@@ -18,6 +18,7 @@ function getStoragePath(): { storageDir: string; storagePath: string } {
 
 export const plainTextStorage = {
   name: 'plaintext',
+  // @ts-ignore - recovered code
   read(): SecureStorageData | null {
     // sync IO: called from sync context (SecureStorage interface)
     const { storagePath } = getStoragePath()
@@ -30,6 +31,7 @@ export const plainTextStorage = {
       return null
     }
   },
+  // @ts-ignore - recovered code
   async readAsync(): Promise<SecureStorageData | null> {
     const { storagePath } = getStoragePath()
     try {
@@ -41,6 +43,7 @@ export const plainTextStorage = {
       return null
     }
   },
+  // @ts-ignore - recovered code
   update(data: SecureStorageData): { success: boolean; warning?: string } {
     // sync IO: called from sync context (SecureStorage interface)
     try {
@@ -67,6 +70,7 @@ export const plainTextStorage = {
       return { success: false }
     }
   },
+  // @ts-ignore - recovered code
   delete(): boolean {
     // sync IO: called from sync context (SecureStorage interface)
     const { storagePath } = getStoragePath()

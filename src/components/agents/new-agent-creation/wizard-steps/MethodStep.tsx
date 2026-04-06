@@ -41,6 +41,7 @@ export function MethodStep() {
   if ($[2] !== goNext || $[3] !== goToStep || $[4] !== updateWizardData) {
     t2 = value => {
       const method = value as 'generate' | 'manual';
+      // @ts-ignore - recovered code
       updateWizardData({
         method,
         wasGenerated: method === "generate"
@@ -48,6 +49,7 @@ export function MethodStep() {
       if (method === "generate") {
         goNext();
       } else {
+        // @ts-ignore - recovered code
         goToStep(3);
       }
     };

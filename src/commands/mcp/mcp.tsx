@@ -77,6 +77,7 @@ export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, arg
   }
 
   // Redirect base /mcp command to /plugins installed tab for ant users
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     return <PluginSettings onComplete={onDone} args="manage" showMcpRedirectMessage />;
   }

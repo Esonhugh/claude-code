@@ -17,9 +17,11 @@ type Props = {
   defaultSelections: Workflow[];
 };
 const WORKFLOWS: WorkflowOption[] = [{
+  // @ts-ignore - recovered code
   value: 'claude' as const,
   label: '@Claude Code - Tag @claude in issues and PR comments'
 }, {
+  // @ts-ignore - recovered code
   value: 'claude-review' as const,
   label: 'Claude Code Review - Automated code review on new PRs'
 }];

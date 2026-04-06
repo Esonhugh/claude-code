@@ -675,6 +675,7 @@ export async function initEnvLessBridgeCore(
     // explicit sleep. close() sets closed=true which interrupts drain at the
     // next while-check, so close-before-archive drops the result.
     transport.reportState('idle')
+    // @ts-ignore - recovered code
     void transport.write(makeResultMessage(sessionId))
 
     let token = getAccessToken()
@@ -865,6 +866,7 @@ export async function initEnvLessBridgeCore(
       // interactiveHandler calls only cancelRequest (no sendResponse) on
       // those paths, so without this the server stays on requires_action.
       transport.reportState('running')
+      // @ts-ignore - recovered code
       void transport.write(event)
       logForDebugging(
         `[remote-bridge] Sent control_cancel_request request_id=${requestId}`,
@@ -876,6 +878,7 @@ export async function initEnvLessBridgeCore(
         return
       }
       transport.reportState('idle')
+      // @ts-ignore - recovered code
       void transport.write(makeResultMessage(sessionId))
       logForDebugging(`[remote-bridge] Sent result`)
     },

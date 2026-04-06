@@ -79,6 +79,7 @@ export function useBackgroundTaskNavigation(options?: {
 
   // Check for non-teammate background tasks (local_agent, local_bash, etc.)
   const hasNonTeammateBackgroundTasks = Object.values(tasks).some(
+    // @ts-ignore - recovered code
     t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
   )
 

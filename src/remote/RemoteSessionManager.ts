@@ -193,7 +193,9 @@ export class RemoteSessionManager {
       logForDebugging(
         `[RemoteSessionManager] Permission request for tool: ${inner.tool_name}`,
       )
+      // @ts-ignore - recovered code
       this.pendingPermissionRequests.set(request_id, inner)
+      // @ts-ignore - recovered code
       this.callbacks.onPermissionRequest(inner, request_id)
     } else {
       // Send an error response for unrecognized subtypes so the server

@@ -218,6 +218,7 @@ async function handleSessionFileAccess(
         input.tool_name,
         input.tool_input,
         filePath,
+        // @ts-ignore - recovered code
         scope,
       )
     }

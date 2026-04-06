@@ -77,6 +77,7 @@ export function SkillsMenu(t0) {
       }
     }
     for (const group of Object.values(groups)) {
+      // @ts-ignore - recovered code
       group.sort(_temp2);
     }
     $[2] = skills;

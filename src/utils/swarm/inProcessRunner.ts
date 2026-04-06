@@ -1237,6 +1237,7 @@ export async function runInProcessTeammate(
                 if (message.type === 'assistant') {
                   for (const block of message.message.content) {
                     if (block.type === 'tool_use') {
+                      // @ts-ignore - recovered code
                       inProgressToolUseIDs = new Set([
                         ...(inProgressToolUseIDs ?? []),
                         block.id,
@@ -1254,6 +1255,7 @@ export async function runInProcessTeammate(
                       ) {
                         if (inProgressToolUseIDs) {
                           inProgressToolUseIDs = new Set(inProgressToolUseIDs)
+                          // @ts-ignore - recovered code
                           inProgressToolUseIDs.delete(block.tool_use_id)
                         }
                       }

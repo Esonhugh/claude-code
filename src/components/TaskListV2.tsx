@@ -94,9 +94,12 @@ export function TaskListV2({
   const teammateColors: Record<string, keyof Theme> = {};
   if (isAgentSwarmsEnabled() && teamContext?.teammates) {
     for (const teammate of Object.values(teamContext.teammates)) {
+      // @ts-ignore - recovered code
       if (teammate.color) {
+        // @ts-ignore - recovered code
         const themeColor = AGENT_COLOR_TO_THEME_COLOR[teammate.color as AgentColorName];
         if (themeColor) {
+          // @ts-ignore - recovered code
           teammateColors[teammate.name] = themeColor;
         }
       }

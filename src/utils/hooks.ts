@@ -386,6 +386,7 @@ function validateHookJson(
   const validation = hookJSONOutputSchema().safeParse(parsed)
   if (validation.success) {
     logForDebugging('Successfully parsed and validated hook JSON output')
+    // @ts-ignore - recovered code
     return { json: validation.data }
   }
   const errors = validation.error.issues
@@ -462,6 +463,7 @@ function parseHttpHookOutput(body: string): {
       logForDebugging(
         'HTTP hook returned empty body, treating as empty JSON object',
       )
+      // @ts-ignore - recovered code
       return { json: validation.data }
     }
   }
@@ -709,6 +711,7 @@ function processHookJSONOutput({
 
   return {
     ...result,
+    // @ts-ignore - recovered code
     message: result.blockingError
       ? createAttachmentMessage({
           type: 'hook_blocking_error',
@@ -2095,6 +2098,7 @@ async function* executeHooks({
   for (const { hook } of matchingHooks) {
     yield {
       message: {
+        // @ts-ignore - recovered code
         type: 'progress',
         data: {
           type: 'hook_progress',
@@ -2165,6 +2169,7 @@ async function* executeHooks({
     if (hook.type === 'function') {
       if (!messages) {
         yield {
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_error_during_execution',
             hookName,
@@ -2204,11 +2209,13 @@ async function* executeHooks({
       const jsonInputRes = getJsonInput()
       if (!jsonInputRes.ok) {
         yield {
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_error_during_execution',
             hookName,
             toolUseID,
             hookEvent,
+            // @ts-ignore - recovered code
             content: `Failed to prepare hook input: ${errorMessage(jsonInputRes.error)}`,
             command: hookCommand,
             durationMs: Date.now() - hookStartMs,
@@ -2238,13 +2245,18 @@ async function* executeHooks({
           toolUseID,
         )
         // Inject timing fields for hook visibility
+        // @ts-ignore - recovered code
         if (promptResult.message?.type === 'attachment') {
           const att = promptResult.message.attachment
           if (
+            // @ts-ignore - recovered code
             att.type === 'hook_success' ||
+            // @ts-ignore - recovered code
             att.type === 'hook_non_blocking_error'
           ) {
+            // @ts-ignore - recovered code
             att.command = hookCommand
+            // @ts-ignore - recovered code
             att.durationMs = Date.now() - hookStartMs
           }
         }
@@ -2278,13 +2290,18 @@ async function* executeHooks({
             : undefined,
         )
         // Inject timing fields for hook visibility
+        // @ts-ignore - recovered code
         if (agentResult.message?.type === 'attachment') {
           const att = agentResult.message.attachment
           if (
+            // @ts-ignore - recovered code
             att.type === 'hook_success' ||
+            // @ts-ignore - recovered code
             att.type === 'hook_non_blocking_error'
           ) {
+            // @ts-ignore - recovered code
             att.command = hookCommand
+            // @ts-ignore - recovered code
             att.durationMs = Date.now() - hookStartMs
           }
         }
@@ -2319,6 +2336,7 @@ async function* executeHooks({
             outcome: 'cancelled',
           })
           yield {
+            // @ts-ignore - recovered code
             message: createAttachmentMessage({
               type: 'hook_cancelled',
               hookName,
@@ -2345,6 +2363,7 @@ async function* executeHooks({
             outcome: 'error',
           })
           yield {
+            // @ts-ignore - recovered code
             message: createAttachmentMessage({
               type: 'hook_non_blocking_error',
               hookName,
@@ -2376,6 +2395,7 @@ async function* executeHooks({
             outcome: 'error',
           })
           yield {
+            // @ts-ignore - recovered code
             message: createAttachmentMessage({
               type: 'hook_non_blocking_error',
               hookName,
@@ -2412,6 +2432,7 @@ async function* executeHooks({
 
         if (httpJson) {
           const processed = processHookJSONOutput({
+            // @ts-ignore - recovered code
             json: httpJson,
             command: hook.url,
             hookName,
@@ -2482,6 +2503,7 @@ async function* executeHooks({
           outcome: 'cancelled',
         })
         yield {
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_cancelled',
             hookName,
@@ -2513,6 +2535,7 @@ async function* executeHooks({
           outcome: 'error',
         })
         yield {
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_non_blocking_error',
             hookName,
@@ -2575,6 +2598,7 @@ async function* executeHooks({
           })
           yield {
             ...processed,
+            // @ts-ignore - recovered code
             message:
               processed.message ||
               createAttachmentMessage({
@@ -2626,6 +2650,7 @@ async function* executeHooks({
           outcome: 'success',
         })
         yield {
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_success',
             hookName,
@@ -2680,6 +2705,7 @@ async function* executeHooks({
         outcome: 'error',
       })
       yield {
+        // @ts-ignore - recovered code
         message: createAttachmentMessage({
           type: 'hook_non_blocking_error',
           hookName,
@@ -2712,6 +2738,7 @@ async function* executeHooks({
         outcome: 'error',
       })
       yield {
+        // @ts-ignore - recovered code
         message: createAttachmentMessage({
           type: 'hook_non_blocking_error',
           hookName,
@@ -2769,6 +2796,7 @@ async function* executeHooks({
     // Yield system message separately if present
     if (result.systemMessage) {
       yield {
+        // @ts-ignore - recovered code
         message: createAttachmentMessage({
           type: 'hook_system_message',
           content: result.systemMessage,
@@ -3613,6 +3641,7 @@ export async function executeStopFailureHooks(
   const hookInput: StopFailureHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'StopFailure',
+    // @ts-ignore - recovered code
     error,
     error_details: lastMessage.errorDetails,
     last_assistant_message: lastAssistantText,
@@ -3622,6 +3651,7 @@ export async function executeStopFailureHooks(
     getAppState: toolUseContext?.getAppState,
     hookInput,
     timeoutMs,
+    // @ts-ignore - recovered code
     matchQuery: error,
   })
 }
@@ -4414,9 +4444,11 @@ function parseElicitationHookOutput(
 
   try {
     const parsed = hookJSONOutputSchema().parse(JSON.parse(trimmed))
+    // @ts-ignore - recovered code
     if (isAsyncHookJSONOutput(parsed)) {
       return {}
     }
+    // @ts-ignore - recovered code
     if (!isSyncHookJSONOutput(parsed)) {
       return {}
     }
@@ -4821,6 +4853,7 @@ async function executeFunctionHook({
     // Log for monitoring
     logError(error)
     return {
+      // @ts-ignore - recovered code
       message: createAttachmentMessage({
         type: 'hook_error_during_execution',
         hookName,

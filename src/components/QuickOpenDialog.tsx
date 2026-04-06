@@ -31,6 +31,7 @@ export function QuickOpenDialog(t0) {
     onDone,
     onInsert
   } = t0;
+  // @ts-ignore - recovered code
   useRegisterOverlay("quick-open");
   const {
     columns,

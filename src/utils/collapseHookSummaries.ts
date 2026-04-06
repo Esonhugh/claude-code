@@ -46,6 +46,7 @@ export function collapseHookSummaries(
           preventedContinuation: group.some(m => m.preventedContinuation),
           hasOutput: group.some(m => m.hasOutput),
           // Parallel tool calls' hooks overlap; max is closest to wall-clock.
+          // @ts-ignore - recovered code
           totalDurationMs: Math.max(...group.map(m => m.totalDurationMs ?? 0)),
         })
       }

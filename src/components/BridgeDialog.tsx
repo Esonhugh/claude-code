@@ -22,6 +22,7 @@ export function BridgeDialog(t0) {
   const {
     onDone
   } = t0;
+  // @ts-ignore - recovered code
   useRegisterOverlay("bridge-dialog");
   const connected = useAppState(_temp);
   const sessionActive = useAppState(_temp2);

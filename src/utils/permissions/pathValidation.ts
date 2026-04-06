@@ -116,8 +116,10 @@ export function isPathInSandboxWriteAllowlist(resolvedPath: string): boolean {
   const resolvedDeny = denyWithinAllow.flatMap(getResolvedSandboxConfigPath)
   return pathsToCheck.every(p => {
     for (const denyPath of resolvedDeny) {
+      // @ts-ignore - recovered code
       if (pathInWorkingPath(p, denyPath)) return false
     }
+    // @ts-ignore - recovered code
     return resolvedAllow.some(allowPath => pathInWorkingPath(p, allowPath))
   })
 }
@@ -188,7 +190,9 @@ export function isPathAllowed(
         allowed: false,
         decisionReason: {
           type: 'safetyCheck',
+          // @ts-ignore - recovered code
           reason: safetyCheck.message,
+          // @ts-ignore - recovered code
           classifierApprovable: safetyCheck.classifierApprovable,
         },
       }

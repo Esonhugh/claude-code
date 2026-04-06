@@ -16,7 +16,9 @@ export function isRunningWithBun(): boolean {
 export function isInBundledMode(): boolean {
   return (
     typeof Bun !== 'undefined' &&
+    // @ts-ignore - recovered code
     Array.isArray(Bun.embeddedFiles) &&
+    // @ts-ignore - recovered code
     Bun.embeddedFiles.length > 0
   )
 }

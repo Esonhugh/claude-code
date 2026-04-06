@@ -67,6 +67,7 @@ export function ConfirmStep(t0) {
     t2 = $[3];
   }
   const handleKeyDown = t2;
+  // @ts-ignore - recovered code
   const agent = wizardData.finalAgent;
   let T0;
   let T1;
@@ -87,6 +88,7 @@ export function ConfirmStep(t0) {
   let t7;
   let t8;
   let t9;
+  // @ts-ignore - recovered code
   if ($[4] !== agent || $[5] !== existingAgents || $[6] !== handleKeyDown || $[7] !== tools || $[8] !== wizardData.location) {
     const validation = validateAgent(agent, tools, existingAgents);
     let t20;
@@ -152,12 +154,15 @@ export function ConfirmStep(t0) {
       t24 = $[38];
     }
     let t25;
+    // @ts-ignore - recovered code
     if ($[39] !== agent.agentType || $[40] !== wizardData.location) {
       t25 = getNewRelativeAgentFilePath({
+        // @ts-ignore - recovered code
         source: wizardData.location,
         agentType: agent.agentType
       });
       $[39] = agent.agentType;
+      // @ts-ignore - recovered code
       $[40] = wizardData.location;
       $[41] = t25;
     } else {
@@ -247,6 +252,7 @@ export function ConfirmStep(t0) {
     $[5] = existingAgents;
     $[6] = handleKeyDown;
     $[7] = tools;
+    // @ts-ignore - recovered code
     $[8] = wizardData.location;
     $[9] = T0;
     $[10] = T1;

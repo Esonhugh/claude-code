@@ -81,6 +81,7 @@ export type AutoRunIssueReason = 'feedback_survey_bad' | 'feedback_survey_good';
  */
 export function shouldAutoRunIssue(reason: AutoRunIssueReason): boolean {
   // Only for Ant users
+  // @ts-ignore - recovered code
   if ("external" !== 'ant') {
     return false;
   }
@@ -100,6 +101,7 @@ export function shouldAutoRunIssue(reason: AutoRunIssueReason): boolean {
  */
 export function getAutoRunCommand(reason: AutoRunIssueReason): string {
   // Only ant builds have the /good-claude command
+  // @ts-ignore - recovered code
   if ("external" === 'ant' && reason === 'feedback_survey_good') {
     return '/good-claude';
   }

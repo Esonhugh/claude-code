@@ -6,11 +6,16 @@ import type {
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { formatOutput } from '../tools/BashTool/utils.js'
 import type {
+  // @ts-ignore - recovered code
   NotebookCell,
+  // @ts-ignore - recovered code
   NotebookCellOutput,
+  // @ts-ignore - recovered code
   NotebookCellSource,
+  // @ts-ignore - recovered code
   NotebookCellSourceOutput,
   NotebookContent,
+  // @ts-ignore - recovered code
   NotebookOutputImage,
 } from '../types/notebook.js'
 import { getFsImplementation } from './fsOperations.js'

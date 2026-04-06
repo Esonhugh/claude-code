@@ -100,17 +100,22 @@ export function useDirectConnect({
 
         const permissionResult: PermissionAskDecision = {
           behavior: 'ask',
+          // @ts-ignore - recovered code
           message:
             request.description ?? `${request.tool_name} requires permission`,
+          // @ts-ignore - recovered code
           suggestions: request.permission_suggestions,
+          // @ts-ignore - recovered code
           blockedPath: request.blocked_path,
         }
 
         const toolUseConfirm: ToolUseConfirm = {
           assistantMessage: syntheticMessage,
           tool,
+          // @ts-ignore - recovered code
           description:
             request.description ?? `${request.tool_name} requires permission`,
+          // @ts-ignore - recovered code
           input: request.input,
           toolUseContext: {} as ToolUseConfirm['toolUseContext'],
           toolUseID: request.tool_use_id,

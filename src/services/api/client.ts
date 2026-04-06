@@ -159,6 +159,7 @@ export async function getAnthropicClient({
         ? process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
         : getAWSRegion()
 
+    // @ts-ignore - recovered code
     const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
       ...ARGS,
       awsRegion,
@@ -180,6 +181,7 @@ export async function getAnthropicClient({
       // Refresh auth and get credentials with cache clearing
       const cachedCredentials = await refreshAndGetAwsCredentials()
       if (cachedCredentials) {
+        // @ts-ignore - recovered code
         bedrockArgs.awsAccessKey = cachedCredentials.accessKeyId
         bedrockArgs.awsSecretKey = cachedCredentials.secretAccessKey
         bedrockArgs.awsSessionToken = cachedCredentials.sessionToken
@@ -290,6 +292,7 @@ export async function getAnthropicClient({
     const vertexArgs: ConstructorParameters<typeof AnthropicVertex>[0] = {
       ...ARGS,
       region: getVertexRegionForModel(model),
+      // @ts-ignore - recovered code
       googleAuth,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }

@@ -1211,9 +1211,12 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
     secureStorage.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
 
   try {
+    // @ts-ignore - recovered code
     const storageData = secureStorage.read() || {}
+    // @ts-ignore - recovered code
     const existingOauth = storageData.claudeAiOauth
 
+    // @ts-ignore - recovered code
     storageData.claudeAiOauth = {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -1228,8 +1231,10 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
         tokens.rateLimitTier ?? existingOauth?.rateLimitTier ?? null,
     }
 
+    // @ts-ignore - recovered code
     const updateStatus = secureStorage.update(storageData)
 
+    // @ts-ignore - recovered code
     if (updateStatus.success) {
       logEvent('tengu_oauth_tokens_saved', { storageBackend })
     } else {
@@ -1239,6 +1244,7 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
     getClaudeAIOAuthTokens.cache?.clear?.()
     clearBetasCaches()
     clearToolSchemaCache()
+    // @ts-ignore - recovered code
     return updateStatus
   } catch (error) {
     logError(error)
@@ -1285,7 +1291,9 @@ export const getClaudeAIOAuthTokens = memoize((): OAuthTokens | null => {
 
   try {
     const secureStorage = getSecureStorage()
+    // @ts-ignore - recovered code
     const storageData = secureStorage.read()
+    // @ts-ignore - recovered code
     const oauthData = storageData?.claudeAiOauth
 
     if (!oauthData?.accessToken) {
@@ -1409,7 +1417,9 @@ export async function getClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null>
 
   try {
     const secureStorage = getSecureStorage()
+    // @ts-ignore - recovered code
     const storageData = await secureStorage.readAsync()
+    // @ts-ignore - recovered code
     const oauthData = storageData?.claudeAiOauth
     if (!oauthData?.accessToken) {
       return null

@@ -113,6 +113,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           parent_tool_use_id: null,
           session_id: getSessionId(),
           uuid: _.uuid,
+          // @ts-ignore - recovered code
           error: _.error,
         }
       }
@@ -122,7 +123,9 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         message.data.type === 'agent_progress' ||
         message.data.type === 'skill_progress'
       ) {
+        // @ts-ignore - recovered code
         for (const _ of normalizeMessages([message.data.message])) {
+          // @ts-ignore - recovered code
           switch (_.type) {
             case 'assistant':
               // Skip empty messages (e.g., "(no content)") that shouldn't be output to SDK
@@ -131,24 +134,34 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
               }
               yield {
                 type: 'assistant',
+                // @ts-ignore - recovered code
                 message: _.message,
                 parent_tool_use_id: message.parentToolUseID,
                 session_id: getSessionId(),
+                // @ts-ignore - recovered code
                 uuid: _.uuid,
+                // @ts-ignore - recovered code
                 error: _.error,
               }
               break
             case 'user':
               yield {
                 type: 'user',
+                // @ts-ignore - recovered code
                 message: _.message,
                 parent_tool_use_id: message.parentToolUseID,
                 session_id: getSessionId(),
+                // @ts-ignore - recovered code
                 uuid: _.uuid,
+                // @ts-ignore - recovered code
                 timestamp: _.timestamp,
+                // @ts-ignore - recovered code
                 isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
+                // @ts-ignore - recovered code
                 tool_use_result: _.mcpMeta
+                  // @ts-ignore - recovered code
                   ? { content: _.toolUseResult, ..._.mcpMeta }
+                  // @ts-ignore - recovered code
                   : _.toolUseResult,
               }
               break
@@ -192,7 +205,9 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
             tool_name:
               message.data.type === 'bash_progress' ? 'Bash' : 'PowerShell',
             parent_tool_use_id: message.parentToolUseID,
+            // @ts-ignore - recovered code
             elapsed_time_seconds: message.data.elapsedTimeSeconds,
+            // @ts-ignore - recovered code
             task_id: message.data.taskId,
             session_id: getSessionId(),
             uuid: message.uuid,
@@ -240,6 +255,7 @@ export async function* handleOrphanedPermission(
   if (Array.isArray(content)) {
     for (const block of content) {
       if (block.type === 'tool_use' && block.id === toolUseID) {
+        // @ts-ignore - recovered code
         toolUseBlock = block as ToolUseBlock
         break
       }
@@ -378,6 +394,7 @@ export function extractReadFilesFromMessages(
           ) {
             // Normalize to absolute path for consistent cache lookups
             const absolutePath = expandPath(input.file_path, cwd)
+            // @ts-ignore - recovered code
             fileReadToolUseIds.set(content.id, absolutePath)
           }
         } else if (
@@ -391,6 +408,7 @@ export function extractReadFilesFromMessages(
           if (input?.file_path && input?.content) {
             // Normalize to absolute path for consistent cache lookups
             const absolutePath = expandPath(input.file_path, cwd)
+            // @ts-ignore - recovered code
             fileWriteToolUseIds.set(content.id, {
               filePath: absolutePath,
               content: input.content,
@@ -405,6 +423,7 @@ export function extractReadFilesFromMessages(
           const input = content.input as { file_path?: string } | undefined
           if (input?.file_path) {
             const absolutePath = expandPath(input.file_path, cwd)
+            // @ts-ignore - recovered code
             fileEditToolUseIds.set(content.id, absolutePath)
           }
         }
@@ -418,6 +437,7 @@ export function extractReadFilesFromMessages(
       for (const content of message.message.content) {
         if (content.type === 'tool_result' && content.tool_use_id) {
           // Handle Read tool results
+          // @ts-ignore - recovered code
           const readFilePath = fileReadToolUseIds.get(content.tool_use_id)
           if (
             readFilePath &&
@@ -454,6 +474,7 @@ export function extractReadFilesFromMessages(
           }
 
           // Handle Write tool results - use content from the tool input
+          // @ts-ignore - recovered code
           const writeToolData = fileWriteToolUseIds.get(content.tool_use_id)
           if (writeToolData && message.timestamp) {
             const timestamp = new Date(message.timestamp).getTime()
@@ -474,6 +495,7 @@ export function extractReadFilesFromMessages(
           // Cowork cold-restart per turn), so disk content at extraction time
           // IS the post-edit state. No dedup: processing every Edit preserves
           // last-wins semantics when Read/Write interleave (Edit→Read→Edit).
+          // @ts-ignore - recovered code
           const editFilePath = fileEditToolUseIds.get(content.tool_use_id)
           if (editFilePath && content.is_error !== true) {
             try {

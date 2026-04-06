@@ -135,6 +135,7 @@ export async function showInvalidConfigDialog({
     const {
       unmount
     } = await render(<AppStateProvider>
+        {/* @ts-ignore - recovered code */}
         <KeybindingSetup>
           <InvalidConfigDialog filePath={error.filePath} errorDescription={error.message} onExit={() => {
           unmount();

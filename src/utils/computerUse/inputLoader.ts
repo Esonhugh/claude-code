@@ -26,5 +26,6 @@ export function requireComputerUseInput(): ComputerUseInputAPI {
   if (!input.isSupported) {
     throw new Error('@ant/computer-use-input is not supported on this platform')
   }
+  // @ts-ignore - recovered code
   return (cached = input)
 }

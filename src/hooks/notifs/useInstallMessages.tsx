@@ -1,6 +1,7 @@
 import { checkInstall } from 'src/utils/nativeInstaller/index.js';
 import { useStartupNotification } from './useStartupNotification.js';
 export function useInstallMessages() {
+  // @ts-ignore - recovered code
   useStartupNotification(_temp2);
 }
 async function _temp2() {

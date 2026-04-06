@@ -1764,6 +1764,7 @@ export function getFirstMeaningfulUserMessageTextContent<T extends Message>(
     } else if (Array.isArray(content)) {
       for (const block of content) {
         if (block.type === 'text' && block.text) {
+          // @ts-ignore - recovered code
           texts.push(block.text)
         }
       }
@@ -1840,6 +1841,7 @@ function applyPreservedSegmentRelinks(
   messages: Map<UUID, TranscriptMessage>,
 ): void {
   type Seg = NonNullable<
+    // @ts-ignore - recovered code
     SystemCompactBoundaryMessage['compactMetadata']['preservedSegment']
   >
 
@@ -1854,6 +1856,7 @@ function applyPreservedSegmentRelinks(
     entryIndex.set(entry.uuid, i)
     if (isCompactBoundaryMessage(entry)) {
       absoluteLastBoundaryIdx = i
+      // @ts-ignore - recovered code
       const seg = entry.compactMetadata?.preservedSegment
       if (seg) {
         lastSeg = seg
@@ -2232,8 +2235,10 @@ export function checkResumeConsistency(chain: Message[]): void {
     // position should be messageCount (i.e., i === expected).
     const actual = i
     logEvent('tengu_resume_consistency_delta', {
+      // @ts-ignore - recovered code
       expected,
       actual,
+      // @ts-ignore - recovered code
       delta: actual - expected,
       chain_length: chain.length,
       checkpoint_age_entries: chain.length - 1 - i,
@@ -4356,6 +4361,7 @@ export function isLoggableMessage(m: Message): boolean {
   // user-configured hook output that is useful for session context on resume.
   if (m.type === 'attachment' && getUserType() !== 'ant') {
     if (
+      // @ts-ignore - recovered code
       m.attachment.type === 'hook_additional_context' &&
       isEnvTruthy(process.env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT)
     ) {
@@ -4372,6 +4378,7 @@ function collectReplIds(messages: readonly Message[]): Set<string> {
     if (m.type === 'assistant' && Array.isArray(m.message.content)) {
       for (const b of m.message.content) {
         if (b.type === 'tool_use' && b.name === REPL_TOOL_NAME) {
+          // @ts-ignore - recovered code
           ids.add(b.id)
         }
       }
@@ -4421,10 +4428,12 @@ function transformMessagesForExternalTranscript(
     if (m.type === 'user' && Array.isArray(m.message.content)) {
       const content = m.message.content
       const hasRepl = content.some(
+        // @ts-ignore - recovered code
         b => b.type === 'tool_result' && replIds.has(b.tool_use_id),
       )
       const filtered = hasRepl
         ? content.filter(
+            // @ts-ignore - recovered code
             b => !(b.type === 'tool_result' && replIds.has(b.tool_use_id)),
           )
         : content

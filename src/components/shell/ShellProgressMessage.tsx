@@ -62,6 +62,7 @@ export function ShellProgressMessage(t0) {
     }
     let t4;
     if ($[8] !== elapsedTimeSeconds || $[9] !== timeoutMs) {
+      // @ts-ignore - recovered code
       t4 = <MessageResponse><OffscreenFreeze>{t3}<ShellTimeDisplay elapsedTimeSeconds={elapsedTimeSeconds} timeoutMs={timeoutMs} /></OffscreenFreeze></MessageResponse>;
       $[8] = elapsedTimeSeconds;
       $[9] = timeoutMs;
@@ -135,6 +136,7 @@ export function ShellProgressMessage(t0) {
   }
   let t10;
   if ($[27] !== t5 || $[28] !== t9) {
+    // @ts-ignore - recovered code
     t10 = <MessageResponse><OffscreenFreeze><Box flexDirection="column">{t5}{t9}</Box></OffscreenFreeze></MessageResponse>;
     $[27] = t5;
     $[28] = t9;

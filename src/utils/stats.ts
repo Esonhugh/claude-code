@@ -316,6 +316,7 @@ async function processSessionFiles(
             }
 
             if (!modelUsageAgg[model]) {
+              // @ts-ignore - recovered code
               modelUsageAgg[model] = {
                 inputTokens: 0,
                 outputTokens: 0,
@@ -481,6 +482,7 @@ function cacheToStats(
   if (todayStats) {
     for (const [model, usage] of Object.entries(todayStats.modelUsage)) {
       if (modelUsage[model]) {
+        // @ts-ignore - recovered code
         modelUsage[model] = {
           inputTokens: modelUsage[model]!.inputTokens + usage.inputTokens,
           outputTokens: modelUsage[model]!.outputTokens + usage.outputTokens,
@@ -947,6 +949,7 @@ function extractShotCountFromMessages(
     for (const block of content) {
       if (
         block.type !== 'tool_use' ||
+        // @ts-ignore - recovered code
         !SHELL_TOOL_NAMES.includes(block.name) ||
         typeof block.input !== 'object' ||
         block.input === null ||

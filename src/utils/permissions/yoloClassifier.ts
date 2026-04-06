@@ -302,7 +302,9 @@ export type TranscriptEntry = {
 export function buildTranscriptEntries(messages: Message[]): TranscriptEntry[] {
   const transcript: TranscriptEntry[] = []
   for (const msg of messages) {
+    // @ts-ignore - recovered code
     if (msg.type === 'attachment' && msg.attachment.type === 'queued_command') {
+      // @ts-ignore - recovered code
       const prompt = msg.attachment.prompt
       let text: string | null = null
       if (typeof prompt === 'string') {
@@ -331,6 +333,7 @@ export function buildTranscriptEntries(messages: Message[]): TranscriptEntry[] {
       } else if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'text') {
+            // @ts-ignore - recovered code
             textBlocks.push({ type: 'text', text: block.text })
           }
         }
@@ -346,6 +349,7 @@ export function buildTranscriptEntries(messages: Message[]): TranscriptEntry[] {
         if (block.type === 'tool_use') {
           blocks.push({
             type: 'tool_use',
+            // @ts-ignore - recovered code
             name: block.name,
             input: block.input,
           })

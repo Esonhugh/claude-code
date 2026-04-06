@@ -493,6 +493,7 @@ export function ManagePlugins({
         setResult('Run /reload-plugins to apply plugin changes.');
         return;
       }
+      // @ts-ignore - recovered code
       setParentViewState({
         type: 'menu'
       });
@@ -1090,6 +1091,7 @@ export function ManagePlugins({
               if (onManageComplete) {
                 await onManageComplete();
               }
+              // @ts-ignore - recovered code
               setParentViewState({
                 type: 'menu'
               });
@@ -1129,6 +1131,7 @@ export function ManagePlugins({
       if (onManageComplete) {
         await onManageComplete();
       }
+      // @ts-ignore - recovered code
       setParentViewState({
         type: 'menu'
       });
@@ -1525,6 +1528,7 @@ export function ManagePlugins({
       clearAllCaches();
       setResult(`✓ Disabled ${selectedPlugin.plugin.name} in .claude/settings.local.json. Run /reload-plugins to apply.`);
       if (onManageComplete) void onManageComplete();
+      // @ts-ignore - recovered code
       setParentViewState({
         type: 'menu'
       });
@@ -1563,6 +1567,7 @@ export function ManagePlugins({
         const suffix = deleteDataDir ? '' : ' · data preserved';
         setResult(`${figures.tick} ${result_3.message}${suffix}`);
         if (onManageComplete) void onManageComplete();
+        // @ts-ignore - recovered code
         setParentViewState({
           type: 'menu'
         });
@@ -1638,6 +1643,7 @@ export function ManagePlugins({
       if (onManageComplete) {
         void onManageComplete();
       }
+      // @ts-ignore - recovered code
       setParentViewState({
         type: 'menu'
       });
@@ -1973,6 +1979,7 @@ export function ManagePlugins({
     const scope_5 = client_3.config.scope;
     const configType = client_3.config.type;
     if (configType === 'stdio') {
+      // @ts-ignore - recovered code
       const server: StdioServerInfo = {
         name: client_3.name,
         client: client_3,
@@ -1982,6 +1989,7 @@ export function ManagePlugins({
       };
       return <MCPStdioServerMenu server={server} serverToolsCount={serverToolsCount} onViewTools={handleMcpViewTools} onCancel={handleMcpCancel} onComplete={handleMcpComplete} borderless />;
     } else if (configType === 'sse') {
+      // @ts-ignore - recovered code
       const server_0: SSEServerInfo = {
         name: client_3.name,
         client: client_3,
@@ -1992,6 +2000,7 @@ export function ManagePlugins({
       };
       return <MCPRemoteServerMenu server={server_0} serverToolsCount={serverToolsCount} onViewTools={handleMcpViewTools} onCancel={handleMcpCancel} onComplete={handleMcpComplete} borderless />;
     } else if (configType === 'http') {
+      // @ts-ignore - recovered code
       const server_1: HTTPServerInfo = {
         name: client_3.name,
         client: client_3,
@@ -2002,6 +2011,7 @@ export function ManagePlugins({
       };
       return <MCPRemoteServerMenu server={server_1} serverToolsCount={serverToolsCount} onViewTools={handleMcpViewTools} onCancel={handleMcpCancel} onComplete={handleMcpComplete} borderless />;
     } else if (configType === 'claudeai-proxy') {
+      // @ts-ignore - recovered code
       const server_2: ClaudeAIServerInfo = {
         name: client_3.name,
         client: client_3,
@@ -2027,6 +2037,7 @@ export function ManagePlugins({
     // Build ServerInfo for MCPToolListView
     let server_3: StdioServerInfo | SSEServerInfo | HTTPServerInfo | ClaudeAIServerInfo;
     if (configType_0 === 'stdio') {
+      // @ts-ignore - recovered code
       server_3 = {
         name: client_4.name,
         client: client_4,
@@ -2035,6 +2046,7 @@ export function ManagePlugins({
         config: client_4.config as McpStdioServerConfig
       };
     } else if (configType_0 === 'sse') {
+      // @ts-ignore - recovered code
       server_3 = {
         name: client_4.name,
         client: client_4,
@@ -2044,6 +2056,7 @@ export function ManagePlugins({
         config: client_4.config as McpSSEServerConfig
       };
     } else if (configType_0 === 'http') {
+      // @ts-ignore - recovered code
       server_3 = {
         name: client_4.name,
         client: client_4,
@@ -2053,6 +2066,7 @@ export function ManagePlugins({
         config: client_4.config as McpHTTPServerConfig
       };
     } else {
+      // @ts-ignore - recovered code
       server_3 = {
         name: client_4.name,
         client: client_4,
@@ -2086,6 +2100,7 @@ export function ManagePlugins({
     // Build ServerInfo for MCPToolDetailView
     let server_4: StdioServerInfo | SSEServerInfo | HTTPServerInfo | ClaudeAIServerInfo;
     if (configType_1 === 'stdio') {
+      // @ts-ignore - recovered code
       server_4 = {
         name: client_5.name,
         client: client_5,
@@ -2094,6 +2109,7 @@ export function ManagePlugins({
         config: client_5.config as McpStdioServerConfig
       };
     } else if (configType_1 === 'sse') {
+      // @ts-ignore - recovered code
       server_4 = {
         name: client_5.name,
         client: client_5,
@@ -2103,6 +2119,7 @@ export function ManagePlugins({
         config: client_5.config as McpSSEServerConfig
       };
     } else if (configType_1 === 'http') {
+      // @ts-ignore - recovered code
       server_4 = {
         name: client_5.name,
         client: client_5,
@@ -2112,6 +2129,7 @@ export function ManagePlugins({
         config: client_5.config as McpHTTPServerConfig
       };
     } else {
+      // @ts-ignore - recovered code
       server_4 = {
         name: client_5.name,
         client: client_5,

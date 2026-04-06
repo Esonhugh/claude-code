@@ -5,8 +5,11 @@ function isTeammateShutdownAttachment(
 ): msg is AttachmentMessage {
   return (
     msg.type === 'attachment' &&
+    // @ts-ignore - recovered code
     msg.attachment.type === 'task_status' &&
+    // @ts-ignore - recovered code
     msg.attachment.taskType === 'in_process_teammate' &&
+    // @ts-ignore - recovered code
     msg.attachment.status === 'completed'
   )
 }

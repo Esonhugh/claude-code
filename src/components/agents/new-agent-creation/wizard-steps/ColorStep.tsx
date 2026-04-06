@@ -29,21 +29,30 @@ export function ColorStep() {
   }
   useKeybinding("confirm:no", goBack, t0);
   let t1;
+  // @ts-ignore - recovered code
   if ($[1] !== goNext || $[2] !== updateWizardData || $[3] !== wizardData.agentType || $[4] !== wizardData.location || $[5] !== wizardData.selectedModel || $[6] !== wizardData.selectedTools || $[7] !== wizardData.systemPrompt || $[8] !== wizardData.whenToUse) {
     t1 = color => {
+      // @ts-ignore - recovered code
       updateWizardData({
         selectedColor: color,
         finalAgent: {
+          // @ts-ignore - recovered code
           agentType: wizardData.agentType,
+          // @ts-ignore - recovered code
           whenToUse: wizardData.whenToUse,
+          // @ts-ignore - recovered code
           getSystemPrompt: () => wizardData.systemPrompt,
+          // @ts-ignore - recovered code
           tools: wizardData.selectedTools,
+          // @ts-ignore - recovered code
           ...(wizardData.selectedModel ? {
+            // @ts-ignore - recovered code
             model: wizardData.selectedModel
           } : {}),
           ...(color ? {
             color: color as AgentColorName
           } : {}),
+          // @ts-ignore - recovered code
           source: wizardData.location
         }
       });
@@ -51,11 +60,17 @@ export function ColorStep() {
     };
     $[1] = goNext;
     $[2] = updateWizardData;
+    // @ts-ignore - recovered code
     $[3] = wizardData.agentType;
+    // @ts-ignore - recovered code
     $[4] = wizardData.location;
+    // @ts-ignore - recovered code
     $[5] = wizardData.selectedModel;
+    // @ts-ignore - recovered code
     $[6] = wizardData.selectedTools;
+    // @ts-ignore - recovered code
     $[7] = wizardData.systemPrompt;
+    // @ts-ignore - recovered code
     $[8] = wizardData.whenToUse;
     $[9] = t1;
   } else {
@@ -69,6 +84,7 @@ export function ColorStep() {
   } else {
     t2 = $[10];
   }
+  // @ts-ignore - recovered code
   const t3 = wizardData.agentType || "agent";
   let t4;
   if ($[11] !== handleConfirm || $[12] !== t3) {

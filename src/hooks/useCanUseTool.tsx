@@ -132,10 +132,12 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                   if (ctx.resolveIfAborted(resolve)) {
                     return;
                   }
+                  // @ts-ignore - recovered code
                   if (raceResult.type === "result" && raceResult.result.matches && raceResult.result.confidence === "high" && feature("BASH_CLASSIFIER")) {
                     consumeSpeculativeClassifierCheck((input as {
                       command: string;
                     }).command);
+                    // @ts-ignore - recovered code
                     const matchedRule = raceResult.result.matchedDescription ?? undefined;
                     if (matchedRule) {
                       setClassifierApproval(toolUseID, matchedRule);
@@ -150,6 +152,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                       decisionReason: {
                         type: "classifier" as const,
                         classifier: "bash_allow" as const,
+                        // @ts-ignore - recovered code
                         reason: `Allowed by prompt rule: "${raceResult.result.matchedDescription}"`
                       }
                     }));

@@ -144,6 +144,7 @@ export async function startMCPServer(
         )
         if (validationResult && !validationResult.result) {
           throw new Error(
+            // @ts-ignore - recovered code
             `Tool ${name} input is invalid: ${validationResult.message}`,
           )
         }

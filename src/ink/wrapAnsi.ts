@@ -7,7 +7,9 @@ type WrapAnsiOptions = {
 }
 
 const wrapAnsiBun =
+  // @ts-ignore - recovered code
   typeof Bun !== 'undefined' && typeof Bun.wrapAnsi === 'function'
+    // @ts-ignore - recovered code
     ? Bun.wrapAnsi
     : null
 

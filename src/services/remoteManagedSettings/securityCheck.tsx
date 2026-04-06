@@ -44,6 +44,7 @@ export async function checkManagedSettingsSecurity(cachedSettings: SettingsJson 
       const {
         unmount
       } = await render(<AppStateProvider>
+          {/* @ts-ignore - recovered code */}
           <KeybindingSetup>
             <ManagedSettingsSecurityDialog settings={newSettings} onAccept={() => {
             logEvent('tengu_managed_settings_security_dialog_accepted', {});

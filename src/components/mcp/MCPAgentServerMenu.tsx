@@ -67,6 +67,7 @@ export function MCPAgentServerMenu({
         type: agentServer.transport as 'http' | 'sse',
         url: agentServer.url
       };
+      // @ts-ignore - recovered code
       await performMCPOAuthFlow(agentServer.name, tempConfig, setAuthorizationUrl, controller.signal);
       onComplete?.(`Authentication successful for ${agentServer.name}. The server will connect when the agent runs.`);
     } catch (err) {
@@ -138,6 +139,7 @@ export function MCPAgentServerMenu({
 
         <Box>
           <Text bold>Used by: </Text>
+          {/* @ts-ignore - recovered code */}
           <Text dimColor>{agentServer.sourceAgents.join(', ')}</Text>
         </Box>
 

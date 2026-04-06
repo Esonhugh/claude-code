@@ -360,6 +360,7 @@ export function roughTokenCountEstimationForMessage(message: {
     const userMessages = normalizeAttachmentForAPI(message.attachment)
     let total = 0
     for (const userMsg of userMessages) {
+      // @ts-ignore - recovered code
       total += roughTokenCountEstimationForContent(userMsg.message.content)
     }
     return total
@@ -411,6 +412,7 @@ function roughTokenCountEstimationForBlock(
     return 2000
   }
   if (block.type === 'tool_result') {
+    // @ts-ignore - recovered code
     return roughTokenCountEstimationForContent(block.content)
   }
   if (block.type === 'tool_use') {

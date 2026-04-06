@@ -148,8 +148,11 @@ function computeStickyPromptText(msg: RenderableMessage): string | null {
     if (msg.isMeta || msg.isVisibleInTranscriptOnly) return null;
     const block = msg.message.content[0];
     if (block?.type !== 'text') return null;
+    // @ts-ignore - recovered code
     raw = block.text;
+  // @ts-ignore - recovered code
   } else if (msg.type === 'attachment' && msg.attachment.type === 'queued_command' && msg.attachment.commandMode !== 'task-notification' && !msg.attachment.isMeta) {
+    // @ts-ignore - recovered code
     const p = msg.attachment.prompt;
     raw = typeof p === 'string' ? p : p.flatMap(b => b.type === 'text' ? [b.text] : []).join('\n');
   }
@@ -345,6 +348,7 @@ export function VirtualMessageList({
   useImperativeHandle(cursorNavRef, (): MessageActionsNav => {
     const select = (m: NavigableMessage) => setCursor?.({
       uuid: m.uuid,
+      // @ts-ignore - recovered code
       msgType: m.type,
       expanded: false,
       toolName: toolCallOf(m)?.name

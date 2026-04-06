@@ -90,6 +90,7 @@ export function useClaudeCodeHintRecommendation() {
                 trigger: "hint"
               });
               if (!result.success) {
+                // @ts-ignore - recovered code
                 throw new Error(result.error);
               }
             });

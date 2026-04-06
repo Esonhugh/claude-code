@@ -18,6 +18,7 @@ export function DescriptionStep() {
     updateWizardData,
     wizardData
   } = useWizard();
+  // @ts-ignore - recovered code
   const [whenToUse, setWhenToUse] = useState(wizardData.whenToUse || "");
   const [cursorOffset, setCursorOffset] = useState(whenToUse.length);
   const [error, setError] = useState(null);
@@ -65,6 +66,7 @@ export function DescriptionStep() {
         return;
       }
       setError(null);
+      // @ts-ignore - recovered code
       updateWizardData({
         whenToUse: trimmedValue
       });

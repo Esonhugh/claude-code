@@ -141,6 +141,7 @@ export function DiffDialog(t0) {
     t8 = $[15];
   }
   useEffect(t7, t8);
+  // @ts-ignore - recovered code
   useRegisterOverlay("diff-dialog");
   let t10;
   let t9;

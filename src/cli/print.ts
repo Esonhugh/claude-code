@@ -546,6 +546,7 @@ export async function runHeadless(
 
   // Periodically force a full GC to keep memory usage in check
   if (typeof Bun !== 'undefined') {
+    // @ts-ignore - recovered code
     const gcTimer = setInterval(Bun.gc, 1000)
     gcTimer.unref()
   }
@@ -892,6 +893,7 @@ export async function runHeadless(
     if (
       message.type !== 'control_response' &&
       message.type !== 'control_request' &&
+      // @ts-ignore - recovered code
       message.type !== 'control_cancel_request' &&
       !(
         message.type === 'system' &&
@@ -899,11 +901,14 @@ export async function runHeadless(
           message.subtype === 'task_notification' ||
           message.subtype === 'task_started' ||
           message.subtype === 'task_progress' ||
+          // @ts-ignore - recovered code
           message.subtype === 'post_turn_summary')
       ) &&
       message.type !== 'stream_event' &&
       message.type !== 'keep_alive' &&
+      // @ts-ignore - recovered code
       message.type !== 'streamlined_text' &&
+      // @ts-ignore - recovered code
       message.type !== 'streamlined_tool_use_summary' &&
       message.type !== 'prompt_suggestion'
     ) {
@@ -1071,6 +1076,7 @@ function runHeadlessStreaming(
         type: 'system',
         subtype: 'status',
         status: null,
+        // @ts-ignore - recovered code
         permissionMode: newMode as PermissionMode,
         uuid: randomUUID(),
         session_id: getSessionId(),
@@ -1186,6 +1192,7 @@ function runHeadlessStreaming(
     removeInterruptedMessage(mutableMessages, turnInterruptionState.message)
     enqueue({
       mode: 'prompt',
+      // @ts-ignore - recovered code
       value: turnInterruptionState.message.message.content,
       uuid: randomUUID(),
     })
@@ -1648,7 +1655,9 @@ function runHeadlessStreaming(
       ) {
         config = {
           type: 'stdio' as const,
+          // @ts-ignore - recovered code
           command: connection.config.command,
+          // @ts-ignore - recovered code
           args: connection.config.args,
         }
       }
@@ -1802,6 +1811,7 @@ function runHeadlessStreaming(
         type === 'http' ||
         type === 'sdk'
       ) {
+        // @ts-ignore - recovered code
         supportedConfigs[name] = config
       }
     }
@@ -2261,6 +2271,7 @@ function runHeadlessStreaming(
                 output.enqueue({
                   type: 'system' as const,
                   subtype: 'files_persisted' as const,
+                  // @ts-ignore - recovered code
                   files: result.files,
                   failed: result.failed,
                   processed_at: new Date().toISOString(),
@@ -2865,8 +2876,10 @@ function runHeadlessStreaming(
           // Populated by both browser and ProcessTransport sessions
           if (
             message.request.sdkMcpServers &&
+            // @ts-ignore - recovered code
             message.request.sdkMcpServers.length > 0
           ) {
+            // @ts-ignore - recovered code
             for (const serverName of message.request.sdkMcpServers) {
               // Create placeholder config for SDK MCP servers
               // The actual server connection is managed by the SDK Query class
@@ -2878,6 +2891,7 @@ function runHeadlessStreaming(
           }
 
           await handleInitializeRequest(
+            // @ts-ignore - recovered code
             message.request,
             message.request_id,
             initialized,
@@ -2920,11 +2934,13 @@ function runHeadlessStreaming(
           setAppState(prev => ({
             ...prev,
             toolPermissionContext: handleSetPermissionMode(
+              // @ts-ignore - recovered code
               m,
               message.request_id,
               prev.toolPermissionContext,
               output,
             ),
+            // @ts-ignore - recovered code
             isUltraplanMode: m.ultraplan ?? prev.isUltraplanMode,
           }))
           // handleSetPermissionMode sends the control_response; the
@@ -2936,9 +2952,13 @@ function runHeadlessStreaming(
             requestedModel === 'default'
               ? getDefaultMainLoopModel()
               : requestedModel
+          // @ts-ignore - recovered code
           activeUserSpecifiedModel = model
+          // @ts-ignore - recovered code
           setMainLoopModelOverride(model)
+          // @ts-ignore - recovered code
           notifySessionMetadataChanged({ model })
+          // @ts-ignore - recovered code
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
           sendControlResponseSuccess(message)
@@ -2950,6 +2970,7 @@ function runHeadlessStreaming(
           } else {
             options.thinkingConfig = {
               type: 'enabled',
+              // @ts-ignore - recovered code
               budgetTokens: message.request.max_thinking_tokens,
             }
           }
@@ -2989,6 +3010,7 @@ function runHeadlessStreaming(
             sdkClient.type === 'connected' &&
             sdkClient.client?.transport?.onmessage
           ) {
+            // @ts-ignore - recovered code
             sdkClient.client.transport.onmessage(mcpRequest.message)
           }
           sendControlResponseSuccess(message)
@@ -2998,6 +3020,7 @@ function runHeadlessStreaming(
             message.request.user_message_id as UUID,
             appState,
             setAppState,
+            // @ts-ignore - recovered code
             message.request.dry_run ?? false,
           )
           if (result.canRewind || message.request.dry_run) {
@@ -3022,6 +3045,7 @@ function runHeadlessStreaming(
             // expandPath: all other readFileState writers normalize (~, relative,
             // session cwd vs process cwd). FileEditTool looks up by expandPath'd
             // key — a verbatim client path would miss.
+            // @ts-ignore - recovered code
             const normalizedPath = expandPath(message.request.path)
             // Check disk mtime before reading content. If the file changed
             // since the client's observation, readFile would return C_current
@@ -3032,6 +3056,7 @@ function runHeadlessStreaming(
             // makes Edit fail "file not read yet" → forces a fresh Read.
             // Math.floor matches FileReadTool and getFileModificationTime.
             const diskMtime = Math.floor((await stat(normalizedPath)).mtimeMs)
+            // @ts-ignore - recovered code
             if (diskMtime <= message.request.mtime) {
               const raw = await readFile(normalizedPath, 'utf-8')
               // Strip BOM + normalize CRLF→LF to match readFileInRange and
@@ -3054,6 +3079,7 @@ function runHeadlessStreaming(
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'mcp_set_servers') {
           const { response, sdkServersChanged } = await applyMcpServerChanges(
+            // @ts-ignore - recovered code
             message.request.servers,
           )
           sendControlResponseSuccess(message, response)
@@ -3086,6 +3112,7 @@ function runHeadlessStreaming(
             // Reload succeeded — gather response data best-effort so a
             // read failure doesn't mask the successful state change.
             // allSettled so one failure doesn't discard the others.
+            // @ts-ignore - recovered code
             let plugins: SDKControlReloadPluginsResponse['plugins'] = []
             const [cmdsR, mcpR, pluginsR] = await Promise.allSettled([
               getCommands(cwd()),
@@ -3111,6 +3138,7 @@ function runHeadlessStreaming(
             }
 
             sendControlResponseSuccess(message, {
+              // @ts-ignore - recovered code
               commands: currentCommands
                 .filter(cmd => cmd.userInvocable !== false)
                 .map(cmd => ({
@@ -3133,6 +3161,7 @@ function runHeadlessStreaming(
         } else if (message.request.subtype === 'mcp_reconnect') {
           const currentAppState = getAppState()
           const { serverName } = message.request
+          // @ts-ignore - recovered code
           elicitationRegistered.delete(serverName)
           // Config-existence gate must cover the SAME sources as the
           // operations below. SDK-injected servers (query({mcpServers:{...}}))
@@ -3140,6 +3169,7 @@ function runHeadlessStreaming(
           // toggleMcpServer/reconnect returned "Server not found" even though
           // the disconnect/reconnect would have worked (gh-31339 / CC-314).
           const config =
+            // @ts-ignore - recovered code
             getMcpConfigByName(serverName) ??
             mcpClients.find(c => c.name === serverName)?.config ??
             sdkClients.find(c => c.name === serverName)?.config ??
@@ -3150,8 +3180,10 @@ function runHeadlessStreaming(
           if (!config) {
             sendControlResponseError(message, `Server not found: ${serverName}`)
           } else {
+            // @ts-ignore - recovered code
             const result = await reconnectMcpServerImpl(serverName, config)
             // Update appState.mcp with the new client, tools, commands, and resources
+            // @ts-ignore - recovered code
             const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
@@ -3166,12 +3198,14 @@ function runHeadlessStreaming(
                 ],
                 commands: [
                   ...reject(prev.mcp.commands, c =>
+                    // @ts-ignore - recovered code
                     commandBelongsToServer(c, serverName),
                   ),
                   ...result.commands,
                 ],
                 resources:
                   result.resources && result.resources.length > 0
+                    // @ts-ignore - recovered code
                     ? { ...prev.mcp.resources, [serverName]: result.resources }
                     : omit(prev.mcp.resources, serverName),
               },
@@ -3206,11 +3240,13 @@ function runHeadlessStreaming(
         } else if (message.request.subtype === 'mcp_toggle') {
           const currentAppState = getAppState()
           const { serverName, enabled } = message.request
+          // @ts-ignore - recovered code
           elicitationRegistered.delete(serverName)
           // Gate must match the client-lookup spread below (which
           // includes sdkClients and dynamicMcpState.clients). Same fix as
           // mcp_reconnect above (gh-31339 / CC-314).
           const config =
+            // @ts-ignore - recovered code
             getMcpConfigByName(serverName) ??
             mcpClients.find(c => c.name === serverName)?.config ??
             sdkClients.find(c => c.name === serverName)?.config ??
@@ -3223,6 +3259,7 @@ function runHeadlessStreaming(
             sendControlResponseError(message, `Server not found: ${serverName}`)
           } else if (!enabled) {
             // Disabling: persist + disconnect (matches TUI toggleMcpServer behavior)
+            // @ts-ignore - recovered code
             setMcpServerEnabled(serverName, false)
             const client = [
               ...mcpClients,
@@ -3231,9 +3268,11 @@ function runHeadlessStreaming(
               ...currentAppState.mcp.clients,
             ].find(c => c.name === serverName)
             if (client && client.type === 'connected') {
+              // @ts-ignore - recovered code
               await clearServerCache(serverName, config)
             }
             // Update appState.mcp to reflect disabled status and remove tools/commands/resources
+            // @ts-ignore - recovered code
             const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
@@ -3246,6 +3285,7 @@ function runHeadlessStreaming(
                 ),
                 tools: reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
                 commands: reject(prev.mcp.commands, c =>
+                  // @ts-ignore - recovered code
                   commandBelongsToServer(c, serverName),
                 ),
                 resources: omit(prev.mcp.resources, serverName),
@@ -3254,10 +3294,13 @@ function runHeadlessStreaming(
             sendControlResponseSuccess(message)
           } else {
             // Enabling: persist + reconnect
+            // @ts-ignore - recovered code
             setMcpServerEnabled(serverName, true)
+            // @ts-ignore - recovered code
             const result = await reconnectMcpServerImpl(serverName, config)
             // Update appState.mcp with the new client, tools, commands, and resources
             // This ensures the LLM sees updated tools after enabling the server
+            // @ts-ignore - recovered code
             const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
@@ -3272,12 +3315,14 @@ function runHeadlessStreaming(
                 ],
                 commands: [
                   ...reject(prev.mcp.commands, c =>
+                    // @ts-ignore - recovered code
                     commandBelongsToServer(c, serverName),
                   ),
                   ...result.commands,
                 ],
                 resources:
                   result.resources && result.resources.length > 0
+                    // @ts-ignore - recovered code
                     ? { ...prev.mcp.resources, [serverName]: result.resources }
                     : omit(prev.mcp.resources, serverName),
               },
@@ -3298,6 +3343,7 @@ function runHeadlessStreaming(
           const currentAppState = getAppState()
           handleChannelEnable(
             message.request_id,
+            // @ts-ignore - recovered code
             message.request.serverName,
             // Pool spread matches mcp_status — all three client sources.
             [
@@ -3311,6 +3357,7 @@ function runHeadlessStreaming(
           const { serverName } = message.request
           const currentAppState = getAppState()
           const config =
+            // @ts-ignore - recovered code
             getMcpConfigByName(serverName) ??
             mcpClients.find(c => c.name === serverName)?.config ??
             currentAppState.mcp.clients.find(c => c.name === serverName)
@@ -3326,8 +3373,10 @@ function runHeadlessStreaming(
           } else {
             try {
               // Abort any previous in-flight OAuth flow for this server
+              // @ts-ignore - recovered code
               activeOAuthFlows.get(serverName)?.abort()
               const controller = new AbortController()
+              // @ts-ignore - recovered code
               activeOAuthFlows.set(serverName, controller)
 
               // Capture the auth URL from the callback
@@ -3338,6 +3387,7 @@ function runHeadlessStreaming(
 
               // Start the OAuth flow in the background
               const oauthPromise = performMCPOAuthFlow(
+                // @ts-ignore - recovered code
                 serverName,
                 config,
                 url => resolveAuthUrl!(url),
@@ -3345,6 +3395,7 @@ function runHeadlessStreaming(
                 {
                   skipBrowserOpen: true,
                   onWaitingForCallback: submit => {
+                    // @ts-ignore - recovered code
                     oauthCallbackSubmitters.set(serverName, submit)
                   },
                 },
@@ -3370,6 +3421,7 @@ function runHeadlessStreaming(
               // Store auth-only promise for mcp_oauth_callback_url handler.
               // Don't swallow errors — the callback handler needs to detect
               // auth failures and report them to the caller.
+              // @ts-ignore - recovered code
               oauthAuthPromises.set(serverName, oauthPromise)
 
               // Handle background completion — reconnect after auth.
@@ -3379,20 +3431,24 @@ function runHeadlessStreaming(
               const fullFlowPromise = oauthPromise
                 .then(async () => {
                   // Don't reconnect if the server was disabled during the OAuth flow
+                  // @ts-ignore - recovered code
                   if (isMcpServerDisabled(serverName)) {
                     return
                   }
                   // Skip reconnect if the manual callback path was used —
                   // handleAuthDone will do it via mcp_reconnect (which
                   // updates dynamicMcpState for tool registration).
+                  // @ts-ignore - recovered code
                   if (oauthManualCallbackUsed.has(serverName)) {
                     return
                   }
                   // Reconnect the server after successful auth
                   const result = await reconnectMcpServerImpl(
+                    // @ts-ignore - recovered code
                     serverName,
                     config,
                   )
+                  // @ts-ignore - recovered code
                   const prefix = getMcpPrefix(serverName)
                   setAppState(prev => ({
                     ...prev,
@@ -3409,6 +3465,7 @@ function runHeadlessStreaming(
                       ],
                       commands: [
                         ...reject(prev.mcp.commands, c =>
+                          // @ts-ignore - recovered code
                           commandBelongsToServer(c, serverName),
                         ),
                         ...result.commands,
@@ -3417,6 +3474,7 @@ function runHeadlessStreaming(
                         result.resources && result.resources.length > 0
                           ? {
                               ...prev.mcp.resources,
+                              // @ts-ignore - recovered code
                               [serverName]: result.resources,
                             }
                           : omit(prev.mcp.resources, serverName),
@@ -3448,10 +3506,15 @@ function runHeadlessStreaming(
                 })
                 .finally(() => {
                   // Clean up only if this is still the active flow
+                  // @ts-ignore - recovered code
                   if (activeOAuthFlows.get(serverName) === controller) {
+                    // @ts-ignore - recovered code
                     activeOAuthFlows.delete(serverName)
+                    // @ts-ignore - recovered code
                     oauthCallbackSubmitters.delete(serverName)
+                    // @ts-ignore - recovered code
                     oauthManualCallbackUsed.delete(serverName)
+                    // @ts-ignore - recovered code
                     oauthAuthPromises.delete(serverName)
                   }
                 })
@@ -3462,6 +3525,7 @@ function runHeadlessStreaming(
           }
         } else if (message.request.subtype === 'mcp_oauth_callback_url') {
           const { serverName, callbackUrl } = message.request
+          // @ts-ignore - recovered code
           const submit = oauthCallbackSubmitters.get(serverName)
           if (submit) {
             // Validate the callback URL before submitting. The submit
@@ -3470,6 +3534,7 @@ function runHeadlessStreaming(
             // block the control message loop until timeout.
             let hasCodeOrError = false
             try {
+              // @ts-ignore - recovered code
               const parsed = new URL(callbackUrl)
               hasCodeOrError =
                 parsed.searchParams.has('code') ||
@@ -3483,11 +3548,14 @@ function runHeadlessStreaming(
                 'Invalid callback URL: missing authorization code. Please paste the full redirect URL including the code parameter.',
               )
             } else {
+              // @ts-ignore - recovered code
               oauthManualCallbackUsed.add(serverName)
+              // @ts-ignore - recovered code
               submit(callbackUrl)
               // Wait for auth (token exchange) to complete before responding.
               // Reconnect is handled by the extension via handleAuthDone →
               // mcp_reconnect (which updates dynamicMcpState for tools).
+              // @ts-ignore - recovered code
               const authPromise = oauthAuthPromises.get(serverName)
               if (authPromise) {
                 try {
@@ -3527,6 +3595,7 @@ function runHeadlessStreaming(
           claudeOAuth?.service.cleanup()
 
           logEvent('tengu_oauth_flow_start', {
+            // @ts-ignore - recovered code
             loginWithClaudeAi: loginWithClaudeAi ?? true,
           })
 
@@ -3550,6 +3619,7 @@ function runHeadlessStreaming(
                 urlResolver({ manualUrl, automaticUrl: automaticUrl! })
               },
               {
+                // @ts-ignore - recovered code
                 loginWithClaudeAi: loginWithClaudeAi ?? true,
                 skipBrowserOpen: true,
               },
@@ -3562,6 +3632,7 @@ function runHeadlessStreaming(
               // next API call re-reads keychain/file and works. No respawn.
               await installOAuthTokens(tokens)
               logEvent('tengu_oauth_success', {
+                // @ts-ignore - recovered code
                 loginWithClaudeAi: loginWithClaudeAi ?? true,
               })
             })
@@ -3620,7 +3691,9 @@ function runHeadlessStreaming(
             // replace the service before this code lands.
             if (message.request.subtype === 'claude_oauth_callback') {
               claudeOAuth.service.handleManualAuthCodeInput({
+                // @ts-ignore - recovered code
                 authorizationCode: message.request.authorizationCode,
+                // @ts-ignore - recovered code
                 state: message.request.state,
               })
             }
@@ -3652,6 +3725,7 @@ function runHeadlessStreaming(
           const { serverName } = message.request
           const currentAppState = getAppState()
           const config =
+            // @ts-ignore - recovered code
             getMcpConfigByName(serverName) ??
             mcpClients.find(c => c.name === serverName)?.config ??
             currentAppState.mcp.clients.find(c => c.name === serverName)
@@ -3665,8 +3739,11 @@ function runHeadlessStreaming(
               `Cannot clear auth for server type "${config.type}"`,
             )
           } else {
+            // @ts-ignore - recovered code
             await revokeServerTokens(serverName, config)
+            // @ts-ignore - recovered code
             const result = await reconnectMcpServerImpl(serverName, config)
+            // @ts-ignore - recovered code
             const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
@@ -3681,6 +3758,7 @@ function runHeadlessStreaming(
                 ],
                 commands: [
                   ...reject(prev.mcp.commands, c =>
+                    // @ts-ignore - recovered code
                     commandBelongsToServer(c, serverName),
                   ),
                   ...result.commands,
@@ -3689,6 +3767,7 @@ function runHeadlessStreaming(
                   result.resources && result.resources.length > 0
                     ? {
                         ...prev.mcp.resources,
+                        // @ts-ignore - recovered code
                         [serverName]: result.resources,
                       }
                     : omit(prev.mcp.resources, serverName),
@@ -3710,6 +3789,7 @@ function runHeadlessStreaming(
           // to signal "clear this key". Convert nulls to deletions so
           // SettingsSchema().safeParse() doesn't reject the whole object
           // (z.string().optional() accepts string | undefined, not null).
+          // @ts-ignore - recovered code
           const merged = { ...existing, ...incoming }
           for (const key of Object.keys(merged)) {
             if (merged[key as keyof typeof merged] === null) {
@@ -3734,6 +3814,7 @@ function runHeadlessStreaming(
           // getUserSpecifiedModelSetting(), so without this update,
           // getMainLoopModel() returns the stale override and the model
           // change is silently ignored (matching set_model at :2811).
+          // @ts-ignore - recovered code
           if ('model' in incoming) {
             if (incoming.model != null) {
               setMainLoopModelOverride(String(incoming.model))
@@ -3747,6 +3828,7 @@ function runHeadlessStreaming(
           const newModel = getMainLoopModel()
           if (newModel !== prevModel) {
             activeUserSpecifiedModel = newModel
+            // @ts-ignore - recovered code
             const modelArg = incoming.model ? String(incoming.model) : 'default'
             notifySessionMetadataChanged({ model: newModel })
             injectModelSwitchBreadcrumbs(modelArg, newModel)
@@ -3772,6 +3854,7 @@ function runHeadlessStreaming(
         } else if (message.request.subtype === 'stop_task') {
           const { task_id: taskId } = message.request
           try {
+            // @ts-ignore - recovered code
             await stopTask(taskId, {
               getAppState,
               setAppState,
@@ -3795,6 +3878,7 @@ function runHeadlessStreaming(
           ).signal
           void (async () => {
             try {
+              // @ts-ignore - recovered code
               const title = await generateSessionTitle(description, titleSignal)
               if (title && persist) {
                 try {
@@ -3864,6 +3948,7 @@ function runHeadlessStreaming(
                     agents: currentAgents,
                   })
               const result = await runSideQuestion({
+                // @ts-ignore - recovered code
                 question,
                 cacheSafeParams,
               })
@@ -4064,10 +4149,12 @@ function runHeadlessStreaming(
         const sessionId = getSessionId() as UUID
         const existsInSession = await doesMessageExistInSession(
           sessionId,
+          // @ts-ignore - recovered code
           message.uuid,
         )
 
         // Check both historical duplicates (from file) and runtime duplicates (this session)
+        // @ts-ignore - recovered code
         if (existsInSession || receivedMessageUuids.has(message.uuid)) {
           logForDebugging(`Skipping duplicate user message: ${message.uuid}`)
           // Send acknowledgment for duplicate message if replay mode is enabled
@@ -4096,6 +4183,7 @@ function runHeadlessStreaming(
         }
 
         // Track this UUID to prevent runtime duplicates
+        // @ts-ignore - recovered code
         trackReceivedMessageUuid(message.uuid)
       }
 
@@ -4103,7 +4191,9 @@ function runHeadlessStreaming(
         mode: 'prompt' as const,
         // file_attachments rides the protobuf catchall from the web composer.
         // Same-ref no-op when absent (no 'file_attachments' key).
+        // @ts-ignore - recovered code
         value: await resolveAndPrepend(message, message.message.content),
+        // @ts-ignore - recovered code
         uuid: message.uuid,
         priority: message.priority,
       })
@@ -4359,6 +4449,7 @@ async function handleInitializeRequest(
         subtype: 'error',
         error: 'Already initialized',
         request_id: requestId,
+        // @ts-ignore - recovered code
         pending_permission_requests:
           structuredIO.getPendingPermissionRequests(),
       },
@@ -4368,9 +4459,11 @@ async function handleInitializeRequest(
 
   // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
   if (request.systemPrompt !== undefined) {
+    // @ts-ignore - recovered code
     options.systemPrompt = request.systemPrompt
   }
   if (request.appendSystemPrompt !== undefined) {
+    // @ts-ignore - recovered code
     options.appendSystemPrompt = request.appendSystemPrompt
   }
   if (request.promptSuggestions !== undefined) {
@@ -4435,6 +4528,7 @@ async function handleInitializeRequest(
   if (request.hooks) {
     const hooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {}
     for (const [event, matchers] of Object.entries(request.hooks)) {
+      // @ts-ignore - recovered code
       hooks[event as HookEvent] = matchers.map(matcher => {
         const callbacks = matcher.hookCallbackIds.map(callbackId => {
           return structuredIO.createHookCallback(callbackId, matcher.timeout)
@@ -4448,6 +4542,7 @@ async function handleInitializeRequest(
     registerHookCallbacks(hooks)
   }
   if (request.jsonSchema) {
+    // @ts-ignore - recovered code
     setInitJsonSchema(request.jsonSchema)
   }
   const initResponse: SDKControlInitializeResponse = {
@@ -4464,6 +4559,7 @@ async function handleInitializeRequest(
       // 'inherit' is an internal sentinel; normalize to undefined for the public API
       model: agent.model === 'inherit' ? undefined : agent.model,
     })),
+    // @ts-ignore - recovered code
     output_style: outputStyle,
     available_output_styles: Object.keys(availableOutputStyles),
     models: modelInfos,
@@ -4483,6 +4579,7 @@ async function handleInitializeRequest(
 
   if (isFastModeEnabled() && isFastModeAvailable()) {
     const appState = getAppState()
+    // @ts-ignore - recovered code
     initResponse.fast_mode_state = getFastModeState(
       options.userSpecifiedModel ?? null,
       appState.fastMode,
@@ -4751,6 +4848,7 @@ function handleChannelEnable(
         value: wrapChannelMessage(serverName, content, meta),
         priority: 'next',
         isMeta: true,
+        // @ts-ignore - recovered code
         origin: { kind: 'channel', server: serverName },
         skipSlashCommands: true,
       })
@@ -4827,6 +4925,7 @@ function reregisterChannelHandlerAfterReconnect(
         value: wrapChannelMessage(connection.name, content, meta),
         priority: 'next',
         isMeta: true,
+        // @ts-ignore - recovered code
         origin: { kind: 'channel', server: connection.name },
         skipSlashCommands: true,
       })

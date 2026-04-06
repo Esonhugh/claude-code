@@ -6,6 +6,7 @@ import { registerBundledSkill } from '../bundledSkills.js'
 const browserTools = Array.isArray(BROWSER_TOOLS) ? BROWSER_TOOLS : []
 
 const CLAUDE_IN_CHROME_MCP_TOOLS = browserTools.map(
+  // @ts-ignore - recovered code
   tool => `mcp__claude-in-chrome__${tool.name}`,
 )
 

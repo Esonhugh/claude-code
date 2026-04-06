@@ -40,6 +40,7 @@ function computeSearchText(msg: RenderableMessage): string {
         const parts: string[] = []
         for (const b of c) {
           if (b.type === 'text') {
+            // @ts-ignore - recovered code
             if (!RENDERED_AS_SENTINEL.has(b.text)) parts.push(b.text)
           } else if (b.type === 'tool_result') {
             // b.content is the MODEL-facing serialization (from each tool's
@@ -83,16 +84,22 @@ function computeSearchText(msg: RenderableMessage): string {
       // relevant_memories renders full m.content in transcript mode
       // (AttachmentMessage.tsx <Ansi>{m.content}</Ansi>). Visible but
       // unsearchable without this — [ dump finds it, / doesn't.
+      // @ts-ignore - recovered code
       if (msg.attachment.type === 'relevant_memories') {
+        // @ts-ignore - recovered code
         raw = msg.attachment.memories.map(m => m.content).join('\n')
       } else if (
         // Mid-turn prompts — queued while an agent is running. Render via
         // UserTextMessage (AttachmentMessage.tsx:~348). stickyPromptText
         // (VirtualMessageList.tsx:~103) has the same guards — mirror here.
+        // @ts-ignore - recovered code
         msg.attachment.type === 'queued_command' &&
+        // @ts-ignore - recovered code
         msg.attachment.commandMode !== 'task-notification' &&
+        // @ts-ignore - recovered code
         !msg.attachment.isMeta
       ) {
+        // @ts-ignore - recovered code
         const p = msg.attachment.prompt
         raw =
           typeof p === 'string'
@@ -106,6 +113,7 @@ function computeSearchText(msg: RenderableMessage): string {
       // (collapseReadSearch.ts); their content is visible in transcript mode
       // via CollapsedReadSearchContent, so mirror it here for / search.
       if (msg.relevantMemories) {
+        // @ts-ignore - recovered code
         raw = msg.relevantMemories.map(m => m.content).join('\n')
       }
       break

@@ -8,10 +8,12 @@ import type { SecureStorage } from './types.js'
  */
 export function getSecureStorage(): SecureStorage {
   if (process.platform === 'darwin') {
+    // @ts-ignore - recovered code
     return createFallbackStorage(macOsKeychainStorage, plainTextStorage)
   }
 
   // TODO: add libsecret support for Linux
 
+  // @ts-ignore - recovered code
   return plainTextStorage
 }

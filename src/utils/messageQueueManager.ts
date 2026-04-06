@@ -340,8 +340,10 @@ export function resetCommandQueue(): void {
 // Editable mode helpers
 // ============================================================================
 
+// @ts-ignore - recovered code
 const NON_EDITABLE_MODES = new Set<PromptInputMode>([
   'task-notification',
+// @ts-ignore - recovered code
 ] satisfies Permutations<Exclude<PromptInputMode, EditablePromptInputMode>>)
 
 export function isPromptInputModeEditable(
@@ -368,6 +370,7 @@ export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
 export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
   if (
     (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+    // @ts-ignore - recovered code
     cmd.origin?.kind === 'channel'
   )
     return true

@@ -278,6 +278,7 @@ function StopHookSummaryMessage(t0) {
   }
   const totalDurationMs = t1;
   if (hookErrors.length === 0 && !preventedContinuation && !message.hookLabel) {
+    // @ts-ignore - recovered code
     if (true || totalDurationMs < HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
       return null;
     }

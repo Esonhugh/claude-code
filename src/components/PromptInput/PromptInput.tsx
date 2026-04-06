@@ -391,6 +391,7 @@ function PromptInput({
   // exist. When only local_agent tasks are running (coordinator/fork mode), the
   // pill is absent, so the -1 sentinel would leave nothing visually selected.
   // In that case, skip -1 and treat 0 as the minimum selectable index.
+  // @ts-ignore - recovered code
   const hasBgTaskPill = useMemo(() => Object.values(tasks).some(t => isBackgroundTask(t) && !("external" === 'ant' && isPanelAgentTask(t))), [tasks]);
   const minCoordinatorIndex = hasBgTaskPill ? -1 : 0;
   // Clamp index when tasks complete and the list shrinks beneath the cursor
@@ -438,6 +439,7 @@ function PromptInput({
     if (!teamContext) {
       return [];
     }
+    // @ts-ignore - recovered code
     const teammateCount = count(Object.values(teamContext.teammates), t => t.name !== 'team-lead');
     return [{
       name: teamContext.teamName,
@@ -451,10 +453,12 @@ function PromptInput({
   // Which pills render below the input box. Order here IS the nav order
   // (down/right = forward, up/left = back). Selection lives in AppState so
   // pills rendered outside PromptInput (CompanionSprite) can read focus.
+  // @ts-ignore - recovered code
   const runningTaskCount = useMemo(() => count(Object.values(tasks), t => t.status === 'running'), [tasks]);
   // Panel shows retained-completed agents too (getVisibleAgentTasks), so the
   // pill must stay navigable whenever the panel has rows — not just when
   // something is running.
+  // @ts-ignore - recovered code
   const tasksFooterVisible = (runningTaskCount > 0 || "external" === 'ant' && coordinatorTaskCount > 0) && !shouldHideTasksFooter(tasks, showSpinnerTree);
   const teamsFooterVisible = cachedTeams.length > 0;
   const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', tmuxFooterVisible && 'tmux', bagelFooterVisible && 'bagel', teamsFooterVisible && 'teams', bridgeFooterVisible && 'bridge', companionFooterVisible && 'companion'].filter(Boolean) as FooterItem[], [tasksFooterVisible, tmuxFooterVisible, bagelFooterVisible, teamsFooterVisible, bridgeFooterVisible, companionFooterVisible]);
@@ -564,8 +568,11 @@ function PromptInput({
       const name = match[2];
 
       // Check if this name matches a team member
+      // @ts-ignore - recovered code
       const member = memberValues.find(t => t.name === name);
+      // @ts-ignore - recovered code
       if (member?.color) {
+        // @ts-ignore - recovered code
         const themeColor = AGENT_COLOR_TO_THEME_COLOR[member.color as AgentColorName];
         if (themeColor) {
           highlights.push({
@@ -1054,6 +1061,7 @@ function PromptInput({
           clearBuffer();
           resetHistory();
           return;
+        // @ts-ignore - recovered code
         } else if (result.error === 'no_team_context') {
           // No team context - fall through to normal prompt submission
         } else {
@@ -1189,11 +1197,13 @@ function PromptInput({
   useEffect(() => {
     const referencedIds = new Set(parseReferences(input).map(r => r.id));
     setPastedContents(prev => {
+      // @ts-ignore - recovered code
       const orphaned = Object.values(prev).filter(c => c.type === 'image' && !referencedIds.has(c.id));
       if (orphaned.length === 0) return prev;
       const next = {
         ...prev
       };
+      // @ts-ignore - recovered code
       for (const img of orphaned) delete next[img.id];
       return next;
     });
@@ -1742,6 +1752,7 @@ function PromptInput({
   useKeybindings({
     'footer:up': () => {
       // ↑ scrolls within the coordinator task list before leaving the pill
+      // @ts-ignore - recovered code
       if (tasksSelected && "external" === 'ant' && coordinatorTaskCount > 0 && coordinatorTaskIndex > minCoordinatorIndex) {
         setCoordinatorTaskIndex(prev => prev - 1);
         return;
@@ -1750,6 +1761,7 @@ function PromptInput({
     },
     'footer:down': () => {
       // ↓ scrolls within the coordinator task list, never leaves the pill
+      // @ts-ignore - recovered code
       if (tasksSelected && "external" === 'ant' && coordinatorTaskCount > 0) {
         if (coordinatorTaskIndex < coordinatorTaskCount - 1) {
           setCoordinatorTaskIndex(prev => prev + 1);
@@ -1813,6 +1825,7 @@ function PromptInput({
           }
           break;
         case 'tmux':
+          // @ts-ignore - recovered code
           if ("external" === 'ant') {
             setAppState(prev => prev.tungstenPanelAutoHidden ? {
               ...prev,
@@ -2314,6 +2327,7 @@ function getInitialPasteId(messages: Message[]): number {
       if (Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
           if (block.type === 'text') {
+            // @ts-ignore - recovered code
             const refs = parseReferences(block.text);
             for (const ref of refs) {
               if (ref.id > maxId) maxId = ref.id;

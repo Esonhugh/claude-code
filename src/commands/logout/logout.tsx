@@ -25,6 +25,7 @@ export async function performLogout({
 
   // Wipe all secure storage data on logout
   const secureStorage = getSecureStorage();
+  // @ts-ignore - recovered code
   secureStorage.delete();
   await clearAuthRelatedCaches();
   saveGlobalConfig(current => {

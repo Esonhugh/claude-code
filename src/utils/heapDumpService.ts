@@ -294,6 +294,7 @@ async function writeHeapSnapshot(filepath: string): Promise<void> {
     /* eslint-enable custom-rules/no-sync-fs */
 
     // Force GC to try to free that heap snapshot sooner.
+    // @ts-ignore - recovered code
     Bun.gc(true)
     return
   }

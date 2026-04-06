@@ -1625,6 +1625,7 @@ export async function initBridgeCore(
     transport = null
     flushGate.drop()
     if (teardownTransport) {
+      // @ts-ignore - recovered code
       void teardownTransport.write(makeResultMessage(currentSessionId))
     }
 
@@ -1812,6 +1813,7 @@ export async function initBridgeCore(
         request_id: requestId,
         session_id: currentSessionId,
       }
+      // @ts-ignore - recovered code
       void transport.write(event)
       logForDebugging(
         `[bridge:repl] Sent control_cancel_request request_id=${requestId}`,
@@ -1824,6 +1826,7 @@ export async function initBridgeCore(
         )
         return
       }
+      // @ts-ignore - recovered code
       void transport.write(makeResultMessage(currentSessionId))
       logForDebugging(
         `[bridge:repl] Sent result for session=${currentSessionId}`,

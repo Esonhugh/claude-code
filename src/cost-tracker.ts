@@ -97,6 +97,7 @@ export function getStoredSessionCosts(
   // Build model usage with context windows
   let modelUsage: { [modelName: string]: ModelUsage } | undefined
   if (projectConfig.lastModelUsage) {
+    // @ts-ignore - recovered code
     modelUsage = Object.fromEntries(
       Object.entries(projectConfig.lastModelUsage).map(([model, usage]) => [
         model,
@@ -189,6 +190,7 @@ function formatModelUsage(): string {
   for (const [model, usage] of Object.entries(modelUsageMap)) {
     const shortName = getCanonicalName(model)
     if (!usageByShortName[shortName]) {
+      // @ts-ignore - recovered code
       usageByShortName[shortName] = {
         inputTokens: 0,
         outputTokens: 0,
@@ -272,6 +274,7 @@ function addToTotalModelUsage(
   modelUsage.costUSD += cost
   modelUsage.contextWindow = getContextWindowForModel(model, getSdkBetas())
   modelUsage.maxOutputTokens = getModelMaxOutputTokens(model).default
+  // @ts-ignore - recovered code
   return modelUsage
 }
 

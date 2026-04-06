@@ -67,6 +67,7 @@ export function ThemeProvider({
       let cleanup: (() => void) | undefined;
       let cancelled = false;
       void import('../../utils/systemThemeWatcher.js').then(({
+        // @ts-ignore - recovered code
         watchSystemTheme
       }) => {
         if (cancelled) return;

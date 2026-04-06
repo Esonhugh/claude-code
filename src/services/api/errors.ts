@@ -72,6 +72,7 @@ export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
   return content.some(
     block =>
       block.type === 'text' &&
+      // @ts-ignore - recovered code
       block.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE),
   )
 }
@@ -338,6 +339,7 @@ function logToolUseToolResultMismatch(
         }
         case 'attachment':
           if ('attachment' in msg) {
+            // @ts-ignore - recovered code
             preNormalizedSeq.push(`attachment:${msg.attachment.type}`)
           }
           break

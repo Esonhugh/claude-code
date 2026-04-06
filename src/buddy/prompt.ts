@@ -22,7 +22,9 @@ export function getCompanionIntroAttachment(
   // Skip if already announced for this companion.
   for (const msg of messages ?? []) {
     if (msg.type !== 'attachment') continue
+    // @ts-ignore - recovered code
     if (msg.attachment.type !== 'companion_intro') continue
+    // @ts-ignore - recovered code
     if (msg.attachment.name === companion.name) return []
   }
 

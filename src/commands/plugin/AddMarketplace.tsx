@@ -90,6 +90,7 @@ export function AddMarketplace({
         setResult(`Successfully added marketplace: ${name}`);
       } else {
         // In interactive mode, switch to browse view
+        // @ts-ignore - recovered code
         setViewState({
           type: 'browse-marketplace',
           targetMarketplace: name

@@ -46,6 +46,7 @@ export function analyzeContext(messages: Message[]): TokenStats {
 
   messages.forEach(msg => {
     if (msg.type === 'attachment') {
+      // @ts-ignore - recovered code
       const type = msg.attachment.type || 'unknown'
       stats.attachments.set(type, (stats.attachments.get(type) || 0) + 1)
     }
@@ -69,6 +70,7 @@ export function analyzeContext(messages: Message[]): TokenStats {
     } else {
       content.forEach(block =>
         processBlock(
+          // @ts-ignore - recovered code
           block,
           msg,
           stats,

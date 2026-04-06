@@ -94,6 +94,7 @@ export function clearSessionCaches(
   // Clear tungsten session usage tracking
   if (process.env.USER_TYPE === 'ant') {
     void import('../../tools/TungstenTool/TungstenTool.js').then(
+      // @ts-ignore - recovered code
       ({ clearSessionsWithTungstenUsage, resetInitializationState }) => {
         clearSessionsWithTungstenUsage()
         resetInitializationState()
@@ -104,6 +105,7 @@ export function clearSessionCaches(
   // Dynamic import to preserve dead code elimination for COMMIT_ATTRIBUTION feature flag
   if (feature('COMMIT_ATTRIBUTION')) {
     void import('../../utils/attributionHooks.js').then(
+      // @ts-ignore - recovered code
       ({ clearAttributionCaches }) => clearAttributionCaches(),
     )
   }

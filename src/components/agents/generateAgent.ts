@@ -165,6 +165,7 @@ export async function generateAgent(
   })
 
   const textBlocks = response.message.content.filter(
+    // @ts-ignore - recovered code
     (block): block is ContentBlock & { type: 'text' } => block.type === 'text',
   )
   const responseText = textBlocks.map(block => block.text).join('\n')

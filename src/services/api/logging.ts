@@ -658,10 +658,12 @@ export function logAPISuccessAndDuration({
     for (const msg of newMessages) {
       for (const block of msg.message.content) {
         if (block.type === 'text') {
+          // @ts-ignore - recovered code
           textLen += block.text.length
         } else if (feature('CONNECTOR_TEXT') && isConnectorTextBlock(block)) {
           connectorCount++
         } else if (block.type === 'thinking') {
+          // @ts-ignore - recovered code
           thinkingLen += block.thinking.length
         } else if (
           block.type === 'tool_use' ||
@@ -669,6 +671,7 @@ export function logAPISuccessAndDuration({
           block.type === 'mcp_tool_use'
         ) {
           const inputLen = jsonStringify(block.input).length
+          // @ts-ignore - recovered code
           const sanitizedName = sanitizeToolNameForAnalytics(block.name)
           toolLengths[sanitizedName] =
             (toolLengths[sanitizedName] ?? 0) + inputLen
@@ -692,6 +695,7 @@ export function logAPISuccessAndDuration({
     preNormalizedModel,
     messageCount,
     messageTokens,
+    // @ts-ignore - recovered code
     usage,
     durationMs,
     durationMsIncludingRetries,

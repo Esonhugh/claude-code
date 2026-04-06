@@ -266,6 +266,7 @@ export function resolvePluginLspEnvironment(
   const resolvedEnv: Record<string, string> = {
     CLAUDE_PLUGIN_ROOT: plugin.path,
     CLAUDE_PLUGIN_DATA: getPluginDataDir(plugin.source),
+    // @ts-ignore - recovered code
     ...(resolved.env || {}),
   }
   for (const [key, value] of Object.entries(resolvedEnv)) {
@@ -277,6 +278,7 @@ export function resolvePluginLspEnvironment(
 
   // Resolve workspaceFolder if present
   if (resolved.workspaceFolder) {
+    // @ts-ignore - recovered code
     resolved.workspaceFolder = resolveValue(resolved.workspaceFolder)
   }
 

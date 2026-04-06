@@ -403,6 +403,7 @@ export function extractSedExpressions(command: string): string[] {
   const parseResult = tryParseShellCommand(withoutSed)
   if (!parseResult.success) {
     // Malformed shell syntax - throw error to be caught by caller
+    // @ts-ignore - recovered code
     throw new Error(`Malformed shell syntax: ${parseResult.error}`)
   }
   const parsed = parseResult.tokens

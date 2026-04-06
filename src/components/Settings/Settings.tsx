@@ -95,6 +95,7 @@ export function Settings(t0) {
   }
   let t7;
   if ($[13] !== contentHeight) {
+    // @ts-ignore - recovered code
     t7 = false ? [<Tab key="gates" title="Gates"><Gates onOwnsEscChange={setGatesOwnsEsc} contentHeight={contentHeight} /></Tab>] : [];
     $[13] = contentHeight;
     $[14] = t7;

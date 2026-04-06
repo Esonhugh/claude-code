@@ -31,7 +31,9 @@ import { createUserMessage } from '../utils/messages.js'
 function convertAssistantMessage(msg: SDKAssistantMessage): AssistantMessage {
   return {
     type: 'assistant',
+    // @ts-ignore - recovered code
     message: msg.message,
+    // @ts-ignore - recovered code
     uuid: msg.uuid,
     requestId: undefined,
     timestamp: new Date().toISOString(),
@@ -63,6 +65,7 @@ function convertResultMessage(msg: SDKResultMessage): SystemMessage {
     subtype: 'informational',
     content,
     level: isError ? 'warning' : 'info',
+    // @ts-ignore - recovered code
     uuid: msg.uuid,
     timestamp: new Date().toISOString(),
   }
@@ -77,6 +80,7 @@ function convertInitMessage(msg: SDKSystemMessage): SystemMessage {
     subtype: 'informational',
     content: `Remote session initialized (model: ${msg.model})`,
     level: 'info',
+    // @ts-ignore - recovered code
     uuid: msg.uuid,
     timestamp: new Date().toISOString(),
   }
@@ -98,6 +102,7 @@ function convertStatusMessage(msg: SDKStatusMessage): SystemMessage | null {
         ? 'Compacting conversation…'
         : `Status: ${msg.status}`,
     level: 'info',
+    // @ts-ignore - recovered code
     uuid: msg.uuid,
     timestamp: new Date().toISOString(),
   }
@@ -116,6 +121,7 @@ function convertToolProgressMessage(
     subtype: 'informational',
     content: `Tool ${msg.tool_name} running for ${msg.elapsed_time_seconds}s…`,
     level: 'info',
+    // @ts-ignore - recovered code
     uuid: msg.uuid,
     timestamp: new Date().toISOString(),
     toolUseID: msg.tool_use_id,
@@ -133,6 +139,7 @@ function convertCompactBoundaryMessage(
     subtype: 'compact_boundary',
     content: 'Conversation compacted',
     level: 'info',
+    // @ts-ignore - recovered code
     uuid: msg.uuid,
     timestamp: new Date().toISOString(),
     compactMetadata: fromSDKCompactMetadata(msg.compact_metadata),
@@ -174,6 +181,7 @@ export function convertSDKMessage(
       return { type: 'message', message: convertAssistantMessage(msg) }
 
     case 'user': {
+      // @ts-ignore - recovered code
       const content = msg.message?.content
       // Tool result messages from the remote server need to be converted so
       // they render and collapse like local tool results. Detect via content

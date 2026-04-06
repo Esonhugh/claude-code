@@ -148,6 +148,7 @@ function extractSideQuestionResponse(messages: Message[]): string | null {
       m.type === 'system' && 'subtype' in m && m.subtype === 'api_error',
   )
   if (apiErr) {
+    // @ts-ignore - recovered code
     return `(API error: ${formatAPIError(apiErr.error)})`
   }
 

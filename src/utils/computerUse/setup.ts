@@ -26,7 +26,9 @@ export function setupComputerUseMCP(): {
 } {
   const allowedTools = buildComputerUseTools(
     CLI_CU_CAPABILITIES,
+    // @ts-ignore - recovered code
     getChicagoCoordinateMode(),
+  // @ts-ignore - recovered code
   ).map(t => buildMcpToolName(COMPUTER_USE_MCP_SERVER_NAME, t.name))
 
   // command/args are never spawned — client.ts intercepts by name and

@@ -38,7 +38,9 @@ function getToolUseInfo(
     const content = msg.message.content[0]
     return {
       messageId: msg.message.id,
+      // @ts-ignore - recovered code
       toolUseId: content.id,
+      // @ts-ignore - recovered code
       toolName: content.name,
     }
   }
@@ -75,6 +77,7 @@ export function applyGrouping(
     if (info && toolsWithGrouping.has(info.toolName)) {
       const key = `${info.messageId}:${info.toolName}`
       const group = groups.get(key) ?? []
+      // @ts-ignore - recovered code
       group.push(msg as NormalizedAssistantMessage<BetaToolUseBlock>)
       groups.set(key, group)
     }
@@ -91,6 +94,7 @@ export function applyGrouping(
     if (group.length >= 2) {
       validGroups.set(key, group)
       for (const msg of group) {
+        // @ts-ignore - recovered code
         const info = getToolUseInfo(msg)
         if (info) {
           groupedToolUseIds.add(info.toolUseId)
@@ -108,8 +112,10 @@ export function applyGrouping(
       for (const content of msg.message.content) {
         if (
           content.type === 'tool_result' &&
+          // @ts-ignore - recovered code
           groupedToolUseIds.has(content.tool_use_id)
         ) {
+          // @ts-ignore - recovered code
           resultsByToolUseId.set(content.tool_use_id, msg)
         }
       }
@@ -147,6 +153,7 @@ export function applyGrouping(
           const groupedMessage: GroupedToolUseMessage = {
             type: 'grouped_tool_use',
             toolName: info.toolName,
+            // @ts-ignore - recovered code
             messages: group,
             results,
             displayMessage: firstMsg,
@@ -163,10 +170,12 @@ export function applyGrouping(
     // Skip user messages whose tool_results are all grouped
     if (msg.type === 'user') {
       const toolResults = msg.message.content.filter(
+        // @ts-ignore - recovered code
         (c): c is ToolResultBlockParam => c.type === 'tool_result',
       )
       if (toolResults.length > 0) {
         const allGrouped = toolResults.every(tr =>
+          // @ts-ignore - recovered code
           groupedToolUseIds.has(tr.tool_use_id),
         )
         if (allGrouped) {

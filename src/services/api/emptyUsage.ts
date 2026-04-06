@@ -5,6 +5,7 @@ import type { NonNullableUsage } from '../../entrypoints/sdk/sdkUtilityTypes.js'
  * bridge/replBridge.ts can import it without transitively pulling in
  * api/errors.ts → utils/messages.ts → BashTool.tsx → the world.
  */
+// @ts-ignore - recovered code
 export const EMPTY_USAGE: Readonly<NonNullableUsage> = {
   input_tokens: 0,
   cache_creation_input_tokens: 0,

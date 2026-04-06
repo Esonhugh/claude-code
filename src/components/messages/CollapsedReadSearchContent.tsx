@@ -211,6 +211,7 @@ export function CollapsedReadSearchContent({
           pattern?: string;
           file_path?: string;
         };
+        // @ts-ignore - recovered code
         incomingHint = input.file_path ?? (input.pattern ? `"${input.pattern}"` : undefined) ?? input.command ?? latest.toolName;
       }
     }
@@ -241,15 +242,19 @@ export function CollapsedReadSearchContent({
             </Text>
             {message.hookInfos.map((info, idx) => <Text key={`hook-${idx}`} dimColor>
                 {'     ⎿ '}
+                {/* @ts-ignore - recovered code */}
                 {info.command} ({formatSecondsShort(info.durationMs ?? 0)})
               </Text>)}
           </>}
+        {/* @ts-ignore - recovered code */}
         {message.relevantMemories?.map(m => <Box key={m.path} flexDirection="column" marginTop={1}>
             <Text dimColor>
+              {/* @ts-ignore - recovered code */}
               {'  ⎿  '}Recalled {basename(m.path)}
             </Text>
             <Box paddingLeft={5}>
               <Text>
+                {/* @ts-ignore - recovered code */}
                 <Ansi>{m.content}</Ansi>
               </Text>
             </Box>
@@ -280,8 +285,11 @@ export function CollapsedReadSearchContent({
       if (data?.type !== 'bash_progress' && data?.type !== 'powershell_progress') {
         continue;
       }
+      // @ts-ignore - recovered code
       if (elapsed === undefined || data.elapsedTimeSeconds > elapsed) {
+        // @ts-ignore - recovered code
         elapsed = data.elapsedTimeSeconds;
+        // @ts-ignore - recovered code
         lines = data.totalLines;
       }
     }
@@ -310,6 +318,7 @@ export function CollapsedReadSearchContent({
       'cherry-picked': 'cherry-picked'
     };
     for (const kind of ['committed', 'amended', 'cherry-picked'] as const) {
+      // @ts-ignore - recovered code
       const shas = message.commits.filter(c => c.kind === kind).map(c_0 => c_0.sha);
       if (shas.length) {
         pushPart(kind, byKind[kind], <Text bold>{shas.join(', ')}</Text>);
@@ -317,6 +326,7 @@ export function CollapsedReadSearchContent({
     }
   }
   if (isFullscreenEnvEnabled() && message.pushes?.length) {
+    // @ts-ignore - recovered code
     const branches = uniq(message.pushes.map(p => p.branch));
     pushPart('push', 'pushed to', <Text bold>{branches.join(', ')}</Text>);
   }
@@ -326,6 +336,7 @@ export function CollapsedReadSearchContent({
       rebased: 'rebased onto'
     };
     for (const b of message.branches) {
+      // @ts-ignore - recovered code
       pushPart(`br-${b.action}-${b.ref}`, byAction[b.action], <Text bold>{b.ref}</Text>);
     }
   }
@@ -339,6 +350,7 @@ export function CollapsedReadSearchContent({
       ready: 'marked ready'
     };
     for (const pr of message.prs) {
+      // @ts-ignore - recovered code
       pushPart(`pr-${pr.action}-${pr.number}`, verbs[pr.action], pr.url ? <PrBadge number={pr.number} url={pr.url} bold /> : <Text bold>PR #{pr.number}</Text>);
     }
   }

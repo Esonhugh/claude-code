@@ -118,6 +118,7 @@ export async function buildSideQuestionFallbackParams({
       tools,
       mainLoopModel,
       additionalWorkingDirectories: Array.from(
+        // @ts-ignore - recovered code
         appState.toolPermissionContext.additionalWorkingDirectories.keys(),
       ),
       mcpClients,

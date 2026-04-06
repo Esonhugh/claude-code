@@ -14,6 +14,7 @@ export function teamMemSavedPart(
   if (count === 0) return null
   return {
     segment: `${count} team ${count === 1 ? 'memory' : 'memories'}`,
+    // @ts-ignore - recovered code
     count,
   }
 }

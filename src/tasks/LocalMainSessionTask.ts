@@ -408,23 +408,28 @@ export function startBackgroundSession({
           continue
         }
 
+        // @ts-ignore - recovered code
         bgMessages.push(event)
 
         // Per-message write (matches runAgent.ts pattern) — gives live
         // TaskOutput progress and keeps the transcript file current even if
         // /clear re-links the symlink mid-run.
+        // @ts-ignore - recovered code
         void recordSidechainTranscript([event], taskId, lastRecordedUuid).catch(
           err => logForDebugging(`bg-session transcript write failed: ${err}`),
         )
+        // @ts-ignore - recovered code
         lastRecordedUuid = event.uuid
 
         if (event.type === 'assistant') {
           for (const block of event.message.content) {
             if (block.type === 'text') {
+              // @ts-ignore - recovered code
               tokenCount += roughTokenCountEstimation(block.text)
             } else if (block.type === 'tool_use') {
               toolCount++
               const activity: ToolActivity = {
+                // @ts-ignore - recovered code
                 toolName: block.name,
                 input: block.input as Record<string, unknown>,
               }

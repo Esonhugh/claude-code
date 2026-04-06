@@ -104,12 +104,14 @@ const VoiceKeybindingHandler: typeof import('../hooks/useVoiceIntegration.js').V
 // Frustration detection is ant-only (dogfooding). Conditional require so external
 // builds eliminate the module entirely (including its two O(n) useMemos that run
 // on every messages change, plus the GrowthBook fetch).
+// @ts-ignore - recovered code
 const useFrustrationDetection: typeof import('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection = "external" === 'ant' ? require('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection : () => ({
   state: 'closed',
   handleTranscriptSelect: () => {}
 });
 // Ant-only org warning. Conditional require so the org UUID list is
 // eliminated from external builds (one UUID is on excluded-strings).
+// @ts-ignore - recovered code
 const useAntOrgWarningNotification: typeof import('../hooks/notifs/useAntOrgWarningNotification.js').useAntOrgWarningNotification = "external" === 'ant' ? require('../hooks/notifs/useAntOrgWarningNotification.js').useAntOrgWarningNotification : () => {};
 // Dead code elimination: conditional import for coordinator mode
 const getCoordinatorUserContext: (mcpClients: ReadonlyArray<{
@@ -218,8 +220,11 @@ import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCall
 import type { EffortValue } from '../utils/effort.js';
 import { RemoteCallout } from '../components/RemoteCallout.js';
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
+// @ts-ignore - recovered code
 const AntModelSwitchCallout = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
+// @ts-ignore - recovered code
 const shouldShowAntModelSwitch = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').shouldShowModelSwitchCallout : (): boolean => false;
+// @ts-ignore - recovered code
 const UndercoverAutoCallout = "external" === 'ant' ? require('../components/UndercoverAutoCallout.js').UndercoverAutoCallout : null;
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { activityManager } from '../utils/activityManager.js';
@@ -601,6 +606,7 @@ export function REPL({
   // Env-var gates hoisted to mount-time — isEnvTruthy does toLowerCase+trim+
   // includes, and these were on the render path (hot during PageUp spam).
   const titleDisabled = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE), []);
+  // @ts-ignore - recovered code
   const moreRightEnabled = useMemo(() => "external" === 'ant' && isEnvTruthy(process.env.CLAUDE_MORERIGHT), []);
   const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL), []);
   const disableMessageActions = feature('MESSAGE_ACTIONS') ?
@@ -733,6 +739,7 @@ export function REPL({
   const [showIdeOnboarding, setShowIdeOnboarding] = useState(false);
   // Dead code elimination: model switch callout state (ant-only)
   const [showModelSwitchCallout, setShowModelSwitchCallout] = useState(() => {
+    // @ts-ignore - recovered code
     if ("external" === 'ant') {
       return shouldShowAntModelSwitch();
     }
@@ -1012,6 +1019,7 @@ export function REPL({
   }, []);
   const [showUndercoverCallout, setShowUndercoverCallout] = useState(false);
   useEffect(() => {
+    // @ts-ignore - recovered code
     if ("external" === 'ant') {
       void (async () => {
         // Wait for repo classification to settle (memoized, no-op if primed).
@@ -1542,6 +1550,7 @@ export function REPL({
       bashTools: bashTools.current
     }).then(async tip => {
       if (tip) {
+        // @ts-ignore - recovered code
         const content = await tip.content({
           theme
         });
@@ -2041,9 +2050,11 @@ export function REPL({
     if (allowDialogsWithAnimation && showIdeOnboarding) return 'ide-onboarding';
 
     // Model switch callout (ant-only, eliminated from external builds)
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && allowDialogsWithAnimation && showModelSwitchCallout) return 'model-switch';
 
     // Undercover auto-enable explainer (ant-only, eliminated from external builds)
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && allowDialogsWithAnimation && showUndercoverCallout) return 'undercover-callout';
 
     // Effort callout (shown once for Opus 4.6 users when effort is enabled)
@@ -2482,6 +2493,7 @@ export function REPL({
       dynamicSkillDirTriggers: new Set<string>(),
       discoveredSkillNames: discoveredSkillNamesRef.current,
       setResponseLength,
+      // @ts-ignore - recovered code
       pushApiMetricsEntry: "external" === 'ant' ? (ttftMs: number) => {
         const now = Date.now();
         const baseline = responseLengthRef.current;
@@ -2555,6 +2567,7 @@ export function REPL({
           existingPrompts.add(m.attachment.prompt);
         }
       }
+      // @ts-ignore - recovered code
       const uniqueNotifications = notificationMessages.filter(m => m.attachment.type === 'queued_command' && (typeof m.attachment.prompt !== 'string' || !existingPrompts.has(m.attachment.prompt)));
       startBackgroundSession({
         messages: [...messagesRef.current, ...uniqueNotifications],
@@ -2683,6 +2696,7 @@ export function REPL({
     // title silently fell through to the "Claude Code" default.
     if (!titleDisabled && !sessionTitle && !agentTitle && !haikuTitleAttemptedRef.current) {
       const firstUserMessage = newMessages.find(m => m.type === 'user' && !m.isMeta);
+      // @ts-ignore - recovered code
       const text = firstUserMessage?.type === 'user' ? getContentText(firstUserMessage.message.content) : null;
       // Skip synthetic breadcrumbs — slash-command output, prompt-skill
       // expansions (/commit → <command-message>), local-command headers
@@ -2802,6 +2816,7 @@ export function REPL({
       onQueryEvent(event);
     }
     if (feature('BUDDY')) {
+      // @ts-ignore - recovered code
       void fireCompanionObserver(messagesRef.current, reaction => setAppState(prev => prev.companionReaction === reaction ? prev : {
         ...prev,
         companionReaction: reaction
@@ -2811,6 +2826,7 @@ export function REPL({
 
     // Capture ant-only API metrics before resetLoadingState clears the ref.
     // For multi-request turns (tool use loops), compute P50 across all requests.
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && apiMetricsRef.current.length > 0) {
       const entries = apiMetricsRef.current;
       const ttfts = entries.map(e => e.ttftMs);
@@ -2873,6 +2889,7 @@ export function REPL({
       // Extract and enqueue user message text, skipping meta messages
       // (e.g. expanded skill content, tick prompts) that should not be
       // replayed as user-visible text.
+      // @ts-ignore - recovered code
       newMessages.filter((m): m is UserMessage => m.type === 'user' && !m.isMeta).map(_ => getContentText(_.message.content)).filter(_ => _ !== null).forEach((msg, i) => {
         enqueue({
           value: msg,
@@ -2939,6 +2956,7 @@ export function REPL({
         // minutes — wiping the session made the pill disappear entirely, forcing
         // the user to re-invoke Tmux just to peek. Skip on abort so the panel
         // stays open for inspection (matches the turn-duration guard below).
+        // @ts-ignore - recovered code
         if ("external" === 'ant' && !abortController.signal.aborted) {
           setAppState(prev => {
             if (prev.tungstenActiveSession === undefined) return prev;
@@ -3062,6 +3080,7 @@ export function REPL({
       }
 
       // Atomically: clear initial message, set permission mode and rules, and store plan for verification
+      // @ts-ignore - recovered code
       const shouldStorePlanForVerification = initialMsg.message.planContent && "external" === 'ant' && isEnvTruthy(undefined);
       setAppState(prev => {
         // Build and apply permission updates (mode + allowedPrompts rules)
@@ -3419,7 +3438,9 @@ export function REPL({
     })?.type === 'local-jsx')) {
       // Build content blocks when there are pasted attachments (images)
       const pastedValues = Object.values(pastedContents);
+      // @ts-ignore - recovered code
       const imageContents = pastedValues.filter(c => c.type === 'image');
+      // @ts-ignore - recovered code
       const imagePasteIds = imageContents.length > 0 ? imageContents.map(c => c.id) : undefined;
       let messageContent: string | ContentBlockParam[] = input.trim();
       let remoteContent: RemoteMessageContent = input.trim();
@@ -3441,10 +3462,13 @@ export function REPL({
           });
         }
         for (const pasted of pastedValues) {
+          // @ts-ignore - recovered code
           if (pasted.type === 'image') {
             const source = {
               type: 'base64' as const,
+              // @ts-ignore - recovered code
               media_type: (pasted.mediaType ?? 'image/png') as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+              // @ts-ignore - recovered code
               data: pasted.content
             };
             contentBlocks.push({
@@ -3458,10 +3482,12 @@ export function REPL({
           } else {
             contentBlocks.push({
               type: 'text',
+              // @ts-ignore - recovered code
               text: pasted.content
             });
             remoteBlocks.push({
               type: 'text',
+              // @ts-ignore - recovered code
               text: pasted.content
             });
           }
@@ -3595,6 +3621,7 @@ export function REPL({
 
   // Handler for when user presses 1 on survey thanks screen to share details
   const handleSurveyRequestFeedback = useCallback(() => {
+    // @ts-ignore - recovered code
     const command = "external" === 'ant' ? '/issue' : '/feedback';
     onSubmit(command, {
       setCursorOffset: () => {},
@@ -3691,6 +3718,7 @@ export function REPL({
     setAppState(prev => ({
       ...prev,
       // Restore permission mode from the message
+      // @ts-ignore - recovered code
       toolPermissionContext: message.permissionMode && prev.toolPermissionContext.mode !== message.permissionMode ? {
         ...prev.toolPermissionContext,
         mode: message.permissionMode
@@ -3719,6 +3747,7 @@ export function REPL({
 
     // Restore pasted images
     if (Array.isArray(message.message.content) && message.message.content.some(block => block.type === 'image')) {
+      // @ts-ignore - recovered code
       const imageBlocks: Array<ImageBlockParam> = message.message.content.filter(block => block.type === 'image');
       if (imageBlocks.length > 0) {
         const newPastedContents: Record<number, PastedContent> = {};
@@ -4063,6 +4092,7 @@ export function REPL({
   // - Workers receive permission responses via mailbox messages
   // - Leaders receive permission requests via mailbox messages
 
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     // Tasks mode: watch for tasks and auto-process them
     // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -4158,7 +4188,9 @@ export function REPL({
 
     // Count completed hooks
     const completedCount = count(messages, m => {
+      // @ts-ignore - recovered code
       if (m.type !== 'attachment') return false;
+      // @ts-ignore - recovered code
       const attachment = m.attachment;
       return 'hookEvent' in attachment && (attachment.hookEvent === 'Stop' || attachment.hookEvent === 'SubagentStop') && 'toolUseID' in attachment && attachment.toolUseID === currentToolUseID;
     });
@@ -4172,6 +4204,7 @@ export function REPL({
 
     // Fall back to default behavior
     const hookType = currentHooks[0]?.data.hookEvent === 'SubagentStop' ? 'subagent stop' : 'stop';
+    // @ts-ignore - recovered code
     if ("external" === 'ant') {
       const cmd = currentHooks[completedCount]?.data.command;
       const label = cmd ? ` '${truncateToWidth(cmd, 40)}'` : '';
@@ -4403,6 +4436,7 @@ export function REPL({
     const transcriptToolJSX = toolJSX && <Box flexDirection="column" width="100%">
         {toolJSX.jsx}
       </Box>;
+    // @ts-ignore - recovered code
     const transcriptReturn = <KeybindingSetup>
         <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={terminalTitle} disabled={titleDisabled} noPrefix={showStatusInTerminalTab} />
         <GlobalKeybindingHandlers {...globalKeybindingProps} />
@@ -4545,6 +4579,7 @@ export function REPL({
   // flexGrow in FullscreenLayout resolves against this Box. The transcript
   // early return above wraps its virtual-scroll branch the same way; only
   // the 30-cap dump branch stays unwrapped for native terminal scrollback.
+  // @ts-ignore - recovered code
   const mainReturn = <KeybindingSetup>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={terminalTitle} disabled={titleDisabled} noPrefix={showStatusInTerminalTab} />
       <GlobalKeybindingHandlers {...globalKeybindingProps} />
@@ -4581,9 +4616,11 @@ export function REPL({
               {toolJSX && !(toolJSX.isLocalJSXCommand && toolJSX.isImmediate) && !toolJsxCentered && <Box flexDirection="column" width="100%">
                     {toolJSX.jsx}
                   </Box>}
+              {/* @ts-ignore - recovered code */}
               {"external" === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
               <Box flexGrow={1} />
+              {/* @ts-ignore - recovered code */}
               {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
               {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
@@ -4804,6 +4841,7 @@ export function REPL({
             });
           }} />}
                 {focusedInputDialog === 'ide-onboarding' && <IdeOnboardingDialog onDone={() => setShowIdeOnboarding(false)} installationStatus={ideInstallationStatus} />}
+                {/* @ts-ignore - recovered code */}
                 {"external" === 'ant' && focusedInputDialog === 'model-switch' && AntModelSwitchCallout && <AntModelSwitchCallout onDone={(selection: string, modelAlias?: string) => {
             setShowModelSwitchCallout(false);
             if (selection === 'switch' && modelAlias) {
@@ -4814,6 +4852,7 @@ export function REPL({
               }));
             }
           }} />}
+                {/* @ts-ignore - recovered code */}
                 {"external" === 'ant' && focusedInputDialog === 'undercover-callout' && UndercoverAutoCallout && <UndercoverAutoCallout onDone={() => setShowUndercoverCallout(false)} />}
                 {focusedInputDialog === 'effort-callout' && <EffortCallout model={mainLoopModel} onDone={selection => {
             setShowEffortCallout(false);
@@ -4847,8 +4886,10 @@ export function REPL({
 
                 {focusedInputDialog === 'desktop-upsell' && <DesktopUpsellStartup onDone={() => setShowDesktopUpsellStartup(false)} />}
 
+                {/* @ts-ignore - recovered code */}
                 {feature('ULTRAPLAN') ? focusedInputDialog === 'ultraplan-choice' && ultraplanPendingChoice && <UltraplanChoiceDialog plan={ultraplanPendingChoice.plan} sessionId={ultraplanPendingChoice.sessionId} taskId={ultraplanPendingChoice.taskId} setMessages={setMessages} readFileState={readFileState.current} getAppState={() => store.getState()} setConversationId={setConversationId} /> : null}
 
+                {/* @ts-ignore - recovered code */}
                 {feature('ULTRAPLAN') ? focusedInputDialog === 'ultraplan-launch' && ultraplanLaunchPending && <UltraplanLaunchDialog onChoice={(choice, opts) => {
             const blurb = ultraplanLaunchPending.blurb;
             setAppState(prev => prev.ultraplanLaunchPending ? {
@@ -4879,6 +4920,7 @@ export function REPL({
                 appendStdout(msg);
               });
             };
+            // @ts-ignore - recovered code
             void launchUltraplan({
               blurb,
               getAppState: () => store.getState(),
@@ -4897,6 +4939,7 @@ export function REPL({
                       {/* Frustration-triggered transcript sharing prompt */}
                       {frustrationDetection.state !== 'closed' && <FeedbackSurvey state={frustrationDetection.state} lastResponse={null} handleSelect={() => {}} handleTranscriptSelect={frustrationDetection.handleTranscriptSelect} inputValue={inputValue} setInputValue={setInputValue} />}
                       {/* Skill improvement survey - appears when improvements detected (ant-only) */}
+                      {/* @ts-ignore - recovered code */}
                       {"external" === 'ant' && skillImprovementSurvey.suggestion && <SkillImprovementSurvey isOpen={skillImprovementSurvey.isOpen} skillName={skillImprovementSurvey.suggestion.skillName} updates={skillImprovementSurvey.suggestion.updates} handleSelect={skillImprovementSurvey.handleSelect} inputValue={inputValue} setInputValue={setInputValue} />}
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {}
@@ -4915,6 +4958,7 @@ export function REPL({
                 fileHistory: updater(prev.fileHistory)
               }));
             }, message.uuid);
+          // @ts-ignore - recovered code
           }} onSummarize={async (message: UserMessage, feedback?: string, direction: PartialCompactDirection = 'from') => {
             // Project snipped messages so the compact model
             // doesn't summarize content that was intentionally removed.
@@ -4948,6 +4992,7 @@ export function REPL({
               forkContextMessages: compactMessages
             }, feedback, direction);
             const kept = result.messagesToKeep ?? [];
+            // @ts-ignore - recovered code
             const ordered = direction === 'up_to' ? [...result.summaryMessages, ...kept] : [...kept, ...result.summaryMessages];
             const postCompact = [result.boundaryMarker, ...ordered, ...result.attachments, ...result.hookResults];
             // Fullscreen 'from' keeps scrollback; 'up_to' must not
@@ -4955,6 +5000,7 @@ export function REPL({
             // useLogMessages path, so boundary never persisted).
             // Find by uuid since old is raw REPL history and snipped
             // entries can shift the projected messageIndex.
+            // @ts-ignore - recovered code
             if (isFullscreenEnvEnabled() && direction === 'from') {
               setMessages(old => {
                 const rawIdx = old.findIndex(m => m.uuid === message.uuid);
@@ -4970,6 +5016,7 @@ export function REPL({
             }
             setConversationId(randomUUID());
             runPostCompactCleanup(context.options.querySource);
+            // @ts-ignore - recovered code
             if (direction === 'from') {
               const r = textForResubmit(message);
               if (r) {
@@ -4990,6 +5037,7 @@ export function REPL({
             setIsMessageSelectorVisible(false);
             setMessageSelectorPreselect(undefined);
           }} />}
+                {/* @ts-ignore - recovered code */}
                 {"external" === 'ant' && <DevBar />}
               </Box>
               {feature('BUDDY') && !(companionNarrow && isFullscreenEnvEnabled()) && companionVisible ? <CompanionSprite /> : null}

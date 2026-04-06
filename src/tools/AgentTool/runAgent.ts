@@ -502,6 +502,7 @@ export async function* runAgent({
     : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
 
   const additionalWorkingDirectories = Array.from(
+    // @ts-ignore - recovered code
     appState.toolPermissionContext.additionalWorkingDirectories.keys(),
   )
 
@@ -512,6 +513,7 @@ export async function* runAgent({
           agentDefinition,
           toolUseContext,
           resolvedAgentModel,
+          // @ts-ignore - recovered code
           additionalWorkingDirectories,
           resolvedTools,
         ),
@@ -760,9 +762,11 @@ export async function* runAgent({
       // so TTFT/OTPS update during subagent execution.
       if (
         message.type === 'stream_event' &&
+        // @ts-ignore - recovered code
         message.event.type === 'message_start' &&
         message.ttftMs != null
       ) {
+        // @ts-ignore - recovered code
         toolUseContext.pushApiMetricsEntry?.(message.ttftMs)
         continue
       }
@@ -770,6 +774,7 @@ export async function* runAgent({
       // Yield attachment messages (e.g., structured_output) without recording them
       if (message.type === 'attachment') {
         // Handle max turns reached signal from query.ts
+        // @ts-ignore - recovered code
         if (message.attachment.type === 'max_turns_reached') {
           logForDebugging(
             `[Agent
@@ -852,6 +857,7 @@ export async function* runAgent({
       mcpMod.killMonitorMcpTasksForAgent(
         agentId,
         toolUseContext.getAppState,
+        // @ts-ignore - recovered code
         rootSetAppState,
       )
     }
@@ -874,6 +880,7 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'tool_result' && block.tool_use_id) {
+            // @ts-ignore - recovered code
             toolUseIdsWithResults.add(block.tool_use_id)
           }
         }
@@ -892,6 +899,7 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
           block =>
             block.type === 'tool_use' &&
             block.id &&
+            // @ts-ignore - recovered code
             !toolUseIdsWithResults.has(block.id),
         )
         // Exclude messages with incomplete tool calls

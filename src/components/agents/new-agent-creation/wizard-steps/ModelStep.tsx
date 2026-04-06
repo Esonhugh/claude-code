@@ -18,6 +18,7 @@ export function ModelStep() {
   let t0;
   if ($[0] !== goNext || $[1] !== updateWizardData) {
     t0 = model => {
+      // @ts-ignore - recovered code
       updateWizardData({
         selectedModel: model
       });
@@ -38,10 +39,13 @@ export function ModelStep() {
     t1 = $[3];
   }
   let t2;
+  // @ts-ignore - recovered code
   if ($[4] !== goBack || $[5] !== handleComplete || $[6] !== wizardData.selectedModel) {
+    // @ts-ignore - recovered code
     t2 = <WizardDialogLayout subtitle="Select model" footerText={t1}><ModelSelector initialModel={wizardData.selectedModel} onComplete={handleComplete} onCancel={goBack} /></WizardDialogLayout>;
     $[4] = goBack;
     $[5] = handleComplete;
+    // @ts-ignore - recovered code
     $[6] = wizardData.selectedModel;
     $[7] = t2;
   } else {

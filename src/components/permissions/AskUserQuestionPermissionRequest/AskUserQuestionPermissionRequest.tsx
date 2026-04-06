@@ -183,7 +183,9 @@ function AskUserQuestionPermissionRequestBody(t0) {
         filename: filename || "Pasted image",
         dimensions
       };
+      // @ts-ignore - recovered code
       cacheImagePath(newContent);
+      // @ts-ignore - recovered code
       storeImage(newContent);
       setPastedContentsByQuestion(prev => ({
         ...prev,

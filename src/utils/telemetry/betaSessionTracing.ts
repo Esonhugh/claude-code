@@ -179,6 +179,7 @@ function formatMessagesForContext(messages: UserMessage[]): FormattedMessages {
     } else if (Array.isArray(content)) {
       for (const block of content) {
         if (block.type === 'text') {
+          // @ts-ignore - recovered code
           const reminderContent = extractSystemReminderContent(block.text)
           if (reminderContent) {
             systemReminders.push(reminderContent)

@@ -17,6 +17,7 @@ const DEFAULTS: ChicagoConfig = {
   hideBeforeAction: true,
   autoTargetDisplay: true,
   clipboardGuard: true,
+  // @ts-ignore - recovered code
   coordinateMode: 'pixels',
 }
 

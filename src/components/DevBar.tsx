@@ -6,6 +6,7 @@ import { Text, useInterval } from '../ink.js';
 
 // Show DevBar for dev builds or all ants
 function shouldShowDevBar(): boolean {
+  // @ts-ignore - recovered code
   return "production" === 'development' || "external" === 'ant';
 }
 export function DevBar() {

@@ -284,10 +284,12 @@ export async function initReplBridge(
           msg.isMeta ||
           msg.toolUseResult ||
           msg.isCompactSummary ||
+          // @ts-ignore - recovered code
           (msg.origin && msg.origin.kind !== 'human') ||
           isSyntheticMessage(msg)
         )
           continue
+        // @ts-ignore - recovered code
         const rawContent = getContentText(msg.message.content)
         if (!rawContent) continue
         const derived = deriveTitle(rawContent)

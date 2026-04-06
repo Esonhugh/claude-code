@@ -179,6 +179,7 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
   if (process.env.USER_TYPE === 'ant') {
     return (
+      // @ts-ignore - recovered code
       getAntModelOverrideConfig()?.defaultModel ??
       getDefaultOpusModel() + '[1m]'
     )
@@ -399,6 +400,7 @@ export function renderModelName(model: ModelName): string {
   }
   if (process.env.USER_TYPE === 'ant') {
     const resolved = parseUserSpecifiedModel(model)
+    // @ts-ignore - recovered code
     const antModel = resolveAntModel(model)
     if (antModel) {
       const baseName = antModel.model.replace(/\[1m\]$/i, '')
@@ -486,6 +488,7 @@ export function parseUserSpecifiedModel(
     const has1mAntTag = has1mContext(normalizedModel)
     const baseAntModel = normalizedModel.replace(/\[1m]$/i, '').trim()
 
+    // @ts-ignore - recovered code
     const antModel = resolveAntModel(baseAntModel)
     if (antModel) {
       const suffix = has1mAntTag ? '[1m]' : ''

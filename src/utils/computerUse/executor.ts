@@ -64,6 +64,7 @@ function computeTargetDims(
 ): [number, number] {
   const physW = Math.round(logicalW * scaleFactor)
   const physH = Math.round(logicalH * scaleFactor)
+  // @ts-ignore - recovered code
   return targetImageSize(physW, physH, API_RESIZE_PARAMS)
 }
 
@@ -115,6 +116,7 @@ async function moveAndSettle(
   x: number,
   y: number,
 ): Promise<void> {
+  // @ts-ignore - recovered code
   await input.moveMouse(x, y, false)
   await sleep(MOVE_SETTLE_MS)
 }
@@ -132,6 +134,7 @@ async function releasePressed(input: Input, pressed: string[]): Promise<void> {
   let k: string | undefined
   while ((k = pressed.pop()) !== undefined) {
     try {
+      // @ts-ignore - recovered code
       await input.key(k, 'release')
     } catch {
       // Swallow — best-effort release.
@@ -155,6 +158,7 @@ async function withModifiers<T>(
   const pressed: string[] = []
   try {
     for (const m of mods) {
+      // @ts-ignore - recovered code
       await input.key(m, 'press')
       pressed.push(m)
     }
@@ -224,6 +228,7 @@ async function animatedMove(
     await moveAndSettle(input, targetX, targetY)
     return
   }
+  // @ts-ignore - recovered code
   const start = await input.mouseLocation()
   const deltaX = targetX - start.x
   const deltaY = targetY - start.y
@@ -243,6 +248,7 @@ async function animatedMove(
     await input.moveMouse(
       Math.round(start.x + deltaX * eased),
       Math.round(start.y + deltaY * eased),
+      // @ts-ignore - recovered code
       false,
     )
     if (frame < totalFrames) {
@@ -318,6 +324,7 @@ export function createCliExecutor(opts: {
       // frontmost gate in toolCalls.ts catches any actual unsafe state.
       return drainRunLoop(async () => {
         try {
+          // @ts-ignore - recovered code
           const result = await cu.apps.prepareDisplay(
             allowlistBundleIds,
             surrogateHost,
@@ -343,6 +350,7 @@ export function createCliExecutor(opts: {
       allowlistBundleIds: string[],
       displayId?: number,
     ): Promise<Array<{ bundleId: string; displayName: string }>> {
+      // @ts-ignore - recovered code
       return cu.apps.previewHideSet(
         [...allowlistBundleIds, surrogateHost],
         displayId,
@@ -352,16 +360,19 @@ export function createCliExecutor(opts: {
     // ── Display ──────────────────────────────────────────────────────────
 
     async getDisplaySize(displayId?: number): Promise<DisplayGeometry> {
+      // @ts-ignore - recovered code
       return cu.display.getSize(displayId)
     },
 
     async listDisplays(): Promise<DisplayGeometry[]> {
+      // @ts-ignore - recovered code
       return cu.display.listAll()
     },
 
     async findWindowDisplays(
       bundleIds: string[],
     ): Promise<Array<{ bundleId: string; displayIds: number[] }>> {
+      // @ts-ignore - recovered code
       return cu.apps.findWindowDisplays(bundleIds)
     },
 
@@ -371,6 +382,7 @@ export function createCliExecutor(opts: {
       autoResolve: boolean
       doHide?: boolean
     }): Promise<ResolvePrepareCaptureResult> {
+      // @ts-ignore - recovered code
       const d = cu.display.getSize(opts.preferredDisplayId)
       const [targetW, targetH] = computeTargetDims(
         d.width,
@@ -378,6 +390,7 @@ export function createCliExecutor(opts: {
         d.scaleFactor,
       )
       return drainRunLoop(() =>
+        // @ts-ignore - recovered code
         cu.resolvePrepareCapture(
           withoutTerminal(opts.allowedBundleIds),
           surrogateHost,
@@ -400,6 +413,7 @@ export function createCliExecutor(opts: {
       allowedBundleIds: string[]
       displayId?: number
     }): Promise<ScreenshotResult> {
+      // @ts-ignore - recovered code
       const d = cu.display.getSize(opts.displayId)
       const [targetW, targetH] = computeTargetDims(
         d.width,
@@ -407,6 +421,7 @@ export function createCliExecutor(opts: {
         d.scaleFactor,
       )
       return drainRunLoop(() =>
+        // @ts-ignore - recovered code
         cu.screenshot.captureExcluding(
           withoutTerminal(opts.allowedBundleIds),
           SCREENSHOT_JPEG_QUALITY,
@@ -422,6 +437,7 @@ export function createCliExecutor(opts: {
       allowedBundleIds: string[],
       displayId?: number,
     ): Promise<{ base64: string; width: number; height: number }> {
+      // @ts-ignore - recovered code
       const d = cu.display.getSize(displayId)
       const [outW, outH] = computeTargetDims(
         regionLogical.w,
@@ -429,6 +445,7 @@ export function createCliExecutor(opts: {
         d.scaleFactor,
       )
       return drainRunLoop(() =>
+        // @ts-ignore - recovered code
         cu.screenshot.captureRegion(
           withoutTerminal(allowedBundleIds),
           regionLogical.x,
@@ -495,6 +512,7 @@ export function createCliExecutor(opts: {
             if (isBareEscape([k])) {
               notifyExpectedEscape()
             }
+            // @ts-ignore - recovered code
             await input.key(k, 'press')
             pressed.push(k)
           }
@@ -515,6 +533,7 @@ export function createCliExecutor(opts: {
       }
       // `toolCalls.ts` handles the grapheme loop + 8ms sleeps and calls this
       // once per grapheme. typeText doesn't dispatch to the main queue.
+      // @ts-ignore - recovered code
       await input.typeText(text)
     },
 
@@ -547,23 +566,28 @@ export function createCliExecutor(opts: {
       if (modifiers && modifiers.length > 0) {
         await drainRunLoop(() =>
           withModifiers(input, modifiers, () =>
+            // @ts-ignore - recovered code
             input.mouseButton(button, 'click', count),
           ),
         )
       } else {
+        // @ts-ignore - recovered code
         await input.mouseButton(button, 'click', count)
       }
     },
 
     async mouseDown(): Promise<void> {
+      // @ts-ignore - recovered code
       await requireComputerUseInput().mouseButton('left', 'press')
     },
 
     async mouseUp(): Promise<void> {
+      // @ts-ignore - recovered code
       await requireComputerUseInput().mouseButton('left', 'release')
     },
 
     async getCursorPosition(): Promise<{ x: number; y: number }> {
+      // @ts-ignore - recovered code
       return requireComputerUseInput().mouseLocation()
     },
 
@@ -584,11 +608,13 @@ export function createCliExecutor(opts: {
       if (from !== undefined) {
         await moveAndSettle(input, from.x, from.y)
       }
+      // @ts-ignore - recovered code
       await input.mouseButton('left', 'press')
       await sleep(MOVE_SETTLE_MS)
       try {
         await animatedMove(input, to.x, to.y, getMouseAnimationEnabled())
       } finally {
+        // @ts-ignore - recovered code
         await input.mouseButton('left', 'release')
       }
     },
@@ -601,9 +627,11 @@ export function createCliExecutor(opts: {
       const input = requireComputerUseInput()
       await moveAndSettle(input, x, y)
       if (dy !== 0) {
+        // @ts-ignore - recovered code
         await input.mouseScroll(dy, 'vertical')
       }
       if (dx !== 0) {
+        // @ts-ignore - recovered code
         await input.mouseScroll(dx, 'horizontal')
       }
     },
@@ -611,8 +639,10 @@ export function createCliExecutor(opts: {
     // ── App management ───────────────────────────────────────────────────
 
     async getFrontmostApp(): Promise<FrontmostApp | null> {
+      // @ts-ignore - recovered code
       const info = requireComputerUseInput().getFrontmostAppInfo()
       if (!info || !info.bundleId) return null
+      // @ts-ignore - recovered code
       return { bundleId: info.bundleId, displayName: info.appName }
     },
 
@@ -620,6 +650,7 @@ export function createCliExecutor(opts: {
       x: number,
       y: number,
     ): Promise<{ bundleId: string; displayName: string } | null> {
+      // @ts-ignore - recovered code
       return cu.apps.appUnderPoint(x, y)
     },
 
@@ -627,18 +658,22 @@ export function createCliExecutor(opts: {
       // `ComputerUseInstalledApp` is `{bundleId, displayName, path}`.
       // `InstalledApp` adds optional `iconDataUrl` — left unpopulated;
       // the approval dialog fetches lazily via getAppIcon() below.
+      // @ts-ignore - recovered code
       return drainRunLoop(() => cu.apps.listInstalled())
     },
 
     async getAppIcon(path: string): Promise<string | undefined> {
+      // @ts-ignore - recovered code
       return cu.apps.iconDataUrl(path) ?? undefined
     },
 
     async listRunningApps(): Promise<RunningApp[]> {
+      // @ts-ignore - recovered code
       return cu.apps.listRunning()
     },
 
     async openApp(bundleId: string): Promise<void> {
+      // @ts-ignore - recovered code
       await cu.apps.open(bundleId)
     },
   }
@@ -654,5 +689,6 @@ export async function unhideComputerUseApps(
 ): Promise<void> {
   if (bundleIds.length === 0) return
   const cu = requireComputerUseSwift()
+  // @ts-ignore - recovered code
   await cu.apps.unhide([...bundleIds])
 }

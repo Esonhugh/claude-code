@@ -96,6 +96,7 @@ export function UserToolSuccessMessage({
                 <Text dimColor>Allowed by auto mode classifier</Text>
               </MessageResponse> : null}
       </Box>
+      {/* @ts-ignore - recovered code */}
       <SentryErrorBoundary>
         <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
       </SentryErrorBoundary>

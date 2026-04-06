@@ -18,6 +18,7 @@ export function PromptStep() {
     updateWizardData,
     wizardData
   } = useWizard();
+  // @ts-ignore - recovered code
   const [systemPrompt, setSystemPrompt] = useState(wizardData.systemPrompt || "");
   const [cursorOffset, setCursorOffset] = useState(systemPrompt.length);
   const [error, setError] = useState(null);
@@ -65,6 +66,7 @@ export function PromptStep() {
         return;
       }
       setError(null);
+      // @ts-ignore - recovered code
       updateWizardData({
         systemPrompt: trimmedPrompt
       });

@@ -77,6 +77,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   const hiddenCount = progressMessages.length - displayedMessages.length;
   const {
     inProgressToolUseIDs
+  // @ts-ignore - recovered code
   } = buildSubagentLookups(progressMessages.map(pm => pm.data));
   return <MessageResponse>
       <Box flexDirection="column">

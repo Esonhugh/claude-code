@@ -347,6 +347,7 @@ function renderToolUseProgressMessage(tool: Tool, tools: Tools, lookups: ReturnT
       isTranscriptMode
     }) ?? null;
     return <>
+        {/* @ts-ignore - recovered code */}
         <SentryErrorBoundary>
           <HookProgressMessage hookEvent="PreToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
         </SentryErrorBoundary>

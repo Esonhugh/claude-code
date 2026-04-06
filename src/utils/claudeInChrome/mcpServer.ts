@@ -270,10 +270,12 @@ export async function runClaudeInChromeMcpServer(): Promise<void> {
   process.stdin.on('error', () => void shutdownAndExit())
 
   logForDebugging('[Claude in Chrome] Starting MCP server')
+  // @ts-ignore - recovered code
   await server.connect(transport)
   logForDebugging('[Claude in Chrome] MCP server started')
 }
 
+// @ts-ignore - recovered code
 class DebugLogger implements Logger {
   silly(message: string, ...args: unknown[]): void {
     logForDebugging(format(message, ...args), { level: 'debug' })

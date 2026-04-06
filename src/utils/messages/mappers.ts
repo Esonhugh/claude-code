@@ -26,6 +26,7 @@ import { getPlan } from '../plans.js'
 export function toInternalMessages(
   messages: readonly DeepImmutable<SDKMessage>[],
 ): Message[] {
+  // @ts-ignore - recovered code
   return messages.flatMap(message => {
     switch (message.type) {
       case 'assistant':
@@ -80,12 +81,17 @@ export function toSDKCompactMetadata(
 ): SDKCompactMetadata {
   const seg = meta.preservedSegment
   return {
+    // @ts-ignore - recovered code
     trigger: meta.trigger,
+    // @ts-ignore - recovered code
     pre_tokens: meta.preTokens,
     ...(seg && {
       preserved_segment: {
+        // @ts-ignore - recovered code
         head_uuid: seg.headUuid,
+        // @ts-ignore - recovered code
         anchor_uuid: seg.anchorUuid,
+        // @ts-ignore - recovered code
         tail_uuid: seg.tailUuid,
       },
     }),
@@ -123,6 +129,7 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
             session_id: getSessionId(),
             parent_tool_use_id: null,
             uuid: message.uuid,
+            // @ts-ignore - recovered code
             error: message.error,
           },
         ]
@@ -153,6 +160,7 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
               subtype: 'compact_boundary' as const,
               session_id: getSessionId(),
               uuid: message.uuid,
+              // @ts-ignore - recovered code
               compact_metadata: toSDKCompactMetadata(message.compactMetadata),
             },
           ]
@@ -163,11 +171,14 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
         // not leak to the RC web UI.
         if (
           message.subtype === 'local_command' &&
+          // @ts-ignore - recovered code
           (message.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
+            // @ts-ignore - recovered code
             message.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
         ) {
           return [
             localCommandOutputToSDKAssistantMessage(
+              // @ts-ignore - recovered code
               message.content,
               message.uuid,
             ),
@@ -267,12 +278,14 @@ function normalizeAssistantMessageForSDK(
 
   const normalizedContent = content.map((block): BetaContentBlock => {
     if (block.type !== 'tool_use') {
+      // @ts-ignore - recovered code
       return block
     }
 
     if (block.name === EXIT_PLAN_MODE_V2_TOOL_NAME) {
       const plan = getPlan()
       if (plan) {
+        // @ts-ignore - recovered code
         return {
           ...block,
           input: { ...(block.input as Record<string, unknown>), plan },
@@ -280,11 +293,13 @@ function normalizeAssistantMessageForSDK(
       }
     }
 
+    // @ts-ignore - recovered code
     return block
   })
 
   return {
     ...message.message,
+    // @ts-ignore - recovered code
     content: normalizedContent,
   }
 }

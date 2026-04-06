@@ -32,6 +32,7 @@ export async function launchSnapshotUpdateDialog(root: Root, props: {
   snapshotTimestamp: string;
 }): Promise<'merge' | 'keep' | 'replace'> {
   const {
+    // @ts-ignore - recovered code
     SnapshotUpdateDialog
   } = await import('./components/agents/SnapshotUpdateDialog.js');
   return showSetupDialog<'merge' | 'keep' | 'replace'>(root, done => <SnapshotUpdateDialog agentType={props.agentType} scope={props.scope} snapshotTimestamp={props.snapshotTimestamp} onComplete={done} onCancel={() => done('keep')} />);
@@ -59,6 +60,7 @@ export async function launchAssistantSessionChooser(root: Root, props: {
   sessions: AssistantSession[];
 }): Promise<string | null> {
   const {
+    // @ts-ignore - recovered code
     AssistantSessionChooser
   } = await import('./assistant/AssistantSessionChooser.js');
   return showSetupDialog<string | null>(root, done => <AssistantSessionChooser sessions={props.sessions} onSelect={id => done(id)} onCancel={() => done(null)} />);
@@ -72,7 +74,9 @@ export async function launchAssistantSessionChooser(root: Root, props: {
  */
 export async function launchAssistantInstallWizard(root: Root): Promise<string | null> {
   const {
+    // @ts-ignore - recovered code
     NewInstallWizard,
+    // @ts-ignore - recovered code
     computeDefaultInstallDir
   } = await import('./commands/assistant/assistant.js');
   const defaultDir = await computeDefaultInstallDir();
@@ -125,7 +129,9 @@ export async function launchResumeChooser(root: Root, appProps: {
     App
   }] = await Promise.all([worktreePathsPromise, import('./screens/ResumeConversation.js'), import('./components/App.js')]);
   await renderAndRun(root, <App getFpsMetrics={appProps.getFpsMetrics} stats={appProps.stats} initialState={appProps.initialState}>
+      {/* @ts-ignore - recovered code */}
       <KeybindingSetup>
+        {/* @ts-ignore - recovered code */}
         <ResumeConversation {...resumeProps} worktreePaths={worktreePaths} />
       </KeybindingSetup>
     </App>);

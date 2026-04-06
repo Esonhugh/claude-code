@@ -54,6 +54,7 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return BashPermissionRequest;
     case PowerShellTool:
       return PowerShellPermissionRequest;
+    // @ts-ignore - recovered code
     case ReviewArtifactTool:
       return ReviewArtifactPermissionRequest ?? FallbackPermissionRequest;
     case WebFetchTool:
@@ -68,8 +69,10 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return SkillPermissionRequest;
     case AskUserQuestionTool:
       return AskUserQuestionPermissionRequest;
+    // @ts-ignore - recovered code
     case WorkflowTool:
       return WorkflowPermissionRequest ?? FallbackPermissionRequest;
+    // @ts-ignore - recovered code
     case MonitorTool:
       return MonitorPermissionRequest ?? FallbackPermissionRequest;
     case GlobTool:
@@ -133,6 +136,7 @@ function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
   if (toolUseConfirm.tool === EnterPlanModeTool) {
     return 'Claude Code wants to enter plan mode';
   }
+  // @ts-ignore - recovered code
   if (feature('REVIEW_ARTIFACT') && toolUseConfirm.tool === ReviewArtifactTool) {
     return 'Claude needs your approval for a review artifact';
   }

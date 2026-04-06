@@ -252,6 +252,7 @@ async function executeForkedSkill(
               data: {
                 message: m,
                 type: 'skill_progress',
+                // @ts-ignore - recovered code
                 prompt: skillContent,
                 agentId,
               },

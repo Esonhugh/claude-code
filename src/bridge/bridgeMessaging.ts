@@ -103,6 +103,7 @@ export function isEligibleBridgeMessage(m: Message): boolean {
 export function extractTitleText(m: Message): string | undefined {
   if (m.type !== 'user' || m.isMeta || m.toolUseResult || m.isCompactSummary)
     return undefined
+  // @ts-ignore - recovered code
   if (m.origin && m.origin.kind !== 'human') return undefined
   const content = m.message.content
   let raw: string | undefined
@@ -111,6 +112,7 @@ export function extractTitleText(m: Message): string | undefined {
   } else {
     for (const block of content) {
       if (block.type === 'text') {
+        // @ts-ignore - recovered code
         raw = block.text
         break
       }
@@ -304,6 +306,7 @@ export function handleServerControlRequest(
       break
 
     case 'set_model':
+      // @ts-ignore - recovered code
       onSetModel?.(request.request.model)
       response = {
         type: 'control_response',
@@ -315,6 +318,7 @@ export function handleServerControlRequest(
       break
 
     case 'set_max_thinking_tokens':
+      // @ts-ignore - recovered code
       onSetMaxThinkingTokens?.(request.request.max_thinking_tokens)
       response = {
         type: 'control_response',
@@ -333,6 +337,7 @@ export function handleServerControlRequest(
       // see daemonBridge.ts), return an error verdict rather than a silent
       // false-success: the mode is never actually applied in that context,
       // so success would lie to the client.
+      // @ts-ignore - recovered code
       const verdict = onSetPermissionMode?.(request.request.mode) ?? {
         ok: false,
         error:
@@ -352,6 +357,7 @@ export function handleServerControlRequest(
           response: {
             subtype: 'error',
             request_id: request.request_id,
+            // @ts-ignore - recovered code
             error: verdict.error,
           },
         }
@@ -407,6 +413,7 @@ export function makeResultMessage(sessionId: string): SDKResultSuccess {
     result: '',
     stop_reason: null,
     total_cost_usd: 0,
+    // @ts-ignore - recovered code
     usage: { ...EMPTY_USAGE },
     modelUsage: {},
     permission_denials: [],

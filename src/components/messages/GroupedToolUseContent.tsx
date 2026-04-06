@@ -30,6 +30,7 @@ export function GroupedToolUseContent({
   for (const resultMsg of message.results) {
     for (const content of resultMsg.message.content) {
       if (content.type === 'tool_result') {
+        // @ts-ignore - recovered code
         resultsByToolUseId.set(content.tool_use_id, {
           param: content,
           output: resultMsg.toolUseResult
@@ -39,12 +40,18 @@ export function GroupedToolUseContent({
   }
   const toolUsesData = message.messages.map(msg => {
     const content = msg.message.content[0];
+    // @ts-ignore - recovered code
     const result = resultsByToolUseId.get(content.id);
     return {
+      // @ts-ignore - recovered code
       param: content as ToolUseBlockParam,
+      // @ts-ignore - recovered code
       isResolved: lookups.resolvedToolUseIDs.has(content.id),
+      // @ts-ignore - recovered code
       isError: lookups.erroredToolUseIDs.has(content.id),
+      // @ts-ignore - recovered code
       isInProgress: inProgressToolUseIDs.has(content.id),
+      // @ts-ignore - recovered code
       progressMessages: filterToolProgressMessages(lookups.progressMessagesByToolUseID.get(content.id) ?? []),
       result
     };

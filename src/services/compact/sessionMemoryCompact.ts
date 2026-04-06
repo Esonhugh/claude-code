@@ -163,6 +163,7 @@ function getToolResultIds(message: Message): string[] {
   const ids: string[] = []
   for (const block of content) {
     if (block.type === 'tool_result') {
+      // @ts-ignore - recovered code
       ids.push(block.tool_use_id)
     }
   }
@@ -181,6 +182,7 @@ function hasToolUseWithIds(message: Message, toolUseIds: Set<string>): boolean {
     return false
   }
   return content.some(
+    // @ts-ignore - recovered code
     block => block.type === 'tool_use' && toolUseIds.has(block.id),
   )
 }
@@ -254,6 +256,7 @@ export function adjustIndexToPreserveAPIInvariants(
       if (msg.type === 'assistant' && Array.isArray(msg.message.content)) {
         for (const block of msg.message.content) {
           if (block.type === 'tool_use') {
+            // @ts-ignore - recovered code
             toolUseIdsInKeptRange.add(block.id)
           }
         }
@@ -276,7 +279,9 @@ export function adjustIndexToPreserveAPIInvariants(
           Array.isArray(message.message.content)
         ) {
           for (const block of message.message.content) {
+            // @ts-ignore - recovered code
             if (block.type === 'tool_use' && neededToolUseIds.has(block.id)) {
+              // @ts-ignore - recovered code
               neededToolUseIds.delete(block.id)
             }
           }
@@ -451,6 +456,7 @@ function createCompactionResultFromSessionMemory(
   )
   const preCompactDiscovered = extractDiscoveredToolNames(messages)
   if (preCompactDiscovered.size > 0) {
+    // @ts-ignore - recovered code
     boundaryMarker.compactMetadata.preCompactDiscoveredTools = [
       ...preCompactDiscovered,
     ].sort()

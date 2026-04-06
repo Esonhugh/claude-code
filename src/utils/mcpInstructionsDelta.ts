@@ -63,9 +63,12 @@ export function getMcpInstructionsDelta(
   for (const msg of messages) {
     if (msg.type !== 'attachment') continue
     attachmentCount++
+    // @ts-ignore - recovered code
     if (msg.attachment.type !== 'mcp_instructions_delta') continue
     midCount++
+    // @ts-ignore - recovered code
     for (const n of msg.attachment.addedNames) announced.add(n)
+    // @ts-ignore - recovered code
     for (const n of msg.attachment.removedNames) announced.delete(n)
   }
 

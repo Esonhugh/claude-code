@@ -128,8 +128,10 @@ export async function setupGitHubActions(
       skip_workflow: skipWorkflow,
       has_api_key: !!apiKeyOrOAuthToken,
       using_default_secret_name: secretName === 'ANTHROPIC_API_KEY',
+      // @ts-ignore - recovered code
       selected_claude_workflow: selectedWorkflows.includes('claude'),
       selected_claude_review_workflow:
+        // @ts-ignore - recovered code
         selectedWorkflows.includes('claude-review'),
       ...context,
     })
@@ -221,6 +223,7 @@ export async function setupGitHubActions(
       // Create selected workflow files
       const workflows = []
 
+      // @ts-ignore - recovered code
       if (selectedWorkflows.includes('claude')) {
         workflows.push({
           path: '.github/workflows/claude.yml',
@@ -229,6 +232,7 @@ export async function setupGitHubActions(
         })
       }
 
+      // @ts-ignore - recovered code
       if (selectedWorkflows.includes('claude-review')) {
         workflows.push({
           path: '.github/workflows/claude-code-review.yml',
@@ -296,8 +300,10 @@ export async function setupGitHubActions(
       auth_type:
         authType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       using_default_secret_name: secretName === 'ANTHROPIC_API_KEY',
+      // @ts-ignore - recovered code
       selected_claude_workflow: selectedWorkflows.includes('claude'),
       selected_claude_review_workflow:
+        // @ts-ignore - recovered code
         selectedWorkflows.includes('claude-review'),
       ...context,
     })

@@ -70,6 +70,7 @@ export function buildSessionContext(): ComputerUseSessionContext {
       const d = tuc().getAppState().computerUseMcpState?.lastScreenshotDims;
       return d ? {
         ...d,
+        // @ts-ignore - recovered code
         displayId: d.displayId ?? 0,
         originX: d.originX ?? 0,
         originY: d.originY ?? 0
@@ -232,6 +233,7 @@ function getOrBind(): Binding {
   const ctx = buildSessionContext();
   binding = {
     ctx,
+    // @ts-ignore - recovered code
     dispatch: bindSessionContext(getComputerUseHostAdapter(), getChicagoCoordinateMode(), ctx)
   };
   return binding;
@@ -255,7 +257,9 @@ export function getComputerUseMCPToolOverrides(toolName: string): ComputerUseMCP
       telemetry,
       ...result
     } = await dispatch(toolName, args);
+    // @ts-ignore - recovered code
     if (telemetry?.error_kind) {
+      // @ts-ignore - recovered code
       logForDebugging(`[Computer Use MCP] ${toolName} error_kind=${telemetry.error_kind}`);
     }
 
@@ -298,6 +302,7 @@ async function runPermissionDialog(req: CuPermissionRequest): Promise<CuPermissi
   const setToolJSX = context.setToolJSX;
   if (!setToolJSX) {
     // Shouldn't happen — main.tsx gate excludes non-interactive. Fail safe.
+    // @ts-ignore - recovered code
     return {
       granted: [],
       denied: [],

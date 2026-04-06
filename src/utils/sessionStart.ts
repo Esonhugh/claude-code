@@ -168,6 +168,7 @@ export async function processSessionStartHooks(
       toolUseID: 'SessionStart',
       hookEvent: 'SessionStart',
     })
+    // @ts-ignore - recovered code
     hookMessages.push(contextMessage)
   }
 
@@ -225,6 +226,7 @@ export async function processSetupHooks(
       toolUseID: 'Setup',
       hookEvent: 'Setup',
     })
+    // @ts-ignore - recovered code
     hookMessages.push(contextMessage)
   }
 

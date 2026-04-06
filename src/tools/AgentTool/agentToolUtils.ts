@@ -316,6 +316,7 @@ export function finalizeAgentTool(
     }
   }
 
+  // @ts-ignore - recovered code
   const totalTokens = getTokenCountFromUsage(lastAssistantMessage.message.usage)
   const totalToolUseCount = countToolUses(agentMessages)
 
@@ -348,6 +349,7 @@ export function finalizeAgentTool(
   return {
     agentId,
     agentType,
+    // @ts-ignore - recovered code
     content,
     totalDurationMs: Date.now() - startTime,
     totalTokens,
@@ -363,6 +365,7 @@ export function finalizeAgentTool(
 export function getLastToolUseName(message: MessageType): string | undefined {
   if (message.type !== 'assistant') return undefined
   const block = message.message.content.findLast(b => b.type === 'tool_use')
+  // @ts-ignore - recovered code
   return block?.type === 'tool_use' ? block.name : undefined
 }
 

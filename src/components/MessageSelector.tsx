@@ -118,6 +118,7 @@ export function MessageSelector({
       ...summarizeInputProps,
       onChange: setSummarizeFromFeedback
     });
+    // @ts-ignore - recovered code
     if ("external" === 'ant') {
       baseOptions.push({
         value: 'summarize_up_to',
@@ -194,6 +195,7 @@ export function MessageSelector({
       try {
         const direction = option === 'summarize_up_to' ? 'up_to' : 'from';
         const feedback = (direction === 'up_to' ? summarizeUpToFeedback : summarizeFromFeedback).trim() || undefined;
+        // @ts-ignore - recovered code
         await onSummarize(messageToRestore, feedback, direction);
         setIsRestoring(false);
         setRestoringOption(null);
@@ -782,6 +784,7 @@ export function selectableUserMessagesFilter(message: Message): message is UserM
   }
   const content = message.message.content;
   const lastBlock = typeof content === 'string' ? null : content[content.length - 1];
+  // @ts-ignore - recovered code
   const messageText = typeof content === 'string' ? content.trim() : lastBlock && isTextBlock(lastBlock) ? lastBlock.text.trim() : '';
 
   // Filter out non-user-authored messages (command outputs, task notifications, ticks).
@@ -813,6 +816,7 @@ export function messagesAfterAreOnlySynthetic(messages: Message[], fromIndex: nu
     if (msg.type === 'assistant') {
       const content = msg.message.content;
       if (Array.isArray(content)) {
+        // @ts-ignore - recovered code
         const hasMeaningfulContent = content.some(block => block.type === 'text' && block.text.trim() || block.type === 'tool_use');
         if (hasMeaningfulContent) return false;
       }

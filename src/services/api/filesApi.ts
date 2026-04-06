@@ -107,6 +107,7 @@ async function retryWithBackoff<T>(
       return result.value
     }
 
+    // @ts-ignore - recovered code
     lastError = result.error || `${operation} failed`
     logDebug(
       `${operation} attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`,

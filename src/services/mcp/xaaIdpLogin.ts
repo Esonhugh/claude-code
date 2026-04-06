@@ -98,7 +98,9 @@ export function issuerKey(issuer: string): string {
  */
 export function getCachedIdpIdToken(idpIssuer: string): string | undefined {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const data = storage.read()
+  // @ts-ignore - recovered code
   const entry = data?.mcpXaaIdp?.[issuerKey(idpIssuer)]
   if (!entry) return undefined
   const remainingMs = entry.expiresAt - Date.now()
@@ -112,10 +114,13 @@ function saveIdpIdToken(
   expiresAt: number,
 ): void {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existing = storage.read() || {}
+  // @ts-ignore - recovered code
   storage.update({
     ...existing,
     mcpXaaIdp: {
+      // @ts-ignore - recovered code
       ...existing.mcpXaaIdp,
       [issuerKey(idpIssuer)]: { idToken, expiresAt },
     },
@@ -142,10 +147,14 @@ export function saveIdpIdTokenFromJwt(
 
 export function clearIdpIdToken(idpIssuer: string): void {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existing = storage.read()
   const key = issuerKey(idpIssuer)
+  // @ts-ignore - recovered code
   if (!existing?.mcpXaaIdp?.[key]) return
+  // @ts-ignore - recovered code
   delete existing.mcpXaaIdp[key]
+  // @ts-ignore - recovered code
   storage.update(existing)
 }
 
@@ -161,10 +170,13 @@ export function saveIdpClientSecret(
   clientSecret: string,
 ): { success: boolean; warning?: string } {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existing = storage.read() || {}
+  // @ts-ignore - recovered code
   return storage.update({
     ...existing,
     mcpXaaIdpConfig: {
+      // @ts-ignore - recovered code
       ...existing.mcpXaaIdpConfig,
       [issuerKey(idpIssuer)]: { clientSecret },
     },
@@ -176,7 +188,9 @@ export function saveIdpClientSecret(
  */
 export function getIdpClientSecret(idpIssuer: string): string | undefined {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const data = storage.read()
+  // @ts-ignore - recovered code
   return data?.mcpXaaIdpConfig?.[issuerKey(idpIssuer)]?.clientSecret
 }
 
@@ -186,10 +200,14 @@ export function getIdpClientSecret(idpIssuer: string): string | undefined {
  */
 export function clearIdpClientSecret(idpIssuer: string): void {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existing = storage.read()
   const key = issuerKey(idpIssuer)
+  // @ts-ignore - recovered code
   if (!existing?.mcpXaaIdpConfig?.[key]) return
+  // @ts-ignore - recovered code
   delete existing.mcpXaaIdpConfig[key]
+  // @ts-ignore - recovered code
   storage.update(existing)
 }
 

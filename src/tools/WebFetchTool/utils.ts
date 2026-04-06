@@ -523,6 +523,7 @@ export async function applyPromptToMarkdown(
   if (content.length > 0) {
     const contentBlock = content[0]
     if ('text' in contentBlock!) {
+      // @ts-ignore - recovered code
       return contentBlock.text
     }
   }

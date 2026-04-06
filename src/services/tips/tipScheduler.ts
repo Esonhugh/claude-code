@@ -53,6 +53,7 @@ export function recordShownTip(tip: Tip): void {
   logEvent('tengu_tip_shown', {
     tipIdLength:
       tip.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    // @ts-ignore - recovered code
     cooldownSessions: tip.cooldownSessions,
   })
 }

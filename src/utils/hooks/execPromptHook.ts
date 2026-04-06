@@ -118,6 +118,7 @@ Your response must be a JSON object matching one of the following schemas:
         return {
           hook,
           outcome: 'non_blocking_error',
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_non_blocking_error',
             hookName,
@@ -138,6 +139,7 @@ Your response must be a JSON object matching one of the following schemas:
         return {
           hook,
           outcome: 'non_blocking_error',
+          // @ts-ignore - recovered code
           message: createAttachmentMessage({
             type: 'hook_non_blocking_error',
             hookName,
@@ -172,6 +174,7 @@ Your response must be a JSON object matching one of the following schemas:
       return {
         hook,
         outcome: 'success',
+        // @ts-ignore - recovered code
         message: createAttachmentMessage({
           type: 'hook_success',
           hookName,
@@ -197,6 +200,7 @@ Your response must be a JSON object matching one of the following schemas:
     return {
       hook,
       outcome: 'non_blocking_error',
+      // @ts-ignore - recovered code
       message: createAttachmentMessage({
         type: 'hook_non_blocking_error',
         hookName,

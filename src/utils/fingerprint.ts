@@ -30,6 +30,7 @@ export function extractFirstMessageText(
   if (Array.isArray(content)) {
     const textBlock = content.find(block => block.type === 'text')
     if (textBlock && textBlock.type === 'text') {
+      // @ts-ignore - recovered code
       return textBlock.text
     }
   }

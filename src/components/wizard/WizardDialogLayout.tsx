@@ -29,6 +29,7 @@ export function WizardDialogLayout(t0) {
     goBack
   } = useWizard();
   const title = titleOverride || providerTitle || "Wizard";
+  // @ts-ignore - recovered code
   const stepSuffix = showStepCounter !== false ? ` (${currentStepIndex + 1}/${totalSteps})` : "";
   const t2 = `${title}${stepSuffix}`;
   let t3;

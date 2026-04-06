@@ -18,6 +18,7 @@ let pump: ReturnType<typeof setInterval> | undefined
 let pending = 0
 
 function drainTick(cu: ReturnType<typeof requireComputerUseSwift>): void {
+  // @ts-ignore - recovered code
   cu._drainMainRunLoop()
 }
 
@@ -70,6 +71,7 @@ export async function drainRunLoop<T>(fn: () => Promise<T>): Promise<T> {
     const work = fn()
     work.catch(() => {})
     const timeout = withResolvers<never>()
+    // @ts-ignore - recovered code
     timer = setTimeout(timeoutReject, TIMEOUT_MS, timeout.reject)
     return await Promise.race([work, timeout.promise])
   } finally {

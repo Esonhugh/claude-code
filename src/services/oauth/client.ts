@@ -292,6 +292,7 @@ export async function fetchAndStoreUserRoles(
 
   saveGlobalConfig(current => ({
     ...current,
+    // @ts-ignore - recovered code
     oauthAccount: current.oauthAccount
       ? {
           ...current.oauthAccount,

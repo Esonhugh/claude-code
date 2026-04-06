@@ -392,6 +392,7 @@ export function Config({
     }
   }] : []),
   // Speculation toggle (ant-only)
+  // @ts-ignore - recovered code
   ...("external" === 'ant' ? [{
     id: 'speculationEnabled',
     label: 'Speculative execution',

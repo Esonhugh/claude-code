@@ -525,6 +525,7 @@ export function useManageMCPConnections(
                       value: wrapChannelMessage(client.name, content, meta),
                       priority: 'next',
                       isMeta: true,
+                      // @ts-ignore - recovered code
                       origin: { kind: 'channel', server: client.name },
                       skipSlashCommands: true,
                     })

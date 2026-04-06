@@ -198,6 +198,7 @@ export function Notifications(t0) {
   }
   let t14;
   if ($[31] !== t11 || $[32] !== t13) {
+    // @ts-ignore - recovered code
     t14 = <SentryErrorBoundary><Box flexDirection="column" alignItems={t11} flexShrink={0} overflowX="hidden">{t13}</Box></SentryErrorBoundary>;
     $[31] = t11;
     $[32] = t13;

@@ -25,12 +25,14 @@ export async function handleMcpjsonServerApprovals(root: Root): Promise<void> {
     if (pendingServers.length === 1 && pendingServers[0] !== undefined) {
       const serverName = pendingServers[0];
       root.render(<AppStateProvider>
+          {/* @ts-ignore - recovered code */}
           <KeybindingSetup>
             <MCPServerApprovalDialog serverName={serverName} onDone={done} />
           </KeybindingSetup>
         </AppStateProvider>);
     } else {
       root.render(<AppStateProvider>
+          {/* @ts-ignore - recovered code */}
           <KeybindingSetup>
             <MCPServerMultiselectDialog serverNames={pendingServers} onDone={done} />
           </KeybindingSetup>

@@ -33,6 +33,7 @@ export function MemoryStep() {
     t0 = $[0];
   }
   useKeybinding("confirm:no", goBack, t0);
+  // @ts-ignore - recovered code
   const isUserScope = wizardData.location === "userSettings";
   let t1;
   if ($[1] !== isUserScope) {
@@ -68,15 +69,21 @@ export function MemoryStep() {
   }
   const memoryOptions = t1;
   let t2;
+  // @ts-ignore - recovered code
   if ($[3] !== goNext || $[4] !== updateWizardData || $[5] !== wizardData.finalAgent || $[6] !== wizardData.systemPrompt) {
     t2 = value => {
       const memory = value === "none" ? undefined : value as AgentMemoryScope;
+      // @ts-ignore - recovered code
       const agentType = wizardData.finalAgent?.agentType;
+      // @ts-ignore - recovered code
       updateWizardData({
         selectedMemory: memory,
+        // @ts-ignore - recovered code
         finalAgent: wizardData.finalAgent ? {
+          // @ts-ignore - recovered code
           ...wizardData.finalAgent,
           memory,
+          // @ts-ignore - recovered code
           getSystemPrompt: isAutoMemoryEnabled() && memory && agentType ? () => wizardData.systemPrompt + "\n\n" + loadAgentMemoryPrompt(agentType, memory) : () => wizardData.systemPrompt
         } : undefined
       });
@@ -84,7 +91,9 @@ export function MemoryStep() {
     };
     $[3] = goNext;
     $[4] = updateWizardData;
+    // @ts-ignore - recovered code
     $[5] = wizardData.finalAgent;
+    // @ts-ignore - recovered code
     $[6] = wizardData.systemPrompt;
     $[7] = t2;
   } else {

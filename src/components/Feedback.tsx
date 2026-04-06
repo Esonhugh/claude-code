@@ -32,6 +32,7 @@ import TextInput from './TextInput.js';
 
 // This value was determined experimentally by testing the URL length limit
 const GITHUB_URL_LIMIT = 7250;
+// @ts-ignore - recovered code
 const GITHUB_ISSUES_REPO_URL = "external" === 'ant' ? 'https://github.com/anthropics/claude-cli-internal/issues' : 'https://github.com/anthropics/claude-code/issues';
 type Props = {
   abortSignal: AbortSignal;
@@ -462,9 +463,11 @@ async function generateTitle(description: string, abortSignal: AbortSignal): Pro
     const title = response.message.content[0]?.type === 'text' ? response.message.content[0].text : 'Bug Report';
 
     // Check if the title contains an API error message
+    // @ts-ignore - recovered code
     if (startsWithApiErrorPrefix(title)) {
       return createFallbackTitle(description);
     }
+    // @ts-ignore - recovered code
     return title;
   } catch (error) {
     // If there's any error in title generation, use a fallback title

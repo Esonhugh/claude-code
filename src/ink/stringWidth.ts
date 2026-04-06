@@ -211,7 +211,9 @@ function isZeroWidth(codePoint: number): boolean {
 // Bun.stringWidth is resolved once at module scope rather than checked on every
 // call — typeof guards deopt property access and this is a hot path (~100k calls/frame).
 const bunStringWidth =
+  // @ts-ignore - recovered code
   typeof Bun !== 'undefined' && typeof Bun.stringWidth === 'function'
+    // @ts-ignore - recovered code
     ? Bun.stringWidth
     : null
 

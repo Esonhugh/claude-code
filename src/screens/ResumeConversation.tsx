@@ -181,8 +181,10 @@ export function ResumeConversation({
     const crossProjectCheck = checkCrossProjectResume(log_0, showAllProjects, worktreePaths);
     if (crossProjectCheck.isCrossProject) {
       if (!crossProjectCheck.isSameRepoWorktree) {
+        // @ts-ignore - recovered code
         const raw = await setClipboard(crossProjectCheck.command);
         if (raw) process.stdout.write(raw);
+        // @ts-ignore - recovered code
         setCrossProjectCommand(crossProjectCheck.command);
         return;
       }

@@ -18,6 +18,7 @@ import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 
 const bootstrapResponseSchema = lazySchema(() =>
   z.object({
+    // @ts-ignore - recovered code
     client_data: z.record(z.unknown()).nullish(),
     additional_model_options: z
       .array(

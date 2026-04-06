@@ -186,6 +186,7 @@ function startBunRelay(
   type BunState = ConnState & { writeBuf: Uint8Array[] }
 
   // eslint-disable-next-line custom-rules/require-bun-typeof-guard -- caller dispatches on typeof Bun
+  // @ts-ignore - recovered code
   const server = Bun.listen<BunState>({
     hostname: '127.0.0.1',
     port: 0,
@@ -263,6 +264,7 @@ export async function startNodeRelay(
       end: () => sock.end(),
     }
     sock.on('data', data =>
+      // @ts-ignore - recovered code
       handleData(adapter, st, data, wsUrl, authHeader, wsAuthHeader),
     )
     sock.on('close', () => cleanupConn(states.get(sock)))

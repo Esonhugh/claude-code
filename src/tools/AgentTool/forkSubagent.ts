@@ -83,6 +83,7 @@ export function isInForkChild(messages: MessageType[]): boolean {
     return content.some(
       block =>
         block.type === 'text' &&
+        // @ts-ignore - recovered code
         block.text.includes(`<${FORK_BOILERPLATE_TAG}>`),
     )
   })
@@ -121,6 +122,7 @@ export function buildForkedMessages(
 
   // Collect all tool_use blocks from the assistant message
   const toolUseBlocks = assistantMessage.message.content.filter(
+    // @ts-ignore - recovered code
     (block): block is BetaToolUseBlock => block.type === 'tool_use',
   )
 
@@ -157,8 +159,10 @@ export function buildForkedMessages(
   // from src/utils/messages.ts to fold the directive into the last tool_result.content.
   const toolResultMessage = createUserMessage({
     content: [
+      // @ts-ignore - recovered code
       ...toolResultBlocks,
       {
+        // @ts-ignore - recovered code
         type: 'text' as const,
         text: buildChildMessage(directive),
       },

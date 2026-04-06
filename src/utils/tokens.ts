@@ -10,10 +10,12 @@ export function getTokenUsage(message: Message): Usage | undefined {
     'usage' in message.message &&
     !(
       message.message.content[0]?.type === 'text' &&
+      // @ts-ignore - recovered code
       SYNTHETIC_MESSAGES.has(message.message.content[0].text)
     ) &&
     message.message.model !== SYNTHETIC_MODEL
   ) {
+    // @ts-ignore - recovered code
     return message.message.usage
   }
   return undefined
@@ -186,10 +188,13 @@ export function getAssistantMessageContentLength(
   let contentLength = 0
   for (const block of message.message.content) {
     if (block.type === 'text') {
+      // @ts-ignore - recovered code
       contentLength += block.text.length
     } else if (block.type === 'thinking') {
+      // @ts-ignore - recovered code
       contentLength += block.thinking.length
     } else if (block.type === 'redacted_thinking') {
+      // @ts-ignore - recovered code
       contentLength += block.data.length
     } else if (block.type === 'tool_use') {
       contentLength += jsonStringify(block.input).length
@@ -252,10 +257,12 @@ export function tokenCountWithEstimation(messages: readonly Message[]): number {
       }
       return (
         getTokenCountFromUsage(usage) +
+        // @ts-ignore - recovered code
         roughTokenCountEstimationForMessages(messages.slice(i + 1))
       )
     }
     i--
   }
+  // @ts-ignore - recovered code
   return roughTokenCountEstimationForMessages(messages)
 }

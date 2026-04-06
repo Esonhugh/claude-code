@@ -899,6 +899,7 @@ async function callInner(
         parsedRange ?? undefined,
       )
       if (!extractResult.success) {
+        // @ts-ignore - recovered code
         throw new Error(extractResult.error.message)
       }
       logEvent('tengu_pdf_page_extraction', {
@@ -970,6 +971,7 @@ async function callInner(
       } else {
         logEvent('tengu_pdf_page_extraction', {
           success: false,
+          // @ts-ignore - recovered code
           available: extractResult.error.reason !== 'unavailable',
           fileSize: stats.size,
         })
@@ -986,6 +988,7 @@ async function callInner(
 
     const readResult = await readPDF(resolvedFilePath)
     if (!readResult.success) {
+      // @ts-ignore - recovered code
       throw new Error(readResult.error.message)
     }
     const pdfData = readResult.data
@@ -1158,11 +1161,13 @@ export async function readImageWithTokenBudget(
         const sharpModule = await import('sharp')
         const sharp =
           (
+            // @ts-ignore - recovered code
             sharpModule as {
               default?: typeof sharpModule
             } & typeof sharpModule
           ).default || sharpModule
 
+        // @ts-ignore - recovered code
         const fallbackBuffer = await sharp(imageBuffer)
           .resize(400, 400, {
             fit: 'inside',

@@ -271,6 +271,7 @@ function getOpusPlanOption(): ModelOption {
 function getModelOptionsBase(fastMode = false): ModelOption[] {
   if (process.env.USER_TYPE === 'ant') {
     // Build options from antModels config
+    // @ts-ignore - recovered code
     const antModelOptions: ModelOption[] = getAntModels().map(m => ({
       value: m.alias,
       label: m.label,

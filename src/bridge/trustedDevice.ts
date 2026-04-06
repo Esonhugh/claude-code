@@ -48,6 +48,7 @@ const readStoredToken = memoize((): string | undefined => {
   if (envToken) {
     return envToken
   }
+  // @ts-ignore - recovered code
   return getSecureStorage().read()?.trustedDeviceToken
 })
 
@@ -75,9 +76,13 @@ export function clearTrustedDeviceToken(): void {
   }
   const secureStorage = getSecureStorage()
   try {
+    // @ts-ignore - recovered code
     const data = secureStorage.read()
+    // @ts-ignore - recovered code
     if (data?.trustedDeviceToken) {
+      // @ts-ignore - recovered code
       delete data.trustedDeviceToken
+      // @ts-ignore - recovered code
       secureStorage.update(data)
     }
   } catch {
@@ -180,6 +185,7 @@ export async function enrollTrustedDevice(): Promise<void> {
     }
 
     try {
+      // @ts-ignore - recovered code
       const storageData = secureStorage.read()
       if (!storageData) {
         logForDebugging(
@@ -187,10 +193,14 @@ export async function enrollTrustedDevice(): Promise<void> {
         )
         return
       }
+      // @ts-ignore - recovered code
       storageData.trustedDeviceToken = token
+      // @ts-ignore - recovered code
       const result = secureStorage.update(storageData)
+      // @ts-ignore - recovered code
       if (!result.success) {
         logForDebugging(
+          // @ts-ignore - recovered code
           `[trusted-device] Failed to persist token: ${result.warning ?? 'unknown'}`,
         )
         return

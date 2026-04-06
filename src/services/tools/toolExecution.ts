@@ -816,12 +816,14 @@ async function checkPermissionsAndCallTool(
           const att = result.message.message.attachment
           if (
             att &&
+            // @ts-ignore - recovered code
             'command' in att &&
             att.command !== undefined &&
             'durationMs' in att &&
             att.durationMs !== undefined
           ) {
             preToolHookInfos.push({
+              // @ts-ignore - recovered code
               command: att.command,
               durationMs: att.durationMs,
             })
@@ -881,6 +883,7 @@ async function checkPermissionsAndCallTool(
           false,
           undefined,
           false,
+          // @ts-ignore - recovered code
           'suggestion',
           undefined,
           'PreToolUse',
@@ -1500,12 +1503,14 @@ async function checkPermissionsAndCallTool(
         if (hookResult.message.type === 'attachment') {
           const att = hookResult.message.attachment
           if (
+            // @ts-ignore - recovered code
             'command' in att &&
             att.command !== undefined &&
             'durationMs' in att &&
             att.durationMs !== undefined
           ) {
             postToolHookInfos.push({
+              // @ts-ignore - recovered code
               command: att.command,
               durationMs: att.durationMs,
             })
@@ -1516,12 +1521,14 @@ async function checkPermissionsAndCallTool(
         if (hookResult.message.type === 'attachment') {
           const att = hookResult.message.attachment
           if (
+            // @ts-ignore - recovered code
             'command' in att &&
             att.command !== undefined &&
             'durationMs' in att &&
             att.durationMs !== undefined
           ) {
             postToolHookInfos.push({
+              // @ts-ignore - recovered code
               command: att.command,
               durationMs: att.durationMs,
             })
@@ -1553,6 +1560,7 @@ async function checkPermissionsAndCallTool(
             false,
             undefined,
             false,
+            // @ts-ignore - recovered code
             'suggestion',
             undefined,
             'PostToolUse',

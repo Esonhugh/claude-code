@@ -341,6 +341,7 @@ export async function generateSuggestion(
     if (msg.type !== 'assistant') continue
     const textBlock = msg.message.content.find(b => b.type === 'text')
     if (textBlock?.type === 'text') {
+      // @ts-ignore - recovered code
       const suggestion = textBlock.text.trim()
       if (suggestion) {
         return { suggestion, generationRequestId }

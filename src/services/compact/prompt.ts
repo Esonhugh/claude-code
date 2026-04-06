@@ -273,9 +273,11 @@ const NO_TOOLS_TRAILER =
 
 export function getPartialCompactPrompt(
   customInstructions?: string,
+  // @ts-ignore - recovered code
   direction: PartialCompactDirection = 'from',
 ): string {
   const template =
+    // @ts-ignore - recovered code
     direction === 'up_to'
       ? PARTIAL_COMPACT_UP_TO_PROMPT
       : PARTIAL_COMPACT_PROMPT

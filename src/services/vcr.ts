@@ -166,7 +166,9 @@ function addCachedCostToTotalSessionCost(
   if (message.type === 'stream_event') {
     return
   }
+  // @ts-ignore - recovered code
   const model = message.message.model
+  // @ts-ignore - recovered code
   const usage = message.message.usage
   const costUSD = calculateUSDCost(model, usage)
   addToTotalSessionCost(costUSD, usage, model)
@@ -251,6 +253,7 @@ function mapAssistantMessage(
     timestamp: message.timestamp,
     message: {
       ...message.message,
+      // @ts-ignore - recovered code
       content: message.message.content
         .map(_ => {
           switch (_.type) {
@@ -282,6 +285,7 @@ function mapMessage(
   uuid?: UUID,
 ): AssistantMessage | SystemAPIErrorMessage | StreamEvent {
   if (message.type === 'assistant') {
+    // @ts-ignore - recovered code
     return mapAssistantMessage(message, f, index, uuid)
   } else {
     return message

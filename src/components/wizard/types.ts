@@ -17,3 +17,11 @@ export interface WizardProviderProps {
   totalSteps?: number
   [key: string]: unknown
 }
+
+export type WizardStepComponent<T = Record<string, unknown>> = React.ComponentType<{
+  data: T
+  setData: (data: Partial<T>) => void
+  goNext: () => void
+  goBack: () => void
+  [key: string]: unknown
+}>

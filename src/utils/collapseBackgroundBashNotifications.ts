@@ -17,13 +17,16 @@ function isCompletedBackgroundBash(
   if (msg.type !== 'user') return false
   const content = msg.message.content[0]
   if (content?.type !== 'text') return false
+  // @ts-ignore - recovered code
   if (!content.text.includes(`<${TASK_NOTIFICATION_TAG}`)) return false
   // Only collapse successful completions — failed/killed stay visible individually.
+  // @ts-ignore - recovered code
   if (extractTag(content.text, STATUS_TAG) !== 'completed') return false
   // The prefix constant distinguishes bash-kind LocalShellTask completions from
   // agent/workflow/monitor notifications. Monitor-kind completions have their
   // own summary wording and deliberately don't collapse here.
   return (
+    // @ts-ignore - recovered code
     extractTag(content.text, SUMMARY_TAG)?.startsWith(
       BACKGROUND_BASH_SUMMARY_PREFIX,
     ) ?? false

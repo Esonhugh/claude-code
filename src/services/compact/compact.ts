@@ -214,7 +214,9 @@ export function stripReinjectedAttachments(messages: Message[]): Message[] {
       m =>
         !(
           m.type === 'attachment' &&
+          // @ts-ignore - recovered code
           (m.attachment.type === 'skill_discovery' ||
+            // @ts-ignore - recovered code
             m.attachment.type === 'skill_listing')
         ),
     )
@@ -263,6 +265,7 @@ export function truncateHeadForPTLRetry(
     let acc = 0
     dropCount = 0
     for (const g of groups) {
+      // @ts-ignore - recovered code
       acc += roughTokenCountEstimationForMessages(g)
       dropCount++
       if (acc >= tokenGap) break
@@ -356,6 +359,7 @@ export function annotateBoundaryWithPreservedSegment(
   return {
     ...boundary,
     compactMetadata: {
+      // @ts-ignore - recovered code
       ...boundary.compactMetadata,
       preservedSegment: {
         headUuid: keep[0]!.uuid,
@@ -605,6 +609,7 @@ export async function compactConversation(
     // already-loaded deferred tool schemas to the API.
     const preCompactDiscovered = extractDiscoveredToolNames(messages)
     if (preCompactDiscovered.size > 0) {
+      // @ts-ignore - recovered code
       boundaryMarker.compactMetadata.preCompactDiscoveredTools = [
         ...preCompactDiscovered,
       ].sort()
@@ -636,8 +641,11 @@ export async function compactConversation(
     // is a strong signal; `false` may still retrigger when this is close to threshold.
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
+      // @ts-ignore - recovered code
       ...summaryMessages,
+      // @ts-ignore - recovered code
       ...postCompactFileAttachments,
+      // @ts-ignore - recovered code
       ...hookMessages,
     ])
 
@@ -775,10 +783,12 @@ export async function partialCompactConversation(
   context: ToolUseContext,
   cacheSafeParams: CacheSafeParams,
   userFeedback?: string,
+  // @ts-ignore - recovered code
   direction: PartialCompactDirection = 'from',
 ): Promise<CompactionResult> {
   try {
     const messagesToSummarize =
+      // @ts-ignore - recovered code
       direction === 'up_to'
         ? allMessages.slice(0, pivotIndex)
         : allMessages.slice(pivotIndex)
@@ -788,6 +798,7 @@ export async function partialCompactConversation(
     // 'from' keeps them: summary_B sits AFTER kept (backward scan still
     // works), and removing an old summary would lose its covered history.
     const messagesToKeep =
+      // @ts-ignore - recovered code
       direction === 'up_to'
         ? allMessages
             .slice(pivotIndex)
@@ -801,6 +812,7 @@ export async function partialCompactConversation(
 
     if (messagesToSummarize.length === 0) {
       throw new Error(
+        // @ts-ignore - recovered code
         direction === 'up_to'
           ? 'Nothing to summarize before the selected message.'
           : 'Nothing to summarize after the selected message.',
@@ -851,8 +863,10 @@ export async function partialCompactConversation(
 
     // 'up_to' prefix hits cache directly; 'from' sends all (tail wouldn't cache).
     // PTL retry breaks the cache prefix but unblocks the user (CC-1180).
+    // @ts-ignore - recovered code
     let apiMessages = direction === 'up_to' ? messagesToSummarize : allMessages
     let retryCacheSafeParams =
+      // @ts-ignore - recovered code
       direction === 'up_to'
         ? { ...cacheSafeParams, forkContextMessages: messagesToSummarize }
         : cacheSafeParams
@@ -1007,6 +1021,7 @@ export async function partialCompactConversation(
     // Progress messages aren't loggable, so forkSessionImpl would null out
     // a logicalParentUuid pointing at one. Both directions skip them.
     const lastPreCompactUuid =
+      // @ts-ignore - recovered code
       direction === 'up_to'
         ? allMessages.slice(0, pivotIndex).findLast(m => m.type !== 'progress')
             ?.uuid
@@ -1022,6 +1037,7 @@ export async function partialCompactConversation(
     // simpler than tracking which half each tool lived in.
     const preCompactDiscovered = extractDiscoveredToolNames(allMessages)
     if (preCompactDiscovered.size > 0) {
+      // @ts-ignore - recovered code
       boundaryMarker.compactMetadata.preCompactDiscoveredTools = [
         ...preCompactDiscovered,
       ].sort()
@@ -1076,6 +1092,7 @@ export async function partialCompactConversation(
 
     // 'from': prefix-preserving → boundary; 'up_to': suffix → last summary
     const anchorUuid =
+      // @ts-ignore - recovered code
       direction === 'up_to'
         ? (summaryMessages.at(-1)?.uuid ?? boundaryMarker.uuid)
         : boundaryMarker.uuid
@@ -1332,8 +1349,11 @@ async function streamCompactSummary({
 
         if (
           !hasStartedStreaming &&
+          // @ts-ignore - recovered code
           event.type === 'stream_event' &&
+          // @ts-ignore - recovered code
           event.event.type === 'content_block_start' &&
+          // @ts-ignore - recovered code
           event.event.content_block.type === 'text'
         ) {
           hasStartedStreaming = true
@@ -1341,15 +1361,21 @@ async function streamCompactSummary({
         }
 
         if (
+          // @ts-ignore - recovered code
           event.type === 'stream_event' &&
+          // @ts-ignore - recovered code
           event.event.type === 'content_block_delta' &&
+          // @ts-ignore - recovered code
           event.event.delta.type === 'text_delta'
         ) {
+          // @ts-ignore - recovered code
           const charactersStreamed = event.event.delta.text.length
           context.setResponseLength?.(length => length + charactersStreamed)
         }
 
+        // @ts-ignore - recovered code
         if (event.type === 'assistant') {
+          // @ts-ignore - recovered code
           response = event
         }
 
@@ -1619,6 +1645,7 @@ function collectReadToolFilePaths(messages: Message[]): Set<string> {
         typeof block.content === 'string' &&
         block.content.startsWith(FILE_UNCHANGED_STUB)
       ) {
+        // @ts-ignore - recovered code
         stubIds.add(block.tool_use_id)
       }
     }
@@ -1636,6 +1663,7 @@ function collectReadToolFilePaths(messages: Message[]): Set<string> {
       if (
         block.type !== 'tool_use' ||
         block.name !== FILE_READ_TOOL_NAME ||
+        // @ts-ignore - recovered code
         stubIds.has(block.id)
       ) {
         continue

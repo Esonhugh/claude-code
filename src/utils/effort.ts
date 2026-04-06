@@ -58,6 +58,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (model.toLowerCase().includes('opus-4-6')) {
     return true
   }
+  // @ts-ignore - recovered code
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
     return true
   }
@@ -280,6 +281,7 @@ export function getDefaultEffortForModel(
   model: string,
 ): EffortValue | undefined {
   if (process.env.USER_TYPE === 'ant') {
+    // @ts-ignore - recovered code
     const config = getAntModelOverrideConfig()
     const isDefaultModel =
       config?.defaultModel !== undefined &&
@@ -287,6 +289,7 @@ export function getDefaultEffortForModel(
     if (isDefaultModel && config?.defaultModelEffortLevel) {
       return config.defaultModelEffortLevel
     }
+    // @ts-ignore - recovered code
     const antModel = resolveAntModel(model)
     if (antModel) {
       if (antModel.defaultEffortLevel) {

@@ -182,6 +182,7 @@ export function ExitPlanModePermissionRequest({
       return next;
     });
   }, []);
+  // @ts-ignore - recovered code
   const imageAttachments = Object.values(pastedContents).filter(c => c.type === 'image');
   const hasImages = imageAttachments.length > 0;
 
@@ -493,7 +494,9 @@ export function ExitPlanModePermissionRequest({
             type: 'image',
             source: {
               type: 'base64',
+              // @ts-ignore - recovered code
               media_type: (img.mediaType || 'image/png') as Base64ImageSource['media_type'],
+              // @ts-ignore - recovered code
               data: img.content
             }
           };

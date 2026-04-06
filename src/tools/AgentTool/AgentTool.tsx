@@ -96,6 +96,7 @@ const fullInputSchema = lazySchema(() => {
     mode: permissionModeSchema().optional().describe('Permission mode for spawned teammate (e.g., "plan" to require plan approval).')
   });
   return baseInputSchema().merge(multiAgentInputSchema).extend({
+    // @ts-ignore - recovered code
     isolation: ("external" === 'ant' ? z.enum(['worktree', 'remote']) : z.enum(['worktree'])).optional().describe("external" === 'ant' ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote CCR environment (always runs in background).' : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.'),
     cwd: z.string().optional().describe('Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent. Mutually exclusive with isolation: "worktree".')
   });
@@ -432,9 +433,11 @@ export const AgentTool = buildTool({
 
     // Remote isolation: delegate to CCR. Gated ant-only — the guard enables
     // dead code elimination of the entire block for external builds.
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && effectiveIsolation === 'remote') {
       const eligibility = await checkRemoteAgentEligibility();
       if (!eligibility.eligible) {
+        // @ts-ignore - recovered code
         const reasons = eligibility.errors.map(formatPreconditionError).join('\n');
         throw new Error(`Cannot launch remote agent:\n${reasons}`);
       }
@@ -499,7 +502,9 @@ export const AgentTool = buildTool({
         // Fallback: recompute. May diverge from parent's cached bytes if
         // GrowthBook state changed between parent turn-start and fork spawn.
         const mainThreadAgentDefinition = appState.agent ? appState.agentDefinitions.activeAgents.find(a => a.agentType === appState.agent) : undefined;
+        // @ts-ignore - recovered code
         const additionalWorkingDirectories = Array.from(appState.toolPermissionContext.additionalWorkingDirectories.keys());
+        // @ts-ignore - recovered code
         const defaultSystemPrompt = await getSystemPrompt(toolUseContext.options.tools, toolUseContext.options.mainLoopModel, additionalWorkingDirectories, toolUseContext.options.mcpClients);
         forkParentSystemPrompt = buildEffectiveSystemPrompt({
           mainThreadAgentDefinition,
@@ -512,6 +517,7 @@ export const AgentTool = buildTool({
       promptMessages = buildForkedMessages(prompt, assistantMessage);
     } else {
       try {
+        // @ts-ignore - recovered code
         const additionalWorkingDirectories = Array.from(appState.toolPermissionContext.additionalWorkingDirectories.keys());
 
         // All agents have getSystemPrompt - pass toolUseContext to all
@@ -522,6 +528,7 @@ export const AgentTool = buildTool({
         // Log agent memory loaded event for subagents
         if (selectedAgent.memory) {
           logEvent('tengu_agent_memory_loaded', {
+            // @ts-ignore - recovered code
             ...("external" === 'ant' && {
               agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
             }),
@@ -531,6 +538,7 @@ export const AgentTool = buildTool({
         }
 
         // Apply environment details enhancement
+        // @ts-ignore - recovered code
         enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails([agentPrompt], resolvedAgentModel, additionalWorkingDirectories);
       } catch (error) {
         logForDebugging(`Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`);
@@ -798,6 +806,7 @@ export const AgentTool = buildTool({
               data: {
                 message: normalizedFirstMessage,
                 type: 'agent_progress',
+                // @ts-ignore - recovered code
                 prompt,
                 agentId: syncAgentId
               }
@@ -1062,11 +1071,14 @@ export const AgentTool = buildTool({
             } = raceResult;
             if (result.done) break;
             const message = result.value;
+            // @ts-ignore - recovered code
             agentMessages.push(message);
 
             // Emit task_progress for the VS Code subagent panel
+            // @ts-ignore - recovered code
             updateProgressFromMessage(syncTracker, message, syncResolveActivity, toolUseContext.options.tools);
             if (foregroundTaskId) {
+              // @ts-ignore - recovered code
               const lastToolName = getLastToolUseName(message);
               if (lastToolName) {
                 emitTaskProgress(syncTracker, foregroundTaskId, toolUseContext.toolUseId, description, agentStartTime, lastToolName);
@@ -1081,12 +1093,15 @@ export const AgentTool = buildTool({
 
             // Forward bash_progress events from sub-agent to parent so the SDK
             // receives tool_progress events just as it does for the main agent.
+            // @ts-ignore - recovered code
             if (message.type === 'progress' && (message.data.type === 'bash_progress' || message.data.type === 'powershell_progress') && onProgress) {
               onProgress({
                 toolUseID: message.toolUseID,
+                // @ts-ignore - recovered code
                 data: message.data
               });
             }
+            // @ts-ignore - recovered code
             if (message.type !== 'assistant' && message.type !== 'user') {
               continue;
             }
@@ -1116,6 +1131,7 @@ export const AgentTool = buildTool({
                       type: 'agent_progress',
                       // prompt only needed on first progress message (UI.tsx:624
                       // reads progressMessages[0]). Omit here to avoid duplication.
+                      // @ts-ignore - recovered code
                       prompt: '',
                       agentId: syncAgentId
                     }
@@ -1284,6 +1300,7 @@ export const AgentTool = buildTool({
     // Only route through auto mode classifier when in auto mode
     // In all other modes, auto-approve sub-agent generation
     // Note: "external" === 'ant' guard enables dead code elimination for external builds
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && appState.toolPermissionContext.mode === 'auto') {
       return {
         behavior: 'passthrough',

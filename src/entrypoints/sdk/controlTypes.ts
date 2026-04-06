@@ -235,3 +235,9 @@ export type SDKControlCancelRequest = {
 // Composite message types for stdio transport
 export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKKeepAliveMessage
 export type StdinMessage = SDKUserMessage | SDKControlRequest | SDKControlResponse | SDKKeepAliveMessage | SDKUpdateEnvironmentVariablesMessage | SDKControlCancelRequest
+
+// Partial assistant message (streaming chunks)
+export interface SDKPartialAssistantMessage {
+  type: string
+  [key: string]: unknown
+}

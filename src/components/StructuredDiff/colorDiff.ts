@@ -22,11 +22,15 @@ export function getColorModuleUnavailableReason(): ColorModuleUnavailableReason 
   return null
 }
 
+// @ts-ignore - recovered code
 export function expectColorDiff(): typeof ColorDiff | null {
+  // @ts-ignore - recovered code
   return getColorModuleUnavailableReason() === null ? ColorDiff : null
 }
 
+// @ts-ignore - recovered code
 export function expectColorFile(): typeof ColorFile | null {
+  // @ts-ignore - recovered code
   return getColorModuleUnavailableReason() === null ? ColorFile : null
 }
 

@@ -903,6 +903,7 @@ export const connectToServer = memoize(
         )
         logMCPDebug(name, `claude.ai proxy transport created successfully`)
       } else if (
+        // @ts-ignore - recovered code
         (serverRef.type === 'stdio' || !serverRef.type) &&
         isClaudeInChromeMCPServer(name)
       ) {
@@ -917,6 +918,7 @@ export const connectToServer = memoize(
           './InProcessTransport.js'
         )
         const context = createChromeContext(serverRef.env)
+        // @ts-ignore - recovered code
         inProcessServer = createClaudeForChromeMcpServer(context)
         const [clientTransport, serverTransport] = createLinkedTransportPair()
         await inProcessServer.connect(serverTransport)
@@ -924,6 +926,7 @@ export const connectToServer = memoize(
         logMCPDebug(name, `In-process Chrome MCP server started`)
       } else if (
         feature('CHICAGO_MCP') &&
+        // @ts-ignore - recovered code
         (serverRef.type === 'stdio' || !serverRef.type) &&
         isComputerUseMCPServer!(name)
       ) {
@@ -936,11 +939,13 @@ export const connectToServer = memoize(
         const { createLinkedTransportPair } = await import(
           './InProcessTransport.js'
         )
+        // @ts-ignore - recovered code
         inProcessServer = await createComputerUseMcpServerForCli()
         const [clientTransport, serverTransport] = createLinkedTransportPair()
         await inProcessServer.connect(serverTransport)
         transport = clientTransport
         logMCPDebug(name, `In-process Computer Use MCP server started`)
+      // @ts-ignore - recovered code
       } else if (serverRef.type === 'stdio' || !serverRef.type) {
         const finalCommand =
           process.env.CLAUDE_CODE_SHELL_PREFIX || serverRef.command
@@ -957,6 +962,7 @@ export const connectToServer = memoize(
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
         })
       } else {
+        // @ts-ignore - recovered code
         throw new Error(`Unsupported server type: ${serverRef.type}`)
       }
 
@@ -1848,6 +1854,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                   toolUseID: toolUseId,
                   data: {
                     type: 'mcp_progress',
+                    // @ts-ignore - recovered code
                     status: 'started',
                     serverName: client.name,
                     toolName: tool.name,
@@ -1886,6 +1893,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                       toolUseID: toolUseId,
                       data: {
                         type: 'mcp_progress',
+                        // @ts-ignore - recovered code
                         status: 'completed',
                         serverName: client.name,
                         toolName: tool.name,
@@ -1927,6 +1935,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                       toolUseID: toolUseId,
                       data: {
                         type: 'mcp_progress',
+                        // @ts-ignore - recovered code
                         status: 'failed',
                         serverName: client.name,
                         toolName: tool.name,
@@ -3103,6 +3112,7 @@ async function callMCPTool({
             ? sdkProgress => {
                 onProgress({
                   type: 'mcp_progress',
+                  // @ts-ignore - recovered code
                   status: 'progress',
                   serverName: name,
                   toolName: tool,
@@ -3248,6 +3258,7 @@ function extractToolUseId(message: AssistantMessage): string | undefined {
   if (message.message.content[0]?.type !== 'tool_use') {
     return undefined
   }
+  // @ts-ignore - recovered code
   return message.message.content[0].id
 }
 

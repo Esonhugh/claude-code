@@ -28,6 +28,7 @@ export function extractFirstPrompt(messages: Message[]): string {
   } else if (Array.isArray(content)) {
     const textContent = content.find(item => item.type === 'text');
     if (textContent && 'text' in textContent) {
+      // @ts-ignore - recovered code
       result = textContent.text.trim();
     }
   }

@@ -6,4 +6,6 @@ export interface ScopedLspServerConfig {
   [key: string]: unknown
 }
 
+export type LspServerConfig = ScopedLspServerConfig
+
 export type LspServerState = 'starting' | 'running' | 'stopped' | 'error'

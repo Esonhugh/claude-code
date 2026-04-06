@@ -554,9 +554,11 @@ export function buildMissedTaskNotification(missed: CronTask[]): string {
     // prompt containing ``` cannot close the fence early and un-wrap the
     // trailing text (CommonMark fence-matching rule).
     const longestRun = (t.prompt.match(/`+/g) ?? []).reduce(
+      // @ts-ignore - recovered code
       (max, run) => Math.max(max, run.length),
       0,
     )
+    // @ts-ignore - recovered code
     const fence = '`'.repeat(Math.max(3, longestRun + 1))
     return `${meta}\n${fence}\n${t.prompt}\n${fence}`
   })

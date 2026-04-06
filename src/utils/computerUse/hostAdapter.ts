@@ -9,6 +9,7 @@ import { createCliExecutor } from './executor.js'
 import { getChicagoEnabled, getChicagoSubGates } from './gates.js'
 import { requireComputerUseSwift } from './swiftLoader.js'
 
+// @ts-ignore - recovered code
 class DebugLogger implements Logger {
   silly(message: string, ...args: unknown[]): void {
     logForDebugging(format(message, ...args), { level: 'debug' })
@@ -46,7 +47,9 @@ export function getComputerUseHostAdapter(): ComputerUseHostAdapter {
     }),
     ensureOsPermissions: async () => {
       const cu = requireComputerUseSwift()
+      // @ts-ignore - recovered code
       const accessibility = cu.tcc.checkAccessibility()
+      // @ts-ignore - recovered code
       const screenRecording = cu.tcc.checkScreenRecording()
       return accessibility && screenRecording
         ? { granted: true }

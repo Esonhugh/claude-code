@@ -159,6 +159,7 @@ export async function authLogin({
 
       const orgResult = await validateForceLoginOrg()
       if (!orgResult.valid) {
+        // @ts-ignore - recovered code
         process.stderr.write(orgResult.message + '\n')
         process.exit(1)
       }
@@ -209,6 +210,7 @@ export async function authLogin({
 
     const orgResult = await validateForceLoginOrg()
     if (!orgResult.valid) {
+      // @ts-ignore - recovered code
       process.stderr.write(orgResult.message + '\n')
       process.exit(1)
     }

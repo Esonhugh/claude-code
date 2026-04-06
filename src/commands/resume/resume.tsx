@@ -154,10 +154,12 @@ function ResumeCommand({
       }
 
       // Different project - show command instead of resuming
+      // @ts-ignore - recovered code
       const raw = await setClipboard(crossProjectCheck.command);
       if (raw) process.stdout.write(raw);
 
       // Format the output message
+      // @ts-ignore - recovered code
       const message = ['', 'This conversation is from a different directory.', '', 'To resume, run:', `  ${crossProjectCheck.command}`, '', '(Command copied to clipboard)', ''].join('\n');
       onDone(message, {
         display: 'user'
@@ -207,6 +209,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
 
   // No argument provided - show picker
   if (!arg) {
+    // @ts-ignore - recovered code
     return <ResumeCommand key={Date.now()} onDone={onDone} onResume={onResume} />;
   }
 

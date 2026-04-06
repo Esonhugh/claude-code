@@ -235,6 +235,7 @@ export function ConsoleOAuthFlow({
         await installOAuthTokens(result);
         const orgResult = await validateForceLoginOrg();
         if (!orgResult.valid) {
+          // @ts-ignore - recovered code
           throw new Error(orgResult.message);
         }
         setOAuthStatus({

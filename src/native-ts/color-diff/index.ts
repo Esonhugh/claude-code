@@ -429,8 +429,10 @@ function detectLanguage(
   // Filename-based lookup (handles Dockerfile, Makefile, CMakeLists.txt, etc.)
   const stem = base.split('.')[0] ?? ''
   const byName = FILENAME_LANGS[base] ?? FILENAME_LANGS[stem]
+  // @ts-ignore - recovered code
   if (byName && hljs().getLanguage(byName)) return byName
   if (ext) {
+    // @ts-ignore - recovered code
     const lang = hljs().getLanguage(ext)
     if (lang) return ext
   }
@@ -513,6 +515,7 @@ function highlightLine(
   }
   let result
   try {
+    // @ts-ignore - recovered code
     result = hljs().highlight(code, {
       language: state.lang,
       ignoreIllegals: true,

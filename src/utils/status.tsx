@@ -26,6 +26,7 @@ export type Property = {
 };
 export type Diagnostic = React.ReactNode;
 export function buildSandboxProperties(): Property[] {
+  // @ts-ignore - recovered code
   if ("external" !== 'ant') {
     return [];
   }

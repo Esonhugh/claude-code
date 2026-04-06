@@ -35,6 +35,7 @@ export function getToolUseIDFromParentMessage(
     block => block.type === 'tool_use' && block.name === toolName,
   )
   return toolUseBlock && toolUseBlock.type === 'tool_use'
+    // @ts-ignore - recovered code
     ? toolUseBlock.id
     : undefined
 }

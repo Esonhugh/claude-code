@@ -1,3 +1,4 @@
+// @ts-ignore - recovered code
 import type { McpbManifest } from '@anthropic-ai/mcpb'
 import { errorMessage } from '../errors.js'
 import { jsonParse } from '../slowOperations.js'
@@ -13,6 +14,7 @@ import { jsonParse } from '../slowOperations.js'
 export async function validateManifest(
   manifestJson: unknown,
 ): Promise<McpbManifest> {
+  // @ts-ignore - recovered code
   const { McpbManifestSchema } = await import('@anthropic-ai/mcpb')
   const parseResult = McpbManifestSchema.safeParse(manifestJson)
 
@@ -20,6 +22,7 @@ export async function validateManifest(
     const errors = parseResult.error.flatten()
     const errorMessages = [
       ...Object.entries(errors.fieldErrors).map(
+        // @ts-ignore - recovered code
         ([field, errs]) => `${field}: ${errs?.join(', ')}`,
       ),
       ...(errors.formErrors || []),

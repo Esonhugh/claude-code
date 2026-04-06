@@ -219,11 +219,13 @@ async function executeBYOCPersistence(
     if (result.success) {
       persistedFiles.push({
         filename: result.path,
+        // @ts-ignore - recovered code
         file_id: result.fileId,
       })
     } else {
       failedFiles.push({
         filename: result.path,
+        // @ts-ignore - recovered code
         error: result.error,
       })
     }

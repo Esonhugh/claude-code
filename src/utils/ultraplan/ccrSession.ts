@@ -101,6 +101,7 @@ export class ExitPlanModeScanner {
   ingest(newEvents: SDKMessage[]): ScanResult {
     for (const m of newEvents) {
       if (m.type === 'assistant') {
+        // @ts-ignore - recovered code
         for (const block of m.message.content) {
           if (block.type !== 'tool_use') continue
           const tu = block as ToolUseBlock
@@ -109,6 +110,7 @@ export class ExitPlanModeScanner {
           }
         }
       } else if (m.type === 'user') {
+        // @ts-ignore - recovered code
         const content = m.message.content
         if (!Array.isArray(content)) continue
         for (const block of content) {

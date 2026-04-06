@@ -201,39 +201,51 @@ export async function* handleStopHooks(
       if (result.message) {
         yield result.message
         // Track toolUseID from progress messages and count hooks
+        // @ts-ignore - recovered code
         if (result.message.type === 'progress' && result.message.toolUseID) {
+          // @ts-ignore - recovered code
           stopHookToolUseID = result.message.toolUseID
           hookCount++
           // Extract hook command and prompt text from progress data
           const progressData = result.message.data as HookProgress
           if (progressData.command) {
             hookInfos.push({
+              // @ts-ignore - recovered code
               command: progressData.command,
               promptText: progressData.promptText,
             })
           }
         }
         // Track errors and output from attachments
+        // @ts-ignore - recovered code
         if (result.message.type === 'attachment') {
           const attachment = result.message.attachment
           if (
+            // @ts-ignore - recovered code
             'hookEvent' in attachment &&
             (attachment.hookEvent === 'Stop' ||
               attachment.hookEvent === 'SubagentStop')
           ) {
+            // @ts-ignore - recovered code
             if (attachment.type === 'hook_non_blocking_error') {
               hookErrors.push(
+                // @ts-ignore - recovered code
                 attachment.stderr || `Exit code ${attachment.exitCode}`,
               )
               // Non-blocking errors always have output
               hasOutput = true
+            // @ts-ignore - recovered code
             } else if (attachment.type === 'hook_error_during_execution') {
+              // @ts-ignore - recovered code
               hookErrors.push(attachment.content)
               hasOutput = true
+            // @ts-ignore - recovered code
             } else if (attachment.type === 'hook_success') {
               // Check if successful hook produced any stdout/stderr
               if (
+                // @ts-ignore - recovered code
                 (attachment.stdout && attachment.stdout.trim()) ||
+                // @ts-ignore - recovered code
                 (attachment.stderr && attachment.stderr.trim())
               ) {
                 hasOutput = true
@@ -244,10 +256,13 @@ export async function* handleStopHooks(
             if ('durationMs' in attachment && 'command' in attachment) {
               const info = hookInfos.find(
                 i =>
+                  // @ts-ignore - recovered code
                   i.command === attachment.command &&
+                  // @ts-ignore - recovered code
                   i.durationMs === undefined,
               )
               if (info) {
+                // @ts-ignore - recovered code
                 info.durationMs = attachment.durationMs
               }
             }
@@ -303,6 +318,7 @@ export async function* handleStopHooks(
         preventedContinuation,
         stopReason,
         hasOutput,
+        // @ts-ignore - recovered code
         'suggestion',
         stopHookToolUseID,
       )
@@ -365,9 +381,11 @@ export async function* handleStopHooks(
         for await (const result of taskCompletedGenerator) {
           if (result.message) {
             if (
+              // @ts-ignore - recovered code
               result.message.type === 'progress' &&
               result.message.toolUseID
             ) {
+              // @ts-ignore - recovered code
               teammateHookToolUseID = result.message.toolUseID
             }
             yield result.message
@@ -409,7 +427,9 @@ export async function* handleStopHooks(
 
       for await (const result of teammateIdleGenerator) {
         if (result.message) {
+          // @ts-ignore - recovered code
           if (result.message.type === 'progress' && result.message.toolUseID) {
+            // @ts-ignore - recovered code
             teammateHookToolUseID = result.message.toolUseID
           }
           yield result.message

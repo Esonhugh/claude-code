@@ -76,6 +76,7 @@ export function useSkillImprovementSurvey(setMessages: SetMessages): {
               ...prev,
               createSystemMessage(
                 `Skill "${current.skillName}" updated with improvements.`,
+                // @ts-ignore - recovered code
                 'suggestion',
               ),
             ])

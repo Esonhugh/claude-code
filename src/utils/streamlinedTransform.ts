@@ -110,6 +110,7 @@ function accumulateToolUses(
   message: SDKAssistantMessage,
   counts: ToolCounts,
 ): void {
+  // @ts-ignore - recovered code
   const content = message.message.content
   if (!Array.isArray(content)) {
     return
@@ -137,6 +138,7 @@ export function createStreamlinedTransformer(): (
   ): StdoutMessage | null {
     switch (message.type) {
       case 'assistant': {
+        // @ts-ignore - recovered code
         const content = message.message.content
         const text = Array.isArray(content)
           ? extractTextContent(content, '\n').trim()
@@ -149,6 +151,7 @@ export function createStreamlinedTransformer(): (
           // Text message: emit text only, reset counts
           cumulativeCounts = createEmptyToolCounts()
           return {
+            // @ts-ignore - recovered code
             type: 'streamlined_text',
             text,
             session_id: message.session_id,
@@ -163,6 +166,7 @@ export function createStreamlinedTransformer(): (
         }
 
         return {
+          // @ts-ignore - recovered code
           type: 'streamlined_tool_use_summary',
           tool_summary: toolSummary,
           session_id: message.session_id,
@@ -182,6 +186,7 @@ export function createStreamlinedTransformer(): (
       case 'rate_limit_event':
       case 'control_response':
       case 'control_request':
+      // @ts-ignore - recovered code
       case 'control_cancel_request':
       case 'keep_alive':
         return null

@@ -248,6 +248,7 @@ export function DiscoverPlugins({
         failureCount++;
         newFailedPlugins.push({
           name: plugin_0.entry.name,
+          // @ts-ignore - recovered code
           reason: result.error
         });
       }
@@ -271,6 +272,7 @@ export function DiscoverPlugins({
         await onInstallComplete();
       }
     }
+    // @ts-ignore - recovered code
     setParentViewState({
       type: 'menu'
     });
@@ -301,11 +303,13 @@ export function DiscoverPlugins({
       if (onInstallComplete) {
         await onInstallComplete();
       }
+      // @ts-ignore - recovered code
       setParentViewState({
         type: 'menu'
       });
     } else {
       setIsInstalling(false);
+      // @ts-ignore - recovered code
       setInstallError(result_0.error);
     }
   };
@@ -328,6 +332,7 @@ export function DiscoverPlugins({
 
   // Escape in plugin-list view (not search mode) - exit to parent menu
   useKeybinding('confirm:no', () => {
+    // @ts-ignore - recovered code
     setParentViewState({
       type: 'menu'
     });
@@ -376,6 +381,7 @@ export function DiscoverPlugins({
         const plugin_2 = filteredPlugins[selectedIndex];
         if (plugin_2) {
           if (plugin_2.isInstalled) {
+            // @ts-ignore - recovered code
             setParentViewState({
               type: 'manage-plugins',
               targetPlugin: plugin_2.entry.name,
@@ -471,6 +477,7 @@ export function DiscoverPlugins({
       if (onInstallComplete) {
         void onInstallComplete();
       }
+      // @ts-ignore - recovered code
       setParentViewState({
         type: 'menu'
       });

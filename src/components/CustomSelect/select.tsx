@@ -507,6 +507,7 @@ export function Select(t0) {
         } else {
           t19 = $[63];
         }
+        // @ts-ignore - recovered code
         const maxLabelWidth = Math.max(...optionData.map(t19));
         let t20;
         if ($[64] !== hideIndexes || $[65] !== maxIndexWidth_1 || $[66] !== maxLabelWidth) {

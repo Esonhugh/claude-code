@@ -296,6 +296,7 @@ export async function setup(
       /* eslint-disable @typescript-eslint/no-require-imports */
       ;(
         require('./services/contextCollapse/index.js') as typeof import('./services/contextCollapse/index.js')
+      // @ts-ignore - recovered code
       ).initContextCollapse()
       /* eslint-enable @typescript-eslint/no-require-imports */
     }
@@ -353,6 +354,7 @@ export async function setup(
       // rather than during the setup() microtask window.
       setImmediate(() => {
         void import('./utils/attributionHooks.js').then(
+          // @ts-ignore - recovered code
           ({ registerAttributionHooks }) => {
             registerAttributionHooks() // Register attribution tracking hooks (ant-only feature)
           },

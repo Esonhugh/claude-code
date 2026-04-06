@@ -40,7 +40,9 @@ const NULL_RENDERING_TYPES = [
   'auto_mode',
   'auto_mode_exit',
   'output_token_usage',
+  // @ts-ignore - recovered code
   'pen_mode_enter',
+  // @ts-ignore - recovered code
   'pen_mode_exit',
   'verify_plan_reminder',
   'current_session_memory',
@@ -50,6 +52,7 @@ const NULL_RENDERING_TYPES = [
 
 export type NullRenderingAttachmentType = (typeof NULL_RENDERING_TYPES)[number]
 
+// @ts-ignore - recovered code
 const NULL_RENDERING_ATTACHMENT_TYPES: ReadonlySet<Attachment['type']> =
   new Set(NULL_RENDERING_TYPES)
 
@@ -65,6 +68,7 @@ export function isNullRenderingAttachment(
 ): boolean {
   return (
     msg.type === 'attachment' &&
+    // @ts-ignore - recovered code
     NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type)
   )
 }

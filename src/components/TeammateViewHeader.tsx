@@ -67,6 +67,7 @@ export function TeammateViewHeader() {
   }
   let t6;
   if ($[11] !== t4 || $[12] !== t5) {
+    // @ts-ignore - recovered code
     t6 = <OffscreenFreeze><Box flexDirection="column" marginBottom={1}>{t4}{t5}</Box></OffscreenFreeze>;
     $[11] = t4;
     $[12] = t5;

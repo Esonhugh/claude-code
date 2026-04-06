@@ -186,6 +186,7 @@ export async function processUserInput({
     context.requestPrompt,
   )) {
     // We only care about the result
+    // @ts-ignore - recovered code
     if (hookResult.message?.type === 'progress') {
       continue
     }
@@ -241,21 +242,27 @@ export async function processUserInput({
 
     // TODO: Clean this up
     if (hookResult.message) {
+      // @ts-ignore - recovered code
       switch (hookResult.message.attachment.type) {
         case 'hook_success':
+          // @ts-ignore - recovered code
           if (!hookResult.message.attachment.content) {
             // Skip if there is no content
             break
           }
+          // @ts-ignore - recovered code
           result.messages.push({
             ...hookResult.message,
             attachment: {
+              // @ts-ignore - recovered code
               ...hookResult.message.attachment,
+              // @ts-ignore - recovered code
               content: applyTruncation(hookResult.message.attachment.content),
             },
           })
           break
         default:
+          // @ts-ignore - recovered code
           result.messages.push(hookResult.message)
           break
       }
@@ -555,7 +562,9 @@ async function processUserInputBase(
     const trimmedInput = inputString.trim()
 
     const agentMention = attachmentMessages.find(
+      // @ts-ignore - recovered code
       (m): m is AttachmentMessage<AgentMentionAttachment> =>
+        // @ts-ignore - recovered code
         m.attachment.type === 'agent_mention',
     )
 

@@ -78,12 +78,15 @@ async function isMarketplacePluginRelevant(
     return false
   }
   const { bashTools } = context ?? {}
+  // @ts-ignore - recovered code
   if (signals.cli && bashTools?.size) {
+    // @ts-ignore - recovered code
     if (signals.cli.some(cmd => bashTools.has(cmd))) {
       return true
     }
   }
   if (signals.filePath && context?.readFileState) {
+    // @ts-ignore - recovered code
     const readFiles = cacheKeys(context.readFileState)
     if (readFiles.some(fp => signals.filePath!.test(fp))) {
       return true
@@ -93,6 +96,7 @@ async function isMarketplacePluginRelevant(
 }
 
 const externalTips: Tip[] = [
+  // @ts-ignore - recovered code
   {
     id: 'new-user-warmup',
     content: async () =>
@@ -103,6 +107,7 @@ const externalTips: Tip[] = [
       return config.numStartups < 10
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'plan-mode-for-complex-tasks',
     content: async () =>
@@ -118,6 +123,7 @@ const externalTips: Tip[] = [
       return daysSinceLastUse > 7
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'default-permission-mode-config',
     content: async () =>
@@ -140,6 +146,7 @@ const externalTips: Tip[] = [
       }
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'git-worktrees',
     content: async () =>
@@ -155,6 +162,7 @@ const externalTips: Tip[] = [
       }
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'color-when-multi-clauding',
     content: async () =>
@@ -166,6 +174,7 @@ const externalTips: Tip[] = [
       return count >= 2
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'terminal-setup',
     content: async () =>
@@ -181,6 +190,7 @@ const externalTips: Tip[] = [
       return !config.shiftEnterKeyBindingInstalled
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'shift-enter',
     content: async () =>
@@ -197,6 +207,7 @@ const externalTips: Tip[] = [
       )
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'shift-enter-setup',
     content: async () =>
@@ -214,6 +225,7 @@ const externalTips: Tip[] = [
         : config.shiftEnterKeyBindingInstalled)
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'memory-command',
     content: async () => 'Use /memory to view and manage Claude memory',
@@ -223,12 +235,14 @@ const externalTips: Tip[] = [
       return config.memoryUsageCount <= 0
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'theme-command',
     content: async () => 'Use /theme to change the color theme',
     cooldownSessions: 20,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'colorterm-truecolor',
     content: async () =>
@@ -236,6 +250,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 30,
     isRelevant: async () => !process.env.COLORTERM && chalk.level < 3,
   },
+  // @ts-ignore - recovered code
   {
     id: 'powershell-tool-env',
     content: async () =>
@@ -245,6 +260,7 @@ const externalTips: Tip[] = [
       getPlatform() === 'windows' &&
       process.env.CLAUDE_CODE_USE_POWERSHELL_TOOL === undefined,
   },
+  // @ts-ignore - recovered code
   {
     id: 'status-line',
     content: async () =>
@@ -252,6 +268,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 25,
     isRelevant: async () => getSettings_DEPRECATED().statusLine === undefined,
   },
+  // @ts-ignore - recovered code
   {
     id: 'prompt-queue',
     content: async () =>
@@ -262,6 +279,7 @@ const externalTips: Tip[] = [
       return config.promptQueueUseCount <= 3
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'enter-to-steer-in-relatime',
     content: async () =>
@@ -269,6 +287,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 20,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'todo-list',
     content: async () =>
@@ -276,6 +295,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 20,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'vscode-command-install',
     content: async () =>
@@ -303,6 +323,7 @@ const externalTips: Tip[] = [
       }
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'ide-upsell-external-terminal',
     content: async () => 'Connect Claude to your IDE · /ide',
@@ -322,6 +343,7 @@ const externalTips: Tip[] = [
       return runningIDEs.length > 0
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'install-github-app',
     content: async () =>
@@ -329,12 +351,14 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => !getGlobalConfig().githubActionSetupCount,
   },
+  // @ts-ignore - recovered code
   {
     id: 'install-slack-app',
     content: async () => 'Run /install-slack-app to use Claude in Slack',
     cooldownSessions: 10,
     isRelevant: async () => !getGlobalConfig().slackAppInstallCount,
   },
+  // @ts-ignore - recovered code
   {
     id: 'permissions',
     content: async () =>
@@ -345,6 +369,7 @@ const externalTips: Tip[] = [
       return config.numStartups > 10
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'drag-and-drop-images',
     content: async () =>
@@ -352,6 +377,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => !env.isSSH(),
   },
+  // @ts-ignore - recovered code
   {
     id: 'paste-images-mac',
     content: async () =>
@@ -359,6 +385,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => getPlatform() === 'macos',
   },
+  // @ts-ignore - recovered code
   {
     id: 'double-esc',
     content: async () =>
@@ -366,6 +393,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => !fileHistoryEnabled(),
   },
+  // @ts-ignore - recovered code
   {
     id: 'double-esc-code-restore',
     content: async () =>
@@ -373,6 +401,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => fileHistoryEnabled(),
   },
+  // @ts-ignore - recovered code
   {
     id: 'continue',
     content: async () =>
@@ -380,6 +409,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'rename-conversation',
     content: async () =>
@@ -388,6 +418,7 @@ const externalTips: Tip[] = [
     isRelevant: async () =>
       isCustomTitleEnabled() && getGlobalConfig().numStartups > 10,
   },
+  // @ts-ignore - recovered code
   {
     id: 'custom-commands',
     content: async () =>
@@ -398,6 +429,7 @@ const externalTips: Tip[] = [
       return config.numStartups > 10
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'shift-tab',
     content: async () =>
@@ -407,6 +439,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 10,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'image-paste',
     content: async () =>
@@ -414,6 +447,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 20,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'custom-agents',
     content: async () =>
@@ -424,6 +458,7 @@ const externalTips: Tip[] = [
       return config.numStartups > 5
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'agent-flag',
     content: async () =>
@@ -434,6 +469,7 @@ const externalTips: Tip[] = [
       return config.numStartups > 5
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'desktop-app',
     content: async () =>
@@ -441,6 +477,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 15,
     isRelevant: async () => getPlatform() !== 'linux',
   },
+  // @ts-ignore - recovered code
   {
     id: 'desktop-shortcut',
     content: async ctx => {
@@ -456,6 +493,7 @@ const externalTips: Tip[] = [
       )
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'web-app',
     content: async () =>
@@ -463,6 +501,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 15,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'mobile-app',
     content: async () =>
@@ -470,6 +509,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 15,
     isRelevant: async () => true,
   },
+  // @ts-ignore - recovered code
   {
     id: 'opusplan-mode-reminder',
     content: async () =>
@@ -487,6 +527,7 @@ const externalTips: Tip[] = [
       return hasOpusPlanMode && daysSinceLastUse > 3
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'frontend-design-plugin',
     content: async ctx => {
@@ -499,6 +540,7 @@ const externalTips: Tip[] = [
         filePath: /\.(html|css|htm)$/i,
       }),
   },
+  // @ts-ignore - recovered code
   {
     id: 'vercel-plugin',
     content: async ctx => {
@@ -512,6 +554,7 @@ const externalTips: Tip[] = [
         cli: ['vercel'],
       }),
   },
+  // @ts-ignore - recovered code
   {
     id: 'effort-high-nudge',
     content: async ctx => {
@@ -542,6 +585,7 @@ const externalTips: Tip[] = [
       )
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'subagent-fanout-nudge',
     content: async ctx => {
@@ -564,6 +608,7 @@ const externalTips: Tip[] = [
       )
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'loop-command-nudge',
     content: async ctx => {
@@ -587,6 +632,7 @@ const externalTips: Tip[] = [
       )
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'guest-passes',
     content: async ctx => {
@@ -606,6 +652,7 @@ const externalTips: Tip[] = [
       return eligible
     },
   },
+  // @ts-ignore - recovered code
   {
     id: 'overage-credit',
     content: async ctx => {
@@ -619,6 +666,7 @@ const externalTips: Tip[] = [
     cooldownSessions: 3,
     isRelevant: async () => shouldShowOverageCreditUpsell(),
   },
+  // @ts-ignore - recovered code
   {
     id: 'feedback-command',
     content: async () => 'Use /feedback to help us improve!',
@@ -632,6 +680,7 @@ const externalTips: Tip[] = [
     },
   },
 ]
+// @ts-ignore - recovered code
 const internalOnlyTips: Tip[] =
   process.env.USER_TYPE === 'ant'
     ? [
@@ -657,6 +706,7 @@ function getCustomTips(): Tip[] {
   const override = settings.spinnerTipsOverride
   if (!override?.tips?.length) return []
 
+  // @ts-ignore - recovered code
   return override.tips.map((content, i) => ({
     id: `custom-tip-${i}`,
     content: async () => content,
@@ -677,9 +727,11 @@ export async function getRelevantTips(context?: TipContext): Promise<Tip[]> {
 
   // Otherwise, filter built-in tips as before and combine with custom
   const tips = [...externalTips, ...internalOnlyTips]
+  // @ts-ignore - recovered code
   const isRelevant = await Promise.all(tips.map(_ => _.isRelevant(context)))
   const filtered = tips
     .filter((_, index) => isRelevant[index])
+    // @ts-ignore - recovered code
     .filter(_ => getSessionsSinceLastShown(_.id) >= _.cooldownSessions)
 
   return [...filtered, ...customTips]

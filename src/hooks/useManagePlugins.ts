@@ -190,6 +190,7 @@ export function useManagePlugins({
           sum +
           Object.values(p.hooksConfig).reduce(
             (s, matchers) =>
+              // @ts-ignore - recovered code
               s + (matchers?.reduce((h, m) => h + m.hooks.length, 0) ?? 0),
             0,
           )
@@ -199,7 +200,9 @@ export function useManagePlugins({
       return {
         enabled_count: enabled.length,
         disabled_count: disabled.length,
+        // @ts-ignore - recovered code
         inline_count: count(enabled, p => p.source.endsWith('@inline')),
+        // @ts-ignore - recovered code
         marketplace_count: count(enabled, p => !p.source.endsWith('@inline')),
         error_count: errors.length,
         skill_count: commands.length,

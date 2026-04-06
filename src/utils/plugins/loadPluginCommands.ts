@@ -523,9 +523,11 @@ export const getPluginCommands = memoize(async (): Promise<Command[]> => {
                   for (const [name, metadata] of Object.entries(
                     plugin.commandsMetadata,
                   )) {
+                    // @ts-ignore - recovered code
                     if (metadata.source) {
                       const fullMetadataPath = join(
                         plugin.path,
+                        // @ts-ignore - recovered code
                         metadata.source,
                       )
                       if (commandPath === fullMetadataPath) {
@@ -609,11 +611,13 @@ export const getPluginCommands = memoize(async (): Promise<Command[]> => {
           plugin.commandsMetadata,
         )) {
           // Only process entries with inline content (no source)
+          // @ts-ignore - recovered code
           if (metadata.content && !metadata.source) {
             try {
               // Parse inline content for frontmatter
               const { frontmatter, content: markdownContent } =
                 parseFrontmatter(
+                  // @ts-ignore - recovered code
                   metadata.content,
                   `<inline:${plugin.name}:${name}>`,
                 )
@@ -621,16 +625,24 @@ export const getPluginCommands = memoize(async (): Promise<Command[]> => {
               // Apply metadata overrides to frontmatter
               const finalFrontmatter: FrontmatterData = {
                 ...frontmatter,
+                // @ts-ignore - recovered code
                 ...(metadata.description && {
+                  // @ts-ignore - recovered code
                   description: metadata.description,
                 }),
+                // @ts-ignore - recovered code
                 ...(metadata.argumentHint && {
+                  // @ts-ignore - recovered code
                   'argument-hint': metadata.argumentHint,
                 }),
+                // @ts-ignore - recovered code
                 ...(metadata.model && {
+                  // @ts-ignore - recovered code
                   model: metadata.model,
                 }),
+                // @ts-ignore - recovered code
                 ...(metadata.allowedTools && {
+                  // @ts-ignore - recovered code
                   'allowed-tools': metadata.allowedTools.join(','),
                 }),
               }

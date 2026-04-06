@@ -217,6 +217,7 @@ export function countUnseenAssistantTurns(messages: readonly Message[], dividerI
 function assistantHasVisibleText(m: Message): boolean {
   if (m.type !== 'assistant') return false;
   for (const b of m.message.content) {
+    // @ts-ignore - recovered code
     if (b.type === 'text' && b.text.trim() !== '') return true;
   }
   return false;

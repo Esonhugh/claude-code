@@ -182,6 +182,7 @@ async function compactViaReactive(
       // The outer catch in `call` translates these: aborted → "Compaction
       // canceled." (via abortController.signal.aborted check), NOT_ENOUGH →
       // re-thrown as-is, everything else → "Error during compaction: …".
+      // @ts-ignore - recovered code
       switch (outcome.reason) {
         case 'too_few_groups':
           throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
@@ -207,6 +208,7 @@ async function compactViaReactive(
     // they can merge its userDisplayMessage with PostCompact's here. This
     // caller additionally runs it concurrently with getCacheSharingParams.
     const combinedMessage =
+      // @ts-ignore - recovered code
       [hookResult.userDisplayMessage, outcome.result.userDisplayMessage]
         .filter(Boolean)
         .join('\n') || undefined
@@ -214,6 +216,7 @@ async function compactViaReactive(
     return {
       type: 'compact',
       compactionResult: {
+        // @ts-ignore - recovered code
         ...outcome.result,
         userDisplayMessage: combinedMessage,
       },
@@ -262,6 +265,7 @@ async function getCacheSharingParams(
     context.options.tools,
     context.options.mainLoopModel,
     Array.from(
+      // @ts-ignore - recovered code
       appState.toolPermissionContext.additionalWorkingDirectories.keys(),
     ),
     context.options.mcpClients,

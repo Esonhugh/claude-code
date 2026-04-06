@@ -263,6 +263,7 @@ function isBeingDebugged() {
 }
 
 // Exit if we detect node debugging or inspection
+// @ts-ignore - recovered code
 if ("external" !== 'ant' && isBeingDebugged()) {
   // Use process.exit directly here since we're in the top-level code before imports
   // and gracefulShutdown is not yet available
@@ -337,6 +338,7 @@ function runMigrations(): void {
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer();
     }
+    // @ts-ignore - recovered code
     if ("external" === 'ant') {
       migrateFennecToOpus();
     }
@@ -425,7 +427,9 @@ export function startDeferredPrefetches(): void {
   }
 
   // Event loop stall detector — logs when the main thread is blocked >500ms
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
+    // @ts-ignore - recovered code
     void import('./utils/eventLoopStallDetector.js').then(m => m.startEventLoopStallDetector());
   }
 }
@@ -615,6 +619,7 @@ export async function main() {
     if (ccIdx !== -1 && _pendingConnect) {
       const ccUrl = rawCliArgs[ccIdx]!;
       const {
+        // @ts-ignore - recovered code
         parseConnectUrl
       } = await import('./server/parseConnectUrl.js');
       const parsed = parseConnectUrl(ccUrl);
@@ -1072,6 +1077,7 @@ async function run(): Promise<CommanderCommand> {
         // cache is false/missing, lazily inits GrowthBook and fetches fresh
         // (max ~5s). --assistant skips the gate entirely (daemon is
         // pre-entitled).
+        // @ts-ignore - recovered code
         kairosEnabled = assistantModule.isAssistantForced() || (await kairosGate.isKairosEnabled());
         if (kairosEnabled) {
           const opts = options as {
@@ -1134,10 +1140,12 @@ async function run(): Promise<CommanderCommand> {
     const disableSlashCommands = options.disableSlashCommands || false;
 
     // Extract tasks mode options (ant-only)
+    // @ts-ignore - recovered code
     const tasksOption = "external" === 'ant' && (options as {
       tasks?: boolean | string;
     }).tasks;
     const taskListId = tasksOption ? typeof tasksOption === 'string' ? tasksOption : DEFAULT_TASKS_MODE_TASK_LIST_ID : undefined;
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && taskListId) {
       process.env.CLAUDE_CODE_TASK_LIST_ID = taskListId;
     }
@@ -1515,6 +1523,7 @@ async function run(): Promise<CommanderCommand> {
         if (blocked.length > 0) {
           process.stderr.write(`Warning: MCP ${plural(blocked.length, 'server')} blocked by enterprise policy: ${blocked.join(', ')}\n`);
         }
+        // @ts-ignore - recovered code
         dynamicMcpConfig = {
           ...dynamicMcpConfig,
           ...allowed
@@ -1528,6 +1537,7 @@ async function run(): Promise<CommanderCommand> {
     };
     // Store the explicit CLI flag so teammates can inherit it
     setChromeFlagOverride(chromeOpts.chrome);
+    // @ts-ignore - recovered code
     const enableClaudeInChrome = shouldEnableClaudeInChrome(chromeOpts.chrome) && ("external" === 'ant' || isClaudeAISubscriber());
     const autoEnableClaudeInChrome = !enableClaudeInChrome && shouldAutoEnableClaudeInChrome();
     if (enableClaudeInChrome) {
@@ -1760,6 +1770,7 @@ async function run(): Promise<CommanderCommand> {
     } = initResult;
 
     // Handle overly broad shell allow rules for ant users (Bash(*), PowerShell(*))
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && overlyBroadBashPermissions.length > 0) {
       for (const permission of overlyBroadBashPermissions) {
         logForDebugging(`Ignoring overly broad shell permission ${permission.ruleDisplay} from ${permission.sourceDisplay}`);
@@ -2010,6 +2021,7 @@ async function run(): Promise<CommanderCommand> {
     //  - no env override (which short-circuits _CACHED_MAY_BE_STALE before disk)
     //  - flag absent from disk (== null also catches pre-#22279 poisoned null)
     const explicitModel = options.model || process.env.ANTHROPIC_MODEL;
+    // @ts-ignore - recovered code
     if ("external" === 'ant' && explicitModel && explicitModel !== 'default' && !hasGrowthBookEnvOverride('tengu_ant_model_override') && getGlobalConfig().cachedGrowthBookFeatures?.['tengu_ant_model_override'] == null) {
       await initializeGrowthBook();
     }
@@ -2156,6 +2168,7 @@ async function run(): Promise<CommanderCommand> {
         // Log agent memory loaded event for tmux teammates
         if (customAgent.memory) {
           logEvent('tengu_agent_memory_loaded', {
+            // @ts-ignore - recovered code
             ...("external" === 'ant' && {
               agent_type: customAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
             }),
@@ -2220,6 +2233,7 @@ async function run(): Promise<CommanderCommand> {
       getFpsMetrics = ctx.getFpsMetrics;
       stats = ctx.stats;
       // Install asciicast recorder before Ink mounts (ant-only, opt-in via CLAUDE_CODE_TERMINAL_RECORDING=1)
+      // @ts-ignore - recovered code
       if ("external" === 'ant') {
         installAsciicastRecorder();
       }
@@ -2264,6 +2278,7 @@ async function run(): Promise<CommanderCommand> {
         });
         if (choice === 'merge') {
           const {
+            // @ts-ignore - recovered code
             buildMergePrompt
           } = await import('./components/agents/SnapshotUpdateDialog.js');
           const mergePrompt = buildMergePrompt(agentDef.agentType, agentDef.memory!);
@@ -2301,6 +2316,7 @@ async function run(): Promise<CommanderCommand> {
       // login state are fully loaded.
       const orgValidation = await validateForceLoginOrg();
       if (!orgValidation.valid) {
+        // @ts-ignore - recovered code
         await exitWithError(root, orgValidation.message);
       }
     }
@@ -2613,6 +2629,7 @@ async function run(): Promise<CommanderCommand> {
       // Validate org restriction for non-interactive sessions
       const orgValidation = await validateForceLoginOrg();
       if (!orgValidation.valid) {
+        // @ts-ignore - recovered code
         process.stderr.write(orgValidation.message + '\n');
         process.exit(1);
       }
@@ -2816,7 +2833,9 @@ async function run(): Promise<CommanderCommand> {
       if (!isBareMode()) {
         startDeferredPrefetches();
         void import('./utils/backgroundHousekeeping.js').then(m => m.startBackgroundHousekeeping());
+        // @ts-ignore - recovered code
         if ("external" === 'ant') {
+          // @ts-ignore - recovered code
           void import('./utils/sdkHeapDumpMonitor.js').then(m => m.startSdkMemoryMonitor());
         }
       }
@@ -3032,6 +3051,7 @@ async function run(): Promise<CommanderCommand> {
       // KAIROS block so Agent(name: "foo") can spawn in-process teammates
       // without TeamCreate. computeInitialTeamContext() is for tmux-spawned
       // teammates reading their own identity, not the assistant-mode leader.
+      // @ts-ignore - recovered code
       teamContext: feature('KAIROS') ? assistantTeamContext ?? computeInitialTeamContext?.() : computeInitialTeamContext?.()
     };
 
@@ -3061,12 +3081,14 @@ async function run(): Promise<CommanderCommand> {
     //   - Runtime: uploader checks github.com/anthropics/* remote + gcloud auth.
     //   - Safety: CLAUDE_CODE_DISABLE_SESSION_DATA_UPLOAD=1 bypasses (tests set this).
     // Import is dynamic + async to avoid adding startup latency.
+    // @ts-ignore - recovered code
     const sessionUploaderPromise = "external" === 'ant' ? import('./utils/sessionDataUploader.js') : null;
 
     // Defer session uploader resolution to the onTurnComplete callback to avoid
     // adding a new top-level await in main.tsx (performance-critical path).
     // The per-turn auth logic in sessionDataUploader.ts handles unauthenticated
     // state gracefully (re-checks each turn, so auth recovery mid-session works).
+    // @ts-ignore - recovered code
     const uploaderReady = sessionUploaderPromise ? sessionUploaderPromise.then(mod => mod.createSessionTurnUploader()).catch(() => null) : null;
     const sessionConfig = {
       debug: debug || debugToStderr,
@@ -3197,8 +3219,11 @@ async function run(): Promise<CommanderCommand> {
       // `--local` skips probe/deploy/ssh and spawns the current binary
       // directly with the same env — e2e test of the proxy/auth plumbing.
       const {
+        // @ts-ignore - recovered code
         createSSHSession,
+        // @ts-ignore - recovered code
         createLocalSSHSession,
+        // @ts-ignore - recovered code
         SSHSessionError
       } = await import('./ssh/createSSHSession.js');
       let sshSession;
@@ -3262,6 +3287,7 @@ async function run(): Promise<CommanderCommand> {
       // process streams live events and POSTs messages. History is lazy-
       // loaded by useAssistantHistory on scroll-up (no blocking fetch here).
       const {
+        // @ts-ignore - recovered code
         discoverAssistantSessions
       } = await import('./assistant/sessionDiscovery.js');
       let targetSessionId = _pendingAssistantChat.sessionId;
@@ -3578,11 +3604,14 @@ async function run(): Promise<CommanderCommand> {
           }
         }
       }
+      // @ts-ignore - recovered code
       if ("external" === 'ant') {
         if (options.resume && typeof options.resume === 'string' && !maybeSessionId) {
           // Check for ccshare URL (e.g. https://go/ccshare/boris-20260311-211036)
           const {
+            // @ts-ignore - recovered code
             parseCcshareId,
+            // @ts-ignore - recovered code
             loadCcshare
           } = await import('./utils/ccshareResume.js');
           const ccshareId = parseCcshareId(options.resume);
@@ -3813,6 +3842,7 @@ async function run(): Promise<CommanderCommand> {
   if (canUserConfigureAdvisor()) {
     program.addOption(new Option('--advisor <model>', 'Enable the server-side advisor tool with the specified model (alias or full ID).').hideHelp());
   }
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     program.addOption(new Option('--delegate-permissions', '[ANT-ONLY] Alias for --permission-mode auto.').implies({
       permissionMode: 'auto'
@@ -3972,23 +4002,31 @@ async function run(): Promise<CommanderCommand> {
         randomBytes
       } = await import('crypto');
       const {
+        // @ts-ignore - recovered code
         startServer
       } = await import('./server/server.js');
       const {
+        // @ts-ignore - recovered code
         SessionManager
       } = await import('./server/sessionManager.js');
       const {
+        // @ts-ignore - recovered code
         DangerousBackend
       } = await import('./server/backends/dangerousBackend.js');
       const {
+        // @ts-ignore - recovered code
         printBanner
       } = await import('./server/serverBanner.js');
       const {
+        // @ts-ignore - recovered code
         createServerLogger
       } = await import('./server/serverLog.js');
       const {
+        // @ts-ignore - recovered code
         writeServerLock,
+        // @ts-ignore - recovered code
         removeServerLock,
+        // @ts-ignore - recovered code
         probeRunningServer
       } = await import('./server/lockfile.js');
       const existing = await probeRunningServer();
@@ -4056,11 +4094,13 @@ async function run(): Promise<CommanderCommand> {
   // Interactive mode (without -p) is handled by early argv rewriting in main()
   // which redirects to the main command with full TUI support.
   if (feature('DIRECT_CONNECT')) {
+    // @ts-ignore - recovered code
     program.command('open <cc-url>').description('Connect to a Claude Code server (internal — use cc:// URLs)').option('-p, --print [prompt]', 'Print mode (headless)').option('--output-format <format>', 'Output format: text, json, stream-json', 'text').action(async (ccUrl: string, opts: {
       print?: string | boolean;
       outputFormat: string;
     }) => {
       const {
+        // @ts-ignore - recovered code
         parseConnectUrl
       } = await import('./server/parseConnectUrl.js');
       const {
@@ -4087,6 +4127,7 @@ async function run(): Promise<CommanderCommand> {
         process.exit(1);
       }
       const {
+        // @ts-ignore - recovered code
         runConnectHeadless
       } = await import('./server/connectHeadless.js');
       const prompt = typeof opts.print === 'string' ? opts.print : '';
@@ -4367,9 +4408,11 @@ async function run(): Promise<CommanderCommand> {
   });
 
   // claude up — run the project's CLAUDE.md "# claude up" setup instructions.
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     program.command('up').description('[ANT-ONLY] Initialize or upgrade the local dev environment using the "# claude up" section of the nearest CLAUDE.md').action(async () => {
       const {
+        // @ts-ignore - recovered code
         up
       } = await import('src/cli/up.js');
       await up();
@@ -4378,6 +4421,7 @@ async function run(): Promise<CommanderCommand> {
 
   // claude rollback (ant-only)
   // Rolls back to previous releases
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     program.command('rollback [target]').description('[ANT-ONLY] Roll back to a previous release\n\nExamples:\n  claude rollback                                    Go 1 version back from current\n  claude rollback 3                                  Go 3 versions back from current\n  claude rollback 2.0.73-dev.20251217.t190658        Roll back to a specific version').option('-l, --list', 'List recent published versions with ages').option('--dry-run', 'Show what would be installed without installing').option('--safe', 'Roll back to the server-pinned safe version (set by oncall during incidents)').action(async (target?: string, options?: {
       list?: boolean;
@@ -4385,6 +4429,7 @@ async function run(): Promise<CommanderCommand> {
       safe?: boolean;
     }) => {
       const {
+        // @ts-ignore - recovered code
         rollback
       } = await import('src/cli/rollback.js');
       await rollback(target, options);
@@ -4402,6 +4447,7 @@ async function run(): Promise<CommanderCommand> {
   });
 
   // ant-only commands
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     const validateLogId = (value: string) => {
       const maybeSessionId = validateUuid(value);
@@ -4411,6 +4457,7 @@ async function run(): Promise<CommanderCommand> {
     // claude log
     program.command('log').description('[ANT-ONLY] Manage conversation logs.').argument('[number|sessionId]', 'A number (0, 1, 2, etc.) to display a specific log, or the sesssion ID (uuid) of a log', validateLogId).action(async (logId: string | number | undefined) => {
       const {
+        // @ts-ignore - recovered code
         logHandler
       } = await import('./cli/handlers/ant.js');
       await logHandler(logId);
@@ -4419,6 +4466,7 @@ async function run(): Promise<CommanderCommand> {
     // claude error
     program.command('error').description('[ANT-ONLY] View error logs. Optionally provide a number (0, -1, -2, etc.) to display a specific log.').argument('[number]', 'A number (0, 1, 2, etc.) to display a specific log', parseInt).action(async (number: number | undefined) => {
       const {
+        // @ts-ignore - recovered code
         errorHandler
       } = await import('./cli/handlers/ant.js');
       await errorHandler(number);
@@ -4432,10 +4480,12 @@ Examples:
   $ claude export input.json output.txt             Render JSON log file to text
   $ claude export <uuid>.jsonl output.txt           Render JSONL session file to text`).action(async (source: string, outputFile: string) => {
       const {
+        // @ts-ignore - recovered code
         exportHandler
       } = await import('./cli/handlers/ant.js');
       await exportHandler(source, outputFile);
     });
+    // @ts-ignore - recovered code
     if ("external" === 'ant') {
       const taskCmd = program.command('task').description('[ANT-ONLY] Manage task list tasks');
       taskCmd.command('create <subject>').description('Create a new task').option('-d, --description <text>', 'Task description').option('-l, --list <id>', 'Task list ID (defaults to "tasklist")').action(async (subject: string, opts: {
@@ -4443,6 +4493,7 @@ Examples:
         list?: string;
       }) => {
         const {
+          // @ts-ignore - recovered code
           taskCreateHandler
         } = await import('./cli/handlers/ant.js');
         await taskCreateHandler(subject, opts);
@@ -4453,6 +4504,7 @@ Examples:
         json?: boolean;
       }) => {
         const {
+          // @ts-ignore - recovered code
           taskListHandler
         } = await import('./cli/handlers/ant.js');
         await taskListHandler(opts);
@@ -4461,6 +4513,7 @@ Examples:
         list?: string;
       }) => {
         const {
+          // @ts-ignore - recovered code
           taskGetHandler
         } = await import('./cli/handlers/ant.js');
         await taskGetHandler(id, opts);
@@ -4474,6 +4527,7 @@ Examples:
         clearOwner?: boolean;
       }) => {
         const {
+          // @ts-ignore - recovered code
           taskUpdateHandler
         } = await import('./cli/handlers/ant.js');
         await taskUpdateHandler(id, opts);
@@ -4482,6 +4536,7 @@ Examples:
         list?: string;
       }) => {
         const {
+          // @ts-ignore - recovered code
           taskDirHandler
         } = await import('./cli/handlers/ant.js');
         await taskDirHandler(opts);
@@ -4495,6 +4550,7 @@ Examples:
       output?: string;
     }) => {
       const {
+        // @ts-ignore - recovered code
         completionHandler
       } = await import('./cli/handlers/ant.js');
       await completionHandler(shell, opts, program);
@@ -4595,6 +4651,7 @@ async function logTenguInit({
         assistantActivationPath: assistantActivationPath as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       }),
       autoUpdatesChannel: (getInitialSettings().autoUpdatesChannel ?? 'latest') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      // @ts-ignore - recovered code
       ...("external" === 'ant' ? (() => {
         const cwd = getCwd();
         const gitRoot = findGitRoot(cwd);

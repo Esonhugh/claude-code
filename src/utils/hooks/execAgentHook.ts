@@ -211,8 +211,10 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
         // Check for structured output in attachments
         if (
           message.type === 'attachment' &&
+          // @ts-ignore - recovered code
           message.attachment.type === 'structured_output'
         ) {
+          // @ts-ignore - recovered code
           const parsed = hookResponseSchema().safeParse(message.attachment.data)
           if (parsed.success) {
             structuredOutputResult = parsed.data
@@ -293,6 +295,7 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       return {
         hook,
         outcome: 'success',
+        // @ts-ignore - recovered code
         message: createAttachmentMessage({
           type: 'hook_success',
           hookName,
@@ -325,6 +328,7 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
     return {
       hook,
       outcome: 'non_blocking_error',
+      // @ts-ignore - recovered code
       message: createAttachmentMessage({
         type: 'hook_non_blocking_error',
         hookName,

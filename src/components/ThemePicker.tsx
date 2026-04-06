@@ -72,6 +72,7 @@ export function ThemePicker(t0) {
   } = usePreviewTheme();
   const syntaxHighlightingDisabled = useAppState(_temp) ?? false;
   const setAppState = useSetAppState();
+  // @ts-ignore - recovered code
   useRegisterKeybindingContext("ThemePicker");
   const syntaxToggleShortcut = useShortcutDisplay("theme:toggleSyntaxHighlighting", "ThemePicker", "ctrl+t");
   let t8;

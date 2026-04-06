@@ -13,6 +13,7 @@ function extractUserMessages(messages: Message[]): string[] {
         .filter(
           (b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text',
         )
+        // @ts-ignore - recovered code
         .map(b => b.text)
         .join('\n')
     })

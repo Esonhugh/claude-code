@@ -379,30 +379,36 @@ export async function installPluginOp(
   })
 
   if (!result.ok) {
+    // @ts-ignore - recovered code
     switch (result.reason) {
       case 'local-source-no-location':
         return {
           success: false,
+          // @ts-ignore - recovered code
           message: `Cannot install local plugin "${result.pluginName}" without marketplace install location`,
         }
       case 'settings-write-failed':
         return {
           success: false,
+          // @ts-ignore - recovered code
           message: `Failed to update settings: ${result.message}`,
         }
       case 'resolution-failed':
         return {
           success: false,
+          // @ts-ignore - recovered code
           message: formatResolutionError(result.resolution),
         }
       case 'blocked-by-policy':
         return {
           success: false,
+          // @ts-ignore - recovered code
           message: `Plugin "${result.pluginName}" is blocked by your organization's policy and cannot be installed`,
         }
       case 'dependency-blocked-by-policy':
         return {
           success: false,
+          // @ts-ignore - recovered code
           message: `Plugin "${result.pluginName}" depends on "${result.blockedDependency}", which is blocked by your organization's policy`,
         }
     }
@@ -410,6 +416,7 @@ export async function installPluginOp(
 
   return {
     success: true,
+    // @ts-ignore - recovered code
     message: `Successfully installed plugin: ${pluginId} (scope: ${scope})${result.depNote}`,
     pluginId,
     pluginName: entry.name,

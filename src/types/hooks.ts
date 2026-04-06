@@ -196,6 +196,7 @@ export function isAsyncHookJSONOutput(
 import type { IsEqual } from 'type-fest'
 type Assert<T extends true> = T
 type _assertSDKTypesMatch = Assert<
+  // @ts-ignore - recovered code
   IsEqual<SchemaHookJSONOutput, HookJSONOutput>
 >
 

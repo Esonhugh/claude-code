@@ -280,6 +280,7 @@ async function countSystemTokens(
 
   // Build named entries: system prompt parts + system context values
   // Skip empty strings and the global-cache boundary marker
+  // @ts-ignore - recovered code
   const namedEntries: Array<{ name: string; content: string }> = [
     ...effectiveSystemPrompt
       .filter(
@@ -288,6 +289,7 @@ async function countSystemTokens(
       )
       .map(content => ({ name: extractSectionName(content), content })),
     ...Object.entries(systemContext)
+      // @ts-ignore - recovered code
       .filter(([, content]) => content.length > 0)
       .map(([name, content]) => ({ name, content })),
   ]
@@ -792,7 +794,9 @@ function processAssistantMessage(
       breakdown.toolCallTokens += blockTokens
       const toolName = ('name' in block ? block.name : undefined) || 'unknown'
       breakdown.toolCallsByType.set(
+        // @ts-ignore - recovered code
         toolName,
+        // @ts-ignore - recovered code
         (breakdown.toolCallsByType.get(toolName) || 0) + blockTokens,
       )
     } else {
@@ -824,6 +828,7 @@ function processUserMessage(
       breakdown.toolResultTokens += blockTokens
       const toolUseId = 'tool_use_id' in block ? block.tool_use_id : undefined
       const toolName =
+        // @ts-ignore - recovered code
         (toolUseId ? toolUseIdToName.get(toolUseId) : undefined) || 'unknown'
       breakdown.toolResultsByType.set(
         toolName,
@@ -843,6 +848,7 @@ function processAttachment(
   const contentStr = jsonStringify(msg.attachment)
   const tokens = roughTokenCountEstimation(contentStr)
   breakdown.attachmentTokens += tokens
+  // @ts-ignore - recovered code
   const attachType = msg.attachment.type || 'unknown'
   breakdown.attachmentsByType.set(
     attachType,
@@ -878,6 +884,7 @@ async function approximateMessageTokens(
           const toolName =
             ('name' in block ? block.name : undefined) || 'unknown'
           if (toolUseId) {
+            // @ts-ignore - recovered code
             toolUseIdToName.set(toolUseId, toolName)
           }
         }
@@ -898,6 +905,7 @@ async function approximateMessageTokens(
 
   // Calculate total tokens using the API for accuracy
   const approximateMessageTokens = await countTokensWithFallback(
+    // @ts-ignore - recovered code
     normalizeMessagesForAPI(microcompactResult.messages).map(_ => {
       if (_.type === 'assistant') {
         return {

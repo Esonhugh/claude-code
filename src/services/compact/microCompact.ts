@@ -54,8 +54,10 @@ const COMPACTABLE_TOOLS = new Set<string>([
 // Lazy-initialized cached MC module and state to avoid importing in external builds.
 // The imports and state live inside feature() checks for dead code elimination.
 let cachedMCModule: typeof import('./cachedMicrocompact.js') | null = null
+// @ts-ignore - recovered code
 let cachedMCState: import('./cachedMicrocompact.js').CachedMCState | null = null
 let pendingCacheEdits:
+  // @ts-ignore - recovered code
   | import('./cachedMicrocompact.js').CacheEditsBlock
   | null = null
 
@@ -68,8 +70,10 @@ async function getCachedMCModule(): Promise<
   return cachedMCModule
 }
 
+// @ts-ignore - recovered code
 function ensureCachedMCState(): import('./cachedMicrocompact.js').CachedMCState {
   if (!cachedMCState && cachedMCModule) {
+    // @ts-ignore - recovered code
     cachedMCState = cachedMCModule.createCachedMCState()
   }
   if (!cachedMCState) {
@@ -86,6 +90,7 @@ function ensureCachedMCState(): import('./cachedMicrocompact.js').CachedMCState 
  * Clears the pending state (caller must pin them after insertion).
  */
 export function consumePendingCacheEdits():
+  // @ts-ignore - recovered code
   | import('./cachedMicrocompact.js').CacheEditsBlock
   | null {
   const edits = pendingCacheEdits
@@ -97,6 +102,7 @@ export function consumePendingCacheEdits():
  * Get all previously-pinned cache edits that must be re-sent at their
  * original positions for cache hits.
  */
+// @ts-ignore - recovered code
 export function getPinnedCacheEdits(): import('./cachedMicrocompact.js').PinnedCacheEdits[] {
   if (!cachedMCState) {
     return []
@@ -110,6 +116,7 @@ export function getPinnedCacheEdits(): import('./cachedMicrocompact.js').PinnedC
  */
 export function pinCacheEdits(
   userMessageIndex: number,
+  // @ts-ignore - recovered code
   block: import('./cachedMicrocompact.js').CacheEditsBlock,
 ): void {
   if (cachedMCState) {
@@ -123,12 +130,14 @@ export function pinCacheEdits(
  */
 export function markToolsSentToAPIState(): void {
   if (cachedMCState && cachedMCModule) {
+    // @ts-ignore - recovered code
     cachedMCModule.markToolsSentToAPI(cachedMCState)
   }
 }
 
 export function resetMicrocompactState(): void {
   if (cachedMCState && cachedMCModule) {
+    // @ts-ignore - recovered code
     cachedMCModule.resetCachedMCState(cachedMCState)
   }
   pendingCacheEdits = null
@@ -175,8 +184,10 @@ export function estimateMessageTokens(messages: Message[]): number {
 
     for (const block of message.message.content) {
       if (block.type === 'text') {
+        // @ts-ignore - recovered code
         totalTokens += roughTokenCountEstimation(block.text)
       } else if (block.type === 'tool_result') {
+        // @ts-ignore - recovered code
         totalTokens += calculateToolResultTokens(block)
       } else if (block.type === 'image' || block.type === 'document') {
         totalTokens += IMAGE_MAX_TOKEN_SIZE
@@ -184,8 +195,10 @@ export function estimateMessageTokens(messages: Message[]): number {
         // Match roughTokenCountEstimationForBlock: count only the thinking
         // text, not the JSON wrapper or signature (signature is metadata,
         // not model-tokenized content).
+        // @ts-ignore - recovered code
         totalTokens += roughTokenCountEstimation(block.thinking)
       } else if (block.type === 'redacted_thinking') {
+        // @ts-ignore - recovered code
         totalTokens += roughTokenCountEstimation(block.data)
       } else if (block.type === 'tool_use') {
         // Match roughTokenCountEstimationForBlock: count name + input,
@@ -231,7 +244,9 @@ function collectCompactableToolIds(messages: Message[]): string[] {
       Array.isArray(message.message.content)
     ) {
       for (const block of message.message.content) {
+        // @ts-ignore - recovered code
         if (block.type === 'tool_use' && COMPACTABLE_TOOLS.has(block.name)) {
+          // @ts-ignore - recovered code
           ids.push(block.id)
         }
       }
@@ -277,7 +292,9 @@ export async function microcompactMessages(
     const mod = await getCachedMCModule()
     const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
     if (
+      // @ts-ignore - recovered code
       mod.isCachedMicrocompactEnabled() &&
+      // @ts-ignore - recovered code
       mod.isModelSupportedForCacheEditing(model) &&
       isMainThreadSource(querySource)
     ) {
@@ -308,6 +325,7 @@ async function cachedMicrocompactPath(
 ): Promise<MicrocompactResult> {
   const mod = await getCachedMCModule()
   const state = ensureCachedMCState()
+  // @ts-ignore - recovered code
   const config = mod.getCachedMCConfig()
 
   const compactableToolIds = new Set(collectCompactableToolIds(messages))
@@ -318,21 +336,27 @@ async function cachedMicrocompactPath(
       for (const block of message.message.content) {
         if (
           block.type === 'tool_result' &&
+          // @ts-ignore - recovered code
           compactableToolIds.has(block.tool_use_id) &&
           !state.registeredTools.has(block.tool_use_id)
         ) {
+          // @ts-ignore - recovered code
           mod.registerToolResult(state, block.tool_use_id)
+          // @ts-ignore - recovered code
           groupIds.push(block.tool_use_id)
         }
       }
+      // @ts-ignore - recovered code
       mod.registerToolMessage(state, groupIds)
     }
   }
 
+  // @ts-ignore - recovered code
   const toolsToDelete = mod.getToolResultsToDelete(state)
 
   if (toolsToDelete.length > 0) {
     // Create and queue the cache_edits block for the API layer
+    // @ts-ignore - recovered code
     const cacheEdits = mod.createCacheEditsBlock(state, toolsToDelete)
     if (cacheEdits) {
       pendingCacheEdits = cacheEdits
@@ -475,9 +499,11 @@ function maybeTimeBasedMicrocompact(
     const newContent = message.message.content.map(block => {
       if (
         block.type === 'tool_result' &&
+        // @ts-ignore - recovered code
         clearSet.has(block.tool_use_id) &&
         block.content !== TIME_BASED_MC_CLEARED_MESSAGE
       ) {
+        // @ts-ignore - recovered code
         tokensSaved += calculateToolResultTokens(block)
         touched = true
         return { ...block, content: TIME_BASED_MC_CLEARED_MESSAGE }

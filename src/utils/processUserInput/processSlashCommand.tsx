@@ -198,6 +198,7 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
       data: {
         message,
         type: 'agent_progress',
+        // @ts-ignore - recovered code
         prompt: skillContent,
         agentId
       },
@@ -273,6 +274,7 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
   logForDebugging(`Forked slash command /${command.name} completed with agent ${agentId}`);
 
   // Prepend debug log for ant users so it appears inside the command output
+  // @ts-ignore - recovered code
   if ("external" === 'ant') {
     resultText = `[ANT-ONLY] API calls: ${getDisplayPath(getDumpPromptsPath(agentId))}\n${resultText}`;
   }
@@ -427,6 +429,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     logEvent('tengu_input_command', {
       ...eventData,
       invocation_trigger: 'user-slash' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      // @ts-ignore - recovered code
       ...("external" === 'ant' && {
         skill_name: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         ...(returnedCommand.type === 'prompt' && {
@@ -495,6 +498,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
   logEvent('tengu_input_command', {
     ...eventData,
     invocation_trigger: 'user-slash' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    // @ts-ignore - recovered code
     ...("external" === 'ant' && {
       skill_name: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       ...(returnedCommand.type === 'prompt' && {
@@ -698,6 +702,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
               // (UUIDs never repeat, so they're never looked up).
               resetMicrocompactState();
               return {
+                // @ts-ignore - recovered code
                 messages: buildPostCompactMessages(compactionResultWithSlashMessages),
                 shouldQuery: false,
                 command

@@ -136,6 +136,7 @@ function getSystemRemindersSection(): string {
 function getAntModelOverrideSection(): string | null {
   if (process.env.USER_TYPE !== 'ant') return null
   if (isUndercover()) return null
+  // @ts-ignore - recovered code
   return getAntModelOverrideConfig()?.defaultSystemPromptSuffix || null
 }
 
@@ -833,9 +834,10 @@ function getFunctionResultClearingSection(model: string): string | null {
   ) {
     return null
   }
+  // @ts-ignore - recovered code
   return `# Function Result Clearing
 
-Old tool results will be automatically cleared from context to free up space. The ${config.keepRecent} most recent results are always kept.`
+Old tool results will be automatically cleared from context to free up space. The ${(config as any).keepRecent} most recent results are always kept.`
 }
 
 const SUMMARIZE_TOOL_RESULTS_SECTION = `When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`

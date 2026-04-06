@@ -254,8 +254,11 @@ export function prepareMessagesForInjection(messages: Message[]): Message[] {
 
   return messages
     .map(msg => {
+      // @ts-ignore - recovered code
       if (!('message' in msg) || !Array.isArray(msg.message.content)) return msg
+      // @ts-ignore - recovered code
       const content = msg.message.content.filter(keep)
+      // @ts-ignore - recovered code
       if (content.length === msg.message.content.length) return msg
       if (content.length === 0) return null
       // Drop messages where all remaining blocks are whitespace-only text
@@ -265,6 +268,7 @@ export function prepareMessagesForInjection(messages: Message[]): Message[] {
           b.type !== 'text' || (b.text !== undefined && b.text.trim() !== ''),
       )
       if (!hasNonWhitespaceContent) return null
+      // @ts-ignore - recovered code
       return { ...msg, message: { ...msg.message, content } } as typeof msg
     })
     .filter((m): m is Message => m !== null)

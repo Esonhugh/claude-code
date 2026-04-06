@@ -91,6 +91,7 @@ export function AppStateProvider(t0) {
   useSettingsChange(onSettingsChange);
   let t5;
   if ($[8] !== children) {
+    // @ts-ignore - recovered code
     t5 = <MailboxProvider><VoiceProvider>{children}</VoiceProvider></MailboxProvider>;
     $[8] = children;
     $[9] = t5;

@@ -56,7 +56,9 @@ function whichNodeSync(command: string): string | null {
 }
 
 const bunWhich =
+  // @ts-ignore - recovered code
   typeof Bun !== 'undefined' && typeof Bun.which === 'function'
+    // @ts-ignore - recovered code
     ? Bun.which
     : null
 

@@ -29,6 +29,7 @@ export function HistorySearchDialog({
   onSelect,
   onCancel
 }: Props): React.ReactNode {
+  // @ts-ignore - recovered code
   useRegisterOverlay('history-search');
   const {
     columns
@@ -81,19 +82,24 @@ export function HistorySearchDialog({
   const listWidth = previewOnRight ? Math.floor((columns - 6) * 0.5) : columns - 6;
   const rowWidth = Math.max(20, listWidth - AGE_WIDTH - 1);
   const previewWidth = previewOnRight ? Math.max(20, columns - listWidth - 12) : Math.max(20, columns - 10);
+  // @ts-ignore - recovered code
   return <FuzzyPicker title="Search prompts" placeholder="Filter history…" initialQuery={initialQuery} items={filtered} getKey={item_0 => String(item_0.entry.timestamp)} onQueryChange={setQuery} onSelect={item_1 => {
     logEvent('tengu_history_picker_select', {
       result_count: filtered.length,
       query_length: query.length
     });
+    // @ts-ignore - recovered code
     void item_1.entry.resolve().then(onSelect);
   }} onCancel={onCancel} emptyMessage={q_0 => items === null ? 'Loading…' : q_0 ? 'No matching prompts' : 'No history yet'} selectAction="use" direction="up" previewPosition={previewOnRight ? 'right' : 'bottom'} renderItem={(item_2, isFocused) => <Text>
+          {/* @ts-ignore - recovered code */}
           <Text dimColor>{item_2.age}</Text>
           <Text color={isFocused ? 'suggestion' : undefined}>
             {' '}
+            {/* @ts-ignore - recovered code */}
             {truncateToWidth(item_2.firstLine, rowWidth)}
           </Text>
         </Text>} renderPreview={item_3 => {
+    // @ts-ignore - recovered code
     const wrapped = wrapAnsi(item_3.display, previewWidth, {
       hard: true
     }).split('\n').filter(l => l.trim() !== '');

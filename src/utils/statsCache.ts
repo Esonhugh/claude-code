@@ -306,6 +306,7 @@ export function mergeCacheWithNewStats(
   const modelUsage = { ...existingCache.modelUsage }
   for (const [model, usage] of Object.entries(newStats.modelUsage)) {
     if (modelUsage[model]) {
+      // @ts-ignore - recovered code
       modelUsage[model] = {
         inputTokens: modelUsage[model]!.inputTokens + usage.inputTokens,
         outputTokens: modelUsage[model]!.outputTokens + usage.outputTokens,

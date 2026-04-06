@@ -358,6 +358,7 @@ export function hasMcpDiscoveryButNoToken(
     return false
   }
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   const entry = getSecureStorage().read()?.mcpOAuth?.[serverKey]
   return entry !== undefined && !entry.accessToken && !entry.refreshToken
 }
@@ -470,10 +471,13 @@ export async function revokeServerTokens(
   { preserveStepUpState = false }: { preserveStepUpState?: boolean } = {},
 ): Promise<void> {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existingData = storage.read()
+  // @ts-ignore - recovered code
   if (!existingData?.mcpOAuth) return
 
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   const tokenData = existingData.mcpOAuth[serverKey]
 
   // Attempt server-side revocation if there are tokens to revoke (best-effort)
@@ -583,16 +587,21 @@ export async function revokeServerTokens(
     tokenData &&
     (tokenData.stepUpScope || tokenData.discoveryState)
   ) {
+    // @ts-ignore - recovered code
     const freshData = storage.read() || {}
     const updatedData: SecureStorageData = {
       ...freshData,
       mcpOAuth: {
+        // @ts-ignore - recovered code
         ...freshData.mcpOAuth,
         [serverKey]: {
+          // @ts-ignore - recovered code
           ...freshData.mcpOAuth?.[serverKey],
           serverName,
           serverUrl: serverConfig.url,
+          // @ts-ignore - recovered code
           accessToken: freshData.mcpOAuth?.[serverKey]?.accessToken ?? '',
+          // @ts-ignore - recovered code
           expiresAt: freshData.mcpOAuth?.[serverKey]?.expiresAt ?? 0,
           ...(tokenData.stepUpScope
             ? { stepUpScope: tokenData.stepUpScope }
@@ -612,6 +621,7 @@ export async function revokeServerTokens(
         },
       },
     }
+    // @ts-ignore - recovered code
     storage.update(updatedData)
     logMCPDebug(serverName, 'Preserved step-up auth state across revocation')
   }
@@ -622,12 +632,17 @@ export function clearServerTokensFromLocalStorage(
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): void {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existingData = storage.read()
+  // @ts-ignore - recovered code
   if (!existingData?.mcpOAuth) return
 
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   if (existingData.mcpOAuth[serverKey]) {
+    // @ts-ignore - recovered code
     delete existingData.mcpOAuth[serverKey]
+    // @ts-ignore - recovered code
     storage.update(existingData)
     logMCPDebug(serverName, 'Cleared stored tokens')
   }
@@ -694,6 +709,7 @@ async function performMCPXaaAuth(
     // on the error path so there's no perf cost on success.
     const wantedKey = getServerKey(serverName, serverConfig)
     const haveKeys = Object.keys(
+      // @ts-ignore - recovered code
       getSecureStorage().read()?.mcpOAuthClientConfig ?? {},
     )
     const headersForLogging = Object.fromEntries(
@@ -794,12 +810,16 @@ async function performMCPXaaAuth(
     // (instead of ClaudeAuthProvider.saveTokens) to avoid instantiating the
     // whole provider just to write the same keys.
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const existingData = storage.read() || {}
     const serverKey = getServerKey(serverName, serverConfig)
+    // @ts-ignore - recovered code
     const prev = existingData.mcpOAuth?.[serverKey]
+    // @ts-ignore - recovered code
     storage.update({
       ...existingData,
       mcpOAuth: {
+        // @ts-ignore - recovered code
         ...existingData.mcpOAuth,
         [serverKey]: {
           ...prev,
@@ -905,6 +925,7 @@ export async function performMCPOAuthFlow(
   // a step-up 401, so we can use it here instead of making an extra probe request.
   const storage = getSecureStorage()
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   const cachedEntry = storage.read()?.mcpOAuth?.[serverKey]
   const cachedStepUpScope = cachedEntry?.stepUpScope
   const cachedResourceMetadataUrl =
@@ -1308,11 +1329,16 @@ export async function performMCPOAuthFlow(
         error.message.includes('Client not found')
       ) {
         const storage = getSecureStorage()
+        // @ts-ignore - recovered code
         const existingData = storage.read() || {}
         const serverKey = getServerKey(serverName, serverConfig)
+        // @ts-ignore - recovered code
         if (existingData.mcpOAuth?.[serverKey]) {
+          // @ts-ignore - recovered code
           delete existingData.mcpOAuth[serverKey].clientId
+          // @ts-ignore - recovered code
           delete existingData.mcpOAuth[serverKey].clientSecret
+          // @ts-ignore - recovered code
           storage.update(existingData)
         }
       }
@@ -1481,10 +1507,12 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const data = storage.read()
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     // Check session credentials first (from DCR or previous auth)
+    // @ts-ignore - recovered code
     const storedInfo = data?.mcpOAuth?.[serverKey]
     if (storedInfo?.clientId) {
       logMCPDebug(this.serverName, `Found client info`)
@@ -1497,6 +1525,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // Fallback: pre-configured client ID from server config
     const configClientId = this.serverConfig.oauth?.clientId
     if (configClientId) {
+      // @ts-ignore - recovered code
       const clientConfig = data?.mcpOAuthClientConfig?.[serverKey]
       logMCPDebug(this.serverName, `Using pre-configured client ID`)
       return {
@@ -1514,26 +1543,32 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     clientInformation: OAuthClientInformationFull,
   ): Promise<void> {
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     const updatedData: SecureStorageData = {
       ...existingData,
       mcpOAuth: {
+        // @ts-ignore - recovered code
         ...existingData.mcpOAuth,
         [serverKey]: {
+          // @ts-ignore - recovered code
           ...existingData.mcpOAuth?.[serverKey],
           serverName: this.serverName,
           serverUrl: this.serverConfig.url,
           clientId: clientInformation.client_id,
           clientSecret: clientInformation.client_secret,
           // Provide default values for required fields if not present
+          // @ts-ignore - recovered code
           accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
+          // @ts-ignore - recovered code
           expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
         },
       },
     }
 
+    // @ts-ignore - recovered code
     storage.update(updatedData)
   }
 
@@ -1546,9 +1581,11 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // a blocking spawnSync(`security find-generic-password`) 30-40x/sec.
     // See CPU profile: spawnSync was 7.2% of total CPU after PR #19436.
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const data = await storage.readAsync()
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
+    // @ts-ignore - recovered code
     const tokenData = data?.mcpOAuth?.[serverKey]
 
     // XAA: a cached id_token plays the same UX role as a refresh_token — run
@@ -1704,6 +1741,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     this._pendingStepUpScope = undefined
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
@@ -1714,8 +1752,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     const updatedData: SecureStorageData = {
       ...existingData,
       mcpOAuth: {
+        // @ts-ignore - recovered code
         ...existingData.mcpOAuth,
         [serverKey]: {
+          // @ts-ignore - recovered code
           ...existingData.mcpOAuth?.[serverKey],
           serverName: this.serverName,
           serverUrl: this.serverConfig.url,
@@ -1727,6 +1767,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       },
     }
 
+    // @ts-ignore - recovered code
     storage.update(updatedData)
   }
 
@@ -1807,12 +1848,16 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       // revokeServerTokens would later read tokenData.clientId as undefined
       // and send a client_id-less RFC 7009 request that strict ASes reject.
       const storage = getSecureStorage()
+      // @ts-ignore - recovered code
       const existingData = storage.read() || {}
       const serverKey = getServerKey(this.serverName, this.serverConfig)
+      // @ts-ignore - recovered code
       const prev = existingData.mcpOAuth?.[serverKey]
+      // @ts-ignore - recovered code
       storage.update({
         ...existingData,
         mcpOAuth: {
+          // @ts-ignore - recovered code
           ...existingData.mcpOAuth,
           [serverKey]: {
             ...prev,
@@ -1889,11 +1934,14 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // (where the scope may come from metadata scopes_supported rather than a 401).
     if (this._scopes && !this.handleRedirection) {
       const storage = getSecureStorage()
+      // @ts-ignore - recovered code
       const existingData = storage.read() || {}
       const serverKey = getServerKey(this.serverName, this.serverConfig)
+      // @ts-ignore - recovered code
       const existing = existingData.mcpOAuth?.[serverKey]
       if (existing) {
         existing.stepUpScope = this._scopes
+        // @ts-ignore - recovered code
         storage.update(existingData)
         logMCPDebug(this.serverName, `Persisted step-up scope: ${this._scopes}`)
       }
@@ -1961,15 +2009,19 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery',
   ): Promise<void> {
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const existingData = storage.read()
+    // @ts-ignore - recovered code
     if (!existingData?.mcpOAuth) return
 
     const serverKey = getServerKey(this.serverName, this.serverConfig)
+    // @ts-ignore - recovered code
     const tokenData = existingData.mcpOAuth[serverKey]
     if (!tokenData) return
 
     switch (scope) {
       case 'all':
+        // @ts-ignore - recovered code
         delete existingData.mcpOAuth[serverKey]
         break
       case 'client':
@@ -1990,12 +2042,14 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
         break
     }
 
+    // @ts-ignore - recovered code
     storage.update(existingData)
     logMCPDebug(this.serverName, `Invalidated credentials (scope: ${scope})`)
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
@@ -2016,12 +2070,16 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     const updatedData: SecureStorageData = {
       ...existingData,
       mcpOAuth: {
+        // @ts-ignore - recovered code
         ...existingData.mcpOAuth,
         [serverKey]: {
+          // @ts-ignore - recovered code
           ...existingData.mcpOAuth?.[serverKey],
           serverName: this.serverName,
           serverUrl: this.serverConfig.url,
+          // @ts-ignore - recovered code
           accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
+          // @ts-ignore - recovered code
           expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
           discoveryState: {
             authorizationServerUrl: state.authorizationServerUrl,
@@ -2031,14 +2089,17 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       },
     }
 
+    // @ts-ignore - recovered code
     storage.update(updatedData)
   }
 
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
     const storage = getSecureStorage()
+    // @ts-ignore - recovered code
     const data = storage.read()
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
+    // @ts-ignore - recovered code
     const cached = data?.mcpOAuth?.[serverKey]?.discoveryState
     if (cached?.authorizationServerUrl) {
       logMCPDebug(
@@ -2139,7 +2200,9 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       // Re-read tokens after acquiring lock — another process may have refreshed
       clearKeychainCache()
       const storage = getSecureStorage()
+      // @ts-ignore - recovered code
       const data = storage.read()
+      // @ts-ignore - recovered code
       const tokenData = data?.mcpOAuth?.[serverKey]
       if (tokenData) {
         const expiresIn = (tokenData.expiresAt - Date.now()) / 1000
@@ -2293,8 +2356,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           )
           clearKeychainCache()
           const storage = getSecureStorage()
+          // @ts-ignore - recovered code
           const data = storage.read()
           const serverKey = getServerKey(this.serverName, this.serverConfig)
+          // @ts-ignore - recovered code
           const tokenData = data?.mcpOAuth?.[serverKey]
           if (tokenData) {
             const expiresIn = (tokenData.expiresAt - Date.now()) / 1000
@@ -2402,11 +2467,14 @@ export function saveMcpClientSecret(
   clientSecret: string,
 ): void {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existingData = storage.read() || {}
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   storage.update({
     ...existingData,
     mcpOAuthClientConfig: {
+      // @ts-ignore - recovered code
       ...existingData.mcpOAuthClientConfig,
       [serverKey]: { clientSecret },
     },
@@ -2418,11 +2486,16 @@ export function clearMcpClientConfig(
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): void {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const existingData = storage.read()
+  // @ts-ignore - recovered code
   if (!existingData?.mcpOAuthClientConfig) return
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   if (existingData.mcpOAuthClientConfig[serverKey]) {
+    // @ts-ignore - recovered code
     delete existingData.mcpOAuthClientConfig[serverKey]
+    // @ts-ignore - recovered code
     storage.update(existingData)
   }
 }
@@ -2432,8 +2505,10 @@ export function getMcpClientConfig(
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): { clientSecret?: string } | undefined {
   const storage = getSecureStorage()
+  // @ts-ignore - recovered code
   const data = storage.read()
   const serverKey = getServerKey(serverName, serverConfig)
+  // @ts-ignore - recovered code
   return data?.mcpOAuthClientConfig?.[serverKey]
 }
 

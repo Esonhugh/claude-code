@@ -18,6 +18,7 @@ export type CliHighlight = {
 // faulted in.
 let cliHighlightPromise: Promise<CliHighlight | null> | undefined
 
+// @ts-ignore - recovered code
 let loadedGetLanguage: typeof import('highlight.js').getLanguage | undefined
 
 async function loadCliHighlight(): Promise<CliHighlight | null> {
@@ -25,6 +26,7 @@ async function loadCliHighlight(): Promise<CliHighlight | null> {
     const cliHighlight = await import('cli-highlight')
     // cache hit — cli-highlight already loaded highlight.js
     const highlightJs = await import('highlight.js')
+    // @ts-ignore - recovered code
     loadedGetLanguage = highlightJs.getLanguage
     return {
       highlight: cliHighlight.highlight,

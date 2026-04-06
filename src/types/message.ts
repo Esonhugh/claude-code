@@ -436,3 +436,18 @@ export type Message =
   | ToolUseSummaryMessage
   | GroupedToolUseMessage
   | CollapsedReadSearchGroup
+
+// Additional types referenced by the codebase
+export type CollapsibleMessage = NormalizedAssistantMessage | GroupedToolUseMessage
+
+export interface CompactMetadata {
+  messagesSummarized?: number
+  userContext?: string
+  direction?: PartialCompactDirection
+  [key: string]: unknown
+}
+
+export interface SystemFileSnapshotMessage extends SystemBase {
+  subtype: 'file_snapshot'
+  [key: string]: unknown
+}

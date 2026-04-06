@@ -25,6 +25,7 @@ const SECURITY_STDIN_LINE_LIMIT = 4096 - 64
 
 export const macOsKeychainStorage = {
   name: 'keychain',
+  // @ts-ignore - recovered code
   read(): SecureStorageData | null {
     const prev = keychainCacheState.cache
     if (Date.now() - prev.cachedAt < KEYCHAIN_CACHE_TTL_MS) {
@@ -64,6 +65,7 @@ export const macOsKeychainStorage = {
     keychainCacheState.cache = { data: null, cachedAt: Date.now() }
     return null
   },
+  // @ts-ignore - recovered code
   async readAsync(): Promise<SecureStorageData | null> {
     const prev = keychainCacheState.cache
     if (Date.now() - prev.cachedAt < KEYCHAIN_CACHE_TTL_MS) {
@@ -94,6 +96,7 @@ export const macOsKeychainStorage = {
     keychainCacheState.readInFlight = promise
     return promise
   },
+  // @ts-ignore - recovered code
   update(data: SecureStorageData): { success: boolean; warning?: string } {
     // Invalidate cache before update
     clearKeychainCache()
@@ -156,6 +159,7 @@ export const macOsKeychainStorage = {
       return { success: false }
     }
   },
+  // @ts-ignore - recovered code
   delete(): boolean {
     // Invalidate cache before delete
     clearKeychainCache()

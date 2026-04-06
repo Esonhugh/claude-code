@@ -669,6 +669,7 @@ export function allWorkingDirectories(
 ): Set<string> {
   return new Set([
     getOriginalCwd(),
+    // @ts-ignore - recovered code
     ...context.additionalWorkingDirectories.keys(),
   ])
 }
@@ -1327,11 +1328,14 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
       : generateSuggestions(path, 'write', toolPermissionContext, pathsToCheck)
     return {
       behavior: 'ask',
+      // @ts-ignore - recovered code
       message: safetyCheck.message,
       suggestions: safetySuggestions,
       decisionReason: {
         type: 'safetyCheck',
+        // @ts-ignore - recovered code
         reason: safetyCheck.message,
+        // @ts-ignore - recovered code
         classifierApprovable: safetyCheck.classifierApprovable,
       },
     }

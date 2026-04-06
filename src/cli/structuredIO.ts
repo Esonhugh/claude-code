@@ -175,6 +175,7 @@ export class StructuredIO {
    */
   private trackResolvedToolUseId(request: SDKControlRequest): void {
     if (request.request.subtype === 'can_use_tool') {
+      // @ts-ignore - recovered code
       this.resolvedToolUseIds.add(request.request.tool_use_id)
       if (this.resolvedToolUseIds.size > MAX_RESOLVED_TOOL_USE_IDS) {
         // Evict the oldest entry (Sets iterate in insertion order)
@@ -289,6 +290,7 @@ export class StructuredIO {
     this.pendingRequests.delete(requestId)
     // Cancel the SDK consumer's canUseTool callback — the bridge won.
     void this.write({
+      // @ts-ignore - recovered code
       type: 'control_cancel_request',
       request_id: requestId,
     })
@@ -448,8 +450,10 @@ export class StructuredIO {
       if (message.type === 'assistant' || message.type === 'system') {
         return message
       }
+      // @ts-ignore - recovered code
       if (message.message.role !== 'user') {
         exitWithMessage(
+          // @ts-ignore - recovered code
           `Error: Expected message role 'user', got '${message.message.role}'`,
         )
       }
@@ -489,6 +493,7 @@ export class StructuredIO {
     }
     const aborted = () => {
       this.outbound.enqueue({
+        // @ts-ignore - recovered code
         type: 'control_cancel_request',
         request_id: requestId,
       })

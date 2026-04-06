@@ -995,6 +995,7 @@ export async function getAttachments(
 
   clearTimeout(timeoutId)
   // Defensive: a getter leaking [undefined] crashes .map(a => a.type) below.
+  // @ts-ignore - recovered code
   return [
     ...userAttachmentResults.flat(),
     ...threadAttachmentResults.flat(),
@@ -1092,6 +1093,7 @@ export function getAgentPendingMessageAttachments(
     toolUseContext.getAppState,
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState,
   )
+  // @ts-ignore - recovered code
   return drained.map(msg => ({
     type: 'queued_command' as const,
     prompt: msg,
@@ -1151,7 +1153,9 @@ function getPlanModeAttachmentTurnCount(messages: Message[]): {
       turnsSinceLastAttachment++
     } else if (
       message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
       (message.attachment.type === 'plan_mode' ||
+        // @ts-ignore - recovered code
         message.attachment.type === 'plan_mode_reentry')
     ) {
       foundPlanModeAttachment = true
@@ -1172,9 +1176,11 @@ function countPlanModeAttachmentsSinceLastExit(messages: Message[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     if (message?.type === 'attachment') {
+      // @ts-ignore - recovered code
       if (message.attachment.type === 'plan_mode_exit') {
         break // Stop counting at the last exit
       }
+      // @ts-ignore - recovered code
       if (message.attachment.type === 'plan_mode') {
         count++
       }
@@ -1296,12 +1302,14 @@ function getAutoModeAttachmentTurnCount(messages: Message[]): {
       turnsSinceLastAttachment++
     } else if (
       message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
       message.attachment.type === 'auto_mode'
     ) {
       foundAutoModeAttachment = true
       break
     } else if (
       message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
       message.attachment.type === 'auto_mode_exit'
     ) {
       // Exit resets the throttle — treat as if no prior attachment exists
@@ -1321,9 +1329,11 @@ function countAutoModeAttachmentsSinceLastExit(messages: Message[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     if (message?.type === 'attachment') {
+      // @ts-ignore - recovered code
       if (message.attachment.type === 'auto_mode_exit') {
         break
       }
+      // @ts-ignore - recovered code
       if (message.attachment.type === 'auto_mode') {
         count++
       }
@@ -1524,8 +1534,11 @@ export function getAgentListingDeltaAttachment(
   const announced = new Set<string>()
   for (const msg of messages ?? []) {
     if (msg.type !== 'attachment') continue
+    // @ts-ignore - recovered code
     if (msg.attachment.type !== 'agent_listing_delta') continue
+    // @ts-ignore - recovered code
     for (const t of msg.attachment.addedTypes) announced.add(t)
+    // @ts-ignore - recovered code
     for (const t of msg.attachment.removedTypes) announced.delete(t)
   }
 
@@ -2255,7 +2268,9 @@ export function collectSurfacedMemories(messages: ReadonlyArray<Message>): {
   const paths = new Set<string>()
   let totalBytes = 0
   for (const m of messages) {
+    // @ts-ignore - recovered code
     if (m.type === 'attachment' && m.attachment.type === 'relevant_memories') {
+      // @ts-ignore - recovered code
       for (const mem of m.attachment.memories) {
         paths.add(mem.path)
         totalBytes += mem.content.length
@@ -2474,6 +2489,7 @@ export function collectRecentSuccessfulTools(
     if (isHumanTurn(m) && m !== lastUserMessage) break
     if (m.type === 'assistant' && typeof m.message.content !== 'string') {
       for (const block of m.message.content) {
+        // @ts-ignore - recovered code
         if (block.type === 'tool_use') useIdToName.set(block.id, block.name)
       }
     } else if (
@@ -2778,6 +2794,7 @@ export function extractAtMentionedFiles(content: string): string[] {
   // Extract regular mentions
   const regularMatchArray = content.match(regularAtMentionRegex) || []
   regularMatchArray.forEach(match => {
+    // @ts-ignore - recovered code
     const filename = match.slice(match.indexOf('@') + 1)
     // Don't include if it starts with a quote (already handled as quoted)
     if (!filename.startsWith('"')) {
@@ -3247,6 +3264,7 @@ function getTodoReminderTurnCounts(messages: Message[]): {
     } else if (
       lastReminderIndex === -1 &&
       message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
       message.attachment.type === 'todo_reminder'
     ) {
       lastReminderIndex = i
@@ -3356,6 +3374,7 @@ function getTaskReminderTurnCounts(messages: Message[]): {
     } else if (
       lastReminderIndex === -1 &&
       message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
       message.attachment.type === 'task_reminder'
     ) {
       lastReminderIndex = i
@@ -3879,6 +3898,7 @@ export function getVerifyPlanReminderTurnCount(messages: Message[]): number {
     // Stop counting at plan_mode_exit attachment (marks when implementation started)
     if (
       message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
       message.attachment.type === 'plan_mode_exit'
     ) {
       return turnCount

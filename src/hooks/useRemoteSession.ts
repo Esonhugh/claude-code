@@ -158,6 +158,7 @@ export function useRemoteSession({
         const parts = [`type=${sdkMessage.type}`]
         if ('subtype' in sdkMessage) parts.push(`subtype=${sdkMessage.subtype}`)
         if (sdkMessage.type === 'user') {
+          // @ts-ignore - recovered code
           const c = sdkMessage.message?.content
           parts.push(
             `content=${Array.isArray(c) ? c.map(b => b.type).join(',') : typeof c}`,
@@ -248,6 +249,7 @@ export function useRemoteSession({
         // and inProcessRunner.ts; without this the set grows unbounded for the
         // session lifetime (BQ: CCR cohort shows 5.2x higher RSS slope).
         if (setInProgressToolUseIDs && sdkMessage.type === 'user') {
+          // @ts-ignore - recovered code
           const content = sdkMessage.message?.content
           if (Array.isArray(content)) {
             const resultIds: string[] = []
@@ -297,6 +299,7 @@ export function useRemoteSession({
               setInProgressToolUseIDs(prev => {
                 const next = new Set(prev)
                 for (const id of toolUseIds) {
+                  // @ts-ignore - recovered code
                   next.add(id)
                 }
                 return next
@@ -344,17 +347,22 @@ export function useRemoteSession({
 
         const permissionResult: PermissionAskDecision = {
           behavior: 'ask',
+          // @ts-ignore - recovered code
           message:
             request.description ?? `${request.tool_name} requires permission`,
+          // @ts-ignore - recovered code
           suggestions: request.permission_suggestions,
+          // @ts-ignore - recovered code
           blockedPath: request.blocked_path,
         }
 
         const toolUseConfirm: ToolUseConfirm = {
           assistantMessage: syntheticMessage,
           tool,
+          // @ts-ignore - recovered code
           description:
             request.description ?? `${request.tool_name} requires permission`,
+          // @ts-ignore - recovered code
           input: request.input,
           toolUseContext: {} as ToolUseConfirm['toolUseContext'],
           toolUseID: request.tool_use_id,

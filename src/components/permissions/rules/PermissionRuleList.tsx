@@ -957,12 +957,14 @@ export function PermissionRuleList(t0) {
           directories: [path_0],
           destination
         };
+        // @ts-ignore - recovered code
         const updatedContext = applyPermissionUpdate(toolPermissionContext, permissionUpdate);
         setAppState(prev_4 => ({
           ...prev_4,
           toolPermissionContext: updatedContext
         }));
         if (remember) {
+          // @ts-ignore - recovered code
           persistPermissionUpdate(permissionUpdate);
         }
         setChanges(prev_5 => [...prev_5, `Added directory ${chalk.bold(path_0)} to workspace${remember ? " and saved to local settings" : " for this session"}`]);

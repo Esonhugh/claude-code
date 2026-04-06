@@ -20,6 +20,7 @@ export function GenerateStep(): ReactNode {
     goToStep,
     wizardData
   } = useWizard<AgentWizardData>();
+  // @ts-ignore - recovered code
   const [prompt, setPrompt] = useState(wizardData.generationPrompt || '');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +57,7 @@ export function GenerateStep(): ReactNode {
 
   // Go back when escape pressed while not generating
   const handleGoBack = useCallback(() => {
+    // @ts-ignore - recovered code
     updateWizardData({
       generationPrompt: '',
       agentType: '',
@@ -82,6 +84,7 @@ export function GenerateStep(): ReactNode {
     }
     setError(null);
     setIsGenerating(true);
+    // @ts-ignore - recovered code
     updateWizardData({
       generationPrompt: trimmedPrompt,
       isGenerating: true
@@ -92,6 +95,7 @@ export function GenerateStep(): ReactNode {
     abortControllerRef.current = controller;
     try {
       const generated = await generateAgent(trimmedPrompt, model, [], controller.signal);
+      // @ts-ignore - recovered code
       updateWizardData({
         agentType: generated.identifier,
         whenToUse: generated.whenToUse,
@@ -102,6 +106,7 @@ export function GenerateStep(): ReactNode {
       });
 
       // Skip directly to ToolsStep (index 6) - matching original flow
+      // @ts-ignore - recovered code
       goToStep(6);
     } catch (err) {
       // Don't show error if it was cancelled (already set in escape handler)
@@ -110,6 +115,7 @@ export function GenerateStep(): ReactNode {
       } else if (err instanceof Error && !err.message.includes('No assistant message found')) {
         setError(err.message || 'Failed to generate agent');
       }
+      // @ts-ignore - recovered code
       updateWizardData({
         isGenerating: false
       });

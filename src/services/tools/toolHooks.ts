@@ -66,7 +66,9 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         // Check if we were aborted during hook execution
         // IMPORTANT: We emit a cancelled event per hook
         if (
+          // @ts-ignore - recovered code
           result.message?.type === 'attachment' &&
+          // @ts-ignore - recovered code
           result.message.attachment.type === 'hook_cancelled'
         ) {
           logEvent('tengu_post_tool_hooks_cancelled', {
@@ -95,10 +97,13 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         if (
           result.message &&
           !(
+            // @ts-ignore - recovered code
             result.message.type === 'attachment' &&
+            // @ts-ignore - recovered code
             result.message.attachment.type === 'hook_blocking_error'
           )
         ) {
+          // @ts-ignore - recovered code
           yield { message: result.message }
         }
 
@@ -222,7 +227,9 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
       try {
         // Check if we were aborted during hook execution
         if (
+          // @ts-ignore - recovered code
           result.message?.type === 'attachment' &&
+          // @ts-ignore - recovered code
           result.message.attachment.type === 'hook_cancelled'
         ) {
           logEvent('tengu_post_tool_failure_hooks_cancelled', {
@@ -247,10 +254,13 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
         if (
           result.message &&
           !(
+            // @ts-ignore - recovered code
             result.message.type === 'attachment' &&
+            // @ts-ignore - recovered code
             result.message.attachment.type === 'hook_blocking_error'
           )
         ) {
+          // @ts-ignore - recovered code
           yield { message: result.message }
         }
 
@@ -476,6 +486,7 @@ export async function* runPreToolUseHooks(
     )) {
       try {
         if (result.message) {
+          // @ts-ignore - recovered code
           yield { type: 'message', message: { message: result.message } }
         }
         if (result.blockingError) {

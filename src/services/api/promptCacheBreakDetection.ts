@@ -170,6 +170,7 @@ function stripCacheControl(
 function computeHash(data: unknown): number {
   const str = jsonStringify(data)
   if (typeof Bun !== 'undefined') {
+    // @ts-ignore - recovered code
     const hash = Bun.hash(str)
     // Bun.hash can return bigint for large inputs; convert to number safely
     return typeof hash === 'bigint' ? Number(hash & 0xffffffffn) : hash

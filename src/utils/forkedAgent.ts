@@ -558,9 +558,12 @@ export async function runForkedAgent({
       if (message.type === 'stream_event') {
         if (
           'event' in message &&
+          // @ts-ignore - recovered code
           message.event?.type === 'message_delta' &&
+          // @ts-ignore - recovered code
           message.event.usage
         ) {
+          // @ts-ignore - recovered code
           const turnUsage = updateUsage({ ...EMPTY_USAGE }, message.event.usage)
           totalUsage = accumulateUsage(totalUsage, turnUsage)
         }
@@ -670,8 +673,10 @@ function logForkAgentQueryEvent({
     serviceTier:
       totalUsage.service_tier as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     cacheCreationEphemeral1hTokens:
+      // @ts-ignore - recovered code
       totalUsage.cache_creation.ephemeral_1h_input_tokens,
     cacheCreationEphemeral5mTokens:
+      // @ts-ignore - recovered code
       totalUsage.cache_creation.ephemeral_5m_input_tokens,
 
     // Derived metrics

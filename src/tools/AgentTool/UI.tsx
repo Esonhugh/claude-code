@@ -70,7 +70,9 @@ function getSearchOrReadInfo(progressMessage: ProgressMessage<Progress>, tools: 
   // Check tool_result (user message) - find corresponding tool use from the map
   if (message.type === 'user') {
     const content = message.message.content[0];
+    // @ts-ignore - recovered code
     if (content?.type === 'tool_result') {
+      // @ts-ignore - recovered code
       const toolUse = toolUseByID.get(content.tool_use_id);
       if (toolUse) {
         return getSearchOrReadFromContent(toolUse, tools);
@@ -99,6 +101,7 @@ type ProcessedMessage = {
  */
 function processProgressMessages(messages: ProgressMessage<Progress>[], tools: Tools, isAgentRunning: boolean): ProcessedMessage[] {
   // Only process for ants
+  // @ts-ignore - recovered code
   if ("external" !== 'ant') {
     return messages.filter((m): m is ProgressMessage<AgentToolProgress> => hasProgressMessage(m.data) && m.data.message.type !== 'user').map(m => ({
       type: 'original',
@@ -134,6 +137,7 @@ function processProgressMessages(messages: ProgressMessage<Progress>[], tools: T
     if (msg.data.message.type === 'assistant') {
       for (const c of msg.data.message.message.content) {
         if (c.type === 'tool_use') {
+          // @ts-ignore - recovered code
           toolUseByID.set(c.id, c as ToolUseBlockParam);
         }
       }
@@ -377,6 +381,7 @@ export function renderToolResultMessage(data: Output, progressMessagesForMessage
   const completionMessage = `Done (${result.join(' · ')})`;
   const finalAssistantMessage = createAssistantMessage({
     content: completionMessage,
+    // @ts-ignore - recovered code
     usage: {
       ...usage,
       inference_geo: null,
@@ -385,6 +390,7 @@ export function renderToolResultMessage(data: Output, progressMessagesForMessage
     }
   });
   return <Box flexDirection="column">
+      {/* @ts-ignore - recovered code */}
       {"external" === 'ant' && <MessageResponse>
           <Text color="warning">
             [ANT-ONLY] API calls: {getDisplayPath(getDumpPromptsPath(agentId))}
@@ -474,6 +480,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
         return false;
       }
       const message = msg.data.message;
+      // @ts-ignore - recovered code
       return message.message.content.some(content => content.type === 'tool_use');
     });
     const latestAssistant = progressMessages.findLast((msg): msg is ProgressMessage<AgentToolProgress> => hasProgressMessage(msg.data) && msg.data.message.type === 'assistant');
@@ -522,9 +529,11 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
     if (!hasProgressMessage(data)) {
       return false;
     }
+    // @ts-ignore - recovered code
     return data.message.message.content.some(content => content.type === 'tool_use');
   });
   const firstData = progressMessages[0]?.data;
+  // @ts-ignore - recovered code
   const prompt = firstData && hasProgressMessage(firstData) ? firstData.prompt : undefined;
 
   // After grouping, displayedMessages can be empty when the only progress so
@@ -539,6 +548,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
   const {
     lookups: subagentLookups,
     inProgressToolUseIDs: collapsedInProgressIDs
+  // @ts-ignore - recovered code
   } = buildSubagentLookups(progressMessages.filter((pm): pm is ProgressMessage<AgentToolProgress> => hasProgressMessage(pm.data)).map(pm => pm.data));
   return <MessageResponse>
       <Box flexDirection="column">
@@ -589,8 +599,10 @@ export function renderToolUseRejectedMessage(_input: {
 }): React.ReactNode {
   // Get agentId from progress messages if available (agent was running before rejection)
   const firstData = progressMessagesForMessage[0]?.data;
+  // @ts-ignore - recovered code
   const agentId = firstData && hasProgressMessage(firstData) ? firstData.agentId : undefined;
   return <>
+      {/* @ts-ignore - recovered code */}
       {"external" === 'ant' && agentId && <MessageResponse>
           <Text color="warning">
             [ANT-ONLY] API calls: {getDisplayPath(getDumpPromptsPath(agentId))}
@@ -633,6 +645,7 @@ function calculateAgentStats(progressMessages: ProgressMessage<Progress>[]): {
       return false;
     }
     const message = msg.data.message;
+    // @ts-ignore - recovered code
     return message.type === 'user' && message.message.content.some(content => content.type === 'tool_result');
   });
   const latestAssistant = progressMessages.findLast((msg): msg is ProgressMessage<AgentToolProgress> => hasProgressMessage(msg.data) && msg.data.message.type === 'assistant');
@@ -795,6 +808,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
     if (pm.data.message.type === 'assistant') {
       for (const c of pm.data.message.message.content) {
         if (c.type === 'tool_use') {
+          // @ts-ignore - recovered code
           toolUseByID.set(c.id, c as ToolUseBlockParam);
         }
       }
@@ -833,9 +847,11 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
       return false;
     }
     const message = msg.data.message;
+    // @ts-ignore - recovered code
     return message.type === 'user' && message.message.content.some(c => c.type === 'tool_result');
   });
   if (lastToolResult?.data.message.type === 'user') {
+    // @ts-ignore - recovered code
     const toolResultBlock = lastToolResult.data.message.message.content.find(c => c.type === 'tool_result');
     if (toolResultBlock?.type === 'tool_result') {
       // Look up the corresponding tool_use — already indexed above

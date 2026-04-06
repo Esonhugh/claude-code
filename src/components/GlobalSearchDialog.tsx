@@ -41,6 +41,7 @@ export function GlobalSearchDialog(t0) {
     onDone,
     onInsert
   } = t0;
+  // @ts-ignore - recovered code
   useRegisterOverlay("global-search");
   const {
     columns,

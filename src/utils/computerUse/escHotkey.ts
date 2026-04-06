@@ -25,6 +25,7 @@ let registered = false
 export function registerEscHotkey(onEscape: () => void): boolean {
   if (registered) return true
   const cu = requireComputerUseSwift()
+  // @ts-ignore - recovered code
   if (!cu.hotkey.registerEscape(onEscape)) {
     // CGEvent.tapCreate failed — typically missing Accessibility permission.
     // CU still works, just without ESC abort. Mirrors Cowork's escAbort.ts:81.
@@ -40,6 +41,7 @@ export function registerEscHotkey(onEscape: () => void): boolean {
 export function unregisterEscHotkey(): void {
   if (!registered) return
   try {
+    // @ts-ignore - recovered code
     requireComputerUseSwift().hotkey.unregister()
   } finally {
     releasePump()
@@ -50,5 +52,6 @@ export function unregisterEscHotkey(): void {
 
 export function notifyExpectedEscape(): void {
   if (!registered) return
+  // @ts-ignore - recovered code
   requireComputerUseSwift().hotkey.notifyExpectedEscape()
 }

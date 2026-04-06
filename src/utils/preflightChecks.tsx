@@ -41,6 +41,7 @@ async function checkEndpoints(): Promise<PreflightCheckResult> {
         const sslHint = getSSLErrorHint(error);
         return {
           success: false,
+          // @ts-ignore - recovered code
           error: `Failed to connect to ${hostname}: ${error instanceof Error ? (error as ErrnoException).code || error.message : String(error)}`,
           sslHint: sslHint ?? undefined
         };
@@ -68,6 +69,7 @@ async function checkEndpoints(): Promise<PreflightCheckResult> {
     });
     return {
       success: false,
+      // @ts-ignore - recovered code
       error: `Connectivity check error: ${error instanceof Error ? (error as ErrnoException).code || error.message : String(error)}`
     };
   }

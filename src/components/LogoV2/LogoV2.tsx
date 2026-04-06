@@ -224,7 +224,9 @@ export function LogoV2() {
     if ($[25] === Symbol.for("react.memo_cache_sentinel")) {
       t19 = false && !process.env.DEMO_VERSION && <Box paddingLeft={2} flexDirection="column"><Text dimColor={true}>Use /issue to report model behavior issues</Text></Box>;
       t20 = false && !process.env.DEMO_VERSION && <Box paddingLeft={2} flexDirection="column"><Text color="warning">[ANT-ONLY] Logs:</Text><Text dimColor={true}>API calls: {getDisplayPath(getDumpPromptsPath())}</Text><Text dimColor={true}>Debug logs: {getDisplayPath(getDebugLogPath())}</Text>{isDetailedProfilingEnabled() && <Text dimColor={true}>Startup Perf: {getDisplayPath(getStartupPerfLogPath())}</Text>}</Box>;
+      // @ts-ignore - recovered code
       t21 = false && <GateOverridesWarning />;
+      // @ts-ignore - recovered code
       t22 = false && <ExperimentEnrollmentNotice />;
       $[25] = t19;
       $[26] = t20;
@@ -318,7 +320,9 @@ export function LogoV2() {
     let t18;
     let t19;
     if ($[42] === Symbol.for("react.memo_cache_sentinel")) {
+      // @ts-ignore - recovered code
       t18 = false && <GateOverridesWarning />;
+      // @ts-ignore - recovered code
       t19 = false && <ExperimentEnrollmentNotice />;
       $[42] = t18;
       $[43] = t19;
@@ -326,6 +330,7 @@ export function LogoV2() {
       t18 = $[42];
       t19 = $[43];
     }
+    // @ts-ignore - recovered code
     return <><OffscreenFreeze><Box flexDirection="column" borderStyle="round" borderColor="claude" borderText={t11} paddingX={1} paddingY={1} alignItems="center" width={columns}><Text bold={true}>{welcomeMessage}</Text>{t12}{t13}<Text dimColor={true}>{billingType}</Text><Text dimColor={true}>{agentName ? `@${agentName} · ${truncatedCwd}` : truncatedCwd}</Text></Box></OffscreenFreeze>{t14}{t15}{t16}{t17}{t18}{t19}</>;
   }
   const welcomeMessage_0 = formatWelcomeMessage(username);
@@ -443,6 +448,7 @@ export function LogoV2() {
   }
   let t28;
   if ($[72] !== T0 || $[73] !== t27) {
+    // @ts-ignore - recovered code
     t28 = <T0>{t27}</T0>;
     $[72] = T0;
     $[73] = t27;
@@ -501,7 +507,9 @@ export function LogoV2() {
   if ($[86] === Symbol.for("react.memo_cache_sentinel")) {
     t37 = false && !process.env.DEMO_VERSION && <Box paddingLeft={2} flexDirection="column"><Text dimColor={true}>Use /issue to report model behavior issues</Text></Box>;
     t38 = false && !process.env.DEMO_VERSION && <Box paddingLeft={2} flexDirection="column"><Text color="warning">[ANT-ONLY] Logs:</Text><Text dimColor={true}>API calls: {getDisplayPath(getDumpPromptsPath())}</Text><Text dimColor={true}>Debug logs: {getDisplayPath(getDebugLogPath())}</Text>{isDetailedProfilingEnabled() && <Text dimColor={true}>Startup Perf: {getDisplayPath(getStartupPerfLogPath())}</Text>}</Box>;
+    // @ts-ignore - recovered code
     t39 = false && <GateOverridesWarning />;
+    // @ts-ignore - recovered code
     t40 = false && <ExperimentEnrollmentNotice />;
     $[86] = t37;
     $[87] = t38;

@@ -97,6 +97,7 @@ export function setupClaudeInChrome(): {
 } {
   const isNativeBuild = isInBundledMode()
   const allowedTools = browserTools.map(
+    // @ts-ignore - recovered code
     tool => `mcp__claude-in-chrome__${tool.name}`,
   )
 

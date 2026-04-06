@@ -25,6 +25,7 @@ export function ToolsStep(t0) {
   let t1;
   if ($[0] !== goNext || $[1] !== updateWizardData) {
     t1 = selectedTools => {
+      // @ts-ignore - recovered code
       updateWizardData({
         selectedTools
       });
@@ -37,6 +38,7 @@ export function ToolsStep(t0) {
     t1 = $[2];
   }
   const handleComplete = t1;
+  // @ts-ignore - recovered code
   const initialTools = wizardData.selectedTools;
   let t2;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {

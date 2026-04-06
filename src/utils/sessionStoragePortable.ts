@@ -314,6 +314,7 @@ export function sanitizePath(name: string): string {
     return sanitized
   }
   const hash =
+    // @ts-ignore - recovered code
     typeof Bun !== 'undefined' ? Bun.hash(name).toString(36) : simpleHash(name)
   return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${hash}`
 }

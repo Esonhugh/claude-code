@@ -61,6 +61,7 @@ export async function* all<A>(
       promises.add(next(generator))
       // TODO: Clean this up
       if (value !== undefined) {
+        // @ts-ignore - recovered code
         yield value
       }
     } else if (waiting.length > 0) {

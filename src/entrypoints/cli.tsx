@@ -105,6 +105,7 @@ async function main(): Promise<void> {
   // it calls them inside its run() fn.
   if (feature('DAEMON') && args[0] === '--daemon-worker') {
     const {
+      // @ts-ignore - recovered code
       runDaemonWorker
     } = await import('../daemon/workerRegistry.js');
     await runDaemonWorker(args[1]);
@@ -179,6 +180,7 @@ async function main(): Promise<void> {
     } = await import('../utils/sinks.js');
     initSinks();
     const {
+      // @ts-ignore - recovered code
       daemonMain
     } = await import('../daemon/main.js');
     await daemonMain(args.slice(1));
@@ -197,18 +199,23 @@ async function main(): Promise<void> {
     const bg = await import('../cli/bg.js');
     switch (args[0]) {
       case 'ps':
+        // @ts-ignore - recovered code
         await bg.psHandler(args.slice(1));
         break;
       case 'logs':
+        // @ts-ignore - recovered code
         await bg.logsHandler(args[1]);
         break;
       case 'attach':
+        // @ts-ignore - recovered code
         await bg.attachHandler(args[1]);
         break;
       case 'kill':
+        // @ts-ignore - recovered code
         await bg.killHandler(args[1]);
         break;
       default:
+        // @ts-ignore - recovered code
         await bg.handleBgFlag(args);
     }
     return;
@@ -218,6 +225,7 @@ async function main(): Promise<void> {
   if (feature('TEMPLATES') && (args[0] === 'new' || args[0] === 'list' || args[0] === 'reply')) {
     profileCheckpoint('cli_templates_path');
     const {
+      // @ts-ignore - recovered code
       templatesMain
     } = await import('../cli/handlers/templateJobs.js');
     await templatesMain(args);
@@ -232,6 +240,7 @@ async function main(): Promise<void> {
   if (feature('BYOC_ENVIRONMENT_RUNNER') && args[0] === 'environment-runner') {
     profileCheckpoint('cli_environment_runner_path');
     const {
+      // @ts-ignore - recovered code
       environmentRunnerMain
     } = await import('../environment-runner/main.js');
     await environmentRunnerMain(args.slice(1));
@@ -244,6 +253,7 @@ async function main(): Promise<void> {
   if (feature('SELF_HOSTED_RUNNER') && args[0] === 'self-hosted-runner') {
     profileCheckpoint('cli_self_hosted_runner_path');
     const {
+      // @ts-ignore - recovered code
       selfHostedRunnerMain
     } = await import('../self-hosted-runner/main.js');
     await selfHostedRunnerMain(args.slice(1));

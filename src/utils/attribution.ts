@@ -173,6 +173,7 @@ function countUserPromptsFromEntries(entries: ReadonlyArray<Entry>): number {
     entry =>
       entry.type === 'user' && !('isSidechain' in entry && entry.isSidechain),
   )
+  // @ts-ignore - recovered code
   return countUserPromptsInMessages(nonSidechain)
 }
 
@@ -233,9 +234,11 @@ function countMemoryFileAccessFromEntries(
     for (const block of content) {
       if (
         block.type !== 'tool_use' ||
+        // @ts-ignore - recovered code
         !MEMORY_ACCESS_TOOL_NAMES.has(block.name)
       )
         continue
+      // @ts-ignore - recovered code
       if (isMemoryFileAccess(block.name, block.input)) count++
     }
   }

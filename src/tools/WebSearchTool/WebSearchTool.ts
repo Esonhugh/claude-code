@@ -298,6 +298,7 @@ export const WebSearchTool = buildTool({
 
     for await (const event of queryStream) {
       if (event.type === 'assistant') {
+        // @ts-ignore - recovered code
         allContentBlocks.push(...event.message.content)
         continue
       }
@@ -305,8 +306,10 @@ export const WebSearchTool = buildTool({
       // Track tool use ID when server_tool_use starts
       if (
         event.type === 'stream_event' &&
+        // @ts-ignore - recovered code
         event.event?.type === 'content_block_start'
       ) {
+        // @ts-ignore - recovered code
         const contentBlock = event.event.content_block
         if (contentBlock && contentBlock.type === 'server_tool_use') {
           currentToolUseId = contentBlock.id
@@ -321,8 +324,10 @@ export const WebSearchTool = buildTool({
       if (
         currentToolUseId &&
         event.type === 'stream_event' &&
+        // @ts-ignore - recovered code
         event.event?.type === 'content_block_delta'
       ) {
+        // @ts-ignore - recovered code
         const delta = event.event.delta
         if (delta?.type === 'input_json_delta' && delta.partial_json) {
           currentToolUseJson += delta.partial_json
@@ -363,8 +368,10 @@ export const WebSearchTool = buildTool({
       // Yield progress when search results come in
       if (
         event.type === 'stream_event' &&
+        // @ts-ignore - recovered code
         event.event?.type === 'content_block_start'
       ) {
+        // @ts-ignore - recovered code
         const contentBlock = event.event.content_block
         if (contentBlock && contentBlock.type === 'web_search_tool_result') {
           // Get the actual query that was used for this search

@@ -82,6 +82,7 @@ export class DirectConnectSessionManager {
         if (parsed.type === 'control_request') {
           if (parsed.request.subtype === 'can_use_tool') {
             this.callbacks.onPermissionRequest(
+              // @ts-ignore - recovered code
               parsed.request,
               parsed.request_id,
             )
@@ -103,9 +104,13 @@ export class DirectConnectSessionManager {
         if (
           parsed.type !== 'control_response' &&
           parsed.type !== 'keep_alive' &&
+          // @ts-ignore - recovered code
           parsed.type !== 'control_cancel_request' &&
+          // @ts-ignore - recovered code
           parsed.type !== 'streamlined_text' &&
+          // @ts-ignore - recovered code
           parsed.type !== 'streamlined_tool_use_summary' &&
+          // @ts-ignore - recovered code
           !(parsed.type === 'system' && parsed.subtype === 'post_turn_summary')
         ) {
           this.callbacks.onMessage(parsed)

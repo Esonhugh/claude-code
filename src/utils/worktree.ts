@@ -606,6 +606,7 @@ async function performPostCreationSetup(
     void import('./postCommitAttribution.js')
       .then(m =>
         m
+          // @ts-ignore - recovered code
           .installPrepareCommitMsgHook(worktreePath, worktreeHooksDir)
           .catch(error => {
             logForDebugging(
@@ -1293,6 +1294,7 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
       if (!result.existed) {
         // biome-ignore lint/suspicious/noConsole: intentional console output
         console.log(
+          // @ts-ignore - recovered code
           `Created worktree: ${worktreeDir} (based on ${result.baseBranch})`,
         )
         await performPostCreationSetup(repoRoot, worktreeDir)

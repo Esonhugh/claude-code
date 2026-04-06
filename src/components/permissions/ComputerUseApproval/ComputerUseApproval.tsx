@@ -15,6 +15,7 @@ type ComputerUseApprovalProps = {
   request: CuPermissionRequest;
   onDone: (response: CuPermissionResponse) => void;
 };
+// @ts-ignore - recovered code
 const DENY_ALL_RESPONSE: CuPermissionResponse = {
   granted: [],
   denied: [],

@@ -53,6 +53,7 @@ const DEFAULT_INSTRUCTIONS: string = (typeof _rawPrompt === 'string' ? _rawPromp
 // Shell-set env only, so top-level process.env read is fine
 // — settings.env never injects this.
 /* eslint-disable custom-rules/no-process-env-top-level, custom-rules/no-sync-fs -- ant-only dev override; eager top-level read is the point (crash at startup, not silently inside the slash-command try/catch) */
+// @ts-ignore - recovered code
 const ULTRAPLAN_INSTRUCTIONS: string = "external" === 'ant' && process.env.ULTRAPLAN_PROMPT_FILE ? readFileSync(process.env.ULTRAPLAN_PROMPT_FILE, 'utf8').trimEnd() : DEFAULT_INSTRUCTIONS;
 /* eslint-enable custom-rules/no-process-env-top-level, custom-rules/no-sync-fs */
 
@@ -316,8 +317,10 @@ async function launchDetached(opts: {
     if (!eligibility.eligible) {
       logEvent('tengu_ultraplan_create_failed', {
         reason: 'precondition' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        // @ts-ignore - recovered code
         precondition_errors: eligibility.errors.map(e => e.type).join(',') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
+      // @ts-ignore - recovered code
       const reasons = eligibility.errors.map(formatPreconditionError).join('\n');
       enqueuePendingNotification({
         value: `ultraplan: cannot launch remote session —\n${reasons}`,
@@ -463,6 +466,7 @@ export default {
   name: 'ultraplan',
   description: `~10–30 min · Claude Code on the web drafts an advanced plan you can edit and approve. See ${CCR_TERMS_URL}`,
   argumentHint: '<prompt>',
+  // @ts-ignore - recovered code
   isEnabled: () => "external" === 'ant',
   load: () => Promise.resolve({
     call

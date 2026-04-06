@@ -172,7 +172,9 @@ export function ManageMarketplaces({
 
   // Get count of pending operations
   const getPendingCounts = () => {
+    // @ts-ignore - recovered code
     const updateCount = count(marketplaceStates, s => s.pendingUpdate);
+    // @ts-ignore - recovered code
     const removeCount = count(marketplaceStates, s => s.pendingRemove);
     return {
       updateCount,
@@ -324,6 +326,7 @@ export function ManageMarketplaces({
           });
         }
       } else if (!wasInDetailsView) {
+        // @ts-ignore - recovered code
         setViewState({
           type: 'menu'
         });
@@ -433,6 +436,7 @@ export function ManageMarketplaces({
 
   // Escape in list view without pending changes - exit to parent menu
   useKeybinding('confirm:no', () => {
+    // @ts-ignore - recovered code
     setViewState({
       type: 'menu'
     });
@@ -451,6 +455,7 @@ export function ManageMarketplaces({
     'select:accept': () => {
       const marketplaceIndex = selectedIndex - 1;
       if (selectedIndex === 0) {
+        // @ts-ignore - recovered code
         setViewState({
           type: 'add-marketplace'
         });
@@ -502,6 +507,7 @@ export function ManageMarketplaces({
       const menuOptions = buildDetailsMenuOptions(selectedMarketplace);
       const selectedOption = menuOptions[detailsMenuIndex];
       if (selectedOption?.value === 'browse') {
+        // @ts-ignore - recovered code
         setViewState({
           type: 'browse-marketplace',
           targetMarketplace: selectedMarketplace.name

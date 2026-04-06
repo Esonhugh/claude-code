@@ -119,6 +119,7 @@ export function checkCachedPassesEligibility(): {
   const needsRefresh = now - timestamp > CACHE_EXPIRATION_MS
 
   return {
+    // @ts-ignore - recovered code
     eligible,
     needsRefresh,
     hasCache: true,

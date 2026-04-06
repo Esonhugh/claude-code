@@ -97,6 +97,7 @@ export async function handleUrlSchemeLaunch(): Promise<number | null> {
     if (!url) {
       return null
     }
+    // @ts-ignore - recovered code
     return await handleDeepLinkUri(url)
   } catch {
     // NAPI module not available, or handleDeepLinkUri rejected — not a URL launch

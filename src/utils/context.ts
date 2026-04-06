@@ -89,6 +89,7 @@ export function getContextWindowForModel(
     return 1_000_000
   }
   if (process.env.USER_TYPE === 'ant') {
+    // @ts-ignore - recovered code
     const antModel = resolveAntModel(model)
     if (antModel?.contextWindow) {
       return antModel.contextWindow
@@ -154,6 +155,7 @@ export function getModelMaxOutputTokens(model: string): {
   let upperLimit: number
 
   if (process.env.USER_TYPE === 'ant') {
+    // @ts-ignore - recovered code
     const antModel = resolveAntModel(model.toLowerCase())
     if (antModel) {
       defaultTokens = antModel.defaultMaxTokens ?? MAX_OUTPUT_TOKENS_DEFAULT

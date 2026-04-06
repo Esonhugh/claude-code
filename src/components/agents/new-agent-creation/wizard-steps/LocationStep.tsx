@@ -47,6 +47,7 @@ export function LocationStep() {
   let t3;
   if ($[3] !== goNext || $[4] !== updateWizardData) {
     t3 = value => {
+      // @ts-ignore - recovered code
       updateWizardData({
         location: value as SettingSource
       });
@@ -60,6 +61,7 @@ export function LocationStep() {
   }
   let t4;
   if ($[6] !== cancel) {
+    // @ts-ignore - recovered code
     t4 = () => cancel();
     $[6] = cancel;
     $[7] = t4;

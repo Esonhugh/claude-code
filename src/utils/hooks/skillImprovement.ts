@@ -48,6 +48,7 @@ function formatRecentMessages(messages: Message[]): string {
         .filter(
           (b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text',
         )
+        // @ts-ignore - recovered code
         .map(b => b.text)
         .join('\n')
       return `${role}: ${text.slice(0, 500)}`

@@ -66,6 +66,7 @@ const LogoHeader = React.memo(function LogoHeader(t0) {
   }
   let t2;
   if ($[1] !== agentDefinitions) {
+    // @ts-ignore - recovered code
     t2 = <OffscreenFreeze><Box flexDirection="column" gap={1}>{t1}<React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense></Box></OffscreenFreeze>;
     $[1] = agentDefinitions;
     $[2] = t2;
@@ -511,13 +512,16 @@ const MessagesImpl = ({
     // SendUserFile delivers a file without replacement text, so dropping
     // assistant text for file-only turns would leave the user with no context.
     const dropTextToolNames = [BRIEF_TOOL_NAME].filter((n_0): n_0 is string => n_0 !== null);
+    // @ts-ignore - recovered code
     const briefFiltered = briefToolNames.length > 0 && !isTranscriptMode ? isBriefOnly ? filterForBriefTool(messagesToShowNotTruncated, briefToolNames) : dropTextToolNames.length > 0 ? dropTextInBriefTurns(messagesToShowNotTruncated, dropTextToolNames) : messagesToShowNotTruncated : messagesToShowNotTruncated;
     const messagesToShow = shouldTruncate ? briefFiltered.slice(-MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE) : briefFiltered;
     const hasTruncatedMessages = shouldTruncate && briefFiltered.length > MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE;
     const {
       messages: groupedMessages
+    // @ts-ignore - recovered code
     } = applyGrouping(messagesToShow, tools, verbose);
     const collapsed = collapseBackgroundBashNotifications(collapseHookSummaries(collapseTeammateShutdowns(collapseReadSearchGroups(groupedMessages, tools))), verbose);
+    // @ts-ignore - recovered code
     const lookups = buildMessageLookups(normalizedMessages, messagesToShow);
     const hiddenMessageCount = messagesToShowNotTruncated.length - MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE;
     return {
@@ -706,6 +710,7 @@ const MessagesImpl = ({
               <Text color="text">{BLACK_CIRCLE}</Text>
             </Box>
             <Box flexDirection="column">
+              {/* @ts-ignore - recovered code */}
               <StreamingMarkdown>{streamingText}</StreamingMarkdown>
             </Box>
           </Box>
@@ -788,6 +793,7 @@ export function shouldRenderStatically(message: RenderableMessage, streamingTool
         if (message.type === 'assistant') {
           const block = message.message.content[0];
           if (block?.type === 'server_tool_use') {
+            // @ts-ignore - recovered code
             return lookups.resolvedToolUseIDs.has(block.id);
           }
         }
@@ -819,6 +825,7 @@ export function shouldRenderStatically(message: RenderableMessage, streamingTool
       {
         const allResolved = message.messages.every(msg => {
           const content = msg.message.content[0];
+          // @ts-ignore - recovered code
           return content?.type === 'tool_use' && lookups.resolvedToolUseIDs.has(content.id);
         });
         return allResolved;

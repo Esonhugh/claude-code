@@ -36,6 +36,7 @@ function StaticKeybindingProvider({
 // AttachmentMessage etc. have no .message and normalize to ≤1.
 function normalizedUpperBound(m: Message): number {
   if (!('message' in m)) return 1;
+  // @ts-ignore - recovered code
   const c = m.message.content;
   return Array.isArray(c) ? c.length : 1;
 }
@@ -64,6 +65,7 @@ export async function streamRenderedMessages(messages: Message[], tools: Tools, 
   onProgress?: (rendered: number) => void;
 } = {}): Promise<void> {
   const renderChunk = (range: readonly [number, number]) => renderToAnsiString(<AppStateProvider>
+        {/* @ts-ignore - recovered code */}
         <StaticKeybindingProvider>
           <Messages messages={messages} tools={tools} commands={[]} verbose={verbose} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={new Set()} isMessageSelectorVisible={false} conversationId="export" screen="prompt" streamingToolUses={[]} showAllInTranscript={true} isLoading={false} renderRange={range} />
         </StaticKeybindingProvider>

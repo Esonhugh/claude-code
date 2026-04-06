@@ -540,3 +540,30 @@ export type SDKMessage =
   | SDKRateLimitEvent
   | SDKElicitationCompleteMessage
   | SDKPromptSuggestionMessage
+
+// Result types
+export interface SDKResultSuccess {
+  type: 'result'
+  subtype: 'success'
+  duration_ms: number
+  duration_api_ms: number
+  is_error: boolean
+  num_turns: number
+  result: string
+  stop_reason: string | null
+  total_cost_usd: number
+  usage: Record<string, number>
+  modelUsage: Record<string, unknown>
+  permission_denials: unknown[]
+  session_id: string
+  uuid: string
+  [key: string]: unknown
+}
+
+export interface SDKResultError {
+  type: 'result'
+  subtype: 'error'
+  error: string
+  session_id: string
+  [key: string]: unknown
+}

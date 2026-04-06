@@ -25,6 +25,7 @@ export async function setupTokenHandler(root: Root): Promise<void> {
   } = await import('../../components/ConsoleOAuthFlow.js');
   await new Promise<void>(resolve => {
     root.render(<AppStateProvider onChangeAppState={onChangeAppState}>
+        {/* @ts-ignore - recovered code */}
         <KeybindingSetup>
           <Box flexDirection="column" gap={1}>
             <WelcomeV2 />
@@ -73,6 +74,7 @@ export async function doctorHandler(root: Root): Promise<void> {
   logEvent('tengu_doctor_command', {});
   await new Promise<void>(resolve => {
     root.render(<AppStateProvider>
+        {/* @ts-ignore - recovered code */}
         <KeybindingSetup>
           <MCPConnectionManager dynamicMcpConfig={undefined} isStrictMcpConfig={false}>
             <DoctorWithPlugins onDone={() => {

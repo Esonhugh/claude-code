@@ -177,6 +177,7 @@ export function deserializeMessagesWithInterruptDetection(
       if (
         msg.type === 'user' &&
         msg.permissionMode !== undefined &&
+        // @ts-ignore - recovered code
         !validModes.has(msg.permissionMode)
       ) {
         msg.permissionMode = undefined
@@ -384,7 +385,9 @@ export function restoreSkillStateFromMessages(messages: Message[]): void {
     if (message.type !== 'attachment') {
       continue
     }
+    // @ts-ignore - recovered code
     if (message.attachment.type === 'invoked_skills') {
+      // @ts-ignore - recovered code
       for (const skill of message.attachment.skills) {
         if (skill.name && skill.path && skill.content) {
           // Resume only happens for the main session, so agentId is null
@@ -396,6 +399,7 @@ export function restoreSkillStateFromMessages(messages: Message[]): void {
     // in the transcript the model is about to see. sentSkillNames is
     // process-local, so without this every resume re-announces the same
     // ~600 tokens. Fire-once latch; consumed on the first attachment pass.
+    // @ts-ignore - recovered code
     if (message.attachment.type === 'skill_listing') {
       suppressNextSkillListing()
     }

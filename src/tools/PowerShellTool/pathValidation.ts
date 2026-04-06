@@ -907,7 +907,9 @@ function isPathAllowed(
         allowed: false,
         decisionReason: {
           type: 'safetyCheck',
+          // @ts-ignore - recovered code
           reason: safetyCheck.message,
+          // @ts-ignore - recovered code
           classifierApprovable: safetyCheck.classifierApprovable,
         },
       }

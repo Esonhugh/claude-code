@@ -253,6 +253,7 @@ async function getCommandPrefixImpl(
             'none')
           : 'none'
 
+    // @ts-ignore - recovered code
     if (startsWithApiErrorPrefix(prefix)) {
       logEvent(eventName, {
         success: false,
@@ -274,6 +275,7 @@ async function getCommandPrefixImpl(
       }
     } else if (
       prefix === 'git' ||
+      // @ts-ignore - recovered code
       DANGEROUS_SHELL_PREFIXES.has(prefix.toLowerCase())
     ) {
       // Never accept bare `git` or shell executables as a prefix
@@ -300,6 +302,7 @@ async function getCommandPrefixImpl(
     } else {
       // Validate that the prefix is actually a prefix of the command
 
+      // @ts-ignore - recovered code
       if (!command.startsWith(prefix)) {
         // Prefix isn't actually a prefix of the command
         logEvent(eventName, {
@@ -317,6 +320,7 @@ async function getCommandPrefixImpl(
           durationMs,
         })
         result = {
+          // @ts-ignore - recovered code
           commandPrefix: prefix,
         }
       }

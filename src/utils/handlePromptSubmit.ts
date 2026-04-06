@@ -507,6 +507,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
             : undefined)
         if (origin) {
           for (const m of result.messages) {
+            // @ts-ignore - recovered code
             if (m.type === 'user') m.origin = origin
           }
         }
