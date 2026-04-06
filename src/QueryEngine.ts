@@ -1149,9 +1149,9 @@ export class QueryEngine {
       const lastContent = last(result.message.content)
       if (
         lastContent?.type === 'text' &&
-        !SYNTHETIC_MESSAGES.has(lastContent.text)
+        !SYNTHETIC_MESSAGES.has(lastContent.text as string)
       ) {
-        textResult = lastContent.text
+        textResult = lastContent.text as string
       }
       isApiError = Boolean(result.isApiErrorMessage)
     }

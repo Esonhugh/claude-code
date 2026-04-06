@@ -3160,7 +3160,7 @@ function runHeadlessStreaming(
           }
         } else if (message.request.subtype === 'mcp_reconnect') {
           const currentAppState = getAppState()
-          const { serverName } = message.request
+          const serverName = message.request.serverName as string
           // @ts-ignore - recovered code
           elicitationRegistered.delete(serverName)
           // Config-existence gate must cover the SAME sources as the
@@ -3239,7 +3239,8 @@ function runHeadlessStreaming(
           }
         } else if (message.request.subtype === 'mcp_toggle') {
           const currentAppState = getAppState()
-          const { serverName, enabled } = message.request
+          const serverName = message.request.serverName as string
+          const enabled = message.request.enabled as boolean
           // @ts-ignore - recovered code
           elicitationRegistered.delete(serverName)
           // Gate must match the client-lookup spread below (which
@@ -3354,7 +3355,7 @@ function runHeadlessStreaming(
             output,
           )
         } else if (message.request.subtype === 'mcp_authenticate') {
-          const { serverName } = message.request
+          const serverName = message.request.serverName as string
           const currentAppState = getAppState()
           const config =
             // @ts-ignore - recovered code
@@ -3722,7 +3723,7 @@ function runHeadlessStreaming(
             )
           }
         } else if (message.request.subtype === 'mcp_clear_auth') {
-          const { serverName } = message.request
+          const serverName = message.request.serverName as string
           const currentAppState = getAppState()
           const config =
             // @ts-ignore - recovered code
