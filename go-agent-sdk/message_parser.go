@@ -2,10 +2,10 @@ package claudesdk
 
 import (
 	"encoding/json"
-	"fmt"
 )
 
 // ParseMessage parses a raw JSON message into a typed Message.
+// Unknown message types return nil (forward-compatible).
 func ParseMessage(raw json.RawMessage) (Message, error) {
 	var base struct {
 		Type    string `json:"type"`
@@ -38,12 +38,7 @@ func ParseMessage(raw json.RawMessage) (Message, error) {
 		return msg, nil
 
 	case "system":
-		var msg SystemMessage
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			return nil, NewMessageParseError(string(raw), "system", err)
-		}
-		msg.Raw = raw
-		return msg, nil
+		return parseSystemMessage(raw, base.Subtype)
 
 	case "result":
 		var msg ResultMessage
@@ -51,6 +46,13 @@ func ParseMessage(raw json.RawMessage) (Message, error) {
 			return nil, NewMessageParseError(string(raw), "result", err)
 		}
 		msg.Raw = raw
+		return msg, nil
+
+	case "stream_event":
+		var msg StreamEvent
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return nil, NewMessageParseError(string(raw), "stream_event", err)
+		}
 		return msg, nil
 
 	case "rate_limit_event":
@@ -61,7 +63,6 @@ func ParseMessage(raw json.RawMessage) (Message, error) {
 		return msg, nil
 
 	case "auth_status":
-		// Treat auth_status as a system message
 		var msg SystemMessage
 		msg.Type = "system"
 		msg.Subtype = "auth_status"
@@ -69,8 +70,42 @@ func ParseMessage(raw json.RawMessage) (Message, error) {
 		return msg, nil
 
 	default:
-		return nil, NewMessageParseError(string(raw), "type",
-			fmt.Errorf("unknown message type: %s", base.Type))
+		// Forward-compatible: return nil for unknown types
+		return nil, nil
+	}
+}
+
+// parseSystemMessage handles system message subtypes.
+func parseSystemMessage(raw json.RawMessage, subtype string) (Message, error) {
+	switch subtype {
+	case "task_started":
+		var msg TaskStartedMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return nil, NewMessageParseError(string(raw), "task_started", err)
+		}
+		return msg, nil
+
+	case "task_progress":
+		var msg TaskProgressMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return nil, NewMessageParseError(string(raw), "task_progress", err)
+		}
+		return msg, nil
+
+	case "task_notification":
+		var msg TaskNotificationMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return nil, NewMessageParseError(string(raw), "task_notification", err)
+		}
+		return msg, nil
+
+	default:
+		var msg SystemMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return nil, NewMessageParseError(string(raw), "system", err)
+		}
+		msg.Raw = raw
+		return msg, nil
 	}
 }
 

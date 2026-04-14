@@ -129,9 +129,9 @@ func TestAgent_Run_WithSystemMessages(t *testing.T) {
 		t.Errorf("expected 3 messages, got %d", len(res.Messages))
 	}
 
-	// First message should be SystemMessage
-	if _, ok := res.Messages[0].(SystemMessage); !ok {
-		t.Errorf("expected SystemMessage first, got %T", res.Messages[0])
+	// First message should be TaskStartedMessage (system subtype task_started)
+	if _, ok := res.Messages[0].(TaskStartedMessage); !ok {
+		t.Errorf("expected TaskStartedMessage first, got %T", res.Messages[0])
 	}
 }
 

@@ -9,12 +9,12 @@ import (
 // ClaudeSDKClient provides a bidirectional streaming interface to Claude.
 // Use this for multi-turn conversations and advanced control.
 type ClaudeSDKClient struct {
-	opts       *ClaudeAgentOptions
-	transport  Transport
-	handler    *queryHandler
-	msgCh      <-chan Message
-	connected  bool
-	mu         sync.Mutex
+	opts      *ClaudeAgentOptions
+	transport Transport
+	handler   *queryHandler
+	msgCh     <-chan Message
+	connected bool
+	mu        sync.Mutex
 }
 
 // NewClient creates a new ClaudeSDKClient with the given options.
@@ -132,6 +132,63 @@ func (c *ClaudeSDKClient) GetMCPStatus(ctx context.Context) ([]McpServerStatus, 
 		return nil, fmt.Errorf("client not connected")
 	}
 	return c.handler.mcpServerStatus(ctx)
+}
+
+// GetContextUsage returns the context window usage breakdown.
+func (c *ClaudeSDKClient) GetContextUsage(ctx context.Context) (*ContextUsageResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected {
+		return nil, fmt.Errorf("client not connected")
+	}
+	return c.handler.contextUsage(ctx)
+}
+
+// RewindFiles reverts files to their state at the given user message ID.
+// Requires EnableFileCheckpointing to be set in options.
+func (c *ClaudeSDKClient) RewindFiles(ctx context.Context, userMessageID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected {
+		return fmt.Errorf("client not connected")
+	}
+	return c.handler.rewindFiles(ctx, userMessageID)
+}
+
+// ReconnectMcpServer reconnects a failed MCP server by name.
+func (c *ClaudeSDKClient) ReconnectMcpServer(ctx context.Context, serverName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected {
+		return fmt.Errorf("client not connected")
+	}
+	return c.handler.reconnectMcpServer(ctx, serverName)
+}
+
+// ToggleMcpServer enables or disables an MCP server at runtime.
+func (c *ClaudeSDKClient) ToggleMcpServer(ctx context.Context, serverName string, enabled bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected {
+		return fmt.Errorf("client not connected")
+	}
+	return c.handler.toggleMcpServer(ctx, serverName, enabled)
+}
+
+// StopTask stops a running background task.
+func (c *ClaudeSDKClient) StopTask(ctx context.Context, taskID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected {
+		return fmt.Errorf("client not connected")
+	}
+	return c.handler.stopTask(ctx, taskID)
+}
+
+// GetServerInfo returns the initialization result (available commands, models, account info).
+// Alias for GetInitResult for compatibility with the Python SDK naming.
+func (c *ClaudeSDKClient) GetServerInfo() *InitializeResponse {
+	return c.GetInitResult()
 }
 
 // GetInitResult returns the initialization result (available commands, models, account info).

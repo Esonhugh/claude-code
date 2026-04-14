@@ -77,18 +77,15 @@ func TestParseMessage_System(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sm, ok := msg.(SystemMessage)
+	sm, ok := msg.(TaskStartedMessage)
 	if !ok {
-		t.Fatalf("expected SystemMessage, got %T", msg)
+		t.Fatalf("expected TaskStartedMessage, got %T", msg)
 	}
 	if sm.Subtype != "task_started" {
 		t.Errorf("expected subtype task_started, got %s", sm.Subtype)
 	}
 	if sm.TaskID != "task-1" {
 		t.Errorf("expected task_id task-1, got %s", sm.TaskID)
-	}
-	if sm.Raw == nil {
-		t.Error("expected Raw to be set")
 	}
 }
 
@@ -158,9 +155,12 @@ func TestParseMessage_AuthStatus(t *testing.T) {
 
 func TestParseMessage_UnknownType(t *testing.T) {
 	raw := json.RawMessage(`{"type":"unknown_xyz"}`)
-	_, err := ParseMessage(raw)
-	if err == nil {
-		t.Fatal("expected error for unknown type")
+	msg, err := ParseMessage(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != nil {
+		t.Fatal("expected nil for unknown type")
 	}
 }
 
@@ -578,5 +578,289 @@ func TestTerminalReasonConstants(t *testing.T) {
 		if string(r) != expected[i] {
 			t.Errorf("TerminalReason[%d]: expected %s, got %s", i, expected[i], r)
 		}
+	}
+}
+
+// --- New Message Type Tests ---
+
+func TestParseMessage_TaskStarted(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type":"system",
+		"subtype":"task_started",
+		"task_id":"task-42",
+		"description":"Running tests",
+		"uuid":"uuid-ts-1",
+		"session_id":"sess-ts",
+		"tool_use_id":"tu-ts",
+		"task_type":"background"
+	}`)
+	msg, err := ParseMessage(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ts, ok := msg.(TaskStartedMessage)
+	if !ok {
+		t.Fatalf("expected TaskStartedMessage, got %T", msg)
+	}
+	if ts.Type != "system" {
+		t.Errorf("expected type system, got %s", ts.Type)
+	}
+	if ts.Subtype != "task_started" {
+		t.Errorf("expected subtype task_started, got %s", ts.Subtype)
+	}
+	if ts.TaskID != "task-42" {
+		t.Errorf("expected task_id task-42, got %s", ts.TaskID)
+	}
+	if ts.Description != "Running tests" {
+		t.Errorf("expected description 'Running tests', got %s", ts.Description)
+	}
+	if ts.UUID != "uuid-ts-1" {
+		t.Errorf("expected uuid uuid-ts-1, got %s", ts.UUID)
+	}
+	if ts.SessionID != "sess-ts" {
+		t.Errorf("expected session_id sess-ts, got %s", ts.SessionID)
+	}
+	if ts.ToolUseID != "tu-ts" {
+		t.Errorf("expected tool_use_id tu-ts, got %s", ts.ToolUseID)
+	}
+	if ts.TaskType != "background" {
+		t.Errorf("expected task_type background, got %s", ts.TaskType)
+	}
+	if ts.MessageType() != "system" {
+		t.Errorf("expected MessageType() system, got %s", ts.MessageType())
+	}
+}
+
+func TestParseMessage_TaskProgress(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type":"system",
+		"subtype":"task_progress",
+		"task_id":"task-43",
+		"description":"Processing step 2",
+		"uuid":"uuid-tp-1",
+		"session_id":"sess-tp",
+		"tool_use_id":"tu-tp",
+		"last_tool_name":"Read",
+		"usage":{"total_tokens":500,"tool_uses":3,"duration_ms":1200}
+	}`)
+	msg, err := ParseMessage(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tp, ok := msg.(TaskProgressMessage)
+	if !ok {
+		t.Fatalf("expected TaskProgressMessage, got %T", msg)
+	}
+	if tp.Type != "system" {
+		t.Errorf("expected type system, got %s", tp.Type)
+	}
+	if tp.Subtype != "task_progress" {
+		t.Errorf("expected subtype task_progress, got %s", tp.Subtype)
+	}
+	if tp.TaskID != "task-43" {
+		t.Errorf("expected task_id task-43, got %s", tp.TaskID)
+	}
+	if tp.Description != "Processing step 2" {
+		t.Errorf("expected description 'Processing step 2', got %s", tp.Description)
+	}
+	if tp.UUID != "uuid-tp-1" {
+		t.Errorf("expected uuid uuid-tp-1, got %s", tp.UUID)
+	}
+	if tp.LastToolName != "Read" {
+		t.Errorf("expected last_tool_name Read, got %s", tp.LastToolName)
+	}
+	if tp.Usage == nil {
+		t.Fatal("expected usage to be non-nil")
+	}
+	if tp.Usage.TotalTokens != 500 {
+		t.Errorf("expected total_tokens 500, got %d", tp.Usage.TotalTokens)
+	}
+	if tp.Usage.ToolUses != 3 {
+		t.Errorf("expected tool_uses 3, got %d", tp.Usage.ToolUses)
+	}
+	if tp.Usage.DurationMs != 1200 {
+		t.Errorf("expected duration_ms 1200, got %d", tp.Usage.DurationMs)
+	}
+	if tp.MessageType() != "system" {
+		t.Errorf("expected MessageType() system, got %s", tp.MessageType())
+	}
+}
+
+func TestParseMessage_TaskNotification(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type":"system",
+		"subtype":"task_notification",
+		"task_id":"task-44",
+		"status":"completed",
+		"output_file":"/out/result.txt",
+		"summary":"All tests passed",
+		"uuid":"uuid-tn-1",
+		"session_id":"sess-tn",
+		"tool_use_id":"tu-tn",
+		"usage":{"total_tokens":1000,"tool_uses":5,"duration_ms":3000}
+	}`)
+	msg, err := ParseMessage(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tn, ok := msg.(TaskNotificationMessage)
+	if !ok {
+		t.Fatalf("expected TaskNotificationMessage, got %T", msg)
+	}
+	if tn.Type != "system" {
+		t.Errorf("expected type system, got %s", tn.Type)
+	}
+	if tn.Subtype != "task_notification" {
+		t.Errorf("expected subtype task_notification, got %s", tn.Subtype)
+	}
+	if tn.TaskID != "task-44" {
+		t.Errorf("expected task_id task-44, got %s", tn.TaskID)
+	}
+	if tn.Status != TaskNotificationCompleted {
+		t.Errorf("expected status completed, got %s", tn.Status)
+	}
+	if tn.OutputFile != "/out/result.txt" {
+		t.Errorf("expected output_file /out/result.txt, got %s", tn.OutputFile)
+	}
+	if tn.Summary != "All tests passed" {
+		t.Errorf("expected summary 'All tests passed', got %s", tn.Summary)
+	}
+	if tn.UUID != "uuid-tn-1" {
+		t.Errorf("expected uuid uuid-tn-1, got %s", tn.UUID)
+	}
+	if tn.Usage == nil {
+		t.Fatal("expected usage to be non-nil")
+	}
+	if tn.Usage.TotalTokens != 1000 {
+		t.Errorf("expected total_tokens 1000, got %d", tn.Usage.TotalTokens)
+	}
+	if tn.MessageType() != "system" {
+		t.Errorf("expected MessageType() system, got %s", tn.MessageType())
+	}
+}
+
+func TestParseMessage_StreamEvent(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type":"stream_event",
+		"uuid":"uuid-se-1",
+		"session_id":"sess-se",
+		"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}},
+		"parent_tool_use_id":"tu-parent"
+	}`)
+	msg, err := ParseMessage(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	se, ok := msg.(StreamEvent)
+	if !ok {
+		t.Fatalf("expected StreamEvent, got %T", msg)
+	}
+	if se.Type != "stream_event" {
+		t.Errorf("expected type stream_event, got %s", se.Type)
+	}
+	if se.UUID != "uuid-se-1" {
+		t.Errorf("expected uuid uuid-se-1, got %s", se.UUID)
+	}
+	if se.SessionID != "sess-se" {
+		t.Errorf("expected session_id sess-se, got %s", se.SessionID)
+	}
+	if se.Event == nil {
+		t.Fatal("expected event to be non-nil")
+	}
+	if se.Event["type"] != "content_block_delta" {
+		t.Errorf("expected event type content_block_delta, got %v", se.Event["type"])
+	}
+	if se.ParentToolUseID == nil || *se.ParentToolUseID != "tu-parent" {
+		t.Errorf("expected parent_tool_use_id tu-parent, got %v", se.ParentToolUseID)
+	}
+	if se.MessageType() != "stream_event" {
+		t.Errorf("expected MessageType() stream_event, got %s", se.MessageType())
+	}
+}
+
+// --- ResultMessage Custom JSON Tests ---
+
+func TestResultMessage_UnmarshalCostUSD(t *testing.T) {
+	data := []byte(`{
+		"type":"result",
+		"subtype":"success",
+		"cost_usd":0.0042,
+		"duration_ms":1500,
+		"session_id":"sess-1",
+		"num_turns":3
+	}`)
+	var rm ResultMessage
+	if err := json.Unmarshal(data, &rm); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if rm.CostUSD != 0.0042 {
+		t.Errorf("expected CostUSD 0.0042, got %f", rm.CostUSD)
+	}
+	if rm.SessionID != "sess-1" {
+		t.Errorf("expected session_id sess-1, got %s", rm.SessionID)
+	}
+	if rm.NumTurns != 3 {
+		t.Errorf("expected num_turns 3, got %d", rm.NumTurns)
+	}
+}
+
+func TestResultMessage_UnmarshalTotalCostUSD(t *testing.T) {
+	data := []byte(`{
+		"type":"result",
+		"subtype":"success",
+		"total_cost_usd":0.0099,
+		"duration_ms":2000,
+		"session_id":"sess-2"
+	}`)
+	var rm ResultMessage
+	if err := json.Unmarshal(data, &rm); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if rm.CostUSD != 0.0099 {
+		t.Errorf("expected CostUSD 0.0099, got %f", rm.CostUSD)
+	}
+}
+
+func TestResultMessage_MarshalCostUSD(t *testing.T) {
+	rm := ResultMessage{
+		Type:      "result",
+		Subtype:   "success",
+		CostUSD:   0.005,
+		SessionID: "sess-3",
+	}
+	data, err := json.Marshal(rm)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal map error: %v", err)
+	}
+	// MarshalJSON outputs "total_cost_usd"
+	if v, ok := m["total_cost_usd"]; !ok {
+		t.Error("expected total_cost_usd field in marshaled output")
+	} else if v.(float64) != 0.005 {
+		t.Errorf("expected total_cost_usd 0.005, got %v", v)
+	}
+	// CostUSD should not appear as a separate field since it has no json tag
+	if _, ok := m["cost_usd"]; ok {
+		t.Error("did not expect cost_usd field in marshaled output (should be total_cost_usd)")
+	}
+}
+
+func TestResultMessage_BothCostFields(t *testing.T) {
+	// When both fields are present, total_cost_usd wins because it's checked first
+	data := []byte(`{
+		"type":"result",
+		"cost_usd":0.001,
+		"total_cost_usd":0.009,
+		"session_id":"sess-4"
+	}`)
+	var rm ResultMessage
+	if err := json.Unmarshal(data, &rm); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if rm.CostUSD != 0.009 {
+		t.Errorf("expected CostUSD 0.009 (total_cost_usd wins), got %f", rm.CostUSD)
 	}
 }

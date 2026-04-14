@@ -17,14 +17,18 @@ type queryHandler struct {
 	pending        map[string]chan json.RawMessage
 	initialized    bool
 	initResult     *InitializeResponse
+	// Hook callback registry: callback_id -> callback function
+	hookCallbacks  map[string]HookCallback
+	nextCallbackID int
 }
 
 // newQueryHandler creates a new query handler.
 func newQueryHandler(transport Transport, opts *ClaudeAgentOptions) *queryHandler {
 	return &queryHandler{
-		transport: transport,
-		opts:      opts,
-		pending:   make(map[string]chan json.RawMessage),
+		transport:     transport,
+		opts:          opts,
+		pending:       make(map[string]chan json.RawMessage),
+		hookCallbacks: make(map[string]HookCallback),
 	}
 }
 
@@ -99,6 +103,13 @@ func (q *queryHandler) initialize(ctx context.Context) (*InitializeResponse, err
 		switch v := q.opts.SystemPrompt.(type) {
 		case string:
 			fields["systemPrompt"] = v
+		case SystemPromptPreset:
+			if v.Append != "" {
+				fields["appendSystemPrompt"] = v.Append
+			}
+			if v.ExcludeDynamicSections != nil && *v.ExcludeDynamicSections {
+				fields["excludeDynamicSections"] = true
+			}
 		case map[string]any:
 			if preset, ok := v["preset"]; ok && preset == "claude_code" {
 				if append, ok := v["append"]; ok {
@@ -108,15 +119,47 @@ func (q *queryHandler) initialize(ctx context.Context) (*InitializeResponse, err
 		}
 	}
 
+	// Build hooks configuration
+	if q.opts.HookCallbacks != nil {
+		hooksConfig := map[string]any{}
+		for event, matchers := range q.opts.HookCallbacks {
+			if len(matchers) == 0 {
+				continue
+			}
+			var matcherConfigs []map[string]any
+			for _, matcher := range matchers {
+				callbackIDs := make([]string, 0, len(matcher.Hooks))
+				for _, callback := range matcher.Hooks {
+					callbackID := fmt.Sprintf("hook_%d", q.nextCallbackID)
+					q.nextCallbackID++
+					q.hookCallbacks[callbackID] = callback
+					callbackIDs = append(callbackIDs, callbackID)
+				}
+				matcherConfig := map[string]any{
+					"matcher":         matcher.Matcher,
+					"hookCallbackIds": callbackIDs,
+				}
+				if matcher.Timeout != nil {
+					matcherConfig["timeout"] = *matcher.Timeout
+				}
+				matcherConfigs = append(matcherConfigs, matcherConfig)
+			}
+			hooksConfig[string(event)] = matcherConfigs
+		}
+		if len(hooksConfig) > 0 {
+			fields["hooks"] = hooksConfig
+		}
+	}
+
 	resp, err := q.sendControlRequest(ctx, "initialize", fields)
 	if err != nil {
 		return nil, fmt.Errorf("initialize handshake failed: %w", err)
 	}
 
 	var controlResp struct {
-		Subtype  string             `json:"subtype"`
+		Subtype  string              `json:"subtype"`
 		Response *InitializeResponse `json:"response,omitempty"`
-		Error    string             `json:"error,omitempty"`
+		Error    string              `json:"error,omitempty"`
 	}
 	if err := json.Unmarshal(resp, &controlResp); err != nil {
 		return nil, fmt.Errorf("failed to parse initialize response: %w", err)
@@ -169,6 +212,9 @@ func (q *queryHandler) routeMessage(raw json.RawMessage) (Message, bool, error) 
 	if err != nil {
 		return nil, false, err
 	}
+	if msg == nil {
+		return nil, false, nil // unknown message type, skip
+	}
 
 	return msg, true, nil
 }
@@ -179,11 +225,18 @@ func (q *queryHandler) handleControlRequest(raw json.RawMessage) {
 		Type      string `json:"type"`
 		RequestID string `json:"request_id"`
 		Request   struct {
-			Subtype   string          `json:"subtype"`
-			ToolName  string          `json:"tool_name,omitempty"`
-			Input     json.RawMessage `json:"input,omitempty"`
-			ToolUseID string          `json:"tool_use_id,omitempty"`
-			AgentID   string          `json:"agent_id,omitempty"`
+			Subtype               string          `json:"subtype"`
+			ToolName              string          `json:"tool_name,omitempty"`
+			Input                 json.RawMessage `json:"input,omitempty"`
+			ToolUseID             string          `json:"tool_use_id,omitempty"`
+			AgentID               string          `json:"agent_id,omitempty"`
+			PermissionSuggestions json.RawMessage `json:"permission_suggestions,omitempty"`
+			BlockedPath           string          `json:"blocked_path,omitempty"`
+			// Hook callback fields
+			CallbackID string `json:"callback_id,omitempty"`
+			// MCP fields
+			ServerName string          `json:"server_name,omitempty"`
+			Message    json.RawMessage `json:"message,omitempty"`
 		} `json:"request"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -194,19 +247,58 @@ func (q *queryHandler) handleControlRequest(raw json.RawMessage) {
 
 	switch req.Request.Subtype {
 	case "can_use_tool":
-		q.handlePermissionRequest(ctx, req.RequestID, req.Request.ToolName, req.Request.Input, req.Request.ToolUseID, req.Request.AgentID)
+		q.handlePermissionRequest(ctx, req.RequestID, req.Request.ToolName,
+			req.Request.Input, req.Request.ToolUseID, req.Request.AgentID,
+			req.Request.PermissionSuggestions, req.Request.BlockedPath)
+
+	case "hook_callback":
+		q.handleHookCallback(ctx, req.RequestID, req.Request.CallbackID,
+			req.Request.Input, req.Request.ToolUseID)
+
 	default:
 		// Send default response for unhandled requests
 		q.sendControlResponse(ctx, req.RequestID, map[string]any{})
 	}
 }
 
+// handleHookCallback handles a hook_callback control request from the CLI.
+func (q *queryHandler) handleHookCallback(ctx context.Context, requestID, callbackID string, inputRaw json.RawMessage, toolUseID string) {
+	callback, ok := q.hookCallbacks[callbackID]
+	if !ok {
+		q.sendControlErrorResponse(ctx, requestID, fmt.Sprintf("no hook callback found for ID: %s", callbackID))
+		return
+	}
+
+	output, err := callback(inputRaw, toolUseID)
+	if err != nil {
+		q.sendControlErrorResponse(ctx, requestID, err.Error())
+		return
+	}
+
+	// Convert output to map for sending, handling the "continue" keyword
+	respData, err := json.Marshal(output)
+	if err != nil {
+		q.sendControlErrorResponse(ctx, requestID, fmt.Sprintf("failed to marshal hook output: %v", err))
+		return
+	}
+	var respMap map[string]any
+	if err := json.Unmarshal(respData, &respMap); err != nil {
+		q.sendControlErrorResponse(ctx, requestID, fmt.Sprintf("failed to unmarshal hook output: %v", err))
+		return
+	}
+
+	q.sendControlResponse(ctx, requestID, respMap)
+}
+
 // handlePermissionRequest handles a can_use_tool request.
-func (q *queryHandler) handlePermissionRequest(ctx context.Context, requestID, toolName string, inputRaw json.RawMessage, toolUseID, agentID string) {
+func (q *queryHandler) handlePermissionRequest(ctx context.Context, requestID, toolName string, inputRaw json.RawMessage, toolUseID, agentID string, suggestionsRaw json.RawMessage, blockedPath string) {
 	if q.opts.CanUseTool == nil {
-		// Default: allow
+		// Default: allow with original input
+		var input map[string]any
+		json.Unmarshal(inputRaw, &input)
 		q.sendControlResponse(ctx, requestID, map[string]any{
-			"behavior": "allow",
+			"behavior":     "allow",
+			"updatedInput": input,
 		})
 		return
 	}
@@ -214,9 +306,16 @@ func (q *queryHandler) handlePermissionRequest(ctx context.Context, requestID, t
 	var input map[string]any
 	json.Unmarshal(inputRaw, &input)
 
+	var suggestions []PermissionUpdate
+	if len(suggestionsRaw) > 0 {
+		json.Unmarshal(suggestionsRaw, &suggestions)
+	}
+
 	permCtx := ToolPermissionContext{
-		ToolUseID: toolUseID,
-		AgentID:   agentID,
+		ToolUseID:   toolUseID,
+		AgentID:     agentID,
+		Suggestions: suggestions,
+		BlockedPath: blockedPath,
 	}
 
 	result, err := q.opts.CanUseTool(toolName, input, permCtx)
@@ -232,6 +331,8 @@ func (q *queryHandler) handlePermissionRequest(ctx context.Context, requestID, t
 		resp := map[string]any{"behavior": "allow"}
 		if result.Allow.UpdatedInput != nil {
 			resp["updatedInput"] = result.Allow.UpdatedInput
+		} else {
+			resp["updatedInput"] = input
 		}
 		if result.Allow.UpdatedPermissions != nil {
 			resp["updatedPermissions"] = result.Allow.UpdatedPermissions
@@ -249,7 +350,7 @@ func (q *queryHandler) handlePermissionRequest(ctx context.Context, requestID, t
 	}
 }
 
-// sendControlResponse sends a response to a control request from the CLI.
+// sendControlResponse sends a success response to a control request from the CLI.
 func (q *queryHandler) sendControlResponse(ctx context.Context, requestID string, response map[string]any) {
 	msg := map[string]any{
 		"type": "control_response",
@@ -257,6 +358,25 @@ func (q *queryHandler) sendControlResponse(ctx context.Context, requestID string
 			"subtype":    "success",
 			"request_id": requestID,
 			"response":   response,
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+
+	q.transport.Write(ctx, string(data))
+}
+
+// sendControlErrorResponse sends an error response to a control request from the CLI.
+func (q *queryHandler) sendControlErrorResponse(ctx context.Context, requestID string, errMsg string) {
+	msg := map[string]any{
+		"type": "control_response",
+		"response": map[string]any{
+			"subtype":    "error",
+			"request_id": requestID,
+			"error":      errMsg,
 		},
 	}
 
@@ -365,4 +485,54 @@ func (q *queryHandler) mcpServerStatus(ctx context.Context) ([]McpServerStatus, 
 		return nil, err
 	}
 	return controlResp.Response.Response, nil
+}
+
+// contextUsage queries context window usage breakdown.
+func (q *queryHandler) contextUsage(ctx context.Context) (*ContextUsageResponse, error) {
+	resp, err := q.sendControlRequest(ctx, "context_usage", nil)
+	if err != nil {
+		return nil, err
+	}
+	var controlResp struct {
+		Response struct {
+			Response *ContextUsageResponse `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(resp, &controlResp); err != nil {
+		return nil, err
+	}
+	return controlResp.Response.Response, nil
+}
+
+// rewindFiles reverts files to their state at the given user message ID.
+func (q *queryHandler) rewindFiles(ctx context.Context, userMessageID string) error {
+	_, err := q.sendControlRequest(ctx, "rewind_files", map[string]any{
+		"user_message_id": userMessageID,
+	})
+	return err
+}
+
+// reconnectMcpServer reconnects a failed MCP server.
+func (q *queryHandler) reconnectMcpServer(ctx context.Context, serverName string) error {
+	_, err := q.sendControlRequest(ctx, "mcp_reconnect", map[string]any{
+		"serverName": serverName,
+	})
+	return err
+}
+
+// toggleMcpServer enables or disables an MCP server.
+func (q *queryHandler) toggleMcpServer(ctx context.Context, serverName string, enabled bool) error {
+	_, err := q.sendControlRequest(ctx, "mcp_toggle", map[string]any{
+		"serverName": serverName,
+		"enabled":    enabled,
+	})
+	return err
+}
+
+// stopTask stops a running background task.
+func (q *queryHandler) stopTask(ctx context.Context, taskID string) error {
+	_, err := q.sendControlRequest(ctx, "stop_task", map[string]any{
+		"task_id": taskID,
+	})
+	return err
 }

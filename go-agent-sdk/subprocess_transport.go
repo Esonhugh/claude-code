@@ -188,6 +188,46 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 	if opts.MaxBudgetUsd != nil {
 		args = append(args, "--max-budget-usd", fmt.Sprintf("%.2f", *opts.MaxBudgetUsd))
 	}
+	if opts.TaskBudget != nil {
+		args = append(args, "--task-budget", fmt.Sprintf("%d", opts.TaskBudget.TotalTokens))
+	}
+
+	// System prompt handling
+	if opts.SystemPrompt != nil {
+		switch v := opts.SystemPrompt.(type) {
+		case string:
+			args = append(args, "--system-prompt", v)
+		case SystemPromptPreset:
+			if v.Append != "" {
+				args = append(args, "--append-system-prompt", v.Append)
+			}
+		case SystemPromptFile:
+			args = append(args, "--system-prompt-file", v.Path)
+		}
+	}
+
+	// Plugins
+	for _, plugin := range opts.Plugins {
+		if plugin.Path != "" {
+			args = append(args, "--plugin-dir", plugin.Path)
+		}
+	}
+
+	// MCP server configuration
+	if len(opts.McpServers) > 0 {
+		mcpJSON, err := json.Marshal(opts.McpServers)
+		if err == nil {
+			args = append(args, "--mcp-config", string(mcpJSON))
+		}
+	}
+
+	// Sandbox settings are passed via --settings
+	if opts.Sandbox != nil || opts.Settings != nil {
+		settingsJSON := buildSettingsValue(opts)
+		if settingsJSON != "" {
+			args = append(args, "--settings", settingsJSON)
+		}
+	}
 
 	// Extra args
 	for k, v := range opts.ExtraArgs {
@@ -199,6 +239,40 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 	}
 
 	return args
+}
+
+// buildSettingsValue merges sandbox settings into a settings JSON string.
+func buildSettingsValue(opts *ClaudeAgentOptions) string {
+	settings := make(map[string]any)
+
+	// If existing settings is a string (JSON), parse it
+	if s, ok := opts.Settings.(string); ok && s != "" {
+		json.Unmarshal([]byte(s), &settings)
+	} else if m, ok := opts.Settings.(map[string]any); ok {
+		for k, v := range m {
+			settings[k] = v
+		}
+	}
+
+	// Merge sandbox settings
+	if opts.Sandbox != nil {
+		sandboxJSON, err := json.Marshal(opts.Sandbox)
+		if err == nil {
+			var sandboxMap map[string]any
+			json.Unmarshal(sandboxJSON, &sandboxMap)
+			settings["sandbox"] = sandboxMap
+		}
+	}
+
+	if len(settings) == 0 {
+		return ""
+	}
+
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // Connect starts the CLI process.
@@ -219,13 +293,29 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	t.cmd = exec.CommandContext(ctx, binary, args...)
 
 	// Set environment
-	if t.opts.Env != nil {
-		env := os.Environ()
-		for k, v := range t.opts.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
+	env := os.Environ()
+	// Filter out CLAUDECODE to prevent nesting
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, CLAUDE_CODE_NESTING_FILTER+"=") {
+			filtered = append(filtered, e)
 		}
-		t.cmd.Env = env
 	}
+	// Set SDK environment variables
+	filtered = append(filtered,
+		CLAUDE_CODE_ENTRYPOINT+"="+SDKEntrypoint,
+		CLAUDE_CODE_SDK_VERSION+"="+SDKVersion,
+	)
+	if t.opts.EnableFileCheckpointing {
+		filtered = append(filtered, CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING+"=true")
+	}
+	// Add user-specified environment variables
+	if t.opts.Env != nil {
+		for k, v := range t.opts.Env {
+			filtered = append(filtered, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+	t.cmd.Env = filtered
 
 	if t.opts.CWD != "" {
 		t.cmd.Dir = t.opts.CWD
