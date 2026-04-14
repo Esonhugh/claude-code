@@ -1,0 +1,11 @@
+# Compiled binaries (root level only)
+/quickstart
+/streaming
+/calculator
+/codereview
+/multiagent
+/pipeline
+/tooluse
+*.exe
+*.test
+*.out
