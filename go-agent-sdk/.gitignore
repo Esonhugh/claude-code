@@ -9,3 +9,4 @@
 *.exe
 *.test
 *.out
+/apitest
