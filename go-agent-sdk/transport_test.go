@@ -58,11 +58,15 @@ func effortPtr(e EffortLevel) *EffortLevel { return &e }
 func TestBuildArgs_Minimal(t *testing.T) {
 	args := buildArgs(&ClaudeAgentOptions{})
 
-	if len(args) != 3 {
-		t.Fatalf("expected exactly 3 args for empty options, got %d: %v", len(args), args)
+	// With nil SystemPrompt, buildArgs now emits --system-prompt "" to match Python
+	if len(args) != 5 {
+		t.Fatalf("expected exactly 5 args for empty options, got %d: %v", len(args), args)
 	}
 	if args[0] != "--output-format" || args[1] != "stream-json" || args[2] != "--verbose" {
 		t.Fatalf("unexpected base args: %v", args)
+	}
+	if args[3] != "--system-prompt" || args[4] != "" {
+		t.Fatalf("expected --system-prompt '' for nil SystemPrompt, got: %v", args[3:])
 	}
 }
 
@@ -156,17 +160,18 @@ func TestBuildArgs_ThinkingConfig(t *testing.T) {
 	tests := []struct {
 		name   string
 		cfg    ThinkingConfig
+		flag   string
 		expect string
 	}{
-		{"disabled", ThinkingConfig{Type: "disabled"}, "disabled"},
-		{"adaptive", ThinkingConfig{Type: "adaptive"}, "adaptive"},
-		{"enabled", ThinkingConfig{Type: "enabled", BudgetTokens: 8000}, "enabled:8000"},
+		{"disabled", ThinkingConfig{Type: "disabled"}, "--thinking", "disabled"},
+		{"adaptive", ThinkingConfig{Type: "adaptive"}, "--thinking", "adaptive"},
+		{"enabled", ThinkingConfig{Type: "enabled", BudgetTokens: 8000}, "--max-thinking-tokens", "8000"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			args := buildArgs(&ClaudeAgentOptions{Thinking: &tt.cfg})
-			if v := argValue(args, "--thinking"); v != tt.expect {
-				t.Errorf("--thinking = %q, want %q", v, tt.expect)
+			if v := argValue(args, tt.flag); v != tt.expect {
+				t.Errorf("%s = %q, want %q", tt.flag, v, tt.expect)
 			}
 		})
 	}
@@ -196,14 +201,15 @@ func TestBuildArgs_AllowedDisallowedTools(t *testing.T) {
 		DisallowedTools: []string{"Write"},
 	})
 
-	allowed := argValues(args, "--allowedTools")
-	if len(allowed) != 2 || allowed[0] != "Bash" || allowed[1] != "Read" {
-		t.Errorf("--allowedTools = %v, want [Bash Read]", allowed)
+	// Now comma-joined: --allowedTools "Bash,Read"
+	allowed := argValue(args, "--allowedTools")
+	if allowed != "Bash,Read" {
+		t.Errorf("--allowedTools = %q, want %q", allowed, "Bash,Read")
 	}
 
-	disallowed := argValues(args, "--disallowedTools")
-	if len(disallowed) != 1 || disallowed[0] != "Write" {
-		t.Errorf("--disallowedTools = %v, want [Write]", disallowed)
+	disallowed := argValue(args, "--disallowedTools")
+	if disallowed != "Write" {
+		t.Errorf("--disallowedTools = %q, want %q", disallowed, "Write")
 	}
 }
 
@@ -226,12 +232,10 @@ func TestBuildArgs_Betas(t *testing.T) {
 	betas := []string{"context-1m-2025-08-07", "another-beta"}
 	args := buildArgs(&ClaudeAgentOptions{Betas: betas})
 
-	got := argValues(args, "--beta")
-	if len(got) != 2 {
-		t.Fatalf("expected 2 --beta flags, got %d", len(got))
-	}
-	if got[0] != betas[0] || got[1] != betas[1] {
-		t.Errorf("--beta values = %v, want %v", got, betas)
+	// Now comma-joined: --betas "context-1m-2025-08-07,another-beta"
+	got := argValue(args, "--betas")
+	if got != "context-1m-2025-08-07,another-beta" {
+		t.Errorf("--betas = %q, want %q", got, "context-1m-2025-08-07,another-beta")
 	}
 }
 
@@ -239,14 +243,11 @@ func TestBuildArgs_SettingSources(t *testing.T) {
 	sources := []SettingSource{SettingSourceLocal, SettingSourceUser, SettingSourceProject}
 	args := buildArgs(&ClaudeAgentOptions{SettingSources: sources})
 
-	got := argValues(args, "--setting-source")
-	if len(got) != 3 {
-		t.Fatalf("expected 3 --setting-source flags, got %d", len(got))
-	}
-	for i, s := range sources {
-		if got[i] != string(s) {
-			t.Errorf("--setting-source[%d] = %q, want %q", i, got[i], string(s))
-		}
+	// Now comma-joined: --setting-sources "local,user,project"
+	got := argValue(args, "--setting-sources")
+	expected := strings.Join([]string{string(SettingSourceLocal), string(SettingSourceUser), string(SettingSourceProject)}, ",")
+	if got != expected {
+		t.Errorf("--setting-sources = %q, want %q", got, expected)
 	}
 }
 
@@ -290,8 +291,12 @@ func TestBuildArgs_SystemPrompt(t *testing.T) {
 
 	t.Run("nil", func(t *testing.T) {
 		args := buildArgs(&ClaudeAgentOptions{})
-		if contains(args, "--system-prompt") || contains(args, "--append-system-prompt") || contains(args, "--system-prompt-file") {
-			t.Error("no system prompt flags should appear for nil")
+		// With nil SystemPrompt, Python SDK sends --system-prompt ""
+		if v := argValue(args, "--system-prompt"); v != "" {
+			t.Errorf("expected --system-prompt '' for nil, got %q", v)
+		}
+		if contains(args, "--append-system-prompt") || contains(args, "--system-prompt-file") {
+			t.Error("append/file flags should not appear for nil")
 		}
 	})
 }
@@ -503,17 +508,18 @@ func TestBuildArgs_OutputFormatJSON(t *testing.T) {
 		},
 	})
 
-	raw := argValue(args, "--output-format-json")
+	// Now uses --json-schema with just the schema object, not the full OutputFormat
+	raw := argValue(args, "--json-schema")
 	if raw == "" {
-		t.Fatal("expected --output-format-json flag")
+		t.Fatal("expected --json-schema flag")
 	}
 
-	var parsed OutputFormat
+	var parsed map[string]any
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		t.Fatalf("failed to parse output-format-json: %v", err)
+		t.Fatalf("failed to parse json-schema: %v", err)
 	}
-	if parsed.Type != OutputFormatJSONSchema {
-		t.Errorf("output format type = %q, want %q", parsed.Type, OutputFormatJSONSchema)
+	if parsed["type"] != "object" {
+		t.Errorf("schema type = %v, want %q", parsed["type"], "object")
 	}
 }
 
@@ -546,7 +552,7 @@ func TestBuildArgs_StringFields(t *testing.T) {
 		{"DebugFile", ClaudeAgentOptions{DebugFile: "/var/log/debug.log"}, "--debug-file", "/var/log/debug.log"},
 		{"ResumeSessionAt", ClaudeAgentOptions{ResumeSessionAt: "2024-01-01"}, "--resume-session-at", "2024-01-01"},
 		{"Agent", ClaudeAgentOptions{Agent: "custom-agent"}, "--agent", "custom-agent"},
-		{"PermissionPromptToolName", ClaudeAgentOptions{PermissionPromptToolName: "my-tool"}, "--permission-prompt-tool-name", "my-tool"},
+		{"PermissionPromptToolName", ClaudeAgentOptions{PermissionPromptToolName: "my-tool"}, "--permission-prompt-tool", "my-tool"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -569,12 +575,21 @@ func TestBuildArgs_McpServers(t *testing.T) {
 		t.Fatal("expected --mcp-config flag")
 	}
 
+	// Should be wrapped in {"mcpServers": {...}}
 	var parsed map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		t.Fatalf("failed to parse mcp-config: %v", err)
 	}
-	if _, ok := parsed["server1"]; !ok {
-		t.Error("expected server1 key in mcp-config")
+	inner, ok := parsed["mcpServers"]
+	if !ok {
+		t.Fatal("expected mcpServers wrapper key in mcp-config")
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(inner, &servers); err != nil {
+		t.Fatalf("failed to parse inner mcpServers: %v", err)
+	}
+	if _, ok := servers["server1"]; !ok {
+		t.Error("expected server1 key in mcp-config mcpServers")
 	}
 }
 
@@ -616,8 +631,8 @@ func TestBuildArgs_CombinedComplex(t *testing.T) {
 	if v := argValue(args, "--max-turns"); v != "5" {
 		t.Errorf("--max-turns = %q", v)
 	}
-	if v := argValue(args, "--thinking"); v != "enabled:4096" {
-		t.Errorf("--thinking = %q", v)
+	if v := argValue(args, "--max-thinking-tokens"); v != "4096" {
+		t.Errorf("--max-thinking-tokens = %q, want %q", v, "4096")
 	}
 	if v := argValue(args, "--effort"); v != "high" {
 		t.Errorf("--effort = %q", v)

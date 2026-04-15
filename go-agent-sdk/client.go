@@ -22,6 +22,12 @@ func NewClient(opts *ClaudeAgentOptions) *ClaudeSDKClient {
 	if opts == nil {
 		opts = &ClaudeAgentOptions{}
 	}
+
+	// Auto-set permission_prompt_tool_name when CanUseTool callback is provided.
+	if opts.CanUseTool != nil && opts.PermissionPromptToolName == "" {
+		opts.PermissionPromptToolName = "stdio"
+	}
+
 	return &ClaudeSDKClient{
 		opts: opts,
 	}

@@ -87,6 +87,22 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 	if opts.FallbackModel != "" {
 		args = append(args, "--fallback-model", opts.FallbackModel)
 	}
+	// System prompt: Python sends --system-prompt "" when nil to override CLI defaults
+	if opts.SystemPrompt == nil {
+		args = append(args, "--system-prompt", "")
+	} else {
+		switch v := opts.SystemPrompt.(type) {
+		case string:
+			args = append(args, "--system-prompt", v)
+		case SystemPromptPreset:
+			if v.Append != "" {
+				args = append(args, "--append-system-prompt", v.Append)
+			}
+		case SystemPromptFile:
+			args = append(args, "--system-prompt-file", v.Path)
+		}
+	}
+
 	if opts.PermissionMode != "" {
 		args = append(args, "--permission-mode", string(opts.PermissionMode))
 	}
@@ -148,23 +164,36 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 		args = append(args, "--strict-mcp-config")
 	}
 	if opts.PermissionPromptToolName != "" {
-		args = append(args, "--permission-prompt-tool-name", opts.PermissionPromptToolName)
+		args = append(args, "--permission-prompt-tool", opts.PermissionPromptToolName)
 	}
 
-	for _, tool := range opts.AllowedTools {
-		args = append(args, "--allowedTools", tool)
+	if len(opts.AllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(opts.AllowedTools, ","))
 	}
-	for _, tool := range opts.DisallowedTools {
-		args = append(args, "--disallowedTools", tool)
+	if len(opts.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(opts.DisallowedTools, ","))
+	}
+	// Tools: can be []string (tool names) or a map/struct with preset config
+	if opts.Tools != nil {
+		switch v := opts.Tools.(type) {
+		case []string:
+			if len(v) > 0 {
+				args = append(args, "--tools", strings.Join(v, ","))
+			}
+		}
 	}
 	for _, dir := range opts.AdditionalDirectories {
 		args = append(args, "--add-dir", dir)
 	}
-	for _, beta := range opts.Betas {
-		args = append(args, "--beta", beta)
+	if len(opts.Betas) > 0 {
+		args = append(args, "--betas", strings.Join(opts.Betas, ","))
 	}
-	for _, source := range opts.SettingSources {
-		args = append(args, "--setting-source", string(source))
+	if len(opts.SettingSources) > 0 {
+		sources := make([]string, len(opts.SettingSources))
+		for i, s := range opts.SettingSources {
+			sources[i] = string(s)
+		}
+		args = append(args, "--setting-sources", strings.Join(sources, ","))
 	}
 
 	if opts.Thinking != nil {
@@ -172,17 +201,24 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 		case "disabled":
 			args = append(args, "--thinking", "disabled")
 		case "enabled":
-			args = append(args, "--thinking", fmt.Sprintf("enabled:%d", opts.Thinking.BudgetTokens))
+			// Python maps enabled to --max-thinking-tokens, not --thinking enabled:N
+			args = append(args, "--max-thinking-tokens", fmt.Sprintf("%d", opts.Thinking.BudgetTokens))
 		case "adaptive":
 			args = append(args, "--thinking", "adaptive")
 		}
+	} else if opts.MaxThinkingTokens != nil {
+		// Deprecated fallback: use max_thinking_tokens when no thinking config
+		args = append(args, "--max-thinking-tokens", fmt.Sprintf("%d", *opts.MaxThinkingTokens))
 	}
 	if opts.Effort != nil {
 		args = append(args, "--effort", string(*opts.Effort))
 	}
+	// OutputFormat: extract schema for json_schema type, use --json-schema flag
 	if opts.OutputFormat != nil {
-		if j, err := json.Marshal(opts.OutputFormat); err == nil {
-			args = append(args, "--output-format-json", string(j))
+		if opts.OutputFormat.Type == OutputFormatJSONSchema && opts.OutputFormat.Schema != nil {
+			if j, err := json.Marshal(opts.OutputFormat.Schema); err == nil {
+				args = append(args, "--json-schema", string(j))
+			}
 		}
 	}
 	if opts.MaxBudgetUsd != nil {
@@ -192,20 +228,6 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 		args = append(args, "--task-budget", fmt.Sprintf("%d", opts.TaskBudget.TotalTokens))
 	}
 
-	// System prompt handling
-	if opts.SystemPrompt != nil {
-		switch v := opts.SystemPrompt.(type) {
-		case string:
-			args = append(args, "--system-prompt", v)
-		case SystemPromptPreset:
-			if v.Append != "" {
-				args = append(args, "--append-system-prompt", v.Append)
-			}
-		case SystemPromptFile:
-			args = append(args, "--system-prompt-file", v.Path)
-		}
-	}
-
 	// Plugins
 	for _, plugin := range opts.Plugins {
 		if plugin.Path != "" {
@@ -213,9 +235,10 @@ func buildArgs(opts *ClaudeAgentOptions) []string {
 		}
 	}
 
-	// MCP server configuration
+	// MCP server configuration - wrap in {"mcpServers": ...} for CLI
 	if len(opts.McpServers) > 0 {
-		mcpJSON, err := json.Marshal(opts.McpServers)
+		wrapped := map[string]any{"mcpServers": opts.McpServers}
+		mcpJSON, err := json.Marshal(wrapped)
 		if err == nil {
 			args = append(args, "--mcp-config", string(mcpJSON))
 		}
@@ -308,6 +331,10 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	)
 	if t.opts.EnableFileCheckpointing {
 		filtered = append(filtered, CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING+"=true")
+	}
+	// Set PWD when CWD is specified (some tools check PWD instead of actual cwd)
+	if t.opts.CWD != "" {
+		filtered = append(filtered, "PWD="+t.opts.CWD)
 	}
 	// Add user-specified environment variables
 	if t.opts.Env != nil {

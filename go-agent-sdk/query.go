@@ -433,7 +433,9 @@ func (q *queryHandler) runMessageRouter(ctx context.Context) <-chan Message {
 // sendPrompt sends a user prompt to the CLI.
 func (q *queryHandler) sendPrompt(ctx context.Context, prompt string) error {
 	msg := map[string]any{
-		"type": "user",
+		"type":               "user",
+		"session_id":         "",
+		"parent_tool_use_id": nil,
 		"message": map[string]any{
 			"role":    "user",
 			"content": prompt,
@@ -489,7 +491,7 @@ func (q *queryHandler) mcpServerStatus(ctx context.Context) ([]McpServerStatus, 
 
 // contextUsage queries context window usage breakdown.
 func (q *queryHandler) contextUsage(ctx context.Context) (*ContextUsageResponse, error) {
-	resp, err := q.sendControlRequest(ctx, "context_usage", nil)
+	resp, err := q.sendControlRequest(ctx, "get_context_usage", nil)
 	if err != nil {
 		return nil, err
 	}

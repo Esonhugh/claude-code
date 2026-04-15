@@ -36,6 +36,13 @@ func Query(ctx context.Context, prompt string, opts *ClaudeAgentOptions) (<-chan
 		opts = &ClaudeAgentOptions{}
 	}
 
+	// Auto-set permission_prompt_tool_name when CanUseTool callback is provided.
+	// This tells the CLI to route permission requests through the control protocol
+	// instead of prompting interactively.
+	if opts.CanUseTool != nil && opts.PermissionPromptToolName == "" {
+		opts.PermissionPromptToolName = "stdio"
+	}
+
 	msgCh := make(chan Message, 64)
 	errCh := make(chan error, 8)
 
@@ -66,6 +73,14 @@ func Query(ctx context.Context, prompt string, opts *ClaudeAgentOptions) (<-chan
 			return
 		}
 
+		// If no hooks or MCP servers, close stdin immediately after sending prompt.
+		// Otherwise, keep stdin open for bidirectional control protocol until
+		// the first result message arrives.
+		hasHooksOrMCP := len(opts.HookCallbacks) > 0 || len(opts.McpServers) > 0
+		if !hasHooksOrMCP {
+			transport.EndInput()
+		}
+
 		// Stream messages until result
 		for msg := range routedMsgs {
 			select {
@@ -74,6 +89,9 @@ func Query(ctx context.Context, prompt string, opts *ClaudeAgentOptions) (<-chan
 				return
 			}
 			if IsResultMessage(msg) {
+				if hasHooksOrMCP {
+					transport.EndInput()
+				}
 				return
 			}
 		}

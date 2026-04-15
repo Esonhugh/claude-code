@@ -296,14 +296,10 @@ func TestBuildArgs_AllowedTools(t *testing.T) {
 	args := buildArgs(&ClaudeAgentOptions{
 		AllowedTools: []string{"Read", "Write"},
 	})
-	count := 0
-	for _, a := range args {
-		if a == "--allowedTools" {
-			count++
-		}
-	}
-	if count != 2 {
-		t.Errorf("expected 2 --allowedTools flags, got %d", count)
+	// Now comma-joined: single --allowedTools "Read,Write"
+	v := argValue(args, "--allowedTools")
+	if v != "Read,Write" {
+		t.Errorf("expected --allowedTools 'Read,Write', got %q", v)
 	}
 }
 
@@ -324,14 +320,15 @@ func TestBuildArgs_Thinking(t *testing.T) {
 	args := buildArgs(&ClaudeAgentOptions{
 		Thinking: &ThinkingConfig{Type: "enabled", BudgetTokens: 4096},
 	})
+	// enabled maps to --max-thinking-tokens, not --thinking
 	found := false
 	for i, a := range args {
-		if a == "--thinking" && i+1 < len(args) && args[i+1] == "enabled:4096" {
+		if a == "--max-thinking-tokens" && i+1 < len(args) && args[i+1] == "4096" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected --thinking enabled:4096")
+		t.Error("expected --max-thinking-tokens 4096")
 	}
 }
 
