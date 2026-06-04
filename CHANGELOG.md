@@ -14,6 +14,7 @@
 
 ### 关联提交
 
+- `12c8153` — `update: add sourcemap and Ink debug workflow`
 - `46da60f` — 2026-06-04 12:21:46 +08:00 — `update: add autonomous goal and marketplace controls`
 - `40b54bc` — 2026-06-04 12:44:34 +08:00 — `upgrade: add extra dependency`
 - `01ae965` — 2026-06-04 15:51:29 +08:00 — `chore: update, eslint updating and type guards`
@@ -30,6 +31,8 @@
 - 修复 Commander debug-to-stderr 选项的无效短参数注册问题，确保 CLI `--help` 正常启动。
 - 重整项目文档结构：将根 `README.md` 定位为项目目的与使用指南，新增 `docs/README.md` 作为阅读索引，重写构建与二次开发手册，并将 `docs/upgrade-plan.md` 调整为历史工作说明。
 - 新增 `docs/claude-code-internals-index.md`，作为 Claude Code 启动流程、REPL 查询循环、工具体系、Agent / Subagent 生命周期和 Team / Swarm 协作模型的中文索引文档。
+- 新增 source map 运行与调试脚本、VS Code Node 调试配置，以及 `CLAUDE_CODE_ALLOW_INSPECTOR` 显式本地调试开关，方便定位到恢复后的 TypeScript/TSX 源码。
+- 在构建手册中补充 Ink/React 调试工作流，说明 integrated terminal、`patchConsole` 行为和现有 debug 日志通道的推荐用法。
 
 ## 2026-03-31 - 恢复工程初始化与安全策略限制处理
 
