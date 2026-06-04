@@ -380,10 +380,7 @@ import {
   useSetAppState,
   useAppStateStore,
 } from '../state/AppState.js'
-import type {
-  ContentBlockParam,
-  ImageBlockParam,
-} from '@anthropic-ai/sdk/resources/messages.mjs'
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
 import type { PastedContent } from '../utils/config.js'
 import {
