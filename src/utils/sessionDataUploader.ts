@@ -1,2 +1,3 @@
-// Auto-generated stub for missing module
-export {}
+export function createSessionTurnUploader(): undefined {
+  return undefined
+}

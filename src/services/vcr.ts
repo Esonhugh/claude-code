@@ -1,4 +1,7 @@
-import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type {
+  BetaContentBlock,
+  BetaUsage,
+} from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import isPlainObject from 'lodash-es/isPlainObject.js'
@@ -160,6 +163,23 @@ export async function withVCR(
   return results
 }
 
+function normalizeUsageForCost(usage: AssistantMessage['message']['usage']): BetaUsage {
+  return {
+    ...usage,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+    cache_creation: usage.cache_creation ?? null,
+    inference_geo: usage.inference_geo ?? null,
+    iterations: usage.iterations ?? null,
+    server_tool_use: usage.server_tool_use ?? {
+      web_search_requests: 0,
+      web_fetch_requests: 0,
+    },
+    service_tier: usage.service_tier ?? null,
+    speed: usage.speed ?? null,
+  }
+}
+
 function addCachedCostToTotalSessionCost(
   message: AssistantMessage | StreamEvent,
 ): void {
@@ -169,7 +189,7 @@ function addCachedCostToTotalSessionCost(
   // @ts-ignore - recovered code
   const model = message.message.model
   // @ts-ignore - recovered code
-  const usage = message.message.usage
+  const usage = normalizeUsageForCost(message.message.usage)
   const costUSD = calculateUSDCost(model, usage)
   addToTotalSessionCost(costUSD, usage, model)
 }

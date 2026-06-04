@@ -15,7 +15,8 @@
     },
     "skipLibCheck": true,
     "types": [
-      "node"
+      "node",
+      "bun"
     ],
     "noEmit": true
   },

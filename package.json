@@ -19,16 +19,26 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "start": "node ./dist/cli.js",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
+    "lint:fix": "eslint --fix \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "audit:missing": "node ./scripts/audit-missing.mjs",
     "cli:run": "node ./scripts/run-recovered-cli.mjs",
     "cli:login": "node ./scripts/run-recovered-cli.mjs auth login",
     "cli:status": "node ./scripts/run-recovered-cli.mjs auth status"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/bun": "^1.3.14",
     "@types/node": "^22.13.14",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
     "esbuild": "^0.25.2",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "type-fest": "^5.7.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.60.1"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

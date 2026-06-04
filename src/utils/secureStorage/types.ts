@@ -6,7 +6,7 @@ export interface SecureStorage {
   name?: string
   get(key: string): Promise<string | undefined>
   set(key: string, value: string): Promise<void>
-  delete(key: string): Promise<void>
+  delete(key?: string): Promise<void>
   read(key: string): string | undefined
   readAsync?(key: string): Promise<string | undefined>
   update(key: string, value: string): void

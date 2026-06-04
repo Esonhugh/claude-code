@@ -5,6 +5,8 @@ export type AgentToolProgress = {
   message: Message
   taskId?: string
   summary?: string
+  prompt?: string
+  agentId?: string
 }
 
 export type ShellProgress = {
@@ -41,9 +43,11 @@ export type SkillToolProgress = {
 }
 
 export type TaskOutputProgress = {
-  type: 'task_output_progress'
+  type: 'task_output_progress' | 'waiting_for_task'
   message?: string
   taskId?: string
+  taskDescription?: string
+  taskType?: string
 }
 
 export type WebSearchProgress =

@@ -1139,18 +1139,17 @@ export function hasUnresolvedHooks(
 export function getToolResultIDs(normalizedMessages: NormalizedMessage[]): {
   [toolUseID: string]: boolean
 } {
-  return Object.fromEntries(
-    normalizedMessages.flatMap(_ =>
-      _.type === 'user' && _.message.content[0]?.type === 'tool_result'
-        ? [
-            [
-              _.message.content[0].tool_use_id,
-              _.message.content[0].is_error ?? false,
-            ],
-          ]
-        : ([] as [string, boolean][]),
-    ),
-  )
+  const result: { [toolUseID: string]: boolean } = {}
+  for (const message of normalizedMessages) {
+    const block = message.type === 'user' ? message.message.content[0] : undefined
+    if (
+      block?.type === 'tool_result' &&
+      typeof block.tool_use_id === 'string'
+    ) {
+      result[block.tool_use_id] = Boolean(block.is_error)
+    }
+  }
+  return result
 }
 
 export function getSiblingToolUseIDs(
@@ -1428,7 +1427,7 @@ export const EMPTY_STRING_SET: ReadonlySet<string> = Object.freeze(
  * `AssistantMessage | NormalizedUserMessage`.
  */
 export function buildSubagentLookups(
-  messages: { message: AssistantMessage | NormalizedUserMessage }[],
+  messages: { message: AssistantMessage | NormalizedUserMessage | unknown }[],
 ): { lookups: MessageLookups; inProgressToolUseIDs: Set<string> } {
   const toolUseByToolUseID = new Map<string, ToolUseBlockParam>()
   const resolvedToolUseIDs = new Set<string>()
@@ -1438,20 +1437,20 @@ export function buildSubagentLookups(
   >()
 
   for (const { message: msg } of messages) {
+    if (typeof msg !== 'object' || msg === null || !('type' in msg)) continue
     if (msg.type === 'assistant') {
-      for (const content of msg.message.content) {
-        if (content.type === 'tool_use') {
-          // @ts-ignore - recovered code
+      const contentBlocks = (msg as AssistantMessage).message.content
+      for (const content of contentBlocks) {
+        if (content.type === 'tool_use' && typeof content.id === 'string') {
           toolUseByToolUseID.set(content.id, content as ToolUseBlockParam)
         }
       }
     } else if (msg.type === 'user') {
-      for (const content of msg.message.content) {
-        if (content.type === 'tool_result') {
-          // @ts-ignore - recovered code
+      const userMsg = msg as NormalizedUserMessage
+      for (const content of userMsg.message.content) {
+        if (content.type === 'tool_result' && typeof content.tool_use_id === 'string') {
           resolvedToolUseIDs.add(content.tool_use_id)
-          // @ts-ignore - recovered code
-          toolResultByToolUseID.set(content.tool_use_id, msg)
+          toolResultByToolUseID.set(content.tool_use_id, userMsg)
         }
       }
     }

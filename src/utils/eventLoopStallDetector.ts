@@ -1,2 +1,1 @@
-// Auto-generated stub for missing module
-export {}
+export function startEventLoopStallDetector(): void {}

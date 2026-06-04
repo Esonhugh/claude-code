@@ -7,6 +7,10 @@ import type { AppState } from '../../state/AppState.js';
 export type LocalWorkflowTaskState = TaskStateBase & {
   type: 'local_workflow';
   currentAgentId?: string;
+  workflowName?: string;
+  summary?: string;
+  description?: string;
+  agentCount?: number;
 };
 
 function endWorkflowTask(taskId: string, status: LocalWorkflowTaskState['status']) {

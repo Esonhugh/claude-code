@@ -1,2 +1,1 @@
-// Auto-generated stub for missing module
-export {}
+export async function daemonMain(_args: string[] = []): Promise<void> {}

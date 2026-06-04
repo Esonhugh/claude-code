@@ -17,14 +17,7 @@ import {
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { IDESelection } from '../../hooks/useIdeSelection.js'
 import type { SetToolJSXFn, ToolUseContext } from '../../Tool.js'
-import type {
-  AssistantMessage,
-  AttachmentMessage,
-  Message,
-  ProgressMessage,
-  SystemMessage,
-  UserMessage,
-} from '../../types/message.js'
+import type { Message } from '../../types/message.js'
 import type { PermissionMode } from '../../types/permissions.js'
 import {
   isValidImagePaste,
@@ -62,13 +55,7 @@ import { processTextPrompt } from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
 export type ProcessUserInputBaseResult = {
-  messages: (
-    | UserMessage
-    | AssistantMessage
-    | AttachmentMessage
-    | SystemMessage
-    | ProgressMessage
-  )[]
+  messages: Message[]
   shouldQuery: boolean
   allowedTools?: string[]
   model?: string

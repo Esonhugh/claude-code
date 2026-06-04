@@ -186,6 +186,7 @@ export function createStreamlinedTransformer(): (
       case 'rate_limit_event':
       case 'control_response':
       case 'control_request':
+      // fall through
       // @ts-ignore - recovered code
       case 'control_cancel_request':
       case 'keep_alive':

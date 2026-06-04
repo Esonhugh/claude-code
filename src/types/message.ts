@@ -1,14 +1,15 @@
 import type { UUID } from 'crypto'
+import type { Attachment } from '../utils/attachments.js'
 
 // ---------------------------------------------------------------------------
 // Shared primitives
 // ---------------------------------------------------------------------------
 
-export type PartialCompactDirection = 'back' | 'forward'
+export type PartialCompactDirection = 'back' | 'forward' | 'from' | 'up_to'
 
 export type MessageOrigin = string
 
-export type SystemMessageLevel = 'info' | 'warning' | 'error'
+export type SystemMessageLevel = 'info' | 'warning' | 'error' | 'suggestion'
 
 // ---------------------------------------------------------------------------
 // Content block placeholders (re-exported Anthropic SDK shapes are complex;
@@ -16,33 +17,65 @@ export type SystemMessageLevel = 'info' | 'warning' | 'error'
 // in the full SDK types at stub level)
 // ---------------------------------------------------------------------------
 
-interface ContentBlockBase {
+export interface ContentBlockBase {
   type: string
+  text?: string
+  id?: string
+  name?: string
+  input?: unknown
+  tool_use_id?: string
+  content?: unknown
   [key: string]: unknown
 }
 
-type ContentBlockParam = ContentBlockBase
-type BetaContentBlock = ContentBlockBase
-type BetaToolUseBlock = ContentBlockBase & {
+export type ContentBlockParam = ContentBlockBase
+export type BetaContentBlock = ContentBlockBase
+export interface RecoveredToolUseBlock extends ContentBlockBase {
   type: 'tool_use'
   id: string
   name: string
   input: unknown
 }
 
+export type DisplayContentBlock = { type: string }
+
 // ---------------------------------------------------------------------------
 // Progress & streaming helpers
 // ---------------------------------------------------------------------------
 
 export interface Progress {
+  type?: string
+  message?: unknown
+  output?: string
+  fullOutput?: string
+  elapsedTimeSeconds?: number
+  totalLines?: number
+  totalBytes?: number
+  timeoutMs?: number
+  taskId?: string
   [key: string]: unknown
 }
 
 export interface StreamEvent {
+  type: 'stream_event'
+  event?: unknown
+  subtype?: string
+  compactMetadata?: CompactMetadata
+  retryAttempt?: number
+  maxRetries?: number
+  retryInMs?: number
   [key: string]: unknown
 }
 
 export interface RequestStartEvent {
+  type: 'stream_request_start'
+  event?: unknown
+  subtype?: string
+  compactMetadata?: CompactMetadata
+  retryAttempt?: number
+  maxRetries?: number
+  retryInMs?: number
+  ttftMs?: number
   [key: string]: unknown
 }
 
@@ -51,11 +84,14 @@ export interface RequestStartEvent {
 // ---------------------------------------------------------------------------
 
 export interface StopHookInfo {
-  hookName: string
-  exitCode: number
+  hookName?: string
+  command?: string
+  promptText?: string
+  exitCode?: number
   stdout?: string
   stderr?: string
   duration?: number
+  durationMs?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +124,7 @@ export interface UserMessage {
   sourceToolAssistantUUID?: UUID
   permissionMode?: unknown
   origin?: MessageOrigin
+  planContent?: string
 }
 
 export interface AssistantMessage {
@@ -101,14 +138,17 @@ export interface AssistantMessage {
     content: BetaContentBlock[]
     stop_reason: string
     stop_sequence: string | null
+    container?: unknown
+    type?: string
     usage: {
       input_tokens: number
       output_tokens: number
       cache_creation_input_tokens?: number
       cache_read_input_tokens?: number
-      [key: string]: unknown
+      [key: string]: any
     }
     context_management?: unknown
+    [key: string]: any
   }
   requestId?: string
   isMeta?: boolean
@@ -133,6 +173,7 @@ interface SystemBase {
   uuid: UUID
   timestamp: string
   level?: SystemMessageLevel
+  content?: string
   message?: { content?: BetaContentBlock[] }
 }
 
@@ -146,77 +187,82 @@ export interface SystemAPIErrorMessage extends SystemBase {
 
 export interface SystemApiMetricsMessage extends SystemBase {
   subtype: 'api_metrics'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemAwaySummaryMessage extends SystemBase {
   subtype: 'away_summary'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemBridgeStatusMessage extends SystemBase {
   subtype: 'bridge_status'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemCompactBoundaryMessage extends SystemBase {
   subtype: 'compact_boundary'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemInformationalMessage extends SystemBase {
   subtype: 'informational'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemLocalCommandMessage extends SystemBase {
   subtype: 'local_command'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemMemorySavedMessage extends SystemBase {
   subtype: 'memory_saved'
   writtenPaths?: string[]
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemMicrocompactBoundaryMessage extends SystemBase {
   subtype: 'microcompact_boundary'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemPermissionRetryMessage extends SystemBase {
   subtype: 'permission_retry'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemScheduledTaskFireMessage extends SystemBase {
   subtype: 'scheduled_task_fire'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemStopHookSummaryMessage extends SystemBase {
   subtype: 'stop_hook_summary'
-  hookCount?: number
-  hookInfos?: StopHookInfo[]
-  [key: string]: unknown
+  hookCount: number
+  hookInfos: StopHookInfo[]
+  hookErrors: string[]
+  preventedContinuation?: boolean
+  stopReason?: string
+  totalDurationMs?: number
+  hookLabel?: string
+  [key: string]: any
 }
 
 export interface SystemThinkingMessage extends SystemBase {
   subtype: 'thinking'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemTurnDurationMessage extends SystemBase {
   subtype: 'turn_duration'
   durationMs?: number
   budgetTokens?: number
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemAgentsKilledMessage extends SystemBase {
   subtype: 'agents_killed'
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export type SystemMessage =
@@ -257,7 +303,7 @@ export interface AttachmentMessage {
   type: 'attachment'
   uuid: UUID
   timestamp: string
-  attachment: unknown
+  attachment: Attachment
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +318,7 @@ export interface HookResultMessage {
   exitCode?: number
   stdout?: string
   stderr?: string
-  [key: string]: unknown
+  [key: string]: any
 }
 
 // ---------------------------------------------------------------------------
@@ -314,9 +360,10 @@ export interface NormalizedAssistantMessage<T = BetaContentBlock> {
       output_tokens: number
       cache_creation_input_tokens?: number
       cache_read_input_tokens?: number
-      [key: string]: unknown
+      [key: string]: any
     }
     context_management?: unknown
+    [key: string]: any
   }
   requestId?: string
   isMeta?: boolean
@@ -357,6 +404,8 @@ export interface GroupedToolUseMessage {
   toolName: string
   messages: NormalizedAssistantMessage[]
   results: NormalizedUserMessage[]
+  displayMessage?: NormalizedAssistantMessage<DisplayContentBlock> | NormalizedUserMessage
+  messageId?: string
 }
 
 export interface CollapsedReadSearchGroup {
@@ -372,11 +421,11 @@ export interface CollapsedReadSearchGroup {
   hookTotalMs?: number
   hookCount?: number
   hookInfos?: StopHookInfo[]
-  relevantMemories?: unknown[]
+  relevantMemories?: Array<{ path: string; content: string }>
   readCount?: number
   readFilePaths?: string[]
   searchCount?: number
-  searchArgs?: unknown[]
+  searchArgs?: Array<{ pattern?: string; path?: string; content?: string } | string>
   listCount?: number
   replCount?: number
   bashCount?: number
@@ -389,11 +438,11 @@ export interface CollapsedReadSearchGroup {
   teamMemoryReadCount?: number
   teamMemoryWriteCount?: number
   teamMemorySearchCount?: number
-  pushes?: unknown[]
-  prs?: unknown[]
-  commits?: unknown[]
-  branches?: unknown[]
-  [key: string]: unknown
+  pushes?: Array<{ kind?: string; sha?: string; branch?: string }>
+  prs?: Array<{ action?: string; number?: number; url?: string }>
+  commits?: Array<{ kind?: string; sha?: string; message?: string }>
+  branches?: Array<{ action?: string; ref?: string }>
+  [key: string]: any
 }
 
 // ---------------------------------------------------------------------------
@@ -444,10 +493,10 @@ export interface CompactMetadata {
   messagesSummarized?: number
   userContext?: string
   direction?: PartialCompactDirection
-  [key: string]: unknown
+  [key: string]: any
 }
 
 export interface SystemFileSnapshotMessage extends SystemBase {
   subtype: 'file_snapshot'
-  [key: string]: unknown
+  [key: string]: any
 }

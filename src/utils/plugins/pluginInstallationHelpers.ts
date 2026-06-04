@@ -485,8 +485,8 @@ export async function installResolvedPlugin({
  * Result of a plugin installation operation
  */
 export type InstallPluginResult =
-  | { success: true; message: string }
-  | { success: false; error: string }
+  | { readonly success: true; readonly message: string }
+  | { readonly success: false; readonly error: string }
 
 /**
  * Parameters for installing a plugin from marketplace

@@ -1,8 +1,4 @@
-import type {
-  // @ts-ignore - recovered code
-  McpbManifest,
-  McpbUserConfigurationOption,
-} from '@anthropic-ai/mcpb'
+import type { McpbManifestAny } from '@anthropic-ai/mcpb'
 import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
@@ -33,13 +29,13 @@ export type UserConfigValues = Record<
 /**
  * User configuration schema from DXT manifest
  */
-export type UserConfigSchema = Record<string, McpbUserConfigurationOption>
+export type UserConfigSchema = NonNullable<McpbManifestAny['user_config']>
 
 /**
  * Result of loading an MCPB file (success case)
  */
 export type McpbLoadResult = {
-  manifest: McpbManifest
+  manifest: McpbManifestAny
   mcpConfig: McpServerConfig
   extractedPath: string
   contentHash: string
@@ -50,7 +46,7 @@ export type McpbLoadResult = {
  */
 export type McpbNeedsConfigResult = {
   status: 'needs-config'
-  manifest: McpbManifest
+  manifest: McpbManifestAny
   extractedPath: string
   contentHash: string
   configSchema: UserConfigSchema
@@ -424,7 +420,7 @@ export function validateUserConfig(
  * Generate MCP server configuration from DXT manifest
  */
 async function generateMcpConfig(
-  manifest: McpbManifest,
+  manifest: McpbManifestAny,
   extractedPath: string,
   userConfig: UserConfigValues = {},
 ): Promise<McpServerConfig> {

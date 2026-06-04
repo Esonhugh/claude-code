@@ -1,27 +1,25 @@
 export interface WizardContextValue<T = Record<string, unknown>> {
-  data: T
-  setData: (data: Partial<T>) => void
-  step: number
-  setStep: (step: number) => void
+  currentStepIndex: number
   totalSteps: number
+  wizardData: T
+  setWizardData: React.Dispatch<React.SetStateAction<T>>
+  updateWizardData: (updates: Partial<T>) => void
   goNext: () => void
   goBack: () => void
-  isFirst: boolean
-  isLast: boolean
-  [key: string]: unknown
+  goToStep: (index: number) => void
+  cancel: () => void
+  title?: string
+  showStepCounter: boolean
 }
 
-export interface WizardProviderProps {
-  children: React.ReactNode
-  initialData?: Record<string, unknown>
-  totalSteps?: number
-  [key: string]: unknown
+export interface WizardProviderProps<T = Record<string, unknown>> {
+  steps: WizardStepComponent<T>[]
+  initialData?: T
+  onComplete: (data: T) => void | Promise<void>
+  onCancel?: () => void
+  children?: React.ReactNode
+  title?: string
+  showStepCounter?: boolean
 }
 
-export type WizardStepComponent<T = Record<string, unknown>> = React.ComponentType<{
-  data: T
-  setData: (data: Partial<T>) => void
-  goNext: () => void
-  goBack: () => void
-  [key: string]: unknown
-}>
+export type WizardStepComponent<T = Record<string, unknown>> = React.ComponentType
