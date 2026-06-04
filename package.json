@@ -25,7 +25,10 @@
     "cli:status": "node ./scripts/run-recovered-cli.mjs auth status"
   },
   "devDependencies": {
-    "esbuild": "^0.25.2"
+    "@types/node": "^22.13.14",
+    "esbuild": "^0.25.2",
+    "type-fest": "^5.7.0",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
