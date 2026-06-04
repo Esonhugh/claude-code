@@ -1,166 +1,137 @@
-# Claude Code 安全限制移除说明
+# Claude Code Recovered Source
 
-> 本文档记录了对 Claude Code v2.1.88 源代码的修改，移除了提示词级别的网络安全限制。
+This repository is a recovered and actively maintained Claude Code source tree based on Claude Code `2.1.88`. The goal is to keep the recovered project readable, buildable, runnable, and suitable for secondary development.
 
----
+## Project purpose
 
-## 修改概述
+This project exists to:
 
-| 修改文件 | 修改类型 | 状态 |
-|----------|----------|------|
-| `src/constants/cyberRiskInstruction.ts` | 清空安全指令 | ✅ 已完成 |
+1. Preserve a readable TypeScript/TSX source tree reconstructed from the distributed Claude Code bundle.
+2. Provide a working local build of the Claude Code CLI for research, debugging, and controlled secondary development.
+3. Track local feature changes clearly from the `2.1.88` base version.
+4. Keep recovery-specific stubs, type declarations, and build shims explicit so they can be replaced with real implementations over time.
 
----
+This is not an official Anthropic source distribution. Treat it as a recovery and development workspace.
 
-## 已移除的限制
+## Current baseline
 
-### 1. CYBER_RISK_INSTRUCTION (网络安全风险指令)
+- Base version: `2.1.88`
+- Runtime target: Node.js `>=18`
+- Package manager used in this workspace: `pnpm`
+- Build output: `dist/cli.js`
 
-**文件位置:** `src/constants/cyberRiskInstruction.ts`
+## Quick start
 
-#### 移除前的完整内容:
+Install dependencies:
 
-```typescript
-export const CYBER_RISK_INSTRUCTION = `IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.`
+```bash
+pnpm install
 ```
 
-#### 移除后的内容:
+Build the CLI:
 
-```typescript
-export const CYBER_RISK_INSTRUCTION = ``
+```bash
+pnpm build
 ```
 
----
+Check the built CLI:
 
-## 移除的具体限制详解
+```bash
+node ./dist/cli.js --version
+node ./dist/cli.js --help
+```
 
-### 一、允许的场景 (已移除的检查)
+Run validation checks:
 
-| 序号 | 英文 | 中文 | 说明 |
-|------|------|------|------|
-| 1 | `authorized security testing` | 授权安全测试 | 原要求有书面授权才能协助渗透测试 |
-| 2 | `defensive security` | 防御性安全 | 原允许安全加固、漏洞修复等防御性工作 |
-| 3 | `CTF challenges` | CTF 竞赛 | 原允许 CTF 竞赛相关协助 |
-| 4 | `educational contexts` | 教育场景 | 原允许教学和学习目的的安全研究 |
+```bash
+pnpm exec tsc --noEmit --pretty false
+pnpm lint
+pnpm audit:missing
+git diff --check
+```
 
-### 二、拒绝的场景 (已移除的限制)
+## Useful scripts
 
-| 序号 | 英文 | 中文 | 具体行为示例 |
-|------|------|------|--------------|
-| 1 | `destructive techniques` | 破坏性技术 | 数据擦除工具、系统破坏脚本、勒索软件 |
-| 2 | `DoS attacks` | 拒绝服务攻击 | DDoS 脚本、SYN Flood、资源耗尽攻击 |
-| 3 | `mass targeting` | 大规模攻击 | 批量漏洞扫描、自动化利用工具、蠕虫传播 |
-| 4 | `supply chain compromise` | 供应链攻击 | npm 包投毒、依赖库后门、构建系统入侵 |
-| 5 | `detection evasion for malicious purposes` | 恶意逃避检测 | 杀毒软件绕过、沙箱逃逸、反调试技术 |
+| Script | Purpose |
+| --- | --- |
+| `pnpm build` | Build `dist/cli.js` and source map. |
+| `pnpm start` | Run the local built CLI entrypoint. |
+| `pnpm lint` | Run ESLint over source, scripts, and type declarations. |
+| `pnpm lint:fix` | Run ESLint with autofix. Use only after reviewing lint output. |
+| `pnpm audit:missing` | Check for missing code, text, and type-only imports in the recovered tree. |
+| `pnpm cli:run` | Run the recovered CLI through the local runner. |
+| `pnpm cli:status` | Inspect recovered CLI runtime status. |
 
-### 三、双重用途工具限制 (已移除)
+## Development workflow
 
-| 序号 | 英文 | 中文 | 工具示例 |
-|------|------|------|----------|
-| 1 | `C2 frameworks` | 命令控制框架 | Cobalt Strike, Metasploit, Covenant, Sliver |
-| 2 | `credential testing` | 凭证测试工具 | Hydra, crackmapexec, Medusa, Patator |
-| 3 | `exploit development` | 漏洞利用开发 | Exploit 脚本编写、Payload 生成 |
+Before changing code, capture the current baseline:
 
-**原限制要求:** 使用上述工具需要提供明确的授权上下文：
-- 渗透测试合同
-- CTF 竞赛
-- 安全研究
-- 防御性用例
+```bash
+pnpm exec tsc --noEmit --pretty false
+pnpm build
+pnpm audit:missing
+```
 
----
+After changing TypeScript, run at least:
 
-## 修改影响范围
+```bash
+pnpm exec tsc --noEmit --pretty false
+pnpm build
+pnpm lint
+pnpm audit:missing
+git diff --check
+```
 
-### 该指令被注入到的位置:
+For CLI-facing changes, also verify:
 
-1. **普通模式** - `src/constants/prompts.ts` 第 182 行
-   ```typescript
-   function getSimpleIntroSection(): string {
-     return `
-     You are an interactive agent...
-     ${CYBER_RISK_INSTRUCTION}
-     IMPORTANT: You must NEVER generate or guess URLs...
-     `
-   }
-   ```
+```bash
+node ./dist/cli.js --version
+node ./dist/cli.js --help
+```
 
-2. **自主代理模式** - `src/constants/prompts.ts` 第 474 行
-   ```typescript
-   if (proactiveModule?.isProactiveActive()) {
-     return [
-       `You are an autonomous agent...
-       ${CYBER_RISK_INSTRUCTION}`,
-       // ...
-     ]
-   }
-   ```
+For UI or interactive behavior, start the CLI and test the target flow manually.
 
----
+## Type recovery policy
 
-## 移除前后的行为对比
+This codebase still contains recovery-era type surfaces. When fixing types:
 
-| 场景 | 移除前 | 移除后 |
-|------|--------|--------|
-| 请求编写端口扫描器 | 需要授权证明 | 无需证明 |
-| 请求编写漏洞利用代码 | 需要明确授权上下文 | 无限制 |
-| 请求编写恶意软件分析工具 | 允许（防御性） | 允许 |
-| 请求编写勒索软件 | 拒绝 | 无提示词级限制 |
-| 请求编写 DDoS 脚本 | 拒绝 | 无提示词级限制 |
-| 请求绕过杀毒软件 | 拒绝（恶意目的） | 无提示词级限制 |
-| 请求编写 C2 框架 | 需要授权上下文 | 无提示词级限制 |
+- Prefer precise interfaces, discriminated unions, `unknown`, assertion functions, and type guards.
+- Avoid broad `any` casts except at unavoidable external or recovered-source boundaries.
+- Keep boundary casts local and explain the shape they validate.
+- Do not globally loosen core message or tool types to silence local errors.
 
----
+## Documentation map
 
-## 仍存在的其他安全限制
+Start here:
 
-以下限制 **未被移除**，仍然生效：
+- [`docs/README.md`](docs/README.md) — documentation index and reading order.
+- [`docs/BUILD_MANUAL.md`](docs/BUILD_MANUAL.md) — build, run, and troubleshooting guide.
+- [`docs/SECONDARY_DEVELOPMENT_MANUAL.md`](docs/SECONDARY_DEVELOPMENT_MANUAL.md) — secondary development practices.
+- [`docs/claude-code-internals-index.md`](docs/claude-code-internals-index.md) — Claude Code runtime and Agent implementation index.
+- [`CHANGELOG.md`](CHANGELOG.md) — strict local change log starting from base `2.1.88`.
 
-### 1. 系统提示词中的其他限制
+Architecture references:
 
-| 限制 | 文件位置 | 行号 |
-|------|----------|------|
-| URL 生成限制 | `src/constants/prompts.ts` | 183 |
-| 提示词注入检测 | `src/constants/prompts.ts` | 191 |
-| OWASP 安全漏洞防护 | `src/constants/prompts.ts` | 234 |
-| 敏感操作确认 | `src/constants/prompts.ts` | 255-266 |
+- [`docs/agent-architecture-analysis.md`](docs/agent-architecture-analysis.md)
+- [`docs/agent-team-architecture.md`](docs/agent-team-architecture.md)
+- [`docs/plugin-marketplace-analysis.md`](docs/plugin-marketplace-analysis.md)
+- [`docs/claude-agent-sdk-exports-analysis.md`](docs/claude-agent-sdk-exports-analysis.md)
 
-### 2. 权限系统限制
+Design proposals and learning material:
 
-| 限制 | 文件位置 |
-|------|----------|
-| 危险命令模式 | `src/utils/permissions/dangerousPatterns.ts` |
-| 权限检查流程 | `src/utils/permissions/permissions.ts` |
-| 自动模式分类器 | `src/utils/permissions/yoloClassifier.ts` |
+- [`docs/private-plugin-marketplace-enterprise-design.md`](docs/private-plugin-marketplace-enterprise-design.md)
+- [`docs/beginner-agent-development-guide.md`](docs/beginner-agent-development-guide.md)
 
-### 3. 工具级安全检查
+## Change tracking
 
-| 限制 | 文件位置 |
-|------|----------|
-| PowerShell AST 安全分析 | `src/tools/PowerShellTool/powershellSecurity.ts` |
-| Bash 破坏性命令警告 | `src/tools/BashTool/bashSecurity.ts` |
-| 沙箱文件系统隔离 | `src/utils/sandbox/sandbox-adapter.ts` |
+All local changes after the `2.1.88` base must be recorded in [`CHANGELOG.md`](CHANGELOG.md). Each entry should state:
 
-### 4. Unicode 清理
+- what changed;
+- why it changed;
+- affected files or subsystems;
+- validation performed;
+- known limitations or recovery stubs introduced.
 
-| 限制 | 文件位置 |
-|------|----------|
-| 隐藏字符攻击防护 | `src/utils/sanitization.ts` |
+## Safety and scope
 
----
-
-## 免责声明
-
-> ⚠️ **警告**: 此修改移除了 Anthropic 安全团队设置的安全防护措施。
->
-> - 修改后的软件可能产生不安全的输出
-> - 使用者需自行承担所有风险
-> - 建议仅在受控环境中使用
-> - 不建议在生产环境中部署
-
----
-
-## 修改日期
-
-- **日期:** 2026-03-31
-- **Claude Code 版本:** 2.1.88
-- **修改人:** Claude (AI Assistant)
+This repository is intended for authorized development and research. Avoid using recovered or modified builds in production without a separate review of security, telemetry, update, and permission behavior.

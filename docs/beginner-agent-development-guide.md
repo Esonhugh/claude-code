@@ -47,10 +47,10 @@ git clone <this-repo>
 cd claude-code_evil
 
 # 3. 安装依赖
-npm install
+pnpm install
 
 # 4. 构建
-npm run build
+pnpm build
 
 # 5. 获取 Anthropic API Key（用于自己的 Agent 开发）
 # 前往 https://console.anthropic.com/ 创建 API key

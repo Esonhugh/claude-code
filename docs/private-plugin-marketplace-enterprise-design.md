@@ -404,7 +404,7 @@ publish:
 
   prebuild:
     - npm ci
-    - npm run build
+    - pnpm build
     - npm test
 
   postpublish:
@@ -1067,7 +1067,7 @@ jobs:
       - name: Install & Build
         run: |
           npm ci
-          npm run build
+          pnpm build
           npm test
 
       - name: Security Scan (SCA)

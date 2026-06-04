@@ -1,243 +1,176 @@
-# 编译手册
+# Build Manual
 
-本文档描述如何在当前恢复工程中完成依赖安装、构建、运行和故障排查。
+This guide explains how to install dependencies, build the recovered Claude Code CLI, run it locally, and verify the recovered source tree.
 
-## 1. 环境要求
+## Status
 
-### 必需环境
+- Base version: `2.1.88`
+- Build output: `dist/cli.js`
+- Package manager used in this workspace: `pnpm`
+- Source state: recovered TypeScript/TSX with explicit recovery shims and type declarations
 
-- Node.js `>= 18`
-- npm
-- 可访问 npm registry
+## Requirements
 
-当前仓库的 `package.json` 已声明：
+Required:
 
-```json
-{
-  "type": "module",
-  "engines": {
-    "node": ">=18.0.0"
-  }
-}
-```
+- Node.js `>=18`
+- `pnpm`
+- Network access to the configured npm registry
 
-### 建议环境
+Recommended:
 
-- macOS / Linux / WSL
-- Node.js 20 或以上
-- 可用的网络代理环境，尤其是需要走自定义 `ANTHROPIC_BASE_URL` 时
+- macOS, Linux, or WSL
+- Node.js 20+
+- A clean shell environment when debugging CLI startup issues
 
-## 2. 依赖安装
+## Install dependencies
 
 ```bash
-cd /Users/test/Downloads/claude-code/package/claude-code-2.1.88
-npm install
+pnpm install
 ```
 
-如果 npm 缓存目录权限不稳定，建议本项目内单独使用缓存：
+If dependency resolution changes, keep `pnpm-lock.yaml` in sync with `package.json`.
+
+## Build
 
 ```bash
-npm_config_cache=.npm-cache npm install
+pnpm build
 ```
 
-## 3. 构建步骤
-
-### 标准构建
-
-```bash
-npm_config_cache=.npm-cache npm run build
-```
-
-脚本入口：
-
-- [package.json](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/package.json)
-- [scripts/build.mjs](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/scripts/build.mjs)
-
-### 构建产物
-
-成功后会生成：
+Expected outputs:
 
 - `dist/cli.js`
 - `dist/cli.js.map`
 
-## 4. 构建链说明
+The build is driven by `scripts/build.mjs`. It handles recovery-specific build behavior such as Bun import shims, text asset loaders, and native-module fallbacks.
 
-当前构建链不是官方原始流水线，而是恢复工程的重建流水线，主要由 esbuild 完成。它额外做了几件对恢复工程很关键的事情：
+## Run the CLI
 
-1. 把 `bun:bundle`、`bun:ffi` 等 Bun 相关导入映射到 shim。
-2. 为 `.md`、`.txt` 文本资源注册 `text` loader。
-3. 对恢复过程中仍缺失的模块注入 `missing-module` / `missing-text` 降级模块。
-4. 对 `color-diff-napi` 这类原生依赖优先切换到 TS 替代实现。
-5. 通过 `feature('FLAG')` 的宏替换配合 `CLAUDE_CODE_RECOVER_FEATURES` 做恢复期功能裁剪。
-
-## 5. 运行验证
-
-### 构建后检查版本
+Check version:
 
 ```bash
-node dist/cli.js --version
+node ./dist/cli.js --version
 ```
 
-期望输出类似：
+Expected base output:
 
 ```text
 2.1.88 (Claude Code)
 ```
 
-### 检查恢复启动器状态
+Check help:
 
 ```bash
-npm run cli:status
+node ./dist/cli.js --help
 ```
 
-### 非交互调用验证
+Run through the local script:
 
 ```bash
-npm run cli:run -- -p "Reply with exactly: OK"
+pnpm cli:run
 ```
 
-期望输出：
-
-```text
-OK
-```
-
-### 交互模式验证
+Check runtime status:
 
 ```bash
-npm run cli:run
+pnpm cli:status
 ```
 
-如果一切正常，应能进入 Claude Code 欢迎界面与主题选择界面。
+## Validation checklist
 
-## 6. 启动模式
-
-### 模式 A：默认模式
+Run these after TypeScript or build-system changes:
 
 ```bash
-npm run cli:run
+pnpm exec tsc --noEmit --pretty false
+pnpm build
+pnpm lint
+pnpm audit:missing
+git diff --check
+node ./dist/cli.js --version
+node ./dist/cli.js --help
 ```
 
-默认模式会：
+Current expectations:
 
-- 使用项目内 `.claude-recovery/` 保存运行时状态
-- 自动继承 `~/.claude/settings.json` 中的 `env` 配置
+- TypeScript should pass with no errors.
+- Build should produce `dist/cli.js`.
+- ESLint should report no errors. Warnings may remain while recovered source cleanup continues.
+- `audit:missing` should report zero missing imports/assets.
+- `git diff --check` should produce no output.
 
-适合：
+## Missing import audit
 
-- 你已经在全局配置里设置了代理
-- 你要沿用已有认证和模型环境
-
-### 模式 B：隔离模式
+Run:
 
 ```bash
-CLAUDE_RECOVERY_SKIP_GLOBAL_ENV=1 npm run cli:run
+pnpm audit:missing
 ```
 
-隔离模式会：
+The audit checks:
 
-- 仍然使用项目内 `.claude-recovery/`
-- 但不继承全局 `~/.claude/settings.json` 的 `env`
+- missing `src/*` imports;
+- missing relative code imports;
+- missing text assets;
+- missing type-only modules.
 
-适合：
+Treat runtime code and text asset misses as high priority. Type-only misses may not break the build, but they reduce maintainability and should be fixed during type recovery work.
 
-- 排查全局环境污染
-- 验证最小化恢复环境
-- 做二开或 CI 验证
+## Recovery build behavior
 
-## 7. 缺失模块审计
+The recovered build differs from a normal application build in several ways:
 
-恢复源码时，建议经常运行：
+1. Some Bun virtual imports are shimmed for Node/esbuild compatibility.
+2. Text assets are loaded explicitly.
+3. Feature-gated internal modules may be represented by minimal recovery stubs.
+4. Native packages may be redirected to TypeScript fallbacks.
+5. Recovered source maps and declarations may require local type guards at API boundaries.
+
+Keep these behaviors explicit. Do not hide missing runtime behavior behind broad global type loosening.
+
+## Troubleshooting
+
+### `pnpm build` succeeds but the CLI crashes on `--help`
+
+Check command registration and Commander option definitions. Commander short flags must be one dash and one character; multi-character aliases should be long flags such as `--d2e`.
+
+### `audit:missing` reports missing code imports
+
+1. Identify the import path.
+2. Check whether the module is feature-gated or required at runtime.
+3. Restore the real implementation when possible.
+4. If unavailable, add a narrow recovery stub with the exact interface callers need.
+
+### TypeScript errors around recovered messages or SDK blocks
+
+Prefer:
+
+- local interfaces for the boundary shape;
+- `unknown` plus type guards;
+- assertion functions for externally recovered structures.
+
+Avoid broad `any` on core message or tool types.
+
+### CLI can start but API calls fail
+
+Check:
+
+- authentication environment;
+- `ANTHROPIC_BASE_URL` or other proxy settings;
+- whether the configured endpoint supports the expected `/v1/messages` API;
+- whether the token is valid for that endpoint.
+
+## Release readiness checklist
+
+Before treating a build as usable:
 
 ```bash
-npm run audit:missing
+pnpm exec tsc --noEmit --pretty false
+pnpm build
+pnpm lint
+pnpm audit:missing
+git diff --check
+node ./dist/cli.js --version
+node ./dist/cli.js --help
 ```
 
-该脚本会输出四类信息：
-
-- `Missing src/* imports`
-- `Missing relative code imports`
-- `Missing text assets`
-- `Missing type-only modules`
-
-入口脚本：
-
-- [scripts/audit-missing.mjs](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/scripts/audit-missing.mjs)
-
-建议解读方式：
-
-- 前三项优先级最高，会直接影响运行或打包。
-- `type-only` 缺口通常不阻塞当前打包，但会影响类型体验和后续维护质量。
-
-## 8. 常见问题
-
-### 8.1 `TypeError: import_chalk4.Chalk is not a constructor`
-
-原因：
-
-- 恢复源码使用了不兼容当前 `chalk@4` 的导入方式。
-
-现状：
-
-- 已在 [src/utils/theme.ts](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/src/utils/theme.ts) 修复为兼容写法。
-
-### 8.2 交互界面启动时报 `getSyntaxTheme is not a function`
-
-原因：
-
-- `color-diff-napi` 被当作缺失原生模块降级，但交互主题选择流程依赖它的 `getSyntaxTheme`。
-
-现状：
-
-- 已在 [scripts/build.mjs](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/scripts/build.mjs) 将它映射到 [src/native-ts/color-diff/index.ts](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/src/native-ts/color-diff/index.ts)。
-
-### 8.3 `npm` 报缓存目录权限错误
-
-建议先尝试：
-
-```bash
-npm_config_cache=.npm-cache npm install
-npm_config_cache=.npm-cache npm run build
-```
-
-如果仍然报 `EACCES`，需要修复用户目录中的 npm 缓存权限。
-
-### 8.4 CLI 能启动但请求卡住
-
-重点检查：
-
-- `~/.claude/settings.json` 中是否配置了 `ANTHROPIC_BASE_URL`
-- 该代理是否真的支持 `/v1/messages`
-- 认证头到底是 `Bearer` 还是 `x-api-key`
-- 代理是否会返回空响应
-
-### 8.5 直连官方接口时报 `403 Request not allowed`
-
-说明：
-
-- 当前认证材料可能只对你的代理有效，不一定能直连官方 `api.anthropic.com`。
-
-## 9. 构建回归建议
-
-每次修改恢复源码后，建议至少跑下面这一组：
-
-```bash
-npm_config_cache=.npm-cache npm run build
-npm run audit:missing
-npm run cli:status
-npm run cli:run -- -p "Reply with exactly: OK"
-```
-
-如果改动涉及交互界面，再额外验证：
-
-```bash
-npm run cli:run
-```
-
-## 10. 发布前最低检查项
-
-- `dist/cli.js` 可以重新生成
-- `cli:status` 可运行
-- `cli:run -p` 可返回结果
-- 交互模式不在启动阶段崩溃
-- `audit:missing` 不出现新的运行时缺口
+If the change affects interactive UI, also run the CLI interactively and test the changed flow manually.
