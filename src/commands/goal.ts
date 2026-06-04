@@ -11,6 +11,7 @@ $ARGUMENTS
 Decision rules:
 - Return ok: true only if the latest /goal objective has a verified final result and no unresolved required work remains.
 - Return ok: true if there is no active /goal objective in the transcript.
+- Return ok: true if the latest /goal command is clear, because that explicitly clears any active objective.
 - Return ok: true if stop_hook_active is true and the last assistant message is still genuinely blocked by permissions, missing credentials, or a user-only decision.
 - Return ok: false when the objective is partially complete, unverified, has failing checks, still has in-progress tasks, or can be continued autonomously with available tools.
 - When returning ok: false, the reason must be a concrete continuation instruction for the main assistant. Include what remains, what to do next, and any checks to run. The main assistant will receive this reason as hidden Stop hook feedback and continue without human intervention.
@@ -35,12 +36,22 @@ Rules:
 When finished, report the verified result and any remaining blockers concisely.
 `
 
+const isGoalClear = (args: string): boolean => args.trim().toLowerCase() === 'clear'
+
+const goalClearPrompt = `
+The active /goal objective has been explicitly cleared by the user.
+
+Do not continue any previous /goal objective. Treat the session as having no active autonomous goal.
+
+Report concisely that the goal has been cleared.
+`
+
 const goal: Command = {
   type: 'prompt',
   name: 'goal',
   description: 'Work autonomously toward a goal',
-  argumentHint: '<goal>',
-  progressMessage: 'working toward goal',
+  argumentHint: '[ <condition> | clear ]',
+  progressMessage: 'Set a goal — keep working until the condition is met',
   contentLength: 0,
   source: 'builtin',
   allowedTools: [AGENT_TOOL_NAME],
@@ -58,8 +69,13 @@ const goal: Command = {
       },
     ],
   },
-  async getPromptForCommand(args): Promise<ContentBlockParam[]> {
-    return [{ type: 'text', text: goalPrompt(args) }]
+  async getPromptForCommand(args, context): Promise<ContentBlockParam[]> {
+    const clearGoal = isGoalClear(args)
+    context.setAppState(prev => {
+      if (prev.goalStatus.active === !clearGoal) return prev
+      return { ...prev, goalStatus: { active: !clearGoal } }
+    })
+    return [{ type: 'text', text: clearGoal ? goalClearPrompt : goalPrompt(args) }]
   },
 }
 

@@ -1,0 +1,222 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build, for example v2.1.89'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      checkout_ref: ${{ steps.version.outputs.checkout_ref }}
+    steps:
+      - name: Checkout repository metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            echo "Expected format: vX.Y.Z" >&2
+            exit 1
+          fi
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            git fetch --force --tags origin
+            if ! CHECKOUT_REF="$(git rev-parse "refs/tags/$TAG^{}" 2>/dev/null)"; then
+              echo "Release tag does not exist: $TAG" >&2
+              exit 1
+            fi
+          else
+            CHECKOUT_REF="${GITHUB_SHA}"
+          fi
+
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.os }}
+    needs: validate-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-14
+          - macos-13
+          - windows-latest
+    env:
+      CLAUDE_CODE_VERSION: ${{ needs.validate-tag.outputs.version }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-tag.outputs.checkout_ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Verify source version is dev
+        shell: bash
+        run: |
+          node -e "const p=require('./package.json'); if (p.version !== '0.0.0-dev') { console.error('package.json version must stay 0.0.0-dev, got ' + p.version); process.exit(1); }"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit --pretty false
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Audit missing recovered imports
+        run: pnpm audit:missing
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Build CLI with release version
+        run: pnpm build
+
+      - name: Verify CLI version
+        shell: bash
+        run: |
+          VERSION_OUTPUT="$(node ./dist/cli.js --version)"
+          echo "$VERSION_OUTPUT"
+          if [[ "$VERSION_OUTPUT" != *"${CLAUDE_CODE_VERSION} (Claude Code)"* ]]; then
+            echo "Expected version output to contain ${CLAUDE_CODE_VERSION} (Claude Code)" >&2
+            exit 1
+          fi
+
+      - name: Verify CLI help
+        run: node ./dist/cli.js --help
+
+      - name: Package binary
+        run: pnpm package:binary
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-code-v${{ needs.validate-tag.outputs.version }}-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - validate-tag
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag metadata
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-tag.outputs.checkout_ref }}
+
+      - name: Resolve release commit
+        id: release-commit
+        shell: bash
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag still matches build commit
+        shell: bash
+        env:
+          BUILD_SHA: ${{ needs.validate-tag.outputs.checkout_ref }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          if ! git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"; then
+            echo "Release tag no longer exists on origin: $TAG" >&2
+            exit 1
+          fi
+          CURRENT_TAG_SHA="$(git rev-parse "refs/tags/$TAG^{}")"
+          if [[ "$CURRENT_TAG_SHA" != "$BUILD_SHA" ]]; then
+            echo "Release tag $TAG changed after build." >&2
+            echo "Built commit: $BUILD_SHA" >&2
+            echo "Current tag target: $CURRENT_TAG_SHA" >&2
+            exit 1
+          fi
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<EOF
+          Automated binary release for ${{ needs.validate-tag.outputs.tag }}.
+
+          Version: ${{ needs.validate-tag.outputs.version }}
+          Commit: ${{ steps.release-commit.outputs.sha }}
+
+          Checks run before packaging:
+          - pnpm exec tsc --noEmit --pretty false
+          - pnpm lint
+          - pnpm audit:missing
+          - git diff --check
+          - node ./dist/cli.js --version
+          - node ./dist/cli.js --help
+
+          Verify downloads with SHA256SUMS.txt.
+          EOF
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate-tag.outputs.tag }}
+          name: ${{ needs.validate-tag.outputs.tag }}
+          body_path: release-notes.md
+          files: artifacts/*

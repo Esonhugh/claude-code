@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { builtinModules } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
+
+const packageJson = JSON.parse(
+  await fs.promises.readFile(
+    new URL('../package.json', import.meta.url),
+    'utf8',
+  ),
+);
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(rootDir, '..');
@@ -21,6 +28,10 @@ const colorDiffFallbackPath = path.join(
   projectDir,
   'src/native-ts/color-diff/index.ts',
 );
+const defaultVersion = '0.0.0-dev';
+const buildVersion = String(
+  process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
+).trim() || defaultVersion;
 
 const builtinSet = new Set([
   ...builtinModules,
@@ -68,7 +79,7 @@ const macroValues = {
   ),
   'MACRO.NATIVE_PACKAGE_URL': 'null',
   'MACRO.PACKAGE_URL': JSON.stringify('@anthropic-ai/claude-code'),
-  'MACRO.VERSION': JSON.stringify('2.1.88'),
+  'MACRO.VERSION': JSON.stringify(buildVersion),
   'MACRO.VERSION_CHANGELOG': 'null',
 };
 

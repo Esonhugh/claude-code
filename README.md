@@ -16,9 +16,23 @@ This is not an official Anthropic source distribution. Treat it as a recovery an
 ## Current baseline
 
 - Base version: `2.1.88`
+- Local source version: `0.0.0-dev`
 - Runtime target: Node.js `>=18`
 - Package manager used in this workspace: `pnpm`
 - Build output: `dist/cli.js`
+
+## Release and version flow
+
+This repository keeps the recovered source tree on the local development version `0.0.0-dev` while preserving the recovered base version `2.1.88` in the project history and documentation.
+
+- Local source builds use `0.0.0-dev` by default.
+- Release builds derive their version from the Git tag, for example `v2.1.89`.
+- The release process is tag-driven:
+  1. create and push a release tag such as `git tag v2.1.89` and `git push origin v2.1.89`;
+  2. the release workflow builds with `CLAUDE_CODE_VERSION=2.1.89`;
+  3. the workflow packages per-runner binaries;
+  4. the workflow attaches `SHA256SUMS.txt` alongside the release artifacts.
+- The local packaging script also rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override before compiling the binary artifact.
 
 ## Quick start
 
@@ -40,6 +54,40 @@ Check the built CLI:
 node ./dist/cli.js --version
 node ./dist/cli.js --help
 ```
+
+Expected local source version output:
+
+```text
+0.0.0-dev (Claude Code)
+```
+
+Build a tagged release locally by overriding the version during the build:
+
+```bash
+CLAUDE_CODE_VERSION=2.1.89 pnpm build
+node ./dist/cli.js --version
+```
+
+Expected release build output:
+
+```text
+2.1.89 (Claude Code)
+```
+
+Package a local binary after rebuilding with the release version override:
+
+```bash
+pnpm build
+CLAUDE_CODE_VERSION=2.1.89 pnpm package:binary
+```
+
+The binary smoke-test path uses the actual runtime platform and architecture reported by Node:
+
+```bash
+./dist/release/claude-code-v2.1.89-$(node -p "process.platform")-$(node -p "process.arch")
+```
+
+`pnpm package:binary` rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override and names the artifact using the current runtime platform and architecture, not fake target environment variables.
 
 Run validation checks:
 

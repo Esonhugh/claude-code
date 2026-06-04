@@ -5,6 +5,7 @@ This guide explains how to install dependencies, build the recovered Claude Code
 ## Status
 
 - Base version: `2.1.88`
+- Local source version: `0.0.0-dev`
 - Build output: `dist/cli.js`
 - Package manager used in this workspace: `pnpm`
 - Source state: recovered TypeScript/TSX with explicit recovery shims and type declarations
@@ -52,10 +53,23 @@ Check version:
 node ./dist/cli.js --version
 ```
 
-Expected base output:
+Expected local source output:
 
 ```text
-2.1.88 (Claude Code)
+0.0.0-dev (Claude Code)
+```
+
+Build with a release version override when you want the built CLI to report a tagged release version:
+
+```bash
+CLAUDE_CODE_VERSION=2.1.89 pnpm build
+node ./dist/cli.js --version
+```
+
+Expected release build output:
+
+```text
+2.1.89 (Claude Code)
 ```
 
 Check help:
@@ -160,6 +174,23 @@ The audit checks:
 - missing type-only modules.
 
 Treat runtime code and text asset misses as high priority. Type-only misses may not break the build, but they reduce maintainability and should be fixed during type recovery work.
+
+## Binary packaging
+
+Use the Bun packaging script to rebuild `dist/cli.js` with a release version override and produce a platform-specific binary for the current machine:
+
+```bash
+pnpm build
+CLAUDE_CODE_VERSION=2.1.89 pnpm package:binary
+```
+
+The artifact is written under `dist/release/` and uses the runtime platform and architecture reported by Node, so the smoke-test path should be constructed with:
+
+```bash
+./dist/release/claude-code-v2.1.89-$(node -p "process.platform")-$(node -p "process.arch")
+```
+
+`pnpm package:binary` always rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override before compiling the binary. It does not rely on fake target environment variables for the artifact name.
 
 ## Recovery build behavior
 

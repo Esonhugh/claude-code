@@ -70,6 +70,7 @@ function buildStatusLineCommandInput(
   messages: Message[],
   addedDirs: string[],
   mainLoopModel: ModelName,
+  goalActive: boolean,
   vimMode?: VimMode,
 ): StatusLineCommandInput {
   const agentType = getMainThreadAgentType()
@@ -121,6 +122,9 @@ function buildStatusLineCommandInput(
       added_dirs: addedDirs,
     },
     version: MACRO.VERSION,
+    goal: {
+      active: goalActive,
+    },
     output_style: {
       name: outputStyleName,
     },
@@ -193,6 +197,7 @@ function StatusLineInner({
     s => s.toolPermissionContext.additionalWorkingDirectories,
   )
   const statusLineText = useAppState(s => s.statusLineText)
+  const goalActive = useAppState(s => s.goalStatus.active)
   const setAppState = useSetAppState()
   const settings = useSettings()
   const { addNotification } = useNotifications()
@@ -212,6 +217,8 @@ function StatusLineInner({
   addedDirsRef.current = additionalWorkingDirectories
   const mainLoopModelRef = useRef(mainLoopModel)
   mainLoopModelRef.current = mainLoopModel
+  const goalActiveRef = useRef(goalActive)
+  goalActiveRef.current = goalActive
 
   // Track previous state to detect changes and cache expensive calculations
   const previousStateRef = useRef<{
@@ -220,12 +227,14 @@ function StatusLineInner({
     permissionMode: PermissionMode
     vimMode: VimMode | undefined
     mainLoopModel: ModelName
+    goalActive: boolean
   }>({
     messageId: null,
     exceeds200kTokens: false,
     permissionMode,
     vimMode,
     mainLoopModel,
+    goalActive,
   })
 
   // Debounce timer ref
@@ -269,6 +278,7 @@ function StatusLineInner({
           (addedDirsRef.current as unknown as Map<string, unknown>).keys(),
         ),
         mainLoopModelRef.current,
+        goalActiveRef.current,
         vimModeRef.current,
       )
 
@@ -311,13 +321,15 @@ function StatusLineInner({
       lastAssistantMessageId !== previousStateRef.current.messageId ||
       permissionMode !== previousStateRef.current.permissionMode ||
       vimMode !== previousStateRef.current.vimMode ||
-      mainLoopModel !== previousStateRef.current.mainLoopModel
+      mainLoopModel !== previousStateRef.current.mainLoopModel ||
+      goalActive !== previousStateRef.current.goalActive
     ) {
       // Don't update messageId here — let doUpdate handle it so
       // exceeds200kTokens is recalculated with the latest messages
       previousStateRef.current.permissionMode = permissionMode
       previousStateRef.current.vimMode = vimMode
       previousStateRef.current.mainLoopModel = mainLoopModel
+      previousStateRef.current.goalActive = goalActive
       scheduleUpdate()
     }
   }, [
@@ -325,6 +337,7 @@ function StatusLineInner({
     permissionMode,
     vimMode,
     mainLoopModel,
+    goalActive,
     scheduleUpdate,
   ])
 
@@ -391,6 +404,9 @@ function StatusLineInner({
 
   // Get padding from settings or default to 0
   const paddingX = settings?.statusLine?.padding ?? 0
+  const renderedStatusLineText = goalActive
+    ? [statusLineText, 'goal: active'].filter(Boolean).join(' ')
+    : statusLineText
 
   // StatusLine must have stable height in fullscreen — the footer is
   // flexShrink:0 so a 0→1 row change when the command finishes steals
@@ -398,9 +414,9 @@ function StatusLineInner({
   // (same trick as PromptInputFooterLeftSide).
   return (
     <Box paddingX={paddingX} gap={2}>
-      {statusLineText ? (
+      {renderedStatusLineText ? (
         <Text dimColor wrap="truncate">
-          <Ansi>{statusLineText}</Ansi>
+          <Ansi>{renderedStatusLineText}</Ansi>
         </Text>
       ) : isFullscreenEnvEnabled() ? (
         <Text> </Text>
