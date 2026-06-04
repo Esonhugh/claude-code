@@ -14,6 +14,7 @@ import { count } from '../../utils/array.js';
 import { shouldSkipPluginAutoupdate } from '../../utils/config.js';
 import { errorMessage } from '../../utils/errors.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
+import { ESONHUGH_MARKETPLACE_NAME } from '../../utils/plugins/esonhughMarketplace.js';
 import { createPluginId, formatMarketplaceLoadingErrors, getMarketplaceSourceDisplay, loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
 import { loadKnownMarketplacesConfig, refreshMarketplace, removeMarketplaceSource, setMarketplaceAutoUpdate } from '../../utils/plugins/marketplaceManager.js';
 import { updatePluginsForMarketplaces } from '../../utils/plugins/pluginAutoupdate.js';
@@ -104,10 +105,10 @@ export function ManageMarketplaces({
           });
         }
 
-        // Sort: claude-plugin-directory first, then alphabetically
+        // Sort: default marketplace first, then alphabetically
         states.sort((a, b) => {
-          if (a.name === 'claude-plugin-directory') return -1;
-          if (b.name === 'claude-plugin-directory') return 1;
+          if (a.name === ESONHUGH_MARKETPLACE_NAME) return -1;
+          if (b.name === ESONHUGH_MARKETPLACE_NAME) return 1;
           return a.name.localeCompare(b.name);
         });
         setMarketplaceStates(states);
@@ -288,10 +289,10 @@ export function ManageMarketplaces({
         });
       }
 
-      // Sort: claude-plugin-directory first, then alphabetically
+      // Sort: default marketplace first, then alphabetically
       newStates.sort((a, b) => {
-        if (a.name === 'claude-plugin-directory') return -1;
-        if (b.name === 'claude-plugin-directory') return 1;
+        if (a.name === ESONHUGH_MARKETPLACE_NAME) return -1;
+        if (b.name === ESONHUGH_MARKETPLACE_NAME) return 1;
         return a.name.localeCompare(b.name);
       });
       setMarketplaceStates(newStates);
@@ -717,9 +718,9 @@ export function ManageMarketplaces({
               <Box flexDirection="column" flexGrow={1}>
                 <Box flexDirection="row" gap={1}>
                   <Text bold strikethrough={state.pendingRemove} dimColor={state.pendingRemove}>
-                    {state.name === 'claude-plugins-official' && <Text color="claude">✻ </Text>}
+                    {state.name === ESONHUGH_MARKETPLACE_NAME && <Text color="claude">✻ </Text>}
                     {state.name}
-                    {state.name === 'claude-plugins-official' && <Text color="claude"> ✻</Text>}
+                    {state.name === ESONHUGH_MARKETPLACE_NAME && <Text color="claude"> ✻</Text>}
                   </Text>
                   {indicators.length > 0 && <Text color="warning">[{indicators.join(', ')}]</Text>}
                 </Box>

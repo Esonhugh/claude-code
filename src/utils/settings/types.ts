@@ -565,6 +565,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enabled plugins using plugin-id@marketplace-id format. Example: { "formatter@anthropic-tools": true }. Also supports extended format with version constraints.',
         ),
+      favoritePlugins: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Favorite plugins using plugin-id@marketplace-id format. Favorite installed plugins are prioritized in the Installed plugins view.',
+        ),
       // Extra marketplaces for this repository (usually for project settings)
       extraKnownMarketplaces: z
         .record(z.string(), ExtraKnownMarketplaceSchema())

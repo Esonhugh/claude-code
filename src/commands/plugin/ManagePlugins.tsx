@@ -32,9 +32,11 @@ import { errorMessage, toError } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
 import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsManager.js';
+import { ESONHUGH_MARKETPLACE_NAME } from '../../utils/plugins/esonhughMarketplace.js';
 import { getMarketplace } from '../../utils/plugins/marketplaceManager.js';
 import { isMcpbSource, loadMcpbFile, type McpbNeedsConfigResult, type UserConfigValues } from '../../utils/plugins/mcpbHandler.js';
 import { getPluginDataDirSize, pluginDataDirPath } from '../../utils/plugins/pluginDirectories.js';
+import { getFavoritePluginIds, togglePluginFavorite } from '../../utils/plugins/pluginFavorites.js';
 import { getFlaggedPlugins, markFlaggedPluginsSeen, removeFlaggedPlugin } from '../../utils/plugins/pluginFlagging.js';
 import { type PersistablePluginScope, parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js';
 import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js';
@@ -437,6 +439,7 @@ export function ManagePlugins({
   // Data state
   const [marketplaces, setMarketplaces] = useState<MarketplaceInfo[]>([]);
   const [pluginStates, setPluginStates] = useState<PluginState[]>([]);
+  const [favoritePluginIds, setFavoritePluginIds] = useState<Set<string>>(() => getFavoritePluginIds());
   const [loading, setLoading] = useState(true);
   const [pendingToggles, setPendingToggles] = useState<Map<string, 'will-enable' | 'will-disable'>>(new Map());
 
@@ -564,6 +567,7 @@ export function ManagePlugins({
 
       // Built-in plugins use 'builtin' scope; others look up from V2 data.
       const originalScope = state.plugin.isBuiltin ? 'builtin' : state.scope || 'user';
+      const isFavorite = favoritePluginIds.has(pluginId);
       pluginsWithChildren.push({
         item: {
           type: 'plugin',
@@ -571,14 +575,16 @@ export function ManagePlugins({
           name: state.plugin.name,
           description: state.plugin.manifest.description,
           marketplace: state.marketplace,
-          scope: originalScope,
+          scope: isFavorite ? 'favorite' : originalScope,
+          originalScope,
           isEnabled,
           errorCount: errors.length,
           errors,
           plugin: state.plugin,
           pendingEnable: state.pendingEnable,
           pendingUpdate: state.pendingUpdate,
-          pendingToggle: pendingToggles.get(pluginId)
+          pendingToggle: pendingToggles.get(pluginId),
+          isFavorite
         },
         originalScope,
         childMcps: pluginMcpMap.get(state.plugin.name) || []
@@ -644,13 +650,14 @@ export function ManagePlugins({
     // Define scope order for display
     const scopeOrder: Record<string, number> = {
       flagged: -1,
-      project: 0,
-      local: 1,
-      user: 2,
-      enterprise: 3,
-      managed: 4,
-      dynamic: 5,
-      builtin: 6
+      favorite: 0,
+      project: 1,
+      local: 2,
+      user: 3,
+      enterprise: 4,
+      managed: 5,
+      dynamic: 6,
+      builtin: 7
     };
 
     // Build final list by merging plugins (with their child MCPs) and standalone MCPs
@@ -677,7 +684,7 @@ export function ManagePlugins({
         displayName,
         client: client_2
       } of childMcps) {
-        const displayScope = originalScope_0 === 'builtin' ? 'user' : originalScope_0;
+        const displayScope = item_1.scope === 'favorite' ? 'favorite' : originalScope_0 === 'builtin' ? 'user' : originalScope_0;
         if (!itemsByScope.has(displayScope)) {
           itemsByScope.set(displayScope, []);
         }
@@ -780,7 +787,7 @@ export function ManagePlugins({
       unified.push(...standaloneMcpsInScope);
     }
     return unified;
-  }, [pluginStates, mcpClients, pluginErrors, pendingToggles, flaggedPlugins]);
+  }, [pluginStates, mcpClients, pluginErrors, pendingToggles, flaggedPlugins, favoritePluginIds]);
 
   // Mark flagged plugins as seen when the Installed view renders them.
   // After 48 hours from seenAt, they auto-clear on next load.
@@ -896,10 +903,10 @@ export function ManagePlugins({
           });
         }
 
-        // Sort marketplaces: claude-plugin-directory first, then alphabetically
+        // Sort marketplaces: default marketplace first, then alphabetically
         marketplaceInfos.sort((a, b) => {
-          if (a.name === 'claude-plugin-directory') return -1;
-          if (b.name === 'claude-plugin-directory') return 1;
+          if (a.name === ESONHUGH_MARKETPLACE_NAME) return -1;
+          if (b.name === ESONHUGH_MARKETPLACE_NAME) return 1;
           return a.name.localeCompare(b.name);
         });
         setMarketplaces(marketplaceInfos);
@@ -1303,10 +1310,26 @@ export function ManagePlugins({
     const pluginId_5 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
     const isEnabled_1 = mergedSettings_1?.enabledPlugins?.[pluginId_5] !== false;
     const isBuiltin_1 = selectedPlugin.marketplace === 'builtin';
+    const isFavorite = favoritePluginIds.has(pluginId_5);
     const menuItems: Array<{
       label: string;
       action: () => void;
     }> = [];
+    menuItems.push({
+      label: isFavorite ? 'Remove from favorites' : 'Add to favorites',
+      action: () => {
+        try {
+          const nextFavorite = togglePluginFavorite(pluginId_5);
+          setFavoritePluginIds(getFavoritePluginIds());
+          setSelectedPlugin({
+            ...selectedPlugin
+          });
+          setResult(`${selectedPlugin.plugin.name} ${nextFavorite ? 'added to' : 'removed from'} favorites.`);
+        } catch (error_1) {
+          setProcessError(error_1 instanceof Error ? error_1.message : 'Failed to update favorites');
+        }
+      }
+    });
     menuItems.push({
       label: isEnabled_1 ? 'Disable plugin' : 'Enable plugin',
       action: () => void handleSingleOperation(isEnabled_1 ? 'disable' : 'enable')
@@ -1422,7 +1445,7 @@ export function ManagePlugins({
       }
     });
     return menuItems;
-  }, [viewState, selectedPlugin, selectedPluginHasMcpb, pluginStates]);
+  }, [viewState, selectedPlugin, selectedPluginHasMcpb, pluginStates, favoritePluginIds, setResult]);
 
   // Plugin-details navigation
   useKeybindings({

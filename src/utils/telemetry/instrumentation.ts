@@ -48,6 +48,7 @@ import {
 import { getPlatform, getWslVersion } from 'src/utils/platform.js'
 
 import { getCACertificates } from '../caCerts.js'
+import { isAnthropicTelemetryEnabled } from '../../services/analytics/config.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getHasFormattedOutput, logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
@@ -85,7 +86,7 @@ function telemetryTimeout(ms: number, message: string): Promise<never> {
 }
 
 export function bootstrapTelemetry() {
-  if (process.env.USER_TYPE === 'ant') {
+  if (process.env.USER_TYPE === 'ant' && isAnthropicTelemetryEnabled()) {
     // Read from ANT_ prefixed variables that are defined at build time
     if (process.env.ANT_OTEL_METRICS_EXPORTER) {
       process.env.OTEL_METRICS_EXPORTER = process.env.ANT_OTEL_METRICS_EXPORTER
@@ -334,6 +335,10 @@ function getBigQueryExportingReader() {
 }
 
 function isBigQueryMetricsEnabled() {
+  if (!isAnthropicTelemetryEnabled()) {
+    return false
+  }
+
   // BigQuery metrics are enabled for:
   // 1. API customers (excluding Claude.ai subscribers and Bedrock/Vertex)
   // 2. Claude for Enterprise (C4E) users

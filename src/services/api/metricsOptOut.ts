@@ -5,6 +5,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { getAuthHeaders, withOAuth401Retry } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
+import { isAnthropicTelemetryEnabled } from '../analytics/config.js'
 import { memoizeWithTTLAsync } from '../../utils/memoize.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
@@ -126,6 +127,10 @@ async function refreshMetricsStatus(): Promise<MetricsStatus> {
  * an extra one during the 24h window is acceptable.
  */
 export async function checkMetricsEnabled(): Promise<MetricsStatus> {
+  if (!isAnthropicTelemetryEnabled()) {
+    return { enabled: false, hasError: false }
+  }
+
   // Service key OAuth sessions lack user:profile scope → would 403.
   // API key users (non-subscribers) fall through and use x-api-key auth.
   // This check runs before the disk read so we never persist auth-state-derived

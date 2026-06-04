@@ -15,7 +15,7 @@ importers:
         specifier: ^0.26.4
         version: 0.26.4(zod@4.3.6)
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.2.88
+        specifier: ^0.2.89
         version: 0.2.92(zod@4.3.6)
       '@anthropic-ai/foundry-sdk':
         specifier: ^0.2.3
@@ -166,7 +166,7 @@ importers:
         version: 9.6.1
       fflate:
         specifier: ^0.8.2
-        version: 0.8.2
+        version: 0.8.3
       figures:
         specifier: ^6.1.0
         version: 6.1.0
@@ -211,7 +211,7 @@ importers:
         version: 4.0.4
       plist:
         specifier: ^3.1.0
-        version: 3.1.0
+        version: 3.1.1
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -235,7 +235,7 @@ importers:
         version: 0.34.5
       shell-quote:
         specifier: ^1.8.3
-        version: 1.8.3
+        version: 1.8.4
       signal-exit:
         specifier: ^4.1.0
         version: 4.1.0
@@ -1451,9 +1451,9 @@ packages:
     resolution: {integrity: sha512-CI0NhTrz4EBaa0U+HaaUZrJhPoso8sG7ZFya8uQoBA57fjzrjRSv87ekCjLZOFExN+gXE/z0xuN2QfH4H2HrLQ==}
     engines: {node: '>=20.0.0'}
 
-  '@xmldom/xmldom@0.8.12':
-    resolution: {integrity: sha512-9k/gHF6n/pAi/9tqr3m3aqkuiNosYTurLLUtc7xQ9sxB/wm7WPygCv8GYa6mS0fLJEHhqMC1ATYhz++U/lRHqg==}
-    engines: {node: '>=10.0.0'}
+  '@xmldom/xmldom@0.9.10':
+    resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
+    engines: {node: '>=14.6'}
 
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
@@ -1814,8 +1814,8 @@ packages:
     resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
     engines: {node: ^12.20 || >= 14.13}
 
-  fflate@0.8.2:
-    resolution: {integrity: sha512-cPJU47OaAoCbg0pBvzsgpTPhmhqI5eJjh/JIu8tPj5q+T7iLvW/JAYUqmE7KOB4R1ZyEhzBaIQpQpardBF5z8A==}
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   figures@6.1.0:
     resolution: {integrity: sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg==}
@@ -2327,8 +2327,8 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
-  plist@3.1.0:
-    resolution: {integrity: sha512-uysumyrvkUX0rX/dEVqt8gC3sTBzd4zoWfLeS29nb53imdaXVvLINYXTI2GNqzaMuvacNx4uJQ8+b3zXR0pkgQ==}
+  plist@3.1.1:
+    resolution: {integrity: sha512-ZIfcLJC+7E7FBFnDxm9MPmt7D+DidyQ26lewieO75AdhA2ayMtsJSES0iWzqJQbcVRSrTufQoy0DR94xHue0oA==}
     engines: {node: '>=10.4.0'}
 
   pngjs@5.0.0:
@@ -2452,8 +2452,8 @@ packages:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
 
-  shell-quote@1.8.3:
-    resolution: {integrity: sha512-ObmnIF4hXNg1BqhnHmgbDETF8dLPCggZWBjkQfhZpbszZnYur5DUljTcCHii5LC3J5E0yeO/1LIMyH+UvHQgyw==}
+  shell-quote@1.8.4:
+    resolution: {integrity: sha512-VsC6n6vz1ihYYyZZwX7YZSF5l5x36ca17OC+a69h94YqB7X6XLwf+5MOgynYir2SLFUbl8gIYvBo8K8RoNQ6bQ==}
     engines: {node: '>= 0.4'}
 
   side-channel-list@1.0.0:
@@ -2792,7 +2792,7 @@ snapshots:
     dependencies:
       '@inquirer/prompts': 6.0.1
       commander: 13.1.0
-      fflate: 0.8.2
+      fflate: 0.8.3
       galactus: 1.0.0
       ignore: 7.0.5
       node-forge: 1.4.0
@@ -2808,7 +2808,7 @@ snapshots:
       '@types/lodash-es': 4.17.12
       commander: 12.1.0
       lodash-es: 4.18.1
-      shell-quote: 1.8.3
+      shell-quote: 1.8.4
       zod: 3.25.76
 
   '@anthropic-ai/sdk@0.80.0(zod@4.3.6)':
@@ -4526,7 +4526,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@xmldom/xmldom@0.8.12': {}
+  '@xmldom/xmldom@0.9.10': {}
 
   accepts@2.0.0:
     dependencies:
@@ -4915,7 +4915,7 @@ snapshots:
       node-domexception: 1.0.0
       web-streams-polyfill: 3.3.3
 
-  fflate@0.8.2: {}
+  fflate@0.8.3: {}
 
   figures@6.1.0:
     dependencies:
@@ -5403,9 +5403,9 @@ snapshots:
 
   pkce-challenge@5.0.1: {}
 
-  plist@3.1.0:
+  plist@3.1.1:
     dependencies:
-      '@xmldom/xmldom': 0.8.12
+      '@xmldom/xmldom': 0.9.10
       base64-js: 1.5.1
       xmlbuilder: 15.1.1
 
@@ -5567,7 +5567,7 @@ snapshots:
 
   shebang-regex@3.0.0: {}
 
-  shell-quote@1.8.3: {}
+  shell-quote@1.8.4: {}
 
   side-channel-list@1.0.0:
     dependencies:

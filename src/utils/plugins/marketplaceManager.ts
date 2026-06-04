@@ -64,6 +64,10 @@ import {
   isSourceInBlocklist,
 } from './marketplaceHelpers.js'
 import {
+  ESONHUGH_MARKETPLACE_NAME,
+  ESONHUGH_MARKETPLACE_SOURCE,
+} from './esonhughMarketplace.js'
+import {
   OFFICIAL_MARKETPLACE_NAME,
   OFFICIAL_MARKETPLACE_SOURCE,
 } from './officialMarketplace.js'
@@ -159,10 +163,14 @@ export type DeclaredMarketplace = {
  * when any enabled plugin references it.
  */
 export function getDeclaredMarketplaces(): Record<string, DeclaredMarketplace> {
-  const implicit: Record<string, DeclaredMarketplace> = {}
+  const implicit: Record<string, DeclaredMarketplace> = {
+    [ESONHUGH_MARKETPLACE_NAME]: {
+      source: ESONHUGH_MARKETPLACE_SOURCE,
+      sourceIsFallback: true,
+    },
+  }
 
-  // Only the official marketplace can be implicitly declared — it's the one
-  // built-in source we know. Other marketplaces have no default source to inject.
+  // The official marketplace is implicitly declared when enabled plugins need it.
   // Explicitly-disabled entries (value: false) don't count.
   const enabledPlugins = {
     ...getAddDirEnabledPlugins(),

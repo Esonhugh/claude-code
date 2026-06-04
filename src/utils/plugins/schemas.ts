@@ -25,6 +25,7 @@ export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'agent-skills',
   'life-sciences',
   'knowledge-work-plugins',
+  'esonhugh-marketplace',
 ])
 
 /**

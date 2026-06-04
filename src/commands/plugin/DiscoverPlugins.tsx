@@ -20,7 +20,7 @@ import { formatInstallCount, getInstallCounts } from '../../utils/plugins/instal
 import { isPluginGloballyInstalled } from '../../utils/plugins/installedPluginsManager.js';
 import { createPluginId, detectEmptyMarketplaceReason, type EmptyMarketplaceReason, formatFailureDetails, formatMarketplaceLoadingErrors, loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
 import { loadKnownMarketplacesConfig } from '../../utils/plugins/marketplaceManager.js';
-import { OFFICIAL_MARKETPLACE_NAME } from '../../utils/plugins/officialMarketplace.js';
+import { ESONHUGH_MARKETPLACE_NAME } from '../../utils/plugins/esonhughMarketplace.js';
 import { installPluginFromMarketplace } from '../../utils/plugins/pluginInstallationHelpers.js';
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js';
 import { plural } from '../../utils/stringUtils.js';
@@ -625,7 +625,7 @@ export function DiscoverPlugins({
                 {plugin_5.entry.name}
                 <Text dimColor> · {plugin_5.marketplaceName}</Text>
                 {plugin_5.entry.tags?.includes('community-managed') && <Text dimColor> [Community Managed]</Text>}
-                {installCounts && plugin_5.marketplaceName === OFFICIAL_MARKETPLACE_NAME && <Text dimColor>
+                {installCounts && plugin_5.marketplaceName === ESONHUGH_MARKETPLACE_NAME && <Text dimColor>
                       {' · '}
                       {formatInstallCount(installCounts.get(plugin_5.pluginId) ?? 0)}{' '}
                       installs
