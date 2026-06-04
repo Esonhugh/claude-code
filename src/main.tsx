@@ -509,7 +509,11 @@ function isBeingDebugged() {
 }
 
 // Exit if we detect node debugging or inspection
-if (("external" as string) !== 'ant' && isBeingDebugged()) {
+if (
+  ("external" as string) !== 'ant' &&
+  isBeingDebugged() &&
+  !isEnvTruthy(process.env.CLAUDE_CODE_ALLOW_INSPECTOR)
+) {
   // Use process.exit directly here since we're in the top-level code before imports
   // and gracefulShutdown is not yet available
   // eslint-disable-next-line custom-rules/no-top-level-side-effects

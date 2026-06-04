@@ -1,0 +1,55 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug CLI help with source maps",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--enable-source-maps"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "args": ["--help"],
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/dist/**/*.js.map",
+        "!**/node_modules/**"
+      ],
+      "console": "integratedTerminal",
+      "env": {
+        "CLAUDE_CODE_ALLOW_INSPECTOR": "1"
+      }
+    },
+    {
+      "name": "Debug interactive CLI with source maps",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--enable-source-maps"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "args": ["--debug"],
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/dist/**/*.js.map",
+        "!**/node_modules/**"
+      ],
+      "console": "integratedTerminal",
+      "env": {
+        "CLAUDE_CODE_ALLOW_INSPECTOR": "1"
+      }
+    },
+    {
+      "name": "Attach to CLI inspector",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/dist/**/*.js.map",
+        "!**/node_modules/**"
+      ]
+    }
+  ]
+}

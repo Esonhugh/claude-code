@@ -19,6 +19,9 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "start": "node ./dist/cli.js",
+    "start:sourcemap": "node --enable-source-maps ./dist/cli.js",
+    "debug:sourcemap": "node --enable-source-maps ./dist/cli.js --debug",
+    "debug:inspect": "CLAUDE_CODE_ALLOW_INSPECTOR=1 node --enable-source-maps --inspect-brk=9229 ./dist/cli.js --debug",
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "lint:fix": "eslint --fix \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "audit:missing": "node ./scripts/audit-missing.mjs",

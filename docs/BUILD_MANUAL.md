@@ -76,6 +76,52 @@ Check runtime status:
 pnpm cli:status
 ```
 
+## Debugging with source maps and Ink
+
+Build first so `dist/cli.js` and `dist/cli.js.map` are in sync:
+
+```bash
+pnpm build
+```
+
+Run with mapped stack traces:
+
+```bash
+node --enable-source-maps ./dist/cli.js --help
+pnpm start:sourcemap --help
+```
+
+Run with mapped stack traces and Claude Code debug logging:
+
+```bash
+node --enable-source-maps ./dist/cli.js --debug --help
+pnpm debug:sourcemap --help
+```
+
+Run under the Node inspector:
+
+```bash
+CLAUDE_CODE_ALLOW_INSPECTOR=1 node --enable-source-maps --inspect-brk=9229 ./dist/cli.js --debug
+pnpm debug:inspect
+```
+
+`CLAUDE_CODE_ALLOW_INSPECTOR=1` is required because `src/main.tsx` blocks Node inspector/debugger startup by default in external builds. Keep it limited to local debugging sessions.
+
+For VS Code debugging, use the checked-in `.vscode/launch.json` configurations. Interactive Ink sessions should run in the integrated terminal, not the Debug Console, because Ink needs a real TTY for stdin and screen rendering.
+
+Ink rendering enters through `src/main.tsx`, wraps nodes with `ThemeProvider` in `src/ink.ts`, creates the managed Ink instance in `src/ink/root.ts`, and commonly waits for completion through `renderAndRun()` in `src/interactiveHelpers.tsx`.
+
+`src/ink/root.ts` defaults `patchConsole` to `true`, so raw `console.log` can be captured or reordered after Ink starts. Prefer the existing debug channels when inspecting UI behavior:
+
+```bash
+node ./dist/cli.js --debug
+node ./dist/cli.js --debug-to-stderr --help
+node ./dist/cli.js --debug-file /tmp/claude-debug.log
+CLAUDE_CODE_DEBUG_LOG_LEVEL=verbose node ./dist/cli.js --debug
+```
+
+Use `--debug-to-stderr` mainly for non-interactive flows or short smoke tests, because stderr output can still disturb interactive terminal UI readability.
+
 ## Validation checklist
 
 Run these after TypeScript or build-system changes:
