@@ -2,6 +2,14 @@ export type WorkflowReviewMode = 'none' | 'cross-check' | 'adversarial' | 'synth
 
 export type WorkflowPermissionMode = 'default' | 'acceptEdits' | 'plan'
 
+export type WorkflowArgs =
+  | string
+  | number
+  | boolean
+  | null
+  | WorkflowArgs[]
+  | { [key: string]: WorkflowArgs }
+
 export type WorkflowInputSpec = {
   name: string
   description?: string
@@ -45,6 +53,33 @@ export type WorkflowRuntimeSpec = {
   sourcePath?: string
   isolated?: boolean
 }
+
+export type WorkflowProgressEvent =
+  | {
+      type: 'workflow_progress'
+      workflowRunId: string
+      status: 'running' | 'paused' | 'completed' | 'failed' | 'killed'
+      completedAgents: number
+      totalAgents: number
+    }
+  | {
+      type: 'workflow_phase'
+      workflowRunId: string
+      phaseId: string
+      status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+    }
+  | {
+      type: 'workflow_agent'
+      workflowRunId: string
+      phaseId: string
+      agentId: string
+      status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+    }
+  | {
+      type: 'workflow_log'
+      workflowRunId: string
+      message: string
+    }
 
 export type WorkflowSpec = {
   name: string

@@ -1,9 +1,11 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { basename, dirname, extname, join, parse, resolve } from 'node:path'
 import { isENOENT } from '../../utils/errors.js'
 
-import type { WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
+import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
+import { getBundledWorkflowSpecs } from './bundled/index.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 
 export type DiscoveredWorkflowSpec = {
@@ -23,7 +25,11 @@ export type WorkflowDiscoveryResult = {
   invalid: InvalidWorkflowSpec[]
 }
 
-const WORKFLOW_DIRS = [join('docs', 'workflows'), join('.claude', 'workflows')]
+const PROJECT_WORKFLOW_DIRS = [join('docs', 'workflows'), join('.claude', 'workflows')]
+
+type WorkflowDiscoveryOptions = {
+  home?: string
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -84,70 +90,99 @@ async function listWorkflowFiles(dir: string): Promise<string[]> {
     .sort((a, b) => a.localeCompare(b))
 }
 
-async function loadWorkflowFile(filePath: string, args: string): Promise<WorkflowSpec> {
+async function loadWorkflowFile(
+  filePath: string,
+  args?: WorkflowArgs,
+): Promise<WorkflowSpec> {
   if (filePath.endsWith('.js')) {
     return loadWorkflowScriptSpec(filePath, args)
   }
   return JSON.parse(await readFile(filePath, 'utf8')) as WorkflowSpec
 }
 
-export async function discoverWorkflowSpecs(cwd: string, args = ''): Promise<WorkflowDiscoveryResult> {
-  const valid: DiscoveredWorkflowSpec[] = []
+async function workflowSearchDirs(
+  cwd: string,
+  options: WorkflowDiscoveryOptions,
+): Promise<string[]> {
+  const dirs = [resolve(options.home ?? homedir(), '.claude', 'workflows')]
+  for (const root of await findWorkflowRoots(cwd)) {
+    for (const relativeDir of PROJECT_WORKFLOW_DIRS) {
+      dirs.push(resolve(root, relativeDir))
+    }
+  }
+  return dirs
+}
+
+export async function discoverWorkflowSpecs(
+  cwd: string,
+  args?: WorkflowArgs,
+  options: WorkflowDiscoveryOptions = {},
+): Promise<WorkflowDiscoveryResult> {
   const invalid: InvalidWorkflowSpec[] = []
-  const usedCommandNames = new Set<string>()
+  const workflowsByCommandName = new Map<string, DiscoveredWorkflowSpec>()
+
+  for (const spec of getBundledWorkflowSpecs()) {
+    try {
+      const plan = validateWorkflowSpec(spec)
+      const commandName = workflowNameToCommandName(plan.name, `bundled:${plan.name}`)
+      workflowsByCommandName.set(commandName, {
+        commandName,
+        path: `bundled:${plan.name}`,
+        spec,
+        plan,
+      })
+    } catch (error) {
+      invalid.push({
+        path: `bundled:${spec.name}`,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 
   const searchedDirs = new Set<string>()
-  for (const root of await findWorkflowRoots(cwd)) {
-    for (const relativeDir of WORKFLOW_DIRS) {
-      const dir = resolve(root, relativeDir)
-      if (searchedDirs.has(dir)) continue
-      searchedDirs.add(dir)
+  for (const dir of await workflowSearchDirs(cwd, options)) {
+    if (searchedDirs.has(dir)) continue
+    searchedDirs.add(dir)
 
-      let files: string[]
+    let files: string[]
+    try {
+      files = await listWorkflowFiles(dir)
+    } catch (error) {
+      if (isENOENT(error)) continue
+      invalid.push({
+        path: dir,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      continue
+    }
+
+    for (const filePath of files) {
       try {
-        files = await listWorkflowFiles(dir)
+        const spec = await loadWorkflowFile(filePath, args)
+        const plan = validateWorkflowSpec(spec)
+        const commandName = workflowNameToCommandName(plan.name, filePath)
+        workflowsByCommandName.set(commandName, {
+          commandName,
+          path: filePath,
+          spec,
+          plan,
+        })
       } catch (error) {
-        if (isENOENT(error)) continue
         invalid.push({
-          path: dir,
+          path: filePath,
           error: error instanceof Error ? error.message : String(error),
         })
-        continue
-      }
-
-      for (const filePath of files) {
-        try {
-          const spec = await loadWorkflowFile(filePath, args)
-          const plan = validateWorkflowSpec(spec)
-          const commandName = workflowNameToCommandName(plan.name, filePath)
-
-          if (usedCommandNames.has(commandName)) {
-            invalid.push({
-              path: filePath,
-              error: `Duplicate workflow command name: ${commandName}`,
-            })
-            continue
-          }
-
-          usedCommandNames.add(commandName)
-          valid.push({ commandName, path: filePath, spec, plan })
-        } catch (error) {
-          invalid.push({
-            path: filePath,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        }
       }
     }
   }
 
-  return { valid, invalid }
+  return { valid: [...workflowsByCommandName.values()], invalid }
 }
 
 export async function loadWorkflowSpecByNameOrPath(
   cwd: string,
   selector: string,
-  args = '',
+  args?: WorkflowArgs,
 ): Promise<DiscoveredWorkflowSpec> {
   const discovery = await discoverWorkflowSpecs(cwd, args)
   const trimmed = selector.trim()

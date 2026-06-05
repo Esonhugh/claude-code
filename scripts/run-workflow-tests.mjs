@@ -11,8 +11,12 @@ const tests = [
   'src/tools/WorkflowTool/workflowSpec.test.ts',
   'src/tools/WorkflowTool/workflowDiscovery.test.ts',
   'src/tools/WorkflowTool/workflowDsl.test.ts',
+  'src/tools/WorkflowTool/workflowCompatibilityBenchmark.test.ts',
+  'src/tools/WorkflowTool/workflowScriptPersistence.test.ts',
+  'src/tools/WorkflowTool/workflowOrchestrator.test.ts',
   'src/tools/WorkflowTool/workflowCommand.test.ts',
   'src/tools/WorkflowTool/WorkflowTool.test.ts',
+  'src/tools/WorkflowTool/WorkflowFacadeTool.test.ts',
   'src/commands/workflows/workflows.test.ts',
   'src/tasks/LocalWorkflowTask/LocalWorkflowTask.test.ts',
 ]

@@ -6,6 +6,8 @@ import { formatWorkflowDryRun } from '../../tools/WorkflowTool/formatWorkflowDry
 import {
   pauseWorkflowTask,
   resumeWorkflowTask,
+  retryWorkflowAgent,
+  skipWorkflowAgent,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import {
   discoverWorkflowSpecs,
@@ -134,6 +136,7 @@ function workflowSetAppState(
 function formatWorkflowTaskStatus(
   context: WorkflowCommandContext | unknown,
   selector: string,
+  options: { detail?: boolean } = {},
 ): string {
   const task =
     context &&
@@ -145,7 +148,17 @@ function formatWorkflowTaskStatus(
   if (!task || typeof task !== 'object' || !('type' in task) || task.type !== 'local_workflow') {
     return `Workflow task not found: ${selector}`
   }
-  return formatWorkflowStatus(task as LocalWorkflowTaskState)
+  return formatWorkflowStatus(task as LocalWorkflowTaskState, options)
+}
+
+function splitAgentControlSelector(
+  selector: string,
+): { taskId: string; phaseId: string; agentId: string } {
+  const [taskId = '', phaseId = '', agentId = ''] = selector
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  return { taskId, phaseId, agentId }
 }
 
 function parseArgs(args: string): { action: string; selector: string } {
@@ -208,9 +221,30 @@ export async function call(
     return { type: 'text', value: formatWorkflowRunPrompt(workflow, template.runArgs) }
   }
 
-  if (action === 'status') {
-    if (!selector) return { type: 'text', value: 'Usage: /workflows status <workflow-task-id>' }
-    return { type: 'text', value: formatWorkflowTaskStatus(context, selector) }
+  if (action === 'status' || action === 'detail') {
+    if (!selector) return { type: 'text', value: `Usage: /workflows ${action} <workflow-task-id>` }
+    return {
+      type: 'text',
+      value: formatWorkflowTaskStatus(context, selector, { detail: action === 'detail' }),
+    }
+  }
+
+  if (action === 'skip-agent' || action === 'retry-agent') {
+    const { taskId, phaseId, agentId } = splitAgentControlSelector(selector)
+    if (!taskId || !phaseId || !agentId) {
+      return {
+        type: 'text',
+        value: `Usage: /workflows ${action} <workflow-task-id> <phase-id> <agent-id>`,
+      }
+    }
+    const setAppState = workflowSetAppState(context)
+    if (!setAppState) return { type: 'text', value: `Workflow ${action} requires AppState access` }
+    if (action === 'skip-agent') {
+      skipWorkflowAgent(taskId, agentId, setAppState as never)
+    } else {
+      retryWorkflowAgent(taskId, agentId, setAppState as never)
+    }
+    return { type: 'text', value: formatWorkflowTaskStatus(context, taskId) }
   }
 
   if (action === 'pause' || action === 'resume') {
@@ -227,6 +261,6 @@ export async function call(
 
   return {
     type: 'text',
-    value: 'Usage: /workflows [list|show|dry-run|run|templates|save-template|run-template|status|pause|resume] [name-or-path]',
+    value: 'Usage: /workflows [list|show|dry-run|run|templates|save-template|run-template|status|detail|pause|resume|retry-agent|skip-agent] [name-or-path]',
   }
 }

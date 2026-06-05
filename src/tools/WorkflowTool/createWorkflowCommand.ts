@@ -2,12 +2,19 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Command } from '../../commands.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
+import type { WorkflowArgs } from './workflowSpec.js'
 import type { DiscoveredWorkflowSpec } from './workflowDiscovery.js'
 import { discoverWorkflowSpecs, loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 
+function formatWorkflowArgs(args: WorkflowArgs | undefined): string {
+  if (args === undefined) return ''
+  if (typeof args === 'string') return args
+  return JSON.stringify(args, null, 2)
+}
+
 function buildWorkflowPrompt(
   workflow: DiscoveredWorkflowSpec,
-  args: string,
+  args: WorkflowArgs | undefined,
 ): ContentBlockParam[] {
   const dryRun = formatWorkflowDryRun(workflow.plan)
   const phaseDetails = workflow.plan.phases
@@ -33,7 +40,7 @@ function buildWorkflowPrompt(
         `Workflow: ${workflow.commandName}\n` +
         `Source: ${workflow.path}\n\n` +
         `${dryRun}\n` +
-        `User input:\n${args.trim() || '(none)'}\n\n` +
+        `User input:\n${formatWorkflowArgs(args).trim() || '(none)'}\n\n` +
         `Execute this validated workflow as an orchestration plan. Use the ${AGENT_TOOL_NAME} tool for phase work. Do not bypass workflow phases by directly completing phase work with shell or filesystem tools in the main thread.\n\n` +
         `Rules:\n` +
         `- Respect phase dependencies: do not start a phase until all dependencies are complete.\n` +

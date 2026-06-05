@@ -174,8 +174,8 @@ const context = {
   assert.match(String(statusResult.data), /Progress: \[██████████\] 3\/3 \(100%\)/)
   assert.match(String(statusResult.data), /Tokens: 3/)
   assert.match(String(statusResult.data), /Tool uses: 0/)
-  assert.match(String(statusResult.data), /- research: completed 2\/2 \[██████████\] retries: 0/)
-  assert.match(String(statusResult.data), /- synthesis: completed 1\/1 \[██████████\] retries: 0/)
+  assert.match(String(statusResult.data), /- research: completed 2\/2 \[██████████\] skipped 0\/2 retries: 0/)
+  assert.match(String(statusResult.data), /- synthesis: completed 1\/1 \[██████████\] skipped 0\/1 retries: 0/)
 
   killWorkflowTask(task.id, setAppState)
   assert.equal((state.tasks[task.id] as LocalWorkflowTaskState).status, 'completed')

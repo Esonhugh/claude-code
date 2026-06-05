@@ -97,6 +97,15 @@ const workflowTask = {
     },
   ],
   results: [],
+  events: [
+    {
+      type: 'workflow_progress' as const,
+      workflowRunId: 'wf_test_detail',
+      status: 'running' as const,
+      completedAgents: 2,
+      totalAgents: 3,
+    },
+  ],
 }
 
 let commandState = { tasks: { 'w-test': workflowTask } }
@@ -174,5 +183,24 @@ assert.match(pauseResult.value, /Status: pending/)
 const resumeResult = await call('resume w-test', context)
 assert.equal(resumeResult.type, 'text')
 assert.match(resumeResult.value, /Status: running/)
+
+const detailResult = await call('detail w-test', context)
+assert.equal(detailResult.type, 'text')
+assert.match(detailResult.value, /Workflow detail/)
+assert.match(detailResult.value, /Events:/)
+assert.match(detailResult.value, /workflow_progress/)
+assert.match(detailResult.value, /Controls:/)
+assert.match(detailResult.value, /\/workflows pause w-test/)
+assert.match(detailResult.value, /\/workflows resume w-test/)
+assert.match(detailResult.value, /\/workflows retry-agent w-test <phase-id> <agent-id>/)
+assert.match(detailResult.value, /\/workflows skip-agent w-test <phase-id> <agent-id>/)
+
+const skipResult = await call('skip-agent w-test synthesis a3', context)
+assert.equal(skipResult.type, 'text')
+assert.match(skipResult.value, /synthesis: completed 1\/1 \[██████████\] skipped 1\/1/)
+
+const retryResult = await call('retry-agent w-test synthesis a3', context)
+assert.equal(retryResult.type, 'text')
+assert.match(retryResult.value, /synthesis: pending 0\/0/)
 
 console.log('workflows.test.ts passed')

@@ -2,8 +2,10 @@ import { randomBytes } from 'node:crypto'
 import type { AppState } from '../../state/AppState.js'
 import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
 import type {
+  WorkflowArgs,
   WorkflowDryRunPhase,
   WorkflowDryRunPlan,
+  WorkflowProgressEvent,
   WorkflowRuntimeSpec,
 } from '../../tools/WorkflowTool/workflowSpec.js'
 
@@ -78,7 +80,9 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   type: 'local_workflow'
   currentAgentId?: string
   workflowName?: string
-  runArgs?: string
+  workflowRunId?: string
+  scriptPath?: string
+  runArgs?: WorkflowArgs
   summary?: string
   agentCount?: number
   tokenCount?: number
@@ -92,6 +96,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   abortController?: AbortController
   phases: LocalWorkflowPhaseState[]
   results: WorkflowAgentResult[]
+  events: WorkflowProgressEvent[]
   error?: string
 }
 
@@ -113,12 +118,16 @@ export function registerWorkflowTask({
   toolUseId,
   runArgs,
   teamName,
+  workflowRunId,
+  scriptPath,
 }: {
   plan: WorkflowDryRunPlan
   setAppState: SetAppState
   toolUseId?: string
-  runArgs?: string
+  runArgs?: WorkflowArgs
   teamName?: string
+  workflowRunId?: string
+  scriptPath?: string
 }): LocalWorkflowTaskState {
   const id = generateWorkflowTaskId()
   const taskState: LocalWorkflowTaskState = {
@@ -126,6 +135,8 @@ export function registerWorkflowTask({
     type: 'local_workflow',
     status: 'running',
     workflowName: plan.name,
+    workflowRunId,
+    scriptPath,
     runArgs,
     summary: 'Workflow started',
     agentCount: plan.totalAgents,
@@ -139,6 +150,7 @@ export function registerWorkflowTask({
     abortController: new AbortController(),
     phases: plan.phases.map(createPhaseState),
     results: [],
+    events: [],
   }
 
   registerWorkflowTaskState(taskState, setAppState)
@@ -222,6 +234,21 @@ function phaseCompleted(phase: LocalWorkflowPhaseState): boolean {
     phase.completedAgentIds.length >= phase.agentIds.length &&
     phase.failedAgentIds.length === 0
   )
+}
+
+export function recordWorkflowEvent({
+  taskId,
+  event,
+  setAppState,
+}: {
+  taskId: string
+  event: WorkflowProgressEvent
+  setAppState: SetAppState
+}): void {
+  withWorkflowTask(taskId, setAppState, task => ({
+    ...task,
+    events: [...task.events, event],
+  }))
 }
 
 export function startWorkflowPhase(

@@ -8,20 +8,26 @@ import {
   failWorkflowAgent,
   failWorkflowTask,
   recordWorkflowAgentStarted,
+  recordWorkflowEvent,
   registerWorkflowTask,
   startWorkflowPhase,
   type WorkflowAgentResult,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type {
+  WorkflowArgs,
   WorkflowDryRunPhase,
   WorkflowDryRunPlan,
   WorkflowPermissionMode,
+  WorkflowProgressEvent,
 } from './workflowSpec.js'
 import {
+  appendWorkflowRunEvent,
   completeWorkflowRunSession,
   failWorkflowRunSession,
   startWorkflowRunSession,
+  type WorkflowRunSession,
 } from './workflowRunSessions.js'
+import { createWorkflowRunId } from './workflowScriptPersistence.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 
@@ -106,18 +112,42 @@ function formatUpstreamOutputs(
   return lines.join('\n')
 }
 
+function formatWorkflowArgs(args: WorkflowArgs | undefined): string {
+  if (args === undefined) return ''
+  if (typeof args === 'string') return args
+  return JSON.stringify(args, null, 2)
+}
+
 function buildAgentPrompt(
   phase: WorkflowDryRunPhase,
   resultsByPhase: Map<string, WorkflowAgentResult[]>,
-  runArgs: string | undefined,
+  runArgs: WorkflowArgs | undefined,
 ): string {
   const parts = [phase.prompt]
-  if (runArgs?.trim()) {
-    parts.push(`Workflow user input:\n${runArgs.trim()}`)
+  const formattedArgs = formatWorkflowArgs(runArgs).trim()
+  if (formattedArgs) {
+    parts.push(`Workflow user input:\n${formattedArgs}`)
   }
   const upstream = formatUpstreamOutputs(phase, resultsByPhase)
   if (upstream) parts.push(upstream)
   return parts.join('\n\n')
+}
+
+async function emitWorkflowEvent({
+  cwd,
+  session,
+  taskId,
+  event,
+  setAppState,
+}: {
+  cwd: string
+  session: WorkflowRunSession
+  taskId: string
+  event: WorkflowProgressEvent
+  setAppState: ToolUseContext['setAppState']
+}): Promise<WorkflowRunSession> {
+  recordWorkflowEvent({ taskId, event, setAppState })
+  return appendWorkflowRunEvent({ cwd, session, event })
 }
 
 function extractAgentOutput(output: AgentToolOutput): string {
@@ -173,7 +203,7 @@ async function runPhaseAgentAttempt({
   assistantMessage: AssistantMessage
   taskId: string
   resultsByPhase: Map<string, WorkflowAgentResult[]>
-  runArgs?: string
+  runArgs?: WorkflowArgs
 }): Promise<WorkflowAgentResult> {
   const description = formatAgentDescription(plan, phase, index, attempt)
   const teamName =
@@ -241,7 +271,7 @@ async function runPhaseAgent({
   assistantMessage: AssistantMessage
   taskId: string
   resultsByPhase: Map<string, WorkflowAgentResult[]>
-  runArgs?: string
+  runArgs?: WorkflowArgs
 }): Promise<WorkflowAgentResult> {
   let lastError: unknown
   for (let attempt = 0; attempt <= maxRetriesFor(plan); attempt++) {
@@ -280,12 +310,18 @@ export async function runWorkflowPlan({
   canUseTool,
   assistantMessage,
   runArgs,
+  workflowRunId = createWorkflowRunId(),
+  scriptPath = plan.sourcePath,
+  resumeFromRunId,
 }: {
   plan: WorkflowDryRunPlan
   context: ToolUseContext
   canUseTool: CanUseToolFn
   assistantMessage: AssistantMessage
-  runArgs?: string
+  runArgs?: WorkflowArgs
+  workflowRunId?: string
+  scriptPath?: string
+  resumeFromRunId?: string
 }): Promise<string> {
   const agentTool = findAgentTool(context.options.tools)
   if (!agentTool) {
@@ -300,19 +336,53 @@ export async function runWorkflowPlan({
     toolUseId: context.toolUseId,
     runArgs,
     teamName,
+    workflowRunId,
+    scriptPath,
   })
   const cwd = workflowCwd(context)
-  const runSession = await startWorkflowRunSession({
+  let runSession = await startWorkflowRunSession({
     cwd,
     taskId: workflowTask.id,
     plan,
     runArgs,
+    workflowRunId,
+    scriptPath,
+    resumeFromRunId,
   })
   const resultsByPhase = new Map<string, WorkflowAgentResult[]>()
 
+  const emit = async (event: WorkflowProgressEvent): Promise<void> => {
+    runSession = await emitWorkflowEvent({
+      cwd,
+      session: runSession,
+      taskId: workflowTask.id,
+      event,
+      setAppState,
+    })
+  }
+
   try {
+    await emit({
+      type: 'workflow_progress',
+      workflowRunId,
+      status: 'running',
+      completedAgents: 0,
+      totalAgents: plan.totalAgents,
+    })
+    await emit({
+      type: 'workflow_log',
+      workflowRunId,
+      message: `Workflow started: ${plan.name}`,
+    })
+
     for (const phase of plan.phases) {
       startWorkflowPhase(workflowTask.id, phase.id, setAppState)
+      await emit({
+        type: 'workflow_phase',
+        workflowRunId,
+        phaseId: phase.id,
+        status: 'running',
+      })
       const results: WorkflowAgentResult[] = []
       for (let index = 0; index < phase.fanout; index += phase.concurrency) {
         const batchIndexes = Array.from(
@@ -336,21 +406,59 @@ export async function runWorkflowPlan({
           ),
         )
         results.push(...batchResults)
+        for (const result of batchResults) {
+          await emit({
+            type: 'workflow_agent',
+            workflowRunId,
+            phaseId: phase.id,
+            agentId: result.agentId,
+            status: result.status,
+          })
+        }
       }
       resultsByPhase.set(phase.id, results)
+      await emit({
+        type: 'workflow_phase',
+        workflowRunId,
+        phaseId: phase.id,
+        status: 'completed',
+      })
+      await emit({
+        type: 'workflow_progress',
+        workflowRunId,
+        status: 'running',
+        completedAgents: [...resultsByPhase.values()].flat().length,
+        totalAgents: plan.totalAgents,
+      })
     }
     const allResults = [...resultsByPhase.values()].flat()
     completeWorkflowTask(workflowTask.id, setAppState)
+    await emit({
+      type: 'workflow_progress',
+      workflowRunId,
+      status: 'completed',
+      completedAgents: allResults.length,
+      totalAgents: plan.totalAgents,
+    })
     await completeWorkflowRunSession({ cwd, session: runSession, results: allResults })
     return [
       `Workflow completed: ${plan.name}`,
       `Task ID: ${workflowTask.id}`,
+      `Workflow run ID: ${workflowRunId}`,
+      ...(scriptPath ? [`Script path: ${scriptPath}`] : []),
       `Agents completed: ${plan.totalAgents}`,
     ].join('\n')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const allResults = [...resultsByPhase.values()].flat()
     failWorkflowTask(workflowTask.id, message, setAppState)
+    await emit({
+      type: 'workflow_progress',
+      workflowRunId,
+      status: 'failed',
+      completedAgents: allResults.length,
+      totalAgents: plan.totalAgents,
+    })
     await failWorkflowRunSession({ cwd, session: runSession, results: allResults, error: message })
     throw error
   }

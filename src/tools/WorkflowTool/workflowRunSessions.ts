@@ -1,58 +1,102 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import type { WorkflowDryRunPlan } from './workflowSpec.js'
+import type {
+  WorkflowArgs,
+  WorkflowDryRunPlan,
+  WorkflowProgressEvent,
+} from './workflowSpec.js'
 
 export type WorkflowRunSession = {
   taskId: string
+  workflowRunId: string
   workflowName: string
   status: 'running' | 'completed' | 'failed'
-  runArgs: string
+  runArgs?: WorkflowArgs
+  scriptPath?: string
+  resumeFromRunId?: string
   runtime?: WorkflowDryRunPlan['runtime']
   sourcePath?: string
   runScriptSnapshot?: string
   startedAt: number
   updatedAt: number
   results: WorkflowAgentResult[]
+  events: WorkflowProgressEvent[]
   error?: string
 }
 
-function sessionPath(cwd: string, taskId: string): string {
+function taskSessionPath(cwd: string, taskId: string): string {
   return join(cwd, '.claude', 'workflow-runs', `${taskId}.json`)
 }
 
-async function writeWorkflowRunSession(cwd: string, session: WorkflowRunSession): Promise<void> {
-  const path = sessionPath(cwd, session.taskId)
+function runSessionPath(cwd: string, workflowRunId: string): string {
+  return join(cwd, '.claude', 'workflow-runs', workflowRunId, 'session.json')
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(session, null, 2)}\n`)
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+async function writeWorkflowRunSession(cwd: string, session: WorkflowRunSession): Promise<void> {
+  await writeJson(taskSessionPath(cwd, session.taskId), session)
+  await writeJson(runSessionPath(cwd, session.workflowRunId), session)
 }
 
 export async function startWorkflowRunSession({
   cwd,
   taskId,
+  workflowRunId,
   plan,
   runArgs,
+  scriptPath,
+  resumeFromRunId,
 }: {
   cwd: string
   taskId: string
+  workflowRunId: string
   plan: WorkflowDryRunPlan
-  runArgs?: string
+  runArgs?: WorkflowArgs
+  scriptPath?: string
+  resumeFromRunId?: string
 }): Promise<WorkflowRunSession> {
   const now = Date.now()
   const session = {
     taskId,
+    workflowRunId,
     workflowName: plan.name,
     status: 'running' as const,
-    runArgs: runArgs?.trim() ?? '',
+    runArgs,
+    scriptPath,
+    resumeFromRunId,
     runtime: plan.runtime,
     sourcePath: plan.sourcePath,
     runScriptSnapshot: plan.runScriptSnapshot,
     startedAt: now,
     updatedAt: now,
     results: [],
+    events: [],
   }
   await writeWorkflowRunSession(cwd, session)
   return session
+}
+
+export async function appendWorkflowRunEvent({
+  cwd,
+  session,
+  event,
+}: {
+  cwd: string
+  session: WorkflowRunSession
+  event: WorkflowProgressEvent
+}): Promise<WorkflowRunSession> {
+  const updated = {
+    ...session,
+    updatedAt: Date.now(),
+    events: [...session.events, event],
+  }
+  await writeWorkflowRunSession(cwd, updated)
+  return updated
 }
 
 export async function completeWorkflowRunSession({

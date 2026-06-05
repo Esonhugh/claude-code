@@ -29,12 +29,23 @@ function progressPercent(completed: number, total: number): number {
   return total <= 0 ? 0 : Math.round((completed / total) * 100)
 }
 
-export function formatWorkflowStatus(task: LocalWorkflowTaskState): string {
+function formatWorkflowArgs(args: LocalWorkflowTaskState['runArgs']): string {
+  if (args === undefined) return '(none)'
+  if (typeof args === 'string') return args.trim() || '(none)'
+  return JSON.stringify(args)
+}
+
+export function formatWorkflowStatus(
+  task: LocalWorkflowTaskState,
+  options: { detail?: boolean } = {},
+): string {
   const completed = completedAgents(task)
   const total = task.agentCount ?? 0
   const lines = [
     `Workflow: ${task.workflowName ?? task.description}`,
     `Task ID: ${task.id}`,
+    ...(task.workflowRunId ? [`Workflow run ID: ${task.workflowRunId}`] : []),
+    ...(task.scriptPath ? [`Script path: ${task.scriptPath}`] : []),
     `Status: ${task.status}`,
     `Execution: ${task.execution ?? 'agent'}`,
   ]
@@ -54,10 +65,11 @@ export function formatWorkflowStatus(task: LocalWorkflowTaskState): string {
   }
 
   lines.push(
-    `User input: ${task.runArgs?.trim() || '(none)'}`,
+    `User input: ${formatWorkflowArgs(task.runArgs)}`,
     `Agents: ${completed}/${total}`,
     `Progress: [${progressBar(completed, total)}] ${completed}/${total} (${progressPercent(completed, total)}%)`,
     `Retries: ${retryCount(task)}`,
+    `Official events: ${task.events?.length ?? 0}`,
     `Tokens: ${task.tokenCount ?? 0}`,
     `Tool uses: ${task.toolUseCount ?? 0}`,
     `Elapsed ms: ${elapsedMs(task)}`,
@@ -68,12 +80,24 @@ export function formatWorkflowStatus(task: LocalWorkflowTaskState): string {
     const phaseCompleted = phase.completedAgentIds.length
     const phaseTotal = phase.agentIds.length
     lines.push(
-      `- ${phase.id}: ${phase.status} ${phaseCompleted}/${phaseTotal} [${progressBar(phaseCompleted, phaseTotal)}] retries: ${phase.failedAgentIds.length}`,
+      `- ${phase.id}: ${phase.status} ${phaseCompleted}/${phaseTotal} [${progressBar(phaseCompleted, phaseTotal)}] skipped ${phase.skippedAgentIds.length}/${phaseTotal} retries: ${phase.failedAgentIds.length}`,
     )
   }
 
   if (task.error) {
     lines.push(`Error: ${task.error}`)
+  }
+
+  if (options.detail) {
+    lines.push('', 'Workflow detail', 'Events:')
+    for (const event of (task.events ?? []).slice(-20)) {
+      lines.push(`  - ${event.type}: ${JSON.stringify(event)}`)
+    }
+    lines.push('Controls:')
+    lines.push(`  /workflows pause ${task.id}`)
+    lines.push(`  /workflows resume ${task.id}`)
+    lines.push(`  /workflows retry-agent ${task.id} <phase-id> <agent-id>`)
+    lines.push(`  /workflows skip-agent ${task.id} <phase-id> <agent-id>`)
   }
 
   return lines.join('\n')

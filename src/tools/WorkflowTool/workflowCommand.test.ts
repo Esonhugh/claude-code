@@ -65,7 +65,11 @@ await writeFile(
 )
 
 const commands = await getWorkflowCommands(tempRoot)
-assert.equal(commands.length, 2)
+const projectCommands = commands.filter(command =>
+  ['research-workflow', 'js-command-workflow'].includes(command.name),
+)
+assert.equal(projectCommands.length, 2)
+assert.ok(commands.some(command => command.name === 'bughunt-lite'))
 
 const command = commands.find(command => command.name === 'research-workflow')!
 assert.equal(command.type, 'prompt')

@@ -146,6 +146,8 @@ const runResult = await WorkflowTool.call(
   { message: { id: 'msg_js_run' } } as never,
 )
 assert.match(String(runResult.data), /Workflow completed: JS Run Workflow/)
+assert.match(String(runResult.data), /Workflow run ID: wf_/)
+assert.match(String(runResult.data), /Script path: .*js-run\.js/)
 assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
 const jsTask = Object.values(runState.tasks).find(
@@ -173,13 +175,19 @@ const runSession = JSON.parse(
   await readFile(join(tempRoot, '.claude', 'workflow-runs', `${jsTaskId}.json`), 'utf8'),
 )
 assert.equal(runSession.taskId, jsTaskId)
+assert.match(runSession.workflowRunId, /^wf_/)
 assert.equal(runSession.workflowName, 'JS Run Workflow')
 assert.equal(runSession.status, 'completed')
 assert.equal(runSession.runArgs, 'topic: DSL')
+assert.equal(runSession.scriptPath, join(tempRoot, 'docs', 'workflows', 'js-run.js'))
 assert.equal(runSession.runtime.kind, 'javascript-worker')
 assert.equal(runSession.runtime.isolated, true)
 assert.equal(runSession.sourcePath, join(tempRoot, 'docs', 'workflows', 'js-run.js'))
 assert.match(runSession.runScriptSnapshot, /export default workflow/)
+assert.deepEqual(
+  [...new Set(runSession.events.map((event: { type: string }) => event.type))],
+  ['workflow_progress', 'workflow_log', 'workflow_phase', 'workflow_agent'],
+)
 assert.equal(runSession.results.length, 1)
 
 console.log('WorkflowTool.test.ts passed')

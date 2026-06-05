@@ -33,6 +33,8 @@ Official constraints that must shape implementation:
 - The workflow runtime should bound concurrency and total agent count.
 - Workflow agents must inherit the normal permission and tool boundaries instead of bypassing them.
 - Costs scale with spawned agents, so specs must define fan-out, retry, and review limits.
+- Workflow scripts must be deterministic enough to resume: `/opt/homebrew/bin/claude` 2.1.150 contains explicit runtime errors for `Date.now()`, `new Date()`, and `Math.random()`.
+- Official workflow invocations persist script files and expose `scriptPath`/`workflowRunId` for edit-and-resume flows.
 
 Primary sources:
 
