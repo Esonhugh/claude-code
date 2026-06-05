@@ -1,0 +1,84 @@
+export type WorkflowReviewMode = 'none' | 'cross-check' | 'adversarial' | 'synthesis'
+
+export type WorkflowPermissionMode = 'default' | 'acceptEdits' | 'plan'
+
+export type WorkflowInputSpec = {
+  name: string
+  description?: string
+  required?: boolean
+  default?: unknown
+}
+
+export type WorkflowDefaults = {
+  maxConcurrency?: number
+  maxAgents?: number
+  maxRetries?: number
+  fanout?: number
+  concurrency?: number
+  review?: WorkflowReviewMode
+  permissionMode?: WorkflowPermissionMode
+  agentType?: string
+  model?: string
+  execution?: 'agent' | 'team'
+}
+
+export type WorkflowPhaseSpec = {
+  id: string
+  description: string
+  prompt: string
+  dependsOn?: string[]
+  fanout?: number
+  concurrency?: number
+  review?: WorkflowReviewMode
+  permissionMode?: WorkflowPermissionMode
+  agentType?: string
+  model?: string
+}
+
+export type WorkflowOutputSpec = {
+  format?: string
+  description?: string
+}
+
+export type WorkflowRuntimeSpec = {
+  kind: 'declarative' | 'javascript-worker'
+  sourcePath?: string
+  isolated?: boolean
+}
+
+export type WorkflowSpec = {
+  name: string
+  description: string
+  inputs?: WorkflowInputSpec[]
+  defaults?: WorkflowDefaults
+  phases: WorkflowPhaseSpec[]
+  output?: WorkflowOutputSpec
+  runtime?: WorkflowRuntimeSpec
+  sourcePath?: string
+  runScriptSnapshot?: string
+}
+
+export type WorkflowDryRunPhase = {
+  id: string
+  description: string
+  prompt: string
+  dependsOn: string[]
+  fanout: number
+  concurrency: number
+  review: WorkflowReviewMode
+  permissionMode: WorkflowPermissionMode
+  agentType?: string
+  model?: string
+}
+
+export type WorkflowDryRunPlan = {
+  name: string
+  description: string
+  defaults: Required<Pick<WorkflowDefaults, 'maxConcurrency' | 'maxAgents' | 'maxRetries' | 'fanout' | 'concurrency' | 'review' | 'permissionMode' | 'execution'>> & Pick<WorkflowDefaults, 'agentType' | 'model'>
+  phases: WorkflowDryRunPhase[]
+  totalAgents: number
+  output?: WorkflowOutputSpec
+  runtime?: WorkflowRuntimeSpec
+  sourcePath?: string
+  runScriptSnapshot?: string
+}

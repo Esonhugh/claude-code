@@ -1,0 +1,232 @@
+import type { LocalCommandResult } from '../../types/command.js'
+import { formatWorkflowStatus } from '../../tasks/LocalWorkflowTask/formatWorkflowStatus.js'
+import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
+import { formatWorkflowDryRun } from '../../tools/WorkflowTool/formatWorkflowDryRun.js'
+import {
+  pauseWorkflowTask,
+  resumeWorkflowTask,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  discoverWorkflowSpecs,
+  loadWorkflowSpecByNameOrPath,
+  type DiscoveredWorkflowSpec,
+  type WorkflowDiscoveryResult,
+} from '../../tools/WorkflowTool/workflowDiscovery.js'
+import {
+  listWorkflowRunTemplates,
+  loadWorkflowRunTemplate,
+  saveWorkflowRunTemplate,
+  type WorkflowRunTemplate,
+} from '../../tools/WorkflowTool/workflowRunTemplates.js'
+import { getCwd } from '../../utils/cwd.js'
+
+type WorkflowCommandContext = {
+  getCwd?: () => string
+  getAppState?: () => { tasks?: Record<string, unknown> }
+  setAppState?: (updater: (prev: never) => never) => void
+}
+
+function resolveCwd(context: WorkflowCommandContext | unknown): string {
+  if (
+    context &&
+    typeof context === 'object' &&
+    'getCwd' in context &&
+    typeof context.getCwd === 'function'
+  ) {
+    return context.getCwd()
+  }
+  return getCwd()
+}
+
+function formatWorkflowList(discovery: WorkflowDiscoveryResult): string {
+  const lines: string[] = []
+
+  if (discovery.valid.length === 0) {
+    lines.push('No workflow specs found in docs/workflows or .claude/workflows')
+  } else {
+    lines.push('Workflow specs:')
+    for (const workflow of discovery.valid) {
+      lines.push(`- ${workflow.commandName}: ${workflow.plan.description}`)
+      lines.push(`  source: ${workflow.path}`)
+    }
+  }
+
+  if (discovery.invalid.length > 0) {
+    lines.push('', 'Invalid workflow specs:')
+    for (const invalid of discovery.invalid) {
+      lines.push(`- ${invalid.path}: ${invalid.error}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
+function formatWorkflowShow(workflow: DiscoveredWorkflowSpec): string {
+  const phaseChain = workflow.plan.phases.map(phase => phase.id).join(' -> ')
+  return [
+    `Workflow: ${workflow.commandName}`,
+    `Name: ${workflow.plan.name}`,
+    `Description: ${workflow.plan.description}`,
+    `Source: ${workflow.path}`,
+    `Max concurrency: ${workflow.plan.defaults.maxConcurrency}`,
+    `Max agents: ${workflow.plan.defaults.maxAgents}`,
+    `Planned agents: ${workflow.plan.totalAgents}`,
+    `Phases: ${phaseChain}`,
+  ].join('\n')
+}
+
+function formatWorkflowRunTemplates(templates: WorkflowRunTemplate[]): string {
+  if (templates.length === 0) return 'No workflow run templates saved'
+  return [
+    'Workflow run templates:',
+    ...templates.map(template =>
+      `- ${template.name}: ${template.selector}${template.runArgs ? ` -- ${template.runArgs}` : ''}`,
+    ),
+  ].join('\n')
+}
+
+function formatWorkflowRunPrompt(workflow: DiscoveredWorkflowSpec, runArgs: string): string {
+  return [
+    `Execute workflow: ${workflow.plan.name}`,
+    `Source: ${workflow.path}`,
+    '',
+    formatWorkflowDryRun(workflow.plan),
+    `User input:`,
+    runArgs.trim() || '(none)',
+    '',
+    `Use the WorkflowTool action "run" for this validated workflow plan. WorkflowTool.run must execute phase work through the ${AGENT_TOOL_NAME} tool, record LocalWorkflowTask phase state, and preserve normal permission and hook boundaries. Do not manually perform the phase work in the main thread.`,
+    '',
+    `Workflow plan JSON:`,
+    JSON.stringify(workflow.plan),
+  ].join('\n')
+}
+
+function splitSelectorAndRunArgs(selector: string): { selector: string; runArgs: string } {
+  const separator = selector.indexOf(' -- ')
+  if (separator === -1) return { selector, runArgs: '' }
+  return {
+    selector: selector.slice(0, separator).trim(),
+    runArgs: selector.slice(separator + 4).trim(),
+  }
+}
+
+function splitTemplateNameAndSelector(value: string): { name: string; selector: string; runArgs: string } {
+  const [name = '', ...selectorParts] = value.trim().split(/\s+/).filter(Boolean)
+  const runInput = splitSelectorAndRunArgs(selectorParts.join(' '))
+  return { name, selector: runInput.selector, runArgs: runInput.runArgs }
+}
+
+function workflowSetAppState(
+  context: WorkflowCommandContext | unknown,
+): ((updater: (prev: never) => never) => void) | undefined {
+  if (
+    context &&
+    typeof context === 'object' &&
+    'setAppState' in context &&
+    typeof context.setAppState === 'function'
+  ) {
+    return context.setAppState as (updater: (prev: never) => never) => void
+  }
+  return undefined
+}
+
+function formatWorkflowTaskStatus(
+  context: WorkflowCommandContext | unknown,
+  selector: string,
+): string {
+  const task =
+    context &&
+    typeof context === 'object' &&
+    'getAppState' in context &&
+    typeof context.getAppState === 'function'
+      ? context.getAppState().tasks?.[selector]
+      : undefined
+  if (!task || typeof task !== 'object' || !('type' in task) || task.type !== 'local_workflow') {
+    return `Workflow task not found: ${selector}`
+  }
+  return formatWorkflowStatus(task as LocalWorkflowTaskState)
+}
+
+function parseArgs(args: string): { action: string; selector: string } {
+  const [action = 'list', ...selectorParts] = args.trim().split(/\s+/).filter(Boolean)
+  return { action, selector: selectorParts.join(' ') }
+}
+
+export async function call(
+  args: string,
+  context: WorkflowCommandContext | unknown,
+): Promise<LocalCommandResult> {
+  const cwd = resolveCwd(context)
+  const { action, selector } = parseArgs(args)
+
+  if (action === 'list') {
+    return { type: 'text', value: formatWorkflowList(await discoverWorkflowSpecs(cwd)) }
+  }
+
+  if (action === 'show') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows show <name-or-path>' }
+    return {
+      type: 'text',
+      value: formatWorkflowShow(await loadWorkflowSpecByNameOrPath(cwd, selector)),
+    }
+  }
+
+  if (action === 'dry-run') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows dry-run <name-or-path>' }
+    const workflow = await loadWorkflowSpecByNameOrPath(cwd, selector)
+    return { type: 'text', value: formatWorkflowDryRun(workflow.plan) }
+  }
+
+  if (action === 'run') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows run <name-or-path> [-- workflow input]' }
+    const runInput = splitSelectorAndRunArgs(selector)
+    const workflow = await loadWorkflowSpecByNameOrPath(cwd, runInput.selector, runInput.runArgs)
+    return { type: 'text', value: formatWorkflowRunPrompt(workflow, runInput.runArgs) }
+  }
+
+  if (action === 'templates') {
+    return { type: 'text', value: formatWorkflowRunTemplates(await listWorkflowRunTemplates(cwd)) }
+  }
+
+  if (action === 'save-template') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows save-template <template-name> <name-or-path> [-- workflow input]' }
+    const templateInput = splitTemplateNameAndSelector(selector)
+    await saveWorkflowRunTemplate({
+      cwd,
+      name: templateInput.name,
+      selector: templateInput.selector,
+      runArgs: templateInput.runArgs,
+    })
+    return { type: 'text', value: `Saved workflow run template: ${templateInput.name}` }
+  }
+
+  if (action === 'run-template') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows run-template <template-name>' }
+    const template = await loadWorkflowRunTemplate(cwd, selector)
+    const workflow = await loadWorkflowSpecByNameOrPath(cwd, template.selector, template.runArgs)
+    return { type: 'text', value: formatWorkflowRunPrompt(workflow, template.runArgs) }
+  }
+
+  if (action === 'status') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows status <workflow-task-id>' }
+    return { type: 'text', value: formatWorkflowTaskStatus(context, selector) }
+  }
+
+  if (action === 'pause' || action === 'resume') {
+    if (!selector) return { type: 'text', value: `Usage: /workflows ${action} <workflow-task-id>` }
+    const setAppState = workflowSetAppState(context)
+    if (!setAppState) return { type: 'text', value: `Workflow ${action} requires AppState access` }
+    if (action === 'pause') {
+      pauseWorkflowTask(selector, setAppState as never)
+    } else {
+      resumeWorkflowTask(selector, setAppState as never)
+    }
+    return { type: 'text', value: formatWorkflowTaskStatus(context, selector) }
+  }
+
+  return {
+    type: 'text',
+    value: 'Usage: /workflows [list|show|dry-run|run|templates|save-template|run-template|status|pause|resume] [name-or-path]',
+  }
+}

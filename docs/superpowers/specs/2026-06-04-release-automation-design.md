@@ -54,7 +54,6 @@ Target artifact names:
 
 - `claude-code-vX.Y.Z-linux-x64`
 - `claude-code-vX.Y.Z-darwin-arm64`
-- `claude-code-vX.Y.Z-darwin-x64` if feasible
 - `claude-code-vX.Y.Z-win32-x64.exe`
 
 The packaging script should keep platform naming deterministic by deriving platform and architecture from the runtime that actually performs Bun compilation (`process.platform` and `process.arch`). It must not accept target platform or architecture environment overrides that only change labels without changing Bun's emitted binary target. CI must run packaging jobs on the actual target OS/architecture for each artifact. The script should write artifacts to `dist/release/`.

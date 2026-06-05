@@ -19,6 +19,7 @@ This directory contains project guides, recovery notes, architecture references,
 | --- | --- |
 | [`agent-architecture-analysis.md`](agent-architecture-analysis.md) | AgentTool, runAgent, local/background agents, resume/fork behavior, and safety controls. |
 | [`agent-team-architecture.md`](agent-team-architecture.md) | Team/swarm coordination, inter-agent messaging, coordinator mode, and lifecycle. |
+| [`dynamic-workflow-agent-orchestration.md`](dynamic-workflow-agent-orchestration.md) | Dynamic workflow, subagent, agent team, skill, hook, permission, and worktree primitives for secondary development. |
 | [`plugin-marketplace-analysis.md`](plugin-marketplace-analysis.md) | Plugin loader, marketplace manager, install pipeline, cache, reconciliation, and policy model. |
 | [`claude-agent-sdk-exports-analysis.md`](claude-agent-sdk-exports-analysis.md) | Agent SDK export map, plugin/agent/hook/session API surfaces, and unstable exports. |
 

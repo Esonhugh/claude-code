@@ -1,0 +1,52 @@
+{
+  "name": "Code Audit Dry Run",
+  "description": "Plan a staged code audit with independent inspection, adversarial review, and synthesis.",
+  "defaults": {
+    "maxConcurrency": 3,
+    "maxAgents": 12,
+    "fanout": 1,
+    "concurrency": 1,
+    "review": "none",
+    "permissionMode": "plan",
+    "model": "claude-sonnet-4-5"
+  },
+  "inputs": [
+    {
+      "name": "scope",
+      "description": "Repository paths or pull request scope to audit.",
+      "required": true
+    }
+  ],
+  "phases": [
+    {
+      "id": "inspect",
+      "description": "Inspect the requested code paths for correctness and maintainability risks.",
+      "prompt": "Read the target code and identify concrete findings with file paths and evidence.",
+      "fanout": 3,
+      "concurrency": 3,
+      "agentType": "code-auditor"
+    },
+    {
+      "id": "adversarial-review",
+      "description": "Challenge the inspection findings and look for false positives or missed risks.",
+      "prompt": "Review inspection outputs critically and verify each claim against the code.",
+      "dependsOn": ["inspect"],
+      "fanout": 2,
+      "concurrency": 2,
+      "review": "adversarial",
+      "agentType": "reviewer"
+    },
+    {
+      "id": "audit-summary",
+      "description": "Synthesize verified audit findings into a concise report.",
+      "prompt": "Summarize only verified findings with severity, evidence, and suggested fixes.",
+      "dependsOn": ["adversarial-review"],
+      "review": "synthesis",
+      "agentType": "synthesizer"
+    }
+  ],
+  "output": {
+    "format": "markdown",
+    "description": "A verified code audit summary."
+  }
+}

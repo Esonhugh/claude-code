@@ -1,0 +1,49 @@
+{
+  "name": "Deep Research Dry Run",
+  "description": "Coordinate parallel research, cross-checking, and synthesis before execution support exists.",
+  "defaults": {
+    "maxConcurrency": 4,
+    "maxAgents": 32,
+    "fanout": 1,
+    "concurrency": 1,
+    "review": "none",
+    "permissionMode": "plan"
+  },
+  "inputs": [
+    {
+      "name": "topic",
+      "description": "Research topic or question.",
+      "required": true
+    }
+  ],
+  "phases": [
+    {
+      "id": "research",
+      "description": "Research current evidence from independent angles.",
+      "prompt": "Investigate the topic and collect evidence with citations.",
+      "fanout": 4,
+      "agentType": "researcher",
+      "model": "claude-sonnet-4-5"
+    },
+    {
+      "id": "cross-check",
+      "description": "Cross-check the research findings for contradictions.",
+      "prompt": "Review research outputs and identify unsupported claims.",
+      "dependsOn": ["research"],
+      "fanout": 2,
+      "concurrency": 2,
+      "review": "cross-check"
+    },
+    {
+      "id": "synthesis",
+      "description": "Synthesize the reviewed findings into a final answer.",
+      "prompt": "Produce a concise synthesis using only validated claims.",
+      "dependsOn": ["cross-check"],
+      "review": "synthesis"
+    }
+  ],
+  "output": {
+    "format": "markdown",
+    "description": "A concise research brief with verified claims."
+  }
+}
