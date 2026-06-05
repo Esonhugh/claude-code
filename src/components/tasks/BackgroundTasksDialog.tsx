@@ -128,21 +128,14 @@ type ListItem =
       status: 'running'
     }
 
-// WORKFLOW_SCRIPTS is ant-only (build_flags.yaml). Static imports would leak
-// ~1.3K lines into external builds. Gate with feature() + require so the
-// bundler can dead-code-eliminate the branch.
 /* eslint-disable @typescript-eslint/no-require-imports */
-const WorkflowDetailDialog = feature('WORKFLOW_SCRIPTS')
-  ? (
-      require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')
-    ).WorkflowDetailDialog
-  : null
-const workflowTaskModule = feature('WORKFLOW_SCRIPTS')
-  ? (require('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js') as typeof import('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js'))
-  : null
-const killWorkflowTask = workflowTaskModule?.killWorkflowTask ?? null
-const skipWorkflowAgent = workflowTaskModule?.skipWorkflowAgent ?? null
-const retryWorkflowAgent = workflowTaskModule?.retryWorkflowAgent ?? null
+const WorkflowDetailDialog = (
+  require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')
+).WorkflowDetailDialog
+const workflowTaskModule = require('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js') as typeof import('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js')
+const killWorkflowTask = workflowTaskModule.killWorkflowTask
+const skipWorkflowAgent = workflowTaskModule.skipWorkflowAgent
+const retryWorkflowAgent = workflowTaskModule.retryWorkflowAgent
 // Relative path, not `src/...` path-mapping — Bun's DCE can statically
 // resolve + eliminate `./` requires, but path-mapped strings stay opaque
 // and survive as dead literals in the bundle. Matches tasks.ts pattern.

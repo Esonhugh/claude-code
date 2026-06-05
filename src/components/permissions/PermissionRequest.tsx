@@ -44,17 +44,13 @@ const ReviewArtifactPermissionRequest = feature('REVIEW_ARTIFACT')
     ).ReviewArtifactPermissionRequest
   : null
 
-const WorkflowTool: Tool | null = feature('WORKFLOW_SCRIPTS')
-  ? (
-      require('../../tools/WorkflowTool/WorkflowTool.js') as typeof import('../../tools/WorkflowTool/WorkflowTool.js')
-    ).WorkflowTool as unknown as Tool
-  : null
+const WorkflowTool: Tool = (
+  require('../../tools/WorkflowTool/WorkflowTool.js') as typeof import('../../tools/WorkflowTool/WorkflowTool.js')
+).WorkflowTool as unknown as Tool
 
-const WorkflowPermissionRequest = feature('WORKFLOW_SCRIPTS')
-  ? (
-      require('../../tools/WorkflowTool/WorkflowPermissionRequest.js') as typeof import('../../tools/WorkflowTool/WorkflowPermissionRequest.js')
-    ).WorkflowPermissionRequest
-  : null
+const WorkflowPermissionRequest = (
+  require('../../tools/WorkflowTool/WorkflowPermissionRequest.js') as typeof import('../../tools/WorkflowTool/WorkflowPermissionRequest.js')
+).WorkflowPermissionRequest
 
 const MonitorTool: Tool | null = feature('MONITOR_TOOL')
   ? (
@@ -101,7 +97,7 @@ function permissionComponentForTool(
     case AskUserQuestionTool:
       return AskUserQuestionPermissionRequest
     case WorkflowTool:
-      return WorkflowPermissionRequest ?? FallbackPermissionRequest
+      return WorkflowPermissionRequest
     case MonitorTool:
       return MonitorPermissionRequest ?? FallbackPermissionRequest
     case GlobTool:
