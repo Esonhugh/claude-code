@@ -47,6 +47,8 @@ import {
 import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js'
 import { useAnimationFrame } from '../ink.js'
 import { getGlobalConfig } from '../utils/config.js'
+import { isAnt } from 'src/utils/userType.js'
+
 export type { SpinnerMode } from './Spinner/index.js'
 
 const DEFAULT_CHARACTERS = getDefaultCharacters()
@@ -290,7 +292,7 @@ function SpinnerWithVerbInner({
   // re-render cadence, same as the old ApiMetricsLine did.
   let ttftText: string | null = null
   if (
-    ("external" as string) === 'ant' &&
+    isAnt() &&
     apiMetricsRef?.current &&
     apiMetricsRef.current.length > 0
   ) {

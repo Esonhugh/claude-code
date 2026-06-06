@@ -34,6 +34,8 @@ import {
   updateSettingsForSource,
 } from './settings/settings.js'
 import { createSignal } from './signal.js'
+import { isAnt as getIsAnt } from 'src/utils/userType.js'
+
 
 export function isFastModeEnabled(): boolean {
   return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FAST_MODE)
@@ -396,7 +398,7 @@ export function resolveFastModeStatusFromCache(): void {
   if (orgStatus.status !== 'pending') {
     return
   }
-  const isAnt = process.env.USER_TYPE === 'ant'
+  const isAnt = getIsAnt()
   const cachedEnabled = getGlobalConfig().penguinModeOrgEnabled === true
   orgStatus =
     isAnt || cachedEnabled
@@ -428,7 +430,7 @@ export async function prefetchFastModeStatus(): Promise<void> {
   const hasUsableOAuth =
     getClaudeAIOAuthTokens()?.accessToken && hasProfileScope()
   if (!hasUsableOAuth && !apiKey) {
-    const isAnt = process.env.USER_TYPE === 'ant'
+    const isAnt = getIsAnt()
     const cachedEnabled = getGlobalConfig().penguinModeOrgEnabled === true
     orgStatus =
       isAnt || cachedEnabled
@@ -511,7 +513,7 @@ export async function prefetchFastModeStatus(): Promise<void> {
       // On failure: ants default to enabled (don't block internal users).
       // External users: fall back to the cached penguinModeOrgEnabled value;
       // if no positive cache, disable with network_error reason.
-      const isAnt = process.env.USER_TYPE === 'ant'
+      const isAnt = getIsAnt()
       const cachedEnabled = getGlobalConfig().penguinModeOrgEnabled === true
       orgStatus =
         isAnt || cachedEnabled

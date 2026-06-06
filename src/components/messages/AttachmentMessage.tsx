@@ -29,6 +29,8 @@ import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { FilePathLink } from '../FilePathLink.js'
 import { feature } from 'bun:bundle'
 import { useSelectedMessageBg } from '../messageActions.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   addMargin: boolean
@@ -145,7 +147,7 @@ export function AttachmentMessage({
         .join(', ')
       const firstId = attachment.skills[0]?.shortId
       const hint =
-        ("external" as string) === 'ant' && !isDemoEnv && firstId
+        isAnt() && !isDemoEnv && firstId
           ? ` · /skill-feedback ${firstId} 1=wrong 2=noisy 3=good [comment]`
           : ''
       return (
@@ -473,7 +475,7 @@ function TaskStatusMessage({
 }): React.ReactNode {
   // For ants, killed task status is shown in the CoordinatorTaskPanel.
   // Don't render it again in the chat.
-  if (("external" as string) === 'ant' && attachment.status === 'killed') {
+  if (isAnt() && attachment.status === 'killed') {
     return null
   }
 

@@ -8,6 +8,8 @@ import {
 import { getModelOptions } from '../../utils/model/modelOptions.js'
 import { validateModel } from '../../utils/model/validateModel.js'
 import { THEME_NAMES, THEME_SETTINGS } from '../../utils/theme.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /** AppState keys that can be synced for immediate UI effect */
 type SyncableAppStateKey = 'verbose' | 'mainLoopModel' | 'thinkingEnabled'
@@ -131,7 +133,7 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
       'How to spawn teammates: "tmux" for traditional tmux, "in-process" for same process, "auto" to choose automatically',
     options: TEAMMATE_MODES,
   },
-  ...(process.env.USER_TYPE === 'ant'
+  ...(isAnt()
     ? {
         classifierPermissionsEnabled: {
           source: 'settings' as const,

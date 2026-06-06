@@ -3,6 +3,8 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { shouldIncludeFirstPartyOnlyBetas } from './betas.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getInitialSettings } from './settings/settings.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // The SDK does not yet have types for advisor blocks.
 // TODO(hackyon): Migrate to the real anthropic SDK types when this feature ships publicly
@@ -91,7 +93,7 @@ export function modelSupportsAdvisor(model: string): boolean {
   return (
     m.includes('opus-4-6') ||
     m.includes('sonnet-4-6') ||
-    process.env.USER_TYPE === 'ant'
+    isAnt()
   )
 }
 
@@ -101,7 +103,7 @@ export function isValidAdvisorModel(model: string): boolean {
   return (
     m.includes('opus-4-6') ||
     m.includes('sonnet-4-6') ||
-    process.env.USER_TYPE === 'ant'
+    isAnt()
   )
 }
 

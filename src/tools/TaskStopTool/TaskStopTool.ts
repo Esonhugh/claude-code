@@ -6,6 +6,8 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { DESCRIPTION, TASK_STOP_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -43,7 +45,7 @@ export const TaskStopTool = buildTool({
   // with existing transcripts and SDK users
   aliases: ['KillShell'],
   maxResultSizeChars: 100_000,
-  userFacingName: () => (process.env.USER_TYPE === 'ant' ? '' : 'Stop Task'),
+  userFacingName: () => (isAnt() ? '' : 'Stop Task'),
   get inputSchema(): InputSchema {
     return inputSchema()
   },

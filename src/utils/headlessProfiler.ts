@@ -21,6 +21,8 @@ import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getPerformance } from './profilerBase.js'
 import { jsonStringify } from './slowOperations.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Detailed profiling mode - same env var as startupProfiler
 // eslint-disable-next-line custom-rules/no-process-env-top-level
@@ -31,7 +33,7 @@ const DETAILED_PROFILING = isEnvTruthy(process.env.CLAUDE_CODE_PROFILE_STARTUP)
 const STATSIG_SAMPLE_RATE = 0.05
 // eslint-disable-next-line custom-rules/no-process-env-top-level
 const STATSIG_LOGGING_SAMPLED =
-  process.env.USER_TYPE === 'ant' || Math.random() < STATSIG_SAMPLE_RATE
+  isAnt() || Math.random() < STATSIG_SAMPLE_RATE
 
 // Enable profiling if either detailed mode OR sampled for Statsig
 const SHOULD_PROFILE = DETAILED_PROFILING || STATSIG_LOGGING_SAMPLED

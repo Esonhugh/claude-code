@@ -51,6 +51,8 @@ import {
   type SettingsWithErrors,
   type ValidationError,
 } from './validation.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Get the path to the managed settings file based on the current platform
@@ -962,7 +964,7 @@ export function getAutoModeConfig():
       if (result.success) {
         if (result.data.allow) allow.push(...result.data.allow)
         if (result.data.soft_deny) soft_deny.push(...result.data.soft_deny)
-        if (process.env.USER_TYPE === 'ant') {
+        if (isAnt()) {
           if (result.data.deny) soft_deny.push(...result.data.deny)
         }
         if (result.data.environment)

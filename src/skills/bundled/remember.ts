@@ -1,8 +1,10 @@
 import { isAutoMemoryEnabled } from '../../memdir/paths.js'
 import { registerBundledSkill } from '../bundledSkills.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function registerRememberSkill(): void {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return
   }
 

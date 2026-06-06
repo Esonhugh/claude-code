@@ -61,11 +61,47 @@ export default workflow({
 })
 `,
 )
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'official-run.js'),
+  `export const meta = {
+    name: 'official-run',
+    description: 'Official run permission preview.',
+    phases: [{ title: 'Scope', detail: 'Scope official args' }],
+  }
+  phase('Scope')
+  await agent('official run ' + args, { label: 'scope' })`,
+)
 
 const context = { getCwd: () => tempRoot } as never
 
 assert.equal(WorkflowTool.isEnabled(), true)
 assert.equal(WorkflowTool.isReadOnly({ action: 'dry-run', selector: 'Research Workflow' }), true)
+assert.deepEqual(
+  await WorkflowTool.checkPermissions({ action: 'dry-run', selector: 'Research Workflow' }, context),
+  { behavior: 'allow', updatedInput: { action: 'dry-run', selector: 'Research Workflow' } },
+)
+const runPermissionPreview = await WorkflowTool.checkPermissions(
+  { action: 'run', selector: 'official-run', runArgs: 'topic' },
+  context,
+)
+assert.equal(runPermissionPreview.behavior, 'ask')
+assert.equal(runPermissionPreview.message, 'Run a dynamic workflow?')
+assert.equal(runPermissionPreview.updatedInput?.action, 'run')
+assert.equal(runPermissionPreview.updatedInput?.selector, 'official-run')
+assert.equal(runPermissionPreview.updatedInput?.runArgs, 'topic')
+assert.match(runPermissionPreview.updatedInput?.script as string, /export const meta/)
+assert.deepEqual(runPermissionPreview.updatedInput?.plan, {
+  name: 'official-run',
+  description: 'Official run permission preview.',
+  phases: [{ title: 'Scope', detail: 'Scope official args', prompt: "'official run '" }],
+  runScriptSnapshot: `export const meta = {
+    name: 'official-run',
+    description: 'Official run permission preview.',
+    phases: [{ title: 'Scope', detail: 'Scope official args' }],
+  }
+  phase('Scope')
+  await agent('official run ' + args, { label: 'scope' })`,
+})
 
 const result = await WorkflowTool.call(
   { action: 'dry-run', selector: 'Research Workflow' },
@@ -145,9 +181,10 @@ const runResult = await WorkflowTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_js_run' } } as never,
 )
-assert.match(String(runResult.data), /Workflow completed: JS Run Workflow/)
-assert.match(String(runResult.data), /Workflow run ID: wf_/)
-assert.match(String(runResult.data), /Script path: .*js-run\.js/)
+assert.match(String(runResult.data), /Workflow launched in background\. Task ID: w/)
+assert.match(String(runResult.data), /Run ID: wf_/)
+assert.match(String(runResult.data), /To resume after editing the script: Workflow\({scriptPath: ".*js-run\.js", resumeFromRunId: "wf_[^"]+"}\) — completed agents return cached results\./)
+assert.match(String(runResult.data), /Use \/workflows to watch live progress\./)
 assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
 const jsTask = Object.values(runState.tasks).find(
@@ -189,5 +226,97 @@ assert.deepEqual(
   ['workflow_progress', 'workflow_log', 'workflow_phase', 'workflow_agent'],
 )
 assert.equal(runSession.results.length, 1)
+
+const pausableTaskId = 'w-pausable'
+const pausableRunId = 'wf_pausable'
+const pausableScriptPath = join(tempRoot, 'docs', 'workflows', 'js-run.js')
+const pausableTask: LocalWorkflowTaskState = {
+  id: pausableTaskId,
+  type: 'local_workflow',
+  status: 'running',
+  description: 'Workflow: Pausable Workflow',
+  startTime: Date.now(),
+  outputFile: `.claude/tasks/${pausableTaskId}.output`,
+  outputOffset: 0,
+  notified: false,
+  workflowName: 'Pausable Workflow',
+  workflowRunId: pausableRunId,
+  scriptPath: pausableScriptPath,
+  runArgs: 'pause input',
+  summary: 'Workflow running',
+  agentCount: 1,
+  progressVersion: 1,
+  tokenCount: 0,
+  toolUseCount: 0,
+  execution: 'agent',
+  phases: [
+    {
+      id: 'run',
+      status: 'running',
+      agentIds: ['agent-pause-1'],
+      completedAgentIds: [],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [],
+    },
+  ],
+  results: [],
+  events: [],
+}
+runState = {
+  ...runState,
+  tasks: {
+    ...runState.tasks,
+    [pausableTaskId]: pausableTask,
+  },
+}
+await mkdir(join(tempRoot, '.claude', 'workflow-runs', pausableRunId), { recursive: true })
+await writeFile(
+  join(tempRoot, '.claude', 'workflow-runs', `${pausableTaskId}.json`),
+  JSON.stringify({
+    taskId: pausableTaskId,
+    workflowRunId: pausableRunId,
+    workflowName: 'Pausable Workflow',
+    status: 'running',
+    runArgs: 'pause input',
+    scriptPath: pausableScriptPath,
+    resumeCacheEntries: [],
+    startedAt: 1,
+    updatedAt: 1,
+    results: [],
+    events: [],
+  }),
+)
+await writeFile(
+  join(tempRoot, '.claude', 'workflow-runs', pausableRunId, 'session.json'),
+  JSON.stringify({
+    taskId: pausableTaskId,
+    workflowRunId: pausableRunId,
+    workflowName: 'Pausable Workflow',
+    status: 'running',
+    runArgs: 'pause input',
+    scriptPath: pausableScriptPath,
+    resumeCacheEntries: [],
+    startedAt: 1,
+    updatedAt: 1,
+    results: [],
+    events: [],
+  }),
+)
+
+const pauseResult = await WorkflowTool.call(
+  { action: 'pause', selector: pausableTaskId },
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_pause' } } as never,
+)
+assert.match(String(pauseResult.data), /Status: pending/)
+const pausedSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', pausableRunId, 'session.json'), 'utf8'),
+)
+assert.equal(pausedSession.status, 'paused')
+assert.match(pausedSession.resumePrompt, /Workflow\(\{scriptPath: ".*js-run\.js", resumeFromRunId: "wf_pausable"\}\)/)
+assert.equal(pausedSession.events.at(-1)?.type, 'workflow_progress')
+assert.equal(pausedSession.events.at(-1)?.status, 'paused')
 
 console.log('WorkflowTool.test.ts passed')

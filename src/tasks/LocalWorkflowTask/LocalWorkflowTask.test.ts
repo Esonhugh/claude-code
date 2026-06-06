@@ -133,7 +133,7 @@ const context = {
     { message: { id: 'msg_test' } } as never,
   )
 
-  assert.match(String(result.data), /Workflow completed: Runtime Test Workflow/)
+  assert.match(String(result.data), /Workflow launched in background\. Task ID: w/)
   assert.equal(launchedAgents.length, 3)
   assert.deepEqual(launchedAgents.map(agent => agent.description), [
     'Runtime Test Workflow: research 1/2',
@@ -154,12 +154,15 @@ const context = {
   assert.equal(task.workflowName, 'Runtime Test Workflow')
   assert.equal(task.runArgs, 'target: runtime')
   assert.equal(task.agentCount, 3)
+  assert.equal(task.defaultModel, 'claude-sonnet-4-5')
   assert.equal(task.phases.length, 2)
   assert.equal(task.tokenCount, 3)
   assert.equal(task.toolUseCount, 0)
   assert.deepEqual(task.phases.map(phase => phase.status), ['completed', 'completed'])
   assert.deepEqual(task.phases.map(phase => phase.agentIds.length), [2, 1])
   assert.equal(task.results.length, 3)
+  assert.equal(typeof task.progressVersion, 'number')
+  assert.ok((task.progressVersion ?? 0) > 0)
 
   const statusResult = await WorkflowTool.call(
     { action: 'status', selector: task.id },
@@ -171,6 +174,8 @@ const context = {
   assert.match(String(statusResult.data), /Status: completed/)
   assert.match(String(statusResult.data), /User input: target: runtime/)
   assert.match(String(statusResult.data), /Execution: agent/)
+  assert.match(String(statusResult.data), /Progress version: \d+/)
+  assert.match(String(statusResult.data), /Default model: claude-sonnet-4-5/)
   assert.match(String(statusResult.data), /Progress: \[██████████\] 3\/3 \(100%\)/)
   assert.match(String(statusResult.data), /Tokens: 3/)
   assert.match(String(statusResult.data), /Tool uses: 0/)
@@ -202,6 +207,12 @@ const context = {
   let pausedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.equal(pausedRunningTask.status, 'pending')
   assert.ok(pausedRunningTask.pausedAt)
+  assert.match(pausedRunningTask.summary ?? '', /Resume the paused workflow by calling: Workflow\(\{scriptPath:/)
+  const pauseEvent = pausedRunningTask.events.at(-1)
+  assert.equal(pauseEvent?.type, 'workflow_progress')
+  if (pauseEvent?.type === 'workflow_progress') {
+    assert.equal(pauseEvent.status, 'paused')
+  }
 
   resumeWorkflowTask('w-running', setAppState)
   pausedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
@@ -213,12 +224,22 @@ const context = {
   let updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.deepEqual(updatedRunningTask.phases[0]!.skippedAgentIds, ['agent-1'])
   assert.deepEqual(updatedRunningTask.phases[0]!.completedAgentIds, ['agent-1'])
+  const skipEvent = updatedRunningTask.events.at(-1)
+  assert.equal(skipEvent?.type, 'workflow_agent')
+  if (skipEvent?.type === 'workflow_agent') {
+    assert.equal(skipEvent.status, 'skipped')
+  }
 
   retryWorkflowAgent('w-running', 'agent-1', setAppState)
   updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.deepEqual(updatedRunningTask.phases[0]!.skippedAgentIds, [])
   assert.deepEqual(updatedRunningTask.phases[0]!.completedAgentIds, [])
   assert.deepEqual(updatedRunningTask.phases[0]!.agentIds, [])
+  const retryEvent = updatedRunningTask.events.at(-1)
+  assert.equal(retryEvent?.type, 'workflow_agent')
+  if (retryEvent?.type === 'workflow_agent') {
+    assert.equal(retryEvent.status, 'pending')
+  }
 
 let retryState = {
   tasks: {},
@@ -280,7 +301,7 @@ const retryResult = await WorkflowTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_retry' } } as never,
 )
-assert.match(String(retryResult.data), /Workflow completed: Retry Workflow/)
+assert.match(String(retryResult.data), /Workflow launched in background\. Task ID: w/)
 assert.deepEqual(retryAttempts, [
   'Retry Workflow: unstable',
   'Retry Workflow: unstable retry 1/1',

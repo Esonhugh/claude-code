@@ -40,6 +40,8 @@ import { createPowerShellProvider } from './shell/powershellProvider.js'
 import type { ShellProvider, ShellType } from './shell/shellProvider.js'
 import { subprocessEnv } from './subprocessEnv.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const DEFAULT_TIMEOUT = 30 * 60 * 1000 // 30 minutes
 
@@ -320,7 +322,7 @@ export async function exec(
         GIT_EDITOR: 'true',
         CLAUDECODE: '1',
         ...envOverrides,
-        ...(process.env.USER_TYPE === 'ant'
+        ...(isAnt()
           ? {
               CLAUDE_CODE_SESSION_ID: getSessionId(),
             }

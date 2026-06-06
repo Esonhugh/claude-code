@@ -30,6 +30,8 @@ import {
   type PathCommand,
 } from './pathValidation.js'
 import { sedCommandIsAllowedByAllowlist } from './sedValidation.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Unified command validation configuration system
 type CommandConfig = {
@@ -1208,7 +1210,7 @@ function getCommandAllowlist(): Record<string, CommandConfig> {
     const { xargs: _, ...rest } = allowlist
     allowlist = rest
   }
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return { ...allowlist, ...ANT_ONLY_COMMAND_ALLOWLIST }
   }
   return allowlist

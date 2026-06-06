@@ -78,6 +78,10 @@ function formatWorkflowShow(workflow: DiscoveredWorkflowSpec): string {
   ].join('\n')
 }
 
+function formatWorkflowRunsEmpty(): string {
+  return 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close'
+}
+
 function formatWorkflowRunTemplates(templates: WorkflowRunTemplate[]): string {
   if (templates.length === 0) return 'No workflow run templates saved'
   return [
@@ -162,7 +166,7 @@ function splitAgentControlSelector(
 }
 
 function parseArgs(args: string): { action: string; selector: string } {
-  const [action = 'list', ...selectorParts] = args.trim().split(/\s+/).filter(Boolean)
+  const [action = 'runs', ...selectorParts] = args.trim().split(/\s+/).filter(Boolean)
   return { action, selector: selectorParts.join(' ') }
 }
 
@@ -172,6 +176,10 @@ export async function call(
 ): Promise<LocalCommandResult> {
   const cwd = resolveCwd(context)
   const { action, selector } = parseArgs(args)
+
+  if (action === 'runs') {
+    return { type: 'text', value: formatWorkflowRunsEmpty() }
+  }
 
   if (action === 'list') {
     return { type: 'text', value: formatWorkflowList(await discoverWorkflowSpecs(cwd)) }

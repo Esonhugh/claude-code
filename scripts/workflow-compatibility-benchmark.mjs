@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { build } from 'esbuild'
 
+const { AbortController } = globalThis
+
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(scriptDir, '..')
 const benchmarkBundle = resolve(

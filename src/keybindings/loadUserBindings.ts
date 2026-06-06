@@ -4,9 +4,7 @@
  * Loads keybindings from ~/.claude/keybindings.json and watches
  * for changes to reload them automatically.
  *
- * NOTE: User keybinding customization is currently only available for
- * Anthropic employees (USER_TYPE === 'ant'). External users always
- * use the default bindings.
+ * NOTE: User keybinding customization is currently only available for ant users.
  */
 
 import chokidar, { type FSWatcher } from 'chokidar'

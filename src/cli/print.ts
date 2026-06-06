@@ -352,6 +352,8 @@ import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Dead code elimination: conditional imports
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -492,7 +494,7 @@ export async function runHeadless(
   },
 ): Promise<void> {
   if (
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     isEnvTruthy(process.env.CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER)
   ) {
     process.stderr.write(

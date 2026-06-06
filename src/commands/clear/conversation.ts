@@ -45,6 +45,8 @@ import {
 } from '../../utils/task/diskOutput.js'
 import { getCurrentWorktreeSession } from '../../utils/worktree.js'
 import { clearSessionCaches } from './caches.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export async function clearConversation({
   setMessages,
@@ -202,7 +204,7 @@ export async function clearConversation({
   // Set the old session as parent for analytics lineage tracking
   regenerateSessionId({ setCurrentAsParent: true })
   // Update the environment variable so subprocesses use the new session ID
-  if (process.env.USER_TYPE === 'ant' && process.env.CLAUDE_CODE_SESSION_ID) {
+  if (isAnt() && process.env.CLAUDE_CODE_SESSION_ID) {
     process.env.CLAUDE_CODE_SESSION_ID = getSessionId()
   }
   await resetSessionFilePointer()

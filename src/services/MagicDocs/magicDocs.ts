@@ -27,6 +27,8 @@ import {
 } from '../../utils/messages.js'
 import { sequential } from '../../utils/sequential.js'
 import { buildMagicDocsUpdatePrompt } from './prompts.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Magic Doc header pattern: # MAGIC DOC: [title]
 // Matches at the start of the file (first line)
@@ -240,7 +242,7 @@ const updateMagicDocs = sequential(async function (
 })
 
 export async function initMagicDocs(): Promise<void> {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     // Register listener to detect magic docs when files are read
     registerFileReadListener((filePath: string, content: string) => {
       const result = detectMagicDocHeader(content)

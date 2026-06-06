@@ -10,6 +10,8 @@ import type { PromptInputMode } from 'src/types/textInputTypes.js'
 import { getTeammateColor } from 'src/utils/teammate.js'
 import type { Theme } from 'src/utils/theme.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   mode: PromptInputMode
@@ -52,8 +54,8 @@ function PromptChar({
 }: PromptCharProps): React.ReactNode {
   // Assign to original name for clarity within the function
   const teammateColor = themeColor
-  const isAnt = ("external" as string) === 'ant'
-  const color = teammateColor ?? (isAnt ? 'subtle' : undefined)
+  const antEnabled = isAnt()
+  const color = teammateColor ?? (antEnabled ? 'subtle' : undefined)
 
   return (
     <Text color={color} dimColor={isLoading}>

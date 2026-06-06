@@ -19,7 +19,7 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "package:binary": "node ./scripts/package-binary.mjs",
-    "start": "node ./dist/cli.js",
+    "start": "NODE_ENV=test node ./dist/cli.js",
     "start:sourcemap": "node --enable-source-maps ./dist/cli.js",
     "debug:sourcemap": "node --enable-source-maps ./dist/cli.js --debug",
     "debug:inspect": "CLAUDE_CODE_ALLOW_INSPECTOR=1 node --enable-source-maps --inspect-brk=9229 ./dist/cli.js --debug",
@@ -29,6 +29,9 @@
     "workflow:benchmark": "node ./scripts/workflow-compatibility-benchmark.mjs",
     "workflow:export-official": "node ./scripts/export-official-workflow-metadata.mjs",
     "workflow:compare-bundled": "node ./scripts/compare-bundled-workflows.mjs",
+    "workflow:binary-compat": "node ./scripts/workflow-binary-compatibility-runner.mjs",
+    "workflow:ui-byte-compare": "node ./scripts/workflow-ui-byte-compare.mjs",
+    "workflow:deobfuscate-official": "node ./scripts/workflow-deobfuscator.mjs",
     "cli:run": "node ./scripts/run-recovered-cli.mjs",
     "cli:login": "node ./scripts/run-recovered-cli.mjs auth login",
     "cli:status": "node ./scripts/run-recovered-cli.mjs auth status"

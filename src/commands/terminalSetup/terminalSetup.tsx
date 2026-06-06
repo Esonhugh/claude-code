@@ -28,6 +28,8 @@ import { addItemToJSONCArray, safeParseJSONC } from '../../utils/json.js'
 import { logError } from '../../utils/log.js'
 import { getPlatform } from '../../utils/platform.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const EOL = '\n'
 
@@ -146,7 +148,7 @@ export async function setupTerminal(theme: ThemeName): Promise<string> {
   maybeMarkProjectOnboardingComplete()
 
   // Install shell completions (ant-only, since the completion command is ant-only)
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     result += await setupShellCompletion(theme)
   }
 

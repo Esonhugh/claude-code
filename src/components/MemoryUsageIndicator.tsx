@@ -2,18 +2,18 @@ import * as React from 'react'
 import { useMemoryUsage } from '../hooks/useMemoryUsage.js'
 import { Box, Text } from '../ink.js'
 import { formatFileSize } from '../utils/format.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function MemoryUsageIndicator(): React.ReactNode {
   // Ant-only: the /heapdump link is an internal debugging aid. Gating before
-  // the hook means the 10s polling interval is never set up in external builds.
-  // USER_TYPE is a build-time constant, so the hook call below is either always
-  // reached or dead-code-eliminated — never conditional at runtime.
-  if (("external" as string) !== 'ant') {
+  // the hook means the 10s polling interval is never set up for non-ant users.
+  if (!isAnt()) {
     return null
   }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  // biome-ignore lint/correctness/useHookAtTopLevel: USER_TYPE is a build-time constant
+  // biome-ignore lint/correctness/useHookAtTopLevel: isAnt() returns before hooks run for non-ant users
   const memoryUsage = useMemoryUsage()
 
   if (!memoryUsage) {

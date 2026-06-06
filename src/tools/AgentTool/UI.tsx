@@ -50,6 +50,8 @@ import type {
 import { inputSchema } from './AgentTool.js'
 import { getAgentColor } from './agentColorManager.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3
 
@@ -151,7 +153,7 @@ function processProgressMessages(
   isAgentRunning: boolean,
 ): ProcessedMessage[] {
   // Only process for ants
-  if (("external" as string) !== 'ant') {
+  if (!isAnt()) {
     return messages
       .filter(
         (m): m is ProgressMessage<AgentToolProgress> =>
@@ -442,7 +444,7 @@ export function renderToolResultMessage(
 
   return (
     <Box flexDirection="column">
-      {("external" as string) === 'ant' && (
+      {isAnt() && (
         <MessageResponse>
           <Text color="warning">
             [ANT-ONLY] API calls: {getDisplayPath(getDumpPromptsPath(agentId))}
@@ -771,7 +773,7 @@ export function renderToolUseRejectedMessage(
 
   return (
     <>
-      {("external" as string) === 'ant' && agentId && (
+      {isAnt() && agentId && (
         <MessageResponse>
           <Text color="warning">
             [ANT-ONLY] API calls: {getDisplayPath(getDumpPromptsPath(agentId))}

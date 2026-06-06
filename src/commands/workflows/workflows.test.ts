@@ -117,6 +117,10 @@ const context = {
   },
 } as never
 
+const defaultResult = await call('', context)
+assert.equal(defaultResult.type, 'text')
+assert.equal(defaultResult.value, 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close')
+
 const listResult = await call('list', context)
 assert.equal(listResult.type, 'text')
 assert.match(listResult.value, /Research-Workflow/)

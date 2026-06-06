@@ -93,6 +93,8 @@ import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
 import { validateUuid } from './uuid.js'
+import { userType } from 'src/utils/userType.js'
+
 
 // Cache MACRO.VERSION at module level to work around bun --define bug in async contexts
 // See: https://github.com/oven-sh/bun/issues/26168
@@ -417,7 +419,7 @@ export function getNodeEnv(): string {
 
 // exported for testing
 export function getUserType(): string {
-  return process.env.USER_TYPE || 'external'
+  return userType() || 'external'
 }
 
 function getEntrypoint(): string | undefined {

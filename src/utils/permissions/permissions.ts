@@ -103,6 +103,8 @@ import {
   classifyYoloAction,
   formatActionForClassifier,
 } from './yoloClassifier.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
 
@@ -703,7 +705,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
 
       // Notify ants when classifier error dumped prompts (will be in /share)
       if (
-        process.env.USER_TYPE === 'ant' &&
+        isAnt() &&
         classifierResult.errorDumpPath &&
         context.addNotification
       ) {

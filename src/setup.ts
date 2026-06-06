@@ -52,6 +52,8 @@ import {
   generateTmuxSessionName,
   worktreeBranchName,
 } from './utils/worktree.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export async function setup(
   cwd: string,
@@ -335,7 +337,7 @@ export async function setup(
   // overhead. NOT an early-return: the --dangerously-skip-permissions safety
   // gate, tengu_started beacon, and apiKeyHelper prefetch below must still run.
   if (!isBareMode()) {
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       // Prime repo classification cache for auto-undercover mode. Default is
       // undercover ON until proven internal; if this resolves to internal, clear
       // the prompt cache so the next turn picks up the OFF state.
@@ -416,7 +418,7 @@ export async function setup(
     }
 
     if (
-      process.env.USER_TYPE === 'ant' &&
+      isAnt() &&
       // Skip for Desktop's local agent mode — same trust model as CCR/BYOC
       // (trusted Anthropic-managed launcher intentionally pre-approving everything).
       // Precedent: permissionSetup.ts:861, applySettingsChange.ts:55 (PR #19116)

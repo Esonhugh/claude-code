@@ -33,6 +33,8 @@ import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 import { isOAuthTokenExpired } from '../oauth/client.js'
 import { stripProtoFields } from './index.js'
 import { type EventMetadata, to1PEventFormat } from './metadata.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Unique ID for this process run - used to isolate failed event files between runs
 const BATCH_UUID = randomUUID()
@@ -251,7 +253,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       return
     }
 
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging(
         `1P event logging: retrying ${events.length} events from previous batch`,
       )
@@ -260,13 +262,13 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     const failedEvents = await this.sendEventsInBatches(events)
     if (failedEvents.length === 0) {
       await this.deleteFile(filePath)
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         logForDebugging('1P event logging: previous batch retry succeeded')
       }
     } else {
       // Save only the failed events back (not all original events)
       await this.saveEventsToFile(filePath, failedEvents)
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         logForDebugging(
           `1P event logging: previous batch retry failed, ${failedEvents.length} events remain`,
         )
@@ -279,7 +281,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     resultCallback: (result: ExportResult) => void,
   ): Promise<void> {
     if (this.isShutdown) {
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         logForDebugging(
           '1P event logging export failed: Exporter has been shutdown',
         )
@@ -363,7 +365,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       }
       resultCallback({ code: ExportResultCode.SUCCESS })
     } catch (error) {
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         logForDebugging(
           `1P event logging export failed: ${errorMessage(error)}`,
         )
@@ -385,7 +387,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       batches.push(events.slice(i, i + this.maxBatchSize))
     }
 
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging(
         `1P event logging: exporting ${events.length} events in ${batches.length} batch(es)`,
       )
@@ -406,7 +408,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
         for (let j = i; j < batches.length; j++) {
           failedBatchEvents.push(...batches[j]!)
         }
-        if (process.env.USER_TYPE === 'ant') {
+        if (isAnt()) {
           const skipped = batches.length - 1 - i
           logForDebugging(
             `1P event logging: batch ${i + 1}/${batches.length} failed (${lastErrorContext}); short-circuiting ${skipped} remaining batch(es)`,
@@ -454,7 +456,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       this.maxBackoffDelayMs,
     )
 
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging(
         `1P event logging: scheduling backoff retry in ${delay}ms (attempt ${this.attempts})`,
       )
@@ -475,7 +477,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       if (events.length === 0) break
 
       if (this.attempts >= this.maxAttempts) {
-        if (process.env.USER_TYPE === 'ant') {
+        if (isAnt()) {
           logForDebugging(
             `1P event logging: max attempts (${this.maxAttempts}) reached, dropping ${events.length} events`,
           )
@@ -490,7 +492,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       // Clear file before retry (we have events in memory now)
       await this.deleteFile(filePath)
 
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         logForDebugging(
           `1P event logging: retrying ${events.length} failed events (attempt ${this.attempts + 1})`,
         )
@@ -510,7 +512,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
 
       // Success - reset backoff and continue loop to drain any newly queued events
       this.resetBackoff()
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         logForDebugging('1P event logging: backoff retry succeeded')
       }
     }
@@ -546,7 +548,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     // Non-interactive sessions implicitly have workspace trust
     const hasTrust =
       checkHasTrustDialogAccepted() || getIsNonInteractiveSession()
-    if (process.env.USER_TYPE === 'ant' && !hasTrust) {
+    if (isAnt() && !hasTrust) {
       logForDebugging('1P event logging: Trust not accepted')
     }
 
@@ -559,7 +561,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
         shouldSkipAuth = true
       } else if (tokens && isOAuthTokenExpired(tokens.expiresAt)) {
         shouldSkipAuth = true
-        if (process.env.USER_TYPE === 'ant') {
+        if (isAnt()) {
           logForDebugging(
             '1P event logging: OAuth token expired, skipping auth to avoid 401',
           )
@@ -573,7 +575,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       : getAuthHeaders()
     const useAuth = !authResult.error
 
-    if (!useAuth && process.env.USER_TYPE === 'ant') {
+    if (!useAuth && isAnt()) {
       logForDebugging(
         `1P event logging: auth not available, sending without auth`,
       )
@@ -597,7 +599,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
         axios.isAxiosError(error) &&
         error.response?.status === 401
       ) {
-        if (process.env.USER_TYPE === 'ant') {
+        if (isAnt()) {
           logForDebugging(
             '1P event logging: 401 auth error, retrying without auth',
           )
@@ -619,7 +621,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     withAuth: boolean,
     responseData: unknown,
   ): void {
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging(
         `1P event logging: ${eventCount} events exported successfully${withAuth ? ' (with auth)' : ' (without auth)'}`,
       )
@@ -683,7 +685,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
 
       if (!coreMetadata) {
         // Emit partial event if core metadata is missing
-        if (process.env.USER_TYPE === 'ant') {
+        if (isAnt()) {
           logForDebugging(
             `1P event logging: core_metadata missing for event ${eventName}`,
           )
@@ -766,14 +768,14 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     this.isShutdown = true
     this.resetBackoff()
     await this.forceFlush()
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging('1P event logging exporter shutdown complete')
     }
   }
 
   async forceFlush(): Promise<void> {
     await Promise.all(this.pendingExports)
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging('1P event logging exporter flush complete')
     }
   }

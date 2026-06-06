@@ -27,6 +27,8 @@ import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import { count } from '../../utils/array.js'
 import { plural } from '../../utils/stringUtils.js'
 import { Divider } from '../design-system/Divider.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   tools: Tools
@@ -80,7 +82,7 @@ function getToolBuckets(): ToolBuckets {
       toolNames: new Set(
         [
           BashTool.name,
-          ("external" as string) === 'ant' ? TungstenTool.name : undefined,
+          isAnt() ? TungstenTool.name : undefined,
         ].filter(n => n !== undefined),
       ),
     },

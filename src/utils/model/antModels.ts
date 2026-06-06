@@ -1,5 +1,7 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { EffortLevel } from '../effort.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type AntModel = {
   alias: string
@@ -32,7 +34,7 @@ export type AntModelOverrideConfig = {
 // @[MODEL LAUNCH]: Update tengu_ant_model_override with new ant-only models
 // @[MODEL LAUNCH]: Add the codename to scripts/excluded-strings.txt to prevent it from leaking to external builds.
 export function getAntModelOverrideConfig(): AntModelOverrideConfig | null {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return null
   }
   return getFeatureValue_CACHED_MAY_BE_STALE<AntModelOverrideConfig | null>(
@@ -42,7 +44,7 @@ export function getAntModelOverrideConfig(): AntModelOverrideConfig | null {
 }
 
 export function getAntModels(): AntModel[] {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return []
   }
   return getAntModelOverrideConfig()?.antModels ?? []
@@ -51,7 +53,7 @@ export function getAntModels(): AntModel[] {
 export function resolveAntModel(
   model: string | undefined,
 ): AntModel | undefined {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return undefined
   }
   if (model === undefined) {

@@ -21,6 +21,8 @@ import { submitTranscriptShare } from './submitTranscriptShare.js'
 import type { TranscriptShareResponse } from './TranscriptSharePrompt.js'
 import { useSurveyState } from './useSurveyState.js'
 import type { FeedbackSurveyResponse } from './utils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const HIDE_THANKS_AFTER_MS = 3000
 const MEMORY_SURVEY_GATE = 'tengu_dunwich_bell'
@@ -117,7 +119,7 @@ export function useMemorySurvey(
 
   const shouldShowTranscriptPrompt = useCallback(
     (selected: FeedbackSurveyResponse) => {
-      if (("external" as string) !== 'ant') {
+      if (!isAnt()) {
         return false
       }
       if (selected !== 'bad' && selected !== 'good') {

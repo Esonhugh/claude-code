@@ -19,6 +19,8 @@ import { Select } from './CustomSelect/select.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
 import { Spinner } from './Spinner.js'
 import TextInput from './TextInput.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   onDone(): void
@@ -436,7 +438,7 @@ function OAuthStatusMessage({
                     <Text>
                       Claude account with subscription ·{' '}
                       <Text dimColor>Pro, Max, Team, or Enterprise</Text>
-                      {("external" as string) === 'ant' && (
+                      {isAnt() && (
                         <Text>
                           {'\n'}
                           <Text color="warning">[ANT-ONLY]</Text>{' '}

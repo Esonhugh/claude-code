@@ -19,6 +19,8 @@ import {
 } from '../utils/sessionState.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import type { AppState } from './AppStateStore.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Inverse of the push below — restore on worker restart.
 export function externalMetadataToAppState(
@@ -140,7 +142,7 @@ export function onChangeAppState({
   }
 
   // tungstenPanelVisible (ant-only tmux panel sticky toggle)
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     if (
       newState.tungstenPanelVisible !== oldState.tungstenPanelVisible &&
       newState.tungstenPanelVisible !== undefined &&

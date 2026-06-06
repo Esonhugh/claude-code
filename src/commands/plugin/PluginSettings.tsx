@@ -35,6 +35,8 @@ import { formatErrorMessage, getErrorGuidance } from './PluginErrors.js'
 import { type ParsedCommand, parsePluginArgs } from './parseArgs.js'
 import type { PluginSettingsProps, ViewState } from './types.js'
 import { ValidatePlugin } from './ValidatePlugin.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type TabId = 'discover' | 'installed' | 'marketplaces' | 'errors'
 
@@ -68,7 +70,7 @@ function MarketplaceList({
 }
 
 function McpRedirectBanner(): React.ReactNode {
-  if (("external" as string) !== 'ant') {
+  if (!isAnt()) {
     return null
   }
 

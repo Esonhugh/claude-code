@@ -3,13 +3,15 @@ import type { LocalCommandResult } from '../../commands.js'
 import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsManager.js'
 import { OFFICIAL_MARKETPLACE_NAME } from '../../utils/plugins/officialMarketplace.js'
 import { playAnimation } from '../thinkback/thinkback.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const INTERNAL_MARKETPLACE_NAME = 'claude-code-marketplace'
 const SKILL_NAME = 'thinkback'
 
 function getPluginId(): string {
   const marketplaceName =
-    process.env.USER_TYPE === 'ant'
+    isAnt()
       ? INTERNAL_MARKETPLACE_NAME
       : OFFICIAL_MARKETPLACE_NAME
   return `thinkback@${marketplaceName}`

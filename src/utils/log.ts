@@ -20,6 +20,8 @@ import { isEnvTruthy } from './envUtils.js'
 import { toError } from './errors.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import { jsonParse } from './slowOperations.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Gets the display title for a log/session with fallback logic.
@@ -350,7 +352,7 @@ export function captureAPIRequest(
   // CLAUDE.md-injected payload the API received. Overwritten each turn;
   // dumpPrompts.ts already holds 5 full request bodies for ants, so this is
   // not a new retention class.
-  setLastAPIRequestMessages(process.env.USER_TYPE === 'ant' ? messages : null)
+  setLastAPIRequestMessages(isAnt() ? messages : null)
 }
 
 /**

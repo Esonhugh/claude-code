@@ -2,6 +2,8 @@ import type { Command } from '../../commands.js'
 import { isPolicyAllowed } from '../../services/policyLimits/index.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const feedback = {
   aliases: ['bug'],
@@ -17,7 +19,7 @@ const feedback = {
       isEnvTruthy(process.env.DISABLE_FEEDBACK_COMMAND) ||
       isEnvTruthy(process.env.DISABLE_BUG_COMMAND) ||
       isEssentialTrafficOnly() ||
-      process.env.USER_TYPE === 'ant' ||
+      isAnt() ||
       !isPolicyAllowed('allow_product_feedback')
     ),
   load: () => import('./feedback.js'),

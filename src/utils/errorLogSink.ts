@@ -20,6 +20,8 @@ import { logForDebugging } from './debug.js'
 import { getFsImplementation } from './fsOperations.js'
 import { attachErrorLogSink, dateToFilename } from './log.js'
 import { jsonStringify } from './slowOperations.js'
+import { isAnt, userType } from 'src/utils/userType.js'
+
 
 const DATE = dateToFilename(new Date())
 
@@ -109,7 +111,7 @@ function getLogWriter(path: string): JsonlWriter {
 }
 
 function appendToLog(path: string, message: object): void {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return
   }
 
@@ -117,7 +119,7 @@ function appendToLog(path: string, message: object): void {
     timestamp: new Date().toISOString(),
     ...message,
     cwd: getFsImplementation().cwd(),
-    userType: process.env.USER_TYPE,
+    userType: userType(),
     sessionId: getSessionId(),
     version: MACRO.VERSION,
   }

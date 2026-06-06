@@ -108,6 +108,8 @@ import {
   sendPermissionRequestViaMailbox,
 } from './permissionSync.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
@@ -947,7 +949,7 @@ export async function runInProcessTeammate(
       // Log agent memory loaded event for in-process teammates
       if (agentDefinition.memory) {
         logEvent('tengu_agent_memory_loaded', {
-          ...(process.env.USER_TYPE === 'ant'
+          ...(isAnt()
             ? {
                 agent_type:
                   agentDefinition.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

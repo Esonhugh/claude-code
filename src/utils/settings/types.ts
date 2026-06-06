@@ -28,6 +28,8 @@ export {
 // Also import for use within this file
 import { type HookCommand, HooksSchema } from '../../schemas/hooks.js'
 import { count } from '../array.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Schema for environment variables
@@ -708,7 +710,7 @@ export const SettingsSchema = lazySchema(() =>
         ),
       effortLevel: z
         .enum(
-          process.env.USER_TYPE === 'ant'
+          isAnt()
             ? ['low', 'medium', 'high', 'max']
             : ['low', 'medium', 'high'],
         )
@@ -834,7 +836,7 @@ export const SettingsSchema = lazySchema(() =>
           'Custom directory for plan files, relative to project root. ' +
             'If not set, defaults to ~/.claude/plans/',
         ),
-      ...(process.env.USER_TYPE === 'ant'
+      ...(isAnt()
         ? {
             classifierPermissionsEnabled: z
               .boolean()
@@ -995,7 +997,7 @@ export const SettingsSchema = lazySchema(() =>
                   .array(z.string())
                   .optional()
                   .describe('Rules for the auto mode classifier deny section'),
-                ...(process.env.USER_TYPE === 'ant'
+                ...(isAnt()
                   ? {
                       // Back-compat alias for ant users; external users use soft_deny
                       deny: z.array(z.string()).optional(),

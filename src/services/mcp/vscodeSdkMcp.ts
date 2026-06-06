@@ -7,6 +7,8 @@ import {
 } from '../analytics/growthbook.js'
 import { logEvent } from '../analytics/index.js'
 import type { ConnectedMCPServer, MCPServerConnection } from './types.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Mirror of AutoModeEnabledState in permissionSetup.ts — inlined because that
 // file pulls in too many deps for this thin IPC module.
@@ -41,7 +43,7 @@ export function notifyVscodeFileUpdated(
   oldContent: string | null,
   newContent: string | null,
 ): void {
-  if (process.env.USER_TYPE !== 'ant' || !vscodeMcpClient) {
+  if (!isAnt() || !vscodeMcpClient) {
     return
   }
 

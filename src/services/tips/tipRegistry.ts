@@ -55,6 +55,8 @@ import {
 } from '../api/referral.js'
 import { getSessionsSinceLastShown } from './tipHistory.js'
 import type { Tip, TipContext } from './types.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 let _isOfficialMarketplaceInstalledCache: boolean | undefined
 async function isOfficialMarketplaceInstalled(): Promise<boolean> {
@@ -114,7 +116,7 @@ const externalTips: Tip[] = [
       `Use Plan Mode to prepare for a complex request before making changes. Press ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} twice to enable.`,
     cooldownSessions: 5,
     isRelevant: async () => {
-      if (process.env.USER_TYPE === 'ant') return false
+      if (isAnt()) return false
       const config = getGlobalConfig()
       // Show to users who haven't used plan mode recently (7+ days)
       const daysSinceLastUse = config.lastPlanModeUse
@@ -433,7 +435,7 @@ const externalTips: Tip[] = [
   {
     id: 'shift-tab',
     content: async () =>
-      process.env.USER_TYPE === 'ant'
+      isAnt()
         ? `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between default mode and auto mode`
         : `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between default mode, auto-accept edit mode, and plan mode`,
     cooldownSessions: 10,
@@ -516,7 +518,7 @@ const externalTips: Tip[] = [
       `Your default model setting is Opus Plan Mode. Press ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} twice to activate Plan Mode and plan with Claude Opus.`,
     cooldownSessions: 2,
     async isRelevant() {
-      if (process.env.USER_TYPE === 'ant') return false
+      if (isAnt()) return false
       const config = getGlobalConfig()
       const modelSetting = getUserSpecifiedModelSetting()
       const hasOpusPlanMode = modelSetting === 'opusplan'
@@ -672,7 +674,7 @@ const externalTips: Tip[] = [
     content: async () => 'Use /feedback to help us improve!',
     cooldownSessions: 15,
     async isRelevant() {
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         return false
       }
       const config = getGlobalConfig()
@@ -682,7 +684,7 @@ const externalTips: Tip[] = [
 ]
 // @ts-ignore - recovered code
 const internalOnlyTips: Tip[] =
-  process.env.USER_TYPE === 'ant'
+  isAnt()
     ? [
         {
           id: 'important-claudemd',

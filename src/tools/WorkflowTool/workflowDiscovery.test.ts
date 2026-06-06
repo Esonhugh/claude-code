@@ -24,6 +24,28 @@ assert.deepEqual(
 )
 assert.equal(missingDiscovery.invalid.length, 0)
 
+const looseCwd = await mkdtemp(join(tmpdir(), 'workflow-discovery-loose-cwd-'))
+await mkdir(join(looseCwd, '.claude', 'workflows'), { recursive: true })
+await writeFile(
+  join(looseCwd, '.claude', 'workflows', 'loose-workflow.json'),
+  JSON.stringify({
+    name: 'loose-workflow',
+    description: 'Workflow defined directly in a non-repo cwd.',
+    phases: [
+      {
+        id: 'inspect',
+        description: 'Inspect loose cwd workflow.',
+        prompt: 'Inspect loose cwd workflow.',
+      },
+    ],
+  }),
+)
+const looseDiscovery = await discoverWorkflowSpecs(looseCwd)
+assert.equal(
+  looseDiscovery.valid.some(workflow => workflow.commandName === 'loose-workflow'),
+  true,
+)
+
 await writeFile(join(tempRoot, 'docs'), 'not a directory')
 const invalidDiscovery = await discoverWorkflowSpecs(tempRoot)
 assert.equal(invalidDiscovery.valid.length, 10)

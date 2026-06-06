@@ -8,6 +8,8 @@ import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from 'src/tools/WebSearchTool/prompt.js'
 import { SHELL_TOOL_NAMES } from 'src/utils/shell/shellToolUtils.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // docs: https://docs.google.com/document/d/1oCT4evvWTh3P6z-kcfNQwWTCxAhkoFndSaNS9Gm40uw/edit?tab=t.0
 
@@ -87,7 +89,7 @@ export function getAPIContextManagement(options?: {
   }
 
   // Tool clearing strategies are ant-only
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return strategies.length > 0 ? { edits: strategies } : undefined
   }
 

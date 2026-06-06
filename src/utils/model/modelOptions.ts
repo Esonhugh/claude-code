@@ -32,6 +32,8 @@ import {
 } from './model.js'
 import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -43,7 +45,7 @@ export type ModelOption = {
 }
 
 export function getDefaultOptionForUser(fastMode = false): ModelOption {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const currentModel = renderDefaultModelSetting(
       getDefaultMainLoopModelSetting(),
     )
@@ -269,7 +271,7 @@ function getOpusPlanOption(): ModelOption {
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getModelOptionsBase(fastMode = false): ModelOption[] {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     // Build options from antModels config
     // @ts-ignore - recovered code
     const antModelOptions: ModelOption[] = getAntModels().map(m => ({

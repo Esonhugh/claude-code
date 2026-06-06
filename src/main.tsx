@@ -446,6 +446,8 @@ import {
   isTmuxAvailable,
   parsePRReference,
 } from './utils/worktree.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 profileCheckpoint('main_tsx_imports_loaded')
@@ -510,7 +512,7 @@ function isBeingDebugged() {
 
 // Exit if we detect node debugging or inspection
 if (
-  ("external" as string) !== 'ant' &&
+  !isAnt() &&
   isBeingDebugged() &&
   !isEnvTruthy(process.env.CLAUDE_CODE_ALLOW_INSPECTOR)
 ) {
@@ -598,7 +600,7 @@ function runMigrations(): void {
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer()
     }
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       migrateFennecToOpus()
     }
     saveGlobalConfig(prev =>
@@ -696,7 +698,7 @@ export function startDeferredPrefetches(): void {
   }
 
   // Event loop stall detector — logs when the main thread is blocked >500ms
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     void import('./utils/eventLoopStallDetector.js').then(m =>
       m.startEventLoopStallDetector(),
     )
@@ -1860,14 +1862,14 @@ async function run(): Promise<CommanderCommand> {
 
       // Extract tasks mode options (ant-only)
       const tasksOption =
-        ("external" as string) === 'ant' &&
+        isAnt() &&
         (options as { tasks?: boolean | string }).tasks
       const taskListId = tasksOption
         ? typeof tasksOption === 'string'
           ? tasksOption
           : DEFAULT_TASKS_MODE_TASK_LIST_ID
         : undefined
-      if (("external" as string) === 'ant' && taskListId) {
+      if (isAnt() && taskListId) {
         process.env.CLAUDE_CODE_TASK_LIST_ID = taskListId
       }
 
@@ -2344,7 +2346,7 @@ async function run(): Promise<CommanderCommand> {
       setChromeFlagOverride(chromeOpts.chrome)
       const enableClaudeInChrome =
         shouldEnableClaudeInChrome(chromeOpts.chrome) &&
-        (("external" as string) === 'ant' || isClaudeAISubscriber())
+        (isAnt() || isClaudeAISubscriber())
       const autoEnableClaudeInChrome =
         !enableClaudeInChrome && shouldAutoEnableClaudeInChrome()
 
@@ -2614,7 +2616,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Handle overly broad shell allow rules for ant users (Bash(*), PowerShell(*))
       if (
-        ("external" as string) === 'ant' &&
+        isAnt() &&
         overlyBroadBashPermissions.length > 0
       ) {
         for (const permission of overlyBroadBashPermissions) {
@@ -2932,7 +2934,7 @@ async function run(): Promise<CommanderCommand> {
       //  - flag absent from disk (== null also catches pre-#22279 poisoned null)
       const explicitModel = options.model || process.env.ANTHROPIC_MODEL
       if (
-        ("external" as string) === 'ant' &&
+        isAnt() &&
         explicitModel &&
         explicitModel !== 'default' &&
         !hasGrowthBookEnvOverride('tengu_ant_model_override') &&
@@ -3142,7 +3144,7 @@ async function run(): Promise<CommanderCommand> {
           // Log agent memory loaded event for tmux teammates
           if (customAgent.memory) {
             logEvent('tengu_agent_memory_loaded', {
-              ...(("external" as string) === 'ant' && {
+              ...(isAnt() && {
                 agent_type:
                   customAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               }),
@@ -3235,7 +3237,7 @@ async function run(): Promise<CommanderCommand> {
         getFpsMetrics = ctx.getFpsMetrics
         stats = ctx.stats
         // Install asciicast recorder before Ink mounts (ant-only, opt-in via CLAUDE_CODE_TERMINAL_RECORDING=1)
-        if (("external" as string) === 'ant') {
+        if (isAnt()) {
           installAsciicastRecorder()
         }
 
@@ -3747,7 +3749,7 @@ async function run(): Promise<CommanderCommand> {
         }
 
         // Async check of auto mode gate — corrects state and disables auto if needed.
-        // Gated on TRANSCRIPT_CLASSIFIER (not USER_TYPE) so GrowthBook kill switch runs for external builds too.
+        // Gated on TRANSCRIPT_CLASSIFIER so the GrowthBook kill switch still runs.
         if (feature('TRANSCRIPT_CLASSIFIER')) {
           void verifyAutoModeGateAccess(
             toolPermissionContext,
@@ -3921,7 +3923,7 @@ async function run(): Promise<CommanderCommand> {
           void import('./utils/backgroundHousekeeping.js').then(m =>
             m.startBackgroundHousekeeping(),
           )
-          if (("external" as string) === 'ant') {
+          if (isAnt()) {
             void import('./utils/sdkHeapDumpMonitor.js').then(m =>
               m.startSdkMemoryMonitor(),
             )
@@ -4200,7 +4202,7 @@ async function run(): Promise<CommanderCommand> {
       //   - Safety: CLAUDE_CODE_DISABLE_SESSION_DATA_UPLOAD=1 bypasses (tests set this).
       // Import is dynamic + async to avoid adding startup latency.
       const sessionUploaderPromise =
-        ("external" as string) === 'ant'
+        isAnt()
           ? import('./utils/sessionDataUploader.js')
           : null
 
@@ -4885,7 +4887,7 @@ async function run(): Promise<CommanderCommand> {
             }
           }
         }
-        if (("external" as string) === 'ant') {
+        if (isAnt()) {
           if (
             options.resume &&
             typeof options.resume === 'string' &&
@@ -5226,7 +5228,7 @@ async function run(): Promise<CommanderCommand> {
     )
   }
 
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     program.addOption(
       new Option(
         '--delegate-permissions',
@@ -6176,7 +6178,7 @@ async function run(): Promise<CommanderCommand> {
     })
 
   // claude up — run the project's CLAUDE.md "# claude up" setup instructions.
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     program
       .command('up')
       .description(
@@ -6190,7 +6192,7 @@ async function run(): Promise<CommanderCommand> {
 
   // claude rollback (ant-only)
   // Rolls back to previous releases
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     program
       .command('rollback [target]')
       .description(
@@ -6228,7 +6230,7 @@ async function run(): Promise<CommanderCommand> {
     )
 
   // ant-only commands
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     const validateLogId = (value: string) => {
       const maybeSessionId = validateUuid(value)
       if (maybeSessionId) return maybeSessionId
@@ -6288,7 +6290,7 @@ Examples:
         await exportHandler(source, outputFile)
       })
 
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       const taskCmd = program
         .command('task')
         .description('[ANT-ONLY] Manage task list tasks')
@@ -6498,7 +6500,7 @@ async function logTenguInit({
       }),
       autoUpdatesChannel: (getInitialSettings().autoUpdatesChannel ??
         'latest') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      ...(("external" as string) === 'ant'
+      ...(isAnt()
         ? (() => {
             const cwd = getCwd()
             const gitRoot = findGitRoot(cwd)

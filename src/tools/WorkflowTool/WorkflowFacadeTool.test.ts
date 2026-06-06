@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -46,8 +46,89 @@ assert.deepEqual(normalizeWorkflowFacadeInput('official-compatible-research'), {
 
 const { WorkflowFacadeTool } = await import('./WorkflowFacadeTool.js')
 assert.equal(WorkflowFacadeTool.name, 'Workflow')
+assert.deepEqual(
+  await WorkflowFacadeTool.checkPermissions(
+    { scriptPath: '/tmp/workflow.js', args: 'topic' },
+    {} as never,
+  ),
+  {
+    behavior: 'ask',
+    message: 'Run a dynamic workflow?',
+    updatedInput: { scriptPath: '/tmp/workflow.js', args: 'topic' },
+  },
+)
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-facade-test-'))
+await mkdir(join(tempRoot, '.claude', 'workflows'), { recursive: true })
+const permissionScriptPath = join(tempRoot, 'permission-preview.js')
+await writeFile(
+  permissionScriptPath,
+  `export const meta = {
+    name: 'permission-preview',
+    description: 'Preview permission phases.',
+    phases: [{ title: 'Scope', detail: 'Scope topic' }],
+  }
+  phase('Scope')`,
+)
+const permissionPreview = await WorkflowFacadeTool.checkPermissions(
+  { scriptPath: permissionScriptPath, args: 'topic' },
+  { getCwd: () => tempRoot } as never,
+)
+assert.equal(permissionPreview.behavior, 'ask')
+assert.equal(permissionPreview.message, 'Run a dynamic workflow?')
+assert.match(permissionPreview.updatedInput?.scriptPath as string, /permission-preview\.js$/)
+assert.equal(permissionPreview.updatedInput?.args, 'topic')
+assert.match(permissionPreview.updatedInput?.script as string, /export const meta/)
+assert.deepEqual(permissionPreview.updatedInput?.plan, {
+  name: 'permission-preview',
+  description: 'Preview permission phases.',
+  phases: [{ title: 'Scope', detail: 'Scope topic' }],
+  runScriptSnapshot: `export const meta = {
+    name: 'permission-preview',
+    description: 'Preview permission phases.',
+    phases: [{ title: 'Scope', detail: 'Scope topic' }],
+  }
+  phase('Scope')`,
+})
+
+await writeFile(
+  join(tempRoot, '.claude', 'workflows', 'saved-preview.js'),
+  `export const meta = {
+    name: 'saved-preview',
+    description: 'Saved workflow preview.',
+    phases: [{ title: 'Scope', detail: 'Scope saved args' }],
+  }
+  phase('Scope')
+  await agent('saved preview ' + args, { label: 'scope' })`,
+)
+const savedPermissionPreview = await WorkflowFacadeTool.checkPermissions(
+  { name: 'saved-preview', args: 'saved topic' },
+  { getCwd: () => tempRoot } as never,
+)
+assert.equal(savedPermissionPreview.behavior, 'ask')
+assert.equal(savedPermissionPreview.message, 'Run a dynamic workflow?')
+assert.equal(savedPermissionPreview.updatedInput?.name, 'saved-preview')
+assert.equal(savedPermissionPreview.updatedInput?.args, 'saved topic')
+assert.match(savedPermissionPreview.updatedInput?.script as string, /export const meta/)
+assert.deepEqual(savedPermissionPreview.updatedInput?.plan, {
+  name: 'saved-preview',
+  description: 'Saved workflow preview.',
+  phases: [{ title: 'Scope', detail: 'Scope saved args', prompt: "'saved preview '" }],
+  runScriptSnapshot: `export const meta = {
+    name: 'saved-preview',
+    description: 'Saved workflow preview.',
+    phases: [{ title: 'Scope', detail: 'Scope saved args' }],
+  }
+  phase('Scope')
+  await agent('saved preview ' + args, { label: 'scope' })`,
+})
+const savedStringPermissionPreview = await WorkflowFacadeTool.checkPermissions(
+  'saved-preview' as never,
+  { getCwd: () => tempRoot } as never,
+)
+assert.equal(savedStringPermissionPreview.behavior, 'ask')
+assert.equal(savedStringPermissionPreview.updatedInput?.name, 'saved-preview')
+assert.deepEqual(savedStringPermissionPreview.updatedInput?.plan, savedPermissionPreview.updatedInput?.plan)
 let state = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -119,12 +200,12 @@ const inlineRun = await WorkflowFacadeTool.call(
   { message: { id: 'msg_facade_inline' } } as never,
 )
 
-assert.match(String(inlineRun.data), /Workflow completed: Inline Research/)
-assert.match(String(inlineRun.data), /Workflow run ID: wf_/)
-assert.match(String(inlineRun.data), /Script path: .*inline-research\.js/)
+assert.match(String(inlineRun.data), /Workflow launched in background\. Task ID: w/)
+assert.match(String(inlineRun.data), /Run ID: wf_/)
+assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*inline-research\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=facade\n\nWorkflow user input:\n{\n  "topic": "facade"\n}'])
 const taskId = String(inlineRun.data).match(/Task ID: (\S+)/)?.[1]
-const workflowRunId = String(inlineRun.data).match(/Workflow run ID: (\S+)/)?.[1]
+const workflowRunId = String(inlineRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(taskId)
 assert.ok(workflowRunId)
 const session = JSON.parse(
@@ -134,6 +215,60 @@ assert.equal(session.taskId, taskId)
 assert.equal(session.workflowRunId, workflowRunId)
 assert.match(session.scriptPath, /inline-research\.js$/)
 assert.deepEqual(session.runArgs, { topic: 'facade' })
+
+launchedPrompts.length = 0
+const officialRun = await WorkflowFacadeTool.call(
+  {
+    name: 'official-inline',
+    args: { topic: 'meta' },
+    script: `export const meta = {
+      name: 'official-inline',
+      description: 'Official inline workflow',
+      phases: [{ title: 'Scan', detail: 'Scan topic' }],
+    }
+    phase('Scan')
+    await agent('scan ' + args.topic, { label: 'scan' })`,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_official_inline' } } as never,
+)
+
+assert.match(String(officialRun.data), /Workflow launched in background\. Task ID: w/)
+const officialWorkflowRunId = String(officialRun.data).match(/Run ID: (\S+)/)?.[1]
+assert.ok(officialWorkflowRunId)
+const officialSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', officialWorkflowRunId, 'session.json'), 'utf8'),
+)
+assert.deepEqual(officialSession.meta, {
+  name: 'official-inline',
+  description: 'Official inline workflow',
+  phases: [{ title: 'Scan', detail: 'Scan topic' }],
+})
+assert.equal(officialSession.resumeCacheEntries.length, 1)
+assert.deepEqual(launchedPrompts, ['scan meta\n\nWorkflow user input:\n{\n  "topic": "meta"\n}'])
+
+launchedPrompts.length = 0
+const cachedRerun = await WorkflowFacadeTool.call(
+  {
+    scriptPath: officialSession.scriptPath,
+    args: { topic: 'meta' },
+    resumeFromRunId: officialWorkflowRunId,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_cached_rerun' } } as never,
+)
+
+assert.match(String(cachedRerun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, [])
+const cachedWorkflowRunId = String(cachedRerun.data).match(/Run ID: (\S+)/)?.[1]
+assert.ok(cachedWorkflowRunId)
+const cachedSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', cachedWorkflowRunId, 'session.json'), 'utf8'),
+)
+assert.equal(cachedSession.resumeFromRunId, officialWorkflowRunId)
+assert.equal(cachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
 
 launchedPrompts.length = 0
 const rerun = await WorkflowFacadeTool.call(
@@ -147,10 +282,10 @@ const rerun = await WorkflowFacadeTool.call(
   { message: { id: 'msg_facade_rerun' } } as never,
 )
 
-assert.match(String(rerun.data), /Workflow completed: Inline Research/)
-assert.match(String(rerun.data), /Script path: .*inline-research\.js/)
+assert.match(String(rerun.data), /Workflow launched in background\. Task ID: w/)
+assert.match(String(rerun.data), /Workflow\({scriptPath: ".*inline-research\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=rerun\n\nWorkflow user input:\n{\n  "topic": "rerun"\n}'])
-const rerunWorkflowRunId = String(rerun.data).match(/Workflow run ID: (\S+)/)?.[1]
+const rerunWorkflowRunId = String(rerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(rerunWorkflowRunId)
 const rerunSession = JSON.parse(
   await readFile(join(tempRoot, '.claude', 'workflow-runs', rerunWorkflowRunId, 'session.json'), 'utf8'),
@@ -213,8 +348,8 @@ const complexRun = await WorkflowFacadeTool.call(
   { message: { id: 'msg_facade_complex' } } as never,
 )
 
-assert.match(String(complexRun.data), /Workflow completed: dry-run/)
-const complexWorkflowRunId = String(complexRun.data).match(/Workflow run ID: (\S+)/)?.[1]
+assert.match(String(complexRun.data), /Workflow launched in background\. Task ID: w/)
+const complexWorkflowRunId = String(complexRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(complexWorkflowRunId)
 assert.deepEqual(launchedAgents.map(agent => agent.description), [
   'dry-run: research-primary',

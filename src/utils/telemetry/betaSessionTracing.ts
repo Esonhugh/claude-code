@@ -34,6 +34,8 @@ import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { logOTelEvent } from './events.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Message type for API calls (UserMessage or AssistantMessage)
 type APIMessage = UserMessage | AssistantMessage
@@ -87,7 +89,7 @@ export function isBetaTracingEnabled(): boolean {
   // For external users, enable in SDK/headless mode OR when org is allowlisted.
   // Gate reads from disk cache, so first run after allowlisting returns false;
   // works from second run onward (same behavior as enhanced_telemetry_beta).
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return (
       getIsNonInteractiveSession() ||
       getFeatureValue_CACHED_MAY_BE_STALE('tengu_trace_lantern', false)
@@ -429,7 +431,7 @@ export function addBetaLLMResponseAttributes(
 
   // Add thinking_output - ant-only
   if (
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     metadata.thinkingOutput !== undefined
   ) {
     const { content: thinkingOutput, truncated: thinkingTruncated } =

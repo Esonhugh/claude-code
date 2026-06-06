@@ -85,6 +85,8 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   runArgs?: WorkflowArgs
   summary?: string
   agentCount?: number
+  progressVersion?: number
+  defaultModel?: string
   tokenCount?: number
   toolUseCount?: number
   execution?: 'agent' | 'team'
@@ -120,6 +122,7 @@ export function registerWorkflowTask({
   teamName,
   workflowRunId,
   scriptPath,
+  defaultModel,
 }: {
   plan: WorkflowDryRunPlan
   setAppState: SetAppState
@@ -128,6 +131,7 @@ export function registerWorkflowTask({
   teamName?: string
   workflowRunId?: string
   scriptPath?: string
+  defaultModel?: string
 }): LocalWorkflowTaskState {
   const id = generateWorkflowTaskId()
   const taskState: LocalWorkflowTaskState = {
@@ -140,6 +144,8 @@ export function registerWorkflowTask({
     runArgs,
     summary: 'Workflow started',
     agentCount: plan.totalAgents,
+    progressVersion: 1,
+    defaultModel: plan.defaults.model ?? defaultModel,
     tokenCount: 0,
     toolUseCount: 0,
     execution: plan.defaults.execution,
@@ -190,17 +196,28 @@ function withWorkflowTask(
   })
 }
 
+function bumpProgressVersion(task: LocalWorkflowTaskState): LocalWorkflowTaskState {
+  return {
+    ...task,
+    progressVersion: (task.progressVersion ?? 0) + 1,
+  }
+}
+
+function withProgressVersion(task: LocalWorkflowTaskState): LocalWorkflowTaskState {
+  return bumpProgressVersion(task)
+}
+
 function updatePhase(
   task: LocalWorkflowTaskState,
   phaseId: string,
   updater: (phase: LocalWorkflowPhaseState) => LocalWorkflowPhaseState,
 ): LocalWorkflowTaskState {
-  return {
+  return withProgressVersion({
     ...task,
     phases: task.phases.map(phase =>
       phase.id === phaseId ? updater(phase) : phase,
     ),
-  }
+  })
 }
 
 function addUnique(values: string[], value: string): string[] {
@@ -236,6 +253,59 @@ function phaseCompleted(phase: LocalWorkflowPhaseState): boolean {
   )
 }
 
+function completedAgents(task: LocalWorkflowTaskState): number {
+  return task.phases.reduce(
+    (sum, phase) => sum + phase.completedAgentIds.length,
+    0,
+  )
+}
+
+function appendEvent(
+  task: LocalWorkflowTaskState,
+  event: WorkflowProgressEvent,
+): LocalWorkflowTaskState {
+  return withProgressVersion({
+    ...task,
+    events: [...task.events, event],
+  })
+}
+
+function progressEvent(
+  task: LocalWorkflowTaskState,
+  status: Extract<WorkflowProgressEvent, { type: 'workflow_progress' }>['status'],
+): WorkflowProgressEvent {
+  return {
+    type: 'workflow_progress',
+    workflowRunId: task.workflowRunId ?? task.id,
+    status,
+    completedAgents: completedAgents(task),
+    totalAgents: task.agentCount ?? 0,
+    timestamp: Date.now(),
+  }
+}
+
+function agentEvent(
+  task: LocalWorkflowTaskState,
+  phaseId: string,
+  agentId: string,
+  status: Extract<WorkflowProgressEvent, { type: 'workflow_agent' }>['status'],
+): WorkflowProgressEvent {
+  return {
+    type: 'workflow_agent',
+    workflowRunId: task.workflowRunId ?? task.id,
+    phaseId,
+    agentId,
+    status,
+    timestamp: Date.now(),
+  }
+}
+
+function buildResumePrompt(task: LocalWorkflowTaskState): string {
+  const scriptPath = task.scriptPath ?? '<script path unavailable>'
+  const workflowRunId = task.workflowRunId ?? '<workflow run id unavailable>'
+  return `Resume the paused workflow by calling: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})`
+}
+
 export function recordWorkflowEvent({
   taskId,
   event,
@@ -245,7 +315,7 @@ export function recordWorkflowEvent({
   event: WorkflowProgressEvent
   setAppState: SetAppState
 }): void {
-  withWorkflowTask(taskId, setAppState, task => ({
+  withWorkflowTask(taskId, setAppState, task => withProgressVersion({
     ...task,
     events: [...task.events, event],
   }))
@@ -457,12 +527,13 @@ export function pauseWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    return {
+    const pausedTask = {
       ...task,
-      status: 'pending',
+      status: 'pending' as const,
       pausedAt: Date.now(),
-      summary: 'Workflow paused',
+      summary: `Workflow paused. ${buildResumePrompt(task)}`,
     }
+    return appendEvent(pausedTask, progressEvent(pausedTask, 'paused'))
   })
 }
 
@@ -473,13 +544,14 @@ export function resumeWorkflowTask(
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'pending') return task
     const pausedMs = task.pausedAt ? Date.now() - task.pausedAt : 0
-    return {
+    const resumedTask = {
       ...task,
-      status: 'running',
+      status: 'running' as const,
       totalPausedMs: (task.totalPausedMs ?? 0) + Math.max(0, pausedMs),
       pausedAt: undefined,
       summary: 'Workflow resumed',
     }
+    return appendEvent(resumedTask, progressEvent(resumedTask, 'running'))
   })
 }
 
@@ -497,10 +569,13 @@ export function skipWorkflowAgent(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    return {
+    let skippedPhaseId: string | undefined
+    const skippedTask = {
       ...task,
+      summary: `Workflow agent skipped by user: ${agentId}`,
       phases: task.phases.map(phase => {
         if (!phase.agentIds.includes(agentId)) return phase
+        skippedPhaseId = phase.id
         const nextPhase = {
           ...phase,
           skippedAgentIds: addUnique(phase.skippedAgentIds, agentId),
@@ -512,10 +587,13 @@ export function skipWorkflowAgent(
         }
         return {
           ...nextPhase,
-          status: phaseCompleted(nextPhase) ? 'completed' : nextPhase.status,
+          status: phaseCompleted(nextPhase) ? 'completed' as const : nextPhase.status,
         }
       }),
     }
+    return skippedPhaseId
+      ? appendEvent(skippedTask, agentEvent(skippedTask, skippedPhaseId, agentId, 'skipped'))
+      : task
   })
 }
 
@@ -526,14 +604,17 @@ export function retryWorkflowAgent(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    return {
+    let retryPhaseId: string | undefined
+    const retryTask = {
       ...task,
+      summary: `Workflow agent retry requested by user: ${agentId}`,
       phases: task.phases.map(phase => {
         if (!phase.agentIds.includes(agentId)) return phase
+        retryPhaseId = phase.id
         const agentIds = removeValue(phase.agentIds, agentId)
         return {
           ...phase,
-          status: agentIds.length === 0 ? 'pending' : 'running',
+          status: agentIds.length === 0 ? 'pending' as const : 'running' as const,
           agentIds,
           completedAgentIds: removeValue(phase.completedAgentIds, agentId),
           skippedAgentIds: removeValue(phase.skippedAgentIds, agentId),
@@ -545,5 +626,8 @@ export function retryWorkflowAgent(
       results: task.results.filter(result => result.agentId !== agentId),
       error: undefined,
     }
+    return retryPhaseId
+      ? appendEvent(retryTask, agentEvent(retryTask, retryPhaseId, agentId, 'pending'))
+      : task
   })
 }

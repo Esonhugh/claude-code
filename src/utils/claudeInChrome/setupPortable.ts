@@ -2,6 +2,8 @@ import { readdir } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import { isFsInaccessible } from '../errors.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const CHROME_EXTENSION_URL = 'https://claude.ai/chrome'
 
@@ -12,7 +14,7 @@ const DEV_EXTENSION_ID = 'dihbgbndebgnbjfmelmegjepbnkhlgni'
 const ANT_EXTENSION_ID = 'dngcpimnedloihjnnfngkgjoidhnaolf'
 
 function getExtensionIds(): string[] {
-  return process.env.USER_TYPE === 'ant'
+  return isAnt()
     ? [PROD_EXTENSION_ID, DEV_EXTENSION_ID, ANT_EXTENSION_ID]
     : [PROD_EXTENSION_ID]
 }

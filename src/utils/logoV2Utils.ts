@@ -13,6 +13,8 @@ import { getStoredChangelogFromMemory, parseChangelog } from './releaseNotes.js'
 import { gt } from './semver.js'
 import { loadMessageLogs } from './sessionStorage.js'
 import { getInitialSettings } from './settings/settings.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Layout constants
 const MAX_LEFT_WIDTH = 50
@@ -311,7 +313,7 @@ export function formatModelAndBilling(
  */
 export function getRecentReleaseNotesSync(maxItems: number): string[] {
   // For ants, use bundled changelog
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const changelog = MACRO.VERSION_CHANGELOG
     if (changelog) {
       const commits = changelog.trim().split('\n').filter(Boolean)

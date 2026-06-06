@@ -12,6 +12,8 @@ import { isAutoUpdaterDisabled } from '../utils/config.js'
 import { installLatest } from '../utils/nativeInstaller/index.js'
 import { gt } from '../utils/semver.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Categorize error messages for analytics
@@ -220,7 +222,7 @@ export function NativeAutoUpdater({
           ✗ Auto-update failed &middot; Try <Text bold>/status</Text>
         </Text>
       )}
-      {maxVersionIssue && ("external" as string) === 'ant' && (
+      {maxVersionIssue && isAnt() && (
         <Text color="warning">
           ⚠ Known issue: {maxVersionIssue} &middot; Run{' '}
           <Text bold>claude rollback --safe</Text> to downgrade

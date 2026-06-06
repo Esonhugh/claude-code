@@ -40,6 +40,8 @@ import {
 } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
+import { userType, isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Default percentage of context window at which to auto-enable tool search.
@@ -409,7 +411,7 @@ export async function isToolSearchEnabled(
       checkedModel:
         model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       mcpToolCount,
-      userType: (process.env.USER_TYPE ??
+      userType: (userType() ??
         'external') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       ...extraProps,
     })
@@ -629,7 +631,7 @@ export type DeferredToolsDeltaScanContext = {
  */
 export function isDeferredToolsDeltaEnabled(): boolean {
   return (
-    process.env.USER_TYPE === 'ant' ||
+    isAnt() ||
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_glacier_2xr', false)
   )
 }

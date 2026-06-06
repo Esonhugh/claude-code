@@ -1,12 +1,12 @@
 import type { Command } from '../../commands.js'
 
 const workflows = {
-  type: 'local',
+  type: 'local-jsx',
   name: 'workflows',
-  description: 'List, show, dry-run, run, template, and control workflow specs',
+  description: 'View dynamic workflow runs',
   argumentHint: '[list|show|dry-run|run|templates|save-template|run-template|status|pause|resume] [name-or-path]',
-  supportsNonInteractive: true,
-  load: () => import('./workflows.js'),
+  immediate: true,
+  load: () => import('./workflowsPage.js'),
 } satisfies Command
 
 export default workflows

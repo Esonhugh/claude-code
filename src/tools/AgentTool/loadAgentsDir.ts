@@ -52,6 +52,8 @@ import {
   initializeFromSnapshot,
 } from './agentMemorySnapshot.js'
 import { getBuiltInAgents } from './builtInAgents.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Type for MCP server specification in agent definitions
 // Can be either a reference to an existing server by name, or an inline definition as { [name]: config }
@@ -91,7 +93,7 @@ const AgentJsonSchema = lazySchema(() =>
     initialPrompt: z.string().optional(),
     memory: z.enum(['user', 'project', 'local']).optional(),
     background: z.boolean().optional(),
-    isolation: (process.env.USER_TYPE === 'ant'
+    isolation: (isAnt()
       ? z.enum(['worktree', 'remote'])
       : z.enum(['worktree'])
     ).optional(),
@@ -607,7 +609,7 @@ export function parseAgentFromMarkdown(
     // Parse isolation mode. 'remote' is ant-only; external builds reject it at parse time.
     type IsolationMode = 'worktree' | 'remote'
     const VALID_ISOLATION_MODES: readonly IsolationMode[] =
-      process.env.USER_TYPE === 'ant' ? ['worktree', 'remote'] : ['worktree']
+      isAnt() ? ['worktree', 'remote'] : ['worktree']
     const isolationRaw = frontmatter['isolation'] as string | undefined
     let isolation: IsolationMode | undefined
     if (isolationRaw !== undefined) {

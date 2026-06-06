@@ -35,6 +35,8 @@ import { getTranscriptPath } from './sessionStorage.js'
 import { readTranscriptForLoad } from './sessionStoragePortable.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isUndercover } from './undercover.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type AttributionTexts = {
   commit: string
@@ -50,7 +52,7 @@ export type AttributionTexts = {
  * - Remote mode: returns session URL for attribution
  */
 export function getAttributionTexts(): AttributionTexts {
-  if (process.env.USER_TYPE === 'ant' && isUndercover()) {
+  if (isAnt() && isUndercover()) {
     return { commit: '', pr: '' }
   }
 
@@ -300,7 +302,7 @@ async function getTranscriptStats(): Promise<{
 export async function getEnhancedPRAttribution(
   getAppState: () => AppState,
 ): Promise<string> {
-  if (process.env.USER_TYPE === 'ant' && isUndercover()) {
+  if (isAnt() && isUndercover()) {
     return ''
   }
 

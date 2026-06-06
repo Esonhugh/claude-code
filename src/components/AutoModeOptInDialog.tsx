@@ -4,6 +4,8 @@ import { Box, Link, Text } from '../ink.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import { Select } from './CustomSelect/index.js'
 import { Dialog } from './design-system/Dialog.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // NOTE: This copy is legally reviewed — do not modify without Legal team approval.
 export const AUTO_MODE_DESCRIPTION =
@@ -62,7 +64,7 @@ export function AutoModeOptInDialog({
 
       <Select
         options={[
-          ...(("external" as string) !== 'ant'
+          ...(!isAnt()
             ? [
                 {
                   label: 'Yes, and make it my default mode',

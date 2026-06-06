@@ -67,7 +67,10 @@ import {
   getModelMaxOutputTokens,
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
-import { resolveAppliedEffort } from '../../utils/effort.js'
+import {
+  convertEffortValueToLevel,
+  resolveAppliedEffort,
+} from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
@@ -255,6 +258,8 @@ import {
   type RetryContext,
   withRetry,
 } from './withRetry.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -406,7 +411,7 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
   let userEligible = getPromptCache1hEligible()
   if (userEligible === null) {
     userEligible =
-      process.env.USER_TYPE === 'ant' ||
+      isAnt() ||
       (isClaudeAISubscriber() && !currentLimits.isUsingOverage)
     setPromptCache1hEligible(userEligible)
   }
@@ -451,10 +456,9 @@ function configureEffortParams(
   if (effortValue === undefined) {
     betas.push(EFFORT_BETA_HEADER)
   } else if (typeof effortValue === 'string') {
-    // Send string effort level as is
-    outputConfig.effort = effortValue
+    outputConfig.effort = convertEffortValueToLevel(effortValue)
     betas.push(EFFORT_BETA_HEADER)
-  } else if (process.env.USER_TYPE === 'ant') {
+  } else if (isAnt()) {
     // Numeric effort override - ant-only (uses anthropic_internal)
     const existingInternal =
       (extraBodyParams.anthropic_internal as Record<string, unknown>) || {}
@@ -1999,7 +2003,7 @@ async function* queryModel(
             // Capture research from message_start if available (internal only).
             // Always overwrite with the latest value.
             if (
-              process.env.USER_TYPE === 'ant' &&
+              isAnt() &&
               'research' in (part.message as unknown as Record<string, unknown>)
             ) {
               research = (part.message as unknown as Record<string, unknown>)
@@ -2178,7 +2182,7 @@ async function* queryModel(
             }
             // Capture research from content_block_delta if available (internal only).
             // Always overwrite with the latest value.
-            if (process.env.USER_TYPE === 'ant' && 'research' in part) {
+            if (isAnt() && 'research' in part) {
               research = (part as { research: unknown }).research
             }
             break
@@ -2218,7 +2222,7 @@ async function* queryModel(
               type: 'assistant',
               uuid: randomUUID(),
               timestamp: new Date().toISOString(),
-              ...(process.env.USER_TYPE === 'ant' &&
+              ...(isAnt() &&
                 research !== undefined && { research }),
               ...(advisorModel && { advisorModel }),
             }
@@ -2233,7 +2237,7 @@ async function* queryModel(
             // already-yielded messages since message_delta arrives after
             // content_block_stop.
             if (
-              process.env.USER_TYPE === 'ant' &&
+              isAnt() &&
               'research' in (part as unknown as Record<string, unknown>)
             ) {
               research = (part as unknown as Record<string, unknown>).research
@@ -2603,7 +2607,7 @@ async function* queryModel(
         type: 'assistant',
         uuid: randomUUID(),
         timestamp: new Date().toISOString(),
-        ...(process.env.USER_TYPE === 'ant' &&
+        ...(isAnt() &&
           research !== undefined && {
             research,
           }),
@@ -2701,7 +2705,7 @@ async function* queryModel(
           type: 'assistant',
           uuid: randomUUID(),
           timestamp: new Date().toISOString(),
-          ...(process.env.USER_TYPE === 'ant' &&
+          ...(isAnt() &&
             research !== undefined && { research }),
           ...(advisorModel && { advisorModel }),
         }

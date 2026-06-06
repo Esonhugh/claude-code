@@ -1,13 +1,15 @@
 import * as React from 'react'
 import { FLAG_ICON } from '../../constants/figures.js'
 import { Box, Text } from '../../ink.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * ANT-ONLY: Banner shown in the transcript that prompts users to report
  * issues via /issue. Appears when friction is detected in the conversation.
  */
 export function IssueFlagBanner(): React.ReactNode {
-  if (("external" as string) !== 'ant') {
+  if (!isAnt()) {
     return null
   }
 

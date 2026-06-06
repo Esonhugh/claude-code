@@ -1,5 +1,7 @@
 import { isPlanModeInterviewPhaseEnabled } from '../../utils/planModeV2.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../AskUserQuestionTool/prompt.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const WHAT_HAPPENS_SECTION = `## What Happens in Plan Mode
 
@@ -164,7 +166,7 @@ User: "Fix the typo in the README"
 }
 
 export function getEnterPlanModeToolPrompt(): string {
-  return process.env.USER_TYPE === 'ant'
+  return isAnt()
     ? getEnterPlanModeToolPromptAnt()
     : getEnterPlanModeToolPromptExternal()
 }

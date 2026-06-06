@@ -26,6 +26,8 @@ import type {
   SessionActivity,
   SpawnMode,
 } from './types.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const QR_OPTIONS = {
   type: 'utf8' as const,
@@ -221,7 +223,7 @@ export function createBridgeLogger(options: {
       suffix += chalk.dim(' \u00b7 ') + chalk.dim(branch)
     }
 
-    if (process.env.USER_TYPE === 'ant' && debugLogPath) {
+    if (isAnt() && debugLogPath) {
       writeStatus(
         `${chalk.yellow('[ANT-ONLY] Logs:')} ${chalk.dim(debugLogPath)}\n`,
       )

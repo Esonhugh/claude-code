@@ -18,6 +18,8 @@ import { getAuthHeaders } from '../http.js'
 import { logError } from '../log.js'
 import { jsonStringify } from '../slowOperations.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type DataPoint = {
   attributes: Record<string, string>
@@ -47,7 +49,7 @@ export class BigQueryMetricsExporter implements PushMetricExporter {
     const defaultEndpoint = 'https://api.anthropic.com/api/claude_code/metrics'
 
     if (
-      process.env.USER_TYPE === 'ant' &&
+      isAnt() &&
       process.env.ANT_CLAUDE_CODE_METRICS_ENDPOINT
     ) {
       this.endpoint =

@@ -40,6 +40,8 @@ import {
   isTeammate,
 } from '../../utils/teammate.js'
 import { feature } from 'bun:bundle'
+import { userType } from 'src/utils/userType.js'
+
 
 /**
  * Marker type for verifying analytics metadata doesn't contain sensitive data
@@ -707,7 +709,7 @@ export async function getEventMetadata(
   const metadata: EventMetadata = {
     model,
     sessionId: getSessionId(),
-    userType: process.env.USER_TYPE || '',
+    userType: userType() || '',
     ...(betas.length > 0 ? { betas: betas } : {}),
     envContext,
     ...(process.env.CLAUDE_CODE_ENTRYPOINT && {

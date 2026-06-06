@@ -189,6 +189,10 @@ import {
   findUltraplanTriggerPositions,
   findUltrareviewTriggerPositions,
 } from '../../utils/ultraplan/keyword.js'
+import {
+  findUltracodeTriggerPositions,
+  getUltracodeNotificationText,
+} from '../../utils/ultracodeOrchestration.js'
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js'
 import { BridgeDialog } from '../BridgeDialog.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
@@ -223,6 +227,8 @@ import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js'
 import { useShowFastIconHint } from './useShowFastIconHint.js'
 import { useSwarmBanner } from './useSwarmBanner.js'
 import { isNonSpacePrintable, isVimModeEnabled } from './utils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   debug: boolean
@@ -424,10 +430,10 @@ function PromptInput({
   // Tmux pill (ant-only) — visible when there's an active tungsten session
   const hasTungstenSession = useAppState(
     s =>
-      ("external" as string) === 'ant' && s.tungstenActiveSession !== undefined,
+      isAnt() && s.tungstenActiveSession !== undefined,
   )
   const tmuxFooterVisible =
-    ("external" as string) === 'ant' && hasTungstenSession
+    isAnt() && hasTungstenSession
   // WebBrowser pill — visible when a browser is open
   const bagelFooterVisible = useAppState(s =>
         false,
@@ -550,7 +556,7 @@ function PromptInput({
       Object.values(tasks).some(
         t =>
           isBackgroundTask(t) &&
-          !(("external" as string) === 'ant' && isPanelAgentTask(t)),
+          !(isAnt() && isPanelAgentTask(t)),
       ),
     [tasks],
   )
@@ -631,7 +637,7 @@ function PromptInput({
   // something is running.
   const tasksFooterVisible =
     (runningTaskCount > 0 ||
-      (("external" as string) === 'ant' && coordinatorTaskCount > 0)) &&
+      (isAnt() && coordinatorTaskCount > 0)) &&
     !shouldHideTasksFooter(tasks, showSpinnerTree)
   const teamsFooterVisible = cachedTeams.length > 0
 
@@ -752,6 +758,11 @@ function PromptInput({
       isUltrareviewEnabled()
         ? findUltrareviewTriggerPositions(displayedValue)
         : [],
+    [displayedValue],
+  )
+
+  const ultracodeTriggers = useMemo(
+    () => findUltracodeTriggerPositions(displayedValue),
     [displayedValue],
   )
 
@@ -994,6 +1005,19 @@ function PromptInput({
       }
     }
 
+    // Same rainbow treatment for the ultracode keyword
+    for (const trigger of ultracodeTriggers) {
+      for (let i = trigger.start; i < trigger.end; i++) {
+        highlights.push({
+          start: i,
+          end: i + 1,
+          color: getRainbowColor(i - trigger.start),
+          shimmerColor: getRainbowColor(i - trigger.start, true),
+          priority: 10,
+        })
+      }
+    }
+
     // Rainbow for /buddy
     for (const trigger of buddyTriggers) {
       for (let i = trigger.start; i < trigger.end; i++) {
@@ -1025,6 +1049,7 @@ function PromptInput({
     thinkTriggers,
     ultraplanTriggers,
     ultrareviewTriggers,
+    ultracodeTriggers,
     buddyTriggers,
   ])
 
@@ -1067,6 +1092,19 @@ function PromptInput({
       })
     }
   }, [addNotification, ultrareviewTriggers.length])
+
+  useEffect(() => {
+    if (ultracodeTriggers.length) {
+      addNotification({
+        key: 'ultracode-active',
+        text: getUltracodeNotificationText(),
+        priority: 'immediate',
+        timeoutMs: 5000,
+      })
+    } else {
+      removeNotification('ultracode-active')
+    }
+  }, [addNotification, removeNotification, ultracodeTriggers.length])
 
   // Track input length for stash hint
   const prevInputLengthRef = useRef(input.length)
@@ -2259,7 +2297,7 @@ function PromptInput({
         // ↑ scrolls within the coordinator task list before leaving the pill
         if (
           tasksSelected &&
-          ("external" as string) === 'ant' &&
+          isAnt() &&
           coordinatorTaskCount > 0 &&
           coordinatorTaskIndex > minCoordinatorIndex
         ) {
@@ -2272,7 +2310,7 @@ function PromptInput({
         // ↓ scrolls within the coordinator task list, never leaves the pill
         if (
           tasksSelected &&
-          ("external" as string) === 'ant' &&
+          isAnt() &&
           coordinatorTaskCount > 0
         ) {
           if (coordinatorTaskIndex < coordinatorTaskCount - 1) {
@@ -2338,7 +2376,7 @@ function PromptInput({
             }
             break
           case 'tmux':
-            if (("external" as string) === 'ant') {
+            if (isAnt()) {
               setAppState(prev =>
                 prev.tungstenPanelAutoHidden
                   ? { ...prev, tungstenPanelAutoHidden: false }

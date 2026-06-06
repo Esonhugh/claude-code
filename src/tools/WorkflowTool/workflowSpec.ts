@@ -1,3 +1,5 @@
+import type { WorkflowScriptMeta } from './workflowScriptParser.js'
+
 export type WorkflowReviewMode = 'none' | 'cross-check' | 'adversarial' | 'synthesis'
 
 export type WorkflowPermissionMode = 'default' | 'acceptEdits' | 'plan'
@@ -61,12 +63,14 @@ export type WorkflowProgressEvent =
       status: 'running' | 'paused' | 'completed' | 'failed' | 'killed'
       completedAgents: number
       totalAgents: number
+      timestamp: number
     }
   | {
       type: 'workflow_phase'
       workflowRunId: string
       phaseId: string
       status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+      timestamp: number
     }
   | {
       type: 'workflow_agent'
@@ -74,11 +78,14 @@ export type WorkflowProgressEvent =
       phaseId: string
       agentId: string
       status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+      cacheHit?: boolean
+      timestamp: number
     }
   | {
       type: 'workflow_log'
       workflowRunId: string
       message: string
+      timestamp: number
     }
 
 export type WorkflowSpec = {
@@ -91,6 +98,8 @@ export type WorkflowSpec = {
   runtime?: WorkflowRuntimeSpec
   sourcePath?: string
   runScriptSnapshot?: string
+  meta?: WorkflowScriptMeta
+  scriptResult?: unknown
 }
 
 export type WorkflowDryRunPhase = {
@@ -116,4 +125,6 @@ export type WorkflowDryRunPlan = {
   runtime?: WorkflowRuntimeSpec
   sourcePath?: string
   runScriptSnapshot?: string
+  meta?: WorkflowScriptMeta
+  scriptResult?: unknown
 }

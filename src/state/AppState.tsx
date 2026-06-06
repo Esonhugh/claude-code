@@ -30,6 +30,8 @@ import {
   type AppStateStore,
   getDefaultAppState,
 } from './AppStateStore.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // TODO: Remove these re-exports once all callers import directly from
 // ./AppStateStore.js. Kept for back-compat during migration so .ts callers
@@ -154,7 +156,7 @@ export function useAppState<T>(selector: (state: AppState) => T): T {
     const state = store.getState()
     const selected = selector(state)
 
-    if (("external" as string) === 'ant' && state === selected) {
+    if (isAnt() && state === selected) {
       throw new Error(
         `Your selector in \`useAppState(${selector.toString()})\` returned the original state, which is not allowed. You must instead return a property for optimised rendering.`,
       )

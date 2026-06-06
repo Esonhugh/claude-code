@@ -83,6 +83,8 @@ import {
 import { registerElicitationHandler } from './elicitationHandler.js'
 import { getMcpPrefix } from './mcpStringUtils.js'
 import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Constants for reconnection with exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 5
@@ -987,7 +989,7 @@ export function useManageMCPConnections(
         else if (serverConfig.scope === 'claudeai') counts.claudeai++
 
         if (
-          process.env.USER_TYPE === 'ant' &&
+          isAnt() &&
           !isMcpServerDisabled(name) &&
           (serverConfig.type === undefined || serverConfig.type === 'stdio') &&
           'command' in serverConfig
@@ -997,7 +999,7 @@ export function useManageMCPConnections(
       }
       logEvent('tengu_mcp_servers', {
         ...counts,
-        ...(process.env.USER_TYPE === 'ant' && stdioCommands.length > 0
+        ...(isAnt() && stdioCommands.length > 0
           ? {
               stdio_commands: stdioCommands
                 .sort()

@@ -28,6 +28,8 @@ import {
 import { formatDuration, formatNumber } from '../utils/format.js'
 import { evictTerminalTask } from '../utils/task/framework.js'
 import { isTerminalStatus } from './tasks/taskStatusUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Which panel-managed tasks currently have a visible row.
@@ -124,7 +126,7 @@ export function CoordinatorTaskPanel(): React.ReactNode {
 export function useCoordinatorTaskCount(): number {
   const tasks = useAppState(s => s.tasks)
   return React.useMemo(() => {
-    if (("external" as string) !== 'ant') return 0
+    if (!isAnt()) return 0
     const count = getVisibleAgentTasks(tasks).length
     return count > 0 ? count + 1 : 0
   }, [tasks])

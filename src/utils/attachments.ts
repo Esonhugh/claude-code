@@ -250,6 +250,8 @@ import { isInProcessTeammate } from './teammateContext.js'
 import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
 import { unassignTeammateTasks } from './tasks.js'
 import { getCompanionIntroAttachment } from '../buddy/prompt.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const TODO_REMINDER_CONFIG = {
   TURNS_SINCE_WRITE: 10,
@@ -3400,7 +3402,7 @@ async function getTaskReminderAttachments(
   }
 
   // Skip for ant users
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return []
   }
 
@@ -3554,7 +3556,7 @@ async function getTeammateMailboxAttachments(
   if (!isAgentSwarmsEnabled()) {
     return []
   }
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return []
   }
 
@@ -3916,7 +3918,7 @@ async function getVerifyPlanReminderAttachment(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
   if (
-    process.env.USER_TYPE !== 'ant' ||
+    !isAnt() ||
     !isEnvTruthy(process.env.CLAUDE_CODE_VERIFY_PLAN)
   ) {
     return []

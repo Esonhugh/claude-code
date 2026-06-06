@@ -11,11 +11,13 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
 import { runWorkflowPlan } from './runWorkflow.js'
-import type { WorkflowDryRunPlan } from './workflowSpec.js'
+import type { WorkflowDryRunPlan, WorkflowProgressEvent } from './workflowSpec.js'
+import { updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
 import {
   discoverWorkflowSpecs,
   loadWorkflowSpecByNameOrPath,
 } from './workflowDiscovery.js'
+import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -73,6 +75,32 @@ function loadWorkflowTaskStatus(context: { getAppState?: () => { tasks?: Record<
   return formatWorkflowStatus(loadWorkflowTask(context, selector))
 }
 
+function latestWorkflowProgressEvent(task: LocalWorkflowTaskState): WorkflowProgressEvent | undefined {
+  return task.events
+    .slice()
+    .reverse()
+    .find(event => event.type === 'workflow_progress')
+}
+
+async function persistWorkflowControlStatus({
+  cwd,
+  task,
+  status,
+}: {
+  cwd: string
+  task: LocalWorkflowTaskState
+  status: 'paused' | 'running'
+}): Promise<void> {
+  if (!task.workflowRunId) return
+  await updateWorkflowRunSessionStatus({
+    cwd,
+    workflowRunId: task.workflowRunId,
+    status,
+    event: latestWorkflowProgressEvent(task),
+    ...(task.summary?.includes('Workflow({scriptPath:') ? { resumePrompt: task.summary } : {}),
+  })
+}
+
 async function listWorkflows(cwd: string): Promise<string> {
   const discovery = await discoverWorkflowSpecs(cwd)
   const lines: string[] = []
@@ -122,6 +150,17 @@ export const WorkflowTool = buildTool({
   isReadOnly(input) {
     return !['run', 'pause', 'resume'].includes(input.action)
   },
+  async checkPermissions(input, context) {
+    if (input.action === 'run') {
+      const cwd = resolveCwd(context)
+      return {
+        behavior: 'ask',
+        message: 'Run a dynamic workflow?',
+        updatedInput: await workflowPermissionPreviewInput(input, cwd),
+      }
+    }
+    return { behavior: 'allow', updatedInput: input }
+  },
   renderToolUseMessage(input) {
     const action = input.action ?? 'list'
     const selector = input.selector ? ` ${input.selector}` : ''
@@ -157,13 +196,17 @@ export const WorkflowTool = buildTool({
     if (action === 'pause') {
       loadWorkflowTask(context, selector)
       pauseWorkflowTask(selector, context.setAppStateForTasks ?? context.setAppState)
-      return { data: loadWorkflowTaskStatus(context, selector) }
+      const task = loadWorkflowTask(context, selector)
+      await persistWorkflowControlStatus({ cwd, task, status: 'paused' })
+      return { data: formatWorkflowStatus(task) }
     }
 
     if (action === 'resume') {
       loadWorkflowTask(context, selector)
       resumeWorkflowTask(selector, context.setAppStateForTasks ?? context.setAppState)
-      return { data: loadWorkflowTaskStatus(context, selector) }
+      const task = loadWorkflowTask(context, selector)
+      await persistWorkflowControlStatus({ cwd, task, status: 'running' })
+      return { data: formatWorkflowStatus(task) }
     }
 
     const workflow = await loadWorkflowSpecByNameOrPath(cwd, selector, action === 'run' ? runArgs ?? '' : '')

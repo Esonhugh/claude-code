@@ -4,6 +4,8 @@ import { stringWidth } from '../../ink/stringWidth.js'
 import { Text } from '../../ink.js'
 import { truncateToWidthNoEllipsis } from '../../utils/format.js'
 import type { Output } from './TaskStopTool.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function renderToolUseMessage(): React.ReactNode {
   return ''
@@ -32,7 +34,7 @@ export function renderToolResultMessage(
   _progressMessagesForMessage: unknown[],
   { verbose }: { verbose: boolean },
 ): React.ReactNode {
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     return null
   }
 

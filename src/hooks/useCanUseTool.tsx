@@ -40,6 +40,8 @@ import {
   createPermissionQueueOps,
 } from './toolPermission/PermissionContext.js'
 import { logPermissionDecision } from './toolPermission/permissionLogging.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type CanUseToolFn<
   Input extends Record<string, unknown> = Record<string, unknown>,
@@ -94,7 +96,7 @@ function useCanUseTool(
         return decisionPromise
           .then(async result => {
             // [ANT-ONLY] Log all tool permission decisions with tool name and args
-            if (("external" as string) === 'ant') {
+            if (isAnt()) {
               logEvent('tengu_internal_tool_permission_decision', {
                 toolName: sanitizeToolNameForAnalytics(tool.name),
                 behavior:

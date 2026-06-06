@@ -21,6 +21,8 @@ import { logError } from '../log.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify, writeFileSync_DEPRECATED } from '../slowOperations.js'
 import { getBinaryName, getPlatform } from './installer.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const GCS_BUCKET_URL =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
@@ -138,7 +140,7 @@ export async function getLatestVersion(
   }
 
   // Route to appropriate source
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     // Use Artifactory for ant users
     const npmTag = channel === 'stable' ? 'stable' : 'latest'
     return getLatestVersionFromArtifactory(npmTag)
@@ -506,7 +508,7 @@ export async function downloadVersion(
     return 'binary'
   }
 
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     // Use Artifactory for ant users
     await downloadVersionFromArtifactory(version, stagingPath)
     return 'npm'

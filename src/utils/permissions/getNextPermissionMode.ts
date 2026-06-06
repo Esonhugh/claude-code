@@ -7,6 +7,8 @@ import {
   isAutoModeGateEnabled,
   transitionPermissionMode,
 } from './permissionSetup.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Checks both the cached isAutoModeAvailable (set at startup by
 // verifyAutoModeGateAccess) and the live isAutoModeGateEnabled() — these can
@@ -38,7 +40,7 @@ export function getNextPermissionMode(
   switch (toolPermissionContext.mode) {
     case 'default':
       // Ants skip acceptEdits and plan — auto mode replaces them
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         if (toolPermissionContext.isBypassPermissionsModeAvailable) {
           return 'bypassPermissions'
         }

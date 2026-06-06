@@ -12,6 +12,8 @@ import type { TranscriptShareResponse } from './TranscriptSharePrompt.js'
 import { TranscriptSharePrompt } from './TranscriptSharePrompt.js'
 import { useDebouncedDigitInput } from './useDebouncedDigitInput.js'
 import type { FeedbackSurveyResponse } from './utils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   state:
@@ -144,7 +146,7 @@ function FeedbackSurveyThanks({
   })
 
   const feedbackCommand =
-    ("external" as string) === 'ant' ? '/issue' : '/feedback'
+    isAnt() ? '/issue' : '/feedback'
 
   return (
     <Box marginTop={1} flexDirection="column">

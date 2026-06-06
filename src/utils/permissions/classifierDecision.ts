@@ -21,6 +21,8 @@ import { TODO_WRITE_TOOL_NAME } from '../../tools/TodoWriteTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/prompt.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifier.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Ant-only tool names: conditional require so Bun can DCE these in external builds.
 // Gates mirror tools.ts. Keeps the tool name strings out of cli.js.
@@ -36,7 +38,7 @@ const OVERFLOW_TEST_TOOL_NAME = feature('OVERFLOW_TEST_TOOL')
     ).OVERFLOW_TEST_TOOL_NAME
   : null
 const VERIFY_PLAN_EXECUTION_TOOL_NAME =
-  process.env.USER_TYPE === 'ant'
+  isAnt()
     ? (
         require('../../tools/VerifyPlanExecutionTool/constants.js') as typeof import('../../tools/VerifyPlanExecutionTool/constants.js')
       ).VERIFY_PLAN_EXECUTION_TOOL_NAME

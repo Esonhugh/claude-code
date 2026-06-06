@@ -8,6 +8,8 @@ import { getAPIProvider } from '../../utils/model/providers.js'
 import { MODEL_COSTS } from '../../utils/modelCost.js'
 import { isAnalyticsDisabled } from './config.js'
 import { getEventMetadata } from './metadata.js'
+import { isAnt, userType } from 'src/utils/userType.js'
+
 
 const DATADOG_LOGS_ENDPOINT =
   'https://http-intake.logs.us5.datadoghq.com/api/v2/logs'
@@ -202,7 +204,7 @@ export async function trackDatadogEvent(
     }
 
     // Normalize model names for cardinality reduction (external users only)
-    if (process.env.USER_TYPE !== 'ant' && typeof allData.model === 'string') {
+    if (!isAnt() && typeof allData.model === 'string') {
       const shortName = getCanonicalName(allData.model.replace(/\[1m]$/i, ''))
       allData.model = shortName in MODEL_COSTS ? shortName : 'other'
     }
@@ -251,7 +253,7 @@ export async function trackDatadogEvent(
       message: eventName,
       service: 'claude-code',
       hostname: 'claude-code',
-      env: process.env.USER_TYPE,
+      env: userType(),
     }
 
     // Add all fields as searchable attributes (not duplicated in tags)

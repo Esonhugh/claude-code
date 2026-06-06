@@ -43,6 +43,8 @@ import {
   getSettingsForSource,
 } from './settings/settings.js'
 import type { ThemeName } from './theme.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type Property = {
   label?: string
@@ -52,7 +54,7 @@ export type Property = {
 export type Diagnostic = React.ReactNode
 
 export function buildSandboxProperties(): Property[] {
-  if (("external" as string) !== 'ant') {
+  if (!isAnt()) {
     return []
   }
 

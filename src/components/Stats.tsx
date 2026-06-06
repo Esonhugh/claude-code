@@ -35,6 +35,8 @@ import { getTheme, themeColorToAnsi } from '../utils/theme.js'
 import { Pane } from './design-system/Pane.js'
 import { Tab, Tabs, useTabHeaderFocus } from './design-system/Tabs.js'
 import { Spinner } from './Spinner.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 function formatPeakDay(dateStr: string): string {
   const date = new Date(dateStr)
@@ -450,7 +452,7 @@ function OverviewTab({
       </Box>
 
       {/* Speculation time saved (ant-only) */}
-      {("external" as string) === 'ant' &&
+      {isAnt() &&
         stats.totalSpeculationTimeSavedMs > 0 && (
           <Box flexDirection="row" gap={4}>
             <Box flexDirection="column" width={28}>
@@ -1059,7 +1061,7 @@ function renderOverviewToAnsi(stats: ClaudeCodeStats): string[] {
 
   // Speculation time saved (ant-only)
   if (
-    ("external" as string) === 'ant' &&
+    isAnt() &&
     stats.totalSpeculationTimeSavedMs > 0
   ) {
     const label = 'Speculation saved:'.padEnd(COL1_LABEL_WIDTH)

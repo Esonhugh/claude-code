@@ -41,6 +41,10 @@ The recovered repository contains agent, task, workflow inspection, and minimal 
 - `src/tools/TeamCreateTool/TeamCreateTool.ts`, `src/tools/TeamDeleteTool/TeamDeleteTool.ts`, and `src/tools/SendMessageTool/SendMessageTool.ts` provide team and mailbox primitives.
 - `src/tools/TaskCreateTool`, `TaskGetTool`, `TaskUpdateTool`, and `TaskListTool` provide shared task coordination.
 - `src/tools/WorkflowTool/workflowSpec.ts` defines the declarative workflow spec and normalized dry-run plan types.
+- `src/tools/WorkflowTool/workflowScriptParser.ts` validates official-style JavaScript workflow metadata.
+- `src/tools/WorkflowTool/workflowRuntimeGlobals.ts` exposes official-compatible orchestration globals for plan-building scripts.
+- `src/tools/WorkflowTool/workflowEvents.ts` centralizes official event names and payload constructors.
+- `src/tools/WorkflowTool/workflowResumeCache.ts` implements same-session unchanged-prefix cache reuse for completed agent calls.
 - `src/tools/WorkflowTool/validateWorkflowSpec.ts` rejects invalid workflow graphs before any worker can start.
 - `src/tools/WorkflowTool/formatWorkflowDryRun.ts` formats the validated phase graph, fan-out, concurrency, review, permission, agent type, and model choices.
 - `src/tools/WorkflowTool/workflowDiscovery.ts` discovers workflow specs from `docs/workflows/` and `.claude/workflows/` roots.
@@ -53,20 +57,25 @@ The recovered repository contains agent, task, workflow inspection, and minimal 
 
 Current workflow surface:
 
-- Workflow specs are discoverable, validated, dry-runnable, and executable through `WorkflowTool.run`; clean-room bundled workflows currently cover all observed official names: `autopilot`, `bugfix`, `bughunt`, `bughunt-lite`, `dashboard`, `deep-research`, `docs`, `investigate`, `plan-hunter`, and `review-branch`.
+- Workflow specs are discoverable, validated, dry-runnable, and executable through `WorkflowTool.run`; clean-room bundled workflows currently cover all observed official names: `autopilot`, `bugfix`, `bughunt`, `bughunt-lite`, `dashboard`, `deep-research`, `docs`, `investigate`, `plan-hunter`, and `review-branch`. The bundled `deep-research` follows the strongest 2.1.165 evidence pattern: Scope → Search → URL dedup → Fetch+Extract → 3-vote Verify → Synthesize.
 - Workflow files can be declarative JSON or JavaScript DSL files ending in `.js` under user `~/.claude/workflows/`, project `docs/workflows/`, or project `.claude/workflows/`; project definitions shadow user definitions with the same command name.
 - The JavaScript DSL exposes declarative `workflow(...)`, shape-aware `agent(...)`, structured `args`, and official-style async orchestration helpers including `parallel`, `series`, `retry`, `loopUntil`, `review`, `refute`, `synthesize`, `vote`, and `log`.
 - JavaScript workflow plans carry explicit runtime metadata (`javascript-worker`, source path, isolated runtime flag) plus a run script snapshot for persisted run sessions.
 - A local `Workflow` facade accepts saved workflow names, inline `{ script, name, args }`, and `{ scriptPath, args, resumeFromRunId }` inputs, then delegates execution to the existing workflow runner.
-- `/workflows` can list specs, show metadata, print dry-run plans, generate a run prompt with saved user input, save/list/reuse workflow run templates, inspect/control workflow task status, print detail views, and expose textual retry-agent/skip-agent controls.
+- The `ultracode` keyword sets per-turn ultracode effort, shows the tmux-verified official prompt indicator `Dynamic workflow requested for this turn · opt+w to ignore`, and injects model-facing dynamic workflow orchestration guidance so complex prompts can route through `Workflow` without an explicit slash command. Official strings say the keyword opts that turn into the `Workflow` tool; local behavior implements that as model-visible orchestration guidance rather than a hardcoded forced tool call.
+- The `Workflow` permission dialog uses saved workflow `export const meta` previews for both facade and internal tool calls, including description, phase details, script excerpts, args, consent options, `/workflows` usage-control text, and `ctrl+g` script editing guidance.
+- `/workflows` interactive UI opens the Dynamic workflows panel even when typed with arguments such as `list`, `show`, or `dry-run`, matching the tmux-sampled official 2.1.165 behavior; text subcommands remain available through the non-interactive command implementation and tool surfaces.
 - Workflow-backed prompt commands reload JavaScript workflow files with the current command arguments before formatting the orchestration prompt.
 - `WorkflowTool.run` executes phase work through the existing `Agent` tool, records `LocalWorkflowTask` phase state, and does not directly use shell or filesystem tools.
 - `WorkflowTool.run` can launch phase workers as named teammates through the existing Agent/team path when `defaults.execution` is `team` and a team context exists, which lets tmux-backed teams provide an interactive pane experience.
 - `scripts/workflow-tmux-e2e-smoke.mjs` creates a tmux workflow session, leader pane, named worker panes, and a captured transcript proving team-mode workflow interaction reaches tmux panes.
+- `scripts/workflow-official-running-probe.mjs` launches an official saved workflow in tmux and captures real official running-detail phase/agent views under `.claude/workflow-official-running-probe/` for comparison.
+- `scripts/workflow-running-detail-capture.mjs` creates a deterministic tmux transcript for the local running workflow detail surface, now using the official-style two-column phase/agent layout and running controls.
 - `defaults.maxRetries` controls automatic retry scheduling for failed phase agents.
-- Workflow task status renders a compact progress panel with `workflowRunId`, `scriptPath`, overall progress, per-phase progress bars, skipped/retry counts, official event count, token count, tool-use count, elapsed time, saved user input, execution mode, and team/tmux details when available.
-- `pauseWorkflowTask()` and `resumeWorkflowTask()` provide workflow-level pause/resume state transitions exposed through `WorkflowTool` and `/workflows`.
-- `killWorkflowTask()`, `skipWorkflowAgent()`, and `retryWorkflowAgent()` update workflow task state for the runtime.
+- Workflow task status renders a compact progress panel with `workflowRunId`, `scriptPath`, `progressVersion`, `defaultModel`, overall progress, per-phase progress bars, skipped/retry counts, official event count, token count, tool-use count, elapsed time, saved user input, execution mode, and team/tmux details when available.
+- `WorkflowDetailDialog` renders a deterministic workflow detail snapshot with run identity, progress, phase rows, recent events, and official-style controls; `workflowDetailSnapshot.test.ts` locks this local UI text byte-for-byte.
+- `pauseWorkflowTask()` and `resumeWorkflowTask()` provide workflow-level pause/resume state transitions exposed through `WorkflowTool` and `/workflows`; `WorkflowTool.pause` also persists official-style paused session state and resume prompt text under `.claude/workflow-runs/<workflowRunId>/session.json`.
+- `killWorkflowTask()`, `skipWorkflowAgent()`, and `retryWorkflowAgent()` update workflow task state for the runtime; skip and retry controls now append official-style `workflow_agent` events in local task state.
 
 Official compatibility boundary from `/opt/homebrew/bin/claude` 2.1.150 experiments:
 
@@ -75,7 +84,7 @@ A detailed experiment matrix is maintained in `docs/workflow-compatibility-exper
 - The installed official binary contains a hidden `Workflow` tool and embedded built-in workflow names including `bugfix`, `bughunt`, `bughunt-lite`, `dashboard`, `deep-research`, `docs`, `investigate`, `plan-hunter`, and `review-branch`; `autopilot` appears in descriptive binary strings as an end-to-end task runner.
 - Official `Workflow` accepts a workflow name or `{ script, name, scriptPath }`; strings in the binary state that every invocation persists its script under the session directory and returns `scriptPath` for edit-and-rerun.
 - Official workflow state includes `workflowRunId`, `workflow_progress`, `workflow_agent`, `workflow_phase`, `workflow_log`, and local task events such as `task_local_workflow`, `task_local_workflow_skip_agent`, and `task_local_workflow_retry_agent`.
-- Official scripts intentionally disable `Date.now()`, `new Date()`, and `Math.random()` because they break resumability; this branch now mirrors those deterministic-runtime restrictions.
+- Official scripts intentionally disable `Date.now()`, `new Date()`, and `Math.random()` because they break resumability; this branch now mirrors those deterministic-runtime restrictions while exposing deterministic web-platform `URL` for official-style script helpers such as deep-research URL normalization.
 - In `--print --bare` experiments, even with `CLAUDE_CODE_WORKFLOWS`, `tengu_workflows_enabled`, and `CLAUDE_CODE_RECOVER_FEATURES=WORKFLOW_SCRIPTS`, the hidden `Workflow` tool was not exposed in the init tool list, so direct tool execution could not be completed through non-interactive print mode.
 - This branch supports a JavaScript DSL compatibility layer that converts a JS workflow declaration into the existing validated `WorkflowSpec` plan, persists run templates, and writes `.claude/workflow-runs/<taskId>.json` session metadata.
 - The DSL runs in a constrained in-process VM context and intentionally exposes no shell or filesystem helpers; phase work still goes through normal Agent tool permission boundaries.

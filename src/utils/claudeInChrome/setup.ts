@@ -30,6 +30,8 @@ import {
 } from './common.js'
 import { getChromeSystemPrompt } from './prompt.js'
 import { isChromeExtensionInstalledPortable } from './setupPortable.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const CHROME_EXTENSION_RECONNECT_URL = 'https://clau.de/chrome/reconnect'
 const browserTools = Array.isArray(BROWSER_TOOLS) ? BROWSER_TOOLS : []
@@ -79,7 +81,7 @@ export function shouldAutoEnableClaudeInChrome(): boolean {
     browserTools.length > 0 &&
     getIsInteractive() &&
     isChromeExtensionInstalled_CACHED_MAY_BE_STALE() &&
-    (process.env.USER_TYPE === 'ant' ||
+    (isAnt() ||
       getFeatureValue_CACHED_MAY_BE_STALE('tengu_chrome_auto_enable', false))
 
   return shouldAutoEnable
@@ -206,7 +208,7 @@ export async function installChromeNativeHostManifest(
     type: 'stdio',
     allowed_origins: [
       `chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/`, // PROD_EXTENSION_ID
-      ...(process.env.USER_TYPE === 'ant'
+      ...(isAnt()
         ? [
             'chrome-extension://dihbgbndebgnbjfmelmegjepbnkhlgni/', // DEV_EXTENSION_ID
             'chrome-extension://dngcpimnedloihjnnfngkgjoidhnaolf/', // ANT_EXTENSION_ID

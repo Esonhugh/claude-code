@@ -2,6 +2,8 @@ import { getSessionId } from '../bootstrap/state.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import type { SessionId } from '../types/ids.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // -- config
 
@@ -36,7 +38,7 @@ export function buildQueryConfig(): QueryConfig {
       emitToolUseSummaries: isEnvTruthy(
         process.env.CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES,
       ),
-      isAnt: process.env.USER_TYPE === 'ant',
+      isAnt: isAnt(),
       // Inlined from fastMode.ts to avoid pulling its heavy module graph
       // (axios, settings, auth, model, oauth, config) into test shards that
       // didn't previously load it — changes init order and breaks unrelated tests.

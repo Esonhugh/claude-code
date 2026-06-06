@@ -55,6 +55,8 @@ import {
   registerWorker,
   sameSessionId,
 } from './workSecret.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type BackoffConfig = {
   connInitialMs: number
@@ -340,7 +342,7 @@ export async function runBridgeLoop(
 
   // For ant users, show where session debug logs will land so they can tail them.
   // sessionRunner.ts uses the same base path. File appears once a session spawns.
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     let debugGlob: string
     if (config.debugFile) {
       const ext = config.debugFile.lastIndexOf('.')
@@ -1132,7 +1134,7 @@ export async function runBridgeLoop(
             } else {
               sessionDebugFile = `${config.debugFile}-${safeId}`
             }
-          } else if (config.verbose || process.env.USER_TYPE === 'ant') {
+          } else if (config.verbose || isAnt()) {
             sessionDebugFile = join(
               tmpdir(),
               'claude',
@@ -2198,7 +2200,7 @@ export async function bridgeMain(args: string[]): Promise<void> {
   // contain-provide-api (8211), so CLAUDE_BRIDGE_SESSION_INGRESS_URL must be
   // set explicitly. Ant-only, matching CLAUDE_BRIDGE_BASE_URL.
   const sessionIngressUrl =
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       ? process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       : baseUrl
@@ -2851,7 +2853,7 @@ export async function runBridgeHeadless(
     )
   }
   const sessionIngressUrl =
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       ? process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       : baseUrl

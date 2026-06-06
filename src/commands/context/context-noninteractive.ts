@@ -12,6 +12,8 @@ import { formatTokens } from '../../utils/format.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { getSourceDisplayName } from '../../utils/settings/constants.js'
 import { plural } from '../../utils/stringUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Shared data-collection path for `/context` (slash command) and the SDK
@@ -203,7 +205,7 @@ function formatContextAsMarkdownTable(data: ContextData): string {
   if (
     systemTools &&
     systemTools.length > 0 &&
-    process.env.USER_TYPE === 'ant'
+    isAnt()
   ) {
     output += `### [ANT-ONLY] System Tools\n\n`
     output += `| Tool | Tokens |\n`
@@ -218,7 +220,7 @@ function formatContextAsMarkdownTable(data: ContextData): string {
   if (
     systemPromptSections &&
     systemPromptSections.length > 0 &&
-    process.env.USER_TYPE === 'ant'
+    isAnt()
   ) {
     output += `### [ANT-ONLY] System Prompt Sections\n\n`
     output += `| Section | Tokens |\n`
@@ -289,7 +291,7 @@ function formatContextAsMarkdownTable(data: ContextData): string {
   }
 
   // Message breakdown (ant-only)
-  if (messageBreakdown && process.env.USER_TYPE === 'ant') {
+  if (messageBreakdown && isAnt()) {
     output += `### [ANT-ONLY] Message Breakdown\n\n`
     output += `| Category | Tokens |\n`
     output += `|----------|--------|\n`

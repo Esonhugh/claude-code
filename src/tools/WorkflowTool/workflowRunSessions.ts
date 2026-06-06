@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type {
@@ -6,15 +6,19 @@ import type {
   WorkflowDryRunPlan,
   WorkflowProgressEvent,
 } from './workflowSpec.js'
+import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
+import type { WorkflowScriptMeta } from './workflowScriptParser.js'
 
 export type WorkflowRunSession = {
   taskId: string
   workflowRunId: string
   workflowName: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'killed'
   runArgs?: WorkflowArgs
   scriptPath?: string
   resumeFromRunId?: string
+  meta?: WorkflowScriptMeta
+  resumeCacheEntries: WorkflowResumeCacheEntry[]
   runtime?: WorkflowDryRunPlan['runtime']
   sourcePath?: string
   runScriptSnapshot?: string
@@ -22,6 +26,7 @@ export type WorkflowRunSession = {
   updatedAt: number
   results: WorkflowAgentResult[]
   events: WorkflowProgressEvent[]
+  resumePrompt?: string
   error?: string
 }
 
@@ -69,6 +74,8 @@ export async function startWorkflowRunSession({
     runArgs,
     scriptPath,
     resumeFromRunId,
+    meta: plan.meta,
+    resumeCacheEntries: [],
     runtime: plan.runtime,
     sourcePath: plan.sourcePath,
     runScriptSnapshot: plan.runScriptSnapshot,
@@ -79,6 +86,20 @@ export async function startWorkflowRunSession({
   }
   await writeWorkflowRunSession(cwd, session)
   return session
+}
+
+export async function loadWorkflowRunSession({
+  cwd,
+  workflowRunId,
+}: {
+  cwd: string
+  workflowRunId: string
+}): Promise<WorkflowRunSession | undefined> {
+  try {
+    return JSON.parse(await readFile(runSessionPath(cwd, workflowRunId), 'utf8')) as WorkflowRunSession
+  } catch {
+    return undefined
+  }
 }
 
 export async function appendWorkflowRunEvent({
@@ -99,20 +120,49 @@ export async function appendWorkflowRunEvent({
   return updated
 }
 
+export async function updateWorkflowRunSessionStatus({
+  cwd,
+  workflowRunId,
+  status,
+  event,
+  resumePrompt,
+}: {
+  cwd: string
+  workflowRunId: string
+  status: WorkflowRunSession['status']
+  event?: WorkflowProgressEvent
+  resumePrompt?: string
+}): Promise<WorkflowRunSession | undefined> {
+  const session = await loadWorkflowRunSession({ cwd, workflowRunId })
+  if (!session) return undefined
+  const updated = {
+    ...session,
+    status,
+    updatedAt: Date.now(),
+    events: event ? [...session.events, event] : session.events,
+    ...(resumePrompt !== undefined ? { resumePrompt } : {}),
+  }
+  await writeWorkflowRunSession(cwd, updated)
+  return updated
+}
+
 export async function completeWorkflowRunSession({
   cwd,
   session,
   results,
+  resumeCacheEntries = session.resumeCacheEntries,
 }: {
   cwd: string
   session: WorkflowRunSession
   results: WorkflowAgentResult[]
+  resumeCacheEntries?: WorkflowResumeCacheEntry[]
 }): Promise<void> {
   await writeWorkflowRunSession(cwd, {
     ...session,
     status: 'completed',
     updatedAt: Date.now(),
     results,
+    resumeCacheEntries,
     error: undefined,
   })
 }
@@ -122,17 +172,20 @@ export async function failWorkflowRunSession({
   session,
   results,
   error,
+  resumeCacheEntries = session.resumeCacheEntries,
 }: {
   cwd: string
   session: WorkflowRunSession
   results: WorkflowAgentResult[]
   error: string
+  resumeCacheEntries?: WorkflowResumeCacheEntry[]
 }): Promise<void> {
   await writeWorkflowRunSession(cwd, {
     ...session,
     status: 'failed',
     updatedAt: Date.now(),
     results,
+    resumeCacheEntries,
     error,
   })
 }

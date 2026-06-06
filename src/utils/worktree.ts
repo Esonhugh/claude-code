@@ -44,6 +44,8 @@ import {
 } from './settings/settings.js'
 import { sleep } from './sleep.js'
 import { isInITerm2 } from './swarm/backends/detection.js'
+import { isAnt as getIsAnt } from 'src/utils/userType.js'
+
 
 const VALID_WORKTREE_SLUG_SEGMENT = /^[a-zA-Z0-9._-]+$/
 const MAX_WORKTREE_SLUG_LENGTH = 64
@@ -1395,7 +1397,7 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
   }
 
   // For ants in claude-cli-internal, set up dev panes (watch + start)
-  const isAnt = process.env.USER_TYPE === 'ant'
+  const isAnt = getIsAnt()
   const isClaudeCliInternal = repoName === 'claude-cli-internal'
   const shouldSetupDevPanes = isAnt && isClaudeCliInternal && !sessionExists
 

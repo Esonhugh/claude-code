@@ -28,6 +28,8 @@ import {
   validateFlags,
 } from '../../utils/shell/readOnlyCommandValidation.js'
 import { COMMON_PARAMETERS } from './commonParameters.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const DOTNET_READ_ONLY_FLAGS = new Set([
   '--version',
@@ -1702,7 +1704,7 @@ function isGitSafe(args: string[]): boolean {
 
 function isGhSafe(args: string[]): boolean {
   // gh commands are network-dependent; only allow for ant users
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return false
   }
 

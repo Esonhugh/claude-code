@@ -1,4 +1,6 @@
 import type { Command, LocalCommandCall } from '../types/command.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const call: LocalCommandCall = async () => {
   return {
@@ -14,7 +16,7 @@ const version = {
   name: 'version',
   description:
     'Print the version this session is running (not what autoupdate downloaded)',
-  isEnabled: () => process.env.USER_TYPE === 'ant',
+  isEnabled: () => isAnt(),
   supportsNonInteractive: true,
   load: () => Promise.resolve({ call }),
 } satisfies Command

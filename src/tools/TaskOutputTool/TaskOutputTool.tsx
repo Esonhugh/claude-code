@@ -26,6 +26,8 @@ import type { ThemeName } from '../../utils/theme.js'
 import { AgentPromptDisplay, AgentResponseDisplay } from '../AgentTool/UI.js'
 import BashToolResultMessage from '../BashTool/BashToolResultMessage.js'
 import { TASK_OUTPUT_TOOL_NAME } from './constants.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -192,7 +194,7 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> =
     },
 
     isEnabled() {
-      return ("external" as string) !== 'ant'
+      return !isAnt()
     },
 
     isReadOnly(_input) {

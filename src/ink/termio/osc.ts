@@ -7,6 +7,8 @@ import { env } from '../../utils/env.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const OSC_PREFIX = ESC + String.fromCharCode(ESC_TYPE.OSC)
 
@@ -465,7 +467,7 @@ export const CLEAR_TAB_STATUS = osc(
  * DCS-passthrough carries the sequence to the outer terminal.
  */
 export function supportsTabStatus(): boolean {
-  return process.env.USER_TYPE === 'ant'
+  return isAnt()
 }
 
 /**

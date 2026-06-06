@@ -21,6 +21,8 @@ import { loadPluginMcpServers } from '../utils/plugins/mcpPluginIntegration.js'
 import { detectAndUninstallDelistedPlugins } from '../utils/plugins/pluginBlocklist.js'
 import { getFlaggedPlugins } from '../utils/plugins/pluginFlagging.js'
 import { loadAllPlugins } from '../utils/plugins/pluginLoader.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Hook to manage plugin state and synchronize with AppState.
@@ -214,7 +216,7 @@ export function useManagePlugins({
         // Kept separate from base metrics so it doesn't flow into
         // logForDiagnosticsNoPII.
         ant_enabled_names:
-          process.env.USER_TYPE === 'ant' && enabled.length > 0
+          isAnt() && enabled.length > 0
             ? (enabled
                 .map(p => p.name)
                 .sort()

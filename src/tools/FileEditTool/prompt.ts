@@ -1,5 +1,7 @@
 import { isCompactLinePrefixEnabled } from '../../utils/file.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 function getPreReadInstruction(): string {
   return `\n- You must use your \`${FILE_READ_TOOL_NAME}\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file. `
@@ -14,7 +16,7 @@ function getDefaultEditDescription(): string {
     ? 'line number + tab'
     : 'spaces + line number + arrow'
   const minimalUniquenessHint =
-    process.env.USER_TYPE === 'ant'
+    isAnt()
       ? `\n- Use the smallest old_string that's clearly unique — usually 2-4 adjacent lines is sufficient. Avoid including 10+ lines of context when less uniquely identifies the target.`
       : ''
   return `Performs exact string replacements in files.

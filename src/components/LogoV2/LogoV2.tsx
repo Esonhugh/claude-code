@@ -85,6 +85,8 @@ import { useAppState } from '../../state/AppState.js'
 import { getEffortSuffix } from '../../utils/effort.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import { renderModelSetting } from '../../utils/model/model.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const LEFT_PANEL_MAX_WIDTH = 50
 
@@ -227,12 +229,12 @@ export function LogoV2(): React.ReactNode {
             <Text>{announcement}</Text>
           </Box>
         )}
-        {("external" as string) === 'ant' && !process.env.DEMO_VERSION && (
+        {isAnt() && !process.env.DEMO_VERSION && (
           <Box paddingLeft={2} flexDirection="column">
             <Text dimColor>Use /issue to report model behavior issues</Text>
           </Box>
         )}
-        {("external" as string) === 'ant' && !process.env.DEMO_VERSION && (
+        {isAnt() && !process.env.DEMO_VERSION && (
           <Box paddingLeft={2} flexDirection="column">
             <Text color="warning">[ANT-ONLY] Logs:</Text>
             <Text dimColor>
@@ -248,8 +250,8 @@ export function LogoV2(): React.ReactNode {
             )}
           </Box>
         )}
-        {("external" as string) === 'ant' && <GateOverridesWarning />}
-        {("external" as string) === 'ant' && <ExperimentEnrollmentNotice />}
+        {isAnt() && <GateOverridesWarning />}
+        {isAnt() && <ExperimentEnrollmentNotice />}
       </>
     )
   }
@@ -322,8 +324,8 @@ export function LogoV2(): React.ReactNode {
             </Text>
           </Box>
         )}
-        {("external" as string) === 'ant' && <GateOverridesWarning />}
-        {("external" as string) === 'ant' && <ExperimentEnrollmentNotice />}
+        {isAnt() && <GateOverridesWarning />}
+        {isAnt() && <ExperimentEnrollmentNotice />}
       </>
     )
   }
@@ -481,12 +483,12 @@ export function LogoV2(): React.ReactNode {
           </Text>
         </Box>
       )}
-      {("external" as string) === 'ant' && !process.env.DEMO_VERSION && (
+      {isAnt() && !process.env.DEMO_VERSION && (
         <Box paddingLeft={2} flexDirection="column">
           <Text dimColor>Use /issue to report model behavior issues</Text>
         </Box>
       )}
-      {("external" as string) === 'ant' && !process.env.DEMO_VERSION && (
+      {isAnt() && !process.env.DEMO_VERSION && (
         <Box paddingLeft={2} flexDirection="column">
           <Text color="warning">[ANT-ONLY] Logs:</Text>
           <Text dimColor>
@@ -500,8 +502,8 @@ export function LogoV2(): React.ReactNode {
           )}
         </Box>
       )}
-      {("external" as string) === 'ant' && <GateOverridesWarning />}
-      {("external" as string) === 'ant' && <ExperimentEnrollmentNotice />}
+      {isAnt() && <GateOverridesWarning />}
+      {isAnt() && <ExperimentEnrollmentNotice />}
     </>
   )
 }

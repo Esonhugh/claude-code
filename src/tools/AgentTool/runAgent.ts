@@ -81,6 +81,8 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Initialize agent-specific MCP servers
@@ -359,7 +361,7 @@ export async function* runAgent({
   }
 
   // Log API calls path for subagents (ant-only)
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     logForDebugging(
       `[Subagent ${agentDefinition.agentType}] API calls: ${getDisplayPath(getDumpPromptsPath(agentId))}`,
     )

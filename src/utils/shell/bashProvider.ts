@@ -23,6 +23,8 @@ import {
 } from '../tmuxSocket.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
 import type { ShellProvider } from './shellProvider.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Returns a shell command to disable extended glob patterns for security.
@@ -219,7 +221,7 @@ export async function createBashShellProvider(
       // See tmuxSocket.ts for the full isolation architecture documentation.
       const commandUsesTmux = command.includes('tmux')
       if (
-        process.env.USER_TYPE === 'ant' &&
+        isAnt() &&
         (hasTmuxToolBeenUsed() || commandUsesTmux)
       ) {
         await ensureSocketInitialized()

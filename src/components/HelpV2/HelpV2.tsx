@@ -15,6 +15,8 @@ import { Pane } from '../design-system/Pane.js'
 import { Tab, Tabs } from '../design-system/Tabs.js'
 import { Commands } from './Commands.js'
 import { General } from './General.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   onClose: (
@@ -44,7 +46,7 @@ export function HelpV2({ onClose, commands }: Props): React.ReactNode {
   let antOnlyCommands: Command[] = []
 
   // We have to do this in an `if` to help treeshaking
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     const internalOnlyNames = new Set(INTERNAL_ONLY_COMMANDS.map(_ => _.name))
     builtinCommands = builtinCommands.filter(
       cmd => !internalOnlyNames.has(cmd.name),
@@ -89,7 +91,7 @@ export function HelpV2({ onClose, commands }: Props): React.ReactNode {
     </Tab>,
   )
 
-  if (("external" as string) === 'ant' && antOnlyCommands.length > 0) {
+  if (isAnt() && antOnlyCommands.length > 0) {
     tabs.push(
       <Tab key="ant-only" title="[ant-only]">
         <Commands
@@ -108,7 +110,7 @@ export function HelpV2({ onClose, commands }: Props): React.ReactNode {
       <Pane color="professionalBlue">
         <Tabs
           title={
-            ("external" as string) === 'ant'
+            isAnt()
               ? '/help'
               : `Claude Code v${MACRO.VERSION}`
           }

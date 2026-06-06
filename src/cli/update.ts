@@ -26,6 +26,8 @@ import { getPackageManager } from 'src/utils/nativeInstaller/packageManagers.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
 import { getInitialSettings } from 'src/utils/settings/settings.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export async function update() {
   logEvent('tengu_update_check', {})
@@ -294,7 +296,7 @@ export async function update() {
     process.stderr.write('  • Run with --debug flag for more details\n')
     const packageName =
       MACRO.PACKAGE_URL ||
-      (process.env.USER_TYPE === 'ant'
+      (isAnt()
         ? '@anthropic-ai/claude-cli'
         : '@anthropic-ai/claude-code')
     process.stderr.write(

@@ -1,9 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 /**
  * Ensure that any model codenames introduced here are also added to
- * scripts/excluded-strings.txt to avoid leaking them. Wrap any codename string
- * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
- * during dead code elimination
+ * scripts/excluded-strings.txt to avoid leaking them.
  */
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import {
@@ -28,6 +26,8 @@ import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type ModelShortName = string
 export type ModelName = string
@@ -177,7 +177,7 @@ export function getRuntimeMainLoopModel(params: {
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return (
       // @ts-ignore - recovered code
       getAntModelOverrideConfig()?.defaultModel ??
@@ -398,7 +398,7 @@ export function renderModelName(model: ModelName): string {
   if (publicName) {
     return publicName
   }
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const resolved = parseUserSpecifiedModel(model)
     // @ts-ignore - recovered code
     const antModel = resolveAntModel(model)
@@ -484,7 +484,7 @@ export function parseUserSpecifiedModel(
     return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
   }
 
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const has1mAntTag = has1mContext(normalizedModel)
     const baseAntModel = normalizedModel.replace(/\[1m]$/i, '').trim()
 
@@ -558,7 +558,7 @@ export function isLegacyModelRemapEnabled(): boolean {
 
 export function modelDisplayString(model: ModelSetting): string {
   if (model === null) {
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       return `Default for Ants (${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`
     } else if (isClaudeAISubscriber()) {
       return `Default (${getClaudeAiUserDefaultModelDescription()})`

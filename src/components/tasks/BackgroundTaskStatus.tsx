@@ -25,6 +25,8 @@ import {
 import type { Theme } from '../../utils/theme.js'
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 import { shouldHideTasksFooter } from './taskStatusUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   tasksSelected: boolean
@@ -51,7 +53,7 @@ export function BackgroundTaskStatus({
       (Object.values(tasks ?? {}) as TaskState[]).filter(
         t =>
           isBackgroundTask(t) &&
-          !(("external" as string) === 'ant' && isPanelAgentTask(t)),
+          !(isAnt() && isPanelAgentTask(t)),
       ),
     [tasks],
   )

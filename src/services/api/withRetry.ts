@@ -46,6 +46,8 @@ import {
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
+import { isAnt, userType } from 'src/utils/userType.js'
+
 
 const abortError = () => new APIUserAbortError()
 
@@ -199,7 +201,7 @@ export async function* withRetry<T>(
 
     try {
       // Check for mock rate limits (used by /mock-limits command for Ant employees)
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         const mockError = checkMockRateLimitError(
           retryContext.model,
           wasFastModeActive,
@@ -351,7 +353,7 @@ export async function* withRetry<T>(
           }
 
           if (
-            process.env.USER_TYPE === 'external' &&
+            userType() === 'external' &&
             !process.env.IS_SANDBOX &&
             !isPersistentRetryEnabled()
           ) {
@@ -745,7 +747,7 @@ function shouldRetry(error: APIError): boolean {
   // For other status codes (401, 403, 400, 429, etc.), respect the header.
   if (shouldRetryHeader === 'false') {
     const is5xxError = error.status !== undefined && error.status >= 500
-    if (!(process.env.USER_TYPE === 'ant' && is5xxError)) {
+    if (!(isAnt() && is5xxError)) {
       return false
     }
   }

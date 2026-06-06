@@ -4,6 +4,8 @@
  */
 import type { Command } from '../../commands.js'
 import { isClaudeAISubscriber } from '../../utils/auth.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const cost = {
   type: 'local',
@@ -11,7 +13,7 @@ const cost = {
   description: 'Show the total cost and duration of the current session',
   get isHidden() {
     // Keep visible for Ants even if they're subscribers (they see cost breakdowns)
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       return false
     }
     return isClaudeAISubscriber()

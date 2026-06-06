@@ -45,6 +45,8 @@ import {
 } from './idePathConversion.js'
 import { sleep } from './sleep.js'
 import { jsonParse } from './slowOperations.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -845,7 +847,7 @@ export function hasAccessToIDEExtensionDiffFeature(
 }
 
 const EXTENSION_ID =
-  process.env.USER_TYPE === 'ant'
+  isAnt()
     ? 'anthropic.claude-code-internal'
     : 'anthropic.claude-code'
 
@@ -881,7 +883,7 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
     const command = await getVSCodeIDECommand(ideType)
 
     if (command) {
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         return await installFromArtifactory(command)
       }
       let version = await getInstalledVSCodeExtensionVersion(command)

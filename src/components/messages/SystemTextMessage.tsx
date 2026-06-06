@@ -44,6 +44,8 @@ import { isBackgroundTask, type TaskState } from '../../tasks/types.js'
 import { getPillLabel } from '../../tasks/pillLabel.js'
 import { useSelectedMessageBg } from '../messageActions.js'
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../services/tools/toolExecution.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   message: SystemMessage
@@ -103,7 +105,7 @@ export function SystemTextMessage({
 
   // Thinking messages are subtle, like turn duration (ant-only)
   if (message.subtype === 'thinking') {
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       return <ThinkingMessage message={message} addMargin={addMargin} />
     }
     return null
@@ -200,19 +202,19 @@ function StopHookSummaryMessage({
   const totalDurationMs =
     message.totalDurationMs ??
     hookInfos.reduce((sum, h) => sum + (h.durationMs ?? 0), 0)
-  const isAnt = ("external" as string) === 'ant'
+  const antUser = isAnt()
 
   // Only show summary if there are errors or continuation was prevented
   // For ants: also show when hooks took > 500ms
   // Non-stop hooks (e.g. PreToolUse) are pre-filtered by the caller
   if (hookErrors.length === 0 && !preventedContinuation && !message.hookLabel) {
-    if (!isAnt || totalDurationMs < HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
+    if (!antUser || totalDurationMs < HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
       return null
     }
   }
 
   const totalStr =
-    isAnt && totalDurationMs > 0
+    antUser && totalDurationMs > 0
       ? ` (${formatSecondsShort(totalDurationMs)})`
       : ''
   // Non-stop hooks (e.g. PreToolUse) render as a child line without bullet
@@ -227,7 +229,7 @@ function StopHookSummaryMessage({
         {isTranscriptMode &&
           hookInfos.map((info, idx) => {
             const durationStr =
-              isAnt && info.durationMs !== undefined
+              antUser && info.durationMs !== undefined
                 ? ` (${formatSecondsShort(info.durationMs)})`
                 : ''
             return (
@@ -270,7 +272,7 @@ function StopHookSummaryMessage({
           hookInfos.length > 0 &&
           hookInfos.map((info, idx) => {
             const durationStr =
-              isAnt && info.durationMs !== undefined
+              antUser && info.durationMs !== undefined
                 ? ` (${formatSecondsShort(info.durationMs)})`
                 : ''
             return (

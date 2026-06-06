@@ -51,6 +51,7 @@ import {
   hasUltraplanKeyword,
   replaceUltraplanKeyword,
 } from '../ultraplan/keyword.js'
+import { hasUltracodeKeyword } from '../ultracodeOrchestration.js'
 import { processTextPrompt } from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
@@ -570,18 +571,25 @@ async function processUserInputBase(
   }
 
   // Regular user prompt
-  return addImageMetadataMessage(
-    processTextPrompt(
-      normalizedInput,
-      imageContentBlocks,
-      imagePasteIds,
-      attachmentMessages,
-      uuid,
-      permissionMode,
-      isMeta,
-    ),
-    imageMetadataTexts,
+  const promptResult: ProcessUserInputBaseResult = processTextPrompt(
+    normalizedInput,
+    imageContentBlocks,
+    imagePasteIds,
+    attachmentMessages,
+    uuid,
+    permissionMode,
+    isMeta,
   )
+  if (
+    inputString !== null &&
+    mode === 'prompt' &&
+    !effectiveSkipSlash &&
+    hasUltracodeKeyword(preExpansionInput ?? inputString)
+  ) {
+    logEvent('tengu_ultracode_keyword', {})
+    promptResult.effort = 'ultracode'
+  }
+  return addImageMetadataMessage(promptResult, imageMetadataTexts)
 }
 
 // Adds image metadata texts as isMeta message to result

@@ -21,12 +21,25 @@ import type {
   WorkflowProgressEvent,
 } from './workflowSpec.js'
 import {
+  createWorkflowAgentEvent,
+  createWorkflowLogEvent,
+  createWorkflowPhaseEvent,
+  createWorkflowProgressEvent,
+} from './workflowEvents.js'
+import {
   appendWorkflowRunEvent,
   completeWorkflowRunSession,
   failWorkflowRunSession,
+  loadWorkflowRunSession,
   startWorkflowRunSession,
   type WorkflowRunSession,
 } from './workflowRunSessions.js'
+import {
+  createAgentCallIdentity,
+  createWorkflowResumeCursor,
+  recordResumeCacheEntry,
+  type WorkflowResumeCacheEntry,
+} from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -48,6 +61,16 @@ type AgentToolOutput = {
   totalTokens?: number
   totalToolUseCount?: number
   totalDurationMs?: number
+}
+
+type WorkflowResumeRuntime = {
+  cursor: ReturnType<typeof createWorkflowResumeCursor>
+  entries: WorkflowResumeCacheEntry[]
+}
+
+type WorkflowAgentRunResult = {
+  result: WorkflowAgentResult
+  cacheHit: boolean
 }
 
 function findAgentTool(tools: readonly Tool[]): Tool | undefined {
@@ -190,8 +213,7 @@ async function runPhaseAgentAttempt({
   canUseTool,
   assistantMessage,
   taskId,
-  resultsByPhase,
-  runArgs,
+  prompt,
 }: {
   agentTool: Tool
   phase: WorkflowDryRunPhase
@@ -202,15 +224,14 @@ async function runPhaseAgentAttempt({
   canUseTool: CanUseToolFn
   assistantMessage: AssistantMessage
   taskId: string
-  resultsByPhase: Map<string, WorkflowAgentResult[]>
-  runArgs?: WorkflowArgs
+  prompt: string
 }): Promise<WorkflowAgentResult> {
   const description = formatAgentDescription(plan, phase, index, attempt)
   const teamName =
     plan.defaults.execution === 'team' ? workflowTeamName(context) : undefined
   const input: AgentToolInput = {
     description,
-    prompt: buildAgentPrompt(phase, resultsByPhase, runArgs),
+    prompt,
     subagent_type: phase.agentType,
     model: mapModel(phase.model),
     mode: mapPermissionMode(phase.permissionMode),
@@ -254,29 +275,69 @@ async function runPhaseAgent({
   agentTool,
   phase,
   index,
+  agentIndex,
   plan,
   context,
   canUseTool,
   assistantMessage,
   taskId,
   resultsByPhase,
+  resumeRuntime,
   runArgs,
 }: {
   agentTool: Tool
   phase: WorkflowDryRunPhase
   index: number
+  agentIndex: number
   plan: WorkflowDryRunPlan
   context: ToolUseContext
   canUseTool: CanUseToolFn
   assistantMessage: AssistantMessage
   taskId: string
   resultsByPhase: Map<string, WorkflowAgentResult[]>
+  resumeRuntime: WorkflowResumeRuntime
   runArgs?: WorkflowArgs
-}): Promise<WorkflowAgentResult> {
+}): Promise<WorkflowAgentRunResult> {
+  const prompt = buildAgentPrompt(phase, resultsByPhase, runArgs)
+  const identity = createAgentCallIdentity({
+    index: agentIndex,
+    phase: phase.id,
+    prompt,
+    opts: {
+      label: workflowAgentName(plan, phase, index),
+      model: phase.model,
+      agentType: phase.agentType,
+      permissionMode: phase.permissionMode,
+    },
+  })
+  const cacheLookup = resumeRuntime.cursor.lookup(agentIndex, identity)
+  if (cacheLookup.cacheHit) {
+    const cachedResult = cacheLookup.result as WorkflowAgentResult
+    recordWorkflowAgentStarted({
+      taskId,
+      phaseId: phase.id,
+      agentId: cachedResult.agentId,
+      setAppState: context.setAppStateForTasks ?? context.setAppState,
+    })
+    completeWorkflowAgent({
+      taskId,
+      result: cachedResult,
+      setAppState: context.setAppStateForTasks ?? context.setAppState,
+    })
+    resumeRuntime.entries.push(recordResumeCacheEntry({
+      index: agentIndex,
+      identity,
+      phase: phase.id,
+      label: cachedResult.agentId,
+      result: cachedResult,
+    }))
+    return { result: cachedResult, cacheHit: true }
+  }
+
   let lastError: unknown
   for (let attempt = 0; attempt <= maxRetriesFor(plan); attempt++) {
     try {
-      return await runPhaseAgentAttempt({
+      const result = await runPhaseAgentAttempt({
         agentTool,
         phase,
         index,
@@ -286,9 +347,16 @@ async function runPhaseAgent({
         canUseTool,
         assistantMessage,
         taskId,
-        resultsByPhase,
-        runArgs,
+        prompt,
       })
+      resumeRuntime.entries.push(recordResumeCacheEntry({
+        index: agentIndex,
+        identity,
+        phase: phase.id,
+        label: result.agentId,
+        result,
+      }))
+      return { result, cacheHit: false }
     } catch (error) {
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
@@ -323,6 +391,12 @@ export async function runWorkflowPlan({
   scriptPath?: string
   resumeFromRunId?: string
 }): Promise<string> {
+  if (plan.totalAgents === 0 && plan.scriptResult !== undefined) {
+    return typeof plan.scriptResult === 'string'
+      ? plan.scriptResult
+      : JSON.stringify(plan.scriptResult)
+  }
+
   const agentTool = findAgentTool(context.options.tools)
   if (!agentTool) {
     throw new Error('Workflow execution requires the Agent tool')
@@ -338,6 +412,7 @@ export async function runWorkflowPlan({
     teamName,
     workflowRunId,
     scriptPath,
+    defaultModel: context.options.mainLoopModel,
   })
   const cwd = workflowCwd(context)
   let runSession = await startWorkflowRunSession({
@@ -349,7 +424,15 @@ export async function runWorkflowPlan({
     scriptPath,
     resumeFromRunId,
   })
+  const priorSession = resumeFromRunId
+    ? await loadWorkflowRunSession({ cwd, workflowRunId: resumeFromRunId })
+    : undefined
+  const resumeRuntime: WorkflowResumeRuntime = {
+    cursor: createWorkflowResumeCursor(priorSession?.resumeCacheEntries ?? []),
+    entries: [],
+  }
   const resultsByPhase = new Map<string, WorkflowAgentResult[]>()
+  let globalAgentIndex = 0
 
   const emit = async (event: WorkflowProgressEvent): Promise<void> => {
     runSession = await emitWorkflowEvent({
@@ -362,104 +445,115 @@ export async function runWorkflowPlan({
   }
 
   try {
-    await emit({
-      type: 'workflow_progress',
+    await emit(createWorkflowProgressEvent({
       workflowRunId,
       status: 'running',
       completedAgents: 0,
       totalAgents: plan.totalAgents,
-    })
-    await emit({
-      type: 'workflow_log',
+    }))
+    await emit(createWorkflowLogEvent({
       workflowRunId,
       message: `Workflow started: ${plan.name}`,
-    })
+    }))
 
     for (const phase of plan.phases) {
       startWorkflowPhase(workflowTask.id, phase.id, setAppState)
-      await emit({
-        type: 'workflow_phase',
+      await emit(createWorkflowPhaseEvent({
         workflowRunId,
         phaseId: phase.id,
         status: 'running',
-      })
+      }))
       const results: WorkflowAgentResult[] = []
       for (let index = 0; index < phase.fanout; index += phase.concurrency) {
         const batchIndexes = Array.from(
           { length: Math.min(phase.concurrency, phase.fanout - index) },
           (_, offset) => index + offset,
         )
+        const batchRuns = batchIndexes.map(batchIndex => ({
+          batchIndex,
+          agentIndex: globalAgentIndex++,
+        }))
         const batchResults = await Promise.all(
-          batchIndexes.map(batchIndex =>
+          batchRuns.map(batchRun =>
             runPhaseAgent({
               agentTool,
               phase,
-              index: batchIndex,
+              index: batchRun.batchIndex,
+              agentIndex: batchRun.agentIndex,
               plan,
               context,
               canUseTool,
               assistantMessage,
               taskId: workflowTask.id,
               resultsByPhase,
+              resumeRuntime,
               runArgs,
             }),
           ),
         )
-        results.push(...batchResults)
-        for (const result of batchResults) {
-          await emit({
-            type: 'workflow_agent',
+        results.push(...batchResults.map(batchResult => batchResult.result))
+        for (const batchResult of batchResults) {
+          await emit(createWorkflowAgentEvent({
             workflowRunId,
             phaseId: phase.id,
-            agentId: result.agentId,
-            status: result.status,
-          })
+            agentId: batchResult.result.agentId,
+            status: batchResult.result.status,
+            cacheHit: batchResult.cacheHit || undefined,
+          }))
         }
       }
       resultsByPhase.set(phase.id, results)
-      await emit({
-        type: 'workflow_phase',
+      await emit(createWorkflowPhaseEvent({
         workflowRunId,
         phaseId: phase.id,
         status: 'completed',
-      })
-      await emit({
-        type: 'workflow_progress',
+      }))
+      await emit(createWorkflowProgressEvent({
         workflowRunId,
         status: 'running',
         completedAgents: [...resultsByPhase.values()].flat().length,
         totalAgents: plan.totalAgents,
-      })
+      }))
     }
     const allResults = [...resultsByPhase.values()].flat()
     completeWorkflowTask(workflowTask.id, setAppState)
-    await emit({
-      type: 'workflow_progress',
+    await emit(createWorkflowProgressEvent({
       workflowRunId,
       status: 'completed',
       completedAgents: allResults.length,
       totalAgents: plan.totalAgents,
+    }))
+    await completeWorkflowRunSession({
+      cwd,
+      session: runSession,
+      results: allResults,
+      resumeCacheEntries: resumeRuntime.entries,
     })
-    await completeWorkflowRunSession({ cwd, session: runSession, results: allResults })
     return [
-      `Workflow completed: ${plan.name}`,
-      `Task ID: ${workflowTask.id}`,
-      `Workflow run ID: ${workflowRunId}`,
-      ...(scriptPath ? [`Script path: ${scriptPath}`] : []),
-      `Agents completed: ${plan.totalAgents}`,
+      `Workflow launched in background. Task ID: ${workflowTask.id}`,
+      `Run ID: ${workflowRunId}`,
+      ...(scriptPath
+        ? [`To resume after editing the script: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"}) — completed agents return cached results.`]
+        : []),
+      'Use /workflows to watch live progress.',
     ].join('\n')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const allResults = [...resultsByPhase.values()].flat()
     failWorkflowTask(workflowTask.id, message, setAppState)
-    await emit({
-      type: 'workflow_progress',
+    await emit(createWorkflowProgressEvent({
       workflowRunId,
       status: 'failed',
       completedAgents: allResults.length,
       totalAgents: plan.totalAgents,
+    }))
+    await failWorkflowRunSession({
+      cwd,
+      session: runSession,
+      results: allResults,
+      error: message,
+      resumeCacheEntries: resumeRuntime.entries,
     })
-    await failWorkflowRunSession({ cwd, session: runSession, results: allResults, error: message })
     throw error
   }
 }

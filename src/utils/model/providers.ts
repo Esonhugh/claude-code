@@ -1,5 +1,7 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { isEnvTruthy } from '../envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
 
@@ -30,7 +32,7 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
   try {
     const host = new URL(baseUrl).host
     const allowedHosts = ['api.anthropic.com']
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       allowedHosts.push('api-staging.anthropic.com')
     }
     return allowedHosts.includes(host)

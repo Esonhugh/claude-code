@@ -14,6 +14,8 @@ import {
 } from '../utils/claudeInChrome/common.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Schema for the prompt notification from Chrome extension (JSON-RPC 2.0 format)
 const ClaudeInChromePromptNotificationSchema = lazySchema(() =>
@@ -49,7 +51,7 @@ export function usePromptsFromClaudeInChrome(
   const mcpClientRef = useRef<ConnectedMCPServer | undefined>(undefined)
 
   useEffect(() => {
-    if (("external" as string) !== 'ant') {
+    if (!isAnt()) {
       return
     }
 

@@ -129,6 +129,8 @@ import {
   runPostToolUseHooks,
   runPreToolUseHooks,
 } from './toolHooks.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /** Minimum total hook duration (ms) to show inline timing summary */
 export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500
@@ -873,7 +875,7 @@ async function checkPermissionsAndCallTool(
 
   // Emit PreToolUse summary immediately so it's visible while the tool executes.
   // Use wall-clock time (not sum of individual durations) since hooks run in parallel.
-  if (process.env.USER_TYPE === 'ant' && preToolHookInfos.length > 0) {
+  if (isAnt() && preToolHookInfos.length > 0) {
     if (preToolHookDurationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
       resultingMessages.push({
         message: createStopHookSummaryMessage(
@@ -1550,7 +1552,7 @@ async function checkPermissionsAndCallTool(
 
     // Show PostToolUse hook timing inline below tool result when > 500ms.
     // Use wall-clock time (not sum of individual durations) since hooks run in parallel.
-    if (process.env.USER_TYPE === 'ant' && postToolHookInfos.length > 0) {
+    if (isAnt() && postToolHookInfos.length > 0) {
       if (postToolHookDurationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
         resultingMessages.push({
           message: createStopHookSummaryMessage(

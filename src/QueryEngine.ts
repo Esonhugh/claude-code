@@ -413,6 +413,7 @@ export class QueryEngine {
       shouldQuery,
       allowedTools,
       model: modelFromUserInput,
+      effort,
       resultText,
     } = await processUserInput({
       input: prompt,
@@ -525,6 +526,13 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+    }
+    if (effort !== undefined) {
+      const previousGetAppState = processUserInputContext.getAppState
+      processUserInputContext.getAppState = () => ({
+        ...previousGetAppState(),
+        effortValue: effort,
+      })
     }
 
     headlessProfilerCheckpoint('before_skills_plugins')

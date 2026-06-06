@@ -14,11 +14,11 @@ import { BriefTool } from './tools/BriefTool/BriefTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
-  process.env.USER_TYPE === 'ant'
+  isAnt()
     ? require('./tools/REPLTool/REPLTool.js').REPLTool
     : null
 const SuggestBackgroundPRTool =
-  process.env.USER_TYPE === 'ant'
+  isAnt()
     ? require('./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js')
         .SuggestBackgroundPRTool
     : null
@@ -138,6 +138,7 @@ import type { ToolPermissionContext } from './Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
 import { hasEmbeddedSearchTools } from './utils/embeddedTools.js'
 import { isEnvTruthy } from './utils/envUtils.js'
+import { isWorkflowScriptsFeatureEnabled } from './tools/WorkflowTool/workflowFeatureFlags.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
@@ -146,6 +147,8 @@ import {
   REPL_ONLY_TOOLS,
   isReplModeEnabled,
 } from './tools/REPLTool/constants.js'
+import { isAnt } from 'src/utils/userType.js'
+
 export { REPL_ONLY_TOOLS }
 /* eslint-disable @typescript-eslint/no-require-imports */
 const getPowerShellTool = () => {
@@ -212,8 +215,8 @@ export function getAllBaseTools(): Tools {
     AskUserQuestionTool,
     SkillTool,
     EnterPlanModeTool,
-    ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
-    ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
+    ...(isAnt() ? [ConfigTool] : []),
+    ...(isAnt() ? [TungstenTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
     ...(WebBrowserTool ? [WebBrowserTool] : []),
     ...(isTodoV2Enabled()
@@ -230,7 +233,7 @@ export function getAllBaseTools(): Tools {
       ? [getTeamCreateTool(), getTeamDeleteTool()]
       : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
-    ...(process.env.USER_TYPE === 'ant' && REPLTool ? [REPLTool] : []),
+    ...(isAnt() && REPLTool ? [REPLTool] : []),
     ...workflowTools,
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
@@ -286,6 +289,9 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
       return filterToolsByDenyRules(replSimple, permissionContext)
     }
     const simpleTools: Tool[] = [BashTool, FileReadTool, FileEditTool]
+    if (isWorkflowScriptsFeatureEnabled()) {
+      simpleTools.push(...workflowTools)
+    }
     // When coordinator mode is also active, include AgentTool and TaskStopTool
     // so the coordinator gets Task+TaskStop (via useMergedTools filtering) and
     // workers get Bash/Read/Edit (via filterToolsForAgent filtering).

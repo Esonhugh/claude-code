@@ -2,6 +2,8 @@ import { formatTotalCost } from '../../cost-tracker.js'
 import { currentLimits } from '../../services/claudeAiLimits.js'
 import type { LocalCommandCall } from '../../types/command.js'
 import { isClaudeAISubscriber } from '../../utils/auth.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const call: LocalCommandCall = async () => {
   if (isClaudeAISubscriber()) {
@@ -15,7 +17,7 @@ export const call: LocalCommandCall = async () => {
         'You are currently using your subscription to power your Claude Code usage'
     }
 
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       value += `\n\n[ANT-ONLY] Showing cost anyway:\n ${formatTotalCost()}`
     }
     return { type: 'text', value }

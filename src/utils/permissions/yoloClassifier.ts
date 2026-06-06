@@ -42,6 +42,8 @@ import {
   parseClassifierResponse,
 } from './classifierShared.js'
 import { getClaudeTempDir } from './filesystem.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Dead code elimination: conditional imports for auto mode classifier prompts.
 // At build time, the bundler inlines .txt files as string literals. At test
@@ -63,13 +65,13 @@ const EXTERNAL_PERMISSIONS_TEMPLATE: string = feature('TRANSCRIPT_CLASSIFIER')
   : ''
 
 const ANTHROPIC_PERMISSIONS_TEMPLATE: string =
-  feature('TRANSCRIPT_CLASSIFIER') && process.env.USER_TYPE === 'ant'
+  feature('TRANSCRIPT_CLASSIFIER') && isAnt()
     ? txtRequire(require('./yolo-classifier-prompts/permissions_anthropic.txt'))
     : ''
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 
 function isUsingExternalPermissions(): boolean {
-  if (process.env.USER_TYPE !== 'ant') return true
+  if (!isAnt()) return true
   const config = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
@@ -156,7 +158,7 @@ async function maybeDumpAutoMode(
   timestamp: number,
   suffix?: string,
 ): Promise<void> {
-  if (process.env.USER_TYPE !== 'ant') return
+  if (!isAnt()) return
   if (!isEnvTruthy(process.env.CLAUDE_CODE_DUMP_AUTO_MODE)) return
   const base = suffix ? `${timestamp}.${suffix}` : `${timestamp}`
   try {
@@ -688,7 +690,7 @@ function getClassifierThinkingConfig(
   model: string,
 ): [false | undefined, number] {
   if (
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     resolveAntModel(model)?.alwaysOnThinking
   ) {
     return [undefined, 2048]
@@ -1336,7 +1338,7 @@ type AutoModeConfig = {
  * then the main loop model.
  */
 function getClassifierModel(): string {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
     if (envModel) return envModel
   }
@@ -1359,7 +1361,7 @@ function resolveTwoStageClassifier():
   | 'fast'
   | 'thinking'
   | undefined {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const env = process.env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER
     if (env === 'fast' || env === 'thinking') return env
     if (isEnvTruthy(env)) return true
@@ -1381,7 +1383,7 @@ function isTwoStageClassifierEnabled(): boolean {
 }
 
 function isJsonlTranscriptEnabled(): boolean {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const env = process.env.CLAUDE_CODE_JSONL_TRANSCRIPT
     if (isEnvTruthy(env)) return true
     if (isEnvDefinedFalsy(env)) return false

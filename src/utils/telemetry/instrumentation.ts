@@ -66,6 +66,8 @@ import {
   endInteractionSpan,
   isEnhancedTelemetryEnabled,
 } from './sessionTracing.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const DEFAULT_METRICS_EXPORT_INTERVAL_MS = 60000
 const DEFAULT_LOGS_EXPORT_INTERVAL_MS = 5000
@@ -86,7 +88,7 @@ function telemetryTimeout(ms: number, message: string): Promise<never> {
 }
 
 export function bootstrapTelemetry() {
-  if (process.env.USER_TYPE === 'ant' && isAnthropicTelemetryEnabled()) {
+  if (isAnt() && isAnthropicTelemetryEnabled()) {
     // Read from ANT_ prefixed variables that are defined at build time
     if (process.env.ANT_OTEL_METRICS_EXPORTER) {
       process.env.OTEL_METRICS_EXPORTER = process.env.ANT_OTEL_METRICS_EXPORTER

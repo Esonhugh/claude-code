@@ -2,6 +2,8 @@ import { useMemo, useRef } from 'react'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import type { Message } from '../types/message.js'
 import { getUserMessageText } from '../utils/messages.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const EXTERNAL_COMMAND_PATTERNS = [
   /\bcurl\b/,
@@ -93,20 +95,20 @@ export function useIssueFlagBanner(
   messages: Message[],
   submitCount: number,
 ): boolean {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return false
   }
 
-  // biome-ignore lint/correctness/useHookAtTopLevel: process.env.USER_TYPE is a compile-time constant
+  // biome-ignore lint/correctness/useHookAtTopLevel: isAnt() returns before hooks run for non-ant users
   const lastTriggeredAtRef = useRef(0)
-  // biome-ignore lint/correctness/useHookAtTopLevel: process.env.USER_TYPE is a compile-time constant
+  // biome-ignore lint/correctness/useHookAtTopLevel: isAnt() returns before hooks run for non-ant users
   const activeForSubmitRef = useRef(-1)
 
   // Memoize the O(messages) scans. This hook runs on every REPL render
   // (including every keystroke), but messages is stable during typing.
   // isSessionContainerCompatible walks all messages + regex-tests each
   // bash command — by far the heaviest work here.
-  // biome-ignore lint/correctness/useHookAtTopLevel: process.env.USER_TYPE is a compile-time constant
+  // biome-ignore lint/correctness/useHookAtTopLevel: isAnt() returns before hooks run for non-ant users
   const shouldTrigger = useMemo(
     () => isSessionContainerCompatible(messages) && hasFrictionSignal(messages),
     [messages],

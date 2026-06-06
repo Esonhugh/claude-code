@@ -71,6 +71,8 @@ import type { BridgeState, ReplBridgeHandle } from './replBridge.js'
 import { initBridgeCore } from './replBridge.js'
 import { setCseShimGate } from './sessionIdCompat.js'
 import type { BridgeWorkerType } from './types.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type InitBridgeOptions = {
   onInboundMessage?: (msg: SDKMessage) => void | Promise<void>
@@ -467,7 +469,7 @@ export async function initReplBridge(
   const branch = await getBranch()
   const gitRepoUrl = await getRemoteUrl()
   const sessionIngressUrl =
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       ? process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       : baseUrl

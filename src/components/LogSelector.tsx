@@ -34,6 +34,8 @@ import { Spinner } from './Spinner.js'
 import { TagTabs } from './TagTabs.js'
 import TextInput from './TextInput.js'
 import { type TreeNode, TreeSelect } from './ui/TreeSelect.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type AgenticSearchState =
   | { status: 'idle' }
@@ -191,14 +193,14 @@ export function LogSelector({
   const exitState = useExitOnCtrlCDWithKeybindings(onCancel)
   const isTerminalFocused = useTerminalFocus()
   const isResumeWithRenameEnabled = isCustomTitleEnabled()
-  const isDeepSearchEnabled = ("external" as string) === 'ant'
+  const isDeepSearchEnabled = isAnt()
   const [themeName] = useTheme()
   const theme = getTheme(themeName)
   const highlightColor = React.useMemo(
     () => (text: string) => applyColor(text, theme.warning as Color),
     [theme.warning],
   )
-  const isAgenticSearchEnabled = ("external" as string) === 'ant'
+  const isAgenticSearchEnabled = isAnt()
 
   const [currentBranch, setCurrentBranch] = React.useState<string | null>(null)
   const [branchFilterEnabled, setBranchFilterEnabled] = React.useState(false)

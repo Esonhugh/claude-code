@@ -12,6 +12,8 @@ import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
 import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
 import type { SettingSource } from './constants.js'
 import { getInitialSettings } from './settings.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Apply a settings change to app state. Re-reads settings from disk,
@@ -49,7 +51,7 @@ export function applySettingsChange(
 
     // Ant-only: re-strip overly broad Bash allow rules after settings sync
     if (
-      process.env.USER_TYPE === 'ant' &&
+      isAnt() &&
       process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent'
     ) {
       const overlyBroad = findOverlyBroadBashPermissions(updatedRules, [])

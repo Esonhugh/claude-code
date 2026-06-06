@@ -6,6 +6,8 @@ import {
 } from '../services/analytics/index.js'
 import { abortSpeculation } from '../services/PromptSuggestion/speculation.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   inputValue: string
@@ -148,7 +150,7 @@ export function usePromptSuggestion({
           Math.round(
             (finalInput.length / (suggestionText?.length || 1)) * 100,
           ) / 100,
-        ...(process.env.USER_TYPE === 'ant' && {
+        ...(isAnt() && {
           suggestion:
             suggestionText as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           userInput:

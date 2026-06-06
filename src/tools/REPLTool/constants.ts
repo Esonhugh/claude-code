@@ -7,6 +7,8 @@ import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const REPL_TOOL_NAME = 'REPL'
 
@@ -16,15 +18,13 @@ export const REPL_TOOL_NAME = 'REPL'
  *
  * SDK entrypoints (sdk-ts, sdk-py, sdk-cli) are NOT defaulted on — SDK
  * consumers script direct tool calls (Bash, Read, etc.) and REPL mode
- * hides those tools. USER_TYPE is a build-time --define, so the ant-native
- * binary would otherwise force REPL mode on every SDK subprocess regardless
- * of the env the caller passes.
+ * hides those tools.
  */
 export function isReplModeEnabled(): boolean {
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_REPL)) return false
   if (isEnvTruthy(process.env.CLAUDE_REPL_MODE)) return true
   return (
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     process.env.CLAUDE_CODE_ENTRYPOINT === 'cli'
   )
 }

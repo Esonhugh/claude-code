@@ -1,5 +1,7 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { isEnvTruthy } from './envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Check if --agent-teams flag is provided via CLI.
@@ -23,7 +25,7 @@ function isAgentTeamsFlagSet(): boolean {
  */
 export function isAgentSwarmsEnabled(): boolean {
   // Ant: always on
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return true
   }
 

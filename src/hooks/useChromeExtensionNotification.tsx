@@ -7,6 +7,8 @@ import {
 } from '../utils/claudeInChrome/setup.js'
 import { isRunningOnHomespace } from '../utils/envUtils.js'
 import { useStartupNotification } from './notifs/useStartupNotification.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 function getChromeFlag(): boolean | undefined {
   if (process.argv.includes('--chrome')) {
@@ -24,7 +26,7 @@ export function useChromeExtensionNotification(): void {
     if (!shouldEnableClaudeInChrome(chromeFlag)) return null
 
     // Claude in Chrome is only supported for claude.ai subscribers (unless user is ant)
-    if (("external" as string) !== 'ant' && !isClaudeAISubscriber()) {
+    if (!isAnt() && !isClaudeAISubscriber()) {
       return {
         key: 'chrome-requires-subscription',
         jsx: (

@@ -1,4 +1,6 @@
 import { feature } from 'bun:bundle'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const CLAUDE_CODE_20250219_BETA_HEADER = 'claude-code-20250219'
 export const INTERLEAVED_THINKING_BETA_HEADER =
@@ -27,7 +29,7 @@ export const AFK_MODE_BETA_HEADER = feature('TRANSCRIPT_CLASSIFIER')
   ? 'afk-mode-2026-01-31'
   : ''
 export const CLI_INTERNAL_BETA_HEADER =
-  process.env.USER_TYPE === 'ant' ? 'cli-internal-2026-02-09' : ''
+  isAnt() ? 'cli-internal-2026-02-09' : ''
 export const ADVISOR_BETA_HEADER = 'advisor-tool-2026-03-01'
 
 /**

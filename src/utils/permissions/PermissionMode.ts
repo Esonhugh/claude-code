@@ -9,6 +9,8 @@ import {
   type PermissionMode,
 } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Re-export for backwards compatibility
 export {
@@ -98,7 +100,7 @@ export function isExternalPermissionMode(
   mode: PermissionMode,
 ): mode is ExternalPermissionMode {
   // External users can't have auto, so always true for them
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return true
   }
   return mode !== 'auto' && mode !== 'bubble'

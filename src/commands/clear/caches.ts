@@ -31,6 +31,8 @@ import { clearRepositoryCaches } from '../../utils/detectRepository.js'
 import { clearResolveGitDirCache } from '../../utils/git/gitFilesystem.js'
 import { clearStoredImagePaths } from '../../utils/imageStore.js'
 import { clearSessionEnvVars } from '../../utils/sessionEnvVars.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Clear all session-related caches.
@@ -92,7 +94,7 @@ export function clearSessionCaches(
   if (!hasPreserved) clearAllPendingCallbacks()
 
   // Clear tungsten session usage tracking
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     void import('../../tools/TungstenTool/TungstenTool.js').then(
       // @ts-ignore - recovered code
       ({ clearSessionsWithTungstenUsage, resetInitializationState }) => {

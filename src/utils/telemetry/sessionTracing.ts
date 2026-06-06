@@ -38,6 +38,8 @@ import {
   startToolPerfettoSpan,
   startUserInputPerfettoSpan,
 } from './perfettoTracing.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Re-export for callers
 export type { Span }
@@ -135,7 +137,7 @@ export function isEnhancedTelemetryEnabled(): boolean {
       return false
     }
     return (
-      process.env.USER_TYPE === 'ant' ||
+      isAnt() ||
       getFeatureValue_CACHED_MAY_BE_STALE('enhanced_telemetry_beta', false)
     )
   }

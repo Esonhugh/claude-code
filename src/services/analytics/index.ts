@@ -1,3 +1,4 @@
+import { isAnt } from 'src/utils/userType.js'
 /**
  * Analytics service - public API for event logging
  *
@@ -104,7 +105,7 @@ export function attachAnalyticsSink(newSink: AnalyticsSink): void {
     eventQueue.length = 0
 
     // Log queue size for ants to help debug analytics initialization timing
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       sink.logEvent('analytics_sink_attached', {
         queued_event_count: queuedEvents.length,
       })

@@ -23,6 +23,8 @@ import type { GrowthBookUserAttributes } from './growthbook.js'
 import { getDynamicConfig_CACHED_MAY_BE_STALE } from './growthbook.js'
 import { getEventMetadata } from './metadata.js'
 import { isSinkKilled } from './sinkKillswitch.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Configuration for sampling individual event types.
@@ -119,7 +121,7 @@ export async function shutdown1PEventLogging(): Promise<void> {
   }
   try {
     await firstPartyEventLoggerProvider.shutdown()
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging('1P event logging: final shutdown complete')
     }
   } catch {
@@ -184,7 +186,7 @@ async function logEventTo1PAsync(
     }
 
     // Debug logging when debug mode is enabled
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging(
         `[ANT-ONLY] 1P event: ${eventName} ${jsonStringify(metadata, null, 0)}`,
       )
@@ -199,7 +201,7 @@ async function logEventTo1PAsync(
     if (process.env.NODE_ENV === 'development') {
       throw e
     }
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logError(e as Error)
     }
     // swallow
@@ -285,7 +287,7 @@ export function logGrowthBookExperimentTo1P(
     environment: getEnvironmentForGrowthBook(),
   }
 
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     logForDebugging(
       `[ANT-ONLY] 1P GrowthBook experiment: ${data.experimentId} variation=${data.variationId}`,
     )
@@ -314,7 +316,7 @@ export function initialize1PEventLogging(): void {
   const enabled = is1PEventLoggingEnabled()
 
   if (!enabled) {
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       logForDebugging('1P event logging not enabled')
     }
     return
@@ -415,7 +417,7 @@ export async function reinitialize1PEventLoggingIfConfigChanged(): Promise<void>
     return
   }
 
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     logForDebugging(
       `1P event logging: ${BATCH_CONFIG_NAME} changed, reinitializing`,
     )

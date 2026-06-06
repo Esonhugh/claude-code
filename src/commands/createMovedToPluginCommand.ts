@@ -1,6 +1,8 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../commands.js'
 import type { ToolUseContext } from '../Tool.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Options = {
   name: string
@@ -41,7 +43,7 @@ export function createMovedToPluginCommand({
       args: string,
       context: ToolUseContext,
     ): Promise<ContentBlockParam[]> {
-      if (process.env.USER_TYPE === 'ant') {
+      if (isAnt()) {
         return [
           {
             type: 'text',

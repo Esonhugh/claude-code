@@ -1,10 +1,12 @@
 import { useEffect } from 'react'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function useAfterFirstRender(): void {
   useEffect(() => {
     if (
-      process.env.USER_TYPE === 'ant' &&
+      isAnt() &&
       isEnvTruthy(process.env.CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER)
     ) {
       process.stderr.write(

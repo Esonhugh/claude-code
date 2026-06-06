@@ -10,6 +10,8 @@ import { getGlobalConfig, getOrCreateUserID } from './config.js'
 import { getCwd } from './cwd.js'
 import { type env, getHostPlatformForAnalytics } from './env.js'
 import { isEnvTruthy } from './envUtils.js'
+import { userType, isAnt } from 'src/utils/userType.js'
+
 
 // Cache for email fetched asynchronously at startup
 let cachedEmail: string | undefined | null = null // null means not fetched yet
@@ -109,7 +111,7 @@ export const getCoreUserData = memoize(
       platform: getHostPlatformForAnalytics(),
       organizationUuid,
       accountUuid,
-      userType: process.env.USER_TYPE,
+      userType: userType(),
       subscriptionType,
       rateLimitTier,
       firstTokenTime,
@@ -147,7 +149,7 @@ function getEmail(): string | undefined {
   }
 
   // Ant-only fallbacks below (no execSync)
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return undefined
   }
 
@@ -167,7 +169,7 @@ async function getEmailAsync(): Promise<string | undefined> {
   }
 
   // Ant-only fallbacks below
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return undefined
   }
 

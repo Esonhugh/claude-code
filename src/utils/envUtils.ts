@@ -1,6 +1,8 @@
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { join } from 'path'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Memoized: 150+ callers, many on hot paths. Keyed off CLAUDE_CONFIG_DIR so
 // tests that change the env var get a fresh value without explicit cache.clear.
@@ -117,7 +119,7 @@ export function shouldMaintainProjectWorkingDir(): boolean {
  */
 export function isRunningOnHomespace(): boolean {
   return (
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     isEnvTruthy(process.env.COO_RUNNING_ON_HOMESPACE)
   )
 }
@@ -134,9 +136,8 @@ export function isRunningOnHomespace(): boolean {
  * Used for telemetry to measure auto-mode usage in sensitive environments.
  */
 export function isInProtectedNamespace(): boolean {
-  // USER_TYPE is build-time --define'd; in external builds this block is
-  // DCE'd so the require() and namespace allowlist never appear in the bundle.
-  if (process.env.USER_TYPE === 'ant') {
+  // Keep the protected namespace helper behind the ant gate.
+  if (isAnt()) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     return (
       require('./protectedNamespace.js') as typeof import('./protectedNamespace.js')

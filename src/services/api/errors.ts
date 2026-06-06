@@ -50,6 +50,8 @@ import {
 } from '../claudeAiLimits.js'
 import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mock-limits command
 import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 
@@ -686,7 +688,7 @@ export function getAssistantMessageFromError(
       }
     }
 
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       const baseMessage = `API Error: 400 ${error.message}\n\nRun /share and post the JSON file to ${MACRO.FEEDBACK_CHANNEL}.`
       const rewindInstruction = getIsNonInteractiveSession()
         ? ''
@@ -753,7 +755,7 @@ export function getAssistantMessageFromError(
   // defaulting to a custom internal-only model for Ants, and there might be
   // Ants using new or unknown org IDs that haven't been gated in.
   if (
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     !process.env.ANTHROPIC_MODEL &&
     error instanceof Error &&
     error.message.toLowerCase().includes('invalid model name')

@@ -19,6 +19,8 @@ import {
 } from './settings/settings.js'
 import { TOOL_RESULTS_SUBDIR } from './toolResultStorage.js'
 import { cleanupStaleAgentWorktrees } from './worktree.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const DEFAULT_CLEANUP_PERIOD_DAYS = 30
 
@@ -596,7 +598,7 @@ export async function cleanupOldMessageFilesInBackground(): Promise<void> {
   if (removedWorktrees > 0) {
     logEvent('tengu_worktree_cleanup', { removed: removedWorktrees })
   }
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     await cleanupNpmCacheForAnthropicPackages()
   }
 }

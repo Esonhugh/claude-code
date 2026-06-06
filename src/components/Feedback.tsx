@@ -40,11 +40,13 @@ import { Byline } from './design-system/Byline.js'
 import { Dialog } from './design-system/Dialog.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
 import TextInput from './TextInput.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // This value was determined experimentally by testing the URL length limit
 const GITHUB_URL_LIMIT = 7250
 const GITHUB_ISSUES_REPO_URL =
-  ("external" as string) === 'ant'
+  isAnt()
     ? 'https://github.com/anthropics/claude-cli-internal/issues'
     : 'https://github.com/anthropics/claude-code/issues'
 

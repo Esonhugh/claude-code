@@ -8,6 +8,12 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
 import { isEnvTruthy } from './envUtils.js'
 import { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
+import {
+  getUltracodeOrchestrationSystemPrompt,
+  shouldInjectUltracodeOrchestration,
+} from './ultracodeOrchestration.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
 
@@ -47,14 +53,25 @@ export function buildEffectiveSystemPrompt({
   overrideSystemPrompt,
 }: {
   mainThreadAgentDefinition: AgentDefinition | undefined
-  toolUseContext: Pick<ToolUseContext, 'options'>
+  toolUseContext: Pick<ToolUseContext, 'options'> &
+    Partial<Pick<ToolUseContext, 'getAppState'>>
   customSystemPrompt: string | undefined
   defaultSystemPrompt: string[]
   appendSystemPrompt: string | undefined
   overrideSystemPrompt?: string | null
 }): SystemPrompt {
+  const appState = toolUseContext.getAppState?.()
+  const ultracodeOrchestrationPrompt = shouldInjectUltracodeOrchestration(
+    appState?.effortValue,
+  )
+    ? getUltracodeOrchestrationSystemPrompt()
+    : undefined
+
   if (overrideSystemPrompt) {
-    return asSystemPrompt([overrideSystemPrompt])
+    return asSystemPrompt([
+      overrideSystemPrompt,
+      ...(ultracodeOrchestrationPrompt ? [ultracodeOrchestrationPrompt] : []),
+    ])
   }
   // Coordinator mode: use coordinator prompt instead of default
   // Use inline env check instead of coordinatorModule to avoid circular
@@ -71,6 +88,7 @@ export function buildEffectiveSystemPrompt({
     return asSystemPrompt([
       getCoordinatorSystemPrompt(),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+      ...(ultracodeOrchestrationPrompt ? [ultracodeOrchestrationPrompt] : []),
     ])
   }
 
@@ -81,11 +99,10 @@ export function buildEffectiveSystemPrompt({
         })
       : mainThreadAgentDefinition.getSystemPrompt()
     : undefined
-
   // Log agent memory loaded event for main loop agents
   if (mainThreadAgentDefinition?.memory) {
     logEvent('tengu_agent_memory_loaded', {
-      ...(process.env.USER_TYPE === 'ant' && {
+      ...(isAnt() && {
         agent_type:
           mainThreadAgentDefinition.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       }),
@@ -109,6 +126,7 @@ export function buildEffectiveSystemPrompt({
       ...defaultSystemPrompt,
       `\n# Custom Agent Instructions\n${agentSystemPrompt}`,
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+      ...(ultracodeOrchestrationPrompt ? [ultracodeOrchestrationPrompt] : []),
     ])
   }
 
@@ -119,5 +137,6 @@ export function buildEffectiveSystemPrompt({
         ? [customSystemPrompt]
         : defaultSystemPrompt),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+    ...(ultracodeOrchestrationPrompt ? [ultracodeOrchestrationPrompt] : []),
   ])
 }

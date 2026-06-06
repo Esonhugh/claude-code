@@ -64,6 +64,8 @@ import { count } from '../utils/array.js'
 import { formatRelativeTimeAgo, truncate } from '../utils/format.js'
 import type { Theme } from '../utils/theme.js'
 import { Divider } from './design-system/Divider.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type RestoreOption =
   | 'both'
@@ -193,7 +195,7 @@ export function MessageSelector({
       ...summarizeInputProps,
       onChange: setSummarizeFromFeedback,
     })
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       baseOptions.push({
         value: 'summarize_up_to',
         label: 'Summarize up to here',

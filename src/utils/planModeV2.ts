@@ -1,6 +1,8 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getRateLimitTier, getSubscriptionType } from './auth.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function getPlanModeV2AgentCount(): number {
   // Environment variable override takes precedence
@@ -49,7 +51,7 @@ export function getPlanModeV2ExploreAgentCount(): number {
  */
 export function isPlanModeInterviewPhaseEnabled(): boolean {
   // Always on for ants
-  if (process.env.USER_TYPE === 'ant') return true
+  if (isAnt()) return true
 
   const env = process.env.CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE
   if (isEnvTruthy(env)) return true

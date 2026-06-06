@@ -6,6 +6,8 @@ import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpda
 import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permissionsLoader.js'
 import type { OptionWithDescription } from '../../CustomSelect/select.js'
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type BashToolUseOption =
   | 'yes'
@@ -141,7 +143,7 @@ export function bashToolUseOptions({
       o => o.value === 'yes-prefix-edited',
     )
     if (
-      ("external" as string) === 'ant' &&
+      isAnt() &&
       !editablePrefixShown &&
       isClassifierPermissionsEnabled() &&
       onClassifierDescriptionChange &&

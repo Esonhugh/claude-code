@@ -194,4 +194,45 @@ assert.deepEqual(orchestrationSpec.phases.map(phase => phase.id), [
 assert.equal(orchestrationSpec.phases[2]!.review, 'cross-check')
 assert.equal(orchestrationSpec.runtime?.kind, 'javascript-worker')
 
+const officialScriptPath = join(tempRoot, 'docs', 'workflows', 'official-meta.js')
+await writeFile(
+  officialScriptPath,
+  `export const meta = {
+    name: 'official-meta-workflow',
+    description: 'Official-style metadata workflow',
+    phases: [{ title: 'Scan', detail: 'Find files' }],
+  }
+
+  phase('Scan')
+  await agent('Find files for ' + args.topic, { label: 'scan', schema: { type: 'object' } })
+  log('scan registered')
+  `,
+)
+
+const officialSpec = await loadWorkflowScriptSpec(officialScriptPath, { topic: 'runtime' })
+assert.equal(officialSpec.name, 'official-meta-workflow')
+assert.equal(officialSpec.description, 'Official-style metadata workflow')
+assert.equal(officialSpec.phases[0]?.id, 'scan')
+assert.equal(officialSpec.phases[0]?.prompt, 'Find files for runtime')
+assert.deepEqual(officialSpec.meta?.phases, [{ title: 'Scan', detail: 'Find files' }])
+assert.equal(officialSpec.runtime?.kind, 'javascript-worker')
+
+const officialUrlPath = join(tempRoot, 'docs', 'workflows', 'official-url.js')
+await writeFile(
+  officialUrlPath,
+  `export const meta = {
+    name: 'official-url-workflow',
+    description: 'Official-style workflow with URL normalization',
+    phases: [{ title: 'Normalize', detail: 'Normalize source URL' }],
+  }
+
+  phase('Normalize')
+  const host = new URL('https://www.example.com/path/').hostname.replace(/^www\\./, '')
+  await agent('host=' + host, { label: 'normalize' })
+  `,
+)
+
+const officialUrlSpec = await loadWorkflowScriptSpec(officialUrlPath)
+assert.equal(officialUrlSpec.phases[0]?.prompt, 'host=example.com')
+
 console.log('workflowDsl.test.ts passed')

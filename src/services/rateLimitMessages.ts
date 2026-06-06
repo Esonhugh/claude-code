@@ -11,6 +11,8 @@ import {
 import { hasClaudeAiBillingAccess } from '../utils/billing.js'
 import { formatResetTime } from '../utils/format.js'
 import type { ClaudeAILimits } from './claudeAiLimits.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const FEEDBACK_CHANNEL_ANT = '#briarpatch-cc'
 
@@ -336,7 +338,7 @@ function formatLimitReachedText(
   _model: string,
 ): string {
   // Enhanced messaging for Ant users
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return `You've hit your ${limit}${resetMessage}. If you have feedback about this limit, post in ${FEEDBACK_CHANNEL_ANT}. You can reset your limits with /reset-limits`
   }
 

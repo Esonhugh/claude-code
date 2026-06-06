@@ -1,6 +1,8 @@
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 import { SKILL_FILES, SKILL_MD } from './verifyContent.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const { frontmatter, content: SKILL_BODY } = parseFrontmatter(SKILL_MD)
 
@@ -10,7 +12,7 @@ const DESCRIPTION =
     : 'Verify a code change does what it should by running the app.'
 
 export function registerVerifySkill(): void {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return
   }
 

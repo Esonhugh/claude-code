@@ -7,6 +7,7 @@ import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { runWorkflowPlan } from './runWorkflow.js'
+import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 import {
   createWorkflowRunId,
   persistWorkflowScript,
@@ -61,6 +62,7 @@ const inputSchema = lazySchema(() =>
     scriptPath: z.string().optional(),
     args: workflowArgsSchema.optional(),
     resumeFromRunId: z.string().optional(),
+    plan: z.unknown().optional(),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -151,6 +153,34 @@ export const WorkflowFacadeTool = buildTool({
   },
   isReadOnly() {
     return false
+  },
+  async checkPermissions(input, context) {
+    const cwd = resolveCwd(context)
+    const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)
+    const previewInput =
+      normalized.kind === 'saved-workflow'
+        ? { name: normalized.selector, args: normalized.args }
+        : normalized.kind === 'script-path'
+          ? {
+              scriptPath: normalized.scriptPath,
+              args: normalized.args,
+              ...(normalized.resumeFromRunId
+                ? { resumeFromRunId: normalized.resumeFromRunId }
+                : {}),
+            }
+          : {
+              name: normalized.name,
+              script: normalized.script,
+              args: normalized.args,
+              ...(normalized.resumeFromRunId
+                ? { resumeFromRunId: normalized.resumeFromRunId }
+                : {}),
+            }
+    return {
+      behavior: 'ask',
+      message: 'Run a dynamic workflow?',
+      updatedInput: await workflowPermissionPreviewInput(previewInput, cwd),
+    }
   },
   renderToolUseMessage(input) {
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)

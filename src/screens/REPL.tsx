@@ -207,14 +207,14 @@ const VoiceKeybindingHandler: typeof import('../hooks/useVoiceIntegration.js').V
 // builds eliminate the module entirely (including its two O(n) useMemos that run
 // on every messages change, plus the GrowthBook fetch).
 const useFrustrationDetection: typeof import('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection =
-  ("external" as string) === 'ant'
+  isAnt()
     ? require('../components/FeedbackSurvey/useFrustrationDetection.js')
         .useFrustrationDetection
     : () => ({ state: 'closed', handleTranscriptSelect: () => {} })
 // Ant-only org warning. Conditional require so the org UUID list is
 // eliminated from external builds (one UUID is on excluded-strings).
 const useAntOrgWarningNotification: typeof import('../hooks/notifs/useAntOrgWarningNotification.js').useAntOrgWarningNotification =
-  ("external" as string) === 'ant'
+  isAnt()
     ? require('../hooks/notifs/useAntOrgWarningNotification.js')
         .useAntOrgWarningNotification
     : () => {}
@@ -508,16 +508,16 @@ import type { EffortValue } from '../utils/effort.js'
 import { RemoteCallout } from '../components/RemoteCallout.js'
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const AntModelSwitchCallout =
-  ("external" as string) === 'ant'
+  isAnt()
     ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout
     : null
 const shouldShowAntModelSwitch =
-  ("external" as string) === 'ant'
+  isAnt()
     ? require('../components/AntModelSwitchCallout.js')
         .shouldShowModelSwitchCallout
     : (): boolean => false
 const UndercoverAutoCallout =
-  ("external" as string) === 'ant'
+  isAnt()
     ? require('../components/UndercoverAutoCallout.js').UndercoverAutoCallout
     : null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
@@ -627,6 +627,8 @@ import {
   createAttachmentMessage,
   getQueuedCommandAttachments,
 } from '../utils/attachments.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Stable empty array for hooks that accept MCPServerConnection[] — avoids
 // creating a new [] literal on every render in remote mode, which would
@@ -989,7 +991,7 @@ export function REPL({
   )
   const moreRightEnabled = useMemo(
     () =>
-      ("external" as string) === 'ant' &&
+      isAnt() &&
       isEnvTruthy(process.env.CLAUDE_MORERIGHT),
     [],
   )
@@ -1165,7 +1167,7 @@ export function REPL({
   const [showIdeOnboarding, setShowIdeOnboarding] = useState(false)
   // Dead code elimination: model switch callout state (ant-only)
   const [showModelSwitchCallout, setShowModelSwitchCallout] = useState(() => {
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       return shouldShowAntModelSwitch()
     }
     return false
@@ -1487,7 +1489,7 @@ export function REPL({
 
   const [showUndercoverCallout, setShowUndercoverCallout] = useState(false)
   useEffect(() => {
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       void (async () => {
         // Wait for repo classification to settle (memoized, no-op if primed).
         const { isInternalModelRepo } = await import(
@@ -2778,7 +2780,7 @@ export function REPL({
 
     // Model switch callout (ant-only, eliminated from external builds)
     if (
-      ("external" as string) === 'ant' &&
+      isAnt() &&
       allowDialogsWithAnimation &&
       showModelSwitchCallout
     )
@@ -2786,7 +2788,7 @@ export function REPL({
 
     // Undercover auto-enable explainer (ant-only, eliminated from external builds)
     if (
-      ("external" as string) === 'ant' &&
+      isAnt() &&
       allowDialogsWithAnimation &&
       showUndercoverCallout
     )
@@ -3306,7 +3308,7 @@ export function REPL({
         discoveredSkillNames: discoveredSkillNamesRef.current,
         setResponseLength,
         pushApiMetricsEntry:
-          ("external" as string) === 'ant'
+          isAnt()
             ? (ttftMs: number) => {
                 const now = Date.now()
                 const baseline = responseLengthRef.current
@@ -3841,7 +3843,7 @@ export function REPL({
 
       // Capture ant-only API metrics before resetLoadingState clears the ref.
       // For multi-request turns (tool use loops), compute P50 across all requests.
-      if (("external" as string) === 'ant' && apiMetricsRef.current.length > 0) {
+      if (isAnt() && apiMetricsRef.current.length > 0) {
         const entries = apiMetricsRef.current
 
         const ttfts = entries.map(e => e.ttftMs)
@@ -4029,7 +4031,7 @@ export function REPL({
           // the user to re-invoke Tmux just to peek. Skip on abort so the panel
           // stays open for inspection (matches the turn-duration guard below).
           if (
-            ("external" as string) === 'ant' &&
+            isAnt() &&
             !abortController.signal.aborted
           ) {
             setAppState(prev => {
@@ -4190,7 +4192,7 @@ export function REPL({
       // Atomically: clear initial message, set permission mode and rules, and store plan for verification
       const shouldStorePlanForVerification =
         initialMsg.message.planContent &&
-        ("external" as string) === 'ant' &&
+        isAnt() &&
         isEnvTruthy(undefined)
 
       setAppState(prev => {
@@ -4890,7 +4892,7 @@ export function REPL({
 
   // Handler for when user presses 1 on survey thanks screen to share details
   const handleSurveyRequestFeedback = useCallback(() => {
-    const command = ("external" as string) === 'ant' ? '/issue' : '/feedback'
+    const command = isAnt() ? '/issue' : '/feedback'
     onSubmit(command, {
       setCursorOffset: () => {},
       clearBuffer: () => {},
@@ -5472,7 +5474,7 @@ export function REPL({
   // - Workers receive permission responses via mailbox messages
   // - Leaders receive permission requests via mailbox messages
 
-  if (("external" as string) === 'ant') {
+  if (isAnt()) {
     // Tasks mode: watch for tasks and auto-process them
     // eslint-disable-next-line react-hooks/rules-of-hooks
     // biome-ignore lint/correctness/useHookAtTopLevel: conditional for dead code elimination in external builds
@@ -5606,7 +5608,7 @@ export function REPL({
         ? 'subagent stop'
         : 'stop'
 
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       const cmd = currentHooks[completedCount]?.data.command
       const label = cmd ? ` '${truncateToWidth(cmd, 40)}'` : ''
       return total === 1
@@ -6267,7 +6269,7 @@ export function REPL({
                     {toolJSX.jsx}
                   </Box>
                 )}
-              {("external" as string) === 'ant' && <TungstenLiveMonitor />}
+              {isAnt() && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL')
                 ? WebBrowserPanelModule && (
                     <WebBrowserPanelModule.WebBrowserPanel />
@@ -6626,7 +6628,7 @@ export function REPL({
                     installationStatus={ideInstallationStatus}
                   />
                 )}
-                {("external" as string) === 'ant' &&
+                {isAnt() &&
                   focusedInputDialog === 'model-switch' &&
                   AntModelSwitchCallout && (
                     <AntModelSwitchCallout
@@ -6642,7 +6644,7 @@ export function REPL({
                       }}
                     />
                   )}
-                {("external" as string) === 'ant' &&
+                {isAnt() &&
                   focusedInputDialog === 'undercover-callout' &&
                   UndercoverAutoCallout && (
                     <UndercoverAutoCallout
@@ -6854,7 +6856,7 @@ export function REPL({
                         />
                       )}
                       {/* Skill improvement survey - appears when improvements detected (ant-only) */}
-                      {("external" as string) === 'ant' &&
+                      {isAnt() &&
                         skillImprovementSurvey.suggestion && (
                           <SkillImprovementSurvey
                             isOpen={skillImprovementSurvey.isOpen}
@@ -7090,7 +7092,7 @@ export function REPL({
                     }}
                   />
                 )}
-                {("external" as string) === 'ant' && <DevBar />}
+                {isAnt() && <DevBar />}
               </Box>
               {feature('BUDDY') &&
               !(companionNarrow && isFullscreenEnvEnabled()) &&

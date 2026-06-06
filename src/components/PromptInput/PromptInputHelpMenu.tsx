@@ -7,6 +7,8 @@ import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { isFastModeAvailable, isFastModeEnabled } from '../../utils/fastMode.js'
 import { getNewlineInstructions } from './utils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /** Format a shortcut for display in the help menu (e.g., "ctrl+o" → "ctrl + o") */
 function formatShortcut(shortcut: string): string {
@@ -90,7 +92,7 @@ export function PromptInputHelpMenu(props: Props): React.ReactNode {
         <Box>
           <Text dimColor={dimColor}>
             {cycleModeShortcut}{' '}
-            {("external" as string) === 'ant'
+            {isAnt()
               ? 'to cycle modes'
               : 'to auto-accept edits'}
           </Text>

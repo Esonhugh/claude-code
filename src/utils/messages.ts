@@ -172,6 +172,8 @@ import {
   isToolReferenceBlock,
   isToolSearchEnabledOptimistic,
 } from './toolSearch.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const MEMORY_CORRECTION_HINT =
   "\n\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions."
@@ -2770,7 +2772,7 @@ export function normalizeContentFromAPI(
               toolName: sanitizeToolNameForAnalytics(contentBlock.name),
               inputLen: contentBlock.input.length,
             })
-            if (process.env.USER_TYPE === 'ant') {
+            if (isAnt()) {
               logForDebugging(
                 `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
                 { level: 'warn' },

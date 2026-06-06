@@ -7,6 +7,8 @@ import {
   type IndividualHookConfig,
   sortMatchersByPriority,
 } from './hooksSettings.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type MatcherMetadata = {
   fieldToMatch: string
@@ -343,7 +345,7 @@ export function groupHooksByEventAndMatcher(
               pluginName: matcher.pluginId,
             })
           }
-        } else if (process.env.USER_TYPE === 'ant') {
+        } else if (isAnt()) {
           eventGroup[matcherKey] ??= []
           for (const _hook of matcher.hooks) {
             eventGroup[matcherKey].push({

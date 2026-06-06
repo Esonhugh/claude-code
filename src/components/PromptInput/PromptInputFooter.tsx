@@ -33,6 +33,8 @@ import {
   type SuggestionItem,
 } from './PromptInputFooterSuggestions.js'
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   apiKeyStatus: VerificationStatus
@@ -218,13 +220,13 @@ function PromptInputFooter({
               isNarrow={isNarrow}
             />
           )}
-          {("external" as string) === 'ant' && isUndercover() && (
+          {isAnt() && isUndercover() && (
             <Text dimColor>undercover</Text>
           )}
           <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
         </Box>
       </Box>
-      {("external" as string) === 'ant' && <CoordinatorTaskPanel />}
+      {isAnt() && <CoordinatorTaskPanel />}
     </>
   )
 }

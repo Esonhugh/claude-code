@@ -79,7 +79,7 @@ export function injectBridgeFault(fault: BridgeFault): void {
  * matching fault is queued, throw the specified error instead of calling
  * through. Delegates everything else to the real client.
  *
- * Only called when USER_TYPE === 'ant' — zero overhead in external builds.
+ * Only called for ant users.
  */
 export function wrapApiForFaultInjection(
   api: BridgeApiClient,

@@ -28,6 +28,8 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Environment variables for different client types:
@@ -307,7 +309,7 @@ export async function getAnthropicClient({
       ? getClaudeAIOAuthTokens()?.accessToken
       : undefined,
     // Set baseURL from OAuth config when using staging OAuth
-    ...(process.env.USER_TYPE === 'ant' &&
+    ...(isAnt() &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)
       ? { baseURL: getOauthConfig().BASE_API_URL }
       : {}),

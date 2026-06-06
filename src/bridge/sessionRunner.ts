@@ -12,6 +12,8 @@ import type {
   SessionSpawner,
   SessionSpawnOpts,
 } from './types.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const MAX_ACTIVITIES = 10
 const MAX_STDERR_LINES = 10
@@ -261,7 +263,7 @@ export function createSessionSpawner(deps: SessionSpawnerDeps): SessionSpawner {
         } else {
           debugFile = `${deps.debugFile}-${safeId}`
         }
-      } else if (deps.verbose || process.env.USER_TYPE === 'ant') {
+      } else if (deps.verbose || isAnt()) {
         debugFile = join(tmpdir(), 'claude', `bridge-session-${safeId}.log`)
       }
 

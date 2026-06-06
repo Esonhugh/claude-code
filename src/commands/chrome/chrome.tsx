@@ -16,6 +16,8 @@ import { isChromeExtensionInstalled } from '../../utils/claudeInChrome/setup.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { env } from '../../utils/env.js'
 import { isRunningOnHomespace } from '../../utils/envUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const CHROME_EXTENSION_URL = 'https://claude.ai/chrome'
 const CHROME_PERMISSIONS_URL = 'https://clau.de/chrome/permissions'
@@ -50,7 +52,7 @@ function ClaudeInChromeMenu({
   const [showInstallHint, setShowInstallHint] = useState(false)
   const [isExtensionInstalled, setIsExtensionInstalled] = useState(installed)
 
-  const isHomespace = ("external" as string) === 'ant' && isRunningOnHomespace()
+  const isHomespace = isAnt() && isRunningOnHomespace()
 
   const chromeClient = mcpClients.find(
     c => c.name === CLAUDE_IN_CHROME_MCP_SERVER_NAME,
@@ -136,7 +138,7 @@ function ClaudeInChromeMenu({
   )
 
   const isDisabled =
-    isWSL || (("external" as string) !== 'ant' && !isClaudeAISubscriber)
+    isWSL || (!isAnt() && !isClaudeAISubscriber)
 
   return (
     <Dialog
@@ -159,7 +161,7 @@ function ClaudeInChromeMenu({
         )}
 
 
-        {("external" as string) !== 'ant' && !isClaudeAISubscriber && (
+        {!isAnt() && !isClaudeAISubscriber && (
           <Text color="error">
             Claude in Chrome requires a claude.ai subscription.
           </Text>

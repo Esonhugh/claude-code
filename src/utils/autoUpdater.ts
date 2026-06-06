@@ -26,6 +26,8 @@ import {
   writeFileLines,
 } from './shellConfig.js'
 import { jsonParse } from './slowOperations.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const GCS_BUCKET_URL =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
@@ -107,7 +109,7 @@ This will ensure you have access to the latest features and improvements.
  */
 export async function getMaxVersion(): Promise<string | undefined> {
   const config = await getMaxVersionConfig()
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return config.ant || undefined
   }
   return config.external || undefined
@@ -119,7 +121,7 @@ export async function getMaxVersion(): Promise<string | undefined> {
  */
 export async function getMaxVersionMessage(): Promise<string | undefined> {
   const config = await getMaxVersionConfig()
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     return config.ant_message || undefined
   }
   return config.external_message || undefined
@@ -419,7 +421,7 @@ export async function getGcsDistTags(): Promise<NpmDistTags> {
  * 3. This prevents rollback from listing versions that don't have native binaries
  */
 export async function getVersionHistory(limit: number): Promise<string[]> {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return []
   }
 

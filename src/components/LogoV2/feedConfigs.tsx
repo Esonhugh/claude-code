@@ -11,6 +11,8 @@ import type { LogOption } from '../../types/logs.js'
 import { getCwd } from '../../utils/cwd.js'
 import { formatRelativeTimeAgo } from '../../utils/format.js'
 import type { FeedConfig, FeedLine } from './Feed.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function createRecentActivityFeed(activities: LogOption[]): FeedConfig {
   const lines: FeedLine[] = activities.map(log => {
@@ -34,7 +36,7 @@ export function createRecentActivityFeed(activities: LogOption[]): FeedConfig {
 
 export function createWhatsNewFeed(releaseNotes: string[]): FeedConfig {
   const lines: FeedLine[] = releaseNotes.map(note => {
-    if (("external" as string) === 'ant') {
+    if (isAnt()) {
       const match = note.match(/^(\d+\s+\w+\s+ago)\s+(.+)$/)
       if (match) {
         return {
@@ -49,13 +51,13 @@ export function createWhatsNewFeed(releaseNotes: string[]): FeedConfig {
   })
 
   const emptyMessage =
-    ("external" as string) === 'ant'
+    isAnt()
       ? 'Unable to fetch latest claude-cli-internal commits'
       : 'Check the Claude Code changelog for updates'
 
   return {
     title:
-      ("external" as string) === 'ant'
+      isAnt()
         ? "What's new [ANT-ONLY: Latest CC commits]"
         : "What's new",
     lines,

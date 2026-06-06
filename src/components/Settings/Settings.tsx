@@ -17,6 +17,8 @@ import type {
   LocalJSXCommandContext,
   CommandResultDisplay,
 } from '../../commands.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 function Gates(_props: {
   onOwnsEscChange: (ownsEsc: boolean) => void
@@ -108,7 +110,7 @@ export function Settings({
     <Tab key="usage" title="Usage">
       <Usage />
     </Tab>,
-    ...(("external" as string) === 'ant'
+    ...(isAnt()
       ? [
           <Tab key="gates" title="Gates">
             <Gates

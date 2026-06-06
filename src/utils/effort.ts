@@ -7,6 +7,8 @@ import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type { EffortLevel }
 
@@ -15,9 +17,11 @@ export const EFFORT_LEVELS = [
   'medium',
   'high',
   'max',
-] as const satisfies readonly EffortLevel[]
+  'ultracode',
+] as const
 
-export type EffortValue = EffortLevel | number
+export type UltracodeEffortLevel = 'ultracode'
+export type EffortValue = EffortLevel | UltracodeEffortLevel | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -59,13 +63,13 @@ export function modelSupportsMaxEffort(model: string): boolean {
     return true
   }
   // @ts-ignore - recovered code
-  if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
+  if (isAnt() && resolveAntModel(model)) {
     return true
   }
   return false
 }
 
-export function isEffortLevel(value: string): value is EffortLevel {
+export function isEffortLevel(value: string): value is EffortLevel | UltracodeEffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(value)
 }
 
@@ -96,10 +100,11 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
+  if (value === 'ultracode') return undefined
   if (value === 'low' || value === 'medium' || value === 'high') {
     return value
   }
-  if (value === 'max' && process.env.USER_TYPE === 'ant') {
+  if (value === 'max' && isAnt()) {
     return value
   }
   return undefined
@@ -160,6 +165,9 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  if (resolved === 'ultracode') {
+    return 'high'
+  }
   // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
   if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
     return 'high'
@@ -202,12 +210,13 @@ export function isValidNumericEffort(value: number): boolean {
 
 export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
   if (typeof value === 'string') {
+    if (value === 'ultracode') return 'high'
     // Runtime guard: value may come from remote config (GrowthBook) where
     // TypeScript types can't help us. Coerce unknown strings to 'high'
     // rather than passing them through unchecked.
     return isEffortLevel(value) ? value : 'high'
   }
-  if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
+  if (isAnt() && typeof value === 'number') {
     if (value <= 50) return 'low'
     if (value <= 85) return 'medium'
     if (value <= 100) return 'high'
@@ -222,7 +231,7 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
  * @param level The effort level to describe
  * @returns Human-readable description
  */
-export function getEffortLevelDescription(level: EffortLevel): string {
+export function getEffortLevelDescription(level: EffortLevel | UltracodeEffortLevel): string {
   switch (level) {
     case 'low':
       return 'Quick, straightforward implementation with minimal overhead'
@@ -232,6 +241,8 @@ export function getEffortLevelDescription(level: EffortLevel): string {
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'max':
       return 'Maximum capability with deepest reasoning (Opus 4.6 only)'
+    case 'ultracode':
+      return 'xhigh + dynamic workflow orchestration'
   }
 }
 
@@ -242,7 +253,7 @@ export function getEffortLevelDescription(level: EffortLevel): string {
  * @returns Human-readable description
  */
 export function getEffortValueDescription(value: EffortValue): string {
-  if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
+  if (isAnt() && typeof value === 'number') {
     return `[ANT-ONLY] Numeric effort value of ${value}`
   }
 
@@ -280,7 +291,7 @@ export function getOpusDefaultEffortConfig(): OpusDefaultEffortConfig {
 export function getDefaultEffortForModel(
   model: string,
 ): EffortValue | undefined {
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     // @ts-ignore - recovered code
     const config = getAntModelOverrideConfig()
     const isDefaultModel =

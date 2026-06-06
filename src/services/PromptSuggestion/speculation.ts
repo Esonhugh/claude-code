@@ -54,6 +54,8 @@ import {
   logSuggestionSuppressed,
   shouldFilterSuggestion,
 } from './promptSuggestion.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const MAX_SPECULATION_TURNS = 20
 const MAX_SPECULATION_MESSAGES = 100
@@ -280,7 +282,7 @@ function createSpeculationFeedbackMessage(
   timeSavedMs: number,
   sessionTotalMs: number,
 ): Message | null {
-  if (process.env.USER_TYPE !== 'ant') return null
+  if (!isAnt()) return null
 
   if (messages.length === 0 || timeSavedMs === 0) return null
 
@@ -340,7 +342,7 @@ function resetSpeculationState(setAppState: SetAppState): void {
 
 export function isSpeculationEnabled(): boolean {
   const enabled =
-    process.env.USER_TYPE === 'ant' &&
+    isAnt() &&
     (getGlobalConfig().speculationEnabled ?? true)
   logForDebugging(`[Speculation] enabled=${enabled}`)
   return enabled

@@ -48,6 +48,10 @@ const WorkflowTool: Tool = (
   require('../../tools/WorkflowTool/WorkflowTool.js') as typeof import('../../tools/WorkflowTool/WorkflowTool.js')
 ).WorkflowTool as unknown as Tool
 
+const WorkflowFacadeTool: Tool = (
+  require('../../tools/WorkflowTool/WorkflowFacadeTool.js') as typeof import('../../tools/WorkflowTool/WorkflowFacadeTool.js')
+).WorkflowFacadeTool as unknown as Tool
+
 const WorkflowPermissionRequest = (
   require('../../tools/WorkflowTool/WorkflowPermissionRequest.js') as typeof import('../../tools/WorkflowTool/WorkflowPermissionRequest.js')
 ).WorkflowPermissionRequest
@@ -97,6 +101,7 @@ function permissionComponentForTool(
     case AskUserQuestionTool:
       return AskUserQuestionPermissionRequest
     case WorkflowTool:
+    case WorkflowFacadeTool:
       return WorkflowPermissionRequest
     case MonitorTool:
       return MonitorPermissionRequest ?? FallbackPermissionRequest

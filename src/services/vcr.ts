@@ -22,13 +22,15 @@ import { getClaudeConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
 import { getErrnoCode } from '../utils/errors.js'
 import { normalizeMessagesForAPI } from '../utils/messages.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 function shouldUseVCR(): boolean {
   if (process.env.NODE_ENV === 'test') {
     return true
   }
 
-  if (process.env.USER_TYPE === 'ant' && isEnvTruthy(process.env.FORCE_VCR)) {
+  if (isAnt() && isEnvTruthy(process.env.FORCE_VCR)) {
     return true
   }
 

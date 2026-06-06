@@ -97,6 +97,8 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
 export type { SkillToolProgress as Progress } from '../../types/tools.js'
 
 import type { SkillToolProgress as Progress } from '../../types/tools.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Conditional require for remote skill modules — static imports here would
 // pull in akiBackend.ts (via remoteSkillLoader → akiBackend), which has
@@ -168,7 +170,7 @@ async function executeForkedSkill(
         parentAgentId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     }),
     ...wasDiscoveredField,
-    ...(process.env.USER_TYPE === 'ant' && {
+    ...(isAnt() && {
       skill_name:
         commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       skill_source:
@@ -377,7 +379,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // skills are not in the local command registry.
     if (
       feature('EXPERIMENTAL_SKILL_SEARCH') &&
-      process.env.USER_TYPE === 'ant'
+      isAnt()
     ) {
       const slug = remoteSkillModules!.stripCanonicalPrefix(
         normalizedCommandName,
@@ -492,7 +494,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // The skill content itself is canonical/curated, not user-authored.
     if (
       feature('EXPERIMENTAL_SKILL_SEARCH') &&
-      process.env.USER_TYPE === 'ant'
+      isAnt()
     ) {
       const slug = remoteSkillModules!.stripCanonicalPrefix(commandName)
       if (slug !== null) {
@@ -605,7 +607,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // (no !command substitution, no $ARGUMENTS interpolation) is needed.
     if (
       feature('EXPERIMENTAL_SKILL_SEARCH') &&
-      process.env.USER_TYPE === 'ant'
+      isAnt()
     ) {
       const slug = remoteSkillModules!.stripCanonicalPrefix(commandName)
       if (slug !== null) {
@@ -692,7 +694,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
           parentAgentId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       }),
       ...wasDiscoveredField,
-      ...(process.env.USER_TYPE === 'ant' && {
+      ...(isAnt() && {
         skill_name:
           commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         ...(command?.type === 'prompt' && {
@@ -1049,7 +1051,7 @@ async function executeRemoteSkill(
     is_remote: true,
     remote_cache_hit: cacheHit,
     remote_load_latency_ms: latencyMs,
-    ...(process.env.USER_TYPE === 'ant' && {
+    ...(isAnt() && {
       skill_name:
         commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       remote_slug:

@@ -53,6 +53,8 @@ import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { getPlatform } from '../../utils/platform.js'
 import { PrBadge } from '../PrBadge.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Dead code elimination: conditional import for proactive mode
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -232,7 +234,7 @@ function ModeIndicator({
   const prStatus = usePrStatus(isLoading, isPrStatusEnabled())
   const hasTmuxSession = useAppState(
     s =>
-      ("external" as string) === 'ant' && s.tungstenActiveSession !== undefined,
+      isAnt() && s.tungstenActiveSession !== undefined,
   )
 
   const nextTickAt = useSyncExternalStore(
@@ -262,7 +264,7 @@ function ModeIndicator({
         Object.values(tasks),
         t =>
           isBackgroundTask(t) &&
-          !(("external" as string) === 'ant' && isPanelAgentTask(t)),
+          !(isAnt() && isPanelAgentTask(t)),
       ),
     [tasks],
   )
@@ -410,7 +412,7 @@ function ModeIndicator({
     // its click-target Box isn't nested inside the <Text wrap="truncate">
     // wrapper (reconciler throws on Box-in-Text).
     // Tmux pill (ant-only) — appears right after tasks in nav order
-    ...(("external" as string) === 'ant' && hasTmuxSession
+    ...(isAnt() && hasTmuxSession
       ? [<TungstenPill key="tmux" selected={tmuxSelected} />]
       : []),
     ...(isAgentSwarmsEnabled() && hasTeams
@@ -503,7 +505,7 @@ function ModeIndicator({
 
   // Add "↓ to manage tasks" hint when panel has visible rows
   const hasCoordinatorTasks =
-    ("external" as string) === 'ant' && getVisibleAgentTasks(tasks).length > 0
+    isAnt() && getVisibleAgentTasks(tasks).length > 0
 
   // Tasks pill renders as a Box sibling (not a parts entry) so its
   // click-target Box isn't nested inside <Text wrap="truncate"> — the

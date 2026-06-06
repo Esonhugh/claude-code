@@ -1,4 +1,6 @@
 import { registerBundledSkill } from '../bundledSkills.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // Verified 1-token words (tested via API token counting)
 // All common English words confirmed to tokenize as single tokens
@@ -232,7 +234,7 @@ function generateLoremIpsum(targetTokens: number): string {
 }
 
 export function registerLoremIpsumSkill(): void {
-  if (process.env.USER_TYPE !== 'ant') {
+  if (!isAnt()) {
     return
   }
 

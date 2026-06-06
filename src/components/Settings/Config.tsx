@@ -117,6 +117,8 @@ import {
   isFastModeSupportedByModel,
 } from '../../utils/fastMode.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 type Props = {
   onClose: (
@@ -480,7 +482,7 @@ export function Config({
         ]
       : []),
     // Speculation toggle (ant-only)
-    ...(("external" as string) === 'ant'
+    ...(isAnt()
       ? [
           {
             id: 'speculationEnabled',

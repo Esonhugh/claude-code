@@ -20,6 +20,8 @@ import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { sideQuery } from '../sideQuery.js'
 import { getAllSocketPaths, getSecureSocketPath } from './common.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const EXTENSION_DOWNLOAD_URL = 'https://claude.ai/chrome'
 const BUG_REPORT_URL =
@@ -50,7 +52,7 @@ function isPermissionMode(raw: string): raw is PermissionMode {
  */
 function getChromeBridgeUrl(): string | undefined {
   const bridgeEnabled =
-    process.env.USER_TYPE === 'ant' ||
+    isAnt() ||
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_copper_bridge', false)
 
   if (!bridgeEnabled) {
@@ -167,7 +169,7 @@ export function createChromeContext(
     // version — 0.3.0 sees an unknown field (allowed in spread), 0.4.0 sees a
     // structurally-matching one. Once 0.4.0 is published, this can switch to
     // the package's exported types and the dep can be bumped.
-    ...(process.env.USER_TYPE === 'ant' && {
+    ...(isAnt() && {
       callAnthropicMessages: async (req: {
         model: string
         max_tokens: number

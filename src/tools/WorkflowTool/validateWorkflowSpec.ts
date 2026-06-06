@@ -43,6 +43,12 @@ function assertPositiveInteger(value: number, label: string): void {
   }
 }
 
+function assertNonNegativeInteger(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`)
+  }
+}
+
 function normalizeDefaults(defaults: WorkflowDefaults | undefined): WorkflowDryRunPlan['defaults'] {
   const normalized = {
     ...DEFAULTS,
@@ -218,10 +224,14 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
     const review = phase.review ?? defaults.review
     const permissionMode = phase.permissionMode ?? defaults.permissionMode
 
-    assertPositiveInteger(fanout, `Workflow phase ${id} fanout`)
+    if (spec.scriptResult !== undefined) {
+      assertNonNegativeInteger(fanout, `Workflow phase ${id} fanout`)
+    } else {
+      assertPositiveInteger(fanout, `Workflow phase ${id} fanout`)
+    }
     assertPositiveInteger(concurrency, `Workflow phase ${id} concurrency`)
 
-    if (concurrency > fanout) {
+    if (fanout > 0 && concurrency > fanout) {
       throw new Error(`Workflow phase ${id} concurrency must be less than or equal to fanout`)
     }
 
@@ -269,5 +279,7 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
     runtime: spec.runtime,
     sourcePath: spec.sourcePath,
     runScriptSnapshot: spec.runScriptSnapshot,
+    meta: spec.meta,
+    scriptResult: spec.scriptResult,
   }
 }

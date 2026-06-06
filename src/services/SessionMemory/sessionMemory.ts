@@ -72,6 +72,8 @@ import {
   getDynamicConfig_CACHED_MAY_BE_STALE,
   getFeatureValue_CACHED_MAY_BE_STALE,
 } from '../analytics/growthbook.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Check if session memory feature is enabled.
@@ -283,7 +285,7 @@ const extractSessionMemory = sequential(async function (
   // Check gate lazily when hook runs (cached, non-blocking)
   if (!isSessionMemoryGateEnabled()) {
     // Log gate failure once per session (ant-only)
-    if (process.env.USER_TYPE === 'ant' && !hasLoggedGateFailure) {
+    if (isAnt() && !hasLoggedGateFailure) {
       hasLoggedGateFailure = true
       logEvent('tengu_session_memory_gate_disabled', {})
     }
@@ -360,7 +362,7 @@ export function initSessionMemory(): void {
   const autoCompactEnabled = isAutoCompactEnabled()
 
   // Log initialization state (ant-only to avoid noise in external logs)
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     logEvent('tengu_session_memory_init', {
       auto_compact_enabled: autoCompactEnabled,
     })

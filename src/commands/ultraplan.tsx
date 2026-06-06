@@ -28,6 +28,8 @@ import {
   pollForApprovedExitPlanMode,
   UltraplanPollError,
 } from '../utils/ultraplan/ccrSession.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 // TODO(prod-hardening): OAuth token may go stale over the 30min poll;
 // consider refresh.
@@ -67,13 +69,11 @@ const DEFAULT_INSTRUCTIONS: string = (
 ).trimEnd()
 
 // Dev-only prompt override resolved eagerly at module load.
-// Gated to ant builds (USER_TYPE is a build-time define,
-// so the override path is DCE'd from external builds).
-// Shell-set env only, so top-level process.env read is fine
+// Gated to ant users. Shell-set env only, so top-level process.env read is fine
 // — settings.env never injects this.
 /* eslint-disable custom-rules/no-process-env-top-level, custom-rules/no-sync-fs -- ant-only dev override; eager top-level read is the point (crash at startup, not silently inside the slash-command try/catch) */
 const ULTRAPLAN_INSTRUCTIONS: string =
-  ("external" as string) === 'ant' && process.env.ULTRAPLAN_PROMPT_FILE
+  isAnt() && process.env.ULTRAPLAN_PROMPT_FILE
     ? readFileSync(process.env.ULTRAPLAN_PROMPT_FILE, 'utf8').trimEnd()
     : DEFAULT_INSTRUCTIONS
 /* eslint-enable custom-rules/no-process-env-top-level, custom-rules/no-sync-fs */
@@ -523,6 +523,6 @@ export default {
   name: 'ultraplan',
   description: `~10–30 min · Claude Code on the web drafts an advanced plan you can edit and approve. See ${CCR_TERMS_URL}`,
   argumentHint: '<prompt>',
-  isEnabled: () => ("external" as string) === 'ant',
+  isEnabled: () => isAnt(),
   load: () => Promise.resolve({ call }),
 } satisfies Command

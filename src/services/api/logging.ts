@@ -38,6 +38,8 @@ import { sanitizeToolNameForAnalytics } from '../analytics/metadata.js'
 import { EMPTY_USAGE } from './emptyUsage.js'
 import { classifyAPIError } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export type { NonNullableUsage }
 export { EMPTY_USAGE }
@@ -747,7 +749,7 @@ export function logAPISuccessAndDuration({
         .join('\n') || undefined
 
     // Thinking output - Ant-only (build-time gated)
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAnt()) {
       thinkingOutput =
         newMessages
           .flatMap(m =>

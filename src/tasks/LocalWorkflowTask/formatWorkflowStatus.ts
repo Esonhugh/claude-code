@@ -66,6 +66,8 @@ export function formatWorkflowStatus(
 
   lines.push(
     `User input: ${formatWorkflowArgs(task.runArgs)}`,
+    `Progress version: ${task.progressVersion ?? 0}`,
+    ...(task.defaultModel ? [`Default model: ${task.defaultModel}`] : []),
     `Agents: ${completed}/${total}`,
     `Progress: [${progressBar(completed, total)}] ${completed}/${total} (${progressPercent(completed, total)}%)`,
     `Retries: ${retryCount(task)}`,

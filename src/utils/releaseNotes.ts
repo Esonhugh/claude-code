@@ -9,6 +9,8 @@ import { toError } from './errors.js'
 import { logError } from './log.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import { gt } from './semver.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const MAX_RELEASE_NOTES_SHOWN = 5
 
@@ -289,7 +291,7 @@ export async function checkForReleaseNotes(
   currentVersion: string = MACRO.VERSION,
 ): Promise<{ hasReleaseNotes: boolean; releaseNotes: string[] }> {
   // For Ant builds, use VERSION_CHANGELOG bundled at build time
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const changelog = MACRO.VERSION_CHANGELOG
     if (changelog) {
       const commits = changelog.trim().split('\n').filter(Boolean)
@@ -337,7 +339,7 @@ export function checkForReleaseNotesSync(
   currentVersion: string = MACRO.VERSION,
 ): { hasReleaseNotes: boolean; releaseNotes: string[] } {
   // For Ant builds, use VERSION_CHANGELOG bundled at build time
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const changelog = MACRO.VERSION_CHANGELOG
     if (changelog) {
       const commits = changelog.trim().split('\n').filter(Boolean)

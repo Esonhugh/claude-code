@@ -1,6 +1,8 @@
 import { getBridgeDebugHandle } from '../bridge/bridgeDebug.js'
 import type { Command } from '../commands.js'
 import type { LocalCommandCall } from '../types/command.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 /**
  * Ant-only: inject bridge failure states to manually test recovery paths.
@@ -54,7 +56,7 @@ const call: LocalCommandCall = async args => {
     return {
       type: 'text',
       value:
-        'No bridge debug handle registered. Remote Control must be connected (USER_TYPE=ant).',
+        'No bridge debug handle registered. Remote Control must be connected.',
     }
   }
 
@@ -192,7 +194,7 @@ const bridgeKick = {
   type: 'local',
   name: 'bridge-kick',
   description: 'Inject bridge failure states for manual recovery testing',
-  isEnabled: () => process.env.USER_TYPE === 'ant',
+  isEnabled: () => isAnt(),
   supportsNonInteractive: false,
   load: () => Promise.resolve({ call }),
 } satisfies Command

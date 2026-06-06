@@ -23,6 +23,8 @@ import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
 import { TodoWriteTool } from '../TodoWriteTool/TodoWriteTool.js'
 import { BASH_TOOL_NAME } from './toolName.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 export function getDefaultTimeoutMs(): number {
   return getDefaultBashTimeoutMs()
@@ -46,14 +48,14 @@ function getCommitAndPRInstructions(): string {
   // your cover" instructions are the last line of defense against the model
   // volunteering an internal codename in a commit message.
   const undercoverSection =
-    process.env.USER_TYPE === 'ant' && isUndercover()
+    isAnt() && isUndercover()
       ? getUndercoverInstructions() + '\n'
       : ''
 
   if (!shouldIncludeGitInstructions()) return undercoverSection
 
   // For ant users, use the short version pointing to skills
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const skillsSection = !isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)
       ? `For git commits and pull requests, use the \`/commit\` and \`/commit-push-pr\` skills:
 - \`/commit\` - Create a git commit with staged changes

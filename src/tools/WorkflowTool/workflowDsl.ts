@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import { createWorkflowOrchestrator } from './workflowOrchestrator.js'
+import { createWorkflowRuntimeGlobals } from './workflowRuntimeGlobals.js'
+import { parseWorkflowScript } from './workflowScriptParser.js'
 import type { WorkflowArgs, WorkflowPhaseSpec, WorkflowSpec } from './workflowSpec.js'
 
 type WorkflowScriptContext = {
@@ -84,6 +86,55 @@ async function runOrchestrationExport(
   return orchestrator.toSpec()
 }
 
+async function loadOfficialWorkflowScriptSpec({
+  filePath,
+  source,
+  args,
+}: {
+  filePath: string
+  source: string
+  args?: WorkflowArgs
+}): Promise<WorkflowSpec> {
+  const parsed = parseWorkflowScript(source)
+  const globals = createWorkflowRuntimeGlobals({
+    args,
+    workflowRunId: 'dry-run',
+    log: () => undefined,
+  })
+  const sandbox = vm.createContext({
+    args,
+    agent: globals.agent,
+    pipeline: globals.pipeline,
+    parallel: globals.parallel,
+    phase: globals.phase,
+    log: globals.log,
+    workflow: globals.workflow,
+    budget: globals.budget,
+    Date: globals.Date,
+    Math: globals.Math,
+    URL,
+  })
+  const script = new vm.Script(`(async () => {\n${parsed.scriptBody}\n})()`, {
+    filename: filePath,
+  })
+  const scriptResult = await script.runInContext(sandbox, { timeout: 1000 })
+  return structuredClone({
+    ...globals.toWorkflowSpec({
+      name: parsed.meta.name,
+      description: parsed.meta.description,
+    }),
+    meta: parsed.meta,
+    runtime: {
+      kind: 'javascript-worker' as const,
+      sourcePath: filePath,
+      isolated: true,
+    },
+    sourcePath: filePath,
+    runScriptSnapshot: source,
+    scriptResult,
+  })
+}
+
 export async function loadWorkflowScriptSpec(
   filePath: string,
   args?: WorkflowArgs,
@@ -119,6 +170,9 @@ export async function loadWorkflowScriptSpec(
     Math: createWorkflowMath(),
   })
   const source = await readFile(filePath, 'utf8')
+  if (/^\s*export\s+const\s+meta\s*=/.test(source)) {
+    return loadOfficialWorkflowScriptSpec({ filePath, source, args: parsedArgs })
+  }
   const script = new vm.Script(transformModuleSyntax(source), {
     filename: filePath,
   })

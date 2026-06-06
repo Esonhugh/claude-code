@@ -61,6 +61,8 @@ import { jsonStringify } from './slowOperations.js'
 import { buildEffectiveSystemPrompt } from './systemPrompt.js'
 import type { Theme } from './theme.js'
 import { getCurrentUsage } from './tokens.js'
+import { isAnt } from 'src/utils/userType.js'
+
 
 const RESERVED_CATEGORY_NAME = 'Autocompact buffer'
 const MANUAL_COMPACT_BUFFER_NAME = 'Compact buffer'
@@ -414,7 +416,7 @@ async function countBuiltInToolTokens(
   // split of the bulk count based on rough schema size estimation). Excludes
   // SkillTool since its tokens are shown in the separate Skills category.
   let systemToolDetails: SystemToolDetail[] = []
-  if (process.env.USER_TYPE === 'ant') {
+  if (isAnt()) {
     const toolsForBreakdown = alwaysLoadedTools.filter(
       t => !toolMatchesName(t, SKILL_TOOL_NAME),
     )
@@ -1030,7 +1032,7 @@ export async function analyzeContextUsage(
   if (systemToolsTokens > 0) {
     cats.push({
       name:
-        process.env.USER_TYPE === 'ant'
+        isAnt()
           ? '[ANT-ONLY] System tools'
           : 'System tools',
       tokens: systemToolsTokens,
@@ -1359,11 +1361,11 @@ export async function analyzeContextUsage(
     memoryFiles: memoryFileDetails,
     mcpTools: mcpToolDetails,
     deferredBuiltinTools:
-      process.env.USER_TYPE === 'ant' ? deferredBuiltinDetails : undefined,
+      isAnt() ? deferredBuiltinDetails : undefined,
     systemTools:
-      process.env.USER_TYPE === 'ant' ? systemToolDetails : undefined,
+      isAnt() ? systemToolDetails : undefined,
     systemPromptSections:
-      process.env.USER_TYPE === 'ant' ? systemPromptSections : undefined,
+      isAnt() ? systemPromptSections : undefined,
     agents: agentDetails,
     slashCommands:
       slashCommandTokens > 0

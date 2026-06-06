@@ -266,53 +266,55 @@ const BUNDLED_WORKFLOWS: WorkflowSpec[] = [
   {
     name: 'deep-research',
     description:
-      'Deep research workflow with scoped search angles, source extraction, adversarial claim verification, and cited synthesis.',
+      'Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.',
     defaults: {
       maxConcurrency: 6,
-      maxAgents: 18,
+      maxAgents: 40,
       maxRetries: 1,
       permissionMode: 'plan',
     },
     phases: [
       {
         id: 'scope',
-        description: 'Decompose the research question into complementary angles.',
+        description: 'Decompose question (from args) into 5 search angles.',
         prompt:
-          'Decompose the research question from workflow args into complementary search angles. Define success criteria, likely source types, and claims that need verification.',
+          'Decompose this research question into complementary search angles. Generate 5 distinct web search queries that together cover the question from different angles. Pick angles that suit the question domain, such as broad/primary, academic/technical, recent news, contrarian/skeptical, and practitioner/implementation. Make queries specific enough to surface high-signal results. Avoid redundancy. Return the question verbatim or lightly normalized, a 1-2 sentence decomposition strategy, and the angles. Structured output only.',
       },
       {
         id: 'search',
-        description: 'Search independently from multiple angles.',
+        description: '5 parallel WebSearch agents, one per angle.',
         prompt:
-          'Research one scoped angle using available tools. Return source URLs or local references, extracted facts, and uncertainty. Prefer primary sources.',
+          'Use WebSearch for one scoped angle and return the top 4-6 most relevant results. Rank by relevance to the original question, not just the search query. Skip obvious SEO spam and content farms. Include URL, title, snippet, and relevance high/medium/low with a short snippet capturing why each result is relevant. Structured output only.',
         dependsOn: ['scope'],
-        fanout: 4,
-        concurrency: 4,
+        fanout: 5,
+        concurrency: 5,
       },
       {
-        id: 'dedupe-extract',
-        description: 'Deduplicate sources and extract candidate claims.',
+        id: 'fetch',
+        description: 'URL-dedup, fetch top 15 sources, extract falsifiable claims.',
         prompt:
-          'Deduplicate overlapping sources from the search phase. Extract atomic candidate claims with source support and note conflicts.',
+          'URL-deduplicate search results by normalized host and path, keep a running top-15 fetch budget, prefer high relevance, then use WebFetch to retrieve each novel source. Assess source quality as primary, secondary, blog, forum, or unreliable. Extract 2-5 falsifiable claims per source that bear on the research question, each with a direct quote and importance central/supporting/tangential. If the fetch fails or the page is irrelevant or paywalled, return claims: [] and sourceQuality: "unreliable". Structured output only.',
         dependsOn: ['search'],
+        fanout: 15,
+        concurrency: 6,
         review: 'cross-check',
       },
       {
-        id: 'verify-claims',
-        description: 'Adversarially verify or refute candidate claims.',
+        id: 'verify',
+        description: '3-vote adversarial verification per claim (need 2/3 refutes to kill).',
         prompt:
-          'Verify candidate claims against cited evidence. Refute weak claims, flag unsupported statements, and keep only claims with adequate support.',
-        dependsOn: ['dedupe-extract'],
+          'Run 3-vote adversarial verification over the top 25 candidate claims. Be skeptical and try to refute each claim. Check whether the quote supports it, whether credible sources contradict or qualify it, whether the source quality is sufficient, whether it is outdated, and whether it is marketing fluff, press release cherry-picking, or forum speculation. Treat skipped or failed votes as abstentions. A claim survives only with at least 2 valid votes and fewer than 2 refutations. Default to refuted=true if uncertain. Evidence must be specific.',
+        dependsOn: ['fetch'],
         fanout: 3,
         concurrency: 3,
         review: 'adversarial',
       },
       {
-        id: 'synthesis',
-        description: 'Write the final cited research report.',
+        id: 'synthesize',
+        description: 'Merge semantic dupes, rank by confidence, cite sources.',
         prompt:
-          'Write a concise research report using only verified claims. Include citations/source references, disputed claims, and confidence notes.',
-        dependsOn: ['verify-claims'],
+          'Synthesize a cited research report from claims that survived 3-vote adversarial verification. Merge semantic duplicates and combine sources. Group related claims into findings that directly address the research question. Assign confidence: high for multiple primary sources or unanimous votes, medium for secondary sources or split votes, low for single-source or blog-quality evidence. Write a 3-5 sentence executive summary, list caveats and time-sensitivity, include 2-4 open questions, and include refuted claims for transparency. If the Synthesis step was skipped or failed, salvage verified claims raw rather than discarding the run.',
+        dependsOn: ['verify'],
         review: 'synthesis',
       },
     ],

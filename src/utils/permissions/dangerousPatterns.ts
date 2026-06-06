@@ -1,3 +1,4 @@
+import { isAnt } from 'src/utils/userType.js'
 /**
  * Pattern lists for dangerous shell-tool allow-rule prefixes.
  *
@@ -55,7 +56,7 @@ export const DANGEROUS_BASH_PATTERNS: readonly string[] = [
   // These stay ant-only — external users don't have coo, and the rest are
   // an empirical-risk call grounded in ant sandbox data, not a universal
   // "this tool is unsafe" judgment. PS may want these once it has usage data.
-  ...(process.env.USER_TYPE === 'ant'
+  ...(isAnt()
     ? [
         'fa run',
         // Cluster code launcher — arbitrary code on the cluster
