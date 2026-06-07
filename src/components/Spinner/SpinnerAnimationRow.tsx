@@ -327,7 +327,9 @@ export function SpinnerAnimationRow({
     <Box
       ref={viewportRef}
       flexDirection="row"
-      flexWrap="wrap"
+      flexWrap="nowrap"
+      height={1}
+      overflow="hidden"
       marginTop={1}
       width="100%"
     >

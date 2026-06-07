@@ -38,6 +38,7 @@ const tests = [
   'src/tools/WorkflowTool/WorkflowPermissionRequest.test.ts',
   'src/tools/WorkflowTool/WorkflowTool.test.ts',
   'src/tools/WorkflowTool/WorkflowFacadeTool.test.ts',
+  'src/tools/WorkflowTool/workflowSkillActivity.test.ts',
   'src/utils/ultracodeOrchestration.test.ts',
   'src/utils/processUserInput/processUserInput.test.ts',
   'src/commands/workflows/workflows.test.ts',
@@ -45,6 +46,7 @@ const tests = [
   'src/commands/workflows/workflowsPageModel.test.ts',
   'src/tasks/LocalWorkflowTask/LocalWorkflowTask.test.ts',
   'src/components/tasks/workflowDetailSnapshot.test.ts',
+  'src/components/CoordinatorAgentStatus.test.ts',
 ]
 
 for (const test of tests) {

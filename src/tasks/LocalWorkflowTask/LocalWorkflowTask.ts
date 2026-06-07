@@ -11,6 +11,7 @@ import type {
 import type { WorkflowScriptMeta } from '../../tools/WorkflowTool/workflowScriptParser.js'
 
 const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
+const MAX_RECENT_ACTIVITIES = 5
 export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'workflow-agent-user-retry'
 
 function generateWorkflowTaskId(): string {
@@ -83,6 +84,7 @@ export type WorkflowLiveAgentState = {
   toolUseCount: number
   prompt?: string
   activity?: string
+  recentActivities?: string[]
 }
 
 export type WorkflowAgentControllerState = {
@@ -435,10 +437,29 @@ export function recordWorkflowAgentProgress({
           toolUseCount: (current?.toolUseCount ?? 0) + toolUseCount,
           ...(prompt ?? current?.prompt ? { prompt: prompt ?? current?.prompt } : {}),
           ...(activity ?? current?.activity ? { activity: activity ?? current?.activity } : {}),
+          ...(activity
+            ? { recentActivities: [...(current?.recentActivities ?? []), activity].slice(-MAX_RECENT_ACTIVITIES) }
+            : current?.recentActivities ? { recentActivities: current.recentActivities } : {}),
         },
       },
     })
   })
+}
+
+function resultWithProgressMetrics(
+  task: LocalWorkflowTaskState,
+  activeAgentId: string | undefined,
+  result: WorkflowAgentResult,
+): WorkflowAgentResult {
+  const liveProgress = task.liveAgents?.[result.agentId] ?? (
+    activeAgentId ? task.liveAgents?.[activeAgentId] : undefined
+  )
+  if (!liveProgress) return result
+  return {
+    ...result,
+    tokenCount: result.tokenCount ?? liveProgress.tokenCount,
+    toolUseCount: result.toolUseCount ?? liveProgress.toolUseCount,
+  }
 }
 
 export function completeWorkflowAgent({
@@ -453,7 +474,8 @@ export function completeWorkflowAgent({
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
     const activeAgentId = task.currentAgentId
-    const nextTask = updatePhase(task, result.phaseId, phase => {
+    const completedResult = resultWithProgressMetrics(task, activeAgentId, result)
+    const nextTask = updatePhase(task, completedResult.phaseId, phase => {
       const priorResultsForIndex = phase.results.filter(
         phaseResult => phaseResult.index === result.index,
       )
@@ -466,21 +488,21 @@ export function completeWorkflowAgent({
           phase.completedAgentIds.filter(
             agentId => !priorAgentIdsForIndex.includes(agentId),
           ),
-          result.agentId,
+          completedResult.agentId,
         ),
         failedAgentIds: phase.failedAgentIds.filter(agentId => {
           if (priorAgentIdsForIndex.includes(agentId)) return false
           if (activeAgentId && agentId === activeAgentId) return false
           if (activeAgentId && agentId.startsWith(`${activeAgentId}-retry-`)) return false
           if (activeAgentId && activeAgentId.startsWith(`${agentId}-retry-`)) return false
-          if (agentId.startsWith(`${result.agentId}-retry-`)) return false
-          if (result.agentId.startsWith(`${agentId}-retry-`)) return false
-          return !agentId.includes(`-${result.index + 1}-`)
+          if (agentId.startsWith(`${completedResult.agentId}-retry-`)) return false
+          if (completedResult.agentId.startsWith(`${agentId}-retry-`)) return false
+          return !agentId.includes(`-${completedResult.index + 1}-`)
         }),
         skippedAgentIds: phase.skippedAgentIds.filter(
           agentId => !priorAgentIdsForIndex.includes(agentId),
         ),
-        results: [...removePhaseResultsForIndex(phase.results, result.index), result],
+        results: [...removePhaseResultsForIndex(phase.results, completedResult.index), completedResult],
         error: undefined,
       }
       return {
@@ -488,8 +510,14 @@ export function completeWorkflowAgent({
         status: phaseCompleted(nextPhase) ? 'completed' : nextPhase.status,
       }
     })
-    const { [result.agentId]: _completedLiveAgent, ...liveAgents } = nextTask.liveAgents ?? {}
-    const { [result.agentId]: _completedController, ...agentControllers } = nextTask.agentControllers ?? {}
+    const liveAgentKeysToRemove = new Set([completedResult.agentId])
+    if (activeAgentId) liveAgentKeysToRemove.add(activeAgentId)
+    const liveAgents = Object.fromEntries(
+      Object.entries(nextTask.liveAgents ?? {}).filter(([agentId]) => !liveAgentKeysToRemove.has(agentId)),
+    )
+    const agentControllers = Object.fromEntries(
+      Object.entries(nextTask.agentControllers ?? {}).filter(([agentId]) => !liveAgentKeysToRemove.has(agentId)),
+    )
     return {
       ...nextTask,
       agentControllers,
@@ -497,14 +525,14 @@ export function completeWorkflowAgent({
       results: [
         ...removeTaskResultsForPhaseIndex(
           nextTask.results,
-          result.phaseId,
-          result.index,
+          completedResult.phaseId,
+          completedResult.index,
         ),
-        result,
+        completedResult,
       ],
-      summary: `Completed ${result.phaseId} agent ${result.index + 1}`,
-      tokenCount: (nextTask.tokenCount ?? 0) + (result.tokenCount ?? 0),
-      toolUseCount: (nextTask.toolUseCount ?? 0) + (result.toolUseCount ?? 0),
+      summary: `Completed ${completedResult.phaseId} agent ${completedResult.index + 1}`,
+      tokenCount: (nextTask.tokenCount ?? 0) + (completedResult.tokenCount ?? 0),
+      toolUseCount: (nextTask.toolUseCount ?? 0) + (completedResult.toolUseCount ?? 0),
       error: undefined,
     }
   })

@@ -5,6 +5,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import { WorkflowTool } from '../../tools/WorkflowTool/WorkflowTool.js'
 import type { AgentId } from '../../types/ids.js'
 import {
+  completeWorkflowAgent,
   killWorkflowTask,
   pauseWorkflowTask,
   recordWorkflowAgentController,
@@ -84,6 +85,28 @@ const fakeAgentTool = {
       name: input.name,
       team_name: input.team_name,
     })
+    onProgress?.({
+      toolUseID: 'agent_msg_skill',
+      data: {
+        type: 'agent_progress',
+        prompt: input.prompt,
+        message: {
+          type: 'user',
+          uuid: 'user_msg_skill',
+          timestamp: new Date().toISOString(),
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '<command-message>superpowers:using-superpowers</command-message>\n<skill-format>true</skill-format>' }],
+          },
+        },
+      },
+    })
+    if (launchedAgents.length === 1) {
+      const task = Object.values(state.tasks).find(
+        (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+      )
+      assert.deepEqual(task?.liveAgents?.['runtime-test-workflow-research-1']?.recentActivities, ['Skill(superpowers:using-superpowers)'])
+    }
     for (const toolIndex of [1, 2]) {
       onProgress?.({
         toolUseID: `agent_msg_test_${toolIndex}`,
@@ -168,7 +191,8 @@ const context = {
     'Runtime Test Workflow: synthesis',
   ])
   assert.deepEqual(launchedAgents.map(agent => agent.mode), ['plan', 'plan', 'plan'])
-  assert.match(launchedAgents[0]!.prompt, /Workflow user input:\ntarget: runtime/)
+  assert.equal(launchedAgents[0]!.prompt, 'Research the target.')
+  assert.doesNotMatch(launchedAgents[0]!.prompt, /Workflow user input/)
   assert.match(launchedAgents[2]!.prompt, /Upstream phase outputs/)
   assert.match(launchedAgents[2]!.prompt, /done Runtime Test Workflow: research 1\/2/)
 
@@ -235,6 +259,7 @@ const context = {
     agentId: 'agent-1',
     tokenCount: 12,
     toolUseCount: 1,
+    activity: 'Skill(superpowers:using-superpowers)',
     setAppState,
   })
   recordWorkflowAgentProgress({
@@ -242,11 +267,75 @@ const context = {
     agentId: 'agent-1',
     tokenCount: 18,
     toolUseCount: 1,
+    activity: 'Bash(sleep 20)',
     setAppState,
   })
   let progressRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
-  assert.deepEqual(progressRunningTask.liveAgents?.['agent-1'], { tokenCount: 18, toolUseCount: 2 })
+  assert.deepEqual(progressRunningTask.liveAgents?.['agent-1'], {
+    tokenCount: 18,
+    toolUseCount: 2,
+    activity: 'Bash(sleep 20)',
+    recentActivities: ['Skill(superpowers:using-superpowers)', 'Bash(sleep 20)'],
+  })
+  for (let index = 0; index < 6; index += 1) {
+    recordWorkflowAgentProgress({
+      taskId: 'w-running',
+      agentId: 'agent-1',
+      tokenCount: 18 + index,
+      toolUseCount: 1,
+      activity: `Activity ${index}`,
+      setAppState,
+    })
+  }
+  progressRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
+  assert.deepEqual(progressRunningTask.liveAgents?.['agent-1']?.recentActivities, [
+    'Activity 1',
+    'Activity 2',
+    'Activity 3',
+    'Activity 4',
+    'Activity 5',
+  ])
   assert.ok((progressRunningTask.progressVersion ?? 0) > (runningTask.progressVersion ?? 0))
+
+  const completionMetricsTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-complete-metrics',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['agent-1'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    liveAgents: {
+      'agent-1': { tokenCount: 12, toolUseCount: 1 },
+    },
+    results: [],
+    tokenCount: 0,
+    toolUseCount: 0,
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [completionMetricsTask.id]: completionMetricsTask } }))
+  completeWorkflowAgent({
+    taskId: completionMetricsTask.id,
+    result: {
+      phaseId: 'phase',
+      agentId: 'agent-1',
+      index: 0,
+      status: 'completed',
+      output: 'done',
+    },
+    setAppState,
+  })
+
+  const completedProgressTask = state.tasks[completionMetricsTask.id] as LocalWorkflowTaskState
+  assert.equal(completedProgressTask.results[0]?.tokenCount, 12)
+  assert.equal(completedProgressTask.results[0]?.toolUseCount, 1)
+  assert.equal(completedProgressTask.tokenCount, 12)
+  assert.equal(completedProgressTask.toolUseCount, 1)
 
   pauseWorkflowTask('w-running', setAppState)
   let pausedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
@@ -282,6 +371,44 @@ const context = {
   if (skipEvent?.type === 'workflow_agent') {
     assert.equal(skipEvent.status, 'skipped')
   }
+
+  const mismatchTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-mismatch',
+    currentAgentId: 'workflow-label',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['workflow-label'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    liveAgents: {
+      'workflow-label': { tokenCount: 1, toolUseCount: 1, activity: 'Read(file)' },
+    },
+    agentControllers: {
+      'workflow-label': { abortController: new AbortController() },
+    },
+    results: [],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [mismatchTask.id]: mismatchTask } }))
+  completeWorkflowAgent({
+    taskId: mismatchTask.id,
+    result: {
+      phaseId: 'phase',
+      agentId: 'returned-agent-id',
+      index: 0,
+      status: 'completed',
+    },
+    setAppState,
+  })
+  const completedMismatchTask = state.tasks[mismatchTask.id] as LocalWorkflowTaskState
+  assert.equal(completedMismatchTask.liveAgents?.['workflow-label'], undefined)
+  assert.equal(completedMismatchTask.agentControllers?.['workflow-label'], undefined)
 
   retryWorkflowAgent('w-running', 'agent-1', setAppState)
   updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState

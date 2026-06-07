@@ -1390,7 +1390,7 @@ assert.deepEqual(officialSession.meta, {
   phases: [{ title: 'Scan', detail: 'Scan topic' }],
 })
 assert.deepEqual(officialSession.resumeCacheEntries, [])
-assert.deepEqual(launchedPrompts, ['scan meta\n\nWorkflow user input:\n{\n  "topic": "meta"\n}'])
+assert.deepEqual(launchedPrompts, ['scan meta'])
 ```
 
 - [ ] **Step 2: Run facade tests and verify failure**

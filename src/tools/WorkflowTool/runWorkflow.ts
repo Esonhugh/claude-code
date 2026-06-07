@@ -1,6 +1,7 @@
-import type { AssistantMessage } from '../../types/message.js'
+import type { AssistantMessage, NormalizedUserMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js'
 import { getCwd } from '../../utils/cwd.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import {
@@ -8,7 +9,6 @@ import {
   completeWorkflowTask,
   failWorkflowAgent,
   failWorkflowTask,
-  WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
   recordWorkflowAgentController,
   recordWorkflowAgentProgress,
   recordWorkflowAgentStarted,
@@ -36,6 +36,7 @@ import {
   failWorkflowRunSession,
   loadWorkflowRunSession,
   startWorkflowRunSession,
+  updateWorkflowRunSessionProgress,
   type WorkflowRunSession,
 } from './workflowRunSessions.js'
 import {
@@ -47,6 +48,8 @@ import {
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
+const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
+const COMMAND_MESSAGE_RE = new RegExp(`<${COMMAND_MESSAGE_TAG}>${TAG_CONTENT_ESCAPE}<\\/${COMMAND_MESSAGE_TAG}>`)
 
 type AgentToolInput = {
   description: string
@@ -81,7 +84,7 @@ type AgentProgressMetrics = {
   tokenCount: number
   toolUseCount: number
   prompt?: string
-  activity?: string
+  activities?: string[]
 }
 
 function compactToolInput(input: unknown): string {
@@ -93,11 +96,21 @@ function compactToolInput(input: unknown): string {
   return ''
 }
 
-function toolActivityFromAssistant(assistant: AssistantMessage): string | undefined {
-  const toolUse = assistant.message.content.findLast(block => block.type === 'tool_use')
-  if (!toolUse || toolUse.type !== 'tool_use') return undefined
-  const input = compactToolInput(toolUse.input)
-  return input ? `${toolUse.name}(${input})` : toolUse.name
+function toolActivitiesFromAssistant(assistant: AssistantMessage): string[] {
+  return assistant.message.content.flatMap(block => {
+    if (block.type !== 'tool_use') return []
+    const input = compactToolInput(block.input)
+    return input ? [`${block.name}(${input})`] : [block.name]
+  })
+}
+
+function commandActivityFromUser(user: NormalizedUserMessage): string | undefined {
+  const text = user.message.content
+    .map(block => block.type === 'text' ? block.text : '')
+    .join('\n')
+  const command = COMMAND_MESSAGE_RE.exec(text)?.[1]?.trim()
+  if (!command) return undefined
+  return text.includes('<skill-format>true</skill-format>') ? `Skill(${command})` : command
 }
 
 function agentProgressMetrics(progress: unknown): AgentProgressMetrics | undefined {
@@ -106,7 +119,23 @@ function agentProgressMetrics(progress: unknown): AgentProgressMetrics | undefin
   if (!data || typeof data !== 'object' || (data as { type?: unknown }).type !== 'agent_progress') return undefined
   const prompt = (data as { prompt?: unknown }).prompt
   const message = (data as { message?: unknown }).message
-  if (!message || typeof message !== 'object' || (message as { type?: unknown }).type !== 'assistant') {
+  if (!message || typeof message !== 'object') {
+    return typeof prompt === 'string' && prompt.trim() !== ''
+      ? { tokenCount: 0, toolUseCount: 0, prompt: prompt.trim() }
+      : undefined
+  }
+  if ((message as { type?: unknown }).type === 'user') {
+    const activity = commandActivityFromUser(message as NormalizedUserMessage)
+    return typeof prompt === 'string' && prompt.trim() !== '' || activity
+      ? {
+          tokenCount: 0,
+          toolUseCount: activity ? 1 : 0,
+          prompt: typeof prompt === 'string' && prompt.trim() !== '' ? prompt.trim() : undefined,
+          activities: activity ? [activity] : undefined,
+        }
+      : undefined
+  }
+  if ((message as { type?: unknown }).type !== 'assistant') {
     return typeof prompt === 'string' && prompt.trim() !== ''
       ? { tokenCount: 0, toolUseCount: 0, prompt: prompt.trim() }
       : undefined
@@ -122,7 +151,7 @@ function agentProgressMetrics(progress: unknown): AgentProgressMetrics | undefin
     tokenCount,
     toolUseCount,
     prompt: typeof prompt === 'string' && prompt.trim() !== '' ? prompt.trim() : undefined,
-    activity: toolActivityFromAssistant(assistant),
+    activities: toolActivitiesFromAssistant(assistant),
   }
 }
 
@@ -190,22 +219,12 @@ function formatUpstreamOutputs(
   return lines.join('\n')
 }
 
-function formatWorkflowArgs(args: WorkflowArgs | undefined): string {
-  if (args === undefined) return ''
-  if (typeof args === 'string') return args
-  return JSON.stringify(args, null, 2)
-}
-
 function buildAgentPrompt(
   phase: WorkflowDryRunPhase,
   resultsByPhase: Map<string, WorkflowAgentResult[]>,
-  runArgs: WorkflowArgs | undefined,
+  _runArgs: WorkflowArgs | undefined,
 ): string {
   const parts = [phase.prompt]
-  const formattedArgs = formatWorkflowArgs(runArgs).trim()
-  if (formattedArgs) {
-    parts.push(`Workflow user input:\n${formattedArgs}`)
-  }
   const upstream = formatUpstreamOutputs(phase, resultsByPhase)
   if (upstream) parts.push(upstream)
   return parts.join('\n\n')
@@ -332,15 +351,18 @@ async function runPhaseAgentAttempt({
   const result = await agentTool.call(input as never, agentContext, canUseTool, assistantMessage, progress => {
     const metrics = agentProgressMetrics(progress)
     if (!metrics) return
-    recordWorkflowAgentProgress({
-      taskId,
-      agentId: fallbackAgentId,
-      tokenCount: metrics.tokenCount,
-      toolUseCount: metrics.toolUseCount,
-      prompt: metrics.prompt,
-      activity: metrics.activity,
-      setAppState: context.setAppStateForTasks ?? context.setAppState,
-    })
+    const activities = metrics.activities?.length ? metrics.activities : [undefined]
+    for (const activity of activities) {
+      recordWorkflowAgentProgress({
+        taskId,
+        agentId: fallbackAgentId,
+        tokenCount: metrics.tokenCount,
+        toolUseCount: activity ? 1 : metrics.toolUseCount,
+        prompt: metrics.prompt,
+        activity,
+        setAppState: context.setAppStateForTasks ?? context.setAppState,
+      })
+    }
   })
   const output = result.data as AgentToolOutput
   const agentId = resultAgentId(output, fallbackAgentId)
@@ -610,6 +632,12 @@ export async function runWorkflowPlan({
             cacheHit: batchResult.cacheHit || undefined,
           }))
         }
+        runSession = await updateWorkflowRunSessionProgress({
+          cwd,
+          session: runSession,
+          results: [...resultsByPhase.values()].flat().concat(results),
+          resumeCacheEntries: resumeRuntime.entries,
+        })
       }
       resultsByPhase.set(phase.id, results)
       await emit(createWorkflowPhaseEvent({

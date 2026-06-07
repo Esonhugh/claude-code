@@ -636,8 +636,7 @@ function PromptInput({
   // pill must stay navigable whenever the panel has rows — not just when
   // something is running.
   const tasksFooterVisible =
-    (runningTaskCount > 0 ||
-      (isAnt() && coordinatorTaskCount > 0)) &&
+    (runningTaskCount > 0 || coordinatorTaskCount > 0) &&
     !shouldHideTasksFooter(tasks, showSpinnerTree)
   const teamsFooterVisible = cachedTeams.length > 0
 
@@ -683,7 +682,6 @@ function PromptInput({
 
   const tasksSelected = footerItemSelected === 'tasks'
   const tmuxSelected = footerItemSelected === 'tmux'
-  const bagelSelected = footerItemSelected === 'bagel'
   const teamsSelected = footerItemSelected === 'teams'
   const bridgeSelected = footerItemSelected === 'bridge'
 
@@ -2297,7 +2295,6 @@ function PromptInput({
         // ↑ scrolls within the coordinator task list before leaving the pill
         if (
           tasksSelected &&
-          isAnt() &&
           coordinatorTaskCount > 0 &&
           coordinatorTaskIndex > minCoordinatorIndex
         ) {
@@ -2310,7 +2307,6 @@ function PromptInput({
         // ↓ scrolls within the coordinator task list, never leaves the pill
         if (
           tasksSelected &&
-          isAnt() &&
           coordinatorTaskCount > 0
         ) {
           if (coordinatorTaskIndex < coordinatorTaskCount - 1) {
@@ -2365,10 +2361,13 @@ function PromptInput({
             } else if (coordinatorTaskIndex === 0 && coordinatorTaskCount > 0) {
               exitTeammateView(setAppState)
             } else {
-              const selectedTaskId =
-                getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]?.id
-              if (selectedTaskId) {
-                enterTeammateView(selectedTaskId, setAppState)
+              const selectedTask =
+                getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]
+              if (selectedTask?.type === 'local_agent') {
+                enterTeammateView(selectedTask.id, setAppState)
+              } else if (selectedTask?.type === 'local_workflow') {
+                setShowBashesDialog(selectedTask.id)
+                selectFooterItem(null)
               } else {
                 setShowBashesDialog(true)
                 selectFooterItem(null)
@@ -2408,6 +2407,11 @@ function PromptInput({
         if (tasksSelected && coordinatorTaskIndex >= 1) {
           const task = getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]
           if (!task) return false
+          if (task.type === 'local_workflow') {
+            setShowBashesDialog(task.id)
+            selectFooterItem(null)
+            return
+          }
           // When the selected row IS the viewed agent, 'x' types into the
           // steering input. Any other row — dismiss it.
           if (

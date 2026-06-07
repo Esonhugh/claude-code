@@ -203,7 +203,7 @@ const inlineRun = await WorkflowFacadeTool.call(
 assert.match(String(inlineRun.data), /Workflow launched in background\. Task ID: w/)
 assert.match(String(inlineRun.data), /Run ID: wf_/)
 assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*inline-research\.js", resumeFromRunId: "wf_[^"]+"}\)/)
-assert.deepEqual(launchedPrompts, ['inline topic=facade\n\nWorkflow user input:\n{\n  "topic": "facade"\n}'])
+assert.deepEqual(launchedPrompts, ['inline topic=facade'])
 const taskId = String(inlineRun.data).match(/Task ID: (\S+)/)?.[1]
 const workflowRunId = String(inlineRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(taskId)
@@ -250,7 +250,7 @@ const officialInlineTask = Object.values(state.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-inline',
 )!
 assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
-assert.deepEqual(launchedPrompts, ['scan meta\n\nWorkflow user input:\n{\n  "topic": "meta"\n}'])
+assert.deepEqual(launchedPrompts, ['scan meta'])
 
 launchedPrompts.length = 0
 const cachedRerun = await WorkflowFacadeTool.call(
@@ -301,7 +301,7 @@ const insertedStepRerun = await WorkflowFacadeTool.call(
   { message: { id: 'msg_facade_inserted_step_rerun' } } as never,
 )
 assert.match(String(insertedStepRerun.data), /Workflow launched in background\. Task ID: w/)
-assert.deepEqual(launchedPrompts, ['prep meta\n\nWorkflow user input:\n{\n  "topic": "meta"\n}'])
+assert.deepEqual(launchedPrompts, ['prep meta'])
 const insertedWorkflowRunId = String(insertedStepRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(insertedWorkflowRunId)
 const insertedSession = JSON.parse(
@@ -323,7 +323,7 @@ const rerun = await WorkflowFacadeTool.call(
 
 assert.match(String(rerun.data), /Workflow launched in background\. Task ID: w/)
 assert.match(String(rerun.data), /Workflow\({scriptPath: ".*inline-research\.js", resumeFromRunId: "wf_[^"]+"}\)/)
-assert.deepEqual(launchedPrompts, ['inline topic=rerun\n\nWorkflow user input:\n{\n  "topic": "rerun"\n}'])
+assert.deepEqual(launchedPrompts, ['inline topic=rerun'])
 const rerunWorkflowRunId = String(rerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(rerunWorkflowRunId)
 const rerunSession = JSON.parse(

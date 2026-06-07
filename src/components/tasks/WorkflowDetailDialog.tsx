@@ -43,7 +43,12 @@ function displayPhaseId(task: LocalWorkflowTaskState, phaseIndex: number): strin
 }
 
 function workflowAgentResult(task: LocalWorkflowTaskState, agentId: string): WorkflowAgentResult | undefined {
-  return task.results.find(item => item.agentId === agentId) ?? task.phases.flatMap(phase => phase.results).find(item => item.agentId === agentId)
+  const direct = task.results.find(item => item.agentId === agentId) ?? task.phases.flatMap(phase => phase.results).find(item => item.agentId === agentId)
+  if (direct) return direct
+  const phase = task.phases.find(phase => phase.agentIds.includes(agentId))
+  const index = phase?.agentIds.indexOf(agentId) ?? -1
+  if (!phase || index < 0) return undefined
+  return phase.results.find(item => item.index === index) ?? task.results.find(item => item.phaseId === phase.id && item.index === index)
 }
 
 function workflowAgentMetrics(task: LocalWorkflowTaskState, agentId: string): { tokenCount: number; toolUseCount: number } {
@@ -80,9 +85,12 @@ function agentPrompt(task: LocalWorkflowTaskState, selectedAgentId: string): str
   return task.liveAgents?.[selectedAgentId]?.prompt ?? task.meta?.phases?.[phaseIndex]?.detail ?? agentPhase(task, selectedAgentId)?.id ?? selectedAgentId
 }
 
-function agentActivity(task: LocalWorkflowTaskState, selectedAgentId: string): string {
-  if (task.status === 'pending') return task.liveAgents?.[selectedAgentId]?.activity ?? 'Bash(sleep 20)'
-  return task.liveAgents?.[selectedAgentId]?.activity ?? workflowAgentResult(task, selectedAgentId)?.output ?? 'Still running…'
+function agentActivities(task: LocalWorkflowTaskState, selectedAgentId: string): string[] {
+  const liveAgent = task.liveAgents?.[selectedAgentId]
+  if (liveAgent?.recentActivities?.length) return liveAgent.recentActivities
+  if (liveAgent?.activity) return [liveAgent.activity]
+  if (task.status === 'pending') return ['Bash(sleep 20)']
+  return [workflowAgentResult(task, selectedAgentId)?.output ?? 'Still running…']
 }
 
 function agentOutcome(task: LocalWorkflowTaskState, selectedAgentId: string): string {
@@ -183,7 +191,9 @@ function AgentDetailPanel({ workflow, selectedAgentId }: { workflow: LocalWorkfl
         <Text>{agentPrompt(workflow, selectedAgentId)}</Text>
         <Text> </Text>
         <Text color="suggestion">Activity</Text>
-        <Text>{agentActivity(workflow, selectedAgentId)}</Text>
+        {agentActivities(workflow, selectedAgentId).map((activity, index) => (
+          <Text key={`${index}:${activity}`}>{activity}</Text>
+        ))}
         <Text> </Text>
         <Text color="suggestion">Outcome</Text>
         <Text>{agentOutcome(workflow, selectedAgentId)}</Text>

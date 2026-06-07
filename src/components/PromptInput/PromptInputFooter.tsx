@@ -226,7 +226,7 @@ function PromptInputFooter({
           <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
         </Box>
       </Box>
-      {isAnt() && <CoordinatorTaskPanel />}
+      <CoordinatorTaskPanel onOpenTasksDialog={onOpenTasksDialog} />
     </>
   )
 }

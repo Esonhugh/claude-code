@@ -146,6 +146,27 @@ export async function updateWorkflowRunSessionStatus({
   return updated
 }
 
+export async function updateWorkflowRunSessionProgress({
+  cwd,
+  session,
+  results,
+  resumeCacheEntries = session.resumeCacheEntries,
+}: {
+  cwd: string
+  session: WorkflowRunSession
+  results: WorkflowAgentResult[]
+  resumeCacheEntries?: WorkflowResumeCacheEntry[]
+}): Promise<WorkflowRunSession> {
+  const updated = {
+    ...session,
+    updatedAt: Date.now(),
+    results,
+    resumeCacheEntries,
+  }
+  await writeWorkflowRunSession(cwd, updated)
+  return updated
+}
+
 export async function completeWorkflowRunSession({
   cwd,
   session,
