@@ -717,6 +717,10 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),
+      ultracodeKeywordTrigger: z
+        .boolean()
+        .optional()
+        .describe('Enable the "ultracode" keyword trigger. Default: true.'),
       advisorModel: z
         .string()
         .optional()

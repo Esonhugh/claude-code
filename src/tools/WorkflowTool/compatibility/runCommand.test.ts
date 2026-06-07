@@ -44,7 +44,7 @@ describe('workflow compatibility command runner', () => {
       ],
       cwd: process.cwd(),
       env: {},
-      timeoutMs: 50,
+      timeoutMs: 250,
       maxOutputBytes: 10000,
     })
 

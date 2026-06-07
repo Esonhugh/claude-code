@@ -71,6 +71,22 @@ await writeFile(
   phase('Scope')
   await agent('official run ' + args, { label: 'scope' })`,
 )
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'default-mode.js'),
+  `export default workflow({
+    name: 'Default Mode Workflow',
+    description: 'Run a workflow without explicit permission defaults.',
+    defaults: {
+      maxConcurrency: 1,
+      maxAgents: 1,
+    },
+    phases: [agent({
+      id: 'run',
+      description: 'Run with default mode.',
+      prompt: () => 'default permission mode',
+    })],
+  })`,
+)
 
 const context = { getCwd: () => tempRoot } as never
 
@@ -93,7 +109,7 @@ assert.match(runPermissionPreview.updatedInput?.script as string, /export const 
 assert.deepEqual(runPermissionPreview.updatedInput?.plan, {
   name: 'official-run',
   description: 'Official run permission preview.',
-  phases: [{ title: 'Scope', detail: 'Scope official args', prompt: "'official run '" }],
+  phases: [{ title: 'Scope', detail: 'Scope official args', prompt: "'official run ' + args", displayName: 'scope' }],
   runScriptSnapshot: `export const meta = {
     name: 'official-run',
     description: 'Official run permission preview.',
@@ -137,6 +153,7 @@ const setRunState = (updater: (prev: AppState) => AppState): void => {
   runState = updater(runState)
 }
 const launchedPrompts: string[] = []
+const launchedInputs: Array<{ prompt: string; mode?: string }> = []
 const runContext = {
   getCwd: () => tempRoot,
   getAppState: () => runState,
@@ -147,8 +164,9 @@ const runContext = {
       {
         name: 'Agent',
         aliases: ['Task'],
-        async call(input: { prompt: string }) {
+        async call(input: { prompt: string; mode?: string }) {
           launchedPrompts.push(input.prompt)
+          launchedInputs.push({ prompt: input.prompt, mode: input.mode })
           return {
             data: {
               status: 'completed' as const,
@@ -187,6 +205,7 @@ assert.match(String(runResult.data), /To resume after editing the script: Workfl
 assert.match(String(runResult.data), /Use \/workflows to watch live progress\./)
 assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
+assert.equal(launchedInputs[0]?.mode, 'plan')
 const jsTask = Object.values(runState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow',
 )!
@@ -226,6 +245,16 @@ assert.deepEqual(
   ['workflow_progress', 'workflow_log', 'workflow_phase', 'workflow_agent'],
 )
 assert.equal(runSession.results.length, 1)
+
+launchedInputs.length = 0
+const defaultModeRun = await WorkflowTool.call(
+  { action: 'run', selector: 'Default Mode Workflow' },
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_default_mode_run' } } as never,
+)
+assert.match(String(defaultModeRun.data), /Workflow launched in background\. Task ID: w/)
+assert.equal(launchedInputs[0]?.mode, 'acceptEdits')
 
 const pausableTaskId = 'w-pausable'
 const pausableRunId = 'wf_pausable'

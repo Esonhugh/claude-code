@@ -113,7 +113,7 @@ assert.match(savedPermissionPreview.updatedInput?.script as string, /export cons
 assert.deepEqual(savedPermissionPreview.updatedInput?.plan, {
   name: 'saved-preview',
   description: 'Saved workflow preview.',
-  phases: [{ title: 'Scope', detail: 'Scope saved args', prompt: "'saved preview '" }],
+  phases: [{ title: 'Scope', detail: 'Scope saved args', prompt: "'saved preview ' + args", displayName: 'scope' }],
   runScriptSnapshot: `export const meta = {
     name: 'saved-preview',
     description: 'Saved workflow preview.',
@@ -246,6 +246,10 @@ assert.deepEqual(officialSession.meta, {
   phases: [{ title: 'Scan', detail: 'Scan topic' }],
 })
 assert.equal(officialSession.resumeCacheEntries.length, 1)
+const officialInlineTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-inline',
+)!
+assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
 assert.deepEqual(launchedPrompts, ['scan meta\n\nWorkflow user input:\n{\n  "topic": "meta"\n}'])
 
 launchedPrompts.length = 0
@@ -269,6 +273,41 @@ const cachedSession = JSON.parse(
 )
 assert.equal(cachedSession.resumeFromRunId, officialWorkflowRunId)
 assert.equal(cachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
+
+await writeFile(
+  officialSession.scriptPath,
+  `export const meta = {
+    name: 'official-inline',
+    description: 'Official inline workflow',
+    phases: [
+      { title: 'Prep', detail: 'Prep topic' },
+      { title: 'Scan', detail: 'Scan topic' },
+    ],
+  }
+  phase('Prep')
+  await agent('prep ' + args.topic, { label: 'prep' })
+  phase('Scan')
+  await agent('scan ' + args.topic, { label: 'scan' })`,
+)
+launchedPrompts.length = 0
+const insertedStepRerun = await WorkflowFacadeTool.call(
+  {
+    scriptPath: officialSession.scriptPath,
+    args: { topic: 'meta' },
+    resumeFromRunId: officialWorkflowRunId,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_inserted_step_rerun' } } as never,
+)
+assert.match(String(insertedStepRerun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, ['prep meta\n\nWorkflow user input:\n{\n  "topic": "meta"\n}'])
+const insertedWorkflowRunId = String(insertedStepRerun.data).match(/Run ID: (\S+)/)?.[1]
+assert.ok(insertedWorkflowRunId)
+const insertedSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', insertedWorkflowRunId, 'session.json'), 'utf8'),
+)
+assert.equal(insertedSession.events.filter((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit).length, 1)
 
 launchedPrompts.length = 0
 const rerun = await WorkflowFacadeTool.call(

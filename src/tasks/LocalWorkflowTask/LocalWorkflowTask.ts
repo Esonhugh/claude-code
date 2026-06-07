@@ -8,8 +8,10 @@ import type {
   WorkflowProgressEvent,
   WorkflowRuntimeSpec,
 } from '../../tools/WorkflowTool/workflowSpec.js'
+import type { WorkflowScriptMeta } from '../../tools/WorkflowTool/workflowScriptParser.js'
 
 const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
+export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'workflow-agent-user-retry'
 
 function generateWorkflowTaskId(): string {
   const bytes = randomBytes(8)
@@ -57,7 +59,7 @@ export type WorkflowAgentResult = {
   phaseId: string
   agentId: string
   index: number
-  status: 'completed' | 'failed' | 'skipped'
+  status: 'completed' | 'failed' | 'skipped' | 'running'
   output?: string
   error?: string
   tokenCount?: number
@@ -76,9 +78,25 @@ export type LocalWorkflowPhaseState = {
   error?: string
 }
 
+export type WorkflowLiveAgentState = {
+  tokenCount: number
+  toolUseCount: number
+  prompt?: string
+  activity?: string
+}
+
+export type WorkflowAgentControllerState = {
+  abortController: AbortController
+  baseAgentId?: string
+  index?: number
+  userRetryAttempt?: number
+}
+
 export type LocalWorkflowTaskState = TaskStateBase & {
   type: 'local_workflow'
   currentAgentId?: string
+  agentControllers?: Record<string, WorkflowAgentControllerState>
+  liveAgents?: Record<string, WorkflowLiveAgentState>
   workflowName?: string
   workflowRunId?: string
   scriptPath?: string
@@ -92,6 +110,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   execution?: 'agent' | 'team'
   teamName?: string
   runtime?: WorkflowRuntimeSpec
+  meta?: WorkflowScriptMeta
   sourcePath?: string
   runScriptSnapshot?: string
   pausedAt?: number
@@ -151,6 +170,7 @@ export function registerWorkflowTask({
     execution: plan.defaults.execution,
     teamName,
     runtime: plan.runtime,
+    meta: plan.meta,
     sourcePath: plan.sourcePath,
     runScriptSnapshot: plan.runScriptSnapshot,
     abortController: new AbortController(),
@@ -357,6 +377,70 @@ export function recordWorkflowAgentStarted({
   })
 }
 
+export function recordWorkflowAgentController({
+  taskId,
+  agentId,
+  abortController,
+  setAppState,
+  baseAgentId,
+  index,
+  userRetryAttempt,
+}: {
+  taskId: string
+  agentId: string
+  abortController: AbortController
+  setAppState: SetAppState
+  baseAgentId?: string
+  index?: number
+  userRetryAttempt?: number
+}): void {
+  withWorkflowTask(taskId, setAppState, task => {
+    if (task.status !== 'running') return task
+    return withProgressVersion({
+      ...task,
+      agentControllers: {
+        ...task.agentControllers,
+        [agentId]: { abortController, baseAgentId, index, userRetryAttempt },
+      },
+    })
+  })
+}
+
+export function recordWorkflowAgentProgress({
+  taskId,
+  agentId,
+  tokenCount,
+  toolUseCount,
+  prompt,
+  activity,
+  setAppState,
+}: {
+  taskId: string
+  agentId: string
+  tokenCount: number
+  toolUseCount: number
+  prompt?: string
+  activity?: string
+  setAppState: SetAppState
+}): void {
+  withWorkflowTask(taskId, setAppState, task => {
+    if (task.status !== 'running') return task
+    const current = task.liveAgents?.[agentId]
+    return withProgressVersion({
+      ...task,
+      liveAgents: {
+        ...task.liveAgents,
+        [agentId]: {
+          tokenCount,
+          toolUseCount: (current?.toolUseCount ?? 0) + toolUseCount,
+          ...(prompt ?? current?.prompt ? { prompt: prompt ?? current?.prompt } : {}),
+          ...(activity ?? current?.activity ? { activity: activity ?? current?.activity } : {}),
+        },
+      },
+    })
+  })
+}
+
 export function completeWorkflowAgent({
   taskId,
   result,
@@ -368,6 +452,7 @@ export function completeWorkflowAgent({
 }): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    const activeAgentId = task.currentAgentId
     const nextTask = updatePhase(task, result.phaseId, phase => {
       const priorResultsForIndex = phase.results.filter(
         phaseResult => phaseResult.index === result.index,
@@ -385,6 +470,11 @@ export function completeWorkflowAgent({
         ),
         failedAgentIds: phase.failedAgentIds.filter(agentId => {
           if (priorAgentIdsForIndex.includes(agentId)) return false
+          if (activeAgentId && agentId === activeAgentId) return false
+          if (activeAgentId && agentId.startsWith(`${activeAgentId}-retry-`)) return false
+          if (activeAgentId && activeAgentId.startsWith(`${agentId}-retry-`)) return false
+          if (agentId.startsWith(`${result.agentId}-retry-`)) return false
+          if (result.agentId.startsWith(`${agentId}-retry-`)) return false
           return !agentId.includes(`-${result.index + 1}-`)
         }),
         skippedAgentIds: phase.skippedAgentIds.filter(
@@ -398,8 +488,12 @@ export function completeWorkflowAgent({
         status: phaseCompleted(nextPhase) ? 'completed' : nextPhase.status,
       }
     })
+    const { [result.agentId]: _completedLiveAgent, ...liveAgents } = nextTask.liveAgents ?? {}
+    const { [result.agentId]: _completedController, ...agentControllers } = nextTask.agentControllers ?? {}
     return {
       ...nextTask,
+      agentControllers,
+      liveAgents,
       results: [
         ...removeTaskResultsForPhaseIndex(
           nextTask.results,
@@ -570,8 +664,13 @@ export function skipWorkflowAgent(
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
     let skippedPhaseId: string | undefined
+    task.agentControllers?.[agentId]?.abortController.abort('workflow-agent-skipped')
+    const { [agentId]: _skippedController, ...agentControllers } = task.agentControllers ?? {}
+    const { [agentId]: _skippedLiveAgent, ...liveAgents } = task.liveAgents ?? {}
     const skippedTask = {
       ...task,
+      agentControllers,
+      liveAgents,
       summary: `Workflow agent skipped by user: ${agentId}`,
       phases: task.phases.map(phase => {
         if (!phase.agentIds.includes(agentId)) return phase
@@ -605,29 +704,45 @@ export function retryWorkflowAgent(
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
     let retryPhaseId: string | undefined
+    let retryAgentId: string | undefined
+    const controller = task.agentControllers?.[agentId]
+    const baseAgentId = controller?.baseAgentId ?? agentId.replace(/ \(retry \d+\)$/u, '')
+    const retryAttempt = (controller?.userRetryAttempt ?? 0) + 1
+    const nextAgentId = `${baseAgentId} (retry ${retryAttempt})`
+    controller?.abortController.abort(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON)
+    const { [agentId]: _retriedController, ...agentControllers } = task.agentControllers ?? {}
+    const { [agentId]: _retriedLiveAgent, ...liveAgents } = task.liveAgents ?? {}
     const retryTask = {
       ...task,
+      agentControllers,
+      liveAgents,
+      currentAgentId: nextAgentId,
       summary: `Workflow agent retry requested by user: ${agentId}`,
       phases: task.phases.map(phase => {
         if (!phase.agentIds.includes(agentId)) return phase
         retryPhaseId = phase.id
-        const agentIds = removeValue(phase.agentIds, agentId)
+        retryAgentId = nextAgentId
+        const agentIndex = phase.agentIds.indexOf(agentId)
+        const agentIds = phase.agentIds.map(current => current === agentId ? nextAgentId : current)
         return {
           ...phase,
-          status: agentIds.length === 0 ? 'pending' as const : 'running' as const,
+          status: 'running' as const,
           agentIds,
           completedAgentIds: removeValue(phase.completedAgentIds, agentId),
           skippedAgentIds: removeValue(phase.skippedAgentIds, agentId),
           failedAgentIds: removeValue(phase.failedAgentIds, agentId),
-          results: phase.results.filter(result => result.agentId !== agentId),
+          results: [
+            ...phase.results.filter(result => result.agentId !== agentId),
+            { phaseId: phase.id, agentId: nextAgentId, index: agentIndex, status: 'running' as const },
+          ],
           error: undefined,
         }
       }),
       results: task.results.filter(result => result.agentId !== agentId),
       error: undefined,
     }
-    return retryPhaseId
-      ? appendEvent(retryTask, agentEvent(retryTask, retryPhaseId, agentId, 'pending'))
+    return retryPhaseId && retryAgentId
+      ? appendEvent(retryTask, agentEvent(retryTask, retryPhaseId, retryAgentId, 'running'))
       : task
   })
 }

@@ -7,6 +7,8 @@ import type { AgentId } from '../../types/ids.js'
 import {
   killWorkflowTask,
   pauseWorkflowTask,
+  recordWorkflowAgentController,
+  recordWorkflowAgentProgress,
   resumeWorkflowTask,
   retryWorkflowAgent,
   skipWorkflowAgent,
@@ -74,7 +76,7 @@ const fakeAgentTool = {
     mode?: string
     name?: string
     team_name?: string
-  }) {
+  }, _context: unknown, _canUseTool: unknown, _assistantMessage: unknown, onProgress?: (progress: unknown) => void) {
     launchedAgents.push({
       description: input.description,
       prompt: input.prompt,
@@ -82,6 +84,31 @@ const fakeAgentTool = {
       name: input.name,
       team_name: input.team_name,
     })
+    for (const toolIndex of [1, 2]) {
+      onProgress?.({
+        toolUseID: `agent_msg_test_${toolIndex}`,
+        data: {
+          type: 'agent_progress',
+          message: {
+            type: 'assistant',
+            message: {
+              id: `agent_msg_test_${toolIndex}`,
+              role: 'assistant',
+              model: 'claude-sonnet-4-5',
+              content: [{ type: 'tool_use', id: `tool_test_${toolIndex}`, name: 'Read', input: {} }],
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              usage: {
+                input_tokens: 10 + toolIndex,
+                output_tokens: 2,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+              },
+            },
+          },
+        },
+      })
+    }
     return {
       data: {
         status: 'completed' as const,
@@ -203,6 +230,24 @@ const context = {
     ],
   }
   setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [runningTask.id]: runningTask } }))
+  recordWorkflowAgentProgress({
+    taskId: 'w-running',
+    agentId: 'agent-1',
+    tokenCount: 12,
+    toolUseCount: 1,
+    setAppState,
+  })
+  recordWorkflowAgentProgress({
+    taskId: 'w-running',
+    agentId: 'agent-1',
+    tokenCount: 18,
+    toolUseCount: 1,
+    setAppState,
+  })
+  let progressRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
+  assert.deepEqual(progressRunningTask.liveAgents?.['agent-1'], { tokenCount: 18, toolUseCount: 2 })
+  assert.ok((progressRunningTask.progressVersion ?? 0) > (runningTask.progressVersion ?? 0))
+
   pauseWorkflowTask('w-running', setAppState)
   let pausedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.equal(pausedRunningTask.status, 'pending')
@@ -220,7 +265,15 @@ const context = {
   assert.equal(pausedRunningTask.pausedAt, undefined)
   assert.ok((pausedRunningTask.totalPausedMs ?? 0) >= 0)
 
+  const agentAbortController = new AbortController()
+  recordWorkflowAgentController({
+    taskId: 'w-running',
+    agentId: 'agent-1',
+    abortController: agentAbortController,
+    setAppState,
+  })
   skipWorkflowAgent('w-running', 'agent-1', setAppState)
+  assert.equal(agentAbortController.signal.aborted, true)
   let updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.deepEqual(updatedRunningTask.phases[0]!.skippedAgentIds, ['agent-1'])
   assert.deepEqual(updatedRunningTask.phases[0]!.completedAgentIds, ['agent-1'])
@@ -234,11 +287,12 @@ const context = {
   updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.deepEqual(updatedRunningTask.phases[0]!.skippedAgentIds, [])
   assert.deepEqual(updatedRunningTask.phases[0]!.completedAgentIds, [])
-  assert.deepEqual(updatedRunningTask.phases[0]!.agentIds, [])
+  assert.deepEqual(updatedRunningTask.phases[0]!.agentIds, ['agent-1 (retry 1)'])
+  assert.equal(updatedRunningTask.currentAgentId, 'agent-1 (retry 1)')
   const retryEvent = updatedRunningTask.events.at(-1)
   assert.equal(retryEvent?.type, 'workflow_agent')
   if (retryEvent?.type === 'workflow_agent') {
-    assert.equal(retryEvent.status, 'pending')
+    assert.equal(retryEvent.status, 'running')
   }
 
 let retryState = {
@@ -312,6 +366,91 @@ const retryTask = Object.values(retryState.tasks).find(
 assert.equal(retryTask.status, 'completed')
 assert.equal(retryTask.results.length, 1)
 assert.equal(retryTask.phases[0]!.failedAgentIds.length, 0)
+
+let manualRetryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setManualRetryState = (updater: (prev: AppState) => AppState): void => {
+  manualRetryState = updater(manualRetryState)
+}
+const manualRetryAttempts: string[] = []
+let manualRetryFirstAbortReason: unknown
+const manualRetryAgentTool = {
+  name: 'Agent',
+  aliases: ['Task'],
+  async call(input: { description: string; prompt: string; mode?: string }, callContext: { abortController: AbortController }) {
+    manualRetryAttempts.push(input.description)
+    if (manualRetryAttempts.length === 1) {
+      setTimeout(() => {
+        const running = Object.values(manualRetryState.tasks).find(
+          (task): task is LocalWorkflowTaskState => task.type === 'local_workflow',
+        )!
+        retryWorkflowAgent(running.id, 'unstable', setManualRetryState)
+      }, 0)
+      return await new Promise<never>((_resolve, reject) => {
+        callContext.abortController.signal.addEventListener('abort', () => {
+          manualRetryFirstAbortReason = callContext.abortController.signal.reason
+          reject(new Error('manual retry abort'))
+        }, { once: true })
+      })
+    }
+    return {
+      data: {
+        status: 'completed' as const,
+        prompt: input.prompt,
+        content: [{ type: 'text' as const, text: 'manual retry succeeded' }],
+      },
+    }
+  },
+}
+const manualRetryContext = {
+  ...context,
+  getAppState: () => manualRetryState,
+  setAppState: setManualRetryState,
+  options: {
+    ...context.options,
+    tools: [manualRetryAgentTool],
+  },
+} as unknown as ToolUseContext
+const manualRetryResult = await WorkflowTool.call(
+  {
+    action: 'run',
+    plan: {
+      ...workflowPlan,
+      name: 'Manual Retry Workflow',
+      phases: [
+        {
+          ...workflowPlan.phases[0]!,
+          id: 'unstable',
+          displayName: 'unstable',
+          description: 'Retry unstable work by user request.',
+          prompt: 'Retry unstable work by user request.',
+          fanout: 1,
+          concurrency: 1,
+        },
+      ],
+      totalAgents: 1,
+    },
+  },
+  manualRetryContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_manual_retry' } } as never,
+)
+assert.match(String(manualRetryResult.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(manualRetryAttempts, [
+  'Manual Retry Workflow: unstable',
+  'Manual Retry Workflow: unstable retry 1',
+])
+assert.equal(manualRetryFirstAbortReason, 'workflow-agent-user-retry')
+const manualRetryTask = Object.values(manualRetryState.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow',
+)!
+assert.equal(manualRetryTask.status, 'completed')
+assert.equal(manualRetryTask.results.length, 1)
+assert.equal(manualRetryTask.results[0]!.agentId, 'unstable (retry 1)')
+assert.deepEqual(manualRetryTask.phases[0]!.completedAgentIds, ['unstable (retry 1)'])
+assert.equal(manualRetryTask.phases[0]!.failedAgentIds.length, 0)
 
 let teamState = {
   tasks: {},

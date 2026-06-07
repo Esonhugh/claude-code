@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { mkdir } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 import { build } from 'esbuild'
 
@@ -38,6 +39,7 @@ const tests = [
   'src/tools/WorkflowTool/WorkflowTool.test.ts',
   'src/tools/WorkflowTool/WorkflowFacadeTool.test.ts',
   'src/utils/ultracodeOrchestration.test.ts',
+  'src/utils/processUserInput/processUserInput.test.ts',
   'src/commands/workflows/workflows.test.ts',
   'src/commands/workflows/workflowsPage.behavior.test.ts',
   'src/commands/workflows/workflowsPageModel.test.ts',
@@ -58,5 +60,11 @@ for (const test of tests) {
     outfile,
   })
 
-  await import(pathToFileURL(outfile).href)
+  const result = spawnSync(process.execPath, [outfile], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+  })
+  if (result.status !== 0) {
+    throw new Error(`${test} failed`)
+  }
 }

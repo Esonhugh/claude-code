@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { availableParallelism } from 'node:os'
 
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
@@ -39,25 +40,28 @@ const deepResearchWorkflow = {
   },
 } satisfies WorkflowSpec
 
+const officialDefaultConcurrency = Math.min(16, Math.max(1, availableParallelism() - 2))
+const officialDefaultMaxAgents = 1000
+
 const plan = validateWorkflowSpec(deepResearchWorkflow)
 
 assert.equal(plan.name, 'Deep Research Dry Run')
 assert.equal(plan.totalAgents, 7)
-assert.equal(plan.defaults.maxConcurrency, 4)
-assert.equal(plan.defaults.maxAgents, 32)
+assert.equal(plan.defaults.maxConcurrency, officialDefaultConcurrency)
+assert.equal(plan.defaults.maxAgents, officialDefaultMaxAgents)
 assert.equal(plan.defaults.maxRetries, 0)
 assert.equal(plan.defaults.execution, 'agent')
 assert.equal(plan.defaults.fanout, 1)
 assert.equal(plan.defaults.concurrency, 1)
 assert.equal(plan.defaults.review, 'none')
-assert.equal(plan.defaults.permissionMode, 'default')
+assert.equal(plan.defaults.permissionMode, 'acceptEdits')
 
 const researchPhase = plan.phases.find(phase => phase.id === 'research')
 assert.ok(researchPhase)
 assert.equal(researchPhase.fanout, 4)
 assert.equal(researchPhase.concurrency, 1)
 assert.equal(researchPhase.review, 'none')
-assert.equal(researchPhase.permissionMode, 'default')
+assert.equal(researchPhase.permissionMode, 'acceptEdits')
 assert.equal(researchPhase.agentType, 'researcher')
 assert.equal(researchPhase.model, 'claude-sonnet-4-5')
 
@@ -67,19 +71,19 @@ assert.deepEqual(synthesisPhase.dependsOn, ['cross-check'])
 assert.equal(synthesisPhase.fanout, 1)
 assert.equal(synthesisPhase.concurrency, 1)
 assert.equal(synthesisPhase.review, 'synthesis')
-assert.equal(synthesisPhase.permissionMode, 'default')
+assert.equal(synthesisPhase.permissionMode, 'acceptEdits')
 
 const output = formatWorkflowDryRun(plan)
 assert.match(output, /Workflow: Deep Research Dry Run/)
 assert.match(output, /Description: Coordinate parallel research/)
-assert.match(output, /Max concurrency: 4/)
-assert.match(output, /Max agents: 32/)
+assert.match(output, new RegExp(`Max concurrency: ${officialDefaultConcurrency}`))
+assert.match(output, /Max agents: 1000/)
 assert.match(output, /Max retries: 0/)
 assert.match(output, /Execution: agent/)
 assert.match(output, /Planned agents: 7/)
-assert.match(output, /- research \| depends: none \| fanout: 4 \| concurrency: 1 \| review: none \| permissionMode: default \| agentType: researcher \| model: claude-sonnet-4-5/)
-assert.match(output, /- cross-check \| depends: research \| fanout: 2 \| concurrency: 2 \| review: cross-check \| permissionMode: default/)
-assert.match(output, /- synthesis \| depends: cross-check \| fanout: 1 \| concurrency: 1 \| review: synthesis \| permissionMode: default/)
+assert.match(output, /- research \| depends: none \| fanout: 4 \| concurrency: 1 \| review: none \| permissionMode: acceptEdits \| agentType: researcher \| model: claude-sonnet-4-5/)
+assert.match(output, /- cross-check \| depends: research \| fanout: 2 \| concurrency: 2 \| review: cross-check \| permissionMode: acceptEdits/)
+assert.match(output, /- synthesis \| depends: cross-check \| fanout: 1 \| concurrency: 1 \| review: synthesis \| permissionMode: acceptEdits/)
 
 const trimmedDependencyPlan = validateWorkflowSpec({
   name: 'Trimmed Dependency',

@@ -145,6 +145,7 @@ export function createWorkflowRuntimeGlobals({
         id: label,
         description: label,
         prompt,
+        displayName: label,
         ...(opts?.model ? { model: opts.model } : {}),
         ...(opts?.agentType ? { agentType: opts.agentType } : {}),
       }

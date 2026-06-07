@@ -267,6 +267,40 @@ const BUNDLED_WORKFLOWS: WorkflowSpec[] = [
     name: 'deep-research',
     description:
       'Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.',
+    meta: {
+      name: 'deep-research',
+      description:
+        'Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.',
+      whenToUse:
+        'When the user wants a deep, multi-source, fact-checked research report on any topic.',
+      phases: [
+        { title: 'Scope', detail: 'Decompose question into search angles' },
+        { title: 'Search', detail: 'Fan-out web searches for scoped angles' },
+        { title: 'Fetch', detail: 'Deduplicate URLs, fetch sources, extract claims' },
+        { title: 'Verify', detail: 'Adversarial 3-vote claim verification' },
+        { title: 'Synthesize', detail: 'Produce cited report with stats and caveats' },
+      ],
+    },
+    runScriptSnapshot: `const VOTES_PER_CLAIM = 3
+const REFUTATIONS_REQUIRED = 2
+const MAX_FETCH = 15
+const MAX_VERIFY_CLAIMS = 25
+
+const REPORT_SCHEMA = {
+  executiveSummary: 'string',
+  findings: 'array',
+  caveats: 'array',
+  openQuestions: 'array',
+  refutedClaims: 'array',
+  stats: { sourcesFetched, claimsVerified, claimsRefuted, claimsUsed },
+}
+
+workflow('deep-research')
+phase('Scope')
+phase('Search')
+phase('Fetch')
+phase('Verify')
+phase('Synthesize')`,
     defaults: {
       maxConcurrency: 6,
       maxAgents: 40,

@@ -32,7 +32,11 @@ export function createAgentCallIdentity(input: {
   prompt: string
   opts?: unknown
 }): string {
-  return sha256(stableJson(input))
+  return sha256(stableJson({
+    phase: input.phase,
+    prompt: input.prompt,
+    opts: input.opts,
+  }))
 }
 
 export function recordResumeCacheEntry(input: {
@@ -54,17 +58,18 @@ export function recordResumeCacheEntry(input: {
 }
 
 export function createWorkflowResumeCursor(entries: WorkflowResumeCacheEntry[]) {
-  let prefixBroken = false
-  const byIndex = new Map(entries.map(entry => [entry.index, entry]))
+  const byIdentity = new Map<string, WorkflowResumeCacheEntry[]>()
+  for (const entry of entries) {
+    const matches = byIdentity.get(entry.identity) ?? []
+    matches.push(entry)
+    byIdentity.set(entry.identity, matches)
+  }
 
   return {
-    lookup(index: number, identity: string): WorkflowResumeLookup {
-      if (prefixBroken) return { cacheHit: false }
-      const entry = byIndex.get(index)
-      if (!entry || entry.identity !== identity) {
-        prefixBroken = true
-        return { cacheHit: false }
-      }
+    lookup(_index: number, identity: string): WorkflowResumeLookup {
+      const matches = byIdentity.get(identity)
+      const entry = matches?.shift()
+      if (!entry) return { cacheHit: false }
       return { cacheHit: true, result: entry.result }
     },
   }

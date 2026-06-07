@@ -2,11 +2,15 @@ import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { createChildAbortController } from '../../utils/abortController.js'
 import {
   completeWorkflowAgent,
   completeWorkflowTask,
   failWorkflowAgent,
   failWorkflowTask,
+  WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
+  recordWorkflowAgentController,
+  recordWorkflowAgentProgress,
   recordWorkflowAgentStarted,
   recordWorkflowEvent,
   registerWorkflowTask,
@@ -73,6 +77,55 @@ type WorkflowAgentRunResult = {
   cacheHit: boolean
 }
 
+type AgentProgressMetrics = {
+  tokenCount: number
+  toolUseCount: number
+  prompt?: string
+  activity?: string
+}
+
+function compactToolInput(input: unknown): string {
+  if (!input || typeof input !== 'object') return ''
+  const command = (input as { command?: unknown }).command
+  if (typeof command === 'string' && command.trim() !== '') return command.trim()
+  const prompt = (input as { prompt?: unknown }).prompt
+  if (typeof prompt === 'string' && prompt.trim() !== '') return prompt.trim()
+  return ''
+}
+
+function toolActivityFromAssistant(assistant: AssistantMessage): string | undefined {
+  const toolUse = assistant.message.content.findLast(block => block.type === 'tool_use')
+  if (!toolUse || toolUse.type !== 'tool_use') return undefined
+  const input = compactToolInput(toolUse.input)
+  return input ? `${toolUse.name}(${input})` : toolUse.name
+}
+
+function agentProgressMetrics(progress: unknown): AgentProgressMetrics | undefined {
+  if (!progress || typeof progress !== 'object' || !('data' in progress)) return undefined
+  const data = (progress as { data?: unknown }).data
+  if (!data || typeof data !== 'object' || (data as { type?: unknown }).type !== 'agent_progress') return undefined
+  const prompt = (data as { prompt?: unknown }).prompt
+  const message = (data as { message?: unknown }).message
+  if (!message || typeof message !== 'object' || (message as { type?: unknown }).type !== 'assistant') {
+    return typeof prompt === 'string' && prompt.trim() !== ''
+      ? { tokenCount: 0, toolUseCount: 0, prompt: prompt.trim() }
+      : undefined
+  }
+  const assistant = message as AssistantMessage
+  const tokenCount =
+    assistant.message.usage.input_tokens +
+    assistant.message.usage.output_tokens +
+    (assistant.message.usage.cache_creation_input_tokens ?? 0) +
+    (assistant.message.usage.cache_read_input_tokens ?? 0)
+  const toolUseCount = assistant.message.content.filter(block => block.type === 'tool_use').length
+  return {
+    tokenCount,
+    toolUseCount,
+    prompt: typeof prompt === 'string' && prompt.trim() !== '' ? prompt.trim() : undefined,
+    activity: toolActivityFromAssistant(assistant),
+  }
+}
+
 function findAgentTool(tools: readonly Tool[]): Tool | undefined {
   return tools.find(
     tool => AGENT_TOOL_NAMES.has(tool.name) || tool.aliases?.some(alias => AGENT_TOOL_NAMES.has(alias)),
@@ -116,6 +169,8 @@ function workflowAgentName(
   phase: WorkflowDryRunPhase,
   index: number,
 ): string {
+  if (phase.displayName && phase.fanout === 1) return phase.displayName
+  if (phase.displayName) return `${phase.displayName}-${index + 1}`
   return `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${index + 1}`
 }
 
@@ -195,12 +250,18 @@ function formatAgentDescription(
   phase: WorkflowDryRunPhase,
   index: number,
   attempt: number,
+  userRetryAttempt = 0,
 ): string {
   const base =
     phase.fanout > 1
       ? `${plan.name}: ${phase.id} ${index + 1}/${phase.fanout}`
       : `${plan.name}: ${phase.id}`
+  if (userRetryAttempt > 0) return `${base} retry ${userRetryAttempt}`
   return attempt === 0 ? base : `${base} retry ${attempt}/${maxRetriesFor(plan)}`
+}
+
+function userRetryAgentId(baseAgentId: string, userRetryAttempt: number): string {
+  return userRetryAttempt > 0 ? `${baseAgentId} (retry ${userRetryAttempt})` : baseAgentId
 }
 
 async function runPhaseAgentAttempt({
@@ -214,6 +275,8 @@ async function runPhaseAgentAttempt({
   assistantMessage,
   taskId,
   prompt,
+  workflowAbortController,
+  userRetryAttempt = 0,
 }: {
   agentTool: Tool
   phase: WorkflowDryRunPhase
@@ -225,8 +288,10 @@ async function runPhaseAgentAttempt({
   assistantMessage: AssistantMessage
   taskId: string
   prompt: string
+  workflowAbortController: AbortController
+  userRetryAttempt?: number
 }): Promise<WorkflowAgentResult> {
-  const description = formatAgentDescription(plan, phase, index, attempt)
+  const description = formatAgentDescription(plan, phase, index, attempt, userRetryAttempt)
   const teamName =
     plan.defaults.execution === 'team' ? workflowTeamName(context) : undefined
   const input: AgentToolInput = {
@@ -242,15 +307,41 @@ async function runPhaseAgentAttempt({
         }
       : {}),
   }
-  const fallbackAgentId = `${taskId}-${phase.id}-${index + 1}-${attempt}`
+  const baseAgentId = workflowAgentName(plan, phase, index)
+  const fallbackAgentId = userRetryAttempt > 0
+    ? userRetryAgentId(baseAgentId, userRetryAttempt)
+    : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
   recordWorkflowAgentStarted({
     taskId,
     phaseId: phase.id,
     agentId: fallbackAgentId,
     setAppState: context.setAppStateForTasks ?? context.setAppState,
   })
+  const agentAbortController = createChildAbortController(workflowAbortController)
+  recordWorkflowAgentController({
+    taskId,
+    agentId: fallbackAgentId,
+    abortController: agentAbortController,
+    setAppState: context.setAppStateForTasks ?? context.setAppState,
+    baseAgentId,
+    index,
+    userRetryAttempt,
+  })
+  const agentContext = { ...context, abortController: agentAbortController }
 
-  const result = await agentTool.call(input as never, context, canUseTool, assistantMessage)
+  const result = await agentTool.call(input as never, agentContext, canUseTool, assistantMessage, progress => {
+    const metrics = agentProgressMetrics(progress)
+    if (!metrics) return
+    recordWorkflowAgentProgress({
+      taskId,
+      agentId: fallbackAgentId,
+      tokenCount: metrics.tokenCount,
+      toolUseCount: metrics.toolUseCount,
+      prompt: metrics.prompt,
+      activity: metrics.activity,
+      setAppState: context.setAppStateForTasks ?? context.setAppState,
+    })
+  })
   const output = result.data as AgentToolOutput
   const agentId = resultAgentId(output, fallbackAgentId)
   const workflowResult: WorkflowAgentResult = {
@@ -281,6 +372,7 @@ async function runPhaseAgent({
   canUseTool,
   assistantMessage,
   taskId,
+  workflowAbortController,
   resultsByPhase,
   resumeRuntime,
   runArgs,
@@ -294,6 +386,7 @@ async function runPhaseAgent({
   canUseTool: CanUseToolFn
   assistantMessage: AssistantMessage
   taskId: string
+  workflowAbortController: AbortController
   resultsByPhase: Map<string, WorkflowAgentResult[]>
   resumeRuntime: WorkflowResumeRuntime
   runArgs?: WorkflowArgs
@@ -335,6 +428,7 @@ async function runPhaseAgent({
   }
 
   let lastError: unknown
+  let userRetryAttempt = 0
   for (let attempt = 0; attempt <= maxRetriesFor(plan); attempt++) {
     try {
       const result = await runPhaseAgentAttempt({
@@ -348,6 +442,8 @@ async function runPhaseAgent({
         assistantMessage,
         taskId,
         prompt,
+        workflowAbortController,
+        userRetryAttempt,
       })
       resumeRuntime.entries.push(recordResumeCacheEntry({
         index: agentIndex,
@@ -358,12 +454,24 @@ async function runPhaseAgent({
       }))
       return { result, cacheHit: false }
     } catch (error) {
+      if (workflowAbortController.signal.aborted) throw error
+      const baseAgentId = workflowAgentName(plan, phase, index)
+      const currentAgentId = userRetryAttempt > 0
+        ? userRetryAgentId(baseAgentId, userRetryAttempt)
+        : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
+      const task = context.getAppState().tasks?.[taskId]
+      const userRetryRequested = task?.type === 'local_workflow' && task.agentControllers?.[currentAgentId] === undefined
+      if (userRetryRequested) {
+        userRetryAttempt += 1
+        attempt -= 1
+        continue
+      }
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
       failWorkflowAgent({
         taskId,
         phaseId: phase.id,
-        agentId: `${taskId}-${phase.id}-${index + 1}-${attempt}`,
+        agentId: currentAgentId,
         error: message,
         setAppState: context.setAppStateForTasks ?? context.setAppState,
       })
@@ -485,6 +593,7 @@ export async function runWorkflowPlan({
               canUseTool,
               assistantMessage,
               taskId: workflowTask.id,
+              workflowAbortController: workflowTask.abortController!,
               resultsByPhase,
               resumeRuntime,
               runArgs,

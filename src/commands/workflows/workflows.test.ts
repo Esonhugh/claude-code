@@ -205,6 +205,6 @@ assert.match(skipResult.value, /synthesis: completed 1\/1 \[██████�
 
 const retryResult = await call('retry-agent w-test synthesis a3', context)
 assert.equal(retryResult.type, 'text')
-assert.match(retryResult.value, /synthesis: pending 0\/0/)
+assert.match(retryResult.value, /synthesis: running 0\/1/)
 
 console.log('workflows.test.ts passed')

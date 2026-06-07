@@ -56,6 +56,19 @@ const changedIdentity = createAgentCallIdentity({
 assert.deepEqual(cursor.lookup(2, changedIdentity), { cacheHit: false })
 assert.deepEqual(cursor.lookup(0, firstIdentity), { cacheHit: false })
 
+const insertedStepCursor = createWorkflowResumeCursor(priorEntries)
+const insertedIdentity = createAgentCallIdentity({
+  index: 0,
+  phase: 'Prep',
+  prompt: 'Prep work',
+  opts: { label: 'prep' },
+})
+assert.deepEqual(insertedStepCursor.lookup(0, insertedIdentity), { cacheHit: false })
+assert.deepEqual(insertedStepCursor.lookup(1, firstIdentity), {
+  cacheHit: true,
+  result: { files: ['a.ts'] },
+})
+
 assert.notEqual(
   createAgentCallIdentity({ index: 0, phase: 'Scan', prompt: 'Find files', opts: { label: 'scan' } }),
   createAgentCallIdentity({ index: 0, phase: 'Scan', prompt: 'Find changed files', opts: { label: 'scan' } }),

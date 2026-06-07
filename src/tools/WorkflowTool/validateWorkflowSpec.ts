@@ -1,3 +1,5 @@
+import { availableParallelism } from 'node:os'
+
 import type {
   WorkflowDefaults,
   WorkflowDryRunPhase,
@@ -21,13 +23,13 @@ const SUPPORTED_PERMISSION_MODES = new Set<WorkflowPermissionMode>([
 ])
 
 const DEFAULTS = {
-  maxConcurrency: 4,
-  maxAgents: 32,
+  maxConcurrency: Math.min(16, Math.max(1, availableParallelism() - 2)),
+  maxAgents: 1000,
   maxRetries: 0,
   fanout: 1,
   concurrency: 1,
   review: 'none' as WorkflowReviewMode,
-  permissionMode: 'default' as WorkflowPermissionMode,
+  permissionMode: 'acceptEdits' as WorkflowPermissionMode,
   execution: 'agent' as const,
 }
 
@@ -251,6 +253,7 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
       id,
       description: phase.description.trim(),
       prompt: phase.prompt.trim(),
+      ...(phase.displayName?.trim() ? { displayName: phase.displayName.trim() } : {}),
       dependsOn,
       fanout,
       concurrency,

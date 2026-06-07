@@ -51,7 +51,10 @@ import {
   hasUltraplanKeyword,
   replaceUltraplanKeyword,
 } from '../ultraplan/keyword.js'
-import { hasUltracodeKeyword } from '../ultracodeOrchestration.js'
+import {
+  hasUltracodeKeyword,
+  isUltracodeKeywordTriggerEnabled,
+} from '../ultracodeOrchestration.js'
 import { processTextPrompt } from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
@@ -584,6 +587,7 @@ async function processUserInputBase(
     inputString !== null &&
     mode === 'prompt' &&
     !effectiveSkipSlash &&
+    isUltracodeKeywordTriggerEnabled(context.getAppState().settings) &&
     hasUltracodeKeyword(preExpansionInput ?? inputString)
   ) {
     logEvent('tengu_ultracode_keyword', {})

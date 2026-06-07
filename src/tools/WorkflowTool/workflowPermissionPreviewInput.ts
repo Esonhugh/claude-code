@@ -51,8 +51,13 @@ function planFromDryRunPlan(plan: WorkflowDryRunPlan): NonNullable<WorkflowPermi
   }
 }
 
-function extractAgentPreviewPrompts(scriptBody: string): string[] {
-  const prompts: string[] = []
+type AgentPreview = {
+  prompt?: string
+  displayName?: string
+}
+
+function extractAgentPreviews(scriptBody: string): AgentPreview[] {
+  const previews: AgentPreview[] = []
   for (const match of scriptBody.matchAll(/agent\s*\(\s*{/g)) {
     if (match.index === undefined) continue
     const objectStart = match.index + match[0].length - 1
@@ -64,25 +69,32 @@ function extractAgentPreviewPrompts(scriptBody: string): string[] {
       if (previewLines.length >= 3) break
     }
     const prompt = previewLines.join('\n').trim()
-    if (prompt) prompts.push(prompt)
+    previews.push({ ...(prompt ? { prompt } : {}) })
   }
-  for (const match of scriptBody.matchAll(/agent\s*\(\s*(['"`][^'"`]*['"`])/g)) {
+  for (const match of scriptBody.matchAll(/agent\s*\(\s*([^,\n]+?)\s*,\s*\{([^}]*)\}/g)) {
     const prompt = match[1]?.trim()
-    if (prompt) prompts.push(prompt)
+    const options = match[2] ?? ''
+    const label = /label\s*:\s*(['"`])([^'"`]+)\1/.exec(options)?.[2]
+    previews.push({ ...(prompt ? { prompt } : {}), ...(label ? { displayName: label } : {}) })
   }
-  return prompts
+  for (const match of scriptBody.matchAll(/agent\s*\(\s*(['"`][^'"`]*['"`])\s*\)/g)) {
+    const prompt = match[1]?.trim()
+    if (prompt) previews.push({ prompt })
+  }
+  return previews
 }
 
 function planFromScript(script: string): NonNullable<WorkflowPermissionPreviewInputValue['plan']> {
   const parsed = parseWorkflowScript(script)
-  const prompts = extractAgentPreviewPrompts(parsed.scriptBody)
+  const previews = extractAgentPreviews(parsed.scriptBody)
   return {
     name: parsed.meta.name,
     description: parsed.meta.description,
     phases: (parsed.meta.phases ?? []).map((phase, index) => ({
       title: phase.title,
       detail: phase.detail,
-      ...(prompts[index] ? { prompt: prompts[index] } : {}),
+      ...(previews[index]?.prompt ? { prompt: previews[index].prompt } : {}),
+      ...(previews[index]?.displayName ? { displayName: previews[index].displayName } : {}),
     })),
     runScriptSnapshot: script,
   }

@@ -36,6 +36,7 @@ export type WorkflowPhaseSpec = {
   id: string
   description: string
   prompt: string
+  displayName?: string
   dependsOn?: string[]
   fanout?: number
   concurrency?: number
@@ -106,6 +107,7 @@ export type WorkflowDryRunPhase = {
   id: string
   description: string
   prompt: string
+  displayName?: string
   dependsOn: string[]
   fanout: number
   concurrency: number

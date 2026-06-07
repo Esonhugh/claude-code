@@ -18,6 +18,34 @@ assert.equal(
   deepResearch.description,
   'Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.',
 )
+assert.equal(
+  deepResearch.meta?.whenToUse,
+  'When the user wants a deep, multi-source, fact-checked research report on any topic.',
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
+  /REPORT_SCHEMA/,
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
+  /VOTES_PER_CLAIM = 3/,
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
+  /REFUTATIONS_REQUIRED = 2/,
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
+  /MAX_FETCH = 15/,
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
+  /MAX_VERIFY_CLAIMS = 25/,
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
+  /stats: \{ sourcesFetched, claimsVerified, claimsRefuted, claimsUsed \}/,
+)
 assert.match(
   deepResearch.phases.find(phase => phase.id === 'scope')?.prompt ?? '',
   /Structured output only/,

@@ -136,6 +136,8 @@ const workflowTaskModule = require('src/tasks/LocalWorkflowTask/LocalWorkflowTas
 const killWorkflowTask = workflowTaskModule.killWorkflowTask
 const skipWorkflowAgent = workflowTaskModule.skipWorkflowAgent
 const retryWorkflowAgent = workflowTaskModule.retryWorkflowAgent
+const pauseWorkflowTask = workflowTaskModule.pauseWorkflowTask
+const resumeWorkflowTask = workflowTaskModule.resumeWorkflowTask
 // Relative path, not `src/...` path-mapping — Bun's DCE can statically
 // resolve + eliminate `./` requires, but path-mapped strings stay opaque
 // and survive as dead literals in the bundle. Matches tasks.ts pattern.
@@ -536,6 +538,16 @@ export function BackgroundTasksDialog({
             onRetryAgent={
               task.status === 'running' && retryWorkflowAgent
                 ? agentId => retryWorkflowAgent(task.id, agentId, setAppState)
+                : undefined
+            }
+            onPause={
+              task.status === 'running' && pauseWorkflowTask
+                ? () => pauseWorkflowTask(task.id, setAppState)
+                : undefined
+            }
+            onResume={
+              task.status === 'pending' && resumeWorkflowTask
+                ? () => resumeWorkflowTask(task.id, setAppState)
                 : undefined
             }
             onBack={goBackToList}

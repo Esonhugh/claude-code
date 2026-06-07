@@ -23,6 +23,10 @@ export function hasUltracodeKeyword(text: string): boolean {
   return findUltracodeTriggerPositions(text).length > 0
 }
 
+export function isUltracodeKeywordTriggerEnabled(settings: { ultracodeKeywordTrigger?: boolean } | undefined): boolean {
+  return settings?.ultracodeKeywordTrigger !== false
+}
+
 export function shouldInjectUltracodeOrchestration(
   effortValue: EffortValue | undefined,
 ): boolean {

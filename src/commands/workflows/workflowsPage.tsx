@@ -5,11 +5,14 @@ import { KeyboardShortcutHint } from '../../components/design-system/KeyboardSho
 import { Pane } from '../../components/design-system/Pane.js'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 import { WorkflowDetailDialog } from '../../components/tasks/WorkflowDetailDialog.js'
+import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import {
   killWorkflowTask,
+  pauseWorkflowTask,
+  resumeWorkflowTask,
   retryWorkflowAgent,
   skipWorkflowAgent,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -60,6 +63,7 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
   const [viewState, setViewState] = useState<ViewState>({ mode: 'list' })
   const [selectedIndex, setSelectedIndex] = useState(0)
   const workflowItems = useMemo(() => getWorkflowPageItems(tasks), [tasks])
+  useRegisterOverlay('workflows-page')
 
   const close = useCallback(() => {
     onComplete(workflowDialogDismissedMessage, { display: 'system' })
@@ -116,6 +120,16 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
           onRetryAgent={
             task.status === 'running'
               ? agentId => retryWorkflowAgent(task.id, agentId, setAppState)
+              : undefined
+          }
+          onPause={
+            task.status === 'running'
+              ? () => pauseWorkflowTask(task.id, setAppState)
+              : undefined
+          }
+          onResume={
+            task.status === 'pending'
+              ? () => resumeWorkflowTask(task.id, setAppState)
               : undefined
           }
           onBack={goBackToList}

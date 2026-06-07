@@ -58,19 +58,53 @@ function hasPermissionPrompt(text) {
 }
 
 function hasLaunchEvidence(text) {
-  return /(?:Running in background|Launched the .*workflow|Run ID:\s*wf_|Waiting for \d+ dynamic workflow|Dynamic workflow requested)/.test(text)
+  return /(?:Running in background|Launched the .*workflow|Run ID:\s*wf_|Waiting for \d+ dynamic workflow|Dynamic workflow requested|Workflow started|background workflow)/.test(text)
 }
 
 function hasWorkflowList(text) {
   return /(?:Dynamic workflows|tmux-compat-probe|Interactive tmux compatibility workflow probe)/.test(text)
 }
 
+function hasInteractiveWorkflowList(text) {
+  return /Dynamic workflows/.test(text) && /(?:Enter to view|↑\/↓ to select|↑\/↓ to select · Enter to view)/.test(text)
+}
+
 function hasRunningDetailText(text) {
-  return /╭ (?:Phases|Wait)/.test(text) && /(?:↑↓ select|↑↓ agent|x stop|p pause|esc back|s save)/.test(text)
+  return (
+    (/╭ (?:Phases|Wait|wait)/.test(text) || /Dynamic workflow/.test(text) || /\bPhases\s+Wait · \d+ agent/.test(text)) &&
+    /(?:↑↓ select|↑↓ agent|x stop|p pause|esc back|s save)/.test(text)
+  )
+}
+
+function hasAgentSelectedDetailText(text) {
+  return /↑↓ (?:agent|select) · x stop · r restart · p pause · esc back · s save/.test(text)
+}
+
+function hasAgentDrilldownText(text) {
+  return /Prompt/.test(text) && /Activity/.test(text) && /Outcome/.test(text) && /↑↓ agent ·/.test(text)
+}
+
+function hasRestartEvidence(text) {
+  return /(?:retry \d+|retry\)|user-retry|attempt 2|\(retry 1\))/i.test(text)
+}
+
+function extractLocalWorkflowTaskId(text) {
+  const match = text.match(/\.claude\/tasks\/(w[a-z0-9]{8})\.output/) ?? text.match(/Task ID:\s*(w[a-z0-9]{8})/)
+  return match?.[1]
 }
 
 function hasPauseEvidence(text) {
-  return /(?:paused|Workflow paused|resumeFromRunId|Resume the paused workflow|p pause)/i.test(text)
+  return /(?:paused|Workflow paused|resumeFromRunId|Resume the paused workflow|p resume)/i.test(text)
+}
+
+function extractAgentMetricRows(text) {
+  return text
+    .split('\n')
+    .filter(line => /[❯ ](?:⏺|◌) wait/.test(line))
+    .map(line => ({
+      row: line.trimEnd(),
+      metrics: line.match(/\b\d+ tok · \d+ tools?\b/)?.[0] ?? null,
+    }))
 }
 
 async function delay(ms) {
@@ -134,6 +168,17 @@ async function probeExecutor({ label, command, args }) {
     await delay(wait)
   }
 
+  async function typePrompt(value, prefix) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await send(['C-u'], 200)
+      tmux(['send-keys', '-t', session, '-l', value])
+      await delay(500)
+      const text = await capture(`${prefix}-type-${attempt}`)
+      if (text.includes(value)) return
+      await send(['Escape'], 300)
+    }
+  }
+
   async function acceptPrompts(prefix, attempts = 12) {
     let latest = ''
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -166,11 +211,17 @@ async function probeExecutor({ label, command, args }) {
     for (const key of ['Enter', 'Enter', 'Enter', 'Enter']) {
       await send([key], 300)
     }
+    await send(['Escape'], 900)
     await capture('startup')
 
-    await paste(`Workflow({ name: "${workflowName}", args: { source: "tmux", executor: "${label}" } })`, 300)
-    await send(['Enter'], 4000)
-    const afterInvoke = await acceptPrompts('after-invoke', 16)
+    const workflowPrompt = `Workflow({ name: "${workflowName}", args: { source: "tmux", executor: "${label}" } })`
+    await typePrompt(workflowPrompt, 'workflow-prompt')
+    let afterInvoke = ''
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await send(['Enter'], 4000)
+      afterInvoke = await acceptPrompts(attempt === 0 ? 'after-invoke' : `after-invoke-submit-retry-${attempt}`, 16)
+      if (!afterInvoke.includes(workflowPrompt) || hasLaunchEvidence(afterInvoke)) break
+    }
 
     let launchText = afterInvoke
     for (let attempt = 0; attempt < 18 && !hasLaunchEvidence(launchText); attempt += 1) {
@@ -178,28 +229,77 @@ async function probeExecutor({ label, command, args }) {
       launchText = await acceptPrompts(`launch-wait-${attempt}`, 4)
     }
 
-    await send(['/workflows', 'Enter'], 3000)
-    const workflowsList = await acceptPrompts('workflows-list', 4)
+    await send(['/workflows', 'Enter'], 900)
+    let workflowsList = ''
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      workflowsList = await acceptPrompts(`workflows-list-${attempt}`, 4)
+      if (hasInteractiveWorkflowList(workflowsList)) break
+      await delay(700)
+    }
 
     let workflowsDetail = ''
+    let detailMode = 'interactive'
     for (let attempt = 0; attempt < 4; attempt += 1) {
       await send(attempt === 0 ? ['Enter'] : ['Down', 'Enter'], 2200)
       workflowsDetail = await capture(attempt === 0 ? 'workflows-detail' : `workflows-detail-retry-${attempt}`)
-      if (hasRunningDetailText(workflowsDetail)) break
+      if (hasRunningDetailText(workflowsDetail)) {
+        await delay(900)
+        const refreshedDetail = await capture(attempt === 0 ? 'workflows-detail-refresh' : `workflows-detail-retry-${attempt}-refresh`)
+        if (hasRunningDetailText(refreshedDetail)) workflowsDetail = refreshedDetail
+        break
+      }
       await send(['Escape'], 700)
       await send(['/workflows', 'Enter'], 1500)
     }
 
-    let pauseText = ''
+    if (!hasRunningDetailText(workflowsDetail)) {
+      const taskId = extractLocalWorkflowTaskId([afterInvoke, launchText, workflowsList].join('\n'))
+      if (taskId) {
+        detailMode = 'text-command'
+        await send(['Escape'], 700)
+        await paste(`/workflows detail ${taskId}`, 300)
+        await send(['Enter'], 1800)
+        workflowsDetail = await capture('workflows-detail-command')
+      }
+    }
+
+    let agentSelectedDetail = ''
+    let agentDrilldownDetail = ''
     if (hasRunningDetailText(workflowsDetail)) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await send(['Down'], 1200)
+        agentSelectedDetail = await capture(attempt === 0 ? 'workflows-agent-detail' : `workflows-agent-detail-retry-${attempt}`)
+        if (hasAgentSelectedDetailText(agentSelectedDetail)) {
+          await send(['Enter'], 1200)
+          agentDrilldownDetail = await capture('workflows-agent-drilldown')
+          break
+        }
+      }
+    }
+
+    let restartText = ''
+    if (hasAgentSelectedDetailText(agentDrilldownDetail || agentSelectedDetail)) {
+      await send(['r'], 1800)
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        restartText = await capture(attempt === 0 ? 'after-restart' : `after-restart-retry-${attempt}`)
+        if (hasRestartEvidence(restartText)) break
+        await delay(900)
+      }
+    }
+
+    let pauseText = ''
+    if (hasRunningDetailText(restartText || agentDrilldownDetail || agentSelectedDetail || workflowsDetail)) {
       await send(['p'], 1800)
       pauseText = await capture('after-pause')
     }
 
-    const combined = [afterInvoke, launchText, workflowsList, workflowsDetail, pauseText].join('\n')
+    const combined = [afterInvoke, launchText, workflowsList, workflowsDetail, agentSelectedDetail, agentDrilldownDetail, restartText, pauseText].join('\n')
     const hasWorkflowRun = hasLaunchEvidence(combined) || /◯\s+tmux-compat-probe/.test(combined)
     const hasList = hasWorkflowList(workflowsList)
     const hasRunningDetail = hasRunningDetailText(workflowsDetail)
+    const hasAgentSelectedDetail = hasAgentSelectedDetailText(agentSelectedDetail)
+    const hasAgentDrilldown = hasAgentDrilldownText(agentDrilldownDetail)
+    const hasRestart = hasRestartEvidence(restartText)
     const hasPause = hasPauseEvidence(pauseText)
     blocker = hasRunningDetail
       ? 'captured-running-detail'
@@ -216,12 +316,23 @@ async function probeExecutor({ label, command, args }) {
       hasWorkflowRun,
       hasWorkflowList: hasList,
       hasRunningDetail,
+      hasAgentSelectedDetail,
+      hasAgentDrilldown,
+      hasRestartEvidence: hasRestart,
       hasPauseEvidence: hasPause,
+      detailMode,
       blocker,
+      metrics: {
+        runningRows: extractAgentMetricRows(workflowsDetail),
+        agentRows: extractAgentMetricRows(agentSelectedDetail),
+        drilldownRows: extractAgentMetricRows(agentDrilldownDetail),
+        restartRows: extractAgentMetricRows(restartText),
+        pausedRows: extractAgentMetricRows(pauseText),
+      },
       captures,
     }
     await writeFile(join(executorRoot, 'report.json'), `${JSON.stringify(report, null, 2)}\n`)
-    passed = hasWorkflowRun && hasList && hasRunningDetail
+    passed = hasWorkflowRun && hasList && hasRunningDetail && hasAgentSelectedDetail && hasAgentDrilldown && hasRestart
     return report
   } finally {
     if (passed || process.env.WORKFLOW_TMUX_KEEP_SESSIONS !== '1') {
@@ -255,6 +366,9 @@ const report = {
     bothLaunched: official.hasWorkflowRun && local.hasWorkflowRun,
     bothListed: official.hasWorkflowList && local.hasWorkflowList,
     bothCapturedRunningDetail: official.hasRunningDetail && local.hasRunningDetail,
+    bothCapturedAgentSelectedDetail: official.hasAgentSelectedDetail && local.hasAgentSelectedDetail,
+    bothCapturedAgentDrilldown: official.hasAgentDrilldown && local.hasAgentDrilldown,
+    bothRestartEvidence: official.hasRestartEvidence && local.hasRestartEvidence,
     bothPauseEvidence: official.hasPauseEvidence && local.hasPauseEvidence,
   },
 }
@@ -263,6 +377,9 @@ console.log(`workflow tmux compatibility output: ${outputRoot}`)
 console.log(`official=${official.blocker}`)
 console.log(`local=${local.blocker}`)
 console.log(`bothCapturedRunningDetail=${report.parity.bothCapturedRunningDetail}`)
-if (!report.parity.bothCapturedRunningDetail) {
+console.log(`bothCapturedAgentSelectedDetail=${report.parity.bothCapturedAgentSelectedDetail}`)
+console.log(`bothCapturedAgentDrilldown=${report.parity.bothCapturedAgentDrilldown}`)
+console.log(`bothRestartEvidence=${report.parity.bothRestartEvidence}`)
+if (!report.parity.bothCapturedRunningDetail || !report.parity.bothCapturedAgentSelectedDetail) {
   process.exitCode = 1
 }

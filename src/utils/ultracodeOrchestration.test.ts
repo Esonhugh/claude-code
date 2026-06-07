@@ -4,6 +4,7 @@ import {
   getUltracodeOrchestrationSystemPrompt,
   hasUltracodeKeyword,
   getUltracodeNotificationText,
+  isUltracodeKeywordTriggerEnabled,
   shouldInjectUltracodeOrchestration,
 } from './ultracodeOrchestration.js'
 
@@ -13,6 +14,9 @@ assert.equal(findUltracodeTriggerPositions('ultracode this')[0]?.word, 'ultracod
 assert.equal(shouldInjectUltracodeOrchestration('ultracode'), true)
 assert.equal(shouldInjectUltracodeOrchestration('high'), false)
 assert.equal(shouldInjectUltracodeOrchestration(undefined), false)
+assert.equal(isUltracodeKeywordTriggerEnabled({}), true)
+assert.equal(isUltracodeKeywordTriggerEnabled({ ultracodeKeywordTrigger: true }), true)
+assert.equal(isUltracodeKeywordTriggerEnabled({ ultracodeKeywordTrigger: false }), false)
 assert.equal(
   getUltracodeNotificationText(),
   'Dynamic workflow requested for this turn · opt+w to ignore',
