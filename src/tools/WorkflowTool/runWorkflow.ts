@@ -221,15 +221,27 @@ function formatUpstreamOutputs(
   return lines.join('\n')
 }
 
+function formatRunArgs(runArgs: WorkflowArgs | undefined): string {
+  if (runArgs === undefined || runArgs === null) return ''
+  if (typeof runArgs === 'string') return runArgs.trim()
+  return JSON.stringify(runArgs, null, 2)
+}
+
 function buildAgentPrompt(
   phase: WorkflowDryRunPhase,
   index: number,
   resultsByPhase: Map<string, WorkflowAgentResult[]>,
-  _runArgs: WorkflowArgs | undefined,
+  runArgs: WorkflowArgs | undefined,
 ): string {
   const parts = [phase.agentPrompts?.[index] ?? phase.prompt]
   const upstream = formatUpstreamOutputs(phase, resultsByPhase)
   if (upstream) parts.push(upstream)
+  // Inject runArgs into prompts for phases with no upstream dependencies
+  // (root phases that need the user's input to operate)
+  const formattedArgs = formatRunArgs(runArgs)
+  if (formattedArgs && phase.dependsOn.length === 0) {
+    parts.push(`User input:\n${formattedArgs}`)
+  }
   return parts.join('\n\n')
 }
 

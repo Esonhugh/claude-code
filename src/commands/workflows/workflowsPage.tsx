@@ -1,9 +1,8 @@
 import * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Byline } from '../../components/design-system/Byline.js'
+import { Dialog } from '../../components/design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
-import { Pane } from '../../components/design-system/Pane.js'
-import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 import { WorkflowDetailDialog } from '../../components/tasks/WorkflowDetailDialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { Box, Text } from '../../ink.js'
@@ -27,9 +26,11 @@ import {
   workflowDialogDismissedMessage,
 } from './workflowsMessages.js'
 import {
+  completedCount,
   formatWorkflowEmptyState,
-  formatWorkflowListRow,
   getWorkflowPageItems,
+  runningCount,
+  type WorkflowPageItem,
 } from './workflowsPageModel.js'
 
 type Props = {
@@ -57,12 +58,28 @@ export async function call(
   return <WorkflowsPage onComplete={onDone} />
 }
 
+function WorkflowListRow({ item, isSelected }: { item: WorkflowPageItem; isSelected: boolean }): React.ReactNode {
+  const name = item.title.length > 50 ? item.title.slice(0, 49) + '…' : item.title
+  const pointer = isSelected ? '❯ ' : '  '
+  return (
+    <Box>
+      <Text>{pointer}</Text>
+      <Text color={isSelected ? 'suggestion' : undefined}>
+        <Text color={item.iconColor}>{item.icon}</Text>
+        {' '}{name}
+        <Text dimColor>{'  '}{item.metricsText}</Text>
+      </Text>
+    </Box>
+  )
+}
+
 export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
   const tasks = useAppState(s => s.tasks) as Record<string, TaskState> | undefined
   const setAppState = useSetAppState()
   const [viewState, setViewState] = useState<ViewState>({ mode: 'list' })
   const [selectedIndex, setSelectedIndex] = useState(0)
   const workflowItems = useMemo(() => getWorkflowPageItems(tasks), [tasks])
+  const autoJumped = useRef(false)
   useRegisterOverlay('workflows-page')
 
   const close = useCallback(() => {
@@ -70,8 +87,20 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
   }, [onComplete])
 
   const goBackToList = useCallback(() => {
-    setViewState({ mode: 'list' })
-  }, [])
+    if (autoJumped.current && workflowItems.length <= 1) {
+      close()
+    } else {
+      setViewState({ mode: 'list' })
+    }
+  }, [workflowItems.length, close])
+
+  // Auto-jump to detail when only 1 workflow
+  useEffect(() => {
+    if (!autoJumped.current && workflowItems.length === 1 && viewState.mode === 'list') {
+      autoJumped.current = true
+      setViewState({ mode: 'detail', taskId: workflowItems[0]!.id })
+    }
+  }, [workflowItems, viewState.mode])
 
   useEffect(() => {
     if (selectedIndex >= workflowItems.length && workflowItems.length > 0) {
@@ -84,6 +113,16 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
       }
     }
   }, [selectedIndex, tasks, viewState, workflowItems.length])
+
+  const handleKeyDown = useCallback((e: { key: string; ctrl?: boolean; meta?: boolean; preventDefault: () => void }) => {
+    if (e.ctrl || e.meta) return
+    if (viewState.mode !== 'list') return
+    const selected = workflowItems[selectedIndex]
+    if (e.key === 'x' && selected?.status === 'running') {
+      e.preventDefault()
+      killWorkflowTask(selected.id, setAppState)
+    }
+  }, [viewState.mode, workflowItems, selectedIndex, setAppState])
 
   useKeybindings(
     {
@@ -138,45 +177,44 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
     }
   }
 
+  const running = runningCount(workflowItems)
+  const completed = completedCount(workflowItems)
+  const subtitle = workflowItems.length > 0
+    ? [running > 0 && `${running} running`, completed > 0 && `${completed} completed`].filter(Boolean).join(', ')
+    : undefined
+
   return (
-    <Pane color="suggestion">
-      <Box flexDirection="column">
-        <Text color="suggestion" bold>
-          Dynamic workflows
-        </Text>
-        <Text> </Text>
+    <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
+      <Dialog
+        title="Dynamic workflows"
+        subtitle={subtitle}
+        onCancel={close}
+        color="background"
+        inputGuide={() => (
+          <Byline>
+            {workflowItems.length > 0 && (
+              <KeyboardShortcutHint shortcut="↑/↓" action="select" />
+            )}
+            {workflowItems.length > 0 && (
+              <KeyboardShortcutHint shortcut="enter" action="view" />
+            )}
+            {workflowItems[selectedIndex]?.status === 'running' && (
+              <KeyboardShortcutHint shortcut="x" action="stop" />
+            )}
+            <KeyboardShortcutHint shortcut="escape" action="close" />
+          </Byline>
+        )}
+      >
         {workflowItems.length === 0 ? (
           <Text dimColor>{formatWorkflowEmptyState()}</Text>
         ) : (
           <Box flexDirection="column">
             {workflowItems.map((item, index) => (
-              <Text
-                key={item.id}
-                color={index === selectedIndex ? 'suggestion' : undefined}
-              >
-                {formatWorkflowListRow(item, index === selectedIndex)}
-              </Text>
+              <WorkflowListRow key={item.id} item={item} isSelected={index === selectedIndex} />
             ))}
           </Box>
         )}
-        <Text> </Text>
-        <Byline>
-          {workflowItems.length > 0 && [
-            <KeyboardShortcutHint
-              key="select"
-              shortcut="↑/↓"
-              action="select"
-            />,
-            <KeyboardShortcutHint key="view" shortcut="Enter" action="view" />,
-          ]}
-          <ConfigurableShortcutHint
-            action="confirm:no"
-            context="Workflows"
-            fallback="Esc"
-            description="close"
-          />
-        </Byline>
-      </Box>
-    </Pane>
+      </Dialog>
+    </Box>
   )
 }

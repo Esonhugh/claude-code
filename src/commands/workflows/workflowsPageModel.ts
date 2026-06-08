@@ -1,14 +1,18 @@
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { TaskState } from '../../tasks/types.js'
+import type { Theme } from '../../utils/theme.js'
+import { formatDuration, formatNumber } from '../../utils/format.js'
 
 export type WorkflowPageItem = {
   id: string
+  task: LocalWorkflowTaskState
   title: string
   status: LocalWorkflowTaskState['status']
   completedAgents: number
   totalAgents: number
-  progressLabel: string
-  metricsLabel: string
+  icon: string
+  iconColor: keyof Theme | undefined
+  metricsText: string
 }
 
 function isLocalWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
@@ -28,7 +32,7 @@ function completedAgents(task: LocalWorkflowTaskState): number {
 }
 
 function workflowTitle(task: LocalWorkflowTaskState): string {
-  return task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')
+  return task.workflowName ?? task.summary ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
 function visibleAgentTotal(task: LocalWorkflowTaskState): number {
@@ -37,21 +41,40 @@ function visibleAgentTotal(task: LocalWorkflowTaskState): number {
   return task.agentCount ?? started
 }
 
-function formatCount(value: number, singular: string, plural: string): string {
-  return `${value.toLocaleString('en-US')} ${value === 1 ? singular : plural}`
+function statusIcon(status: LocalWorkflowTaskState['status']): { icon: string; color: keyof Theme | undefined } {
+  switch (status) {
+    case 'completed': return { icon: '✓', color: 'success' }
+    case 'failed':
+    case 'killed': return { icon: '✗', color: 'error' }
+    default: return { icon: '↻', color: undefined }
+  }
+}
+
+function elapsedMs(task: LocalWorkflowTaskState): number {
+  const pausedMs = task.totalPausedMs ?? 0
+  const end = task.endTime ?? Date.now()
+  return Math.max(0, end - task.startTime - pausedMs)
 }
 
 function toWorkflowPageItem(task: LocalWorkflowTaskState): WorkflowPageItem {
   const completed = completedAgents(task)
   const total = visibleAgentTotal(task)
+  const { icon, color } = statusIcon(task.status)
+  const tokenCount = task.tokenCount ?? task.results.reduce((sum, r) => sum + (r.tokenCount ?? 0), 0)
+  const parts: string[] = []
+  if (total > 0) parts.push(`${total} ${total === 1 ? 'agent' : 'agents'}`)
+  if (tokenCount > 0) parts.push(`${formatNumber(tokenCount)} tok`)
+  parts.push(formatDuration(elapsedMs(task)))
   return {
     id: task.id,
+    task,
     title: workflowTitle(task),
     status: task.status,
     completedAgents: completed,
     totalAgents: total,
-    progressLabel: `${completed}/${total} agents`,
-    metricsLabel: `${formatCount(task.tokenCount ?? 0, 'token', 'tokens')} · ${formatCount(task.toolUseCount ?? 0, 'tool use', 'tool uses')}`,
+    icon,
+    iconColor: color,
+    metricsText: parts.join(' · '),
   }
 }
 
@@ -65,16 +88,13 @@ export function getWorkflowPageItems(
   return Object.values(tasks ?? {})
     .filter(isLocalWorkflowTask)
     .map(toWorkflowPageItem)
-    .sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1
-      if (a.status !== 'running' && b.status === 'running') return 1
-      return 0
-    })
+    .sort((a, b) => b.task.startTime - a.task.startTime)
 }
 
-export function formatWorkflowListRow(
-  item: WorkflowPageItem,
-  selected: boolean,
-): string {
-  return `${selected ? '›' : ' '} ${item.title} — ${item.status} — ${item.progressLabel} — ${item.metricsLabel}`
+export function runningCount(items: WorkflowPageItem[]): number {
+  return items.filter(i => i.status === 'running').length
+}
+
+export function completedCount(items: WorkflowPageItem[]): number {
+  return items.filter(i => i.status !== 'running').length
 }
