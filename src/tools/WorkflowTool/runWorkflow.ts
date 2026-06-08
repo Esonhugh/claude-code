@@ -655,6 +655,20 @@ export async function runWorkflowPlan({
         })
       }
       resultsByPhase.set(phase.id, results)
+      // Guard: if a single-agent root phase produced an empty or refusal output,
+      // abort the workflow early instead of letting downstream phases spin on garbage
+      if (
+        phase.fanout === 1 &&
+        phase.dependsOn.length === 0 &&
+        results.length === 1
+      ) {
+        const output = results[0]?.output ?? ''
+        if (!output || output.length < 20) {
+          throw new Error(
+            `Workflow aborted: root phase "${phase.id}" returned insufficient output (${output.length} chars). The phase agent may not have received valid input.`,
+          )
+        }
+      }
       await emit(createWorkflowPhaseEvent({
         workflowRunId,
         phaseId: phase.id,
@@ -690,6 +704,8 @@ export async function runWorkflowPlan({
       'Use /workflows to watch live progress.',
     ].join('\n')
   } catch (error) {
+    // Abort remaining agents on workflow failure
+    workflowTask.abortController?.abort()
     const message = error instanceof Error ? error.message : String(error)
     const allResults = [...resultsByPhase.values()].flat()
     failWorkflowTask(workflowTask.id, message, setAppState)
