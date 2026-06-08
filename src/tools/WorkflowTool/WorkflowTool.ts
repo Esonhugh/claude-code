@@ -11,6 +11,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
 import { runWorkflowPlan } from './runWorkflow.js'
+import { runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan, WorkflowProgressEvent, WorkflowSpec } from './workflowSpec.js'
 import { updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
 import {
@@ -240,6 +241,20 @@ export const WorkflowTool = buildTool({
     }
 
     if (action === 'run') {
+      // Use script runtime for script-based workflows
+      if (workflow.spec.runScriptSnapshot && workflow.spec.runtime?.kind === 'javascript-worker') {
+        return {
+          data: await runWorkflowScript({
+            script: workflow.spec.runScriptSnapshot,
+            plan: workflow.plan,
+            args: runArgs,
+            context,
+            canUseTool,
+            assistantMessage,
+            scriptPath: workflow.path,
+          }),
+        }
+      }
       return {
         data: await runWorkflowPlan({
           plan: workflow.plan,

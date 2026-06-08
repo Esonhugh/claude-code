@@ -7,6 +7,7 @@ import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { runWorkflowPlan } from './runWorkflow.js'
+import { runWorkflowScript } from './workflowScriptRuntime.js'
 import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 import {
   createWorkflowRunId,
@@ -198,6 +199,20 @@ export const WorkflowFacadeTool = buildTool({
         normalized.selector,
         normalized.args,
       )
+      // Use script runtime for script-based workflows
+      if (workflow.spec.runScriptSnapshot && workflow.spec.runtime?.kind === 'javascript-worker') {
+        return {
+          data: await runWorkflowScript({
+            script: workflow.spec.runScriptSnapshot,
+            plan: workflow.plan,
+            args: normalized.args,
+            context,
+            canUseTool,
+            assistantMessage,
+            scriptPath: workflow.path,
+          }),
+        }
+      }
       return {
         data: await runWorkflowPlan({
           plan: workflow.plan,
@@ -220,9 +235,25 @@ export const WorkflowFacadeTool = buildTool({
             script: normalized.script,
           })
     const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args)
+    const plan = validateWorkflowSpec(spec) as WorkflowDryRunPlan
+    // Use script runtime for script-based workflows
+    if (spec.runScriptSnapshot && spec.runtime?.kind === 'javascript-worker') {
+      return {
+        data: await runWorkflowScript({
+          script: spec.runScriptSnapshot,
+          plan,
+          args: normalized.args,
+          context,
+          canUseTool,
+          assistantMessage,
+          workflowRunId,
+          scriptPath,
+        }),
+      }
+    }
     return {
       data: await runWorkflowPlan({
-        plan: validateWorkflowSpec(spec) as WorkflowDryRunPlan,
+        plan,
         context,
         canUseTool,
         assistantMessage,
