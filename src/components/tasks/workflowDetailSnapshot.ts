@@ -30,6 +30,12 @@ function workflowDescription(task: LocalWorkflowTaskState): string {
   return task.meta?.description ?? task.summary ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
+function visibleAgentTotal(task: LocalWorkflowTaskState): number {
+  const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
+  if ((task.status === 'running' || task.status === 'pending') && started > 0) return started
+  return task.agentCount ?? started
+}
+
 function pad(value: string, width: number): string {
   const truncated = value.length > width ? value.slice(0, Math.max(0, width - 1)) : value
   return `${truncated}${' '.repeat(Math.max(0, width - truncated.length))}`
@@ -91,7 +97,7 @@ function agentRow(task: LocalWorkflowTaskState, agentId: string, selected: boole
 
 function formatHeader(task: LocalWorkflowTaskState): string[] {
   const completed = completedAgents(task)
-  const total = task.agentCount ?? 0
+  const total = visibleAgentTotal(task)
   const description = workflowDescription(task)
   const metrics = `${completed}/${total} ${total === 1 ? 'agent' : 'agents'} · ${elapsedSeconds(task)}s${task.status === 'pending' ? ' · paused' : ''}`
   return [

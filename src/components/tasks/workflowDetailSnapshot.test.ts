@@ -200,6 +200,32 @@ assert.equal(
   '↑↓ select · p resume · esc back · s save',
 )
 
+const stagedLines = workflowDetailSnapshotLines({
+  ...workflow,
+  agentCount: 4,
+  phases: [
+    {
+      id: 'Fanout',
+      status: 'running',
+      agentIds: ['fanout-1', 'fanout-2', 'fanout-3'],
+      completedAgentIds: [],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [],
+    },
+    {
+      id: 'After',
+      status: 'pending',
+      agentIds: [],
+      completedAgentIds: [],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [],
+    },
+  ],
+})
+assert.equal(stagedLines[1], 'Official-style running workflow detail.                                                        0/3 agents · 2s')
+
 assert.equal(initialSelectedWorkflowAgentIndex(workflow), 0)
 assert.equal(initialSelectedWorkflowAgentIndex({ ...workflow, status: 'pending' }), null)
 assert.equal(initialSelectedWorkflowAgentIndex({ ...workflow, phases: [{ ...workflow.phases[0]!, agentIds: [] }] }), null)

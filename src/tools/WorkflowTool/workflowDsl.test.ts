@@ -217,6 +217,38 @@ assert.equal(officialSpec.phases[0]?.prompt, 'Find files for runtime')
 assert.deepEqual(officialSpec.meta?.phases, [{ title: 'Scan', detail: 'Find files' }])
 assert.equal(officialSpec.runtime?.kind, 'javascript-worker')
 
+const officialParallelPath = join(tempRoot, 'docs', 'workflows', 'official-parallel.js')
+await writeFile(
+  officialParallelPath,
+  `export const meta = {
+    name: 'official-parallel-workflow',
+    description: 'Official-style workflow with grouped parallel agents',
+    phases: [
+      { title: 'Fanout', detail: 'Launch fanout agents' },
+      { title: 'After', detail: 'Run after fanout' },
+    ],
+  }
+
+  phase('Fanout')
+  await parallel([1, 2, 3].map(i => () =>
+    agent('fanout prompt ' + i, { label: 'fanout-' + i, phase: 'Fanout' })
+  ))
+  phase('After')
+  await agent('after prompt', { label: 'after', phase: 'After' })
+  `,
+)
+
+const officialParallelSpec = await loadWorkflowScriptSpec(officialParallelPath)
+assert.equal(officialParallelSpec.phases.length, 2)
+assert.equal(officialParallelSpec.phases[0]?.id, 'Fanout')
+assert.equal(officialParallelSpec.phases[0]?.fanout, 3)
+assert.equal(officialParallelSpec.phases[0]?.concurrency, 3)
+assert.deepEqual(officialParallelSpec.phases[0]?.agentLabels, ['fanout-1', 'fanout-2', 'fanout-3'])
+assert.deepEqual(officialParallelSpec.phases[0]?.agentPrompts, ['fanout prompt 1', 'fanout prompt 2', 'fanout prompt 3'])
+assert.equal(officialParallelSpec.phases[1]?.id, 'After')
+assert.deepEqual(officialParallelSpec.phases[1]?.dependsOn, ['Fanout'])
+assert.deepEqual(officialParallelSpec.phases[1]?.agentLabels, ['after'])
+
 const officialUrlPath = join(tempRoot, 'docs', 'workflows', 'official-url.js')
 await writeFile(
   officialUrlPath,

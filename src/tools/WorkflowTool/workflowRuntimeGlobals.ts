@@ -90,6 +90,7 @@ export function createWorkflowRuntimeGlobals({
 }) {
   const phases: WorkflowPhaseSpec[] = []
   let currentPhase: string | undefined
+  let lastGroupedPhaseId: string | undefined
   let callIndex = 0
   let spent = 0
 
@@ -105,6 +106,60 @@ export function createWorkflowRuntimeGlobals({
       prompt: `Run workflow phase: ${title}`,
       fanout: 0,
     })
+  }
+
+  function removePhasePlaceholder(title: string): void {
+    const placeholderIndex = phases.findIndex(
+      phase => phase.id === title && phase.prompt === `Run workflow phase: ${title}`,
+    )
+    if (placeholderIndex !== -1) phases.splice(placeholderIndex, 1)
+  }
+
+  function upsertGroupedAgentPhase({
+    phaseId,
+    label,
+    prompt,
+    opts,
+  }: {
+    phaseId: string
+    label: string
+    prompt: string
+    opts?: WorkflowRuntimeAgentOptions
+  }): void {
+    removePhasePlaceholder(phaseId)
+    const phaseIndex = phases.findIndex(phase => phase.id === phaseId)
+    const previousPhase = lastGroupedPhaseId && lastGroupedPhaseId !== phaseId
+      ? lastGroupedPhaseId
+      : undefined
+    lastGroupedPhaseId = phaseId
+    const agentLabels = phaseIndex === -1
+      ? [label]
+      : [...(phases[phaseIndex]?.agentLabels ?? []), label]
+    const agentPrompts = phaseIndex === -1
+      ? [prompt]
+      : [...(phases[phaseIndex]?.agentPrompts ?? []), prompt]
+    const phaseSpec: WorkflowPhaseSpec = {
+      id: phaseId,
+      description: opts?.phase ?? currentPhase ?? phaseId,
+      prompt: agentPrompts[0] ?? prompt,
+      displayName: phaseId,
+      ...(previousPhase ? { dependsOn: [previousPhase] } : {}),
+      fanout: agentLabels.length,
+      concurrency: agentLabels.length,
+      agentLabels,
+      agentPrompts,
+      ...(opts?.model ? { model: opts.model } : {}),
+      ...(opts?.agentType ? { agentType: opts.agentType } : {}),
+    }
+    if (phaseIndex === -1) {
+      phases.push(phaseSpec)
+    } else {
+      phases[phaseIndex] = {
+        ...phases[phaseIndex],
+        ...phaseSpec,
+        dependsOn: phases[phaseIndex]?.dependsOn ?? phaseSpec.dependsOn,
+      }
+    }
   }
 
   const globals = {
@@ -134,25 +189,27 @@ export function createWorkflowRuntimeGlobals({
       const label = nextLabel(opts)
       callIndex += 1
       spent += 1
-      const placeholderIndex = currentPhase
-        ? phases.findIndex(phase => phase.id === currentPhase && phase.prompt === `Run workflow phase: ${currentPhase}`)
-        : -1
-      if (placeholderIndex !== -1) {
-        phases.splice(placeholderIndex, 1)
-      }
-      const phaseIndex = phases.findIndex(phase => phase.id === label)
-      const phaseSpec = {
-        id: label,
-        description: label,
-        prompt,
-        displayName: label,
-        ...(opts?.model ? { model: opts.model } : {}),
-        ...(opts?.agentType ? { agentType: opts.agentType } : {}),
-      }
-      if (phaseIndex === -1) {
-        phases.push(phaseSpec)
+      if (opts?.phase) {
+        upsertGroupedAgentPhase({ phaseId: opts.phase, label, prompt, opts })
       } else {
-        phases[phaseIndex] = phaseSpec
+        if (currentPhase) removePhasePlaceholder(currentPhase)
+        const phaseIndex = phases.findIndex(phase => phase.id === label)
+        const phaseSpec = {
+          id: label,
+          description: label,
+          prompt,
+          displayName: label,
+          agentLabels: [label],
+          agentPrompts: [prompt],
+          ...(opts?.model ? { model: opts.model } : {}),
+          ...(opts?.agentType ? { agentType: opts.agentType } : {}),
+        }
+        if (phaseIndex === -1) {
+          phases.push(phaseSpec)
+        } else {
+          phases[phaseIndex] = phaseSpec
+        }
+        lastGroupedPhaseId = label
       }
       return (placeholderForSchema(opts?.schema, label) ?? {
         label,

@@ -261,6 +261,8 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
       permissionMode,
       agentType: phase.agentType ?? defaults.agentType,
       model: phase.model ?? defaults.model,
+      ...(phase.agentLabels ? { agentLabels: phase.agentLabels } : {}),
+      ...(phase.agentPrompts ? { agentPrompts: phase.agentPrompts } : {}),
     }
   })
 

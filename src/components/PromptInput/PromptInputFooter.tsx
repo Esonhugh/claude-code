@@ -226,7 +226,9 @@ function PromptInputFooter({
           <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
         </Box>
       </Box>
-      <CoordinatorTaskPanel onOpenTasksDialog={onOpenTasksDialog} />
+      {!isLocalJSXCommandActive && (
+        <CoordinatorTaskPanel onOpenTasksDialog={onOpenTasksDialog} />
+      )}
     </>
   )
 }

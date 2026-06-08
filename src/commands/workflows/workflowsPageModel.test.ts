@@ -148,4 +148,38 @@ assert.equal(
   '  Bugfix — failed — 1/2 agents — 0 tokens · 0 tool uses',
 )
 
+const staged = workflowTask({
+  id: 'w-staged',
+  workflowName: 'Staged Workflow',
+  status: 'running',
+  agentCount: 4,
+  phases: [
+    {
+      id: 'Fanout',
+      status: 'running',
+      agentIds: ['fanout-1', 'fanout-2', 'fanout-3'],
+      completedAgentIds: [],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [],
+    },
+    {
+      id: 'After',
+      status: 'pending',
+      agentIds: [],
+      completedAgentIds: [],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [],
+    },
+  ],
+})
+const stagedItem = getWorkflowPageItems({ [staged.id]: staged })[0]!
+assert.equal(stagedItem.totalAgents, 3)
+assert.equal(stagedItem.progressLabel, '0/3 agents')
+assert.equal(
+  formatWorkflowListRow(stagedItem, true),
+  '› Staged Workflow — running — 0/3 agents — 0 tokens · 0 tool uses',
+)
+
 console.log('workflowsPageModel.test.ts passed')

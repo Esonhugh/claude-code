@@ -23,6 +23,7 @@ type CoordinatorSessionRowsInput = {
   viewingAgentTaskId?: string
   nameByAgentId: Map<string, string>
   now?: number
+  omitMainRow?: boolean
 }
 
 function isPanelAgentTask(t: unknown): t is LocalAgentTaskState {
@@ -44,13 +45,30 @@ function isPanelWorkflowTask(t: unknown): t is LocalWorkflowTaskState {
   )
 }
 
+function workflowToolUseIds(tasks: AppState['tasks']): Set<string> {
+  return new Set(
+    Object.values(tasks)
+      .filter(isPanelWorkflowTask)
+      .map(task => task.toolUseId)
+      .filter((toolUseId): toolUseId is string => Boolean(toolUseId)),
+  )
+}
+
+function isWorkflowChildAgent(
+  task: LocalAgentTaskState,
+  workflowToolUses: Set<string>,
+): boolean {
+  return Boolean(task.toolUseId && workflowToolUses.has(task.toolUseId))
+}
+
 export function getVisibleAgentTasks(
   tasks: AppState['tasks'],
 ): CoordinatorPanelTask[] {
+  const workflowToolUses = workflowToolUseIds(tasks)
   return Object.values(tasks)
     .filter(
       (t): t is CoordinatorPanelTask =>
-        (isPanelAgentTask(t) && t.evictAfter !== 0) || isPanelWorkflowTask(t),
+        (isPanelAgentTask(t) && t.evictAfter !== 0 && !isWorkflowChildAgent(t, workflowToolUses)) || isPanelWorkflowTask(t),
     )
     .sort((a, b) => a.startTime - b.startTime)
 }
@@ -106,7 +124,7 @@ function agentRowLabel(task: LocalAgentTaskState, nameByAgentId: Map<string, str
 }
 
 function workflowRowLabel(task: LocalWorkflowTaskState): string {
-  return `workflow ${task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')}`
+  return task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
 function agentRowMeta(task: LocalAgentTaskState): string {
@@ -117,7 +135,10 @@ function agentRowMeta(task: LocalAgentTaskState): string {
 
 function workflowRowMeta(task: LocalWorkflowTaskState): string {
   const completed = workflowCompletedAgents(task)
-  const total = task.agentCount ?? task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
+  const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
+  const total = (task.status === 'running' || task.status === 'pending') && started > 0
+    ? started
+    : task.agentCount ?? started
   const tokenCount = task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0)
   return `${completed}/${total} agents · ${formatNumber(tokenCount)} tok`
 }
@@ -128,8 +149,38 @@ export function getCoordinatorSessionRows({
   viewingAgentTaskId,
   nameByAgentId,
   now = Date.now(),
+  omitMainRow = false,
 }: CoordinatorSessionRowsInput): CoordinatorSessionRow[] {
   const visibleTasks = getVisibleAgentTasks(tasks)
+  const taskRows = visibleTasks.map((task, index): CoordinatorSessionRow => {
+    const selected = selectedIndex === index + (omitMainRow ? 0 : 1)
+    if (task.type === 'local_agent') {
+      return {
+        id: task.id,
+        taskId: task.id,
+        kind: 'agent',
+        selected,
+        viewed: viewingAgentTaskId === task.id,
+        icon: taskIcon(task),
+        label: agentRowLabel(task, nameByAgentId),
+        meta: agentRowMeta(task),
+        statusText: agentStatusText(task, now),
+      }
+    }
+    return {
+      id: task.id,
+      taskId: task.id,
+      kind: 'workflow',
+      selected,
+      viewed: false,
+      icon: taskIcon(task),
+      label: workflowRowLabel(task),
+      meta: workflowRowMeta(task),
+      statusText: workflowStatusText(task, now),
+    }
+  })
+
+  if (omitMainRow) return taskRows
   return [
     {
       id: 'main',
@@ -142,32 +193,6 @@ export function getCoordinatorSessionRows({
       meta: '',
       statusText: 'current session',
     },
-    ...visibleTasks.map((task, index): CoordinatorSessionRow => {
-      const selected = selectedIndex === index + 1
-      if (task.type === 'local_agent') {
-        return {
-          id: task.id,
-          taskId: task.id,
-          kind: 'agent',
-          selected,
-          viewed: viewingAgentTaskId === task.id,
-          icon: taskIcon(task),
-          label: agentRowLabel(task, nameByAgentId),
-          meta: agentRowMeta(task),
-          statusText: agentStatusText(task, now),
-        }
-      }
-      return {
-        id: task.id,
-        taskId: task.id,
-        kind: 'workflow',
-        selected,
-        viewed: false,
-        icon: taskIcon(task),
-        label: workflowRowLabel(task),
-        meta: workflowRowMeta(task),
-        statusText: workflowStatusText(task, now),
-      }
-    }),
+    ...taskRows,
   ]
 }

@@ -11,13 +11,14 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
 import { runWorkflowPlan } from './runWorkflow.js'
-import type { WorkflowDryRunPlan, WorkflowProgressEvent } from './workflowSpec.js'
+import type { WorkflowDryRunPlan, WorkflowProgressEvent, WorkflowSpec } from './workflowSpec.js'
 import { updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
 import {
   discoverWorkflowSpecs,
   loadWorkflowSpecByNameOrPath,
 } from './workflowDiscovery.js'
 import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
+import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -80,6 +81,18 @@ function latestWorkflowProgressEvent(task: LocalWorkflowTaskState): WorkflowProg
     .slice()
     .reverse()
     .find(event => event.type === 'workflow_progress')
+}
+
+function normalizeExecutableWorkflowPlan(plan: unknown): WorkflowDryRunPlan {
+  if (!plan || typeof plan !== 'object') {
+    throw new Error('Invalid executable workflow plan: plan must be an object')
+  }
+  try {
+    return validateWorkflowSpec(plan as WorkflowSpec)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Invalid executable workflow plan: ${message}`)
+  }
 }
 
 async function persistWorkflowControlStatus({
@@ -173,10 +186,11 @@ export const WorkflowTool = buildTool({
       return { data: await listWorkflows(cwd) }
     }
 
-    if (action === 'run' && plan) {
+    if (action === 'run' && plan && !selector?.trim()) {
+      const executablePlan = normalizeExecutableWorkflowPlan(plan)
       return {
         data: await runWorkflowPlan({
-          plan: plan as WorkflowDryRunPlan,
+          plan: executablePlan,
           context,
           canUseTool,
           assistantMessage,

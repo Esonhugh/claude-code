@@ -31,16 +31,19 @@ function workflowTitle(task: LocalWorkflowTaskState): string {
   return task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
+function visibleAgentTotal(task: LocalWorkflowTaskState): number {
+  const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
+  if ((task.status === 'running' || task.status === 'pending') && started > 0) return started
+  return task.agentCount ?? started
+}
+
 function formatCount(value: number, singular: string, plural: string): string {
   return `${value.toLocaleString('en-US')} ${value === 1 ? singular : plural}`
 }
 
 function toWorkflowPageItem(task: LocalWorkflowTaskState): WorkflowPageItem {
   const completed = completedAgents(task)
-  const total = task.agentCount ?? task.phases.reduce(
-    (sum, phase) => sum + phase.agentIds.length,
-    0,
-  )
+  const total = visibleAgentTotal(task)
   return {
     id: task.id,
     title: workflowTitle(task),

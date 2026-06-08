@@ -4,7 +4,7 @@ const workflows = {
   type: 'local-jsx',
   name: 'workflows',
   description: 'View dynamic workflow runs',
-  argumentHint: '[list|show|dry-run|run|templates|save-template|run-template|status|pause|resume] [name-or-path]',
+  argumentHint: '',
   immediate: true,
   load: () => import('./workflowsPage.js'),
 } satisfies Command

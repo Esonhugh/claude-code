@@ -25,6 +25,23 @@ const agentTask: LocalAgentTaskState = {
   },
 } as unknown as LocalAgentTaskState
 
+const workflowChildAgentTask: LocalAgentTaskState = {
+  id: 'workflow-child-agent',
+  type: 'local_agent',
+  status: 'running',
+  description: 'tmux-agent-smoke: Run',
+  prompt: 'Run workflow child agent',
+  startTime: 2_500,
+  outputFile: '.claude/tasks/workflow-child-agent.output',
+  outputOffset: 0,
+  notified: false,
+  toolUseId: 'workflow-tool-use',
+  progress: {
+    tokenCount: 500,
+    toolUseCount: 1,
+  },
+} as unknown as LocalAgentTaskState
+
 const workflowTask: LocalWorkflowTaskState = {
   id: 'workflow-1',
   type: 'local_workflow',
@@ -41,6 +58,7 @@ const workflowTask: LocalWorkflowTaskState = {
   outputFile: '.claude/tasks/workflow-1.output',
   outputOffset: 0,
   notified: false,
+  toolUseId: 'workflow-tool-use',
   phases: [
     {
       id: 'Run',
@@ -80,6 +98,7 @@ const workflowTask: LocalWorkflowTaskState = {
 
 const tasks = {
   [agentTask.id]: agentTask,
+  [workflowChildAgentTask.id]: workflowChildAgentTask,
   [workflowTask.id]: workflowTask,
 } as unknown as AppState['tasks']
 
@@ -116,8 +135,21 @@ assert.equal(rows[1]?.statusText, 'running · Read(src/index.ts)')
 assert.equal(rows[2]?.id, 'workflow-1')
 assert.equal(rows[2]?.kind, 'workflow')
 assert.equal(rows[2]?.selected, true)
-assert.equal(rows[2]?.label, 'workflow tmux-agent-smoke')
+assert.equal(rows[2]?.label, 'tmux-agent-smoke')
 assert.equal(rows[2]?.meta, '1/1 agents · 19.6k tok')
 assert.equal(rows[2]?.statusText, 'done · 2s')
+
+const workflowOnlyRows = getCoordinatorSessionRows({
+  tasks: { [workflowTask.id]: workflowTask } as unknown as AppState['tasks'],
+  selectedIndex: 0,
+  viewingAgentTaskId: undefined,
+  nameByAgentId: new Map(),
+  now: 5_000,
+  omitMainRow: true,
+})
+assert.equal(workflowOnlyRows.length, 1)
+assert.equal(workflowOnlyRows[0]?.kind, 'workflow')
+assert.equal(workflowOnlyRows[0]?.selected, true)
+assert.equal(workflowOnlyRows[0]?.label, 'tmux-agent-smoke')
 
 console.log('CoordinatorAgentStatus.test.ts passed')

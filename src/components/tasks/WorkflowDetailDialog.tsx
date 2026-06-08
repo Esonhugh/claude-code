@@ -38,6 +38,12 @@ function workflowDescription(task: LocalWorkflowTaskState): string {
   return task.meta?.description ?? task.summary ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
+function visibleAgentTotal(task: LocalWorkflowTaskState): number {
+  const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
+  if ((task.status === 'running' || task.status === 'pending') && started > 0) return started
+  return task.agentCount ?? started
+}
+
 function displayPhaseId(task: LocalWorkflowTaskState, phaseIndex: number): string {
   return task.meta?.phases?.[phaseIndex]?.title ?? task.phases[phaseIndex]?.id ?? ''
 }
@@ -106,7 +112,7 @@ function StatusIcon({ task, selected }: { task: LocalWorkflowTaskState; selected
 }
 
 function WorkflowHeader({ workflow }: { workflow: LocalWorkflowTaskState }): React.JSX.Element {
-  const total = workflow.agentCount ?? 0
+  const total = visibleAgentTotal(workflow)
   const metrics = `${completedAgents(workflow)}/${total} ${total === 1 ? 'agent' : 'agents'} · ${elapsedSeconds(workflow)}s${workflow.status === 'pending' ? ' · paused' : ''}`
   return (
     <Box flexDirection="column">

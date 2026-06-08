@@ -69,7 +69,10 @@ const projectCommands = commands.filter(command =>
   ['research-workflow', 'js-command-workflow'].includes(command.name),
 )
 assert.equal(projectCommands.length, 2)
-assert.ok(commands.some(command => command.name === 'bughunt-lite'))
+assert.ok(commands.some(command => command.name === 'deep-research'))
+assert.ok(commands.some(command => command.name === 'investigate'))
+assert.equal(commands.some(command => command.name === 'bugfix'), false)
+assert.equal(commands.some(command => command.name === 'docs'), false)
 
 const command = commands.find(command => command.name === 'research-workflow')!
 assert.equal(command.type, 'prompt')
@@ -83,10 +86,14 @@ const text = prompt.map(block => (block.type === 'text' ? block.text : '')).join
 assert.match(text, /Workflow: research-workflow/)
 assert.match(text, /Planned agents: 3/)
 assert.match(text, /User input:\s*topic: workflow testing/)
-assert.match(text, /Use the Agent tool/)
+assert.match(text, /through the Agent tool/)
 assert.match(text, /Do not bypass workflow phases/)
 assert.doesNotMatch(text, /no hidden workflow runtime/)
 assert.match(text, /WorkflowTool\.run/)
+assert.match(text, /selector: "research-workflow"/)
+assert.match(text, /Must use WorkflowTool\.run when it is available/)
+assert.match(text, /Do not call WorkflowTool with only a plan copied from this prompt/)
+assert.doesNotMatch(text, /Prefer WorkflowTool\.run/)
 assert.match(text, /permissionMode: plan/)
 assert.match(text, /Honor each phase permissionMode/)
 assert.match(text, /mode "plan"/)

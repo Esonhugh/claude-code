@@ -44,6 +44,8 @@ export type WorkflowPhaseSpec = {
   permissionMode?: WorkflowPermissionMode
   agentType?: string
   model?: string
+  agentLabels?: string[]
+  agentPrompts?: string[]
 }
 
 export type WorkflowOutputSpec = {
@@ -115,6 +117,8 @@ export type WorkflowDryRunPhase = {
   permissionMode: WorkflowPermissionMode
   agentType?: string
   model?: string
+  agentLabels?: string[]
+  agentPrompts?: string[]
 }
 
 export type WorkflowDryRunPlan = {

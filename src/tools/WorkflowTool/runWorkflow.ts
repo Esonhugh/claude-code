@@ -198,6 +198,8 @@ function workflowAgentName(
   phase: WorkflowDryRunPhase,
   index: number,
 ): string {
+  const label = phase.agentLabels?.[index]
+  if (label) return label
   if (phase.displayName && phase.fanout === 1) return phase.displayName
   if (phase.displayName) return `${phase.displayName}-${index + 1}`
   return `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${index + 1}`
@@ -221,10 +223,11 @@ function formatUpstreamOutputs(
 
 function buildAgentPrompt(
   phase: WorkflowDryRunPhase,
+  index: number,
   resultsByPhase: Map<string, WorkflowAgentResult[]>,
   _runArgs: WorkflowArgs | undefined,
 ): string {
-  const parts = [phase.prompt]
+  const parts = [phase.agentPrompts?.[index] ?? phase.prompt]
   const upstream = formatUpstreamOutputs(phase, resultsByPhase)
   if (upstream) parts.push(upstream)
   return parts.join('\n\n')
@@ -413,7 +416,7 @@ async function runPhaseAgent({
   resumeRuntime: WorkflowResumeRuntime
   runArgs?: WorkflowArgs
 }): Promise<WorkflowAgentRunResult> {
-  const prompt = buildAgentPrompt(phase, resultsByPhase, runArgs)
+  const prompt = buildAgentPrompt(phase, index, resultsByPhase, runArgs)
   const identity = createAgentCallIdentity({
     index: agentIndex,
     phase: phase.id,

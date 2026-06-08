@@ -332,7 +332,7 @@ async function probeExecutor({ label, command, args }) {
       captures,
     }
     await writeFile(join(executorRoot, 'report.json'), `${JSON.stringify(report, null, 2)}\n`)
-    passed = hasWorkflowRun && hasList && hasRunningDetail && hasAgentSelectedDetail && hasAgentDrilldown && hasRestart
+    passed = hasWorkflowRun && hasList && hasRunningDetail && hasAgentSelectedDetail && hasAgentDrilldown && hasRestart && hasPause
     return report
   } finally {
     if (passed || process.env.WORKFLOW_TMUX_KEEP_SESSIONS !== '1') {
@@ -380,6 +380,14 @@ console.log(`bothCapturedRunningDetail=${report.parity.bothCapturedRunningDetail
 console.log(`bothCapturedAgentSelectedDetail=${report.parity.bothCapturedAgentSelectedDetail}`)
 console.log(`bothCapturedAgentDrilldown=${report.parity.bothCapturedAgentDrilldown}`)
 console.log(`bothRestartEvidence=${report.parity.bothRestartEvidence}`)
-if (!report.parity.bothCapturedRunningDetail || !report.parity.bothCapturedAgentSelectedDetail) {
+if (
+  !report.parity.bothLaunched ||
+  !report.parity.bothListed ||
+  !report.parity.bothCapturedRunningDetail ||
+  !report.parity.bothCapturedAgentSelectedDetail ||
+  !report.parity.bothCapturedAgentDrilldown ||
+  !report.parity.bothRestartEvidence ||
+  !report.parity.bothPauseEvidence
+) {
   process.exitCode = 1
 }

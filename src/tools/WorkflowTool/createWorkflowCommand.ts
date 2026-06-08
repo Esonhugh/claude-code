@@ -41,7 +41,8 @@ function buildWorkflowPrompt(
         `Source: ${workflow.path}\n\n` +
         `${dryRun}\n` +
         `User input:\n${formatWorkflowArgs(args).trim() || '(none)'}\n\n` +
-        `Execute this validated workflow as an orchestration plan. Use the ${AGENT_TOOL_NAME} tool for phase work. Do not bypass workflow phases by directly completing phase work with shell or filesystem tools in the main thread.\n\n` +
+        `Execute this validated workflow through WorkflowTool.run with selector-based input. Use selector: "${workflow.commandName}" and pass the user input as runArgs. Do not call WorkflowTool with only a plan copied from this prompt; this prompt's phase summary is for inspection and orchestration guidance only.\n` +
+        `WorkflowTool.run must execute phase work through the ${AGENT_TOOL_NAME} tool, record LocalWorkflowTask phase state, and preserve normal permission and hook boundaries. Do not bypass workflow phases by directly completing phase work with shell or filesystem tools in the main thread.\n\n` +
         `Rules:\n` +
         `- Respect phase dependencies: do not start a phase until all dependencies are complete.\n` +
         `- Respect each phase fanout and concurrency limit.\n` +
@@ -51,15 +52,22 @@ function buildWorkflowPrompt(
         `- For cross-check or adversarial review phases, have workers verify prior phase outputs and identify unsupported claims.\n` +
         `- For synthesis phases, include only findings that survived review.\n` +
         `- Agents inherit their normal Claude Code tool permissions and hooks; do not narrow child agents to the parent orchestration tool scope.\n` +
-        `- Prefer WorkflowTool.run for execution when available so phase state, retries, status, pause/resume, and task progress are recorded by the workflow runtime.\n\n` +
+        `- Must use WorkflowTool.run when it is available so phase state, retries, status, pause/resume, and task progress are recorded by the workflow runtime. The fanout and worker rules describe behavior the workflow runtime must perform, not manual orchestration for the main thread.\n\n` +
         phaseDetails,
     },
   ]
 }
 
+const BUNDLED_SLASH_WORKFLOW_COMMANDS = new Set(['deep-research', 'investigate'])
+
+function shouldRegisterWorkflowSlashCommand(workflow: DiscoveredWorkflowSpec): boolean {
+  if (!workflow.path.startsWith('bundled:')) return true
+  return BUNDLED_SLASH_WORKFLOW_COMMANDS.has(workflow.commandName)
+}
+
 export async function getWorkflowCommands(cwd: string): Promise<Command[]> {
   const discovery = await discoverWorkflowSpecs(cwd)
-  return discovery.valid.map(workflow => {
+  return discovery.valid.filter(shouldRegisterWorkflowSlashCommand).map(workflow => {
     const commandName = workflow.commandName
     const dryRun = formatWorkflowDryRun(workflow.plan)
     return {

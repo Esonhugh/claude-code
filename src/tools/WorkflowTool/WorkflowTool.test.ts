@@ -193,6 +193,61 @@ const runContext = {
   updateAttributionState: () => {},
 } as unknown as ToolUseContext
 
+await assert.rejects(
+  WorkflowTool.call(
+    {
+      action: 'run',
+      plan: {
+        name: 'display-only-preview',
+        description: 'Preview plan without executable defaults.',
+        phases: [{ title: 'Scope', detail: 'Display only' }],
+      },
+    } as never,
+    runContext,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_invalid_direct_plan' } } as never,
+  ),
+  /Invalid executable workflow plan/,
+)
+
+const previewRunResult = await WorkflowTool.call(
+  runPermissionPreview.updatedInput as never,
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_preview_run' } } as never,
+)
+assert.match(String(previewRunResult.data), /Workflow launched in background\. Task ID: w/)
+assert.equal(launchedPrompts.length, 1)
+assert.match(launchedPrompts[0]!, /official run topic/)
+assert.equal(launchedInputs[0]?.mode, 'acceptEdits')
+
+launchedPrompts.length = 0
+launchedInputs.length = 0
+const deepResearchPermissionPreview = await WorkflowTool.checkPermissions(
+  { action: 'run', selector: 'deep-research', runArgs: '分析 claude 的 dynamic workflow 设计原理' },
+  context,
+)
+assert.equal(deepResearchPermissionPreview.behavior, 'ask')
+assert.equal(deepResearchPermissionPreview.updatedInput?.selector, 'deep-research')
+assert.ok(deepResearchPermissionPreview.updatedInput?.plan)
+const deepResearchRun = await WorkflowTool.call(
+  deepResearchPermissionPreview.updatedInput as never,
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_deep_research_preview_run' } } as never,
+)
+assert.match(String(deepResearchRun.data), /Workflow launched in background\. Task ID: w/)
+const deepResearchTask = Object.values(runState.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'deep-research',
+)!
+assert.equal(deepResearchTask.status, 'completed')
+assert.equal(deepResearchTask.defaultModel, 'claude-sonnet-4-5')
+assert.equal(deepResearchTask.execution, 'agent')
+assert.ok(launchedPrompts.length > 1)
+assert.match(launchedPrompts[0]!, /Decompose this research question/)
+
+launchedPrompts.length = 0
+launchedInputs.length = 0
 const runResult = await WorkflowTool.call(
   { action: 'run', selector: 'JS Run Workflow', runArgs: 'topic: DSL' },
   runContext,
@@ -207,7 +262,7 @@ assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
 assert.equal(launchedInputs[0]?.mode, 'plan')
 const jsTask = Object.values(runState.tasks).find(
-  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow',
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'JS Run Workflow',
 )!
 assert.deepEqual(jsTask.runtime, {
   kind: 'javascript-worker',
