@@ -38,7 +38,7 @@ const scenarios = [
     name: 'investigate',
     prompt: '/investigate 为什么这个隔离目录的假想测试会超时。不要修改文件，只启动/规划 workflow。',
     expectedOfficialWorkflowName: 'investigate',
-    expectedLocalClassification: 'workflow',
+    expectedLocalClassification: 'non-workflow-response',
   },
   {
     name: 'dashboard',
@@ -243,11 +243,12 @@ for (const scenario of scenarios) {
   const official = await probeExecutor({ label: 'official', command: officialBinary, args: ['--dangerously-skip-permissions', '--settings', disableDetectiveSettings], scenario })
   const local = await probeExecutor({ label: 'local', command: localBinary, args: localArgs, scenario })
   const parity = {
-    officialObserved: official.classification !== 'unknown' || scenario.name === 'investigate',
+    officialObserved: official.classification !== 'unknown',
     localMatchesExpectedStrategy: local.classification === scenario.expectedLocalClassification,
+    localMatchesOfficialClassification: local.classification === official.classification,
     neitherExecutionCrash: !official.hasExecutionCrash && !local.hasExecutionCrash,
     neitherTimedOutOrApiErrored: !official.hasTimeoutOrApiError && !local.hasTimeoutOrApiError,
-    localDoesNotMissOfficialWorkflow: scenario.expectedLocalClassification !== 'workflow' || local.classification === 'workflow',
+    localDoesNotMissOfficialWorkflow: official.classification !== 'workflow' || local.classification === 'workflow',
   }
   const passed = Object.values(parity).every(Boolean)
   reports.push({ scenario: scenario.name, prompt: scenario.prompt, official, local, parity, passed })

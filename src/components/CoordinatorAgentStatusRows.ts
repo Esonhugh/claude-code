@@ -73,6 +73,14 @@ export function getVisibleAgentTasks(
     .sort((a, b) => a.startTime - b.startTime)
 }
 
+export function getCoordinatorTaskAtIndex(
+  tasks: AppState['tasks'],
+  selectedIndex: number,
+  omitMainRow = false,
+): CoordinatorPanelTask | undefined {
+  return getVisibleAgentTasks(tasks)[selectedIndex - (omitMainRow ? 0 : 1)]
+}
+
 function taskElapsed(task: CoordinatorPanelTask, now: number): string {
   const pausedMs = task.totalPausedMs ?? 0
   const elapsedMs = Math.max(

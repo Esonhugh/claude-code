@@ -159,7 +159,9 @@ function getSelectableBackgroundTasks(
 ): TaskState[] {
   const backgroundTasks = Object.values(tasks ?? {}).filter(isBackgroundTask)
   return backgroundTasks.filter(
-    task => !(task.type === 'local_agent' && task.id === foregroundedTaskId),
+    task =>
+      task.type !== 'local_workflow' &&
+      !(task.type === 'local_agent' && task.id === foregroundedTaskId),
   )
 }
 
@@ -211,14 +213,15 @@ export function BackgroundTasksDialog({
     remoteSessions,
     agentTasks,
     teammateTasks,
-    workflowTasks,
     mcpMonitors,
     dreamTasks,
     allSelectableItems,
   } = useMemo(() => {
-    // Filter to only show running/pending background tasks, matching the status bar count
+    // Filter to only show running/pending background tasks, matching the status bar count.
+    // Workflows are steered from CoordinatorTaskPanel so the user selects the
+    // visible deep-research/workflow row directly, not a generic Workflows group.
     const backgroundTasks = Object.values(typedTasks ?? {}).filter(
-      isBackgroundTask,
+      task => isBackgroundTask(task) && task.type !== 'local_workflow',
     )
     const allItems = backgroundTasks.map(toListItem)
     const sorted = allItems.sort((a, b) => {
@@ -236,7 +239,6 @@ export function BackgroundTasksDialog({
     const agent = sorted.filter(
       item => item.type === 'local_agent' && item.id !== foregroundedTaskId,
     )
-    const workflows = sorted.filter(item => item.type === 'local_workflow')
     const monitorMcp = sorted.filter(item => item.type === 'monitor_mcp')
     const dreamTasks = sorted.filter(item => item.type === 'dream')
     // In spinner-tree mode, exclude teammates from the dialog (they appear in the tree)
@@ -259,7 +261,6 @@ export function BackgroundTasksDialog({
       bashTasks: bash,
       remoteSessions: remote,
       agentTasks: agent,
-      workflowTasks: workflows,
       mcpMonitors: monitorMcp,
       dreamTasks,
       teammateTasks: [...leaderItem, ...teammates],
@@ -273,7 +274,6 @@ export function BackgroundTasksDialog({
         ...monitorMcp,
         ...remote,
         ...agent,
-        ...workflows,
         ...dreamTasks,
       ],
     }
@@ -808,33 +808,6 @@ export function BackgroundTasksDialog({
               </Box>
             )}
 
-            {workflowTasks.length > 0 && (
-              <Box
-                flexDirection="column"
-                marginTop={
-                  teammateTasks.length > 0 ||
-                  bashTasks.length > 0 ||
-                  mcpMonitors.length > 0 ||
-                  remoteSessions.length > 0 ||
-                  agentTasks.length > 0
-                    ? 1
-                    : 0
-                }
-              >
-                <Text dimColor>
-                  <Text bold>{'  '}Workflows</Text> ({workflowTasks.length})
-                </Text>
-                <Box flexDirection="column">
-                  {workflowTasks.map(item => (
-                    <Item
-                      key={item.id}
-                      item={item}
-                      isSelected={item.id === currentSelection?.id}
-                    />
-                  ))}
-                </Box>
-              </Box>
-            )}
 
             {dreamTasks.length > 0 && (
               <Box
@@ -844,9 +817,7 @@ export function BackgroundTasksDialog({
                   bashTasks.length > 0 ||
                   mcpMonitors.length > 0 ||
                   remoteSessions.length > 0 ||
-                  agentTasks.length > 0 ||
-                  workflowTasks.length > 0
-                    ? 1
+                  agentTasks.length > 0                    ? 1
                     : 0
                 }
               >

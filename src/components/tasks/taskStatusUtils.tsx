@@ -110,6 +110,7 @@ export function shouldHideTasksFooter(
   for (const t of Object.values(tasks) as TaskState[]) {
     if (
       !isBackgroundTask(t) ||
+      t.type === 'local_workflow' ||
       (isAnt() && isPanelAgentTask(t))
     ) {
       continue

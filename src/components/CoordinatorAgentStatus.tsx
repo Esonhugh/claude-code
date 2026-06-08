@@ -20,10 +20,11 @@ import { evictTerminalTask } from '../utils/task/framework.js'
 import {
   type CoordinatorSessionRow,
   getCoordinatorSessionRows,
+  getCoordinatorTaskAtIndex,
   getVisibleAgentTasks,
 } from './CoordinatorAgentStatusRows.js'
 
-export { getCoordinatorSessionRows, getVisibleAgentTasks }
+export { getCoordinatorSessionRows, getCoordinatorTaskAtIndex, getVisibleAgentTasks }
 export type { CoordinatorPanelTask, CoordinatorSessionRow } from './CoordinatorAgentStatusRows.js'
 
 export function CoordinatorTaskPanel({

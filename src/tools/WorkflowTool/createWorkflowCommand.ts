@@ -58,7 +58,7 @@ function buildWorkflowPrompt(
   ]
 }
 
-const BUNDLED_SLASH_WORKFLOW_COMMANDS = new Set(['deep-research', 'investigate'])
+const BUNDLED_SLASH_WORKFLOW_COMMANDS = new Set(['deep-research'])
 
 function shouldRegisterWorkflowSlashCommand(workflow: DiscoveredWorkflowSpec): boolean {
   if (!workflow.path.startsWith('bundled:')) return true

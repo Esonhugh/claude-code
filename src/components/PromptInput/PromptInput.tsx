@@ -197,6 +197,7 @@ import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js'
 import { BridgeDialog } from '../BridgeDialog.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import {
+  getCoordinatorTaskAtIndex,
   getVisibleAgentTasks,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
@@ -547,20 +548,33 @@ function PromptInput({
     [setAppState],
   )
   const coordinatorTaskCount = useCoordinatorTaskCount()
-  // The pill (BackgroundTaskStatus) only renders when non-local_agent bg tasks
-  // exist. When only local_agent tasks are running (coordinator/fork mode), the
-  // pill is absent, so the -1 sentinel would leave nothing visually selected.
-  // In that case, skip -1 and treat 0 as the minimum selectable index.
+  const visibleCoordinatorTasks = useMemo(
+    () => getVisibleAgentTasks(tasks),
+    [tasks],
+  )
+  const coordinatorOmitsMainRow =
+    visibleCoordinatorTasks.length > 0 &&
+    visibleCoordinatorTasks.every(task => task.type === 'local_workflow')
+  // The pill (BackgroundTaskStatus) only renders when non-local_agent,
+  // non-workflow bg tasks exist. Workflow tasks are represented by the
+  // CoordinatorTaskPanel row so selecting deep-research opens the workflow
+  // detail directly instead of the generic Background tasks list.
   const hasBgTaskPill = useMemo(
     () =>
       Object.values(tasks).some(
         t =>
           isBackgroundTask(t) &&
+          t.type !== 'local_workflow' &&
           !(isAnt() && isPanelAgentTask(t)),
       ),
     [tasks],
   )
   const minCoordinatorIndex = hasBgTaskPill ? -1 : 0
+  const selectedCoordinatorTask = getCoordinatorTaskAtIndex(
+    tasks,
+    coordinatorTaskIndex,
+    coordinatorOmitsMainRow,
+  )
   // Clamp index when tasks complete and the list shrinks beneath the cursor
   useEffect(() => {
     if (coordinatorTaskIndex >= coordinatorTaskCount) {
@@ -629,7 +643,11 @@ function PromptInput({
   // (down/right = forward, up/left = back). Selection lives in AppState so
   // pills rendered outside PromptInput (CompanionSprite) can read focus.
   const runningTaskCount = useMemo(
-    () => count(Object.values(tasks), t => t.status === 'running'),
+    () =>
+      count(
+        Object.values(tasks),
+        t => t.status === 'running' && t.type !== 'local_workflow',
+      ),
     [tasks],
   )
   // Panel shows retained-completed agents too (getVisibleAgentTasks), so the
@@ -2358,11 +2376,14 @@ function PromptInput({
                 const teammate = inProcessTeammates[teammateFooterIndex - 1]
                 if (teammate) enterTeammateView(teammate.id, setAppState)
               }
-            } else if (coordinatorTaskIndex === 0 && coordinatorTaskCount > 0) {
+            } else if (
+              !coordinatorOmitsMainRow &&
+              coordinatorTaskIndex === 0 &&
+              coordinatorTaskCount > 0
+            ) {
               exitTeammateView(setAppState)
             } else {
-              const selectedTask =
-                getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]
+              const selectedTask = selectedCoordinatorTask
               if (selectedTask?.type === 'local_agent') {
                 enterTeammateView(selectedTask.id, setAppState)
               } else if (selectedTask?.type === 'local_workflow') {
@@ -2404,8 +2425,11 @@ function PromptInput({
         selectFooterItem(null)
       },
       'footer:close': () => {
-        if (tasksSelected && coordinatorTaskIndex >= 1) {
-          const task = getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]
+        if (
+          tasksSelected &&
+          coordinatorTaskIndex >= (coordinatorOmitsMainRow ? 0 : 1)
+        ) {
+          const task = selectedCoordinatorTask
           if (!task) return false
           if (task.type === 'local_workflow') {
             setShowBashesDialog(task.id)
@@ -3117,9 +3141,8 @@ function PromptInput({
         historyQuery={historyQuery}
         setHistoryQuery={setHistoryQuery}
         historyFailedMatch={historyFailedMatch}
-        onOpenTasksDialog={
-          isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined
-        }
+        onOpenTasksDialog={handleOpenTasksDialog}
+        isLocalJSXCommandActive={isLocalJSXCommandActive}
       />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ? (

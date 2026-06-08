@@ -58,7 +58,7 @@ function hasPermissionPrompt(text) {
 }
 
 function hasLaunchEvidence(text) {
-  return /(?:Running in background|Launched the .*workflow|Run ID:\s*wf_|Waiting for \d+ dynamic workflow|Dynamic workflow requested|Workflow started|background workflow)/.test(text)
+  return /(?:Running in background|Launched the .*workflow|Run ID:\s*wf_|Waiting for \d+ dynamic workflow|Dynamic workflow requested|Workflow started|background workflow|Workflow\(Workflow tmux-compat-probe\)|●\s+tmux-compat-probe\s+\d+\/\d+ agents)/.test(text)
 }
 
 function hasWorkflowList(text) {

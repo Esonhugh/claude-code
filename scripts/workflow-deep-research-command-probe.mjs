@@ -61,7 +61,7 @@ function hasWorkflowToolCall(text) {
 }
 
 function hasWorkflowLaunchEvidence(text) {
-  return /(?:Workflow launched in background\. Task ID:\s*w[a-z0-9-]+|Task ID:\s*w[a-z0-9-]+|Run ID:\s*wf_[a-z0-9-]+|Running in background|\b\d+ background workflow\b|[●✔◯]\s+workflow deep-research\s+\d+\/\d+ agents .*\b(?:running|done)\b|◯ deep-research\s+.*\d+\/\d+ agents done)/.test(text)
+  return /(?:Workflow launched in background\. Task ID:\s*w[a-z0-9-]+|Task ID:\s*w[a-z0-9-]+|Run ID:\s*wf_[a-z0-9-]+|Running in background|\b\d+ background workflow\b|[●✔◯]\s+(?:workflow )?deep-research\s+\d+\/\d+ agents .*\b(?:running|done)\b|◯ deep-research\s+.*\d+\/\d+ agents done)/.test(text)
 }
 
 function hasWorkflowPanel(text) {

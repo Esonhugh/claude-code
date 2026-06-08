@@ -72,6 +72,7 @@ type Props = {
   setHistoryQuery: (query: string) => void
   historyFailedMatch: boolean
   onOpenTasksDialog?: (taskId?: string) => void
+  isLocalJSXCommandActive?: boolean
 }
 
 function PromptInputFooter({
@@ -107,6 +108,7 @@ function PromptInputFooter({
   setHistoryQuery,
   historyFailedMatch,
   onOpenTasksDialog,
+  isLocalJSXCommandActive = false,
 }: Props): ReactNode {
   const settings = useSettings()
   const { columns, rows } = useTerminalSize()

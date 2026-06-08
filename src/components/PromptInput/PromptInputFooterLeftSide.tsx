@@ -264,6 +264,7 @@ function ModeIndicator({
         Object.values(tasks),
         t =>
           isBackgroundTask(t) &&
+          t.type !== 'local_workflow' &&
           !(isAnt() && isPanelAgentTask(t)),
       ),
     [tasks],

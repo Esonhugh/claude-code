@@ -70,7 +70,7 @@ const projectCommands = commands.filter(command =>
 )
 assert.equal(projectCommands.length, 2)
 assert.ok(commands.some(command => command.name === 'deep-research'))
-assert.ok(commands.some(command => command.name === 'investigate'))
+assert.equal(commands.some(command => command.name === 'investigate'), false)
 assert.equal(commands.some(command => command.name === 'bugfix'), false)
 assert.equal(commands.some(command => command.name === 'docs'), false)
 

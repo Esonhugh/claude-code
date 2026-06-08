@@ -78,4 +78,5 @@ for (const variant of variants) reports.push(await probe(variant))
 await writeFile(join(outputRoot, 'report.json'), `${JSON.stringify({ reports }, null, 2)}\n`)
 console.log(`investigate gate probe output: ${outputRoot}`)
 for (const r of reports) console.log(`${r.variant}: workflow=${r.hasWorkflow} unknown=${r.hasUnknown} detective=${r.hasDetective} timeout=${r.hasTimeoutOrApiError}`)
-if (!reports.some(r => r.hasWorkflow)) process.exitCode = 1
+console.log('expected current official slash surface: /investigate is unknown when detective plugin is disabled')
+if (reports.some(r => r.hasWorkflow || r.hasDetective || !r.hasUnknown)) process.exitCode = 1

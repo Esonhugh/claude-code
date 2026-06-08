@@ -53,6 +53,7 @@ export function BackgroundTaskStatus({
       (Object.values(tasks ?? {}) as TaskState[]).filter(
         t =>
           isBackgroundTask(t) &&
+          t.type !== 'local_workflow' &&
           !(isAnt() && isPanelAgentTask(t)),
       ),
     [tasks],

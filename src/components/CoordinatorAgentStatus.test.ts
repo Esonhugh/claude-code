@@ -5,6 +5,7 @@ import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask
 import type { LocalWorkflowTaskState } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import {
   getCoordinatorSessionRows,
+  getCoordinatorTaskAtIndex,
   getVisibleAgentTasks,
 } from './CoordinatorAgentStatusRows.js'
 
@@ -151,5 +152,15 @@ assert.equal(workflowOnlyRows.length, 1)
 assert.equal(workflowOnlyRows[0]?.kind, 'workflow')
 assert.equal(workflowOnlyRows[0]?.selected, true)
 assert.equal(workflowOnlyRows[0]?.label, 'tmux-agent-smoke')
+assert.equal(
+  getCoordinatorTaskAtIndex(
+    { [workflowTask.id]: workflowTask } as unknown as AppState['tasks'],
+    0,
+    true,
+  )?.id,
+  'workflow-1',
+)
+assert.equal(getCoordinatorTaskAtIndex(tasks, 0)?.id, undefined)
+assert.equal(getCoordinatorTaskAtIndex(tasks, 2)?.id, 'workflow-1')
 
 console.log('CoordinatorAgentStatus.test.ts passed')
