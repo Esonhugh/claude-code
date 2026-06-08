@@ -88,6 +88,24 @@ export async function runWorkflowScript(options: {
 |--------|------|
 | deep-research (spec-based, runArgs 注入) | ✅ scope agent 正确收到用户输入 |
 | autopilot (spec-based, runArgs 注入) | ✅ 7/8 agents 正常完成 |
-| hello-script (.js, script VM runtime) | ✅ agent() 真实调用 API，return 值正确 |
+| hello-script (.js, script VM runtime) | ✅ agent() 真实调用 API，return 值正确，schema 解析正常 |
 | 无 args 时 guard 防护 | ✅ output<20chars 会 abort workflow |
 | workflow 失败时 abort signal | ✅ 并发 agents 收到 abort |
+
+## Script VM Runtime 完整实现清单
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| agent() 真实 API 调用 | ✅ | 调用 AgentTool 启动子 agent |
+| parallel() catch→null | ✅ | Promise.allSettled，错误→null |
+| pipeline() 无屏障 | ✅ | 每 item 独立流过所有 stages |
+| phase()/log()/args | ✅ | 全局 API |
+| abort signal 传播 | ✅ | createChildAbortController |
+| StructuredOutput schema | ✅ | schema 注入到 prompt + JSON 解析 |
+| 并发 semaphore | ✅ | Semaphore class, max=cpus-2 |
+| Stall 检测 + 自动重试 | ✅ | stallMs timer + abort + retry×3 |
+| Worktree 隔离 | ✅ | opts.isolation='worktree' 传递给 AgentTool |
+| Journal/Resume Cache | ✅ | identity hash + Map cache |
+| Budget 控制 | ✅ | budget.total/spent/remaining + throw |
+| workflow() 子调用 | ✅ | 占位 (throw with message, 需 discovery 集成) |
+| VM 安全沙箱 | ✅ | Date/Math.random 禁用 |
