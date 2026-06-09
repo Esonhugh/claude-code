@@ -1,8 +1,9 @@
 import * as React from 'react'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Box, Text } from '../../ink.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
+import instances from '../../ink/instances.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { Theme } from '../../utils/theme.js'
@@ -49,29 +50,6 @@ function phaseDisplayName(task: LocalWorkflowTaskState, phaseIndex: number, phas
   return task.meta?.phases?.[phaseIndex]?.title ?? phase.id
 }
 
-// ANSI 256-color helpers matching official Claude Code workflow UI
-const W = '\x1b[38;5;231m' // bright white for borders
-const R = '\x1b[39m'        // reset fg
-const C = {
-  green: (s: string) => `\x1b[38;5;114m${s}\x1b[39m`,
-  sel: (s: string) => `\x1b[38;5;153m${s}\x1b[39m`,     // light blue (selected)
-  dim: (s: string) => `\x1b[38;5;246m${s}\x1b[39m`,     // dim gray
-  dark: (s: string) => `\x1b[38;5;239m${s}\x1b[39m`,    // dark gray (pending numbers, running ⏺)
-  bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
-  boldDim: (s: string) => `\x1b[1m\x1b[38;5;246m${s}\x1b[0m`,
-  white: (s: string) => `${W}${s}${R}`,                  // bright white (borders)
-  reset: '\x1b[0m',
-}
-
-function colorIcon(status: AgentStatus, icon: string): string {
-  switch (status) {
-    case 'done': return C.green(icon)
-    case 'failed': return C.red(icon)
-    case 'running': return C.blue(icon)
-    default: return icon
-  }
-}
-
 function agentPhase(task: LocalWorkflowTaskState, agentId: string) {
   return task.phases.find(p => p.agentIds.includes(agentId))
 }
@@ -107,7 +85,6 @@ function agentStatus(task: LocalWorkflowTaskState, agentId: string): AgentStatus
     if (r?.status === 'skipped') return 'skipped'
     return 'done'
   }
-  // Also check by index: agent may have been registered with one ID but completed with another
   if (phase) {
     const idx = phase.agentIds.indexOf(agentId)
     if (idx >= 0) {
@@ -177,49 +154,78 @@ function pad(str: string, width: number): string {
   return w >= width ? truncate(str, width) : str + ' '.repeat(Math.max(0, width - w))
 }
 
-// Strip ANSI escape sequences for width calculation
-function stripAnsi(str: string): string {
-  return str.replace(/\x1b\[[0-9;]*m/g, '')
-}
-
-// ─── Split Panel (box-drawing chars like official) ──────────
-// Render panel as separate <Text> per line to avoid Ink ANSI diff corruption
-function SplitPanel({ rows, leftTitle, rightTitle, leftWidth, rightWidth }: {
-  rows: Array<{ left: string; right: string }>
-  leftTitle: string; rightTitle: string; leftWidth: number; rightWidth: number
-  panelKey?: string
+// ─── Themed inline components ───────────────────────────────
+function PhaseRow({ selected, done, running, name, progress, leftWidth }: {
+  selected: boolean; done: boolean; running: boolean; name: string; progress: string; index: number; leftWidth: number
 }): React.JSX.Element {
-  const lTitleWidth = stringWidth(leftTitle)
-  const rTitleWidth = stringWidth(rightTitle)
-  const lFill = '─'.repeat(Math.max(0, leftWidth - lTitleWidth - 1))
-  const rFill = '─'.repeat(Math.max(0, rightWidth - rTitleWidth - 1))
-  const top = C.white(` ╭ ${leftTitle} ${lFill}┬ ${rightTitle} ${rFill}╮`)
-  const bot = C.white(` ╰${'─'.repeat(leftWidth + 1)}┴${'─'.repeat(rightWidth + 1)}╯`)
-  const rowLines = rows.map(row => {
-    const l = padVisible(row.left, leftWidth)
-    const r = padVisible(row.right, rightWidth)
-    return `\x1b[2K${W} │${R} ${l}\x1b[0m${W}│${R} ${r}\x1b[0m${W}│${R}`
-  })
+  const icon = done ? '✔' : running ? '●' : '○'
+  const iconColor: keyof Theme | undefined = done ? 'success' : undefined
+  const label = progress ? `${name} ${progress}` : name
   return (
-    <Box flexDirection="column">
-      <Text wrap="truncate-end">{'\x1b[2K'}{top}</Text>
-      {rowLines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
-      <Text wrap="truncate-end">{'\x1b[2K'}{bot}</Text>
-    </Box>
+    <Text wrap="truncate-end">
+      <Text color={selected ? 'suggestion' : undefined}>{selected ? '❯ ' : '  '}</Text>
+      <Text color={iconColor} dimColor={!done && !running}>{icon}</Text>
+      <Text>{' '}</Text>
+      <Text color={selected ? 'suggestion' : undefined} dimColor={!selected && !done}>
+        {pad(label, leftWidth - 5)}
+      </Text>
+    </Text>
   )
 }
 
-function SplitPanelRow(_props: { left: string; right: string; leftWidth: number; rightWidth: number; rowKey: string }): React.JSX.Element {
-  return <Text />
+function AgentRow({ selected, status, id, model, metrics, nameWidth, modelWidth, totalWidth }: {
+  selected: boolean; status: AgentStatus; id: string; model: string
+  metrics: string; nameWidth: number; modelWidth: number; totalWidth: number
+}): React.JSX.Element {
+  const g = statusGlyph(status)
+  // Build a fixed-width padded string to prevent Ink diff artifacts
+  const marker = selected ? '❯' : ' '
+  const nameStr = pad(truncate(id, nameWidth), nameWidth)
+  const modelStr = pad(truncate(model, modelWidth), modelWidth)
+  const content = `${marker}${g.icon} ${nameStr}  ${modelStr}  ${metrics}`
+  return (
+    <Text wrap="truncate-end">
+      <Text color={selected ? 'suggestion' : undefined}>{marker}</Text>
+      <Text color={g.color}>{g.icon}</Text>
+      <Text dimColor>{' '}{pad(`${nameStr}  ${modelStr}  ${metrics}`, totalWidth - 3)}</Text>
+    </Text>
+  )
 }
 
-function padVisible(str: string, width: number): string {
-  const vis = stringWidth(str)
-  if (vis >= width) {
-    // Truncate to exact width to prevent overflow
-    return truncate(str, width)
-  }
-  return str + ' '.repeat(Math.max(0, width - vis))
+// ─── Split Panel using React components ──────────────────────
+function SplitPanel({ leftNodes, rightNodes, leftTitle, rightTitle, leftWidth, rightWidth, availableRows: maxRows }: {
+  leftNodes: React.ReactNode[]
+  rightNodes: React.ReactNode[]
+  leftTitle: string; rightTitle: string
+  leftWidth: number; rightWidth: number
+  availableRows: number
+}): React.JSX.Element {
+  const lFill = '─'.repeat(Math.max(0, leftWidth - stringWidth(leftTitle) - 1))
+  const rFill = '─'.repeat(Math.max(0, rightWidth - stringWidth(rightTitle) - 1))
+  const totalRows = Math.max(leftNodes.length, rightNodes.length, maxRows)
+  return (
+    <Box flexDirection="column">
+      <Text dimColor wrap="truncate-end">
+        {' ╭ '}{leftTitle}{' '}{lFill}{'┬ '}{rightTitle}{' '}{rFill}{'╮'}
+      </Text>
+      {Array.from({ length: totalRows }, (_, i) => (
+        <Box key={`${leftTitle}-${rightTitle}-${i}`} width={leftWidth + rightWidth + 7}>
+          <Text dimColor>{' │ '}</Text>
+          <Box width={leftWidth}>
+            {leftNodes[i] ?? <Text>{' '.repeat(leftWidth)}</Text>}
+          </Box>
+          <Text dimColor>{'│ '}</Text>
+          <Box width={rightWidth}>
+            {rightNodes[i] ?? <Text>{' '.repeat(rightWidth)}</Text>}
+          </Box>
+          <Text dimColor>{'│'}</Text>
+        </Box>
+      ))}
+      <Text dimColor wrap="truncate-end">
+        {' ╰'}{'─'.repeat(leftWidth + 1)}{'┴'}{'─'.repeat(rightWidth + 1)}{'╯'}
+      </Text>
+    </Box>
+  )
 }
 
 // ─── Main Component ─────────────────────────────────────────
@@ -248,9 +254,23 @@ export function WorkflowDetailDialog({
   const [selectedAgent, setSelectedAgent] = useState(0)
   const [detailScroll, setDetailScroll] = useState(0)
 
-  // Show all phases (including pending ones) like official
+  // Force full redraw when phase selection or level changes to prevent character remnants
+  const prevPhaseRef = useRef(selectedPhase)
+  const prevLevelRef = useRef(level)
+  const prevAgentRef = useRef(selectedAgent)
+  useLayoutEffect(() => {
+    if (prevPhaseRef.current !== selectedPhase || prevLevelRef.current !== level || prevAgentRef.current !== selectedAgent) {
+      const ink = instances.get(process.stdout)
+      ink?.forceRedraw()
+      prevPhaseRef.current = selectedPhase
+      prevLevelRef.current = level
+      prevAgentRef.current = selectedAgent
+    }
+  })
+
+  // Show only phases that have agents registered (skip empty placeholder phases)
   const visiblePhases = React.useMemo(
-    () => workflow.phases.filter(p => p.agentIds.length > 0 || p.status === 'running' || p.status === 'pending'),
+    () => workflow.phases.filter(p => p.agentIds.length > 0),
     [workflow.phases],
   )
 
@@ -259,11 +279,11 @@ export function WorkflowDetailDialog({
   const currentAgentId = agentIds[Math.min(selectedAgent, agentIds.length - 1)]
   const isRunning = workflow.status === 'running'
 
-  // Layout - use terminal dimensions to fit panel
+  // Layout
   const termRows = process.stdout.rows || 35
   const termCols = process.stdout.columns || 100
-  const availableRows = Math.max(8, termRows - 14) // reserve for separator/title/desc/blank + panel borders + hints + prompt
-  const LEFT_WIDTH = 18
+  const availableRows = Math.max(8, termRows - 14)
+  const LEFT_WIDTH = 22
   const RIGHT_WIDTH = Math.max(40, termCols - LEFT_WIDTH - 8)
 
   // Navigation
@@ -285,12 +305,12 @@ export function WorkflowDetailDialog({
     else { setSelectedAgent(a => Math.min(agentIds.length - 1, a + 1)); setDetailScroll(0) }
   }
   function scrollUp() { setDetailScroll(s => Math.max(0, s - 1)) }
-  function scrollDown() { setDetailScroll(s => s + 1) } // clamped at render time
+  function scrollDown() { setDetailScroll(s => s + 1) }
 
   const handleKeyDown = (e: { key: string; ctrl?: boolean; meta?: boolean; preventDefault: () => void }) => {
     if (e.ctrl || e.meta) return
-    if (level === 'agent' && (e.key === 'j' || e.key === 'down')) { e.preventDefault(); scrollDown() }
-    else if (level === 'agent' && (e.key === 'k' || e.key === 'up')) { e.preventDefault(); scrollUp() }
+    if (level === 'agent' && (e.key === 'j' || e.key === 'down')) { e.preventDefault(); moveDown() }
+    else if (level === 'agent' && (e.key === 'k' || e.key === 'up')) { e.preventDefault(); moveUp() }
     else if (e.key === 'j' || e.key === 'down') { e.preventDefault(); moveDown() }
     else if (e.key === 'k' || e.key === 'up') { e.preventDefault(); moveUp() }
     else if (e.key === 'return' || e.key === 'right') { e.preventDefault(); drillIn() }
@@ -311,134 +331,118 @@ export function WorkflowDetailDialog({
 
   // Panel titles
   const phaseTitle = currentPhase ? phaseDisplayName(workflow, workflow.phases.indexOf(currentPhase), currentPhase) : ''
-  const leftTitle = level === 'agent' ? `${phaseTitle} · ${agentIds.length} ${agentIds.length === 1 ? 'agent' : 'agents'}` : 'Phases'
+  const leftTitle = level === 'agent' ? `${phaseTitle}` : 'Phases'
   const rightTitle = level === 'agent' && currentAgentId
     ? truncate(currentAgentId, RIGHT_WIDTH - 2)
     : currentPhase ? `${phaseTitle} · ${agentIds.length} ${agentIds.length === 1 ? 'agent' : 'agents'}` : ''
 
-  // Build rows
-  const rows: Array<{ left: string; right: string }> = []
+  // Build left/right React node arrays
+  const leftNodes: React.ReactNode[] = []
+  const rightNodes: React.ReactNode[] = []
 
   if (level === 'phases' || level === 'agents') {
-    // Left column: visible phase list (filtered)
-    const maxRows = Math.max(visiblePhases.length, agentIds.length, 1)
-    for (let i = 0; i < maxRows; i++) {
-      let left = ''
-      if (i < visiblePhases.length) {
-        const phase = visiblePhases[i]!
-        const sel = level === 'phases' && i === selectedPhase
-        const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
-        const phaseRunning = !phaseDone && phase.status === 'running'
-        const phaseIcon = phaseDone ? C.green('✔') : phaseRunning ? C.dark('●') : C.dark(String(i + 1))
-        const marker = sel ? C.sel('❯') + ' ' : '  '
-        const pName = phaseDisplayName(workflow, workflow.phases.indexOf(phase), phase)
-        const progress = phase.agentIds.length > 0 ? C.dark(`${phase.completedAgentIds.length}/${phase.agentIds.length}`) : ''
-        const nameStr = sel ? C.sel(truncate(pName, LEFT_WIDTH - 8)) : (phaseDone ? truncate(pName, LEFT_WIDTH - 8) : C.dim(truncate(pName, LEFT_WIDTH - 8)))
-        left = `${marker}${phaseIcon} ${nameStr}${progress ? ' ' + progress : ''}`
-      }
-
-      let right = ''
-      if (i < agentIds.length) {
-        const id = agentIds[i]!
-        const s = agentStatus(workflow, id)
-        const g = statusGlyph(s)
-        const m = agentMetrics(workflow, id)
-        const sel = level === 'agents' && i === selectedAgent
-        const marker = sel ? C.sel('❯') : ' '
-        const model = workflow.defaultModel ?? 'Claude Opus 4.6'
-        const NAME_COL = Math.min(28, Math.floor((RIGHT_WIDTH - 6) * 0.4))
-        const MODEL_COL = Math.min(18, Math.floor((RIGHT_WIDTH - 6) * 0.25))
-        const nameStr = pad(truncate(id, NAME_COL), NAME_COL)
-        const modelStr = pad(truncate(model, MODEL_COL), MODEL_COL)
-        const metricsStr = m.tokens > 0
-          ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'}${m.durationMs > 0 ? ' · ' + formatDuration(m.durationMs) : ''}`
-          : ''
-        const colorIcon = s === 'done' ? C.green(g.icon) : s === 'running' ? C.dark(g.icon) : C.dark(g.icon)
-        const usedWidth = 3 + NAME_COL + 2 + MODEL_COL
-        const gap = Math.max(2, RIGHT_WIDTH - usedWidth - stringWidth(metricsStr))
-        right = `${marker}${colorIcon} ${C.dim(nameStr)}  ${C.dim(modelStr)}${' '.repeat(gap)}${C.dim(metricsStr)}\x1b[0m`
-      }
-      rows.push({ left, right })
+    // Left: phase list
+    for (let i = 0; i < visiblePhases.length; i++) {
+      const phase = visiblePhases[i]!
+      const sel = level === 'phases' && i === selectedPhase
+      const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
+      const phaseRunning = !phaseDone && phase.status === 'running'
+      const pName = phaseDisplayName(workflow, workflow.phases.indexOf(phase), phase)
+      const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
+      leftNodes.push(
+        <PhaseRow key={phase.id} selected={sel} done={phaseDone} running={phaseRunning}
+          name={truncate(pName, LEFT_WIDTH - 8)} progress={progress} index={i} leftWidth={LEFT_WIDTH} />,
+      )
+    }
+    // Right: agent list for currentPhase
+    const model = workflow.defaultModel ?? 'Claude Opus 4.6'
+    const NAME_COL = Math.min(28, Math.floor((RIGHT_WIDTH - 6) * 0.4))
+    const MODEL_COL = Math.min(18, Math.floor((RIGHT_WIDTH - 6) * 0.25))
+    for (let i = 0; i < agentIds.length; i++) {
+      const id = agentIds[i]!
+      const s = agentStatus(workflow, id)
+      const m = agentMetrics(workflow, id)
+      const sel = level === 'agents' && i === selectedAgent
+      const metricsStr = m.tokens > 0
+        ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'}${m.durationMs > 0 ? ' · ' + formatDuration(m.durationMs) : ''}`
+        : ''
+      rightNodes.push(
+        <AgentRow key={id} selected={sel} status={s} id={id} model={model}
+          metrics={metricsStr} nameWidth={NAME_COL} modelWidth={MODEL_COL} totalWidth={RIGHT_WIDTH} />,
+      )
     }
   } else if (level === 'agent' && currentAgentId) {
-    // Left: agent list, Right: agent detail with scrollable outcome
+    // Left: agent list in the current phase
+    for (let i = 0; i < agentIds.length; i++) {
+      const id = agentIds[i]!
+      const sel = i === selectedAgent
+      const as = agentStatus(workflow, id)
+      const ag = statusGlyph(as)
+      leftNodes.push(
+        <Box key={id}>
+          <Text color={sel ? 'suggestion' : undefined}>{sel ? '❯ ' : '  '}</Text>
+          <Text color={ag.color}>{ag.icon}</Text>
+          <Text dimColor>{' '}{truncate(id, LEFT_WIDTH - 5)}</Text>
+        </Box>,
+      )
+    }
+    // Right: detail view for selected agent
     const s = agentStatus(workflow, currentAgentId)
     const g = statusGlyph(s)
     const m = agentMetrics(workflow, currentAgentId)
-
-    // Build outcome lines, wrapping to fit right panel
     const outcomeRaw = agentOutcome(workflow, currentAgentId)
     const outcomeMaxWidth = RIGHT_WIDTH - 4
     const outcomeLines: string[] = []
     for (const line of outcomeRaw.split('\n')) {
-      if (stringWidth(stripAnsi(line)) <= outcomeMaxWidth) {
-        outcomeLines.push(`  ${line}`)
+      if (stringWidth(line) <= outcomeMaxWidth) {
+        outcomeLines.push(line)
       } else {
-        // Simple word-wrap
         let remaining = line
-        while (stringWidth(stripAnsi(remaining)) > outcomeMaxWidth) {
-          outcomeLines.push(`  ${remaining.slice(0, outcomeMaxWidth)}`)
+        while (stringWidth(remaining) > outcomeMaxWidth) {
+          outcomeLines.push(remaining.slice(0, outcomeMaxWidth))
           remaining = remaining.slice(outcomeMaxWidth)
         }
-        if (remaining) outcomeLines.push(`  ${remaining}`)
+        if (remaining) outcomeLines.push(remaining)
       }
     }
-
-    // Activity lines from recent activities or result tool count
     const liveAgent = workflow.liveAgents?.[currentAgentId]
     const activities = liveAgent?.recentActivities ?? []
     const activityLines = activities.length > 0
-      ? activities.map(a => `  ${truncate(a, RIGHT_WIDTH - 4)}`)
-      : [`  ${liveAgent?.activity ?? (m.toolCalls > 0 ? `${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'} completed` : 'No tool calls.')}`]
-
-    // Prompt (collapsible)
+      ? activities.map(a => truncate(a, RIGHT_WIDTH - 4))
+      : [liveAgent?.activity ?? (m.toolCalls > 0 ? `${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'} completed` : 'No tool calls.')]
     const promptText = agentPrompt(workflow, currentAgentId)
     const promptLines = promptText.split('\n')
     const promptPreview = promptLines.length > 2
-      ? [`  ${truncate(promptLines[0]!, RIGHT_WIDTH - 4)}`, `  … ${promptLines.length - 1} more lines`]
-      : promptLines.map(l => `  ${truncate(l, RIGHT_WIDTH - 4)}`)
+      ? [truncate(promptLines[0]!, RIGHT_WIDTH - 4), `… ${promptLines.length - 1} more lines`]
+      : promptLines.map(l => truncate(l, RIGHT_WIDTH - 4))
 
-    const detailLines = [
-      `${s === 'done' ? C.green(g.icon) : C.dark(g.icon)} ${s === 'done' ? C.bold(C.green('Completed')) : C.bold(STATUS_LABELS[s])}${C.dim(' · ' + (workflow.defaultModel ?? 'Claude Opus 4.6'))}`,
-      C.dim(`${formatNumber(m.tokens)} tok · ${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'}${m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}`),
-      '',
-      `${C.boldDim('Prompt')}${C.dim(` · ${promptLines.length} lines`)}`,
-      ...promptPreview.map(l => C.dim(l)),
-      '',
-      C.boldDim('Activity'),
-      ...activityLines.map(l => C.dim(l)),
-      '',
-      C.boldDim('Outcome'),
-      ...outcomeLines,
+    // Build detail nodes
+    const detailNodes: React.ReactNode[] = [
+      <Box key="status">
+        <Text color={g.color}>{g.icon}</Text>
+        <Text bold>{' '}{STATUS_LABELS[s]}</Text>
+        <Text dimColor>{' · '}{workflow.defaultModel ?? 'Claude Opus 4.6'}</Text>
+      </Box>,
+      <Text key="metrics" dimColor>
+        {formatNumber(m.tokens)} tok · {m.toolCalls} tool {m.toolCalls === 1 ? 'call' : 'calls'}{m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}
+      </Text>,
+      <Text key="spacer1"> </Text>,
+      <Text key="prompt-header" bold dimColor>{'Prompt'}<Text dimColor>{' · '}{promptLines.length}{' lines'}</Text></Text>,
+      ...promptPreview.map((l, i) => <Text key={`pp-${i}`} dimColor>{'  '}{l}</Text>),
+      <Text key="spacer2"> </Text>,
+      <Text key="activity-header" bold dimColor>Activity</Text>,
+      ...activityLines.map((l, i) => <Text key={`act-${i}`} dimColor>{'  '}{l}</Text>),
+      <Text key="spacer3"> </Text>,
+      <Text key="outcome-header" bold dimColor>Outcome</Text>,
+      ...outcomeLines.map((l, i) => <Text key={`out-${i}`}>{'  '}{l}</Text>),
     ]
-    // Apply scroll offset to detail lines (right panel scrolls, left stays)
-    const maxScroll = Math.max(0, detailLines.length - availableRows)
+    const maxScroll = Math.max(0, detailNodes.length - availableRows)
     const scroll = Math.min(detailScroll, maxScroll)
     if (scroll !== detailScroll) setDetailScroll(scroll)
-    const visibleDetail = detailLines.slice(scroll, scroll + availableRows)
-
-    const maxRows = Math.max(agentIds.length, visibleDetail.length)
-    for (let i = 0; i < maxRows; i++) {
-      let left = ''
-      if (i < agentIds.length) {
-        const id = agentIds[i]!
-        const sel = i === selectedAgent
-        const as = agentStatus(workflow, id)
-        const ag = statusGlyph(as)
-        const colorIcon = as === 'done' ? C.green(ag.icon) : C.dark(ag.icon)
-        left = `${sel ? C.sel('❯') + ' ' : '  '}${colorIcon} ${C.dim(truncate(id, LEFT_WIDTH - 5))}`
-      }
-      rows.push({ left: left, right: visibleDetail[i] ?? '' })
+    const visibleDetail = detailNodes.slice(scroll, scroll + availableRows)
+    for (let i = 0; i < visibleDetail.length; i++) {
+      rightNodes.push(visibleDetail[i])
     }
-  }
-
-  // Fill to fit available terminal height
-  while (rows.length < availableRows) {
-    rows.push({ left: '', right: '' })
-  }
-  // Cap at available rows
-  if (rows.length > availableRows) {
-    rows.length = availableRows
   }
 
   // Hints
@@ -456,12 +460,19 @@ export function WorkflowDetailDialog({
     <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
       <Dialog title={null} hideBorder hideInputGuide onCancel={goBack} color="text">
         <Box flexDirection="column" overflowY="hidden">
-          <Text wrap="truncate-end">{'\x1b[2K'}{C.white('─'.repeat(termCols - 4))}</Text>
-          <Text wrap="truncate-end">{'\x1b[2K'}{C.sel(C.bold(` ${workflowTitle(workflow)}`))}</Text>
-          <Text wrap="truncate-end">{'\x1b[2K'}{C.dim(` ${workflowDescription(workflow)}`)}{'  '}{C.dim(statsText)}</Text>
-          <Text>{'\x1b[2K'}</Text>
-          <SplitPanel rows={rows} leftTitle={leftTitle} rightTitle={rightTitle} leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH} />
-          <Text dimColor italic wrap="truncate-end">{'\x1b[2K'}{' '}{hints.join(' · ')}</Text>
+          <Text dimColor wrap="truncate-end">{'─'.repeat(termCols - 4)}</Text>
+          <Text bold color="suggestion" wrap="truncate-end">{' '}{workflowTitle(workflow)}</Text>
+          <Box>
+            <Text dimColor wrap="truncate-end">{' '}{workflowDescription(workflow)}{'  '}{statsText}</Text>
+          </Box>
+          <Text> </Text>
+          <SplitPanel
+            leftNodes={leftNodes} rightNodes={rightNodes}
+            leftTitle={leftTitle} rightTitle={rightTitle}
+            leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH}
+            availableRows={availableRows}
+          />
+          <Text dimColor italic wrap="truncate-end">{' '}{hints.join(' · ')}</Text>
         </Box>
       </Dialog>
     </Box>

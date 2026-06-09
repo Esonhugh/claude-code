@@ -21,3 +21,4 @@
 - 使用中文输出结果
 - 注意和官方二进制的 UI 差异等 
 - Agent/Workflow  这类情况 需要使用 /color /rename 对 当前会话进行变色和重命名 并且可以选择让用户切换，workflow 则应该展示 阶段和多个 Agent 情况的大表格让用户切换和分析 workflow 运作的时候应该只在主界面显示一行 而不是每个 Agent 一行 
+- 不允许自己处理字符串 特别是 ANSI 字符 建议使用 ink 官方库的内容 例如 import { Text } from 'ink';   <Text color="green">This text is green</Text> 
