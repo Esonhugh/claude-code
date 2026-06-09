@@ -183,24 +183,30 @@ function stripAnsi(str: string): string {
 }
 
 // ─── Split Panel (box-drawing chars like official) ──────────
-// Render entire panel as ONE <Text> block to prevent Ink partial-diff corruption with ANSI codes
+// Render panel as separate <Text> per line to avoid Ink ANSI diff corruption
 function SplitPanel({ rows, leftTitle, rightTitle, leftWidth, rightWidth }: {
   rows: Array<{ left: string; right: string }>
   leftTitle: string; rightTitle: string; leftWidth: number; rightWidth: number
+  panelKey?: string
 }): React.JSX.Element {
   const lTitleWidth = stringWidth(leftTitle)
   const rTitleWidth = stringWidth(rightTitle)
   const lFill = '─'.repeat(Math.max(0, leftWidth - lTitleWidth - 1))
   const rFill = '─'.repeat(Math.max(0, rightWidth - rTitleWidth - 1))
-  const lines: string[] = []
-  lines.push(C.white(` ╭ ${leftTitle} ${lFill}┬ ${rightTitle} ${rFill}╮`))
-  for (const row of rows) {
+  const top = C.white(` ╭ ${leftTitle} ${lFill}┬ ${rightTitle} ${rFill}╮`)
+  const bot = C.white(` ╰${'─'.repeat(leftWidth + 1)}┴${'─'.repeat(rightWidth + 1)}╯`)
+  const rowLines = rows.map(row => {
     const l = padVisible(row.left, leftWidth)
     const r = padVisible(row.right, rightWidth)
-    lines.push(`${W} │${R} ${l}\x1b[0m${W}│${R} ${r}\x1b[0m${W}│${R}`)
-  }
-  lines.push(C.white(` ╰${'─'.repeat(leftWidth + 1)}┴${'─'.repeat(rightWidth + 1)}╯`))
-  return <Text wrap="truncate-end">{lines.join('\n')}</Text>
+    return `\x1b[2K${W} │${R} ${l}\x1b[0m${W}│${R} ${r}\x1b[0m${W}│${R}`
+  })
+  return (
+    <Box flexDirection="column">
+      <Text wrap="truncate-end">{'\x1b[2K'}{top}</Text>
+      {rowLines.map((line, i) => <Text key={i} wrap="truncate-end">{line}</Text>)}
+      <Text wrap="truncate-end">{'\x1b[2K'}{bot}</Text>
+    </Box>
+  )
 }
 
 function SplitPanelRow(_props: { left: string; right: string; leftWidth: number; rightWidth: number; rowKey: string }): React.JSX.Element {
@@ -256,7 +262,7 @@ export function WorkflowDetailDialog({
   // Layout - use terminal dimensions to fit panel
   const termRows = process.stdout.rows || 35
   const termCols = process.stdout.columns || 100
-  const availableRows = Math.max(8, termRows - 10) // reserve for header/footer/prompt
+  const availableRows = Math.max(8, termRows - 14) // reserve for separator/title/desc/blank + panel borders + hints + prompt
   const LEFT_WIDTH = 18
   const RIGHT_WIDTH = Math.max(40, termCols - LEFT_WIDTH - 8)
 
@@ -350,7 +356,7 @@ export function WorkflowDetailDialog({
         const colorIcon = s === 'done' ? C.green(g.icon) : s === 'running' ? C.dark(g.icon) : C.dark(g.icon)
         const usedWidth = 3 + NAME_COL + 2 + MODEL_COL
         const gap = Math.max(2, RIGHT_WIDTH - usedWidth - stringWidth(metricsStr))
-        right = `${marker}${colorIcon} ${C.dim(nameStr)}  ${C.dim(modelStr)}${' '.repeat(gap)}${C.dim(metricsStr)}`
+        right = `${marker}${colorIcon} ${C.dim(nameStr)}  ${C.dim(modelStr)}${' '.repeat(gap)}${C.dim(metricsStr)}\x1b[0m`
       }
       rows.push({ left, right })
     }
@@ -450,11 +456,12 @@ export function WorkflowDetailDialog({
     <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
       <Dialog title={null} hideBorder hideInputGuide onCancel={goBack} color="text">
         <Box flexDirection="column" overflowY="hidden">
-          <Text bold wrap="truncate-end">{' '}{workflowTitle(workflow)}</Text>
-          <Text wrap="truncate-end">{' '}{workflowDescription(workflow)}{'  '}<Text dimColor>{statsText}</Text></Text>
-          <Text> </Text>
+          <Text wrap="truncate-end">{'\x1b[2K'}{C.white('─'.repeat(termCols - 4))}</Text>
+          <Text wrap="truncate-end">{'\x1b[2K'}{C.sel(C.bold(` ${workflowTitle(workflow)}`))}</Text>
+          <Text wrap="truncate-end">{'\x1b[2K'}{C.dim(` ${workflowDescription(workflow)}`)}{'  '}{C.dim(statsText)}</Text>
+          <Text>{'\x1b[2K'}</Text>
           <SplitPanel rows={rows} leftTitle={leftTitle} rightTitle={rightTitle} leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH} />
-          <Text dimColor italic wrap="truncate-end">{' '}{hints.join(' · ')}</Text>
+          <Text dimColor italic wrap="truncate-end">{'\x1b[2K'}{' '}{hints.join(' · ')}</Text>
         </Box>
       </Dialog>
     </Box>
