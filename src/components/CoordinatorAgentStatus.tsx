@@ -134,19 +134,21 @@ function SessionRow({
   const [hover, setHover] = React.useState(false)
   const active = row.selected || hover
   const prefix = active ? `${figures.pointer} ` : '  '
-  const maxLabelWidth = Math.max(12, Math.min(36, columns - 46))
+  const meta = row.meta ? ` ${row.meta}` : ''
+  const status = row.statusText ? ` ${row.statusText}` : ''
+  // Calculate available width for label: total - prefix(4) - icon(2) - meta - status - padding(2)
+  const fixedWidth = prefix.length + 2 + meta.length + status.length + 2
+  const maxLabelWidth = Math.max(8, Math.min(32, columns - fixedWidth))
   const label = row.label.length > maxLabelWidth
     ? `${row.label.slice(0, Math.max(0, maxLabelWidth - 1))}…`
     : row.label.padEnd(maxLabelWidth)
-  const meta = row.meta ? ` ${row.meta}` : ''
-  const status = row.statusText ? ` ${row.statusText}` : ''
   return (
     <Box
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <Text dimColor={!active && !row.viewed} bold={row.viewed || active}>
+      <Text dimColor={!active && !row.viewed} bold={row.viewed || active} wrap="truncate">
         {prefix}
         {row.icon} {label}
         {meta}
