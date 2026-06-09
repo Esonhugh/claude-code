@@ -43,6 +43,7 @@ export function CoordinatorTaskPanel({
   const visibleTasks = getVisibleAgentTasks(tasks)
   const hasAgentTasks = visibleTasks.some(task => task.type === 'local_agent')
   const hasWorkflowTasks = visibleTasks.some(task => task.type === 'local_workflow')
+  const workflowOnly = visibleTasks.length > 0 && visibleTasks.every(task => task.type === 'local_workflow')
 
   // 1s tick: re-render for elapsed time + evict local agents past their
   // deadline. Workflows stay visible through their task lifecycle.
@@ -84,12 +85,12 @@ export function CoordinatorTaskPanel({
     selectedIndex,
     viewingAgentTaskId,
     nameByAgentId,
-    omitMainRow: false,
+    omitMainRow: workflowOnly,
   })
 
   return (
     <Box flexDirection="column" marginTop={1} paddingX={2}>
-      {(hasAgentTasks || hasWorkflowTasks) && <Text dimColor>Sessions / background work</Text>}
+      {!workflowOnly && <Text dimColor>Sessions / background work</Text>}
       {rows.map(row => (
         <SessionRow
           key={row.id}
@@ -118,7 +119,8 @@ export function useCoordinatorTaskCount(): number {
   return React.useMemo(() => {
     const visibleTasks = getVisibleAgentTasks(tasks)
     if (visibleTasks.length === 0) return 0
-    return visibleTasks.length + 1
+    const workflowOnly = visibleTasks.every(task => task.type === 'local_workflow')
+    return workflowOnly ? visibleTasks.length : visibleTasks.length + 1
   }, [tasks])
 }
 
