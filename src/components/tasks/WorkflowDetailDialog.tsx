@@ -49,13 +49,17 @@ function phaseDisplayName(task: LocalWorkflowTaskState, phaseIndex: number, phas
   return task.meta?.phases?.[phaseIndex]?.title ?? phase.id
 }
 
-// ANSI color helpers for inline coloring in fixed-width text rows
+// ANSI 256-color helpers matching official Claude Code workflow UI
+const W = '\x1b[38;5;231m' // bright white for borders
+const R = '\x1b[39m'        // reset fg
 const C = {
-  green: (s: string) => `\x1b[32m${s}\x1b[39m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[39m`,
-  blue: (s: string) => `\x1b[34m${s}\x1b[39m`,
-  dim: (s: string) => `\x1b[2m${s}\x1b[22m`,
+  green: (s: string) => `\x1b[38;5;114m${s}\x1b[39m`,
+  sel: (s: string) => `\x1b[38;5;153m${s}\x1b[39m`,     // light blue (selected)
+  dim: (s: string) => `\x1b[38;5;246m${s}\x1b[39m`,     // dim gray
+  dark: (s: string) => `\x1b[38;5;239m${s}\x1b[39m`,    // dark gray (pending numbers, running ⏺)
   bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
+  boldDim: (s: string) => `\x1b[1m\x1b[38;5;246m${s}\x1b[0m`,
+  white: (s: string) => `${W}${s}${R}`,                  // bright white (borders)
   reset: '\x1b[0m',
 }
 
@@ -189,13 +193,13 @@ function SplitPanel({ rows, leftTitle, rightTitle, leftWidth, rightWidth }: {
   const lFill = '─'.repeat(Math.max(0, leftWidth - lTitleWidth - 1))
   const rFill = '─'.repeat(Math.max(0, rightWidth - rTitleWidth - 1))
   const lines: string[] = []
-  lines.push(` ╭ ${leftTitle} ${lFill}┬ ${rightTitle} ${rFill}╮`)
+  lines.push(C.white(` ╭ ${leftTitle} ${lFill}┬ ${rightTitle} ${rFill}╮`))
   for (const row of rows) {
     const l = padVisible(row.left, leftWidth)
     const r = padVisible(row.right, rightWidth)
-    lines.push(` │ ${l}\x1b[0m│ ${r}\x1b[0m│`)
+    lines.push(`${W} │${R} ${l}\x1b[0m${W}│${R} ${r}\x1b[0m${W}│${R}`)
   }
-  lines.push(` ╰${'─'.repeat(leftWidth + 1)}┴${'─'.repeat(rightWidth + 1)}╯`)
+  lines.push(C.white(` ╰${'─'.repeat(leftWidth + 1)}┴${'─'.repeat(rightWidth + 1)}╯`))
   return <Text wrap="truncate-end">{lines.join('\n')}</Text>
 }
 
@@ -319,11 +323,12 @@ export function WorkflowDetailDialog({
         const sel = level === 'phases' && i === selectedPhase
         const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
         const phaseRunning = !phaseDone && phase.status === 'running'
-        const phaseIcon = phaseDone ? '✔' : phaseRunning ? '●' : String(i + 1)
-        const marker = sel ? '❯ ' : '  '
+        const phaseIcon = phaseDone ? C.green('✔') : phaseRunning ? C.dark('●') : C.dark(String(i + 1))
+        const marker = sel ? C.sel('❯') + ' ' : '  '
         const pName = phaseDisplayName(workflow, workflow.phases.indexOf(phase), phase)
-        const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
-        left = `${marker}${phaseIcon} ${truncate(pName, LEFT_WIDTH - 8)}${progress ? ' ' + progress : ''}`
+        const progress = phase.agentIds.length > 0 ? C.dark(`${phase.completedAgentIds.length}/${phase.agentIds.length}`) : ''
+        const nameStr = sel ? C.sel(truncate(pName, LEFT_WIDTH - 8)) : (phaseDone ? truncate(pName, LEFT_WIDTH - 8) : C.dim(truncate(pName, LEFT_WIDTH - 8)))
+        left = `${marker}${phaseIcon} ${nameStr}${progress ? ' ' + progress : ''}`
       }
 
       let right = ''
@@ -333,18 +338,19 @@ export function WorkflowDetailDialog({
         const g = statusGlyph(s)
         const m = agentMetrics(workflow, id)
         const sel = level === 'agents' && i === selectedAgent
-        const marker = sel ? '❯' : ' '
+        const marker = sel ? C.sel('❯') : ' '
         const model = workflow.defaultModel ?? 'Claude Opus 4.6'
         const NAME_COL = Math.min(28, Math.floor((RIGHT_WIDTH - 6) * 0.4))
         const MODEL_COL = Math.min(18, Math.floor((RIGHT_WIDTH - 6) * 0.25))
         const nameStr = pad(truncate(id, NAME_COL), NAME_COL)
         const modelStr = pad(truncate(model, MODEL_COL), MODEL_COL)
         const metricsStr = m.tokens > 0
-          ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'} · ${m.durationMs > 0 ? formatDuration(m.durationMs) : '…'}`
+          ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'}${m.durationMs > 0 ? ' · ' + formatDuration(m.durationMs) : ''}`
           : ''
-        const usedWidth = 3 + NAME_COL + 2 + MODEL_COL // "X● " + name + "  " + model
+        const colorIcon = s === 'done' ? C.green(g.icon) : s === 'running' ? C.dark(g.icon) : C.dark(g.icon)
+        const usedWidth = 3 + NAME_COL + 2 + MODEL_COL
         const gap = Math.max(2, RIGHT_WIDTH - usedWidth - stringWidth(metricsStr))
-        right = `${marker}${g.icon} ${nameStr}  ${modelStr}${' '.repeat(gap)}${metricsStr}`
+        right = `${marker}${colorIcon} ${C.dim(nameStr)}  ${C.dim(modelStr)}${' '.repeat(gap)}${C.dim(metricsStr)}`
       }
       rows.push({ left, right })
     }
@@ -387,16 +393,16 @@ export function WorkflowDetailDialog({
       : promptLines.map(l => `  ${truncate(l, RIGHT_WIDTH - 4)}`)
 
     const detailLines = [
-      `${g.icon} ${STATUS_LABELS[s]} · ${workflow.defaultModel ?? 'Claude Opus 4.6'}`,
-      `${formatNumber(m.tokens)} tok · ${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'}${m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}`,
+      `${s === 'done' ? C.green(g.icon) : C.dark(g.icon)} ${s === 'done' ? C.bold(C.green('Completed')) : C.bold(STATUS_LABELS[s])}${C.dim(' · ' + (workflow.defaultModel ?? 'Claude Opus 4.6'))}`,
+      C.dim(`${formatNumber(m.tokens)} tok · ${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'}${m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}`),
       '',
-      `Prompt · ${promptLines.length} lines`,
-      ...promptPreview,
+      `${C.boldDim('Prompt')}${C.dim(` · ${promptLines.length} lines`)}`,
+      ...promptPreview.map(l => C.dim(l)),
       '',
-      'Activity',
-      ...activityLines,
+      C.boldDim('Activity'),
+      ...activityLines.map(l => C.dim(l)),
       '',
-      'Outcome',
+      C.boldDim('Outcome'),
       ...outcomeLines,
     ]
     // Apply scroll offset to detail lines (right panel scrolls, left stays)
@@ -413,7 +419,8 @@ export function WorkflowDetailDialog({
         const sel = i === selectedAgent
         const as = agentStatus(workflow, id)
         const ag = statusGlyph(as)
-        left = `${sel ? '❯ ' : '  '}${ag.icon} ${truncate(id, LEFT_WIDTH - 5)}`
+        const colorIcon = as === 'done' ? C.green(ag.icon) : C.dark(ag.icon)
+        left = `${sel ? C.sel('❯') + ' ' : '  '}${colorIcon} ${C.dim(truncate(id, LEFT_WIDTH - 5))}`
       }
       rows.push({ left: left, right: visibleDetail[i] ?? '' })
     }
