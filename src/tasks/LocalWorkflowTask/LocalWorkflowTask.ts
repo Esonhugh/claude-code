@@ -444,7 +444,7 @@ export function recordWorkflowAgentProgress({
       liveAgents: {
         ...task.liveAgents,
         [agentId]: {
-          tokenCount,
+          tokenCount: (current?.tokenCount ?? 0) + tokenCount,
           toolUseCount: (current?.toolUseCount ?? 0) + toolUseCount,
           ...(prompt ?? current?.prompt ? { prompt: prompt ?? current?.prompt } : {}),
           ...(activity ?? current?.activity ? { activity: activity ?? current?.activity } : {}),

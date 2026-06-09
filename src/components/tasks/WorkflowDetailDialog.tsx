@@ -45,6 +45,10 @@ function visibleAgentTotal(task: LocalWorkflowTaskState): number {
   return task.agentCount ?? started
 }
 
+function phaseDisplayName(task: LocalWorkflowTaskState, phaseIndex: number, phase: { id: string }): string {
+  return task.meta?.phases?.[phaseIndex]?.title ?? phase.id
+}
+
 // ANSI color helpers for inline coloring in fixed-width text rows
 const C = {
   green: (s: string) => `\x1b[32m${s}\x1b[39m`,
@@ -233,9 +237,9 @@ export function WorkflowDetailDialog({
   const [selectedPhase, setSelectedPhase] = useState(0)
   const [selectedAgent, setSelectedAgent] = useState(0)
 
-  // Filter out empty phases (dry-run placeholders with no agents)
+  // Show all phases (including pending ones) like official
   const visiblePhases = React.useMemo(
-    () => workflow.phases.filter(p => p.agentIds.length > 0 || p.status === 'running'),
+    () => workflow.phases.filter(p => p.agentIds.length > 0 || p.status === 'running' || p.status === 'pending'),
     [workflow.phases],
   )
 
@@ -248,7 +252,7 @@ export function WorkflowDetailDialog({
   const termRows = process.stdout.rows || 35
   const termCols = process.stdout.columns || 100
   const availableRows = Math.max(8, termRows - 10) // reserve for header/footer/prompt
-  const LEFT_WIDTH = 22
+  const LEFT_WIDTH = 18
   const RIGHT_WIDTH = Math.max(40, termCols - LEFT_WIDTH - 8)
 
   // Navigation
@@ -291,7 +295,7 @@ export function WorkflowDetailDialog({
   const statsText = `${done}/${total} ${total === 1 ? 'agent' : 'agents'} · ${formatDuration(elapsedMs(workflow))} · ${statusWord}`
 
   // Panel titles
-  const phaseTitle = currentPhase?.id ?? ''
+  const phaseTitle = currentPhase ? phaseDisplayName(workflow, workflow.phases.indexOf(currentPhase), currentPhase) : ''
   const leftTitle = level === 'agent' ? `${phaseTitle} · ${agentIds.length} ${agentIds.length === 1 ? 'agent' : 'agents'}` : 'Phases'
   const rightTitle = level === 'agent' && currentAgentId
     ? truncate(currentAgentId, RIGHT_WIDTH - 2)
@@ -312,8 +316,9 @@ export function WorkflowDetailDialog({
         const phaseRunning = !phaseDone && phase.status === 'running'
         const phaseIcon = phaseDone ? '✔' : phaseRunning ? '●' : String(i + 1)
         const marker = sel ? '❯ ' : '  '
+        const pName = phaseDisplayName(workflow, workflow.phases.indexOf(phase), phase)
         const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
-        left = `${marker}${phaseIcon} ${truncate(phase.id, 10)} ${progress}`
+        left = `${marker}${phaseIcon} ${truncate(pName, LEFT_WIDTH - 8)}${progress ? ' ' + progress : ''}`
       }
 
       let right = ''
@@ -330,7 +335,7 @@ export function WorkflowDetailDialog({
         const nameStr = pad(truncate(id, NAME_COL), NAME_COL)
         const modelStr = pad(truncate(model, MODEL_COL), MODEL_COL)
         const metricsStr = m.tokens > 0
-          ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} tools · ${m.durationMs > 0 ? formatDuration(m.durationMs) : '…'}`
+          ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'} · ${m.durationMs > 0 ? formatDuration(m.durationMs) : '…'}`
           : ''
         const usedWidth = 3 + NAME_COL + 2 + MODEL_COL // "X● " + name + "  " + model
         const gap = Math.max(2, RIGHT_WIDTH - usedWidth - stringWidth(metricsStr))
