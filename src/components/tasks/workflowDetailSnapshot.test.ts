@@ -131,9 +131,9 @@ const retryDetailLines = workflowDetailSnapshotLines({
     },
   ],
 }, { selectedAgentId: 'scan-b (retry 1)', showAgentDetail: true })
-assert.equal(retryDetailLines[4], '│ ❯ ⏺ scan-b (retry 1)│ ⏺ Running · gpt-5.5[1m] · attempt 2 (user retry)                                      │')
-assert.equal(retryDetailLines[13], '│                     │ Outcome                                                                               │')
-assert.equal(retryDetailLines[14], '│                     │   Still running…                                                                      │')
+assert.equal(retryDetailLines[4], '│ ❯ ⏺ scan-b (retry 1)│ ⏺ Running · gpt-5.5[1m] · attempt 2 (user retry)                                     │')
+assert.equal(retryDetailLines[13], '│                      │ Outcome                                                                              │')
+assert.equal(retryDetailLines[14], '│                      │   Still running…                                                                     │')
 
 const liveProgressWorkflow: LocalWorkflowTaskState = {
   ...workflow,
@@ -148,7 +148,7 @@ const liveProgressWorkflow: LocalWorkflowTaskState = {
   },
 }
 const liveProgressLines = workflowDetailSnapshotLines(liveProgressWorkflow, { selectedAgentId: 'scan-b' })
-assert.equal(liveProgressLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    12 tok · 2 tools                                │')
+assert.equal(liveProgressLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    12 tok · 2 tools                               │')
 const liveAgentDetailLines = workflowDetailSnapshotLines(liveProgressWorkflow, { selectedAgentId: 'scan-b', showAgentDetail: true })
 assert.equal(liveAgentDetailLines[8], '│                │   Investigate UI rendering drift.                                                          │')
 assert.equal(liveAgentDetailLines[11], '│                │   Skill(superpowers:using-superpowers)                                                     │')
@@ -186,7 +186,7 @@ const runtimeAgentIdLines = workflowDetailSnapshotLines({
     },
   ],
 }, { selectedAgentId: 'display-agent' })
-assert.equal(runtimeAgentIdLines[4], '│   1 scan   1/1  │ ❯⏺ display-agent            gpt-5.5[1m]    19687 tok · 0 tools                             │')
+assert.equal(runtimeAgentIdLines[4], '│   1 scan   1/1  │ ❯⏺ display-agent            gpt-5.5[1m]    19687 tok · 0 tools                            │')
 
 const pausedLines = workflowDetailSnapshotLines({ ...workflow, status: 'pending' }, { selectedAgentId: 'scan-b', showAgentDetail: true })
 assert.equal(pausedLines[1], 'Official-style running workflow detail.                                               1/2 agents · 2s · paused')
