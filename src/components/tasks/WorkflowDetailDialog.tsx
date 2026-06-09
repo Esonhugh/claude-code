@@ -99,6 +99,18 @@ function agentStatus(task: LocalWorkflowTaskState, agentId: string): AgentStatus
     if (r?.status === 'skipped') return 'skipped'
     return 'done'
   }
+  // Also check by index: agent may have been registered with one ID but completed with another
+  if (phase) {
+    const idx = phase.agentIds.indexOf(agentId)
+    if (idx >= 0) {
+      const resultAtIndex = phase.results.find(r => r.index === idx)
+      if (resultAtIndex) {
+        if (resultAtIndex.status === 'failed') return 'failed'
+        if (resultAtIndex.status === 'skipped') return 'skipped'
+        return 'done'
+      }
+    }
+  }
   if (task.liveAgents?.[agentId]) return 'running'
   if (task.status === 'completed' || task.status === 'failed') {
     const r = workflowAgentResult(task, agentId)
@@ -126,7 +138,8 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
 
 function agentPrompt(task: LocalWorkflowTaskState, agentId: string): string {
   const pi = task.phases.findIndex(p => p.agentIds.includes(agentId))
-  return task.liveAgents?.[agentId]?.prompt ?? task.meta?.phases?.[pi]?.detail ?? agentId
+  const result = workflowAgentResult(task, agentId)
+  return task.liveAgents?.[agentId]?.prompt ?? result?.prompt ?? task.meta?.phases?.[pi]?.detail ?? agentId
 }
 
 function agentOutcome(task: LocalWorkflowTaskState, agentId: string): string {
@@ -162,34 +175,37 @@ function stripAnsi(str: string): string {
 }
 
 // ─── Split Panel (box-drawing chars like official) ──────────
-function SplitPanelRow({ left, right, leftWidth, rightWidth }: { left: string; right: string; leftWidth: number; rightWidth: number }): React.JSX.Element {
-  // Pad using visible width (stringWidth already strips ANSI)
-  const leftPadded = padVisible(left, leftWidth)
-  const rightPadded = padVisible(right, rightWidth)
-  const line = ` │ ${leftPadded}│ ${rightPadded}│`
-  return <Text wrap="truncate-end">{line}{'\x1b[K'}</Text>
+// Render entire panel as ONE <Text> block to prevent Ink partial-diff corruption with ANSI codes
+function SplitPanel({ rows, leftTitle, rightTitle, leftWidth, rightWidth }: {
+  rows: Array<{ left: string; right: string }>
+  leftTitle: string; rightTitle: string; leftWidth: number; rightWidth: number
+}): React.JSX.Element {
+  const lTitleWidth = stringWidth(leftTitle)
+  const rTitleWidth = stringWidth(rightTitle)
+  const lFill = '─'.repeat(Math.max(0, leftWidth - lTitleWidth - 1))
+  const rFill = '─'.repeat(Math.max(0, rightWidth - rTitleWidth - 1))
+  const lines: string[] = []
+  lines.push(` ╭ ${leftTitle} ${lFill}┬ ${rightTitle} ${rFill}╮`)
+  for (const row of rows) {
+    const l = padVisible(row.left, leftWidth)
+    const r = padVisible(row.right, rightWidth)
+    lines.push(` │ ${l}\x1b[0m│ ${r}\x1b[0m│`)
+  }
+  lines.push(` ╰${'─'.repeat(leftWidth + 1)}┴${'─'.repeat(rightWidth + 1)}╯`)
+  return <Text wrap="truncate-end">{lines.join('\n')}</Text>
+}
+
+function SplitPanelRow(_props: { left: string; right: string; leftWidth: number; rightWidth: number; rowKey: string }): React.JSX.Element {
+  return <Text />
 }
 
 function padVisible(str: string, width: number): string {
   const vis = stringWidth(str)
-  if (vis >= width) return str
+  if (vis >= width) {
+    // Truncate to exact width to prevent overflow
+    return truncate(str, width)
+  }
   return str + ' '.repeat(Math.max(0, width - vis))
-}
-
-function SplitPanelTop({ leftTitle, rightTitle, leftWidth, rightWidth }: { leftTitle: string; rightTitle: string; leftWidth: number; rightWidth: number }): React.JSX.Element {
-  const lTitleWidth = stringWidth(leftTitle)
-  const rTitleWidth = stringWidth(rightTitle)
-  // Row pattern: " │ " + pad(leftWidth) + "│ " + pad(rightWidth) + "│"
-  // Top pattern: " ╭ " + title + " " + fill + "┬ " + title + " " + fill + "╮"
-  // ┬ must be at col 3+leftWidth → fill = leftWidth - titleWidth - 1 (the space after title)
-  const lFill = '─'.repeat(Math.max(0, leftWidth - lTitleWidth - 1))
-  const rFill = '─'.repeat(Math.max(0, rightWidth - rTitleWidth - 1))
-  return <Text wrap="truncate-end">{` ╭ ${C.blue(leftTitle)} ${lFill}┬ ${C.blue(rightTitle)} ${rFill}╮`}</Text>
-}
-
-function SplitPanelBottom({ leftWidth, rightWidth }: { leftWidth: number; rightWidth: number }): React.JSX.Element {
-  // ┴ at col 3+leftWidth: " ╰"(2) + dashes(leftWidth+1) + "┴" + dashes(rightWidth+1) + "╯"
-  return <Text wrap="truncate-end">{' ╰'}{'─'.repeat(leftWidth + 1)}{'┴'}{'─'.repeat(rightWidth + 1)}{'╯'}</Text>
 }
 
 // ─── Main Component ─────────────────────────────────────────
@@ -232,8 +248,7 @@ export function WorkflowDetailDialog({
   const termRows = process.stdout.rows || 35
   const termCols = process.stdout.columns || 100
   const availableRows = Math.max(8, termRows - 10) // reserve for header/footer/prompt
-  // Left panel width adapts: wider for agent list view, narrower for phases
-  const LEFT_WIDTH = level === 'phases' ? 20 : 34
+  const LEFT_WIDTH = 22
   const RIGHT_WIDTH = Math.max(40, termCols - LEFT_WIDTH - 8)
 
   // Navigation
@@ -293,10 +308,12 @@ export function WorkflowDetailDialog({
       if (i < visiblePhases.length) {
         const phase = visiblePhases[i]!
         const sel = level === 'phases' && i === selectedPhase
-        const done = phase.completedAgentIds.length === phase.agentIds.length && phase.agentIds.length > 0
-        const phaseIcon = done ? C.green('✓') : String(i + 1)
-        const marker = sel ? C.blue('❯') + ' ' : '  '
-        left = `${marker}${phaseIcon} ${truncate(phase.id, 10)} ${C.dim(`${phase.completedAgentIds.length}/${phase.agentIds.length}`)}`
+        const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
+        const phaseRunning = !phaseDone && phase.status === 'running'
+        const phaseIcon = phaseDone ? '✔' : phaseRunning ? '●' : String(i + 1)
+        const marker = sel ? '❯ ' : '  '
+        const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
+        left = `${marker}${phaseIcon} ${truncate(phase.id, 10)} ${progress}`
       }
 
       let right = ''
@@ -306,17 +323,18 @@ export function WorkflowDetailDialog({
         const g = statusGlyph(s)
         const m = agentMetrics(workflow, id)
         const sel = level === 'agents' && i === selectedAgent
-        const marker = sel ? C.blue('❯') : ' '
+        const marker = sel ? '❯' : ' '
         const model = workflow.defaultModel ?? 'Claude Opus 4.6'
-        // Three-column layout: name | model | metrics (right-aligned)
-        const NAME_COL = Math.min(28, Math.floor((RIGHT_WIDTH - 6) * 0.35))
+        const NAME_COL = Math.min(28, Math.floor((RIGHT_WIDTH - 6) * 0.4))
         const MODEL_COL = Math.min(18, Math.floor((RIGHT_WIDTH - 6) * 0.25))
         const nameStr = pad(truncate(id, NAME_COL), NAME_COL)
-        const modelStr = pad(C.dim(truncate(model, MODEL_COL)), MODEL_COL)
+        const modelStr = pad(truncate(model, MODEL_COL), MODEL_COL)
         const metricsStr = m.tokens > 0
-          ? C.dim(`${formatNumber(m.tokens)} tok · ${m.toolCalls} tools · ${m.durationMs > 0 ? formatDuration(m.durationMs) : '…'}`)
+          ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} tools · ${m.durationMs > 0 ? formatDuration(m.durationMs) : '…'}`
           : ''
-        right = `${marker}${colorIcon(s, g.icon)} ${nameStr} ${modelStr} ${metricsStr}`
+        const usedWidth = 3 + NAME_COL + 2 + MODEL_COL // "X● " + name + "  " + model
+        const gap = Math.max(2, RIGHT_WIDTH - usedWidth - stringWidth(metricsStr))
+        right = `${marker}${g.icon} ${nameStr}  ${modelStr}${' '.repeat(gap)}${metricsStr}`
       }
       rows.push({ left, right })
     }
@@ -344,30 +362,31 @@ export function WorkflowDetailDialog({
       }
     }
 
-    // Activity lines from recent activities
-    const activities = workflow.liveAgents?.[currentAgentId]?.recentActivities ?? []
+    // Activity lines from recent activities or result tool count
+    const liveAgent = workflow.liveAgents?.[currentAgentId]
+    const activities = liveAgent?.recentActivities ?? []
     const activityLines = activities.length > 0
-      ? activities.map(a => `  ${C.dim(truncate(a, RIGHT_WIDTH - 4))}`)
-      : [`  ${C.dim(workflow.liveAgents?.[currentAgentId]?.activity ?? 'No tool calls.')}`]
+      ? activities.map(a => `  ${truncate(a, RIGHT_WIDTH - 4)}`)
+      : [`  ${liveAgent?.activity ?? (m.toolCalls > 0 ? `${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'} completed` : 'No tool calls.')}`]
 
     // Prompt (collapsible)
     const promptText = agentPrompt(workflow, currentAgentId)
     const promptLines = promptText.split('\n')
     const promptPreview = promptLines.length > 2
-      ? [`  ${C.dim(truncate(promptLines[0]!, RIGHT_WIDTH - 4))}`, `  ${C.dim(`… ${promptLines.length - 1} more lines`)}`]
-      : promptLines.map(l => `  ${C.dim(truncate(l, RIGHT_WIDTH - 4))}`)
+      ? [`  ${truncate(promptLines[0]!, RIGHT_WIDTH - 4)}`, `  … ${promptLines.length - 1} more lines`]
+      : promptLines.map(l => `  ${truncate(l, RIGHT_WIDTH - 4)}`)
 
     const detailLines = [
-      `${colorIcon(s, g.icon)} ${C.bold(STATUS_LABELS[s])} · ${C.dim(workflow.defaultModel ?? 'Claude Opus 4.6')}`,
-      C.dim(`${formatNumber(m.tokens)} tok · ${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'}${m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}`),
+      `${g.icon} ${STATUS_LABELS[s]} · ${workflow.defaultModel ?? 'Claude Opus 4.6'}`,
+      `${formatNumber(m.tokens)} tok · ${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'}${m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}`,
       '',
-      `${C.bold('Prompt')} · ${promptLines.length} lines`,
+      `Prompt · ${promptLines.length} lines`,
       ...promptPreview,
       '',
-      C.bold('Activity'),
+      'Activity',
       ...activityLines,
       '',
-      C.bold('Outcome'),
+      'Outcome',
       ...outcomeLines,
     ]
     const maxRows = Math.max(agentIds.length, detailLines.length)
@@ -378,7 +397,7 @@ export function WorkflowDetailDialog({
         const sel = i === selectedAgent
         const as = agentStatus(workflow, id)
         const ag = statusGlyph(as)
-        left = `${sel ? C.blue('❯') + ' ' : '  '}${colorIcon(as, ag.icon)} ${truncate(id, LEFT_WIDTH - 5)}`
+        left = `${sel ? '❯ ' : '  '}${ag.icon} ${truncate(id, LEFT_WIDTH - 5)}`
       }
       rows.push({ left: left, right: detailLines[i] ?? '' })
     }
@@ -411,11 +430,7 @@ export function WorkflowDetailDialog({
           <Text bold wrap="truncate-end">{' '}{workflowTitle(workflow)}</Text>
           <Text wrap="truncate-end">{' '}{workflowDescription(workflow)}{'  '}<Text dimColor>{statsText}</Text></Text>
           <Text> </Text>
-          <SplitPanelTop leftTitle={leftTitle} rightTitle={rightTitle} leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH} />
-          {rows.map((row, i) => (
-            <SplitPanelRow key={`${level}-${selectedPhase}-${selectedAgent}-${i}`} left={row.left} right={row.right} leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH} />
-          ))}
-          <SplitPanelBottom leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH} />
+          <SplitPanel rows={rows} leftTitle={leftTitle} rightTitle={rightTitle} leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH} />
           <Text dimColor italic wrap="truncate-end">{' '}{hints.join(' · ')}</Text>
         </Box>
       </Dialog>

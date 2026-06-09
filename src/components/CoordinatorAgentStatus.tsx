@@ -51,7 +51,7 @@ export function CoordinatorTaskPanel({
   tasksRef.current = tasks
   const [, setTick] = React.useState(0)
   React.useEffect(() => {
-    if (!hasAgentTasks) return
+    if (!hasAgentTasks && !hasWorkflowTasks) return
     const interval = setInterval(
       (tasksRef, setAppState, setTick) => {
         const now = Date.now()
@@ -68,7 +68,7 @@ export function CoordinatorTaskPanel({
       setTick,
     )
     return () => clearInterval(interval)
-  }, [hasAgentTasks, setAppState])
+  }, [hasAgentTasks, hasWorkflowTasks, setAppState])
 
   const nameByAgentId = React.useMemo(() => {
     const inv = new Map<string, string>()

@@ -63,6 +63,7 @@ export type WorkflowAgentResult = {
   status: 'completed' | 'failed' | 'skipped' | 'running'
   output?: string
   error?: string
+  prompt?: string
   tokenCount?: number
   toolUseCount?: number
   durationMs?: number
@@ -369,7 +370,7 @@ export function recordWorkflowAgentStarted({
 }): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    return updatePhase(
+    const updated = updatePhase(
       { ...task, currentAgentId: agentId },
       phaseId,
       phase => ({
@@ -378,6 +379,14 @@ export function recordWorkflowAgentStarted({
         agentIds: addUnique(phase.agentIds, agentId),
       }),
     )
+    // Register a liveAgents entry so the agent shows as 'running' in UI
+    return {
+      ...updated,
+      liveAgents: {
+        ...updated.liveAgents,
+        [agentId]: updated.liveAgents?.[agentId] ?? { tokenCount: 0, toolUseCount: 0 },
+      },
+    }
   })
 }
 

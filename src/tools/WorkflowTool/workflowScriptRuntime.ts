@@ -260,6 +260,7 @@ export async function runWorkflowScript({
     if (cached.hit) return cached.result
 
     agentCount++
+    const agentIndex = agentCount - 1 // Capture index at increment time (before async)
     const phase = opts?.phase || currentPhase || label
     const stallMs = opts?.stallMs ?? DEFAULT_STALL_MS
 
@@ -269,7 +270,7 @@ export async function runWorkflowScript({
     for (let attempt = 1; attempt <= MAX_STALL_RETRIES; attempt++) {
       await semaphore.acquire()
       try {
-        const result = await runSingleAgent(prompt, opts, label, phase, stallMs)
+        const result = await runSingleAgent(prompt, opts, label, phase, stallMs, agentIndex)
         // Record in journal
         journal.record(identityKey, result)
         return result
@@ -295,14 +296,14 @@ export async function runWorkflowScript({
 
   async function runSingleAgent(
     prompt: string, opts: AgentOpts | undefined,
-    label: string, phase: string, stallMs: number,
+    label: string, phase: string, stallMs: number, agentIndex: number,
   ): Promise<unknown> {
     recordWorkflowAgentStarted({ taskId: workflowTask.id, phaseId: phase, agentId: label, setAppState })
     const agentAbortController = createChildAbortController(abortController)
     recordWorkflowAgentController({
       taskId: workflowTask.id, agentId: label,
       abortController: agentAbortController, setAppState,
-      baseAgentId: label, index: agentCount - 1, userRetryAttempt: 0,
+      baseAgentId: label, index: agentIndex, userRetryAttempt: 0,
     })
 
     // Stall timer
@@ -329,7 +330,19 @@ export async function runWorkflowScript({
         input as never,
         { ...context, abortController: agentAbortController },
         canUseTool, assistantMessage,
-        () => { lastProgress = Date.now() },
+        (progress) => {
+          lastProgress = Date.now()
+          // Update liveAgents with progress info for UI
+          const p = progress?.data as { summary?: string } | undefined
+          if (p?.summary) {
+            recordWorkflowAgentProgress({
+              taskId: workflowTask.id, agentId: label,
+              tokenCount: 0, toolUseCount: 0,
+              activity: p.summary, prompt: prompt.slice(0, 200),
+              setAppState,
+            })
+          }
+        },
       )
       clearInterval(stallTimer)
 
@@ -340,8 +353,8 @@ export async function runWorkflowScript({
       completeWorkflowAgent({
         taskId: workflowTask.id,
         result: {
-          phaseId: phase, agentId: label, index: agentCount - 1,
-          status: 'completed', output: text,
+          phaseId: phase, agentId: label, index: agentIndex,
+          status: 'completed', output: text, prompt,
           tokenCount: output.totalTokens ?? 0,
           toolUseCount: output.totalToolUseCount ?? 0,
           durationMs: output.totalDurationMs ?? 0,
