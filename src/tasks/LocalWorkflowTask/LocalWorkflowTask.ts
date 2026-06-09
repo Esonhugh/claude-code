@@ -234,12 +234,14 @@ function updatePhase(
   phaseId: string,
   updater: (phase: LocalWorkflowPhaseState) => LocalWorkflowPhaseState,
 ): LocalWorkflowTaskState {
-  return withProgressVersion({
-    ...task,
-    phases: task.phases.map(phase =>
-      phase.id === phaseId ? updater(phase) : phase,
-    ),
-  })
+  const exists = task.phases.some(phase => phase.id === phaseId)
+  const phases = exists
+    ? task.phases.map(phase => phase.id === phaseId ? updater(phase) : phase)
+    : [...task.phases, updater({
+        id: phaseId, status: 'pending', agentIds: [],
+        completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [],
+      })]
+  return withProgressVersion({ ...task, phases })
 }
 
 function addUnique(values: string[], value: string): string[] {

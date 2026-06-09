@@ -178,7 +178,19 @@ export async function loadWorkflowScriptSpec(
   })
   script.runInContext(sandbox, { timeout: 1000 })
 
-  const exported = module.exports.default
+  // Support both `export default` and bare function-expression formats
+  let exported = module.exports.default
+  if (!exported && typeof sandbox._lastResult === 'function') {
+    exported = sandbox._lastResult
+  }
+  if (!exported) {
+    // Try evaluating as a bare expression (arrow fn / function)
+    try {
+      const exprScript = new vm.Script(`module.exports.default = ${source.trim()}`, { filename: filePath })
+      exprScript.runInContext(sandbox, { timeout: 1000 })
+      exported = module.exports.default
+    } catch { /* ignore */ }
+  }
   if (!exported) {
     throw new Error(`Workflow script did not export a workflow: ${filePath}`)
   }
