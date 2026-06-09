@@ -236,6 +236,7 @@ export function WorkflowDetailDialog({
   const [level, setLevel] = useState<Level>('phases')
   const [selectedPhase, setSelectedPhase] = useState(0)
   const [selectedAgent, setSelectedAgent] = useState(0)
+  const [detailScroll, setDetailScroll] = useState(0)
 
   // Show all phases (including pending ones) like official
   const visiblePhases = React.useMemo(
@@ -257,26 +258,30 @@ export function WorkflowDetailDialog({
 
   // Navigation
   function goBack() {
-    if (level === 'agent') { setLevel('agents'); return }
+    if (level === 'agent') { setLevel('agents'); setDetailScroll(0); return }
     if (level === 'agents') { setLevel('phases'); return }
     close()
   }
   function drillIn() {
     if (level === 'phases' && agentIds.length > 0) { setSelectedAgent(0); setLevel('agents') }
-    else if (level === 'agents' && currentAgentId) { setLevel('agent') }
+    else if (level === 'agents' && currentAgentId) { setDetailScroll(0); setLevel('agent') }
   }
   function moveUp() {
     if (level === 'phases') setSelectedPhase(p => Math.max(0, p - 1))
-    else setSelectedAgent(a => Math.max(0, a - 1))
+    else { setSelectedAgent(a => Math.max(0, a - 1)); setDetailScroll(0) }
   }
   function moveDown() {
     if (level === 'phases') setSelectedPhase(p => Math.min(visiblePhases.length - 1, p + 1))
-    else setSelectedAgent(a => Math.min(agentIds.length - 1, a + 1))
+    else { setSelectedAgent(a => Math.min(agentIds.length - 1, a + 1)); setDetailScroll(0) }
   }
+  function scrollUp() { setDetailScroll(s => Math.max(0, s - 1)) }
+  function scrollDown() { setDetailScroll(s => s + 1) } // clamped at render time
 
   const handleKeyDown = (e: { key: string; ctrl?: boolean; meta?: boolean; preventDefault: () => void }) => {
     if (e.ctrl || e.meta) return
-    if (e.key === 'j' || e.key === 'down') { e.preventDefault(); moveDown() }
+    if (level === 'agent' && (e.key === 'j' || e.key === 'down')) { e.preventDefault(); scrollDown() }
+    else if (level === 'agent' && (e.key === 'k' || e.key === 'up')) { e.preventDefault(); scrollUp() }
+    else if (e.key === 'j' || e.key === 'down') { e.preventDefault(); moveDown() }
     else if (e.key === 'k' || e.key === 'up') { e.preventDefault(); moveUp() }
     else if (e.key === 'return' || e.key === 'right') { e.preventDefault(); drillIn() }
     else if (e.key === 'left') { e.preventDefault(); goBack() }
@@ -394,7 +399,13 @@ export function WorkflowDetailDialog({
       'Outcome',
       ...outcomeLines,
     ]
-    const maxRows = Math.max(agentIds.length, detailLines.length)
+    // Apply scroll offset to detail lines (right panel scrolls, left stays)
+    const maxScroll = Math.max(0, detailLines.length - availableRows)
+    const scroll = Math.min(detailScroll, maxScroll)
+    if (scroll !== detailScroll) setDetailScroll(scroll)
+    const visibleDetail = detailLines.slice(scroll, scroll + availableRows)
+
+    const maxRows = Math.max(agentIds.length, visibleDetail.length)
     for (let i = 0; i < maxRows; i++) {
       let left = ''
       if (i < agentIds.length) {
@@ -404,7 +415,7 @@ export function WorkflowDetailDialog({
         const ag = statusGlyph(as)
         left = `${sel ? '❯ ' : '  '}${ag.icon} ${truncate(id, LEFT_WIDTH - 5)}`
       }
-      rows.push({ left: left, right: detailLines[i] ?? '' })
+      rows.push({ left: left, right: visibleDetail[i] ?? '' })
     }
   }
 
@@ -419,7 +430,7 @@ export function WorkflowDetailDialog({
 
   // Hints
   const hints: string[] = []
-  if (level === 'agent') hints.push('↑↓ agent · j/k scroll')
+  if (level === 'agent') hints.push('↑↓/j/k scroll · ←/esc back')
   else hints.push('↑↓ select')
   hints.push('⏎ expand')
   if (isRunning && currentAgentId && level !== 'phases') hints.push('x stop')
