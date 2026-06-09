@@ -1,4 +1,5 @@
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 
 const PANEL_WIDTH = 110
 const LEFT_WIDTH = 16
@@ -36,9 +37,21 @@ function visibleAgentTotal(task: LocalWorkflowTaskState): number {
   return task.agentCount ?? started
 }
 
+function truncateStr(value: string, maxLen: number): string {
+  if (stringWidth(value) <= maxLen) return value
+  let w = 0
+  let i = 0
+  for (; i < value.length; i++) {
+    const cw = stringWidth(value[i]!)
+    if (w + cw > maxLen - 1) break
+    w += cw
+  }
+  return value.slice(0, i) + '…'
+}
+
 function pad(value: string, width: number): string {
-  const truncated = value.length > width ? value.slice(0, Math.max(0, width - 1)) : value
-  return `${truncated}${' '.repeat(Math.max(0, width - truncated.length))}`
+  const truncated = stringWidth(value) > width ? truncateStr(value, width) : value
+  return `${truncated}${' '.repeat(Math.max(0, width - stringWidth(truncated)))}`
 }
 
 function displayPhaseId(task: LocalWorkflowTaskState, phaseIndex: number): string {
@@ -59,10 +72,10 @@ function phaseLabel(
   )
 }
 
-function phaseHeader(task: LocalWorkflowTaskState): string {
+function phaseHeaderTitle(task: LocalWorkflowTaskState): string {
   const selectedPhase = task.phases[0]
-  if (!selectedPhase) return ''.padEnd(RIGHT_WIDTH)
-  return pad(`${displayPhaseId(task, 0)} · ${selectedPhase.agentIds.length} ${selectedPhase.agentIds.length === 1 ? 'agent' : 'agents'} `, RIGHT_WIDTH)
+  if (!selectedPhase) return ''
+  return `${displayPhaseId(task, 0)} · ${selectedPhase.agentIds.length} ${selectedPhase.agentIds.length === 1 ? 'agent' : 'agents'} `
 }
 
 function workflowAgentResult(task: LocalWorkflowTaskState, agentId: string) {
@@ -90,7 +103,7 @@ function agentRow(task: LocalWorkflowTaskState, agentId: string, selected: boole
   const icon = task.status === 'pending' && selected ? '◌' : '⏺'
   const suffix = task.status === 'pending' && selected ? ' · stopped' : ''
   return pad(
-    `${marker}${icon} ${agentId.padEnd(24)} ${model.padEnd(14)} ${tokenCount} tok · ${toolUseCount} ${toolUseCount === 1 ? 'tool' : 'tools'}${suffix}`,
+    `${marker}${icon} ${pad(agentId, 24)} ${pad(model, 14)} ${tokenCount} tok · ${toolUseCount} ${toolUseCount === 1 ? 'tool' : 'tools'}${suffix}`,
     RIGHT_WIDTH,
   )
 }
@@ -102,19 +115,23 @@ function formatHeader(task: LocalWorkflowTaskState): string[] {
   const metrics = `${completed}/${total} ${total === 1 ? 'agent' : 'agents'} · ${elapsedSeconds(task)}s${task.status === 'pending' ? ' · paused' : ''}`
   return [
     workflowTitle(task),
-    `${pad(description, Math.max(1, PANEL_WIDTH - metrics.length - 1))} ${metrics}`,
+    `${pad(description, Math.max(1, PANEL_WIDTH - stringWidth(metrics) - 1))} ${metrics}`,
   ]
 }
 
 function formatPhasePanel(task: LocalWorkflowTaskState, selectedAgentId?: string): string[] {
   const selectedPhase = selectedAgentId ? agentPhase(task, selectedAgentId) ?? task.phases[0] : task.phases[0]
   const selectedPhaseIndex = selectedPhase ? task.phases.indexOf(selectedPhase) : 0
-  const top = `╭ ${pad('Phases', LEFT_WIDTH - 2).replace(/\s+$/g, ' ────────')}┬ ${phaseHeader(task).replace(/\s+$/g, ' ─────────────────────────────────────────────────────────────────────────────')}╮`
+  const leftPadded = pad('Phases', LEFT_WIDTH - 2)
+  const leftFilled = leftPadded.replace(/\s+$/, ' ────────')
+  const rightPadded = pad(phaseHeaderTitle(task), RIGHT_WIDTH)
+  const rightFilled = rightPadded.replace(/\s+$/, ' ─────────────────────────────────────────────────────────────────────────────')
+  const top = `╭ ${leftFilled}┬ ${rightFilled}╮`
   const rows: string[] = [top]
   const maxRows = Math.max(task.phases.length, selectedPhase?.agentIds.length ?? 0, 1)
   for (let index = 0; index < maxRows; index += 1) {
     rows.push(
-      `│ ${phaseLabel(task, index, !selectedAgentId && index === selectedPhaseIndex)}│ ${selectedPhase?.agentIds[index] ? agentRow(task, selectedPhase.agentIds[index]!, selectedPhase.agentIds[index] === selectedAgentId) : ''.padEnd(RIGHT_WIDTH)}│`,
+      `│ ${phaseLabel(task, index, !selectedAgentId && index === selectedPhaseIndex)}│ ${selectedPhase?.agentIds[index] ? agentRow(task, selectedPhase.agentIds[index]!, selectedPhase.agentIds[index] === selectedAgentId) : ' '.repeat(RIGHT_WIDTH)}│`,
     )
   }
   rows.push(`╰${'─'.repeat(LEFT_WIDTH)}┴${'─'.repeat(RIGHT_WIDTH + 1)}╯`)
@@ -181,9 +198,13 @@ function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: s
     const icon = task.status === 'pending' ? '◌' : '⏺'
     return `${marker}${icon} ${agentId}`
   })
-  const detailLeftWidth = Math.max(LEFT_WIDTH, ...leftRows.map(row => row.length + 1))
+  const detailLeftWidth = Math.max(LEFT_WIDTH, ...leftRows.map(row => stringWidth(row) + 1))
   const detailRightWidth = PANEL_WIDTH - detailLeftWidth - 3
-  const top = `╭ ${pad(phaseTitle, detailLeftWidth - 1)}┬ ${pad(`${selectedAgentId} `, detailRightWidth).replace(/\s+$/g, ' ─────────────────────────────────────────────────────────────────────────────────────')}╮`
+  const topLeftPadded = pad(phaseTitle, detailLeftWidth - 1)
+  const topRightPadded = pad(`${selectedAgentId} `, detailRightWidth)
+  const topLeft = topLeftPadded.replace(/\s+$/, '')
+  const topRight = topRightPadded.replace(/\s+$/, ' ─────────────────────────────────────────────────────────────────────────────────────')
+  const top = `╭ ${topLeft}┬ ${topRight}╮`
   const rows: string[] = [top]
   const activityRows = agentActivities(task, selectedAgentId).map(activity => `  ${activity}`)
   const detailRows = [

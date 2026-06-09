@@ -144,12 +144,20 @@ function agentOutcome(task: LocalWorkflowTaskState, agentId: string): string {
 }
 
 function truncate(str: string, maxLen: number): string {
-  return stringWidth(str) > maxLen ? str.slice(0, maxLen - 1) + '…' : str
+  if (stringWidth(str) <= maxLen) return str
+  let w = 0
+  let i = 0
+  for (; i < str.length; i++) {
+    const cw = stringWidth(str[i]!)
+    if (w + cw > maxLen - 1) break
+    w += cw
+  }
+  return str.slice(0, i) + '…'
 }
 
 function pad(str: string, width: number): string {
   const w = stringWidth(str)
-  return w >= width ? str.slice(0, width) : str + ' '.repeat(Math.max(0, width - w))
+  return w >= width ? truncate(str, width) : str + ' '.repeat(Math.max(0, width - w))
 }
 
 // ─── Split Panel (box-drawing chars like official) ──────────
