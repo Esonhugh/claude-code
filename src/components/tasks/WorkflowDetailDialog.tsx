@@ -22,6 +22,8 @@ type Props = {
 
 type Level = 'phases' | 'agents' | 'agent'
 type AgentStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'interrupted'
+// In agent detail: which pane has focus
+type AgentPane = 'left' | 'right'
 
 // ─── Helpers ───────────────────────────────────────────────
 function completedAgents(task: LocalWorkflowTaskState): number {
@@ -105,14 +107,17 @@ function agentStatus(task: LocalWorkflowTaskState, agentId: string): AgentStatus
   return 'queued'
 }
 
+// All icons must NOT match emoji-regex (which gives width 2 via getEmojiWidth)
+// ✔ (U+2714), ⏺ (U+23FA), ▪ (U+25AA) all match emoji-regex → width 2 in our stringWidth
+// Use only non-emoji chars: ✓ ✗ ⊛ ⬤ ⊘ ⊚
 function statusGlyph(s: AgentStatus): { icon: string; color: keyof Theme | undefined } {
   switch (s) {
     case 'done': return { icon: '✓', color: 'success' }
     case 'failed': return { icon: '✗', color: 'error' }
-    case 'running': return { icon: '●', color: 'suggestion' }
-    case 'interrupted': return { icon: '◌', color: undefined }
+    case 'running': return { icon: '⊛', color: 'suggestion' }
+    case 'interrupted': return { icon: '⊘', color: undefined }
     case 'skipped': return { icon: '⊘', color: undefined }
-    case 'queued': return { icon: '○', color: undefined }
+    case 'queued': return { icon: '⊚', color: undefined }
   }
 }
 
@@ -154,63 +159,26 @@ function pad(str: string, width: number): string {
   return w >= width ? truncate(str, width) : str + ' '.repeat(Math.max(0, width - w))
 }
 
-// ─── Themed inline components ───────────────────────────────
-function PhaseRow({ selected, done, running, name, progress, leftWidth }: {
-  selected: boolean; done: boolean; running: boolean; name: string; progress: string; index: number; leftWidth: number
-}): React.JSX.Element {
-  const icon = done ? '✔' : running ? '●' : '○'
-  const iconColor: keyof Theme | undefined = done ? 'success' : undefined
-  const label = progress ? `${name} ${progress}` : name
-  return (
-    <Text wrap="truncate-end">
-      <Text color={selected ? 'suggestion' : undefined}>{selected ? '❯ ' : '  '}</Text>
-      <Text color={iconColor} dimColor={!done && !running}>{icon}</Text>
-      <Text>{' '}</Text>
-      <Text color={selected ? 'suggestion' : undefined} dimColor={!selected && !done}>
-        {pad(label, leftWidth - 5)}
-      </Text>
-    </Text>
-  )
-}
-
-function AgentRow({ selected, status, id, model, metrics, nameWidth, modelWidth, totalWidth }: {
-  selected: boolean; status: AgentStatus; id: string; model: string
-  metrics: string; nameWidth: number; modelWidth: number; totalWidth: number
-}): React.JSX.Element {
-  const g = statusGlyph(status)
-  // Build a fixed-width padded string to prevent Ink diff artifacts
-  const marker = selected ? '❯' : ' '
-  const nameStr = pad(truncate(id, nameWidth), nameWidth)
-  const modelStr = pad(truncate(model, modelWidth), modelWidth)
-  const content = `${marker}${g.icon} ${nameStr}  ${modelStr}  ${metrics}`
-  return (
-    <Text wrap="truncate-end">
-      <Text color={selected ? 'suggestion' : undefined}>{marker}</Text>
-      <Text color={g.color}>{g.icon}</Text>
-      <Text dimColor>{' '}{pad(`${nameStr}  ${modelStr}  ${metrics}`, totalWidth - 3)}</Text>
-    </Text>
-  )
-}
-
-// ─── Split Panel using React components ──────────────────────
-function SplitPanel({ leftNodes, rightNodes, leftTitle, rightTitle, leftWidth, rightWidth, availableRows: maxRows }: {
+// ─── Split Panel ────────────────────────────────────────────
+function SplitPanel({ leftNodes, rightNodes, leftTitle, rightTitle, leftWidth, rightWidth, rows, focusPane }: {
   leftNodes: React.ReactNode[]
   rightNodes: React.ReactNode[]
   leftTitle: string; rightTitle: string
   leftWidth: number; rightWidth: number
-  availableRows: number
+  rows: number
+  focusPane?: AgentPane
 }): React.JSX.Element {
   const lFill = '─'.repeat(Math.max(0, leftWidth - stringWidth(leftTitle) - 1))
   const rFill = '─'.repeat(Math.max(0, rightWidth - stringWidth(rightTitle) - 1))
-  const totalRows = Math.max(leftNodes.length, rightNodes.length, maxRows)
+  const totalRows = Math.max(leftNodes.length, rightNodes.length, rows)
   return (
     <Box flexDirection="column">
       <Text dimColor wrap="truncate-end">
         {' ╭ '}{leftTitle}{' '}{lFill}{'┬ '}{rightTitle}{' '}{rFill}{'╮'}
       </Text>
       {Array.from({ length: totalRows }, (_, i) => (
-        <Box key={`${leftTitle}-${rightTitle}-${i}`} width={leftWidth + rightWidth + 7}>
-          <Text dimColor>{' │ '}</Text>
+        <Box key={`row-${i}`}>
+          <Text dimColor={focusPane !== 'left'}>{' │ '}</Text>
           <Box width={leftWidth}>
             {leftNodes[i] ?? <Text>{' '.repeat(leftWidth)}</Text>}
           </Box>
@@ -253,74 +221,97 @@ export function WorkflowDetailDialog({
   const [selectedPhase, setSelectedPhase] = useState(0)
   const [selectedAgent, setSelectedAgent] = useState(0)
   const [detailScroll, setDetailScroll] = useState(0)
+  const [agentPane, setAgentPane] = useState<AgentPane>('left')
 
-  // Force full redraw when phase selection or level changes to prevent character remnants
-  const prevPhaseRef = useRef(selectedPhase)
-  const prevLevelRef = useRef(level)
-  const prevAgentRef = useRef(selectedAgent)
+  // Force full redraw on state change to prevent character remnants
+  // Include phase completion counts so竖线 redraws when labels change width
+  const prevStateRef = useRef('')
+  const phaseKey = workflow.phases.map(p => `${p.completedAgentIds.length}/${p.agentIds.length}:${p.status}`).join(',')
   useLayoutEffect(() => {
-    if (prevPhaseRef.current !== selectedPhase || prevLevelRef.current !== level || prevAgentRef.current !== selectedAgent) {
-      const ink = instances.get(process.stdout)
-      ink?.forceRedraw()
-      prevPhaseRef.current = selectedPhase
-      prevLevelRef.current = level
-      prevAgentRef.current = selectedAgent
+    const key = `${level}-${selectedPhase}-${selectedAgent}-${agentPane}-${detailScroll}-${phaseKey}-${workflow.status}`
+    if (prevStateRef.current !== key) {
+      instances.get(process.stdout)?.forceRedraw()
+      prevStateRef.current = key
     }
   })
 
-  // Show only phases that have agents registered (skip empty placeholder phases)
-  const visiblePhases = React.useMemo(
-    () => workflow.phases.filter(p => p.agentIds.length > 0),
-    [workflow.phases],
-  )
+  // Show all phases from meta (or those with agents/running)
+  const visiblePhases = React.useMemo(() => {
+    // If meta has phases, show all of them regardless of state
+    if (workflow.meta?.phases && workflow.meta.phases.length > 0) {
+      // Map meta phases to matching task phases by title/id
+      return workflow.meta.phases.map((mp, idx) => {
+        const found = workflow.phases.find(p => p.id === mp.title) ?? workflow.phases[idx]
+        return found ?? { id: mp.title, status: 'pending' as const, agentIds: [], completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [] }
+      })
+    }
+    return workflow.phases.filter(p => p.agentIds.length > 0 || p.status === 'running')
+  }, [workflow.phases, workflow.meta])
 
   const currentPhase = visiblePhases[Math.min(selectedPhase, visiblePhases.length - 1)]
   const agentIds = currentPhase?.agentIds ?? []
   const currentAgentId = agentIds[Math.min(selectedAgent, agentIds.length - 1)]
   const isRunning = workflow.status === 'running'
 
-  // Layout
+  // Layout — in agent detail mode, left pane is wider for agent names
   const termRows = process.stdout.rows || 35
   const termCols = process.stdout.columns || 100
   const availableRows = Math.max(8, termRows - 14)
-  const LEFT_WIDTH = 22
-  const RIGHT_WIDTH = Math.max(40, termCols - LEFT_WIDTH - 8)
+  const PHASE_LEFT_W = 22
+  const AGENT_LEFT_W = Math.min(40, Math.max(28, Math.floor(termCols * 0.25)))
+  const leftW = level === 'agent' ? AGENT_LEFT_W : PHASE_LEFT_W
+  const rightW = Math.max(30, termCols - leftW - 8)
 
   // Navigation
   function goBack() {
-    if (level === 'agent') { setLevel('agents'); setDetailScroll(0); return }
+    if (level === 'agent' && agentPane === 'right') { setAgentPane('left'); return }
+    if (level === 'agent') { setLevel('agents'); setDetailScroll(0); setAgentPane('left'); return }
     if (level === 'agents') { setLevel('phases'); return }
     close()
   }
   function drillIn() {
     if (level === 'phases' && agentIds.length > 0) { setSelectedAgent(0); setLevel('agents') }
-    else if (level === 'agents' && currentAgentId) { setDetailScroll(0); setLevel('agent') }
+    else if (level === 'agents' && currentAgentId) { setDetailScroll(0); setLevel('agent'); setAgentPane('left') }
+    else if (level === 'agent' && agentPane === 'left') { setAgentPane('right') }
   }
-  function moveUp() {
-    if (level === 'phases') setSelectedPhase(p => Math.max(0, p - 1))
-    else { setSelectedAgent(a => Math.max(0, a - 1)); setDetailScroll(0) }
-  }
-  function moveDown() {
-    if (level === 'phases') setSelectedPhase(p => Math.min(visiblePhases.length - 1, p + 1))
-    else { setSelectedAgent(a => Math.min(agentIds.length - 1, a + 1)); setDetailScroll(0) }
-  }
-  function scrollUp() { setDetailScroll(s => Math.max(0, s - 1)) }
-  function scrollDown() { setDetailScroll(s => s + 1) }
 
   const handleKeyDown = (e: { key: string; ctrl?: boolean; meta?: boolean; preventDefault: () => void }) => {
     if (e.ctrl || e.meta) return
-    if (level === 'agent' && (e.key === 'j' || e.key === 'down')) { e.preventDefault(); moveDown() }
-    else if (level === 'agent' && (e.key === 'k' || e.key === 'up')) { e.preventDefault(); moveUp() }
-    else if (e.key === 'j' || e.key === 'down') { e.preventDefault(); moveDown() }
-    else if (e.key === 'k' || e.key === 'up') { e.preventDefault(); moveUp() }
-    else if (e.key === 'return' || e.key === 'right') { e.preventDefault(); drillIn() }
-    else if (e.key === 'left') { e.preventDefault(); goBack() }
-    else if (e.key === 'x' && isRunning && currentAgentId && level !== 'phases' && onSkipAgent) { e.preventDefault(); onSkipAgent(currentAgentId) }
-    else if (e.key === 'x' && isRunning && level === 'phases' && onKill) { e.preventDefault(); onKill() }
-    else if (e.key === 'r' && isRunning && currentAgentId && level !== 'phases' && onRetryAgent) { e.preventDefault(); onRetryAgent(currentAgentId) }
-    else if (e.key === 'p' && isRunning && onPause) { e.preventDefault(); onPause() }
-    else if (e.key === 'p' && workflow.status === 'pending' && onResume) { e.preventDefault(); onResume() }
-    else if (e.key === ' ') { e.preventDefault(); close() }
+    const k = e.key
+    // Agent detail level — left/right switches pane, up/down depends on active pane
+    if (level === 'agent') {
+      if (k === 'left') { e.preventDefault(); goBack(); return }
+      if (k === 'right') { e.preventDefault(); drillIn(); return }
+      if (agentPane === 'left' && (k === 'j' || k === 'down')) {
+        e.preventDefault(); setSelectedAgent(a => Math.min(agentIds.length - 1, a + 1)); setDetailScroll(0); return
+      }
+      if (agentPane === 'left' && (k === 'k' || k === 'up')) {
+        e.preventDefault(); setSelectedAgent(a => Math.max(0, a - 1)); setDetailScroll(0); return
+      }
+      if (agentPane === 'right' && (k === 'j' || k === 'down')) {
+        e.preventDefault(); setDetailScroll(s => s + 1); return
+      }
+      if (agentPane === 'right' && (k === 'k' || k === 'up')) {
+        e.preventDefault(); setDetailScroll(s => Math.max(0, s - 1)); return
+      }
+    }
+    // Phase / agents list levels
+    if (k === 'j' || k === 'down') {
+      e.preventDefault()
+      if (level === 'phases') setSelectedPhase(p => Math.min(visiblePhases.length - 1, p + 1))
+      else setSelectedAgent(a => Math.min(agentIds.length - 1, a + 1))
+    } else if (k === 'k' || k === 'up') {
+      e.preventDefault()
+      if (level === 'phases') setSelectedPhase(p => Math.max(0, p - 1))
+      else setSelectedAgent(a => Math.max(0, a - 1))
+    } else if (k === 'return' || k === 'right') { e.preventDefault(); drillIn() }
+    else if (k === 'left') { e.preventDefault(); goBack() }
+    else if (k === 'x' && isRunning && currentAgentId && level !== 'phases' && onSkipAgent) { e.preventDefault(); onSkipAgent(currentAgentId) }
+    else if (k === 'x' && isRunning && level === 'phases' && onKill) { e.preventDefault(); onKill() }
+    else if (k === 'r' && isRunning && currentAgentId && level !== 'phases' && onRetryAgent) { e.preventDefault(); onRetryAgent(currentAgentId) }
+    else if (k === 'p' && isRunning && onPause) { e.preventDefault(); onPause() }
+    else if (k === 'p' && workflow.status === 'pending' && onResume) { e.preventDefault(); onResume() }
+    else if (k === ' ') { e.preventDefault(); close() }
   }
 
   // Header
@@ -331,9 +322,11 @@ export function WorkflowDetailDialog({
 
   // Panel titles
   const phaseTitle = currentPhase ? phaseDisplayName(workflow, workflow.phases.indexOf(currentPhase), currentPhase) : ''
-  const leftTitle = level === 'agent' ? `${phaseTitle}` : 'Phases'
+  const phasePending = currentPhase && currentPhase.agentIds.length === 0 && currentPhase.status !== 'running'
+  const leftTitle = level === 'agent' ? `${phaseTitle} agents` : 'Phases'
   const rightTitle = level === 'agent' && currentAgentId
-    ? truncate(currentAgentId, RIGHT_WIDTH - 2)
+    ? truncate(currentAgentId, rightW - 2)
+    : phasePending ? phaseTitle
     : currentPhase ? `${phaseTitle} · ${agentIds.length} ${agentIds.length === 1 ? 'agent' : 'agents'}` : ''
 
   // Build left/right React node arrays
@@ -347,60 +340,94 @@ export function WorkflowDetailDialog({
       const sel = level === 'phases' && i === selectedPhase
       const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
       const phaseRunning = !phaseDone && phase.status === 'running'
+      const phaseNotStarted = phase.agentIds.length === 0 && phase.status !== 'running'
       const pName = phaseDisplayName(workflow, workflow.phases.indexOf(phase), phase)
       const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
+      const icon = phaseDone ? '✓' : phaseRunning ? '⊛' : phaseNotStarted ? String(i + 1) : '⬤'
+      const iconColor: keyof Theme | undefined = phaseDone ? 'success' : phaseRunning ? 'suggestion' : undefined
+      const label = progress ? `${pName} ${progress}` : pName
       leftNodes.push(
-        <PhaseRow key={phase.id} selected={sel} done={phaseDone} running={phaseRunning}
-          name={truncate(pName, LEFT_WIDTH - 8)} progress={progress} index={i} leftWidth={LEFT_WIDTH} />,
+        <Box key={phase.id} width={leftW}>
+          <Text wrap="truncate-end">
+            <Text color={sel ? 'suggestion' : undefined}>{sel ? '❯ ' : '  '}</Text>
+            <Text color={iconColor} dimColor={phaseNotStarted}>{icon}</Text>
+            <Text>{' '}</Text>
+            <Text color={sel ? 'suggestion' : undefined} dimColor={!sel && !phaseDone && !phaseRunning}>{pad(truncate(label, leftW - 6), leftW - 6)}</Text>
+          </Text>
+        </Box>,
       )
     }
-    // Right: agent list for currentPhase
+    // Right: agent list for currentPhase — or "Not running yet" for pending phases
+    if (agentIds.length === 0) {
+      rightNodes.push(
+        <Text key="not-started" dimColor>{'Not running yet'}</Text>,
+      )
+    }
     const model = workflow.defaultModel ?? 'Claude Opus 4.6'
-    const NAME_COL = Math.min(28, Math.floor((RIGHT_WIDTH - 6) * 0.4))
-    const MODEL_COL = Math.min(18, Math.floor((RIGHT_WIDTH - 6) * 0.25))
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i]!
       const s = agentStatus(workflow, id)
+      const g = statusGlyph(s)
       const m = agentMetrics(workflow, id)
       const sel = level === 'agents' && i === selectedAgent
       const metricsStr = m.tokens > 0
         ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'}${m.durationMs > 0 ? ' · ' + formatDuration(m.durationMs) : ''}`
         : ''
+      // Layout: marker(1) icon(1) space(1) name ... model(center) ... metrics(right)
+      const avail = rightW - 3
+      const metricsW = stringWidth(metricsStr)
+      const modelTrunc = truncate(model, 20)
+      const modelStrW = stringWidth(modelTrunc)
+      const nameW = Math.max(8, Math.floor(avail * 0.35))
+      const nameStr = pad(truncate(id, nameW), nameW)
+      const middleZone = avail - nameW - metricsW
+      const mPadL = Math.max(1, Math.floor((middleZone - modelStrW) / 2))
+      const mPadR = Math.max(0, middleZone - modelStrW - mPadL)
+      const line = pad(`${nameStr}${' '.repeat(mPadL)}${modelTrunc}${' '.repeat(mPadR)}${metricsStr}`, avail)
+      // Use fixed-width layout: marker(1) + icon(1) + space(1) + line(avail) = rightW
+      const fullLine = pad(line, avail)
       rightNodes.push(
-        <AgentRow key={id} selected={sel} status={s} id={id} model={model}
-          metrics={metricsStr} nameWidth={NAME_COL} modelWidth={MODEL_COL} totalWidth={RIGHT_WIDTH} />,
+        <Box key={id} width={rightW}>
+          <Text wrap="truncate-end">
+            <Text color={sel ? 'suggestion' : undefined}>{sel ? '❯' : ' '}</Text>
+            <Text color={g.color}>{g.icon}</Text>
+            <Text dimColor>{' '}{fullLine}</Text>
+          </Text>
+        </Box>,
       )
     }
   } else if (level === 'agent' && currentAgentId) {
-    // Left: agent list in the current phase
+    // Left: agent list (wider) — show full agent names
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i]!
       const sel = i === selectedAgent
       const as = agentStatus(workflow, id)
       const ag = statusGlyph(as)
       leftNodes.push(
-        <Box key={id}>
-          <Text color={sel ? 'suggestion' : undefined}>{sel ? '❯ ' : '  '}</Text>
-          <Text color={ag.color}>{ag.icon}</Text>
-          <Text dimColor>{' '}{truncate(id, LEFT_WIDTH - 5)}</Text>
+        <Box key={id} width={AGENT_LEFT_W}>
+          <Text wrap="truncate-end">
+            <Text color={sel ? 'suggestion' : undefined} bold={sel && agentPane === 'left'}>{sel ? '❯ ' : '  '}</Text>
+            <Text color={ag.color}>{ag.icon}</Text>
+            <Text dimColor={!sel}>{' '}{pad(truncate(id, AGENT_LEFT_W - 5), AGENT_LEFT_W - 5)}</Text>
+          </Text>
         </Box>,
       )
     }
-    // Right: detail view for selected agent
+    // Right: detail view for selected agent (scrollable)
     const s = agentStatus(workflow, currentAgentId)
     const g = statusGlyph(s)
     const m = agentMetrics(workflow, currentAgentId)
     const outcomeRaw = agentOutcome(workflow, currentAgentId)
-    const outcomeMaxWidth = RIGHT_WIDTH - 4
+    const maxLineW = rightW - 2
     const outcomeLines: string[] = []
     for (const line of outcomeRaw.split('\n')) {
-      if (stringWidth(line) <= outcomeMaxWidth) {
+      if (stringWidth(line) <= maxLineW) {
         outcomeLines.push(line)
       } else {
         let remaining = line
-        while (stringWidth(remaining) > outcomeMaxWidth) {
-          outcomeLines.push(remaining.slice(0, outcomeMaxWidth))
-          remaining = remaining.slice(outcomeMaxWidth)
+        while (stringWidth(remaining) > maxLineW) {
+          outcomeLines.push(remaining.slice(0, maxLineW))
+          remaining = remaining.slice(maxLineW)
         }
         if (remaining) outcomeLines.push(remaining)
       }
@@ -408,15 +435,14 @@ export function WorkflowDetailDialog({
     const liveAgent = workflow.liveAgents?.[currentAgentId]
     const activities = liveAgent?.recentActivities ?? []
     const activityLines = activities.length > 0
-      ? activities.map(a => truncate(a, RIGHT_WIDTH - 4))
+      ? activities.map(a => truncate(a, maxLineW))
       : [liveAgent?.activity ?? (m.toolCalls > 0 ? `${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'} completed` : 'No tool calls.')]
     const promptText = agentPrompt(workflow, currentAgentId)
     const promptLines = promptText.split('\n')
     const promptPreview = promptLines.length > 2
-      ? [truncate(promptLines[0]!, RIGHT_WIDTH - 4), `… ${promptLines.length - 1} more lines`]
-      : promptLines.map(l => truncate(l, RIGHT_WIDTH - 4))
+      ? [truncate(promptLines[0]!, maxLineW), `… ${promptLines.length - 1} more lines`]
+      : promptLines.map(l => truncate(l, maxLineW))
 
-    // Build detail nodes
     const detailNodes: React.ReactNode[] = [
       <Box key="status">
         <Text color={g.color}>{g.icon}</Text>
@@ -424,37 +450,37 @@ export function WorkflowDetailDialog({
         <Text dimColor>{' · '}{workflow.defaultModel ?? 'Claude Opus 4.6'}</Text>
       </Box>,
       <Text key="metrics" dimColor>
-        {formatNumber(m.tokens)} tok · {m.toolCalls} tool {m.toolCalls === 1 ? 'call' : 'calls'}{m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}
+        {formatNumber(m.tokens)}{' tok · '}{m.toolCalls}{' tool '}{m.toolCalls === 1 ? 'call' : 'calls'}{m.durationMs > 0 ? ` · ${formatDuration(m.durationMs)}` : ''}
       </Text>,
-      <Text key="spacer1"> </Text>,
-      <Text key="prompt-header" bold dimColor>{'Prompt'}<Text dimColor>{' · '}{promptLines.length}{' lines'}</Text></Text>,
-      ...promptPreview.map((l, i) => <Text key={`pp-${i}`} dimColor>{'  '}{l}</Text>),
-      <Text key="spacer2"> </Text>,
-      <Text key="activity-header" bold dimColor>Activity</Text>,
-      ...activityLines.map((l, i) => <Text key={`act-${i}`} dimColor>{'  '}{l}</Text>),
-      <Text key="spacer3"> </Text>,
-      <Text key="outcome-header" bold dimColor>Outcome</Text>,
-      ...outcomeLines.map((l, i) => <Text key={`out-${i}`}>{'  '}{l}</Text>),
+      <Text key="s1">{' '}</Text>,
+      <Text key="ph" bold dimColor>{'Prompt'}{' · '}{promptLines.length}{' lines'}</Text>,
+      ...promptPreview.map((l, i) => <Text key={`p${i}`} dimColor>{'  '}{l}</Text>),
+      <Text key="s2">{' '}</Text>,
+      <Text key="ah" bold dimColor>{'Activity'}</Text>,
+      ...activityLines.map((l, i) => <Text key={`a${i}`} dimColor>{'  '}{l}</Text>),
+      <Text key="s3">{' '}</Text>,
+      <Text key="oh" bold dimColor>{'Outcome'}</Text>,
+      ...outcomeLines.map((l, i) => <Text key={`o${i}`}>{'  '}{l}</Text>),
     ]
+    // Clamp scroll
     const maxScroll = Math.max(0, detailNodes.length - availableRows)
     const scroll = Math.min(detailScroll, maxScroll)
     if (scroll !== detailScroll) setDetailScroll(scroll)
-    const visibleDetail = detailNodes.slice(scroll, scroll + availableRows)
-    for (let i = 0; i < visibleDetail.length; i++) {
-      rightNodes.push(visibleDetail[i])
-    }
+    const visible = detailNodes.slice(scroll, scroll + availableRows)
+    for (const node of visible) rightNodes.push(node)
   }
 
   // Hints
   const hints: string[] = []
-  if (level === 'agent') hints.push('↑↓/j/k scroll · ←/esc back')
-  else hints.push('↑↓ select')
-  hints.push('⏎ expand')
+  if (level === 'agent') {
+    if (agentPane === 'left') hints.push('↑↓ switch agent · → detail')
+    else hints.push('↑↓ scroll outcome · ← agents')
+    hints.push('esc back')
+  } else {
+    hints.push('↑↓ select · ⏎/→ expand · esc back')
+  }
   if (isRunning && currentAgentId && level !== 'phases') hints.push('x stop')
   if (isRunning && level === 'phases' && onKill) hints.push('x stop workflow')
-  if (isRunning && onPause) hints.push('p pause')
-  else if (workflow.status === 'pending' && onResume) hints.push('p resume')
-  hints.push('esc back')
 
   return (
     <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
@@ -465,12 +491,13 @@ export function WorkflowDetailDialog({
           <Box>
             <Text dimColor wrap="truncate-end">{' '}{workflowDescription(workflow)}{'  '}{statsText}</Text>
           </Box>
-          <Text> </Text>
+          <Text>{' '}</Text>
           <SplitPanel
             leftNodes={leftNodes} rightNodes={rightNodes}
             leftTitle={leftTitle} rightTitle={rightTitle}
-            leftWidth={LEFT_WIDTH} rightWidth={RIGHT_WIDTH}
-            availableRows={availableRows}
+            leftWidth={leftW} rightWidth={rightW}
+            rows={availableRows}
+            focusPane={level === 'agent' ? agentPane : undefined}
           />
           <Text dimColor italic wrap="truncate-end">{' '}{hints.join(' · ')}</Text>
         </Box>
