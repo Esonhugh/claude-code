@@ -6,6 +6,7 @@ import {
   getAnthropicApiKey,
   getApiKeyFromApiKeyHelper,
   getClaudeAIOAuthTokens,
+  getOpenAIApiKey,
   isClaudeAISubscriber,
   refreshAndGetAwsCredentials,
   refreshGcpCredentialsIfNeeded,
@@ -29,6 +30,7 @@ import {
   isEnvTruthy,
 } from '../../utils/envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
+import { createOpenAICompatClient } from './openai-compat.js'
 
 
 /**
@@ -151,6 +153,23 @@ export async function getAnthropicClient({
     ...(resolvedFetch && {
       fetch: resolvedFetch,
     }),
+  }
+  if (getAPIProvider() === 'openai') {
+    const openaiKey = getOpenAIApiKey()
+    if (!openaiKey) {
+      throw new Error(
+        'ANTHROPIC_OPENAI_ENABLE=1 but no OpenAI API key found. ' +
+        'Set OPENAI_API_KEY env var or create ~/.codex/auth.json with {"OPENAI_API_KEY": "sk-..."}',
+      )
+    }
+    logForDebugging('[API:auth] Using OpenAI-compatible client')
+    return createOpenAICompatClient({
+      apiKey: openaiKey,
+      baseURL: process.env.OPENAI_BASE_URL,
+      maxRetries,
+      timeout: ARGS.timeout,
+      defaultHeaders,
+    })
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')

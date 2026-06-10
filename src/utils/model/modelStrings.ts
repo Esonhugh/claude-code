@@ -24,8 +24,11 @@ const MODEL_KEYS = Object.keys(ALL_MODEL_CONFIGS) as ModelKey[]
 
 function getBuiltinModelStrings(provider: APIProvider): ModelStrings {
   const out = {} as ModelStrings
+  // OpenAI provider passes model names through as-is (user specifies --model gpt-4o etc.)
+  // Fall back to firstParty names for the config lookup
+  const lookupProvider = provider === 'openai' ? 'firstParty' : provider
   for (const key of MODEL_KEYS) {
-    out[key] = ALL_MODEL_CONFIGS[key][provider]
+    out[key] = ALL_MODEL_CONFIGS[key][lookupProvider]
   }
   return out
 }

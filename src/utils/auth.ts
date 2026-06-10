@@ -1,8 +1,10 @@
 import chalk from 'chalk'
 import { exec } from 'child_process'
 import { execa } from 'execa'
+import { readFileSync } from 'fs'
 import { mkdir, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
+import { homedir } from 'os'
 import { join } from 'path'
 import { CLAUDE_AI_PROFILE_SCOPE } from 'src/constants/oauth.js'
 import {
@@ -115,7 +117,8 @@ export function isAnthropicAuthEnabled(): boolean {
   const is3P =
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
+    isEnvTruthy(process.env.ANTHROPIC_OPENAI_ENABLE)
 
   // Check if user has configured an external API key source
   // This allows externally-provided API keys to work (without requiring proxy configuration)
@@ -1743,7 +1746,8 @@ export function isUsing3PServices(): boolean {
   return !!(
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
+    isEnvTruthy(process.env.ANTHROPIC_OPENAI_ENABLE)
   )
 }
 
@@ -2010,3 +2014,30 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
 }
 
 class GcpCredentialsTimeoutError extends Error {}
+
+/**
+ * Read OpenAI API key from ~/.codex/auth.json or OPENAI_API_KEY env var.
+ * Used when ANTHROPIC_OPENAI_ENABLE=1.
+ * Supports: OPENAI_API_KEY env, explicit key in auth.json, or ChatGPT OAuth access_token.
+ * Returns the access_token as the "key" — the openai-compat layer handles the
+ * full auth flow (account_id header, browser headers for CF bypass).
+ */
+export const getOpenAIApiKey = memoize((): string | null => {
+  if (process.env.OPENAI_API_KEY) {
+    return process.env.OPENAI_API_KEY
+  }
+  try {
+    const authPath = join(homedir(), '.codex', 'auth.json')
+    const content = readFileSync(authPath, 'utf-8')
+    const data = JSON.parse(content)
+    if (data?.OPENAI_API_KEY) {
+      return data.OPENAI_API_KEY
+    }
+    if (data?.tokens?.access_token) {
+      return data.tokens.access_token
+    }
+    return null
+  } catch {
+    return null
+  }
+})
