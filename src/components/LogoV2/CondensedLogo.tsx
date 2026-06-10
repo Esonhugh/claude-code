@@ -92,7 +92,7 @@ export function CondensedLogo(): ReactNode {
       {/* Info */}
       <Box flexDirection="column">
         <Text>
-          <Text bold>Claude Code</Text>{' '}
+          <Text bold>P R T S</Text>{' '}
           <Text dimColor>v{truncatedVersion}</Text>
         </Text>
         {shouldSplit ? (

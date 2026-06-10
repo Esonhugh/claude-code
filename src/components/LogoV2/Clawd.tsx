@@ -1,6 +1,31 @@
 import * as React from 'react'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { Box, Text } from '../../ink.js'
 import { env } from '../../utils/env.js'
+import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+
+// Cache custom clawd art from ~/.claude/clawd.txt
+let customClawdLines: string[] | null = null
+let customClawdLoaded = false
+
+function getCustomClawd(): string[] | null {
+  if (!customClawdLoaded) {
+    customClawdLoaded = true
+    try {
+      const content = readFileSync(
+        join(getClaudeConfigHomeDir(), 'clawd.txt'),
+        'utf-8',
+      )
+      if (content.trim()) {
+        customClawdLines = content.split('\n')
+      }
+    } catch {
+      // file doesn't exist or unreadable
+    }
+  }
+  return customClawdLines
+}
 
 export type ClawdPose =
   | 'default'
@@ -51,6 +76,16 @@ const APPLE_EYES: Record<ClawdPose, string> = {
 }
 
 export function Clawd({ pose = 'default' }: Props = {}): React.ReactNode {
+  const custom = getCustomClawd()
+  if (custom) {
+    return (
+      <Box flexDirection="column">
+        {custom.map((line, i) => (
+          <Text key={i} color="clawd_body">{line}</Text>
+        ))}
+      </Box>
+    )
+  }
   if (env.terminal === 'Apple_Terminal') {
     return <AppleTerminalClawd pose={pose} />
   }
