@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { PtySessionManager } from '../../../utils/pty/PtySessionManager.ts'
-import { FakePtyDriver } from '../../../utils/pty/__fixtures__/FakePtyDriver.ts'
-import { handleOpen } from './open.ts'
+import { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
+import { FakePtyDriver } from '../../../utils/pty/__fixtures__/FakePtyDriver.js'
+import { handleOpen } from './open.js'
 
-test('handleOpen returns the resolved default shell when command is omitted', () => {
+test('handleOpen returns the resolved default shell when command is omitted', async () => {
   const originalShell = process.env.SHELL
 
   try {
@@ -14,7 +14,7 @@ test('handleOpen returns the resolved default shell when command is omitted', ()
       driver: new FakePtyDriver(),
     })
 
-    const opened = handleOpen(manager, {
+    const opened = await handleOpen(manager, {
       action: 'open',
       cwd: process.cwd(),
       args: [],

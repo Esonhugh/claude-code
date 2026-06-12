@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import type { TerminalSpecialKey } from './types.js'
 
-import { FakePtyDriver } from './__fixtures__/FakePtyDriver.ts'
-import { PtySessionManager } from './PtySessionManager.ts'
+import { FakePtyDriver } from './__fixtures__/FakePtyDriver.js'
+import { PtySessionManager } from './PtySessionManager.js'
 import {
   INITIAL_TERMINAL_SIZE,
   SESSION_STATES,
-} from './types.ts'
-import { keyToSequence } from './keyMap.ts'
+} from './types.js'
+import { keyToSequence } from './keyMap.js'
 
 describe('pty shared types and key map', () => {
   it('exposes the session states and initial size constants', () => {
@@ -22,7 +23,7 @@ describe('pty shared types and key map', () => {
 
   it('throws for unsupported keys', () => {
     assert.throws(
-      () => keyToSequence('CTRL_Z' as never),
+      () => keyToSequence('CTRL_Z' as TerminalSpecialKey),
       /Unsupported terminal key: CTRL_Z/,
     )
   })

@@ -2,9 +2,10 @@ import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createTaskStateBase, generateTaskId } from '../../Task.js'
-import { createNodePtyDriver } from '../../utils/pty/nodePtyDriver.ts'
-import { PtySessionManager } from '../../utils/pty/PtySessionManager.ts'
-import { mergePreviewWindow } from '../../utils/pty/previewWindow.ts'
+import { createNodePtyDriver } from '../../utils/pty/nodePtyDriver.js'
+import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
+import { mergePreviewWindow } from '../../utils/pty/previewWindow.js'
+import type { InteractiveTerminalTaskState } from '../../tasks/InteractiveTerminalTask.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
 import {
   actionSchema,
@@ -16,25 +17,25 @@ import {
   signalActionSchema,
   statusActionSchema,
   writeActionSchema,
-} from './actionSchemas.ts'
-import { handleClose } from './handlers/close.ts'
-import { handleOpen } from './handlers/open.ts'
-import { handleRead } from './handlers/read.ts'
-import { handleResize } from './handlers/resize.ts'
-import { handleSendKey } from './handlers/sendKey.ts'
-import { handleSignal } from './handlers/signal.ts'
-import { handleStatus } from './handlers/status.ts'
-import { handleWrite } from './handlers/write.ts'
+} from './actionSchemas.js'
+import { handleClose } from './handlers/close.js'
+import { handleOpen } from './handlers/open.js'
+import { handleRead } from './handlers/read.js'
+import { handleResize } from './handlers/resize.js'
+import { handleSendKey } from './handlers/sendKey.js'
+import { handleSignal } from './handlers/signal.js'
+import { handleStatus } from './handlers/status.js'
+import { handleWrite } from './handlers/write.js'
 import {
   DESCRIPTION,
   INTERACTIVE_TERMINAL_TOOL_NAME,
   PROMPT,
-} from './prompt.ts'
+} from './prompt.js'
 import {
   renderToolResultMessage,
   renderToolUseMessage,
   renderToolUseRejectedMessage,
-} from './UI.tsx'
+} from './UI.js'
 
 const inputSchema = lazySchema(() => actionSchema)
 type InputSchema = ReturnType<typeof inputSchema>
@@ -65,7 +66,7 @@ export const terminalTaskRegistry = new Map<string, string>()
 function updateTerminalTask(
   sessionId: string,
   setAppState: Parameters<typeof updateTaskState>[1],
-  updater: Parameters<typeof updateTaskState>[2],
+  updater: (task: InteractiveTerminalTaskState) => InteractiveTerminalTaskState,
 ): void {
   const taskId = terminalTaskRegistry.get(sessionId)
   if (!taskId) {
@@ -175,7 +176,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const permission = await canUseTool(
             InteractiveTerminalTool,
-            parsed.data as never,
+            parsed.data,
             context,
             assistantMessage,
             context.toolUseId ?? 'interactive-terminal-open',

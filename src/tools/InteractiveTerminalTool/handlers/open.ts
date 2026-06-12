@@ -1,8 +1,8 @@
 import type { z } from 'zod/v4'
-import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.ts'
-import { normalizeTerminalPreview } from '../../../utils/pty/previewText.ts'
-import { resolveInteractiveTerminalCommand } from '../../../utils/shell/resolveDefaultShell.ts'
-import type { openActionSchema } from '../actionSchemas.ts'
+import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
+import { normalizeTerminalPreview } from '../../../utils/pty/previewText.js'
+import { resolveInteractiveTerminalCommand } from '../../../utils/shell/resolveDefaultShell.js'
+import type { openActionSchema } from '../actionSchemas.js'
 
 type OpenActionInput = z.infer<typeof openActionSchema>
 

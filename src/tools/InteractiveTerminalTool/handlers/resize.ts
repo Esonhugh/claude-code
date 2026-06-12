@@ -1,6 +1,6 @@
 import type { z } from 'zod/v4'
-import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.ts'
-import type { resizeActionSchema } from '../actionSchemas.ts'
+import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
+import type { resizeActionSchema } from '../actionSchemas.js'
 
 type ResizeActionInput = z.infer<typeof resizeActionSchema>
 

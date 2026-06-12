@@ -1,12 +1,42 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { UUID } from 'node:crypto'
 
-import { InteractiveTerminalTool } from './InteractiveTerminalTool.ts'
-import { resolveInteractiveTerminalCommand } from '../../utils/shell/resolveDefaultShell.ts'
+import type { ToolUseContext } from '../../Tool.js'
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import type { AppState } from '../../state/AppStateStore.js'
+import type { AssistantMessage } from '../../types/message.js'
+import { FileStateCache } from '../../utils/fileStateCache.js'
+import { resolveInteractiveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
+import { InteractiveTerminalTool } from './InteractiveTerminalTool.js'
 
-function createContext() {
-  let appState = {
-    toolPermissionContext: { mode: 'default' },
+type TestAppState = Pick<AppState, 'toolPermissionContext' | 'tasks'>
+type InteractiveTerminalTask = Extract<
+  AppState['tasks'][string],
+  { type: 'interactive_terminal' }
+>
+
+const TEST_ASSISTANT_MESSAGE: AssistantMessage = {
+  type: 'assistant',
+  uuid: '00000000-0000-4000-8000-000000000000' as UUID,
+  timestamp: '1970-01-01T00:00:00.000Z',
+  message: {
+    id: 'msg_test',
+    role: 'assistant',
+    model: 'claude-sonnet-4-6',
+    content: [],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+    },
+  },
+}
+
+function createContext(): ToolUseContext {
+  let appState: TestAppState = {
+    toolPermissionContext: { mode: 'default' } as AppState['toolPermissionContext'],
     tasks: {},
   }
 
@@ -17,36 +47,38 @@ function createContext() {
       mcpResources: {},
       debug: false,
       verbose: false,
-      thinkingConfig: {},
+      thinkingConfig: { type: 'disabled' },
       commands: [],
       isNonInteractiveSession: true,
-      agentDefinitions: { activeAgents: [], allowedAgentTypes: undefined },
+      agentDefinitions: {
+        activeAgents: [],
+        allAgents: [],
+        allowedAgentTypes: undefined,
+      },
       mainLoopModel: 'claude-sonnet-4-6',
     },
     abortController: new AbortController(),
-    readFileState: {} as never,
-    getAppState: () => appState as never,
-    setAppState: (updater: (prev: typeof appState) => typeof appState) => {
-      appState = updater(appState)
+    readFileState: new FileStateCache(8, 8 * 1024),
+    getAppState: () => appState as AppState,
+    setAppState: updater => {
+      appState = updater(appState as AppState) as TestAppState
     },
-    setInProgressToolUseIDs: () => {},
-    setResponseLength: () => {},
-    updateFileHistoryState: () => {},
-    updateAttributionState: () => {},
+    setInProgressToolUseIDs: _updater => {},
+    setResponseLength: _updater => {},
+    updateFileHistoryState: _updater => {},
+    updateAttributionState: _updater => {},
     messages: [],
-  } as never
+  }
 }
 
-async function allowPermission() {
-  return { behavior: 'allow' as const }
-}
+const allowPermission: CanUseToolFn = async () => ({ behavior: 'allow' })
 
 test('rejects write action without sessionId and text', async () => {
   const result = await InteractiveTerminalTool.call(
-    { action: 'write' } as never,
+    { action: 'write' },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   assert.match(JSON.stringify(result.data), /INVALID_ACTION_INPUT/)
@@ -55,14 +87,22 @@ test('rejects write action without sessionId and text', async () => {
 
 test('rejects unknown actions with INVALID_ACTION', async () => {
   const result = await InteractiveTerminalTool.call(
-    { action: 'unknown_action' } as never,
+    { action: 'unknown_action' } as unknown as Parameters<
+      typeof InteractiveTerminalTool.call
+    >[0],
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
-  assert.equal((result.data as { error: { code: string; message: string } }).error.code, 'INVALID_ACTION')
-  assert.match((result.data as { error: { code: string; message: string } }).error.message, /Unsupported action: unknown_action/)
+  assert.equal(
+    (result.data as { error: { code: string; message: string } }).error.code,
+    'INVALID_ACTION',
+  )
+  assert.match(
+    (result.data as { error: { code: string; message: string } }).error.message,
+    /Unsupported action: unknown_action/,
+  )
 })
 
 test('accepts a valid open action and returns a session', async () => {
@@ -74,10 +114,10 @@ test('accepts a valid open action and returns a session', async () => {
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   assert.equal('error' in result.data, false)
@@ -86,10 +126,10 @@ test('accepts a valid open action and returns a session', async () => {
   assert.equal(typeof (result.data as { pid: number | null }).pid, 'number')
 
   const closed = await InteractiveTerminalTool.call(
-    { action: 'close', sessionId } as never,
+    { action: 'close', sessionId },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   assert.equal((closed.data as { closed: boolean }).closed, true)
@@ -104,46 +144,55 @@ test('routes open, status, write, read, and close through the shared session man
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   const sessionId = String((opened.data as { sessionId: string }).sessionId)
   const status = await InteractiveTerminalTool.call(
-    { action: 'status', sessionId } as never,
+    { action: 'status', sessionId },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((status.data as { isRunning: boolean }).isRunning, true)
   assert.equal(typeof (status.data as { pid: number | null }).pid, 'number')
-  assert.equal(typeof (status.data as { lastActivityAt: number }).lastActivityAt, 'number')
+  assert.equal(
+    typeof (status.data as { lastActivityAt: number }).lastActivityAt,
+    'number',
+  )
 
   const writeResult = await InteractiveTerminalTool.call(
-    { action: 'write', sessionId, text: 'echo test', enter: true } as never,
+    { action: 'write', sessionId, text: 'echo test', enter: true },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((writeResult.data as { accepted: boolean }).accepted, true)
 
   const readResult = await InteractiveTerminalTool.call(
-    { action: 'read', sessionId, cursor: 0, maxBytes: 4096 } as never,
+    { action: 'read', sessionId, cursor: 0, maxBytes: 4096 },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal(typeof (readResult.data as { text: string }).text, 'string')
-  assert.equal(typeof (readResult.data as { isRunning: boolean }).isRunning, 'boolean')
-  assert.equal('exitCode' in (readResult.data as { exitCode: number | null }), true)
+  assert.equal(
+    typeof (readResult.data as { isRunning: boolean }).isRunning,
+    'boolean',
+  )
+  assert.equal(
+    'exitCode' in (readResult.data as { exitCode: number | null }),
+    true,
+  )
 
   const closeResult = await InteractiveTerminalTool.call(
-    { action: 'close', sessionId, force: false } as never,
+    { action: 'close', sessionId, force: false },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((closeResult.data as { closed: boolean }).closed, true)
 })
@@ -157,38 +206,41 @@ test('accepts send_key on an existing session', async () => {
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   const sessionId = String((opened.data as { sessionId: string }).sessionId)
   const keyResult = await InteractiveTerminalTool.call(
-    { action: 'send_key', sessionId, key: 'CTRL_C' } as never,
+    { action: 'send_key', sessionId, key: 'CTRL_C' },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((keyResult.data as { accepted: boolean }).accepted, true)
 
   await InteractiveTerminalTool.call(
-    { action: 'close', sessionId } as never,
+    { action: 'close', sessionId },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 })
 
 test('returns SESSION_NOT_FOUND for a missing session', async () => {
   const result = await InteractiveTerminalTool.call(
-    { action: 'read', sessionId: 'missing-session', cursor: 0, maxBytes: 128 } as never,
+    { action: 'read', sessionId: 'missing-session', cursor: 0, maxBytes: 128 },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
-  assert.equal((result.data as { error: { code: string } }).error.code, 'SESSION_NOT_FOUND')
+  assert.equal(
+    (result.data as { error: { code: string } }).error.code,
+    'SESSION_NOT_FOUND',
+  )
 })
 
 test('records the resolved default shell in task state when open omits command', async () => {
@@ -199,33 +251,34 @@ test('records the resolved default shell in task state when open omits command',
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     context,
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   assert.equal('error' in result.data, false)
   const sessionId = String((result.data as { sessionId: string }).sessionId)
-  const task = Object.values((context.getAppState() as any).tasks).find(
-    (value: any) => value.sessionId === sessionId,
-  ) as { command?: string } | undefined
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is InteractiveTerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === sessionId,
+  )
 
   assert.equal(task?.command, resolveInteractiveTerminalCommand())
 
   await InteractiveTerminalTool.call(
-    { action: 'close', sessionId } as never,
+    { action: 'close', sessionId },
     context,
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 })
 
 test('prompts for permission on open but not on status for an approved session', async () => {
   const permissionCalls: string[] = []
-  const canUseTool = async (input: { input?: { action?: string } }) => {
-    permissionCalls.push(String(input.input?.action ?? 'open'))
-    return { behavior: 'allow' as const }
+  const canUseTool: CanUseToolFn = async (_tool, input) => {
+    permissionCalls.push(String(input.action ?? 'open'))
+    return { behavior: 'allow' }
   }
 
   const opened = await InteractiveTerminalTool.call(
@@ -236,25 +289,25 @@ test('prompts for permission on open but not on status for an approved session',
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     createContext(),
-    canUseTool as never,
-    { message: { id: 'msg_test' } } as never,
+    canUseTool,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   const sessionId = String((opened.data as { sessionId: string }).sessionId)
   await InteractiveTerminalTool.call(
-    { action: 'status', sessionId } as never,
+    { action: 'status', sessionId },
     createContext(),
-    canUseTool as never,
-    { message: { id: 'msg_test' } } as never,
+    canUseTool,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   await InteractiveTerminalTool.call(
-    { action: 'close', sessionId } as never,
+    { action: 'close', sessionId },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   assert.deepEqual(permissionCalls, ['open'])
@@ -269,26 +322,26 @@ test('preserves SIGTERM semantics on signal action', async () => {
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   const sessionId = String((opened.data as { sessionId: string }).sessionId)
   const signaled = await InteractiveTerminalTool.call(
-    { action: 'signal', sessionId, signal: 'SIGTERM' } as never,
+    { action: 'signal', sessionId, signal: 'SIGTERM' },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((signaled.data as { accepted: boolean }).accepted, true)
 
   const status = await InteractiveTerminalTool.call(
-    { action: 'status', sessionId } as never,
+    { action: 'status', sessionId },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((status.data as { exitCode: number }).exitCode, 143)
 })
@@ -302,26 +355,29 @@ test('returns SESSION_ALREADY_CLOSED when writing to a closed session', async ()
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
-    } as never,
+    },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   const sessionId = String((opened.data as { sessionId: string }).sessionId)
   await InteractiveTerminalTool.call(
-    { action: 'close', sessionId } as never,
+    { action: 'close', sessionId },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
   const writeAfterClose = await InteractiveTerminalTool.call(
-    { action: 'write', sessionId, text: 'pwd', enter: true } as never,
+    { action: 'write', sessionId, text: 'pwd', enter: true },
     createContext(),
     allowPermission,
-    { message: { id: 'msg_test' } } as never,
+    TEST_ASSISTANT_MESSAGE,
   )
 
-  assert.equal((writeAfterClose.data as { error: { code: string } }).error.code, 'SESSION_ALREADY_CLOSED')
+  assert.equal(
+    (writeAfterClose.data as { error: { code: string } }).error.code,
+    'SESSION_ALREADY_CLOSED',
+  )
 })

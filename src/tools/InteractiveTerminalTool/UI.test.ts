@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { formatToolResultMessage } from './formatToolResultMessage.ts'
-import { formatToolUseMessage } from './formatToolUseMessage.ts'
+import { formatToolResultMessage } from './formatToolResultMessage.js'
+import { formatToolUseMessage } from './formatToolUseMessage.js'
 
 describe('formatToolUseMessage', () => {
   it('shows action and session for read actions', () => {

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { mergePreviewWindow } from './previewWindow.ts'
+import { mergePreviewWindow } from './previewWindow.js'
 
 describe('mergePreviewWindow', () => {
   it('keeps the latest terminal lines after CRLF normalization', () => {

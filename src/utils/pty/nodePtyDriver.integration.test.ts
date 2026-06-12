@@ -4,9 +4,9 @@ import test from 'node:test'
 import {
   resolveDefaultShell,
   resolveInteractiveTerminalCommand,
-} from '../shell/resolveDefaultShell.ts'
-import { createNodePtyDriver } from './nodePtyDriver.ts'
-import { PtySessionManager } from './PtySessionManager.ts'
+} from '../shell/resolveDefaultShell.js'
+import { createNodePtyDriver } from './nodePtyDriver.js'
+import { PtySessionManager } from './PtySessionManager.js'
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
   const start = Date.now()

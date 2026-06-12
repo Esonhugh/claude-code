@@ -1,5 +1,5 @@
 import { z } from 'zod/v4'
-import { SPECIAL_KEYS } from '../../utils/pty/types.ts'
+import { SPECIAL_KEYS } from '../../utils/pty/types.js'
 
 export const openActionSchema = z.object({
   action: z.literal('open'),

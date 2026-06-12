@@ -1,7 +1,7 @@
 import type { z } from 'zod/v4'
-import { keyToSequence } from '../../../utils/pty/keyMap.ts'
-import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.ts'
-import type { sendKeyActionSchema } from '../actionSchemas.ts'
+import { keyToSequence } from '../../../utils/pty/keyMap.js'
+import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
+import type { sendKeyActionSchema } from '../actionSchemas.js'
 
 type SendKeyActionInput = z.infer<typeof sendKeyActionSchema>
 

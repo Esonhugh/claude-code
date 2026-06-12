@@ -3,7 +3,7 @@ import type {
   PtyDriverOpenOptions,
   PtyDriverSessionStatus,
   TerminalOutputChunk,
-} from '../types.ts'
+} from '../types.js'
 
 interface FakePtyDriverSession {
   status: PtyDriverSessionStatus

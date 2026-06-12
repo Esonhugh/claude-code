@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { normalizeTerminalPreview } from './previewText.ts'
+import { normalizeTerminalPreview } from './previewText.js'
 
 describe('normalizeTerminalPreview', () => {
   it('preserves CRLF terminal output lines', () => {

@@ -1,32 +1,47 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict'
 
-import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.ts'
+import type { TaskStateBase } from '../../Task.js'
+import type { InteractiveTerminalTaskState } from '../../tasks/InteractiveTerminalTask.js'
+import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js'
+import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
 
-const interactiveTerminalTask = (id: string, startTime: number) =>
-  ({
+function createTaskBase(id: string, description: string, startTime: number): TaskStateBase {
+  return {
     id,
     type: 'interactive_terminal',
     status: 'running',
-    sessionId: `session-${id}`,
-    command: 'zsh',
-    cwd: '/tmp',
-    preview: '',
-    description: `terminal ${id}`,
+    description,
     startTime,
-    closed: false,
-  }) as any
+    outputFile: '',
+    outputOffset: 0,
+    notified: false,
+  }
+}
 
-const shellTask = (id: string, startTime: number) =>
-  ({
-    id,
-    type: 'local_bash',
-    status: 'running',
-    command: 'sleep 10',
-    description: 'sleep 10',
-    kind: 'bash',
-    startTime,
-  }) as any
+const interactiveTerminalTask = (
+  id: string,
+  startTime: number,
+): InteractiveTerminalTaskState => ({
+  ...createTaskBase(id, `terminal ${id}`, startTime),
+  type: 'interactive_terminal',
+  sessionId: `session-${id}`,
+  command: 'zsh',
+  cwd: '/tmp',
+  preview: '',
+  closed: false,
+})
+
+const shellTask = (id: string, startTime: number): LocalShellTaskState => ({
+  ...createTaskBase(id, 'sleep 10', startTime),
+  type: 'local_bash',
+  command: 'sleep 10',
+  completionStatusSentInAttachment: false,
+  shellCommand: null,
+  lastReportedTotalLines: 0,
+  isBackgrounded: true,
+  kind: 'bash',
+})
 
 const singleInteractive = getBackgroundTasksDialogInitialState({
   tasks: {

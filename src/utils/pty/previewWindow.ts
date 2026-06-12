@@ -1,4 +1,4 @@
-import { normalizeTerminalPreview } from './previewText.ts'
+import { normalizeTerminalPreview } from './previewText.js'
 
 const MAX_PREVIEW_LINES = 24
 

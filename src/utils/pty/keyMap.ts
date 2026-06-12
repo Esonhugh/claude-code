@@ -1,4 +1,4 @@
-import type { TerminalSpecialKey } from './types.ts'
+import type { TerminalSpecialKey } from './types.js'
 
 const KEY_TO_SEQUENCE: Record<TerminalSpecialKey, string> = {
   ENTER: '\r',

@@ -5,7 +5,7 @@ import {
   type TerminalOutputChunk,
   type TerminalReadResult,
   type TerminalSessionRecord,
-} from './types.ts'
+} from './types.js'
 
 interface PtySessionManagerOptions {
   driver: PtyDriver

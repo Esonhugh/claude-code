@@ -2,13 +2,13 @@ import { accessSync, chmodSync, constants as fsConstants } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import pty from 'node-pty'
-import { resolveInteractiveTerminalCommand } from '../shell/resolveDefaultShell.ts'
+import { resolveInteractiveTerminalCommand } from '../shell/resolveDefaultShell.js'
 import type {
   PtyDriver,
   PtyDriverOpenOptions,
   PtyDriverSessionStatus,
   TerminalOutputChunk,
-} from './types.ts'
+} from './types.js'
 
 interface NodePtySession {
   outputQueue: Array<Omit<TerminalOutputChunk, 'start' | 'end'>>

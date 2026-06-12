@@ -1,6 +1,6 @@
 import type { z } from 'zod/v4'
-import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.ts'
-import type { readActionSchema } from '../actionSchemas.ts'
+import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
+import type { readActionSchema } from '../actionSchemas.js'
 
 type ReadActionInput = z.infer<typeof readActionSchema>
 

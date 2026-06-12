@@ -1,7 +1,7 @@
 import {
   type TaskState,
   isBackgroundTask,
-} from '../../tasks/types.ts'
+} from '../../tasks/types.js'
 
 export type BackgroundTasksDialogScope = 'all' | 'interactive-terminal'
 
