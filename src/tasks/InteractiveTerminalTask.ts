@@ -8,7 +8,6 @@ export type InteractiveTerminalTaskState = TaskStateBase & {
   command: string
   cwd: string
   preview: string
-  previewUpdatedAt?: number
   closed: boolean
 }
 

@@ -50,11 +50,29 @@ type ErrorOutput = {
 
 type Output = SuccessOutput | ErrorOutput
 
-export const terminalManager = new PtySessionManager({
-  driver: createNodePtyDriver(),
-  maxBufferedChunks: 200,
-})
+let terminalManagerInstance: PtySessionManager | undefined
+
+export function getTerminalManager(): PtySessionManager {
+  terminalManagerInstance ??= new PtySessionManager({
+    driver: createNodePtyDriver(),
+    maxBufferedChunks: 200,
+  })
+  return terminalManagerInstance
+}
+
 export const terminalTaskRegistry = new Map<string, string>()
+
+function updateTerminalTask(
+  sessionId: string,
+  setAppState: Parameters<typeof updateTaskState>[1],
+  updater: Parameters<typeof updateTaskState>[2],
+): void {
+  const taskId = terminalTaskRegistry.get(sessionId)
+  if (!taskId) {
+    return
+  }
+  updateTaskState(taskId, setAppState, updater)
+}
 
 function invalidInput(message: string, details: Record<string, unknown>): ErrorOutput {
   return {
@@ -173,7 +191,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               },
             }
           }
-          const opened = await handleOpen(terminalManager, parsed.data)
+          const opened = await handleOpen(getTerminalManager(), parsed.data)
           const taskId = generateTaskId('interactive_terminal')
           terminalTaskRegistry.set(String(opened.sessionId), taskId)
           registerTask(
@@ -190,7 +208,6 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               command: String(opened.command),
               cwd: parsed.data.cwd || process.cwd(),
               preview: String(opened.preview ?? ''),
-              previewUpdatedAt: Date.now(),
               closed: false,
             },
             context.setAppState,
@@ -206,18 +223,11 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const written = handleWrite(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              previewUpdatedAt: Date.now(),
-              preview: mergePreviewWindow(
-                task.preview,
-                `$ ${parsed.data.text}`,
-              ),
-            }))
-          }
+          const written = handleWrite(getTerminalManager(), parsed.data)
+          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
+            ...task,
+            preview: mergePreviewWindow(task.preview, `$ ${parsed.data.text}`),
+          }))
           return { data: written }
         }
         case 'read': {
@@ -227,18 +237,11 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=read requires sessionId', { action: 'read' }),
             }
           }
-          const read = handleRead(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              previewUpdatedAt: Date.now(),
-              preview: mergePreviewWindow(
-                task.preview,
-                String(read.text ?? ''),
-              ),
-            }))
-          }
+          const read = handleRead(getTerminalManager(), parsed.data)
+          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
+            ...task,
+            preview: mergePreviewWindow(task.preview, String(read.text ?? '')),
+          }))
           return { data: read }
         }
         case 'send_key': {
@@ -250,14 +253,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const keyResult = handleSendKey(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              previewUpdatedAt: Date.now(),
-            }))
-          }
+          const keyResult = handleSendKey(getTerminalManager(), parsed.data)
           return { data: keyResult }
         }
         case 'resize': {
@@ -269,14 +265,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const resized = handleResize(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              previewUpdatedAt: Date.now(),
-            }))
-          }
+          const resized = handleResize(getTerminalManager(), parsed.data)
           return { data: resized }
         }
         case 'signal': {
@@ -288,14 +277,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const signalResult = handleSignal(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              previewUpdatedAt: Date.now(),
-            }))
-          }
+          const signalResult = handleSignal(getTerminalManager(), parsed.data)
           return { data: signalResult }
         }
         case 'status': {
@@ -305,14 +287,11 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=status requires sessionId', { action: 'status' }),
             }
           }
-          const status = handleStatus(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              closed: !Boolean(status.isRunning),
-            }))
-          }
+          const status = handleStatus(getTerminalManager(), parsed.data)
+          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
+            ...task,
+            closed: !status.isRunning,
+          }))
           return { data: status }
         }
         case 'close': {
@@ -322,17 +301,14 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=close requires sessionId', { action: 'close' }),
             }
           }
-          const closed = handleClose(terminalManager, parsed.data)
-          const taskId = terminalTaskRegistry.get(parsed.data.sessionId)
-          if (taskId) {
-            updateTaskState(taskId, context.setAppState, task => ({
-              ...task,
-              status: 'completed',
-              closed: true,
-              preview: 'closed',
-              endTime: Date.now(),
-            }))
-          }
+          const closed = handleClose(getTerminalManager(), parsed.data)
+          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
+            ...task,
+            status: 'completed',
+            closed: true,
+            endTime: Date.now(),
+          }))
+          terminalTaskRegistry.delete(parsed.data.sessionId)
           return { data: closed }
         }
         default:

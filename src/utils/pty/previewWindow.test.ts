@@ -14,6 +14,6 @@ describe('mergePreviewWindow', () => {
     assert.match(preview, /alpha/)
     assert.match(preview, /BOLD=beta/)
     assert.match(preview, /gamma/)
-    assert.doesNotMatch(preview, //)
+    assert.equal(preview.includes(String.fromCharCode(27)), false)
   })
 })

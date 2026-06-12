@@ -49,7 +49,7 @@ import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
-import { terminalManager, terminalTaskRegistry } from '../../tools/InteractiveTerminalTool/InteractiveTerminalTool.ts'
+import { getTerminalManager, terminalTaskRegistry } from '../../tools/InteractiveTerminalTool/InteractiveTerminalTool.ts'
 import { normalizeTerminalPreview } from '../../utils/pty/previewText.ts'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { Box, Text } from '../../ink.js'
@@ -101,7 +101,7 @@ function InteractiveTerminalDetailDialog({
         if (!taskId) {
           return
         }
-        const read = terminalManager.read(task.sessionId, 0)
+        const read = getTerminalManager().read(task.sessionId, 0)
         const preview = normalizeTerminalPreview(
           read.chunks.map(chunk => chunk.text).join(''),
         )
@@ -117,7 +117,6 @@ function InteractiveTerminalDetailDialog({
               [taskId]: {
                 ...existing,
                 preview,
-                previewUpdatedAt: Date.now(),
               },
             },
           }
@@ -541,7 +540,7 @@ export function BackgroundTasksDialog({
     if (selectedIndex >= totalItems && totalItems > 0) {
       setSelectedIndex(totalItems - 1)
     }
-  }, [viewState, typedTasks, selectedIndex, allSelectableItems, onDoneEvent])
+  }, [viewState, typedTasks, selectedIndex, allSelectableItems])
 
   // Helper to go back to list view (or close dialog if we skipped list on
   // mount AND there's still only ≤1 item). Checking current count prevents

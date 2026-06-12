@@ -1,25 +1,18 @@
 import * as React from 'react'
 import { Text } from '../../ink.js'
+import { formatToolResultMessage } from './formatToolResultMessage.ts'
+import { formatToolUseMessage } from './formatToolUseMessage.ts'
 
-export function renderToolUseMessage(input: { action?: string }): React.ReactNode {
-  return <Text>InteractiveTerminal({input.action ?? 'unknown'})</Text>
+export function renderToolUseMessage(input: Parameters<typeof formatToolUseMessage>[0]): React.ReactNode {
+  return <Text>{formatToolUseMessage(input)}</Text>
 }
 
 export function renderToolResultMessage(output: Record<string, unknown>): React.ReactNode {
-  if ('error' in output) {
-    const error = output.error as { code?: string; message?: string }
-    return <Text color="red">{error.code ?? 'ERROR'}: {error.message ?? 'unknown error'}</Text>
+  const message = formatToolResultMessage(output)
+  if (!message) {
+    return null
   }
-
-  if ('sessionId' in output && 'text' in output) {
-    return <Text>read {String(output.sessionId)} → {String(output.text)}</Text>
-  }
-
-  if ('sessionId' in output) {
-    return <Text>session {String(output.sessionId)}</Text>
-  }
-
-  return <Text>InteractiveTerminal ok</Text>
+  return <Text color={'error' in output ? 'red' : undefined}>{message}</Text>
 }
 
 export function renderToolUseRejectedMessage(): null {
