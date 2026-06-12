@@ -2,6 +2,7 @@
 // Use this for components that need to work with any task type
 
 import type { DreamTaskState } from './DreamTask/DreamTask.js'
+import type { InteractiveTerminalTaskState } from './InteractiveTerminalTask.js'
 import type { InProcessTeammateTaskState } from './InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from './LocalAgentTask/LocalAgentTask.js'
 import type { LocalShellTaskState } from './LocalShellTask/guards.js'
@@ -11,6 +12,7 @@ import type { RemoteAgentTaskState } from './RemoteAgentTask/RemoteAgentTask.js'
 
 export type TaskState =
   | LocalShellTaskState
+  | InteractiveTerminalTaskState
   | LocalAgentTaskState
   | RemoteAgentTaskState
   | InProcessTeammateTaskState
@@ -21,6 +23,7 @@ export type TaskState =
 // Task types that can appear in the background tasks indicator
 export type BackgroundTaskState =
   | LocalShellTaskState
+  | InteractiveTerminalTaskState
   | LocalAgentTaskState
   | RemoteAgentTaskState
   | InProcessTeammateTaskState

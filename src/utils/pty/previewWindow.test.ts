@@ -1,0 +1,19 @@
+#!/usr/bin/env bun
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+
+import { mergePreviewWindow } from './previewWindow.ts'
+
+describe('mergePreviewWindow', () => {
+  it('keeps the latest terminal lines after CRLF normalization', () => {
+    const preview = mergePreviewWindow(
+      'bash-5.3$ ',
+      'printf "alpha\\n"\r\nalpha\r\nBOLD=[1mbeta[0m\r\ngamma\r\n',
+    )
+
+    assert.match(preview, /alpha/)
+    assert.match(preview, /BOLD=beta/)
+    assert.match(preview, /gamma/)
+    assert.doesNotMatch(preview, //)
+  })
+})

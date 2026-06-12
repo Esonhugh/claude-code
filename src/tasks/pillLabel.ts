@@ -34,6 +34,8 @@ export function getPillLabel(tasks: BackgroundTaskState[]): string {
         ).size
         return teamCount === 1 ? '1 team' : `${teamCount} teams`
       }
+      case 'interactive_terminal':
+        return n === 1 ? '1 interactive terminal' : `${n} interactive terminals`
       case 'local_agent':
         return n === 1 ? '1 local agent' : `${n} local agents`
       case 'remote_agent': {

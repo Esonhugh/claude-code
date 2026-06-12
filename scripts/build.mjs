@@ -2,7 +2,7 @@ import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { builtinModules } from 'node:module';
+import { builtinModules, createRequire } from 'node:module';
 import { fileURLToPath, URL } from 'node:url';
 
 const packageJson = JSON.parse(
@@ -37,6 +37,7 @@ const builtinSet = new Set([
   ...builtinModules,
   ...builtinModules.map(value => `node:${value}`),
 ]);
+const require = createRequire(import.meta.url);
 
 const sourceExts = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'];
 const unavailablePackagePrefixes = [
@@ -204,6 +205,10 @@ const recoveryResolver = {
         return { path: missingModuleStubPath };
       }
 
+      if (args.path === 'node-pty' || args.path.startsWith('node-pty/')) {
+        return { path: args.path, external: true };
+      }
+
       return null;
     });
   },
@@ -231,3 +236,26 @@ const require = __createRequire(import.meta.url);`,
   sourcemap: true,
   target: 'node20',
 });
+
+const nodePtyPackageDir = path.dirname(require.resolve('node-pty/package.json'));
+const nodePtyPrebuildDir = path.join(
+  nodePtyPackageDir,
+  'prebuilds',
+  `${process.platform}-${process.arch}`,
+);
+const distPrebuildDir = path.join(
+  projectDir,
+  'dist',
+  'prebuilds',
+  `${process.platform}-${process.arch}`,
+);
+
+if (fs.existsSync(nodePtyPrebuildDir)) {
+  await fs.promises.mkdir(distPrebuildDir, { recursive: true });
+  for (const entry of await fs.promises.readdir(nodePtyPrebuildDir)) {
+    await fs.promises.copyFile(
+      path.join(nodePtyPrebuildDir, entry),
+      path.join(distPrebuildDir, entry),
+    );
+  }
+}

@@ -32,6 +32,21 @@ export function BackgroundTask({
           <ShellProgress shell={task} />
         </Text>
       )
+    case 'interactive_terminal':
+      return (
+        <Text>
+          {truncate(
+            `${task.description} · ${task.command}`,
+            activityLimit,
+            true,
+          )}{' '}
+          <TaskStatusText
+            status={task.status}
+            label={task.closed ? 'closed' : 'open'}
+            suffix={task.preview ? `, ${truncate(task.preview, 30, true)}` : undefined}
+          />
+        </Text>
+      )
     case 'remote_agent': {
       // Lite-review renders its own rainbow line (title + live counts),
       // so we don't prefix the title — the rainbow already includes it.
