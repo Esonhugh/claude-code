@@ -1,6 +1,6 @@
-# Claude Code Recovered Source
+# Unofficial Claude Code Launcher Workspace
 
-This repository is a recovered and actively maintained Claude Code source tree based on Claude Code `2.1.88`. The goal is to keep the recovered project readable, buildable, runnable, and suitable for secondary development.
+This repository is an unofficial Claude Code launcher and recovery workspace based on Claude Code `2.1.88`. It is not an Anthropic official product, official source distribution, or endorsed Claude Code release. The public npm package ships launch wrappers and platform binaries only, not this repository's source code.
 
 ## Project purpose
 
@@ -11,7 +11,7 @@ This project exists to:
 3. Track local feature changes clearly from the `2.1.88` base version.
 4. Keep recovery-specific stubs, type declarations, and build shims explicit so they can be replaced with real implementations over time.
 
-This is not an official Anthropic source distribution. Treat it as a recovery and development workspace.
+This is not an official Anthropic source distribution. Treat it as an unofficial launcher and recovery development workspace.
 
 ## Current baseline
 
@@ -138,6 +138,26 @@ bun ./dist/cli.js --help
 ```
 
 For UI or interactive behavior, start the CLI and test the target flow manually.
+
+
+## npm launcher package
+
+The public npm package is an unofficial launcher distribution:
+
+- Main package: `@esonhugh/claude-code`
+- Description: `unofficial claude code launch wrappers`
+- Contents: a small `claude` launcher wrapper and metadata only
+- Platform binaries: published as optional dependency subpackages, one package per platform/architecture, for example `@esonhugh/claude-code-darwin-arm64`
+- Source code: not included in the npm package
+
+Install with:
+
+```bash
+npm install -g @esonhugh/claude-code
+claude --version
+```
+
+The launcher resolves the matching optional binary package for `process.platform` and `process.arch`. Unsupported platforms fail with a clear missing-binary message.
 
 ## Type recovery policy
 

@@ -149,7 +149,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish GitHub Release
+    name: Publish GitHub Release and npm package
     needs:
       - validate-tag
       - build
@@ -197,6 +197,36 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Prepare binary-only npm package
+        env:
+          CLAUDE_CODE_VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: bun ./scripts/prepare-npm-package.mjs artifacts dist/npm
+
+      - name: Verify npm package wrapper
+        shell: bash
+        run: |
+          PLATFORM="$(bun -e 'console.log(process.platform)')"
+          ARCH="$(bun -e 'console.log(process.arch)')"
+          mkdir -p dist/npm/main/node_modules/@esonhugh
+          ln -s "../../../${PLATFORM}-${ARCH}" "dist/npm/main/node_modules/@esonhugh/claude-code-${PLATFORM}-${ARCH}"
+          node ./dist/npm/main/bin/claude.js --version
+          node ./dist/npm/main/bin/claude.js --help
+
+      - name: Publish npm packages
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
+          for package_dir in dist/npm/*-*; do
+            bun publish --access public "$package_dir"
+          done
+          bun publish --access public ./dist/npm/main
+
       - name: Write release notes
         shell: bash
         run: |
@@ -215,6 +245,8 @@ jobs:
           - bun run start --help
           - packaged binary --version
           - packaged binary --help
+          - npm launcher package --version
+          - npm launcher package --help
 
           Verify downloads with SHA256SUMS.txt.
           EOF

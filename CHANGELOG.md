@@ -10,6 +10,33 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-06-14 - Bun 迁移、InteractiveTerminal PTY 替换与 binary-only npm 发布准备
+
+### 关联提交
+
+- 待提交 — Bun 包管理迁移、Bun PTY driver、release workflow 与 npm launcher 发布准备。
+
+### 变更内容
+
+- 将工作区包管理和构建入口迁移到 Bun：新增 `bun.lock`，移除 `pnpm-lock.yaml` / `pnpm-workspace.yaml`，并将构建、打包、验证文档同步为 `bun run ...` / `bunx ...` 命令。
+- 用 Bun 自带 `Bun.spawn(..., { terminal })` PTY/terminal API 替换 InteractiveTerminal 的 `node-pty` 后端，删除 `node-pty` 依赖、旧 driver、旧集成测试和 node-pty native prebuild 复制逻辑，解决 standalone binary 启动时找不到 `pty.node` 的问题。
+- 清理 `scripts/` 目录，保留构建/打包/缺失导入审计/本地 CLI runner 和 build shims，删除 workflow probe、compatibility、deobfuscator 和临时测试用途脚本。
+- 更新 GitHub Actions release workflow：使用 Bun 1.3.14 安装、类型检查、lint、audit、build、package，并在上传 release artifacts 前验证 packaged binary 的 `--version` / `--help`。
+- 准备 npm binary-only 发布流程：主包 `@esonhugh/claude-code` 是非官方 Claude Code launcher；平台/架构 binary 拆分到 optional dependency 子包（如 `@esonhugh/claude-code-darwin-arm64`），npm 包不发布本仓库源码。
+- 优化 README，明确本项目不是 Anthropic 官方 Claude Code 程序或官方源码分发，而是非官方启动器/恢复开发工作区。
+
+### 验证
+
+- `bunx tsc --noEmit --pretty false`
+- `bun run audit:missing`
+- `bun run build`
+- `bun run start --version` / `bun run start --help`
+- `CLAUDE_CODE_VERSION=2.1.165-dev bun run package:binary`
+- `./dist/release/claude-code-v2.1.165-dev-darwin-arm64 --version` / `--help`
+- `bun test src/utils/pty/bunPtyDriver.integration.test.ts`
+- `bun test src/utils/pty/PtySessionManager.test.ts`
+- `bun pm pack --dry-run` for the current platform binary subpackage and main npm launcher package.
+
 ## 2026-06-04 - 恢复源码整理、功能扩展与文档索引
 
 ### 关联提交
