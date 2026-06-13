@@ -181,9 +181,6 @@ const recoveryResolver = {
         return { path: missingModuleStubPath };
       }
 
-      if (args.path === 'node-pty' || args.path.startsWith('node-pty/')) {
-        return { path: args.path, external: true };
-      }
 
       return null;
     });
@@ -253,19 +250,10 @@ function ripgrepSourceCandidates(nodeModulesDir) {
 }
 
 export async function copyRuntimeAssets({ projectDir, nodeModulesDir }) {
-  const nodePtyPrebuildDir = path.join(
-    nodeModulesDir,
-    'node-pty',
-    'prebuilds',
-    `${process.platform}-${process.arch}`,
-  );
-  const distPrebuildDir = path.join(
-    projectDir,
-    'dist',
-    'prebuilds',
-    `${process.platform}-${process.arch}`,
-  );
-  await copyDirectoryFiles(nodePtyPrebuildDir, distPrebuildDir);
+  await fs.promises.rm(path.join(projectDir, 'dist', 'prebuilds'), {
+    recursive: true,
+    force: true,
+  });
 
   const ripgrepTargetDir = path.join(
     projectDir,

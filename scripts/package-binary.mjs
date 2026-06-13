@@ -40,10 +40,10 @@ function run(command, args, options = {}) {
   }
 }
 
-run('node', ['./scripts/build.mjs']);
+run('bun', ['./scripts/build.mjs']);
 
 if (!fs.existsSync(entrypoint)) {
-  throw new Error('dist/cli.js does not exist after build. Check pnpm build output before packaging.');
+  throw new Error('dist/cli.js does not exist after build. Check bun run build output before packaging.');
 }
 
 const bunCheck = spawnSync('bun', ['--version'], {
@@ -52,7 +52,7 @@ const bunCheck = spawnSync('bun', ['--version'], {
 });
 
 if (bunCheck.error || bunCheck.status !== 0) {
-  throw new Error('Bun is required for binary packaging. Install bun and rerun pnpm package:binary.');
+  throw new Error('Bun is required for binary packaging. Install bun and rerun bun run package:binary.');
 }
 
 await fs.promises.mkdir(releaseDir, { recursive: true });

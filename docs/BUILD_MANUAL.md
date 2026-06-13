@@ -7,15 +7,15 @@ This guide explains how to install dependencies, build the recovered Claude Code
 - Base version: `2.1.88`
 - Local source version: `0.0.0-dev`
 - Build output: `dist/cli.js`
-- Package manager used in this workspace: `pnpm`
+- Package manager used in this workspace: `bun`
 - Source state: recovered TypeScript/TSX with explicit recovery shims and type declarations
 
 ## Requirements
 
 Required:
 
-- Node.js `>=18`
-- `pnpm`
+- Bun `>=1.3.14`
+- Node.js `>=18` for Node-compatible tooling and inspector flows
 - Network access to the configured npm registry
 
 Recommended:
@@ -27,15 +27,15 @@ Recommended:
 ## Install dependencies
 
 ```bash
-pnpm install
+bun install
 ```
 
-If dependency resolution changes, keep `pnpm-lock.yaml` in sync with `package.json`.
+If dependency resolution changes, keep `bun.lock` in sync with `package.json`.
 
 ## Build
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Expected outputs:
@@ -50,7 +50,7 @@ The build is driven by `scripts/build.mjs`. It handles recovery-specific build b
 Check version:
 
 ```bash
-node ./dist/cli.js --version
+bun ./dist/cli.js --version
 ```
 
 Expected local source output:
@@ -62,8 +62,8 @@ Expected local source output:
 Build with a release version override when you want the built CLI to report a tagged release version:
 
 ```bash
-CLAUDE_CODE_VERSION=2.1.89 pnpm build
-node ./dist/cli.js --version
+CLAUDE_CODE_VERSION=2.1.89 bun run build
+bun ./dist/cli.js --version
 ```
 
 Expected release build output:
@@ -75,19 +75,19 @@ Expected release build output:
 Check help:
 
 ```bash
-node ./dist/cli.js --help
+bun ./dist/cli.js --help
 ```
 
 Run through the local script:
 
 ```bash
-pnpm cli:run
+bun run cli:run
 ```
 
 Check runtime status:
 
 ```bash
-pnpm cli:status
+bun run cli:status
 ```
 
 ## Debugging with source maps and Ink
@@ -95,28 +95,28 @@ pnpm cli:status
 Build first so `dist/cli.js` and `dist/cli.js.map` are in sync:
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Run with mapped stack traces:
 
 ```bash
 node --enable-source-maps ./dist/cli.js --help
-pnpm start:sourcemap --help
+bun run start:sourcemap --help
 ```
 
 Run with mapped stack traces and Claude Code debug logging:
 
 ```bash
 node --enable-source-maps ./dist/cli.js --debug --help
-pnpm debug:sourcemap --help
+bun run debug:sourcemap --help
 ```
 
 Run under the Node inspector:
 
 ```bash
 CLAUDE_CODE_ALLOW_INSPECTOR=1 node --enable-source-maps --inspect-brk=9229 ./dist/cli.js --debug
-pnpm debug:inspect
+bun run debug:inspect
 ```
 
 `CLAUDE_CODE_ALLOW_INSPECTOR=1` is required because `src/main.tsx` blocks Node inspector/debugger startup by default in external builds. Keep it limited to local debugging sessions.
@@ -141,13 +141,13 @@ Use `--debug-to-stderr` mainly for non-interactive flows or short smoke tests, b
 Run these after TypeScript or build-system changes:
 
 ```bash
-pnpm exec tsc --noEmit --pretty false
-pnpm build
-pnpm lint
-pnpm audit:missing
+bunx tsc --noEmit --pretty false
+bun run build
+bun run lint
+bun run audit:missing
 git diff --check
-node ./dist/cli.js --version
-node ./dist/cli.js --help
+bun ./dist/cli.js --version
+bun ./dist/cli.js --help
 ```
 
 Current expectations:
@@ -163,7 +163,7 @@ Current expectations:
 Run:
 
 ```bash
-pnpm audit:missing
+bun run audit:missing
 ```
 
 The audit checks:
@@ -180,17 +180,17 @@ Treat runtime code and text asset misses as high priority. Type-only misses may 
 Use the Bun packaging script to rebuild `dist/cli.js` with a release version override and produce a platform-specific binary for the current machine:
 
 ```bash
-pnpm build
-CLAUDE_CODE_VERSION=2.1.89 pnpm package:binary
+bun run build
+CLAUDE_CODE_VERSION=2.1.89 bun run package:binary
 ```
 
 The artifact is written under `dist/release/` and uses the runtime platform and architecture reported by Node, so the smoke-test path should be constructed with:
 
 ```bash
-./dist/release/claude-code-v2.1.89-$(node -p "process.platform")-$(node -p "process.arch")
+./dist/release/claude-code-v2.1.89-$(bun -e "console.log(process.platform)")-$(bun -e "console.log(process.arch)")
 ```
 
-`pnpm package:binary` always rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override before compiling the binary. It does not rely on fake target environment variables for the artifact name.
+`bun run package:binary` always rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override before compiling the binary. It does not rely on fake target environment variables for the artifact name.
 
 ## Recovery build behavior
 
@@ -206,7 +206,7 @@ Keep these behaviors explicit. Do not hide missing runtime behavior behind broad
 
 ## Troubleshooting
 
-### `pnpm build` succeeds but the CLI crashes on `--help`
+### `bun run build` succeeds but the CLI crashes on `--help`
 
 Check command registration and Commander option definitions. Commander short flags must be one dash and one character; multi-character aliases should be long flags such as `--d2e`.
 
@@ -241,13 +241,13 @@ Check:
 Before treating a build as usable:
 
 ```bash
-pnpm exec tsc --noEmit --pretty false
-pnpm build
-pnpm lint
-pnpm audit:missing
+bunx tsc --noEmit --pretty false
+bun run build
+bun run lint
+bun run audit:missing
 git diff --check
-node ./dist/cli.js --version
-node ./dist/cli.js --help
+bun ./dist/cli.js --version
+bun ./dist/cli.js --help
 ```
 
 If the change affects interactive UI, also run the CLI interactively and test the changed flow manually.

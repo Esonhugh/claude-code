@@ -2,7 +2,7 @@ import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createTaskStateBase, generateTaskId } from '../../Task.js'
-import { createNodePtyDriver } from '../../utils/pty/nodePtyDriver.js'
+import { createBunPtyDriver } from '../../utils/pty/bunPtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import type { InteractiveTerminalTaskState } from '../../tasks/InteractiveTerminalTask.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
@@ -57,7 +57,7 @@ let terminalManagerInstance: PtySessionManager | undefined
 
 export function getTerminalManager(): PtySessionManager {
   terminalManagerInstance ??= new PtySessionManager({
-    driver: createNodePtyDriver(),
+    driver: createBunPtyDriver(),
     maxBufferedChunks: 200,
   })
   return terminalManagerInstance

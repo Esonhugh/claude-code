@@ -8,7 +8,7 @@ import {
   resolveDefaultShell,
   resolveInteractiveTerminalCommand,
 } from '../shell/resolveDefaultShell.js'
-import { createNodePtyDriver } from './nodePtyDriver.js'
+import { createBunPtyDriver } from './bunPtyDriver.js'
 import { PtySessionManager } from './PtySessionManager.js'
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
@@ -21,8 +21,8 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void
   }
 }
 
-test('node-pty driver starts the resolved interactive terminal shell and emits output', async () => {
-  const driver = createNodePtyDriver()
+test('Bun PTY driver starts the resolved interactive terminal shell and emits output', async () => {
+  const driver = createBunPtyDriver()
   const shell = resolveInteractiveTerminalCommand()
   const sessionId = 'term_test'
 
@@ -75,10 +75,10 @@ test('falls back from invalid SHELL to configured/default shell command', () => 
   }
 })
 
-test('node-pty driver starts an explicit bash command with explicit args', async () => {
-  const driver = createNodePtyDriver()
+test('Bun PTY driver starts an explicit bash command with explicit args', async () => {
+  const driver = createBunPtyDriver()
   const sessionId = 'term_explicit_bash'
-  const tempDir = mkdtempSync(join(tmpdir(), 'node-pty-driver-bash-'))
+  const tempDir = mkdtempSync(join(tmpdir(), 'bun-pty-driver-bash-'))
   const bashEnvPath = join(tempDir, '.bashrc')
 
   writeFileSync(bashEnvPath, 'export PS1="FROM_BASHRC> "\n')
@@ -117,8 +117,8 @@ test('node-pty driver starts an explicit bash command with explicit args', async
   }
 })
 
-test('node-pty driver throws when the explicit command cannot be resolved', () => {
-  const driver = createNodePtyDriver()
+test('Bun PTY driver throws when the explicit command cannot be resolved', () => {
+  const driver = createBunPtyDriver()
 
   assert.throws(
     () => {
@@ -138,7 +138,7 @@ test('node-pty driver throws when the explicit command cannot be resolved', () =
 })
 
 test('supports a real interrupt flow against a live PTY shell', async () => {
-  const driver = createNodePtyDriver()
+  const driver = createBunPtyDriver()
   const manager = new PtySessionManager({
     driver,
     maxBufferedChunks: 64,

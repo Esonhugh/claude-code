@@ -1,7 +1,5 @@
-import { accessSync, chmodSync, constants as fsConstants } from 'node:fs'
-import { createRequire } from 'node:module'
-import { delimiter, dirname, isAbsolute, join } from 'node:path'
-import pty from 'node-pty'
+import { accessSync, constants as fsConstants } from 'node:fs'
+import { delimiter, isAbsolute, join } from 'node:path'
 import { resolveInteractiveTerminalCommand } from '../shell/resolveDefaultShell.js'
 import type {
   PtyDriver,
@@ -10,9 +8,10 @@ import type {
   TerminalOutputChunk,
 } from './types.js'
 
-interface NodePtySession {
+interface BunPtySession {
   outputQueue: Array<Omit<TerminalOutputChunk, 'start' | 'end'>>
-  proc?: pty.IPty
+  proc: Bun.Subprocess
+  terminal: Bun.Terminal
   status: PtyDriverSessionStatus
 }
 
@@ -68,29 +67,14 @@ function resolveCommandPath(command: string): string {
   throw new Error(`Unable to resolve terminal command: ${command}`)
 }
 
-function ensureSpawnHelperExecutable(): void {
-  const require = createRequire(import.meta.url)
-  const packageJsonPath = require.resolve('node-pty/package.json')
-  const packageDir = dirname(packageJsonPath)
-  const helperPath = join(
-    packageDir,
-    'prebuilds',
-    `${process.platform}-${process.arch}`,
-    'spawn-helper',
-  )
-
-  try {
-    accessSync(helperPath, fsConstants.X_OK)
-  } catch {
-    chmodSync(helperPath, 0o755)
-  }
-}
-
-export function createNodePtyDriver(): PtyDriver & {
+export function createBunPtyDriver(): PtyDriver & {
   resolveDefaultCommand(): string
 } {
-  ensureSpawnHelperExecutable()
-  const sessions = new Map<string, NodePtySession>()
+  if (typeof Bun === 'undefined' || typeof Bun.spawn !== 'function') {
+    throw new Error('InteractiveTerminal requires Bun terminal PTY support')
+  }
+
+  const sessions = new Map<string, BunPtySession>()
 
   return {
     resolveDefaultCommand() {
@@ -101,44 +85,57 @@ export function createNodePtyDriver(): PtyDriver & {
       const command = options.command ?? resolveInteractiveTerminalCommand()
       const resolvedCommand = resolveCommandPath(command)
       const args = options.args ?? buildShellArgs(command)
-      const proc = pty.spawn(resolvedCommand, args, {
-        name: 'xterm-color',
-        cols: options.cols,
-        rows: options.rows,
+      const session = {
+        outputQueue: [],
+        status: {
+          state: 'running',
+        },
+      } as Pick<BunPtySession, 'outputQueue' | 'status'> &
+        Partial<Pick<BunPtySession, 'proc' | 'terminal'>>
+
+      const proc = Bun.spawn([resolvedCommand, ...args], {
         cwd: options.cwd,
         env: {
           ...process.env,
           ...(options.env ?? {}),
         },
+        terminal: {
+          cols: options.cols,
+          rows: options.rows,
+          data(_terminal, data) {
+            session.outputQueue.push({
+              text: Buffer.from(data).toString('utf8'),
+              stream: 'stdout',
+              timestamp: Date.now(),
+            })
+          },
+        },
       })
 
-      const session: NodePtySession = {
-        outputQueue: [],
-        proc,
-        status: {
-          state: 'running',
-          pid: proc.pid,
-        },
+      if (!proc.terminal) {
+        throw new Error('Bun.spawn did not return a terminal')
       }
 
-      proc.onData(text => {
-        session.outputQueue.push({
-          text,
-          stream: 'stdout',
-          timestamp: Date.now(),
-        })
-      })
+      session.proc = proc
+      session.terminal = proc.terminal
+      session.status = {
+        state: 'running',
+        pid: proc.pid,
+      }
+      sessions.set(options.sessionId, session as BunPtySession)
 
-      proc.onExit(event => {
-        session.status = {
-          state: 'closed',
-          exitCode: event.exitCode,
-          exitedAt: Date.now(),
-          signal: event.signal ? String(event.signal) as NodeJS.Signals : null,
+      void proc.exited.then(exitCode => {
+        if (session.status.state === 'running') {
+          session.status = {
+            state: 'closed',
+            exitCode,
+            exitedAt: Date.now(),
+            pid: proc.pid,
+            signal: null,
+          }
         }
       })
 
-      sessions.set(options.sessionId, session)
       return { ...session.status }
     },
 
@@ -148,7 +145,7 @@ export function createNodePtyDriver(): PtyDriver & {
         throw new Error(`Unknown PTY session: ${sessionId}`)
       }
       if (data) {
-        session.proc?.write(data)
+        session.terminal.write(data)
       }
       return session.outputQueue.shift() ?? null
     },
@@ -158,7 +155,7 @@ export function createNodePtyDriver(): PtyDriver & {
       if (!session) {
         throw new Error(`Unknown PTY session: ${sessionId}`)
       }
-      session.proc?.resize(cols, rows)
+      session.terminal.resize(cols, rows)
     },
 
     status(sessionId: string) {
@@ -174,14 +171,12 @@ export function createNodePtyDriver(): PtyDriver & {
       if (!session) {
         throw new Error(`Unknown PTY session: ${sessionId}`)
       }
-      const pid = session.proc?.pid ?? session.status.pid
-      session.proc?.kill(signal)
-      session.proc = undefined
+      session.proc.kill(signal)
       session.status = {
         state: 'closed',
         exitCode: signal === 'SIGTERM' ? 143 : 130,
         exitedAt: Date.now(),
-        pid,
+        pid: session.proc.pid,
         signal,
       }
       return { ...session.status }
@@ -193,14 +188,12 @@ export function createNodePtyDriver(): PtyDriver & {
         throw new Error(`Unknown PTY session: ${sessionId}`)
       }
       if (session.status.state === 'running') {
-        const pid = session.proc?.pid ?? session.status.pid
-        session.proc?.kill()
-        session.proc = undefined
+        session.terminal.close()
         session.status = {
           state: 'closed',
           exitCode: session.status.exitCode ?? 0,
           exitedAt: Date.now(),
-          pid,
+          pid: session.proc.pid,
           signal: session.status.signal ?? null,
         }
       }
