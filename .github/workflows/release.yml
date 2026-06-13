@@ -81,49 +81,43 @@ jobs:
         with:
           ref: ${{ needs.validate-tag.outputs.checkout_ref }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
 
       - name: Verify source version is dev
         shell: bash
         run: |
           node -e "const p=require('./package.json'); if (p.version !== '0.0.0-dev') { console.error('package.json version must stay 0.0.0-dev, got ' + p.version); process.exit(1); }"
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
 
       - name: Type check
-        run: pnpm exec tsc --noEmit --pretty false
+        run: bunx tsc --noEmit --pretty false
 
       - name: Lint
-        run: pnpm lint
+        run: bun run lint
 
       - name: Audit missing recovered imports
-        run: pnpm audit:missing
+        run: bun run audit:missing
 
       - name: Check whitespace
         run: git diff --check
 
       - name: Build CLI with release version
-        run: pnpm build
+        run: bun run build
 
       - name: Verify CLI version
         shell: bash
         run: |
-          VERSION_OUTPUT="$(node ./dist/cli.js --version)"
+          VERSION_OUTPUT="$(bun run start --version)"
           echo "$VERSION_OUTPUT"
           if [[ "$VERSION_OUTPUT" != *"${CLAUDE_CODE_VERSION} (Claude Code)"* ]]; then
             echo "Expected version output to contain ${CLAUDE_CODE_VERSION} (Claude Code)" >&2
@@ -131,10 +125,21 @@ jobs:
           fi
 
       - name: Verify CLI help
-        run: node ./dist/cli.js --help
+        run: bun run start --help
 
       - name: Package binary
-        run: pnpm package:binary
+        run: bun run package:binary
+
+      - name: Verify packaged binary
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) EXT=".exe" ;;
+            *) EXT="" ;;
+          esac
+          ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-$(bun -e 'console.log(process.platform)')-$(bun -e 'console.log(process.arch)')${EXT}"
+          "$ARTIFACT" --version
+          "$ARTIFACT" --help
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -202,12 +207,14 @@ jobs:
           Commit: ${{ steps.release-commit.outputs.sha }}
 
           Checks run before packaging:
-          - pnpm exec tsc --noEmit --pretty false
-          - pnpm lint
-          - pnpm audit:missing
+          - bunx tsc --noEmit --pretty false
+          - bun run lint
+          - bun run audit:missing
           - git diff --check
-          - node ./dist/cli.js --version
-          - node ./dist/cli.js --help
+          - bun run start --version
+          - bun run start --help
+          - packaged binary --version
+          - packaged binary --help
 
           Verify downloads with SHA256SUMS.txt.
           EOF
