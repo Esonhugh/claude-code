@@ -3,14 +3,15 @@ import test from 'node:test'
 
 import { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
 import { FakePtyDriver } from '../../../utils/pty/__fixtures__/FakePtyDriver.js'
+import type { PtyDriverOpenOptions } from '../../../utils/pty/types.js'
 import { handleOpen } from './open.js'
 
 class CaptureDriver extends FakePtyDriver {
-  lastOpenOptions: Record<string, unknown> | undefined
+  lastOpenOptions: PtyDriverOpenOptions | undefined
 
-  override open(options: Record<string, unknown>) {
+  override open(options: PtyDriverOpenOptions) {
     this.lastOpenOptions = options
-    return super.open(options as never)
+    return super.open(options)
   }
 }
 
