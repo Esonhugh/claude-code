@@ -136,6 +136,83 @@ test('accepts a valid open action and returns a session', async () => {
   assert.equal((closed.data as { closed: boolean }).closed, true)
 })
 
+test('lists unreaped sessions without requiring a sessionId', async () => {
+  const emptyList = await InteractiveTerminalTool.call(
+    { action: 'list' },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  assert.equal((emptyList.data as { count: number }).count, 0)
+  assert.deepEqual((emptyList.data as { sessions: unknown[] }).sessions, [])
+
+  const first = await InteractiveTerminalTool.call(
+    {
+      action: 'open',
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const second = await InteractiveTerminalTool.call(
+    {
+      action: 'open',
+      cwd: process.cwd(),
+      cols: 100,
+      rows: 30,
+    },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const firstSessionId = String((first.data as { sessionId: string }).sessionId)
+  const secondSessionId = String((second.data as { sessionId: string }).sessionId)
+
+  const listed = await InteractiveTerminalTool.call(
+    { action: 'list' },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const listedSessions = (listed.data as { sessions: Array<{ sessionId: string; state: string }> }).sessions
+  assert.equal((listed.data as { count: number }).count, 2)
+  assert.deepEqual(
+    listedSessions.map(session => session.sessionId),
+    [firstSessionId, secondSessionId],
+  )
+
+  await InteractiveTerminalTool.call(
+    { action: 'close', sessionId: firstSessionId },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const afterClose = await InteractiveTerminalTool.call(
+    { action: 'list' },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal(
+    (afterClose.data as { sessions: Array<{ sessionId: string; state: string }> }).sessions.find(
+      session => session.sessionId === firstSessionId,
+    )?.state,
+    'closed',
+  )
+
+  await InteractiveTerminalTool.call(
+    { action: 'close', sessionId: secondSessionId },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+})
+
 test('routes open, status, write, read, and close through the shared session manager', async () => {
   const opened = await InteractiveTerminalTool.call(
     {
@@ -271,7 +348,7 @@ test('records the resolved default shell in task state for open', async () => {
   )
 })
 
-test('prompts for permission on open but not on status for an approved session', async () => {
+test('prompts for permission on open but not on status or list for an approved session', async () => {
   const permissionCalls: string[] = []
   const canUseTool: CanUseToolFn = async (_tool, input) => {
     permissionCalls.push(String(input.action ?? 'open'))
@@ -293,6 +370,12 @@ test('prompts for permission on open but not on status for an approved session',
   const sessionId = String((opened.data as { sessionId: string }).sessionId)
   await InteractiveTerminalTool.call(
     { action: 'status', sessionId },
+    createContext(),
+    canUseTool,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  await InteractiveTerminalTool.call(
+    { action: 'list' },
     createContext(),
     canUseTool,
     TEST_ASSISTANT_MESSAGE,

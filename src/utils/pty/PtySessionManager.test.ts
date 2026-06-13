@@ -37,7 +37,7 @@ describe('PtySessionManager', () => {
 
     const session = manager.open({ cwd: '/tmp/project' })
 
-    assert.equal(session.sessionId, 'session-1')
+    assert.equal(session.sessionId, 'term-1')
     assert.equal(session.state, 'running')
     assert.equal(session.cwd, '/tmp/project')
     assert.equal(session.cols, INITIAL_TERMINAL_SIZE.cols)
@@ -100,6 +100,47 @@ describe('PtySessionManager', () => {
     assert.equal(typeof closedStatus.exitedAt, 'number')
 
     assert.equal(manager.status(session.sessionId).state, 'closed')
+  })
+
+  it('lists all unreaped sessions without exposing internal records', () => {
+    const manager = new PtySessionManager({
+      driver: new FakePtyDriver(),
+      exitedSessionTtlMs: 100,
+    })
+
+    assert.deepEqual(manager.list(), [])
+
+    const first = manager.open({ cwd: '/tmp/one', cols: 80, rows: 24 })
+    const second = manager.open({ cwd: '/tmp/two', cols: 100, rows: 30 })
+    manager.write(first.sessionId, 'hello\n')
+
+    const listed = manager.list()
+    assert.deepEqual(
+      listed.map(session => session.sessionId),
+      [first.sessionId, second.sessionId],
+    )
+    assert.equal(listed[0]?.cwd, '/tmp/one')
+    assert.equal(listed[0]?.state, 'running')
+    assert.equal(listed[0]?.cols, 80)
+    assert.equal(listed[0]?.rows, 24)
+    assert.equal(listed[0]?.nextCursor, Buffer.byteLength('hello\n', 'utf8'))
+    assert.equal(typeof listed[0]?.startedAt, 'number')
+    assert.equal(typeof listed[0]?.lastActivityAt, 'number')
+
+    listed[0]!.state = 'failed'
+    assert.equal(manager.status(first.sessionId).state, 'running')
+
+    manager.close(first.sessionId)
+    assert.equal(
+      manager.list().find(session => session.sessionId === first.sessionId)?.state,
+      'closed',
+    )
+
+    manager.reapExpiredSessions(Date.now() + 101)
+    assert.deepEqual(
+      manager.list().map(session => session.sessionId),
+      [second.sessionId],
+    )
   })
 
   it('updates cols and rows when resizing a session', () => {

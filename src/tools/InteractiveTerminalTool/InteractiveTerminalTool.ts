@@ -9,6 +9,7 @@ import { registerTask, updateTaskState } from '../../utils/task/framework.js'
 import {
   actionSchema,
   closeActionSchema,
+  listActionSchema,
   openActionSchema,
   readActionSchema,
   resizeActionSchema,
@@ -18,6 +19,7 @@ import {
   writeActionSchema,
 } from './actionSchemas.js'
 import { handleClose } from './handlers/close.js'
+import { handleList } from './handlers/list.js'
 import { handleOpen } from './handlers/open.js'
 import { handleRead } from './handlers/read.js'
 import { handleResize } from './handlers/resize.js'
@@ -160,7 +162,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
     return true
   },
   isReadOnly(input) {
-    return input.action === 'read' || input.action === 'status'
+    return input.action === 'read' || input.action === 'status' || input.action === 'list'
   },
   toAutoClassifierInput(input) {
     return `${input.action} ${'sessionId' in input ? String(input.sessionId ?? '') : ''}`.trim()
@@ -257,6 +259,15 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
           const read = handleRead(manager, parsed.data)
           refreshTerminalTaskPreview(parsed.data.sessionId, context.setAppState, manager)
           return { data: read }
+        }
+        case 'list': {
+          const parsed = listActionSchema.safeParse(input)
+          if (!parsed.success) {
+            return {
+              data: invalidInput('action=list requires no additional payload', { action: 'list' }),
+            }
+          }
+          return { data: handleList(getTerminalManager()) }
         }
         case 'send_key': {
           const parsed = sendKeyActionSchema.safeParse(input)

@@ -40,7 +40,7 @@ export class PtySessionManager {
   }
 
   open(options: OpenTerminalSessionOptions): TerminalSessionRecord {
-    const sessionId = `session-${this.nextSessionId++}`
+    const sessionId = `term-${this.nextSessionId++}`
     const startedAt = Date.now()
     const cols = options.cols ?? INITIAL_TERMINAL_SIZE.cols
     const rows = options.rows ?? INITIAL_TERMINAL_SIZE.rows
@@ -119,6 +119,15 @@ export class PtySessionManager {
     this.drainDriverOutput(sessionId, session)
     this.applyDriverStatus(session.record, this.driver.status(sessionId))
     return this.cloneRecord(session.record)
+  }
+
+  list(): TerminalSessionRecord[] {
+    this.reapExpiredSessions()
+    return Array.from(this.sessions, ([sessionId, session]) => {
+      this.drainDriverOutput(sessionId, session)
+      this.applyDriverStatus(session.record, this.driver.status(sessionId))
+      return this.cloneRecord(session.record)
+    })
   }
 
   getRenderedPreview(sessionId: string): string {

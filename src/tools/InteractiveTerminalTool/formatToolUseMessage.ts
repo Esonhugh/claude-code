@@ -47,6 +47,8 @@ export function formatToolUseMessage(
       appendIfPresent(parts, 'text', input.text ? JSON.stringify(input.text) : undefined)
       appendIfPresent(parts, 'enter', input.enter)
       break
+    case 'list':
+      break
     case 'read':
     case 'status':
     case 'close':

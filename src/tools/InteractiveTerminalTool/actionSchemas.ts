@@ -25,6 +25,10 @@ export const readActionSchema = z.object({
   maxBytes: z.number().int().positive().default(8192),
 })
 
+export const listActionSchema = z.object({
+  action: z.literal('list'),
+})
+
 export const sendKeyActionSchema = z.object({
   action: z.literal('send_key'),
   sessionId: z.string().min(1),
@@ -60,6 +64,7 @@ export const actionSchema = z.object({
     'open',
     'write',
     'read',
+    'list',
     'send_key',
     'resize',
     'signal',

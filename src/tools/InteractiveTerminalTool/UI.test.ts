@@ -16,6 +16,10 @@ describe('formatToolUseMessage', () => {
     )
   })
 
+  it('shows only the action for list actions', () => {
+    assert.equal(formatToolUseMessage({ action: 'list' }), 'action=list')
+  })
+
   it('shows key for send_key actions', () => {
     assert.equal(
       formatToolUseMessage({
