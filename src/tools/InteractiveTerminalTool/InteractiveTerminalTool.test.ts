@@ -444,7 +444,7 @@ test('refreshes task preview on status for large terminal redraw output', async 
   )
   assert.equal(
     (readAfterStatus.data as { text: string }).text,
-    'Claude is thinking... 12%\rClaude is thinking... 100%',
+    'Claude is thinking... 100%',
   )
 
   await InteractiveTerminalTool.call(

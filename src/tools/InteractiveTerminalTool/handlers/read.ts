@@ -29,11 +29,11 @@ export function handleRead(manager: PtySessionManager, input: ReadActionInput) {
   )
 
   const status = manager.status(input.sessionId)
-  const toCursor = input.cursor + Buffer.byteLength(text, 'utf8')
+  const toCursor = Buffer.byteLength(text, 'utf8')
 
   return {
     sessionId: input.sessionId,
-    fromCursor: input.cursor,
+    fromCursor: 0,
     toCursor,
     text,
     rows: status.rows,

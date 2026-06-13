@@ -21,14 +21,14 @@ describe('terminalScreenRenderer', () => {
     assert.equal(preview.includes('Claude is thinking... 12%'), false)
   })
 
-  it('keeps ANSI style semantics without leaking non-style control bytes', () => {
+  it('renders ANSI-styled output as plain snapshot text without leaking control bytes', () => {
     const renderer = createTerminalScreenRenderer(40, 6)
 
     applyTerminalOutput(renderer, 'A [31mred[0m B')
 
     const preview = renderedPreview(renderer)
-    assert.equal(preview.includes('red'), true)
-    assert.equal(preview.includes('[31mred[0m'), true)
+    assert.equal(preview.includes('A red B'), true)
+    assert.equal(preview.includes('[31mred[0m'), false)
     assert.equal(preview.includes('[H'), false)
   })
 
@@ -79,5 +79,27 @@ describe('terminalScreenRenderer', () => {
     const preview = renderedPreview(renderer)
     assert.equal(preview.includes('697;DoneSourcing'), false)
     assert.equal(preview.includes('READY'), true)
+  })
+
+  it('renders cursor-positioned overwrites as the final visible screen', () => {
+    const renderer = createTerminalScreenRenderer(20, 4)
+
+    applyTerminalOutput(renderer, 'first line\nsecond line')
+    applyTerminalOutput(renderer, '[1;1Htop')
+
+    const preview = renderedPreview(renderer)
+    assert.equal(preview.includes('topst line'), true)
+    assert.equal(preview.includes('\u001b[1;1H'), false)
+  })
+
+  it('renders clear-screen redraws as a current screen snapshot', () => {
+    const renderer = createTerminalScreenRenderer(20, 4)
+
+    applyTerminalOutput(renderer, 'old output\n')
+    applyTerminalOutput(renderer, '[2J[Hnew prompt')
+
+    const preview = renderedPreview(renderer)
+    assert.equal(preview.includes('old output'), false)
+    assert.equal(preview.includes('new prompt'), true)
   })
 })

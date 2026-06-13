@@ -85,31 +85,28 @@ export class PtySessionManager {
     this.appendOutput(session, output)
   }
 
-  read(sessionId: string, cursor: number): TerminalReadResult {
+  read(_sessionId: string, _cursor: number): TerminalReadResult {
     this.reapExpiredSessions()
-    const session = this.getSession(sessionId)
-    this.drainDriverOutput(sessionId, session)
-    const effectiveCursor = Math.max(cursor, session.record.lowestAvailableCursor)
+    const session = this.getSession(_sessionId)
+    this.drainDriverOutput(_sessionId, session)
+    const text = renderedPreview(session.renderer)
+    const end = Buffer.byteLength(text, 'utf8')
 
     return {
-      chunks: session.outputChunks
-        .filter(chunk => chunk.end > effectiveCursor)
-        .map(chunk => {
-          if (chunk.start >= effectiveCursor) {
-            return { ...chunk }
-          }
-          const offset = effectiveCursor - chunk.start
-          const buffer = Buffer.from(chunk.text, 'utf8')
-          const sliced = buffer.subarray(offset)
-          return {
-            ...chunk,
-            start: effectiveCursor,
-            text: sliced.toString('utf8'),
-          }
-        }),
-      lowestAvailableCursor: session.record.lowestAvailableCursor,
-      nextCursor: session.record.nextCursor,
-      truncatedBeforeCursor: cursor < session.record.lowestAvailableCursor,
+      chunks: text
+        ? [
+            {
+              end,
+              start: 0,
+              stream: 'stdout',
+              text,
+              timestamp: session.record.lastActivityAt,
+            },
+          ]
+        : [],
+      lowestAvailableCursor: 0,
+      nextCursor: end,
+      truncatedBeforeCursor: false,
     }
   }
 

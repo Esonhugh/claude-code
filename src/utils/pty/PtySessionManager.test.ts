@@ -54,7 +54,7 @@ describe('PtySessionManager', () => {
     })
   })
 
-  it('writes data and reads appended output from the requested cursor', () => {
+  it('writes data and reads the current screen snapshot regardless of cursor', () => {
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),
     })
@@ -65,20 +65,15 @@ describe('PtySessionManager', () => {
 
     const firstRead = manager.read(session.sessionId, 0)
     assert.equal(firstRead.lowestAvailableCursor, 0)
-    assert.equal(firstRead.nextCursor, Buffer.byteLength('pwd\n', 'utf8'))
+    assert.equal(firstRead.nextCursor, Buffer.byteLength('pwd', 'utf8'))
     assert.equal(firstRead.truncatedBeforeCursor, false)
     assert.equal(firstRead.chunks.length, 1)
     assert.equal(firstRead.chunks[0]?.start, 0)
-    assert.equal(firstRead.chunks[0]?.end, Buffer.byteLength('pwd\n', 'utf8'))
-    assert.equal(firstRead.chunks[0]?.text, 'pwd\n')
+    assert.equal(firstRead.chunks[0]?.end, Buffer.byteLength('pwd', 'utf8'))
+    assert.equal(firstRead.chunks[0]?.text, 'pwd')
     assert.equal(firstRead.chunks[0]?.stream, 'stdout')
 
-    assert.deepEqual(manager.read(session.sessionId, firstRead.nextCursor), {
-      chunks: [],
-      lowestAvailableCursor: 0,
-      nextCursor: Buffer.byteLength('pwd\n', 'utf8'),
-      truncatedBeforeCursor: false,
-    })
+    assert.deepEqual(manager.read(session.sessionId, firstRead.nextCursor), firstRead)
   })
 
   it('reports status and closes an existing session', () => {
@@ -167,7 +162,7 @@ describe('PtySessionManager', () => {
     assert.equal(signaled.nextCursor, Buffer.byteLength('', 'utf8'))
   })
 
-  it('trims buffered chunks and marks reads before the lowest available cursor as truncated', () => {
+  it('trims raw activity cursors while read keeps returning the current screen snapshot', () => {
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),
       maxBufferedChunks: 2,
@@ -184,16 +179,9 @@ describe('PtySessionManager', () => {
     manager.write(session.sessionId, 'three\n')
 
     const readFromStart = manager.read(session.sessionId, 0)
-    assert.equal(readFromStart.lowestAvailableCursor, one)
-    assert.equal(readFromStart.nextCursor, one + two + three)
-    assert.equal(readFromStart.truncatedBeforeCursor, true)
-    assert.deepEqual(
-      readFromStart.chunks.map(chunk => ({ start: chunk.start, end: chunk.end, text: chunk.text })),
-      [
-        { start: one, end: one + two, text: 'two\n' },
-        { start: one + two, end: one + two + three, text: 'three\n' },
-      ],
-    )
+    assert.equal(readFromStart.lowestAvailableCursor, 0)
+    assert.equal(readFromStart.truncatedBeforeCursor, false)
+    assert.equal(readFromStart.chunks.map(chunk => chunk.text).join(''), 'one\ntwo\nthree')
 
     const sessionStatus = manager.status(session.sessionId)
     assert.equal(sessionStatus.lowestAvailableCursor, one)
@@ -201,11 +189,10 @@ describe('PtySessionManager', () => {
     assert.equal(sessionStatus.truncatedBeforeCursor, true)
 
     const readFromLowestCursor = manager.read(session.sessionId, one)
-    assert.equal(readFromLowestCursor.truncatedBeforeCursor, false)
-    assert.equal(readFromLowestCursor.chunks.length, 2)
+    assert.deepEqual(readFromLowestCursor, readFromStart)
   })
 
-  it('keeps raw chunks for read while exposing a rendered preview for large terminal redraws', () => {
+  it('reads the current rendered screen snapshot for terminal redraws', () => {
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),
     })
@@ -214,12 +201,12 @@ describe('PtySessionManager', () => {
     manager.write(session.sessionId, 'Claude is thinking... 12%')
     manager.write(session.sessionId, '\rClaude is thinking... 100%')
 
-    const raw = manager.read(session.sessionId, 0)
+    const snapshot = manager.read(session.sessionId, 0)
     const preview = manager.getRenderedPreview(session.sessionId)
 
     assert.equal(
-      raw.chunks.map(chunk => chunk.text).join(''),
-      'Claude is thinking... 12%\rClaude is thinking... 100%',
+      snapshot.chunks.map(chunk => chunk.text).join(''),
+      'Claude is thinking... 100%',
     )
     assert.equal(preview.includes('Claude is thinking... 100%'), true)
   })

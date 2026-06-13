@@ -119,6 +119,9 @@ importers:
       '@smithy/node-http-handler':
         specifier: ^4.5.1
         version: 4.5.1
+      '@xterm/headless':
+        specifier: 6.0.0
+        version: 6.0.0
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -2189,6 +2192,9 @@ packages:
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
     engines: {node: '>=14.6'}
+
+  '@xterm/headless@6.0.0':
+    resolution: {integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==}
 
   abbrev@2.0.0:
     resolution: {integrity: sha512-6/mh1E2u2YgEsCHdY0Yx5oW+61gZU+1vXaoiHHrpKeuRNNgFvS+/jrwHiQhB5apAf5oB7UB7E19ol2R2LKH8hQ==}
@@ -7092,6 +7098,8 @@ snapshots:
       - supports-color
 
   '@xmldom/xmldom@0.9.10': {}
+
+  '@xterm/headless@6.0.0': {}
 
   abbrev@2.0.0: {}
 

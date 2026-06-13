@@ -1,101 +1,57 @@
-import {
-  createTerminalScreen,
-  moveCursorToColumn,
-  moveCursorToNextRow,
-  type TerminalScreen,
-  type TerminalScreenStyle,
-  writeCharToScreen,
-} from './terminalScreen.js'
-import { screenToPreview } from './terminalScreenToPreview.js'
+import * as xtermHeadless from '@xterm/headless'
+import type {
+  ITerminalInitOnlyOptions,
+  ITerminalOptions,
+  Terminal as XtermTerminal,
+} from '@xterm/headless'
 
-type StyleState = TerminalScreenStyle
+type XtermTerminalConstructor = new (
+  options?: ITerminalOptions & ITerminalInitOnlyOptions,
+) => XtermTerminal
+
+type XtermHeadlessModule = {
+  Terminal?: XtermTerminalConstructor
+  default?: { Terminal?: XtermTerminalConstructor }
+  'module.exports'?: { Terminal?: XtermTerminalConstructor }
+}
+
+const xtermModule = xtermHeadless as XtermHeadlessModule
+const Terminal =
+  xtermModule.Terminal ??
+  xtermModule.default?.Terminal ??
+  xtermModule['module.exports']?.Terminal
+
+if (!Terminal) {
+  throw new Error('Unable to load @xterm/headless Terminal export')
+}
 
 export type TerminalScreenRenderer = {
-  cols: number
-  rows: number
-  screen: TerminalScreen
-  currentStyle: StyleState
-  pendingEscapeBuffer: string
+  terminal: XtermTerminal
 }
 
-function applySgr(renderer: TerminalScreenRenderer, sgr: string): void {
-  const codes = sgr
-    .split(';')
-    .map(part => Number.parseInt(part || '0', 10))
-    .filter(code => !Number.isNaN(code))
+function writeSync(terminal: XtermTerminal, text: string): void {
+  const writeBuffer = (terminal as unknown as {
+    _core?: { _writeBuffer?: { writeSync(data: string): void } }
+  })._core?._writeBuffer
 
-  if (codes.length === 0 || codes.includes(0)) {
-    renderer.currentStyle = {}
+  if (!writeBuffer) {
+    terminal.write(text)
+    return
   }
 
-  for (const code of codes) {
-    if (code >= 30 && code <= 37) {
-      renderer.currentStyle.fg = code
-    }
-  }
+  writeBuffer.writeSync(text)
 }
 
-function writeStyledChar(renderer: TerminalScreenRenderer, char: string): void {
-  writeCharToScreen(renderer.screen, char, renderer.currentStyle)
-}
+function visibleLines(terminal: XtermTerminal): string[] {
+  const buffer = terminal.buffer.active
+  const start = buffer.baseY
+  const lines: string[] = []
 
-function consumeCsiSequence(renderer: TerminalScreenRenderer, input: string): number {
-  let index = 2
-  while (index < input.length) {
-    const char = input[index]!
-    const isFinalByte =
-      (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z')
-    if (isFinalByte) {
-      const params = input.slice(2, index)
-      const command = char
-
-      if (command === 'm') {
-        applySgr(renderer, params)
-      }
-
-      renderer.pendingEscapeBuffer = ''
-      return index + 1
-    }
-    index += 1
+  for (let row = 0; row < terminal.rows; row += 1) {
+    lines.push(buffer.getLine(start + row)?.translateToString(true) ?? '')
   }
 
-  renderer.pendingEscapeBuffer = input
-  return input.length
-}
-
-function consumeOscSequence(renderer: TerminalScreenRenderer, input: string): number {
-  let index = 2
-  while (index < input.length) {
-    const char = input[index]!
-    if (char === '') {
-      renderer.pendingEscapeBuffer = ''
-      return index + 1
-    }
-    if (char === '' && input[index + 1] === '\\') {
-      renderer.pendingEscapeBuffer = ''
-      return index + 2
-    }
-    index += 1
-  }
-
-  renderer.pendingEscapeBuffer = input
-  return input.length
-}
-
-function consumeAnsiSequence(renderer: TerminalScreenRenderer, input: string): number {
-  if (input[0] !== '') {
-    return 0
-  }
-
-  if (input[1] === '[') {
-    return consumeCsiSequence(renderer, input)
-  }
-
-  if (input[1] === ']') {
-    return consumeOscSequence(renderer, input)
-  }
-
-  return 1
+  return lines
 }
 
 export function createTerminalScreenRenderer(
@@ -103,11 +59,14 @@ export function createTerminalScreenRenderer(
   rows: number,
 ): TerminalScreenRenderer {
   return {
-    cols,
-    rows,
-    screen: createTerminalScreen(cols, rows),
-    currentStyle: {},
-    pendingEscapeBuffer: '',
+    terminal: new Terminal({
+      allowProposedApi: true,
+      cols,
+      convertEol: true,
+      logLevel: 'off',
+      rows,
+      windowsPty: process.platform === 'win32' ? { backend: 'conpty' } : undefined,
+    }),
   }
 }
 
@@ -115,34 +74,7 @@ export function applyTerminalOutput(
   renderer: TerminalScreenRenderer,
   text: string,
 ): void {
-  let input = renderer.pendingEscapeBuffer + text
-  renderer.pendingEscapeBuffer = ''
-
-  while (input.length > 0) {
-    if (input[0] === '') {
-      const consumed = consumeAnsiSequence(renderer, input)
-      if (consumed === input.length && renderer.pendingEscapeBuffer) {
-        return
-      }
-      input = input.slice(consumed)
-      continue
-    }
-
-    const char = input[0]!
-    input = input.slice(1)
-
-    if (char === '\r') {
-      moveCursorToColumn(renderer.screen, 0)
-      continue
-    }
-
-    if (char === '\n') {
-      moveCursorToNextRow(renderer.screen)
-      continue
-    }
-
-    writeStyledChar(renderer, char)
-  }
+  writeSync(renderer.terminal, text)
 }
 
 export function resizeTerminalScreenRenderer(
@@ -150,12 +82,9 @@ export function resizeTerminalScreenRenderer(
   cols: number,
   rows: number,
 ): void {
-  renderer.cols = cols
-  renderer.rows = rows
-  renderer.screen.cols = cols
-  renderer.screen.rows = rows
+  renderer.terminal.resize(cols, rows)
 }
 
 export function renderedPreview(renderer: TerminalScreenRenderer): string {
-  return screenToPreview(renderer.screen)
+  return visibleLines(renderer.terminal).join('\n').trim()
 }
