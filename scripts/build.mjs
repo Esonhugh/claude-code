@@ -2,8 +2,8 @@ import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { builtinModules, createRequire } from 'node:module';
-import { fileURLToPath, URL } from 'node:url';
+import { builtinModules } from 'node:module';
+import { fileURLToPath, pathToFileURL, URL } from 'node:url';
 
 const packageJson = JSON.parse(
   await fs.promises.readFile(
@@ -37,8 +37,6 @@ const builtinSet = new Set([
   ...builtinModules,
   ...builtinModules.map(value => `node:${value}`),
 ]);
-const require = createRequire(import.meta.url);
-
 const sourceExts = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'];
 const unavailablePackagePrefixes = [
   '@ant/',
@@ -48,28 +46,6 @@ const unavailablePackagePrefixes = [
   'modifiers-napi',
   'url-handler-napi',
 ];
-const rootEntryCandidates = [
-  'index.js',
-  'index.mjs',
-  'index.cjs',
-  'source/index.js',
-  'source/index.mjs',
-  'dist/index.js',
-  'dist/index.mjs',
-  'dist/esm/index.js',
-  'dist/esm/index.mjs',
-  'dist-cjs/index.js',
-  'build/index.js',
-  'build/index.mjs',
-  'build/src/index.js',
-  'build/src/index.mjs',
-  'lib/index.js',
-  'lib/index.mjs',
-  'lib/esm/index.js',
-  'lib/esm/main.js',
-  'wrapper.mjs',
-];
-
 const macroValues = {
   'MACRO.BUILD_TIME': JSON.stringify('2026-03-30T21:59:52Z'),
   'MACRO.FEEDBACK_CHANNEL': JSON.stringify(
@@ -214,9 +190,10 @@ const recoveryResolver = {
   },
 };
 
-await fs.promises.mkdir(path.join(projectDir, 'dist'), { recursive: true });
+async function buildCli() {
+  await fs.promises.mkdir(path.join(projectDir, 'dist'), { recursive: true });
 
-await build({
+  await build({
   absWorkingDir: projectDir,
   banner: {
     js: `#!/usr/bin/env node
@@ -234,28 +211,74 @@ const require = __createRequire(import.meta.url);`,
   platform: 'node',
   plugins: [recoveryResolver],
   sourcemap: true,
-  target: 'node20',
-});
+    target: 'node20',
+  });
 
-const nodePtyPackageDir = path.dirname(require.resolve('node-pty/package.json'));
-const nodePtyPrebuildDir = path.join(
-  nodePtyPackageDir,
-  'prebuilds',
-  `${process.platform}-${process.arch}`,
-);
-const distPrebuildDir = path.join(
-  projectDir,
-  'dist',
-  'prebuilds',
-  `${process.platform}-${process.arch}`,
-);
+  await copyRuntimeAssets({ projectDir, nodeModulesDir });
+}
 
-if (fs.existsSync(nodePtyPrebuildDir)) {
-  await fs.promises.mkdir(distPrebuildDir, { recursive: true });
-  for (const entry of await fs.promises.readdir(nodePtyPrebuildDir)) {
-    await fs.promises.copyFile(
-      path.join(nodePtyPrebuildDir, entry),
-      path.join(distPrebuildDir, entry),
-    );
+async function copyDirectoryFiles(sourceDir, targetDir) {
+  if (!fs.existsSync(sourceDir)) return false;
+
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  for (const entry of await fs.promises.readdir(sourceDir)) {
+    const sourcePath = path.join(sourceDir, entry);
+    const targetPath = path.join(targetDir, entry);
+    const stat = await fs.promises.stat(sourcePath);
+    if (stat.isDirectory()) {
+      await copyDirectoryFiles(sourcePath, targetPath);
+    } else if (stat.isFile()) {
+      await fs.promises.copyFile(sourcePath, targetPath);
+    }
   }
+  return true;
+}
+
+function ripgrepSourceCandidates(nodeModulesDir) {
+  return [
+    path.join(
+      nodeModulesDir,
+      '@anthropic-ai',
+      'ripgrep',
+      `${process.arch}-${process.platform}`,
+    ),
+    path.join(
+      nodeModulesDir,
+      '@vscode',
+      'ripgrep',
+      'bin',
+      `${process.arch}-${process.platform}`,
+    ),
+  ];
+}
+
+export async function copyRuntimeAssets({ projectDir, nodeModulesDir }) {
+  const nodePtyPrebuildDir = path.join(
+    nodeModulesDir,
+    'node-pty',
+    'prebuilds',
+    `${process.platform}-${process.arch}`,
+  );
+  const distPrebuildDir = path.join(
+    projectDir,
+    'dist',
+    'prebuilds',
+    `${process.platform}-${process.arch}`,
+  );
+  await copyDirectoryFiles(nodePtyPrebuildDir, distPrebuildDir);
+
+  const ripgrepTargetDir = path.join(
+    projectDir,
+    'dist',
+    'vendor',
+    'ripgrep',
+    `${process.arch}-${process.platform}`,
+  );
+  for (const sourceDir of ripgrepSourceCandidates(nodeModulesDir)) {
+    if (await copyDirectoryFiles(sourceDir, ripgrepTargetDir)) break;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await buildCli();
 }
