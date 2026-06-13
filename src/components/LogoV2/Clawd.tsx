@@ -9,24 +9,6 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 let customClawdLines: string[] | null = null
 let customClawdLoaded = false
 
-const _default = `                                        
-                   #%-                  
-                 *@@%@*                 
-               +@%=  =#@*               
-             +@@+      =%@*             
-           -%@+          -%%+           
-          @@*-             +@@-         
-        #@%                  #@%-       
-      *@#-         P R         *@#-     
-      *@#-         T S         *@#      
-        #@#                  #@%-       
-          %@*              +@@-         
-           -%@=-         =@@=           
-             =%@+      +@@*             
-               +@%=  -%@*               
-                 *@@%@*                 
-                   #%-                  
-                                        `
 
 export function getCustomClawd(): string[] | null {
   if (!customClawdLoaded) {
@@ -41,7 +23,7 @@ export function getCustomClawd(): string[] | null {
       }
     } catch {
       // file doesn't exist or unreadable
-      customClawdLines =  _default.split("\n")
+      // customClawdLines =  _default.split("\n")
     }
   }
   return customClawdLines

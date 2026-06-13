@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0-dev",
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "bin": {
     "claude": "dist/cli.js"
   },
@@ -17,8 +18,8 @@
     "url": "https://github.com/anthropics/claude-code/issues"
   },
   "scripts": {
-    "build": "node ./scripts/build.mjs",
-    "package:binary": "node ./scripts/package-binary.mjs",
+    "build": "bun ./scripts/build.mjs",
+    "package:binary": "bun ./scripts/package-binary.mjs",
     "start": "node ./dist/cli.js",
     "start:sourcemap": "node --enable-source-maps ./dist/cli.js",
     "debug:sourcemap": "node --enable-source-maps ./dist/cli.js --debug",
@@ -26,12 +27,6 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "lint:fix": "eslint --fix \"src/**/*.{ts,tsx}\" \"types/**/*.d.ts\" \"scripts/**/*.mjs\"",
     "audit:missing": "node ./scripts/audit-missing.mjs",
-    "workflow:benchmark": "node ./scripts/workflow-compatibility-benchmark.mjs",
-    "workflow:export-official": "node ./scripts/export-official-workflow-metadata.mjs",
-    "workflow:compare-bundled": "node ./scripts/compare-bundled-workflows.mjs",
-    "workflow:binary-compat": "node ./scripts/workflow-binary-compatibility-runner.mjs",
-    "workflow:ui-byte-compare": "node ./scripts/workflow-ui-byte-compare.mjs",
-    "workflow:deobfuscate-official": "node ./scripts/workflow-deobfuscator.mjs",
     "cli:run": "node ./scripts/run-recovered-cli.mjs",
     "cli:login": "node ./scripts/run-recovered-cli.mjs auth login",
     "cli:status": "node ./scripts/run-recovered-cli.mjs auth status"
@@ -94,6 +89,7 @@
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@smithy/core": "^3.23.13",
     "@smithy/node-http-handler": "^4.5.1",
+    "@xterm/headless": "6.0.0",
     "ajv": "^8.18.0",
     "asciichart": "^1.5.25",
     "auto-bind": "^5.0.1",

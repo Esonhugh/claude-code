@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { AppState } from '../../state/AppState.js'
+import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
 import { normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'

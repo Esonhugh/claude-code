@@ -1,5 +1,0 @@
-allowBuilds:
-  esbuild: true
-  isolated-vm: false
-  protobufjs: true
-  sharp: true

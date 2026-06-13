@@ -378,6 +378,10 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      uiName: z
+        .string()
+        .optional()
+        .describe('Customize the UI name shown in the condensed logo header'),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())

@@ -13,10 +13,12 @@ import {
   getLogoDisplayData,
   truncatePath,
 } from '../../utils/logoV2Utils.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { renderModelSetting } from '../../utils/model/model.js'
 import { OffscreenFreeze } from '../OffscreenFreeze.js'
 import { AnimatedClawd } from './AnimatedClawd.js'
 import { Clawd, getCustomClawd } from './Clawd.js'
+import { getConfiguredUiName } from './uiName.js'
 import {
   GuestPassesUpsell,
   incrementGuestPassesSeenCount,
@@ -34,6 +36,8 @@ export function CondensedLogo(): ReactNode {
   const effortValue = useAppState(s => s.effortValue)
   const model = useMainLoopModel()
   const modelDisplayName = renderModelSetting(model)
+  const settings = getInitialSettings()
+  const uiName = getConfiguredUiName(settings)
   const { version, cwd, billingType, agentName: agentNameFromSettings } = getLogoDisplayData()
 
   // Prefer AppState.agent (set from --agent CLI flag) over settings
@@ -96,7 +100,7 @@ export function CondensedLogo(): ReactNode {
       {/* Info */}
       <Box flexDirection="column">
         <Text>
-          <Text bold>P R T S</Text>{' '}
+          <Text bold>{uiName}</Text>{' '}
           <Text dimColor>v{truncatedVersion}</Text>
         </Text>
         {shouldSplit ? (

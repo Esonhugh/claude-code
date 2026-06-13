@@ -5,6 +5,7 @@ import { getTaskOutputPath } from './utils/task/diskOutput.js'
 
 export type TaskType =
   | 'local_bash'
+  | 'interactive_terminal'
   | 'local_agent'
   | 'remote_agent'
   | 'in_process_teammate'
@@ -78,6 +79,7 @@ export type Task = {
 // Task ID prefixes
 const TASK_ID_PREFIXES: Record<string, string> = {
   local_bash: 'b', // Keep as 'b' for backward compatibility
+  interactive_terminal: 'i',
   local_agent: 'a',
   remote_agent: 'r',
   in_process_teammate: 't',

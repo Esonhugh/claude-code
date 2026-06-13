@@ -5,26 +5,15 @@ import { stringWidth } from '../../ink/stringWidth.js'
 import { Box, Text, useAnimationFrame } from '../../ink.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
-import { toInkColor } from '../../utils/ink.js'
 import type { Theme } from '../../utils/theme.js'
-import { Byline } from '../design-system/Byline.js'
-import { GlimmerMessage } from './GlimmerMessage.js'
+import { buildSpinnerAnimationLine } from './spinnerAnimationLine.js'
 import { SpinnerGlyph } from './SpinnerGlyph.js'
 import type { SpinnerMode } from './types.js'
 import { useStalledAnimation } from './useStalledAnimation.js'
-import { interpolateColor, toRGBColor } from './utils.js'
 
 const SEP_WIDTH = stringWidth(' · ')
 const THINKING_BARE_WIDTH = stringWidth('thinking')
 const SHOW_TOKENS_AFTER_MS = 30_000
-
-// Thinking shimmer constants. Previously lived in a separate ThinkingShimmerText
-// component with its own useAnimationFrame(50) — inlined here to reuse our
-// existing 50ms clock and eliminate the redundant subscriber.
-const THINKING_INACTIVE = { r: 153, g: 153, b: 153 }
-const THINKING_INACTIVE_SHIMMER = { r: 185, g: 185, b: 185 }
-const THINKING_DELAY_MS = 3000
-const THINKING_GLOW_PERIOD_S = 2
 
 export type SpinnerAnimationRowProps = {
   // Animation inputs
@@ -79,7 +68,6 @@ export function SpinnerAnimationRow({
   responseLengthRef,
   message,
   messageColor,
-  shimmerColor,
   overrideColor,
   loadingStartTimeRef,
   totalPausedMsRef,
@@ -132,25 +120,9 @@ export function SpinnerAnimationRow({
 
   const frame = reducedMotion ? 0 : Math.floor(time / 120)
 
-  const glimmerSpeed = mode === 'requesting' ? 50 : 200
   // message is stable within a turn; stringWidth is expensive enough (Bun native
   // call per code point) to memoize explicitly across the 50ms loop.
   const glimmerMessageWidth = useMemo(() => stringWidth(message), [message])
-  const cycleLength = glimmerMessageWidth + 20
-  const cyclePosition = Math.floor(time / glimmerSpeed)
-  const glimmerIndex = reducedMotion
-    ? -100
-    : isStalled
-      ? -100
-      : mode === 'requesting'
-        ? (cyclePosition % cycleLength) - 10
-        : glimmerMessageWidth + 10 - (cyclePosition % cycleLength)
-
-  const flashOpacity = reducedMotion
-    ? 0
-    : mode === 'tool-use'
-      ? (Math.sin((time / 1000) * Math.PI) + 1) / 2
-      : 0
 
   // === Token counter animation (smooth increment, driven by 50ms clock) ===
   const tokenCounterRef = useRef(currentResponseLength)
@@ -245,83 +217,30 @@ export function SpinnerAnimationRow({
     !showTokens &&
     true
 
-  // === Thinking shimmer color (formerly ThinkingShimmerText's own timer) ===
-  // Same sine-wave opacity, but derived from our shared `time` instead of a
-  // second useAnimationFrame(50) subscription.
-  const thinkingElapsedSec = (time - THINKING_DELAY_MS) / 1000
-  const thinkingOpacity =
-    time < THINKING_DELAY_MS
-      ? 0
-      : (Math.sin((thinkingElapsedSec * Math.PI * 2) / THINKING_GLOW_PERIOD_S) +
-          1) /
-        2
-  const thinkingShimmerColor = toRGBColor(
-    interpolateColor(
-      THINKING_INACTIVE,
-      THINKING_INACTIVE_SHIMMER,
-      thinkingOpacity,
-    ),
-  )
-
-  // === Build status parts ===
+  // === Build status text ===
   const parts = [
-    ...(spinnerSuffix
-      ? [
-          <Text dimColor key="suffix">
-            {spinnerSuffix}
-          </Text>,
-        ]
-      : []),
-    ...(showTimer
-      ? [
-          <Text dimColor key="elapsedTime">
-            {timerText}
-          </Text>,
-        ]
-      : []),
+    ...(spinnerSuffix ? [spinnerSuffix] : []),
+    ...(showTimer ? [timerText] : []),
     ...(showTokens
-      ? [
-          <Box flexDirection="row" key="tokens">
-            {!hasRunningTeammates && <SpinnerModeGlyph mode={mode} />}
-            <Text dimColor>{tokenCount} tokens</Text>
-          </Box>,
-        ]
+      ? [`${!hasRunningTeammates ? `${mode === 'requesting' ? figures.arrowUp : figures.arrowDown} ` : ''}${tokenCount} tokens`]
       : []),
-    ...(showThinking && thinkingText
-      ? [
-          thinkingStatus === 'thinking' && !reducedMotion ? (
-            <Text key="thinking" color={thinkingShimmerColor}>
-              {thinkingOnly ? `(${thinkingText})` : thinkingText}
-            </Text>
-          ) : (
-            <Text dimColor key="thinking">
-              {thinkingText}
-            </Text>
-          ),
-        ]
-      : []),
+    ...(showThinking && thinkingText ? [thinkingText] : []),
   ]
 
-  const status =
-    foregroundedTeammate && !foregroundedTeammate.isIdle ? (
-      <>
-        <Text dimColor>(esc to interrupt </Text>
-        <Text color={toInkColor(foregroundedTeammate.identity.color)}>
-          {foregroundedTeammate.identity.agentName}
-        </Text>
-        <Text dimColor>)</Text>
-      </>
-    ) : !foregroundedTeammate && parts.length > 0 ? (
-      thinkingOnly ? (
-        <Byline>{parts}</Byline>
-      ) : (
-        <>
-          <Text dimColor>(</Text>
-          <Byline>{parts}</Byline>
-          <Text dimColor>)</Text>
-        </>
-      )
-    ) : null
+  const statusText =
+    foregroundedTeammate && !foregroundedTeammate.isIdle
+      ? `(esc to interrupt ${foregroundedTeammate.identity.agentName})`
+      : !foregroundedTeammate && parts.length > 0
+        ? thinkingOnly
+          ? `(${thinkingText})`
+          : `(${parts.join(' · ')})`
+        : ''
+  const lineText = buildSpinnerAnimationLine({
+    columns: Math.max(0, columns - 2),
+    message,
+    statusText,
+  })
+  const lineColor = isStalled ? 'error' : messageColor
 
   return (
     <Box
@@ -340,36 +259,7 @@ export function SpinnerAnimationRow({
         reducedMotion={reducedMotion}
         time={time}
       />
-      <GlimmerMessage
-        message={message}
-        mode={mode}
-        messageColor={messageColor}
-        glimmerIndex={glimmerIndex}
-        flashOpacity={flashOpacity}
-        shimmerColor={shimmerColor}
-        stalledIntensity={overrideColor ? 0 : stalledIntensity}
-      />
-      {status}
+      <Text color={overrideColor ?? lineColor}>{lineText}</Text>
     </Box>
   )
-}
-
-function SpinnerModeGlyph({ mode }: { mode: SpinnerMode }): React.ReactNode {
-  switch (mode) {
-    case 'tool-input':
-    case 'tool-use':
-    case 'responding':
-    case 'thinking':
-      return (
-        <Box width={2}>
-          <Text dimColor>{figures.arrowDown}</Text>
-        </Box>
-      )
-    case 'requesting':
-      return (
-        <Box width={2}>
-          <Text dimColor>{figures.arrowUp}</Text>
-        </Box>
-      )
-  }
 }

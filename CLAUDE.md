@@ -1,24 +1,18 @@
 # Project Instructions
 
-## Dynamic workflow compatibility work、
+## InteractiveTerminal tool development
 
- <IMPORTANT>
-  必须使用脚本操作 tmux 然后在其中使用 send key 或者 send 字符串等动作 模拟终端交互 测试 本项目的代码和 官方 claude 
-  你需要修复 deep research / workflows 等等 相关 workflows 的命令 以及编写合理的 prompt 测试 进行交互式 debug 和分析 查看当前代码遗落和失误 
-  你的代码和结果将被 claude opus 4.6 检查 如果让他检查不合格 你的工作就会遭到惩罚，例如断电断水断粮
-  编译方式为 `CLAUDE_CODE_VERSION=2.1.165-dev pnpm build`
-  运行方式为 ` pnpm start --dangerously-skip-permissions ` * in tmux sessions
-  官方二进制和运行方式 `/opt/homebrew/bin/claude --dangerously-skip-permissions`
-</IMPORTANT>
+本仓库当前任务重点是新增并修复独立的 `InteractiveTerminal` tool。该功能是本项目新增能力，不是官方 Claude Code 2.1.165 的可见入口，因此不要把它当作官方 parity 功能逐项对比。
 
-不允许使用 npm ！使用 pnpm 替换！
-
-- 调试工作流兼容性时，请使用 `tmux send-keys` 与官方 Claude Code 二进制文件和当前项目构建版本进行交互。修复前后，务必明确比较并记录 UI 行为差异和工作流执行逻辑差异。
-- 本项目 tmux 验证前的最后一次构建必须是 `CLAUDE_CODE_VERSION=2.1.165-dev pnpm build`；不要在 tmux 验证前运行会覆盖 `dist/cli.js` 版本号的默认 `npm run build`/普通 build，否则本地 CLI 会以 `0.0.0-dev` 启动失败。
-- 使用包括逆向工程和反混淆在内的分析技术，检查官方二进制文件中保存的 JavaScript 代码，并了解相关的工作流程和代理编排逻辑。切勿盲目复制专有的官方脚本；除非获得明确授权，否则必须在无干扰的环境下重构其行为。
-- 保持现有项目代码风格。对于交互式 UI，请使用 React Ink 风格的组件，并优先使用现有的 UI/布局库或结构化的 `Box`/`Text` 布局，而不是固定宽度的字符串结构。
-- 定期检查你编写的代码，删除无效或失效的代码片段，并在不确定作者身份时进行清理。必要时使用 `git blame` 来区分你所做的更改和 Esonhugh 编写的代码。
-- 使用中文输出结果
-- 注意和官方二进制的 UI 差异等 
-- Agent/Workflow  这类情况 需要使用 /color /rename 对 当前会话进行变色和重命名 并且可以选择让用户切换，workflow 则应该展示 阶段和多个 Agent 情况的大表格让用户切换和分析 workflow 运作的时候应该只在主界面显示一行 而不是每个 Agent 一行 
-- 不允许自己处理字符串 特别是 ANSI 字符 建议使用 ink 官方库的内容 例如 import { Text } from 'ink';   <Text color="green">This text is green</Text> 
+- 使用中文输出结果。
+- 不允许使用 npm；所有包管理和脚本命令使用 pnpm。
+- 构建方式为：`CLAUDE_CODE_VERSION=2.1.165-dev pnpm build`。
+- 本地交互式验证运行方式为：`pnpm start --dangerously-skip-permissions`，并放在 tmux session 中驱动。
+- `CLAUDE-workflow.md` 保留给 deep research / workflows 官方兼容性工作使用；InteractiveTerminal 独立功能开发不要套用其中的官方 UI parity 要求。
+- InteractiveTerminal 的验收应以本地行为正确性为准：PTY session 能打开、写入、读取、发送按键、resize、signal、close；Dialog preview 能稳定展示最近终端输出，不能因为 ANSI、CRLF、控制字符或 stale AppState 破坏格式。
+- 调试交互行为时，必须使用脚本操作 tmux（例如 `tmux send-keys`、`tmux capture-pane`）模拟真实终端交互，记录复现步骤和关键 pane 输出。
+- UI 代码保持 React Ink 风格，优先使用现有 `Box` / `Text` / design-system 组件，不要手写固定宽度 ANSI 字符串布局。
+- 不允许自己拼接或解析 ANSI 显示样式；需要颜色/样式时使用 Ink 组件属性，例如 `<Text color="green">...</Text>`。Preview 如需纯文本展示，应显式 strip/normalize，并用测试覆盖。
+- 修改 bug 必须先定位根因，再写最小失败测试；修复后运行相关测试和构建。
+- 保持现有项目代码风格。定期检查 diff，删除无效、重复或失效代码片段。
+- 不要在用户明确批准前创建 git commit。

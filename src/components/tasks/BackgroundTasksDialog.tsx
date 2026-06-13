@@ -20,6 +20,10 @@ import {
   DreamTask,
   type DreamTaskState,
 } from 'src/tasks/DreamTask/DreamTask.js'
+import {
+  InteractiveTerminalTask,
+  type InteractiveTerminalTaskState,
+} from 'src/tasks/InteractiveTerminalTask.js'
 import { InProcessTeammateTask } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
@@ -45,6 +49,12 @@ import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
+import { getTerminalManager, terminalTaskRegistry } from '../../tools/InteractiveTerminalTool/InteractiveTerminalTool.js'
+import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
+import {
+  interactiveTerminalPreviewHeight,
+  interactiveTerminalPreviewLines,
+} from './interactiveTerminalPreview.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
@@ -59,8 +69,12 @@ import { DreamDetailDialog } from './DreamDetailDialog.js'
 import { InProcessTeammateDetailDialog } from './InProcessTeammateDetailDialog.js'
 import { RemoteSessionDetailDialog } from './RemoteSessionDetailDialog.js'
 import { ShellDetailDialog } from './ShellDetailDialog.js'
-
-type ViewState = { mode: 'list' } | { mode: 'detail'; itemId: string }
+import {
+  type BackgroundTasksDialogScope,
+  type BackgroundTasksDialogViewState,
+  getBackgroundTasksDialogInitialState,
+  getScopedBackgroundTasks,
+} from './backgroundTasksDialogState.js'
 
 type Props = {
   onDone: (
@@ -69,6 +83,94 @@ type Props = {
   ) => void
   toolUseContext: ToolUseContext
   initialDetailTaskId?: string
+  scope?: BackgroundTasksDialogScope
+}
+
+function InteractiveTerminalDetailDialog({
+  task,
+  onBack,
+  setAppState,
+}: {
+  task: DeepImmutable<InteractiveTerminalTaskState>
+  onBack: () => void
+  setAppState: (updater: (prev: any) => any) => void
+}): React.ReactNode {
+  useEffect(() => {
+    if (task.closed) {
+      return
+    }
+    const timer = setInterval(() => {
+      try {
+        const taskId = terminalTaskRegistry.get(task.sessionId)
+        if (!taskId) {
+          return
+        }
+        const manager = getTerminalManager()
+        const preview = manager.getRenderedPreview(task.sessionId)
+        setAppState(prev => {
+          const existing = prev.tasks?.[taskId]
+          if (!existing || existing.type !== 'interactive_terminal') {
+            return prev
+          }
+          return {
+            ...prev,
+            tasks: {
+              ...prev.tasks,
+              [taskId]: {
+                ...existing,
+                cols: manager.status(task.sessionId).cols,
+                rows: manager.status(task.sessionId).rows,
+                preview,
+              },
+            },
+          }
+        })
+      } catch {
+        // Ignore refresh errors in read-only preview mode.
+      }
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [task.closed, task.sessionId, setAppState])
+
+  return (
+    <Dialog
+      title="Interactive terminal details"
+      onCancel={onBack}
+      color="background"
+      inputGuide={() => (
+        <Byline>
+          <KeyboardShortcutHint shortcut="←/Esc/Enter" action="go back" />
+        </Byline>
+      )}
+    >
+      <Box flexDirection="column">
+        <Text>
+          <Text bold>Session:</Text> {task.sessionId}
+        </Text>
+        <Text>
+          <Text bold>Status:</Text> {task.closed ? 'closed' : task.status}
+        </Text>
+        <Text>
+          <Text bold>Command:</Text> {task.command}
+        </Text>
+        <Text>
+          <Text bold>CWD:</Text> {task.cwd}
+        </Text>
+        <Text bold>Preview:</Text>
+        <Box
+          borderStyle="round"
+          paddingX={1}
+          flexDirection="column"
+          height={interactiveTerminalPreviewHeight(task.rows)}
+        >
+          {renderAnsiPreviewLines(
+            interactiveTerminalPreviewLines(task.preview, task.rows, 10).join('\n'),
+            task.cols,
+          ).map(renderAnsiPreviewLine)}
+        </Box>
+      </Box>
+    </Dialog>
+  )
 }
 
 type ListItem =
@@ -78,6 +180,13 @@ type ListItem =
       label: string
       status: string
       task: DeepImmutable<LocalShellTaskState>
+    }
+  | {
+      id: string
+      type: 'interactive_terminal'
+      label: string
+      status: string
+      task: DeepImmutable<InteractiveTerminalTaskState>
     }
   | {
       id: string
@@ -152,23 +261,11 @@ const MonitorMcpDetailDialog = feature('MONITOR_TOOL')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-// Helper to get filtered background tasks (excludes foregrounded local_agent)
-function getSelectableBackgroundTasks(
-  tasks: Record<string, TaskState> | undefined,
-  foregroundedTaskId: string | undefined,
-): TaskState[] {
-  const backgroundTasks = Object.values(tasks ?? {}).filter(isBackgroundTask)
-  return backgroundTasks.filter(
-    task =>
-      task.type !== 'local_workflow' &&
-      !(task.type === 'local_agent' && task.id === foregroundedTaskId),
-  )
-}
-
 export function BackgroundTasksDialog({
   onDone,
   toolUseContext,
   initialDetailTaskId,
+  scope = 'all',
 }: Props): React.ReactNode {
   const tasks = useAppState(s => s.tasks)
   const foregroundedTaskId = useAppState(s => s.foregroundedTaskId)
@@ -181,27 +278,22 @@ export function BackgroundTasksDialog({
   )
   const typedTasks = tasks as Record<string, TaskState> | undefined
 
-  // Track if we skipped list view on mount (for back button behavior)
-  const skippedListOnMount = useRef(false)
-
-  // Compute initial view state - skip list if caller provided a specific task,
-  // or if there's exactly one task
-  const [viewState, setViewState] = useState<ViewState>(() => {
-    if (initialDetailTaskId) {
-      skippedListOnMount.current = true
-      return { mode: 'detail', itemId: initialDetailTaskId }
-    }
-    const allItems = getSelectableBackgroundTasks(
-      typedTasks,
-      foregroundedTaskId,
-    )
-    if (allItems.length === 1) {
-      skippedListOnMount.current = true
-      return { mode: 'detail', itemId: allItems[0]!.id }
-    }
-    return { mode: 'list' }
+  const initialState = getBackgroundTasksDialogInitialState({
+    tasks: typedTasks,
+    foregroundedTaskId,
+    initialDetailTaskId,
+    scope,
   })
-  const [selectedIndex, setSelectedIndex] = useState<number>(0)
+
+  // Track if we skipped list view on mount (for back button behavior)
+  const skippedListOnMount = useRef(initialState.skippedListOnMount)
+
+  const [viewState, setViewState] = useState<BackgroundTasksDialogViewState>(
+    initialState.viewState,
+  )
+  const [selectedIndex, setSelectedIndex] = useState<number>(
+    initialState.initialSelectedIndex,
+  )
 
   // Register as modal overlay so parent Chat keybindings (up/down for history)
   // are deactivated while this dialog is open
@@ -210,6 +302,7 @@ export function BackgroundTasksDialog({
   // Memoize the sorted and categorized items together to ensure stable references
   const {
     bashTasks,
+    interactiveTerminalTasks,
     remoteSessions,
     agentTasks,
     teammateTasks,
@@ -220,8 +313,10 @@ export function BackgroundTasksDialog({
     // Filter to only show running/pending background tasks, matching the status bar count.
     // Workflows are steered from CoordinatorTaskPanel so the user selects the
     // visible deep-research/workflow row directly, not a generic Workflows group.
-    const backgroundTasks = Object.values(typedTasks ?? {}).filter(
-      task => isBackgroundTask(task) && task.type !== 'local_workflow',
+    const backgroundTasks = getScopedBackgroundTasks(
+      typedTasks,
+      foregroundedTaskId,
+      scope,
     )
     const allItems = backgroundTasks.map(toListItem)
     const sorted = allItems.sort((a, b) => {
@@ -234,6 +329,9 @@ export function BackgroundTasksDialog({
       return bTime - aTime
     })
     const bash = sorted.filter(item => item.type === 'local_bash')
+    const interactiveTerminals = sorted.filter(
+      item => item.type === 'interactive_terminal',
+    )
     const remote = sorted.filter(item => item.type === 'remote_agent')
     // Exclude foregrounded task - it's being viewed in the main UI, not a background task
     const agent = sorted.filter(
@@ -259,25 +357,27 @@ export function BackgroundTasksDialog({
         : []
     return {
       bashTasks: bash,
+      interactiveTerminalTasks: interactiveTerminals,
       remoteSessions: remote,
       agentTasks: agent,
       mcpMonitors: monitorMcp,
       dreamTasks,
       teammateTasks: [...leaderItem, ...teammates],
-      // Order MUST match JSX render order (teammates \u2192 bash \u2192 monitorMcp \u2192
+      // Order MUST match JSX render order (teammates \u2192 bash \u2192 interactive terminals \u2192 monitorMcp \u2192
       // remote \u2192 agent \u2192 workflows \u2192 dream) so \u2193/\u2191 navigation moves the cursor
       // visually downward.
       allSelectableItems: [
         ...leaderItem,
         ...teammates,
         ...bash,
+        ...interactiveTerminals,
         ...monitorMcp,
         ...remote,
         ...agent,
         ...dreamTasks,
       ],
     }
-  }, [typedTasks, foregroundedTaskId, showSpinnerTree])
+  }, [typedTasks, foregroundedTaskId, scope, showSpinnerTree])
 
   const currentSelection = allSelectableItems[selectedIndex] ?? null
 
@@ -328,6 +428,11 @@ export function BackgroundTasksDialog({
         currentSelection.status === 'running'
       ) {
         void killShellTask(currentSelection.id)
+      } else if (
+        currentSelection.type === 'interactive_terminal' &&
+        currentSelection.status === 'running'
+      ) {
+        void killInteractiveTerminalTask(currentSelection.id)
       } else if (
         currentSelection.type === 'local_agent' &&
         currentSelection.status === 'running'
@@ -391,6 +496,10 @@ export function BackgroundTasksDialog({
     await LocalShellTask.kill(taskId, setAppState)
   }
 
+  async function killInteractiveTerminalTask(taskId: string): Promise<void> {
+    await InteractiveTerminalTask.kill(taskId, setAppState)
+  }
+
   async function killAgentTask(taskId: string): Promise<void> {
     await LocalAgentTask.kill(taskId, setAppState)
   }
@@ -436,7 +545,7 @@ export function BackgroundTasksDialog({
     if (selectedIndex >= totalItems && totalItems > 0) {
       setSelectedIndex(totalItems - 1)
     }
-  }, [viewState, typedTasks, selectedIndex, allSelectableItems, onDoneEvent])
+  }, [viewState, typedTasks, selectedIndex, allSelectableItems])
 
   // Helper to go back to list view (or close dialog if we skipped list on
   // mount AND there's still only ≤1 item). Checking current count prevents
@@ -468,6 +577,14 @@ export function BackgroundTasksDialog({
             onKillShell={() => void killShellTask(task.id)}
             onBack={goBackToList}
             key={`shell-${task.id}`}
+          />
+        )
+      case 'interactive_terminal':
+        return (
+          <InteractiveTerminalDetailDialog
+            task={task}
+            onBack={goBackToList}
+            setAppState={setAppState}
           />
         )
       case 'local_agent':
@@ -590,6 +707,10 @@ export function BackgroundTasksDialog({
   }
 
   const runningBashCount = count(bashTasks, _ => _.status === 'running')
+  const runningInteractiveTerminalCount = count(
+    interactiveTerminalTasks,
+    _ => _.status === 'running',
+  )
   const runningAgentCount =
     count(
       remoteSessions,
@@ -611,6 +732,14 @@ export function BackgroundTasksDialog({
             <Text key="shells">
               {runningBashCount}{' '}
               {runningBashCount !== 1 ? 'active shells' : 'active shell'}
+            </Text>,
+          ]
+        : []),
+      ...(runningInteractiveTerminalCount > 0
+        ? [
+            <Text key="interactive-terminals">
+              {runningInteractiveTerminalCount}{' '}
+              {runningInteractiveTerminalCount !== 1 ? 'interactive terminals' : 'interactive terminal'}
             </Text>,
           ]
         : []),
@@ -640,6 +769,7 @@ export function BackgroundTasksDialog({
         ]
       : []),
     ...((currentSelection?.type === 'local_bash' ||
+      currentSelection?.type === 'interactive_terminal' ||
       currentSelection?.type === 'local_agent' ||
       currentSelection?.type === 'in_process_teammate' ||
       currentSelection?.type === 'local_workflow' ||
@@ -686,7 +816,11 @@ export function BackgroundTasksDialog({
         inputGuide={renderInputGuide}
       >
         {allSelectableItems.length === 0 ? (
-          <Text dimColor>No tasks currently running</Text>
+          <Text dimColor>
+            {scope === 'interactive-terminal'
+              ? 'No interactive terminals currently running'
+              : 'No tasks currently running'}
+          </Text>
         ) : (
           <Box flexDirection="column">
             {teammateTasks.length > 0 && (
@@ -732,11 +866,33 @@ export function BackgroundTasksDialog({
               </Box>
             )}
 
-            {mcpMonitors.length > 0 && (
+            {interactiveTerminalTasks.length > 0 && (
               <Box
                 flexDirection="column"
                 marginTop={
                   teammateTasks.length > 0 || bashTasks.length > 0 ? 1 : 0
+                }
+              >
+                <Text dimColor>
+                  <Text bold>{'  '}Interactive terminals</Text> ({interactiveTerminalTasks.length})
+                </Text>
+                <Box flexDirection="column">
+                  {interactiveTerminalTasks.map(item => (
+                    <Item
+                      key={item.id}
+                      item={item}
+                      isSelected={item.id === currentSelection?.id}
+                    />
+                  ))}
+                </Box>
+              </Box>
+            )}
+
+            {mcpMonitors.length > 0 && (
+              <Box
+                flexDirection="column"
+                marginTop={
+                  teammateTasks.length > 0 || bashTasks.length > 0 || interactiveTerminalTasks.length > 0 ? 1 : 0
                 }
               >
                 <Text dimColor>
@@ -846,6 +1002,14 @@ function toListItem(task: BackgroundTaskState): ListItem {
         id: task.id,
         type: 'local_bash',
         label: task.kind === 'monitor' ? task.description : task.command,
+        status: task.status,
+        task,
+      }
+    case 'interactive_terminal':
+      return {
+        id: task.id,
+        type: 'interactive_terminal',
+        label: task.description,
         status: task.status,
         task,
       }

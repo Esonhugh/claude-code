@@ -1,6 +1,6 @@
-# Claude Code Recovered Source
+# Unofficial Claude Code Launcher Workspace
 
-This repository is a recovered and actively maintained Claude Code source tree based on Claude Code `2.1.88`. The goal is to keep the recovered project readable, buildable, runnable, and suitable for secondary development.
+This repository is an unofficial Claude Code launcher and recovery workspace based on Claude Code `2.1.88`. It is not an Anthropic official product, official source distribution, or endorsed Claude Code release. The public npm package ships launch wrappers and platform binaries only, not this repository's source code.
 
 ## Project purpose
 
@@ -11,14 +11,14 @@ This project exists to:
 3. Track local feature changes clearly from the `2.1.88` base version.
 4. Keep recovery-specific stubs, type declarations, and build shims explicit so they can be replaced with real implementations over time.
 
-This is not an official Anthropic source distribution. Treat it as a recovery and development workspace.
+This is not an official Anthropic source distribution. Treat it as an unofficial launcher and recovery development workspace.
 
 ## Current baseline
 
 - Base version: `2.1.88`
 - Local source version: `0.0.0-dev`
 - Runtime target: Node.js `>=18`
-- Package manager used in this workspace: `pnpm`
+- Package manager used in this workspace: `bun`
 - Build output: `dist/cli.js`
 
 ## Release and version flow
@@ -39,20 +39,20 @@ This repository keeps the recovered source tree on the local development version
 Install dependencies:
 
 ```bash
-pnpm install
+bun install
 ```
 
 Build the CLI:
 
 ```bash
-pnpm build
+bun run build
 ```
 
 Check the built CLI:
 
 ```bash
-node ./dist/cli.js --version
-node ./dist/cli.js --help
+bun ./dist/cli.js --version
+bun ./dist/cli.js --help
 ```
 
 Expected local source version output:
@@ -64,8 +64,8 @@ Expected local source version output:
 Build a tagged release locally by overriding the version during the build:
 
 ```bash
-CLAUDE_CODE_VERSION=2.1.89 pnpm build
-node ./dist/cli.js --version
+CLAUDE_CODE_VERSION=2.1.89 bun run build
+bun run start --version
 ```
 
 Expected release build output:
@@ -77,24 +77,24 @@ Expected release build output:
 Package a local binary after rebuilding with the release version override:
 
 ```bash
-pnpm build
-CLAUDE_CODE_VERSION=2.1.89 pnpm package:binary
+bun run build
+CLAUDE_CODE_VERSION=2.1.89 bun run package:binary
 ```
 
 The binary smoke-test path uses the actual runtime platform and architecture reported by Node:
 
 ```bash
-./dist/release/claude-code-v2.1.89-$(node -p "process.platform")-$(node -p "process.arch")
+./dist/release/claude-code-v2.1.89-$(bun -e "console.log(process.platform)")-$(bun -e "console.log(process.arch)")
 ```
 
-`pnpm package:binary` rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override and names the artifact using the current runtime platform and architecture, not fake target environment variables.
+`bun run package:binary` rebuilds `dist/cli.js` with the `CLAUDE_CODE_VERSION` override and names the artifact using the current runtime platform and architecture, not fake target environment variables.
 
 Run validation checks:
 
 ```bash
-pnpm exec tsc --noEmit --pretty false
-pnpm lint
-pnpm audit:missing
+bunx tsc --noEmit --pretty false
+bun run lint
+bun run audit:missing
 git diff --check
 ```
 
@@ -102,42 +102,62 @@ git diff --check
 
 | Script | Purpose |
 | --- | --- |
-| `pnpm build` | Build `dist/cli.js` and source map. |
-| `pnpm start` | Run the local built CLI entrypoint. |
-| `pnpm lint` | Run ESLint over source, scripts, and type declarations. |
-| `pnpm lint:fix` | Run ESLint with autofix. Use only after reviewing lint output. |
-| `pnpm audit:missing` | Check for missing code, text, and type-only imports in the recovered tree. |
-| `pnpm cli:run` | Run the recovered CLI through the local runner. |
-| `pnpm cli:status` | Inspect recovered CLI runtime status. |
+| `bun run build` | Build `dist/cli.js` and source map. |
+| `bun run start` | Run the local built CLI entrypoint. |
+| `bun run lint` | Run ESLint over source, scripts, and type declarations. |
+| `bun run lint:fix` | Run ESLint with autofix. Use only after reviewing lint output. |
+| `bun run audit:missing` | Check for missing code, text, and type-only imports in the recovered tree. |
+| `bun run cli:run` | Run the recovered CLI through the local runner. |
+| `bun run cli:status` | Inspect recovered CLI runtime status. |
 
 ## Development workflow
 
 Before changing code, capture the current baseline:
 
 ```bash
-pnpm exec tsc --noEmit --pretty false
-pnpm build
-pnpm audit:missing
+bunx tsc --noEmit --pretty false
+bun run build
+bun run audit:missing
 ```
 
 After changing TypeScript, run at least:
 
 ```bash
-pnpm exec tsc --noEmit --pretty false
-pnpm build
-pnpm lint
-pnpm audit:missing
+bunx tsc --noEmit --pretty false
+bun run build
+bun run lint
+bun run audit:missing
 git diff --check
 ```
 
 For CLI-facing changes, also verify:
 
 ```bash
-node ./dist/cli.js --version
-node ./dist/cli.js --help
+bun ./dist/cli.js --version
+bun ./dist/cli.js --help
 ```
 
 For UI or interactive behavior, start the CLI and test the target flow manually.
+
+
+## npm launcher package
+
+The public npm package is an unofficial launcher distribution:
+
+- Main package: `@esonhugh/claude-code`
+- Description: `unofficial claude code launch wrappers`
+- Contents: a small `claude` launcher wrapper and metadata only
+- Platform binaries: published as optional dependency subpackages, one package per platform/architecture, for example `@esonhugh/claude-code-darwin-arm64`
+- Source code: not included in the npm package
+
+Install with:
+
+```bash
+npm install -g @esonhugh/claude-code
+claude --version
+```
+
+The launcher resolves the matching optional binary package for `process.platform` and `process.arch`. Unsupported platforms fail with a clear missing-binary message.
 
 ## Type recovery policy
 
