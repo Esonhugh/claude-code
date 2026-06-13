@@ -102,7 +102,7 @@ export function CoordinatorTaskPanel({
   });
 
   return (
-    <Box flexDirection="column" marginTop={1} paddingX={2}>
+    <Box flexDirection="column" marginTop={0} paddingX={2}>
       {/*{!workflowOnly && <Text dimColor>Sessions / background work</Text>} */}
       {rows.map((row) => (
         <SessionRow

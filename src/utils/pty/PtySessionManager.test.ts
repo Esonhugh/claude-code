@@ -164,6 +164,37 @@ describe('PtySessionManager', () => {
     assert.equal(readFromLowestCursor.chunks.length, 2)
   })
 
+  it('keeps raw chunks for read while exposing a rendered preview for large terminal redraws', () => {
+    const manager = new PtySessionManager({
+      driver: new FakePtyDriver(),
+    })
+    const session = manager.open({ cwd: '/tmp/project', cols: 40, rows: 6 })
+
+    manager.write(session.sessionId, 'Claude is thinking... 12%')
+    manager.write(session.sessionId, '\rClaude is thinking... 100%')
+
+    const raw = manager.read(session.sessionId, 0)
+    const preview = manager.getRenderedPreview(session.sessionId)
+
+    assert.equal(
+      raw.chunks.map(chunk => chunk.text).join(''),
+      'Claude is thinking... 12%\rClaude is thinking... 100%',
+    )
+    assert.equal(preview.includes('Claude is thinking... 100%'), true)
+  })
+
+  it('keeps the final rendered preview after close', () => {
+    const manager = new PtySessionManager({
+      driver: new FakePtyDriver(),
+    })
+    const session = manager.open({ cwd: '/tmp/project', cols: 40, rows: 6 })
+
+    manager.write(session.sessionId, 'Claude complete')
+    manager.close(session.sessionId)
+
+    assert.equal(manager.getRenderedPreview(session.sessionId).includes('Claude complete'), true)
+  })
+
   it('reaps closed sessions after the configured TTL', () => {
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),

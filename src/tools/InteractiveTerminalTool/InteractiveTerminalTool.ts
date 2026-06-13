@@ -4,7 +4,6 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { createTaskStateBase, generateTaskId } from '../../Task.js'
 import { createNodePtyDriver } from '../../utils/pty/nodePtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
-import { mergePreviewWindow } from '../../utils/pty/previewWindow.js'
 import type { InteractiveTerminalTaskState } from '../../tasks/InteractiveTerminalTask.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
 import {
@@ -36,6 +35,7 @@ import {
   renderToolUseMessage,
   renderToolUseRejectedMessage,
 } from './UI.js'
+import { syncInteractiveTerminalTaskAfterStatus } from './taskState.js'
 
 const inputSchema = lazySchema(() => actionSchema)
 type InputSchema = ReturnType<typeof inputSchema>
@@ -73,6 +73,21 @@ function updateTerminalTask(
     return
   }
   updateTaskState(taskId, setAppState, updater)
+}
+
+function refreshTerminalTaskPreview(
+  sessionId: string,
+  setAppState: Parameters<typeof updateTaskState>[1],
+  manager: PtySessionManager,
+): void {
+  const status = manager.status(sessionId)
+  updateTerminalTask(sessionId, setAppState, task => ({
+    ...task,
+    cols: status.cols,
+    rows: status.rows,
+    preview: manager.getRenderedPreview(sessionId),
+    closed: status.state !== 'running',
+  }))
 }
 
 function invalidInput(message: string, details: Record<string, unknown>): ErrorOutput {
@@ -169,7 +184,7 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
           const parsed = openActionSchema.safeParse(input)
           if (!parsed.success) {
             return {
-              data: invalidInput('action=open requires command and cwd', {
+              data: invalidInput('action=open requires a valid open payload', {
                 action: 'open',
               }),
             }
@@ -208,6 +223,8 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               sessionId: String(opened.sessionId),
               command: String(opened.command),
               cwd: parsed.data.cwd || process.cwd(),
+              cols: opened.cols,
+              rows: opened.rows,
               preview: String(opened.preview ?? ''),
               closed: false,
             },
@@ -224,11 +241,9 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const written = handleWrite(getTerminalManager(), parsed.data)
-          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
-            ...task,
-            preview: mergePreviewWindow(task.preview, `$ ${parsed.data.text}`),
-          }))
+          const manager = getTerminalManager()
+          const written = handleWrite(manager, parsed.data)
+          refreshTerminalTaskPreview(parsed.data.sessionId, context.setAppState, manager)
           return { data: written }
         }
         case 'read': {
@@ -238,11 +253,9 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=read requires sessionId', { action: 'read' }),
             }
           }
-          const read = handleRead(getTerminalManager(), parsed.data)
-          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
-            ...task,
-            preview: mergePreviewWindow(task.preview, String(read.text ?? '')),
-          }))
+          const manager = getTerminalManager()
+          const read = handleRead(manager, parsed.data)
+          refreshTerminalTaskPreview(parsed.data.sessionId, context.setAppState, manager)
           return { data: read }
         }
         case 'send_key': {
@@ -266,7 +279,9 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const resized = handleResize(getTerminalManager(), parsed.data)
+          const manager = getTerminalManager()
+          const resized = handleResize(manager, parsed.data)
+          refreshTerminalTaskPreview(parsed.data.sessionId, context.setAppState, manager)
           return { data: resized }
         }
         case 'signal': {
@@ -278,7 +293,9 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               }),
             }
           }
-          const signalResult = handleSignal(getTerminalManager(), parsed.data)
+          const manager = getTerminalManager()
+          const signalResult = handleSignal(manager, parsed.data)
+          refreshTerminalTaskPreview(parsed.data.sessionId, context.setAppState, manager)
           return { data: signalResult }
         }
         case 'status': {
@@ -288,11 +305,16 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=status requires sessionId', { action: 'status' }),
             }
           }
-          const status = handleStatus(getTerminalManager(), parsed.data)
-          updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
-            ...task,
-            closed: !status.isRunning,
-          }))
+          const manager = getTerminalManager()
+          const status = handleStatus(manager, parsed.data)
+          updateTerminalTask(parsed.data.sessionId, context.setAppState, task =>
+            syncInteractiveTerminalTaskAfterStatus(task, {
+              isRunning: status.isRunning,
+              cols: status.cols,
+              rows: status.rows,
+              preview: manager.getRenderedPreview(parsed.data.sessionId),
+            }),
+          )
           return { data: status }
         }
         case 'close': {
@@ -302,9 +324,11 @@ export const InteractiveTerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=close requires sessionId', { action: 'close' }),
             }
           }
-          const closed = handleClose(getTerminalManager(), parsed.data)
+          const manager = getTerminalManager()
+          const closed = handleClose(manager, parsed.data)
           updateTerminalTask(parsed.data.sessionId, context.setAppState, task => ({
             ...task,
+            preview: manager.getRenderedPreview(parsed.data.sessionId),
             status: 'completed',
             closed: true,
             endTime: Date.now(),

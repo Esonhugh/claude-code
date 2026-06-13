@@ -1,8 +1,6 @@
 type InteractiveTerminalToolUseInput = {
   action?: string
-  args?: string[]
   cols?: number
-  command?: string
   cwd?: string
   key?: string
   rows?: number
@@ -27,8 +25,9 @@ export function formatToolUseMessage(
 
   switch (action) {
     case 'open':
-      appendIfPresent(parts, 'command', input.command)
       appendIfPresent(parts, 'cwd', input.cwd)
+      appendIfPresent(parts, 'cols', input.cols)
+      appendIfPresent(parts, 'rows', input.rows)
       break
     case 'send_key':
       appendIfPresent(parts, 'session', input.sessionId)

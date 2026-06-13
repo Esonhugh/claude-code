@@ -28,6 +28,8 @@ const interactiveTerminalTask = (
   sessionId: `session-${id}`,
   command: 'zsh',
   cwd: '/tmp',
+  cols: 120,
+  rows: 30,
   preview: '',
   closed: false,
 })

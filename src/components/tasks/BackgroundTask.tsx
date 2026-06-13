@@ -9,6 +9,7 @@ import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../constants/figures.js'
 import { RemoteSessionProgress } from './RemoteSessionProgress.js'
 import { ShellProgress, TaskStatusText } from './ShellProgress.js'
 import { describeTeammateActivity } from './taskStatusUtils.js'
+import { interactiveTerminalPreviewSummary } from './interactiveTerminalPreview.js'
 
 type Props = {
   task: DeepImmutable<BackgroundTaskState>
@@ -43,7 +44,11 @@ export function BackgroundTask({
           <TaskStatusText
             status={task.status}
             label={task.closed ? 'closed' : 'open'}
-            suffix={task.preview ? `, ${truncate(task.preview, 30, true)}` : undefined}
+            suffix={
+              interactiveTerminalPreviewSummary(task.preview)
+                ? `, ${truncate(interactiveTerminalPreviewSummary(task.preview)!, 30, true)}`
+                : undefined
+            }
           />
         </Text>
       )

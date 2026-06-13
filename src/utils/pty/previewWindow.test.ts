@@ -16,4 +16,13 @@ describe('mergePreviewWindow', () => {
     assert.match(preview, /gamma/)
     assert.equal(preview.includes(String.fromCharCode(27)), false)
   })
+
+  it('collapses carriage-return redraws across streamed chunks for large terminal apps', () => {
+    const preview = mergePreviewWindow(
+      mergePreviewWindow('', 'Claude is thinking... 12%'),
+      '\rClaude is thinking... 100%',
+    )
+
+    assert.equal(preview, 'Claude is thinking... 100%')
+  })
 })

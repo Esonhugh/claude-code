@@ -7,6 +7,8 @@ export type InteractiveTerminalTaskState = TaskStateBase & {
   sessionId: string
   command: string
   cwd: string
+  cols: number
+  rows: number
   preview: string
   closed: boolean
 }

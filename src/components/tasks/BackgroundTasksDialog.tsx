@@ -50,7 +50,11 @@ import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { getTerminalManager, terminalTaskRegistry } from '../../tools/InteractiveTerminalTool/InteractiveTerminalTool.js'
-import { normalizeTerminalPreview } from '../../utils/pty/previewText.js'
+import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
+import {
+  interactiveTerminalPreviewHeight,
+  interactiveTerminalPreviewLines,
+} from './interactiveTerminalPreview.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
@@ -101,10 +105,8 @@ function InteractiveTerminalDetailDialog({
         if (!taskId) {
           return
         }
-        const read = getTerminalManager().read(task.sessionId, 0)
-        const preview = normalizeTerminalPreview(
-          read.chunks.map(chunk => chunk.text).join(''),
-        )
+        const manager = getTerminalManager()
+        const preview = manager.getRenderedPreview(task.sessionId)
         setAppState(prev => {
           const existing = prev.tasks?.[taskId]
           if (!existing || existing.type !== 'interactive_terminal') {
@@ -116,6 +118,8 @@ function InteractiveTerminalDetailDialog({
               ...prev.tasks,
               [taskId]: {
                 ...existing,
+                cols: manager.status(task.sessionId).cols,
+                rows: manager.status(task.sessionId).rows,
                 preview,
               },
             },
@@ -153,15 +157,16 @@ function InteractiveTerminalDetailDialog({
           <Text bold>CWD:</Text> {task.cwd}
         </Text>
         <Text bold>Preview:</Text>
-        <Box borderStyle="round" paddingX={1} flexDirection="column" height={12}>
-          {(task.preview || 'No output yet')
-            .split('\n')
-            .slice(-10)
-            .map((line, index) => (
-              <Text key={index} wrap="truncate-end">
-                {line}
-              </Text>
-            ))}
+        <Box
+          borderStyle="round"
+          paddingX={1}
+          flexDirection="column"
+          height={interactiveTerminalPreviewHeight(task.rows)}
+        >
+          {renderAnsiPreviewLines(
+            interactiveTerminalPreviewLines(task.preview, task.rows, 10).join('\n'),
+            task.cols,
+          ).map(renderAnsiPreviewLine)}
         </Box>
       </Box>
     </Dialog>

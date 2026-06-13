@@ -6,6 +6,13 @@ import {
   type TerminalReadResult,
   type TerminalSessionRecord,
 } from './types.js'
+import {
+  applyTerminalOutput,
+  createTerminalScreenRenderer,
+  renderedPreview,
+  resizeTerminalScreenRenderer,
+  type TerminalScreenRenderer,
+} from './terminalScreenRenderer.js'
 
 interface PtySessionManagerOptions {
   driver: PtyDriver
@@ -16,6 +23,7 @@ interface PtySessionManagerOptions {
 interface ManagedSession {
   outputChunks: TerminalOutputChunk[]
   record: TerminalSessionRecord
+  renderer: TerminalScreenRenderer
 }
 
 export class PtySessionManager {
@@ -63,6 +71,7 @@ export class PtySessionManager {
     this.sessions.set(sessionId, {
       outputChunks: [],
       record,
+      renderer: createTerminalScreenRenderer(cols, rows),
     })
 
     return this.cloneRecord(record)
@@ -112,12 +121,20 @@ export class PtySessionManager {
     return this.cloneRecord(session.record)
   }
 
+  getRenderedPreview(sessionId: string): string {
+    this.reapExpiredSessions()
+    const session = this.getSession(sessionId)
+    this.drainDriverOutput(sessionId, session)
+    return renderedPreview(session.renderer)
+  }
+
   resize(sessionId: string, cols: number, rows: number): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getWritableSession(sessionId)
     this.driver.resize?.(sessionId, cols, rows)
     session.record.cols = cols
     session.record.rows = rows
+    resizeTerminalScreenRenderer(session.renderer, cols, rows)
     session.record.lastActivityAt = Date.now()
     return this.cloneRecord(session.record)
   }
@@ -169,6 +186,7 @@ export class PtySessionManager {
       start,
       end,
     })
+    applyTerminalOutput(session.renderer, output.text)
     session.record.nextCursor = end
     session.record.lastActivityAt = Date.now()
     this.trimBuffer(session)

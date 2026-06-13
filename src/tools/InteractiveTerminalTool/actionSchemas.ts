@@ -4,7 +4,7 @@ import { SPECIAL_KEYS } from '../../utils/pty/types.js'
 export const openActionSchema = z.object({
   action: z.literal('open'),
   command: z.string().min(1).optional(),
-  args: z.array(z.string()).default([]),
+  args: z.array(z.string()).optional(),
   cwd: z.string().min(1).optional(),
   env: z.record(z.string(), z.string()).optional(),
   cols: z.number().int().positive().optional(),
@@ -66,7 +66,7 @@ export const actionSchema = z.object({
     'status',
     'close',
   ]),
-  command: z.string().optional(),
+  command: z.string().min(1).optional(),
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),

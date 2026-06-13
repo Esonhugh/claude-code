@@ -36,6 +36,8 @@ export function handleRead(manager: PtySessionManager, input: ReadActionInput) {
     fromCursor: input.cursor,
     toCursor,
     text,
+    rows: status.rows,
+    cols: status.cols,
     isRunning: status.state === 'running',
     exitCode: status.exitCode ?? null,
     truncatedBeforeCursor: result.truncatedBeforeCursor,

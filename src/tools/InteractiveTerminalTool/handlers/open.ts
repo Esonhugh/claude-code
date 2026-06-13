@@ -7,7 +7,7 @@ import type { openActionSchema } from '../actionSchemas.js'
 type OpenActionInput = z.infer<typeof openActionSchema>
 
 export async function handleOpen(manager: PtySessionManager, input: OpenActionInput) {
-  const command = input.command || resolveInteractiveTerminalCommand()
+  const command = input.command ?? resolveInteractiveTerminalCommand()
   const record = manager.open({
     command,
     args: input.args,

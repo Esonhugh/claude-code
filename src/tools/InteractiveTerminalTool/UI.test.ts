@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import * as React from 'react'
 
+import { Box } from '../../ink.js'
+import { renderToolResultMessage } from './UI.js'
 import { formatToolResultMessage } from './formatToolResultMessage.js'
 import { formatToolUseMessage } from './formatToolUseMessage.js'
 
@@ -24,14 +27,15 @@ describe('formatToolUseMessage', () => {
     )
   })
 
-  it('shows command and cwd for open actions', () => {
+  it('shows cwd and size for open actions', () => {
     assert.equal(
       formatToolUseMessage({
         action: 'open',
-        command: 'bash',
         cwd: '/tmp/project',
+        cols: 120,
+        rows: 30,
       }),
-      'action=open command=bash cwd=/tmp/project',
+      'action=open cwd=/tmp/project cols=120 rows=30',
     )
   })
 
@@ -58,5 +62,17 @@ describe('formatToolResultMessage', () => {
       formatToolResultMessage({ sessionId: 'session-1', text: 'hello' }),
       'read session-1 → hello',
     )
+  })
+})
+
+describe('renderToolResultMessage', () => {
+  it('renders read output as a boxed preview view', () => {
+    const rendered = renderToolResultMessage({
+      sessionId: 'session-1',
+      text: 'line1\nline2',
+    })
+
+    assert.ok(React.isValidElement(rendered))
+    assert.equal(rendered.type, Box)
   })
 })

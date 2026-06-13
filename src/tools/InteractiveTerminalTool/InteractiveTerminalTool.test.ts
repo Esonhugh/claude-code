@@ -8,7 +8,10 @@ import type { AppState } from '../../state/AppStateStore.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
 import { resolveInteractiveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
-import { InteractiveTerminalTool } from './InteractiveTerminalTool.js'
+import {
+  getTerminalManager,
+  InteractiveTerminalTool,
+} from './InteractiveTerminalTool.js'
 
 type TestAppState = Pick<AppState, 'toolPermissionContext' | 'tasks'>
 type InteractiveTerminalTask = Extract<
@@ -109,8 +112,6 @@ test('accepts a valid open action and returns a session', async () => {
   const result = await InteractiveTerminalTool.call(
     {
       action: 'open',
-      command: 'bash',
-      args: [],
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
@@ -139,8 +140,6 @@ test('routes open, status, write, read, and close through the shared session man
   const opened = await InteractiveTerminalTool.call(
     {
       action: 'open',
-      command: 'bash',
-      args: [],
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
@@ -201,8 +200,6 @@ test('accepts send_key on an existing session', async () => {
   const opened = await InteractiveTerminalTool.call(
     {
       action: 'open',
-      command: 'bash',
-      args: [],
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
@@ -243,7 +240,7 @@ test('returns SESSION_NOT_FOUND for a missing session', async () => {
   )
 })
 
-test('records the resolved default shell in task state when open omits command', async () => {
+test('records the resolved default shell in task state for open', async () => {
   const context = createContext()
   const result = await InteractiveTerminalTool.call(
     {
@@ -284,8 +281,6 @@ test('prompts for permission on open but not on status for an approved session',
   const opened = await InteractiveTerminalTool.call(
     {
       action: 'open',
-      command: 'bash',
-      args: [],
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
@@ -313,12 +308,74 @@ test('prompts for permission on open but not on status for an approved session',
   assert.deepEqual(permissionCalls, ['open'])
 })
 
+test('refreshes task preview on status for large terminal redraw output', async () => {
+  const context = createContext()
+  const opened = await InteractiveTerminalTool.call(
+    {
+      action: 'open',
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const sessionId = String((opened.data as { sessionId: string }).sessionId)
+  const taskBefore = Object.values(context.getAppState().tasks).find(
+    (value): value is InteractiveTerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === sessionId,
+  )
+  assert.ok(taskBefore)
+
+  const initialCursor = (await InteractiveTerminalTool.call(
+    { action: 'read', sessionId, cursor: 0, maxBytes: 4096 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )).data as { toCursor: number }
+
+  getTerminalManager().write(sessionId, 'Claude is thinking... 12%')
+  getTerminalManager().write(sessionId, '\rClaude is thinking... 100%')
+
+  await InteractiveTerminalTool.call(
+    { action: 'status', sessionId },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const taskAfter = Object.values(context.getAppState().tasks).find(
+    (value): value is InteractiveTerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === sessionId,
+  )
+
+  assert.equal(taskAfter?.preview, 'Claude is thinking... 100%')
+
+  const readAfterStatus = await InteractiveTerminalTool.call(
+    { action: 'read', sessionId, cursor: initialCursor.toCursor, maxBytes: 4096 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal(
+    (readAfterStatus.data as { text: string }).text,
+    'Claude is thinking... 12%\rClaude is thinking... 100%',
+  )
+
+  await InteractiveTerminalTool.call(
+    { action: 'close', sessionId },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+})
+
 test('preserves SIGTERM semantics on signal action', async () => {
   const opened = await InteractiveTerminalTool.call(
     {
       action: 'open',
-      command: 'bash',
-      args: [],
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
@@ -350,8 +407,6 @@ test('returns SESSION_ALREADY_CLOSED when writing to a closed session', async ()
   const opened = await InteractiveTerminalTool.call(
     {
       action: 'open',
-      command: 'bash',
-      args: [],
       cwd: process.cwd(),
       cols: 80,
       rows: 24,
