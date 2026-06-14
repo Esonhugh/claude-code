@@ -19,7 +19,7 @@ const outDir = process.argv[3]
   ? path.resolve(projectDir, process.argv[3])
   : path.join(projectDir, 'dist', 'npm')
 
-const binaryPattern = /^claude-code-v(.+)-([^-]+)-([^-]+)(\.exe)?$/
+const binaryPattern = /^claude-code-v(.+)-([^-]+)-([^.]+)(\.exe)?$/
 const binaryEntries = []
 
 if (!fs.existsSync(sourceDir)) {
