@@ -40,5 +40,6 @@ describe('interactiveTerminalPreview', () => {
   it('adds border allowance when computing preview box height', () => {
     assert.equal(interactiveTerminalPreviewHeight(6), 8)
     assert.equal(interactiveTerminalPreviewHeight(1), 3)
+    assert.equal(interactiveTerminalPreviewHeight(40), 42)
   })
 })

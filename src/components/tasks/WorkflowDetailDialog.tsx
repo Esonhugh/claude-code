@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { Box, Text } from '../../ink.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
+import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import instances from '../../ink/instances.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -222,18 +223,9 @@ export function WorkflowDetailDialog({
   const [selectedAgent, setSelectedAgent] = useState(0)
   const [detailScroll, setDetailScroll] = useState(0)
   const [agentPane, setAgentPane] = useState<AgentPane>('left')
+  const { rows: termRows, columns: termCols } = useTerminalSize()
 
-  // Force full redraw on state change to prevent character remnants
-  // Include phase completion counts so竖线 redraws when labels change width
-  const prevStateRef = useRef('')
-  const phaseKey = workflow.phases.map(p => `${p.completedAgentIds.length}/${p.agentIds.length}:${p.status}`).join(',')
-  useLayoutEffect(() => {
-    const key = `${level}-${selectedPhase}-${selectedAgent}-${agentPane}-${detailScroll}-${phaseKey}-${workflow.status}`
-    if (prevStateRef.current !== key) {
-      instances.get(process.stdout)?.forceRedraw()
-      prevStateRef.current = key
-    }
-  })
+  const prevLayoutKeyRef = useRef('')
 
   // Show all phases from meta (or those with agents/running)
   const visiblePhases = React.useMemo(() => {
@@ -254,13 +246,28 @@ export function WorkflowDetailDialog({
   const isRunning = workflow.status === 'running'
 
   // Layout — in agent detail mode, left pane is wider for agent names
-  const termRows = process.stdout.rows || 35
-  const termCols = process.stdout.columns || 100
   const availableRows = Math.max(8, termRows - 14)
   const PHASE_LEFT_W = 22
   const AGENT_LEFT_W = Math.min(40, Math.max(28, Math.floor(termCols * 0.25)))
   const leftW = level === 'agent' ? AGENT_LEFT_W : PHASE_LEFT_W
   const rightW = Math.max(30, termCols - leftW - 8)
+  const layoutKey = [
+    level,
+    selectedPhase,
+    agentPane,
+    leftW,
+    rightW,
+    availableRows,
+    visiblePhases.length,
+    agentIds.length,
+  ].join(':')
+
+  useLayoutEffect(() => {
+    if (prevLayoutKeyRef.current !== layoutKey) {
+      instances.get(process.stdout)?.forceRedraw()
+      prevLayoutKeyRef.current = layoutKey
+    }
+  }, [layoutKey])
 
   // Navigation
   function goBack() {

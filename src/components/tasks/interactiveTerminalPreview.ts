@@ -18,5 +18,5 @@ export function interactiveTerminalPreviewSummary(preview: string): string | und
 }
 
 export function interactiveTerminalPreviewHeight(rows: number): number {
-  return Math.min(Math.max(rows + 2, 3), 20)
+  return Math.max(rows + 2, 3)
 }

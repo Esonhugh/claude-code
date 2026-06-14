@@ -164,7 +164,7 @@ function InteractiveTerminalDetailDialog({
           height={interactiveTerminalPreviewHeight(task.rows)}
         >
           {renderAnsiPreviewLines(
-            interactiveTerminalPreviewLines(task.preview, task.rows, 10).join('\n'),
+            interactiveTerminalPreviewLines(task.preview, task.rows, task.rows).join('\n'),
             task.cols,
           ).map(renderAnsiPreviewLine)}
         </Box>

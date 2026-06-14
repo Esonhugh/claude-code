@@ -29,7 +29,7 @@ export function renderToolResultMessage(output: Record<string, unknown>): React.
           height={interactiveTerminalPreviewHeight(rows)}
         >
           {renderAnsiPreviewLines(
-            interactiveTerminalPreviewLines(text, rows, 10).join('\n'),
+            interactiveTerminalPreviewLines(text, rows, rows).join('\n'),
             typeof output.cols === 'number' && Number.isFinite(output.cols)
               ? output.cols
               : 80,
