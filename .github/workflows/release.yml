@@ -219,13 +219,12 @@ jobs:
 
       - name: Publish npm packages
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
           for package_dir in dist/npm/*-*; do
-            (cd "$package_dir" && bun publish --access public)
+            (cd "$package_dir" && npm publish --access public)
           done
-          (cd ./dist/npm/main && bun publish --access public)
+          (cd ./dist/npm/main && npm publish --access public)
 
       - name: Write release notes
         shell: bash
