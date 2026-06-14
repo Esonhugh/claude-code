@@ -223,9 +223,9 @@ jobs:
         run: |
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
           for package_dir in dist/npm/*-*; do
-            bun publish --access public "$package_dir"
+            (cd "$package_dir" && bun publish --access public)
           done
-          bun publish --access public ./dist/npm/main
+          (cd ./dist/npm/main && bun publish --access public)
 
       - name: Write release notes
         shell: bash
