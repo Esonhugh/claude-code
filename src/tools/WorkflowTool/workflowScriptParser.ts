@@ -27,6 +27,16 @@ export class WorkflowScriptParseError extends Error {
 const META_PREFIX = /^\s*export\s+const\s+meta\s*=\s*/
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
+export function hasWorkflowScriptMeta(source: string): boolean {
+  return META_PREFIX.test(source)
+}
+
+export function workflowErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim() !== '') return error.message
+  const message = String(error).trim()
+  return message && message !== 'Error' && message !== '[object Object]' ? message : fallback
+}
+
 function throwParse(message: string): never {
   throw new WorkflowScriptParseError(message)
 }

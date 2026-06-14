@@ -232,6 +232,7 @@ function buildAgentPrompt(
   index: number,
   resultsByPhase: Map<string, WorkflowAgentResult[]>,
   runArgs: WorkflowArgs | undefined,
+  injectRunArgsIntoRootPrompt: boolean,
 ): string {
   const parts = [phase.agentPrompts?.[index] ?? phase.prompt]
   const upstream = formatUpstreamOutputs(phase, resultsByPhase)
@@ -239,7 +240,7 @@ function buildAgentPrompt(
   // Inject runArgs into prompts for phases with no upstream dependencies
   // (root phases that need the user's input to operate)
   const formattedArgs = formatRunArgs(runArgs)
-  if (formattedArgs && phase.dependsOn.length === 0) {
+  if (injectRunArgsIntoRootPrompt && formattedArgs && phase.dependsOn.length === 0) {
     parts.push(`User input:\n${formattedArgs}`)
   }
   return parts.join('\n\n')
@@ -413,6 +414,7 @@ async function runPhaseAgent({
   resultsByPhase,
   resumeRuntime,
   runArgs,
+  injectRunArgsIntoRootPrompt,
 }: {
   agentTool: Tool
   phase: WorkflowDryRunPhase
@@ -427,8 +429,9 @@ async function runPhaseAgent({
   resultsByPhase: Map<string, WorkflowAgentResult[]>
   resumeRuntime: WorkflowResumeRuntime
   runArgs?: WorkflowArgs
+  injectRunArgsIntoRootPrompt: boolean
 }): Promise<WorkflowAgentRunResult> {
-  const prompt = buildAgentPrompt(phase, index, resultsByPhase, runArgs)
+  const prompt = buildAgentPrompt(phase, index, resultsByPhase, runArgs, injectRunArgsIntoRootPrompt)
   const identity = createAgentCallIdentity({
     index: agentIndex,
     phase: phase.id,
@@ -526,6 +529,7 @@ export async function runWorkflowPlan({
   workflowRunId = createWorkflowRunId(),
   scriptPath = plan.sourcePath,
   resumeFromRunId,
+  injectRunArgsIntoRootPrompt = true,
 }: {
   plan: WorkflowDryRunPlan
   context: ToolUseContext
@@ -535,6 +539,7 @@ export async function runWorkflowPlan({
   workflowRunId?: string
   scriptPath?: string
   resumeFromRunId?: string
+  injectRunArgsIntoRootPrompt?: boolean
 }): Promise<string> {
   if (plan.totalAgents === 0 && plan.scriptResult !== undefined) {
     return typeof plan.scriptResult === 'string'
@@ -634,6 +639,7 @@ export async function runWorkflowPlan({
               resultsByPhase,
               resumeRuntime,
               runArgs,
+              injectRunArgsIntoRootPrompt,
             }),
           ),
         )

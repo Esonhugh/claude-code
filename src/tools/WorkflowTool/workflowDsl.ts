@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import { createWorkflowOrchestrator } from './workflowOrchestrator.js'
 import { createWorkflowRuntimeGlobals } from './workflowRuntimeGlobals.js'
-import { parseWorkflowScript } from './workflowScriptParser.js'
+import { parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import type { WorkflowArgs, WorkflowPhaseSpec, WorkflowSpec } from './workflowSpec.js'
 
 type WorkflowScriptContext = {
@@ -117,7 +117,12 @@ async function loadOfficialWorkflowScriptSpec({
   const script = new vm.Script(`(async () => {\n${parsed.scriptBody}\n})()`, {
     filename: filePath,
   })
-  const scriptResult = await script.runInContext(sandbox, { timeout: 1000 })
+  let scriptResult: unknown
+  try {
+    scriptResult = await script.runInContext(sandbox, { timeout: 1000 })
+  } catch (error) {
+    throw new Error(workflowErrorMessage(error, 'Workflow script failed without error details'))
+  }
   return structuredClone({
     ...globals.toWorkflowSpec({
       name: parsed.meta.name,

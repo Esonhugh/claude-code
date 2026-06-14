@@ -20,6 +20,7 @@ import {
 } from './workflowDiscovery.js'
 import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
+import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -180,7 +181,8 @@ export const WorkflowTool = buildTool({
     const selector = input.selector ? ` ${input.selector}` : ''
     return `Workflow ${action}${selector}`
   },
-  async call({ action, selector, plan, runArgs }, context, canUseTool, assistantMessage) {
+  async call(input, context, canUseTool, assistantMessage) {
+    const { action, selector, plan, runArgs } = input
     const cwd = resolveCwd(context)
 
     if (action === 'list') {
@@ -242,7 +244,7 @@ export const WorkflowTool = buildTool({
 
     if (action === 'run') {
       // Use script runtime for script-based workflows
-      if (workflow.spec.runScriptSnapshot && workflow.spec.runtime?.kind === 'javascript-worker') {
+      if (workflow.spec.runScriptSnapshot && hasWorkflowScriptMeta(workflow.spec.runScriptSnapshot)) {
         return {
           data: await runWorkflowScript({
             script: workflow.spec.runScriptSnapshot,
@@ -262,6 +264,7 @@ export const WorkflowTool = buildTool({
           canUseTool,
           assistantMessage,
           runArgs,
+          injectRunArgsIntoRootPrompt: !workflow.spec.runScriptSnapshot,
         }),
       }
     }

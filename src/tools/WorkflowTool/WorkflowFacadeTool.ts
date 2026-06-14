@@ -5,6 +5,7 @@ import { getCwd } from '../../utils/cwd.js'
 import type { WorkflowArgs, WorkflowDryRunPlan } from './workflowSpec.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
+import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { runWorkflowPlan } from './runWorkflow.js'
 import { runWorkflowScript } from './workflowScriptRuntime.js'
@@ -14,6 +15,7 @@ import {
   persistWorkflowScript,
   resolveWorkflowScriptPath,
 } from './workflowScriptPersistence.js'
+import { loadWorkflowRunSession } from './workflowRunSessions.js'
 
 export type WorkflowFacadeInput =
   | string
@@ -200,7 +202,7 @@ export const WorkflowFacadeTool = buildTool({
         normalized.args,
       )
       // Use script runtime for script-based workflows
-      if (workflow.spec.runScriptSnapshot && workflow.spec.runtime?.kind === 'javascript-worker') {
+      if (workflow.spec.runScriptSnapshot && hasWorkflowScriptMeta(workflow.spec.runScriptSnapshot)) {
         return {
           data: await runWorkflowScript({
             script: workflow.spec.runScriptSnapshot,
@@ -220,6 +222,7 @@ export const WorkflowFacadeTool = buildTool({
           canUseTool,
           assistantMessage,
           runArgs: normalized.args,
+          injectRunArgsIntoRootPrompt: !workflow.spec.runScriptSnapshot,
         }),
       }
     }
@@ -236,8 +239,11 @@ export const WorkflowFacadeTool = buildTool({
           })
     const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args)
     const plan = validateWorkflowSpec(spec) as WorkflowDryRunPlan
+    const priorSession = normalized.resumeFromRunId
+      ? await loadWorkflowRunSession({ cwd, workflowRunId: normalized.resumeFromRunId })
+      : undefined
     // Use script runtime for script-based workflows
-    if (spec.runScriptSnapshot && spec.runtime?.kind === 'javascript-worker') {
+    if (spec.runScriptSnapshot && hasWorkflowScriptMeta(spec.runScriptSnapshot)) {
       return {
         data: await runWorkflowScript({
           script: spec.runScriptSnapshot,
@@ -248,6 +254,8 @@ export const WorkflowFacadeTool = buildTool({
           assistantMessage,
           workflowRunId,
           scriptPath,
+          resumeFromRunId: normalized.resumeFromRunId,
+          resumeJournalEntries: priorSession?.resumeCacheEntries,
         }),
       }
     }
@@ -261,6 +269,7 @@ export const WorkflowFacadeTool = buildTool({
         workflowRunId,
         scriptPath,
         resumeFromRunId: normalized.resumeFromRunId,
+        injectRunArgsIntoRootPrompt: !spec.runScriptSnapshot,
       }),
     }
   },

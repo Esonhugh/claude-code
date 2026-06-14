@@ -253,6 +253,25 @@ const officialInlineTask = Object.values(state.tasks).find(
 assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
 assert.deepEqual(launchedPrompts, ['scan meta'])
 
+await assert.rejects(
+  WorkflowFacadeTool.call(
+    {
+      name: 'official-empty-error',
+      script: `export const meta = {
+        name: 'official-empty-error',
+        description: 'Official empty error workflow',
+        phases: [{ title: 'Fail', detail: 'Fail without details' }],
+      }
+      phase('Fail')
+      throw new Error()`,
+    },
+    context,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_facade_official_empty_error' } } as never,
+  ),
+  /Workflow script failed without error details/,
+)
+
 launchedPrompts.length = 0
 const cachedRerun = await WorkflowFacadeTool.call(
   {

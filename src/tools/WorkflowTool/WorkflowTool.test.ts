@@ -87,6 +87,17 @@ await writeFile(
     })],
   })`,
 )
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'empty-error.js'),
+  `export const meta = {
+    name: 'empty-error',
+    description: 'Fail with an empty agent error.',
+    phases: [{ title: 'Fail', detail: 'Fail without details' }],
+  }
+  phase('Fail')
+  const result = await agent('empty error', { label: 'empty-error-agent' })
+  if (result === null) throw new Error()`,
+)
 
 const context = { getCwd: () => tempRoot } as never
 
@@ -167,10 +178,11 @@ const runContext = {
         async call(input: { prompt: string; mode?: string }) {
           launchedPrompts.push(input.prompt)
           launchedInputs.push({ prompt: input.prompt, mode: input.mode })
+          if (input.prompt === 'empty error') throw new Error()
           return {
             data: {
               status: 'completed' as const,
-              content: [{ type: 'text' as const, text: 'js workflow done' }],
+              content: [{ type: 'text' as const, text: 'js workflow completed with enough detail' }],
               agentId: 'js-agent-1' as AgentId,
             },
           }
@@ -310,6 +322,24 @@ const defaultModeRun = await WorkflowTool.call(
 )
 assert.match(String(defaultModeRun.data), /Workflow launched in background\. Task ID: w/)
 assert.equal(launchedInputs[0]?.mode, 'acceptEdits')
+
+await assert.rejects(
+  WorkflowTool.call(
+    { action: 'run', selector: 'empty-error' },
+    runContext,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_empty_error_run' } } as never,
+  ),
+  /Workflow script failed without error details/,
+)
+const emptyErrorTask = Object.values(runState.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'empty-error',
+)!
+const emptyErrorSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', `${emptyErrorTask.id}.json`), 'utf8'),
+)
+assert.equal(emptyErrorSession.status, 'failed')
+assert.equal(emptyErrorSession.error, 'Workflow script failed without error details')
 
 const pausableTaskId = 'w-pausable'
 const pausableRunId = 'wf_pausable'
