@@ -221,6 +221,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
+          npm whoami
           for package_dir in dist/npm/*-*; do
             (cd "$package_dir" && npm publish --access public)
           done
