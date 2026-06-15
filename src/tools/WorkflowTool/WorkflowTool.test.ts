@@ -72,6 +72,25 @@ await writeFile(
   await agent('official run ' + args, { label: 'scope' })`,
 )
 await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'official-parallel.js'),
+  `export const meta = {
+    name: 'official-parallel',
+    description: 'Group official parallel agents under the active phase.',
+    phases: [
+      { title: 'Fanout', detail: 'Run three agents together' },
+      { title: 'After', detail: 'Run a follow-up agent' },
+    ],
+  }
+  phase('Fanout')
+  await parallel([
+    () => agent('parallel a', { label: 'fanout-a' }),
+    () => agent('parallel b', { label: 'fanout-b' }),
+    () => agent('parallel c', { label: 'fanout-c' }),
+  ])
+  phase('After')
+  await agent('parallel after', { label: 'after-agent' })`,
+)
+await writeFile(
   join(tempRoot, 'docs', 'workflows', 'default-mode.js'),
   `export default workflow({
     name: 'Default Mode Workflow',
@@ -397,6 +416,28 @@ assert.deepEqual(
   ['workflow_progress', 'workflow_log', 'workflow_phase', 'workflow_agent'],
 )
 assert.equal(runSession.results.length, 1)
+
+launchedPrompts.length = 0
+launchedInputs.length = 0
+const officialParallelRun = await WorkflowTool.call(
+  { action: 'run', selector: 'official-parallel' },
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_official_parallel_run' } } as never,
+)
+assert.match(String(officialParallelRun.data), /Workflow launched in background\. Task ID: w/)
+const officialParallelTask = Object.values(runState.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-parallel',
+)!
+assert.equal(officialParallelTask.agentCount, 4)
+assert.deepEqual(
+  officialParallelTask.phases.map(phase => [phase.id, phase.agentIds]),
+  [
+    ['Fanout', ['fanout-a', 'fanout-b', 'fanout-c']],
+    ['After', ['after-agent']],
+  ],
+)
+assert.equal(launchedPrompts.length, 4)
 
 launchedInputs.length = 0
 const defaultModeRun = await WorkflowTool.call(

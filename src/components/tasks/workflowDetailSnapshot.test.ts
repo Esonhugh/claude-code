@@ -233,7 +233,7 @@ const stagedLines = workflowDetailSnapshotLines({
     },
   ],
 })
-assertLine(stagedLines[1], 'Official-style running workflow detail.                                                        0/3 agents · 2s')
+assertLine(stagedLines[1], 'Official-style running workflow detail.                                                        0/4 agents · 2s')
 
 const officialParentWorkflow: LocalWorkflowTaskState = {
   ...workflow,

@@ -43,7 +43,6 @@ function workflowDescription(task: LocalWorkflowTaskState): string {
 
 function visibleAgentTotal(task: LocalWorkflowTaskState): number {
   const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
-  if ((task.status === 'running' || task.status === 'pending') && started > 0) return started
   return task.agentCount ?? started
 }
 

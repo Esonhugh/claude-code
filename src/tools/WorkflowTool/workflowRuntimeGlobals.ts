@@ -195,10 +195,9 @@ export function createWorkflowRuntimeGlobals({
       const label = nextLabel(opts)
       callIndex += 1
       spent += 1
-      if (opts?.phase) {
-        upsertGroupedAgentPhase({ phaseId: opts.phase, label, prompt, opts })
+      if (opts?.phase || currentPhase) {
+        upsertGroupedAgentPhase({ phaseId: opts?.phase ?? currentPhase!, label, prompt, opts })
       } else {
-        if (currentPhase) removePhasePlaceholder(currentPhase)
         const phaseIndex = phases.findIndex(phase => phase.id === label)
         const phaseSpec = {
           id: label,

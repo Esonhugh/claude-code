@@ -235,6 +235,7 @@ export async function runWorkflowScript({
   const logs: string[] = []
   let agentCount = 0
   let tokenSpent = 0
+  let currentPhaseId = plan.phases[0]?.id ?? plan.name
   const abortController = workflowTask.abortController!
   const semaphore = new Semaphore(MAX_CONCURRENCY)
   const journal = new WorkflowJournal()
@@ -273,7 +274,7 @@ export async function runWorkflowScript({
 
     const label = opts?.label || `agent-${agentCount + 1}`
     const identityKey = agentIdentityKey(prompt, opts)
-    const phase = opts?.phase || label
+    const phase = opts?.phase || currentPhaseId
     const agentIndex = agentCount
     agentCount++
 
@@ -526,6 +527,7 @@ export async function runWorkflowScript({
       parallel: realParallel,
       workflow: () => Promise.reject(childWorkflowNestingError()),
       phase(title: string) {
+        currentPhaseId = title
         emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
       },
       log(message: string) {
@@ -577,6 +579,7 @@ export async function runWorkflowScript({
       parallel: realParallel,
       workflow: realWorkflow,
       phase(title: string) {
+        currentPhaseId = title
         emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
       },
       log(message: string) {

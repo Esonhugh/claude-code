@@ -140,6 +140,27 @@ assert.equal(rows[2]?.label, 'tmux-agent-smoke')
 assert.equal(rows[2]?.meta, '1/1 agents · 19.6k tok')
 assert.equal(rows[2]?.statusText, 'done · 2s')
 
+const stagedWorkflowRows = getCoordinatorSessionRows({
+  tasks: {
+    staged: {
+      ...workflowTask,
+      id: 'staged',
+      status: 'running',
+      agentCount: 4,
+      phases: [
+        { id: 'fanout', status: 'running', agentIds: ['a1', 'a2', 'a3'], completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [] },
+        { id: 'after', status: 'pending', agentIds: [], completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [] },
+      ],
+    },
+  } as unknown as AppState['tasks'],
+  selectedIndex: 0,
+  viewingAgentTaskId: undefined,
+  nameByAgentId: new Map(),
+  now: 5_000,
+  omitMainRow: true,
+})
+assert.equal(stagedWorkflowRows[0]?.meta, '0/4 agents · 19.6k tok')
+
 const workflowOnlyRows = getCoordinatorSessionRows({
   tasks: { [workflowTask.id]: workflowTask } as unknown as AppState['tasks'],
   selectedIndex: 0,

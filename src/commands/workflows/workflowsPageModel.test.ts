@@ -79,4 +79,17 @@ assert.equal(items[2]!.iconColor, 'error')
 assert.equal(items[1]!.completedAgents, 2)
 assert.equal(items[1]!.totalAgents, 4)
 
+const stagedRunning = getWorkflowPageItems({
+  staged: workflowTask({
+    id: 'w-staged',
+    agentCount: 4,
+    phases: [
+      { id: 'fanout', status: 'running', agentIds: ['a1', 'a2', 'a3'], completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [] },
+      { id: 'after', status: 'pending', agentIds: [], completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [] },
+    ],
+  }),
+})
+assert.equal(stagedRunning[0]!.totalAgents, 4)
+assert.match(stagedRunning[0]!.metricsText, /4 agents/)
+
 console.log('workflowsPageModel.test.ts passed')

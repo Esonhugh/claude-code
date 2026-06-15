@@ -144,9 +144,7 @@ function agentRowMeta(task: LocalAgentTaskState): string {
 function workflowRowMeta(task: LocalWorkflowTaskState): string {
   const completed = workflowCompletedAgents(task)
   const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
-  const total = (task.status === 'running' || task.status === 'pending') && started > 0
-    ? started
-    : task.agentCount ?? started
+  const total = task.agentCount ?? started
   const tokenCount = task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0)
   return `${completed}/${total} agents · ${formatNumber(tokenCount)} tok`
 }
