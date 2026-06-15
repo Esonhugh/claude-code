@@ -1,4 +1,4 @@
-import type { WorkflowArgs, WorkflowPhaseSpec, WorkflowSpec } from './workflowSpec.js'
+import type { WorkflowArgs, WorkflowPermissionMode, WorkflowPhaseSpec, WorkflowSpec } from './workflowSpec.js'
 
 export const DATE_ERROR = 'Date.now() / new Date() are unavailable in workflow scripts (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.'
 export const RANDOM_ERROR = 'Math.random() is unavailable in workflow scripts (breaks resume). For N independent samples, include the index in the agent label or prompt.'
@@ -8,6 +8,7 @@ export type WorkflowRuntimeAgentOptions = {
   phase?: string
   schema?: object
   model?: string
+  mode?: WorkflowPermissionMode
   isolation?: 'worktree'
   agentType?: string
 }
@@ -16,6 +17,8 @@ export type WorkflowRuntimeAgentResult = {
   label: string
   output: string
 }
+
+export type WorkflowRuntimeChildWorkflowRef = string | { scriptPath: string }
 
 type PipelineStage<TInput = any, TOutput = any> = (
   value: TInput,
@@ -82,11 +85,13 @@ export function createWorkflowRuntimeGlobals({
   args,
   budgetTotal = null,
   log,
+  resolveChildWorkflow,
 }: {
   args?: WorkflowArgs
   workflowRunId: string
   budgetTotal?: number | null
   log?: (message: string) => void
+  resolveChildWorkflow?: (ref: WorkflowRuntimeChildWorkflowRef, args?: WorkflowArgs) => Promise<WorkflowSpec>
 }) {
   const phases: WorkflowPhaseSpec[] = []
   let currentPhase: string | undefined
@@ -149,6 +154,7 @@ export function createWorkflowRuntimeGlobals({
       agentLabels,
       agentPrompts,
       ...(opts?.model ? { model: opts.model } : {}),
+      ...(opts?.mode ? { permissionMode: opts.mode } : {}),
       ...(opts?.agentType ? { agentType: opts.agentType } : {}),
     }
     if (phaseIndex === -1) {
@@ -202,6 +208,7 @@ export function createWorkflowRuntimeGlobals({
           agentLabels: [label],
           agentPrompts: [prompt],
           ...(opts?.model ? { model: opts.model } : {}),
+          ...(opts?.mode ? { permissionMode: opts.mode } : {}),
           ...(opts?.agentType ? { agentType: opts.agentType } : {}),
         }
         if (phaseIndex === -1) {
@@ -244,8 +251,19 @@ export function createWorkflowRuntimeGlobals({
       }
       return results
     },
-    async workflow(): Promise<never> {
-      throw new Error('workflow() child execution is not available in the plan-building adapter')
+    async workflow(ref: WorkflowRuntimeChildWorkflowRef, childArgs?: WorkflowArgs): Promise<WorkflowRuntimeAgentResult> {
+      if (!resolveChildWorkflow) {
+        throw new Error('workflow() child execution is not available in the plan-building adapter')
+      }
+      const child = await resolveChildWorkflow(ref, childArgs ?? args)
+      if (currentPhase) removePhasePlaceholder(currentPhase)
+      phases.push(...child.phases)
+      const lastChildPhase = child.phases.at(-1)
+      if (lastChildPhase) lastGroupedPhaseId = lastChildPhase.id
+      return {
+        label: child.name,
+        output: `{{workflow:${child.name}}}`,
+      }
     },
     toWorkflowSpec(meta: { name: string; description: string }): WorkflowSpec {
       return {

@@ -7,16 +7,13 @@ import {
   TASK_TYPE_TAG,
   TOOL_USE_ID_TAG,
 } from '../../constants/xml.js'
-import type { AppState } from '../../state/AppState.js'
-import {
-  isTerminalTaskStatus,
-  type TaskStatus,
-  type TaskType,
-} from '../../Task.js'
+import type { AppState } from '../../state/AppStateStore.js'
+import type { TaskStatus, TaskType } from '../../Task.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
 import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
+import { canEvictTerminalTask } from './retention.js'
 
 // Standard polling interval for all tasks
 export const POLL_INTERVAL_MS = 1000
@@ -129,15 +126,7 @@ export function evictTerminalTask(
   setAppState(prev => {
     const task = prev.tasks?.[taskId]
     if (!task) return prev
-    if (!isTerminalTaskStatus(task.status)) return prev
-    if (!task.notified) return prev
-    // Panel grace period — blocks eviction until deadline passes.
-    // 'retain' in task narrows to LocalAgentTaskState (the only type with
-    // that field); evictAfter is optional so 'evictAfter' in task would
-    // miss tasks that haven't had it set yet.
-    if ('retain' in task && (task.evictAfter ?? Infinity) > Date.now()) {
-      return prev
-    }
+    if (!canEvictTerminalTask(task)) return prev
     const { [taskId]: _, ...remainingTasks } = prev.tasks
     return { ...prev, tasks: remainingTasks }
   })
@@ -175,7 +164,7 @@ export async function generateTaskAttachments(state: AppState): Promise<{
         case 'failed':
         case 'killed':
           // Evict terminal tasks — they've been consumed and can be GC'd
-          evictedTaskIds.push(taskState.id)
+          if (canEvictTerminalTask(taskState)) evictedTaskIds.push(taskState.id)
           continue
         case 'pending':
           // Keep in map — hasn't run yet, but parent already knows about it
@@ -233,14 +222,9 @@ export function applyTaskOffsetsAndEvictions(
     }
     for (const id of evictedTaskIds) {
       const fresh = newTasks[id]
-      // Re-check terminal+notified on fresh state (TOCTOU: resume may have
-      // replaced the task during the generateTaskAttachments await)
-      if (!fresh || !isTerminalTaskStatus(fresh.status) || !fresh.notified) {
-        continue
-      }
-      if ('retain' in fresh && (fresh.evictAfter ?? Infinity) > Date.now()) {
-        continue
-      }
+      // Re-check on fresh state (TOCTOU: resume may have replaced the task
+      // during the generateTaskAttachments await)
+      if (!fresh || !canEvictTerminalTask(fresh)) continue
       delete newTasks[id]
       changed = true
     }

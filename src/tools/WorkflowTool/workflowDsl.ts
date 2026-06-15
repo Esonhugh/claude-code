@@ -1,9 +1,16 @@
 import { readFile } from 'node:fs/promises'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import vm from 'node:vm'
 import { createWorkflowOrchestrator } from './workflowOrchestrator.js'
 import { createWorkflowRuntimeGlobals } from './workflowRuntimeGlobals.js'
 import { parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import type { WorkflowArgs, WorkflowPhaseSpec, WorkflowSpec } from './workflowSpec.js'
+import { validateWorkflowSpec } from './validateWorkflowSpec.js'
+
+export type WorkflowScriptLoadOptions = {
+  childWorkflowDepth?: number
+  cwd?: string
+}
 
 type WorkflowScriptContext = {
   args: WorkflowArgs | undefined
@@ -72,6 +79,63 @@ function WorkflowDate(): never {
   throw new Error(DATE_ERROR)
 }
 
+function childWorkflowNestingError(): Error {
+  return new Error('workflow() cannot be called from within a child workflow — nesting is limited to one level. Inline the inner script or call its agents directly.')
+}
+
+function normalizeChildWorkflowSpec(spec: WorkflowSpec): WorkflowSpec {
+  const plan = validateWorkflowSpec(spec)
+  return {
+    ...spec,
+    phases: plan.phases,
+  }
+}
+
+async function resolveChildWorkflowSpec({
+  parentFilePath,
+  ref,
+  args,
+  childWorkflowDepth,
+  cwd,
+}: {
+  parentFilePath: string
+  ref: string | { scriptPath: string }
+  args?: WorkflowArgs
+  childWorkflowDepth: number
+  cwd?: string
+}): Promise<WorkflowSpec> {
+  if (childWorkflowDepth >= 1) throw childWorkflowNestingError()
+  if (typeof ref === 'string') {
+    const { loadWorkflowSpecByNameOrPath } = await import('./workflowDiscovery.js')
+    const parentDir = dirname(parentFilePath)
+    const candidateCwds = [
+      ...(cwd ? [cwd] : []),
+      parentDir,
+      resolve(parentDir, '..'),
+      resolve(parentDir, '..', '..'),
+    ]
+    let lastError: unknown
+    for (const cwd of candidateCwds) {
+      try {
+        const child = await loadWorkflowSpecByNameOrPath(
+          cwd,
+          ref,
+          args,
+          { childWorkflowDepth: childWorkflowDepth + 1 },
+        )
+        return normalizeChildWorkflowSpec(child.spec)
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw lastError
+  }
+  const scriptPath = isAbsolute(ref.scriptPath)
+    ? ref.scriptPath
+    : resolve(dirname(parentFilePath), ref.scriptPath)
+  return normalizeChildWorkflowSpec(await loadWorkflowScriptSpec(scriptPath, args, { childWorkflowDepth: childWorkflowDepth + 1, cwd }))
+}
+
 async function runOrchestrationExport(
   exported: () => Promise<void> | void,
   orchestrator: ReturnType<typeof createWorkflowOrchestrator>,
@@ -90,16 +154,27 @@ async function loadOfficialWorkflowScriptSpec({
   filePath,
   source,
   args,
+  childWorkflowDepth = 0,
+  cwd,
 }: {
   filePath: string
   source: string
   args?: WorkflowArgs
+  childWorkflowDepth?: number
+  cwd?: string
 }): Promise<WorkflowSpec> {
   const parsed = parseWorkflowScript(source)
   const globals = createWorkflowRuntimeGlobals({
     args,
     workflowRunId: 'dry-run',
     log: () => undefined,
+    resolveChildWorkflow: (ref, childArgs) => resolveChildWorkflowSpec({
+      parentFilePath: filePath,
+      ref,
+      args: childArgs,
+      childWorkflowDepth,
+      cwd,
+    }),
   })
   const sandbox = vm.createContext({
     args,
@@ -143,8 +218,11 @@ async function loadOfficialWorkflowScriptSpec({
 export async function loadWorkflowScriptSpec(
   filePath: string,
   args?: WorkflowArgs,
+  options: WorkflowScriptLoadOptions = {},
 ): Promise<WorkflowSpec> {
   const parsedArgs = parseWorkflowArgs(args)
+  const childWorkflowDepth = options.childWorkflowDepth ?? 0
+  const cwd = options.cwd
   const context: WorkflowScriptContext = { args: parsedArgs }
   const module = {
     exports: {} as {
@@ -176,7 +254,7 @@ export async function loadWorkflowScriptSpec(
   })
   const source = await readFile(filePath, 'utf8')
   if (/^\s*export\s+const\s+meta\s*=/.test(source)) {
-    return loadOfficialWorkflowScriptSpec({ filePath, source, args: parsedArgs })
+    return loadOfficialWorkflowScriptSpec({ filePath, source, args: parsedArgs, childWorkflowDepth, cwd })
   }
   const script = new vm.Script(transformModuleSyntax(source), {
     filename: filePath,

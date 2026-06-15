@@ -20,6 +20,8 @@ const SUPPORTED_PERMISSION_MODES = new Set<WorkflowPermissionMode>([
   'default',
   'acceptEdits',
   'plan',
+  'bypassPermissions',
+  'dontAsk',
 ])
 
 const DEFAULTS = {

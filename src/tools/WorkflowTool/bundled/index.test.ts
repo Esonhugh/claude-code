@@ -1,9 +1,29 @@
 import assert from 'node:assert/strict'
 import { getBundledWorkflowSpecs } from './index.js'
 
-const deepResearch = getBundledWorkflowSpecs().find(
-  workflow => workflow.name === 'deep-research',
+const bundledWorkflows = getBundledWorkflowSpecs()
+assert.deepEqual(
+  bundledWorkflows.map(workflow => workflow.name).sort(),
+  ['code-review', 'deep-research'],
 )
+
+const codeReview = bundledWorkflows.find(workflow => workflow.name === 'code-review')
+assert.ok(codeReview)
+assert.deepEqual(
+  codeReview.phases.map(phase => phase.displayName ?? phase.id),
+  ['Scope', 'Find', 'Verify', 'Sweep', 'Synthesize'],
+)
+assert.equal(
+  codeReview.description,
+  'Workflow-backed code review — one finder agent per review angle, an independent verifier for every candidate, then a ranked, capped findings report.',
+)
+assert.match(codeReview.meta?.whenToUse ?? '', /high, xhigh, or max/)
+assert.match(codeReview.runScriptSnapshot ?? '', /const LEVEL_PARAMS/)
+assert.match(codeReview.runScriptSnapshot ?? '', /MAX_VERIFY = 25/)
+assert.match(codeReview.runScriptSnapshot ?? '', /phase\("Synthesize"\)/)
+assert.equal(codeReview.defaults?.permissionMode, 'plan')
+
+const deepResearch = bundledWorkflows.find(workflow => workflow.name === 'deep-research')
 assert.ok(deepResearch)
 
 assert.deepEqual(

@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto'
 import type { AppState } from './state/AppState.js'
 import type { AgentId } from './types/ids.js'
 import { getTaskOutputPath } from './utils/task/diskOutput.js'
+export { isTerminalTaskStatus, type TaskStatus } from './taskStatus.js'
 
 export type TaskType =
   | 'local_bash'
@@ -12,22 +13,6 @@ export type TaskType =
   | 'local_workflow'
   | 'monitor_mcp'
   | 'dream'
-
-export type TaskStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'killed'
-
-/**
- * True when a task is in a terminal state and will not transition further.
- * Used to guard against injecting messages into dead teammates, evicting
- * finished tasks from AppState, and orphan-cleanup paths.
- */
-export function isTerminalTaskStatus(status: TaskStatus): boolean {
-  return status === 'completed' || status === 'failed' || status === 'killed'
-}
 
 export type TaskHandle = {
   taskId: string

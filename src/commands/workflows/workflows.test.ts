@@ -119,7 +119,14 @@ const context = {
 
 const defaultResult = await call('', context)
 assert.equal(defaultResult.type, 'text')
-assert.equal(defaultResult.value, 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close')
+assert.match(defaultResult.value, /Dynamic workflows/)
+assert.match(defaultResult.value, /1 workflow in this session/)
+assert.match(defaultResult.value, /w-test: Research Workflow \[running\] 2\/3 agents · 9 tok/)
+assert.match(defaultResult.value, /\/workflows detail w-test/)
+
+const emptyRunsResult = await call('', { getCwd: () => tempRoot, getAppState: () => ({ tasks: {} }) } as never)
+assert.equal(emptyRunsResult.type, 'text')
+assert.equal(emptyRunsResult.value, 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close')
 
 const listResult = await call('list', context)
 assert.equal(listResult.type, 'text')

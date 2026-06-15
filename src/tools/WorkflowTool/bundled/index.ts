@@ -1,264 +1,389 @@
 import type { WorkflowSpec } from '../workflowSpec.js'
 
+const CODE_REVIEW_SCRIPT = String.raw`export const meta = {
+  name: "code-review",
+  description: "Workflow-backed code review — one finder agent per review angle, an independent verifier for every candidate, then a ranked, capped findings report.",
+  whenToUse: "Review current branch changes at high, xhigh, or max effort. Pass args as \"<level> [target]\" — level is high, xhigh, or max; target is an optional PR number, branch, ref range, path, or free-form review instructions.",
+  phases: [
+    { title: "Scope", detail: "Pin the diff command, changed files, and conventions" },
+    { title: "Find", detail: "One finder agent per review angle, streaming into verify" },
+    { title: "Verify", detail: "One independent verifier per candidate — CONFIRMED / PLAUSIBLE / REFUTED" },
+    { title: "Sweep", detail: "Fresh finder hunting only for gaps at xhigh/max" },
+    { title: "Synthesize", detail: "Merge duplicates, rank, cap the report" },
+  ],
+}
+
+const LEVEL_PARAMS = {
+  high: { correctnessAngles: 3, perAngle: 6, maxFindings: 10, sweep: false },
+  xhigh: { correctnessAngles: 5, perAngle: 8, maxFindings: 15, sweep: true },
+  max: { correctnessAngles: 5, perAngle: 8, maxFindings: 15, sweep: true },
+}
+const MAX_VERIFY = 25
+const SWEEP_MAX = 8
+
+const RAW_ARGS = (typeof args === "string" ? args : "").trim()
+const FIRST = RAW_ARGS.split(/\s+/)[0] || ""
+const FIRST_IS_LEVEL = Object.prototype.hasOwnProperty.call(LEVEL_PARAMS, FIRST)
+const LEVEL = FIRST_IS_LEVEL ? FIRST : "high"
+const TARGET = FIRST_IS_LEVEL ? RAW_ARGS.slice(FIRST.length).trim() : RAW_ARGS
+const P = LEVEL_PARAMS[LEVEL]
+
+const CORRECTNESS_ANGLES = [
+  {
+    label: "angle-A",
+    text: "Correctness: changed runtime behavior, data loss, crashes, race conditions, async ordering, stale state, missing awaits, off-by-one boundaries, and null/undefined paths.",
+  },
+  {
+    label: "angle-B",
+    text: "Integration: contracts between modules, API shape changes, serialization, persistence, migrations, environment assumptions, permission boundaries, and hook/tool behavior.",
+  },
+  {
+    label: "angle-C",
+    text: "Regression: behavior users already rely on, CLI/UI compatibility, command parsing, resume/cache semantics, and test coverage that no longer exercises the changed path.",
+  },
+  {
+    label: "angle-D",
+    text: "Edge cases: empty input, missing optional fields, duplicate identifiers, unusual but valid paths, partial failures, retry behavior, and fallback branches.",
+  },
+  {
+    label: "angle-E",
+    text: "Security and safety: command injection, path traversal, unsafe shell composition, permission bypass, secret exposure, destructive operations, and external side effects.",
+  },
+]
+
+const CLEANUP_ANGLES = [
+  {
+    label: "reuse",
+    text: "Reuse: identify duplicate logic introduced by the change when an existing helper or framework primitive should be used instead. Only report if it has correctness or maintenance impact.",
+    kind: "cleanup",
+  },
+  {
+    label: "simplification",
+    text: "Simplification: find over-complicated control flow, speculative abstractions, unnecessary compatibility shims, or helpers created for one-off use. Only report actionable simplifications.",
+    kind: "cleanup",
+  },
+  {
+    label: "efficiency",
+    text: "Efficiency: look for avoidable repeated expensive work, unbounded concurrency, large memory retention, accidental quadratic behavior, and unnecessary I/O. Ignore micro-optimizations.",
+    kind: "cleanup",
+  },
+  {
+    label: "altitude",
+    text: "Altitude: check whether the implementation solves the requested problem at the right layer and leaves coherent boundaries, names, and user-visible behavior.",
+    kind: "cleanup",
+  },
+]
+
+const VERDICT_SCHEMA = {
+  type: "object",
+  required: ["verdict", "evidence"],
+  properties: {
+    verdict: { enum: ["CONFIRMED", "PLAUSIBLE", "REFUTED"] },
+    evidence: { type: "string" },
+  },
+}
+const CANDIDATES_SCHEMA = {
+  type: "object",
+  required: ["candidates"],
+  properties: {
+    candidates: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["file", "summary", "failure_scenario"],
+        properties: {
+          file: { type: "string" },
+          line: { type: "number" },
+          summary: { type: "string" },
+          failure_scenario: { type: "string" },
+        },
+      },
+    },
+  },
+}
+const SCOPE_SCHEMA = {
+  type: "object",
+  required: ["diffCommand", "files", "summary"],
+  properties: {
+    diffCommand: { type: "string" },
+    files: { type: "array", items: { type: "string" } },
+    summary: { type: "string" },
+    conventions: { type: "string" },
+  },
+}
+const REPORT_SCHEMA = {
+  type: "object",
+  required: ["summary", "findings"],
+  properties: {
+    summary: { type: "string" },
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["file", "summary", "failure_scenario", "verdict"],
+        properties: {
+          file: { type: "string" },
+          line: { type: "number" },
+          summary: { type: "string" },
+          failure_scenario: { type: "string" },
+          verdict: { enum: ["CONFIRMED", "PLAUSIBLE"] },
+        },
+      },
+    },
+  },
+}
+
+phase("Scope")
+const scope = await agent(
+  "Establish the scope of a code review.\n\n" +
+    (TARGET
+      ? "Review target / instructions (passed by the user, verbatim): \"" + TARGET + "\". If it names a PR number, branch, ref range, or file path, build the matching git diff command for it; if it is free-form, honor the scope restriction and start from the current branch diff for whatever it does not narrow.\n"
+      : "No explicit target — review the current branch. Prefer 'git diff @{upstream}...HEAD' and fall back to 'git diff main...HEAD' or 'git diff HEAD~1'. If there are uncommitted changes also include 'git diff HEAD'.\n") +
+    "\n1. Determine exact diff command(s) and run them to confirm they produce a non-empty diff.\n" +
+    "2. List changed files.\n" +
+    "3. Summarize what changed in one paragraph.\n" +
+    "4. Read CLAUDE.md files relevant to changed files and note conventions reviewers should know.\n\n" +
+    "Return diffCommand exactly as a reviewer should run it. Structured output only.",
+  { label: "scope", phase: "Scope", schema: SCOPE_SCHEMA },
+)
+if (!scope) {
+  return { error: "Scope agent returned no result — cannot establish the review scope." }
+}
+if (!scope.files || scope.files.length === 0) {
+  return { level: LEVEL, target: TARGET || undefined, summary: "No changes found to review.", findings: [], stats: { finders: 0, candidates: 0, verified: 0 } }
+}
+log(LEVEL + " review: " + scope.files.length + " changed files")
+
+const SCOPE_BLOCK =
+  "## Review scope\n" +
+  "Diff command: " + scope.diffCommand + "\n" +
+  "Changed files (" + scope.files.length + "):\n" +
+  scope.files.map(f => "  - " + f).join("\n") + "\n\n" +
+  "## What changed\n" + scope.summary + "\n\n" +
+  "## Conventions\n" + (scope.conventions || "(none noted)") + "\n" +
+  (TARGET ? "\n## User instructions (verbatim)\n" + TARGET + "\nHonor scope restrictions and focus areas above. Do not surface findings the instructions ask to skip.\n" : "")
+
+const FINDER_PROMPT = f =>
+  "## Code-review finder — " + f.label + "\n\n" + SCOPE_BLOCK + "\n" +
+  "Run the diff command above and review ONLY through this lens:\n\n" +
+  f.text + "\n\n" +
+  "Surface up to " + P.perAngle + " candidate findings, each with file, line, a one-line summary, and a concrete failure_scenario. " +
+  "Pass every candidate with a nameable failure scenario through; an independent verifier judges them next. If nothing qualifies, return an empty list.\n\nStructured output only."
+
+const VERIFIER_PROMPT = c =>
+  "## Code-review verifier\n\n" + SCOPE_BLOCK + "\n" +
+  "## Candidate finding\n" +
+  "File: " + c.file + (c.line != null ? ":" + c.line : "") + "\n" +
+  "Summary: " + c.summary + "\n" +
+  "Failure scenario: " + c.failure_scenario + "\n\n" +
+  "Run the diff command above, read the relevant file(s), and return exactly one verdict:\n" +
+  "- CONFIRMED: constructible from code with clear impact.\n" +
+  "- PLAUSIBLE: credible bug with concrete mechanism, but not fully proven.\n" +
+  "- REFUTED: factually wrong, provably impossible, already handled, or style-only.\n\n" +
+  "Structured output only. Evidence must quote or cite the relevant line(s)."
+
+const dedupKey = c => c.file + ":" + (c.line != null ? Math.round(c.line / 5) * 5 : "x:" + String(c.summary || "").toLowerCase().slice(0, 40))
+const seen = new Map()
+const dupes = []
+const budgetDropped = []
+let verifySlots = MAX_VERIFY
+
+function verifyCandidate(c) {
+  const short = (c.file || "").split("/").pop() || "candidate"
+  return agent(VERIFIER_PROMPT(c), { label: "verify:" + short, phase: "Verify", schema: VERDICT_SCHEMA })
+    .then(v => (v ? { ...c, verdict: v.verdict, evidence: v.evidence } : null))
+}
+
+const FINDERS = CORRECTNESS_ANGLES.slice(0, P.correctnessAngles)
+  .map(a => ({ ...a, kind: "correctness" }))
+  .concat(CLEANUP_ANGLES.map(a => ({ ...a, kind: "cleanup" })))
+
+phase("Find")
+const finderResults = await pipeline(
+  FINDERS,
+  f => agent(FINDER_PROMPT(f), { label: f.label, phase: "Find", schema: CANDIDATES_SCHEMA }).then(r => {
+    if (!r) return { finder: f, candidates: [] }
+    log(f.label + ": " + r.candidates.length + " candidates")
+    return { finder: f, candidates: r.candidates.slice(0, P.perAngle) }
+  }),
+  result => {
+    const novel = result.candidates.filter(c => {
+      const key = dedupKey(c)
+      if (seen.has(key)) {
+        dupes.push(c)
+        return false
+      }
+      if (verifySlots <= 0) {
+        budgetDropped.push(c)
+        return false
+      }
+      seen.set(key, true)
+      verifySlots--
+      return true
+    })
+    return parallel(novel.map(c => () => verifyCandidate({ ...c, kind: result.finder.kind })))
+  },
+)
+
+let verified = finderResults.flat().filter(Boolean)
+
+if (P.sweep) {
+  phase("Sweep")
+  const knownBlock = verified.length > 0
+    ? verified.map(c => "- " + c.file + (c.line != null ? ":" + c.line : "") + " — " + c.summary).join("\n")
+    : "(none)"
+  const sweep = await agent(
+    "## Code-review sweep — gaps only\n\n" + SCOPE_BLOCK + "\n" +
+      "## Already-found candidates (do NOT re-derive or re-confirm these)\n" + knownBlock + "\n\n" +
+      "Re-read the diff and enclosing functions looking ONLY for defects not already listed. Focus on moved guards, anchors, setup/teardown asymmetry, config default flips, second-tier footguns, and edge cases first-pass finders miss.\n\n" +
+      "Surface up to " + SWEEP_MAX + " additional candidates. If nothing new, return an empty list — do not pad.\n\nStructured output only.",
+    { label: "sweep", phase: "Sweep", schema: CANDIDATES_SCHEMA },
+  )
+  if (sweep && sweep.candidates.length > 0) {
+    const novel = sweep.candidates.slice(0, SWEEP_MAX).filter(c => !seen.has(dedupKey(c)))
+    log("sweep: " + novel.length + " new candidates")
+    const sweepVerified = await parallel(novel.map(c => () => verifyCandidate({ ...c, kind: "correctness" })))
+    verified = verified.concat(sweepVerified.filter(Boolean))
+  }
+}
+
+const surviving = verified.filter(c => c.verdict !== "REFUTED")
+const refuted = verified.filter(c => c.verdict === "REFUTED")
+log("Verify done: " + verified.length + " verified → " + surviving.length + " kept, " + refuted.length + " refuted")
+
+const stats = {
+  level: LEVEL,
+  finders: FINDERS.length,
+  candidates: seen.size + dupes.length + budgetDropped.length,
+  verified: verified.length,
+  refuted: refuted.length,
+  dupes: dupes.length,
+  budgetDropped: budgetDropped.length,
+}
+
+if (surviving.length === 0) {
+  return {
+    level: LEVEL,
+    target: TARGET || undefined,
+    summary: "No findings survived verification.",
+    findings: [],
+    refuted: refuted.map(c => ({ file: c.file, line: c.line, summary: c.summary })),
+    stats,
+  }
+}
+
+phase("Synthesize")
+const rank = c => (c.kind === "cleanup" ? 2 : 0) + (c.verdict === "PLAUSIBLE" ? 1 : 0)
+const ranked = surviving.slice().sort((a, b) => rank(a) - rank(b))
+const block = ranked.map((c, i) =>
+  "### [" + i + "] " + c.file + (c.line != null ? ":" + c.line : "") + " (" + c.verdict + (c.kind === "cleanup" ? ", cleanup" : "") + ")\n" +
+  c.summary + "\nFailure scenario: " + c.failure_scenario + "\nVerifier evidence: " + c.evidence + "\n"
+).join("\n")
+
+const report = await agent(
+  "## Synthesis: final code-review report\n\n" +
+    ranked.length + " findings survived independent verification (" + LEVEL + "-effort review).\n\n" + block + "\n" +
+    "## Instructions\n" +
+    "1. Merge findings that describe the same defect.\n" +
+    "2. Rank most-severe first. Correctness bugs always outrank cleanup findings.\n" +
+    "3. Keep at most " + P.maxFindings + " findings; drop the least severe beyond the cap.\n" +
+    "4. Write a 2-3 sentence summary of the review.\n\nStructured output only.",
+  { label: "synthesize", phase: "Synthesize", schema: REPORT_SCHEMA },
+)
+
+const findings = report
+  ? report.findings.slice(0, P.maxFindings)
+  : ranked.slice(0, P.maxFindings).map(c => ({
+      file: c.file,
+      line: c.line,
+      summary: c.summary,
+      failure_scenario: c.failure_scenario,
+      verdict: c.verdict,
+    }))
+
+return {
+  level: LEVEL,
+  target: TARGET || undefined,
+  summary: report ? report.summary : "Synthesis step was skipped or failed — returning verified findings unmerged.",
+  findings,
+  refuted: refuted.map(c => ({ file: c.file, line: c.line, summary: c.summary })),
+  stats: { ...stats, reported: findings.length },
+}`
+
 const BUNDLED_WORKFLOWS: WorkflowSpec[] = [
   {
-    name: 'bughunt-lite',
+    name: 'code-review',
     description:
-      'Bounded bug sweep of the current branch with independent finders, adversarial verification, and concise synthesis.',
+      'Workflow-backed code review — one finder agent per review angle, an independent verifier for every candidate, then a ranked, capped findings report.',
+    meta: {
+      name: 'code-review',
+      description:
+        'Workflow-backed code review — one finder agent per review angle, an independent verifier for every candidate, then a ranked, capped findings report.',
+      whenToUse:
+        'Review current branch changes at high, xhigh, or max effort. Pass args as "<level> [target]" — level is high, xhigh, or max; target is an optional PR number, branch, ref range, path, or free-form review instructions.',
+      phases: [
+        { title: 'Scope', detail: 'Pin the diff command, changed files, and conventions' },
+        { title: 'Find', detail: 'One finder agent per review angle, streaming into verify' },
+        { title: 'Verify', detail: 'One independent verifier per candidate — CONFIRMED / PLAUSIBLE / REFUTED' },
+        { title: 'Sweep', detail: 'Fresh finder hunting only for gaps at xhigh/max' },
+        { title: 'Synthesize', detail: 'Merge duplicates, rank, cap the report' },
+      ],
+    },
+    runScriptSnapshot: CODE_REVIEW_SCRIPT,
     defaults: {
-      maxConcurrency: 4,
-      maxAgents: 8,
+      maxConcurrency: 16,
+      maxAgents: 50,
       maxRetries: 0,
       permissionMode: 'plan',
     },
     phases: [
       {
         id: 'scope',
-        description: 'Identify the diff, changed files, test surface, and risk areas.',
+        displayName: 'Scope',
+        description: 'Pin the diff command, changed files, and conventions.',
         prompt:
-          'Inspect the current branch and identify changed files, nearby tests, risk areas, and likely bug classes. Do not edit files.',
+          'Establish the exact code-review scope from workflow args, identify the diff command, changed files, summary, and relevant conventions. Structured output only.',
       },
       {
-        id: 'finders',
-        description: 'Run a bounded pool of independent bug finders.',
+        id: 'find',
+        displayName: 'Find',
+        description: 'Run independent correctness and cleanup finder angles.',
         prompt:
-          'Review the scoped changes for concrete bugs. Report only reproducible issues with file paths, evidence, and minimal failing scenario. Avoid style-only findings.',
+          'Run independent code-review finder angles over the scoped diff. Surface concrete candidate findings with file, line, summary, and failure scenario. Structured output only.',
         dependsOn: ['scope'],
-        fanout: 3,
-        concurrency: 3,
+        fanout: 9,
+        concurrency: 9,
         review: 'adversarial',
       },
       {
         id: 'verify',
-        description: 'Adversarially verify candidate findings.',
+        displayName: 'Verify',
+        description: 'Independently verify candidate findings.',
         prompt:
-          'Verify candidate bug findings from the finder phase. Reject unsupported findings and keep only issues backed by code evidence.',
-        dependsOn: ['finders'],
-        fanout: 2,
-        concurrency: 2,
+          'Verify each candidate finding as CONFIRMED, PLAUSIBLE, or REFUTED using direct code evidence. Drop unsupported or style-only findings.',
+        dependsOn: ['find'],
+        fanout: 25,
+        concurrency: 16,
         review: 'cross-check',
       },
       {
-        id: 'synthesis',
-        description: 'Summarize verified bugs and suggested next fixes.',
+        id: 'sweep',
+        displayName: 'Sweep',
+        description: 'Run a fresh gap finder for xhigh/max effort.',
         prompt:
-          'Synthesize only verified bugs. Include severity, evidence, exact files, and minimal next fix. Explicitly list rejected findings if useful.',
+          'For xhigh/max effort, run one fresh finder looking only for gaps not already listed, then verify novel candidates. For high effort this phase may produce no additional findings.',
         dependsOn: ['verify'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'review-branch',
-    description:
-      'Thoroughly review the current branch for bugs, simplicity, architecture, dead code, best practices, and consistency.',
-    defaults: {
-      maxConcurrency: 4,
-      maxAgents: 10,
-      permissionMode: 'plan',
-    },
-    phases: [
-      {
-        id: 'scope',
-        description: 'Discover branch diff, base branch, changed files, and conventions.',
-        prompt:
-          'Inspect the current branch against its base. Identify changed files, touched subsystems, conventions, and tests that should matter. Do not edit files.',
-      },
-      {
-        id: 'reviewers',
-        description: 'Run independent review perspectives.',
-        prompt:
-          'Review the scoped branch from one perspective: correctness, simplicity, architecture, dead code, best practices, or pattern consistency. Return concrete findings only.',
-        dependsOn: ['scope'],
-        fanout: 4,
-        concurrency: 4,
-        review: 'cross-check',
-      },
-      {
-        id: 'refuters',
-        description: 'Challenge each candidate finding before reporting.',
-        prompt:
-          'Adversarially refute candidate review findings. Keep only findings with direct evidence and clear impact.',
-        dependsOn: ['reviewers'],
-        fanout: 2,
-        concurrency: 2,
+        fanout: 9,
+        concurrency: 9,
         review: 'adversarial',
       },
       {
-        id: 'final-review',
-        description: 'Produce the final verified branch review.',
+        id: 'synthesize',
+        displayName: 'Synthesize',
+        description: 'Merge duplicates, rank, cap the final report.',
         prompt:
-          'Write the final branch review with verified findings, evidence, severity, and suggested fixes. Do not include unverified concerns.',
-        dependsOn: ['refuters'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'plan-hunter',
-    description:
-      'Generate independent plans, judge them from multiple angles, vote on the winner, and synthesize a stronger final plan.',
-    defaults: {
-      maxConcurrency: 4,
-      maxAgents: 10,
-      permissionMode: 'plan',
-    },
-    phases: [
-      {
-        id: 'draft-plans',
-        description: 'Generate independent draft plans from different optimization angles.',
-        prompt:
-          'Create one implementation plan for the requested idea. Use one strong perspective: MVP-first, risk-first, dependency-first, or user-first. Include assumptions and verification gates.',
-        fanout: 4,
-        concurrency: 4,
-      },
-      {
-        id: 'judges',
-        description: 'Score the draft plans independently.',
-        prompt:
-          'Judge the draft plans for correctness, feasibility, risk, simplicity, and verification quality. Pick a winner and note reusable ideas from runners-up.',
-        dependsOn: ['draft-plans'],
-        fanout: 4,
-        concurrency: 4,
-        review: 'cross-check',
-      },
-      {
-        id: 'final-plan',
-        description: 'Synthesize a final plan from the voted winner and best runner-up ideas.',
-        prompt:
-          'Synthesize the final implementation plan. Preserve the winner’s core structure and graft in only the strongest verified ideas from runners-up.',
-        dependsOn: ['judges'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'investigate',
-    description:
-      'Root-cause investigation workflow with evidence gathering, competing hypotheses, adversarial refutation, and a final report.',
-    defaults: {
-      maxConcurrency: 4,
-      maxAgents: 10,
-      permissionMode: 'plan',
-    },
-    phases: [
-      {
-        id: 'evidence',
-        description: 'Gather observable evidence and constraints.',
-        prompt:
-          'Gather evidence for the reported problem: symptoms, logs, code paths, recent changes, tests, and constraints. Do not fix yet.',
-      },
-      {
-        id: 'hypotheses',
-        description: 'Generate competing root-cause hypotheses.',
-        prompt:
-          'Generate a competing root-cause hypothesis from the evidence. Include predictions that would prove or disprove it.',
-        dependsOn: ['evidence'],
-        fanout: 4,
-        concurrency: 4,
-      },
-      {
-        id: 'refute',
-        description: 'Adversarially refute weak hypotheses.',
-        prompt:
-          'Try to disprove each hypothesis using evidence. Identify the best-supported root cause and reject weak explanations.',
-        dependsOn: ['hypotheses'],
-        fanout: 2,
-        concurrency: 2,
-        review: 'adversarial',
-      },
-      {
-        id: 'report',
-        description: 'Write the root-cause report and suggested fix.',
-        prompt:
-          'Write a root-cause report with evidence, rejected hypotheses, confidence, and the smallest suggested fix or next experiment.',
-        dependsOn: ['refute'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'bugfix',
-    description:
-      'Reproduce-first bug fixer that writes a failing repro, identifies root cause, proposes a minimal fix, and locks in a regression test plan.',
-    defaults: {
-      maxConcurrency: 3,
-      maxAgents: 8,
-      maxRetries: 1,
-      permissionMode: 'acceptEdits',
-    },
-    phases: [
-      {
-        id: 'reproduce',
-        description: 'Create or identify the failing reproduction.',
-        prompt:
-          'Reproduce the reported bug first. Prefer an automated failing test or a precise manual repro. Do not implement the fix until the failure is understood.',
-      },
-      {
-        id: 'root-cause',
-        description: 'Find the smallest root cause.',
-        prompt:
-          'Trace the failing repro to the smallest root cause. Identify the responsible code path and why existing tests missed it.',
-        dependsOn: ['reproduce'],
-        review: 'cross-check',
-      },
-      {
-        id: 'fix',
-        description: 'Apply the minimal fix and regression coverage.',
-        prompt:
-          'Apply the minimal fix and convert the repro into regression coverage. Run the narrow verification needed for the bug.',
-        dependsOn: ['root-cause'],
-        permissionMode: 'acceptEdits',
-      },
-      {
-        id: 'verify',
-        description: 'Verify the fix and summarize evidence.',
-        prompt:
-          'Verify the regression test and relevant suite. Summarize the bug, fix, evidence, and any remaining risk.',
-        dependsOn: ['fix'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'docs',
-    description:
-      'Documentation generator that discovers feature surface and conventions, drafts docs, and verifies examples and links.',
-    defaults: {
-      maxConcurrency: 3,
-      maxAgents: 8,
-      maxRetries: 1,
-      permissionMode: 'acceptEdits',
-    },
-    phases: [
-      {
-        id: 'discover',
-        description: 'Discover code surface and documentation conventions.',
-        prompt:
-          'Discover the relevant feature/API/module surface and existing documentation conventions. Identify target audience and missing docs.',
-      },
-      {
-        id: 'outline',
-        description: 'Create a documentation outline.',
-        prompt:
-          'Create a concise documentation outline with sections, examples, and verification steps. Match existing project style.',
-        dependsOn: ['discover'],
-        review: 'cross-check',
-      },
-      {
-        id: 'write-docs',
-        description: 'Write or update documentation.',
-        prompt:
-          'Write or update the documentation following the verified outline. Include accurate examples and avoid unsupported claims.',
-        dependsOn: ['outline'],
-        permissionMode: 'acceptEdits',
-      },
-      {
-        id: 'verify-docs',
-        description: 'Verify examples, links, and consistency.',
-        prompt:
-          'Verify code examples, links, and consistency with the code. Report any commands run and remaining caveats.',
-        dependsOn: ['write-docs'],
+          'Synthesize verified findings into a ranked, capped code-review report. Merge duplicates, correctness bugs outrank cleanup findings, and exclude refuted candidates.',
+        dependsOn: ['sweep'],
         review: 'synthesis',
       },
     ],
@@ -349,202 +474,6 @@ phase('Synthesize')`,
         prompt:
           'Synthesize a cited research report from claims that survived 3-vote adversarial verification. Merge semantic duplicates and combine sources. Group related claims into findings that directly address the research question. Assign confidence: high for multiple primary sources or unanimous votes, medium for secondary sources or split votes, low for single-source or blog-quality evidence. Write a 3-5 sentence executive summary, list caveats and time-sensitivity, include 2-4 open questions, and include refuted claims for transparency. If the Synthesis step was skipped or failed, salvage verified claims raw rather than discarding the run.',
         dependsOn: ['verify'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'bughunt',
-    description:
-      'High-precision multi-agent bug sweep with broad finder pool, adversarial verification votes, and final synthesis.',
-    defaults: {
-      maxConcurrency: 8,
-      maxAgents: 24,
-      permissionMode: 'plan',
-    },
-    phases: [
-      {
-        id: 'scope',
-        description: 'Discover review scope, changed files, tests, and high-risk areas.',
-        prompt:
-          'Scope the current branch for a high-precision bug hunt. Identify diff base, changed files, critical paths, existing tests, and risk taxonomy.',
-      },
-      {
-        id: 'rapid-finders',
-        description: 'Run rapid independent bug finders.',
-        prompt:
-          'Find concrete bugs quickly in the scoped branch. Report only issues with evidence, likely impact, and reproduction or failing-test idea.',
-        dependsOn: ['scope'],
-        fanout: 5,
-        concurrency: 5,
-        review: 'adversarial',
-      },
-      {
-        id: 'deep-finders',
-        description: 'Run deeper targeted bug finders on risky areas.',
-        prompt:
-          'Perform a deeper targeted bug hunt on the riskiest areas from scope and rapid findings. Look for edge cases, races, type holes, data loss, and security-sensitive regressions.',
-        dependsOn: ['scope'],
-        fanout: 3,
-        concurrency: 3,
-        review: 'adversarial',
-      },
-      {
-        id: 'vote-verify',
-        description: 'Vote on and verify candidate findings.',
-        prompt:
-          'Vote on candidate findings from rapid and deep finders. Keep only findings that survive adversarial verification and have direct evidence.',
-        dependsOn: ['rapid-finders', 'deep-finders'],
-        fanout: 5,
-        concurrency: 5,
-        review: 'cross-check',
-      },
-      {
-        id: 'synthesis',
-        description: 'Produce final high-confidence bug report.',
-        prompt:
-          'Synthesize verified bug findings with severity, evidence, affected files, reproduction ideas, and recommended fixes. Exclude unverified concerns.',
-        dependsOn: ['vote-verify'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'dashboard',
-    description:
-      'Dashboard generator that discovers data sources and conventions, designs panels, implements the dashboard, and verifies queries/rendering.',
-    defaults: {
-      maxConcurrency: 4,
-      maxAgents: 12,
-      maxRetries: 1,
-      permissionMode: 'acceptEdits',
-    },
-    phases: [
-      {
-        id: 'discover',
-        description: 'Discover dashboard conventions and available data sources.',
-        prompt:
-          'Discover existing dashboard, metrics, charting, and data-fetching conventions. Identify available data sources, query patterns, and rendering constraints.',
-      },
-      {
-        id: 'design',
-        description: 'Design panel layout and data contracts.',
-        prompt:
-          'Design a dashboard layout with panels, data contracts, loading/error states, and validation strategy. Match existing UI and query conventions.',
-        dependsOn: ['discover'],
-        review: 'cross-check',
-      },
-      {
-        id: 'implement',
-        description: 'Implement the dashboard or metrics view.',
-        prompt:
-          'Implement the dashboard according to the verified design. Keep changes focused, follow existing components, and avoid unrelated refactors.',
-        dependsOn: ['design'],
-        permissionMode: 'acceptEdits',
-      },
-      {
-        id: 'verify',
-        description: 'Verify queries, rendering, accessibility, and regressions.',
-        prompt:
-          'Verify dashboard queries, rendering behavior, accessibility basics, and relevant tests. Report exact verification evidence and remaining caveats.',
-        dependsOn: ['implement'],
-        fanout: 2,
-        concurrency: 2,
-        review: 'adversarial',
-      },
-      {
-        id: 'handoff',
-        description: 'Summarize dashboard implementation and PR-ready notes.',
-        prompt:
-          'Summarize dashboard changes, screenshots or render evidence if available, test results, and PR-ready notes. Do not create a PR unless explicitly requested.',
-        dependsOn: ['verify'],
-        review: 'synthesis',
-      },
-    ],
-  },
-  {
-    name: 'autopilot',
-    description:
-      'End-to-end task runner with adversarial planning, implementation, bughunt-lite review, completeness check, repair, and PR-ready handoff.',
-    defaults: {
-      maxConcurrency: 6,
-      maxAgents: 24,
-      maxRetries: 2,
-      permissionMode: 'acceptEdits',
-    },
-    phases: [
-      {
-        id: 'scope',
-        description: 'Scope the task and identify constraints.',
-        prompt:
-          'Scope the requested task from workflow args. Identify requirements, non-goals, risks, verification gates, and files likely to change.',
-        permissionMode: 'plan',
-      },
-      {
-        id: 'plan-critics',
-        description: 'Generate adversarial critiques of the initial plan.',
-        prompt:
-          'Critique the scoped plan from one angle: correctness, simplicity, integration risk, test strategy, or user impact. Propose concrete plan adjustments.',
-        dependsOn: ['scope'],
-        fanout: 5,
-        concurrency: 5,
-        permissionMode: 'plan',
-        review: 'adversarial',
-      },
-      {
-        id: 'hardened-plan',
-        description: 'Synthesize the hardened implementation plan.',
-        prompt:
-          'Synthesize a hardened implementation plan from scope and critic feedback. Keep it minimal, testable, and explicit about verification.',
-        dependsOn: ['plan-critics'],
-        permissionMode: 'plan',
-        review: 'synthesis',
-      },
-      {
-        id: 'implement',
-        description: 'Implement the hardened plan.',
-        prompt:
-          'Implement the hardened plan. Follow existing project conventions, keep changes focused, and run the narrow verification described by the plan.',
-        dependsOn: ['hardened-plan'],
-        permissionMode: 'acceptEdits',
-      },
-      {
-        id: 'bughunt-lite',
-        description: 'Run bounded bug sweep on the implementation.',
-        prompt:
-          'Run a bounded bughunt-lite review of the implementation. Find concrete correctness, integration, or regression issues only.',
-        dependsOn: ['implement'],
-        fanout: 3,
-        concurrency: 3,
-        permissionMode: 'plan',
-        review: 'adversarial',
-      },
-      {
-        id: 'completeness',
-        description: 'Check feature completeness against requirements.',
-        prompt:
-          'Check whether the implementation satisfies the scoped requirements and verification gates. Identify missing requirements or overbuilt changes.',
-        dependsOn: ['implement'],
-        fanout: 2,
-        concurrency: 2,
-        permissionMode: 'plan',
-        review: 'cross-check',
-      },
-      {
-        id: 'repair',
-        description: 'Repair verified issues only.',
-        prompt:
-          'Fix only verified bughunt or completeness issues. Re-run targeted verification and avoid unrelated cleanup.',
-        dependsOn: ['bughunt-lite', 'completeness'],
-        permissionMode: 'acceptEdits',
-      },
-      {
-        id: 'handoff',
-        description: 'Prepare PR-ready handoff without creating external PRs.',
-        prompt:
-          'Prepare a PR-ready summary with changed files, verification evidence, known risks, and suggested PR title/body. Do not create or push a PR unless explicitly requested.',
-        dependsOn: ['repair'],
-        permissionMode: 'plan',
         review: 'synthesis',
       },
     ],

@@ -84,6 +84,19 @@ assert.deepEqual(spec.phases.map(phase => phase.id), [
 assert.equal(spec.phases[0]?.description, 'scan')
 assert.equal(spec.phases[0]?.prompt, 'Find files')
 
+const modeGlobals = createWorkflowRuntimeGlobals({
+  workflowRunId: 'wf_modes',
+})
+await modeGlobals.agent('Plan prompt', { label: 'plan-agent', mode: 'plan' })
+modeGlobals.phase('Grouped')
+await modeGlobals.agent('Default grouped prompt', { label: 'default-agent', phase: 'Grouped', mode: 'default' })
+const modeSpec = modeGlobals.toWorkflowSpec({
+  name: 'mode-spec',
+  description: 'Mode spec workflow',
+})
+assert.equal(modeSpec.phases[0]?.permissionMode, 'plan')
+assert.equal(modeSpec.phases[1]?.permissionMode, 'default')
+
 const phaseOnlyGlobals = createWorkflowRuntimeGlobals({
   workflowRunId: 'wf_phase_only',
 })

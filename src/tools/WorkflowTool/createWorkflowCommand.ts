@@ -47,7 +47,7 @@ function buildWorkflowPrompt(
         `- Respect phase dependencies: do not start a phase until all dependencies are complete.\n` +
         `- Respect each phase fanout and concurrency limit.\n` +
         `- For fanout greater than 1, launch separate ${AGENT_TOOL_NAME} workers with independent prompts.\n` +
-        `- Honor each phase permissionMode when spawning workers: use mode \"plan\" for planning-only phases, mode \"acceptEdits\" only when the phase explicitly requests it, and omit mode for \"default\".\n` +
+        `- Honor each phase permissionMode when spawning workers: use mode \"plan\", \"acceptEdits\", \"bypassPermissions\", or \"dontAsk\" exactly when requested, and omit mode for \"default\".\n` +
         `- A phase with permissionMode \"plan\" must not edit files or run implementation commands; it may only research, inspect, and propose a plan.\n` +
         `- For cross-check or adversarial review phases, have workers verify prior phase outputs and identify unsupported claims.\n` +
         `- For synthesis phases, include only findings that survived review.\n` +
@@ -58,7 +58,7 @@ function buildWorkflowPrompt(
   ]
 }
 
-const BUNDLED_SLASH_WORKFLOW_COMMANDS = new Set(['deep-research'])
+const BUNDLED_SLASH_WORKFLOW_COMMANDS = new Set(['code-review', 'deep-research'])
 
 function shouldRegisterWorkflowSlashCommand(workflow: DiscoveredWorkflowSpec): boolean {
   if (!workflow.path.startsWith('bundled:')) return true

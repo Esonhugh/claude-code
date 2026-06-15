@@ -46,6 +46,7 @@ import {
   type WorkflowResumeCacheEntry,
 } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
+import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
@@ -606,7 +607,7 @@ export async function runWorkflowPlan({
       message: `Workflow started: ${plan.name}`,
     }))
 
-    for (const phase of plan.phases) {
+    for (const phase of workflowPhaseExecutionOrder(plan.phases)) {
       startWorkflowPhase(workflowTask.id, phase.id, setAppState)
       await emit(createWorkflowPhaseEvent({
         workflowRunId,

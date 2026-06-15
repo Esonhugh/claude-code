@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, parse, resolve } from 'node:path'
 import { isENOENT } from '../../utils/errors.js'
 
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
-import { loadWorkflowScriptSpec } from './workflowDsl.js'
+import { loadWorkflowScriptSpec, type WorkflowScriptLoadOptions } from './workflowDsl.js'
 import { getBundledWorkflowSpecs } from './bundled/index.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 
@@ -27,7 +27,7 @@ export type WorkflowDiscoveryResult = {
 
 const PROJECT_WORKFLOW_DIRS = [join('docs', 'workflows'), join('.claude', 'workflows')]
 
-type WorkflowDiscoveryOptions = {
+type WorkflowDiscoveryOptions = WorkflowScriptLoadOptions & {
   home?: string
 }
 
@@ -93,9 +93,10 @@ async function listWorkflowFiles(dir: string): Promise<string[]> {
 async function loadWorkflowFile(
   filePath: string,
   args?: WorkflowArgs,
+  options: WorkflowScriptLoadOptions = {},
 ): Promise<WorkflowSpec> {
   if (filePath.endsWith('.js')) {
-    return loadWorkflowScriptSpec(filePath, args)
+    return loadWorkflowScriptSpec(filePath, args, options)
   }
   return JSON.parse(await readFile(filePath, 'utf8')) as WorkflowSpec
 }
@@ -158,7 +159,7 @@ export async function discoverWorkflowSpecs(
 
     for (const filePath of files) {
       try {
-        const spec = await loadWorkflowFile(filePath, args)
+        const spec = await loadWorkflowFile(filePath, args, { ...options, cwd })
         const plan = validateWorkflowSpec(spec)
         const commandName = workflowNameToCommandName(plan.name, filePath)
         workflowsByCommandName.set(commandName, {
@@ -183,8 +184,9 @@ export async function loadWorkflowSpecByNameOrPath(
   cwd: string,
   selector: string,
   args?: WorkflowArgs,
+  options: WorkflowDiscoveryOptions = {},
 ): Promise<DiscoveredWorkflowSpec> {
-  const discovery = await discoverWorkflowSpecs(cwd, args)
+  const discovery = await discoverWorkflowSpecs(cwd, args, options)
   const trimmed = selector.trim()
   const absoluteSelector = resolve(cwd, trimmed)
   const matches = discovery.valid.filter(

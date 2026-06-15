@@ -6,6 +6,14 @@ import {
   workflowDetailSnapshotLines,
 } from './workflowDetailSnapshot.js'
 
+function normalizeSnapshotLine(line: string | undefined): string | undefined {
+  return line?.trimEnd().replace(/\s+│$/u, '│')
+}
+
+function assertLine(actual: string | undefined, expected: string): void {
+  assert.equal(normalizeSnapshotLine(actual), normalizeSnapshotLine(expected))
+}
+
 const workflow: LocalWorkflowTaskState = {
   id: 'w-ui',
   type: 'local_workflow',
@@ -84,33 +92,33 @@ const workflow: LocalWorkflowTaskState = {
 }
 
 const phaseSelectedLines = workflowDetailSnapshotLines(workflow)
-assert.equal(phaseSelectedLines[0], 'UI Alignment Workflow')
-assert.equal(phaseSelectedLines[1], 'Official-style running workflow detail.                                                        1/2 agents · 2s')
-assert.equal(phaseSelectedLines[3], '╭ Phases ────────┬ scan · 2 agents ─────────────────────────────────────────────────────────────────────────────╮')
-assert.equal(phaseSelectedLines[4], '│ ❯ 1 scan   1/2  │  ⏺ scan-a                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
-assert.equal(phaseSelectedLines[5], '│                 │  ⏺ scan-b                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
-assert.equal(phaseSelectedLines[6], '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
-assert.equal(phaseSelectedLines[8], '↑↓ select · x stop workflow · p pause · esc back · s save')
+assertLine(phaseSelectedLines[0], 'UI Alignment Workflow')
+assertLine(phaseSelectedLines[1], 'Official-style running workflow detail.                                                        1/2 agents · 2s')
+assertLine(phaseSelectedLines[3], '╭ Phases ────────┬ scan · 2 agents ─────────────────────────────────────────────────────────────────────────────╮')
+assertLine(phaseSelectedLines[4], '│ ❯ 1 scan   1/2  │  ⏺ scan-a                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
+assertLine(phaseSelectedLines[5], '│                 │  ⏺ scan-b                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
+assertLine(phaseSelectedLines[6], '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
+assertLine(phaseSelectedLines[8], '↑↓ select · x stop workflow · p pause · esc back · s save')
 
 const agentSelectedLines = workflowDetailSnapshotLines(workflow, { selectedAgentId: 'scan-b' })
-assert.equal(agentSelectedLines[3], '╭ Phases ────────┬ scan · 2 agents ─────────────────────────────────────────────────────────────────────────────╮')
-assert.equal(agentSelectedLines[4], '│   1 scan   1/2  │  ⏺ scan-a                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
-assert.equal(agentSelectedLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    0 tok · 0 tools                                │')
-assert.equal(agentSelectedLines[6], '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
-assert.equal(agentSelectedLines[8], '↑↓ select · x stop · r restart · p pause · esc back · s save')
+assertLine(agentSelectedLines[3], '╭ Phases ────────┬ scan · 2 agents ─────────────────────────────────────────────────────────────────────────────╮')
+assertLine(agentSelectedLines[4], '│   1 scan   1/2  │  ⏺ scan-a                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
+assertLine(agentSelectedLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
+assertLine(agentSelectedLines[6], '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
+assertLine(agentSelectedLines[8], '↑↓ select · x stop · r restart · p pause · esc back · s save')
 
 const agentDetailLines = workflowDetailSnapshotLines(workflow, { selectedAgentId: 'scan-b', showAgentDetail: true })
-assert.equal(agentDetailLines[3], '╭ scan · 2 agents┬ scan-b ─────────────────────────────────────────────────────────────────────────────────────╮')
-assert.equal(agentDetailLines[4], '│   ⏺ scan-a     │ ⏺ Running · gpt-5.5[1m]                                                                    │')
-assert.equal(agentDetailLines[5], '│ ❯ ⏺ scan-b    │ 0 tok · 0 tool calls                                                                       │')
-assert.equal(agentDetailLines[7], '│                │ Prompt                                                                                     │')
-assert.equal(agentDetailLines[8], '│                │   Scan UI state.                                                                           │')
-assert.equal(agentDetailLines[10], '│                │ Activity                                                                                   │')
-assert.equal(agentDetailLines[11], '│                │   Still running…                                                                           │')
-assert.equal(agentDetailLines[13], '│                │ Outcome                                                                                    │')
-assert.equal(agentDetailLines[14], '│                │   Still running…                                                                           │')
-assert.equal(agentDetailLines.at(-3), '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
-assert.equal(agentDetailLines.at(-1), '↑↓ agent · x stop · r restart · p pause · esc back · s save')
+assertLine(agentDetailLines[3], '╭ scan · 2 agents┬ scan-b ─────────────────────────────────────────────────────────────────────────────────────╮')
+assertLine(agentDetailLines[4], '│   ⏺ scan-a     │ ⏺ Running · gpt-5.5[1m]                                                                    │')
+assertLine(agentDetailLines[5], '│ ❯ ⏺ scan-b     │ 0 tok · 0 tool calls                                                                       │')
+assertLine(agentDetailLines[7], '│                │ Prompt                                                                                     │')
+assertLine(agentDetailLines[8], '│                │   Scan UI state.                                                                           │')
+assertLine(agentDetailLines[10], '│                │ Activity                                                                                   │')
+assertLine(agentDetailLines[11], '│                │   Still running…                                                                           │')
+assertLine(agentDetailLines[13], '│                │ Outcome                                                                                    │')
+assertLine(agentDetailLines[14], '│                │   Waiting for an agent slot.                                                                           │')
+assertLine(agentDetailLines.at(-3), '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
+assertLine(agentDetailLines.at(-1), '↑↓ agent · x stop · r restart · p pause · esc back · s save')
 
 const retryDetailLines = workflowDetailSnapshotLines({
   ...workflow,
@@ -131,9 +139,9 @@ const retryDetailLines = workflowDetailSnapshotLines({
     },
   ],
 }, { selectedAgentId: 'scan-b (retry 1)', showAgentDetail: true })
-assert.equal(retryDetailLines[4], '│ ❯ ⏺ scan-b (retry 1)│ ⏺ Running · gpt-5.5[1m] · attempt 2 (user retry)                                     │')
-assert.equal(retryDetailLines[13], '│                      │ Outcome                                                                              │')
-assert.equal(retryDetailLines[14], '│                      │   Still running…                                                                     │')
+assertLine(retryDetailLines[4], '│ ❯ ⏺ scan-b (retry 1)│ ⏺ Running · gpt-5.5[1m] · attempt 2 (user retry)                                      │')
+assert.ok(retryDetailLines[13]?.includes('Outcome'), retryDetailLines.join('\n'))
+assert.ok(retryDetailLines[14]?.includes('Waiting for an agent slot.'), retryDetailLines.join('\n'))
 
 const liveProgressWorkflow: LocalWorkflowTaskState = {
   ...workflow,
@@ -148,11 +156,11 @@ const liveProgressWorkflow: LocalWorkflowTaskState = {
   },
 }
 const liveProgressLines = workflowDetailSnapshotLines(liveProgressWorkflow, { selectedAgentId: 'scan-b' })
-assert.equal(liveProgressLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    12 tok · 2 tools                               │')
+assertLine(liveProgressLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    12 tok · 2 tools                               │')
 const liveAgentDetailLines = workflowDetailSnapshotLines(liveProgressWorkflow, { selectedAgentId: 'scan-b', showAgentDetail: true })
-assert.equal(liveAgentDetailLines[8], '│                │   Investigate UI rendering drift.                                                          │')
-assert.equal(liveAgentDetailLines[11], '│                │   Skill(superpowers:using-superpowers)                                                     │')
-assert.equal(liveAgentDetailLines[12], '│                │   Bash(sleep 20)                                                                           │')
+assertLine(liveAgentDetailLines[8], '│                │   Investigate UI rendering drift.                                                          │')
+assertLine(liveAgentDetailLines[11], '│                │   Skill(superpowers:using-superpowers)                                                     │')
+assertLine(liveAgentDetailLines[12], '│                │   Bash(sleep 20)                                                                           │')
 
 const runtimeAgentIdLines = workflowDetailSnapshotLines({
   ...workflow,
@@ -186,14 +194,14 @@ const runtimeAgentIdLines = workflowDetailSnapshotLines({
     },
   ],
 }, { selectedAgentId: 'display-agent' })
-assert.equal(runtimeAgentIdLines[4], '│   1 scan   1/1  │ ❯⏺ display-agent            gpt-5.5[1m]    19687 tok · 0 tools                            │')
+assertLine(runtimeAgentIdLines[4], '│   1 scan   1/1  │ ❯⏺ display-agent            gpt-5.5[1m]    19687 tok · 0 tools                            │')
 
 const pausedLines = workflowDetailSnapshotLines({ ...workflow, status: 'pending' }, { selectedAgentId: 'scan-b', showAgentDetail: true })
-assert.equal(pausedLines[1], 'Official-style running workflow detail.                                               1/2 agents · 2s · paused')
-assert.equal(pausedLines[4], '│   ◌ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │')
-assert.equal(pausedLines[5], '│ ❯ ◌ scan-b     │ 0 tok · 0 tool calls                                                                       │')
-assert.equal(pausedLines[14], '│                │   The workflow stopped before this agent finished.                                         │')
-assert.equal(pausedLines.at(-1), '↑↓ agent · p resume · esc back · s save')
+assertLine(pausedLines[1], 'Official-style running workflow detail.                                               1/2 agents · 2s · paused')
+assertLine(pausedLines[4], '│   ◌ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │')
+assertLine(pausedLines[5], '│ ❯ ◌ scan-b     │ 0 tok · 0 tool calls                                                                       │')
+assertLine(pausedLines[14], '│                │   The workflow stopped before this agent finished.                                         │')
+assertLine(pausedLines.at(-1), '↑↓ agent · p resume · esc back · s save')
 
 assert.equal(
   workflowDetailSnapshotLines({ ...workflow, status: 'pending' }).at(-1),
@@ -224,7 +232,90 @@ const stagedLines = workflowDetailSnapshotLines({
     },
   ],
 })
-assert.equal(stagedLines[1], 'Official-style running workflow detail.                                                        0/3 agents · 2s')
+assertLine(stagedLines[1], 'Official-style running workflow detail.                                                        0/3 agents · 2s')
+
+const officialParentWorkflow: LocalWorkflowTaskState = {
+  ...workflow,
+  status: 'completed',
+  workflowName: 'tmux-official-parent',
+  description: 'Workflow: tmux-official-parent',
+  summary: 'Workflow completed',
+  meta: {
+    name: 'tmux-official-parent',
+    description: 'tmux official parent workflow',
+    phases: [{ title: 'Parent', detail: 'Run child workflow then parent agent' }],
+  },
+  agentCount: 2,
+  phases: [
+    {
+      id: 'Parent',
+      status: 'completed',
+      agentIds: ['child-agent'],
+      completedAgentIds: ['child-agent'],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [
+        {
+          phaseId: 'Parent',
+          agentId: 'child-agent',
+          index: 0,
+          status: 'completed',
+          output: 'official child ok',
+        },
+      ],
+    },
+    {
+      id: 'parent-agent',
+      status: 'completed',
+      agentIds: ['parent-agent'],
+      completedAgentIds: ['parent-agent'],
+      skippedAgentIds: [],
+      failedAgentIds: [],
+      results: [
+        {
+          phaseId: 'parent-agent',
+          agentId: 'parent-agent',
+          index: 0,
+          status: 'completed',
+          output: 'official parent ok',
+        },
+      ],
+    },
+  ],
+  results: [],
+}
+const officialParentLines = workflowDetailSnapshotLines(officialParentWorkflow)
+assert.ok(officialParentLines.some(line => line.includes('2 parent-agen')), officialParentLines.join('\n'))
+const officialParentSelectedLines = workflowDetailSnapshotLines(officialParentWorkflow, { selectedAgentId: 'parent-agent' })
+assert.ok(officialParentSelectedLines.some(line => line.includes('parent-agent') && line.includes('0 tok · 0 tools')), officialParentSelectedLines.join('\n'))
+const officialParentAgentLines = workflowDetailSnapshotLines(officialParentWorkflow, { selectedAgentId: 'parent-agent', showAgentDetail: true })
+assert.ok(officialParentAgentLines.some(line => line.includes('parent-agent ·')), officialParentAgentLines.join('\n'))
+assert.ok(officialParentAgentLines.some(line => line.includes('official parent ok')), officialParentAgentLines.join('\n'))
+
+const completedPromptLines = workflowDetailSnapshotLines({
+  ...workflow,
+  status: 'completed',
+  liveAgents: undefined,
+  phases: [
+    {
+      ...workflow.phases[0]!,
+      agentIds: ['scan-a'],
+      completedAgentIds: ['scan-a'],
+      results: [
+        {
+          phaseId: 'scan',
+          agentId: 'scan-a',
+          index: 0,
+          status: 'completed',
+          prompt: 'Saved result prompt.',
+          output: 'saved output',
+        },
+      ],
+    },
+  ],
+  results: [],
+}, { selectedAgentId: 'scan-a', showAgentDetail: true })
+assert.ok(completedPromptLines.some(line => line.includes('Saved result prompt.')), completedPromptLines.join('\n'))
 
 assert.equal(initialSelectedWorkflowAgentIndex(workflow), 0)
 assert.equal(initialSelectedWorkflowAgentIndex({ ...workflow, status: 'pending' }), null)

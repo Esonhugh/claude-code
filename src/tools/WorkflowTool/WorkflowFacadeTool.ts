@@ -2,7 +2,7 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
-import type { WorkflowArgs, WorkflowDryRunPlan } from './workflowSpec.js'
+import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
@@ -25,6 +25,9 @@ export type WorkflowFacadeInput =
       scriptPath?: string
       args?: WorkflowArgs
       resumeFromRunId?: string
+      plan?: unknown
+      description?: string
+      title?: string
     }
 
 export type NormalizedWorkflowFacadeInput =
@@ -32,6 +35,7 @@ export type NormalizedWorkflowFacadeInput =
       kind: 'saved-workflow'
       selector: string
       args?: WorkflowArgs
+      resumeFromRunId?: string
     }
   | {
       kind: 'inline-script'
@@ -43,6 +47,12 @@ export type NormalizedWorkflowFacadeInput =
   | {
       kind: 'script-path'
       scriptPath: string
+      args?: WorkflowArgs
+      resumeFromRunId?: string
+    }
+  | {
+      kind: 'plan'
+      plan: unknown
       args?: WorkflowArgs
       resumeFromRunId?: string
     }
@@ -66,6 +76,8 @@ const inputSchema = lazySchema(() =>
     args: workflowArgsSchema.optional(),
     resumeFromRunId: z.string().optional(),
     plan: z.unknown().optional(),
+    description: z.string().optional(),
+    title: z.string().optional(),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -96,7 +108,7 @@ export function normalizeWorkflowFacadeInput(
   if (typeof input === 'string') {
     const selector = input.trim()
     if (!selector) throw new Error('Workflow name is required')
-    return { kind: 'saved-workflow', selector, args: undefined }
+    return { kind: 'saved-workflow', selector, args: undefined, resumeFromRunId: undefined }
   }
 
   if (typeof input !== 'object' || input === null) {
@@ -126,10 +138,14 @@ export function normalizeWorkflowFacadeInput(
   }
 
   if (typeof input.name === 'string' && input.name.trim() !== '') {
-    return { kind: 'saved-workflow', selector: input.name.trim(), args: input.args }
+    return { kind: 'saved-workflow', selector: input.name.trim(), args: input.args, resumeFromRunId: input.resumeFromRunId }
   }
 
-  throw new Error('Workflow input requires name, script, or scriptPath')
+  if ('plan' in input && input.plan !== undefined) {
+    return { kind: 'plan', plan: input.plan, args: input.args, resumeFromRunId: input.resumeFromRunId }
+  }
+
+  throw new Error('Workflow input requires name, script, scriptPath, or plan')
 }
 
 export const WorkflowFacadeTool = buildTool({
@@ -140,7 +156,7 @@ export const WorkflowFacadeTool = buildTool({
     return 'Run an official-compatible workflow script or saved workflow'
   },
   async prompt() {
-    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script, name }, or { scriptPath }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.`
+    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script, name }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.`
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -162,7 +178,13 @@ export const WorkflowFacadeTool = buildTool({
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)
     const previewInput =
       normalized.kind === 'saved-workflow'
-        ? { name: normalized.selector, args: normalized.args }
+        ? {
+            name: normalized.selector,
+            args: normalized.args,
+            ...(normalized.resumeFromRunId
+              ? { resumeFromRunId: normalized.resumeFromRunId }
+              : {}),
+          }
         : normalized.kind === 'script-path'
           ? {
               scriptPath: normalized.scriptPath,
@@ -171,14 +193,22 @@ export const WorkflowFacadeTool = buildTool({
                 ? { resumeFromRunId: normalized.resumeFromRunId }
                 : {}),
             }
-          : {
-              name: normalized.name,
-              script: normalized.script,
-              args: normalized.args,
-              ...(normalized.resumeFromRunId
-                ? { resumeFromRunId: normalized.resumeFromRunId }
-                : {}),
-            }
+          : normalized.kind === 'plan'
+            ? {
+                plan: normalized.plan,
+                args: normalized.args,
+                ...(normalized.resumeFromRunId
+                  ? { resumeFromRunId: normalized.resumeFromRunId }
+                  : {}),
+              }
+            : {
+                name: normalized.name,
+                script: normalized.script,
+                args: normalized.args,
+                ...(normalized.resumeFromRunId
+                  ? { resumeFromRunId: normalized.resumeFromRunId }
+                  : {}),
+              }
     return {
       behavior: 'ask',
       message: 'Run a dynamic workflow?',
@@ -189,11 +219,26 @@ export const WorkflowFacadeTool = buildTool({
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)
     if (normalized.kind === 'saved-workflow') return `Workflow ${normalized.selector}`
     if (normalized.kind === 'script-path') return `Workflow ${normalized.scriptPath}`
+    if (normalized.kind === 'plan') return 'Workflow plan'
     return `Workflow ${normalized.name}`
   },
   async call(input, context, canUseTool, assistantMessage) {
     const cwd = resolveCwd(context)
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)
+
+    if (normalized.kind === 'plan') {
+      const plan = validateWorkflowSpec(normalized.plan as WorkflowSpec) as WorkflowDryRunPlan
+      return {
+        data: await runWorkflowPlan({
+          plan,
+          context,
+          canUseTool,
+          assistantMessage,
+          runArgs: normalized.args,
+          resumeFromRunId: normalized.resumeFromRunId,
+        }),
+      }
+    }
 
     if (normalized.kind === 'saved-workflow') {
       const workflow = await loadWorkflowSpecByNameOrPath(
@@ -212,6 +257,7 @@ export const WorkflowFacadeTool = buildTool({
             canUseTool,
             assistantMessage,
             scriptPath: workflow.path,
+            resumeFromRunId: normalized.resumeFromRunId,
           }),
         }
       }
@@ -222,6 +268,7 @@ export const WorkflowFacadeTool = buildTool({
           canUseTool,
           assistantMessage,
           runArgs: normalized.args,
+          resumeFromRunId: normalized.resumeFromRunId,
           injectRunArgsIntoRootPrompt: !workflow.spec.runScriptSnapshot,
         }),
       }
@@ -237,7 +284,7 @@ export const WorkflowFacadeTool = buildTool({
             name: normalized.name,
             script: normalized.script,
           })
-    const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args)
+    const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args, { cwd })
     const plan = validateWorkflowSpec(spec) as WorkflowDryRunPlan
     const priorSession = normalized.resumeFromRunId
       ? await loadWorkflowRunSession({ cwd, workflowRunId: normalized.resumeFromRunId })

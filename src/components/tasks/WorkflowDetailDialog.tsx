@@ -6,10 +6,20 @@ import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import instances from '../../ink/instances.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { Theme } from '../../utils/theme.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import { stringWidth } from '../../ink/stringWidth.js'
+import {
+  visibleWorkflowPhases,
+  workflowDetailAgentMetrics,
+  workflowDetailAgentOutcome,
+  workflowDetailAgentPhase,
+  workflowDetailAgentPrompt,
+  workflowDetailAgentResult,
+  workflowDetailAgentStatus,
+  workflowDetailPhaseName,
+  type WorkflowDetailAgentStatus,
+} from './workflowDetailModel.js'
 
 type Props = {
   workflow?: LocalWorkflowTaskState
@@ -22,7 +32,7 @@ type Props = {
 }
 
 type Level = 'phases' | 'agents' | 'agent'
-type AgentStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'interrupted'
+type AgentStatus = WorkflowDetailAgentStatus
 // In agent detail: which pane has focus
 type AgentPane = 'left' | 'right'
 
@@ -49,65 +59,6 @@ function visibleAgentTotal(task: LocalWorkflowTaskState): number {
   return task.agentCount ?? started
 }
 
-function phaseDisplayName(task: LocalWorkflowTaskState, phaseIndex: number, phase: { id: string }): string {
-  return task.meta?.phases?.[phaseIndex]?.title ?? phase.id
-}
-
-function agentPhase(task: LocalWorkflowTaskState, agentId: string) {
-  return task.phases.find(p => p.agentIds.includes(agentId))
-}
-
-function workflowAgentResult(task: LocalWorkflowTaskState, agentId: string): WorkflowAgentResult | undefined {
-  const direct = task.results.find(r => r.agentId === agentId) ??
-    task.phases.flatMap(p => p.results).find(r => r.agentId === agentId)
-  if (direct) return direct
-  const phase = agentPhase(task, agentId)
-  if (!phase) return undefined
-  const idx = phase.agentIds.indexOf(agentId)
-  if (idx < 0) return undefined
-  return phase.results.find(r => r.index === idx) ??
-    task.results.find(r => r.phaseId === phase.id && r.index === idx)
-}
-
-function agentMetrics(task: LocalWorkflowTaskState, agentId: string) {
-  const result = workflowAgentResult(task, agentId)
-  const live = task.liveAgents?.[agentId]
-  return {
-    tokens: live?.tokenCount ?? result?.tokenCount ?? 0,
-    toolCalls: live?.toolUseCount ?? result?.toolUseCount ?? 0,
-    durationMs: result?.durationMs ?? 0,
-  }
-}
-
-function agentStatus(task: LocalWorkflowTaskState, agentId: string): AgentStatus {
-  if (task.status === 'pending') return 'interrupted'
-  const phase = agentPhase(task, agentId)
-  if (phase?.completedAgentIds.includes(agentId)) {
-    const r = workflowAgentResult(task, agentId)
-    if (r?.status === 'failed') return 'failed'
-    if (r?.status === 'skipped') return 'skipped'
-    return 'done'
-  }
-  if (phase) {
-    const idx = phase.agentIds.indexOf(agentId)
-    if (idx >= 0) {
-      const resultAtIndex = phase.results.find(r => r.index === idx)
-      if (resultAtIndex) {
-        if (resultAtIndex.status === 'failed') return 'failed'
-        if (resultAtIndex.status === 'skipped') return 'skipped'
-        return 'done'
-      }
-    }
-  }
-  if (task.liveAgents?.[agentId]) return 'running'
-  if (task.status === 'completed' || task.status === 'failed') {
-    const r = workflowAgentResult(task, agentId)
-    if (r) return r.status === 'failed' ? 'failed' : r.status === 'skipped' ? 'skipped' : 'done'
-    return task.status === 'completed' ? 'done' : 'interrupted'
-  }
-  return 'queued'
-}
-
 // All icons must NOT match emoji-regex (which gives width 2 via getEmojiWidth)
 // ✔ (U+2714), ⏺ (U+23FA), ▪ (U+25AA) all match emoji-regex → width 2 in our stringWidth
 // Use only non-emoji chars: ✓ ✗ ⊛ ⬤ ⊘ ⊚
@@ -125,22 +76,6 @@ function statusGlyph(s: AgentStatus): { icon: string; color: keyof Theme | undef
 const STATUS_LABELS: Record<AgentStatus, string> = {
   queued: 'Queued', running: 'Running', done: 'Completed',
   failed: 'Failed', skipped: 'Skipped', interrupted: 'Stopped',
-}
-
-function agentPrompt(task: LocalWorkflowTaskState, agentId: string): string {
-  const pi = task.phases.findIndex(p => p.agentIds.includes(agentId))
-  const result = workflowAgentResult(task, agentId)
-  return task.liveAgents?.[agentId]?.prompt ?? result?.prompt ?? task.meta?.phases?.[pi]?.detail ?? agentId
-}
-
-function agentOutcome(task: LocalWorkflowTaskState, agentId: string): string {
-  const s = agentStatus(task, agentId)
-  if (s === 'queued') return 'Waiting for an agent slot.'
-  if (s === 'running') return 'Still running…'
-  if (s === 'interrupted') return 'The workflow stopped before this agent finished.'
-  if (s === 'skipped') return 'Skipped by user.'
-  if (s === 'failed') return workflowAgentResult(task, agentId)?.error ?? 'failed'
-  return workflowAgentResult(task, agentId)?.output ?? '(empty)'
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -227,18 +162,7 @@ export function WorkflowDetailDialog({
 
   const prevLayoutKeyRef = useRef('')
 
-  // Show all phases from meta (or those with agents/running)
-  const visiblePhases = React.useMemo(() => {
-    // If meta has phases, show all of them regardless of state
-    if (workflow.meta?.phases && workflow.meta.phases.length > 0) {
-      // Map meta phases to matching task phases by title/id
-      return workflow.meta.phases.map((mp, idx) => {
-        const found = workflow.phases.find(p => p.id === mp.title) ?? workflow.phases[idx]
-        return found ?? { id: mp.title, status: 'pending' as const, agentIds: [], completedAgentIds: [], skippedAgentIds: [], failedAgentIds: [], results: [] }
-      })
-    }
-    return workflow.phases.filter(p => p.agentIds.length > 0 || p.status === 'running')
-  }, [workflow.phases, workflow.meta])
+  const visiblePhases = React.useMemo(() => visibleWorkflowPhases(workflow), [workflow])
 
   const currentPhase = visiblePhases[Math.min(selectedPhase, visiblePhases.length - 1)]
   const agentIds = currentPhase?.agentIds ?? []
@@ -328,7 +252,8 @@ export function WorkflowDetailDialog({
   const statsText = `${done}/${total} ${total === 1 ? 'agent' : 'agents'} · ${formatDuration(elapsedMs(workflow))} · ${statusWord}`
 
   // Panel titles
-  const phaseTitle = currentPhase ? phaseDisplayName(workflow, workflow.phases.indexOf(currentPhase), currentPhase) : ''
+  const currentPhaseIndex = currentPhase ? visiblePhases.indexOf(currentPhase) : -1
+  const phaseTitle = currentPhase ? workflowDetailPhaseName(workflow, currentPhase, currentPhaseIndex) : ''
   const phasePending = currentPhase && currentPhase.agentIds.length === 0 && currentPhase.status !== 'running'
   const leftTitle = level === 'agent' ? `${phaseTitle} agents` : 'Phases'
   const rightTitle = level === 'agent' && currentAgentId
@@ -348,7 +273,7 @@ export function WorkflowDetailDialog({
       const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
       const phaseRunning = !phaseDone && phase.status === 'running'
       const phaseNotStarted = phase.agentIds.length === 0 && phase.status !== 'running'
-      const pName = phaseDisplayName(workflow, workflow.phases.indexOf(phase), phase)
+      const pName = workflowDetailPhaseName(workflow, phase, i)
       const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
       const icon = phaseDone ? '✓' : phaseRunning ? '⊛' : phaseNotStarted ? String(i + 1) : '⬤'
       const iconColor: keyof Theme | undefined = phaseDone ? 'success' : phaseRunning ? 'suggestion' : undefined
@@ -373,9 +298,9 @@ export function WorkflowDetailDialog({
     const model = workflow.defaultModel ?? 'Claude Opus 4.6'
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i]!
-      const s = agentStatus(workflow, id)
+      const s = workflowDetailAgentStatus(workflow, id)
       const g = statusGlyph(s)
-      const m = agentMetrics(workflow, id)
+      const m = workflowDetailAgentMetrics(workflow, id)
       const sel = level === 'agents' && i === selectedAgent
       const metricsStr = m.tokens > 0
         ? `${formatNumber(m.tokens)} tok · ${m.toolCalls} ${m.toolCalls === 1 ? 'tool' : 'tools'}${m.durationMs > 0 ? ' · ' + formatDuration(m.durationMs) : ''}`
@@ -408,7 +333,7 @@ export function WorkflowDetailDialog({
     for (let i = 0; i < agentIds.length; i++) {
       const id = agentIds[i]!
       const sel = i === selectedAgent
-      const as = agentStatus(workflow, id)
+      const as = workflowDetailAgentStatus(workflow, id)
       const ag = statusGlyph(as)
       leftNodes.push(
         <Box key={id} width={AGENT_LEFT_W}>
@@ -421,10 +346,10 @@ export function WorkflowDetailDialog({
       )
     }
     // Right: detail view for selected agent (scrollable)
-    const s = agentStatus(workflow, currentAgentId)
+    const s = workflowDetailAgentStatus(workflow, currentAgentId)
     const g = statusGlyph(s)
-    const m = agentMetrics(workflow, currentAgentId)
-    const outcomeRaw = agentOutcome(workflow, currentAgentId)
+    const m = workflowDetailAgentMetrics(workflow, currentAgentId)
+    const outcomeRaw = workflowDetailAgentOutcome(workflow, currentAgentId)
     const maxLineW = rightW - 2
     const outcomeLines: string[] = []
     for (const line of outcomeRaw.split('\n')) {
@@ -444,7 +369,7 @@ export function WorkflowDetailDialog({
     const activityLines = activities.length > 0
       ? activities.map(a => truncate(a, maxLineW))
       : [liveAgent?.activity ?? (m.toolCalls > 0 ? `${m.toolCalls} tool ${m.toolCalls === 1 ? 'call' : 'calls'} completed` : 'No tool calls.')]
-    const promptText = agentPrompt(workflow, currentAgentId)
+    const promptText = workflowDetailAgentPrompt(workflow, currentAgentId)
     const promptLines = promptText.split('\n')
     const promptPreview = promptLines.length > 2
       ? [truncate(promptLines[0]!, maxLineW), `… ${promptLines.length - 1} more lines`]

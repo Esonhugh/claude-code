@@ -1,5 +1,14 @@
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { stringWidth } from '../../ink/stringWidth.js'
+import {
+  visibleWorkflowPhases,
+  workflowDetailAgentMetrics,
+  workflowDetailAgentOutcome,
+  workflowDetailAgentPhase,
+  workflowDetailAgentPrompt,
+  workflowDetailAgentResult,
+  workflowDetailPhaseName,
+} from './workflowDetailModel.js'
 
 const PANEL_WIDTH = 110
 const LEFT_WIDTH = 16
@@ -12,7 +21,7 @@ type WorkflowDetailSnapshotOptions = {
 
 export function initialSelectedWorkflowAgentIndex(task?: LocalWorkflowTaskState): number | null {
   if (task?.status !== 'running') return null
-  return task.phases.some(phase => phase.agentIds.length > 0) ? 0 : null
+  return visibleWorkflowPhases(task).some(phase => phase.agentIds.length > 0) ? 0 : null
 }
 
 function completedAgents(task: LocalWorkflowTaskState): number {
@@ -54,56 +63,39 @@ function pad(value: string, width: number): string {
   return `${truncated}${' '.repeat(Math.max(0, width - stringWidth(truncated)))}`
 }
 
-function displayPhaseId(task: LocalWorkflowTaskState, phaseIndex: number): string {
-  return task.meta?.phases?.[phaseIndex]?.title ?? task.phases[phaseIndex]?.id ?? ''
+function displayPhaseId(task: LocalWorkflowTaskState, phaseIndex: number, phases = visibleWorkflowPhases(task)): string {
+  return workflowDetailPhaseName(task, phases[phaseIndex], phaseIndex)
 }
 
 function phaseLabel(
   task: LocalWorkflowTaskState,
+  phases: ReturnType<typeof visibleWorkflowPhases>,
   phaseIndex: number,
   selected: boolean,
 ): string {
-  const phase = task.phases[phaseIndex]
+  const phase = phases[phaseIndex]
   if (!phase) return ''.padEnd(LEFT_WIDTH)
   const marker = selected ? '❯ ' : '  '
   return pad(
-    `${marker}${phaseIndex + 1} ${displayPhaseId(task, phaseIndex)}   ${phase.completedAgentIds.length}/${phase.agentIds.length}`,
+    `${marker}${phaseIndex + 1} ${displayPhaseId(task, phaseIndex, phases)}   ${phase.completedAgentIds.length}/${phase.agentIds.length}`,
     LEFT_WIDTH,
   )
 }
 
-function phaseHeaderTitle(task: LocalWorkflowTaskState): string {
-  const selectedPhase = task.phases[0]
+function phaseHeaderTitle(task: LocalWorkflowTaskState, phaseIndex: number, phases: ReturnType<typeof visibleWorkflowPhases>): string {
+  const selectedPhase = phases[phaseIndex]
   if (!selectedPhase) return ''
-  return `${displayPhaseId(task, 0)} · ${selectedPhase.agentIds.length} ${selectedPhase.agentIds.length === 1 ? 'agent' : 'agents'} `
-}
-
-function workflowAgentResult(task: LocalWorkflowTaskState, agentId: string) {
-  const direct = task.results.find(item => item.agentId === agentId) ?? task.phases.flatMap(phase => phase.results).find(item => item.agentId === agentId)
-  if (direct) return direct
-  const phase = task.phases.find(phase => phase.agentIds.includes(agentId))
-  const index = phase?.agentIds.indexOf(agentId) ?? -1
-  if (!phase || index < 0) return undefined
-  return phase.results.find(item => item.index === index) ?? task.results.find(item => item.phaseId === phase.id && item.index === index)
-}
-
-function workflowAgentMetrics(task: LocalWorkflowTaskState, agentId: string): { tokenCount: number; toolUseCount: number } {
-  const result = workflowAgentResult(task, agentId)
-  const liveAgent = task.liveAgents?.[agentId]
-  return {
-    tokenCount: liveAgent?.tokenCount ?? result?.tokenCount ?? 0,
-    toolUseCount: liveAgent?.toolUseCount ?? result?.toolUseCount ?? 0,
-  }
+  return `${displayPhaseId(task, phaseIndex, phases)} · ${selectedPhase.agentIds.length} ${selectedPhase.agentIds.length === 1 ? 'agent' : 'agents'} `
 }
 
 function agentRow(task: LocalWorkflowTaskState, agentId: string, selected: boolean): string {
   const model = task.defaultModel ?? 'gpt-5.5[1m]'
-  const { tokenCount, toolUseCount } = workflowAgentMetrics(task, agentId)
+  const { tokens, toolCalls } = workflowDetailAgentMetrics(task, agentId)
   const marker = selected ? '❯' : ' '
   const icon = task.status === 'pending' && selected ? '◌' : '⏺'
   const suffix = task.status === 'pending' && selected ? ' · stopped' : ''
   return pad(
-    `${marker}${icon} ${pad(agentId, 24)} ${pad(model, 14)} ${tokenCount} tok · ${toolUseCount} ${toolUseCount === 1 ? 'tool' : 'tools'}${suffix}`,
+    `${marker}${icon} ${pad(agentId, 24)} ${pad(model, 14)} ${tokens} tok · ${toolCalls} ${toolCalls === 1 ? 'tool' : 'tools'}${suffix}`,
     RIGHT_WIDTH,
   )
 }
@@ -120,31 +112,29 @@ function formatHeader(task: LocalWorkflowTaskState): string[] {
 }
 
 function formatPhasePanel(task: LocalWorkflowTaskState, selectedAgentId?: string): string[] {
-  const selectedPhase = selectedAgentId ? agentPhase(task, selectedAgentId) ?? task.phases[0] : task.phases[0]
-  const selectedPhaseIndex = selectedPhase ? task.phases.indexOf(selectedPhase) : 0
+  const phases = visibleWorkflowPhases(task)
+  const selectedPhase = selectedAgentId ? workflowDetailAgentPhase(task, selectedAgentId) ?? phases[0] : phases[0]
+  const selectedPhaseIndex = selectedPhase ? phases.indexOf(selectedPhase) : 0
   const leftPadded = pad('Phases', LEFT_WIDTH - 2)
   const leftFilled = leftPadded.replace(/\s+$/, ' ────────')
-  const rightPadded = pad(phaseHeaderTitle(task), RIGHT_WIDTH)
+  const rightPadded = pad(phaseHeaderTitle(task, selectedPhaseIndex, phases), RIGHT_WIDTH)
   const rightFilled = rightPadded.replace(/\s+$/, ' ─────────────────────────────────────────────────────────────────────────────')
   const top = `╭ ${leftFilled}┬ ${rightFilled}╮`
   const rows: string[] = [top]
-  const maxRows = Math.max(task.phases.length, selectedPhase?.agentIds.length ?? 0, 1)
+  const maxRows = Math.max(phases.length, selectedPhase?.agentIds.length ?? 0, 1)
   for (let index = 0; index < maxRows; index += 1) {
     rows.push(
-      `│ ${phaseLabel(task, index, !selectedAgentId && index === selectedPhaseIndex)}│ ${selectedPhase?.agentIds[index] ? agentRow(task, selectedPhase.agentIds[index]!, selectedPhase.agentIds[index] === selectedAgentId) : ' '.repeat(RIGHT_WIDTH)}│`,
+      `│ ${phaseLabel(task, phases, index, !selectedAgentId && index === selectedPhaseIndex)}│ ${selectedPhase?.agentIds[index] ? agentRow(task, selectedPhase.agentIds[index]!, selectedPhase.agentIds[index] === selectedAgentId) : ' '.repeat(RIGHT_WIDTH)}│`,
     )
   }
   rows.push(`╰${'─'.repeat(LEFT_WIDTH)}┴${'─'.repeat(RIGHT_WIDTH + 1)}╯`)
   return rows
 }
 
-function agentPhase(task: LocalWorkflowTaskState, agentId: string) {
-  return task.phases.find(phase => phase.agentIds.includes(agentId))
-}
-
 function selectedAgentPhaseIndex(task: LocalWorkflowTaskState, selectedAgentId: string): number {
-  const phase = agentPhase(task, selectedAgentId)
-  return phase ? Math.max(0, task.phases.indexOf(phase)) : 0
+  const phases = visibleWorkflowPhases(task)
+  const phase = workflowDetailAgentPhase(task, selectedAgentId)
+  return phase ? Math.max(0, phases.indexOf(phase)) : 0
 }
 
 function retryAttempt(agentId: string): number {
@@ -159,13 +149,8 @@ function agentStatusLine(task: LocalWorkflowTaskState, agentId: string): string 
 }
 
 function agentMetricLine(task: LocalWorkflowTaskState, agentId: string): string {
-  const { tokenCount, toolUseCount } = workflowAgentMetrics(task, agentId)
-  return `${tokenCount} tok · ${toolUseCount} tool ${toolUseCount === 1 ? 'call' : 'calls'}`
-}
-
-function agentPrompt(task: LocalWorkflowTaskState, selectedAgentId: string): string {
-  const phaseIndex = selectedAgentPhaseIndex(task, selectedAgentId)
-  return task.liveAgents?.[selectedAgentId]?.prompt ?? task.meta?.phases?.[phaseIndex]?.detail ?? agentPhase(task, selectedAgentId)?.id ?? selectedAgentId
+  const { tokens, toolCalls } = workflowDetailAgentMetrics(task, agentId)
+  return `${tokens} tok · ${toolCalls} tool ${toolCalls === 1 ? 'call' : 'calls'}`
 }
 
 function agentActivities(task: LocalWorkflowTaskState, selectedAgentId: string): string[] {
@@ -173,14 +158,7 @@ function agentActivities(task: LocalWorkflowTaskState, selectedAgentId: string):
   if (liveAgent?.recentActivities?.length) return liveAgent.recentActivities
   if (liveAgent?.activity) return [liveAgent.activity]
   if (task.status === 'pending') return ['Bash(sleep 20)']
-  return [workflowAgentResult(task, selectedAgentId)?.output ?? 'Still running…']
-}
-
-function agentOutcome(task: LocalWorkflowTaskState, selectedAgentId: string): string {
-  if (task.status === 'pending') return 'The workflow stopped before this agent finished.'
-  const result = workflowAgentResult(task, selectedAgentId)
-  if (!result || result.status === 'running') return 'Still running…'
-  return result.output ?? result.error ?? result.status
+  return [workflowDetailAgentResult(task, selectedAgentId)?.output ?? 'Still running…']
 }
 
 function detailLine(value: string, width = RIGHT_WIDTH): string {
@@ -188,9 +166,10 @@ function detailLine(value: string, width = RIGHT_WIDTH): string {
 }
 
 function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: string): string[] {
+  const phases = visibleWorkflowPhases(task)
   const phaseIndex = selectedAgentPhaseIndex(task, selectedAgentId)
-  const phase = task.phases[phaseIndex]
-  const phaseTitle = `${displayPhaseId(task, phaseIndex)} · ${phase?.agentIds.length ?? 0} ${(phase?.agentIds.length ?? 0) === 1 ? 'agent' : 'agents'}`
+  const phase = phases[phaseIndex]
+  const phaseTitle = `${displayPhaseId(task, phaseIndex, phases)} · ${phase?.agentIds.length ?? 0} ${(phase?.agentIds.length ?? 0) === 1 ? 'agent' : 'agents'}`
   const agentIds = phase?.agentIds ?? [selectedAgentId]
   const leftRows = agentIds.map(agentId => {
     const selected = agentId === selectedAgentId
@@ -212,13 +191,13 @@ function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: s
     agentMetricLine(task, selectedAgentId),
     '',
     'Prompt',
-    `  ${agentPrompt(task, selectedAgentId)}`,
+    `  ${workflowDetailAgentPrompt(task, selectedAgentId)}`,
     '',
     'Activity',
     ...activityRows,
     '',
     'Outcome',
-    `  ${agentOutcome(task, selectedAgentId)}`,
+    `  ${workflowDetailAgentOutcome(task, selectedAgentId)}`,
   ]
   const rowCount = Math.max(leftRows.length, detailRows.length)
   for (let index = 0; index < rowCount; index += 1) {

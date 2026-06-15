@@ -2,7 +2,7 @@ import type { WorkflowScriptMeta } from './workflowScriptParser.js'
 
 export type WorkflowReviewMode = 'none' | 'cross-check' | 'adversarial' | 'synthesis'
 
-export type WorkflowPermissionMode = 'default' | 'acceptEdits' | 'plan'
+export type WorkflowPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
 
 export type WorkflowArgs =
   | string

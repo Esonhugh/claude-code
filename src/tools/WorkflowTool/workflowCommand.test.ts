@@ -69,10 +69,13 @@ const projectCommands = commands.filter(command =>
   ['research-workflow', 'js-command-workflow'].includes(command.name),
 )
 assert.equal(projectCommands.length, 2)
+assert.ok(commands.some(command => command.name === 'code-review'))
 assert.ok(commands.some(command => command.name === 'deep-research'))
 assert.equal(commands.some(command => command.name === 'investigate'), false)
 assert.equal(commands.some(command => command.name === 'bugfix'), false)
 assert.equal(commands.some(command => command.name === 'docs'), false)
+assert.equal(commands.some(command => command.name === 'dashboard'), false)
+assert.equal(commands.some(command => command.name === 'autopilot'), false)
 
 const command = commands.find(command => command.name === 'research-workflow')!
 assert.equal(command.type, 'prompt')

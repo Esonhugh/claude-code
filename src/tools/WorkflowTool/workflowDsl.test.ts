@@ -217,6 +217,24 @@ assert.equal(officialSpec.phases[0]?.prompt, 'Find files for runtime')
 assert.deepEqual(officialSpec.meta?.phases, [{ title: 'Scan', detail: 'Find files' }])
 assert.equal(officialSpec.runtime?.kind, 'javascript-worker')
 
+const officialModeVariantsPath = join(tempRoot, 'docs', 'workflows', 'official-mode-variants.js')
+await writeFile(
+  officialModeVariantsPath,
+  `export const meta = {
+    name: 'official-mode-variants',
+    description: 'Official-style workflow with permission mode variants',
+    phases: [{ title: 'Modes', detail: 'Run mode variants' }],
+  }
+
+  phase('Modes')
+  await agent('bypass prompt', { label: 'bypass', mode: 'bypassPermissions' })
+  await agent('dont ask prompt', { label: 'dont-ask', mode: 'dontAsk' })
+  `,
+)
+const officialModeVariantsSpec = await loadWorkflowScriptSpec(officialModeVariantsPath)
+assert.equal(officialModeVariantsSpec.phases[0]?.permissionMode, 'bypassPermissions')
+assert.equal(officialModeVariantsSpec.phases[1]?.permissionMode, 'dontAsk')
+
 const officialParallelPath = join(tempRoot, 'docs', 'workflows', 'official-parallel.js')
 await writeFile(
   officialParallelPath,
@@ -266,5 +284,66 @@ await writeFile(
 
 const officialUrlSpec = await loadWorkflowScriptSpec(officialUrlPath)
 assert.equal(officialUrlSpec.phases[0]?.prompt, 'host=example.com')
+
+const childWorkflowPath = join(tempRoot, 'docs', 'workflows', 'official-child.js')
+await writeFile(
+  childWorkflowPath,
+  `export const meta = {
+    name: 'official-child-workflow',
+    description: 'Official child workflow',
+    phases: [{ title: 'Child', detail: 'Run child agent' }],
+  }
+
+  phase('Child')
+  await agent('child topic=' + args.topic, { label: 'child-agent' })
+  `,
+)
+const parentWorkflowPath = join(tempRoot, 'docs', 'workflows', 'official-parent.js')
+await writeFile(
+  parentWorkflowPath,
+  `export const meta = {
+    name: 'official-parent-workflow',
+    description: 'Official parent workflow',
+    phases: [{ title: 'Parent', detail: 'Run child workflow' }],
+  }
+
+  phase('Parent')
+  await workflow('official-child-workflow')
+  await agent('parent after child', { label: 'parent-agent' })
+  `,
+)
+const parentWorkflowSpec = await loadWorkflowScriptSpec(parentWorkflowPath, { topic: 'nested' })
+assert.deepEqual(parentWorkflowSpec.phases.map(phase => phase.id), ['child-agent', 'parent-agent'])
+assert.equal(parentWorkflowSpec.phases[0]?.prompt, 'child topic=nested')
+assert.equal(parentWorkflowSpec.phases[1]?.prompt, 'parent after child')
+
+const nestedChildPath = join(tempRoot, 'docs', 'workflows', 'official-nested-child.js')
+await writeFile(
+  nestedChildPath,
+  `export const meta = {
+    name: 'official-nested-child-workflow',
+    description: 'Nested child workflow',
+    phases: [{ title: 'Nested', detail: 'Attempt nested child' }],
+  }
+
+  await workflow('official-child-workflow')
+  `,
+)
+const nestedParentPath = join(tempRoot, 'docs', 'workflows', 'official-nested-parent.js')
+await writeFile(
+  nestedParentPath,
+  `export const meta = {
+    name: 'official-nested-parent-workflow',
+    description: 'Nested parent workflow',
+    phases: [{ title: 'Parent', detail: 'Attempt nested child' }],
+  }
+
+  await workflow({ scriptPath: 'official-nested-child.js' })
+  `,
+)
+await assert.rejects(
+  () => loadWorkflowScriptSpec(nestedParentPath),
+  /workflow\(\) cannot be called from within a child workflow/,
+)
 
 console.log('workflowDsl.test.ts passed')

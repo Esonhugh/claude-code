@@ -43,10 +43,53 @@ assert.deepEqual(normalizeWorkflowFacadeInput('official-compatible-research'), {
   kind: 'saved-workflow',
   selector: 'official-compatible-research',
   args: undefined,
+  resumeFromRunId: undefined,
 })
+
+assert.deepEqual(
+  normalizeWorkflowFacadeInput({
+    name: 'official-compatible-research',
+    description: 'ignored compatibility field',
+    title: 'ignored compatibility title',
+    resumeFromRunId: 'wf-saved',
+  }),
+  {
+    kind: 'saved-workflow',
+    selector: 'official-compatible-research',
+    args: undefined,
+    resumeFromRunId: 'wf-saved',
+  },
+)
+
+assert.deepEqual(
+  normalizeWorkflowFacadeInput({
+    args: 'direct plan args',
+    resumeFromRunId: 'wf-plan',
+    plan: {
+      name: 'direct-plan',
+      description: 'Run a direct plan.',
+      phases: [{ id: 'inspect', description: 'Inspect args.', prompt: 'inspect direct plan' }],
+    },
+  }),
+  {
+    kind: 'plan',
+    args: 'direct plan args',
+    resumeFromRunId: 'wf-plan',
+    plan: {
+      name: 'direct-plan',
+      description: 'Run a direct plan.',
+      phases: [{ id: 'inspect', description: 'Inspect args.', prompt: 'inspect direct plan' }],
+    },
+  },
+)
 
 const { WorkflowFacadeTool } = await import('./WorkflowFacadeTool.js')
 assert.equal(WorkflowFacadeTool.name, 'Workflow')
+assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
+  name: 'research',
+  description: 'ignored compatibility field',
+  title: 'ignored compatibility title',
+}))
 assert.deepEqual(
   await WorkflowFacadeTool.checkPermissions(
     { scriptPath: '/tmp/workflow.js', args: 'topic' },
@@ -138,7 +181,7 @@ const setState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const launchedPrompts: string[] = []
-const launchedAgents: Array<{ description: string; prompt: string }> = []
+const launchedAgents: Array<{ description: string; prompt: string; mode?: string }> = []
 const context = {
   getCwd: () => tempRoot,
   getAppState: () => state,
@@ -149,11 +192,12 @@ const context = {
       {
         name: 'Agent',
         aliases: ['Task'],
-        async call(input: { description: string; prompt: string }) {
+        async call(input: { description: string; prompt: string; mode?: string }) {
           launchedPrompts.push(input.prompt)
           launchedAgents.push({
             description: input.description,
             prompt: input.prompt,
+            mode: input.mode,
           })
           return {
             data: {
@@ -180,6 +224,23 @@ const context = {
   updateFileHistoryState: () => {},
   updateAttributionState: () => {},
 } as unknown as ToolUseContext
+
+const directPlanRun = await WorkflowFacadeTool.call(
+  {
+    args: 'direct plan args',
+    plan: {
+      name: 'direct-plan',
+      description: 'Run a direct plan.',
+      phases: [{ id: 'inspect', description: 'Inspect args.', prompt: 'inspect direct plan' }],
+    },
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_direct_plan' } } as never,
+)
+assert.match(String(directPlanRun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, ['inspect direct plan\n\nUser input:\ndirect plan args'])
+launchedPrompts.length = 0
 
 const inlineRun = await WorkflowFacadeTool.call(
   {
@@ -253,6 +314,107 @@ const officialInlineTask = Object.values(state.tasks).find(
 assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
 assert.deepEqual(launchedPrompts, ['scan meta'])
 
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const defaultModeRun = await WorkflowFacadeTool.call(
+  {
+    name: 'official-default-mode',
+    args: { topic: 'mode' },
+    script: `export const meta = {
+      name: 'official-default-mode',
+      description: 'Official default mode workflow',
+      phases: [{ title: 'Mode', detail: 'Run default mode agent' }],
+    }
+    phase('Mode')
+    await agent('default mode ' + args.topic, { label: 'default-mode', mode: 'default' })`,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_default_mode' } } as never,
+)
+assert.match(String(defaultModeRun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, ['default mode mode'])
+assert.equal(launchedAgents[0]?.mode, undefined)
+
+await writeFile(
+  join(tempRoot, '.claude', 'workflows', 'runtime-child.js'),
+  `export const meta = {
+    name: 'runtime-child',
+    description: 'Runtime child workflow.',
+    phases: [{ title: 'Child', detail: 'Run child agent' }],
+  }
+  phase('Child')
+  await agent('child runtime ' + args.topic, { label: 'child-runtime' })`,
+)
+launchedPrompts.length = 0
+const childWorkflowRun = await WorkflowFacadeTool.call(
+  {
+    name: 'official-child-parent',
+    args: { topic: 'child' },
+    script: `export const meta = {
+      name: 'official-child-parent',
+      description: 'Official child parent workflow',
+      phases: [{ title: 'Parent', detail: 'Run child workflow' }],
+    }
+    phase('Parent')
+    await workflow('runtime-child')
+    await agent('parent runtime ' + args.topic, { label: 'parent-runtime' })`,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_child_workflow' } } as never,
+)
+assert.match(String(childWorkflowRun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, ['child runtime child', 'parent runtime child'])
+const childWorkflowRunId = String(childWorkflowRun.data).match(/Run ID: (\S+)/)?.[1]
+assert.ok(childWorkflowRunId)
+const childWorkflowSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', childWorkflowRunId, 'session.json'), 'utf8'),
+)
+assert.equal(childWorkflowSession.resumeCacheEntries.length, 2)
+const childParentTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-child-parent',
+)!
+assert.deepEqual(childParentTask.phases.map(phase => [phase.id, phase.agentIds]), [
+  ['child-runtime', ['child-runtime']],
+  ['parent-runtime', ['parent-runtime']],
+])
+
+const colocatedParentPath = join(tempRoot, 'docs', 'workflows', 'runtime-parent.js')
+await mkdir(join(tempRoot, 'docs', 'workflows'), { recursive: true })
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'runtime-child-local.js'),
+  `export const meta = {
+    name: 'runtime-child-local',
+    description: 'Runtime colocated child workflow.',
+    phases: [{ title: 'Local child', detail: 'Run colocated child agent' }],
+  }
+  phase('Local child')
+  await agent('local child ' + args.topic, { label: 'local-child' })`,
+)
+await writeFile(
+  colocatedParentPath,
+  `export const meta = {
+    name: 'runtime-parent-local',
+    description: 'Runtime colocated parent workflow.',
+    phases: [{ title: 'Parent', detail: 'Run colocated child workflow' }],
+  }
+  phase('Parent')
+  await workflow({ scriptPath: './runtime-child-local.js' })`,
+)
+launchedPrompts.length = 0
+const colocatedChildRun = await WorkflowFacadeTool.call(
+  {
+    scriptPath: colocatedParentPath,
+    args: { topic: 'local' },
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_colocated_child' } } as never,
+)
+assert.match(String(colocatedChildRun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, ['local child local'])
+
 await assert.rejects(
   WorkflowFacadeTool.call(
     {
@@ -272,6 +434,16 @@ await assert.rejects(
   /Workflow script failed without error details/,
 )
 
+await writeFile(
+  officialSession.scriptPath,
+  `export const meta = {
+    name: 'official-inline',
+    description: 'Official inline workflow',
+    phases: [{ title: 'Scan', detail: 'Scan topic' }],
+  }
+  phase('Scan')
+  await agent('scan ' + args.topic, { label: 'scan', mode: 'default' })`,
+)
 launchedPrompts.length = 0
 const cachedRerun = await WorkflowFacadeTool.call(
   {

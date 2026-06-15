@@ -82,6 +82,57 @@ function formatWorkflowRunsEmpty(): string {
   return 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close'
 }
 
+function isLocalWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
+  return (
+    typeof task === 'object' &&
+    task !== null &&
+    'type' in task &&
+    task.type === 'local_workflow'
+  )
+}
+
+function completedAgents(task: LocalWorkflowTaskState): number {
+  return task.phases.reduce((sum, phase) => sum + phase.completedAgentIds.length, 0)
+}
+
+function totalAgents(task: LocalWorkflowTaskState): number {
+  return task.agentCount ?? task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
+}
+
+function workflowTaskName(task: LocalWorkflowTaskState): string {
+  return task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')
+}
+
+function formatWorkflowRuns(context: WorkflowCommandContext | unknown): string {
+  const tasks =
+    context &&
+    typeof context === 'object' &&
+    'getAppState' in context &&
+    typeof context.getAppState === 'function'
+      ? Object.values(context.getAppState().tasks ?? {})
+          .filter(isLocalWorkflowTask)
+          .sort((a, b) => b.startTime - a.startTime)
+      : []
+
+  if (tasks.length === 0) return formatWorkflowRunsEmpty()
+
+  const lines = [
+    'Dynamic workflows',
+    '',
+    `${tasks.length} ${tasks.length === 1 ? 'workflow' : 'workflows'} in this session`,
+    '',
+  ]
+  for (const task of tasks) {
+    const tokens = task.tokenCount ? ` · ${task.tokenCount} tok` : ''
+    lines.push(
+      `- ${task.id}: ${workflowTaskName(task)} [${task.status}] ${completedAgents(task)}/${totalAgents(task)} agents${tokens}`,
+      `  /workflows detail ${task.id}`,
+    )
+  }
+  lines.push('', 'Esc to close')
+  return lines.join('\n')
+}
+
 function formatWorkflowRunTemplates(templates: WorkflowRunTemplate[]): string {
   if (templates.length === 0) return 'No workflow run templates saved'
   return [
@@ -189,7 +240,7 @@ export async function call(
   const { action, selector } = parseArgs(args)
 
   if (action === 'runs') {
-    return { type: 'text', value: formatWorkflowRunsEmpty() }
+    return { type: 'text', value: formatWorkflowRuns(context) }
   }
 
   if (action === 'list') {

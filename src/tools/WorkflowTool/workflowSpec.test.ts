@@ -104,6 +104,29 @@ const trimmedDependencyPlan = validateWorkflowSpec({
 })
 assert.deepEqual(trimmedDependencyPlan.phases[1]?.dependsOn, ['first'])
 
+const permissionModePlan = validateWorkflowSpec({
+  name: 'Permission Modes',
+  description: 'A workflow with official permission mode variants.',
+  phases: [
+    {
+      id: 'bypass',
+      description: 'Run with bypass permissions.',
+      prompt: 'Bypass permissions prompt.',
+      permissionMode: 'bypassPermissions',
+    },
+    {
+      id: 'dont-ask',
+      description: 'Run without asking.',
+      prompt: 'Dont ask prompt.',
+      permissionMode: 'dontAsk',
+    },
+  ],
+})
+assert.equal(permissionModePlan.phases[0]?.permissionMode, 'bypassPermissions')
+assert.equal(permissionModePlan.phases[1]?.permissionMode, 'dontAsk')
+assert.match(formatWorkflowDryRun(permissionModePlan), /permissionMode: bypassPermissions/)
+assert.match(formatWorkflowDryRun(permissionModePlan), /permissionMode: dontAsk/)
+
 assert.throws(
   () => validateWorkflowSpec({
     name: 'Unknown Dependency',

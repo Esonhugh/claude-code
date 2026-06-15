@@ -1,5 +1,6 @@
 import vm from 'node:vm'
 import { availableParallelism } from 'node:os'
+import { dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -17,7 +18,8 @@ import {
   registerWorkflowTask,
   startWorkflowPhase,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowProgressEvent } from './workflowSpec.js'
+import type { WorkflowArgs, WorkflowDryRunPhase, WorkflowDryRunPlan, WorkflowPermissionMode, WorkflowProgressEvent } from './workflowSpec.js'
+import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 import {
   createWorkflowAgentEvent,
   createWorkflowLogEvent,
@@ -29,11 +31,14 @@ import {
   completeWorkflowRunSession,
   failWorkflowRunSession,
   startWorkflowRunSession,
-  type WorkflowRunSession,
 } from './workflowRunSessions.js'
-import { createWorkflowRunId } from './workflowScriptPersistence.js'
-import { parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
+import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScriptPersistence.js'
+import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import { getCwd } from '../../utils/cwd.js'
+import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
+import { loadWorkflowScriptSpec } from './workflowDsl.js'
+import { validateWorkflowSpec } from './validateWorkflowSpec.js'
+import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -51,7 +56,7 @@ type AgentToolInput = {
   prompt: string
   subagent_type?: string
   model?: 'sonnet' | 'opus' | 'haiku'
-  mode?: string
+  mode?: WorkflowPermissionMode
   isolation?: 'worktree'
 }
 
@@ -70,12 +75,11 @@ type AgentOpts = {
   schema?: object
   model?: string
   agentType?: string
-  mode?: string
+  mode?: WorkflowPermissionMode
   isolation?: 'worktree'
   stallMs?: number
 }
 
-type JournalEntry = { key: string; result: unknown }
 
 export type WorkflowScriptResult = {
   result: unknown
@@ -102,26 +106,46 @@ class Semaphore {
 
 // --- Journal (Resume Cache) ---
 class WorkflowJournal {
-  private cache = new Map<string, unknown>()
-  record(key: string, result: unknown): void { this.cache.set(key, result) }
-  lookup(key: string): { hit: true; result: unknown } | { hit: false } {
-    if (this.cache.has(key)) return { hit: true, result: this.cache.get(key) }
+  private cache = new Map<string, WorkflowResumeCacheEntry>()
+  record(identity: string, result: unknown, input: { index: number; phase?: string; label?: string }): void {
+    this.cache.set(identity, {
+      index: input.index,
+      identity,
+      phase: input.phase,
+      label: input.label,
+      result,
+      completedAt: Date.now(),
+    })
+  }
+  lookup(identity: string): { hit: true; result: unknown } | { hit: false } {
+    const entry = this.cache.get(identity)
+    if (entry) return { hit: true, result: entry.result }
     return { hit: false }
   }
-  entries(): JournalEntry[] {
-    return [...this.cache.entries()].map(([key, result]) => ({ key, result }))
+  entries(): WorkflowResumeCacheEntry[] {
+    return [...this.cache.values()]
   }
-  loadFrom(entries: JournalEntry[]): void {
-    for (const { key, result } of entries) this.cache.set(key, result)
+  loadFrom(entries: WorkflowResumeCacheEntry[]): void {
+    for (const entry of entries) this.cache.set(entry.identity, entry)
   }
+}
+
+function mapPermissionMode(mode: WorkflowPermissionMode | undefined): WorkflowPermissionMode | undefined {
+  return mode === 'default' ? undefined : mode
 }
 
 function agentIdentityKey(prompt: string, opts?: AgentOpts): string {
   const h = createHash('sha256')
   h.update(prompt)
-  if (opts?.label) h.update(opts.label)
-  if (opts?.model) h.update(opts.model)
-  if (opts?.schema) h.update(JSON.stringify(opts.schema))
+  h.update(JSON.stringify({
+    agentType: opts?.agentType,
+    isolation: opts?.isolation,
+    label: opts?.label,
+    mode: mapPermissionMode(opts?.mode),
+    model: opts?.model,
+    phase: opts?.phase,
+    schema: opts?.schema,
+  }))
   return h.digest('hex').slice(0, 16)
 }
 
@@ -140,14 +164,6 @@ function extractAgentText(output: AgentToolOutput): string {
       .join('\n')
       .trim() || output.status || 'completed'
   )
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) { reject(new Error('aborted')); return }
-    const timer = setTimeout(resolve, ms)
-    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')) }, { once: true })
-  })
 }
 
 // --- StructuredOutput schema prompt ---
@@ -194,7 +210,7 @@ export async function runWorkflowScript({
   scriptPath?: string
   budgetTotal?: number | null
   resumeFromRunId?: string
-  resumeJournalEntries?: JournalEntry[]
+  resumeJournalEntries?: WorkflowResumeCacheEntry[]
 }): Promise<string> {
   const agentTool = findAgentTool(context.options.tools)
   if (!agentTool) throw new Error('Workflow script execution requires the Agent tool')
@@ -258,16 +274,35 @@ export async function runWorkflowScript({
     const label = opts?.label || `agent-${agentCount + 1}`
     const identityKey = agentIdentityKey(prompt, opts)
     const phase = opts?.phase || label
+    const agentIndex = agentCount
+    agentCount++
 
     // Journal cache hit
     const cached = journal.lookup(identityKey)
     if (cached.hit) {
+      const output = typeof cached.result === 'string'
+        ? cached.result
+        : JSON.stringify(cached.result) ?? String(cached.result)
+      recordWorkflowAgentStarted({ taskId: workflowTask.id, phaseId: phase, agentId: label, setAppState })
+      completeWorkflowAgent({
+        taskId: workflowTask.id,
+        result: {
+          phaseId: phase,
+          agentId: label,
+          index: agentIndex,
+          status: 'completed',
+          output,
+          prompt,
+          tokenCount: 0,
+          toolUseCount: 0,
+          durationMs: 0,
+        },
+        setAppState,
+      })
       await emit(createWorkflowAgentEvent({ workflowRunId, phaseId: phase, agentId: label, status: 'completed', cacheHit: true }))
       return cached.result
     }
 
-    agentCount++
-    const agentIndex = agentCount - 1 // Capture index at increment time (before async)
     const stallMs = opts?.stallMs ?? DEFAULT_STALL_MS
 
     startWorkflowPhase(workflowTask.id, phase, setAppState)
@@ -278,7 +313,7 @@ export async function runWorkflowScript({
       try {
         const result = await runSingleAgent(prompt, opts, label, phase, stallMs, agentIndex)
         // Record in journal
-        journal.record(identityKey, result)
+        journal.record(identityKey, result, { index: agentIndex, phase, label })
         return result
       } catch (error) {
         if (abortController.signal.aborted) return null
@@ -328,7 +363,7 @@ export async function runWorkflowScript({
       prompt: prompt + schemaPrompt,
       subagent_type: opts?.agentType,
       model: opts?.model as AgentToolInput['model'],
-      mode: opts?.mode ?? plan.defaults.permissionMode,
+      mode: mapPermissionMode(opts?.mode ?? plan.defaults.permissionMode),
       ...(opts?.isolation === 'worktree' ? { isolation: 'worktree' } : {}),
     }
 
@@ -413,10 +448,120 @@ export async function runWorkflowScript({
     )
   }
 
+  function childWorkflowNestingError(): Error {
+    return new Error('workflow() cannot be called from within a child workflow — nesting is limited to one level. Inline the inner script or call its agents directly.')
+  }
+
+  async function loadChildWorkflow(ref: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<{ plan: WorkflowDryRunPlan; script?: string }> {
+    if (typeof ref === 'string') {
+      const workflow = await loadWorkflowSpecByNameOrPath(cwd, ref, subArgs, { childWorkflowDepth: 1 })
+      return { plan: workflow.plan, script: workflow.spec.runScriptSnapshot }
+    }
+    const childCwd = scriptPath ? dirname(scriptPath) : cwd
+    const childScriptPath = await resolveWorkflowScriptPath({ cwd: childCwd, scriptPath: ref.scriptPath })
+    const spec = await loadWorkflowScriptSpec(childScriptPath, subArgs, { childWorkflowDepth: 1, cwd })
+    return { plan: validateWorkflowSpec(spec), script: spec.runScriptSnapshot }
+  }
+
+  function childResultText(result: unknown): string {
+    if (typeof result === 'string') return result
+    const serialized = JSON.stringify(result)
+    return serialized ?? String(result)
+  }
+
+  function childPlanPrompt(
+    phase: WorkflowDryRunPhase,
+    index: number,
+    resultsByPhase: Map<string, Array<{ label: string; output: unknown }>>,
+  ): string {
+    const parts = [phase.agentPrompts?.[index] ?? phase.prompt]
+    if (phase.dependsOn.length > 0) {
+      const lines = ['Upstream phase outputs:']
+      for (const dependencyId of phase.dependsOn) {
+        lines.push(`## ${dependencyId}`)
+        for (const result of resultsByPhase.get(dependencyId) ?? []) {
+          lines.push(`- ${result.label}: ${childResultText(result.output)}`)
+        }
+      }
+      parts.push(lines.join('\n'))
+    }
+    return parts.join('\n\n')
+  }
+
+  async function runChildPlan(plan: WorkflowDryRunPlan): Promise<unknown[]> {
+    const results: unknown[] = []
+    const resultsByPhase = new Map<string, Array<{ label: string; output: unknown }>>()
+    for (const phase of workflowPhaseExecutionOrder(plan.phases)) {
+      const phaseResults: Array<{ label: string; output: unknown }> = []
+      for (let index = 0; index < phase.fanout; index += phase.concurrency) {
+        const batchIndexes = Array.from(
+          { length: Math.min(phase.concurrency, phase.fanout - index) },
+          (_, offset) => index + offset,
+        )
+        const batchResults = await Promise.all(batchIndexes.map(async batchIndex => {
+          const label = phase.agentLabels?.[batchIndex] ?? `${phase.id}-${batchIndex + 1}`
+          const output = await realAgent(childPlanPrompt(phase, batchIndex, resultsByPhase), {
+            label,
+            phase: phase.id,
+            agentType: phase.agentType,
+            model: phase.model,
+            mode: phase.permissionMode,
+          })
+          return { label, output }
+        }))
+        phaseResults.push(...batchResults)
+        results.push(...batchResults.map(result => result.output))
+      }
+      resultsByPhase.set(phase.id, phaseResults)
+    }
+    return results
+  }
+
+  async function runChildOfficialScript(script: string, subArgs?: WorkflowArgs): Promise<unknown> {
+    const parsed = parseWorkflowScript(script)
+    const childSandbox = vm.createContext({
+      args: subArgs,
+      agent: realAgent,
+      pipeline: realPipeline,
+      parallel: realParallel,
+      workflow: () => Promise.reject(childWorkflowNestingError()),
+      phase(title: string) {
+        emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
+      },
+      log(message: string) {
+        if (logs.length < MAX_LOGS) logs.push(String(message))
+        emit(createWorkflowLogEvent({ workflowRunId, message: String(message) }))
+      },
+      budget: Object.freeze({ get total() { return budget.total }, spent: budget.spent, remaining: budget.remaining }),
+      Date: Object.assign(
+        () => { throw new Error('Date() unavailable in workflow scripts (breaks resume)') },
+        { now: () => { throw new Error('Date.now() unavailable') }, parse: Date.parse, UTC: Date.UTC },
+      ),
+      Math: (() => {
+        const m = Object.create(Math)
+        Object.defineProperty(m, 'random', { value: () => { throw new Error('Math.random() unavailable (breaks resume)') } })
+        return Object.freeze(m)
+      })(),
+      URL,
+      console: { log: (msg: unknown) => { if (logs.length < MAX_LOGS) logs.push(String(msg)) } },
+    })
+    return await new vm.Script(`(async () => {\n${parsed.scriptBody}\n})()`, {
+      filename: 'child-workflow-script.js',
+    }).runInContext(childSandbox, { timeout: SYNC_TIMEOUT_MS })
+  }
+
   // --- workflow() sub-call ---
   async function realWorkflow(nameOrRef: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<unknown> {
-    // For now, throw — full recursive implementation needs workflow discovery
-    throw new Error(`workflow() sub-calls are not yet supported in this runtime. Called with: ${typeof nameOrRef === 'string' ? nameOrRef : nameOrRef.scriptPath}`)
+    const childArgs = subArgs ?? args
+    const child = await loadChildWorkflow(nameOrRef, childArgs)
+    if (child.script && hasWorkflowScriptMeta(child.script)) {
+      return runChildOfficialScript(child.script, childArgs)
+    }
+    const results = await runChildPlan(child.plan)
+    return {
+      label: child.plan.name,
+      output: results.map(childResultText).join('\n'),
+    }
   }
 
   // --- Execute ---
