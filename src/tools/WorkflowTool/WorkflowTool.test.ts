@@ -98,6 +98,60 @@ await writeFile(
   const result = await agent('empty error', { label: 'empty-error-agent' })
   if (result === null) throw new Error()`,
 )
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'schema-valid.js'),
+  `const RESULT_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ok', 'value'],
+    properties: { ok: { type: 'boolean' }, value: { type: 'string' } },
+  }
+  export const meta = {
+    name: 'schema-valid',
+    description: 'Accept validated structured output.',
+    phases: [{ title: 'Structured', detail: 'Require structured output' }],
+  }
+  phase('Structured')
+  const result = await agent('schema valid', { label: 'schema-valid-agent', schema: RESULT_SCHEMA })
+  if (!result?.ok || result.value !== 'validated') throw new Error('schema result not returned')
+  return result`,
+)
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'schema-raw.js'),
+  `const RESULT_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ok', 'value'],
+    properties: { ok: { type: 'boolean' }, value: { type: 'string' } },
+  }
+  export const meta = {
+    name: 'schema-raw',
+    description: 'Reject raw text fallback.',
+    phases: [{ title: 'Structured', detail: 'Require structured output' }],
+  }
+  phase('Structured')
+  const result = await agent('schema raw', { label: 'schema-raw-agent', schema: RESULT_SCHEMA })
+  if (result !== null) throw new Error('raw text fallback used')
+  throw new Error('schema raw rejected')`,
+)
+await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'schema-invalid.js'),
+  `const RESULT_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ok', 'value'],
+    properties: { ok: { type: 'boolean' }, value: { type: 'string' } },
+  }
+  export const meta = {
+    name: 'schema-invalid',
+    description: 'Reject invalid structured output.',
+    phases: [{ title: 'Structured', detail: 'Require structured output' }],
+  }
+  phase('Structured')
+  const result = await agent('schema invalid', { label: 'schema-invalid-agent', schema: RESULT_SCHEMA })
+  if (result !== null) throw new Error('invalid structured output accepted')
+  throw new Error('schema invalid rejected')`,
+)
 
 const context = { getCwd: () => tempRoot } as never
 
@@ -164,7 +218,7 @@ const setRunState = (updater: (prev: AppState) => AppState): void => {
   runState = updater(runState)
 }
 const launchedPrompts: string[] = []
-const launchedInputs: Array<{ prompt: string; mode?: string }> = []
+const launchedInputs: Array<{ prompt: string; mode?: string; hasStructuredOutputTool?: boolean }> = []
 const runContext = {
   getCwd: () => tempRoot,
   getAppState: () => runState,
@@ -175,10 +229,40 @@ const runContext = {
       {
         name: 'Agent',
         aliases: ['Task'],
-        async call(input: { prompt: string; mode?: string }) {
+        async call(input: { prompt: string; mode?: string }, toolUseContext: ToolUseContext) {
+          const hasStructuredOutputTool = toolUseContext.options.tools.some(tool => tool.name === 'StructuredOutput')
           launchedPrompts.push(input.prompt)
-          launchedInputs.push({ prompt: input.prompt, mode: input.mode })
+          launchedInputs.push({ prompt: input.prompt, mode: input.mode, hasStructuredOutputTool })
           if (input.prompt === 'empty error') throw new Error()
+          if (input.prompt.includes('schema valid')) {
+            return {
+              data: {
+                status: 'completed' as const,
+                content: [{ type: 'text' as const, text: 'used structured output' }],
+                agentId: 'schema-agent-1' as AgentId,
+                structured_output: { ok: true, value: 'validated' },
+              },
+            }
+          }
+          if (input.prompt.includes('schema raw')) {
+            return {
+              data: {
+                status: 'completed' as const,
+                content: [{ type: 'text' as const, text: '{"ok":true,"value":"raw"}' }],
+                agentId: 'schema-agent-raw' as AgentId,
+              },
+            }
+          }
+          if (input.prompt.includes('schema invalid')) {
+            return {
+              data: {
+                status: 'completed' as const,
+                content: [{ type: 'text' as const, text: 'invalid structured output' }],
+                agentId: 'schema-agent-invalid' as AgentId,
+                structured_output: { ok: true, extra: 'nope' },
+              },
+            }
+          }
           return {
             data: {
               status: 'completed' as const,
@@ -273,6 +357,7 @@ assert.match(String(runResult.data), /Use \/workflows to watch live progress\./)
 assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
 assert.equal(launchedInputs[0]?.mode, 'plan')
+assert.equal(launchedInputs[0]?.hasStructuredOutputTool, false)
 const jsTask = Object.values(runState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'JS Run Workflow',
 )!

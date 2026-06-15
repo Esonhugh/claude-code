@@ -8,6 +8,7 @@ import {
   workflowDetailAgentPrompt,
   workflowDetailAgentResult,
   workflowDetailPhaseName,
+  wrapWorkflowDetailText,
 } from './workflowDetailModel.js'
 
 const PANEL_WIDTH = 110
@@ -185,19 +186,24 @@ function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: s
   const topRight = topRightPadded.replace(/\s+$/, ' ─────────────────────────────────────────────────────────────────────────────────────')
   const top = `╭ ${topLeft}┬ ${topRight}╮`
   const rows: string[] = [top]
-  const activityRows = agentActivities(task, selectedAgentId).map(activity => `  ${activity}`)
+  const detailTextWidth = detailRightWidth - 2
+  const activityRows = agentActivities(task, selectedAgentId).flatMap(activity =>
+    wrapWorkflowDetailText(activity, detailTextWidth).map(line => `  ${line}`),
+  )
+  const promptRows = wrapWorkflowDetailText(workflowDetailAgentPrompt(task, selectedAgentId), detailTextWidth).map(line => `  ${line}`)
+  const outcomeRows = wrapWorkflowDetailText(workflowDetailAgentOutcome(task, selectedAgentId), detailTextWidth).map(line => `  ${line}`)
   const detailRows = [
     agentStatusLine(task, selectedAgentId),
     agentMetricLine(task, selectedAgentId),
     '',
     'Prompt',
-    `  ${workflowDetailAgentPrompt(task, selectedAgentId)}`,
+    ...promptRows,
     '',
     'Activity',
     ...activityRows,
     '',
     'Outcome',
-    `  ${workflowDetailAgentOutcome(task, selectedAgentId)}`,
+    ...outcomeRows,
   ]
   const rowCount = Math.max(leftRows.length, detailRows.length)
   for (let index = 0; index < rowCount; index += 1) {

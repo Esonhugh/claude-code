@@ -41,10 +41,10 @@ color: blue
 
 你必须遵循项目约束：
 - 输出默认使用中文。
-- **禁止使用 npm**；只允许使用 `pnpm`。
-- 本项目本地验证前，最后一次构建必须是：`CLAUDE_CODE_VERSION=2.1.165-dev pnpm build`
-- 本项目本地运行命令必须是：`pnpm start --dangerously-skip-permissions`
-- 官方 CLI 运行命令必须是：`/opt/homebrew/bin/claude --dangerously-skip-permissions`
+- **禁止使用 npm**；只允许使用 `bun`。
+- 本项目本地验证前，最后一次构建必须是：`CLAUDE_CODE_VERSION=2.1.165-dev bun package:binary`
+- 本项目本地运行命令必须是：`./dist/release/claude-code-v2.1.165-dev-darwin-arm64 --dangerously-skip-permissions`
+- 官方 CLI 运行命令必须是：`../official-claude --dangerously-skip-permissions`
 - **必须使用脚本或命令方式操作 tmux，并通过 `tmux send-keys`、`tmux capture-pane` 等方式做真实交互验证。**
 - **不得只做静态读码后就声称已验证 parity。**静态代码分析只能作为解释证据的补充，不能替代运行实验。
 - 如果涉及 agent/workflow 场景，注意检查 `/color`、`/rename`、任务列表、agent 列表、background task 列表、footer 信息以及 workflow 主界面的聚合展示是否与官方一致。
@@ -87,7 +87,7 @@ color: blue
 - 若有源码定位，相关文件绝对路径
 
 ### 5) 不使用 npm
-任何安装、构建、运行、测试命令都不能使用 npm。若发现历史文档或脚本里写了 npm，应在报告里指出不符合项目约束，并改用 pnpm 路径。
+任何安装、构建、运行、测试命令都不能使用 npm。若发现历史文档或脚本里写了 npm，应在报告里指出不符合项目约束，并改用 bun 路径。
 
 ## 标准流程
 
@@ -105,14 +105,14 @@ color: blue
 
 ### 第二步：准备本地 CLI 验证环境
 在进行本地 tmux 验证前，确认最后一次构建使用的是：
-`CLAUDE_CODE_VERSION=2.1.165-dev pnpm build`
+`CLAUDE_CODE_VERSION=2.1.165-dev bun build`
 
 如果在此之后执行过任何可能覆盖版本号或产物的普通 build/脚本，应在真正开始 tmux 验证前重新运行上述精确命令。不要用普通 `build` 替代，不要用 npm。
 
 ### 第三步：启动双端会话
 你应尽量为官方与本地分别创建清晰可辨认的 tmux session/window，例如带有时间戳与 `official` / `local` 标识。启动命令必须分别是：
 - 官方：`/opt/homebrew/bin/claude --dangerously-skip-permissions`
-- 本地：`pnpm start --dangerously-skip-permissions`
+- 本地：`bun start --dangerously-skip-permissions`
 
 如果是本地 CLI，默认应在项目根目录中启动。如果工作流涉及会话识别、颜色或标题，请在实验中显式验证 `/color` 与 `/rename` 的行为是否与官方一致。
 
@@ -164,7 +164,7 @@ color: blue
 ### 2. 实验方法
 - 使用的 tmux session/window/pane
 - 发送过的关键命令/输入
-- 本地构建命令（必须写出 `CLAUDE_CODE_VERSION=2.1.165-dev pnpm build`）
+- 本地构建命令（必须写出 `CLAUDE_CODE_VERSION=2.1.165-dev bun build`）
 - 关键 capture 或日志保存路径（绝对路径）
 
 ### 3. 官方结果

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 
+import { stringWidth } from '../../ink/stringWidth.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import {
   initialSelectedWorkflowAgentIndex,
@@ -316,6 +317,37 @@ const completedPromptLines = workflowDetailSnapshotLines({
   results: [],
 }, { selectedAgentId: 'scan-a', showAgentDetail: true })
 assert.ok(completedPromptLines.some(line => line.includes('Saved result prompt.')), completedPromptLines.join('\n'))
+
+const longOutcomeLines = workflowDetailSnapshotLines({
+  ...workflow,
+  status: 'completed',
+  liveAgents: undefined,
+  phases: [
+    {
+      ...workflow.phases[0]!,
+      agentIds: ['scan-a'],
+      completedAgentIds: ['scan-a'],
+      results: [
+        {
+          phaseId: 'scan',
+          agentId: 'scan-a',
+          index: 0,
+          status: 'completed',
+          output: `start ${'x'.repeat(140)} 宽字符结尾\r\n\u001b[32mgreen line\u001b[0m`,
+        },
+      ],
+    },
+  ],
+  results: [],
+}, { selectedAgentId: 'scan-a', showAgentDetail: true })
+assert.ok(longOutcomeLines.some(line => line.includes('start x')), longOutcomeLines.join('\n'))
+assert.ok(longOutcomeLines.some(line => line.includes('宽字符结尾')), longOutcomeLines.join('\n'))
+assert.ok(longOutcomeLines.some(line => line.includes('green line')), longOutcomeLines.join('\n'))
+assert.ok(!longOutcomeLines.join('\n').includes('\u001b'), longOutcomeLines.join('\n'))
+const longOutcomePanelWidth = stringWidth(longOutcomeLines[3]!)
+for (const line of longOutcomeLines.slice(3, -2)) {
+  assert.equal(stringWidth(line), longOutcomePanelWidth, line)
+}
 
 assert.equal(initialSelectedWorkflowAgentIndex(workflow), 0)
 assert.equal(initialSelectedWorkflowAgentIndex({ ...workflow, status: 'pending' }), null)

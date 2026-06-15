@@ -1,3 +1,5 @@
+import stripAnsi from 'strip-ansi'
+import { wrapAnsi } from '../../ink/wrapAnsi.js'
 import type {
   LocalWorkflowPhaseState,
   LocalWorkflowTaskState,
@@ -5,6 +7,22 @@ import type {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 export type WorkflowDetailAgentStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'interrupted'
+
+function normalizeWorkflowDetailText(text: string): string {
+  return stripAnsi(text)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\t\v\f]/g, ' ')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
+}
+
+export function wrapWorkflowDetailText(text: string, width: number): string[] {
+  if (width <= 0) return []
+  return normalizeWorkflowDetailText(text).split('\n').flatMap(line => {
+    const wrapped = wrapAnsi(line, width, { hard: true, trim: false }).split('\n')
+    return wrapped.length > 0 ? wrapped : ['']
+  })
+}
 
 function isRuntimeVisiblePhase(phase: LocalWorkflowPhaseState): boolean {
   return phase.agentIds.length > 0 || phase.status === 'running'

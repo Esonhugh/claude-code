@@ -18,6 +18,7 @@ import {
   workflowDetailAgentResult,
   workflowDetailAgentStatus,
   workflowDetailPhaseName,
+  wrapWorkflowDetailText,
   type WorkflowDetailAgentStatus,
 } from './workflowDetailModel.js'
 
@@ -351,19 +352,7 @@ export function WorkflowDetailDialog({
     const m = workflowDetailAgentMetrics(workflow, currentAgentId)
     const outcomeRaw = workflowDetailAgentOutcome(workflow, currentAgentId)
     const maxLineW = rightW - 2
-    const outcomeLines: string[] = []
-    for (const line of outcomeRaw.split('\n')) {
-      if (stringWidth(line) <= maxLineW) {
-        outcomeLines.push(line)
-      } else {
-        let remaining = line
-        while (stringWidth(remaining) > maxLineW) {
-          outcomeLines.push(remaining.slice(0, maxLineW))
-          remaining = remaining.slice(maxLineW)
-        }
-        if (remaining) outcomeLines.push(remaining)
-      }
-    }
+    const outcomeLines = wrapWorkflowDetailText(outcomeRaw, maxLineW)
     const liveAgent = workflow.liveAgents?.[currentAgentId]
     const activities = liveAgent?.recentActivities ?? []
     const activityLines = activities.length > 0
