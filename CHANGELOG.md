@@ -10,6 +10,43 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-06-16 - Dynamic Workflows 运行时、恢复缓存与 UI 状态对齐
+
+### 版本状态
+
+- `package.json` 仍为 `0.0.0-dev`，本分支未引入正式发布版本号。
+- 新增 `Makefile` 本地测试入口，当前 `VERSION := 2.1.666-test`，用于通过 `bun package:binary` 生成 `built-claude` 测试二进制。
+- 本分支主要围绕 Claude Code `2.1.165` Dynamic Workflows 行为做兼容性和可观测性补齐；InteractiveTerminal 仍按独立功能验收，不并入官方 workflow parity 范围。
+
+### 关联提交
+
+- `2f15490` — 2026-06-14 21:32:42 +08:00 — `update: Workflow JS runtime detection, error process, resume cache persistence and runArgs injections`
+- `4cc7c79` — 2026-06-15 17:27:24 +08:00 — `fix: align workflow runtime phase handling and child script resolution`
+- `45949fa` — 2026-06-15 19:26:03 +08:00 — `update: fix outcome oversize`
+- `81cf564` — 2026-06-15 20:27:40 +08:00 — `fix: Outcomes fix`
+- `06a478a` — 2026-06-16 11:10:50 +08:00 — `update: build tool for test`
+- `65f3bb3` — 2026-06-16 14:49:45 +08:00 — `fix: deep research with inputs`
+
+### 变更内容
+
+- 增强 `Workflow` facade 和 `WorkflowTool` 输入处理，补齐 inline script、`scriptPath`、saved workflow、`runArgs` 注入、child script 解析、workflow name 解析和 deep-research 输入传递路径。
+- 扩展 JavaScript workflow runtime：增加脚本识别、错误处理、resume cache 持久化、phase 调度、DSL/spec 校验、runtime globals 和 structured workflow 相关测试覆盖。
+- 对齐 workflow phase 与 agent orchestration 行为，新增 `workflowPhaseScheduler`，完善 fanout/concurrency、phase dependencies、root prompt、built-in workflow metadata 和 bundled workflow 定义。
+- 重构 `/workflows` 详情展示：抽出 `workflowDetailModel`，调整 snapshot 渲染、agent/outcome 状态、oversize outcome 展示、空结果处理和 coordinator agent rows。
+- 新增 task 状态与保留策略工具，补齐 `taskStatus`、`retention` 及对应测试，减少 UI 和持久化状态判断分散实现。
+- 新增 `Makefile` 和 `.gitignore` 调整，提供本地 `built-claude` 构建/运行快捷入口，并更新 official parity agent 说明。
+
+### 测试覆盖
+
+- 新增或更新 `WorkflowFacadeTool`、`WorkflowTool`、`workflowDsl`、`workflowPhaseScheduler`、`workflowRuntimeGlobals`、`workflowSpec`、`workflowCommand`、`workflowDiscovery` 相关测试。
+- 新增或更新 `/workflows` 页面模型、详情 snapshot、coordinator agent status、task retention 相关测试。
+- 本次 changelog 更新未额外运行测试或构建命令。
+
+### 代码审查后续关注
+
+- workflow code-review 已确认若干后续 correctness 风险，主要集中在并行 agent 生命周期清理、pause/kill 状态传播、run session 异步持久化顺序、schema structured output 解析、saved workflow resume cache、zero-agent workflow 持久化和 `phase()` 依赖标签一致性。
+- 这些风险尚未在本条目中修复，后续应优先补最小失败测试后再做 targeted fix。
+
 ## 2026-06-14 - Bun 迁移、InteractiveTerminal PTY 替换与 binary-only npm 发布准备
 
 ### 关联提交
