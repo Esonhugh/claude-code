@@ -17,11 +17,15 @@ export function workflowDetailStatusWord(status: LocalWorkflowTaskState['status'
 }
 
 function normalizeWorkflowDetailText(text: string): string {
-  return stripAnsi(text)
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/[\t\v\f]/g, ' ')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
+  return Array.from(
+    stripAnsi(text)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[\t\v\f]/g, ' '),
+  ).filter(char => {
+    const code = char.codePointAt(0) ?? 0
+    return code === 10 || (code > 31 && (code < 127 || code > 159))
+  }).join('')
 }
 
 export function wrapWorkflowDetailText(text: string, width: number): string[] {

@@ -104,6 +104,7 @@ assert.match(text, /must not edit files/)
 assert.match(text, /synthesis/)
 
 const deepResearchCommand = commands.find(command => command.name === 'deep-research')!
+assert.equal(deepResearchCommand.type, 'prompt')
 const emptyDeepResearchPrompt = await deepResearchCommand.getPromptForCommand('', {} as never)
 const emptyDeepResearchText = emptyDeepResearchPrompt.map(block => (block.type === 'text' ? block.text : '')).join('\n')
 assert.equal(emptyDeepResearchText, 'Usage: /deep-research <workflow input>')
