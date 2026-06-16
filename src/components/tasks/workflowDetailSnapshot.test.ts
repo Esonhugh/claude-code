@@ -6,6 +6,7 @@ import {
   initialSelectedWorkflowAgentIndex,
   workflowDetailSnapshotLines,
 } from './workflowDetailSnapshot.js'
+import { workflowDetailAgentStatus } from './workflowDetailModel.js'
 
 function normalizeSnapshotLine(line: string | undefined): string | undefined {
   return line?.trimEnd().replace(/\s+│$/u, '│')
@@ -199,7 +200,7 @@ assertLine(runtimeAgentIdLines[4], '│   1 scan   1/1  │ ❯⏺ display-agent
 
 const pausedLines = workflowDetailSnapshotLines({ ...workflow, status: 'pending' }, { selectedAgentId: 'scan-b', showAgentDetail: true })
 assertLine(pausedLines[1], 'Official-style running workflow detail.                                               1/2 agents · 2s · paused')
-assertLine(pausedLines[4], '│   ◌ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │')
+assertLine(pausedLines[4], '│   ✓ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │')
 assertLine(pausedLines[5], '│ ❯ ◌ scan-b     │ 0 tok · 0 tool calls                                                                       │')
 assertLine(pausedLines[14], '│                │   The workflow stopped before this agent finished.                                         │')
 assertLine(pausedLines.at(-1), '↑↓ agent · p resume · esc back · s save')
@@ -213,6 +214,40 @@ const killedLines = workflowDetailSnapshotLines({ ...workflow, status: 'killed' 
 assertLine(killedLines[1], 'Official-style running workflow detail.                                               1/2 agents · 2s · killed')
 assertLine(killedLines[4], '│   ✓ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │')
 assertLine(killedLines[14], '│                │   The workflow stopped before this agent finished.                                         │')
+
+const staleLiveAgentKilledWorkflow: LocalWorkflowTaskState = {
+  ...workflow,
+  status: 'killed',
+  liveAgents: {
+    'scan-b': { tokenCount: 5, toolUseCount: 1, activity: 'Bash(sleep 20)' },
+  },
+}
+assert.equal(workflowDetailAgentStatus(staleLiveAgentKilledWorkflow, 'scan-b'), 'interrupted')
+assertLine(
+  workflowDetailSnapshotLines(staleLiveAgentKilledWorkflow, { selectedAgentId: 'scan-b', showAgentDetail: true })[4],
+  '│   ✓ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │',
+)
+
+const killedFailedLines = workflowDetailSnapshotLines({
+  ...workflow,
+  status: 'killed',
+  phases: [
+    {
+      ...workflow.phases[0]!,
+      completedAgentIds: ['scan-a', 'scan-b'],
+      results: [
+        ...workflow.phases[0]!.results,
+        { phaseId: 'scan', agentId: 'scan-b', index: 1, status: 'failed', error: 'boom' },
+      ],
+    },
+  ],
+  results: [
+    ...workflow.results,
+    { phaseId: 'scan', agentId: 'scan-b', index: 1, status: 'failed', error: 'boom' },
+  ],
+}, { selectedAgentId: 'scan-b', showAgentDetail: true })
+assertLine(killedFailedLines[5], '│ ❯ ✗ scan-b     │ 0 tok · 0 tool calls                                                                       │')
+assertLine(killedFailedLines[14], '│                │   boom                                                                                     │')
 
 const stagedLines = workflowDetailSnapshotLines({
   ...workflow,

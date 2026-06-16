@@ -131,8 +131,8 @@ export function workflowDetailAgentStatus(
       }
     }
   }
-  if (task.liveAgents?.[agentId]) return 'running'
   if (task.status === 'pending' || task.status === 'killed') return 'interrupted'
+  if (task.liveAgents?.[agentId]) return 'running'
   if (task.status === 'completed' || task.status === 'failed') {
     const result = workflowDetailAgentResult(task, agentId)
     if (result) return result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'done'
