@@ -16,6 +16,7 @@ import {
   workflowDetailAgentPrompt,
   workflowDetailAgentStatus,
   workflowDetailPhaseName,
+  workflowDetailStatusWord,
   wrapWorkflowDetailText,
   type WorkflowDetailAgentStatus,
 } from './workflowDetailModel.js'
@@ -243,7 +244,7 @@ export function WorkflowDetailDialog({
   // Header
   const total = visibleAgentTotal(workflow)
   const done = completedAgents(workflow)
-  const statusWord = workflow.status === 'completed' ? 'done' : workflow.status === 'failed' ? 'failed' : workflow.status === 'pending' ? 'paused' : 'running'
+  const statusWord = workflowDetailStatusWord(workflow.status)
   const statsText = `${done}/${total} ${total === 1 ? 'agent' : 'agents'} · ${formatDuration(elapsedMs(workflow))} · ${statusWord}`
 
   // Panel titles

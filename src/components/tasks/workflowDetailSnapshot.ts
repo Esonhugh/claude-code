@@ -7,7 +7,9 @@ import {
   workflowDetailAgentPhase,
   workflowDetailAgentPrompt,
   workflowDetailAgentResult,
+  workflowDetailAgentStatus,
   workflowDetailPhaseName,
+  workflowDetailStatusWord,
   wrapWorkflowDetailText,
 } from './workflowDetailModel.js'
 
@@ -92,8 +94,9 @@ function agentRow(task: LocalWorkflowTaskState, agentId: string, selected: boole
   const model = task.defaultModel ?? 'gpt-5.5[1m]'
   const { tokens, toolCalls } = workflowDetailAgentMetrics(task, agentId)
   const marker = selected ? '❯' : ' '
-  const icon = task.status === 'pending' && selected ? '◌' : '⏺'
-  const suffix = task.status === 'pending' && selected ? ' · stopped' : ''
+  const stopped = task.status === 'pending' || task.status === 'killed'
+  const icon = stopped && selected ? '◌' : '⏺'
+  const suffix = stopped && selected ? ' · stopped' : ''
   return pad(
     `${marker}${icon} ${pad(agentId, 24)} ${pad(model, 14)} ${tokens} tok · ${toolCalls} ${toolCalls === 1 ? 'tool' : 'tools'}${suffix}`,
     RIGHT_WIDTH,
@@ -104,7 +107,9 @@ function formatHeader(task: LocalWorkflowTaskState): string[] {
   const completed = completedAgents(task)
   const total = visibleAgentTotal(task)
   const description = workflowDescription(task)
-  const metrics = `${completed}/${total} ${total === 1 ? 'agent' : 'agents'} · ${elapsedSeconds(task)}s${task.status === 'pending' ? ' · paused' : ''}`
+  const statusWord = workflowDetailStatusWord(task.status)
+  const statusSuffix = statusWord === 'running' ? '' : ` · ${statusWord}`
+  const metrics = `${completed}/${total} ${total === 1 ? 'agent' : 'agents'} · ${elapsedSeconds(task)}s${statusSuffix}`
   return [
     workflowTitle(task),
     `${pad(description, Math.max(1, PANEL_WIDTH - stringWidth(metrics) - 1))} ${metrics}`,
@@ -145,7 +150,8 @@ function agentStatusLine(task: LocalWorkflowTaskState, agentId: string): string 
   const model = task.defaultModel ?? 'gpt-5.5[1m]'
   const attempt = retryAttempt(agentId)
   const retrySuffix = attempt > 0 ? ` · attempt ${attempt + 1} (user retry)` : ''
-  return `${task.status === 'pending' ? '◌ Stopped' : '⏺ Running'} · ${model}${retrySuffix}`
+  const stopped = task.status === 'pending' || task.status === 'killed'
+  return `${stopped ? '◌ Stopped' : '⏺ Running'} · ${model}${retrySuffix}`
 }
 
 function agentMetricLine(task: LocalWorkflowTaskState, agentId: string): string {
@@ -174,7 +180,9 @@ function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: s
   const leftRows = agentIds.map(agentId => {
     const selected = agentId === selectedAgentId
     const marker = selected ? '❯ ' : '  '
-    const icon = task.status === 'pending' ? '◌' : '⏺'
+    const status = workflowDetailAgentStatus(task, agentId)
+    const stopped = task.status === 'pending' || task.status === 'killed'
+    const icon = task.status === 'killed' && status === 'done' ? '✓' : stopped ? '◌' : '⏺'
     return `${marker}${icon} ${agentId}`
   })
   const detailLeftWidth = Math.max(LEFT_WIDTH, ...leftRows.map(row => stringWidth(row) + 1))

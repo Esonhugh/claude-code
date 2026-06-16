@@ -8,6 +8,14 @@ import type {
 
 export type WorkflowDetailAgentStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'interrupted'
 
+export function workflowDetailStatusWord(status: LocalWorkflowTaskState['status']): string {
+  if (status === 'completed') return 'done'
+  if (status === 'failed') return 'failed'
+  if (status === 'pending') return 'paused'
+  if (status === 'killed') return 'killed'
+  return 'running'
+}
+
 function normalizeWorkflowDetailText(text: string): string {
   return stripAnsi(text)
     .replace(/\r\n/g, '\n')
@@ -105,7 +113,6 @@ export function workflowDetailAgentStatus(
   task: LocalWorkflowTaskState,
   agentId: string,
 ): WorkflowDetailAgentStatus {
-  if (task.status === 'pending') return 'interrupted'
   const phase = workflowDetailAgentPhase(task, agentId)
   if (phase?.completedAgentIds.includes(agentId)) {
     const result = workflowDetailAgentResult(task, agentId)
@@ -125,6 +132,7 @@ export function workflowDetailAgentStatus(
     }
   }
   if (task.liveAgents?.[agentId]) return 'running'
+  if (task.status === 'pending' || task.status === 'killed') return 'interrupted'
   if (task.status === 'completed' || task.status === 'failed') {
     const result = workflowDetailAgentResult(task, agentId)
     if (result) return result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'done'

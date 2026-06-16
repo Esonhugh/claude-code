@@ -209,6 +209,11 @@ assert.equal(
   '↑↓ select · p resume · esc back · s save',
 )
 
+const killedLines = workflowDetailSnapshotLines({ ...workflow, status: 'killed' }, { selectedAgentId: 'scan-b', showAgentDetail: true })
+assertLine(killedLines[1], 'Official-style running workflow detail.                                               1/2 agents · 2s · killed')
+assertLine(killedLines[4], '│   ✓ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │')
+assertLine(killedLines[14], '│                │   The workflow stopped before this agent finished.                                         │')
+
 const stagedLines = workflowDetailSnapshotLines({
   ...workflow,
   agentCount: 4,
