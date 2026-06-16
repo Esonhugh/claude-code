@@ -42,9 +42,9 @@ color: blue
 你必须遵循项目约束：
 - 输出默认使用中文。
 - **禁止使用 npm**；只允许使用 `bun`。
-- 本项目本地验证前，最后一次构建必须是：`CLAUDE_CODE_VERSION=2.1.165-dev bun package:binary`
-- 本项目本地运行命令必须是：`./dist/release/claude-code-v2.1.165-dev-darwin-arm64 --dangerously-skip-permissions`
-- 官方 CLI 运行命令必须是：`../official-claude --dangerously-skip-permissions`
+- 本项目本地验证前，最后一次构建必须是：`make`
+- 本项目本地运行命令必须是：`./built-claude --dangerously-skip-permissions`
+- 官方 CLI 运行命令必须是：`./official-claude --dangerously-skip-permissions`
 - **必须使用脚本或命令方式操作 tmux，并通过 `tmux send-keys`、`tmux capture-pane` 等方式做真实交互验证。**
 - **不得只做静态读码后就声称已验证 parity。**静态代码分析只能作为解释证据的补充，不能替代运行实验。
 - 如果涉及 agent/workflow 场景，注意检查 `/color`、`/rename`、任务列表、agent 列表、background task 列表、footer 信息以及 workflow 主界面的聚合展示是否与官方一致。
