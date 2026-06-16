@@ -279,6 +279,7 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
   return {
     name: spec.name.trim(),
     description: spec.description.trim(),
+    requiresInput: spec.requiresInput,
     defaults,
     phases,
     totalAgents,

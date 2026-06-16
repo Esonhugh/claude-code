@@ -16,6 +16,10 @@ function buildWorkflowPrompt(
   workflow: DiscoveredWorkflowSpec,
   args: WorkflowArgs | undefined,
 ): ContentBlockParam[] {
+  const formattedArgs = formatWorkflowArgs(args).trim()
+  if (workflow.plan.requiresInput && !formattedArgs) {
+    return [{ type: 'text', text: `Usage: /${workflow.commandName} <workflow input>` }]
+  }
   const dryRun = formatWorkflowDryRun(workflow.plan)
   const phaseDetails = workflow.plan.phases
     .map(
@@ -40,7 +44,7 @@ function buildWorkflowPrompt(
         `Workflow: ${workflow.commandName}\n` +
         `Source: ${workflow.path}\n\n` +
         `${dryRun}\n` +
-        `User input:\n${formatWorkflowArgs(args).trim() || '(none)'}\n\n` +
+        `User input:\n${formattedArgs || '(none)'}\n\n` +
         `Execute this validated workflow through WorkflowTool.run with selector-based input. Use selector: "${workflow.commandName}" and pass the user input as runArgs. Do not call WorkflowTool with only a plan copied from this prompt; this prompt's phase summary is for inspection and orchestration guidance only.\n` +
         `WorkflowTool.run must execute phase work through the ${AGENT_TOOL_NAME} tool, record LocalWorkflowTask phase state, and preserve normal permission and hook boundaries. Do not bypass workflow phases by directly completing phase work with shell or filesystem tools in the main thread.\n\n` +
         `Rules:\n` +

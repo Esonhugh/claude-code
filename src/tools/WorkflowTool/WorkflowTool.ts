@@ -85,6 +85,19 @@ function latestWorkflowProgressEvent(task: LocalWorkflowTaskState): WorkflowProg
     .find(event => event.type === 'workflow_progress')
 }
 
+function normalizeWorkflowRunArgs(runArgs: unknown): string {
+  if (runArgs === undefined || runArgs === null) return ''
+  return typeof runArgs === 'string' ? runArgs.trim() : JSON.stringify(runArgs).trim()
+}
+
+function isExecutableWorkflowScript(workflow: WorkflowSpec): boolean {
+  return Boolean(workflow.runScriptSnapshot && hasWorkflowScriptMeta(workflow.runScriptSnapshot))
+}
+
+function shouldInjectRunArgsIntoRootPrompt(workflow: WorkflowSpec, sourcePath: string): boolean {
+  return !workflow.runScriptSnapshot || (sourcePath.startsWith('bundled:') && !isExecutableWorkflowScript(workflow))
+}
+
 function normalizeExecutableWorkflowPlan(plan: unknown): WorkflowDryRunPlan {
   if (!plan || typeof plan !== 'object') {
     throw new Error('Invalid executable workflow plan: plan must be an object')
@@ -227,6 +240,9 @@ export const WorkflowTool = buildTool({
     }
 
     const workflow = await loadWorkflowSpecByNameOrPath(cwd, selector, action === 'run' ? runArgs ?? '' : '')
+    if (action === 'run' && workflow.plan.requiresInput && !normalizeWorkflowRunArgs(runArgs)) {
+      throw new Error(`Workflow ${workflow.commandName} requires workflow input`)
+    }
     if (action === 'show') {
       return {
         data: [
@@ -244,7 +260,7 @@ export const WorkflowTool = buildTool({
 
     if (action === 'run') {
       // Use script runtime for script-based workflows
-      if (workflow.spec.runScriptSnapshot && hasWorkflowScriptMeta(workflow.spec.runScriptSnapshot)) {
+      if (isExecutableWorkflowScript(workflow.spec)) {
         return {
           data: await runWorkflowScript({
             script: workflow.spec.runScriptSnapshot,
@@ -264,7 +280,7 @@ export const WorkflowTool = buildTool({
           canUseTool,
           assistantMessage,
           runArgs,
-          injectRunArgsIntoRootPrompt: !workflow.spec.runScriptSnapshot,
+          injectRunArgsIntoRootPrompt: shouldInjectRunArgsIntoRootPrompt(workflow.spec, workflow.path),
         }),
       }
     }

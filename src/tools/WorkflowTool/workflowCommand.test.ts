@@ -103,6 +103,12 @@ assert.match(text, /mode "plan"/)
 assert.match(text, /must not edit files/)
 assert.match(text, /synthesis/)
 
+const deepResearchCommand = commands.find(command => command.name === 'deep-research')!
+const emptyDeepResearchPrompt = await deepResearchCommand.getPromptForCommand('', {} as never)
+const emptyDeepResearchText = emptyDeepResearchPrompt.map(block => (block.type === 'text' ? block.text : '')).join('\n')
+assert.equal(emptyDeepResearchText, 'Usage: /deep-research <workflow input>')
+assert.doesNotMatch(emptyDeepResearchText, /WorkflowTool\.run/)
+
 const jsCommand = commands.find(command => command.name === 'js-command-workflow')!
 assert.equal(jsCommand.type, 'prompt')
 const jsPrompt = await jsCommand.getPromptForCommand('topic: command args', {} as never)

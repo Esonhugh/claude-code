@@ -6,4 +6,5 @@ build:
 	CLAUDE_CODE_VERSION=$(VERSION) bun package:binary
 	mv $(FILE) ./built-claude
 
-
+test:
+	./built-claude --dangerously-skip-permissions

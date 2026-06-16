@@ -376,8 +376,8 @@ const childParentTask = Object.values(state.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-child-parent',
 )!
 assert.deepEqual(childParentTask.phases.map(phase => [phase.id, phase.agentIds]), [
-  ['child-runtime', ['child-runtime']],
-  ['parent-runtime', ['parent-runtime']],
+  ['Child', ['child-runtime']],
+  ['Parent', ['parent-runtime']],
 ])
 
 const colocatedParentPath = join(tempRoot, 'docs', 'workflows', 'runtime-parent.js')

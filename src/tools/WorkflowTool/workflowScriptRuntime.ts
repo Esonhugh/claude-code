@@ -554,15 +554,20 @@ export async function runWorkflowScript({
 
   // --- workflow() sub-call ---
   async function realWorkflow(nameOrRef: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<unknown> {
-    const childArgs = subArgs ?? args
-    const child = await loadChildWorkflow(nameOrRef, childArgs)
-    if (child.script && hasWorkflowScriptMeta(child.script)) {
-      return runChildOfficialScript(child.script, childArgs)
-    }
-    const results = await runChildPlan(child.plan)
-    return {
-      label: child.plan.name,
-      output: results.map(childResultText).join('\n'),
+    const parentPhaseId = currentPhaseId
+    try {
+      const childArgs = subArgs ?? args
+      const child = await loadChildWorkflow(nameOrRef, childArgs)
+      if (child.script && hasWorkflowScriptMeta(child.script)) {
+        return await runChildOfficialScript(child.script, childArgs)
+      }
+      const results = await runChildPlan(child.plan)
+      return {
+        label: child.plan.name,
+        output: results.map(childResultText).join('\n'),
+      }
+    } finally {
+      currentPhaseId = parentPhaseId
     }
   }
 

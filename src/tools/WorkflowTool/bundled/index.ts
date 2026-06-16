@@ -392,6 +392,7 @@ const BUNDLED_WORKFLOWS: WorkflowSpec[] = [
     name: 'deep-research',
     description:
       'Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.',
+    requiresInput: true,
     meta: {
       name: 'deep-research',
       description:

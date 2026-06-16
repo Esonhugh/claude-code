@@ -94,6 +94,7 @@ export type WorkflowProgressEvent =
 export type WorkflowSpec = {
   name: string
   description: string
+  requiresInput?: boolean
   inputs?: WorkflowInputSpec[]
   defaults?: WorkflowDefaults
   phases: WorkflowPhaseSpec[]
@@ -124,6 +125,7 @@ export type WorkflowDryRunPhase = {
 export type WorkflowDryRunPlan = {
   name: string
   description: string
+  requiresInput?: boolean
   defaults: Required<Pick<WorkflowDefaults, 'maxConcurrency' | 'maxAgents' | 'maxRetries' | 'fanout' | 'concurrency' | 'review' | 'permissionMode' | 'execution'>> & Pick<WorkflowDefaults, 'agentType' | 'model'>
   phases: WorkflowDryRunPhase[]
   totalAgents: number

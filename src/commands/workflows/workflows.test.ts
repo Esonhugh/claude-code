@@ -167,6 +167,10 @@ assert.match(deepResearchRunResult.value, /selector: "deep-research"/)
 assert.match(deepResearchRunResult.value, /runArgs: "分析 claude 的 dynamic workflow 设计原理"/)
 assert.match(deepResearchRunResult.value, /Do not call WorkflowTool with only a plan copied from this prompt/)
 
+const emptyDeepResearchRunResult = await call('run deep-research', context)
+assert.equal(emptyDeepResearchRunResult.type, 'text')
+assert.equal(emptyDeepResearchRunResult.value, 'Usage: /workflows run deep-research -- <workflow input>')
+
 const jsRunResult = await call('run JS Run Workflow -- topic: JS command', context)
 assert.equal(jsRunResult.type, 'text')
 assert.match(jsRunResult.value, /Execute workflow: JS Run Workflow/)

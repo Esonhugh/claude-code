@@ -90,6 +90,19 @@ type WorkflowFacadeToolContext = {
   getCwd?: () => string
 }
 
+function normalizeWorkflowRunArgs(args: WorkflowArgs | undefined): string {
+  if (args === undefined || args === null) return ''
+  return typeof args === 'string' ? args.trim() : JSON.stringify(args).trim()
+}
+
+function isExecutableWorkflowScript(workflow: WorkflowSpec): boolean {
+  return Boolean(workflow.runScriptSnapshot && hasWorkflowScriptMeta(workflow.runScriptSnapshot))
+}
+
+function shouldInjectRunArgsIntoRootPrompt(workflow: WorkflowSpec, sourcePath: string): boolean {
+  return !workflow.runScriptSnapshot || (sourcePath.startsWith('bundled:') && !isExecutableWorkflowScript(workflow))
+}
+
 function resolveCwd(context: WorkflowFacadeToolContext | unknown): string {
   if (
     context &&
@@ -246,8 +259,11 @@ export const WorkflowFacadeTool = buildTool({
         normalized.selector,
         normalized.args,
       )
+      if (workflow.plan.requiresInput && !normalizeWorkflowRunArgs(normalized.args)) {
+        throw new Error(`Workflow ${workflow.commandName} requires workflow input`)
+      }
       // Use script runtime for script-based workflows
-      if (workflow.spec.runScriptSnapshot && hasWorkflowScriptMeta(workflow.spec.runScriptSnapshot)) {
+      if (isExecutableWorkflowScript(workflow.spec)) {
         return {
           data: await runWorkflowScript({
             script: workflow.spec.runScriptSnapshot,
@@ -269,7 +285,7 @@ export const WorkflowFacadeTool = buildTool({
           assistantMessage,
           runArgs: normalized.args,
           resumeFromRunId: normalized.resumeFromRunId,
-          injectRunArgsIntoRootPrompt: !workflow.spec.runScriptSnapshot,
+          injectRunArgsIntoRootPrompt: shouldInjectRunArgsIntoRootPrompt(workflow.spec, workflow.path),
         }),
       }
     }
@@ -316,7 +332,7 @@ export const WorkflowFacadeTool = buildTool({
         workflowRunId,
         scriptPath,
         resumeFromRunId: normalized.resumeFromRunId,
-        injectRunArgsIntoRootPrompt: !spec.runScriptSnapshot,
+        injectRunArgsIntoRootPrompt: shouldInjectRunArgsIntoRootPrompt(spec, scriptPath),
       }),
     }
   },

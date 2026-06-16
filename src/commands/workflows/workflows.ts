@@ -145,6 +145,9 @@ function formatWorkflowRunTemplates(templates: WorkflowRunTemplate[]): string {
 
 function formatWorkflowRunPrompt(workflow: DiscoveredWorkflowSpec, runArgs: string): string {
   const normalizedRunArgs = runArgs.trim()
+  if (workflow.plan.requiresInput && !normalizedRunArgs) {
+    return `Usage: /workflows run ${workflow.commandName} -- <workflow input>`
+  }
   const runArgsLiteral = JSON.stringify(normalizedRunArgs)
   return [
     `Execute workflow: ${workflow.plan.name}`,

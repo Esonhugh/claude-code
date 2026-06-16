@@ -360,6 +360,17 @@ assert.equal(deepResearchTask.defaultModel, 'claude-sonnet-4-5')
 assert.equal(deepResearchTask.execution, 'agent')
 assert.ok(launchedPrompts.length > 1)
 assert.match(launchedPrompts[0]!, /Decompose this research question/)
+assert.match(launchedPrompts[0]!, /User input:\n分析 claude 的 dynamic workflow 设计原理/)
+
+await assert.rejects(
+  () => WorkflowTool.call(
+    { action: 'run', selector: 'deep-research', runArgs: '' },
+    runContext,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_empty_deep_research_run' } } as never,
+  ),
+  /Workflow deep-research requires workflow input/,
+)
 
 launchedPrompts.length = 0
 launchedInputs.length = 0
