@@ -69,6 +69,8 @@ const workflowTask = {
   status: 'running' as const,
   description: 'Workflow: Research Workflow',
   workflowName: 'Research Workflow',
+  workflowRunId: 'wf_test_detail',
+  scriptPath: '/tmp/research-workflow.js',
   agentCount: 3,
   tokenCount: 9,
   toolUseCount: 2,
@@ -210,24 +212,16 @@ assert.match(statusResult.value, /Tool uses: 2/)
 assert.match(statusResult.value, /research: completed 2\/2/)
 assert.match(statusResult.value, /synthesis: running 0\/1/)
 
-const pauseResult = await call('pause w-test', context)
-assert.equal(pauseResult.type, 'text')
-assert.match(pauseResult.value, /Status: pending/)
-
-const resumeResult = await call('resume w-test', context)
-assert.equal(resumeResult.type, 'text')
-assert.match(resumeResult.value, /Status: running/)
-
-const detailResult = await call('detail w-test', context)
-assert.equal(detailResult.type, 'text')
-assert.match(detailResult.value, /Workflow detail/)
-assert.match(detailResult.value, /Events:/)
-assert.match(detailResult.value, /workflow_progress/)
-assert.match(detailResult.value, /Controls:/)
-assert.match(detailResult.value, /\/workflows pause w-test/)
-assert.match(detailResult.value, /\/workflows resume w-test/)
-assert.match(detailResult.value, /\/workflows retry-agent w-test <phase-id> <agent-id>/)
-assert.match(detailResult.value, /\/workflows skip-agent w-test <phase-id> <agent-id>/)
+const runningDetailResult = await call('detail w-test', context)
+assert.equal(runningDetailResult.type, 'text')
+assert.match(runningDetailResult.value, /Workflow detail/)
+assert.match(runningDetailResult.value, /Events:/)
+assert.match(runningDetailResult.value, /workflow_progress/)
+assert.match(runningDetailResult.value, /Controls:/)
+assert.match(runningDetailResult.value, /\/workflows pause w-test/)
+assert.match(runningDetailResult.value, /\/workflows retry-agent w-test <phase-id> <agent-id>/)
+assert.match(runningDetailResult.value, /\/workflows skip-agent w-test <phase-id> <agent-id>/)
+assert.doesNotMatch(runningDetailResult.value, /\/workflows resume w-test/)
 
 const skipResult = await call('skip-agent w-test synthesis a3', context)
 assert.equal(skipResult.type, 'text')
@@ -236,5 +230,21 @@ assert.match(skipResult.value, /synthesis: completed 1\/1 \[██████�
 const retryResult = await call('retry-agent w-test synthesis a3', context)
 assert.equal(retryResult.type, 'text')
 assert.match(retryResult.value, /synthesis: running 0\/1/)
+
+const pauseResult = await call('pause w-test', context)
+assert.equal(pauseResult.type, 'text')
+assert.match(pauseResult.value, /Status: pending/)
+
+const resumeResult = await call('resume w-test', context)
+assert.equal(resumeResult.type, 'text')
+assert.match(resumeResult.value, /Workflow\(\{scriptPath: "\/tmp\/research-workflow\.js", resumeFromRunId: "wf_test_detail"\}\)/)
+
+const pausedDetailResult = await call('detail w-test', context)
+assert.equal(pausedDetailResult.type, 'text')
+assert.match(pausedDetailResult.value, /\/workflows resume w-test/)
+assert.match(pausedDetailResult.value, /Workflow\(\{scriptPath: "\/tmp\/research-workflow\.js", resumeFromRunId: "wf_test_detail"\}\)/)
+assert.doesNotMatch(pausedDetailResult.value, /\/workflows pause w-test/)
+assert.doesNotMatch(pausedDetailResult.value, /\/workflows retry-agent w-test <phase-id> <agent-id>/)
+assert.doesNotMatch(pausedDetailResult.value, /\/workflows skip-agent w-test <phase-id> <agent-id>/)
 
 console.log('workflows.test.ts passed')

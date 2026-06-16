@@ -3,10 +3,12 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
-import { formatWorkflowStatus } from '../../tasks/LocalWorkflowTask/formatWorkflowStatus.js'
+import {
+  formatWorkflowResumeInstruction,
+  formatWorkflowStatus,
+} from '../../tasks/LocalWorkflowTask/formatWorkflowStatus.js'
 import {
   pauseWorkflowTask,
-  resumeWorkflowTask,
   type LocalWorkflowTaskState,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
@@ -117,7 +119,7 @@ async function persistWorkflowControlStatus({
 }: {
   cwd: string
   task: LocalWorkflowTaskState
-  status: 'paused' | 'running'
+  status: 'paused'
 }): Promise<void> {
   if (!task.workflowRunId) return
   await updateWorkflowRunSessionStatus({
@@ -161,7 +163,7 @@ export const WorkflowTool = buildTool({
     return 'List, show, and dry-run workflow specs'
   },
   async prompt() {
-    return `Use this tool to inspect or execute validated workflow specs. Use action "list" to discover workflows, "show" to inspect metadata, "dry-run" to view the planned phase graph, "run" to execute phases through the Agent tool, "status" to inspect a workflow task by id, and "pause" or "resume" to control a workflow task. Workflow execution records LocalWorkflowTask phase state and does not directly use shell or filesystem tools.`
+    return `Use this tool to inspect or execute validated workflow specs. Use action "list" to discover workflows, "show" to inspect metadata, "dry-run" to view the planned phase graph, "run" to execute phases through the Agent tool, "status" to inspect a workflow task by id, "pause" to stop a running workflow with a resumeFromRunId prompt, and "resume" to print that prompt for a paused workflow. Workflow execution records LocalWorkflowTask phase state and does not directly use shell or filesystem tools.`
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -176,7 +178,7 @@ export const WorkflowTool = buildTool({
     return true
   },
   isReadOnly(input) {
-    return !['run', 'pause', 'resume'].includes(input.action)
+    return !['run', 'pause'].includes(input.action)
   },
   async checkPermissions(input, context) {
     if (input.action === 'run') {
@@ -232,11 +234,11 @@ export const WorkflowTool = buildTool({
     }
 
     if (action === 'resume') {
-      loadWorkflowTask(context, selector)
-      resumeWorkflowTask(selector, context.setAppStateForTasks ?? context.setAppState)
       const task = loadWorkflowTask(context, selector)
-      await persistWorkflowControlStatus({ cwd, task, status: 'running' })
-      return { data: formatWorkflowStatus(task) }
+      if (task.status !== 'pending') {
+        return { data: formatWorkflowStatus(task) }
+      }
+      return { data: formatWorkflowResumeInstruction(task) }
     }
 
     const workflow = await loadWorkflowSpecByNameOrPath(cwd, selector, action === 'run' ? runArgs ?? '' : '')

@@ -13,9 +13,7 @@ import {
   visibleWorkflowPhases,
   workflowDetailAgentMetrics,
   workflowDetailAgentOutcome,
-  workflowDetailAgentPhase,
   workflowDetailAgentPrompt,
-  workflowDetailAgentResult,
   workflowDetailAgentStatus,
   workflowDetailPhaseName,
   wrapWorkflowDetailText,
@@ -29,7 +27,6 @@ type Props = {
   onSkipAgent?: (agentId: string) => void
   onRetryAgent?: (agentId: string) => void
   onPause?: () => void
-  onResume?: () => void
 }
 
 type Level = 'phases' | 'agents' | 'agent'
@@ -140,7 +137,6 @@ export function WorkflowDetailDialog({
   onSkipAgent,
   onRetryAgent,
   onPause,
-  onResume,
 }: Props): React.JSX.Element {
   useRegisterOverlay('workflow-detail-dialog')
   const close = onBack ?? (() => undefined)
@@ -241,7 +237,6 @@ export function WorkflowDetailDialog({
     else if (k === 'x' && isRunning && level === 'phases' && onKill) { e.preventDefault(); onKill() }
     else if (k === 'r' && isRunning && currentAgentId && level !== 'phases' && onRetryAgent) { e.preventDefault(); onRetryAgent(currentAgentId) }
     else if (k === 'p' && isRunning && onPause) { e.preventDefault(); onPause() }
-    else if (k === 'p' && workflow.status === 'pending' && onResume) { e.preventDefault(); onResume() }
     else if (k === ' ') { e.preventDefault(); close() }
   }
 

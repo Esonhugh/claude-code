@@ -11,7 +11,6 @@ import { useAppState, useSetAppState } from '../../state/AppState.js'
 import {
   killWorkflowTask,
   pauseWorkflowTask,
-  resumeWorkflowTask,
   retryWorkflowAgent,
   skipWorkflowAgent,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -164,11 +163,6 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
           onPause={
             task.status === 'running'
               ? () => pauseWorkflowTask(task.id, setAppState)
-              : undefined
-          }
-          onResume={
-            task.status === 'pending'
-              ? () => resumeWorkflowTask(task.id, setAppState)
               : undefined
           }
           onBack={goBackToList}

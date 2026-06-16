@@ -37,6 +37,7 @@ import {
   loadWorkflowRunSession,
   startWorkflowRunSession,
   updateWorkflowRunSessionProgress,
+  updateWorkflowRunSessionStatus,
   type WorkflowRunSession,
 } from './workflowRunSessions.js'
 import {
@@ -171,6 +172,12 @@ function mapModel(model: string | undefined): 'sonnet' | 'opus' | 'haiku' | unde
   if (model.includes('haiku')) return 'haiku'
   if (model.includes('opus')) return 'opus'
   if (model.includes('sonnet')) return 'sonnet'
+  return undefined
+}
+
+function workflowAbortStatus(reason: unknown): 'paused' | 'killed' | undefined {
+  if (reason === 'workflow-paused') return 'paused'
+  if (reason === 'workflow-killed') return 'killed'
   return undefined
 }
 
@@ -711,10 +718,35 @@ export async function runWorkflowPlan({
       'Use /workflows to watch live progress.',
     ].join('\n')
   } catch (error) {
+    const abortStatus = workflowAbortStatus(workflowTask.abortController?.signal.reason)
+    const allResults = [...resultsByPhase.values()].flat()
+    if (abortStatus) {
+      await updateWorkflowRunSessionProgress({
+        cwd,
+        session: runSession,
+        results: allResults,
+        resumeCacheEntries: resumeRuntime.entries,
+      })
+      await updateWorkflowRunSessionStatus({
+        cwd,
+        workflowRunId,
+        status: abortStatus,
+        ...(abortStatus === 'paused' && scriptPath
+          ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
+          : {}),
+      })
+      return [
+        `Workflow ${abortStatus}. Task ID: ${workflowTask.id}`,
+        `Run ID: ${workflowRunId}`,
+        ...(abortStatus === 'paused' && scriptPath
+          ? [`Resume with: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})`]
+          : []),
+      ].join('\n')
+    }
+
     // Abort remaining agents on workflow failure
     workflowTask.abortController?.abort()
     const message = error instanceof Error ? error.message : String(error)
-    const allResults = [...resultsByPhase.values()].flat()
     failWorkflowTask(workflowTask.id, message, setAppState)
     await emit(createWorkflowProgressEvent({
       workflowRunId,

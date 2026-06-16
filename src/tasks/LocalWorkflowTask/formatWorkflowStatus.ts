@@ -35,6 +35,14 @@ function formatWorkflowArgs(args: LocalWorkflowTaskState['runArgs']): string {
   return JSON.stringify(args)
 }
 
+export function formatWorkflowResumeInstruction(task: LocalWorkflowTaskState): string {
+  if (task.scriptPath && task.workflowRunId) {
+    return `Resume by calling: Workflow({scriptPath: "${task.scriptPath}", resumeFromRunId: "${task.workflowRunId}"})`
+  }
+  if (!task.scriptPath) return 'Resume unavailable: this workflow was not launched from a script path.'
+  return 'Resume unavailable: workflow run ID is missing.'
+}
+
 export function formatWorkflowStatus(
   task: LocalWorkflowTaskState,
   options: { detail?: boolean } = {},
@@ -96,10 +104,14 @@ export function formatWorkflowStatus(
       lines.push(`  - ${event.type}: ${JSON.stringify(event)}`)
     }
     lines.push('Controls:')
-    lines.push(`  /workflows pause ${task.id}`)
-    lines.push(`  /workflows resume ${task.id}`)
-    lines.push(`  /workflows retry-agent ${task.id} <phase-id> <agent-id>`)
-    lines.push(`  /workflows skip-agent ${task.id} <phase-id> <agent-id>`)
+    if (task.status === 'running') {
+      lines.push(`  /workflows pause ${task.id}`)
+      lines.push(`  /workflows retry-agent ${task.id} <phase-id> <agent-id>`)
+      lines.push(`  /workflows skip-agent ${task.id} <phase-id> <agent-id>`)
+    } else if (task.status === 'pending') {
+      lines.push(`  /workflows resume ${task.id}`)
+      lines.push(`  ${formatWorkflowResumeInstruction(task)}`)
+    }
   }
 
   return lines.join('\n')

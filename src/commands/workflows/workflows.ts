@@ -1,11 +1,13 @@
 import type { LocalCommandResult } from '../../types/command.js'
-import { formatWorkflowStatus } from '../../tasks/LocalWorkflowTask/formatWorkflowStatus.js'
+import {
+  formatWorkflowResumeInstruction,
+  formatWorkflowStatus,
+} from '../../tasks/LocalWorkflowTask/formatWorkflowStatus.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { formatWorkflowDryRun } from '../../tools/WorkflowTool/formatWorkflowDryRun.js'
 import {
   pauseWorkflowTask,
-  resumeWorkflowTask,
   retryWorkflowAgent,
   skipWorkflowAgent,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -197,11 +199,10 @@ function workflowSetAppState(
   return undefined
 }
 
-function formatWorkflowTaskStatus(
+function workflowTaskFromContext(
   context: WorkflowCommandContext | unknown,
   selector: string,
-  options: { detail?: boolean } = {},
-): string {
+): LocalWorkflowTaskState | undefined {
   const task =
     context &&
     typeof context === 'object' &&
@@ -209,10 +210,17 @@ function formatWorkflowTaskStatus(
     typeof context.getAppState === 'function'
       ? context.getAppState().tasks?.[selector]
       : undefined
-  if (!task || typeof task !== 'object' || !('type' in task) || task.type !== 'local_workflow') {
-    return `Workflow task not found: ${selector}`
-  }
-  return formatWorkflowStatus(task as LocalWorkflowTaskState, options)
+  return isLocalWorkflowTask(task) ? task : undefined
+}
+
+function formatWorkflowTaskStatus(
+  context: WorkflowCommandContext | unknown,
+  selector: string,
+  options: { detail?: boolean } = {},
+): string {
+  const task = workflowTaskFromContext(context, selector)
+  if (!task) return `Workflow task not found: ${selector}`
+  return formatWorkflowStatus(task, options)
 }
 
 function splitAgentControlSelector(
@@ -320,16 +328,19 @@ export async function call(
     return { type: 'text', value: formatWorkflowTaskStatus(context, taskId) }
   }
 
-  if (action === 'pause' || action === 'resume') {
-    if (!selector) return { type: 'text', value: `Usage: /workflows ${action} <workflow-task-id>` }
+  if (action === 'pause') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows pause <workflow-task-id>' }
     const setAppState = workflowSetAppState(context)
-    if (!setAppState) return { type: 'text', value: `Workflow ${action} requires AppState access` }
-    if (action === 'pause') {
-      pauseWorkflowTask(selector, setAppState as never)
-    } else {
-      resumeWorkflowTask(selector, setAppState as never)
-    }
+    if (!setAppState) return { type: 'text', value: 'Workflow pause requires AppState access' }
+    pauseWorkflowTask(selector, setAppState as never)
     return { type: 'text', value: formatWorkflowTaskStatus(context, selector) }
+  }
+
+  if (action === 'resume') {
+    if (!selector) return { type: 'text', value: 'Usage: /workflows resume <workflow-task-id>' }
+    const task = workflowTaskFromContext(context, selector)
+    if (!task) return { type: 'text', value: `Workflow task not found: ${selector}` }
+    return { type: 'text', value: formatWorkflowResumeInstruction(task) }
   }
 
   return {

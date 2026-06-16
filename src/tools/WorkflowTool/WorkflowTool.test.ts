@@ -570,4 +570,13 @@ assert.match(pausedSession.resumePrompt, /Workflow\(\{scriptPath: ".*js-run\.js"
 assert.equal(pausedSession.events.at(-1)?.type, 'workflow_progress')
 assert.equal(pausedSession.events.at(-1)?.status, 'paused')
 
+const resumeResult = await WorkflowTool.call(
+  { action: 'resume', selector: pausableTaskId },
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_resume' } } as never,
+)
+assert.match(String(resumeResult.data), /Workflow\(\{scriptPath: ".*js-run\.js", resumeFromRunId: "wf_pausable"\}\)/)
+assert.equal((runState.tasks[pausableTaskId] as LocalWorkflowTaskState).status, 'pending')
+
 console.log('WorkflowTool.test.ts passed')

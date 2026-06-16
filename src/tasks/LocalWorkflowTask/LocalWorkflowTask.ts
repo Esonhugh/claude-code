@@ -457,19 +457,52 @@ export function recordWorkflowAgentProgress({
   })
 }
 
+function registeredAgentIdsForResult(
+  task: LocalWorkflowTaskState,
+  result: WorkflowAgentResult,
+): string[] {
+  const phase = task.phases.find(item => item.id === result.phaseId)
+  const indexedAgentId = phase?.agentIds[result.index]
+  return [result.agentId, indexedAgentId].filter(
+    (agentId, index, agentIds): agentId is string => Boolean(agentId) && agentIds.indexOf(agentId) === index,
+  )
+}
+
 function resultWithProgressMetrics(
   task: LocalWorkflowTaskState,
-  activeAgentId: string | undefined,
+  registeredAgentIds: string[],
   result: WorkflowAgentResult,
 ): WorkflowAgentResult {
-  const liveProgress = task.liveAgents?.[result.agentId] ?? (
-    activeAgentId ? task.liveAgents?.[activeAgentId] : undefined
-  )
+  const liveProgress = registeredAgentIds
+    .map(agentId => task.liveAgents?.[agentId])
+    .find(Boolean)
   if (!liveProgress) return result
   return {
     ...result,
     tokenCount: result.tokenCount ?? liveProgress.tokenCount,
     toolUseCount: result.toolUseCount ?? liveProgress.toolUseCount,
+  }
+}
+
+function removeLiveAgentState(
+  task: LocalWorkflowTaskState,
+  agentIds: string[],
+): Pick<LocalWorkflowTaskState, 'agentControllers' | 'liveAgents'> {
+  const agentIdsToRemove = new Set(agentIds)
+  return {
+    liveAgents: Object.fromEntries(
+      Object.entries(task.liveAgents ?? {}).filter(([agentId]) => !agentIdsToRemove.has(agentId)),
+    ),
+    agentControllers: Object.fromEntries(
+      Object.entries(task.agentControllers ?? {}).filter(([agentId]) => !agentIdsToRemove.has(agentId)),
+    ),
+  }
+}
+
+function abortWorkflowControllers(task: LocalWorkflowTaskState, reason: string): void {
+  task.abortController?.abort(reason)
+  for (const controller of Object.values(task.agentControllers ?? {})) {
+    controller.abortController.abort(reason)
   }
 }
 
@@ -484,8 +517,8 @@ export function completeWorkflowAgent({
 }): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    const activeAgentId = task.currentAgentId
-    const completedResult = resultWithProgressMetrics(task, activeAgentId, result)
+    const registeredAgentIds = registeredAgentIdsForResult(task, result)
+    const completedResult = resultWithProgressMetrics(task, registeredAgentIds, result)
     const nextTask = updatePhase(task, completedResult.phaseId, phase => {
       const priorResultsForIndex = phase.results.filter(
         phaseResult => phaseResult.index === result.index,
@@ -503,9 +536,9 @@ export function completeWorkflowAgent({
         ),
         failedAgentIds: phase.failedAgentIds.filter(agentId => {
           if (priorAgentIdsForIndex.includes(agentId)) return false
-          if (activeAgentId && agentId === activeAgentId) return false
-          if (activeAgentId && agentId.startsWith(`${activeAgentId}-retry-`)) return false
-          if (activeAgentId && activeAgentId.startsWith(`${agentId}-retry-`)) return false
+          if (registeredAgentIds.includes(agentId)) return false
+          if (registeredAgentIds.some(registeredAgentId => agentId.startsWith(`${registeredAgentId}-retry-`))) return false
+          if (registeredAgentIds.some(registeredAgentId => registeredAgentId.startsWith(`${agentId}-retry-`))) return false
           if (agentId.startsWith(`${completedResult.agentId}-retry-`)) return false
           if (completedResult.agentId.startsWith(`${agentId}-retry-`)) return false
           return !agentId.includes(`-${completedResult.index + 1}-`)
@@ -521,18 +554,10 @@ export function completeWorkflowAgent({
         status: phaseCompleted(nextPhase) ? 'completed' : nextPhase.status,
       }
     })
-    const liveAgentKeysToRemove = new Set([completedResult.agentId])
-    if (activeAgentId) liveAgentKeysToRemove.add(activeAgentId)
-    const liveAgents = Object.fromEntries(
-      Object.entries(nextTask.liveAgents ?? {}).filter(([agentId]) => !liveAgentKeysToRemove.has(agentId)),
-    )
-    const agentControllers = Object.fromEntries(
-      Object.entries(nextTask.agentControllers ?? {}).filter(([agentId]) => !liveAgentKeysToRemove.has(agentId)),
-    )
+    const liveState = removeLiveAgentState(nextTask, registeredAgentIds)
     return {
       ...nextTask,
-      agentControllers,
-      liveAgents,
+      ...liveState,
       results: [
         ...removeTaskResultsForPhaseIndex(
           nextTask.results,
@@ -564,7 +589,7 @@ export function failWorkflowAgent({
 }): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    return updatePhase(
+    const nextTask = updatePhase(
       { ...task, summary: `Workflow agent failed: ${error}` },
       phaseId,
       phase => ({
@@ -574,6 +599,10 @@ export function failWorkflowAgent({
         error,
       }),
     )
+    return {
+      ...nextTask,
+      ...removeLiveAgentState(nextTask, [agentId]),
+    }
   })
 }
 
@@ -601,7 +630,7 @@ export function failWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    task.abortController?.abort()
+    abortWorkflowControllers(task, 'workflow-failed')
     return {
       ...task,
       status: 'failed',
@@ -628,7 +657,7 @@ function endWorkflowTask(
       return prev
     }
 
-    task.abortController?.abort()
+    abortWorkflowControllers(task, `workflow-${status}`)
     return {
       ...prev,
       tasks: {
@@ -660,31 +689,16 @@ export function pauseWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    abortWorkflowControllers(task, 'workflow-paused')
     const pausedTask = {
       ...task,
       status: 'pending' as const,
       pausedAt: Date.now(),
       summary: `Workflow paused. ${buildResumePrompt(task)}`,
+      abortController: undefined,
+      currentAgentId: undefined,
     }
     return appendEvent(pausedTask, progressEvent(pausedTask, 'paused'))
-  })
-}
-
-export function resumeWorkflowTask(
-  taskId: string,
-  setAppState: SetAppState,
-): void {
-  withWorkflowTask(taskId, setAppState, task => {
-    if (task.status !== 'pending') return task
-    const pausedMs = task.pausedAt ? Date.now() - task.pausedAt : 0
-    const resumedTask = {
-      ...task,
-      status: 'running' as const,
-      totalPausedMs: (task.totalPausedMs ?? 0) + Math.max(0, pausedMs),
-      pausedAt: undefined,
-      summary: 'Workflow resumed',
-    }
-    return appendEvent(resumedTask, progressEvent(resumedTask, 'running'))
   })
 }
 

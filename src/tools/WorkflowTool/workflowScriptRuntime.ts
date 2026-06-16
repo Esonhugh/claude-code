@@ -31,6 +31,8 @@ import {
   completeWorkflowRunSession,
   failWorkflowRunSession,
   startWorkflowRunSession,
+  updateWorkflowRunSessionProgress,
+  updateWorkflowRunSessionStatus,
 } from './workflowRunSessions.js'
 import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScriptPersistence.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
@@ -183,6 +185,12 @@ function tryParseStructuredOutput(text: string): unknown | undefined {
     const match = text.match(/\{[\s\S]*\}/)
     if (match) return JSON.parse(match[0])
   } catch { /* ignore */ }
+  return undefined
+}
+
+function workflowAbortStatus(reason: unknown): 'paused' | 'killed' | undefined {
+  if (reason === 'workflow-paused') return 'paused'
+  if (reason === 'workflow-killed') return 'killed'
   return undefined
 }
 
@@ -635,6 +643,31 @@ export async function runWorkflowScript({
       'Use /workflows to watch live progress.',
     ].filter(Boolean).join('\n')
   } catch (error) {
+    const abortStatus = workflowAbortStatus(abortController.signal.reason)
+    if (abortStatus) {
+      await updateWorkflowRunSessionProgress({
+        cwd,
+        session: runSession,
+        results: [],
+        resumeCacheEntries: journal.entries(),
+      })
+      await updateWorkflowRunSessionStatus({
+        cwd,
+        workflowRunId,
+        status: abortStatus,
+        ...(abortStatus === 'paused' && scriptPath
+          ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
+          : {}),
+      })
+      return [
+        `Workflow ${abortStatus}. Task ID: ${workflowTask.id}`,
+        `Run ID: ${workflowRunId}`,
+        ...(abortStatus === 'paused' && scriptPath
+          ? [`Resume with: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})`]
+          : []),
+      ].join('\n')
+    }
+
     abortController.abort()
     const message = workflowErrorMessage(error, 'Workflow script failed without error details')
     failWorkflowTask(workflowTask.id, message, setAppState)
