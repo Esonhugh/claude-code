@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import axios from 'axios'
 
-globalThis.MACRO = { VERSION: 'test' }
+;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
+  VERSION: 'test',
+}
 
 const originalHome = process.env.HOME
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI

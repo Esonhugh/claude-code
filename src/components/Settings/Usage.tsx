@@ -31,6 +31,27 @@ type LimitBarProps = {
   extraSubtext?: string
 }
 
+export function formatUsageLoadError(err: unknown): string {
+  const axiosError = err as {
+    message?: string
+    response?: { status?: number; statusText?: string; data?: unknown }
+  }
+  const status = axiosError.response?.status
+  const statusText = axiosError.response?.statusText
+  const responseBody = axiosError.response?.data
+    ? jsonStringify(axiosError.response.data)
+    : undefined
+  const details = [
+    status ? `HTTP ${status}${statusText ? ` ${statusText}` : ''}` : undefined,
+    responseBody,
+    !status && axiosError.message ? axiosError.message : undefined,
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  return details ? `Failed to load usage data: ${details}` : 'Failed to load usage data'
+}
+
 function LimitBar({
   title,
   limit,
@@ -118,15 +139,7 @@ export function Usage(): React.ReactNode {
       setUtilization(data)
     } catch (err) {
       logError(err as Error)
-      const axiosError = err as { response?: { data?: unknown } }
-      const responseBody = axiosError.response?.data
-        ? jsonStringify(axiosError.response.data)
-        : undefined
-      setError(
-        responseBody
-          ? `Failed to load usage data: ${responseBody}`
-          : 'Failed to load usage data',
-      )
+      setError(formatUsageLoadError(err))
     } finally {
       setIsLoading(false)
     }

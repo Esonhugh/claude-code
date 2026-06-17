@@ -195,7 +195,7 @@ export type PromptResponse = { prompt_response: string; selected: string }
 export type SlashCommand = { name: string; description: string; argumentHint: string }
 export type AgentInfo = { name: string; description: string; model?: string }
 export type ModelInfo = { value: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('low' | 'medium' | 'high' | 'max')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean }
-export type AccountInfo = { email?: string; organization?: string; subscriptionType?: string; tokenSource?: string; apiKeySource?: string; apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' }
+export type AccountInfo = { email?: string; organization?: string; subscriptionType?: string; tokenSource?: string; apiKeySource?: string; apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai' }
 
 // Agent Definition
 export type AgentMcpServerSpec = string | Record<string, McpServerConfigForProcessTransport>

@@ -10,6 +10,36 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-06-17 - v2.1.169 - OpenAI/Codex 兼容、模型列表缓存与用量展示
+
+### 版本状态
+
+- 发布版本：`v2.1.169`。
+- 本次发布覆盖 `v2.1.168` 后的提交：`4570878`、`9c94526`、`a9c6e4f`、`ee2e991`、`797938e`、`771318e`、`d652e8c`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+
+### 关联提交
+
+- `4570878` — 2026-06-10 21:30:15 +08:00 — `update: add codex providers`
+- `9c94526` — 2026-06-17 02:09:57 +08:00 — `update: changelogs for workflow life time`
+- `a9c6e4f` — 2026-06-17 02:23:51 +08:00 — `update: fix lint and type bugs`
+- `ee2e991` — 2026-06-17 20:17:00 +08:00 — `update: rebase to master and usage panel`
+- `797938e` — 2026-06-17 20:46:11 +08:00 — `update: model list and cache problem`
+- `771318e` — 2026-06-17 20:59:03 +08:00 — `update: learnt openai usage limit calc`
+- `d652e8c` — 2026-06-17 21:01:43 +08:00 — `update: spilt usages`
+
+### 变更内容
+
+- 新增 OpenAI/Codex 兼容 provider 路径，补齐 OpenAI-compatible client、鉴权状态、模型字符串/provider 映射和相关状态显示。
+- 增加 OpenAI-compatible 模型列表获取与缓存逻辑，修复模型列表缓存读取和 bootstrap 流程中的边界问题。
+- 扩展 Settings Usage 面板，支持 Claude 与 ChatGPT/OpenAI 用量分流展示，并根据已学习的 OpenAI 用量限制规则估算状态。
+- 将用量统计逻辑拆分为通用类型、Claude 用量和 ChatGPT/OpenAI 用量模块，降低 `usage.ts` 的职责集中度。
+- 修复 workflow detail model、workflow command 测试、task/swarm model 相关 lint/type 问题。
+
+### 测试覆盖
+
+- 新增或更新 `bootstrap-openai`、`openaiModelOptions`、`usage`、`WorkflowTool` 与 workflow detail model 相关回归测试。
+
 ## 2026-06-17 - v2.1.168 - Workflow 状态生命周期与详情展示修复
 
 ### 版本状态

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-globalThis.MACRO = { VERSION: 'test' }
+;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
+  VERSION: 'test',
+}
 
 const originalFetch = globalThis.fetch
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI

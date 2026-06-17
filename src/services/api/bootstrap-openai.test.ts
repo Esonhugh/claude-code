@@ -6,7 +6,9 @@ const originalAxiosGet = axios.get
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalNodeEnv = process.env.NODE_ENV
 
-globalThis.MACRO = { VERSION: 'test' }
+;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
+  VERSION: 'test',
+}
 
 try {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
