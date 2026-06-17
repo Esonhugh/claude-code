@@ -341,6 +341,7 @@ export function buildAPIProviderProperties(): Property[] {
       bedrock: 'AWS Bedrock',
       vertex: 'Google Vertex AI',
       foundry: 'Microsoft Foundry',
+      openai: 'OpenAI',
     }[apiProvider]
 
     properties.push({

@@ -1,8 +1,10 @@
 import chalk from 'chalk'
 import { exec } from 'child_process'
 import { execa } from 'execa'
+import { readFileSync } from 'fs'
 import { mkdir, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
+import { homedir } from 'os'
 import { join } from 'path'
 import { CLAUDE_AI_PROFILE_SCOPE } from 'src/constants/oauth.js'
 import {
@@ -115,7 +117,8 @@ export function isAnthropicAuthEnabled(): boolean {
   const is3P =
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
 
   // Check if user has configured an external API key source
   // This allows externally-provided API keys to work (without requiring proxy configuration)
@@ -1743,7 +1746,8 @@ export function isUsing3PServices(): boolean {
   return !!(
     isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
   )
 }
 
@@ -2010,3 +2014,38 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
 }
 
 class GcpCredentialsTimeoutError extends Error {}
+
+export type OpenAIAuthInfo = {
+  accessToken: string
+  accountId?: string
+  isChatGPT: boolean
+}
+
+/**
+ * Read OpenAI auth from ~/.codex/auth.json.
+ * Used when CLAUDE_CODE_USE_OPENAI=1.
+ */
+export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
+  try {
+    const authPath = join(homedir(), '.codex', 'auth.json')
+    const content = readFileSync(authPath, 'utf-8')
+    const data = JSON.parse(content)
+    if (data?.OPENAI_API_KEY) {
+      return { accessToken: data.OPENAI_API_KEY, isChatGPT: false }
+    }
+    if (data?.tokens?.access_token) {
+      return {
+        accessToken: data.tokens.access_token,
+        accountId: data.tokens.account_id,
+        isChatGPT: data.auth_mode === 'chatgpt',
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+})
+
+export const getOpenAIApiKey = memoize((): string | null => {
+  return getOpenAIAuthInfo()?.accessToken ?? null
+})

@@ -194,24 +194,39 @@ export function Usage(): React.ReactNode {
     subscriptionType === 'team' ||
     subscriptionType === null
 
-  const limits = [
-    {
-      title: 'Current session',
-      limit: utilization.five_hour,
-    },
-    {
-      title: 'Current week (all models)',
-      limit: utilization.seven_day,
-    },
-    ...(showSonnetBar
-      ? [
-          {
-            title: 'Current week (Sonnet only)',
-            limit: utilization.seven_day_sonnet,
-          },
-        ]
-      : []),
-  ]
+  const limits = utilization.source === 'chatgpt'
+    ? [
+        {
+          title: `ChatGPT Codex usage${utilization.plan_type ? ` (${utilization.plan_type})` : ''}`,
+          limit: utilization.seven_day,
+        },
+        ...(utilization.seven_day_sonnet
+          ? [
+              {
+                title: 'Secondary usage window',
+                limit: utilization.seven_day_sonnet,
+              },
+            ]
+          : []),
+      ]
+    : [
+        {
+          title: 'Current session',
+          limit: utilization.five_hour,
+        },
+        {
+          title: 'Current week (all models)',
+          limit: utilization.seven_day,
+        },
+        ...(showSonnetBar
+          ? [
+              {
+                title: 'Current week (Sonnet only)',
+                limit: utilization.seven_day_sonnet,
+              },
+            ]
+          : []),
+      ]
 
   return (
     <Box flexDirection="column" gap={1} width="100%">
