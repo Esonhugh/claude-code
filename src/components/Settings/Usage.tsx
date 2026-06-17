@@ -194,21 +194,12 @@ export function Usage(): React.ReactNode {
     subscriptionType === 'team' ||
     subscriptionType === null
 
-  const limits = utilization.source === 'chatgpt'
-    ? [
-        {
-          title: `ChatGPT Codex usage${utilization.plan_type ? ` (${utilization.plan_type})` : ''}`,
-          limit: utilization.seven_day,
-        },
-        ...(utilization.seven_day_sonnet
-          ? [
-              {
-                title: 'Secondary usage window',
-                limit: utilization.seven_day_sonnet,
-              },
-            ]
-          : []),
-      ]
+  const limits: Array<{
+    title: string
+    limit?: RateLimit | null
+    extraSubtext?: string
+  }> = utilization.source === 'chatgpt'
+    ? (utilization.chatgpt_limits ?? [])
     : [
         {
           title: 'Current session',
@@ -235,12 +226,13 @@ export function Usage(): React.ReactNode {
       )}
 
       {limits.map(
-        ({ title, limit }) =>
+        ({ title, limit, extraSubtext }) =>
           limit && (
             <LimitBar
               key={title}
               title={title}
               limit={limit}
+              extraSubtext={extraSubtext}
               maxWidth={maxWidth}
             />
           ),

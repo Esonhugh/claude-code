@@ -27,9 +27,14 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
         rate_limit: {
           primary_window: {
             used_percent: 45,
+            limit_window_seconds: 7 * 24 * 60 * 60,
             reset_at: 1783684808,
           },
-          secondary_window: null,
+          secondary_window: {
+            used_percent: 20,
+            limit_window_seconds: 5 * 60 * 60,
+            reset_at: 1783688408,
+          },
         },
         credits: {
           has_credits: false,
@@ -37,6 +42,28 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
           balance: null,
           overage_limit_reached: false,
         },
+        spend_control: {
+          individual_limit: {
+            limit: '100',
+            used: '42',
+            remaining: '58',
+            used_percent: 42,
+            reset_at: 1785542400,
+          },
+        },
+        additional_rate_limits: [
+          {
+            limit_name: 'Code Review',
+            metered_feature: 'codex-auto-review',
+            rate_limit: {
+              primary_window: {
+                used_percent: 10,
+                limit_window_seconds: 30 * 24 * 60 * 60,
+                reset_at: 1785542400,
+              },
+            },
+          },
+        ],
       },
     }
   }) as typeof axios.get
@@ -63,7 +90,54 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
     assert.deepEqual(utilization?.seven_day, {
       utilization: 45,
       resets_at: '2026-07-10T12:00:08.000Z',
+      window_minutes: 7 * 24 * 60,
     })
+    assert.deepEqual(utilization?.seven_day_sonnet, {
+      utilization: 20,
+      resets_at: '2026-07-10T13:00:08.000Z',
+      window_minutes: 5 * 60,
+    })
+    assert.deepEqual(utilization?.monthly_credit_limit, {
+      limit: '100',
+      used: '42',
+      remaining: '58',
+      utilization: 42,
+      resets_at: '2026-08-01T00:00:00.000Z',
+    })
+    assert.deepEqual(utilization?.chatgpt_limits, [
+      {
+        title: 'ChatGPT Codex weekly usage (plus)',
+        limit: {
+          utilization: 45,
+          resets_at: '2026-07-10T12:00:08.000Z',
+          window_minutes: 7 * 24 * 60,
+        },
+      },
+      {
+        title: 'Secondary 5h usage',
+        limit: {
+          utilization: 20,
+          resets_at: '2026-07-10T13:00:08.000Z',
+          window_minutes: 5 * 60,
+        },
+      },
+      {
+        title: 'Code Review monthly usage',
+        limit: {
+          utilization: 10,
+          resets_at: '2026-08-01T00:00:00.000Z',
+          window_minutes: 30 * 24 * 60,
+        },
+      },
+      {
+        title: 'Monthly credit limit',
+        limit: {
+          utilization: 42,
+          resets_at: '2026-08-01T00:00:00.000Z',
+        },
+        extraSubtext: '42 of 100 credits used',
+      },
+    ])
   } finally {
     axios.get = originalAxiosGet
     authModule.getOpenAIAuthInfo.cache.clear?.()
