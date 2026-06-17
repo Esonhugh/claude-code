@@ -12,6 +12,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { withOAuth401Retry } from '../../utils/http.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
+import { fetchOpenAIModelOptions } from '../../utils/model/openaiModelOptions.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
@@ -114,7 +115,16 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
  */
 export async function fetchBootstrapData(): Promise<void> {
   try {
-    const response = await fetchBootstrapAPI()
+    const isOpenAIProvider = getAPIProvider() === 'openai'
+    let response: BootstrapResponse | null
+    if (isOpenAIProvider) {
+      const additionalModelOptions = await fetchOpenAIModelOptions()
+      response = additionalModelOptions
+        ? { additional_model_options: additionalModelOptions }
+        : null
+    } else {
+      response = await fetchBootstrapAPI()
+    }
     if (!response) return
 
     const clientData = response.client_data ?? null
@@ -122,9 +132,12 @@ export async function fetchBootstrapData(): Promise<void> {
 
     // Only persist if data actually changed — avoids a config write on every startup.
     const config = getGlobalConfig()
+    const cachedModelOptions = isOpenAIProvider
+      ? config.openAIModelOptionsCache
+      : config.additionalModelOptionsCache
     if (
       isEqual(config.clientDataCache, clientData) &&
-      isEqual(config.additionalModelOptionsCache, additionalModelOptions)
+      isEqual(cachedModelOptions, additionalModelOptions)
     ) {
       logForDebugging('[Bootstrap] Cache unchanged, skipping write')
       return
@@ -134,7 +147,9 @@ export async function fetchBootstrapData(): Promise<void> {
     saveGlobalConfig(current => ({
       ...current,
       clientDataCache: clientData,
-      additionalModelOptionsCache: additionalModelOptions,
+      ...(isOpenAIProvider
+        ? { openAIModelOptionsCache: additionalModelOptions }
+        : { additionalModelOptionsCache: additionalModelOptions }),
     }))
   } catch (error) {
     logError(error)

@@ -33,6 +33,7 @@ import {
 import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
 import { isAnt } from 'src/utils/userType.js'
+import { getOpenAIModelOptions } from './openaiModelOptions.js'
 
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
@@ -271,6 +272,13 @@ function getOpusPlanOption(): ModelOption {
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getModelOptionsBase(fastMode = false): ModelOption[] {
+  if (getAPIProvider() === 'openai') {
+    const cachedModelOptions = getGlobalConfig().openAIModelOptionsCache ?? []
+    return cachedModelOptions.length > 0
+      ? cachedModelOptions
+      : getOpenAIModelOptions()
+  }
+
   if (isAnt()) {
     // Build options from antModels config
     // @ts-ignore - recovered code
@@ -468,6 +476,7 @@ export function getModelOptions(fastMode = false): ModelOption[] {
   const envCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
   if (
     envCustomModel &&
+    shouldIncludeCustomModel(envCustomModel) &&
     !options.some(existing => existing.value === envCustomModel)
   ) {
     options.push({
@@ -496,6 +505,14 @@ export function getModelOptions(fastMode = false): ModelOption[] {
   } else if (initialMainLoopModel !== null) {
     customModel = initialMainLoopModel
   }
+  if (
+    customModel !== null &&
+    getAPIProvider() === 'openai' &&
+    !isOpenAIModelName(customModel)
+  ) {
+    return filterModelOptionsByAllowlist(options)
+  }
+
   if (customModel === null || options.some(opt => opt.value === customModel)) {
     return filterModelOptionsByAllowlist(options)
   } else if (customModel === 'opusplan') {
@@ -539,5 +556,18 @@ function filterModelOptionsByAllowlist(options: ModelOption[]): ModelOption[] {
   return options.filter(
     opt =>
       opt.value === null || (opt.value !== null && isModelAllowed(opt.value)),
+  )
+}
+
+function shouldIncludeCustomModel(model: string): boolean {
+  return getAPIProvider() !== 'openai' || isOpenAIModelName(model)
+}
+
+function isOpenAIModelName(model: string): boolean {
+  const normalized = model.toLowerCase()
+  return (
+    normalized.startsWith('gpt-') ||
+    normalized.startsWith('o') ||
+    normalized.startsWith('codex')
   )
 }

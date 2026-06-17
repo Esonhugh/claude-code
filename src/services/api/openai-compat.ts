@@ -15,6 +15,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { logForDebugging } from '../../utils/debug.js'
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 
 // --- Auth config ---
 
@@ -219,7 +220,12 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
   })
 
   try {
-    const resp = await fetch(url, { method: 'POST', headers, body })
+    const resp = await fetch(url, {
+      ...getProxyFetchOptions(),
+      method: 'POST',
+      headers,
+      body,
+    })
     if (!resp.ok) {
       const errText = await resp.text()
       stream.fail(new Error(`OpenAI API ${resp.status}: ${errText}`))
