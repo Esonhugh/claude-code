@@ -25,7 +25,7 @@ export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'agent-skills',
   'life-sciences',
   'knowledge-work-plugins',
-  'Esonhugh-Marketplace',
+  'esonhugh-marketplace',
 ])
 
 /**
@@ -105,7 +105,16 @@ export function isBlockedOfficialName(name: string): boolean {
  * The official GitHub organization for Anthropic marketplaces.
  * Reserved names must come from this org.
  */
-export const OFFICIAL_GITHUB_ORG = 'anthropics'
+export const OFFICIAL_GITHUB_ORGS = ['anthropics', 'esonhugh'] as const
+
+const OFFICIAL_GITHUB_REPO_PREFIXES = OFFICIAL_GITHUB_ORGS.map(org => `${org}/`)
+const OFFICIAL_GITHUB_URL_PATTERNS = OFFICIAL_GITHUB_ORGS.flatMap(org => [
+  `github.com/${org}/`,
+  `git@github.com:${org}/`,
+])
+const OFFICIAL_GITHUB_ORGS_DISPLAY = OFFICIAL_GITHUB_ORGS.map(
+  org => `github.com/${org}/*`,
+).join(' or ')
 
 /**
  * Validate that a marketplace with a reserved name comes from the official source.
@@ -130,11 +139,10 @@ export function validateOfficialNameSource(
 
   // Check for GitHub source type
   if (source.source === 'github') {
-    // Verify the repo is from the official org
-    const repo = source.repo || ''
-    if (!repo.toLowerCase().startsWith(`${OFFICIAL_GITHUB_ORG}/`)) {
-      return null
-      // return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from 'github.com/${OFFICIAL_GITHUB_ORG}/' can use this name.`
+    // Verify the repo is from an official org
+    const repo = source.repo?.toLowerCase() || ''
+    if (!OFFICIAL_GITHUB_REPO_PREFIXES.some(prefix => repo.startsWith(prefix))) {
+      return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from '${OFFICIAL_GITHUB_ORGS_DISPLAY}' can use this name.`
     }
     return null // Valid: reserved name from official GitHub source
   }
@@ -142,20 +150,17 @@ export function validateOfficialNameSource(
   // Check for git URL source type
   if (source.source === 'git' && source.url) {
     const url = source.url.toLowerCase()
-    // Check for HTTPS URL format: https://github.com/anthropics/...
-    // or SSH format: git@github.com:anthropics/...
-    const isHttpsAnthropics = url.includes('github.com/anthropics/')
-    const isSshAnthropics = url.includes('git@github.com:anthropics/')
-
-    if (isHttpsAnthropics || isSshAnthropics) {
+    // Check for HTTPS URL format: https://github.com/<official-org>/...
+    // or SSH format: git@github.com:<official-org>/...
+    if (OFFICIAL_GITHUB_URL_PATTERNS.some(pattern => url.includes(pattern))) {
       return null // Valid: reserved name from official git URL
     }
 
-    return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from 'github.com/${OFFICIAL_GITHUB_ORG}/' can use this name.`
+    return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from '${OFFICIAL_GITHUB_ORGS_DISPLAY}' can use this name.`
   }
 
   // Reserved names must come from GitHub (either 'github' or 'git' source)
-  return `The name '${name}' is reserved for official Anthropic marketplaces and can only be used with GitHub sources from the '${OFFICIAL_GITHUB_ORG}' organization.`
+  return `The name '${name}' is reserved for official Anthropic marketplaces and can only be used with GitHub sources from ${OFFICIAL_GITHUB_ORGS_DISPLAY}.`
 }
 
 /**
@@ -1020,7 +1025,7 @@ export const MarketplaceSourceSchema = lazySchema(() =>
             {
               message:
                 'Reserved official marketplace names cannot be used with settings sources. ' +
-                'validateOfficialNameSource only accepts github/git sources from anthropics/* ' +
+                'validateOfficialNameSource only accepts github/git sources from anthropics/* or esonhugh/* ' +
                 'for these names; a settings source would be rejected after ' +
                 'loadAndCacheMarketplace has already written to disk with cleanupNeeded=false.',
             },
