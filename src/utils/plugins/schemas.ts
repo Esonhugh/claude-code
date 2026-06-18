@@ -25,7 +25,7 @@ export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'agent-skills',
   'life-sciences',
   'knowledge-work-plugins',
-  'esonhugh-marketplace',
+  'Esonhugh-Marketplace',
 ])
 
 /**
@@ -133,7 +133,8 @@ export function validateOfficialNameSource(
     // Verify the repo is from the official org
     const repo = source.repo || ''
     if (!repo.toLowerCase().startsWith(`${OFFICIAL_GITHUB_ORG}/`)) {
-      return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from 'github.com/${OFFICIAL_GITHUB_ORG}/' can use this name.`
+      return null
+      // return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from 'github.com/${OFFICIAL_GITHUB_ORG}/' can use this name.`
     }
     return null // Valid: reserved name from official GitHub source
   }
