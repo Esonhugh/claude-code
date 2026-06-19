@@ -8,13 +8,19 @@ let pluginCommandClears = 0
 let pluginSkillClears = 0
 let pluginRefreshes = 0
 
-const result = reloadSkills({
+const result = await reloadSkills({
   clearCommandMemoizationCaches: () => {
     commandMemoClears += 1
   },
   clearSkillCaches: () => {
     skillClears += 1
   },
+  loadSkills: () => [
+    { name: 'user-one', source: 'userSettings' },
+    { name: 'project-one', source: 'projectSettings' },
+    { name: 'project-two', source: 'projectSettings' },
+  ],
+  loadPluginSkills: () => [{ name: 'plugin-one', source: 'plugin' }],
   clearPluginCommandCache: () => {
     pluginCommandClears += 1
   },
@@ -26,11 +32,11 @@ const result = reloadSkills({
   },
 })
 
-assert.equal(result.message, 'Reloaded skills')
+assert.equal(result.message, 'Reloaded 4 skills (user 1 skills, project 2 skills, plugin 1 skills)')
 assert.equal(commandMemoClears, 1)
 assert.equal(skillClears, 1)
 assert.equal(pluginCommandClears, 0)
-assert.equal(pluginSkillClears, 0)
+assert.equal(pluginSkillClears, 1)
 assert.equal(pluginRefreshes, 0)
 
 console.log('reload-skills.test.ts passed')
