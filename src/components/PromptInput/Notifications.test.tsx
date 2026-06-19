@@ -11,7 +11,7 @@ const active = GoalStatusIndicator({ active: true })
 assert.ok(React.isValidElement(active))
 assert.equal(active.type, Text)
 assert.deepEqual(active.props, {
-  color: 'warning',
+  color: 'ansi:magentaBright',
   bold: true,
   children: 'Goal is set',
 })

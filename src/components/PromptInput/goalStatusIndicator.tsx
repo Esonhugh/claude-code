@@ -9,7 +9,7 @@ export function GoalStatusIndicator({
 }): React.ReactNode {
   if (!active) return null
   return (
-    <Text color="warning" bold>
+    <Text color="ansi:magentaBright" bold>
       Goal is set
     </Text>
   )
