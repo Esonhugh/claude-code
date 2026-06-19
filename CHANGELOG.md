@@ -10,6 +10,62 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-06-20 - v2.1.171 - 子 agent 稳定性、会话命令热重载与目标状态展示
+
+### 版本状态
+
+- 准备发布版本：`v2.1.171`。
+- 本次发布覆盖 `v2.1.170` 后的提交：`1f25623`、`42675ff`、`c8e5c36`、`99697ec`、`01426fe`、`5ad2d59`、`a2e0d35`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+
+### 关联提交
+
+- `1f25623` — 2026-06-19 22:16:09 +08:00 — `add: plan and spec`
+- `42675ff` — 2026-06-19 23:56:37 +08:00 — `fix: stabilize nested agents and reloadable session command`
+- `c8e5c36` — 2026-06-20 02:05:37 +08:00 — `update: goal logical`
+- `99697ec` — 2026-06-20 02:35:48 +08:00 — `update: fix goal clear without StopHooks`
+- `01426fe` — 2026-06-20 02:37:04 +08:00 — `update: change goal set color`
+- `5ad2d59` — 2026-06-20 02:56:03 +08:00 — `fix: set working directory clearly`
+- `a2e0d35` — 2026-06-20 03:18:25 +08:00 — `update: reload skills`
+
+### 变更内容
+
+- 新增 `/cd` 会话命令和 cwd 变更工具链，支持在会话内清晰切换与展示工作目录，并让 slash command 处理流程能消费会话命令执行结果。
+- 新增 `/reload-skills` 会话命令，支持运行时重载可用技能列表，并补齐 reload 后的消息提示和命令结果行为。
+- 稳定嵌套 subagent 执行：增加 subagent 深度追踪、forked agent/session storage 传递和 nested agent 相关测试，避免嵌套 agent 行为失控。
+- 调整 reloadable session command 与 `Tool` / `commands` 注册路径，补齐 `/cd`、`/reload-skills`、`InteractiveTerminal`、workflow runtime globals 等相关边界处理。
+- 新增 `/goal` 状态栏与输入 footer 展示逻辑，重构 PromptInput footer 右侧区域，支持目标设置、清除、通知展示和 StatusLine 同步。
+- 修复 `/goal clear` 不依赖 StopHooks 的路径，并调整 goal set/clear 的颜色状态展示。
+- 修正 StructuredDiff 颜色处理中的边界问题，补齐对应测试。
+- 新增 superpowers plan/spec 文档，记录 subagent `/cd`/`reload-skills` 与 goal statusline 设计。
+
+### 测试覆盖
+
+- 新增或更新 `/cd`、`/reload-skills`、`/goal`、slash command 处理、cwd change、StopHooks、StatusLine、PromptInput notifications、StructuredDiff colorDiff 相关测试。
+- 新增或更新 `AgentTool` nested agent、subagent depth、forked agent/session storage、InteractiveTerminal、Workflow DSL/runtime globals 相关测试。
+
+## 2026-06-18 - v2.1.170 - 官方插件 schema 名称兼容
+
+### 版本状态
+
+- 发布版本：`v2.1.170`。
+- 本次发布覆盖 `v2.1.169` 后的提交：`7301267`、`2909b7c`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+
+### 关联提交
+
+- `7301267` — 2026-06-18 15:25:16 +08:00 — `update: bypass validate official names`
+- `2909b7c` — 2026-06-18 15:32:03 +08:00 — `update: i'm official`
+
+### 变更内容
+
+- 调整 plugin schema 校验中的官方插件命名规则，放宽/绕过官方名称相关校验，使本地恢复项目可以识别并接受官方插件命名形态。
+- 更新官方插件 schema 相关判定逻辑，避免官方插件名称在本地校验阶段被误判为无效。
+
+### 测试覆盖
+
+- 本条目仅涉及 plugin schema 校验逻辑调整；本次 changelog 更新未额外运行测试或构建命令。
+
 ## 2026-06-17 - v2.1.169 - OpenAI/Codex 兼容、模型列表缓存与用量展示
 
 ### 版本状态
