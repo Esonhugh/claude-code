@@ -120,6 +120,10 @@ import {
 import { getPrompt } from './prompt.js'
 import { runAgent } from './runAgent.js'
 import {
+  assertCanSpawnNestedSubagent,
+  getNextSubagentDepth,
+} from './subagentDepth.js'
+import {
   renderGroupedAgentToolUse,
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -484,6 +488,10 @@ export const AgentTool = buildTool({
       (isForkSubagentEnabled() ? undefined : GENERAL_PURPOSE_AGENT.agentType)
     const isForkPath = effectiveType === undefined
 
+    if (!isForkPath) {
+      assertCanSpawnNestedSubagent(toolUseContext.options)
+    }
+
     let selectedAgent: AgentDefinition
     if (isForkPath) {
       // Recursive fork guard: fork children keep the Agent tool in their
@@ -663,6 +671,9 @@ export const AgentTool = buildTool({
 
     // Resolve effective isolation mode (explicit param overrides agent def)
     const effectiveIsolation = isolation ?? selectedAgent.isolation
+    if (cwd && effectiveIsolation === 'worktree') {
+      throw new Error('cwd is mutually exclusive with isolation: "worktree"')
+    }
 
     // Remote isolation: delegate to CCR. Gated ant-only — the guard enables
     // dead code elimination of the entire block for external builds.
@@ -884,10 +895,20 @@ export const AgentTool = buildTool({
       )
     }
 
+    const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
+    // Explicit cwd arg (KAIROS) takes precedence over worktree isolation path.
+    const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath
+
     const runAgentParams: Parameters<typeof runAgent>[0] = {
       agentDefinition: selectedAgent,
       promptMessages,
-      toolUseContext,
+      toolUseContext: {
+        ...toolUseContext,
+        options: {
+          ...toolUseContext.options,
+          subagentDepth: childSubagentDepth,
+        },
+      },
       canUseTool,
       isAsync: shouldRunAsync,
       querySource:
@@ -919,12 +940,10 @@ export const AgentTool = buildTool({
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,
       ...(isForkPath && { useExactTools: true }),
       worktreePath: worktreeInfo?.worktreePath,
+      cwd: cwdOverridePath,
       description,
     }
 
-    // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
-    // takes precedence over worktree isolation path.
-    const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath
     const wrapWithCwd = <T,>(fn: () => T): T =>
       cwdOverridePath ? runWithCwdOverride(cwdOverridePath, fn) : fn()
 

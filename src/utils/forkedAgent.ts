@@ -442,7 +442,10 @@ export function createSubagentContext(
     openMessageSelector: undefined,
 
     // Fields that can be overridden or copied from parent
-    options: overrides?.options ?? parentContext.options,
+    options: overrides?.options ?? {
+      ...parentContext.options,
+      subagentDepth: (parentContext.options.subagentDepth ?? 0) + 1,
+    },
     messages: overrides?.messages ?? parentContext.messages,
     // Generate new agentId for subagents (each subagent should have its own ID)
     agentId: overrides?.agentId ?? createAgentId(),

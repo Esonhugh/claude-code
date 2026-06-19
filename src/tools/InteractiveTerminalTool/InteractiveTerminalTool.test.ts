@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import type { UUID } from 'node:crypto'
 
 import type { ToolUseContext } from '../../Tool.js'
@@ -7,10 +7,13 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
+import { FakePtyDriver } from '../../utils/pty/__fixtures__/FakePtyDriver.js'
+import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import { resolveInteractiveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
 import {
   getTerminalManager,
   InteractiveTerminalTool,
+  resetTerminalManagerForTesting,
 } from './InteractiveTerminalTool.js'
 
 type TestAppState = Pick<AppState, 'toolPermissionContext' | 'tasks'>
@@ -76,6 +79,37 @@ function createContext(): ToolUseContext {
 
 const allowPermission: CanUseToolFn = async () => ({ behavior: 'allow' })
 
+function createFakeTerminalManager(): PtySessionManager {
+  return new PtySessionManager({
+    driver: new FakePtyDriver(),
+    maxBufferedChunks: 200,
+  })
+}
+
+beforeEach(() => {
+  resetTerminalManagerForTesting(createFakeTerminalManager())
+})
+
+test('resetTerminalManagerForTesting clears open terminal sessions', async () => {
+  const opened = await InteractiveTerminalTool.call(
+    { action: 'open', cwd: process.cwd(), cols: 80, rows: 24 },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal('error' in opened.data, false)
+
+  resetTerminalManagerForTesting()
+
+  const listed = await InteractiveTerminalTool.call(
+    { action: 'list' },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal((listed.data as { count: number }).count, 0)
+})
+
 test('rejects write action without sessionId and text', async () => {
   const result = await InteractiveTerminalTool.call(
     { action: 'write' },
@@ -123,7 +157,7 @@ test('accepts a valid open action and returns a session', async () => {
 
   assert.equal('error' in result.data, false)
   const sessionId = String((result.data as { sessionId: string }).sessionId)
-  assert.match(sessionId, /^session-/)
+  assert.match(sessionId, /^term-/)
   assert.equal(typeof (result.data as { pid: number | null }).pid, 'number')
 
   const closed = await InteractiveTerminalTool.call(

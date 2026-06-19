@@ -174,6 +174,8 @@ export type ToolUseContext = {
     appendSystemPrompt?: string
     /** Override querySource for analytics tracking */
     querySource?: QuerySource
+    /** Normal AgentTool nesting depth. Main thread is 0; subagents start at 1. */
+    subagentDepth?: number
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
   }

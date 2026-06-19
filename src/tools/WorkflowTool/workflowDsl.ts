@@ -167,6 +167,7 @@ async function loadOfficialWorkflowScriptSpec({
   const globals = createWorkflowRuntimeGlobals({
     args,
     workflowRunId: 'dry-run',
+    groupAgentsByCurrentPhase: true,
     log: () => undefined,
     resolveChildWorkflow: (ref, childArgs) => resolveChildWorkflowSpec({
       parentFilePath: filePath,

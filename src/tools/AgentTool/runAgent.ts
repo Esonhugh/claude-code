@@ -226,6 +226,37 @@ type QueryMessage =
   | ToolUseSummaryMessage
   | TombstoneMessage
 
+export function buildAgentMetadataForTesting({
+  agentType,
+  description,
+  worktreePath,
+  cwd,
+}: {
+  agentType: string
+  description?: string
+  worktreePath?: string
+  cwd?: string
+}) {
+  return {
+    agentType,
+    ...(worktreePath && { worktreePath }),
+    ...(!worktreePath && cwd && { cwd }),
+    ...(description && { description }),
+  }
+}
+
+export function getRootSetAppStateForTesting(
+  context: ToolUseContext,
+): ToolUseContext['setAppState'] {
+  return context.setAppStateForTasks ?? context.setAppState
+}
+
+export function getAgentOptionsSubagentDepthForTesting(
+  context: ToolUseContext,
+): number | undefined {
+  return context.options.subagentDepth
+}
+
 /**
  * Type guard to check if a message from query() is a recordable Message type.
  * Matches the types we want to record: assistant, user, progress, or system compact_boundary.
@@ -266,6 +297,7 @@ export async function* runAgent({
   contentReplacementState,
   useExactTools,
   worktreePath,
+  cwd,
   description,
   transcriptSubdir,
   onQueryProgress,
@@ -317,6 +349,8 @@ export async function* runAgent({
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */
   worktreePath?: string
+  /** Effective cwd for explicit cwd overrides; worktreePath remains separate. */
+  cwd?: string
   /** Original task description from AgentTool input. Persisted to metadata
    * so a resumed agent's notification can show the original description. */
   description?: string
@@ -689,6 +723,7 @@ export async function* runAgent({
     mcpClients: mergedMcpClients,
     mcpResources: toolUseContext.options.mcpResources,
     agentDefinitions: toolUseContext.options.agentDefinitions,
+    subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
     // Fork children (useExactTools path) need querySource on context.options
     // for the recursive-fork guard at AgentTool.tsx call() — it checks
     // options.querySource === 'agent:builtin:fork'. This survives autocompact
@@ -739,11 +774,15 @@ export async function* runAgent({
   void recordSidechainTranscript(initialMessages, agentId).catch(_err =>
     logForDebugging(`Failed to record sidechain transcript: ${_err}`),
   )
-  void writeAgentMetadata(agentId, {
-    agentType: agentDefinition.agentType,
-    ...(worktreePath && { worktreePath }),
-    ...(description && { description }),
-  }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
+  void writeAgentMetadata(
+    agentId,
+    buildAgentMetadataForTesting({
+      agentType: agentDefinition.agentType,
+      description,
+      worktreePath,
+      cwd,
+    }),
+  ).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null

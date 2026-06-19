@@ -63,6 +63,11 @@ export function getTerminalManager(): PtySessionManager {
   return terminalManagerInstance
 }
 
+export function resetTerminalManagerForTesting(manager?: PtySessionManager): void {
+  terminalManagerInstance = manager
+  terminalTaskRegistry.clear()
+}
+
 export const terminalTaskRegistry = new Map<string, string>()
 
 function updateTerminalTask(

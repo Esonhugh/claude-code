@@ -29,11 +29,10 @@ import { which } from './which.js'
 export type { ExecResult } from './ShellCommand.js'
 
 import { accessSync } from 'fs'
-import { onCwdChangedForHooks } from './hooks/fileChangedWatcher.js'
+import { changeSessionCwd } from './cwdChange.js'
 import { getClaudeTempDirName } from './permissions/filesystem.js'
 import { getPlatform } from './platform.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
-import { invalidateSessionEnvCache } from './sessionEnvironment.js'
 import { createBashShellProvider } from './shell/bashProvider.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { createPowerShellProvider } from './shell/powershellProvider.js'
@@ -406,9 +405,10 @@ export async function exec(
           // NFD on macOS APFS. Normalize before comparing so Unicode paths
           // don't false-positive as "changed" on every command.
           if (newCwd.normalize('NFC') !== cwd) {
-            setCwd(newCwd, cwd)
-            invalidateSessionEnvCache()
-            void onCwdChangedForHooks(cwd, newCwd)
+            changeSessionCwd(newCwd, {
+              relativeTo: cwd,
+              shouldClearCommandCaches: false,
+            })
           }
         } catch {
           logEvent('tengu_shell_set_cwd', { success: false })

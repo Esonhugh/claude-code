@@ -84,12 +84,14 @@ function WorkflowDate(): never {
 export function createWorkflowRuntimeGlobals({
   args,
   budgetTotal = null,
+  groupAgentsByCurrentPhase = false,
   log,
   resolveChildWorkflow,
 }: {
   args?: WorkflowArgs
   workflowRunId: string
   budgetTotal?: number | null
+  groupAgentsByCurrentPhase?: boolean
   log?: (message: string) => void
   resolveChildWorkflow?: (ref: WorkflowRuntimeChildWorkflowRef, args?: WorkflowArgs) => Promise<WorkflowSpec>
 }) {
@@ -118,6 +120,17 @@ export function createWorkflowRuntimeGlobals({
       phase => phase.id === title && phase.prompt === `Run workflow phase: ${title}`,
     )
     if (placeholderIndex !== -1) phases.splice(placeholderIndex, 1)
+  }
+
+  function hasGroupedPhaseOptionConflict(
+    phaseId: string,
+    opts?: WorkflowRuntimeAgentOptions,
+  ): boolean {
+    const phase = phases.find(candidate => candidate.id === phaseId)
+    if (!phase || !phase.agentLabels?.length) return false
+    return phase.permissionMode !== opts?.mode ||
+      phase.model !== opts?.model ||
+      phase.agentType !== opts?.agentType
   }
 
   function upsertGroupedAgentPhase({
@@ -195,9 +208,13 @@ export function createWorkflowRuntimeGlobals({
       const label = nextLabel(opts)
       callIndex += 1
       spent += 1
-      if (opts?.phase || currentPhase) {
+      const currentPhaseCanGroup = groupAgentsByCurrentPhase &&
+        currentPhase &&
+        !hasGroupedPhaseOptionConflict(currentPhase, opts)
+      if (opts?.phase || currentPhaseCanGroup) {
         upsertGroupedAgentPhase({ phaseId: opts?.phase ?? currentPhase!, label, prompt, opts })
       } else {
+        if (currentPhase) removePhasePlaceholder(currentPhase)
         const phaseIndex = phases.findIndex(phase => phase.id === label)
         const phaseSpec = {
           id: label,

@@ -267,6 +267,8 @@ export type AgentMetadata = {
   agentType: string
   /** Worktree path if the agent was spawned with isolation: "worktree" */
   worktreePath?: string
+  /** Effective cwd when the agent was spawned with an explicit cwd override. */
+  cwd?: string
   /** Original task description from the AgentTool input. Persisted so a
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */

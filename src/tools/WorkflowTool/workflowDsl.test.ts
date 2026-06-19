@@ -212,8 +212,9 @@ await writeFile(
 const officialSpec = await loadWorkflowScriptSpec(officialScriptPath, { topic: 'runtime' })
 assert.equal(officialSpec.name, 'official-meta-workflow')
 assert.equal(officialSpec.description, 'Official-style metadata workflow')
-assert.equal(officialSpec.phases[0]?.id, 'scan')
+assert.equal(officialSpec.phases[0]?.id, 'Scan')
 assert.equal(officialSpec.phases[0]?.prompt, 'Find files for runtime')
+assert.deepEqual(officialSpec.phases[0]?.agentLabels, ['scan'])
 assert.deepEqual(officialSpec.meta?.phases, [{ title: 'Scan', detail: 'Find files' }])
 assert.equal(officialSpec.runtime?.kind, 'javascript-worker')
 
@@ -313,9 +314,11 @@ await writeFile(
   `,
 )
 const parentWorkflowSpec = await loadWorkflowScriptSpec(parentWorkflowPath, { topic: 'nested' })
-assert.deepEqual(parentWorkflowSpec.phases.map(phase => phase.id), ['child-agent', 'parent-agent'])
+assert.deepEqual(parentWorkflowSpec.phases.map(phase => phase.id), ['Child', 'Parent'])
 assert.equal(parentWorkflowSpec.phases[0]?.prompt, 'child topic=nested')
+assert.deepEqual(parentWorkflowSpec.phases[0]?.agentLabels, ['child-agent'])
 assert.equal(parentWorkflowSpec.phases[1]?.prompt, 'parent after child')
+assert.deepEqual(parentWorkflowSpec.phases[1]?.agentLabels, ['parent-agent'])
 
 const nestedChildPath = join(tempRoot, 'docs', 'workflows', 'official-nested-child.js')
 await writeFile(
