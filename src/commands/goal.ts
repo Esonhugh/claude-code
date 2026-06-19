@@ -41,13 +41,7 @@ When finished, report the verified result and any remaining blockers concisely.
 
 const isGoalClear = (args: string): boolean => args.trim().toLowerCase() === 'clear'
 
-const goalClearPrompt = `
-The active /goal objective has been explicitly cleared by the user.
-
-Do not continue any previous /goal objective. Treat the session as having no active autonomous goal.
-
-Report concisely that the goal has been cleared.
-`
+const goalClearPrompt = 'Goal is clear'
 
 const goal: Command = {
   type: 'prompt',
@@ -71,6 +65,12 @@ const goal: Command = {
         ],
       },
     ],
+  },
+  shouldRegisterHooksForCommand(args): boolean {
+    return !isGoalClear(args)
+  },
+  shouldQueryForCommand(args): boolean {
+    return !isGoalClear(args)
   },
   async getPromptForCommand(args, context): Promise<ContentBlockParam[]> {
     const clearGoal = isGoalClear(args)

@@ -54,6 +54,8 @@ export type PromptCommand = {
     args: string,
     context: ToolUseContext,
   ): Promise<ContentBlockParam[]>
+  shouldRegisterHooksForCommand?: (args: string) => boolean
+  shouldQueryForCommand?: (args: string) => boolean
 }
 
 /**

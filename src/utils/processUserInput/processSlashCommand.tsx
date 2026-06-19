@@ -1170,13 +1170,18 @@ async function getMessagesForPromptSlashCommand(
   }
 
   const result = await command.getPromptForCommand(args, context)
+  const shouldQuery = command.shouldQueryForCommand?.(args) ?? true
 
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),
   // user skills still load and reach this point — block hook REGISTRATION here
   // where source is known. Mirrors the agent frontmatter gate in runAgent.ts.
   const hooksAllowedForThisSkill =
     !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
-  if (command.hooks && hooksAllowedForThisSkill) {
+  if (
+    command.hooks &&
+    hooksAllowedForThisSkill &&
+    (command.shouldRegisterHooksForCommand?.(args) ?? true)
+  ) {
     const sessionId = getSessionId()
     registerSkillHooks(
       context.setAppState,
@@ -1236,26 +1241,39 @@ async function getMessagesForPromptSlashCommand(
     ),
   )
 
-  const messages = [
-    createUserMessage({
-      content: metadata,
-      uuid,
-    }),
-    createUserMessage({
-      content: mainMessageContent,
-      isMeta: true,
-    }),
-    ...attachmentMessages,
-    createAttachmentMessage({
-      type: 'command_permissions',
-      allowedTools: additionalAllowedTools,
-      model: command.model,
-    }),
-  ]
+  const messages = shouldQuery
+    ? [
+        createUserMessage({
+          content: metadata,
+          uuid,
+        }),
+        createUserMessage({
+          content: mainMessageContent,
+          isMeta: true,
+        }),
+        ...attachmentMessages,
+        createAttachmentMessage({
+          type: 'command_permissions',
+          allowedTools: additionalAllowedTools,
+          model: command.model,
+        }),
+      ]
+    : [
+        createUserMessage({
+          content: prepareUserContent({
+            inputString: formatCommandInput(command, args),
+            precedingInputBlocks,
+          }),
+          uuid,
+        }),
+        createCommandInputMessage(
+          `<local-command-stdout>${skillContent}</local-command-stdout>`,
+        ),
+      ]
 
   return {
     messages,
-    shouldQuery: true,
+    shouldQuery,
     allowedTools: additionalAllowedTools,
     model: command.model,
     effort: command.effort,

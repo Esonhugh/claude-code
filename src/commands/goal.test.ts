@@ -34,5 +34,12 @@ const clearContext = createContext({
 })
 await goalCommand.getPromptForCommand(' clear ', clearContext.context)
 assert.deepEqual(clearContext.getState().goalStatus, { active: false })
+assert.equal(goalCommand.shouldRegisterHooksForCommand?.(' clear '), false)
+assert.equal(goalCommand.shouldRegisterHooksForCommand?.('finish the feature'), true)
+assert.equal(goalCommand.shouldQueryForCommand?.(' clear '), false)
+assert.equal(goalCommand.shouldQueryForCommand?.('finish the feature'), true)
+
+const clearPrompt = await goalCommand.getPromptForCommand(' clear ', clearContext.context)
+assert.deepEqual(clearPrompt, [{ type: 'text', text: 'Goal is clear' }])
 
 console.log('goal.test.ts passed')
