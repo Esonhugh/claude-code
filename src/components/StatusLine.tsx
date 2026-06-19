@@ -56,6 +56,8 @@ import {
 import { getCurrentWorktreeSession } from '../utils/worktree.js'
 import { isVimModeEnabled } from './PromptInput/utils.js'
 
+const VERSION = typeof MACRO !== 'undefined' ? MACRO.VERSION : 'test'
+
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
   // REPL/daemon process, not what the agent child is actually running. Hide it.
@@ -63,14 +65,14 @@ export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   return settings?.statusLine !== undefined
 }
 
-function buildStatusLineCommandInput(
+export function buildStatusLineCommandInput(
   permissionMode: PermissionMode,
   exceeds200kTokens: boolean,
   settings: ReadonlySettings,
   messages: Message[],
   addedDirs: string[],
   mainLoopModel: ModelName,
-  goalActive: boolean,
+  goalStatus: { active: boolean },
   vimMode?: VimMode,
 ): StatusLineCommandInput {
   const agentType = getMainThreadAgentType()
@@ -121,9 +123,9 @@ function buildStatusLineCommandInput(
       project_dir: getOriginalCwd(),
       added_dirs: addedDirs,
     },
-    version: MACRO.VERSION,
+    version: VERSION,
     goal: {
-      active: goalActive,
+      active: goalStatus.active,
     },
     output_style: {
       name: outputStyleName,
@@ -197,7 +199,7 @@ function StatusLineInner({
     s => s.toolPermissionContext.additionalWorkingDirectories,
   )
   const statusLineText = useAppState(s => s.statusLineText)
-  const goalActive = useAppState(s => s.goalStatus.active)
+  const goalStatus = useAppState(s => s.goalStatus)
   const setAppState = useSetAppState()
   const settings = useSettings()
   const { addNotification } = useNotifications()
@@ -217,8 +219,8 @@ function StatusLineInner({
   addedDirsRef.current = additionalWorkingDirectories
   const mainLoopModelRef = useRef(mainLoopModel)
   mainLoopModelRef.current = mainLoopModel
-  const goalActiveRef = useRef(goalActive)
-  goalActiveRef.current = goalActive
+  const goalStatusRef = useRef(goalStatus)
+  goalStatusRef.current = goalStatus
 
   // Track previous state to detect changes and cache expensive calculations
   const previousStateRef = useRef<{
@@ -227,14 +229,14 @@ function StatusLineInner({
     permissionMode: PermissionMode
     vimMode: VimMode | undefined
     mainLoopModel: ModelName
-    goalActive: boolean
+    goalStatus: { active: boolean }
   }>({
     messageId: null,
     exceeds200kTokens: false,
     permissionMode,
     vimMode,
     mainLoopModel,
-    goalActive,
+    goalStatus,
   })
 
   // Debounce timer ref
@@ -278,7 +280,7 @@ function StatusLineInner({
           (addedDirsRef.current as unknown as Map<string, unknown>).keys(),
         ),
         mainLoopModelRef.current,
-        goalActiveRef.current,
+        goalStatusRef.current,
         vimModeRef.current,
       )
 
@@ -322,14 +324,14 @@ function StatusLineInner({
       permissionMode !== previousStateRef.current.permissionMode ||
       vimMode !== previousStateRef.current.vimMode ||
       mainLoopModel !== previousStateRef.current.mainLoopModel ||
-      goalActive !== previousStateRef.current.goalActive
+      goalStatus.active !== previousStateRef.current.goalStatus.active
     ) {
       // Don't update messageId here — let doUpdate handle it so
       // exceeds200kTokens is recalculated with the latest messages
       previousStateRef.current.permissionMode = permissionMode
       previousStateRef.current.vimMode = vimMode
       previousStateRef.current.mainLoopModel = mainLoopModel
-      previousStateRef.current.goalActive = goalActive
+      previousStateRef.current.goalStatus = goalStatus
       scheduleUpdate()
     }
   }, [
@@ -337,7 +339,7 @@ function StatusLineInner({
     permissionMode,
     vimMode,
     mainLoopModel,
-    goalActive,
+    goalStatus,
     scheduleUpdate,
   ])
 
@@ -404,9 +406,7 @@ function StatusLineInner({
 
   // Get padding from settings or default to 0
   const paddingX = settings?.statusLine?.padding ?? 0
-  const renderedStatusLineText = goalActive
-    ? [statusLineText, 'goal: active'].filter(Boolean).join(' ')
-    : statusLineText
+  const renderedStatusLineText = statusLineText
 
   // StatusLine must have stable height in fullscreen — the footer is
   // flexShrink:0 so a 0→1 row change when the command finishes steals

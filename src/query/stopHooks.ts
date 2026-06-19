@@ -62,6 +62,16 @@ type StopHookResult = {
   preventContinuation: boolean
 }
 
+export function clearGoalStatusAfterStopHooksPassForTesting(
+  toolUseContext: Pick<ToolUseContext, 'getAppState' | 'setAppState'>,
+): void {
+  if (!toolUseContext.getAppState().goalStatus.active) return
+  toolUseContext.setAppState(prev => ({
+    ...prev,
+    goalStatus: { active: false },
+  }))
+}
+
 export async function* handleStopHooks(
   messagesForQuery: Message[],
   assistantMessages: AssistantMessage[],
@@ -472,6 +482,7 @@ export async function* handleStopHooks(
       }
     }
 
+    clearGoalStatusAfterStopHooksPassForTesting(toolUseContext)
     return { blockingErrors: [], preventContinuation: false }
   } catch (error) {
     const durationMs = Date.now() - hookStartTime

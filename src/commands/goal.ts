@@ -17,10 +17,13 @@ Decision rules:
 - When returning ok: false, the reason must be a concrete continuation instruction for the main assistant. Include what remains, what to do next, and any checks to run. The main assistant will receive this reason as hidden Stop hook feedback and continue without human intervention.
 `
 
+const getGoalPromptForState = (args: string): string =>
+  args.trim() || '(no goal provided)'
+
 const goalPrompt = (args: string) => `
 You are running in /goal mode. The user's goal is:
 
-${args.trim() || '(no goal provided)'}
+${getGoalPromptForState(args)}
 
 Work autonomously toward this goal under the current Claude Code permission mode and available tools.
 
@@ -72,8 +75,12 @@ const goal: Command = {
   async getPromptForCommand(args, context): Promise<ContentBlockParam[]> {
     const clearGoal = isGoalClear(args)
     context.setAppState(prev => {
-      if (prev.goalStatus.active === !clearGoal) return prev
-      return { ...prev, goalStatus: { active: !clearGoal } }
+      if (clearGoal) {
+        if (!prev.goalStatus.active) return prev
+        return { ...prev, goalStatus: { active: false } }
+      }
+      if (prev.goalStatus.active) return prev
+      return { ...prev, goalStatus: { active: true } }
     })
     return [{ type: 'text', text: clearGoal ? goalClearPrompt : goalPrompt(args) }]
   },
