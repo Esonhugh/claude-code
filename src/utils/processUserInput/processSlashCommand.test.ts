@@ -10,6 +10,17 @@ const promptCommand: Command = {
   progressMessage: 'testing',
   contentLength: 0,
   source: 'builtin',
+  hooks: {
+    Stop: [
+      {
+        matcher: '',
+        hooks: [{ type: 'command', command: 'true' }],
+      },
+    ],
+  },
+  shouldRegisterHooksForCommand(args): boolean {
+    return args.trim() !== 'clear'
+  },
   shouldQueryForCommand(args): boolean {
     return args.trim() !== 'clear'
   },
@@ -19,6 +30,12 @@ const promptCommand: Command = {
 }
 
 process.env.ANTHROPIC_API_KEY = 'test-key'
+
+let appState = {
+  sessionState: {
+    sessionHooks: {},
+  },
+}
 
 const result = await processSlashCommand(
   '/test-goal-clear clear',
@@ -33,14 +50,25 @@ const result = await processSlashCommand(
       mcpResources: {},
     },
     messages: [],
-    getAppState: () => ({}) as never,
-    setAppState: () => {},
+    getAppState: () => appState as never,
+    setAppState: updater => {
+      appState = updater(appState as never) as never
+    },
   } as never,
   () => {},
 )
 
 assert.equal(result.shouldQuery, false)
 assert.equal(result.messages.length, 3)
+assert.equal(
+  result.messages.some(
+    message =>
+      message.type === 'attachment' &&
+      message.attachment.type === 'command_permissions',
+  ),
+  false,
+)
+assert.deepEqual(appState.sessionState.sessionHooks, {})
 assert.equal(result.messages[2]?.type, 'system')
 assert.equal(
   result.messages[2]?.content,

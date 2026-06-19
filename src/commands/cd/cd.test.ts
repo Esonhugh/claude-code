@@ -3,9 +3,11 @@ import { mkdtemp, mkdir, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { setCwd } from '../../utils/Shell.js'
-import { executeCd } from './cd.js'
+import { resetCwdIfOutsideProject } from '../../tools/BashTool/utils.js'
+import { call, executeCd } from './cd.js'
 
 const originalCwd = getCwd()
 const tempRoot = await mkdtemp(join(tmpdir(), 'cd-command-test-'))
@@ -59,6 +61,24 @@ try {
 
   assert.match(executeCd(join(physicalRoot, 'missing')).message, /does not exist/)
   assert.equal(getCwd(), physicalRoot)
+
+  let permissionContext = getEmptyToolPermissionContext()
+  const commandResult = await call(`'${physicalNext}'`, {
+    getAppState: () => ({ toolPermissionContext: permissionContext }) as never,
+    setAppState: updater => {
+      const nextState = updater({ toolPermissionContext: permissionContext } as never)
+      permissionContext = nextState.toolPermissionContext
+    },
+  } as never)
+  assert.equal(commandResult.type, 'text')
+  assert.equal(commandResult.value, `Changed directory to ${physicalNext}`)
+  assert.deepEqual((permissionContext.additionalWorkingDirectories as Map<string, unknown>).get(physicalNext), {
+    path: physicalNext,
+    source: 'session',
+  })
+  assert.equal(getCwd(), physicalNext)
+  assert.equal(resetCwdIfOutsideProject(permissionContext), false)
+  assert.equal(getCwd(), physicalNext)
 } finally {
   setCwd(originalCwd)
 }

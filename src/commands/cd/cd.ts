@@ -1,3 +1,6 @@
+import type { LocalJSXCommandContext } from '../../types/command.js'
+import type { AdditionalWorkingDirectory } from '../../types/permissions.js'
+import { getCwd } from '../../utils/cwd.js'
 import { changeSessionCwd } from '../../utils/cwdChange.js'
 
 type ExecuteCdOptions = Parameters<typeof changeSessionCwd>[1]
@@ -37,6 +40,37 @@ export function executeCd(
   }
 }
 
-export async function call(args: string) {
-  return { type: 'text' as const, value: executeCd(args).message }
+function addCwdToAdditionalWorkingDirectories(
+  context: Pick<LocalJSXCommandContext, 'getAppState' | 'setAppState'>,
+  cwd: string,
+): void {
+  context.setAppState(prev => {
+    const current = prev.toolPermissionContext
+      .additionalWorkingDirectories as unknown as Map<
+      string,
+      AdditionalWorkingDirectory
+    >
+    if (current.has(cwd)) return prev
+    const additionalWorkingDirectories = new Map(current)
+    additionalWorkingDirectories.set(cwd, {
+      path: cwd,
+      source: 'session',
+    })
+    return {
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        additionalWorkingDirectories,
+      },
+    }
+  })
+}
+
+export async function call(args: string, context: LocalJSXCommandContext) {
+  const result = executeCd(args)
+  const cwd = getCwd()
+  if (result.message === `Changed directory to ${cwd}`) {
+    addCwdToAdditionalWorkingDirectories(context, cwd)
+  }
+  return { type: 'text' as const, value: result.message }
 }
