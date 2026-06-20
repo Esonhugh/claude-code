@@ -38,7 +38,11 @@ export function OpenAIOAuthFlow(props: {
   }, [props.onDone, props.onExit, props.onError])
 
   const handleExit = React.useCallback(() => {
-    onExitRef.current?.() ?? onDoneRef.current()
+    if (onExitRef.current) {
+      onExitRef.current()
+    } else {
+      onDoneRef.current()
+    }
   }, [])
 
   useInput((input, key) => {
@@ -195,7 +199,7 @@ export function OpenAIOAuthFlow(props: {
             <Text dimColor>Copying login URL to clipboard...</Text>
           ) : null}
           {status.clipboard === 'copied' ? (
-            <Text color="green">Login URL copied to clipboard.</Text>
+            <Text color="success">Login URL copied to clipboard.</Text>
           ) : null}
           {status.clipboard === 'failed' ? (
             <Text dimColor>Could not copy URL to clipboard. Copy the URL above manually.</Text>
@@ -203,11 +207,11 @@ export function OpenAIOAuthFlow(props: {
         </>
       ) : null}
 
-      {status.state === 'done' ? <Text color="green">{status.message}</Text> : null}
+      {status.state === 'done' ? <Text color="success">{status.message}</Text> : null}
 
       {status.state === 'error' ? (
         <>
-          <Text color="red">{status.message}</Text>
+          <Text color="error">{status.message}</Text>
           <Text dimColor>Press Esc or Ctrl+C to exit, or run /login again.</Text>
         </>
       ) : null}

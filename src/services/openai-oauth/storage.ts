@@ -8,24 +8,8 @@ export function getOpenAIAuthPath(homeDir: string = homedir()): string {
   return join(homeDir, '.codex', 'auth.json')
 }
 
-export async function saveOpenAIApiKey(
-  apiKey: string,
-  opts: { homeDir?: string; now?: Date } = {},
-): Promise<string> {
-  return saveOpenAIAuth(
-    {
-      auth_mode: 'apikey',
-      tokens: {
-        access_token: apiKey,
-      },
-      last_refresh: (opts.now ?? new Date()).toISOString(),
-    },
-    { homeDir: opts.homeDir },
-  )
-}
-
-export async function saveOpenAIAuth(
-  auth: OpenAIAuthDotJson,
+async function writeOpenAIAuthFile(
+  auth: unknown,
   opts: { homeDir?: string } = {},
 ): Promise<string> {
   const home = opts.homeDir ?? homedir()
@@ -39,4 +23,18 @@ export async function saveOpenAIAuth(
   getOpenAIAuthInfo.cache.clear?.()
   getOpenAIApiKey.cache.clear?.()
   return authPath
+}
+
+export async function saveOpenAIAuth(
+  auth: OpenAIAuthDotJson,
+  opts: { homeDir?: string } = {},
+): Promise<string> {
+  return writeOpenAIAuthFile(auth, opts)
+}
+
+export async function saveOpenAIApiKey(
+  apiKey: string,
+  opts: { homeDir?: string } = {},
+): Promise<string> {
+  return writeOpenAIAuthFile({ OPENAI_API_KEY: apiKey }, opts)
 }
