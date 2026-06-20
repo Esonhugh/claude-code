@@ -171,6 +171,7 @@ import {
 } from './utils/plugins/loadPluginCommands.js'
 import memoize from 'lodash-es/memoize.js'
 import { isUsing3PServices, isClaudeAISubscriber } from './utils/auth.js'
+import { isEnvTruthy } from './utils/envUtils.js'
 import { isFirstPartyAnthropicBaseUrl } from './utils/model/providers.js'
 import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
@@ -344,7 +345,9 @@ const COMMANDS = memoize((): Command[] => [
   exportCommand,
   sandboxToggle,
   yolo,
-  ...(!isUsing3PServices() ? [logout, login()] : []),
+  ...(!isUsing3PServices() || isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
+    ? [logout, login()]
+    : []),
   passes,
   ...(peersCmd ? [peersCmd] : []),
   tasks,

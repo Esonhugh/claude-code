@@ -158,8 +158,8 @@ export async function getAnthropicClient({
     const openaiKey = getOpenAIApiKey()
     if (!openaiKey) {
       throw new Error(
-        'CLAUDE_CODE_USE_OPENAI=1 but no OpenAI auth found. ' +
-        'Create ~/.codex/auth.json with Codex OAuth tokens or an OPENAI_API_KEY field.',
+        'CLAUDE_CODE_USE_OPENAI=1 but no OpenAI OAuth credentials found. ' +
+        'Run /login in an interactive session to sign in with OpenAI.',
       )
     }
     logForDebugging('[API:auth] Using OpenAI-compatible client')
