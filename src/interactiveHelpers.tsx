@@ -48,6 +48,7 @@ import { isEnvTruthy, isRunningOnHomespace } from './utils/envUtils.js'
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js'
 import { updateGithubRepoPathMapping } from './utils/githubRepoPathMapping.js'
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js'
+import { shouldShowOpenAIAutoLogin } from './utils/openaiAutoLogin.js'
 import type { PermissionMode } from './utils/permissions/PermissionMode.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
 import { getSettingsWithAllErrors } from './utils/settings/allErrors.js'
@@ -250,6 +251,13 @@ export async function showSetupScreens(
   // In normal mode, this happens after the trust dialog is accepted
   // This includes potentially dangerous environment variables from untrusted sources
   applyConfigEnvironmentVariables()
+
+  if (shouldShowOpenAIAutoLogin()) {
+    const { OpenAIOAuthFlow } = await import('./components/OpenAIOAuthFlow.js')
+    await showSetupDialog(root, done => (
+      <OpenAIOAuthFlow onDone={done} onExit={() => gracefulShutdownSync(0)} />
+    ))
+  }
 
   // Initialize telemetry after env vars are applied so OTEL endpoint env vars and
   // otelHeadersHelper (which requires trust to execute) are available.

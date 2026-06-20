@@ -6,7 +6,7 @@ export type OpenAITokenData = {
 }
 
 export type OpenAIAuthDotJson = {
-  auth_mode: 'chatgpt'
+  auth_mode: 'chatgpt' | 'apikey'
   tokens: OpenAITokenData
   last_refresh: string
 }

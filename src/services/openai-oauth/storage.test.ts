@@ -8,7 +8,9 @@ import { join } from 'path'
   VERSION: 'test',
 }
 
-const { saveOpenAIAuth, getOpenAIAuthPath } = await import('./storage.js')
+const { saveOpenAIAuth, saveOpenAIApiKey, getOpenAIAuthPath } = await import(
+  './storage.js'
+)
 const authModule = await import('../../utils/auth.js')
 
 const homeDir = await mkdtemp(join(tmpdir(), 'openai-oauth-storage-'))
@@ -46,10 +48,26 @@ try {
   const fileStat = await stat(authPath)
   assert.equal(fileStat.mode & 0o077, 0)
 
+  await saveOpenAIApiKey('sk-test-api-key', {
+    homeDir,
+    now: new Date('2026-06-20T00:00:02.000Z'),
+  })
+  const apiKeyRaw = await readFile(authPath, 'utf-8')
+  assert.deepEqual(JSON.parse(apiKeyRaw), {
+    auth_mode: 'apikey',
+    tokens: {
+      access_token: 'sk-test-api-key',
+    },
+    last_refresh: '2026-06-20T00:00:02.000Z',
+  })
+  const apiKeyFileStat = await stat(authPath)
+  assert.equal(apiKeyFileStat.mode & 0o077, 0)
+
   authModule.getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'stale-token',
     isChatGPT: true,
   })
+  authModule.getOpenAIApiKey.cache.set(undefined, null)
   await saveOpenAIAuth(
     {
       auth_mode: 'chatgpt',
@@ -63,8 +81,10 @@ try {
     { homeDir },
   )
   assert.equal(authModule.getOpenAIAuthInfo.cache.get(undefined), undefined)
+  assert.equal(authModule.getOpenAIApiKey.cache.get(undefined), undefined)
 } finally {
   authModule.getOpenAIAuthInfo.cache.clear?.()
+  authModule.getOpenAIApiKey.cache.clear?.()
   await rm(homeDir, { recursive: true, force: true })
 }
 

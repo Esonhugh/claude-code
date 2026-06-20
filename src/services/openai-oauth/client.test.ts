@@ -184,6 +184,64 @@ try {
   assert.equal(await authorizationPromise, 'auth-code-success')
   successListener.close()
 
+  const htmlSuccessListener = new OpenAIAuthCodeListener('/auth/callback')
+  const htmlSuccessPort = await htmlSuccessListener.start(0)
+  const htmlSuccessPromise = htmlSuccessListener.waitForAuthorization(
+    'state-html-success',
+    async () => {},
+  )
+  const htmlSuccessResponse = await fetch(
+    `http://localhost:${htmlSuccessPort}/auth/callback?code=auth-code-html&state=state-html-success`,
+  )
+  const htmlSuccessBody = await htmlSuccessResponse.text()
+  assert.match(htmlSuccessResponse.headers.get('content-type') ?? '', /text\/html/)
+  assert.match(htmlSuccessBody, /OpenAI login complete/)
+  assert.match(htmlSuccessBody, /return to Claude Code/)
+  assert.equal(await htmlSuccessPromise, 'auth-code-html')
+  htmlSuccessListener.close()
+
+  const missingCodeListener = new OpenAIAuthCodeListener('/auth/callback')
+  const missingCodePort = await missingCodeListener.start(0)
+  const missingCodePromise = missingCodeListener.waitForAuthorization(
+    'state-missing-code',
+    async () => {},
+  )
+  const missingCodeRejects = assert.rejects(
+    missingCodePromise,
+    /No OpenAI authorization code received/,
+  )
+  const missingCodeResponse = await fetch(
+    `http://localhost:${missingCodePort}/auth/callback?state=state-missing-code`,
+  )
+  const missingCodeBody = await missingCodeResponse.text()
+  assert.equal(missingCodeResponse.status, 400)
+  assert.match(missingCodeResponse.headers.get('content-type') ?? '', /text\/html/)
+  assert.match(missingCodeBody, /OpenAI login failed/)
+  assert.match(missingCodeBody, /Return to Claude Code/)
+  await missingCodeRejects
+  missingCodeListener.close()
+
+  const invalidStateListener = new OpenAIAuthCodeListener('/auth/callback')
+  const invalidStatePort = await invalidStateListener.start(0)
+  const invalidStatePromise = invalidStateListener.waitForAuthorization(
+    'state-expected',
+    async () => {},
+  )
+  const invalidStateRejects = assert.rejects(
+    invalidStatePromise,
+    /Invalid OpenAI OAuth state parameter/,
+  )
+  const invalidStateResponse = await fetch(
+    `http://localhost:${invalidStatePort}/auth/callback?code=auth-code-invalid&state=state-wrong`,
+  )
+  const invalidStateBody = await invalidStateResponse.text()
+  assert.equal(invalidStateResponse.status, 400)
+  assert.match(invalidStateResponse.headers.get('content-type') ?? '', /text\/html/)
+  assert.match(invalidStateBody, /OpenAI login failed/)
+  assert.match(invalidStateBody, /Return to Claude Code/)
+  await invalidStateRejects
+  invalidStateListener.close()
+
   let observedAuthUrl = ''
   await assert.rejects(
     loginOpenAIWithOAuth({
