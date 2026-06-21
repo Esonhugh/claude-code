@@ -13,15 +13,18 @@ import { isAnt } from 'src/utils/userType.js'
 export type { EffortLevel }
 
 export const EFFORT_LEVELS = [
+  'none',
   'low',
   'medium',
   'high',
+  'xhigh',
   'max',
   'ultracode',
 ] as const
 
+export type OpenAIEffortLevel = 'none' | 'xhigh'
 export type UltracodeEffortLevel = 'ultracode'
-export type EffortValue = EffortLevel | UltracodeEffortLevel | number
+export type EffortValue = EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -69,7 +72,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
   return false
 }
 
-export function isEffortLevel(value: string): value is EffortLevel | UltracodeEffortLevel {
+export function isEffortLevel(value: string): value is EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(value)
 }
 
@@ -100,7 +103,7 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'ultracode') return undefined
+  if (value === 'none' || value === 'xhigh' || value === 'ultracode') return undefined
   if (value === 'low' || value === 'medium' || value === 'high') {
     return value
   }
@@ -165,8 +168,11 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  if (resolved === 'none' || resolved === 'xhigh') {
+    return getAPIProvider() === 'openai' ? resolved : undefined
+  }
   if (resolved === 'ultracode') {
-    return 'high'
+    return getAPIProvider() === 'openai' ? 'xhigh' : 'high'
   }
   // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
   if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
@@ -210,7 +216,8 @@ export function isValidNumericEffort(value: number): boolean {
 
 export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
   if (typeof value === 'string') {
-    if (value === 'ultracode') return 'high'
+    if (value === 'none') return 'low'
+    if (value === 'xhigh' || value === 'ultracode') return 'high'
     // Runtime guard: value may come from remote config (GrowthBook) where
     // TypeScript types can't help us. Coerce unknown strings to 'high'
     // rather than passing them through unchecked.
@@ -240,7 +247,11 @@ export function getEffortLevelDescription(level: EffortLevel | UltracodeEffortLe
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.6 only)'
+      return 'Maximum capability with deepest reasoning (Opus 4.6 only; maps to xhigh on OpenAI)'
+    case 'none':
+      return 'No reasoning for latency-critical OpenAI tasks'
+    case 'xhigh':
+      return 'Deepest OpenAI reasoning'
     case 'ultracode':
       return 'xhigh + dynamic workflow orchestration'
   }

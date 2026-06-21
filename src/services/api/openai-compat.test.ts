@@ -19,12 +19,17 @@ try {
 
   process.env.OPENAI_BASE_URL = 'https://gateway.example.test/openai/v1'
 
-  const requests: Array<{ url: string; authorization: string | null }> = []
+  const requests: Array<{
+    url: string
+    authorization: string | null
+    body: any
+  }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers)
     requests.push({
       url: String(input),
       authorization: headers.get('authorization'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
       'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
@@ -52,6 +57,7 @@ try {
     'https://gateway.example.test/openai/v1/responses',
   )
   assert.equal(requests[0]!.authorization, 'Bearer sk-test-api-key')
+  assert.equal(requests[0]!.body.reasoning, undefined)
 
   requests.length = 0
   process.env.OPENAI_BASE_URL = 'https://gateway.example.test/'
@@ -69,6 +75,46 @@ try {
   })
 
   assert.equal(requests[0]!.url, 'https://gateway.example.test/v1/responses')
+
+  requests.length = 0
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+    output_config: { effort: 'medium' },
+  } as any)
+
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'medium' })
+
+  requests.length = 0
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+    output_config: { effort: 'max' },
+  } as any)
+
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
+
+  requests.length = 0
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+    output_config: { effort: 'ultracode' },
+  } as any)
+
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
+
+  requests.length = 0
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+    output_config: { effort: 'none' },
+  } as any)
+
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'none' })
 } finally {
   globalThis.fetch = originalFetch
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')

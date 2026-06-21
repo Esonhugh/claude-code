@@ -157,6 +157,16 @@ function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefi
     }))
 }
 
+function anthropicEffortToOpenAIReasoning(effort: unknown): { effort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
+  if (effort === 'none' || effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh') {
+    return { effort }
+  }
+  if (effort === 'max' || effort === 'ultracode' || typeof effort === 'number') {
+    return { effort: 'xhigh' }
+  }
+  return undefined
+}
+
 // --- SSE streaming adapter ---
 
 function toAnthropicUsage(usage?: any) {
@@ -223,6 +233,7 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
     store: false,
     stream: true,
     ...(payload.tools && { tools: payload.tools }),
+    ...(payload.reasoning && { reasoning: payload.reasoning }),
   })
 
   try {
@@ -333,7 +344,8 @@ export function createOpenAICompatClient(options: {
         : Array.isArray(params.system)
           ? params.system.map((b: any) => b.text || '').join('\n')
           : 'You are a helpful coding assistant.'
-      const payload: any = { model, input, instructions, ...(tools && { tools }) }
+      const reasoning = anthropicEffortToOpenAIReasoning(params.output_config?.effort)
+      const payload: any = { model, input, instructions, ...(tools && { tools }), ...(reasoning && { reasoning }) }
       logForDebugging(`[OpenAI Compat] Responses request model=${model}`)
 
       if (params.stream) {

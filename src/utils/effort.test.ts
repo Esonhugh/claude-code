@@ -8,8 +8,11 @@ import {
   toPersistableEffort,
 } from './effort.js'
 
+assert.equal(isEffortLevel('xhigh'), true)
+assert.equal(parseEffortValue('xhigh'), 'xhigh')
 assert.equal(isEffortLevel('ultracode'), true)
 assert.equal(parseEffortValue('ultracode'), 'ultracode')
+assert.equal(toPersistableEffort('xhigh'), undefined)
 assert.equal(toPersistableEffort('ultracode'), undefined)
 assert.equal(
   getEffortValueDescription('ultracode'),

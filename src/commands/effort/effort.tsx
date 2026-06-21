@@ -48,7 +48,7 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
     const envRaw = process.env.CLAUDE_CODE_EFFORT_LEVEL
     if (persistable === undefined) {
       return {
-        message: `Not applied: CLAUDE_CODE_EFFORT_LEVEL=${envRaw} overrides effort this session, and ${effortValue} is session-only (nothing saved)`,
+        message: `Not applied: CLAUDE_CODE_EFFORT_LEVEL=${envRaw} overrides effort this session, and ${effortValue} is session-only or OpenAI-only (nothing saved)`,
         effortUpdate: { value: effortValue },
       }
     }
@@ -78,7 +78,7 @@ export function showCurrentEffort(
     return { message: `Effort level: auto (currently ${level})` }
   }
   const description = getEffortValueDescription(effectiveValue)
-  const suffix = effectiveValue === 'ultracode' ? '; this session only' : ''
+  const suffix = effectiveValue === 'xhigh' || effectiveValue === 'ultracode' ? '; this session only' : ''
   return {
     message: `Current effort level: ${effectiveValue} (${description}${suffix})`,
   }
@@ -121,7 +121,7 @@ export function executeEffort(args: string): EffortCommandResult {
 
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: low, medium, high, max, ultracode, auto`,
+      message: `Invalid argument: ${args}. Valid options are: none, low, medium, high, xhigh, max, ultracode, auto`,
     }
   }
 
@@ -170,7 +170,7 @@ export async function call(
 
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone(
-      'Usage: /effort [low|medium|high|max|ultracode|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- max: Maximum capability with deepest reasoning (Opus 4.6 only)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
+      'Usage: /effort [none|low|medium|high|xhigh|max|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Deepest OpenAI reasoning (OpenAI only, this session only)\n- max: Maximum capability with deepest reasoning (Opus 4.6 only; maps to xhigh on OpenAI)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
     )
     return
   }

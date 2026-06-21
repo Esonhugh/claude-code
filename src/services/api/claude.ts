@@ -68,6 +68,7 @@ import {
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
 import {
+  type EffortValue,
   convertEffortValueToLevel,
   resolveAppliedEffort,
 } from '../../utils/effort.js'
@@ -456,7 +457,11 @@ function configureEffortParams(
   if (effortValue === undefined) {
     betas.push(EFFORT_BETA_HEADER)
   } else if (typeof effortValue === 'string') {
-    outputConfig.effort = convertEffortValueToLevel(effortValue)
+    if (getAPIProvider() === 'openai') {
+      ;(outputConfig as { effort?: EffortValue }).effort = effortValue
+    } else {
+      outputConfig.effort = convertEffortValueToLevel(effortValue)
+    }
     betas.push(EFFORT_BETA_HEADER)
   } else if (isAnt()) {
     // Numeric effort override - ant-only (uses anthropic_internal)
