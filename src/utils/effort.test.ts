@@ -14,6 +14,7 @@ assert.equal(isEffortLevel('ultracode'), true)
 assert.equal(parseEffortValue('ultracode'), 'ultracode')
 assert.equal(toPersistableEffort('xhigh'), undefined)
 assert.equal(toPersistableEffort('ultracode'), undefined)
+assert.equal(getEffortValueDescription('none'), 'No reasoning for latency-critical OpenAI tasks')
 assert.equal(
   getEffortValueDescription('ultracode'),
   'xhigh + dynamic workflow orchestration',

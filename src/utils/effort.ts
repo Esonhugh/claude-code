@@ -238,7 +238,7 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
  * @param level The effort level to describe
  * @returns Human-readable description
  */
-export function getEffortLevelDescription(level: EffortLevel | UltracodeEffortLevel): string {
+export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel): string {
   switch (level) {
     case 'low':
       return 'Quick, straightforward implementation with minimal overhead'
