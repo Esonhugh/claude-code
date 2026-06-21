@@ -2794,6 +2794,8 @@ export function ManagePlugins({
               return 'Built-in'
             case 'dynamic':
               return 'Built-in'
+            case 'favorite':
+              return 'Favorite'
             default:
               return scope
           }
