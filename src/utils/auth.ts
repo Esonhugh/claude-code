@@ -2031,7 +2031,7 @@ export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
   }
 
   try {
-    const content = readFileSync(join(homedir(), '.codex', 'auth.json'), 'utf-8')
+    const content = readFileSync(join(process.env.HOME ?? homedir(), '.codex', 'auth.json'), 'utf-8')
     const data = JSON.parse(content)
     if (data?.OPENAI_API_KEY) {
       return { accessToken: data.OPENAI_API_KEY, isChatGPT: false }

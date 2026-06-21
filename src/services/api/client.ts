@@ -30,6 +30,7 @@ import {
   isEnvTruthy,
 } from '../../utils/envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
+import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
 import { createOpenAICompatClient } from './openai-compat.js'
 
 
@@ -155,6 +156,9 @@ export async function getAnthropicClient({
     }),
   }
   if (getAPIProvider() === 'openai') {
+    logForDebugging('[API:auth] OpenAI OAuth token check starting')
+    await checkAndRefreshOpenAITokenIfNeeded()
+    logForDebugging('[API:auth] OpenAI OAuth token check complete')
     const openaiKey = getOpenAIApiKey()
     if (!openaiKey) {
       throw new Error(

@@ -17,7 +17,7 @@ const OPENAI_OAUTH_ORIGINATOR = 'codex_cli_rs'
 
 export { createOpenAIPKCE }
 
-function getOpenAIProxyConfig(): AxiosProxyConfig | undefined {
+export function getOpenAIProxyConfig(): AxiosProxyConfig | undefined {
   const proxyUrl = process.env.https_proxy
     ?? process.env.HTTPS_PROXY
     ?? process.env.http_proxy

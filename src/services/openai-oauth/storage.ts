@@ -4,7 +4,7 @@ import { join } from 'path'
 import { getOpenAIApiKey, getOpenAIAuthInfo } from '../../utils/auth.js'
 import type { OpenAIAuthDotJson } from './types.js'
 
-export function getOpenAIAuthPath(homeDir: string = homedir()): string {
+export function getOpenAIAuthPath(homeDir: string = process.env.HOME ?? homedir()): string {
   return join(homeDir, '.codex', 'auth.json')
 }
 
@@ -12,7 +12,7 @@ async function writeOpenAIAuthFile(
   auth: unknown,
   opts: { homeDir?: string } = {},
 ): Promise<string> {
-  const home = opts.homeDir ?? homedir()
+  const home = opts.homeDir ?? process.env.HOME ?? homedir()
   const authPath = getOpenAIAuthPath(home)
   await mkdir(join(home, '.codex'), { recursive: true })
   await writeFile(authPath, `${JSON.stringify(auth, null, 2)}\n`, {
