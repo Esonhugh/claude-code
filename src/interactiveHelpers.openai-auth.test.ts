@@ -9,6 +9,7 @@ const authModule = await import('./utils/auth.js')
 const { shouldShowOpenAIAutoLogin } = await import('./utils/openaiAutoLogin.js')
 
 const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
+const originalOpenAIBaseToken = process.env.OPENAI_BASE_TOKEN
 
 try {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
@@ -16,6 +17,11 @@ try {
   assert.equal(shouldShowOpenAIAutoLogin(), true)
 
   authModule.getOpenAIApiKey.cache.set(undefined, 'access-token')
+  assert.equal(shouldShowOpenAIAutoLogin(), false)
+
+  authModule.getOpenAIApiKey.cache.clear?.()
+  authModule.getOpenAIAuthInfo.cache.clear?.()
+  process.env.OPENAI_BASE_TOKEN = 'sk-env-token'
   assert.equal(shouldShowOpenAIAutoLogin(), false)
 
   process.env.CLAUDE_CODE_USE_OPENAI = '0'
@@ -27,7 +33,13 @@ try {
   } else {
     process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
   }
+  if (originalOpenAIBaseToken === undefined) {
+    delete process.env.OPENAI_BASE_TOKEN
+  } else {
+    process.env.OPENAI_BASE_TOKEN = originalOpenAIBaseToken
+  }
   authModule.getOpenAIApiKey.cache.clear?.()
+  authModule.getOpenAIAuthInfo.cache.clear?.()
 }
 
 console.log('interactiveHelpers.openai-auth.test.ts passed')

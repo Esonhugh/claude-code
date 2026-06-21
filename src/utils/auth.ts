@@ -2026,6 +2026,10 @@ export type OpenAIAuthInfo = {
  * Used when CLAUDE_CODE_USE_OPENAI=1.
  */
 export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
+  if (process.env.OPENAI_BASE_TOKEN) {
+    return { accessToken: process.env.OPENAI_BASE_TOKEN, isChatGPT: false }
+  }
+
   try {
     const content = readFileSync(join(homedir(), '.codex', 'auth.json'), 'utf-8')
     const data = JSON.parse(content)

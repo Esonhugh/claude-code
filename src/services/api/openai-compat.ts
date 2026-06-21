@@ -6,6 +6,7 @@
  * Supports two modes:
  *   1. ChatGPT OAuth (auth_mode=chatgpt): POST to chatgpt.com/backend-api/codex/responses
  *   2. OpenAI Platform API key (sk-...): POST to api.openai.com/v1/responses
+ *      or OPENAI_BASE_URL/responses when OPENAI_BASE_URL is set.
  */
 import type Anthropic from '@anthropic-ai/sdk'
 import type {
@@ -23,9 +24,14 @@ function loadOpenAIAuthInfo(apiKey: string): OpenAIAuthInfo {
   return getOpenAIAuthInfo() ?? { accessToken: apiKey, isChatGPT: false }
 }
 
+function normalizeOpenAIBaseURL(baseURL: string): string {
+  const normalized = baseURL.replace(/\/+$/, '')
+  return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`
+}
+
 function getBaseURL(auth: OpenAIAuthInfo): string {
   if (auth.isChatGPT) return 'https://chatgpt.com/backend-api/codex'
-  return 'https://api.openai.com/v1'
+  return normalizeOpenAIBaseURL(process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1')
 }
 
 function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
@@ -52,7 +58,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
 
 // --- Model mapping: Anthropic model names → OpenAI model slugs ---
 
-const DEFAULT_OPENAI_MODEL = 'gpt-5.3-codex'
+const DEFAULT_OPENAI_MODEL = 'gpt-5.5'
 
 function mapModel(model: string): string {
   if (model.startsWith('gpt-') || model.startsWith('o') || model.startsWith('codex')) return model
