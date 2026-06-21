@@ -9,6 +9,19 @@ import TextInput from './TextInput.js'
 
 type LoginMethod = 'api_key' | 'oauth' | 'exit'
 
+export function createOpenAIAuthFlowCancellation(): {
+  cancel: () => void
+  isCancelled: () => boolean
+} {
+  let cancelled = false
+  return {
+    cancel: () => {
+      cancelled = true
+    },
+    isCancelled: () => cancelled,
+  }
+}
+
 type OpenAIAuthStatus =
   | { state: 'choose' }
   | { state: 'api_key'; value: string; cursorOffset: number }
@@ -29,6 +42,9 @@ export function OpenAIOAuthFlow(props: {
   const onDoneRef = React.useRef(props.onDone)
   const onExitRef = React.useRef(props.onExit)
   const onErrorRef = React.useRef(props.onError)
+  const currentOAuthCancellationRef = React.useRef<ReturnType<
+    typeof createOpenAIAuthFlowCancellation
+  > | null>(null)
   const [status, setStatus] = React.useState<OpenAIAuthStatus>({ state: 'choose' })
 
   React.useEffect(() => {
@@ -37,7 +53,15 @@ export function OpenAIOAuthFlow(props: {
     onErrorRef.current = props.onError
   }, [props.onDone, props.onExit, props.onError])
 
+  React.useEffect(() => {
+    return () => {
+      currentOAuthCancellationRef.current?.cancel()
+    }
+  }, [])
+
   const handleExit = React.useCallback(() => {
+    currentOAuthCancellationRef.current?.cancel()
+    currentOAuthCancellationRef.current = null
     if (onExitRef.current) {
       onExitRef.current()
     } else {
@@ -52,15 +76,17 @@ export function OpenAIOAuthFlow(props: {
   })
 
   const startOAuth = React.useCallback(() => {
-    let cancelled = false
+    currentOAuthCancellationRef.current?.cancel()
+    const cancellation = createOpenAIAuthFlowCancellation()
+    currentOAuthCancellationRef.current = cancellation
     setStatus({ state: 'waiting', authUrl: null, clipboard: 'pending' })
 
     void loginOpenAIWithOAuth({
       onAuthUrl: url => {
-        if (cancelled) return
+        if (cancellation.isCancelled()) return
         setStatus({ state: 'waiting', authUrl: url, clipboard: 'pending' })
         void copyOpenAIAuthUrlToClipboard(url).then(copied => {
-          if (!cancelled) {
+          if (!cancellation.isCancelled()) {
             setStatus({
               state: 'waiting',
               authUrl: url,
@@ -71,20 +97,17 @@ export function OpenAIOAuthFlow(props: {
       },
     })
       .then(authPath => {
-        if (cancelled) return
+        if (cancellation.isCancelled()) return
         setStatus({ state: 'done', message: `OpenAI login saved to ${authPath}` })
         onDoneRef.current()
       })
       .catch(error => {
-        if (cancelled) return
+        if (cancellation.isCancelled()) return
         const err = error instanceof Error ? error : new Error(errorMessage(error))
         setStatus({ state: 'error', message: errorMessage(err) })
         onErrorRef.current?.(err)
       })
 
-    return () => {
-      cancelled = true
-    }
   }, [])
 
   const handleMethod = React.useCallback(

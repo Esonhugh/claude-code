@@ -26,6 +26,10 @@ import {
 } from '../../utils/permissions/bypassPermissionsKillswitch.js'
 import { resetUserCache } from '../../utils/user.js'
 
+export function shouldRunLoginSuccessSideEffects(success: boolean): boolean {
+  return success
+}
+
 export async function call(
   onDone: LocalJSXCommandOnDone,
   context: LocalJSXCommandContext,
@@ -35,11 +39,11 @@ export async function call(
   return (
     <Login
       onDone={async success => {
-        context.onChangeAPIKey()
-        // Signature-bearing blocks (thinking, connector_text) are bound to the API key —
-        // strip them so the new key doesn't reject stale signatures.
-        context.setMessages(stripSignatureBlocks)
-        if (success) {
+        if (shouldRunLoginSuccessSideEffects(success)) {
+          context.onChangeAPIKey()
+          // Signature-bearing blocks (thinking, connector_text) are bound to the API key —
+          // strip them so the new key doesn't reject stale signatures.
+          context.setMessages(stripSignatureBlocks)
           // Post-login refresh logic. Keep in sync with onboarding in src/interactiveHelpers.tsx
           // Reset cost state when switching accounts
           resetCostState()
@@ -113,7 +117,10 @@ export function Login(props: {
       }
     >
       {isOpenAIProvider ? (
-        <OpenAIOAuthFlow onDone={() => props.onDone(true, mainLoopModel)} />
+        <OpenAIOAuthFlow
+          onDone={() => props.onDone(true, mainLoopModel)}
+          onExit={() => props.onDone(false, mainLoopModel)}
+        />
       ) : (
         <ConsoleOAuthFlow
           onDone={() => props.onDone(true, mainLoopModel)}
