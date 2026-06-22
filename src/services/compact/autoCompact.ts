@@ -22,6 +22,11 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
+import {
+  getCodexCompactOptions,
+  getCompactMode,
+} from './compactMode.js'
+import { compactConversationCodexStyle } from './codexCompact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 
@@ -285,40 +290,55 @@ export async function autoCompactIfNeeded(
   }
 
   // EXPERIMENT: Try session memory compaction first
-  const sessionMemoryResult = await trySessionMemoryCompaction(
-    messages,
-    toolUseContext.agentId,
-    recompactionInfo.autoCompactThreshold,
-  )
-  if (sessionMemoryResult) {
-    // Reset lastSummarizedMessageId since session memory compaction prunes messages
-    // and the old message UUID will no longer exist after the REPL replaces messages
-    setLastSummarizedMessageId(undefined)
-    runPostCompactCleanup(querySource)
-    // Reset cache read baseline so the post-compact drop isn't flagged as a
-    // break. compactConversation does this internally; SM-compact doesn't.
-    // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-    // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
-    }
-    markPostCompaction()
-    return {
-      wasCompacted: true,
-      compactionResult: sessionMemoryResult,
+  // Codex mode skips session memory compact to avoid mixing two compaction models.
+  const compactMode = getCompactMode()
+  if (compactMode === 'claude') {
+    const sessionMemoryResult = await trySessionMemoryCompaction(
+      messages,
+      toolUseContext.agentId,
+      recompactionInfo.autoCompactThreshold,
+    )
+    if (sessionMemoryResult) {
+      // Reset lastSummarizedMessageId since session memory compaction prunes messages
+      // and the old message UUID will no longer exist after the REPL replaces messages
+      setLastSummarizedMessageId(undefined)
+      runPostCompactCleanup(querySource)
+      // Reset cache read baseline so the post-compact drop isn't flagged as a
+      // break. compactConversation does this internally; SM-compact doesn't.
+      // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
+      // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
+      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+        notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
+      }
+      markPostCompaction()
+      return {
+        wasCompacted: true,
+        compactionResult: sessionMemoryResult,
+      }
     }
   }
 
   try {
-    const compactionResult = await compactConversation(
-      messages,
-      toolUseContext,
-      cacheSafeParams,
-      true, // Suppress user questions for autocompact
-      undefined, // No custom instructions for autocompact
-      true, // isAutoCompact
-      recompactionInfo,
-    )
+    const compactionResult =
+      compactMode === 'codex'
+        ? await compactConversationCodexStyle(
+            messages,
+            toolUseContext,
+            cacheSafeParams,
+            true, // Suppress user questions for autocompact
+            undefined, // No custom instructions for autocompact
+            true, // isAutoCompact
+            getCodexCompactOptions(),
+          )
+        : await compactConversation(
+            messages,
+            toolUseContext,
+            cacheSafeParams,
+            true, // Suppress user questions for autocompact
+            undefined, // No custom instructions for autocompact
+            true, // isAutoCompact
+            recompactionInfo,
+          )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array

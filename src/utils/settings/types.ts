@@ -378,6 +378,36 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      compact: z
+        .object({
+          mode: z
+            .enum(['claude', 'codex'])
+            .optional()
+            .describe(
+              'Compact strategy. "claude" keeps the default Claude Code compact behavior; "codex" enables Codex-style compact projection.',
+            ),
+          codex: z
+            .object({
+              retainedUserMessageTokens: z
+                .number()
+                .int()
+                .positive()
+                .optional()
+                .describe(
+                  'Approximate token budget for recent user messages retained by Codex-style compact mode.',
+                ),
+              keepPostCompactAttachments: z
+                .boolean()
+                .optional()
+                .describe(
+                  'When true, Codex-style compact keeps the existing post-compact attachment rehydration behavior.',
+                ),
+            })
+            .optional()
+            .describe('Codex-style compact options.'),
+        })
+        .optional()
+        .describe('Conversation compact strategy configuration'),
       uiName: z
         .string()
         .optional()

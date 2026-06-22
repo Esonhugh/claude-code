@@ -13,6 +13,11 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   mergeHookInstructions,
 } from '../../services/compact/compact.js'
+import {
+  getCodexCompactOptions,
+  getCompactMode,
+} from '../../services/compact/compactMode.js'
+import { compactConversationCodexStyle } from '../../services/compact/codexCompact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
@@ -50,11 +55,13 @@ export const call: LocalCommandCall = async (args, context) => {
   }
 
   const customInstructions = args.trim()
+  const compactMode = getCompactMode()
 
   try {
     // Try session memory compaction first if no custom instructions
     // (session memory compaction doesn't support custom instructions)
-    if (!customInstructions) {
+    // Codex mode skips session memory compact to avoid mixing two compaction models.
+    if (compactMode === 'claude' && !customInstructions) {
       const sessionMemoryResult = await trySessionMemoryCompaction(
         messages,
         context.agentId,
@@ -98,14 +105,25 @@ export const call: LocalCommandCall = async (args, context) => {
     const microcompactResult = await microcompactMessages(messages, context)
     const messagesForCompact = microcompactResult.messages
 
-    const result = await compactConversation(
-      messagesForCompact,
-      context,
-      await getCacheSharingParams(context, messagesForCompact),
-      false,
-      customInstructions,
-      false,
-    )
+    const result =
+      compactMode === 'codex'
+        ? await compactConversationCodexStyle(
+            messagesForCompact,
+            context,
+            await getCacheSharingParams(context, messagesForCompact),
+            false,
+            customInstructions,
+            false,
+            getCodexCompactOptions(),
+          )
+        : await compactConversation(
+            messagesForCompact,
+            context,
+            await getCacheSharingParams(context, messagesForCompact),
+            false,
+            customInstructions,
+            false,
+          )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
