@@ -14,6 +14,7 @@ import {
   INTERLEAVED_THINKING_BETA_HEADER,
   PROMPT_CACHING_SCOPE_BETA_HEADER,
   REDACT_THINKING_BETA_HEADER,
+  THINKING_TOKEN_COUNT_BETA_HEADER,
   STRUCTURED_OUTPUTS_BETA_HEADER,
   SUMMARIZE_CONNECTOR_TEXT_BETA_HEADER,
   TOKEN_EFFICIENT_TOOLS_BETA_HEADER,
@@ -276,6 +277,9 @@ export const getAllModelBetas = memoize((model: string): string[] => {
     getInitialSettings().showThinkingSummaries !== true
   ) {
     betaHeaders.push(REDACT_THINKING_BETA_HEADER)
+  }
+  if (provider === 'firstParty' && modelSupportsISP(model)) {
+    betaHeaders.push(THINKING_TOKEN_COUNT_BETA_HEADER)
   }
 
   // POC: server-side connector-text summarization (anti-distillation). The
