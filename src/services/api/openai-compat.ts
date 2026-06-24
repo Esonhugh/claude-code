@@ -210,7 +210,42 @@ class ResponsesSSEStream implements AsyncIterable<BetaRawMessageStreamEvent> {
   get controller(): AbortController { return new AbortController() }
 }
 
-async function connectSSE(url: string, headers: Record<string, string>, payload: any): Promise<ResponsesSSEStream> {
+function isRetryableOpenAIResponse(status: number): boolean {
+  return status >= 500
+}
+
+async function fetchResponsesWithRetry(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  maxRetries: number,
+): Promise<Response> {
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        ...getProxyFetchOptions(),
+        method: 'POST',
+        headers,
+        body,
+      })
+      if (resp.ok) return resp
+
+      const errText = await resp.text()
+      lastError = new Error(`OpenAI API ${resp.status}: ${errText}`)
+      if (!isRetryableOpenAIResponse(resp.status) || attempt >= maxRetries) {
+        throw lastError
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      if (lastError.message.startsWith('OpenAI API ')) throw lastError
+      if (attempt >= maxRetries) throw lastError
+    }
+  }
+  throw lastError ?? new Error('OpenAI API request failed')
+}
+
+async function connectSSE(url: string, headers: Record<string, string>, payload: any, maxRetries: number): Promise<ResponsesSSEStream> {
   const stream = new ResponsesSSEStream()
   let blockIndex = 0
   let hasText = false
@@ -237,17 +272,7 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
   })
 
   try {
-    const resp = await fetch(url, {
-      ...getProxyFetchOptions(),
-      method: 'POST',
-      headers,
-      body,
-    })
-    if (!resp.ok) {
-      const errText = await resp.text()
-      stream.fail(new Error(`OpenAI API ${resp.status}: ${errText}`))
-      return stream
-    }
+    const resp = await fetchResponsesWithRetry(url, headers, body, maxRetries)
 
     // Process SSE stream
     const reader = resp.body?.getReader()
@@ -349,7 +374,7 @@ export function createOpenAICompatClient(options: {
       logForDebugging(`[OpenAI Compat] Responses request model=${model}`)
 
       if (params.stream) {
-        const promise = connectSSE(responsesURL, headers, payload)
+        const promise = connectSSE(responsesURL, headers, payload, options.maxRetries)
         return {
           then: (resolve: any, reject: any) => promise.then(resolve, reject),
           catch: (reject: any) => promise.catch(reject),
@@ -359,7 +384,7 @@ export function createOpenAICompatClient(options: {
 
       // Non-streaming: collect all events
       const promise = (async () => {
-        const adapter = await connectSSE(responsesURL, headers, payload)
+        const adapter = await connectSSE(responsesURL, headers, payload, options.maxRetries)
         let text = ''
         const toolCalls: any[] = []
         let currentToolArgs = ''

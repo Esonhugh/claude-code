@@ -115,6 +115,73 @@ try {
   } as any)
 
   assert.deepEqual(requests[0]!.body.reasoning, { effort: 'none' })
+
+  requests.length = 0
+  let attempts = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    attempts++
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    if (attempts === 1) {
+      return new Response(
+        JSON.stringify({ error: { message: 'Our servers are currently overloaded. Please try again later.' } }),
+        { status: 529, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    return new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as typeof fetch
+
+  const retryClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 1,
+    timeout: 1000,
+  })
+
+  await retryClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+  })
+
+  assert.equal(attempts, 2)
+  assert.equal(requests.length, 2)
+
+  requests.length = 0
+  attempts = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    attempts++
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(
+      JSON.stringify({ error: { message: 'rate limited' } }),
+      { status: 429, headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as typeof fetch
+
+  await assert.rejects(
+    retryClient.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'hi' }],
+    }),
+    /OpenAI API 429/,
+  )
+
+  assert.equal(attempts, 1)
 } finally {
   globalThis.fetch = originalFetch
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
