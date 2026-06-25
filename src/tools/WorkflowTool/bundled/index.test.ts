@@ -21,6 +21,10 @@ assert.match(codeReview.meta?.whenToUse ?? '', /high, xhigh, or max/)
 assert.match(codeReview.runScriptSnapshot ?? '', /const LEVEL_PARAMS/)
 assert.match(codeReview.runScriptSnapshot ?? '', /MAX_VERIFY = 25/)
 assert.match(codeReview.runScriptSnapshot ?? '', /phase\("Synthesize"\)/)
+assert.match(
+  codeReview.runScriptSnapshot ?? '',
+  /Array\.isArray\(report\?\.findings\)/,
+)
 assert.equal(codeReview.defaults?.permissionMode, 'plan')
 
 const deepResearch = bundledWorkflows.find(workflow => workflow.name === 'deep-research')

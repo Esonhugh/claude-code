@@ -291,8 +291,9 @@ const report = await agent(
   { label: "synthesize", phase: "Synthesize", schema: REPORT_SCHEMA },
 )
 
-const findings = report
-  ? report.findings.slice(0, P.maxFindings)
+const synthesizedFindings = Array.isArray(report?.findings) ? report.findings : null
+const findings = synthesizedFindings
+  ? synthesizedFindings.slice(0, P.maxFindings)
   : ranked.slice(0, P.maxFindings).map(c => ({
       file: c.file,
       line: c.line,
@@ -304,7 +305,7 @@ const findings = report
 return {
   level: LEVEL,
   target: TARGET || undefined,
-  summary: report ? report.summary : "Synthesis step was skipped or failed — returning verified findings unmerged.",
+  summary: synthesizedFindings ? report.summary : "Synthesis step was skipped or failed — returning verified findings unmerged.",
   findings,
   refuted: refuted.map(c => ({ file: c.file, line: c.line, summary: c.summary })),
   stats: { ...stats, reported: findings.length },
