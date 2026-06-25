@@ -10,7 +10,57 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-06-21 - OpenAI OAuth 登录、refresh 与 effort 兼容适配
+## 2026-06-26 - v2.1.173 - OpenAI device code 登录、compact 支持与提示/技能整理
+
+### 版本状态
+
+- 准备发布版本：`v2.1.173`。
+- 本次发布覆盖 `v2.1.172` 后的提交：`54879b1`、`9eec95f`、`5b0f2cf`、`a3b6eb5`、`d349f92`、`8231132`、`2e6d153`、`ccaec8d`、`819e6b6`、`72f78dc`、`5af9c3e`、`2a88473`、`fbaf22c`、`6ab3024`、`f8c0839`、`3163c47`、`7109855`、`ab0b49a`、`cd3fd94`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+
+### 关联提交
+
+- `54879b1` — 2026-06-22 00:19:40 +08:00 — `update: fix bug of effort level changes`
+- `9eec95f` — 2026-06-23 02:39:44 +08:00 — `update: init auto compact`
+- `5b0f2cf` — 2026-06-23 12:24:04 +08:00 — `update: ignore preflight check`
+- `a3b6eb5` — 2026-06-23 12:29:31 +08:00 — `rollback: no block preflight check`
+- `d349f92` — 2026-06-24 16:57:17 +08:00 — `update: retry OpenAI responses on server errors`
+- `8231132` — 2026-06-24 17:03:45 +08:00 — `update: expand thinking beta model support`
+- `2e6d153` — 2026-06-24 17:06:11 +08:00 — `update: add extractor in native and compact compare mem`
+- `ccaec8d` — 2026-06-24 17:49:37 +08:00 — `update: claude code beta header CCH checksum`
+- `819e6b6` — 2026-06-24 17:58:31 +08:00 — `update: auto download official claude`
+- `72f78dc` — 2026-06-25 12:47:33 +08:00 — `update: no cyber risk`
+- `5af9c3e` — 2026-06-25 12:50:45 +08:00 — `update: reuse the browser open`
+- `2a88473` — 2026-06-25 14:29:34 +08:00 — `update: fix bug of code-review`
+- `fbaf22c` — 2026-06-25 16:58:56 +08:00 — `update: skill design`
+- `6ab3024` — 2026-06-25 17:00:45 +08:00 — `update: file location`
+- `f8c0839` — 2026-06-25 17:15:42 +08:00 — `update: remove the shit skills`
+- `3163c47` — 2026-06-25 20:28:53 +08:00 — `update: remove evals`
+- `7109855` — 2026-06-25 23:35:58 +08:00 — `update: create skills for analysis claude`
+- `ab0b49a` — 2026-06-25 23:53:08 +08:00 — `update: other prompt file content`
+- `cd3fd94` — 2026-06-26 00:18:13 +08:00 — `update: correctly device code login mode in openai`
+
+### 变更内容
+
+- 新增 OpenAI/Codex device code 登录模式，在 `CLAUDE_CODE_USE_OPENAI=1` 且缺少凭证时可自动进入 OpenAI 登录选择，并支持通过 `https://auth.openai.com/codex/device` 输入一次性 code 完成登录。
+- OpenAI device code 登录复用既有 OAuth token exchange、代理配置和 `~/.codex/auth.json` 存储路径；device code 请求与 token 轮询支持取消、超时和错误状态提示。
+- 修复 OpenAI effort level 切换相关问题，并扩展 thinking beta model 支持范围。
+- 增加 OpenAI Responses API 服务端错误重试，提升 OpenAI backend 临时错误下的请求稳定性。
+- 新增/调整 auto compact、native compact 对比与 memory extractor 相关逻辑，支持 compact 行为分析与对照。
+- 调整 WebFetch preflight 相关行为：尝试忽略 preflight 后回滚阻塞式 preflight 检查，避免不必要阻断。
+- 增加官方 Claude 下载入口，便于本地 parity 验证使用固定来源的 `official-claude`。
+- 调整 Claude Code beta header / CCH checksum 相关逻辑。
+- 整理提示词、技能设计和技能文件位置，新增用于 Claude 分析的技能，移除不再需要的 evals 与无关技能内容。
+- 复用已有 browser open 能力，避免重复实现浏览器打开路径。
+- 修复 code-review 相关 bug，并补充 cyber risk 相关约束说明。
+
+### 测试覆盖
+
+- 新增或更新 OpenAI device code 登录服务和 UI 测试，覆盖 user code 请求、polling、完整登录、取消、错误路径和 `/login` device code 选项展示。
+- 已运行 OpenAI OAuth service/UI 目标测试、登录可用性/退出/取消副作用测试，并执行 `make build` 验证本地产物。
+- 已进行本地交互式 device code 登录验证：备份并删除原 `~/.codex/auth.json` 后，使用 `CLAUDE_CODE_USE_OPENAI=1 HTTPS_PROXY=http://127.0.0.1:7890 ./built-claude --dangerously-skip-permissions` 自动进入 OpenAI 登录，完成 device code 授权并确认 `~/.codex/auth.json` 以 `0600` 权限写入 `auth_mode: chatgpt` 与 token 字段。
+
+## 2026-06-21 - v2.1.172 - OpenAI OAuth 登录、refresh 与 effort 兼容适配
 
 ### 关联提交
 
