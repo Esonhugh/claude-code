@@ -1,17 +1,16 @@
 # JS Bundle 提取与反混淆参考
 
 
-
 ## 范围
 
 当本地 Claude CLI bundle 或 packaged JavaScript artifact 可能包含待分析行为时使用。目标是恢复足够的结构来理解本地兼容性行为，而不是重建专有源代码。
 
 ## 提取本地 bundle artifacts
 
-对于本仓库中的 Bun standalone 风格 `package/claude` artifact，在适用时使用已有解包脚本：
+对于本仓库中的 Bun standalone 风格 `official-cluade` artifact，在适用时使用已有解包脚本：
 
 ```bash
-bun scripts/native-extra.mjs package/claude /tmp/claude-package-extract
+bun scripts/native-extra.mjs official-cluade /tmp/claude-package-extract
 ```
 
 历史 CCH case 中的预期输出：
@@ -110,7 +109,7 @@ docker run --rm \
 
 JS triage 后，搜索解出的 native modules 和原始 binary 中的相关 strings：
 
-- `package/claude`
+- `official-cluade`
 - `/tmp/claude-package-extract/vendor/**/*.node`
 
 有用 anchors：

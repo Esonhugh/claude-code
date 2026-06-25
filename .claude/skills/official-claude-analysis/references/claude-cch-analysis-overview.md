@@ -19,7 +19,7 @@
 ## 输入
 
 - 本地脚本，例如 `claude_cch.py`。
-- 官方或本地 CLI bundle artifacts，例如 `package/claude`。
+- 官方或本地 CLI bundle artifacts，例如 `official-cluade`。
 - 解出的 JS，例如 `/tmp/claude-package-extract/cli.original.js`。
 - 解出的 native modules，例如 `/tmp/claude-package-extract/vendor/**/*.node`。
 - 本地 runtime logs、tmux captures 和 command output。
