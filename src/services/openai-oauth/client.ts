@@ -5,13 +5,14 @@ import { OpenAIAuthCodeListener } from './auth-code-listener.js'
 import { saveOpenAIAuth } from './storage.js'
 import type { OpenAITokenExchangeResponse } from './types.js'
 
-const OPENAI_OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
-const OPENAI_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
-const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-const OPENAI_OAUTH_SCOPE =
+export const OPENAI_OAUTH_ISSUER = 'https://auth.openai.com'
+export const OPENAI_OAUTH_AUTHORIZE_URL = `${OPENAI_OAUTH_ISSUER}/oauth/authorize`
+export const OPENAI_OAUTH_TOKEN_URL = `${OPENAI_OAUTH_ISSUER}/oauth/token`
+export const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+export const OPENAI_OAUTH_SCOPE =
   'openid profile email offline_access api.connectors.read api.connectors.invoke'
-const OPENAI_OAUTH_CALLBACK_PATH = '/auth/callback'
-const OPENAI_OAUTH_ORIGINATOR = 'codex_cli_rs'
+export const OPENAI_OAUTH_CALLBACK_PATH = '/auth/callback'
+export const OPENAI_OAUTH_ORIGINATOR = 'codex_cli_rs'
 
 export { createOpenAIPKCE }
 
@@ -60,15 +61,18 @@ export async function exchangeOpenAICodeForTokens({
   authorizationCode,
   codeVerifier,
   port,
+  redirectUri,
 }: {
   authorizationCode: string
   codeVerifier: string
   port: number
+  redirectUri?: string
 }): Promise<OpenAITokenExchangeResponse> {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code: authorizationCode,
-    redirect_uri: `http://localhost:${port}${OPENAI_OAUTH_CALLBACK_PATH}`,
+    redirect_uri:
+      redirectUri ?? `http://localhost:${port}${OPENAI_OAUTH_CALLBACK_PATH}`,
     client_id: OPENAI_OAUTH_CLIENT_ID,
     code_verifier: codeVerifier,
   })

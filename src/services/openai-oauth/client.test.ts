@@ -116,6 +116,17 @@ try {
   assert.equal(requests[0]!.proxy, undefined)
   assert.equal(requests[0]!.hasHttpsAgent, false)
 
+  await exchangeOpenAICodeForTokens({
+    authorizationCode: 'device-auth-code',
+    codeVerifier: 'device-verifier',
+    port: 1455,
+    redirectUri: 'https://auth.openai.com/deviceauth/callback',
+  })
+  assert.equal(
+    requests[1]!.body.get('redirect_uri'),
+    'https://auth.openai.com/deviceauth/callback',
+  )
+
   const originalHttpsProxy = process.env.https_proxy
   process.env.https_proxy = 'http://127.0.0.1:7890'
   try {
@@ -131,12 +142,12 @@ try {
       process.env.https_proxy = originalHttpsProxy
     }
   }
-  assert.deepEqual(requests[1]!.proxy, {
+  assert.deepEqual(requests[2]!.proxy, {
     protocol: 'http',
     host: '127.0.0.1',
     port: 7890,
   })
-  assert.equal(requests[1]!.hasHttpsAgent, false)
+  assert.equal(requests[2]!.hasHttpsAgent, false)
 
   axios.post = (async () => {
     const error = new Error('Request failed with status code 403') as Error & {

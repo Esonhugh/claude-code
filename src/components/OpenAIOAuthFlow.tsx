@@ -1,13 +1,16 @@
 import * as React from 'react'
 import { Box, Text, useInput } from '../ink.js'
 import { copyOpenAIAuthUrlToClipboard } from '../services/openai-oauth/clipboard.js'
-import { loginOpenAIWithOAuth } from '../services/openai-oauth/index.js'
+import {
+  loginOpenAIWithDeviceCode,
+  loginOpenAIWithOAuth,
+} from '../services/openai-oauth/index.js'
 import { saveOpenAIApiKey } from '../services/openai-oauth/storage.js'
 import { errorMessage } from '../utils/errors.js'
 import { Select } from './CustomSelect/select.js'
 import TextInput from './TextInput.js'
 
-type LoginMethod = 'api_key' | 'oauth' | 'exit'
+type LoginMethod = 'api_key' | 'oauth' | 'device_code' | 'exit'
 
 export function createOpenAIAuthFlowCancellation(): {
   cancel: () => void
@@ -31,6 +34,11 @@ type OpenAIAuthStatus =
       authUrl: string | null
       clipboard: 'pending' | 'copied' | 'failed'
     }
+  | {
+      state: 'device_code_waiting'
+      verificationUrl: string | null
+      userCode: string | null
+    }
   | { state: 'done'; message: string }
   | { state: 'error'; message: string }
 
@@ -45,6 +53,7 @@ export function OpenAIOAuthFlow(props: {
   const currentOAuthCancellationRef = React.useRef<ReturnType<
     typeof createOpenAIAuthFlowCancellation
   > | null>(null)
+  const currentDeviceCodeAbortRef = React.useRef<AbortController | null>(null)
   const [status, setStatus] = React.useState<OpenAIAuthStatus>({ state: 'choose' })
 
   React.useEffect(() => {
@@ -56,12 +65,15 @@ export function OpenAIOAuthFlow(props: {
   React.useEffect(() => {
     return () => {
       currentOAuthCancellationRef.current?.cancel()
+      currentDeviceCodeAbortRef.current?.abort()
     }
   }, [])
 
   const handleExit = React.useCallback(() => {
     currentOAuthCancellationRef.current?.cancel()
     currentOAuthCancellationRef.current = null
+    currentDeviceCodeAbortRef.current?.abort()
+    currentDeviceCodeAbortRef.current = null
     if (onExitRef.current) {
       onExitRef.current()
     } else {
@@ -110,6 +122,43 @@ export function OpenAIOAuthFlow(props: {
 
   }, [])
 
+  const startDeviceCode = React.useCallback(() => {
+    currentOAuthCancellationRef.current?.cancel()
+    currentDeviceCodeAbortRef.current?.abort()
+    const abortController = new AbortController()
+    currentDeviceCodeAbortRef.current = abortController
+    setStatus({
+      state: 'device_code_waiting',
+      verificationUrl: null,
+      userCode: null,
+    })
+
+    void loginOpenAIWithDeviceCode({
+      signal: abortController.signal,
+      onDeviceCode: deviceCode => {
+        if (abortController.signal.aborted) return
+        setStatus({
+          state: 'device_code_waiting',
+          verificationUrl: deviceCode.verificationUrl,
+          userCode: deviceCode.userCode,
+        })
+      },
+    })
+      .then(authPath => {
+        if (abortController.signal.aborted) return
+        currentDeviceCodeAbortRef.current = null
+        setStatus({ state: 'done', message: `OpenAI login saved to ${authPath}` })
+        onDoneRef.current()
+      })
+      .catch(error => {
+        if (abortController.signal.aborted) return
+        currentDeviceCodeAbortRef.current = null
+        const err = error instanceof Error ? error : new Error(errorMessage(error))
+        setStatus({ state: 'error', message: errorMessage(err) })
+        onErrorRef.current?.(err)
+      })
+  }, [])
+
   const handleMethod = React.useCallback(
     (method: LoginMethod) => {
       switch (method) {
@@ -119,12 +168,15 @@ export function OpenAIOAuthFlow(props: {
         case 'oauth':
           startOAuth()
           break
+        case 'device_code':
+          startDeviceCode()
+          break
         case 'exit':
           handleExit()
           break
       }
     },
-    [handleExit, startOAuth],
+    [handleExit, startDeviceCode, startOAuth],
   )
 
   const saveApiKey = React.useCallback(async (value: string) => {
@@ -163,6 +215,11 @@ export function OpenAIOAuthFlow(props: {
                 label: 'Sign in with OAuth',
                 value: 'oauth',
                 description: 'Open the browser and complete ChatGPT login',
+              },
+              {
+                label: 'Sign in with device code',
+                value: 'device_code',
+                description: 'Open a verification URL anywhere and enter a one-time code',
               },
               {
                 label: 'Exit',
@@ -227,6 +284,18 @@ export function OpenAIOAuthFlow(props: {
           {status.clipboard === 'failed' ? (
             <Text dimColor>Could not copy URL to clipboard. Copy the URL above manually.</Text>
           ) : null}
+        </>
+      ) : null}
+
+      {status.state === 'device_code_waiting' ? (
+        <>
+          <Text color="permission">Sign in with OpenAI device code</Text>
+          <Text dimColor>Open this URL in your browser and enter the code below.</Text>
+          <Text>Verification URL:</Text>
+          {status.verificationUrl ? <Text>{status.verificationUrl}</Text> : null}
+          <Text>Enter this one-time code:</Text>
+          {status.userCode ? <Text color="permission">{status.userCode}</Text> : null}
+          <Text dimColor>Never share this code. It expires after 15 minutes.</Text>
         </>
       ) : null}
 
