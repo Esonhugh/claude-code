@@ -151,13 +151,13 @@ low20 = 4205e
 已保存 standalone 复算脚本：
 
 ```text
-scripts/claude_cch.py
+.claude/skills/claude-analysis/scripts/claude_cch.py
 ```
 
 用法：
 
 ```bash
-python3 scripts/claude_cch.py BODY.bin
+python3 .claude/skills/claude-analysis/scripts/claude_cch.py BODY.bin
 ```
 
 输出格式：
@@ -205,7 +205,7 @@ file=/tmp/cch-pytest-rec-1.bin
 Python 复算：
 
 ```text
-python3 scripts/claude_cch.py /tmp/cch-pytest-rec-1.bin
+python3 .claude/skills/claude-analysis/scripts/claude_cch.py /tmp/cch-pytest-rec-1.bin
 computed=57b4f existing=57b4f match=True
 ```
 
