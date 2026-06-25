@@ -53,10 +53,11 @@
 
 - 涉及构建、打包、类型定义、CLI 入口、运行时行为或发布产物的改动，必须运行对应构建或检查命令。
 - 构建命令优先参考 `Makefile`；当前默认入口为 `make build`，其内部通过 `CLAUDE_CODE_VERSION=$(VERSION) bun package:binary` 构建并产出 `./built-claude`。
-- 本地交互式验证优先参考 `Makefile`；当前默认入口为 `make test`，其内部运行 `./built-claude --dangerously-skip-permissions`。
+- 本地 CLI 交互式验证优先参考 `Makefile`；当前默认入口为 `make test`，其内部运行 `./built-claude --dangerously-skip-permissions`。需要手动启动时使用同一产物和参数。
+- 需要官方 Claude CLI 对照验证时，使用项目根目录下的 `./official-claude --dangerously-skip-permissions`；如缺少该文件，先使用 `make download-claude` 获取，避免直接使用系统安装路径造成版本来源不一致。
 - 需要手动执行构建或验证时，应先检查 `Makefile` 中的 `VERSION`、产物路径和目标命令是否仍然符合当前任务。
-- 本地交互式验证必须放在 tmux session 中驱动。
-- 调试交互行为时，必须使用脚本操作 tmux（例如 `tmux send-keys`、`tmux capture-pane`）模拟真实终端交互，记录复现步骤和关键 pane 输出。
+- 本地交互式验证必须放在 tmux session 中驱动；涉及官方 Claude parity、workflow/deep-research parity、任务列表或终端 UI 对照时，官方与本地两侧都必须用脚本操作 tmux 进行真实交互。
+- 调试交互行为时，必须使用脚本操作 tmux（例如 `tmux send-keys`、`tmux capture-pane`）模拟真实终端交互，记录复现步骤、session/window/pane 标识和关键 pane 输出的绝对路径。
 - 验证完成前检查 diff，删除调试日志、临时代码、重复代码、无效代码和无关改动。
 
 ## UI and Terminal Interaction Rules
