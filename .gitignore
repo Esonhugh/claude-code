@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .claude/
+!.claude/
+!.claude/skills/
+!.claude/skills/official-claude-analysis/
+!.claude/skills/official-claude-analysis/**
 *.bun-build
 
 official-claude
