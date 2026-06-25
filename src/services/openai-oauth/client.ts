@@ -1,12 +1,10 @@
 import axios, { type AxiosProxyConfig } from 'axios'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { openBrowser } from '../../utils/browser.js'
 import { createOpenAIPKCE } from './pkce.js'
 import { OpenAIAuthCodeListener } from './auth-code-listener.js'
 import { saveOpenAIAuth } from './storage.js'
 import type { OpenAITokenExchangeResponse } from './types.js'
 
-const execFileAsync = promisify(execFile)
 const OPENAI_OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
 const OPENAI_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -93,16 +91,6 @@ export async function exchangeOpenAICodeForTokens({
   }
 
   return response.data as OpenAITokenExchangeResponse
-}
-
-async function openBrowser(url: string): Promise<void> {
-  const command = process.platform === 'darwin'
-    ? 'open'
-    : process.platform === 'win32'
-      ? 'cmd'
-      : 'xdg-open'
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
-  await execFileAsync(command, args)
 }
 
 export async function loginOpenAIWithOAuth({
