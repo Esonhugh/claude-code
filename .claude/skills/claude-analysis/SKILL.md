@@ -1,6 +1,6 @@
 ---
 name: claude-analysis
-description: 当用户要求分析授权的当前项目下的 Claude Code 源码、official-claude/built-claude 二进制，或需要从 .bun / __BUN,__bun section 提取 cli.original.js、用 objdump/nm/otool 检查符号或 section、用 Frida 观察本地运行行为、用 tmux 或 InteractiveTerminal 调试 CLI 交互、用 webcrack/restringer 提升可读性、或用本 skill 的 scripts/claude_cch.py 复现授权请求样本的 cch checksum 时，应使用此 skill。
+description: 当用户要求分析授权的当前项目下的 Claude Code 源码、official-claude/built-claude 二进制，或需要从 .bun / __BUN,__bun section 提取 cli.original.js、用 objdump/nm/otool 检查符号或 section、用 Frida 观察本地运行行为、用 webcrack/restringer 提升可读性、或用本 skill 的 scripts/claude_cch.py 复现授权请求样本的 cch checksum 时，应使用此 skill。若任务主要是 tmux/InteractiveTerminal、非交互 CLI、--debug-file、HTTP_PROXY/HTTPS_PROXY、SSE/WebSocket 或请求抓流调试，应改用 claude-debug skill。
 ---
 
 # Claude Analysis
@@ -31,7 +31,8 @@ description: 当用户要求分析授权的当前项目下的 Claude Code 源码
 - [`references/js-extraction.md`](references/js-extraction.md) — `webcrack`、`restringer`、[`scripts/native-extra.mjs`](scripts/native-extra.mjs) 和 Bun standalone JS 提取。
 - [`references/binary-debugging.md`](references/binary-debugging.md) — `objdump`、`nm`、`otool`，以及对 `official-claude` 二进制的安全本地 Frida 观察。
 - [`references/cch-checksum.md`](references/cch-checksum.md) — [`scripts/claude_cch.py`](scripts/claude_cch.py)、`xxh64`、请求规范化和 5 位 hex `cch` 计算。
-- [`references/interactive-debugging.md`](references/interactive-debugging.md) — 使用 tmux 和 InteractiveTerminal 获取真实 CLI 交互证据。
+
+交互式 CLI、非交互 `--print`、`--debug-file`、HTTP proxy、SSE、WebSocket 和请求抓流调试流程由 `claude-debug` skill 负责；本 skill 只保留源码/二进制/反混淆/checksum 分析边界。
 
 ## 常见任务路由
 
@@ -42,7 +43,7 @@ description: 当用户要求分析授权的当前项目下的 Claude Code 源码
 | “inspect symbols”, “otool/objdump/nm”, “Mach-O/ELF/PE section” | `references/binary-debugging.md` |
 | “hook official-claude locally with Frida” | `references/binary-debugging.md` |
 | “what is cch”, “compute cch”, “reproduce cch for an authorized request fixture” | `references/cch-checksum.md` |
-| “interactive debug”, “tmux 验证”, “use InteractiveTerminal”, “compare official/local CLI UI” | `references/interactive-debugging.md` |
+| “interactive debug”, “tmux 验证”, “use InteractiveTerminal”, “--debug-file”, “HTTP_PROXY”, “SSE/WebSocket proxy” | 使用 `claude-debug` skill |
 
 ## 操作前安全检查
 
