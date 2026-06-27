@@ -1,0 +1,44 @@
+{
+  "skill_name": "claude-debug",
+  "evals": [
+    {
+      "id": 0,
+      "name": "proxy-parity-debug",
+      "prompt": "built-claude 和 official-claude 在同一个 Claude Code 配置下疑似 HTTPS_PROXY 行为不同。请设计并执行一个最小可复现的代理抓流对比，要求不要泄露 token，只报告 CONNECT 目标、状态、字节数和 artifact 路径。",
+      "expected_output": "A concise debugging report that uses the bundled proxy or equivalent proxy capture, keeps official/local config equal, records commands/artifacts, redacts secrets, and explains HTTPS CONNECT opacity.",
+      "files": [],
+      "assertions": [
+        "Mentions keeping official-claude and built-claude configuration equivalent except the binary or explicit proxy variable.",
+        "Uses HTTP_PROXY/HTTPS_PROXY or a local proxy capture workflow.",
+        "Reports only redacted facts such as CONNECT target/status/byte counts/artifact paths, not tokens or full request bodies.",
+        "Explains that HTTPS payloads are opaque without MITM."
+      ]
+    },
+    {
+      "id": 1,
+      "name": "noninteractive-debug",
+      "prompt": "我想检查 ./built-claude --print 的输出格式和 exit code 是否跟 ./official-claude 一致，同时打开 --debug-file。给我一个可执行的 debug 步骤和最终报告格式。",
+      "expected_output": "A non-interactive debug procedure that captures stdout/stderr separately, exit codes, debug files, help/flag verification when needed, and a compact redacted report format.",
+      "files": [],
+      "assertions": [
+        "Uses non-interactive --print commands for both binaries.",
+        "Captures stdout, stderr, and exit code separately.",
+        "Uses or checks --debug/--debug-file behavior.",
+        "Keeps secrets redacted and reports byte counts or relevant excerpts only."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "sse-websocket-proxy",
+      "prompt": "帮我验证 claude-debug 里的 http-proxy-debug.mjs 对 SSE 流式响应和 WebSocket/Upgrade 场景是否可用。需要本地起 mock server，经过代理访问，输出验证证据和限制说明。",
+      "expected_output": "A local proxy verification report for SSE/plain HTTP streaming and WebSocket or Upgrade behavior, including commands/artifacts, proxy JSONL events, limitations, and no secret leakage.",
+      "files": [],
+      "assertions": [
+        "Starts or describes a local mock server with SSE and WebSocket/Upgrade endpoints.",
+        "Routes requests through http-proxy-debug.mjs or an equivalent HTTP proxy path.",
+        "Verifies proxy logs include HTTP request/response or upgrade/tunnel byte-count evidence.",
+        "States limitations for HTTPS/TLS, HTTP/2, SSE, and WebSocket payload visibility."
+      ]
+    }
+  ]
+}
