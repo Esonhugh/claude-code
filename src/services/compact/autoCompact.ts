@@ -319,6 +319,8 @@ export async function autoCompactIfNeeded(
   }
 
   try {
+    logForDebugging(`autocompact: running ${compactMode}-style compact`)
+
     const compactionResult =
       compactMode === 'codex'
         ? await compactConversationCodexStyle(
