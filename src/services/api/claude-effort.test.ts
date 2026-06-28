@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import type { BetaOutputConfig } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -23,14 +24,14 @@ try {
   resetEnv()
   const { configureEffortParams } = await import('./claude.js')
 
-  const outputConfig: { effort?: string } = {}
+  const outputConfig: BetaOutputConfig = {}
   const betas: string[] = []
   configureEffortParams(undefined, outputConfig, {}, betas, 'gpt-5.5')
 
   assert.equal(outputConfig.effort, 'high')
   assert.ok(betas.length > 0)
 
-  const explicitOutputConfig: { effort?: string } = {}
+  const explicitOutputConfig: BetaOutputConfig = {}
   const explicitBetas: string[] = []
   configureEffortParams('medium', explicitOutputConfig, {}, explicitBetas, 'gpt-5.5')
 
@@ -38,7 +39,7 @@ try {
   assert.ok(explicitBetas.length > 0)
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  const openAIOutputConfig: { effort?: string } = {}
+  const openAIOutputConfig: BetaOutputConfig = {}
   const openAIBetas: string[] = []
   configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas, 'gpt-5.5')
 
@@ -47,7 +48,7 @@ try {
 
   delete process.env.CLAUDE_CODE_USE_OPENAI
   process.env.CLAUDE_CODE_USE_BEDROCK = '1'
-  const bedrockOutputConfig: { effort?: string } = {}
+  const bedrockOutputConfig: BetaOutputConfig = {}
   const bedrockBetas: string[] = []
   configureEffortParams(undefined, bedrockOutputConfig, {}, bedrockBetas, 'gpt-5.5')
 
