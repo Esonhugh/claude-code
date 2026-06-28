@@ -3,7 +3,7 @@
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from '../utils/debug.js'
-import { isEnvDefinedFalsy } from '../utils/envUtils.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from '../utils/envUtils.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
 
@@ -47,9 +47,12 @@ export function getCLISyspromptPrefix(options?: {
 
 /**
  * Check if attribution header is enabled.
- * Enabled by default, can be disabled via env var or GrowthBook killswitch.
+ * Enabled by default, can be forced via env var, or disabled via env var / GrowthBook killswitch.
  */
 function isAttributionHeaderEnabled(): boolean {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
+    return true
+  }
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
     return false
   }

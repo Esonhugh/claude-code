@@ -45,7 +45,30 @@ node .claude/skills/claude-debug/scripts/run-claude-mitm-cch.mjs \
 
 The runner generates a temporary CA and leaf certificate, starts the lower-level `scripts/mitm-cch-debug.mjs`, clears `NO_PROXY`/`no_proxy` for the child process, runs the selected binaries with process-local CA trust (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`), and writes a partially redacted local JSON summary. It reports request line, target, redacted header count, body byte length, SHA-256 prefix, JSON top-level keys, model, stream flag, message/tool counts, and `cch=` values if present.
 
-Treat the output file and runner stdout as sensitive metadata, not share-safe text. Redaction means sensitive header values are removed and bodies are summarized; it does not make request targets, timestamps, models, byte counts, checksums, stdout/stderr, or artifact paths public-safe.
+### Official attribution 与 CCH 激活
+
+当 `official-claude` 没有发出 `x-anthropic-billing-header` 时，先检查 settings 注入，不要直接判断二进制缺少该分支。`~/.claude/settings.json` 或 `CLAUDE_CONFIG_DIR` settings 会在 shell 层 `env -u` 或前置 env 覆盖之后重新注入 env。比如 settings env 中的 `CLAUDE_CODE_ATTRIBUTION_HEADER=0` 会禁用 attribution，即使 shell 命令尝试开启它。
+
+使用 `--settings` 传入 inline JSON settings override 做本地一次性验证，避免修改全局 settings：
+
+```sh
+./official-claude \
+  --settings '{"env":{"ANTHROPIC_BASE_URL":"https://ai-gw.mjclouds.com","CLAUDE_CODE_ATTRIBUTION_HEADER":"1","CLAUDE_CODE_ENTRYPOINT":"cli","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"0","_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL":"1"}}' \
+  --debug --debug-file /tmp/official-cch-debug.log \
+  --print "hello" --dangerously-skip-permissions
+```
+
+`official-claude` 2.1.195 的已验证行为：
+
+- effective settings env 中的 `CLAUDE_CODE_ATTRIBUTION_HEADER=1` 会开启 request body `system` block 内的 pseudo-header。
+- 在当前 proxy base-url 场景下，`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` 是进入 CCH 分支的必要条件。
+- debug log 会显示构造阶段的 placeholder：`cch=00000`。
+- MITM request summary 应显示 `contains_cch_placeholder=false`、`contains_cch_param=true`，并在 `cch_values` 中出现 native HTTP stack 替换后的真实 5-hex 值。
+- `CLAUDE_CODE_RECOVER_FEATURES=NATIVE_CLIENT_ATTESTATION` 只影响会读取 recovered Bun feature flags 的本地源码构建；不能开启已经编译好的 `official-claude` 二进制里的 build-time feature 分支。
+
+将 `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` 视为本地调试用 internal override，不要作为默认用户配置推荐。
+
+将 output file 和 runner stdout 视为敏感 metadata，而不是可直接分享的文本。Redaction 只移除敏感 header 值并摘要 body；它不会让 request target、timestamp、model、byte count、checksum、stdout/stderr 或 artifact path 变成 public-safe。
 
 MITM runner artifacts include:
 

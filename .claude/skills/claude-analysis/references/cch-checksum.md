@@ -81,9 +81,28 @@ cch = xxh64(cch_hash_input(body), SEED) & 0xfffff
 - 只替换第一个匹配的 `cch=xxxxx;`。
 - 非法字符串或括号不匹配会抛出错误。
 
+## Official runtime 激活说明
+
+`official-claude` 可能包含 attribution 和 CCH 代码路径，但在抓包中仍然不输出对应内容。下结论前先验证 effective runtime settings。
+
+`official-claude` 2.1.195 的已观察行为：
+
+- `x-anthropic-billing-header` 是 JSON request body 的 `system` text 里的 pseudo-header，不是 wire HTTP header。
+- effective settings env 中必须有 `CLAUDE_CODE_ATTRIBUTION_HEADER=1`，才能强制开启 attribution。
+- 全局 settings 文件可能在 shell env 设置之后重新注入 `CLAUDE_CODE_ATTRIBUTION_HEADER=0`；这种情况下仅用 shell 层 `env -u` 不够。
+- 使用 `--settings '{"env":{...}}'` 做本地一次性 override，避免修改全局 settings。
+- 在 `ANTHROPIC_BASE_URL=https://ai-gw.mjclouds.com` 这类 proxied first-party base-url 场景下，需要 `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` 才能激活 CCH placeholder 分支。
+- `CLAUDE_CODE_RECOVER_FEATURES=NATIVE_CLIENT_ATTESTATION` 不能开启已经编译好的 official binary 中的 build-time feature 分支。
+
+成功激活时，official debug log 可以显示 `cch=00000`；成功的 MITM body summary 应显示 native replacement 之后的结果，例如 `contains_cch_placeholder=false`、`contains_cch_param=true`，并在 `cch_values` 中出现真实 5-character hex 值。
+
+将 `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` 限定为授权本地调试用途，不要推荐为持久默认配置。
+
 ## 报告检查项
 
 - 记录 body 是否已有 `cch`。
 - 报告 computed value、existing value 和 match status。
+- 区分 debug log 中的 placeholder `cch=00000` 与 MITM request body 中 native patch 后的真实 5-hex value。
+- 检查 settings env 是否覆盖了 shell env，尤其是 `CLAUDE_CODE_ATTRIBUTION_HEADER=0`。
 - 除非明确授权，不要打印完整私有 request body。
 - 将 patched files 保持在本地，并标记为 derived debugging artifacts。
