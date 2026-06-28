@@ -60,12 +60,19 @@ const macroValues = {
   'MACRO.VERSION_CHANGELOG': 'null',
 };
 
-const enabledFeatures = new Set(
-  (process.env.CLAUDE_CODE_RECOVER_FEATURES ?? '')
-    .split(',')
-    .map(value => value.trim())
-    .filter(Boolean),
-);
+const defaultRecoverFeatures = ['AGENT_TRIGGERS'];
+
+export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATURES) {
+  return new Set([
+    ...defaultRecoverFeatures,
+    ...(value ?? '')
+      .split(',')
+      .map(feature => feature.trim())
+      .filter(Boolean),
+  ]);
+}
+
+const enabledFeatures = getEnabledFeatures();
 
 function firstExisting(baseDir, candidates) {
   for (const candidate of candidates) {
