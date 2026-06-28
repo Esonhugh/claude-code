@@ -10,7 +10,7 @@ Dynamic workflows should not be treated as another agent type. They are an orche
 
 | Primitive | Coordinator | State location | Best use |
 | --- | --- | --- | --- |
-| Skill | Current Claude session following loaded instructions | Main session context while loaded | Reusable procedure, checklist, or domain knowledge |
+| Skill | Current Claude session following loaded instructions | Main session context while loaded | Reusable procedure, checklist, domain knowledge, or hidden bundled teaching for model-side tool usage |
 | Subagent | Current Claude session | Subagent context, summarized back to caller | Focused research, review, or implementation that would flood main context |
 | Agent view | User | Separate background sessions | Independent tasks the user wants to monitor manually |
 | Agent team | Team lead Claude session | Shared task list and mailbox | Multi-session collaboration where workers need to coordinate |
@@ -50,8 +50,8 @@ The recovered repository contains agent, task, workflow inspection, and minimal 
 - `src/tools/WorkflowTool/workflowDiscovery.ts` discovers workflow specs from `docs/workflows/` and `.claude/workflows/` roots.
 - `src/tools/WorkflowTool/createWorkflowCommand.ts` exposes valid workflow specs as workflow-backed prompt commands.
 - `src/tools/WorkflowTool/runWorkflow.ts` executes validated phases through the `Agent` tool and records workflow task state.
-- `src/tools/WorkflowTool/WorkflowTool.ts` exposes `list`, `show`, `dry-run`, and `run` actions.
-- `src/commands/workflows/workflows.ts` implements `/workflows list`, `/workflows show`, `/workflows dry-run`, and `/workflows run`.
+- `src/tools/WorkflowTool/WorkflowTool.ts` exposes `list`, `show`, `dry-run`, `run`, `status`, `pause`, and `resume` actions.
+- `src/commands/workflows/workflowsPage.tsx` opens the Dynamic workflows display and management UI; `src/commands/workflows/workflows.ts` contains legacy text helpers but should not become the interactive `/workflows` routing surface.
 - `src/tasks.ts` conditionally registers `LocalWorkflowTask`.
 - `src/tasks/LocalWorkflowTask/LocalWorkflowTask.ts` stores typed workflow phase and agent state plus kill, skip, retry, and retry-cleanup controls.
 
@@ -64,7 +64,8 @@ Current workflow surface:
 - A local `Workflow` facade accepts saved workflow names, inline `{ script, name, args }`, and `{ scriptPath, args, resumeFromRunId }` inputs, then delegates execution to the existing workflow runner.
 - The `ultracode` keyword sets per-turn ultracode effort, shows the tmux-verified official prompt indicator `Dynamic workflow requested for this turn · opt+w to ignore`, and injects model-facing dynamic workflow orchestration guidance so complex prompts can route through `Workflow` without an explicit slash command. Official strings say the keyword opts that turn into the `Workflow` tool; local behavior implements that as model-visible orchestration guidance rather than a hardcoded forced tool call.
 - The `Workflow` permission dialog uses saved workflow `export const meta` previews for both facade and internal tool calls, including description, phase details, script excerpts, args, consent options, `/workflows` usage-control text, and `ctrl+g` script editing guidance.
-- `/workflows` interactive UI opens the Dynamic workflows panel even when typed with arguments such as `list`, `show`, or `dry-run`, matching the tmux-sampled official 2.1.165 behavior; text subcommands remain available through the non-interactive command implementation and tool surfaces.
+- A hidden bundled `workflow` skill teaches the model when and how to call `Workflow` / `WorkflowTool`; it is not user-invocable and should not be promoted as a user-facing slash command.
+- `/workflows` is the Dynamic workflows display and management UI; it should not grow `list`, `show`, `dry-run`, `run`, or similar text-command semantics.
 - Workflow-backed prompt commands reload JavaScript workflow files with the current command arguments before formatting the orchestration prompt.
 - `WorkflowTool.run` executes phase work through the existing `Agent` tool, records `LocalWorkflowTask` phase state, and does not directly use shell or filesystem tools.
 - `WorkflowTool.run` can launch phase workers as named teammates through the existing Agent/team path when `defaults.execution` is `team` and a team context exists, which lets tmux-backed teams provide an interactive pane experience.
@@ -77,6 +78,8 @@ Current workflow surface:
 - `pauseWorkflowTask()` and `resumeWorkflowTask()` provide workflow-level pause/resume state transitions exposed through `WorkflowTool` and `/workflows`; `WorkflowTool.pause` also persists official-style paused session state and resume prompt text under `.claude/workflow-runs/<workflowRunId>/session.json`.
 - `killWorkflowTask()`, `skipWorkflowAgent()`, and `retryWorkflowAgent()` update workflow task state for the runtime; skip and retry controls now append official-style `workflow_agent` events in local task state.
 
+InteractiveTerminal has its own hidden bundled teaching skill for model-side tool usage. The existing interactive terminal slash command remains a display/management surface; the teaching skill explains the `InteractiveTerminal` lifecycle and when to prefer it over `Bash`.
+
 Official compatibility boundary from `/opt/homebrew/bin/claude` 2.1.150 experiments:
 
 A detailed experiment matrix is maintained in `docs/workflow-compatibility-experiments.md`.
@@ -88,6 +91,17 @@ A detailed experiment matrix is maintained in `docs/workflow-compatibility-exper
 - In `--print --bare` experiments, even with `CLAUDE_CODE_WORKFLOWS`, `tengu_workflows_enabled`, and `CLAUDE_CODE_RECOVER_FEATURES=WORKFLOW_SCRIPTS`, the hidden `Workflow` tool was not exposed in the init tool list, so direct tool execution could not be completed through non-interactive print mode.
 - This branch supports a JavaScript DSL compatibility layer that converts a JS workflow declaration into the existing validated `WorkflowSpec` plan, persists run templates, and writes `.claude/workflow-runs/<taskId>.json` session metadata.
 - The DSL runs in a constrained in-process VM context and intentionally exposes no shell or filesystem helpers; phase work still goes through normal Agent tool permission boundaries.
+
+Additional recovered-source observations from `recover/claude-v2.1.165.js`:
+
+- The official model-facing execution tool is named `Workflow` and has alias `RunWorkflow`; the recovered module export may be called `WorkflowTool`, but the tool object uses `name: "Workflow"` and `userFacingName(): "Workflow"`.
+- Official `Workflow` has a long model-facing prompt that teaches explicit opt-in rules, inline script usage, `export const meta`, `agent()`, `parallel()`, `pipeline()`, `phase()`, `log()`, `args`, `budget`, child `workflow()`, pipeline-first guidance, concurrency caps, quality patterns, and resume behavior. The local `Workflow` facade prompt is intentionally much shorter; hidden bundled teaching skills now cover part of this gap.
+- Official `Workflow` input accepts `script`, `name`, `args`, `scriptPath`, and `resumeFromRunId`; `description` and `title` are accepted but ignored in favor of script `meta`. `scriptPath` takes precedence over `script` and `name`, and `resumeFromRunId` is validated as `wf_[a-z0-9-]{6,}`. The local facade additionally accepts direct `plan` input and currently validates `resumeFromRunId` more loosely.
+- Official output is structured: `status`, `taskId`, optional `runId`, `summary`, `transcriptDir`, `scriptPath`, `sessionUrl`, `warning`, and `error`. The local facade currently returns a text result, so task IDs, run IDs, and script paths are model-readable but not schema-addressable.
+- Official workflow validation checks managed `disableWorkflows`, session/org/config enablement, script parse errors, deterministic-script violations such as `Date.now()`, `Math.random()`, and argless `new Date()`, plus still-running resume targets. Local tools are currently always enabled and rely more on runtime validation.
+- Official permission handling supports per-workflow allow/ask/deny rules and can suggest adding an allow rule for a named workflow. Local `Workflow` and `WorkflowTool.run` currently ask every time instead of matching per-workflow rules.
+- Official `meta` parsing uses an AST parser and pure-literal extraction; local parsing uses a lightweight scanner plus guarded object-literal evaluation. This is a parity and hardening gap if the goal is closer official compatibility.
+- Official has a `remote_launched` result path for CCR sessions. Local workflow execution is currently local `LocalWorkflowTask` / workflow-run-session based.
 
 Remaining workflow runtime gaps:
 
