@@ -33,6 +33,39 @@ For `HTTP_PROXY` and `http://` targets, the proxy can observe method, URL, heade
 
 Full HTTPS body inspection requires a trusted local MITM certificate. Use only for authorized local experiments. Prefer established tools such as mitmproxy when certificate management and HTTP/2 frame decoding are required. Keep generated certificates and captured bodies local.
 
+For Claude Code CCH checks, use the bundled local MITM runner when the goal is to compare `built-claude` and `official-claude` request body shape without printing private prompts:
+
+```sh
+node .claude/skills/claude-debug/scripts/run-claude-mitm-cch.mjs \
+  --repo . \
+  --only both \
+  --prompt "hello" \
+  --output /tmp/claude-mitm-cch-summary.json
+```
+
+The runner generates a temporary CA and leaf certificate, starts the lower-level `scripts/mitm-cch-debug.mjs`, clears `NO_PROXY`/`no_proxy` for the child process, runs the selected binaries with process-local CA trust (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`), and writes a partially redacted local JSON summary. It reports request line, target, redacted header count, body byte length, SHA-256 prefix, JSON top-level keys, model, stream flag, message/tool counts, and `cch=` values if present.
+
+Treat the output file and runner stdout as sensitive metadata, not share-safe text. Redaction means sensitive header values are removed and bodies are summarized; it does not make request targets, timestamps, models, byte counts, checksums, stdout/stderr, or artifact paths public-safe.
+
+MITM runner artifacts include:
+
+- generated CA certificate and private key;
+- generated leaf certificate and private key;
+- `mitm-cch.jsonl` decrypted request-summary log;
+- per-binary stdout/stderr captures;
+- optional full plaintext body files if the lower-level proxy is run with `--save-body-prefix`.
+
+Avoid `--save-body-prefix` unless full body capture is explicitly required and authorized. Keep MITM proxies bound to loopback; do not run the lower-level proxy with `--host 0.0.0.0` or expose it on untrusted network interfaces. Do not install the generated CA in system or browser trust stores. Delete the artifact root and explicit `--output` summary file after review. Never commit or upload MITM artifact directories.
+
+MITM-safe report example:
+
+```text
+built: target=ai-gw.mjclouds.com:443 request="POST /v1/messages?beta=true" body_bytes=163659 sha256_16=66bb855ad0fe7ed4 json_keys=[messages,model,stream,system,tools] cch_values=[] exit=0
+official: target=ai-gw.mjclouds.com:443 request="POST /v1/messages?beta=true" body_bytes=111798 sha256_16=d456473f028cbbb2 json_keys=[messages,model,stream,system,tools] cch_values=[] exit=0
+```
+
+Do not paste raw headers, prompts, bodies, tokens, cookies, stdout/stderr excerpts, or generated certificate material in reports.
+
 ## Bundled proxy script
 
 The bundled script is a transparent debugging proxy, not a MITM proxy. It is useful for local authorized debugging of routing and transport metadata. It deliberately does not decrypt HTTPS traffic.
@@ -44,7 +77,7 @@ Current script limits:
 - Plain HTTP forwarding expects absolute-form `http://` URLs.
 - `--dump-dir` captures exchanged bytes for local authorized debugging. It is opt-in because plain HTTP/ws captures can save plaintext prompts, responses, headers, cookies, tokens, and binary frames. HTTPS/wss CONNECT captures contain encrypted TLS records only, not decrypted headers, bodies, SSE events, or WebSocket frames.
 - IPv6 authority parsing is limited; prefer hostname or IPv4 targets for bundled-script captures.
-- For decrypted body/header inspection, use an established local MITM proxy with a trusted test certificate and keep captures local.
+- For decrypted body/header inspection, prefer the bundled MITM runner for Claude Code CCH summaries. Use established local MITM tools only when lower-level TLS/HTTP debugging is required, and keep captures local.
 
 Run metadata-only capture:
 

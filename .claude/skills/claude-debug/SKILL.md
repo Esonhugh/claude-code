@@ -1,6 +1,6 @@
 ---
 name: claude-debug
-description: This skill should be used when the user asks to debug Claude Code CLI or runtime behavior, compare official-claude vs built-claude, inspect API requests or traffic, troubleshoot proxy/OAuth/network behavior, run tmux or InteractiveTerminal repros, capture non-interactive --print output, use --debug/--debug-file logs, configure HTTP_PROXY/HTTPS_PROXY, or build local traffic-capture proxies for HTTP, HTTP/2, SSE, WebSocket, CONNECT, or upstream proxy debugging.
+description: This skill should be used when the user asks to debug Claude Code CLI or runtime behavior, compare official-claude vs built-claude, inspect API requests or traffic, troubleshoot proxy/OAuth/network behavior, run tmux or InteractiveTerminal repros, capture non-interactive --print output, use --debug/--debug-file logs, configure HTTP_PROXY/HTTPS_PROXY, build local traffic-capture proxies for HTTP, HTTP/2, SSE, WebSocket, CONNECT, or upstream proxy debugging, or use local MITM/CCH HTTPS request body inspection with temporary CA artifacts.
 version: 0.1.0
 ---
 
@@ -112,9 +112,19 @@ node .claude/skills/claude-debug/scripts/http-proxy-debug.mjs \
   --log /tmp/claude-proxy.jsonl
 ```
 
-Important limitation: standard `HTTPS_PROXY` uses `CONNECT`, so HTTPS payloads, HTTP/2 frames, SSE event payloads, and WebSocket frames are encrypted and opaque unless a trusted MITM certificate is installed. The bundled script supports tunneling and metadata/byte-count observation for HTTPS, HTTP/2, SSE, and WebSocket. Use a trusted local MITM proxy only in authorized local experiments.
+Important limitation: standard `HTTPS_PROXY` uses `CONNECT`, so HTTPS payloads, HTTP/2 frames, SSE event payloads, and WebSocket frames are encrypted and opaque unless a trusted MITM certificate is installed. The bundled transparent proxy supports tunneling and metadata/byte-count observation for HTTPS, HTTP/2, SSE, and WebSocket.
 
-Treat `--dump-dir` artifacts as sensitive local-only captures. Plain HTTP/ws transcripts may contain plaintext prompts, responses, headers, cookies, or tokens; HTTPS/wss CONNECT transcripts contain encrypted TLS bytes only. Do not commit, upload, or paste these artifacts unless explicitly authorized and redacted.
+For authorized local CCH/body inspection, use the bundled MITM runner. It creates a temporary local CA, runs both binaries through `HTTPS_PROXY`, clears `NO_PROXY` for the child process, injects trust through process-local CA environment variables, and writes partially redacted local request summaries. Treat the output file and runner stdout as sensitive metadata, not share-safe output:
+
+```sh
+node .claude/skills/claude-debug/scripts/run-claude-mitm-cch.mjs \
+  --repo . \
+  --only both \
+  --prompt "hello" \
+  --output /tmp/claude-mitm-cch-summary.json
+```
+
+Treat `--dump-dir`, MITM logs, generated CA/leaf private keys, stdout/stderr captures, runner stdout, output summaries, and optional body artifacts as sensitive local-only captures. Plain HTTP/ws transcripts and MITM summaries may contain private request metadata; optional MITM body files contain full plaintext request bodies. HTTPS/wss CONNECT transcripts from the transparent proxy contain encrypted TLS bytes only. Keep MITM proxies bound to loopback; do not use `--host 0.0.0.0` or expose them on untrusted interfaces. Do not install the generated CA globally. Delete the artifact root and explicit summary output after review. Do not commit, upload, or paste these artifacts unless explicitly authorized and redacted.
 
 Minimum proxy evidence:
 - proxy command, port, upstream proxy, and log path;
@@ -155,3 +165,5 @@ Use this compact format for findings:
 - `references/debug-options.md` — Claude Code debug flags and debug-file handling.
 - `references/proxy-debugging.md` — HTTP_PROXY/HTTPS_PROXY, CONNECT, HTTP/2, SSE, WebSocket, upstream proxy chains.
 - `scripts/http-proxy-debug.mjs` — local transparent proxy with metadata logging and upstream proxy support.
+- `scripts/run-claude-mitm-cch.mjs` — local MITM runner for redacted request/body/CCH summaries from `built-claude` and `official-claude`.
+- `scripts/mitm-cch-debug.mjs` — lower-level MITM proxy used by the runner.

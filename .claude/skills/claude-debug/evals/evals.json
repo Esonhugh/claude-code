@@ -39,6 +39,20 @@
         "Verifies proxy logs include HTTP request/response or upgrade/tunnel byte-count evidence.",
         "States limitations for HTTPS/TLS, HTTP/2, SSE, and WebSocket payload visibility."
       ]
+    },
+    {
+      "id": 3,
+      "name": "mitm-cch-security",
+      "prompt": "我需要用 claude-debug 的 MITM runner 对比 ./built-claude 和 ./official-claude 的 CCH/request body 摘要。请给出执行步骤和最终报告，要求不要泄露 prompt、token、完整 headers/body、stdout/stderr 或证书材料，也不要把 MITM proxy 暴露到非本机网络。",
+      "expected_output": "A safe MITM/CCH debugging procedure that uses the runner, keeps MITM on loopback, treats stdout/output/artifacts as sensitive, reports only minimized facts, and explains cleanup.",
+      "files": [],
+      "assertions": [
+        "Uses run-claude-mitm-cch.mjs or explicitly prefers it over the lower-level MITM proxy for normal CCH checks.",
+        "States that MITM artifact root, output summary, runner stdout, private keys, stdout/stderr captures, and optional body files are sensitive local-only artifacts.",
+        "Warns not to bind the MITM proxy to 0.0.0.0 or an untrusted interface and not to install the generated CA globally.",
+        "Reports only safe facts such as target, request line, body byte count, SHA-256 prefix, JSON key presence, cch values, and exit code; does not paste raw headers, prompts, bodies, tokens, cookies, stdout/stderr, or certificate material.",
+        "Mentions deleting the artifact root and explicit output summary after review."
+      ]
     }
   ]
 }
