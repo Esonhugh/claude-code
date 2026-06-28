@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import test, { beforeEach } from 'node:test'
 import type { UUID } from 'node:crypto'
 
@@ -10,6 +11,7 @@ import { FileStateCache } from '../../utils/fileStateCache.js'
 import { FakePtyDriver } from '../../utils/pty/__fixtures__/FakePtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import { resolveInteractiveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
+import { readActionSchema } from './actionSchemas.js'
 import {
   getTerminalManager,
   InteractiveTerminalTool,
@@ -88,6 +90,20 @@ function createFakeTerminalManager(): PtySessionManager {
 
 beforeEach(() => {
   resetTerminalManagerForTesting(createFakeTerminalManager())
+})
+
+test('read action schema defaults to compact compression options', () => {
+  const input = readActionSchema.parse({
+    action: 'read',
+    sessionId: 'sess-1',
+  })
+
+  assert.equal(input.mode, 'compact')
+  assert.equal(input.maxBytes, 8192)
+  assert.equal(input.maxLines, 80)
+  assert.equal(input.maxLineChars, 240)
+  assert.equal(input.previewBytes, 2000)
+  assert.equal(input.cursor, 0)
 })
 
 test('resetTerminalManagerForTesting clears open terminal sessions', async () => {
@@ -305,6 +321,92 @@ test('routes open, status, write, read, and close through the shared session man
     TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((closeResult.data as { closed: boolean }).closed, true)
+})
+
+test('read modes work through InteractiveTerminalTool.call', async () => {
+  const opened = await InteractiveTerminalTool.call(
+    {
+      action: 'open',
+      cwd: process.cwd(),
+      cols: 120,
+      rows: 24,
+    },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const sessionId = String((opened.data as { sessionId: string }).sessionId)
+  const repeatedText = [
+    'start',
+    ...Array.from({ length: 6 }, () => 'repeat'),
+    'end',
+  ].join('\n')
+
+  await InteractiveTerminalTool.call(
+    { action: 'write', sessionId, text: `${repeatedText}\n` },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const compact = await InteractiveTerminalTool.call(
+    {
+      action: 'read',
+      sessionId,
+      mode: 'compact',
+      maxBytes: 8192,
+      maxLines: 80,
+      maxLineChars: 240,
+    },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal((compact.data as { mode: string }).mode, 'compact')
+  assert.match(
+    (compact.data as { text: string }).text,
+    /\[\.\.\. repeated \d+ more times \.\.\.\]/,
+  )
+
+  const full = await InteractiveTerminalTool.call(
+    { action: 'read', sessionId, mode: 'full', maxBytes: 8192 },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal((full.data as { mode: string }).mode, 'full')
+  assert.equal((full.data as { text: string }).text, repeatedText)
+
+  const saved = await InteractiveTerminalTool.call(
+    {
+      action: 'read',
+      sessionId,
+      mode: 'save_file',
+      previewBytes: 2000,
+      maxLines: 80,
+      maxLineChars: 240,
+    },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const savedData = saved.data as {
+    filePath: string
+    mode: string
+    preview: string
+  }
+  assert.equal(savedData.mode, 'save_file')
+  assert.ok(existsSync(savedData.filePath))
+  assert.equal(readFileSync(savedData.filePath, 'utf8'), repeatedText)
+  assert.match(savedData.preview, /\[\.\.\. repeated \d+ more times \.\.\.\]/)
+
+  await InteractiveTerminalTool.call(
+    { action: 'close', sessionId },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
 })
 
 test('accepts send_key on an existing session', async () => {

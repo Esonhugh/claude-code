@@ -23,6 +23,10 @@ export const readActionSchema = z.object({
   sessionId: z.string().min(1),
   cursor: z.number().int().min(0).default(0),
   maxBytes: z.number().int().positive().default(8192),
+  mode: z.enum(['compact', 'full', 'save_file']).default('compact'),
+  maxLines: z.number().int().positive().default(80),
+  maxLineChars: z.number().int().positive().default(240),
+  previewBytes: z.number().int().positive().default(2000),
 })
 
 export const listActionSchema = z.object({
@@ -82,6 +86,10 @@ export const actionSchema = z.object({
   enter: z.boolean().optional(),
   cursor: z.number().int().min(0).optional(),
   maxBytes: z.number().int().positive().optional(),
+  mode: z.enum(['compact', 'full', 'save_file']).optional(),
+  maxLines: z.number().int().positive().optional(),
+  maxLineChars: z.number().int().positive().optional(),
+  previewBytes: z.number().int().positive().optional(),
   key: z.enum(SPECIAL_KEYS).optional(),
   signal: z.enum(['SIGINT', 'SIGTERM']).optional(),
   force: z.boolean().optional(),

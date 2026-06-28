@@ -1,45 +1,96 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { z } from 'zod/v4'
 import type { PtySessionManager } from '../../../utils/pty/PtySessionManager.js'
+import { getToolResultsDir } from '../../../utils/toolResultStorage.js'
 import type { readActionSchema } from '../actionSchemas.js'
+import {
+  compactReadOutput,
+  truncateUtf8Bytes,
+} from '../compressReadOutput.js'
 
 type ReadActionInput = z.infer<typeof readActionSchema>
 
-function truncateUtf8(text: string, maxBytes: number): string {
-  const buffer = Buffer.from(text, 'utf8')
-  if (buffer.length <= maxBytes) {
-    return text
-  }
+function safeFilePart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80)
+}
 
-  let end = maxBytes
-  while (end > 0) {
-    const decoded = buffer.subarray(0, end).toString('utf8')
-    if (!decoded.includes('�')) {
-      return decoded
-    }
-    end -= 1
-  }
-  return ''
+function writeReadSnapshot(sessionId: string, text: string): string {
+  const dir = getToolResultsDir()
+  mkdirSync(dir, { recursive: true })
+  const filePath = join(
+    dir,
+    `interactive-terminal-read-${safeFilePart(sessionId)}-${Date.now()}.txt`,
+  )
+  writeFileSync(filePath, text, 'utf8')
+  return filePath
 }
 
 export function handleRead(manager: PtySessionManager, input: ReadActionInput) {
+  const mode = input.mode ?? 'compact'
+  const maxBytes = input.maxBytes ?? 8192
+  const maxLines = input.maxLines ?? 80
+  const maxLineChars = input.maxLineChars ?? 240
   const result = manager.read(input.sessionId, input.cursor)
-  const text = truncateUtf8(
-    result.chunks.map(chunk => chunk.text).join(''),
-    input.maxBytes,
-  )
-
+  const fullText = result.chunks.map(chunk => chunk.text).join('')
   const status = manager.status(input.sessionId)
-  const toCursor = Buffer.byteLength(text, 'utf8')
-
-  return {
+  const originalBytes = Buffer.byteLength(fullText, 'utf8')
+  const base = {
     sessionId: input.sessionId,
     fromCursor: 0,
-    toCursor,
-    text,
+    toCursor: originalBytes,
     rows: status.rows,
     cols: status.cols,
     isRunning: status.state === 'running',
     exitCode: status.exitCode ?? null,
     truncatedBeforeCursor: result.truncatedBeforeCursor,
+  }
+
+  if (mode === 'save_file') {
+    const previewCap = input.previewBytes ?? 2000
+    const compact = compactReadOutput(fullText, {
+      maxBytes: previewCap,
+      maxLineChars,
+      maxLines,
+    })
+    const preview = truncateUtf8Bytes(compact.text, previewCap)
+
+    return {
+      ...base,
+      mode: 'save_file' as const,
+      filePath: writeReadSnapshot(input.sessionId, fullText),
+      preview,
+      previewBytes: Buffer.byteLength(preview, 'utf8'),
+      originalBytes,
+    }
+  }
+
+  if (mode === 'full') {
+    const text = truncateUtf8Bytes(fullText, maxBytes)
+    return {
+      ...base,
+      text,
+      mode: 'full' as const,
+      compressed: false,
+      originalBytes,
+      returnedBytes: Buffer.byteLength(text, 'utf8'),
+    }
+  }
+
+  const compact = compactReadOutput(fullText, {
+    maxBytes: maxBytes,
+    maxLineChars: maxLineChars,
+    maxLines: maxLines,
+  })
+
+  return {
+    ...base,
+    text: compact.text,
+    mode: 'compact' as const,
+    compressed: compact.compressed,
+    originalBytes: compact.originalBytes,
+    returnedBytes: compact.returnedBytes,
+    omittedLines: compact.omittedLines,
+    omittedChars: compact.omittedChars,
   }
 }

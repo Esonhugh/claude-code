@@ -31,6 +31,10 @@ import {
 } from '../../utils/envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
+import {
+  decodeRequestBody,
+  patchCchInRequestBody,
+} from './cchAttestation.js'
 import { createOpenAICompatClient } from './openai-compat.js'
 
 
@@ -382,7 +386,7 @@ function getCustomHeaders(): Record<string, string> {
 
 export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
 
-function buildFetch(
+export function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
 ): ClientOptions['fetch'] {
@@ -390,8 +394,9 @@ function buildFetch(
   const inner = fetchOverride ?? globalThis.fetch
   // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
   // and unknown headers risk rejection by strict proxies (inc-4029 class).
+  const patchCchAttestation = getAPIProvider() === 'firstParty'
   const injectClientRequestId =
-    getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+    patchCchAttestation && isFirstPartyAnthropicBaseUrl()
   return (input, init) => {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
@@ -411,6 +416,20 @@ function buildFetch(
     } catch {
       // never let logging crash the fetch
     }
-    return inner(input, { ...init, headers })
+    let body = init?.body
+    if (patchCchAttestation && body) {
+      try {
+        const decodedBody = decodeRequestBody(body)
+        if (decodedBody !== null) {
+          body = patchCchInRequestBody(decodedBody)
+        }
+      } catch (error) {
+        logForDebugging(
+          `[API:request] Failed to patch cch attestation: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+
+    return inner(input, { ...init, headers, body })
   }
 }
