@@ -64,7 +64,36 @@ describe('formatToolResultMessage', () => {
   it('keeps read result output visible', () => {
     assert.equal(
       formatToolResultMessage({ sessionId: 'session-1', text: 'hello' }),
-      'read session-1 → hello',
+      'read session-1 (full)\nhello',
+    )
+  })
+
+  it('renders compact read output as readable multiline text', () => {
+    const message = formatToolResultMessage({
+      sessionId: 'sess-1',
+      mode: 'compact',
+      text: 'alpha\nbeta',
+      compressed: false,
+      originalBytes: 10,
+      returnedBytes: 10,
+    })
+
+    assert.equal(message, 'read sess-1 (compact)\nalpha\nbeta')
+  })
+
+  it('renders save_file with path and preview', () => {
+    const message = formatToolResultMessage({
+      sessionId: 'sess-1',
+      mode: 'save_file',
+      filePath: '/tmp/tool-results/read.txt',
+      preview: 'alpha\nbeta',
+      originalBytes: 10,
+      previewBytes: 10,
+    })
+
+    assert.equal(
+      message,
+      'read sess-1 saved to /tmp/tool-results/read.txt\npreview:\nalpha\nbeta',
     )
   })
 })

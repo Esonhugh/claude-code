@@ -6,8 +6,16 @@ export function formatToolResultMessage(
     return `${error.code ?? 'ERROR'}: ${error.message ?? 'unknown error'}`
   }
 
+  if ('sessionId' in output && output.mode === 'save_file') {
+    const preview = typeof output.preview === 'string' ? output.preview : ''
+    return `read ${String(output.sessionId)} saved to ${String(
+      output.filePath,
+    )}\npreview:\n${preview}`
+  }
+
   if ('sessionId' in output && 'text' in output) {
-    return `read ${String(output.sessionId)} → ${String(output.text)}`
+    const mode = typeof output.mode === 'string' ? output.mode : 'full'
+    return `read ${String(output.sessionId)} (${mode})\n${String(output.text)}`
   }
 
   return null
