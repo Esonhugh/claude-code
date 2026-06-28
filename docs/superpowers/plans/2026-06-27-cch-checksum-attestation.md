@@ -685,6 +685,16 @@ Expected: no capture artifacts under the repository. `/tmp/claude-cch-*.bin` and
 
 ---
 
+## Future Deep Research Plan Items
+
+Fresh MITM parity after CCH activation shows checksum behavior is aligned, but request shape and prompt-token economy still differ. Track these as a separate follow-up plan, not as scope for the current CCH checksum attestation implementation:
+
+- [ ] **Tool list parity:** Compare `built-claude` and `official-claude` captured `tools` arrays, identify which tool definitions are extra/missing, and trace where each side enables them. Use redacted MITM body summaries first; only inspect full local bodies when explicitly needed and keep artifacts under `/tmp`.
+- [ ] **`output_config` parity:** Investigate why `official-claude` sends top-level `output_config: { effort: "high" }` while `built-claude` currently omits it. Trace request construction from source before changing behavior, then add focused tests if an implementation change is needed.
+- [ ] **Compact system prompt research:** Deeply study how `official-claude` reduces system prompt size and token usage compared with `built-claude`, including prompt block selection, feature/settings gates, tool registration, and any compact/summary prompt variants. Capture evidence from source, debug logs, and redacted MITM summaries before proposing changes.
+
+---
+
 ## Self-Review
 
 - Spec coverage: Tasks 1-2 implement checksum and filtering; Tasks 3-4 integrate at fetch time; Task 5 covers focused tests/lint/build; Task 6 covers local request capture and official comparison; Task 7 covers diff hygiene.

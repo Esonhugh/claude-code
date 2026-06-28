@@ -2,8 +2,8 @@
 import net from 'node:net'
 import tls from 'node:tls'
 import { appendFileSync, readFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
 import process from 'node:process'
+import { summarizeJsonBody } from './mitm-cch-summary.mjs'
 
 const args = new Map()
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -64,32 +64,6 @@ function parseHeaders(lines) {
     if (name === 'content-length') contentLength = Number(value) || 0
   }
   return { headers, contentLength }
-}
-
-function summarizeJsonBody(body) {
-  const summary = {
-    body_bytes: body.length,
-    sha256_16: createHash('sha256').update(body).digest('hex').slice(0, 16),
-    contains_cch_placeholder: body.includes(Buffer.from('cch=00000')),
-    contains_cch_param: body.includes(Buffer.from('cch=')),
-    cch_values: [...body.toString('utf8').matchAll(/cch=([0-9a-f]{5})/gi)].map(match => match[1]),
-  }
-
-  try {
-    const json = JSON.parse(body.toString('utf8'))
-    if (json && typeof json === 'object' && !Array.isArray(json)) {
-      summary.json_keys = Object.keys(json).sort()
-      summary.model = typeof json.model === 'string' ? json.model : null
-      summary.messages_count = Array.isArray(json.messages) ? json.messages.length : null
-      summary.tools_count = Array.isArray(json.tools) ? json.tools.length : null
-      summary.stream = typeof json.stream === 'boolean' ? json.stream : null
-      summary.system_type = Array.isArray(json.system) ? 'array' : typeof json.system
-    }
-  } catch (error) {
-    summary.json_parse_error = error instanceof Error ? error.message : String(error)
-  }
-
-  return summary
 }
 
 function recvUntil(socket, marker = Buffer.from('\r\n\r\n'), limit = 1024 * 1024) {
