@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 
 import { getSessionId } from '../bootstrap/state.js'
+import type { AppState } from '../state/AppState.js'
 import type { PromptCommand } from '../types/command.js'
+import type { ToolUseContext } from '../Tool.js'
 import { addSessionHook, getSessionHooks } from '../utils/hooks/sessionHooks.js'
 import goal from './goal.js'
 
@@ -17,12 +19,14 @@ function createContext(initial: { active: boolean; prompt?: string }) {
     goalStatus: { ...initial },
     sessionHooks: new Map(),
   }
+  const context = {
+    setAppState: (updater: (prev: AppState) => AppState) => {
+      state = updater(state as AppState) as unknown as GoalState
+    },
+  } as Pick<ToolUseContext, 'setAppState'> as ToolUseContext
+
   return {
-    context: {
-      setAppState: (updater: (prev: GoalState) => GoalState) => {
-        state = updater(state)
-      },
-    } as never,
+    context,
     getState: () => state,
   }
 }
@@ -38,11 +42,8 @@ assert.deepEqual(emptyContext.getState().goalStatus, { active: true, prompt: '(n
 const clearContext = createContext({ active: true })
 // Simulate the Stop hook that /goal <task> would have registered, so we can
 // assert /goal clear actually removes it.
-const hookSetAppState = clearContext.context.setAppState as unknown as (
-  updater: (prev: GoalState) => GoalState,
-) => void
 addSessionHook(
-  hookSetAppState as never,
+  clearContext.context.setAppState,
   getSessionId(),
   'Stop',
   '',
