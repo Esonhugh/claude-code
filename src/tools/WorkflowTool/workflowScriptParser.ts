@@ -1,5 +1,3 @@
-import * as ts from 'typescript'
-
 export type WorkflowMetaPhase = {
   title: string
   detail?: string
@@ -26,14 +24,11 @@ export class WorkflowScriptParseError extends Error {
   }
 }
 
+const META_PREFIX = /^\s*export\s+const\s+meta\s*=\s*/
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
 export function hasWorkflowScriptMeta(source: string): boolean {
-  const statement = getFirstStatement(source)
-  if (!statement || !ts.isVariableStatement(statement)) return false
-  if (!hasExportModifier(statement) || !isConstDeclarationList(statement.declarationList)) return false
-  const declarations = statement.declarationList.declarations
-  return declarations.length === 1 && ts.isIdentifier(declarations[0]!.name) && declarations[0]!.name.text === 'meta'
+  return META_PREFIX.test(source)
 }
 
 export function workflowErrorMessage(error: unknown, fallback: string): string {
@@ -46,89 +41,246 @@ function throwParse(message: string): never {
   throw new WorkflowScriptParseError(message)
 }
 
-function getSourceFile(source: string): ts.SourceFile {
-  return ts.createSourceFile('workflow.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
-}
+class LiteralParser {
+  index: number
 
-function getFirstStatement(source: string): ts.Statement | undefined {
-  return getSourceFile(source).statements[0]
-}
-
-function hasExportModifier(node: ts.Node): boolean {
-  return ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)
-}
-
-function isConstDeclarationList(node: ts.VariableDeclarationList): boolean {
-  return (node.flags & ts.NodeFlags.Const) !== 0
-}
-
-function getPropertyNameText(name: ts.PropertyName): string {
-  if (ts.isComputedPropertyName(name)) {
-    throwParse('meta must be a pure literal: computed keys not allowed in meta')
-  }
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
-    return name.text
-  }
-  if (ts.isPrivateIdentifier(name)) {
-    throwParse('meta must be a pure literal: private keys not allowed in meta')
-  }
-  return name.getText()
-}
-
-function parseLiteralExpression(node: ts.Expression, path: string): unknown {
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
-  if (ts.isNumericLiteral(node)) return Number(node.text)
-  if (node.kind === ts.SyntaxKind.TrueKeyword) return true
-  if (node.kind === ts.SyntaxKind.FalseKeyword) return false
-  if (node.kind === ts.SyntaxKind.NullKeyword) return null
-
-  if (ts.isPrefixUnaryExpression(node) && ts.isNumericLiteral(node.operand)) {
-    const value = Number(node.operand.text)
-    if (node.operator === ts.SyntaxKind.MinusToken) return -value
-    if (node.operator === ts.SyntaxKind.PlusToken) return value
+  constructor(
+    private readonly source: string,
+    start: number,
+  ) {
+    this.index = start
   }
 
-  if (ts.isTemplateExpression(node)) {
-    throwParse('meta must be a pure literal: template interpolation not allowed in meta')
-  }
-
-  if (ts.isArrayLiteralExpression(node)) {
-    return node.elements.map((element, index) => {
-      if (ts.isSpreadElement(element)) {
-        throwParse('meta must be a pure literal: spread not allowed in meta')
-      }
-      return parseLiteralExpression(element, `${path}[${index}]`)
-    })
-  }
-
-  if (ts.isObjectLiteralExpression(node)) {
+  parseObject(path: string): Record<string, unknown> {
+    this.skipSpaceAndComments()
+    this.expect('{', 'meta must be a pure literal object')
     const result: Record<string, unknown> = {}
-    for (const property of node.properties) {
-      if (ts.isSpreadAssignment(property)) {
+    this.skipSpaceAndComments()
+
+    while (!this.consume('}')) {
+      if (this.startsWith('...')) {
         throwParse('meta must be a pure literal: spread not allowed in meta')
       }
-      if (ts.isShorthandPropertyAssignment(property)) {
-        throwParse('meta must be a pure literal: shorthand properties not allowed in meta')
+      if (this.consume('[')) {
+        throwParse('meta must be a pure literal: computed keys not allowed in meta')
       }
-      if (ts.isMethodDeclaration(property)) {
-        throwParse('meta must be a pure literal: functions not allowed in meta')
-      }
-      if (ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
-        throwParse('meta must be a pure literal: accessors not allowed in meta')
-      }
-      if (!ts.isPropertyAssignment(property)) {
-        throwParse('meta must be a pure literal: unsupported property in meta')
-      }
-      const key = getPropertyNameText(property.name)
+
+      const key = this.parsePropertyName()
       if (RESERVED_KEYS.has(key)) {
         throwParse(`meta must be a pure literal: reserved key ${key} not allowed in meta`)
       }
-      result[key] = parseLiteralExpression(property.initializer, `${path}.${key}`)
+      this.skipSpaceAndComments()
+
+      if (this.consume('(')) {
+        throwParse('meta must be a pure literal: functions not allowed in meta')
+      }
+      if (!this.consume(':')) {
+        throwParse('meta must be a pure literal: shorthand properties not allowed in meta')
+      }
+
+      result[key] = this.parseValue(`${path}.${key}`)
+      this.skipSpaceAndComments()
+      if (this.consume(',')) {
+        this.skipSpaceAndComments()
+        continue
+      }
+      if (!this.peek('}')) {
+        throwParse('meta must be a pure literal: expected comma or closing brace')
+      }
     }
+
     return result
   }
 
-  throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+  private parseArray(path: string): unknown[] {
+    this.expect('[', 'meta must be a pure literal: expected array')
+    const result: unknown[] = []
+    this.skipSpaceAndComments()
+
+    while (!this.consume(']')) {
+      if (this.startsWith('...')) {
+        throwParse('meta must be a pure literal: spread not allowed in meta')
+      }
+      result.push(this.parseValue(`${path}[${result.length}]`))
+      this.skipSpaceAndComments()
+      if (this.consume(',')) {
+        this.skipSpaceAndComments()
+        continue
+      }
+      if (!this.peek(']')) {
+        throwParse('meta must be a pure literal: expected comma or closing bracket')
+      }
+    }
+
+    return result
+  }
+
+  private parseValue(path: string): unknown {
+    this.skipSpaceAndComments()
+    const char = this.source[this.index]
+
+    if (char === '{') return this.parseObject(path)
+    if (char === '[') return this.parseArray(path)
+    if (char === '"' || char === "'") return this.parseQuotedString(char)
+    if (char === '`') return this.parseTemplateString()
+    if (char === '-' || char === '+' || this.isDigit(char)) return this.parseNumber(path)
+    if (this.consumeWord('true')) return true
+    if (this.consumeWord('false')) return false
+    if (this.consumeWord('null')) return null
+    if (this.startsWith('function') || this.startsWith('new ')) {
+      throwParse('meta must be a pure literal: functions not allowed in meta')
+    }
+
+    throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+  }
+
+  private parsePropertyName(): string {
+    this.skipSpaceAndComments()
+    const char = this.source[this.index]
+    if (char === '"' || char === "'") return this.parseQuotedString(char)
+    if (char === '`') return this.parseTemplateString()
+    if (this.isDigit(char)) return this.parseNumber('meta key').toString()
+
+    const identifier = this.parseIdentifier()
+    if (!identifier) {
+      throwParse('meta must be a pure literal: unsupported property in meta')
+    }
+    if (identifier === 'get' || identifier === 'set') {
+      const checkpoint = this.index
+      this.skipSpaceAndComments()
+      if (this.parseIdentifier()) {
+        this.skipSpaceAndComments()
+        if (this.peek('(')) {
+          throwParse('meta must be a pure literal: accessors not allowed in meta')
+        }
+      }
+      this.index = checkpoint
+    }
+    return identifier
+  }
+
+  private parseIdentifier(): string | undefined {
+    const match = /^[A-Za-z_$][\w$]*/.exec(this.source.slice(this.index))
+    if (!match) return undefined
+    this.index += match[0].length
+    return match[0]
+  }
+
+  private parseQuotedString(quote: '"' | "'"): string {
+    this.expect(quote, 'meta must be a pure literal: expected string')
+    let result = ''
+    while (this.index < this.source.length) {
+      const char = this.source[this.index++]!
+      if (char === quote) return result
+      if (char === '\\') {
+        if (this.index >= this.source.length) break
+        const escaped = this.source[this.index++]!
+        result += this.decodeEscape(escaped)
+        continue
+      }
+      result += char
+    }
+    throwParse('meta must be a pure literal: unterminated string')
+  }
+
+  private parseTemplateString(): string {
+    this.expect('`', 'meta must be a pure literal: expected template string')
+    let result = ''
+    while (this.index < this.source.length) {
+      const char = this.source[this.index++]!
+      if (char === '`') return result
+      if (char === '$' && this.source[this.index] === '{') {
+        throwParse('meta must be a pure literal: template interpolation not allowed in meta')
+      }
+      if (char === '\\') {
+        if (this.index >= this.source.length) break
+        const escaped = this.source[this.index++]!
+        result += this.decodeEscape(escaped)
+        continue
+      }
+      result += char
+    }
+    throwParse('meta must be a pure literal: unterminated string')
+  }
+
+  private parseNumber(path: string): number {
+    const match = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(this.source.slice(this.index))
+    if (!match) {
+      throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+    }
+    this.index += match[0].length
+    if (this.source[this.index] === 'n') {
+      throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+    }
+    return Number(match[0])
+  }
+
+  private decodeEscape(char: string): string {
+    if (char === 'n') return '\n'
+    if (char === 'r') return '\r'
+    if (char === 't') return '\t'
+    if (char === 'b') return '\b'
+    if (char === 'f') return '\f'
+    if (char === 'v') return '\v'
+    if (char === '0') return '\0'
+    return char
+  }
+
+  private skipSpaceAndComments(): void {
+    while (this.index < this.source.length) {
+      const char = this.source[this.index]
+      const next = this.source[this.index + 1]
+      if (/\s/.test(char ?? '')) {
+        this.index += 1
+        continue
+      }
+      if (char === '/' && next === '/') {
+        this.index += 2
+        while (this.index < this.source.length && this.source[this.index] !== '\n') this.index += 1
+        continue
+      }
+      if (char === '/' && next === '*') {
+        this.index += 2
+        while (this.index < this.source.length && !(this.source[this.index] === '*' && this.source[this.index + 1] === '/')) {
+          this.index += 1
+        }
+        if (this.index >= this.source.length) throwParse('meta must be a pure literal: unterminated comment')
+        this.index += 2
+        continue
+      }
+      return
+    }
+  }
+
+  private consume(value: string): boolean {
+    if (!this.startsWith(value)) return false
+    this.index += value.length
+    return true
+  }
+
+  private consumeWord(value: string): boolean {
+    if (!this.startsWith(value)) return false
+    const next = this.source[this.index + value.length]
+    if (next && /[\w$]/.test(next)) return false
+    this.index += value.length
+    return true
+  }
+
+  private expect(value: string, message: string): void {
+    if (!this.consume(value)) throwParse(message)
+  }
+
+  private startsWith(value: string): boolean {
+    return this.source.startsWith(value, this.index)
+  }
+
+  private peek(value: string): boolean {
+    return this.source.startsWith(value, this.index)
+  }
+
+  private isDigit(char: string | undefined): boolean {
+    return !!char && /\d/.test(char)
+  }
 }
 
 function normalizeMeta(value: unknown): WorkflowScriptMeta {
@@ -176,38 +328,20 @@ function normalizeMeta(value: unknown): WorkflowScriptMeta {
   }
 }
 
-function getMetaDeclaration(statement: ts.Statement): ts.VariableDeclaration {
-  if (!ts.isVariableStatement(statement) || !hasExportModifier(statement) || !isConstDeclarationList(statement.declarationList)) {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-
-  const declarations = statement.declarationList.declarations
-  if (declarations.length !== 1) {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-
-  const declaration = declarations[0]!
-  if (!ts.isIdentifier(declaration.name) || declaration.name.text !== 'meta') {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-  if (declaration.type) {
+export function parseWorkflowScript(source: string): ParsedWorkflowScript {
+  if (/^\s*export\s+const\s+meta\s*:/.test(source)) {
     throwParse('Workflow scripts must be plain JavaScript; TypeScript syntax fails to parse.')
   }
-  if (!declaration.initializer || !ts.isObjectLiteralExpression(declaration.initializer)) {
-    throwParse('meta must be a pure literal object')
-  }
-
-  return declaration
-}
-
-export function parseWorkflowScript(source: string): ParsedWorkflowScript {
-  const sourceFile = getSourceFile(source)
-  const firstStatement = sourceFile.statements[0]
-  if (!firstStatement) {
+  if (/^\s*export\s+(?!const\s+meta\s*=)/.test(source)) {
     throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
   }
-  const declaration = getMetaDeclaration(firstStatement)
-  const meta = normalizeMeta(parseLiteralExpression(declaration.initializer!, 'meta'))
-  const scriptBody = source.slice(firstStatement.end).replace(/^[;\s]*/, '')
+  const match = META_PREFIX.exec(source)
+  if (!match) {
+    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
+  }
+
+  const parser = new LiteralParser(source, match[0].length)
+  const meta = normalizeMeta(parser.parseObject('meta'))
+  const scriptBody = source.slice(parser.index).replace(/^[;\s]*/, '')
   return { meta, scriptBody }
 }
