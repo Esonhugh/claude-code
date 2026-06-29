@@ -223,8 +223,8 @@ const fullInputSchema = lazySchema(() => {
         .optional()
         .describe(
           isAnt()
-            ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote CCR environment (always runs in background).'
-            : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.',
+            ? 'Optional isolation mode. Omit this field to run in the current workspace. Use "worktree" only when a separate git worktree is specifically needed; especially omit it when the current project is not a git repository. "remote" launches the agent in a remote CCR environment (always runs in background).'
+            : 'Optional isolation mode. Omit this field to run in the current workspace. Use "worktree" only when a separate git worktree is specifically needed; especially omit it when the current project is not a git repository.',
         ),
       cwd: z
         .string()
