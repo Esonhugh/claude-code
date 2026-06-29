@@ -3,27 +3,29 @@ import assert from 'node:assert/strict'
 
 import { createGoalAttachmentIfNeeded } from './compact.js'
 
-const inactiveContext = {
-  getAppState: () => ({ goalStatus: { active: false } }),
-} as never
+function reminderContent(att: ReturnType<typeof createGoalAttachmentIfNeeded>): string {
+  assert.ok(att)
+  assert.equal(att.type, 'attachment')
+  assert.equal(att.attachment.type, 'critical_system_reminder')
+  return (att.attachment as { content: string }).content
+}
 
-assert.equal(createGoalAttachmentIfNeeded(inactiveContext), null)
+assert.equal(createGoalAttachmentIfNeeded({ active: false } as never), null)
 
-const activeContext = {
-  getAppState: () => ({
-    goalStatus: {
-      active: true,
-      prompt: 'finish workflow validation inside built-claude',
-    },
-  }),
-} as never
+const activeContent = reminderContent(
+  createGoalAttachmentIfNeeded({
+    active: true,
+    prompt: 'finish workflow validation inside built-claude',
+  } as never),
+)
+assert.match(activeContent, /still running in \/goal mode/)
+assert.match(activeContent, /finish workflow validation inside built-claude/)
+assert.match(activeContent, /StopHook/)
 
-const attachment = createGoalAttachmentIfNeeded(activeContext)
-assert.ok(attachment)
-assert.equal(attachment.type, 'attachment')
-assert.equal(attachment.attachment.type, 'critical_system_reminder')
-assert.match(attachment.attachment.content, /still running in \/goal mode/)
-assert.match(attachment.attachment.content, /finish workflow validation inside built-claude/)
-assert.match(attachment.attachment.content, /StopHook/)
+const fallbackContent = reminderContent(
+  createGoalAttachmentIfNeeded({ active: true } as never),
+)
+assert.match(fallbackContent, /\(no goal provided\)/)
 
 console.log('goalAttachment.test.ts passed')
+

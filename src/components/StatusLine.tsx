@@ -199,7 +199,7 @@ function StatusLineInner({
     s => s.toolPermissionContext.additionalWorkingDirectories,
   )
   const statusLineText = useAppState(s => s.statusLineText)
-  const goalStatus = useAppState(s => s.goalStatus)
+  const goalActive = useAppState(s => s.goalStatus.active)
   const setAppState = useSetAppState()
   const settings = useSettings()
   const { addNotification } = useNotifications()
@@ -219,8 +219,8 @@ function StatusLineInner({
   addedDirsRef.current = additionalWorkingDirectories
   const mainLoopModelRef = useRef(mainLoopModel)
   mainLoopModelRef.current = mainLoopModel
-  const goalStatusRef = useRef(goalStatus)
-  goalStatusRef.current = goalStatus
+  const goalActiveRef = useRef(goalActive)
+  goalActiveRef.current = goalActive
 
   // Track previous state to detect changes and cache expensive calculations
   const previousStateRef = useRef<{
@@ -229,14 +229,14 @@ function StatusLineInner({
     permissionMode: PermissionMode
     vimMode: VimMode | undefined
     mainLoopModel: ModelName
-    goalStatus: { active: boolean }
+    goalActive: boolean
   }>({
     messageId: null,
     exceeds200kTokens: false,
     permissionMode,
     vimMode,
     mainLoopModel,
-    goalStatus,
+    goalActive,
   })
 
   // Debounce timer ref
@@ -280,7 +280,7 @@ function StatusLineInner({
           (addedDirsRef.current as unknown as Map<string, unknown>).keys(),
         ),
         mainLoopModelRef.current,
-        goalStatusRef.current,
+        { active: goalActiveRef.current },
         vimModeRef.current,
       )
 
@@ -324,14 +324,14 @@ function StatusLineInner({
       permissionMode !== previousStateRef.current.permissionMode ||
       vimMode !== previousStateRef.current.vimMode ||
       mainLoopModel !== previousStateRef.current.mainLoopModel ||
-      goalStatus.active !== previousStateRef.current.goalStatus.active
+      goalActive !== previousStateRef.current.goalActive
     ) {
       // Don't update messageId here — let doUpdate handle it so
       // exceeds200kTokens is recalculated with the latest messages
       previousStateRef.current.permissionMode = permissionMode
       previousStateRef.current.vimMode = vimMode
       previousStateRef.current.mainLoopModel = mainLoopModel
-      previousStateRef.current.goalStatus = goalStatus
+      previousStateRef.current.goalActive = goalActive
       scheduleUpdate()
     }
   }, [
@@ -339,7 +339,7 @@ function StatusLineInner({
     permissionMode,
     vimMode,
     mainLoopModel,
-    goalStatus,
+    goalActive,
     scheduleUpdate,
   ])
 

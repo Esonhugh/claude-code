@@ -482,7 +482,6 @@ export async function* handleStopHooks(
       }
     }
 
-    clearGoalStatusAfterStopHooksPassForTesting(toolUseContext)
     return { blockingErrors: [], preventContinuation: false }
   } catch (error) {
     const durationMs = Date.now() - hookStartTime

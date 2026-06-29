@@ -34,7 +34,7 @@ Use Bash for one-shot commands that simply run and exit. Bash is not suitable fo
 6. status: check whether the process is still running before assuming it can receive input.
 7. signal: send SIGINT or SIGTERM when the running process needs a signal.
 8. list: enumerate unreaped sessions when you need to recover a sessionId.
-9. close: Close sessions when finished.
+9. close: close sessions when finished.
 
 ## Operating guidance
 

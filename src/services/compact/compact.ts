@@ -13,6 +13,8 @@ import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { getGoalPromptForState } from '../../commands/goal.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
@@ -564,7 +566,9 @@ export async function compactConversation(
       postCompactFileAttachments.push(skillAttachment)
     }
 
-    const goalAttachment = createGoalAttachmentIfNeeded(context)
+    const goalAttachment = createGoalAttachmentIfNeeded(
+      context.getAppState().goalStatus,
+    )
     if (goalAttachment) {
       postCompactFileAttachments.push(goalAttachment)
     }
@@ -971,7 +975,9 @@ export async function partialCompactConversation(
       postCompactFileAttachments.push(skillAttachment)
     }
 
-    const goalAttachment = createGoalAttachmentIfNeeded(context)
+    const goalAttachment = createGoalAttachmentIfNeeded(
+      context.getAppState().goalStatus,
+    )
     if (goalAttachment) {
       postCompactFileAttachments.push(goalAttachment)
     }
@@ -1522,23 +1528,26 @@ export function createPlanAttachmentIfNeeded(
 }
 
 /**
+ * Re-announces the active /goal objective after compaction so the StopHook
+ * contract survives summary boundaries.
+ */
+export function createGoalAttachmentIfNeeded(
+  goalStatus: AppState['goalStatus'],
+): AttachmentMessage | null {
+  if (!goalStatus.active) return null
+
+  return createAttachmentMessage({
+    type: 'critical_system_reminder',
+    content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt ?? '')}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
+  })
+}
+
+/**
  * Creates an attachment for invoked skills to preserve their content across compaction.
  * Only includes skills scoped to the given agent (or main session when agentId is null/undefined).
  * This ensures skill guidelines remain available after the conversation is summarized
  * without leaking skills from other agent contexts.
  */
-export function createGoalAttachmentIfNeeded(
-  context: ToolUseContext,
-): AttachmentMessage | null {
-  const goalStatus = context.getAppState().goalStatus
-  if (!goalStatus.active) return null
-
-  return createAttachmentMessage({
-    type: 'critical_system_reminder',
-    content: `You are still running in /goal mode. The user's active goal is:\n\n${goalStatus.prompt ?? '(no goal provided)'}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
-  })
-}
-
 export function createSkillAttachmentIfNeeded(
   agentId?: string,
 ): AttachmentMessage | null {

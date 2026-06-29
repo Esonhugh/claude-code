@@ -17,8 +17,10 @@ Decision rules:
 - When returning ok: false, the reason must be a concrete continuation instruction for the main assistant. Include what remains, what to do next, and any checks to run. The main assistant will receive this reason as hidden Stop hook feedback and continue without human intervention.
 `
 
-const getGoalPromptForState = (args: string): string =>
-  args.trim() || '(no goal provided)'
+const GOAL_NO_PROMPT_PLACEHOLDER = '(no goal provided)'
+
+export const getGoalPromptForState = (args: string): string =>
+  args.trim() || GOAL_NO_PROMPT_PLACEHOLDER
 
 const goalPrompt = (args: string) => `
 You are running in /goal mode. The user's goal is:

@@ -8,6 +8,54 @@ version: 0.1.0
 
 Use this skill to plan and run reproducible Claude Code debugging sessions. Prefer evidence from real CLI execution and local artifacts over assumptions. Keep secrets, OAuth tokens, cookies, request bodies, and extracted binaries local unless the user explicitly authorizes disclosure.
 
+## Choose the right tool: assistant-side vs. binary-side
+
+<system-reminder>
+**CRITICAL TOOL-LAYER RULE — read before any test command.**
+
+Before running anything, classify what you are actually exercising. Crossing these two layers is the #1 cause of invalid debug results — most "test failures" reported here are actually tests that ran in the wrong layer.
+
+<assistant-side-tools>
+**Tools the assistant invokes directly.** They run in this agent's host shell, not inside any Claude binary. Use them to:
+
+- inspect / edit / search the project (`Read`, `Edit`, `Write`, `Grep`, `Glob`),
+- run shell / build commands (`Bash`, e.g. `make build`),
+- drive a real PTY / REPL / TUI for local behavior checks (`InteractiveTerminal`).
+
+`InteractiveTerminal` is the *transport* used to drive a `built-claude` / `official-claude` session from this agent. It is **not** the thing under test when you are exercising slash commands or skills.
+</assistant-side-tools>
+
+<binary-side-surfaces>
+**Features that only exist *inside* a running Claude binary.** They cannot be invoked from assistant-side tools directly — you must start the binary and submit input through it. Examples:
+
+- slash commands (`/goal`, `/compact`, `/workflows`, `/clear`, `/skills`, `/claude-analysis`, …),
+- bundled skills and workflows the binary loads,
+- statusline, permission-mode UI, dialog / preview rendering,
+- StopHook, SessionStart-hook, PostToolUse-hook behavior,
+- the child binary's *own* tool list (its `Bash` / `Read` / `Edit` are different process surfaces from this agent's tools).
+
+To exercise a binary-side surface:
+1. Start the binary (typically `InteractiveTerminal` running `./built-claude --dangerously-skip-permissions`, or tmux when parity requires it).
+2. Type the slash command or prompt **into that binary's stdin**.
+3. Observe via the binary's stdout / pane / log file.
+</binary-side-surfaces>
+
+<invalid-testing-anti-patterns>
+- ❌ Running a slash command through the assistant's `Bash` tool (e.g. `bash -c '/goal foo'`). `/goal` is parsed by the Claude REPL, not the host shell — same for `/compact`, `/workflows`, `/skills`.
+- ❌ Asserting a bundled skill "works" by reading its source file via `Read`. Source presence does not prove the binary registered, listed, or injected it. Confirm via the running binary's `/skills` UI or its debug log.
+- ❌ Reading project files to "verify" `/goal` survives compact. You must actually set a goal in a binary session, trigger `/compact`, and inspect the post-compact transcript.
+- ❌ Confusing names that exist in both layers: assistant's `Read` / `Bash` / `Edit` vs. the child binary's `Read` / `Bash` / `Edit` are different surfaces.
+</invalid-testing-anti-patterns>
+
+<report-rule>
+Label every command and observation with its layer:
+- `assistant-side` (e.g. "`InteractiveTerminal write` into `built-claude` PTY"),
+- `binary-side` (e.g. "`built-claude` slash command `/goal clear`").
+
+This keeps reviewers from re-running broken experiments.
+</report-rule>
+</system-reminder>
+
 ## Core workflow
 
 1. Define the target:
