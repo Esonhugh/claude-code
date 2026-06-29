@@ -564,6 +564,11 @@ export async function compactConversation(
       postCompactFileAttachments.push(skillAttachment)
     }
 
+    const goalAttachment = createGoalAttachmentIfNeeded(context)
+    if (goalAttachment) {
+      postCompactFileAttachments.push(goalAttachment)
+    }
+
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
     // post-compact turn. Empty message history → diff against nothing →
@@ -964,6 +969,11 @@ export async function partialCompactConversation(
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
     if (skillAttachment) {
       postCompactFileAttachments.push(skillAttachment)
+    }
+
+    const goalAttachment = createGoalAttachmentIfNeeded(context)
+    if (goalAttachment) {
+      postCompactFileAttachments.push(goalAttachment)
     }
 
     // Re-announce only what was in the summarized portion — messagesToKeep
@@ -1517,6 +1527,18 @@ export function createPlanAttachmentIfNeeded(
  * This ensures skill guidelines remain available after the conversation is summarized
  * without leaking skills from other agent contexts.
  */
+export function createGoalAttachmentIfNeeded(
+  context: ToolUseContext,
+): AttachmentMessage | null {
+  const goalStatus = context.getAppState().goalStatus
+  if (!goalStatus.active) return null
+
+  return createAttachmentMessage({
+    type: 'critical_system_reminder',
+    content: `You are still running in /goal mode. The user's active goal is:\n\n${goalStatus.prompt ?? '(no goal provided)'}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
+  })
+}
+
 export function createSkillAttachmentIfNeeded(
   agentId?: string,
 ): AttachmentMessage | null {

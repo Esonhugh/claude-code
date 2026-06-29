@@ -6,7 +6,7 @@ import goal from './goal.js'
 const goalCommand = goal as PromptCommand
 
 type GoalState = {
-  goalStatus: { active: boolean }
+  goalStatus: { active: boolean; prompt?: string }
 }
 
 function createContext(initial: GoalState) {
@@ -23,11 +23,11 @@ function createContext(initial: GoalState) {
 
 const setContext = createContext({ goalStatus: { active: false } })
 await goalCommand.getPromptForCommand('  finish the feature  ', setContext.context)
-assert.deepEqual(setContext.getState().goalStatus, { active: true })
+assert.deepEqual(setContext.getState().goalStatus, { active: true, prompt: 'finish the feature' })
 
 const emptyContext = createContext({ goalStatus: { active: false } })
 await goalCommand.getPromptForCommand('', emptyContext.context)
-assert.deepEqual(emptyContext.getState().goalStatus, { active: true })
+assert.deepEqual(emptyContext.getState().goalStatus, { active: true, prompt: '(no goal provided)' })
 
 const clearContext = createContext({
   goalStatus: { active: true },

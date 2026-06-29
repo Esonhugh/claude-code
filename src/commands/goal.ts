@@ -79,8 +79,9 @@ const goal: Command = {
         if (!prev.goalStatus.active) return prev
         return { ...prev, goalStatus: { active: false } }
       }
-      if (prev.goalStatus.active) return prev
-      return { ...prev, goalStatus: { active: true } }
+      const prompt = getGoalPromptForState(args)
+      if (prev.goalStatus.active && prev.goalStatus.prompt === prompt) return prev
+      return { ...prev, goalStatus: { active: true, prompt } }
     })
     return [{ type: 'text', text: clearGoal ? goalClearPrompt : goalPrompt(args) }]
   },
