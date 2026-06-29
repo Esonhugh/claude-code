@@ -1,6 +1,8 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
+import { getSessionId } from '../bootstrap/state.js'
 import type { Command } from '../commands.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
+import { removeSessionHook } from '../utils/hooks/sessionHooks.js'
 
 const goalStopHookPrompt = `
 You are the /goal StopHook verifier. Inspect the current conversation and transcript to decide whether the active /goal objective is fully completed.
@@ -45,6 +47,12 @@ const isGoalClear = (args: string): boolean => args.trim().toLowerCase() === 'cl
 
 const goalClearPrompt = 'Goal is clear'
 
+const goalStopHook = {
+  type: 'agent' as const,
+  prompt: goalStopHookPrompt,
+  statusMessage: 'verifying goal completion',
+}
+
 const goal: Command = {
   type: 'prompt',
   name: 'goal',
@@ -58,13 +66,7 @@ const goal: Command = {
     Stop: [
       {
         matcher: '',
-        hooks: [
-          {
-            type: 'agent',
-            prompt: goalStopHookPrompt,
-            statusMessage: 'verifying goal completion',
-          },
-        ],
+        hooks: [goalStopHook],
       },
     ],
   },
@@ -85,6 +87,12 @@ const goal: Command = {
       if (prev.goalStatus.active && prev.goalStatus.prompt === prompt) return prev
       return { ...prev, goalStatus: { active: true, prompt } }
     })
+    // /goal clear must also unregister the Stop hook that /goal <task> installed.
+    // Otherwise the verifier keeps running on every turn even after the user
+    // explicitly cleared the goal.
+    if (clearGoal) {
+      removeSessionHook(context.setAppState, getSessionId(), 'Stop', goalStopHook)
+    }
     return [{ type: 'text', text: clearGoal ? goalClearPrompt : goalPrompt(args) }]
   },
 }

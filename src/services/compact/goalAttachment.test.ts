@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 
-import { createGoalAttachmentIfNeeded } from './compact.js'
+import {
+  createGoalAttachmentIfNeeded,
+  createGoalRestoredMarkerIfNeeded,
+} from './compact.js'
 
 function reminderContent(att: ReturnType<typeof createGoalAttachmentIfNeeded>): string {
   assert.ok(att)
@@ -26,6 +29,18 @@ const fallbackContent = reminderContent(
   createGoalAttachmentIfNeeded({ active: true } as never),
 )
 assert.match(fallbackContent, /\(no goal provided\)/)
+
+// goal_restored marker mirrors active-goal gating but carries no LLM content;
+// the UI uses it to render "Goal restored" on its own line.
+assert.equal(createGoalRestoredMarkerIfNeeded({ active: false } as never), null)
+
+const marker = createGoalRestoredMarkerIfNeeded({
+  active: true,
+  prompt: 'irrelevant',
+} as never)
+assert.ok(marker)
+assert.equal(marker.type, 'attachment')
+assert.equal(marker.attachment.type, 'goal_restored')
 
 console.log('goalAttachment.test.ts passed')
 

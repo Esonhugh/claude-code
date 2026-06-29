@@ -336,6 +336,8 @@ export function AttachmentMessage({
       const skillNames = attachment.skills.map(s => s.name).join(', ')
       return <Line>Skills restored ({skillNames})</Line>
     }
+    case 'goal_restored':
+      return <Line>Goal restored</Line>
     case 'diagnostics':
       return <DiagnosticsDisplay attachment={attachment} verbose={verbose} />
     case 'mcp_resource':

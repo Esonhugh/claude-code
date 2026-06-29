@@ -1195,6 +1195,9 @@ async function getMessagesForPromptSlashCommand(
   // Record skill invocation for compaction preservation, scoped by agent context.
   // Skills are tagged with their agentId so only skills belonging to the current
   // agent are restored during compaction (preventing cross-agent leaks).
+  // The builtin /goal command is not a skill; its post-compact restoration
+  // travels through AppState.goalStatus + createGoalAttachmentIfNeeded.
+  const isBuiltinGoal = command.name === 'goal' && command.source === 'builtin'
   const skillPath = command.source
     ? `${command.source}:${command.name}`
     : command.name
@@ -1202,12 +1205,14 @@ async function getMessagesForPromptSlashCommand(
     .filter((b): b is TextBlockParam => b.type === 'text')
     .map(b => b.text)
     .join('\n\n')
-  addInvokedSkill(
-    command.name,
-    skillPath,
-    skillContent,
-    getAgentContext()?.agentId ?? null,
-  )
+  if (!isBuiltinGoal) {
+    addInvokedSkill(
+      command.name,
+      skillPath,
+      skillContent,
+      getAgentContext()?.agentId ?? null,
+    )
+  }
 
   const metadata = formatCommandLoadingMetadata(command, args)
 

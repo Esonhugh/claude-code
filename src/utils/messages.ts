@@ -3990,6 +3990,13 @@ You have exited auto mode. The user may now want to interact more directly. You 
         createUserMessage({ content: attachment.content, isMeta: true }),
       ])
     }
+    case 'goal_restored': {
+      // UI-only marker so the post-compact transcript shows "Goal restored"
+      // on its own line. The LLM-visible reminder is delivered separately via
+      // the critical_system_reminder attachment, so this case returns nothing
+      // for the model.
+      return []
+    }
     case 'mcp_resource': {
       // Format the resource content similar to how file attachments work
       const content = attachment.content

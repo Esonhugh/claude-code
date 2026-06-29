@@ -591,6 +591,9 @@ export type Attachment =
       content: string
     }
   | {
+      type: 'goal_restored'
+    }
+  | {
       type: 'plan_file_reference'
       planFilePath: string
       planContent: string

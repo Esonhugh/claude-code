@@ -572,6 +572,12 @@ export async function compactConversation(
     if (goalAttachment) {
       postCompactFileAttachments.push(goalAttachment)
     }
+    const goalRestoredMarker = createGoalRestoredMarkerIfNeeded(
+      context.getAppState().goalStatus,
+    )
+    if (goalRestoredMarker) {
+      postCompactFileAttachments.push(goalRestoredMarker)
+    }
 
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
@@ -980,6 +986,12 @@ export async function partialCompactConversation(
     )
     if (goalAttachment) {
       postCompactFileAttachments.push(goalAttachment)
+    }
+    const goalRestoredMarker = createGoalRestoredMarkerIfNeeded(
+      context.getAppState().goalStatus,
+    )
+    if (goalRestoredMarker) {
+      postCompactFileAttachments.push(goalRestoredMarker)
     }
 
     // Re-announce only what was in the summarized portion — messagesToKeep
@@ -1540,6 +1552,20 @@ export function createGoalAttachmentIfNeeded(
     type: 'critical_system_reminder',
     content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt ?? '')}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
   })
+}
+
+/**
+ * UI-only "Goal restored" marker, paired with createGoalAttachmentIfNeeded.
+ * The critical_system_reminder above is invisible in the rendered transcript
+ * (by design), so without this marker the user has no way to see that the
+ * goal survived /compact. Keeping the two attachments separate lets us
+ * decouple the LLM channel from the UI channel.
+ */
+export function createGoalRestoredMarkerIfNeeded(
+  goalStatus: AppState['goalStatus'],
+): AttachmentMessage | null {
+  if (!goalStatus.active) return null
+  return createAttachmentMessage({ type: 'goal_restored' })
 }
 
 /**
