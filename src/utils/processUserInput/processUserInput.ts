@@ -548,6 +548,19 @@ async function processUserInputBase(
     return addImageMetadataMessage(slashResult, imageMetadataTexts)
   }
 
+  const shouldTriggerUltracodeKeyword =
+    inputString !== null &&
+    mode === 'prompt' &&
+    !effectiveSkipSlash &&
+    isUltracodeKeywordTriggerEnabled(context.getAppState().settings) &&
+    hasUltracodeKeyword(preExpansionInput ?? inputString)
+
+  if (shouldTriggerUltracodeKeyword) {
+    attachmentMessages.push(
+      createAttachmentMessage({ type: 'workflow_keyword_request' }),
+    )
+  }
+
   // Log agent mention queries for analysis
   if (inputString !== null && mode === 'prompt') {
     const trimmedInput = inputString.trim()
@@ -583,13 +596,7 @@ async function processUserInputBase(
     permissionMode,
     isMeta,
   )
-  if (
-    inputString !== null &&
-    mode === 'prompt' &&
-    !effectiveSkipSlash &&
-    isUltracodeKeywordTriggerEnabled(context.getAppState().settings) &&
-    hasUltracodeKeyword(preExpansionInput ?? inputString)
-  ) {
+  if (shouldTriggerUltracodeKeyword) {
     logEvent('tengu_ultracode_keyword', {})
     promptResult.effort = 'ultracode'
   }

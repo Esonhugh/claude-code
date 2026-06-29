@@ -94,6 +94,7 @@ export type AppState = DeepImmutable<{
   statusLineText: string | undefined
   goalStatus: {
     active: boolean
+    prompt?: string
   }
   expandedView: 'none' | 'tasks' | 'teammates'
   isBriefOnly: boolean

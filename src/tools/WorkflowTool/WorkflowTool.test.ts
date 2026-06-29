@@ -175,6 +175,28 @@ await writeFile(
 const context = { getCwd: () => tempRoot } as never
 
 assert.equal(WorkflowTool.isEnabled(), true)
+const workflowPrompt = await WorkflowTool.prompt()
+assert.match(workflowPrompt, /Explicit opt-in requirement/)
+assert.match(workflowPrompt, /Ultracode/)
+assert.match(workflowPrompt, /export const meta = \{ name, description, phases \}/)
+assert.match(workflowPrompt, /pure literal/i)
+assert.match(workflowPrompt, /computed keys/i)
+assert.match(workflowPrompt, /template interpolation/i)
+assert.match(workflowPrompt, /__proto__/)
+assert.match(workflowPrompt, /Date\.now\(\)|Math\.random\(\)/)
+assert.match(workflowPrompt, /dynamic import/i)
+assert.match(workflowPrompt, /pipeline\(\)/)
+assert.match(workflowPrompt, /parallel\(thunks\)/)
+assert.match(workflowPrompt, /not promises/i)
+assert.match(workflowPrompt, /failed branches|\bnull\b/i)
+assert.match(workflowPrompt, /hard cap/i)
+assert.match(workflowPrompt, /agent\(\{ schema \}\)/)
+assert.match(workflowPrompt, /Adversarial verify/i)
+assert.match(workflowPrompt, /Loop-until-dry/i)
+assert.match(workflowPrompt, /Do not manually perform phase work/i)
+assert.doesNotMatch(workflowPrompt, /run `?\/workflow/i)
+assert.doesNotMatch(workflowPrompt, /ask the user to run/i)
+assert.equal(await WorkflowTool.description(), workflowPrompt)
 assert.equal(WorkflowTool.isReadOnly({ action: 'dry-run', selector: 'Research Workflow' }), true)
 assert.deepEqual(
   await WorkflowTool.checkPermissions({ action: 'dry-run', selector: 'Research Workflow' }, context),

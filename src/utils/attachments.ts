@@ -268,6 +268,11 @@ export const AUTO_MODE_ATTACHMENT_CONFIG = {
   FULL_REMINDER_EVERY_N_ATTACHMENTS: 5,
 } as const
 
+export const ULTRA_EFFORT_ATTACHMENT_CONFIG = {
+  TURNS_BETWEEN_ATTACHMENTS: 5,
+  FULL_REMINDER_EVERY_N_ATTACHMENTS: 5,
+} as const
+
 const MAX_MEMORY_LINES = 200
 // Line cap alone doesn't bound size (200 × 500-char lines = 100KB).  The
 // surfacer injects up to 5 files per turn via <system-reminder>, bypassing
@@ -591,6 +596,19 @@ export type Attachment =
       content: string
     }
   | {
+      type: 'workflow_keyword_request'
+    }
+  | {
+      type: 'ultra_effort_enter'
+      reminderType: 'full' | 'sparse'
+    }
+  | {
+      type: 'ultra_effort_exit'
+    }
+  | {
+      type: 'goal_restored'
+    }
+  | {
       type: 'plan_file_reference'
       planFilePath: string
       planContent: string
@@ -892,6 +910,9 @@ export async function getAttachments(
           ),
         ]
       : []),
+    maybe('ultra_effort', () =>
+      Promise.resolve(getUltraEffortAttachments(messages, toolUseContext)),
+    ),
     maybe('todo_reminders', () =>
       isTodoV2Enabled()
         ? getTaskReminderAttachments(messages, toolUseContext)
@@ -1409,6 +1430,101 @@ async function getAutoModeExitAttachment(
 
   setNeedsAutoModeExitAttachment(false)
   return [{ type: 'auto_mode_exit' }]
+}
+
+function getUltraEffortAttachmentTurnCount(messages: Message[]): {
+  turnCount: number
+  foundUltraEffortAttachment: boolean
+} {
+  let turnsSinceLastAttachment = 0
+  let foundUltraEffortAttachment = false
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (
+      message?.type === 'user' &&
+      !message.isMeta &&
+      !hasToolResultContent(message.message.content)
+    ) {
+      turnsSinceLastAttachment++
+    } else if (
+      message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
+      message.attachment.type === 'ultra_effort_enter'
+    ) {
+      foundUltraEffortAttachment = true
+      break
+    } else if (
+      message?.type === 'attachment' &&
+      // @ts-ignore - recovered code
+      message.attachment.type === 'ultra_effort_exit'
+    ) {
+      break
+    }
+  }
+
+  return { turnCount: turnsSinceLastAttachment, foundUltraEffortAttachment }
+}
+
+function countUltraEffortAttachmentsSinceLastExit(messages: Message[]): number {
+  let count = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message?.type !== 'attachment') continue
+    // @ts-ignore - recovered code
+    if (message.attachment.type === 'ultra_effort_exit') break
+    // @ts-ignore - recovered code
+    if (message.attachment.type === 'ultra_effort_enter') count++
+  }
+  return count
+}
+
+function hasActiveUltraEffortAttachment(messages: Message[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message?.type !== 'attachment') continue
+    // @ts-ignore - recovered code
+    if (message.attachment.type === 'ultra_effort_enter') return true
+    // @ts-ignore - recovered code
+    if (message.attachment.type === 'ultra_effort_exit') return false
+  }
+  return false
+}
+
+function getUltraEffortAttachments(
+  messages: Message[] | undefined,
+  toolUseContext: ToolUseContext,
+): Attachment[] {
+  const messagesList = messages ?? []
+  const inUltraEffort = toolUseContext.getAppState().effortValue === 'ultracode'
+
+  if (!inUltraEffort) {
+    return hasActiveUltraEffortAttachment(messagesList)
+      ? [{ type: 'ultra_effort_exit' }]
+      : []
+  }
+
+  if (messagesList.length > 0) {
+    const { turnCount, foundUltraEffortAttachment } =
+      getUltraEffortAttachmentTurnCount(messagesList)
+    if (
+      foundUltraEffortAttachment &&
+      turnCount < ULTRA_EFFORT_ATTACHMENT_CONFIG.TURNS_BETWEEN_ATTACHMENTS
+    ) {
+      return []
+    }
+  }
+
+  const attachmentCount =
+    countUltraEffortAttachmentsSinceLastExit(messagesList) + 1
+  const reminderType: 'full' | 'sparse' =
+    attachmentCount %
+      ULTRA_EFFORT_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS ===
+    1
+      ? 'full'
+      : 'sparse'
+
+  return [{ type: 'ultra_effort_enter', reminderType }]
 }
 
 /**

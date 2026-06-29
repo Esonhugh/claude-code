@@ -36,11 +36,3 @@ export function shouldInjectUltracodeOrchestration(
 export function getUltracodeNotificationText(): string {
   return 'Dynamic workflow requested for this turn · opt+w to ignore'
 }
-
-export function getUltracodeOrchestrationSystemPrompt(): string {
-  return `# Ultracode dynamic workflow orchestration
-
-When ultracode is active, use dynamic workflow orchestration for complex coding work instead of solving everything in one linear pass. Prefer the Workflow tool when the task benefits from multiple coordinated subagents: deep-research for investigation-heavy work, code/review/verification phases for implementation-heavy work, and explicit synthesis when independent findings need reconciliation.
-
-Before invoking Workflow, choose a narrow script or saved workflow that matches the user's request, pass concise args, and keep normal permission boundaries intact. Do not use workflows for trivial edits or when a single direct tool call is sufficient.`
-}

@@ -179,6 +179,13 @@ export async function clearConversation({
           trackedFiles: new Set(),
           snapshotSequence: 0,
         },
+        // /goal mode is conversation-scoped, so /clear must end it. Without
+        // this the next turn would still inject the /goal critical reminder
+        // even though the session is fresh. The old session's Stop hook is
+        // orphaned when regenerateSessionId() below switches the active
+        // sessionId — it stays in sessionHooks under the old key but is never
+        // looked up again.
+        goalStatus: { active: false },
         // Reset MCP state to default to trigger re-initialization.
         // Preserve pluginReconnectKey so /clear doesn't cause a no-op
         // (it's only bumped by /reload-plugins).

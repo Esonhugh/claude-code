@@ -13,6 +13,8 @@ import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { getGoalPromptForState } from '../../commands/goal.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
@@ -564,6 +566,19 @@ export async function compactConversation(
       postCompactFileAttachments.push(skillAttachment)
     }
 
+    const goalAttachment = createGoalAttachmentIfNeeded(
+      context.getAppState().goalStatus,
+    )
+    if (goalAttachment) {
+      postCompactFileAttachments.push(goalAttachment)
+    }
+    const goalRestoredMarker = createGoalRestoredMarkerIfNeeded(
+      context.getAppState().goalStatus,
+    )
+    if (goalRestoredMarker) {
+      postCompactFileAttachments.push(goalRestoredMarker)
+    }
+
     // Compaction ate prior delta attachments. Re-announce from the current
     // state so the model has tool/instruction context on the first
     // post-compact turn. Empty message history → diff against nothing →
@@ -964,6 +979,19 @@ export async function partialCompactConversation(
     const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
     if (skillAttachment) {
       postCompactFileAttachments.push(skillAttachment)
+    }
+
+    const goalAttachment = createGoalAttachmentIfNeeded(
+      context.getAppState().goalStatus,
+    )
+    if (goalAttachment) {
+      postCompactFileAttachments.push(goalAttachment)
+    }
+    const goalRestoredMarker = createGoalRestoredMarkerIfNeeded(
+      context.getAppState().goalStatus,
+    )
+    if (goalRestoredMarker) {
+      postCompactFileAttachments.push(goalRestoredMarker)
     }
 
     // Re-announce only what was in the summarized portion — messagesToKeep
@@ -1509,6 +1537,35 @@ export function createPlanAttachmentIfNeeded(
     planFilePath,
     planContent,
   })
+}
+
+/**
+ * Re-announces the active /goal objective after compaction so the StopHook
+ * contract survives summary boundaries.
+ */
+export function createGoalAttachmentIfNeeded(
+  goalStatus: AppState['goalStatus'],
+): AttachmentMessage | null {
+  if (!goalStatus.active) return null
+
+  return createAttachmentMessage({
+    type: 'critical_system_reminder',
+    content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt ?? '')}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
+  })
+}
+
+/**
+ * UI-only "Goal restored" marker, paired with createGoalAttachmentIfNeeded.
+ * The critical_system_reminder above is invisible in the rendered transcript
+ * (by design), so without this marker the user has no way to see that the
+ * goal survived /compact. Keeping the two attachments separate lets us
+ * decouple the LLM channel from the UI channel.
+ */
+export function createGoalRestoredMarkerIfNeeded(
+  goalStatus: AppState['goalStatus'],
+): AttachmentMessage | null {
+  if (!goalStatus.active) return null
+  return createAttachmentMessage({ type: 'goal_restored' })
 }
 
 /**
