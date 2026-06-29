@@ -1,3 +1,5 @@
+import { parseExpressionAt } from 'acorn'
+
 export type WorkflowMetaPhase = {
   title: string
   detail?: string
@@ -27,6 +29,13 @@ export class WorkflowScriptParseError extends Error {
 const META_PREFIX = /^\s*export\s+const\s+meta\s*=\s*/
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
+type AcornNode = {
+  type: string
+  start: number
+  end: number
+  [key: string]: unknown
+}
+
 export function hasWorkflowScriptMeta(source: string): boolean {
   return META_PREFIX.test(source)
 }
@@ -41,246 +50,102 @@ function throwParse(message: string): never {
   throw new WorkflowScriptParseError(message)
 }
 
-class LiteralParser {
-  index: number
-
-  constructor(
-    private readonly source: string,
-    start: number,
-  ) {
-    this.index = start
-  }
-
-  parseObject(path: string): Record<string, unknown> {
-    this.skipSpaceAndComments()
-    this.expect('{', 'meta must be a pure literal object')
-    const result: Record<string, unknown> = {}
-    this.skipSpaceAndComments()
-
-    while (!this.consume('}')) {
-      if (this.startsWith('...')) {
-        throwParse('meta must be a pure literal: spread not allowed in meta')
-      }
-      if (this.consume('[')) {
-        throwParse('meta must be a pure literal: computed keys not allowed in meta')
-      }
-
-      const key = this.parsePropertyName()
-      if (RESERVED_KEYS.has(key)) {
-        throwParse(`meta must be a pure literal: reserved key ${key} not allowed in meta`)
-      }
-      this.skipSpaceAndComments()
-
-      if (this.consume('(')) {
-        throwParse('meta must be a pure literal: functions not allowed in meta')
-      }
-      if (!this.consume(':')) {
-        throwParse('meta must be a pure literal: shorthand properties not allowed in meta')
-      }
-
-      result[key] = this.parseValue(`${path}.${key}`)
-      this.skipSpaceAndComments()
-      if (this.consume(',')) {
-        this.skipSpaceAndComments()
-        continue
-      }
-      if (!this.peek('}')) {
-        throwParse('meta must be a pure literal: expected comma or closing brace')
-      }
+function parseMetaObject(source: string, start: number): AcornNode {
+  try {
+    const node = parseExpressionAt(source, start, {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+    }) as unknown as AcornNode
+    if (node.type !== 'ObjectExpression') {
+      throwParse('meta must be a pure literal object')
     }
+    return node
+  } catch (error) {
+    if (error instanceof WorkflowScriptParseError) throw error
+    throwParse(`meta must be a pure literal: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
 
-    return result
+function getPropertyKey(property: AcornNode): string {
+  if (property.computed) {
+    throwParse('meta must be a pure literal: computed keys not allowed in meta')
+  }
+  const key = property.key as AcornNode | undefined
+  if (key?.type === 'Identifier') return String(key.name)
+  if (key?.type === 'Literal') return String(key.value)
+  throwParse('meta must be a pure literal: unsupported property in meta')
+}
+
+function parseLiteralNode(node: AcornNode | null, path: string): unknown {
+  if (!node) throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+  if (node.type === 'SpreadElement') {
+    throwParse('meta must be a pure literal: spread not allowed in meta')
   }
 
-  private parseArray(path: string): unknown[] {
-    this.expect('[', 'meta must be a pure literal: expected array')
-    const result: unknown[] = []
-    this.skipSpaceAndComments()
-
-    while (!this.consume(']')) {
-      if (this.startsWith('...')) {
-        throwParse('meta must be a pure literal: spread not allowed in meta')
-      }
-      result.push(this.parseValue(`${path}[${result.length}]`))
-      this.skipSpaceAndComments()
-      if (this.consume(',')) {
-        this.skipSpaceAndComments()
-        continue
-      }
-      if (!this.peek(']')) {
-        throwParse('meta must be a pure literal: expected comma or closing bracket')
-      }
+  if (node.type === 'Literal') {
+    if (node.regex || node.bigint !== undefined) {
+      throwParse(`meta must be a pure literal: ${path} has unsupported value`)
     }
-
-    return result
+    return node.value
   }
 
-  private parseValue(path: string): unknown {
-    this.skipSpaceAndComments()
-    const char = this.source[this.index]
+  if (node.type === 'UnaryExpression' && (node.operator === '-' || node.operator === '+')) {
+    const argument = node.argument as AcornNode | undefined
+    if (argument?.type === 'Literal' && typeof argument.value === 'number') {
+      return node.operator === '-' ? -argument.value : argument.value
+    }
+  }
 
-    if (char === '{') return this.parseObject(path)
-    if (char === '[') return this.parseArray(path)
-    if (char === '"' || char === "'") return this.parseQuotedString(char)
-    if (char === '`') return this.parseTemplateString()
-    if (char === '-' || char === '+' || this.isDigit(char)) return this.parseNumber(path)
-    if (this.consumeWord('true')) return true
-    if (this.consumeWord('false')) return false
-    if (this.consumeWord('null')) return null
-    if (this.startsWith('function') || this.startsWith('new ')) {
+  if (node.type === 'TemplateLiteral') {
+    const expressions = node.expressions as AcornNode[] | undefined
+    if (expressions && expressions.length > 0) {
+      throwParse('meta must be a pure literal: template interpolation not allowed in meta')
+    }
+    const quasis = node.quasis as Array<{ value?: { cooked?: string } }> | undefined
+    return quasis?.[0]?.value?.cooked ?? ''
+  }
+
+  if (node.type === 'ArrayExpression') {
+    const elements = node.elements as Array<AcornNode | null>
+    return elements.map((element, index) => {
+      if (!element) throwParse('meta must be a pure literal: array holes not allowed in meta')
+      return parseLiteralNode(element, `${path}[${index}]`)
+    })
+  }
+
+  if (node.type === 'ObjectExpression') {
+    return parseObjectExpression(node, path)
+  }
+
+  if (node.type === 'ArrowFunctionExpression' || node.type === 'FunctionExpression' || node.type === 'NewExpression') {
+    throwParse('meta must be a pure literal: functions not allowed in meta')
+  }
+
+  throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+}
+
+function parseObjectExpression(node: AcornNode, path: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const entry of node.properties as AcornNode[]) {
+    if (entry.type === 'SpreadElement') {
+      throwParse('meta must be a pure literal: spread not allowed in meta')
+    }
+    if (entry.kind === 'get' || entry.kind === 'set') {
+      throwParse('meta must be a pure literal: accessors not allowed in meta')
+    }
+    if (entry.method) {
       throwParse('meta must be a pure literal: functions not allowed in meta')
     }
-
-    throwParse(`meta must be a pure literal: ${path} has unsupported value`)
-  }
-
-  private parsePropertyName(): string {
-    this.skipSpaceAndComments()
-    const char = this.source[this.index]
-    if (char === '"' || char === "'") return this.parseQuotedString(char)
-    if (char === '`') return this.parseTemplateString()
-    if (this.isDigit(char)) return this.parseNumber('meta key').toString()
-
-    const identifier = this.parseIdentifier()
-    if (!identifier) {
-      throwParse('meta must be a pure literal: unsupported property in meta')
+    if (entry.shorthand) {
+      throwParse('meta must be a pure literal: shorthand properties not allowed in meta')
     }
-    if (identifier === 'get' || identifier === 'set') {
-      const checkpoint = this.index
-      this.skipSpaceAndComments()
-      if (this.parseIdentifier()) {
-        this.skipSpaceAndComments()
-        if (this.peek('(')) {
-          throwParse('meta must be a pure literal: accessors not allowed in meta')
-        }
-      }
-      this.index = checkpoint
+    const key = getPropertyKey(entry)
+    if (RESERVED_KEYS.has(key)) {
+      throwParse(`meta must be a pure literal: reserved key ${key} not allowed in meta`)
     }
-    return identifier
+    result[key] = parseLiteralNode(entry.value as AcornNode | undefined ?? null, `${path}.${key}`)
   }
-
-  private parseIdentifier(): string | undefined {
-    const match = /^[A-Za-z_$][\w$]*/.exec(this.source.slice(this.index))
-    if (!match) return undefined
-    this.index += match[0].length
-    return match[0]
-  }
-
-  private parseQuotedString(quote: '"' | "'"): string {
-    this.expect(quote, 'meta must be a pure literal: expected string')
-    let result = ''
-    while (this.index < this.source.length) {
-      const char = this.source[this.index++]!
-      if (char === quote) return result
-      if (char === '\\') {
-        if (this.index >= this.source.length) break
-        const escaped = this.source[this.index++]!
-        result += this.decodeEscape(escaped)
-        continue
-      }
-      result += char
-    }
-    throwParse('meta must be a pure literal: unterminated string')
-  }
-
-  private parseTemplateString(): string {
-    this.expect('`', 'meta must be a pure literal: expected template string')
-    let result = ''
-    while (this.index < this.source.length) {
-      const char = this.source[this.index++]!
-      if (char === '`') return result
-      if (char === '$' && this.source[this.index] === '{') {
-        throwParse('meta must be a pure literal: template interpolation not allowed in meta')
-      }
-      if (char === '\\') {
-        if (this.index >= this.source.length) break
-        const escaped = this.source[this.index++]!
-        result += this.decodeEscape(escaped)
-        continue
-      }
-      result += char
-    }
-    throwParse('meta must be a pure literal: unterminated string')
-  }
-
-  private parseNumber(path: string): number {
-    const match = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(this.source.slice(this.index))
-    if (!match) {
-      throwParse(`meta must be a pure literal: ${path} has unsupported value`)
-    }
-    this.index += match[0].length
-    if (this.source[this.index] === 'n') {
-      throwParse(`meta must be a pure literal: ${path} has unsupported value`)
-    }
-    return Number(match[0])
-  }
-
-  private decodeEscape(char: string): string {
-    if (char === 'n') return '\n'
-    if (char === 'r') return '\r'
-    if (char === 't') return '\t'
-    if (char === 'b') return '\b'
-    if (char === 'f') return '\f'
-    if (char === 'v') return '\v'
-    if (char === '0') return '\0'
-    return char
-  }
-
-  private skipSpaceAndComments(): void {
-    while (this.index < this.source.length) {
-      const char = this.source[this.index]
-      const next = this.source[this.index + 1]
-      if (/\s/.test(char ?? '')) {
-        this.index += 1
-        continue
-      }
-      if (char === '/' && next === '/') {
-        this.index += 2
-        while (this.index < this.source.length && this.source[this.index] !== '\n') this.index += 1
-        continue
-      }
-      if (char === '/' && next === '*') {
-        this.index += 2
-        while (this.index < this.source.length && !(this.source[this.index] === '*' && this.source[this.index + 1] === '/')) {
-          this.index += 1
-        }
-        if (this.index >= this.source.length) throwParse('meta must be a pure literal: unterminated comment')
-        this.index += 2
-        continue
-      }
-      return
-    }
-  }
-
-  private consume(value: string): boolean {
-    if (!this.startsWith(value)) return false
-    this.index += value.length
-    return true
-  }
-
-  private consumeWord(value: string): boolean {
-    if (!this.startsWith(value)) return false
-    const next = this.source[this.index + value.length]
-    if (next && /[\w$]/.test(next)) return false
-    this.index += value.length
-    return true
-  }
-
-  private expect(value: string, message: string): void {
-    if (!this.consume(value)) throwParse(message)
-  }
-
-  private startsWith(value: string): boolean {
-    return this.source.startsWith(value, this.index)
-  }
-
-  private peek(value: string): boolean {
-    return this.source.startsWith(value, this.index)
-  }
-
-  private isDigit(char: string | undefined): boolean {
-    return !!char && /\d/.test(char)
-  }
+  return result
 }
 
 function normalizeMeta(value: unknown): WorkflowScriptMeta {
@@ -335,13 +200,14 @@ export function parseWorkflowScript(source: string): ParsedWorkflowScript {
   if (/^\s*export\s+(?!const\s+meta\s*=)/.test(source)) {
     throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
   }
+
   const match = META_PREFIX.exec(source)
   if (!match) {
     throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
   }
 
-  const parser = new LiteralParser(source, match[0].length)
-  const meta = normalizeMeta(parser.parseObject('meta'))
-  const scriptBody = source.slice(parser.index).replace(/^[;\s]*/, '')
+  const metaObject = parseMetaObject(source, match[0].length)
+  const meta = normalizeMeta(parseObjectExpression(metaObject, 'meta'))
+  const scriptBody = source.slice(metaObject.end).replace(/^[;\s]*/, '')
   return { meta, scriptBody }
 }

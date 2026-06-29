@@ -90,6 +90,7 @@
     "@smithy/core": "^3.23.13",
     "@smithy/node-http-handler": "^4.5.1",
     "@xterm/headless": "6.0.0",
+    "acorn": "^8.17.0",
     "ajv": "^8.18.0",
     "asciichart": "^1.5.25",
     "auto-bind": "^5.0.1",
