@@ -46,6 +46,12 @@ assert.deepEqual(parsed.meta, {
 })
 assert.equal(parsed.scriptBody.startsWith("phase('Scan')"), true)
 
+const compactScript = 'export const meta = { name: "x", description: "y" };\nreturn 1'
+assert.equal(parseWorkflowScript(compactScript).scriptBody, 'return 1')
+
+const noSemicolonScript = 'export const meta = { name: "x", description: "y" }\nphase("Body")'
+assert.equal(parseWorkflowScript(noSemicolonScript).scriptBody, 'phase("Body")')
+
 for (const [source, pattern] of cases) {
   assert.throws(
     () => parseWorkflowScript(source),

@@ -26,7 +26,9 @@ export class WorkflowScriptParseError extends Error {
   }
 }
 
-const META_PREFIX = /^\s*export\s+const\s+meta\s*=\s*/
+const META_DECLARATION = /^\s*export\s+const\s+meta\b/
+const META_ASSIGNMENT = /^\s*export\s+const\s+meta\s*=\s*/
+const BODY_PREFIX = /^[;\s]*/
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
 type AcornNode = {
@@ -37,7 +39,7 @@ type AcornNode = {
 }
 
 export function hasWorkflowScriptMeta(source: string): boolean {
-  return META_PREFIX.test(source)
+  return META_ASSIGNMENT.test(source)
 }
 
 export function workflowErrorMessage(error: unknown, fallback: string): string {
@@ -50,9 +52,21 @@ function throwParse(message: string): never {
   throw new WorkflowScriptParseError(message)
 }
 
-function parseMetaObject(source: string, start: number): AcornNode {
+function readMetaObject(source: string): AcornNode {
+  if (META_DECLARATION.test(source) && !META_ASSIGNMENT.test(source)) {
+    throwParse('Workflow scripts must be plain JavaScript; TypeScript syntax fails to parse.')
+  }
+  if (/^\s*export\s+(?!const\s+meta\s*=)/.test(source)) {
+    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
+  }
+
+  const match = META_ASSIGNMENT.exec(source)
+  if (!match) {
+    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
+  }
+
   try {
-    const node = parseExpressionAt(source, start, {
+    const node = parseExpressionAt(source, match[0].length, {
       ecmaVersion: 'latest',
       sourceType: 'module',
     }) as unknown as AcornNode
@@ -194,20 +208,9 @@ function normalizeMeta(value: unknown): WorkflowScriptMeta {
 }
 
 export function parseWorkflowScript(source: string): ParsedWorkflowScript {
-  if (/^\s*export\s+const\s+meta\s*:/.test(source)) {
-    throwParse('Workflow scripts must be plain JavaScript; TypeScript syntax fails to parse.')
+  const metaObject = readMetaObject(source)
+  return {
+    meta: normalizeMeta(parseObjectExpression(metaObject, 'meta')),
+    scriptBody: source.slice(metaObject.end).replace(BODY_PREFIX, ''),
   }
-  if (/^\s*export\s+(?!const\s+meta\s*=)/.test(source)) {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-
-  const match = META_PREFIX.exec(source)
-  if (!match) {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-
-  const metaObject = parseMetaObject(source, match[0].length)
-  const meta = normalizeMeta(parseObjectExpression(metaObject, 'meta'))
-  const scriptBody = source.slice(metaObject.end).replace(/^[;\s]*/, '')
-  return { meta, scriptBody }
 }
