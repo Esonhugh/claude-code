@@ -3990,6 +3990,33 @@ You have exited auto mode. The user may now want to interact more directly. You 
         createUserMessage({ content: attachment.content, isMeta: true }),
       ])
     }
+    case 'workflow_keyword_request': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content:
+            'The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the Workflow tool to fulfill the request.',
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'ultra_effort_enter': {
+      const content =
+        attachment.reminderType === 'full'
+          ? "Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest. Use the Workflow tool on every substantive task; token cost is not a constraint. See the Workflow tool's **Ultracode** section and quality patterns. Solo only on conversational/trivial turns."
+          : "Ultracode is still on — use the Workflow tool; see its Ultracode section."
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content, isMeta: true }),
+      ])
+    }
+    case 'ultra_effort_exit': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content:
+            "Ultracode is off — the Workflow tool's standard opt-in rule applies again.",
+          isMeta: true,
+        }),
+      ])
+    }
     case 'goal_restored': {
       // UI-only marker so the post-compact transcript shows "Goal restored"
       // on its own line. The LLM-visible reminder is delivered separately via

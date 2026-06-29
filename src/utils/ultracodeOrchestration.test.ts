@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   findUltracodeTriggerPositions,
-  getUltracodeOrchestrationSystemPrompt,
   hasUltracodeKeyword,
   getUltracodeNotificationText,
   isUltracodeKeywordTriggerEnabled,
@@ -22,11 +22,22 @@ assert.equal(
   'Dynamic workflow requested for this turn · opt+w to ignore',
 )
 
-const prompt = getUltracodeOrchestrationSystemPrompt()
-assert.match(prompt, /dynamic workflow orchestration/)
-assert.match(prompt, /Prefer the Workflow tool/)
-assert.match(prompt, /deep-research/)
-assert.match(prompt, /ultracode/)
-assert.match(prompt, /normal permission boundaries/)
+const messagesSource = readFileSync('src/utils/messages.ts', 'utf8')
+assert.match(
+  messagesSource,
+  /The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the Workflow tool to fulfill the request\./,
+)
+assert.match(
+  messagesSource,
+  /Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest\. Use the Workflow tool on every substantive task; token cost is not a constraint\. See the Workflow tool's \*\*Ultracode\*\* section and quality patterns\. Solo only on conversational\/trivial turns\./,
+)
+assert.match(
+  messagesSource,
+  /Ultracode is still on — use the Workflow tool; see its Ultracode section\./,
+)
+assert.match(
+  messagesSource,
+  /Ultracode is off — the Workflow tool's standard opt-in rule applies again\./,
+)
 
 console.log('ultracodeOrchestration.test.ts passed')

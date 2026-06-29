@@ -24,6 +24,109 @@ import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
 
+const WORKFLOW_TOOL_PROMPT = `Use this tool to inspect or execute validated dynamic workflow specs. Workflows orchestrate multiple subagents deterministically through phase-grouped execution, recording LocalWorkflowTask state. The tool does not directly perform shell or filesystem work — agents launched by the workflow do, under normal tool permissions and hooks.
+
+## Actions
+
+- list: discover saved workflow specs from docs/workflows or .claude/workflows.
+- show <selector>: inspect a workflow's metadata (name, description, source, phases, concurrency).
+- dry-run <selector>: preview the planned phase graph and per-phase agent allocation without executing.
+- run <selector> [runArgs]: execute a saved workflow. Bundled specs and persisted scripts both run through this action. Provide runArgs as a string (or omit when the workflow does not require input).
+- run with plan: pass a validated dry-run plan via the plan parameter when the spec was produced locally and no selector is available.
+- status <taskId>: inspect a running or completed LocalWorkflowTask.
+- pause <taskId>: stop a running workflow and emit a resumeFromRunId prompt.
+- resume <taskId>: print the resume prompt for a paused workflow.
+
+Do not treat /workflows text arguments as the launcher. /workflows is display and management UI; this tool is the execution surface.
+
+## Explicit opt-in requirement
+
+Only execute action="run" when the user has explicitly opted into workflow-scale orchestration. Explicit opt-in includes:
+
+- The user asks for a dynamic workflow, workflow, ultracode-style orchestration, multi-agent orchestration, fan-out, broad audit, migration, deep research, or cross-checking.
+- The user asks to run a named or saved workflow.
+- A loaded skill or command instruction explicitly tells you to call this tool.
+- A system reminder says ultracode or dynamic workflow mode is active for the turn.
+
+If a task merely could benefit from a workflow but the user did not opt in, do not silently run one. Use normal tools or briefly explain what a workflow would do and ask before running one.
+
+## Ultracode
+
+When ultracode is on for a turn (effort=ultracode or the ultracode keyword), prefer this tool on every substantive task. Token cost is not a constraint in ultracode — optimize for the most exhaustive, correct answer, not the fastest or cheapest. Solo-execute only on conversational/trivial turns. See the quality patterns section for the verification techniques to lean on.
+
+When ultracode is off, the standard opt-in rule above applies again.
+
+## Workflow scripts
+
+A workflow saved as a script must start with:
+
+\`\`\`js
+export const meta = { name, description, phases }
+\`\`\`
+
+The meta object must be a pure literal, matching the AST-parser expectations:
+
+- Allowed values: string/number/boolean/null literals, arrays, plain objects, negative numeric literals, and template literals without expressions.
+- Rejected values: variables, identifiers, function calls, spread, sparse arrays, computed keys, methods, accessors, template interpolation, TypeScript syntax, and reserved keys such as __proto__, constructor, and prototype.
+- Required fields are non-empty string name and description.
+- Use phases to preview progress groups; phase entries should use string title, and optional string detail/model.
+
+The script body orchestrates agents with workflow runtime globals:
+
+- agent(prompt, opts): spawn a subagent. Use agent({ schema }) when structured output is needed, and expect the subagent to return via the structured output tool rather than prose.
+- pipeline(items, stage1, stage2, ...): run each item through all stages independently.
+- parallel(thunks): run independent tasks concurrently and wait for all results. Pass thunks/functions, not promises.
+- phase(title): group later agent calls under a progress phase.
+- log(message): emit progress.
+- args: user input passed to the workflow. Pass arrays/objects as real JSON values, not JSON-encoded strings.
+- budget: token budget helper when available.
+- workflow(nameOrRef, args): call a child workflow when available; avoid deep nesting.
+
+Scripts orchestrate agents only — they must not directly perform shell or filesystem work. Scripts run in a constrained official-style JavaScript environment. Do not depend on Node filesystem or shell APIs, dynamic import, Date.now(), bare Date(), argless new Date(), Math.random(), eval, Function, WebAssembly, or deep child workflow nesting. Pass time, random seeds, and external data through args when needed.
+
+## pipeline() vs parallel()
+
+Default to pipeline() for multi-stage per-item work. It avoids unnecessary barriers because item A can advance while item B is still in an earlier stage.
+
+Use parallel() as a barrier only when the next step genuinely needs all previous results together, such as deduping across all findings, comparing all candidates, or deciding whether the total count is zero.
+
+parallel(thunks) expects an array of functions, not promises. Write () => agent(...) entries so the workflow runtime controls launch timing.
+
+Failed branches or budget-limited branches can produce null results while preserving partial workflow progress. Synthesis stages must handle null or missing branch outputs.
+
+Do not add a barrier just to flatten, map, filter, or make code look cleaner. Put simple transforms inside a pipeline stage.
+
+## Loop and budget safety
+
+Loop-until-dry patterns must include a hard cap such as max rounds or max new findings. budget.remaining() may be Infinity when no token budget is configured, so do not rely on it as the only loop bound.
+
+## Quality patterns
+
+Use these patterns when they fit the task:
+
+- Adversarial verify: ask independent skeptics to refute each finding before accepting it.
+- Perspective-diverse verify: use distinct lenses such as correctness, security, performance, and reproducibility.
+- Judge panel: generate multiple independent approaches, score them, then synthesize the best parts.
+- Loop-until-dry: keep discovering until consecutive rounds find nothing new, with an explicit hard cap.
+- Multi-modal sweep: search by different modalities such as file structure, content, ownership, time, or runtime behavior.
+- Completeness critic: run a final agent asking what evidence, modality, or verification is missing.
+- No silent caps: if coverage is bounded or sampled, log what was skipped.
+
+Scale to what the user asked for. A broad audit or migration deserves stronger fan-out and verification than a quick check.
+
+## Resume and iteration
+
+Workflow runs expose a workflowRunId and scriptPath in the LocalWorkflowTask state. To iterate on a persisted script, edit the file on disk and call action="run" with the same selector — the runtime resumes by selector and replays validation, permission previews, hooks, and progress reporting. Do not copy a dry-run plan from prompt text and execute it as a raw plan when a selector or scriptPath exists; reload by selector so task state, hooks, and resume semantics stay intact.
+
+## Permission and execution boundaries
+
+- Preserve normal tool permissions and hooks for child agents.
+- Let workflow phases launch agents through the workflow runtime.
+- Do not narrow child agents to the parent orchestration tool scope.
+- Do not promote /workflow or /workflows run as user-facing command guidance.
+- Do not manually perform phase work in the main thread.`
+
+
 const inputSchema = lazySchema(() =>
   z.strictObject({
     action: z
@@ -160,10 +263,10 @@ export const WorkflowTool = buildTool({
   searchHint: 'inspect workflow specs',
   maxResultSizeChars: 100_000,
   async description() {
-    return 'List, show, and dry-run workflow specs'
+    return WORKFLOW_TOOL_PROMPT
   },
   async prompt() {
-    return `Use this tool to inspect or execute validated workflow specs. Use action "list" to discover workflows, "show" to inspect metadata, "dry-run" to view the planned phase graph, "run" to execute phases through the Agent tool, "status" to inspect a workflow task by id, "pause" to stop a running workflow with a resumeFromRunId prompt, and "resume" to print that prompt for a paused workflow. Workflow execution records LocalWorkflowTask phase state and does not directly use shell or filesystem tools.`
+    return WORKFLOW_TOOL_PROMPT
   },
   get inputSchema(): InputSchema {
     return inputSchema()
