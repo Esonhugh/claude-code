@@ -104,11 +104,31 @@ jobs:
       - name: Check whitespace
         run: git diff --check
 
+  create-release:
+    name: Create GitHub Release
+    needs:
+      - validate-tag
+      - source-checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reset release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          CHECKOUT_REF: ${{ needs.validate-tag.outputs.checkout_ref }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 && gh release delete "$TAG" --yes --cleanup-tag=false || true
+          gh release create "$TAG" \
+            --target "$CHECKOUT_REF" \
+            --title "$TAG" \
+            --notes "Build in progress for $TAG."
+
   build:
     name: Build ${{ matrix.os }}
     needs:
       - validate-tag
       - source-checks
+      - create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -168,13 +188,12 @@ jobs:
           "$ARTIFACT" --version
           "$ARTIFACT" --help
 
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: claude-code-v${{ needs.validate-tag.outputs.version }}-${{ matrix.os }}
-          path: dist/release/*
-          if-no-files-found: error
-          retention-days: 1
+      - name: Upload binary to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        shell: bash
+        run: gh release upload "$TAG" dist/release/* --clobber
 
   release:
     name: Publish GitHub Release and npm package
@@ -213,11 +232,13 @@ jobs:
             exit 1
           fi
 
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
+      - name: Download release binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          mkdir -p artifacts
+          gh release download "$TAG" --dir artifacts --pattern 'claude-code-*'
 
       - name: Generate checksums
         shell: bash
@@ -282,10 +303,10 @@ jobs:
           Verify downloads with SHA256SUMS.txt.
           EOF
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.validate-tag.outputs.tag }}
-          name: ${{ needs.validate-tag.outputs.tag }}
-          body_path: release-notes.md
-          files: artifacts/*
+      - name: Publish release notes and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          gh release upload "$TAG" artifacts/SHA256SUMS.txt --clobber
+          gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md
