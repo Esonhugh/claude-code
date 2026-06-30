@@ -279,10 +279,24 @@ jobs:
           npm config set registry https://registry.npmjs.org/
           npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
           npm whoami
-          for package_dir in dist/npm/*-*; do
+
+          publish_if_missing() {
+            package_dir="$1"
+            package_name="$(node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); console.log(p.name)" "$package_dir/package.json")"
+            package_version="$(node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); console.log(p.version)" "$package_dir/package.json")"
+
+            if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
+              echo "Skipping already published package: $package_name@$package_version"
+              return
+            fi
+
             (cd "$package_dir" && npm publish --access public)
+          }
+
+          for package_dir in dist/npm/*-*; do
+            publish_if_missing "$package_dir"
           done
-          (cd ./dist/npm/main && npm publish --access public)
+          publish_if_missing ./dist/npm/main
 
       - name: Write release notes
         shell: bash
