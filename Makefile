@@ -65,3 +65,6 @@ download-claude:
 
 clean-download-claude:
 	rm -rf $(CLAUDE_PACK_DIR)
+
+clean: 
+	rm -rf .*.bun-build
