@@ -256,8 +256,6 @@ ${whenNotToUseSection}
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
-- Do not set \`team_name\` for plugin or specialized subagents. \`subagent_type\` values like \`plugin-name:agent-name\` are agent types, not team names.
-- Only set \`name\` together with \`team_name\` when intentionally spawning a teammate in an existing team. For ordinary subagents, omit both.
 - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
