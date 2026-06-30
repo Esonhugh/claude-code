@@ -60,6 +60,7 @@ await fs.promises.mkdir(releaseDir, { recursive: true });
 run('bun', [
   'build',
   '--compile',
+  '--production',
   entrypoint,
   '--outfile',
   outfile,

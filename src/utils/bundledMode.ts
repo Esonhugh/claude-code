@@ -14,11 +14,14 @@ export function isRunningWithBun(): boolean {
  * This checks for embedded files which are present in compiled binaries.
  */
 export function isInBundledMode(): boolean {
-  return (
-    typeof Bun !== 'undefined' &&
-    // @ts-ignore - recovered code
-    Array.isArray(Bun.embeddedFiles) &&
-    // @ts-ignore - recovered code
-    Bun.embeddedFiles.length > 0
-  )
+  if (typeof Bun === 'undefined') {
+    return false
+  }
+
+  // @ts-ignore - recovered code
+  if (Array.isArray(Bun.embeddedFiles) && Bun.embeddedFiles.length > 0) {
+    return true
+  }
+
+  return process.argv[1]?.startsWith('/$bunfs/root/') ?? false
 }
