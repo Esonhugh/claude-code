@@ -10,6 +10,43 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-02 - v2.1.176 - OpenAI auth 环境变量、发布构建与 npm 包装
+
+### 版本状态
+
+- 准备发布版本：`v2.1.176`。
+- 本次发布覆盖 `v2.1.175` 后的提交：`b1203ec`、`f2950bd`、`3731b11`、`7ef23b5`、`bc613db`、`430ff83`、`ce0ac0b`、`33ab36c`、`05ee2e9`、`74525a6`、`93de121`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+
+### 关联提交
+
+- `b1203ec` — 2026-06-30 12:44:13 +08:00 — `fix: serialize release workflow runs`
+- `f2950bd` — 2026-06-30 12:48:12 +08:00 — `Revert "fix: serialize release workflow runs"`
+- `3731b11` — 2026-06-30 18:09:19 +08:00 — `update: add create team agent restriction in prompt`
+- `7ef23b5` — 2026-06-30 19:46:47 +08:00 — `Revert "update: add create team agent restriction in prompt"`
+- `bc613db` — 2026-06-30 23:48:07 +08:00 — `update: remove bun build cache`
+- `430ff83` — 2026-07-01 02:02:40 +08:00 — `update: production build`
+- `ce0ac0b` — 2026-07-01 16:34:45 +08:00 — `update: test with 666 version`
+- `33ab36c` — 2026-07-01 17:20:51 +08:00 — `update: update upstream as @esonhugh/claude-code`
+- `05ee2e9` — 2026-07-01 18:11:51 +08:00 — `update: native to npm download`
+- `74525a6` — 2026-07-02 00:45:12 +08:00 — `update: add reset button and status line with Openai account`
+- `93de121` — 2026-07-02 01:13:34 +08:00 — `update: multi alias about openai api keys`
+
+### 变更内容
+
+- 调整 release workflow：在 tag 发布时执行 source checks、创建 GitHub Release、跨平台构建 binary、上传 release artifact、生成校验和，并准备/发布 binary-only npm package。
+- 移除发布流程中的 Bun build cache 依赖，避免缓存状态影响 release 构建可复现性。
+- 保持源码 `package.json` 版本为 `0.0.0-dev`，发布版本由 `v2.1.176` tag 注入到 `CLAUDE_CODE_VERSION`。
+- 更新包名与 npm 下载链路为 `@esonhugh/claude-code`，并沿用 release workflow 生成平台包与主 launcher 包。
+- 增加 OpenAI account status line 信息与 reset 按钮相关 UI 支持，便于查看和重置 OpenAI 登录状态。
+- 调整 OpenAI auth 环境变量读取：`OPENAI_AUTH_TOKEN` 作为 auth token 入口，`OPENAI_API_KEY` 可覆盖 `~/.codex/auth.json` 中的 API key，随后再回退到本地 Codex 风格 auth 文件或 ChatGPT OAuth tokens。
+
+### 测试覆盖
+
+- 已运行 `bun src/utils/openai-auth-env.test.ts`，覆盖 `OPENAI_AUTH_TOKEN` 与 `OPENAI_API_KEY` 环境变量优先级。
+- 已运行 `bun src/interactiveHelpers.openai-auth.test.ts`、`bun src/services/openai-oauth/refresh.test.ts`、`bun src/services/api/openai-refresh-client.test.ts`、`bun src/services/openai-oauth/storage.test.ts`、`bun src/services/api/openai-missing-auth.test.ts`，覆盖 OpenAI 自动登录、refresh、存储和缺失凭证提示路径。
+- 发布前按 `.github/workflows/release.yml` 本地执行 source checks 与当前平台 build/package 验证。
+
 ## 2026-06-29 - v2.1.175 - bundled skills、WorkflowTool、goal/compact 与交互验证
 
 ### 版本状态
