@@ -19,8 +19,10 @@ const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalNodeEnv = process.env.NODE_ENV
 const originalClaudeToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const originalHome = process.env.HOME
-const originalOpenAIBaseToken = process.env.OPENAI_BASE_TOKEN
-const originalBunOpenAIBaseToken = Bun.env.OPENAI_BASE_TOKEN
+const originalOpenAIBaseToken = process.env.OPENAI_AUTH_TOKEN
+const originalBunOpenAIBaseToken = Bun.env.OPENAI_AUTH_TOKEN
+const originalOpenAIApiKey = process.env.OPENAI_API_KEY
+const originalBunOpenAIApiKey = Bun.env.OPENAI_API_KEY
 const homeDir = await mkdtemp(join(tmpdir(), 'openai-refresh-client-'))
 
 try {
@@ -28,8 +30,10 @@ try {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-token'
   process.env.NODE_ENV = 'test'
-  delete process.env.OPENAI_BASE_TOKEN
-  delete Bun.env.OPENAI_BASE_TOKEN
+  delete process.env.OPENAI_AUTH_TOKEN
+  delete Bun.env.OPENAI_AUTH_TOKEN
+  delete process.env.OPENAI_API_KEY
+  delete Bun.env.OPENAI_API_KEY
 
   const { saveOpenAIAuth, getOpenAIAuthPath } = await import('../openai-oauth/storage.js')
   const authModule = await import('../../utils/auth.js')
@@ -85,10 +89,14 @@ try {
   else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalClaudeToken
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
-  if (originalOpenAIBaseToken === undefined) delete process.env.OPENAI_BASE_TOKEN
-  else process.env.OPENAI_BASE_TOKEN = originalOpenAIBaseToken
-  if (originalBunOpenAIBaseToken === undefined) delete Bun.env.OPENAI_BASE_TOKEN
-  else Bun.env.OPENAI_BASE_TOKEN = originalBunOpenAIBaseToken
+  if (originalOpenAIBaseToken === undefined) delete process.env.OPENAI_AUTH_TOKEN
+  else process.env.OPENAI_AUTH_TOKEN = originalOpenAIBaseToken
+  if (originalBunOpenAIBaseToken === undefined) delete Bun.env.OPENAI_AUTH_TOKEN
+  else Bun.env.OPENAI_AUTH_TOKEN = originalBunOpenAIBaseToken
+  if (originalOpenAIApiKey === undefined) delete process.env.OPENAI_API_KEY
+  else process.env.OPENAI_API_KEY = originalOpenAIApiKey
+  if (originalBunOpenAIApiKey === undefined) delete Bun.env.OPENAI_API_KEY
+  else Bun.env.OPENAI_API_KEY = originalBunOpenAIApiKey
   await rm(homeDir, { recursive: true, force: true })
 }
 

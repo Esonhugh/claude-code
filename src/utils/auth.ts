@@ -2055,8 +2055,11 @@ export function decodeOpenAIIdTokenClaims(
  * Used when CLAUDE_CODE_USE_OPENAI=1.
  */
 export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
-  if (process.env.OPENAI_BASE_TOKEN) {
-    return { accessToken: process.env.OPENAI_BASE_TOKEN, isChatGPT: false }
+  if (process.env.OPENAI_AUTH_TOKEN) {
+    return { accessToken: process.env.OPENAI_AUTH_TOKEN, isChatGPT: false }
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return { accessToken: process.env.OPENAI_API_KEY, isChatGPT: false }
   }
 
   try {

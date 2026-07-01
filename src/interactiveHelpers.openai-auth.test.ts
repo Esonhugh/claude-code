@@ -9,7 +9,7 @@ const authModule = await import('./utils/auth.js')
 const { shouldShowOpenAIAutoLogin } = await import('./utils/openaiAutoLogin.js')
 
 const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
-const originalOpenAIBaseToken = process.env.OPENAI_BASE_TOKEN
+const originalOpenAIBaseToken = process.env.OPENAI_AUTH_TOKEN
 
 try {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
@@ -21,7 +21,7 @@ try {
 
   authModule.getOpenAIApiKey.cache.clear?.()
   authModule.getOpenAIAuthInfo.cache.clear?.()
-  process.env.OPENAI_BASE_TOKEN = 'sk-env-token'
+  process.env.OPENAI_AUTH_TOKEN = 'sk-env-token'
   assert.equal(shouldShowOpenAIAutoLogin(), false)
 
   process.env.CLAUDE_CODE_USE_OPENAI = '0'
@@ -34,9 +34,9 @@ try {
     process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
   }
   if (originalOpenAIBaseToken === undefined) {
-    delete process.env.OPENAI_BASE_TOKEN
+    delete process.env.OPENAI_AUTH_TOKEN
   } else {
-    process.env.OPENAI_BASE_TOKEN = originalOpenAIBaseToken
+    process.env.OPENAI_AUTH_TOKEN = originalOpenAIBaseToken
   }
   authModule.getOpenAIApiKey.cache.clear?.()
   authModule.getOpenAIAuthInfo.cache.clear?.()
