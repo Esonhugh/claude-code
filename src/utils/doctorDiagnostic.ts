@@ -88,6 +88,10 @@ export async function getCurrentInstallationType(): Promise<InstallationType> {
     return 'development'
   }
 
+  if (process.env.CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER) {
+    return 'npm-global'
+  }
+
   const [invokedPath] = getNormalizedPaths()
 
   // Check if running in bundled mode first

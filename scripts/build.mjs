@@ -46,7 +46,7 @@ const unavailablePackagePrefixes = [
   'modifiers-napi',
   'url-handler-napi',
 ];
-const macroValues = {
+export const macroValues = {
   'MACRO.BUILD_TIME': JSON.stringify('2026-03-30T21:59:52Z'),
   'MACRO.FEEDBACK_CHANNEL': JSON.stringify(
     'https://github.com/anthropics/claude-code/issues',
@@ -55,7 +55,7 @@ const macroValues = {
     'report the issue at https://github.com/anthropics/claude-code/issues',
   ),
   'MACRO.NATIVE_PACKAGE_URL': 'null',
-  'MACRO.PACKAGE_URL': JSON.stringify('@anthropic-ai/claude-code'),
+  'MACRO.PACKAGE_URL': JSON.stringify(packageJson.name),
   'MACRO.VERSION': JSON.stringify(buildVersion),
   'MACRO.VERSION_CHANGELOG': 'null',
 };
