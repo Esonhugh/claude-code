@@ -10,7 +10,7 @@ import {
 } from '../../context/modalContext.js'
 import { Pane } from '../design-system/Pane.js'
 import { Tabs, Tab } from '../design-system/Tabs.js'
-import { Status, buildDiagnostics } from './Status.js'
+import { Status, buildDiagnostics, buildStatusUsage } from './Status.js'
 import { Config } from './Config.js'
 import { Usage } from './Usage.js'
 import type {
@@ -67,6 +67,7 @@ export function Settings({
   const [diagnosticsPromise] = useState(() =>
     buildDiagnostics().catch(() => []),
   )
+  const [statusUsagePromise] = useState(() => buildStatusUsage())
 
   useExitOnCtrlCDWithKeybindings()
 
@@ -94,7 +95,11 @@ export function Settings({
 
   const tabs = [
     <Tab key="status" title="Status">
-      <Status context={context} diagnosticsPromise={diagnosticsPromise} />
+      <Status
+        context={context}
+        diagnosticsPromise={diagnosticsPromise}
+        usagePromise={statusUsagePromise}
+      />
     </Tab>,
     <Tab key="config" title="Config">
       <Suspense fallback={null}>

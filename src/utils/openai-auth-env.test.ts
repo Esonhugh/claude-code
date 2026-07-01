@@ -10,7 +10,8 @@ const originalOpenAIBaseToken = process.env.OPENAI_BASE_TOKEN
 try {
   process.env.OPENAI_BASE_TOKEN = 'sk-env-token'
 
-  const { getOpenAIAuthInfo, getOpenAIApiKey } = await import('./auth.js')
+  const { decodeOpenAIIdTokenClaims, getOpenAIAuthInfo, getOpenAIApiKey } =
+    await import('./auth.js')
   getOpenAIAuthInfo.cache.clear?.()
   getOpenAIApiKey.cache.clear?.()
 
@@ -19,6 +20,14 @@ try {
     isChatGPT: false,
   })
   assert.equal(getOpenAIApiKey(), 'sk-env-token')
+
+  const payload = Buffer.from(
+    JSON.stringify({ name: 'Alice', email: 'alice@example.com' }),
+  ).toString('base64url')
+  assert.deepEqual(decodeOpenAIIdTokenClaims(`header.${payload}.signature`), {
+    name: 'Alice',
+    email: 'alice@example.com',
+  })
 } finally {
   const { getOpenAIAuthInfo, getOpenAIApiKey } = await import('./auth.js')
   getOpenAIAuthInfo.cache.clear?.()

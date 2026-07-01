@@ -32,6 +32,15 @@ export type ChatGPTMonthlyCreditLimit = {
   resets_at: string | null
 }
 
+export type RateLimitResetCredits = {
+  available_count: number
+}
+
+export type OpenAIAccount = {
+  name?: string | null
+  email?: string | null
+}
+
 export type Utilization = {
   five_hour?: RateLimit | null
   seven_day?: RateLimit | null
@@ -44,4 +53,6 @@ export type Utilization = {
   credits?: ChatGPTUsageCredits | null
   chatgpt_limits?: UsageLimit[]
   monthly_credit_limit?: ChatGPTMonthlyCreditLimit | null
+  rate_limit_reset_credits?: RateLimitResetCredits | null
+  openai_account?: OpenAIAccount | null
 }
