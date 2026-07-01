@@ -6,6 +6,7 @@ import type { LocalJSXCommandContext } from '../../commands.js'
 import { useIsInsideModal } from '../../context/modalContext.js'
 import { Box, Text, useTheme } from '../../ink.js'
 import { type AppState, useAppState } from '../../state/AppState.js'
+import { fetchUtilization, type Utilization } from '../../services/api/usage.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getCurrentSessionTitle } from '../../utils/sessionStorage.js'
 import {
@@ -28,9 +29,23 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 type Props = {
   context: LocalJSXCommandContext
   diagnosticsPromise: Promise<Diagnostic[]>
+  usagePromise: Promise<Utilization | null>
 }
 
-function buildPrimarySection(): Property[] {
+export function buildOpenAIProperties(
+  utilization?: Utilization | null,
+): Property[] {
+  const account = utilization?.openai_account
+  if (!account?.name && !account?.email) return []
+
+  const value = account.name && account.email
+    ? `${account.name} (${account.email})`
+    : (account.name ?? account.email)
+
+  return [{ label: 'OpenAI Account', value }]
+}
+
+function buildPrimarySection(openAIUtilization?: Utilization | null): Property[] {
   const sessionId = getSessionId()
   const customTitle = getCurrentSessionTitle(sessionId)
   const nameValue = customTitle ?? <Text dimColor>/rename to add a name</Text>
@@ -41,6 +56,7 @@ function buildPrimarySection(): Property[] {
     { label: 'Session ID', value: sessionId },
     { label: 'cwd', value: getCwd() },
     ...buildAccountProperties(),
+    ...buildOpenAIProperties(openAIUtilization),
     ...buildAPIProviderProperties(),
   ]
 }
@@ -79,6 +95,14 @@ export async function buildDiagnostics(): Promise<Diagnostic[]> {
   ]
 }
 
+export async function buildStatusUsage(): Promise<Utilization | null> {
+  try {
+    return await fetchUtilization()
+  } catch {
+    return null
+  }
+}
+
 function PropertyValue({
   value,
 }: {
@@ -109,10 +133,22 @@ function PropertyValue({
 export function Status({
   context,
   diagnosticsPromise,
+  usagePromise,
 }: Props): React.ReactNode {
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const mcp = useAppState(s => s.mcp)
   const [theme] = useTheme()
+  const [statusUsage, setStatusUsage] = React.useState<Utilization | null>(null)
+
+  React.useEffect(() => {
+    let mounted = true
+    usagePromise.then(value => {
+      if (mounted) setStatusUsage(value)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [usagePromise])
 
   // Sections are synchronous — compute in render so they're never empty.
   // diagnosticsPromise is created once in Settings.tsx so it resolves once
@@ -120,10 +156,10 @@ export function Status({
   // unmounts children when not selected, which was causing the flash).
   const sections = React.useMemo(
     () => [
-      buildPrimarySection(),
+      buildPrimarySection(statusUsage),
       buildSecondarySection({ mainLoopModel, mcp, theme, context }),
     ],
-    [mainLoopModel, mcp, theme, context],
+    [mainLoopModel, mcp, theme, context, statusUsage],
   )
 
   // flexGrow so the "Esc to cancel" footer pins to the bottom of the

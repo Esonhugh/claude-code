@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import axios from 'axios'
 import { getOpenAIAuthInfo } from '../../utils/auth.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
@@ -32,6 +33,7 @@ type ChatGPTUsageResponse = {
   plan_type?: string | null
   rate_limit?: ChatGPTRateLimitDetails | null
   credits?: ChatGPTUsageCredits | null
+  rate_limit_reset_credits?: { available_count?: number | null } | null
   spend_control?: {
     individual_limit?: ChatGPTSpendControlLimit | null
   } | null
@@ -42,27 +44,48 @@ type ChatGPTUsageResponse = {
   }> | null
 }
 
-export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
+function getChatGPTRequestHeaders(): Record<string, string> | null {
   const auth = getOpenAIAuthInfo()
   if (!auth?.isChatGPT) return null
+
+  return {
+    Authorization: `Bearer ${auth.accessToken}`,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': getClaudeCodeUserAgent(),
+    Referer: 'https://chatgpt.com/',
+    Origin: 'https://chatgpt.com',
+    ...(auth.accountId ? { 'chatgpt-account-id': auth.accountId } : {}),
+  }
+}
+
+export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
+  const headers = getChatGPTRequestHeaders()
+  if (!headers) return null
 
   const response = await axios.get<ChatGPTUsageResponse>(
     'https://chatgpt.com/backend-api/wham/usage',
     {
-      headers: {
-        Authorization: `Bearer ${auth.accessToken}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'User-Agent': getClaudeCodeUserAgent(),
-        Referer: 'https://chatgpt.com/',
-        Origin: 'https://chatgpt.com',
-        ...(auth.accountId ? { 'chatgpt-account-id': auth.accountId } : {}),
-      },
+      headers,
       timeout: 5000,
     },
   )
 
   return mapChatGPTUsageToUtilization(response.data)
+}
+
+export async function consumeChatGPTRateLimitResetCredit(): Promise<void> {
+  const headers = getChatGPTRequestHeaders()
+  if (!headers) return
+
+  await axios.post(
+    'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
+    { redeem_request_id: randomUUID() },
+    {
+      headers,
+      timeout: 5000,
+    },
+  )
 }
 
 function mapChatGPTUsageToUtilization(
@@ -81,6 +104,11 @@ function mapChatGPTUsageToUtilization(
     seven_day: primaryWindow,
     seven_day_sonnet: secondaryWindow,
     credits: data.credits ?? null,
+    rate_limit_reset_credits:
+      typeof data.rate_limit_reset_credits?.available_count === 'number'
+        ? { available_count: data.rate_limit_reset_credits.available_count }
+        : null,
+    openai_account: getChatGPTAccountDisplay(),
     chatgpt_limits: buildChatGPTLimits(
       data,
       primaryWindow,
@@ -88,6 +116,15 @@ function mapChatGPTUsageToUtilization(
       monthlyCreditLimit,
     ),
     monthly_credit_limit: monthlyCreditLimit,
+  }
+}
+
+function getChatGPTAccountDisplay(): Utilization['openai_account'] {
+  const auth = getOpenAIAuthInfo()
+  if (!auth?.accountName && !auth?.email) return null
+  return {
+    name: auth.accountName ?? null,
+    email: auth.email ?? null,
   }
 }
 

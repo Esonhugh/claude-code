@@ -19,6 +19,7 @@ const outDir = process.argv[3]
   ? path.resolve(projectDir, process.argv[3])
   : path.join(projectDir, 'dist', 'npm')
 
+const packageName = rootPackageJson.name
 const binaryPattern = /^claude-code-v(.+)-([^-]+)-([^.]+)(\.exe)?$/
 const binaryEntries = []
 
@@ -35,7 +36,7 @@ for (const entry of await fs.promises.readdir(sourceDir)) {
     arch,
     extension,
     filename: entry,
-    packageName: `@esonhugh/claude-code-${platform}-${arch}`,
+    packageName: `${packageName}-${platform}-${arch}`,
     platform,
     sourcePath: path.join(sourceDir, entry),
   })
@@ -64,7 +65,7 @@ for (const entry of binaryEntries) {
     `${JSON.stringify({
       name: entry.packageName,
       version,
-      description: `Binary for @esonhugh/claude-code on ${entry.platform}-${entry.arch}`,
+      description: `Binary for ${packageName} on ${entry.platform}-${entry.arch}`,
       private: false,
       license: rootPackageJson.license,
       os: [entry.platform],
@@ -76,7 +77,7 @@ for (const entry of binaryEntries) {
 
   await fs.promises.writeFile(
     path.join(packageDir, 'README.md'),
-    `# ${entry.packageName}\n\nPlatform binary package for \`@esonhugh/claude-code\` on \`${entry.platform}-${entry.arch}\`.\n\nInstall \`@esonhugh/claude-code\` instead of this package directly.\n`,
+    `# ${entry.packageName}\n\nPlatform binary package for \`${packageName}\` on \`${entry.platform}-${entry.arch}\`.\n\nInstall \`${packageName}\` instead of this package directly.\n`,
   )
 }
 
@@ -91,7 +92,7 @@ const optionalDependencies = Object.fromEntries(
 await fs.promises.writeFile(
   path.join(mainDir, 'package.json'),
   `${JSON.stringify({
-    name: '@esonhugh/claude-code',
+    name: packageName,
     version,
     description: 'unofficial claude code launch wrappers',
     private: false,
@@ -111,7 +112,7 @@ await fs.promises.writeFile(
 
 await fs.promises.writeFile(
   path.join(mainDir, 'README.md'),
-  `# @esonhugh/claude-code\n\nUnofficial Claude Code launch wrappers.\n\nThis package is not an official Anthropic Claude Code distribution. It installs a small launcher and resolves a platform-specific binary from optional dependency packages such as \`@esonhugh/claude-code-darwin-arm64\`. It does not publish this repository's source code.\n\n## Usage\n\n\`\`\`bash\nnpm install -g @esonhugh/claude-code\nclaude --version\n\`\`\`\n`,
+  `# ${packageName}\n\nUnofficial Claude Code launch wrappers.\n\nThis package is not an official Anthropic Claude Code distribution. It installs a small launcher and resolves a platform-specific binary from optional dependency packages such as \`${packageName}-darwin-arm64\`. It does not publish this repository's source code.\n\n## Usage\n\n\`\`\`bash\nnpm install -g ${packageName}\nclaude --version\n\`\`\`\n`,
 )
 
 const launcher = [
@@ -123,14 +124,15 @@ const launcher = [
   "import { fileURLToPath } from 'node:url'",
   '',
   'const require = createRequire(import.meta.url)',
-  "const packageName = `@esonhugh/claude-code-${process.platform}-${process.arch}`",
+  `const rootPackageName = ${JSON.stringify(packageName)}`,
+  'const packageName = `${rootPackageName}-${process.platform}-${process.arch}`',
   "const extension = process.platform === 'win32' ? '.exe' : ''",
   'let packageJsonPath',
   '',
   'try {',
   '  packageJsonPath = require.resolve(`${packageName}/package.json`)',
   '} catch {',
-  '  console.error(`No @esonhugh/claude-code binary package installed for ${process.platform}-${process.arch}.`)',
+  '  console.error(`No ${rootPackageName} binary package installed for ${process.platform}-${process.arch}.`)',
   '  console.error(`Expected optional dependency: ${packageName}`)',
   '  process.exit(1)',
   '}',
@@ -142,7 +144,7 @@ const launcher = [
   '  process.exit(1)',
   '}',
   '',
-  "const result = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit' })",
+  "const result = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit', env: { ...process.env, CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER: '1' } })",
   'if (result.error) {',
   '  console.error(result.error.message)',
   '  process.exit(1)',

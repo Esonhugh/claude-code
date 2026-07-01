@@ -16,11 +16,11 @@ function jwtWithExp(exp: number): string {
 
 const originalPost = axios.post
 const originalHome = process.env.HOME
-const originalOpenAIBaseToken = process.env.OPENAI_BASE_TOKEN
+const originalOpenAIBaseToken = process.env.OPENAI_AUTH_TOKEN
 const originalHttpsProxy = process.env.https_proxy
 const homeDir = await mkdtemp(join(tmpdir(), 'openai-refresh-'))
 process.env.HOME = homeDir
-delete process.env.OPENAI_BASE_TOKEN
+delete process.env.OPENAI_AUTH_TOKEN
 process.env.https_proxy = 'http://127.0.0.1:8080'
 
 const authModule = await import('../../utils/auth.js')
@@ -111,8 +111,8 @@ try {
   authModule.getOpenAIApiKey.cache.clear?.()
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
-  if (originalOpenAIBaseToken === undefined) delete process.env.OPENAI_BASE_TOKEN
-  else process.env.OPENAI_BASE_TOKEN = originalOpenAIBaseToken
+  if (originalOpenAIBaseToken === undefined) delete process.env.OPENAI_AUTH_TOKEN
+  else process.env.OPENAI_AUTH_TOKEN = originalOpenAIBaseToken
   if (originalHttpsProxy === undefined) delete process.env.https_proxy
   else process.env.https_proxy = originalHttpsProxy
   await rm(homeDir, { recursive: true, force: true })

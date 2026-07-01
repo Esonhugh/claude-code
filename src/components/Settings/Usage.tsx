@@ -7,8 +7,10 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import {
+  consumeRateLimitResetCredit,
   type ExtraUsage,
   fetchUtilization,
+  type OpenAIAccount,
   type RateLimit,
   type Utilization,
 } from '../../services/api/usage.js'
@@ -29,6 +31,20 @@ type LimitBarProps = {
   maxWidth: number
   showTimeInReset?: boolean
   extraSubtext?: string
+}
+
+export function formatOpenAIAccountLine(account?: OpenAIAccount | null): string | null {
+  if (!account?.name && !account?.email) return null
+  if (account.name && account.email) {
+    return `Openai Account Name: ${account.name} (${account.email})`
+  }
+  return `Openai Account Name: ${account.name ?? account.email}`
+}
+
+export function formatResetRowLabel(availableCount: number): string {
+  return availableCount > 0
+    ? `Reset: ${availableCount}            [Reset]`
+    : 'Reset: 0'
 }
 
 export function formatUsageLoadError(err: unknown): string {
@@ -126,6 +142,9 @@ export function Usage(): React.ReactNode {
   const [utilization, setUtilization] = useState<Utilization | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isResetSelected, setIsResetSelected] = useState(false)
+  const [isConfirmingReset, setIsConfirmingReset] = useState(false)
+  const [isResetting, setIsResetting] = useState(false)
   const { columns } = useTerminalSize()
 
   const availableWidth = columns - 2 // 2 for screen padding
@@ -137,6 +156,8 @@ export function Usage(): React.ReactNode {
     try {
       const data = await fetchUtilization()
       setUtilization(data)
+      setIsResetSelected(false)
+      setIsConfirmingReset(false)
     } catch (err) {
       logError(err as Error)
       setError(formatUsageLoadError(err))
@@ -149,12 +170,71 @@ export function Usage(): React.ReactNode {
     void loadUtilization()
   }, [loadUtilization])
 
+  const resetCount = utilization?.rate_limit_reset_credits?.available_count ?? 0
+  const canReset = resetCount > 0 && !isLoading && !isResetting
+
   useKeybinding(
     'settings:retry',
     () => {
       void loadUtilization()
     },
     { context: 'Settings', isActive: !!error && !isLoading },
+  )
+
+  useKeybinding(
+    'select:next',
+    () => {
+      if (!canReset) return false
+      setIsResetSelected(true)
+    },
+    { context: 'Settings', isActive: canReset && !isResetSelected },
+  )
+
+  useKeybinding(
+    'select:previous',
+    () => {
+      if (!canReset) return false
+      setIsResetSelected(false)
+      setIsConfirmingReset(false)
+    },
+    { context: 'Settings', isActive: canReset && isResetSelected },
+  )
+
+  useKeybinding(
+    'settings:close',
+    () => {
+      if (!canReset || !isResetSelected) return false
+      setIsConfirmingReset(true)
+    },
+    { context: 'Settings', isActive: canReset && isResetSelected },
+  )
+
+  useKeybinding(
+    'confirm:yes',
+    () => {
+      if (!canReset || !isConfirmingReset) return false
+      setIsResetting(true)
+      void consumeRateLimitResetCredit()
+        .then(loadUtilization)
+        .catch(err => {
+          logError(err as Error)
+          setError(formatUsageLoadError(err))
+        })
+        .finally(() => {
+          setIsResetting(false)
+          setIsConfirmingReset(false)
+        })
+    },
+    { context: 'Settings', isActive: canReset && isConfirmingReset },
+  )
+
+  useKeybinding(
+    'confirm:no',
+    () => {
+      if (!isConfirmingReset) return false
+      setIsConfirmingReset(false)
+    },
+    { context: 'Settings', isActive: isConfirmingReset },
   )
 
   if (error) {
@@ -231,9 +311,12 @@ export function Usage(): React.ReactNode {
             ]
           : []),
       ]
+  const accountLine = formatOpenAIAccountLine(utilization.openai_account)
 
   return (
     <Box flexDirection="column" gap={1} width="100%">
+      {accountLine && <Text>{accountLine}</Text>}
+
       {limits.some(({ limit }) => limit) || (
         <Text dimColor>/usage is only available for subscription plans.</Text>
       )}
@@ -258,6 +341,15 @@ export function Usage(): React.ReactNode {
         />
       )}
 
+      {utilization.source === 'chatgpt' && (
+        <ResetCreditsRow
+          availableCount={resetCount}
+          isSelected={isResetSelected}
+          isConfirming={isConfirmingReset}
+          isResetting={isResetting}
+        />
+      )}
+
       {isEligibleForOverageCreditGrant() && (
         <OverageCreditUpsell maxWidth={maxWidth} />
       )}
@@ -270,6 +362,40 @@ export function Usage(): React.ReactNode {
           description="cancel"
         />
       </Text>
+    </Box>
+  )
+}
+
+type ResetCreditsRowProps = {
+  availableCount: number
+  isSelected: boolean
+  isConfirming: boolean
+  isResetting: boolean
+}
+
+function ResetCreditsRow({
+  availableCount,
+  isSelected,
+  isConfirming,
+  isResetting,
+}: ResetCreditsRowProps): React.ReactNode {
+  if (availableCount <= 0) {
+    return <Text>{formatResetRowLabel(availableCount)}</Text>
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Text>
+        Reset: {availableCount}            <Text color="background" inverse={isSelected}>[Reset]</Text>
+      </Text>
+      {!isSelected && <Text dimColor>↓ to select reset</Text>}
+      {isSelected && !isConfirming && !isResetting && (
+        <Text dimColor>Enter to reset</Text>
+      )}
+      {isConfirming && (
+        <Text color="warning">Consume one reset credit? Enter to confirm, Esc to cancel.</Text>
+      )}
+      {isResetting && <Text dimColor>Resetting usage…</Text>}
     </Box>
   )
 }

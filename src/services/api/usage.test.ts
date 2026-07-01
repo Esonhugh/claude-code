@@ -9,7 +9,51 @@ const originalFetch = globalThis.fetch
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const authModule = await import('../../utils/auth.js')
 const axios = (await import('axios')).default
-const { fetchUtilization } = await import('./usage.js')
+const { consumeRateLimitResetCredit, fetchUtilization } = await import('./usage.js')
+
+test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', async () => {
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+
+  const originalAxiosPost = axios.post
+  const requests: Array<{
+    url: string
+    body: { redeem_request_id?: string }
+    headers: Record<string, string>
+  }> = []
+  axios.post = (async (
+    url: string,
+    body: { redeem_request_id?: string },
+    options: { headers: Record<string, string> },
+  ) => {
+    requests.push({ url, body, headers: options.headers })
+    return { data: {} }
+  }) as typeof axios.post
+
+  try {
+    await consumeRateLimitResetCredit()
+
+    assert.equal(
+      requests[0]?.url,
+      'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
+    )
+    assert.equal(typeof requests[0]?.body.redeem_request_id, 'string')
+    assert.equal(requests[0]?.headers.Authorization, 'Bearer test-token')
+    assert.equal(requests[0]?.headers['chatgpt-account-id'], 'account-123')
+  } finally {
+    axios.post = originalAxiosPost
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+  }
+})
 
 test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is active', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
@@ -53,6 +97,7 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
             reset_at: 1785542400,
           },
         },
+        rate_limit_reset_credits: { available_count: 3 },
         additional_rate_limits: [
           {
             limit_name: 'Code Review',
@@ -106,6 +151,7 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
       utilization: 42,
       resets_at: '2026-08-01T00:00:00.000Z',
     })
+    assert.equal(utilization?.rate_limit_reset_credits?.available_count, 3)
     assert.deepEqual(utilization?.chatgpt_limits, [
       {
         title: 'ChatGPT Codex weekly usage (plus)',

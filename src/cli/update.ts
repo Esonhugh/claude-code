@@ -18,10 +18,7 @@ import {
   installOrUpdateClaudePackage,
   localInstallationExists,
 } from 'src/utils/localInstaller.js'
-import {
-  installLatest as installLatestNative,
-  removeInstalledSymlink,
-} from 'src/utils/nativeInstaller/index.js'
+import { removeInstalledSymlink } from 'src/utils/nativeInstaller/index.js'
 import { getPackageManager } from 'src/utils/nativeInstaller/packageManagers.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
@@ -212,51 +209,13 @@ export async function update() {
     }
   }
 
-  // Handle native installation updates first
+  // Native updates are not supported by this distribution.
   if (diagnostic.installationType === 'native') {
-    logForDebugging(
-      'update: Detected native installation, using native updater',
-    )
-    try {
-      const result = await installLatestNative(channel, true)
-
-      // Handle lock contention gracefully
-      if (result.lockFailed) {
-        const pidInfo = result.lockHolderPid
-          ? ` (PID ${result.lockHolderPid})`
-          : ''
-        writeToStdout(
-          chalk.yellow(
-            `Another Claude process${pidInfo} is currently running. Please try again in a moment.`,
-          ) + '\n',
-        )
-        await gracefulShutdown(0)
-      }
-
-      if (!result.latestVersion) {
-        process.stderr.write('Failed to check for updates\n')
-        await gracefulShutdown(1)
-      }
-
-      if (result.latestVersion === MACRO.VERSION) {
-        writeToStdout(
-          chalk.green(`Claude Code is up to date (${MACRO.VERSION})`) + '\n',
-        )
-      } else {
-        writeToStdout(
-          chalk.green(
-            `Successfully updated from ${MACRO.VERSION} to version ${result.latestVersion}`,
-          ) + '\n',
-        )
-        await regenerateCompletionCache()
-      }
-      await gracefulShutdown(0)
-    } catch (error) {
-      process.stderr.write('Error: Failed to install native update\n')
-      process.stderr.write(String(error) + '\n')
-      process.stderr.write('Try running "claude doctor" for diagnostics\n')
-      await gracefulShutdown(1)
-    }
+    process.stderr.write('Error: Cannot update native installation\n')
+    process.stderr.write('Please install and update with npm or bun instead:\n')
+    process.stderr.write(`  npm install -g ${MACRO.PACKAGE_URL}\n`)
+    process.stderr.write(`  bun install -g ${MACRO.PACKAGE_URL}\n`)
+    await gracefulShutdown(1)
   }
 
   // Fallback to existing JS/npm-based update logic

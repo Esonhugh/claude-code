@@ -2019,6 +2019,35 @@ export type OpenAIAuthInfo = {
   accessToken: string
   accountId?: string
   isChatGPT: boolean
+  accountName?: string
+  email?: string
+}
+
+type OpenAIIdTokenClaims = {
+  name?: string
+  email?: string
+}
+
+export function decodeOpenAIIdTokenClaims(
+  idToken?: string,
+): OpenAIIdTokenClaims | null {
+  const payload = idToken?.split('.')[1]
+  if (!payload) return null
+
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(
+      normalized.length + ((4 - (normalized.length % 4)) % 4),
+      '=',
+    )
+    const parsed = JSON.parse(Buffer.from(padded, 'base64').toString('utf-8'))
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name : undefined,
+      email: typeof parsed.email === 'string' ? parsed.email : undefined,
+    }
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -2026,8 +2055,11 @@ export type OpenAIAuthInfo = {
  * Used when CLAUDE_CODE_USE_OPENAI=1.
  */
 export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
-  if (process.env.OPENAI_BASE_TOKEN) {
-    return { accessToken: process.env.OPENAI_BASE_TOKEN, isChatGPT: false }
+  if (process.env.OPENAI_AUTH_TOKEN) {
+    return { accessToken: process.env.OPENAI_AUTH_TOKEN, isChatGPT: false }
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return { accessToken: process.env.OPENAI_API_KEY, isChatGPT: false }
   }
 
   try {
@@ -2037,10 +2069,13 @@ export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
       return { accessToken: data.OPENAI_API_KEY, isChatGPT: false }
     }
     if (data?.tokens?.access_token) {
+      const idTokenClaims = decodeOpenAIIdTokenClaims(data.tokens.id_token)
       return {
         accessToken: data.tokens.access_token,
         accountId: data.tokens.account_id,
         isChatGPT: data.auth_mode === 'chatgpt',
+        accountName: data.tokens.account_name ?? data.account?.name ?? idTokenClaims?.name,
+        email: data.tokens.email ?? data.account?.email ?? idTokenClaims?.email,
       }
     }
     return null
