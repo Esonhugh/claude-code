@@ -33,6 +33,20 @@
 - 不在 spec 阶段实现代码。
 - 不做无关重构；只改服务于 Agent 官方一致性升级的边界。
 
+## 系统完整性与变更门禁
+
+Agent lifecycle 属于系统完整性逻辑：它影响工具权限、子进程执行、任务状态、后台通知、MCP 工具可用性、worktree/cwd 隔离和 transcript 指引。任何变更都必须按高风险核心路径处理。
+
+强制门禁：
+
+- 不允许一次性大改多个 lifecycle 阶段；实现计划必须按可独立验证的小步拆分。
+- 每一步都必须有正向路径、失败路径、反向对照和全流程终态验证。
+- 涉及 permission、tool assembly、MCP availability、task registry、background completion 的改动必须额外验证不会扩大权限、误报完成或遗漏 cleanup。
+- 如果测试显示局部 patch 需要绕过大量现有边界，必须停止并重新评估是否触发 lifecycle migration gate。
+- 任何 intentional divergence 必须有明确安全/稳定性理由和回归测试，不能只是“本地实现方便”。
+- 必须保留可回滚边界：每个实现提交应只覆盖一个逻辑主题，便于单独 revert。
+- 不能为了通过测试删除、跳过或弱化现有 Agent/Task/permission 测试。
+
 ## 官方一致性原则
 
 采用“官方行为一致优先，本地安全差异保留”的策略。
@@ -347,6 +361,10 @@ sync agent progress payload 增加：
 4. 阅读当前 `AgentTool`、LocalAgentTask、runAgent、task registry、progress event 类型。
 5. 明确哪些差异是 local patch，哪些是 intentional divergence。
 6. 为每项实现列出正向、反向、全流程测试。
+7. 为每项实现列出系统完整性风险：permission 扩大、task 状态误报、后台任务卡死、MCP 误判、worktree/cwd 泄漏、transcript 误读。
+8. 定义回滚边界：每个实现提交只覆盖一个逻辑主题，并能独立 revert。
+9. 确认不会删除、跳过或弱化现有 Agent/Task/permission 测试。
+10. 对涉及 binary-side 行为的改动，准备 tmux 交互式验收步骤和 pane capture 路径。
 
 ## 成功标准
 
@@ -358,4 +376,6 @@ sync agent progress payload 增加：
 - async launched 文案不再鼓励读取完整 transcript。
 - progress payload 提供 agent type 和 description。
 - 后台完成顺序保持本地更安全行为，并有测试证明。
+- permission、tool assembly、MCP availability、task completion、worktree/cwd cleanup 的系统完整性不回退。
+- 每个核心路径都有成功路径、失败路径、反向对照和全流程终态验证。
 - 如果官方 lifecycle 已重构，实施前会先生成对照矩阵，不会静默做大迁移。
