@@ -1,6 +1,6 @@
 ---
 name: claude-debug
-description: Use when the user asks to debug Claude Code CLI or runtime behavior, compare official-claude vs built-claude, inspect API requests or traffic, troubleshoot proxy/OAuth/network behavior, run tmux or InteractiveTerminal repros, capture non-interactive --print output, use --debug/--debug-file logs, configure HTTP_PROXY/HTTPS_PROXY, build local traffic-capture proxies for HTTP, HTTP/2, SSE, WebSocket, CONNECT, or upstream proxy debugging, or use local MITM/CCH HTTPS request body inspection with temporary CA artifacts.
+description: Use when 用户要求调试或验收 Claude Code CLI/运行时行为、测试已实现功能及其子功能/参数/交互式表现、比较 official-claude 与 built-claude、检查 API 请求或流量、排查 proxy/OAuth/network 问题、运行 tmux 或 InteractiveTerminal 复现、捕获非交互式 --print 输出、使用 --debug/--debug-file 日志、配置 HTTP_PROXY/HTTPS_PROXY、构建本地 HTTP/HTTP2/SSE/WebSocket/CONNECT/upstream proxy 流量捕获代理，或使用本地 MITM/CCH HTTPS request body inspection。
 version: 0.1.0
 ---
 
@@ -212,6 +212,7 @@ node .claude/skills/claude-debug/scripts/run-claude-mitm-cch.mjs \
 - `references/non-interactive-debugging.md` — print-mode、JSON、exit-code 和可复现 CLI 检查。
 - `references/debug-options.md` — Claude Code debug flags 与 debug-file 处理。
 - `references/proxy-debugging.md` — HTTP_PROXY/HTTPS_PROXY、CONNECT、HTTP/2、SSE、WebSocket、upstream proxy chains。
+- `references/feature-testing.md` — 已实现功能的子功能、参数矩阵、非交互式与交互式验收方法。
 - `scripts/http-proxy-debug.mjs` — 支持 metadata logging 和 upstream proxy 的本地 transparent proxy。
 - `scripts/run-claude-mitm-cch.mjs` — 从 `built-claude` 和 `official-claude` 生成脱敏 request/body/CCH summaries 的本地 MITM runner。
 - `scripts/mitm-cch-debug.mjs` — runner 使用的低层 MITM proxy。
