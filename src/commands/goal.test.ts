@@ -202,6 +202,11 @@ assert.deepEqual(consumeLastGoalCommandAttachment(), {
 const noGoalClearContext = createContext({ active: false })
 const noGoalClearPrompt = await goalCommand.getPromptForCommand(' cancel ', noGoalClearContext.context)
 assert.deepEqual(noGoalClearPrompt, [{ type: 'text', text: 'No goal set' }])
+assert.equal(
+  goalStopHook.type,
+  'prompt',
+  'builtin /goal should use a JSON-schema prompt hook so verifier success reliably triggers auto-clear',
+)
 
 const autoClearContext = createContext({
   active: true,

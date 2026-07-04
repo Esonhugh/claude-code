@@ -23,7 +23,7 @@ Decision rules:
 `
 
 export const goalStopHook: HookCommand = {
-  type: 'agent',
+  type: 'prompt',
   prompt: goalStopHookPrompt,
   statusMessage: 'verifying goal completion',
 }
