@@ -9,6 +9,7 @@ import {
   setOriginalCwd,
   switchSession,
 } from '../bootstrap/state.js'
+import { restoreGoalFromTranscript } from '../commands/goal/restore.js'
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
@@ -531,6 +532,17 @@ export async function processResumedConversation(
     context.agentDefinitions,
   )
 
+  let initialState: AppState = {
+    ...context.initialState,
+    ...(resumedAgentType && { agent: resumedAgentType }),
+    ...(restoredAttribution && { attribution: restoredAttribution }),
+    ...(standaloneAgentContext && { standaloneAgentContext }),
+    agentDefinitions: refreshedAgentDefs,
+  }
+  restoreGoalFromTranscript(result.messages, updater => {
+    initialState = updater(initialState)
+  }, Date.now)
+
   return {
     messages: result.messages,
     fileHistorySnapshots: result.fileHistorySnapshots,
@@ -540,12 +552,6 @@ export async function processResumedConversation(
       ? undefined
       : result.agentColor) as AgentColorName | undefined,
     restoredAgentDef: restoredAgent,
-    initialState: {
-      ...context.initialState,
-      ...(resumedAgentType && { agent: resumedAgentType }),
-      ...(restoredAttribution && { attribution: restoredAttribution }),
-      ...(standaloneAgentContext && { standaloneAgentContext }),
-      agentDefinitions: refreshedAgentDefs,
-    },
+    initialState,
   }
 }

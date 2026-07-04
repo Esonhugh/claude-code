@@ -2,6 +2,7 @@ import type { Notification } from 'src/context/notifications.js'
 import type { TodoList } from 'src/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../commands.js'
+import type { GoalStatus } from '../commands/goal/types.js'
 import type { ChannelPermissionCallbacks } from '../services/mcp/channelPermissions.js'
 import type { ElicitationRequestEvent } from '../services/mcp/elicitationHandler.js'
 import type {
@@ -92,10 +93,7 @@ export type AppState = DeepImmutable<{
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
   statusLineText: string | undefined
-  goalStatus: {
-    active: boolean
-    prompt?: string
-  }
+  goalStatus: GoalStatus
   expandedView: 'none' | 'tasks' | 'teammates'
   isBriefOnly: boolean
   // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)

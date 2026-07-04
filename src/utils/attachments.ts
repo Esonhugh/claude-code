@@ -81,6 +81,7 @@ import {
 import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
+import type { GoalStatusAttachment } from '../commands/goal/types.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
@@ -608,6 +609,7 @@ export type Attachment =
   | {
       type: 'goal_restored'
     }
+  | GoalStatusAttachment
   | {
       type: 'plan_file_reference'
       planFilePath: string

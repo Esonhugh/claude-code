@@ -4,6 +4,11 @@ import type {
   TextBlockParam,
 } from '@anthropic-ai/sdk/resources'
 import { randomUUID } from 'crypto'
+import {
+  consumeLastGoalCommandAttachment,
+  consumeLastGoalHookRegistration,
+} from '../../commands/goal.js'
+import { registerGoalStopHook } from '../../commands/goal/hooks.js'
 import { setPromptId } from 'src/bootstrap/state.js'
 import {
   builtInCommandNames,
@@ -84,6 +89,7 @@ import {
   isSourceAdminTrusted,
 } from '../settings/pluginOnlyPolicy.js'
 import { parseSlashCommand } from '../slashCommandParsing.js'
+import { recordTranscript } from '../sessionStorage.js'
 import { sleep } from '../sleep.js'
 import { recordSkillUsage } from '../suggestions/skillUsageTracking.js'
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js'
@@ -1177,19 +1183,35 @@ async function getMessagesForPromptSlashCommand(
   // where source is known. Mirrors the agent frontmatter gate in runAgent.ts.
   const hooksAllowedForThisSkill =
     !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
+  const isBuiltinGoal = command.name === 'goal' && command.source === 'builtin'
   if (
     command.hooks &&
     hooksAllowedForThisSkill &&
     (command.shouldRegisterHooksForCommand?.(args) ?? true)
   ) {
     const sessionId = getSessionId()
-    registerSkillHooks(
-      context.setAppState,
-      sessionId,
-      command.hooks,
-      command.name,
-      command.type === 'prompt' ? command.skillRoot : undefined,
-    )
+    if (isBuiltinGoal) {
+      const registration = consumeLastGoalHookRegistration()
+      if (registration) {
+        registerGoalStopHook({
+          setAppState: context.setAppState,
+          sessionId,
+          goalId: registration.id,
+          condition: registration.condition,
+          appendGoalStatusAttachment: attachment => {
+            void recordTranscript([createAttachmentMessage(attachment)])
+          },
+        })
+      }
+    } else {
+      registerSkillHooks(
+        context.setAppState,
+        sessionId,
+        command.hooks,
+        command.name,
+        command.type === 'prompt' ? command.skillRoot : undefined,
+      )
+    }
   }
 
   // Record skill invocation for compaction preservation, scoped by agent context.
@@ -1197,7 +1219,6 @@ async function getMessagesForPromptSlashCommand(
   // agent are restored during compaction (preventing cross-agent leaks).
   // The builtin /goal command is not a skill; its post-compact restoration
   // travels through AppState.goalStatus + createGoalAttachmentIfNeeded.
-  const isBuiltinGoal = command.name === 'goal' && command.source === 'builtin'
   const skillPath = command.source
     ? `${command.source}:${command.name}`
     : command.name
@@ -1245,6 +1266,12 @@ async function getMessagesForPromptSlashCommand(
       { skipSkillDiscovery: true },
     ),
   )
+  const goalStatusAttachment = isBuiltinGoal
+    ? consumeLastGoalCommandAttachment()
+    : null
+  const goalStatusAttachmentMessages = goalStatusAttachment
+    ? [createAttachmentMessage(goalStatusAttachment)]
+    : []
 
   const messages = shouldQuery
     ? [
@@ -1257,6 +1284,7 @@ async function getMessagesForPromptSlashCommand(
           isMeta: true,
         }),
         ...attachmentMessages,
+        ...goalStatusAttachmentMessages,
         createAttachmentMessage({
           type: 'command_permissions',
           allowedTools: additionalAllowedTools,
@@ -1274,6 +1302,7 @@ async function getMessagesForPromptSlashCommand(
         createCommandInputMessage(
           `<local-command-stdout>${skillContent}</local-command-stdout>`,
         ),
+        ...goalStatusAttachmentMessages,
       ]
 
   return {

@@ -1,33 +1,52 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
+import { randomUUID } from 'crypto'
 import { getSessionId } from '../bootstrap/state.js'
 import type { Command } from '../commands.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
-import { removeSessionHook } from '../utils/hooks/sessionHooks.js'
+import { goalStopHook, removeGoalStopHook } from './goal/hooks.js'
+import {
+  createActiveGoalStatus,
+  createGoalStatusAttachment,
+  formatGoalStatusText,
+  getGoalPromptForState,
+} from './goal/state.js'
+import {
+  GOAL_MAX_LENGTH,
+  isGoalClear,
+  isGoalTooLong,
+  type GoalStatusAttachment,
+} from './goal/types.js'
 
-const goalStopHookPrompt = `
-You are the /goal StopHook verifier. Inspect the current conversation and transcript to decide whether the active /goal objective is fully completed.
+export {
+  createActiveGoalStatus,
+  createGoalStatusAttachment,
+  finishGoalStatus,
+  formatGoalStatusText,
+  getGoalPromptForState,
+} from './goal/state.js'
 
-Hook input JSON:
-$ARGUMENTS
+let lastGoalCommandAttachment: GoalStatusAttachment | null = null
+let lastGoalHookRegistration: { id: string; condition: string } | null = null
 
-Decision rules:
-- Return ok: true only if the latest /goal objective has a verified final result and no unresolved required work remains.
-- Return ok: true if there is no active /goal objective in the transcript.
-- Return ok: true if the latest /goal command is clear, because that explicitly clears any active objective.
-- Return ok: true if stop_hook_active is true and the last assistant message is still genuinely blocked by permissions, missing credentials, or a user-only decision.
-- Return ok: false when the objective is partially complete, unverified, has failing checks, still has in-progress tasks, or can be continued autonomously with available tools.
-- When returning ok: false, the reason must be a concrete continuation instruction for the main assistant. Include what remains, what to do next, and any checks to run. The main assistant will receive this reason as hidden Stop hook feedback and continue without human intervention.
-`
+export function consumeLastGoalCommandAttachment(): GoalStatusAttachment | null {
+  const attachment = lastGoalCommandAttachment
+  lastGoalCommandAttachment = null
+  return attachment
+}
 
-const GOAL_NO_PROMPT_PLACEHOLDER = '(no goal provided)'
+export function consumeLastGoalHookRegistration(): {
+  id: string
+  condition: string
+} | null {
+  const registration = lastGoalHookRegistration
+  lastGoalHookRegistration = null
+  return registration
+}
 
-export const getGoalPromptForState = (args: string): string =>
-  args.trim() || GOAL_NO_PROMPT_PLACEHOLDER
-
-const goalPrompt = (args: string) => `
+const goalPrompt = (condition: string) => `
 You are running in /goal mode. The user's goal is:
 
-${getGoalPromptForState(args)}
+${condition}
 
 Work autonomously toward this goal under the current Claude Code permission mode and available tools.
 
@@ -42,16 +61,6 @@ Rules:
 
 When finished, report the verified result and any remaining blockers concisely.
 `
-
-const isGoalClear = (args: string): boolean => args.trim().toLowerCase() === 'clear'
-
-const goalClearPrompt = 'Goal is clear'
-
-const goalStopHook = {
-  type: 'agent' as const,
-  prompt: goalStopHookPrompt,
-  statusMessage: 'verifying goal completion',
-}
 
 const goal: Command = {
   type: 'prompt',
@@ -71,29 +80,61 @@ const goal: Command = {
     ],
   },
   shouldRegisterHooksForCommand(args): boolean {
-    return !isGoalClear(args)
+    return args.trim().length > 0 && !isGoalClear(args) && !isGoalTooLong(args)
   },
   shouldQueryForCommand(args): boolean {
-    return !isGoalClear(args)
+    return args.trim().length > 0 && !isGoalClear(args) && !isGoalTooLong(args)
   },
   async getPromptForCommand(args, context): Promise<ContentBlockParam[]> {
-    const clearGoal = isGoalClear(args)
-    context.setAppState(prev => {
-      if (clearGoal) {
-        if (!prev.goalStatus.active) return prev
-        return { ...prev, goalStatus: { active: false } }
-      }
-      const prompt = getGoalPromptForState(args)
-      if (prev.goalStatus.active && prev.goalStatus.prompt === prompt) return prev
-      return { ...prev, goalStatus: { active: true, prompt } }
-    })
-    // /goal clear must also unregister the Stop hook that /goal <task> installed.
-    // Otherwise the verifier keeps running on every turn even after the user
-    // explicitly cleared the goal.
-    if (clearGoal) {
-      removeSessionHook(context.setAppState, getSessionId(), 'Stop', goalStopHook)
+    lastGoalCommandAttachment = null
+    lastGoalHookRegistration = null
+
+    if (isGoalTooLong(args)) {
+      return [
+        {
+          type: 'text',
+          text: `Goal condition is limited to ${GOAL_MAX_LENGTH} characters (got ${args.trim().length})`,
+        },
+      ]
     }
-    return [{ type: 'text', text: clearGoal ? goalClearPrompt : goalPrompt(args) }]
+
+    if (args.trim().length === 0) {
+      return [
+        { type: 'text', text: formatGoalStatusText(context.getAppState().goalStatus) },
+      ]
+    }
+
+    if (isGoalClear(args)) {
+      let clearedPrompt: string | null = null
+      context.setAppState(prev => {
+        if (!prev.goalStatus.active) return prev
+        clearedPrompt = prev.goalStatus.prompt
+        const activeGoal = prev.goalStatus
+        lastGoalCommandAttachment = createGoalStatusAttachment(
+          activeGoal,
+          'cleared',
+        )
+        return { ...prev, goalStatus: { active: false } }
+      })
+      removeGoalStopHook(context.setAppState, getSessionId())
+      return [
+        {
+          type: 'text',
+          text: clearedPrompt ? `Goal cleared: ${clearedPrompt}` : 'No goal set',
+        },
+      ]
+    }
+
+    const prompt = getGoalPromptForState(args)
+    const goalId = randomUUID()
+    const activeGoal = createActiveGoalStatus(goalId, prompt, Date.now())
+    context.setAppState(prev => ({
+      ...prev,
+      goalStatus: activeGoal,
+    }))
+    lastGoalCommandAttachment = createGoalStatusAttachment(activeGoal, 'active')
+    lastGoalHookRegistration = { id: goalId, condition: prompt }
+    return [{ type: 'text', text: goalPrompt(prompt) }]
   },
 }
 

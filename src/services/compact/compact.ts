@@ -1550,7 +1550,7 @@ export function createGoalAttachmentIfNeeded(
 
   return createAttachmentMessage({
     type: 'critical_system_reminder',
-    content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt ?? '')}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
+    content: `You are still running in /goal mode. The user's active goal is:\n\n${getGoalPromptForState(goalStatus.prompt)}\n\nContinue working autonomously toward this goal. Do not report final success while required work remains, checks are failing, or tracked tasks are still in progress. A /goal StopHook should continue verifying completion.`,
   })
 }
 
