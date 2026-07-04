@@ -1,32 +1,32 @@
-# Non-interactive Claude Code debugging
+# 非交互式 Claude Code 调试
 
-Use non-interactive runs for deterministic request, output, exit-code, and logging checks.
+对于确定性的 request、output、exit-code 和 logging 检查，使用非交互式运行。
 
-## Basic print-mode comparison
+## 基础 print-mode 对比
 
-Run both binaries with the same prompt and environment:
+用相同 prompt 和 environment 运行两个二进制：
 
 ```sh
 env -i HOME="$HOME" PATH="$PATH" ./official-claude --print "hello" --dangerously-skip-permissions > /tmp/official.out 2> /tmp/official.err
 env -i HOME="$HOME" PATH="$PATH" ./built-claude --print "hello" --dangerously-skip-permissions > /tmp/built.out 2> /tmp/built.err
 ```
 
-Add only required variables back, one at a time:
+只把必需变量逐个加回：
 
 ```sh
 HTTPS_PROXY=http://127.0.0.1:8899 HTTP_PROXY=http://127.0.0.1:8899 ./built-claude --print "hello" --dangerously-skip-permissions
 ```
 
-## JSON and stream output
+## JSON 与 stream output
 
-When supported by the binary, prefer explicit output/input format flags for reproducible parser checks:
+当二进制支持时，优先使用显式 output/input format flags 做可复现 parser 检查：
 
 ```sh
 ./built-claude --print --output-format stream-json "hello" > /tmp/built-events.jsonl
 ./official-claude --print --output-format stream-json "hello" > /tmp/official-events.jsonl
 ```
 
-Validate line-delimited JSON without printing private content:
+验证 line-delimited JSON，但不要打印 private content：
 
 ```sh
 python3 - <<'PY'
@@ -42,9 +42,9 @@ for path in ['/tmp/built-events.jsonl', '/tmp/official-events.jsonl']:
 PY
 ```
 
-## Exit-code capture
+## Exit-code 捕获
 
-Use shell wrappers that preserve stdout, stderr, and exit code:
+使用保留 stdout、stderr 和 exit code 的 shell wrappers：
 
 ```sh
 set +e
@@ -54,14 +54,14 @@ printf 'exit_code=%s\nstdout_bytes=%s\nstderr_bytes=%s\n' "$code" "$(wc -c < /tm
 set -e
 ```
 
-## Configuration parity
+## 配置一致性
 
-When comparing official/local, keep config equal:
+比较 official/local 时保持配置一致：
 
-- Same `HOME` or `CLAUDE_CONFIG_DIR`.
-- Same OAuth/API key state.
-- Same settings file.
-- Same proxy env.
-- Same prompt and flags.
+- 相同 `HOME` 或 `CLAUDE_CONFIG_DIR`。
+- 相同 OAuth/API key state。
+- 相同 settings file。
+- 相同 proxy env。
+- 相同 prompt 和 flags。
 
-If a config override is needed, isolate it in a temporary directory and copy only the required files. Do not print secrets from config files.
+如果需要 config override，将其隔离到临时目录，并只复制必要文件。不要打印 config files 中的 secrets。

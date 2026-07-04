@@ -5,53 +5,53 @@
       "id": 0,
       "name": "proxy-parity-debug",
       "prompt": "built-claude 和 official-claude 在同一个 Claude Code 配置下疑似 HTTPS_PROXY 行为不同。请设计并执行一个最小可复现的代理抓流对比，要求不要泄露 token，只报告 CONNECT 目标、状态、字节数和 artifact 路径。",
-      "expected_output": "A concise debugging report that uses the bundled proxy or equivalent proxy capture, keeps official/local config equal, records commands/artifacts, redacts secrets, and explains HTTPS CONNECT opacity.",
+      "expected_output": "一份简洁的调试报告：使用 bundled proxy 或等价代理捕获流程，保持 official/local 配置一致，记录 commands/artifacts，脱敏 secrets，并解释 HTTPS CONNECT 不透明性。",
       "files": [],
       "assertions": [
-        "Mentions keeping official-claude and built-claude configuration equivalent except the binary or explicit proxy variable.",
-        "Uses HTTP_PROXY/HTTPS_PROXY or a local proxy capture workflow.",
-        "Reports only redacted facts such as CONNECT target/status/byte counts/artifact paths, not tokens or full request bodies.",
-        "Explains that HTTPS payloads are opaque without MITM."
+        "提到保持 official-claude 和 built-claude 的配置等价，除二进制或明确 proxy 变量外不做差异化修改。",
+        "使用 HTTP_PROXY/HTTPS_PROXY 或本地 proxy capture 工作流。",
+        "只报告 CONNECT target/status/byte counts/artifact paths 等脱敏事实，不报告 tokens 或完整 request bodies。",
+        "解释 HTTPS payloads 在没有 MITM 时不可见。"
       ]
     },
     {
       "id": 1,
       "name": "noninteractive-debug",
       "prompt": "我想检查 ./built-claude --print 的输出格式和 exit code 是否跟 ./official-claude 一致，同时打开 --debug-file。给我一个可执行的 debug 步骤和最终报告格式。",
-      "expected_output": "A non-interactive debug procedure that captures stdout/stderr separately, exit codes, debug files, help/flag verification when needed, and a compact redacted report format.",
+      "expected_output": "一套非交互式 debug 流程：分别捕获 stdout/stderr、exit codes、debug files，在需要时验证 help/flags，并给出紧凑的脱敏报告格式。",
       "files": [],
       "assertions": [
-        "Uses non-interactive --print commands for both binaries.",
-        "Captures stdout, stderr, and exit code separately.",
-        "Uses or checks --debug/--debug-file behavior.",
-        "Keeps secrets redacted and reports byte counts or relevant excerpts only."
+        "对两个二进制都使用非交互式 --print commands。",
+        "分别捕获 stdout、stderr 和 exit code。",
+        "使用或检查 --debug/--debug-file 行为。",
+        "保持 secrets 脱敏，只报告 byte counts 或相关摘录。"
       ]
     },
     {
       "id": 2,
       "name": "sse-websocket-proxy",
       "prompt": "帮我验证 claude-debug 里的 http-proxy-debug.mjs 对 SSE 流式响应和 WebSocket/Upgrade 场景是否可用。需要本地起 mock server，经过代理访问，输出验证证据和限制说明。",
-      "expected_output": "A local proxy verification report for SSE/plain HTTP streaming and WebSocket or Upgrade behavior, including commands/artifacts, proxy JSONL events, limitations, and no secret leakage.",
+      "expected_output": "一份本地 proxy 验证报告：覆盖 SSE/plain HTTP streaming 和 WebSocket 或 Upgrade 行为，包含 commands/artifacts、proxy JSONL events、限制说明，并且不泄露 secrets。",
       "files": [],
       "assertions": [
-        "Starts or describes a local mock server with SSE and WebSocket/Upgrade endpoints.",
-        "Routes requests through http-proxy-debug.mjs or an equivalent HTTP proxy path.",
-        "Verifies proxy logs include HTTP request/response or upgrade/tunnel byte-count evidence.",
-        "States limitations for HTTPS/TLS, HTTP/2, SSE, and WebSocket payload visibility."
+        "启动或描述一个带 SSE 和 WebSocket/Upgrade endpoints 的本地 mock server。",
+        "通过 http-proxy-debug.mjs 或等价 HTTP proxy 路径路由 requests。",
+        "验证 proxy logs 包含 HTTP request/response 或 upgrade/tunnel byte-count 证据。",
+        "说明 HTTPS/TLS、HTTP/2、SSE 和 WebSocket payload visibility 的限制。"
       ]
     },
     {
       "id": 3,
       "name": "mitm-cch-security",
       "prompt": "我需要用 claude-debug 的 MITM runner 对比 ./built-claude 和 ./official-claude 的 CCH/request body 摘要。请给出执行步骤和最终报告，要求不要泄露 prompt、token、完整 headers/body、stdout/stderr 或证书材料，也不要把 MITM proxy 暴露到非本机网络。",
-      "expected_output": "A safe MITM/CCH debugging procedure that uses the runner, keeps MITM on loopback, treats stdout/output/artifacts as sensitive, reports only minimized facts, and explains cleanup.",
+      "expected_output": "一套安全的 MITM/CCH 调试流程：使用 runner，将 MITM 绑定在 loopback，把 stdout/output/artifacts 视为敏感，只报告最小化事实，并说明清理方式。",
       "files": [],
       "assertions": [
-        "Uses run-claude-mitm-cch.mjs or explicitly prefers it over the lower-level MITM proxy for normal CCH checks.",
-        "States that MITM artifact root, output summary, runner stdout, private keys, stdout/stderr captures, and optional body files are sensitive local-only artifacts.",
-        "Warns not to bind the MITM proxy to 0.0.0.0 or an untrusted interface and not to install the generated CA globally.",
-        "Reports only safe facts such as target, request line, body byte count, SHA-256 prefix, JSON key presence, cch values, and exit code; does not paste raw headers, prompts, bodies, tokens, cookies, stdout/stderr, or certificate material.",
-        "Mentions deleting the artifact root and explicit output summary after review."
+        "使用 run-claude-mitm-cch.mjs，或明确说明常规 CCH 检查优先使用它而不是低层 MITM proxy。",
+        "说明 MITM artifact root、output summary、runner stdout、private keys、stdout/stderr captures 和可选 body files 都是仅限本地的敏感产物。",
+        "警告不要将 MITM proxy 绑定到 0.0.0.0 或不可信接口，也不要全局安装生成的 CA。",
+        "只报告 target、request line、body byte count、SHA-256 prefix、JSON key presence、cch values 和 exit code 等安全事实；不粘贴 raw headers、prompts、bodies、tokens、cookies、stdout/stderr 或 certificate material。",
+        "提到审阅后删除 artifact root 和显式 output summary。"
       ]
     }
   ]

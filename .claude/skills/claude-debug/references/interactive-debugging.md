@@ -1,63 +1,63 @@
-# Interactive Claude Code debugging
+# 交互式 Claude Code 调试
 
-Use interactive debugging for UI, prompt handling, slash commands, permissions, workflows, task lists, and stream rendering.
+当调试 UI、prompt handling、slash commands、permissions、workflows、task lists 和 stream rendering 时，使用交互式调试。
 
-## Choosing tmux vs InteractiveTerminal
+## 选择 tmux 还是 InteractiveTerminal
 
-Use tmux when:
+以下情况使用 tmux：
 
-- Comparing `official-claude` and `built-claude` terminal UI parity.
-- Reproducing workflow/deep-research/task-list behavior where project instructions require tmux.
-- Needing durable pane captures from both binaries with identical dimensions.
+- 比较 `official-claude` 与 `built-claude` 的 terminal UI parity。
+- 复现 workflow/deep-research/task-list 行为，且项目说明要求使用 tmux。
+- 需要用相同 dimensions 从两个二进制获取持久 pane captures。
 
-Use `InteractiveTerminal` when:
+以下情况使用 `InteractiveTerminal`：
 
-- Inspecting local terminal behavior quickly in this harness.
-- Driving one process without a full parity matrix.
-- Capturing visible terminal state through tool snapshots.
+- 在当前 harness 中快速检查本地 terminal behavior。
+- 只驱动一个进程，不需要完整 parity matrix。
+- 通过 tool snapshots 捕获可见 terminal state。
 
-## tmux recipe
+## tmux 配方
 
-Create two sessions with matching geometry:
+创建两个 geometry 一致的 sessions：
 
 ```sh
 tmux new-session -d -s cc-official -x 120 -y 40 './official-claude --dangerously-skip-permissions'
 tmux new-session -d -s cc-built -x 120 -y 40 './built-claude --dangerously-skip-permissions'
 ```
 
-Send identical input:
+发送相同输入：
 
 ```sh
 tmux send-keys -t cc-official 'hello' Enter
 tmux send-keys -t cc-built 'hello' Enter
 ```
 
-Capture panes:
+捕获 panes：
 
 ```sh
 tmux capture-pane -p -e -t cc-official > /tmp/cc-official-pane.txt
 tmux capture-pane -p -e -t cc-built > /tmp/cc-built-pane.txt
 ```
 
-Record:
+记录：
 
-- session names;
-- exact command lines;
-- terminal size;
-- input sequence;
-- capture paths;
-- observed difference.
+- session names；
+- 精确 command lines；
+- terminal size；
+- input sequence；
+- capture paths；
+- 观察到的差异。
 
-Clean up only after capturing evidence:
+只有在捕获证据后才清理：
 
 ```sh
 tmux kill-session -t cc-official
 tmux kill-session -t cc-built
 ```
 
-## InteractiveTerminal recipe
+## InteractiveTerminal 配方
 
-Open a session with the target binary, then write input and read snapshots:
+打开目标二进制 session，然后写入输入并读取 snapshots：
 
 ```text
 InteractiveTerminal.open command='./built-claude --dangerously-skip-permissions'
@@ -65,8 +65,8 @@ InteractiveTerminal.write text='hello' enter=true
 InteractiveTerminal.read
 ```
 
-Use this mode for fast checks and for tasks where project memory prefers InteractiveTerminal over tmux. If nested Claude stalls, capture the stall state and switch to non-interactive or tmux-based verification.
+该模式适合快速检查，以及项目记忆偏好 InteractiveTerminal 而非 tmux 的任务。如果嵌套 Claude 卡住，捕获卡住状态，并切换到非交互式或基于 tmux 的验证。
 
-## Evidence hygiene
+## 证据卫生
 
-Do not paste full terminal captures if they include secrets or private prompts. Summarize and quote only the relevant lines. Save full captures locally under `/tmp` or a named local debug directory.
+如果完整 terminal captures 包含 secrets 或 private prompts，不要粘贴。只摘要并引用相关 lines。将完整 captures 保存在 `/tmp` 或命名清晰的本地 debug 目录下。

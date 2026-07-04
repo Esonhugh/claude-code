@@ -1,42 +1,42 @@
 # Claude Code debug options
 
-Prefer built-in debug options before adding code instrumentation.
+添加代码 instrumentation 前，优先使用内置 debug options。
 
-## Discover current flags
+## 发现当前 flags
 
-Flags can change across official/local versions. Check each binary directly:
+Flags 可能在 official/local 版本之间变化。直接检查每个二进制：
 
 ```sh
 ./official-claude --help > /tmp/official-help.txt
 ./built-claude --help > /tmp/built-help.txt
 ```
 
-Compare help output locally and quote only relevant flag lines.
+在本地比较 help output，只引用相关 flag lines。
 
 ## Debug logs
 
-Use `--debug` and `--debug-file` when available:
+可用时使用 `--debug` 和 `--debug-file`：
 
 ```sh
 ./built-claude --debug --debug-file /tmp/claude-built-debug.log --print "hello" --dangerously-skip-permissions
 ./official-claude --debug --debug-file /tmp/claude-official-debug.log --print "hello" --dangerously-skip-permissions
 ```
 
-Use separate files for official and local. Do not reuse a debug file across runs unless appending is intentional.
+official 和 local 使用不同文件。不要在多次运行之间复用同一个 debug file，除非你明确希望 append。
 
-## Useful environment checks
+## 有用的环境检查
 
-Record non-secret environment values that affect routing and behavior:
+记录会影响路由和行为的非敏感环境值：
 
 ```sh
 env | sort | grep -E '^(ANTHROPIC_|CLAUDE_|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|USE_|NODE_|BUN_)' > /tmp/claude-debug-env.txt
 ```
 
-Review the output before sharing. Redact tokens, keys, cookies, and account identifiers.
+分享前先审阅输出。脱敏 tokens、keys、cookies 和 account identifiers。
 
 ## Debug artifact naming
 
-Use names that encode binary and mode:
+文件名应编码 binary 和 mode：
 
 ```text
 /tmp/claude-debug-built-print.log
@@ -45,21 +45,21 @@ Use names that encode binary and mode:
 /tmp/claude-debug-official-proxy.jsonl
 ```
 
-## Safe report practice
+## 安全报告实践
 
-Report:
+可以报告：
 
-- flag names;
-- exit codes;
-- request IDs if not sensitive;
-- redacted header names and value presence;
-- checksum computed/existing/match facts;
-- byte counts and event counts.
+- flag names；
+- exit codes；
+- 不敏感的 request IDs；
+- 已脱敏 header names 和 value presence；
+- checksum computed/existing/match facts；
+- byte counts 和 event counts。
 
-Avoid reporting:
+避免报告：
 
-- OAuth access/refresh tokens;
-- API keys;
-- cookies;
-- full private prompts;
-- complete request/response bodies unless explicitly authorized.
+- OAuth access/refresh tokens；
+- API keys；
+- cookies；
+- 完整 private prompts；
+- 完整 request/response bodies，除非用户明确授权。
