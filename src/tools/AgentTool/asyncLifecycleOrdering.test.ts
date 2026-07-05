@@ -100,7 +100,7 @@ const lifecycle = runAsyncAgentLifecycle({
 await worktreeStarted
 
 const task = state.tasks['agent-ordering-test']
-assert.equal(isLocalAgentTask(task), true)
+assert.ok(isLocalAgentTask(task))
 assert.equal(task.status, 'completed')
 assert.equal((task.result as AgentToolResult).agentId, 'agent-ordering-test')
 

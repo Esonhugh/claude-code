@@ -13,7 +13,7 @@ function mcpTool(name: string): Tool {
     async description() {
       return name
     },
-  } as Tool
+  } as unknown as Tool
 }
 
 const agent: AgentDefinition = {

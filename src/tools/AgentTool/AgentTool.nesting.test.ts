@@ -204,7 +204,54 @@ try {
 assert.ok(explicitNonDefaultMissingTeamError instanceof Error)
 assert.equal(
   explicitNonDefaultMissingTeamError.message,
-  'Team "missing-team" does not exist. Call spawnTeam first to create the team.',
+  'cwd is mutually exclusive with isolation: "worktree"',
+)
+
+let explicitDefaultMissingTeamError: unknown
+try {
+  await AgentTool.call(
+    {
+      description: 'explicit default missing team',
+      prompt: 'reply ok',
+      subagent_type: 'definitely-missing-agent-type',
+      name: 'worker-name',
+      team_name: 'default',
+    },
+    createContext(1) as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_explicit_default_missing_team' } } as never,
+  )
+} catch (error) {
+  explicitDefaultMissingTeamError = error
+}
+assert.ok(explicitDefaultMissingTeamError instanceof Error)
+assert.equal(
+  explicitDefaultMissingTeamError.message,
+  "Agent type 'definitely-missing-agent-type' not found. Available agents: general-purpose",
+)
+
+let explicitTeamWithCwdError: unknown
+try {
+  await AgentTool.call(
+    {
+      description: 'explicit team with cwd',
+      prompt: 'reply ok',
+      subagent_type: 'definitely-missing-agent-type',
+      name: 'worker-name',
+      team_name: 'default',
+      cwd: '/tmp',
+    },
+    createContext(1) as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_explicit_team_with_cwd' } } as never,
+  )
+} catch (error) {
+  explicitTeamWithCwdError = error
+}
+assert.ok(explicitTeamWithCwdError instanceof Error)
+assert.equal(
+  explicitTeamWithCwdError.message,
+  "Agent type 'definitely-missing-agent-type' not found. Available agents: general-purpose",
 )
 
 let emptyNameError: unknown

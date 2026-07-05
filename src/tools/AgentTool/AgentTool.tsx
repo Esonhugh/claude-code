@@ -514,20 +514,16 @@ export const AgentTool = buildTool({
     // Teammates (in-process or tmux) passing `name` would trigger spawnTeammate()
     // below, but TeamFile.members is a flat array with one leadAgentId — nested
     // teammates land in the roster with no provenance and confuse the lead.
-    let teamName = resolveTeamName({ team_name }, appState)
-    if (teamName) {
+    let teamName = appState.teamContext?.teamName
+    let shouldSpawnTeammate = Boolean(teamName && name && !isolation && !cwd)
+    if (teamName && shouldSpawnTeammate) {
       const teamFile = await readTeamFileAsync(teamName)
       if (!teamFile) {
-        if (team_name && team_name !== 'default') {
-          throw new Error(
-            `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
-          )
-        }
         teamName = undefined
-        team_name = undefined
+        shouldSpawnTeammate = false
       }
     }
-    if (isTeammate() && teamName && name) {
+    if (isTeammate() && shouldSpawnTeammate) {
       throw new Error(
         'Teammates cannot spawn other teammates — the team roster is flat. To spawn a subagent instead, omit the `name` parameter.',
       )
@@ -535,15 +531,15 @@ export const AgentTool = buildTool({
     // In-process teammates cannot spawn background agents (their lifecycle is
     // tied to the leader's process). Tmux teammates are separate processes and
     // can manage their own background agents.
-    if (isInProcessTeammate() && teamName && run_in_background === true) {
+    if (isInProcessTeammate() && shouldSpawnTeammate && run_in_background === true) {
       throw new Error(
         'In-process teammates cannot spawn background agents. Use run_in_background=false for synchronous subagents.',
       )
     }
 
     // Check if this is a multi-agent spawn request
-    // Spawn is triggered when team_name is set (from param or context) and name is provided
-    if (teamName && name) {
+    // Match official behavior: named teammates route from live team context.
+    if (shouldSpawnTeammate) {
       // Set agent definition color for grouped UI display before spawning
       const agentDef = subagent_type
         ? toolUseContext.options.agentDefinitions.activeAgents.find(
@@ -631,7 +627,7 @@ export const AgentTool = buildTool({
     // here because selectedAgent is only now resolved.
     if (
       isInProcessTeammate() &&
-      teamName &&
+      shouldSpawnTeammate &&
       selectedAgent.background === true
     ) {
       throw new Error(
