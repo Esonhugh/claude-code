@@ -10,6 +10,55 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-05 - v2.1.177 - AgentTool recover parity、goal 恢复与调试能力补齐
+
+### 版本状态
+
+- 准备发布版本：`v2.1.177`。
+- 本次发布覆盖 `v2.1.176` 后的提交：`9103c69`、`004684c`、`25a2a25`、`8db03fa`、`d0fd6cf`、`fe737f3`、`0870f3d`、`f278a93`、`14424d7`、`909a5aa`、`af2bd7b`、`e2e22e0`、`4582129`、`1dfa5e3`、`f2b524e`、`ffd28d9`、`e37edc7`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+
+### 关联提交
+
+- `9103c69` — 2026-07-04 17:03:24 +08:00 — `update: CN claude debug skill`
+- `004684c` — 2026-07-04 17:22:55 +08:00 — `update: add feature testing reference`
+- `25a2a25` — 2026-07-04 17:23:13 +08:00 — `update: add goal auto-clear support`
+- `8db03fa` — 2026-07-04 17:52:56 +08:00 — `update: goal clear problem with prompt  as stop hook type`
+- `d0fd6cf` — 2026-07-04 21:13:41 +08:00 — `docs: add agent upgrade design spec`
+- `fe737f3` — 2026-07-04 21:31:41 +08:00 — `docs: add agent upgrade integrity gates`
+- `0870f3d` — 2026-07-05 01:58:21 +08:00 — `update: cc recovered in 2.1.201`
+- `f278a93` — 2026-07-05 13:12:43 +08:00 — `update: Agent tool plans`
+- `14424d7` — 2026-07-05 13:45:28 +08:00 — `update: run Agents tools`
+- `909a5aa` — 2026-07-05 14:17:18 +08:00 — `update: wrong run teammate mode`
+- `af2bd7b` — 2026-07-05 16:38:39 +08:00 — `update: download official`
+- `e2e22e0` — 2026-07-05 18:08:16 +08:00 — `update: appState with team`
+- `4582129` — 2026-07-05 20:23:15 +08:00 — `update: add spec ultra code`
+- `1dfa5e3` — 2026-07-05 22:02:05 +08:00 — `update: more clear spwan`
+- `f2b524e` — 2026-07-05 22:20:21 +08:00 — `update: agent tool prompt`
+- `ffd28d9` — 2026-07-05 22:40:33 +08:00 — `update: broderTitle uiName change to customed`
+- `e37edc7` — 2026-07-05 23:15:56 +08:00 — `update: add uiname test`
+
+### 变更内容
+
+- 补充 Claude 调试技能中文流程与 feature testing 参考，明确 assistant-side / binary-side 分层、交互式验证、非交互式验证和代理流量调试证据要求。
+- 新增 `/goal` 自动清理和 compact/session restore 相关恢复逻辑，确保 goal 状态、StopHook 和 slash command 结果在会话压缩、恢复与清理路径中保持一致。
+- 引入 Claude Code `2.1.201` recover 产物作为 AgentTool 对齐参考，并补充 Agent upgrade design spec、integrity gates、recover parity 和 runAgent 参数生命周期计划文档。
+- 重构 AgentTool agent type 解析、MCP 可用性检查、async lifecycle ordering 和 launch params 处理，补齐相关单元测试，降低 prompt/schema/工具状态变化对 Agent 启动路径的影响。
+- 对齐 recover 201 的 AgentTool -> runAgent 参数消费：保留 `name`、`toolUseId`、`spawnDepth` 等 metadata，整理 `mode`/permission 语义、async progress payload 和 debug launch 参数。
+- 整理 TeamCreate / Agent / SendMessage 协作路径：区分当前 caller 是否为 teammate 与当前 Agent 调用是否应 spawn teammate，补齐 in-process teammate background 限制和 missing team file 预检。
+- 调整 AgentTool prompt/schema 中 `name`、`team_name`、`isolation` 描述，贴近 recover 201 行为，并明确 `isolation: "worktree"` 与 teammate spawn routing 的分支关系。
+- 更新 AppState team context、process slash command/session restore 相关链路，为 team context 与 goal restore 协同提供状态承载。
+- 调整 LogoV2 `uiName` / border title 展示，并新增 `uiName` 测试覆盖。
+- 更新 `Makefile` 默认构建版本到 `2.1.177`。
+
+### 测试覆盖
+
+- 新增或更新 `src/commands/goal.test.ts`，覆盖 goal 自动清理、StopHook 和恢复路径。
+- 新增或更新 `src/tools/AgentTool/agentTypeResolver.test.ts`、`agentLaunchParams.test.ts`、`agentProgressPayload.test.ts`、`asyncLifecycleOrdering.test.ts`、`mcpAvailability.test.ts` 和 `AgentTool.nesting.test.ts`，覆盖 AgentTool recover parity、metadata、MCP 可用性、async 生命周期和 teammate 限制。
+- 新增 `src/tools/shared/spawnMultiAgent.test.ts`，覆盖 missing team file 在副作用前失败的路径。
+- 新增 `src/components/LogoV2/uiName.test.ts`，覆盖自定义 UI 名称展示。
+- 已运行 focused AgentTool suite、`bun run lint`、`git diff --check`、`make build`，并完成 `built-claude` binary-side TeamCreate / Agent / SendMessage coordination smoke；binary-side 验证确认当前 named Agent 若带 `isolation:\"worktree\"` 会按 recover 201 语义走普通 worktree subagent 分支而非 teammate spawn。
+
 ## 2026-07-02 - v2.1.176 - OpenAI auth 环境变量、发布构建与 npm 包装
 
 ### 版本状态
