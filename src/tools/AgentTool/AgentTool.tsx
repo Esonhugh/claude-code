@@ -229,14 +229,14 @@ const fullInputSchema = lazySchema(() => {
     .merge(multiAgentInputSchema)
     .extend({
       isolation: (isAnt()
-        ? z.enum(['worktree', 'remote'])
-        : z.enum(['worktree'])
+        ? z.enum(['', 'worktree', 'remote'])
+        : z.enum(['', 'worktree'])
       )
         .optional()
         .describe(
           isAnt()
-            ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).'
-            : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.',
+            ? 'Isolation mode. Use "" for no isolation. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).'
+            : 'Isolation mode. Use "" for no isolation. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.',
         ),
       cwd: z
         .string()
@@ -279,7 +279,7 @@ type AgentToolInput = z.infer<ReturnType<typeof baseInputSchema>> & {
   name?: string
   team_name?: string
   mode?: z.infer<ReturnType<typeof permissionModeSchema>>
-  isolation?: 'worktree' | 'remote'
+  isolation?: '' | 'worktree' | 'remote'
   cwd?: string
 }
 
@@ -630,7 +630,7 @@ export const AgentTool = buildTool({
       return { data: spawnResult } as unknown as { data: Output }
     }
 
-    const effectiveIsolation = isolation ?? selectedAgent.isolation
+    const effectiveIsolation = isolation === '' ? undefined : (isolation ?? selectedAgent.isolation)
     if (cwd && effectiveIsolation === 'worktree') {
       throw new Error('cwd is mutually exclusive with isolation: "worktree"')
     }

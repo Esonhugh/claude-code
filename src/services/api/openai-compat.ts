@@ -250,6 +250,7 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
   let blockIndex = 0
   let hasText = false
   let currentToolCallId: string | null = null
+  let currentToolArguments = ''
   let outputTokens = 0
 
   stream.push({
@@ -305,13 +306,26 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
               stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: event.delta } } as any)
             } else if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
               if (hasText) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++; hasText = false }
-              if (currentToolCallId) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++ }
+              if (currentToolCallId) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++; currentToolArguments = '' }
               currentToolCallId = event.item.id
               const toolId = event.item.call_id || event.item.id
               stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: toolId, name: event.item.name || '', input: '' } } as any)
             } else if (type === 'response.function_call_arguments.delta') {
               if (!currentToolCallId) { currentToolCallId = event.item_id; stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: event.item_id, name: '', input: '' } } as any) }
+              currentToolArguments += event.delta || ''
               stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: event.delta } } as any)
+            } else if (type === 'response.function_call_arguments.done') {
+              const doneArguments = event.arguments || ''
+              if (!currentToolCallId) { currentToolCallId = event.item_id; stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: event.call_id || event.item_id, name: event.name || '', input: '' } } as any) }
+              if (doneArguments && doneArguments !== currentToolArguments) {
+                const remainingArguments = doneArguments.startsWith(currentToolArguments)
+                  ? doneArguments.slice(currentToolArguments.length)
+                  : doneArguments
+                if (remainingArguments) {
+                  stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: remainingArguments } } as any)
+                  currentToolArguments += remainingArguments
+                }
+              }
             } else if (type === 'response.completed') {
               if (hasText || currentToolCallId) stream.push({ type: 'content_block_stop', index: blockIndex } as any)
               outputTokens = event.response?.usage?.output_tokens || 0
