@@ -50,6 +50,7 @@ import { EmergencyTip } from './EmergencyTip.js'
 import { VoiceModeNotice } from './VoiceModeNotice.js'
 import { Opus1mMergeNotice } from './Opus1mMergeNotice.js'
 import { feature } from 'bun:bundle'
+import { getConfiguredUiName } from './uiName.js'
 
 // Conditional require so ChannelsNotice.tsx tree-shakes when both flags are
 // false. A module-scope helper component inside a feature() ternary does NOT
@@ -260,8 +261,10 @@ export function LogoV2(): React.ReactNode {
   const layoutMode = getLayoutMode(columns)
 
   const userTheme = resolveThemeSetting(getGlobalConfig().theme)
-  const borderTitle = ` ${color('claude', userTheme)('Claude Code')} ${color('inactive', userTheme)(`v${version}`)} `
-  const compactBorderTitle = color('claude', userTheme)(' Claude Code ')
+  const settings = getInitialSettings()
+  const uiName = getConfiguredUiName(settings)
+  const borderTitle = ` ${color('claude', userTheme)(uiName)} ${color('inactive', userTheme)(`v${version}`)} `
+  const compactBorderTitle = color('claude', userTheme)(` ${uiName} `)
 
   // Early return for compact mode
   if (layoutMode === 'compact') {
