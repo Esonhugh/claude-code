@@ -5,6 +5,10 @@ import { join } from 'node:path'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 import {
+  createTeammateContext,
+  runWithTeammateContext,
+} from '../../utils/teammateContext.js'
+import {
   AgentTool,
   buildAgentLaunchDebugParams,
 } from './AgentTool.js'
@@ -277,6 +281,82 @@ assert.ok(emptyNameError instanceof Error)
 assert.equal(
   emptyNameError.message,
   'cwd is mutually exclusive with isolation: "worktree"',
+)
+
+const teammateContext = createTeammateContext({
+  agentId: 'worker@default',
+  agentName: 'worker',
+  teamName: 'default',
+  planModeRequired: false,
+  parentSessionId: 'session_test',
+  abortController: new AbortController(),
+})
+
+let teammateBackgroundError: unknown
+try {
+  await runWithTeammateContext(teammateContext, () =>
+    AgentTool.call(
+      {
+        description: 'teammate background',
+        prompt: 'reply ok',
+        subagent_type: 'general-purpose',
+        run_in_background: true,
+      },
+      createContext(1) as never,
+      async () => ({ behavior: 'allow' }),
+      { message: { id: 'msg_teammate_background' } } as never,
+    ),
+  )
+} catch (error) {
+  teammateBackgroundError = error
+}
+assert.ok(teammateBackgroundError instanceof Error)
+assert.equal(
+  teammateBackgroundError.message,
+  'In-process teammates cannot spawn background agents. Use run_in_background=false for synchronous subagents.',
+)
+
+const backgroundAgent = {
+  ...GENERAL_PURPOSE_AGENT,
+  agentType: 'background-agent',
+  background: true,
+}
+const backgroundBaseContext = createContext(1) as never as {
+  options: Record<string, unknown>
+}
+const backgroundAgentContext = {
+  ...backgroundBaseContext,
+  options: {
+    ...backgroundBaseContext.options,
+    agentDefinitions: {
+      activeAgents: [GENERAL_PURPOSE_AGENT, backgroundAgent],
+      inactiveAgents: [],
+      allowedAgentTypes: undefined,
+    },
+  },
+} as never
+
+let teammateBackgroundAgentError: unknown
+try {
+  await runWithTeammateContext(teammateContext, () =>
+    AgentTool.call(
+      {
+        description: 'teammate background agent',
+        prompt: 'reply ok',
+        subagent_type: 'background-agent',
+      },
+      backgroundAgentContext,
+      async () => ({ behavior: 'allow' }),
+      { message: { id: 'msg_teammate_background_agent' } } as never,
+    ),
+  )
+} catch (error) {
+  teammateBackgroundAgentError = error
+}
+assert.ok(teammateBackgroundAgentError instanceof Error)
+assert.equal(
+  teammateBackgroundAgentError.message,
+  "In-process teammates cannot spawn background agents. Agent 'background-agent' has background: true in its definition.",
 )
 if (originalConfigDir === undefined) {
   delete process.env.CLAUDE_CONFIG_DIR

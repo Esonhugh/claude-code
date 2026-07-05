@@ -511,19 +511,12 @@ export const AgentTool = buildTool({
       throw new Error('Agent Teams is not yet available on your plan.')
     }
 
+    const isCurrentInProcessTeammate = isInProcessTeammate()
+
     // Teammates (in-process or tmux) passing `name` would trigger spawnTeammate()
     // below, but TeamFile.members is a flat array with one leadAgentId — nested
     // teammates land in the roster with no provenance and confuse the lead.
-    let teamName = appState.teamContext?.teamName
-    let shouldSpawnTeammate = Boolean(teamName && name && !isolation && !cwd)
-    if (teamName && shouldSpawnTeammate) {
-      const teamFile = await readTeamFileAsync(teamName)
-      if (!teamFile) {
-        teamName = undefined
-        shouldSpawnTeammate = false
-      }
-    }
-    if (isTeammate() && shouldSpawnTeammate) {
+    if ((isTeammate() || isCurrentInProcessTeammate) && name) {
       throw new Error(
         'Teammates cannot spawn other teammates — the team roster is flat. To spawn a subagent instead, omit the `name` parameter.',
       )
@@ -531,49 +524,10 @@ export const AgentTool = buildTool({
     // In-process teammates cannot spawn background agents (their lifecycle is
     // tied to the leader's process). Tmux teammates are separate processes and
     // can manage their own background agents.
-    if (isInProcessTeammate() && shouldSpawnTeammate && run_in_background === true) {
+    if (isCurrentInProcessTeammate && run_in_background === true) {
       throw new Error(
         'In-process teammates cannot spawn background agents. Use run_in_background=false for synchronous subagents.',
       )
-    }
-
-    // Check if this is a multi-agent spawn request
-    // Match official behavior: named teammates route from live team context.
-    if (shouldSpawnTeammate) {
-      // Set agent definition color for grouped UI display before spawning
-      const agentDef = subagent_type
-        ? toolUseContext.options.agentDefinitions.activeAgents.find(
-            a => a.agentType === subagent_type,
-          )
-        : undefined
-      if (agentDef?.color) {
-        setAgentColor(subagent_type!, agentDef.color)
-      }
-      const result = await spawnTeammate(
-        {
-          name,
-          prompt,
-          description,
-          team_name: teamName,
-          use_splitpane: true,
-          plan_mode_required: spawnMode === 'plan',
-          model: model ?? agentDef?.model,
-          agent_type: subagent_type,
-          invokingRequestId: assistantMessage?.requestId,
-        },
-        toolUseContext,
-      )
-
-      // Type assertion uses TeammateSpawnedOutput (defined above) instead of any.
-      // This type is excluded from the exported outputSchema for dead code elimination.
-      // Cast through unknown because TeammateSpawnedOutput is intentionally
-      // not part of the exported Output union (for dead code elimination purposes).
-      const spawnResult: TeammateSpawnedOutput = {
-        status: 'teammate_spawned' as const,
-        prompt,
-        ...result.data,
-      }
-      return { data: spawnResult } as unknown as { data: Output }
     }
 
     // Fork subagent experiment routing:
@@ -625,14 +579,57 @@ export const AgentTool = buildTool({
     // Same lifecycle constraint as the run_in_background guard above, but for
     // agent definitions that force background via `background: true`. Checked
     // here because selectedAgent is only now resolved.
-    if (
-      isInProcessTeammate() &&
-      shouldSpawnTeammate &&
-      selectedAgent.background === true
-    ) {
+    if (isCurrentInProcessTeammate && selectedAgent.background === true) {
       throw new Error(
         `In-process teammates cannot spawn background agents. Agent '${selectedAgent.agentType}' has background: true in its definition.`,
       )
+    }
+
+    let teamName = appState.teamContext?.teamName
+    let shouldSpawnTeammate = Boolean(
+      teamName && name && !isForkPath && !isolation && !cwd,
+    )
+    if (teamName && shouldSpawnTeammate) {
+      const teamFile = await readTeamFileAsync(teamName)
+      if (!teamFile) {
+        teamName = undefined
+        shouldSpawnTeammate = false
+      }
+    }
+
+    // Check if this is a multi-agent spawn request.
+    // Match recover 201: named teammates route from live team context, excluding
+    // fork, isolation, and cwd paths.
+    if (shouldSpawnTeammate) {
+      const agentDef = subagent_type
+        ? toolUseContext.options.agentDefinitions.activeAgents.find(
+            a => a.agentType === subagent_type,
+          )
+        : undefined
+      if (agentDef?.color) {
+        setAgentColor(subagent_type!, agentDef.color)
+      }
+      const result = await spawnTeammate(
+        {
+          name,
+          prompt,
+          description,
+          team_name: teamName,
+          use_splitpane: true,
+          plan_mode_required: spawnMode === 'plan',
+          model: model ?? agentDef?.model,
+          agent_type: subagent_type,
+          invokingRequestId: assistantMessage?.requestId,
+        },
+        toolUseContext,
+      )
+
+      const spawnResult: TeammateSpawnedOutput = {
+        status: 'teammate_spawned' as const,
+        prompt,
+        ...result.data,
+      }
+      return { data: spawnResult } as unknown as { data: Output }
     }
 
     const effectiveIsolation = isolation ?? selectedAgent.isolation
