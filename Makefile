@@ -1,7 +1,7 @@
 
 VERSION := 2.1.176
 FILE := ./dist/release/claude-code-v$(VERSION)-darwin-arm64
-CLAUDE_NPM_PACKAGE := @esonhugh/claude-code
+CLAUDE_NPM_PACKAGE := @anthropic-ai/claude-code
 CLAUDE_VERSION ?= latest
 CLAUDE_PACK_DIR ?= package/npm
 CLAUDE_PACK_EXTRACT_DIR ?= $(CLAUDE_PACK_DIR)/extracted
