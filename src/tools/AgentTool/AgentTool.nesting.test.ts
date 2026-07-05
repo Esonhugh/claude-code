@@ -3,7 +3,7 @@ import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 import {
   AgentTool,
-  buildAgentLaunchDebugParamsForTesting,
+  buildAgentLaunchDebugParams,
 } from './AgentTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import {
@@ -159,7 +159,7 @@ getRootSetAppStateForTesting(contextWithRootSetter as never)(state => state)
 assert.equal(rootSetCalls, 1)
 assert.equal(isolatedSetCalls, 0)
 
-const debugParams = buildAgentLaunchDebugParamsForTesting({
+const debugParams = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',
   selectedAgentType: 'general-purpose',
   matchKind: 'normalized',
@@ -177,6 +177,7 @@ const debugParams = buildAgentLaunchDebugParamsForTesting({
   childSubagentDepth: 1,
   availableToolNames: ['Agent', 'Read'],
   agentDepth: 1,
+  agentSystemPromptChars: 456,
 })
 assert.equal(debugParams.requestedType, 'general purpose')
 assert.equal(debugParams.selectedAgentType, 'general-purpose')
@@ -194,6 +195,7 @@ assert.deepEqual(debugParams.requiredMcpServers, [])
 assert.deepEqual(debugParams.availableMcpServers, ['github'])
 assert.equal(debugParams.childSubagentDepth, 1)
 assert.equal(debugParams.agentDepth, 1)
+assert.equal(debugParams.agentSystemPromptChars, 456)
 assert.deepEqual(debugParams.availableToolNames, ['Agent', 'Read'])
 assert.equal(JSON.stringify(debugParams).includes('reply ready'), false)
 assert.equal(JSON.stringify(debugParams).includes('debug params test'), false)

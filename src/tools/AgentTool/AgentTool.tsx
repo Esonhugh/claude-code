@@ -155,6 +155,14 @@ export function normalizeAgentDescription(description: string): string {
   return description.replace(/\s+/g, ' ').trim()
 }
 
+export function shouldPreserveAgentToolUseResults({
+  isNonInteractiveSession,
+}: {
+  isNonInteractiveSession: boolean
+}): boolean {
+  return !isNonInteractiveSession
+}
+
 // Auto-background agent tasks after this many ms (0 = disabled)
 // Enabled by env var OR GrowthBook gate (checked lazily since GB may not be ready at module load)
 function getAutoBackgroundMs(): number {
@@ -305,7 +313,7 @@ export const outputSchema = lazySchema(() => {
 type OutputSchema = ReturnType<typeof outputSchema>
 type Output = z.input<OutputSchema>
 
-export function buildAgentLaunchDebugParamsForTesting({
+export function buildAgentLaunchDebugParams({
   requestedType,
   selectedAgentType,
   matchKind,
@@ -324,6 +332,7 @@ export function buildAgentLaunchDebugParamsForTesting({
   childSubagentDepth,
   availableToolNames,
   agentDepth,
+  agentSystemPromptChars,
 }: {
   requestedType: string
   selectedAgentType: string
@@ -343,6 +352,7 @@ export function buildAgentLaunchDebugParamsForTesting({
   childSubagentDepth: number
   availableToolNames: readonly string[]
   agentDepth?: number
+  agentSystemPromptChars?: number
 }): Record<string, unknown> {
   return {
     requestedType,
@@ -365,6 +375,7 @@ export function buildAgentLaunchDebugParamsForTesting({
     childSubagentDepth,
     availableToolNames,
     agentDepth,
+    agentSystemPromptChars,
   }
 }
 
@@ -695,6 +706,15 @@ export const AgentTool = buildTool({
     )
 
     const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
+    let agentPrompt: string | undefined
+    try {
+      agentPrompt = selectedAgent.getSystemPrompt({ toolUseContext })
+    } catch (error) {
+      logForDebugging(
+        `Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`,
+      )
+    }
+    const agentSystemPromptChars = agentPrompt?.length ?? 0
 
     logEvent('tengu_agent_tool_selected', {
       agent_type:
@@ -712,6 +732,7 @@ export const AgentTool = buildTool({
         !isBackgroundTasksDisabled,
       is_fork: isForkPath,
       agent_depth: childSubagentDepth,
+      agent_system_prompt_chars: agentSystemPromptChars,
     })
 
     // Remote isolation: delegate to CCR. Gated ant-only — the guard enables
@@ -822,7 +843,7 @@ export const AgentTool = buildTool({
         )
 
         // All agents have getSystemPrompt - pass toolUseContext to all
-        const agentPrompt = selectedAgent.getSystemPrompt({ toolUseContext })
+        agentPrompt ??= selectedAgent.getSystemPrompt({ toolUseContext })
 
         // Log agent memory loaded event for subagents
         if (selectedAgent.memory) {
@@ -939,7 +960,7 @@ export const AgentTool = buildTool({
 
     logForDebugging(
       `AgentTool launch params ${JSON.stringify(
-        buildAgentLaunchDebugParamsForTesting({
+        buildAgentLaunchDebugParams({
           requestedType: effectiveType ?? 'fork',
           selectedAgentType: selectedAgent.agentType,
           matchKind: selectedAgentMatchKind,
@@ -964,6 +985,7 @@ export const AgentTool = buildTool({
             : workerTools
           ).map(tool => tool.name),
           agentDepth: childSubagentDepth,
+          agentSystemPromptChars,
         }),
       )}`,
     )
@@ -1013,7 +1035,19 @@ export const AgentTool = buildTool({
       cwd: cwdOverridePath,
       description,
       name,
+      preserveToolUseResults: shouldPreserveAgentToolUseResults({
+        isNonInteractiveSession: toolUseContext.options.isNonInteractiveSession,
+      }),
       toolUseId: toolUseContext.toolUseId,
+      onMcpServersBlocked: (serverNames, reason) => {
+        toolUseContext.addNotification?.({
+          key: `agent-mcp-blocked-${earlyAgentId}`,
+          text: `${selectedAgent.agentType} agent MCP ${serverNames.length === 1 ? 'server' : 'servers'} blocked by ${reason}: ${serverNames.join(', ')}`,
+          priority: 'medium',
+          color: 'warning',
+          timeoutMs: 10000,
+        })
+      },
     }
 
     const wrapWithCwd = <T,>(fn: () => T): T =>

@@ -97,6 +97,10 @@ import { isAnt } from 'src/utils/userType.js'
 async function initializeAgentMcpServers(
   agentDefinition: AgentDefinition,
   parentClients: MCPServerConnection[],
+  onMcpServersBlocked?: (
+    serverNames: string[],
+    reason: string,
+  ) => void | Promise<void>,
 ): Promise<{
   clients: MCPServerConnection[]
   tools: Tools
@@ -118,9 +122,15 @@ async function initializeAgentMcpServers(
   // legitimately need MCP, contradicting "plugin-provided always loads."
   const agentIsAdminTrusted = isSourceAdminTrusted(agentDefinition.source)
   if (isRestrictedToPluginOnly('mcp') && !agentIsAdminTrusted) {
+    const blockedServerNames = agentDefinition.mcpServers.map(spec =>
+      typeof spec === 'string' ? spec : Object.keys(spec)[0]!,
+    )
     logForDebugging(
       `[Agent: ${agentDefinition.agentType}] Skipping MCP servers: strictPluginOnlyCustomization locks MCP to plugin-only (agent source: ${agentDefinition.source})`,
     )
+    if (blockedServerNames.length > 0) {
+      await onMcpServersBlocked?.(blockedServerNames, 'plugin-only policy')
+    }
     return {
       clients: parentClients,
       tools: [],
@@ -149,6 +159,7 @@ async function initializeAgentMcpServers(
           `[Agent: ${agentDefinition.agentType}] MCP server not found: ${spec}`,
           { level: 'warn' },
         )
+        await onMcpServersBlocked?.([spec], 'not configured')
         continue
       }
     } else {
@@ -163,6 +174,13 @@ async function initializeAgentMcpServers(
         continue
       }
       const [serverName, serverConfig] = entries[0]!
+      if (!serverName) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Invalid MCP server spec: missing server name`,
+          { level: 'warn' },
+        )
+        continue
+      }
       name = serverName
       config = {
         ...serverConfig,
@@ -190,6 +208,7 @@ async function initializeAgentMcpServers(
         `[Agent: ${agentDefinition.agentType}] Failed to connect to MCP server '${name}': ${client.type}`,
         { level: 'warn' },
       )
+      await onMcpServersBlocked?.([name], client.type)
     }
   }
 
@@ -303,6 +322,7 @@ export async function* runAgent({
   worktreeBranch,
   cwd,
   description,
+  onMcpServersBlocked,
   transcriptSubdir,
   onQueryProgress,
 }: {
@@ -367,7 +387,10 @@ export async function* runAgent({
   /** Whether this agent was spawned by a skill-triggered flow. */
   spawnedBySkill?: boolean
   /** Non-fatal notification hook for blocked/unavailable MCP servers. */
-  onMcpServersBlocked?: (serverNames: string[]) => void | Promise<void>
+  onMcpServersBlocked?: (
+    serverNames: string[],
+    reason: string,
+  ) => void | Promise<void>
   /** Optional subdirectory under subagents/ to group this agent's transcript
    * with related ones (e.g. workflows/<runId> for workflow subagents). */
   transcriptSubdir?: string
@@ -705,6 +728,7 @@ export async function* runAgent({
   } = await initializeAgentMcpServers(
     agentDefinition,
     toolUseContext.options.mcpClients,
+    onMcpServersBlocked,
   )
 
   // Merge agent MCP tools with resolved agent tools, deduplicating by name.

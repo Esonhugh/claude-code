@@ -1,15 +1,24 @@
 import assert from 'node:assert/strict'
 import {
-  buildAgentLaunchDebugParamsForTesting,
+  buildAgentLaunchDebugParams,
   normalizeAgentDescription,
+  shouldPreserveAgentToolUseResults,
 } from './AgentTool.js'
 
 assert.equal(
   normalizeAgentDescription('  Launch\n\tparams   should   normalize  '),
   'Launch params should normalize',
 )
+assert.equal(
+  shouldPreserveAgentToolUseResults({ isNonInteractiveSession: false }),
+  true,
+)
+assert.equal(
+  shouldPreserveAgentToolUseResults({ isNonInteractiveSession: true }),
+  false,
+)
 
-const params = buildAgentLaunchDebugParamsForTesting({
+const params = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',
   selectedAgentType: 'general-purpose',
   matchKind: 'normalized',
@@ -28,6 +37,7 @@ const params = buildAgentLaunchDebugParamsForTesting({
   childSubagentDepth: 2,
   availableToolNames: ['Read', 'Edit', 'mcp__github-enterprise__search'],
   agentDepth: 2,
+  agentSystemPromptChars: 123,
 })
 
 assert.equal(params.requestedType, 'general purpose')
@@ -49,6 +59,7 @@ assert.deepEqual(params.requiredMcpServers, ['github'])
 assert.deepEqual(params.availableMcpServers, ['github-enterprise'])
 assert.equal(params.childSubagentDepth, 2)
 assert.equal(params.agentDepth, 2)
+assert.equal(params.agentSystemPromptChars, 123)
 assert.deepEqual(params.availableToolNames, [
   'Read',
   'Edit',
