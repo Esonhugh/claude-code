@@ -64,10 +64,7 @@ import {
 import { getAgentModel } from '../../utils/model/agent.js'
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
-import {
-  filterDeniedAgents,
-  getDenyRuleForAgent,
-} from '../../utils/permissions/permissions.js'
+import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import { writeAgentMetadata } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
@@ -99,6 +96,11 @@ import {
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
+import { resolveAgentType } from './agentTypeResolver.js'
+import {
+  getAvailableMcpServerNames,
+  getMissingRequiredMcpServers,
+} from './mcpAvailability.js'
 import {
   AGENT_TOOL_NAME,
   LEGACY_AGENT_TOOL_NAME,
@@ -114,7 +116,6 @@ import {
 import type { AgentDefinition } from './loadAgentsDir.js'
 import {
   filterAgentsByMcpRequirements,
-  hasRequiredMcpServers,
   isBuiltInAgent,
 } from './loadAgentsDir.js'
 import { getPrompt } from './prompt.js'
@@ -149,6 +150,10 @@ const PROGRESS_THRESHOLD_MS = 2000 // Show background hint after 2 seconds
 const isBackgroundTasksDisabled =
   // eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
   isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+
+export function normalizeAgentDescription(description: string): string {
+  return description.replace(/\s+/g, ' ').trim()
+}
 
 // Auto-background agent tasks after this many ms (0 = disabled)
 // Enabled by env var OR GrowthBook gate (checked lazily since GB may not be ready at module load)
@@ -282,6 +287,7 @@ export const outputSchema = lazySchema(() => {
     status: z.literal('async_launched'),
     agentId: z.string().describe('The ID of the async agent'),
     description: z.string().describe('The description of the task'),
+    resolvedModel: z.string().describe('The resolved model for the agent'),
     prompt: z.string().describe('The prompt for the agent'),
     outputFile: z
       .string()
@@ -298,6 +304,69 @@ export const outputSchema = lazySchema(() => {
 })
 type OutputSchema = ReturnType<typeof outputSchema>
 type Output = z.input<OutputSchema>
+
+export function buildAgentLaunchDebugParamsForTesting({
+  requestedType,
+  selectedAgentType,
+  matchKind,
+  description,
+  name,
+  model,
+  permissionMode,
+  runInBackground,
+  selectedAgentBackground,
+  isAsync,
+  isolation,
+  cwd,
+  toolUseId,
+  requiredMcpServers,
+  availableMcpServers,
+  childSubagentDepth,
+  availableToolNames,
+  agentDepth,
+}: {
+  requestedType: string
+  selectedAgentType: string
+  matchKind: 'fork' | 'exact' | 'normalized'
+  description: string
+  name?: string
+  model: string
+  permissionMode?: string
+  runInBackground: boolean
+  selectedAgentBackground: boolean
+  isAsync: boolean
+  isolation?: string
+  cwd?: string
+  toolUseId?: string
+  requiredMcpServers: readonly string[]
+  availableMcpServers: readonly string[]
+  childSubagentDepth: number
+  availableToolNames: readonly string[]
+  agentDepth?: number
+}): Record<string, unknown> {
+  return {
+    requestedType,
+    selectedAgentType,
+    matchKind,
+    hasDescription: description.length > 0,
+    descriptionLength: description.length,
+    hasName: name !== undefined,
+    nameLength: name?.length,
+    model,
+    permissionMode,
+    runInBackground,
+    selectedAgentBackground,
+    isAsync,
+    isolation,
+    cwd,
+    toolUseId,
+    requiredMcpServers,
+    availableMcpServers,
+    childSubagentDepth,
+    availableToolNames,
+    agentDepth,
+  }
+}
 
 // Private type for teammate spawn results - excluded from exported schema for dead code elimination
 // The 'teammate_spawned' status string is only included when ENABLE_AGENT_SWARMS is true
@@ -407,6 +476,7 @@ export const AgentTool = buildTool({
     onProgress?,
   ) {
     const startTime = Date.now()
+    description = normalizeAgentDescription(description)
     const model = isCoordinatorMode() ? undefined : modelParam
 
     // Get app state for permission mode and agent filtering
@@ -493,6 +563,7 @@ export const AgentTool = buildTool({
     }
 
     let selectedAgent: AgentDefinition
+    let selectedAgentMatchKind: 'fork' | 'exact' | 'normalized'
     if (isForkPath) {
       // Recursive fork guard: fork children keep the Agent tool in their
       // pool for cache-identical tool defs, so reject fork attempts at call
@@ -510,42 +581,18 @@ export const AgentTool = buildTool({
         )
       }
       selectedAgent = FORK_AGENT
+      selectedAgentMatchKind = 'fork'
     } else {
-      // Filter agents to exclude those denied via Agent(AgentName) syntax
       const allAgents = toolUseContext.options.agentDefinitions.activeAgents
       const { allowedAgentTypes } = toolUseContext.options.agentDefinitions
-      const agents = filterDeniedAgents(
-        // When allowedAgentTypes is set (from Agent(x,y) tool spec), restrict to those types
-        allowedAgentTypes
-          ? allAgents.filter(a => allowedAgentTypes.includes(a.agentType))
-          : allAgents,
-        appState.toolPermissionContext,
-        AGENT_TOOL_NAME,
-      )
-
-      const found = agents.find(agent => agent.agentType === effectiveType)
-      if (!found) {
-        // Check if the agent exists but is denied by permission rules
-        const agentExistsButDenied = allAgents.find(
-          agent => agent.agentType === effectiveType,
-        )
-        if (agentExistsButDenied) {
-          const denyRule = getDenyRuleForAgent(
-            appState.toolPermissionContext,
-            AGENT_TOOL_NAME,
-            effectiveType,
-          )
-          throw new Error(
-            `Agent type '${effectiveType}' has been denied by permission rule '${AGENT_TOOL_NAME}(${effectiveType})' from ${denyRule?.source ?? 'settings'}.`,
-          )
-        }
-        throw new Error(
-          `Agent type '${effectiveType}' not found. Available agents: ${agents
-            .map(a => a.agentType)
-            .join(', ')}`,
-        )
-      }
-      selectedAgent = found
+      const resolution = resolveAgentType({
+        requestedType: effectiveType,
+        activeAgents: allAgents,
+        allowedAgentTypes,
+        permissionContext: appState.toolPermissionContext,
+      })
+      selectedAgent = resolution.agent
+      selectedAgentMatchKind = resolution.matchKind
     }
 
     // Same lifecycle constraint as the run_in_background guard above, but for
@@ -559,6 +606,11 @@ export const AgentTool = buildTool({
       throw new Error(
         `In-process teammates cannot spawn background agents. Agent '${selectedAgent.agentType}' has background: true in its definition.`,
       )
+    }
+
+    const effectiveIsolation = isolation ?? selectedAgent.isolation
+    if (cwd && effectiveIsolation === 'worktree') {
+      throw new Error('cwd is mutually exclusive with isolation: "worktree"')
     }
 
     // Capture for type narrowing — `let selectedAgent` prevents TS from
@@ -611,26 +663,16 @@ export const AgentTool = buildTool({
         }
       }
 
-      // Get servers that actually have tools (meaning they're connected AND authenticated)
-      const serversWithTools: string[] = []
-      for (const tool of currentAppState.mcp.tools) {
-        if (tool.name?.startsWith('mcp__')) {
-          // Extract server name from tool name (format: mcp__serverName__toolName)
-          const parts = tool.name.split('__')
-          const serverName = parts[1]
-          if (serverName && !serversWithTools.includes(serverName)) {
-            serversWithTools.push(serverName)
-          }
-        }
-      }
+      const serversWithTools = getAvailableMcpServerNames({
+        appStateMcpTools: currentAppState.mcp.tools,
+        currentToolPool: toolUseContext.options.tools,
+      })
+      const missing = getMissingRequiredMcpServers({
+        agent: selectedAgent,
+        availableServers: serversWithTools,
+      })
 
-      if (!hasRequiredMcpServers(selectedAgent, serversWithTools)) {
-        const missing = requiredMcpServers.filter(
-          pattern =>
-            !serversWithTools.some(server =>
-              server.toLowerCase().includes(pattern.toLowerCase()),
-            ),
-        )
+      if (missing.length > 0) {
         throw new Error(
           `Agent '${selectedAgent.agentType}' requires MCP servers matching: ${missing.join(', ')}. ` +
             `MCP servers with tools: ${serversWithTools.length > 0 ? serversWithTools.join(', ') : 'none'}. ` +
@@ -652,6 +694,8 @@ export const AgentTool = buildTool({
       permissionMode,
     )
 
+    const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
+
     logEvent('tengu_agent_tool_selected', {
       agent_type:
         selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -667,13 +711,8 @@ export const AgentTool = buildTool({
         (run_in_background === true || selectedAgent.background === true) &&
         !isBackgroundTasksDisabled,
       is_fork: isForkPath,
+      agent_depth: childSubagentDepth,
     })
-
-    // Resolve effective isolation mode (explicit param overrides agent def)
-    const effectiveIsolation = isolation ?? selectedAgent.isolation
-    if (cwd && effectiveIsolation === 'worktree') {
-      throw new Error('cwd is mutually exclusive with isolation: "worktree"')
-    }
 
     // Remote isolation: delegate to CCR. Gated ant-only — the guard enables
     // dead code elimination of the entire block for external builds.
@@ -895,9 +934,39 @@ export const AgentTool = buildTool({
       )
     }
 
-    const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
     // Explicit cwd arg (KAIROS) takes precedence over worktree isolation path.
     const cwdOverridePath = cwd ?? worktreeInfo?.worktreePath
+
+    logForDebugging(
+      `AgentTool launch params ${JSON.stringify(
+        buildAgentLaunchDebugParamsForTesting({
+          requestedType: effectiveType ?? 'fork',
+          selectedAgentType: selectedAgent.agentType,
+          matchKind: selectedAgentMatchKind,
+          description,
+          name,
+          model: resolvedAgentModel,
+          permissionMode,
+          runInBackground: run_in_background === true,
+          selectedAgentBackground: selectedAgent.background === true,
+          isAsync: shouldRunAsync,
+          isolation: effectiveIsolation,
+          cwd: cwdOverridePath,
+          toolUseId: toolUseContext.toolUseId,
+          requiredMcpServers: requiredMcpServers ?? [],
+          availableMcpServers: getAvailableMcpServerNames({
+            appStateMcpTools: appState.mcp.tools,
+            currentToolPool: toolUseContext.options.tools,
+          }),
+          childSubagentDepth,
+          availableToolNames: (isForkPath
+            ? toolUseContext.options.tools
+            : workerTools
+          ).map(tool => tool.name),
+          agentDepth: childSubagentDepth,
+        }),
+      )}`,
+    )
 
     const runAgentParams: Parameters<typeof runAgent>[0] = {
       agentDefinition: selectedAgent,
@@ -940,8 +1009,11 @@ export const AgentTool = buildTool({
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,
       ...(isForkPath && { useExactTools: true }),
       worktreePath: worktreeInfo?.worktreePath,
+      worktreeBranch: worktreeInfo?.worktreeBranch,
       cwd: cwdOverridePath,
       description,
+      name,
+      toolUseId: toolUseContext.toolUseId,
     }
 
     const wrapWithCwd = <T,>(fn: () => T): T =>
@@ -1067,6 +1139,7 @@ export const AgentTool = buildTool({
           status: 'async_launched' as const,
           agentId: agentBackgroundTask.agentId,
           description: description,
+          resolvedModel: resolvedAgentModel,
           prompt: prompt,
           outputFile: getTaskOutputPath(agentBackgroundTask.agentId),
           canReadOutputFile,
@@ -1119,6 +1192,9 @@ export const AgentTool = buildTool({
                   type: 'agent_progress',
                   prompt,
                   agentId: syncAgentId,
+                  agentType: selectedAgent.agentType,
+                  description,
+                  resolvedModel: resolvedAgentModel,
                 },
               })
             }
@@ -1433,6 +1509,7 @@ export const AgentTool = buildTool({
                       status: 'async_launched' as const,
                       agentId: backgroundedTaskId,
                       description: description,
+                      resolvedModel: resolvedAgentModel,
                       prompt: prompt,
                       outputFile: getTaskOutputPath(backgroundedTaskId),
                       canReadOutputFile,
@@ -1533,6 +1610,9 @@ export const AgentTool = buildTool({
                         // reads progressMessages[0]). Omit here to avoid duplication.
                         prompt: '',
                         agentId: syncAgentId,
+                        agentType: selectedAgent.agentType,
+                        description,
+                        resolvedModel: resolvedAgentModel,
                       },
                     })
                   }
@@ -1780,7 +1860,7 @@ The agent is now running and will receive instructions via mailbox.`,
     if (data.status === 'async_launched') {
       const prefix = `Async agent launched successfully.\nagentId: ${data.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${data.agentId}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.`
       const instructions = data.canReadOutputFile
-        ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.\noutput_file: ${data.outputFile}\nIf asked, you can check progress before completion by using ${FILE_READ_TOOL_NAME} or ${BASH_TOOL_NAME} tail on the output file.`
+        ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.\noutput_file: ${data.outputFile}\nDo not proactively read or tail the transcript. Only inspect the output file if the user asks for progress or you need a specific result before continuing.`
         : `Briefly tell the user what you launched and end your response. Do not generate any other text — agent results will arrive in a subsequent message.`
       const text = `${prefix}\n${instructions}`
       return {

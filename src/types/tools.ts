@@ -7,6 +7,9 @@ export type AgentToolProgress = {
   summary?: string
   prompt?: string
   agentId?: string
+  agentType?: string
+  description?: string
+  resolvedModel?: string
 }
 
 export type ShellProgress = {

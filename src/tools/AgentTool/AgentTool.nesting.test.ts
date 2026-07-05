@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
-
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
-import { AgentTool } from './AgentTool.js'
+import {
+  AgentTool,
+  buildAgentLaunchDebugParamsForTesting,
+} from './AgentTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import {
   buildAgentMetadataForTesting,
@@ -23,6 +25,13 @@ type TestContext = {
 }
 
 function createContext(subagentDepth: number): TestContext {
+  const state = {
+    toolPermissionContext: getEmptyToolPermissionContext(),
+    mcp: { clients: [], tools: [] },
+    tasks: {},
+    agentNameRegistry: new Map(),
+  }
+
   return {
     options: {
       commands: [],
@@ -44,12 +53,7 @@ function createContext(subagentDepth: number): TestContext {
     messages: [],
     abortController: new AbortController(),
     readFileState: createFileStateCacheWithSizeLimit(10),
-    getAppState: () => ({
-      toolPermissionContext: getEmptyToolPermissionContext(),
-      mcp: { clients: [], tools: [] },
-      tasks: {},
-      agentNameRegistry: new Map(),
-    }),
+    getAppState: () => state,
     setAppState: () => {},
     setInProgressToolUseIDs: () => {},
     setResponseLength: () => {},
@@ -81,12 +85,14 @@ assert.deepEqual(
     agentType: 'general-purpose',
     description: 'metadata test',
     worktreePath: '/tmp/worktree',
+    worktreeBranch: 'agent-test',
     cwd: undefined,
   }),
   {
     agentType: 'general-purpose',
     description: 'metadata test',
     worktreePath: '/tmp/worktree',
+    worktreeBranch: 'agent-test',
   },
 )
 
@@ -108,6 +114,7 @@ const depthContext = createContext(0) as never as { options: { subagentDepth?: n
 depthContext.options.subagentDepth = 1
 assert.equal(getAgentOptionsSubagentDepthForTesting(depthContext as never), 1)
 
+const invalidContext = createContext(0)
 let cwdWorktreeError: unknown
 try {
   await AgentTool.call(
@@ -118,7 +125,7 @@ try {
       isolation: 'worktree',
       cwd: '/tmp',
     },
-    createContext(0) as never,
+    invalidContext as never,
     async () => ({ behavior: 'allow' }),
     { message: { id: 'msg_cwd_worktree' } } as never,
   )
@@ -130,6 +137,8 @@ assert.equal(
   cwdWorktreeError.message,
   'cwd is mutually exclusive with isolation: "worktree"',
 )
+assert.deepEqual(invalidContext.getAppState().tasks, {})
+assert.equal(invalidContext.getAppState().agentNameRegistry.size, 0)
 
 let rootSetCalls = 0
 let isolatedSetCalls = 0
@@ -149,5 +158,44 @@ const contextWithRootSetter = {
 getRootSetAppStateForTesting(contextWithRootSetter as never)(state => state)
 assert.equal(rootSetCalls, 1)
 assert.equal(isolatedSetCalls, 0)
+
+const debugParams = buildAgentLaunchDebugParamsForTesting({
+  requestedType: 'general purpose',
+  selectedAgentType: 'general-purpose',
+  matchKind: 'normalized',
+  description: 'debug params test',
+  model: 'claude-sonnet-4-6',
+  permissionMode: undefined,
+  runInBackground: true,
+  selectedAgentBackground: false,
+  isAsync: true,
+  isolation: undefined,
+  cwd: undefined,
+  toolUseId: undefined,
+  requiredMcpServers: [],
+  availableMcpServers: ['github'],
+  childSubagentDepth: 1,
+  availableToolNames: ['Agent', 'Read'],
+  agentDepth: 1,
+})
+assert.equal(debugParams.requestedType, 'general purpose')
+assert.equal(debugParams.selectedAgentType, 'general-purpose')
+assert.equal(debugParams.matchKind, 'normalized')
+assert.equal(debugParams.hasDescription, true)
+assert.equal(debugParams.descriptionLength, 'debug params test'.length)
+assert.equal(debugParams.hasName, false)
+assert.equal(debugParams.nameLength, undefined)
+assert.equal(debugParams.runInBackground, true)
+assert.equal(debugParams.isAsync, true)
+assert.equal(debugParams.isolation, undefined)
+assert.equal(debugParams.cwd, undefined)
+assert.equal(debugParams.toolUseId, undefined)
+assert.deepEqual(debugParams.requiredMcpServers, [])
+assert.deepEqual(debugParams.availableMcpServers, ['github'])
+assert.equal(debugParams.childSubagentDepth, 1)
+assert.equal(debugParams.agentDepth, 1)
+assert.deepEqual(debugParams.availableToolNames, ['Agent', 'Read'])
+assert.equal(JSON.stringify(debugParams).includes('reply ready'), false)
+assert.equal(JSON.stringify(debugParams).includes('debug params test'), false)
 
 console.log('AgentTool.nesting.test.ts passed')

@@ -230,16 +230,19 @@ export function buildAgentMetadataForTesting({
   agentType,
   description,
   worktreePath,
+  worktreeBranch,
   cwd,
 }: {
   agentType: string
   description?: string
   worktreePath?: string
+  worktreeBranch?: string
   cwd?: string
 }) {
   return {
     agentType,
     ...(worktreePath && { worktreePath }),
+    ...(worktreeBranch && { worktreeBranch }),
     ...(!worktreePath && cwd && { cwd }),
     ...(description && { description }),
   }
@@ -297,6 +300,7 @@ export async function* runAgent({
   contentReplacementState,
   useExactTools,
   worktreePath,
+  worktreeBranch,
   cwd,
   description,
   transcriptSubdir,
@@ -349,11 +353,21 @@ export async function* runAgent({
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */
   worktreePath?: string
+  /** Worktree branch if the agent was spawned with isolation: "worktree". */
+  worktreeBranch?: string
   /** Effective cwd for explicit cwd overrides; worktreePath remains separate. */
   cwd?: string
   /** Original task description from AgentTool input. Persisted to metadata
    * so a resumed agent's notification can show the original description. */
   description?: string
+  /** Optional parent-provided name for SendMessage routing/attribution. */
+  name?: string
+  /** Parent tool_use id for attribution and notifications. */
+  toolUseId?: string
+  /** Whether this agent was spawned by a skill-triggered flow. */
+  spawnedBySkill?: boolean
+  /** Non-fatal notification hook for blocked/unavailable MCP servers. */
+  onMcpServersBlocked?: (serverNames: string[]) => void | Promise<void>
   /** Optional subdirectory under subagents/ to group this agent's transcript
    * with related ones (e.g. workflows/<runId> for workflow subagents). */
   transcriptSubdir?: string
@@ -780,6 +794,7 @@ export async function* runAgent({
       agentType: agentDefinition.agentType,
       description,
       worktreePath,
+      worktreeBranch,
       cwd,
     }),
   ).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
