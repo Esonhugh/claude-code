@@ -212,14 +212,12 @@ const fullInputSchema = lazySchema(() => {
       .string()
       .optional()
       .describe(
-        'Name for spawning a teammate in an existing team. Omit for ordinary subagents. Only set when the user explicitly asks for an addressable teammate.',
+        'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',
       ),
     team_name: z
       .string()
       .optional()
-      .describe(
-        'Existing team name for teammate spawning. Omit for ordinary subagents. Only set when the user explicitly asks to use a specific existing team.',
-      ),
+      .describe('Deprecated; ignored. The session has a single implicit team.'),
     mode: permissionModeSchema()
       .optional()
       .describe(
@@ -237,8 +235,8 @@ const fullInputSchema = lazySchema(() => {
         .optional()
         .describe(
           isAnt()
-            ? 'Optional isolation mode. Omit this field to run in the current workspace. Use "worktree" only when a separate git worktree is specifically needed; especially omit it when the current project is not a git repository. "remote" launches the agent in a remote CCR environment (always runs in background).'
-            : 'Optional isolation mode. Omit this field to run in the current workspace. Use "worktree" only when a separate git worktree is specifically needed; especially omit it when the current project is not a git repository.',
+            ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote cloud environment (always runs in background; availability is gated).'
+            : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.',
         ),
       cwd: z
         .string()
