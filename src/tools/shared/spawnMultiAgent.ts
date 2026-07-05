@@ -309,9 +309,6 @@ async function handleSpawnSplitPane(
   const { setAppState, getAppState } = context
   const { name, prompt, agent_type, cwd, plan_mode_required } = input
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
-
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
   }
@@ -325,6 +322,16 @@ async function handleSpawnSplitPane(
       'team_name is required for spawn operation. Either provide team_name in input or call spawnTeam first to establish team context.',
     )
   }
+
+  const teamFile = await readTeamFileAsync(teamName)
+  if (!teamFile) {
+    throw new Error(
+      `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
+    )
+  }
+
+  // Resolve model: 'inherit' → leader's model; undefined → default Opus
+  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
 
   // Generate unique name if duplicate exists in team
   const uniqueName = await generateUniqueTeammateName(name, teamName)
@@ -486,12 +493,6 @@ async function handleSpawnSplitPane(
   })
 
   // Register agent in the team file
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
-    throw new Error(
-      `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
-    )
-  }
   teamFile.members.push({
     agentId: teammateId,
     name: sanitizedName,
@@ -549,9 +550,6 @@ async function handleSpawnSeparateWindow(
   const { setAppState, getAppState } = context
   const { name, prompt, agent_type, cwd, plan_mode_required } = input
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
-
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
   }
@@ -565,6 +563,16 @@ async function handleSpawnSeparateWindow(
       'team_name is required for spawn operation. Either provide team_name in input or call spawnTeam first to establish team context.',
     )
   }
+
+  const teamFile = await readTeamFileAsync(teamName)
+  if (!teamFile) {
+    throw new Error(
+      `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
+    )
+  }
+
+  // Resolve model: 'inherit' → leader's model; undefined → default Opus
+  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
 
   // Generate unique name if duplicate exists in team
   const uniqueName = await generateUniqueTeammateName(name, teamName)
@@ -700,12 +708,6 @@ async function handleSpawnSeparateWindow(
   })
 
   // Register agent in the team file
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
-    throw new Error(
-      `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
-    )
-  }
   teamFile.members.push({
     agentId: teammateId,
     name: sanitizedName,
@@ -844,9 +846,6 @@ async function handleSpawnInProcess(
   const { setAppState, getAppState } = context
   const { name, prompt, agent_type, plan_mode_required } = input
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
-
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
   }
@@ -860,6 +859,16 @@ async function handleSpawnInProcess(
       'team_name is required for spawn operation. Either provide team_name in input or call spawnTeam first to establish team context.',
     )
   }
+
+  const teamFile = await readTeamFileAsync(teamName)
+  if (!teamFile) {
+    throw new Error(
+      `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
+    )
+  }
+
+  // Resolve model: 'inherit' → leader's model; undefined → default Opus
+  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
 
   // Generate unique name if duplicate exists in team
   const uniqueName = await generateUniqueTeammateName(name, teamName)
@@ -986,12 +995,6 @@ async function handleSpawnInProcess(
   })
 
   // Register agent in the team file
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
-    throw new Error(
-      `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
-    )
-  }
   teamFile.members.push({
     agentId: teammateId,
     name: sanitizedName,

@@ -251,12 +251,18 @@ export function buildAgentMetadataForTesting({
   worktreePath,
   worktreeBranch,
   cwd,
+  name,
+  toolUseId,
+  spawnDepth,
 }: {
   agentType: string
   description?: string
   worktreePath?: string
   worktreeBranch?: string
   cwd?: string
+  name?: string
+  toolUseId?: string
+  spawnDepth?: number
 }) {
   return {
     agentType,
@@ -264,6 +270,9 @@ export function buildAgentMetadataForTesting({
     ...(worktreeBranch && { worktreeBranch }),
     ...(!worktreePath && cwd && { cwd }),
     ...(description && { description }),
+    ...(name && { name }),
+    ...(toolUseId && { toolUseId }),
+    ...(spawnDepth !== undefined && { spawnDepth }),
   }
 }
 
@@ -322,6 +331,8 @@ export async function* runAgent({
   worktreeBranch,
   cwd,
   description,
+  name,
+  toolUseId,
   onMcpServersBlocked,
   transcriptSubdir,
   onQueryProgress,
@@ -820,6 +831,9 @@ export async function* runAgent({
       worktreePath,
       worktreeBranch,
       cwd,
+      name,
+      toolUseId,
+      spawnDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
     }),
   ).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 import {
@@ -87,12 +90,18 @@ assert.deepEqual(
     worktreePath: '/tmp/worktree',
     worktreeBranch: 'agent-test',
     cwd: undefined,
+    name: 'worker-name',
+    toolUseId: 'toolu_metadata',
+    spawnDepth: 2,
   }),
   {
     agentType: 'general-purpose',
     description: 'metadata test',
     worktreePath: '/tmp/worktree',
     worktreeBranch: 'agent-test',
+    name: 'worker-name',
+    toolUseId: 'toolu_metadata',
+    spawnDepth: 2,
   },
 )
 
@@ -113,6 +122,121 @@ assert.deepEqual(
 const depthContext = createContext(0) as never as { options: { subagentDepth?: number } }
 depthContext.options.subagentDepth = 1
 assert.equal(getAgentOptionsSubagentDepthForTesting(depthContext as never), 1)
+
+const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const configDir = mkdtempSync(join(tmpdir(), 'agent-tool-stale-team-test-'))
+process.env.CLAUDE_CONFIG_DIR = configDir
+const staleTeamContext = createContext(1)
+let staleTeamError: unknown
+try {
+  await AgentTool.call(
+    {
+      description: 'stale team context',
+      prompt: 'reply ok',
+      subagent_type: 'general-purpose',
+      name: 'worker-name',
+      isolation: 'worktree',
+      cwd: '/tmp',
+    },
+    {
+      ...staleTeamContext,
+      getAppState: () => ({
+        ...staleTeamContext.getAppState(),
+        teamContext: { teamName: 'default' },
+      }),
+    } as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_stale_team' } } as never,
+  )
+} catch (error) {
+  staleTeamError = error
+}
+assert.ok(staleTeamError instanceof Error)
+assert.equal(
+  staleTeamError.message,
+  'cwd is mutually exclusive with isolation: "worktree"',
+)
+
+let explicitMissingTeamError: unknown
+try {
+  await AgentTool.call(
+    {
+      description: 'explicit missing team',
+      prompt: 'reply ok',
+      subagent_type: 'general-purpose',
+      name: 'worker-name',
+      team_name: 'default',
+      isolation: 'worktree',
+      cwd: '/tmp',
+    },
+    createContext(1) as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_explicit_missing_team' } } as never,
+  )
+} catch (error) {
+  explicitMissingTeamError = error
+}
+assert.ok(explicitMissingTeamError instanceof Error)
+assert.equal(
+  explicitMissingTeamError.message,
+  'cwd is mutually exclusive with isolation: "worktree"',
+)
+
+let explicitNonDefaultMissingTeamError: unknown
+try {
+  await AgentTool.call(
+    {
+      description: 'explicit non-default missing team',
+      prompt: 'reply ok',
+      subagent_type: 'general-purpose',
+      name: 'worker-name',
+      team_name: 'missing-team',
+      isolation: 'worktree',
+      cwd: '/tmp',
+    },
+    createContext(1) as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_explicit_non_default_missing_team' } } as never,
+  )
+} catch (error) {
+  explicitNonDefaultMissingTeamError = error
+}
+assert.ok(explicitNonDefaultMissingTeamError instanceof Error)
+assert.equal(
+  explicitNonDefaultMissingTeamError.message,
+  'Team "missing-team" does not exist. Call spawnTeam first to create the team.',
+)
+
+let emptyNameError: unknown
+try {
+  await AgentTool.call(
+    {
+      description: 'empty name',
+      prompt: 'reply ok',
+      subagent_type: 'general-purpose',
+      name: '',
+      team_name: 'default',
+      isolation: 'worktree',
+      cwd: '/tmp',
+    },
+    createContext(1) as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_empty_name' } } as never,
+  )
+} catch (error) {
+  emptyNameError = error
+}
+assert.ok(emptyNameError instanceof Error)
+assert.equal(
+  emptyNameError.message,
+  'cwd is mutually exclusive with isolation: "worktree"',
+)
+if (originalConfigDir === undefined) {
+  delete process.env.CLAUDE_CONFIG_DIR
+} else {
+  process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+}
+rmSync(configDir, { recursive: true, force: true })
 
 const invalidContext = createContext(0)
 let cwdWorktreeError: unknown

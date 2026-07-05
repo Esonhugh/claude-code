@@ -68,6 +68,7 @@ import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import { writeAgentMetadata } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
+import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
@@ -211,13 +212,13 @@ const fullInputSchema = lazySchema(() => {
       .string()
       .optional()
       .describe(
-        'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',
+        'Name for spawning a teammate in an existing team. Omit for ordinary subagents. Only set when the user explicitly asks for an addressable teammate.',
       ),
     team_name: z
       .string()
       .optional()
       .describe(
-        'Team name for spawning. Uses current team context if omitted.',
+        'Existing team name for teammate spawning. Omit for ordinary subagents. Only set when the user explicitly asks to use a specific existing team.',
       ),
     mode: permissionModeSchema()
       .optional()
@@ -498,6 +499,13 @@ export const AgentTool = buildTool({
     const rootSetAppState =
       toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
+    if (!name?.trim()) {
+      name = undefined
+    }
+    if (!team_name?.trim()) {
+      team_name = undefined
+    }
+
     // Check if user is trying to use agent teams without access
     if (team_name && !isAgentSwarmsEnabled()) {
       throw new Error('Agent Teams is not yet available on your plan.')
@@ -506,7 +514,19 @@ export const AgentTool = buildTool({
     // Teammates (in-process or tmux) passing `name` would trigger spawnTeammate()
     // below, but TeamFile.members is a flat array with one leadAgentId — nested
     // teammates land in the roster with no provenance and confuse the lead.
-    const teamName = resolveTeamName({ team_name }, appState)
+    let teamName = resolveTeamName({ team_name }, appState)
+    if (teamName) {
+      const teamFile = await readTeamFileAsync(teamName)
+      if (!teamFile) {
+        if (team_name && team_name !== 'default') {
+          throw new Error(
+            `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
+          )
+        }
+        teamName = undefined
+        team_name = undefined
+      }
+    }
     if (isTeammate() && teamName && name) {
       throw new Error(
         'Teammates cannot spawn other teammates — the team roster is flat. To spawn a subagent instead, omit the `name` parameter.',
