@@ -86,17 +86,17 @@ export function getAttributionTexts(): AttributionTexts {
   // New attribution setting takes precedence over deprecated includeCoAuthoredBy
   if (settings.attribution) {
     return {
-      commit: settings.attribution.commit ?? defaultCommit,
-      pr: settings.attribution.pr ?? defaultAttribution,
+      commit: settings.attribution.commit ?? '',
+      pr: settings.attribution.pr ?? '',
     }
   }
 
   // Backward compatibility: deprecated includeCoAuthoredBy setting
-  if (settings.includeCoAuthoredBy === false) {
-    return { commit: '', pr: '' }
+  if (settings.includeCoAuthoredBy === true) {
+    return { commit: defaultCommit, pr: defaultAttribution }
   }
 
-  return { commit: defaultCommit, pr: defaultAttribution }
+  return { commit: '', pr: '' }
 }
 
 /**
@@ -320,13 +320,12 @@ export async function getEnhancedPRAttribution(
 
   const settings = getInitialSettings()
 
-  // If user has custom PR attribution, use that
-  if (settings.attribution?.pr) {
-    return settings.attribution.pr
+  if (settings.attribution) {
+    return settings.attribution.pr ?? ''
   }
 
   // Backward compatibility: deprecated includeCoAuthoredBy setting
-  if (settings.includeCoAuthoredBy === false) {
+  if (settings.includeCoAuthoredBy !== true) {
     return ''
   }
 
