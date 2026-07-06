@@ -178,6 +178,10 @@ assert.equal(WorkflowTool.isEnabled(), true)
 const workflowPrompt = await WorkflowTool.prompt()
 assert.match(workflowPrompt, /Explicit opt-in requirement/)
 assert.match(workflowPrompt, /Ultracode/)
+assert.match(workflowPrompt, /Prefer WorkflowTool for broad, workflow-scale orchestration/)
+assert.match(workflowPrompt, /For focused tasks, use direct tools or a small number of subagents/)
+assert.match(workflowPrompt, /Do not run WorkflowTool when the user asks to avoid workflow orchestration/)
+assert.doesNotMatch(workflowPrompt, /prefer this tool on every substantive task/)
 assert.match(workflowPrompt, /export const meta = \{ name, description, phases \}/)
 assert.match(workflowPrompt, /pure literal/i)
 assert.match(workflowPrompt, /computed keys/i)
@@ -584,6 +588,11 @@ const pauseResult = await WorkflowTool.call(
   { message: { id: 'msg_pause' } } as never,
 )
 assert.match(String(pauseResult.data), /Status: pending/)
+assert.match(String(pauseResult.data), /Child agents:/)
+assert.match(
+  String(pauseResult.data),
+  /Some notifications may still arrive after pause; they are part of this workflow run\./,
+)
 const pausedSession = JSON.parse(
   await readFile(join(tempRoot, '.claude', 'workflow-runs', pausableRunId, 'session.json'), 'utf8'),
 )

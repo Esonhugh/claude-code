@@ -52,7 +52,7 @@ If a task merely could benefit from a workflow but the user did not opt in, do n
 
 ## Ultracode
 
-When ultracode is on for a turn (effort=ultracode or the ultracode keyword), prefer this tool on every substantive task. Token cost is not a constraint in ultracode — optimize for the most exhaustive, correct answer, not the fastest or cheapest. Solo-execute only on conversational/trivial turns. See the quality patterns section for the verification techniques to lean on.
+When ultracode is on for a turn (effort=ultracode or the ultracode keyword), optimize for the most exhaustive, correct answer, not the fastest or cheapest. Prefer WorkflowTool for broad, workflow-scale orchestration such as audits, migrations, deep research, cross-checking, or independent fan-out. For focused tasks, use direct tools or a small number of subagents. Do not run WorkflowTool when the user asks to avoid workflow orchestration. Solo-execute on conversational/trivial turns. See the quality patterns section for the verification techniques to lean on.
 
 When ultracode is off, the standard opt-in rule above applies again.
 
@@ -333,7 +333,12 @@ export const WorkflowTool = buildTool({
       pauseWorkflowTask(selector, context.setAppStateForTasks ?? context.setAppState)
       const task = loadWorkflowTask(context, selector)
       await persistWorkflowControlStatus({ cwd, task, status: 'paused' })
-      return { data: formatWorkflowStatus(task) }
+      return {
+        data: [
+          formatWorkflowStatus(task),
+          'Some notifications may still arrive after pause; they are part of this workflow run.',
+        ].join('\n'),
+      }
     }
 
     if (action === 'resume') {

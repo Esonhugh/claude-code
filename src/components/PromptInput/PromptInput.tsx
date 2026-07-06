@@ -190,8 +190,8 @@ import {
   findUltrareviewTriggerPositions,
 } from '../../utils/ultraplan/keyword.js'
 import {
-  findUltracodeTriggerPositions,
   getUltracodeNotificationText,
+  getUltracodeNotificationTriggerPositions,
 } from '../../utils/ultracodeOrchestration.js'
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js'
 import { BridgeDialog } from '../BridgeDialog.js'
@@ -470,6 +470,7 @@ function PromptInput({
     isFastModeEnabled() ? s.fastMode : false,
   )
   const effortValue = useAppState(s => s.effortValue)
+  const settings = useAppState(s => s.settings)
   const viewedTeammate = getViewedTeammateTask(store.getState())
   const viewingAgentName = viewedTeammate?.identity.agentName
   // identity.color is typed as `string | undefined` (not AgentColorName) because
@@ -778,8 +779,8 @@ function PromptInput({
   )
 
   const ultracodeTriggers = useMemo(
-    () => findUltracodeTriggerPositions(displayedValue),
-    [displayedValue],
+    () => getUltracodeNotificationTriggerPositions(displayedValue, settings),
+    [displayedValue, settings],
   )
 
   const btwTriggers = useMemo(

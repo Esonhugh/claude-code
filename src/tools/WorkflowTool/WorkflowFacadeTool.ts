@@ -169,7 +169,9 @@ export const WorkflowFacadeTool = buildTool({
     return 'Run an official-compatible workflow script or saved workflow'
   },
   async prompt() {
-    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script, name }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.`
+    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script, name }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.
+
+Use this facade only for workflow-scale orchestration or when the user explicitly asks to run a workflow/script/plan. For focused tasks, use direct tools or a small number of subagents instead. If the user asks to avoid workflow orchestration, do not call this tool.`
   },
   get inputSchema(): InputSchema {
     return inputSchema()

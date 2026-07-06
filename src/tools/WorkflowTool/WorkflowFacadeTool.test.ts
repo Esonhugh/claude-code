@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +9,16 @@ import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/Local
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
 import { normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
+
+const workflowFacadeSource = readFileSync(
+  'src/tools/WorkflowTool/WorkflowFacadeTool.ts',
+  'utf8',
+)
+assert.match(workflowFacadeSource, /workflow-scale orchestration/)
+assert.match(workflowFacadeSource, /For focused tasks/)
+assert.match(workflowFacadeSource, /do not call this tool/)
+assert.match(workflowFacadeSource, /avoid workflow/)
+assert.doesNotMatch(workflowFacadeSource, /every substantive task/)
 
 assert.deepEqual(
   normalizeWorkflowFacadeInput({

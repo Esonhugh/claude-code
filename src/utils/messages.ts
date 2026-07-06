@@ -3994,7 +3994,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return wrapMessagesInSystemReminder([
         createUserMessage({
           content:
-            'The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the Workflow tool to fulfill the request.',
+            'The user included the keyword "ultracode", opting this turn into deeper verification and, when the task warrants it, workflow-scale orchestration. Use Workflow only for broad/fan-out work; for focused tasks, use direct tools or a small number of subagents. If the user asks to avoid workflows, do not call Workflow.',
           isMeta: true,
         }),
       ])
@@ -4002,8 +4002,8 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'ultra_effort_enter': {
       const content =
         attachment.reminderType === 'full'
-          ? "Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest. Use the Workflow tool on every substantive task; token cost is not a constraint. See the Workflow tool's **Ultracode** section and quality patterns. Solo only on conversational/trivial turns."
-          : "Ultracode is still on — use the Workflow tool; see its Ultracode section."
+          ? 'Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest. Prefer Workflow for broad, workflow-scale tasks such as audits, migrations, deep research, cross-checking, or independent fan-out. For focused tasks, use direct tools or a small number of subagents. Do not run Workflow when the user asks to avoid workflow orchestration.'
+          : 'Ultracode is still on — use deeper verification; prefer Workflow only for workflow-scale tasks and respect requests to avoid workflows.'
       return wrapMessagesInSystemReminder([
         createUserMessage({ content, isMeta: true }),
       ])

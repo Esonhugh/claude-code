@@ -56,6 +56,12 @@ export type WorkflowPhaseStatus =
   | 'failed'
   | 'skipped'
 
+export type WorkflowAgentErrorKind =
+  | 'concurrency_limit'
+  | 'stalled'
+  | 'permission_denied'
+  | 'agent_failed'
+
 export type WorkflowAgentResult = {
   phaseId: string
   agentId: string
@@ -63,10 +69,21 @@ export type WorkflowAgentResult = {
   status: 'completed' | 'failed' | 'skipped' | 'running'
   output?: string
   error?: string
+  errorKind?: WorkflowAgentErrorKind
   prompt?: string
   tokenCount?: number
   toolUseCount?: number
   durationMs?: number
+}
+
+export type WorkflowChildAgentSummary = {
+  completed: number
+  failed: number
+  skipped: number
+  running: number
+  live: number
+  concurrencyBlocked: number
+  liveActivities: string[]
 }
 
 export type LocalWorkflowPhaseState = {
@@ -283,6 +300,35 @@ function completedAgents(task: LocalWorkflowTaskState): number {
     (sum, phase) => sum + phase.completedAgentIds.length,
     0,
   )
+}
+
+export function getWorkflowChildAgentSummary(
+  task: LocalWorkflowTaskState,
+): WorkflowChildAgentSummary {
+  const liveAgentIds = new Set(Object.keys(task.liveAgents ?? {}))
+  const summary: WorkflowChildAgentSummary = {
+    completed: 0,
+    failed: 0,
+    skipped: 0,
+    running: 0,
+    live: liveAgentIds.size,
+    concurrencyBlocked: 0,
+    liveActivities: [],
+  }
+
+  for (const result of task.results) {
+    if (result.status === 'completed') summary.completed++
+    else if (result.status === 'failed') summary.failed++
+    else if (result.status === 'skipped') summary.skipped++
+    else if (result.status === 'running') summary.running++
+    if (result.errorKind === 'concurrency_limit') summary.concurrencyBlocked++
+  }
+
+  for (const liveAgent of Object.values(task.liveAgents ?? {})) {
+    if (liveAgent.activity) summary.liveActivities.push(liveAgent.activity)
+  }
+
+  return summary
 }
 
 function appendEvent(
@@ -579,16 +625,27 @@ export function failWorkflowAgent({
   phaseId,
   agentId,
   error,
+  errorKind,
   setAppState,
 }: {
   taskId: string
   phaseId: string
   agentId: string
   error: string
+  errorKind?: WorkflowAgentErrorKind
   setAppState: SetAppState
 }): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    const phase = task.phases.find(item => item.id === phaseId)
+    const failedResult: WorkflowAgentResult = {
+      phaseId,
+      agentId,
+      index: Math.max(phase?.agentIds.indexOf(agentId) ?? -1, 0),
+      status: 'failed',
+      error,
+      errorKind,
+    }
     const nextTask = updatePhase(
       { ...task, summary: `Workflow agent failed: ${error}` },
       phaseId,
@@ -596,12 +653,21 @@ export function failWorkflowAgent({
         ...phase,
         status: 'failed',
         failedAgentIds: addUnique(phase.failedAgentIds, agentId),
+        results: [...removePhaseResultsForIndex(phase.results, failedResult.index), failedResult],
         error,
       }),
     )
     return {
       ...nextTask,
       ...removeLiveAgentState(nextTask, [agentId]),
+      results: [
+        ...removeTaskResultsForPhaseIndex(
+          nextTask.results,
+          failedResult.phaseId,
+          failedResult.index,
+        ),
+        failedResult,
+      ],
     }
   })
 }

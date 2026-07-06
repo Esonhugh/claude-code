@@ -4,6 +4,7 @@ import {
   findUltracodeTriggerPositions,
   hasUltracodeKeyword,
   getUltracodeNotificationText,
+  getUltracodeNotificationTriggerPositions,
   isUltracodeKeywordTriggerEnabled,
   shouldInjectUltracodeOrchestration,
 } from './ultracodeOrchestration.js'
@@ -17,23 +18,49 @@ assert.equal(shouldInjectUltracodeOrchestration(undefined), false)
 assert.equal(isUltracodeKeywordTriggerEnabled({}), true)
 assert.equal(isUltracodeKeywordTriggerEnabled({ ultracodeKeywordTrigger: true }), true)
 assert.equal(isUltracodeKeywordTriggerEnabled({ ultracodeKeywordTrigger: false }), false)
+assert.deepEqual(
+  getUltracodeNotificationTriggerPositions('please ultracode this', {}).map(
+    position => position.start,
+  ),
+  [7],
+)
+assert.deepEqual(
+  getUltracodeNotificationTriggerPositions('please ultracode this', {
+    ultracodeKeywordTrigger: true,
+  }).map(position => position.start),
+  [7],
+)
+assert.deepEqual(
+  getUltracodeNotificationTriggerPositions('please ultracode this', {
+    ultracodeKeywordTrigger: false,
+  }),
+  [],
+)
+assert.deepEqual(
+  getUltracodeNotificationTriggerPositions('what is ultracode?', {}),
+  [],
+)
 assert.equal(
   getUltracodeNotificationText(),
   'Dynamic workflow requested for this turn · opt+w to ignore',
 )
 
 const messagesSource = readFileSync('src/utils/messages.ts', 'utf8')
-assert.match(
+assert.match(messagesSource, /deeper verification/)
+assert.match(messagesSource, /workflow-scale orchestration/)
+assert.match(messagesSource, /For focused tasks/)
+assert.match(messagesSource, /do not call Workflow/)
+assert.doesNotMatch(
   messagesSource,
-  /The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the Workflow tool to fulfill the request\./,
+  /use the Workflow tool to fulfill the request/,
 )
-assert.match(
+assert.doesNotMatch(
   messagesSource,
-  /Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest\. Use the Workflow tool on every substantive task; token cost is not a constraint\. See the Workflow tool's \*\*Ultracode\*\* section and quality patterns\. Solo only on conversational\/trivial turns\./,
+  /Use the Workflow tool on every substantive task/,
 )
-assert.match(
+assert.doesNotMatch(
   messagesSource,
-  /Ultracode is still on — use the Workflow tool; see its Ultracode section\./,
+  /Ultracode is still on — use the Workflow tool/,
 )
 assert.match(
   messagesSource,

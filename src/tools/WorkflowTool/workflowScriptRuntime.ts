@@ -18,6 +18,7 @@ import {
   registerWorkflowTask,
   startWorkflowPhase,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import type { WorkflowAgentErrorKind } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowArgs, WorkflowDryRunPhase, WorkflowDryRunPlan, WorkflowPermissionMode, WorkflowProgressEvent } from './workflowSpec.js'
 import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 import {
@@ -51,6 +52,22 @@ const MAX_AGENT_CAP = 1000
 const MAX_STALL_RETRIES = 3
 const DEFAULT_STALL_MS = 120_000
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
+
+export function classifyWorkflowAgentError(
+  error: unknown,
+): WorkflowAgentErrorKind {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/Concurrency limit exceeded for user/i.test(message)) {
+    return 'concurrency_limit'
+  }
+  if (/stalled/i.test(message)) {
+    return 'stalled'
+  }
+  if (/permission denied|not allowed|denied by permission/i.test(message)) {
+    return 'permission_denied'
+  }
+  return 'agent_failed'
+}
 
 // --- Types ---
 type AgentToolInput = {
@@ -334,7 +351,7 @@ export async function runWorkflowScript({
         // Non-stall error or max retries — fail gracefully (return null like official parallel)
         failWorkflowAgent({
           taskId: workflowTask.id, phaseId: phase, agentId: label,
-          error: msg, setAppState,
+          error: msg, errorKind: classifyWorkflowAgentError(error), setAppState,
         })
         return null
       } finally {

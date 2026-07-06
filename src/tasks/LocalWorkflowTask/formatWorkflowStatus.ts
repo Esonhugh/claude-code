@@ -1,4 +1,7 @@
-import type { LocalWorkflowTaskState } from './LocalWorkflowTask.js'
+import {
+  getWorkflowChildAgentSummary,
+  type LocalWorkflowTaskState,
+} from './LocalWorkflowTask.js'
 
 function elapsedMs(task: LocalWorkflowTaskState): number {
   return Math.max(0, (task.endTime ?? Date.now()) - task.startTime)
@@ -72,6 +75,8 @@ export function formatWorkflowStatus(
     }
   }
 
+  const childSummary = getWorkflowChildAgentSummary(task)
+  const liveActivity = childSummary.liveActivities[0]
   lines.push(
     `User input: ${formatWorkflowArgs(task.runArgs)}`,
     `Progress version: ${task.progressVersion ?? 0}`,
@@ -79,6 +84,7 @@ export function formatWorkflowStatus(
     `Agents: ${completed}/${total}`,
     `Progress: [${progressBar(completed, total)}] ${completed}/${total} (${progressPercent(completed, total)}%)`,
     `Retries: ${retryCount(task)}`,
+    `Child agents: ${childSummary.completed} completed, ${childSummary.failed} failed, ${childSummary.skipped} skipped, ${childSummary.running} running, ${childSummary.live} live${liveActivity ? `/${liveActivity}` : ''}, ${childSummary.concurrencyBlocked} blocked by concurrency limit`,
     `Official events: ${task.events?.length ?? 0}`,
     `Tokens: ${task.tokenCount ?? 0}`,
     `Tool uses: ${task.toolUseCount ?? 0}`,

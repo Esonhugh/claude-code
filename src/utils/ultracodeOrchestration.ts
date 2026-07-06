@@ -27,6 +27,14 @@ export function isUltracodeKeywordTriggerEnabled(settings: { ultracodeKeywordTri
   return settings?.ultracodeKeywordTrigger !== false
 }
 
+export function getUltracodeNotificationTriggerPositions(
+  text: string,
+  settings: { ultracodeKeywordTrigger?: boolean } | undefined,
+): TriggerPosition[] {
+  if (!isUltracodeKeywordTriggerEnabled(settings)) return []
+  return findUltracodeTriggerPositions(text)
+}
+
 export function shouldInjectUltracodeOrchestration(
   effortValue: EffortValue | undefined,
 ): boolean {

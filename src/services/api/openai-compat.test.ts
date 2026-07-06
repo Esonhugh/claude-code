@@ -38,7 +38,7 @@ try {
         headers: { 'Content-Type': 'text/event-stream' },
       },
     )
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   const client = createOpenAICompatClient({
     apiKey: 'sk-test-api-key',
@@ -139,7 +139,7 @@ try {
         headers: { 'Content-Type': 'text/event-stream' },
       },
     )
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   const retryClient = createOpenAICompatClient({
     apiKey: 'sk-test-api-key',
@@ -170,7 +170,7 @@ try {
       JSON.stringify({ error: { message: 'rate limited' } }),
       { status: 429, headers: { 'Content-Type': 'application/json' } },
     )
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   await assert.rejects(
     retryClient.beta.messages.create({
@@ -196,7 +196,7 @@ try {
         headers: { 'Content-Type': 'text/event-stream' },
       },
     )
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   const agentStreamClient = createOpenAICompatClient({
     apiKey: 'sk-test-api-key',
@@ -231,7 +231,7 @@ try {
     .withResponse()
 
   const agentEvents: any[] = []
-  for await (const event of agentStream as AsyncIterable<any>) {
+  for await (const event of agentStream as unknown as AsyncIterable<any>) {
     agentEvents.push(event)
   }
 
@@ -257,7 +257,7 @@ try {
         headers: { 'Content-Type': 'text/event-stream' },
       },
     )
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   const streamClient = createOpenAICompatClient({
     apiKey: 'sk-test-api-key',
@@ -287,7 +287,7 @@ try {
     .withResponse()
 
   const events: any[] = []
-  for await (const event of stream as AsyncIterable<any>) {
+  for await (const event of stream as unknown as AsyncIterable<any>) {
     events.push(event)
   }
 
