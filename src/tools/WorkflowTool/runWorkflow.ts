@@ -550,6 +550,7 @@ async function runPhaseAgent({
   }
 
   let lastError: unknown
+  let lastFailedResult: WorkflowAgentResult | undefined
   let userRetryAttempt = 0
   for (let attempt = 0; attempt <= maxRetriesFor(plan); attempt++) {
     try {
@@ -597,8 +598,23 @@ async function runPhaseAgent({
         error: message,
         setAppState: context.setAppStateForTasks ?? context.setAppState,
       })
+      lastFailedResult = {
+        phaseId: phase.id,
+        agentId: currentAgentId,
+        index,
+        status: 'failed',
+        error: message,
+      }
+      resumeRuntime.entries.push(recordResumeCacheEntry({
+        index: agentIndex,
+        identity,
+        phase: phase.id,
+        label: currentAgentId,
+        result: lastFailedResult,
+      }))
     }
   }
+  if (lastFailedResult) return { result: lastFailedResult, cacheHit: false }
   throw lastError
 }
 
@@ -715,7 +731,7 @@ export async function runWorkflowPlan({
           batchIndex,
           agentIndex: globalAgentIndex++,
         }))
-        const batchResults = await Promise.all(
+        const batchSettled = await Promise.allSettled(
           batchRuns.map(batchRun =>
             runPhaseAgent({
               agentTool,
@@ -735,6 +751,9 @@ export async function runWorkflowPlan({
             }),
           ),
         )
+        const batchResults = batchSettled.flatMap(result =>
+          result.status === 'fulfilled' ? [result.value] : [],
+        )
         results.push(...batchResults.map(batchResult => batchResult.result))
         for (const batchResult of batchResults) {
           await emit(createWorkflowAgentEvent({
@@ -753,19 +772,14 @@ export async function runWorkflowPlan({
         })
       }
       resultsByPhase.set(phase.id, results)
-      // Guard: if a single-agent root phase produced an empty or refusal output,
-      // abort the workflow early instead of letting downstream phases spin on garbage
-      if (
-        phase.fanout === 1 &&
-        phase.dependsOn.length === 0 &&
-        results.length === 1
-      ) {
-        const output = results[0]?.output ?? ''
-        if (!output || output.length < 20) {
-          throw new Error(
-            `Workflow aborted: root phase "${phase.id}" returned insufficient output (${output.length} chars). The phase agent may not have received valid input.`,
-          )
-        }
+      const hasFailedResults = results.some(result => result.status === 'failed')
+      if (hasFailedResults) {
+        await emit(createWorkflowPhaseEvent({
+          workflowRunId,
+          phaseId: phase.id,
+          status: 'failed',
+        }))
+        throw new Error(`Workflow phase "${phase.id}" failed`)
       }
       await emit(createWorkflowPhaseEvent({
         workflowRunId,

@@ -23,6 +23,7 @@ import {
 import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
+import { shouldEnableWorkflows } from './workflowFeatureFlags.js'
 
 const WORKFLOW_TOOL_PROMPT = `Use this tool to inspect or execute validated dynamic workflow specs. Workflows orchestrate multiple subagents deterministically through phase-grouped execution, recording LocalWorkflowTask state. The tool does not directly perform shell or filesystem work — agents launched by the workflow do, under normal tool permissions and hooks.
 
@@ -302,6 +303,9 @@ export const WorkflowTool = buildTool({
   async call(input, context, canUseTool, assistantMessage) {
     const { action, selector, plan, runArgs } = input
     const cwd = resolveCwd(context)
+    if ('getAppState' in context && typeof context.getAppState === 'function' && !shouldEnableWorkflows(context.getAppState().settings)) {
+      throw new Error('Workflows are disabled by settings')
+    }
 
     if (action === 'list') {
       return { data: await listWorkflows(cwd) }

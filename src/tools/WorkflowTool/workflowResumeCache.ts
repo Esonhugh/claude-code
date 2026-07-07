@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto'
 
+type WorkflowScriptAgentOpts = {
+  agentType?: string
+  isolation?: 'worktree'
+  label?: string
+  mode?: string
+  model?: string
+  phase?: string
+  schema?: object
+}
+
 export type WorkflowResumeCacheEntry = {
   index: number
   identity: string
@@ -37,6 +47,21 @@ export function createAgentCallIdentity(input: {
     prompt: input.prompt,
     opts: input.opts,
   }))
+}
+
+export function createWorkflowScriptAgentIdentity(prompt: string, opts?: WorkflowScriptAgentOpts): string {
+  const h = createHash('sha256')
+  h.update(prompt)
+  h.update(JSON.stringify({
+    agentType: opts?.agentType,
+    isolation: opts?.isolation,
+    label: opts?.label,
+    mode: opts?.mode === 'default' ? undefined : opts?.mode,
+    model: opts?.model,
+    phase: opts?.phase,
+    schema: opts?.schema,
+  }))
+  return h.digest('hex').slice(0, 16)
 }
 
 export function recordResumeCacheEntry(input: {

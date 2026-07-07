@@ -2,7 +2,6 @@ import vm from 'node:vm'
 import { availableParallelism } from 'node:os'
 import { dirname, join } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
 import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -21,7 +20,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowAgentErrorKind } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowArgs, WorkflowDryRunPhase, WorkflowDryRunPlan, WorkflowPermissionMode, WorkflowProgressEvent } from './workflowSpec.js'
-import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
+import { createWorkflowScriptAgentIdentity, type WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 import {
   createWorkflowAgentEvent,
   createWorkflowLogEvent,
@@ -43,6 +42,10 @@ import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { getProjectTempDir } from '../../utils/permissions/filesystem.js'
+import {
+  appendWorkflowJournalResult,
+  appendWorkflowJournalStarted,
+} from './workflowJournal.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
@@ -131,14 +134,14 @@ class Semaphore {
 // --- Journal (Resume Cache) ---
 class WorkflowJournal {
   private cache = new Map<string, WorkflowResumeCacheEntry>()
-  record(identity: string, result: unknown, input: { index: number; phase?: string; label?: string }): void {
+  record(identity: string, result: unknown, input: { index: number; phase?: string; label?: string; completedAt?: number }): void {
     this.cache.set(identity, {
       index: input.index,
       identity,
       phase: input.phase,
       label: input.label,
       result,
-      completedAt: Date.now(),
+      completedAt: input.completedAt ?? Date.now(),
     })
   }
   lookup(identity: string): { hit: true; result: unknown } | { hit: false } {
@@ -159,9 +162,7 @@ function mapPermissionMode(mode: WorkflowPermissionMode | undefined): WorkflowPe
 }
 
 function agentIdentityKey(prompt: string, opts?: AgentOpts): string {
-  const h = createHash('sha256')
-  h.update(prompt)
-  h.update(JSON.stringify({
+  return createWorkflowScriptAgentIdentity(prompt, {
     agentType: opts?.agentType,
     isolation: opts?.isolation,
     label: opts?.label,
@@ -169,8 +170,7 @@ function agentIdentityKey(prompt: string, opts?: AgentOpts): string {
     model: opts?.model,
     phase: opts?.phase,
     schema: opts?.schema,
-  }))
-  return h.digest('hex').slice(0, 16)
+  })
 }
 
 // --- Helpers ---
@@ -314,8 +314,9 @@ export async function runWorkflowScript({
   const cwd = 'getCwd' in context && typeof context.getCwd === 'function'
     ? context.getCwd() : getCwd()
 
+  const transcriptDir = workflowTranscriptDir(workflowRunId)
   let runSession = await startWorkflowRunSession({
-    cwd, taskId: workflowTask.id, plan, runArgs: args, workflowRunId, scriptPath, resumeFromRunId,
+    cwd, taskId: workflowTask.id, plan, runArgs: args, workflowRunId, scriptPath, transcriptDir, resumeFromRunId,
   })
 
   const logs: string[] = []
@@ -366,13 +367,24 @@ export async function runWorkflowScript({
     const agentIndex = agentCount
     agentCount++
 
+    startWorkflowPhase(workflowTask.id, phase, setAppState)
+    recordWorkflowAgentStarted({ taskId: workflowTask.id, phaseId: phase, agentId: label, setAppState })
+
+    await appendWorkflowJournalStarted(transcriptDir, {
+      key: identityKey,
+      agentId: label,
+      phase,
+      label,
+      index: agentIndex,
+      timestamp: Date.now(),
+    })
+
     // Journal cache hit
     const cached = journal.lookup(identityKey)
     if (cached.hit) {
       const output = typeof cached.result === 'string'
         ? cached.result
         : JSON.stringify(cached.result) ?? String(cached.result)
-      recordWorkflowAgentStarted({ taskId: workflowTask.id, phaseId: phase, agentId: label, setAppState })
       completeWorkflowAgent({
         taskId: workflowTask.id,
         result: {
@@ -388,21 +400,37 @@ export async function runWorkflowScript({
         },
         setAppState,
       })
+      await appendWorkflowJournalResult(transcriptDir, {
+        key: identityKey,
+        agentId: label,
+        phase,
+        label,
+        index: agentIndex,
+        result: cached.result,
+        timestamp: Date.now(),
+      })
       await emit(createWorkflowAgentEvent({ workflowRunId, phaseId: phase, agentId: label, status: 'completed', cacheHit: true }))
       return cached.result
     }
 
     const stallMs = opts?.stallMs ?? DEFAULT_STALL_MS
 
-    startWorkflowPhase(workflowTask.id, phase, setAppState)
-
     // Stall retry loop
     for (let attempt = 1; attempt <= MAX_STALL_RETRIES; attempt++) {
       await semaphore.acquire()
       try {
         const result = await runSingleAgent(prompt, opts, label, phase, stallMs, agentIndex)
-        // Record in journal
-        journal.record(identityKey, result, { index: agentIndex, phase, label })
+        const completedAt = Date.now()
+        journal.record(identityKey, result, { index: agentIndex, phase, label, completedAt })
+        await appendWorkflowJournalResult(transcriptDir, {
+          key: identityKey,
+          agentId: label,
+          phase,
+          label,
+          index: agentIndex,
+          result,
+          timestamp: completedAt,
+        })
         return result
       } catch (error) {
         if (abortController.signal.aborted) return null
@@ -416,6 +444,17 @@ export async function runWorkflowScript({
           taskId: workflowTask.id, phaseId: phase, agentId: label,
           error: msg, errorKind: classifyWorkflowAgentError(error), setAppState,
         })
+        const completedAt = Date.now()
+        journal.record(identityKey, null, { index: agentIndex, phase, label, completedAt })
+        await appendWorkflowJournalResult(transcriptDir, {
+          key: identityKey,
+          agentId: label,
+          phase,
+          label,
+          index: agentIndex,
+          result: null,
+          timestamp: completedAt,
+        })
         return null
       } finally {
         semaphore.release()
@@ -428,7 +467,6 @@ export async function runWorkflowScript({
     prompt: string, opts: AgentOpts | undefined,
     label: string, phase: string, stallMs: number, agentIndex: number,
   ): Promise<unknown> {
-    recordWorkflowAgentStarted({ taskId: workflowTask.id, phaseId: phase, agentId: label, setAppState })
     const agentAbortController = createChildAbortController(abortController)
     recordWorkflowAgentController({
       taskId: workflowTask.id, agentId: label,
@@ -701,7 +739,7 @@ export async function runWorkflowScript({
   const launchEnvelope = workflowLaunchEnvelope({
     taskId: workflowTask.id,
     summary: plan.description,
-    transcriptDir: workflowTranscriptDir(workflowRunId),
+    transcriptDir,
     scriptPath,
     workflowRunId,
   })

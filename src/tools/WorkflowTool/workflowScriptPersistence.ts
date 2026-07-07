@@ -11,9 +11,7 @@ function sanitizeWorkflowFileName(name: string): string {
 }
 
 export function createWorkflowRunId(): string {
-  const [first = Date.now().toString(36), second = 'run'] =
-    randomUUID().replace(/-/g, '').match(/.{1,12}/g) ?? []
-  return `wf_${first}_${second}`
+  return `wf_${randomUUID().slice(0, 12)}`
 }
 
 export async function persistWorkflowScript({

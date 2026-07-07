@@ -1,8 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import type { AppState } from '../../state/AppState.js'
-import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
-import { registerTask } from '../../utils/task/framework.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
+import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPhase,
@@ -11,6 +9,8 @@ import type {
   WorkflowRuntimeSpec,
 } from '../../tools/WorkflowTool/workflowSpec.js'
 import type { WorkflowScriptMeta } from '../../tools/WorkflowTool/workflowScriptParser.js'
+import type { AppState } from '../../state/AppStateStore.js'
+import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
 
 const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 const MAX_RECENT_ACTIVITIES = 5
@@ -199,7 +199,23 @@ export function registerWorkflowTask({
     events: [],
   }
 
-  registerTask(taskState, setAppState)
+  setAppState(prev => ({
+    ...prev,
+    tasks: {
+      ...prev.tasks,
+      [taskState.id]: taskState,
+    },
+  }))
+  enqueueSdkEvent({
+    type: 'system',
+    subtype: 'task_started',
+    task_id: taskState.id,
+    tool_use_id: taskState.toolUseId,
+    description: taskState.description,
+    task_type: taskState.type,
+    workflow_name: taskState.workflowName,
+    prompt: taskState.prompt,
+  })
   return taskState
 }
 

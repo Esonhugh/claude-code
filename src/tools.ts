@@ -127,13 +127,13 @@ const SnipTool = feature('HISTORY_SNIP')
 const ListPeersTool = feature('UDS_INBOX')
   ? require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool
   : null
-const workflowTools = (() => {
+function getWorkflowTools(): Tool[] {
   require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
   return [
     require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool,
     require('./tools/WorkflowTool/WorkflowFacadeTool.js').WorkflowFacadeTool,
   ]
-})()
+}
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
@@ -236,7 +236,7 @@ export function getAllBaseTools(): Tools {
       : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(isAnt() && REPLTool ? [REPLTool] : []),
-    ...workflowTools,
+    ...getWorkflowTools(),
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
     ...(RemoteTriggerTool ? [RemoteTriggerTool] : []),
@@ -292,7 +292,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     }
     const simpleTools: Tool[] = [BashTool, FileReadTool, FileEditTool]
     if (isWorkflowScriptsFeatureEnabled()) {
-      simpleTools.push(...workflowTools)
+      simpleTools.push(...getWorkflowTools())
     }
     // When coordinator mode is also active, include AgentTool and TaskStopTool
     // so the coordinator gets Task+TaskStop (via useMergedTools filtering) and

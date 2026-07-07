@@ -6,12 +6,18 @@ import { LocalAgentTask } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalShellTask } from './tasks/LocalShellTask/LocalShellTask.js'
 import { RemoteAgentTask } from './tasks/RemoteAgentTask/RemoteAgentTask.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const LocalWorkflowTask: Task = require('./tasks/LocalWorkflowTask/LocalWorkflowTask.js').LocalWorkflowTask
-const MonitorMcpTask: Task | null = feature('MONITOR_TOOL')
-  ? require('./tasks/MonitorMcpTask/MonitorMcpTask.js').MonitorMcpTask
-  : null
-/* eslint-enable @typescript-eslint/no-require-imports */
+function getLocalWorkflowTask(): Task {
+  // Lazy require avoids evaluating LocalWorkflowTask while tasks.ts itself is
+  // being imported through task-stop/tool initialization paths.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('./tasks/LocalWorkflowTask/LocalWorkflowTask.js').LocalWorkflowTask
+}
+
+function getMonitorMcpTask(): Task | null {
+  if (!feature('MONITOR_TOOL')) return null
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('./tasks/MonitorMcpTask/MonitorMcpTask.js').MonitorMcpTask
+}
 
 /**
  * Get all tasks.
@@ -26,8 +32,9 @@ export function getAllTasks(): Task[] {
     RemoteAgentTask,
     DreamTask,
   ]
-  tasks.push(LocalWorkflowTask)
-  if (MonitorMcpTask) tasks.push(MonitorMcpTask)
+  tasks.push(getLocalWorkflowTask())
+  const monitorMcpTask = getMonitorMcpTask()
+  if (monitorMcpTask) tasks.push(monitorMcpTask)
   return tasks
 }
 

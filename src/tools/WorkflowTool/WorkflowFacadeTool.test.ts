@@ -511,6 +511,58 @@ assert.equal(cachedSession.resumeFromRunId, officialWorkflowRunId)
 assert.equal(cachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
 
 await writeFile(
+  join(tempRoot, '.claude', 'workflows', 'saved-cache.js'),
+  `export const meta = {
+    name: 'saved-cache',
+    description: 'Saved workflow cache test',
+    phases: [{ title: 'Saved', detail: 'Run saved cache agent' }],
+  }
+  phase('Saved')
+  await agent('saved cache ' + args.topic, { label: 'saved-cache' })`,
+)
+launchedPrompts.length = 0
+const savedCacheRun = await WorkflowFacadeTool.call(
+  {
+    name: 'saved-cache',
+    args: { topic: 'meta' },
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_saved_cache' } } as never,
+)
+assert.match(String(savedCacheRun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, ['saved cache meta'])
+const savedCacheWorkflowRunId = String(savedCacheRun.data).match(/Run ID: (\S+)/)?.[1]
+assert.ok(savedCacheWorkflowRunId)
+const savedCacheSessionPath = join(tempRoot, '.claude', 'workflow-runs', savedCacheWorkflowRunId, 'session.json')
+const savedCacheSession = JSON.parse(await readFile(savedCacheSessionPath, 'utf8'))
+assert.ok(savedCacheSession.transcriptDir)
+await writeFile(
+  savedCacheSessionPath,
+  `${JSON.stringify({ ...savedCacheSession, resumeCacheEntries: [] }, null, 2)}\n`,
+)
+launchedPrompts.length = 0
+const savedCachedRerun = await WorkflowFacadeTool.call(
+  {
+    name: 'saved-cache',
+    args: { topic: 'meta' },
+    resumeFromRunId: savedCacheWorkflowRunId,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_saved_cached_rerun' } } as never,
+)
+assert.match(String(savedCachedRerun.data), /Workflow launched in background\. Task ID: w/)
+assert.deepEqual(launchedPrompts, [])
+const savedCachedWorkflowRunId = String(savedCachedRerun.data).match(/Run ID: (\S+)/)?.[1]
+assert.ok(savedCachedWorkflowRunId)
+const savedCachedSession = JSON.parse(
+  await readFile(join(tempRoot, '.claude', 'workflow-runs', savedCachedWorkflowRunId, 'session.json'), 'utf8'),
+)
+assert.equal(savedCachedSession.resumeFromRunId, savedCacheWorkflowRunId)
+assert.equal(savedCachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
+
+await writeFile(
   officialSession.scriptPath,
   `export const meta = {
     name: 'official-inline',

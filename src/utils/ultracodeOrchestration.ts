@@ -1,4 +1,5 @@
 import type { EffortValue } from './effort.js'
+import { isWorkflowKeywordTriggerEnabled } from '../tools/WorkflowTool/workflowFeatureFlags.js'
 
 type TriggerPosition = { word: string; start: number; end: number }
 
@@ -24,7 +25,7 @@ export function hasUltracodeKeyword(text: string): boolean {
 }
 
 export function isUltracodeKeywordTriggerEnabled(settings: { ultracodeKeywordTrigger?: boolean } | undefined): boolean {
-  return settings?.ultracodeKeywordTrigger !== false
+  return isWorkflowKeywordTriggerEnabled(settings)
 }
 
 export function getUltracodeNotificationTriggerPositions(

@@ -217,6 +217,19 @@ Recover 中可观察到的相关能力：
 
 7. Recover 的 progress model 有 batch merge、log cap 和 aggregate metrics。当前 TS state 更结构化，不建议回退，但可以吸收这些 UX 和 metrics 思路。
 
+## Parity Decision: Ultracode Prompting
+
+`recover/claude-v2.1.201.js` uses stricter ultracode wording that strongly prefers workflow orchestration for substantive tasks. This repository intentionally diverges from that exact prompt policy while preserving the runtime compatibility pieces that matter for workflow execution: launch envelopes, `resumeFromRunId`, cached completed agents, journal diagnostics, and child-agent isolation.
+
+Decision:
+
+- Keep `ultracode` as a high-rigor mode for deeper verification and completeness.
+- Prefer Workflow only for broad, workflow-scale tasks: audits, migrations, deep research, cross-checking, or independent fan-out.
+- For focused source investigation or small edits, use direct tools or a small number of subagents.
+- Respect explicit user requests to avoid workflow orchestration.
+
+This is an intentional UX/safety divergence, not a recover parity bug. Tests should preserve the softened wording and reject reintroducing “Workflow on every substantive task” routing.
+
 ## Problems
 
 ### P0. Ultracode instruction over-orchestrates ordinary tasks

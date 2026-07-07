@@ -16,6 +16,7 @@ import {
   resolveWorkflowScriptPath,
 } from './workflowScriptPersistence.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
+import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 
 export type WorkflowFacadeInput =
   | string
@@ -264,6 +265,12 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
       if (workflow.plan.requiresInput && !normalizeWorkflowRunArgs(normalized.args)) {
         throw new Error(`Workflow ${workflow.commandName} requires workflow input`)
       }
+      const priorSession = normalized.resumeFromRunId
+        ? await loadWorkflowRunSession({ cwd, workflowRunId: normalized.resumeFromRunId })
+        : undefined
+      const resumeJournalEntries = priorSession?.transcriptDir
+        ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
+        : priorSession?.resumeCacheEntries
       // Use script runtime for script-based workflows
       if (isExecutableWorkflowScript(workflow.spec)) {
         return {
@@ -276,6 +283,7 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
             assistantMessage,
             scriptPath: workflow.path,
             resumeFromRunId: normalized.resumeFromRunId,
+            resumeJournalEntries,
           }),
         }
       }
@@ -307,6 +315,9 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
     const priorSession = normalized.resumeFromRunId
       ? await loadWorkflowRunSession({ cwd, workflowRunId: normalized.resumeFromRunId })
       : undefined
+    const resumeJournalEntries = priorSession?.transcriptDir
+      ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
+      : priorSession?.resumeCacheEntries
     // Use script runtime for script-based workflows
     if (spec.runScriptSnapshot && hasWorkflowScriptMeta(spec.runScriptSnapshot)) {
       return {
@@ -320,7 +331,7 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
           workflowRunId,
           scriptPath,
           resumeFromRunId: normalized.resumeFromRunId,
-          resumeJournalEntries: priorSession?.resumeCacheEntries,
+          resumeJournalEntries,
         }),
       }
     }

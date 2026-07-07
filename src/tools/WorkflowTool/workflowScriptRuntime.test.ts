@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { setIsInteractive } from '../../bootstrap/state.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
+import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { classifyWorkflowAgentError, runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
+
+await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
+await import('./WorkflowTool.js')
 
 assert.equal(
   classifyWorkflowAgentError(new Error('Concurrency limit exceeded for user fakeadmin')),
@@ -45,7 +51,7 @@ const script = `export const meta = {
   phases: [{ title: "Parallel", detail: "Two parallel agents" }],
 }
 phase("Parallel")
-const alpha = await agent("Reply exactly alpha-ok", { label: "alpha", phase: "Parallel" })
+const alpha = await agent("Reply exactly alpha-ok", { label: "alpha" })
 return { alpha }
 `
 
@@ -78,10 +84,15 @@ const plan: WorkflowDryRunPlan = {
   runScriptSnapshot: script,
 }
 
+let agentToolCallCount = 0
 const fakeAgentTool = {
   name: 'Agent',
   async call(_input: unknown, agentContext: ToolUseContext) {
+    agentToolCallCount++
     assert.equal(agentContext.options.disableNestedAgentTools, true)
+    if (typeof _input === 'object' && _input && 'prompt' in _input && _input.prompt === 'fail-agent') {
+      throw new Error('agent failed intentionally')
+    }
     return {
       data: {
         status: 'completed',
@@ -120,6 +131,7 @@ const result = await runWorkflowScript({
 assert.match(result, /Workflow launched in background\. Task ID: w/)
 assert.match(result, /Summary: Small real workflow covering phase log args budget agent parallel pipeline workflow\./)
 assert.match(result, /Script file: \/tmp\/runtime-small-workflow\.js/)
+assert.match(result, /Transcript dir: /)
 assert.match(result, /resumeFromRunId: "wf_test"/)
 assert.doesNotMatch(result, /Result:\n/)
 
@@ -143,5 +155,79 @@ assert.equal(notification?.tool_use_id, 'toolu_workflow_test')
 assert.equal(notification?.status, 'completed')
 assert.match(notification?.summary ?? '', /Dynamic workflow "Small real workflow covering phase log args budget agent parallel pipeline workflow\." completed/)
 assert.ok(notification?.output_file)
+
+const workflowTask = Object.values(state.tasks).find(
+  task => task.type === 'local_workflow',
+)
+assert.ok(workflowTask)
+const transcriptDirMatch = result.match(/Transcript dir: (.+)/)
+assert.ok(transcriptDirMatch?.[1])
+const journalRaw = await readFile(join(transcriptDirMatch[1], 'journal.jsonl'), 'utf8')
+assert.match(journalRaw, /"type":"started"/)
+assert.match(journalRaw, /"type":"result"/)
+assert.match(journalRaw, /"agentId":"alpha"/)
+
+const resumedResult = await runWorkflowScript({
+  script,
+  plan,
+  args: { case: 'unit' },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_resume_test' } } as never,
+  workflowRunId: 'wf_resume_test',
+  scriptPath: '/tmp/runtime-small-workflow.js',
+  resumeFromRunId: 'wf_test',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(transcriptDirMatch[1]),
+})
+const resumedTranscriptDirMatch = resumedResult.match(/Transcript dir: (.+)/)
+assert.ok(resumedTranscriptDirMatch?.[1])
+const resumedJournalRaw = await readFile(join(resumedTranscriptDirMatch[1], 'journal.jsonl'), 'utf8')
+assert.match(resumedJournalRaw, /"type":"started"/)
+assert.match(resumedJournalRaw, /"type":"result"/)
+assert.match(resumedJournalRaw, /"agentId":"alpha"/)
+assert.match(resumedJournalRaw, /"result":"alpha-ok"/)
+assert.equal(agentToolCallCount, 1)
+
+const failedScript = `export const meta = {
+  name: "runtime-failed-agent-workflow",
+  description: "Workflow recording failed agent null result.",
+  phases: [{ title: "Fail", detail: "Failing agent" }],
+}
+phase("Fail")
+return await agent("fail-agent", { label: "failed-agent" })
+`
+const failedPlan: WorkflowDryRunPlan = {
+  ...plan,
+  name: 'runtime-failed-agent-workflow',
+  description: 'Workflow recording failed agent null result.',
+  phases: [
+    {
+      id: 'Fail',
+      description: 'Failing agent',
+      prompt: 'Failing agent',
+      dependsOn: [],
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      permissionMode: 'bypassPermissions',
+    },
+  ],
+  runScriptSnapshot: failedScript,
+}
+const failedResult = await runWorkflowScript({
+  script: failedScript,
+  plan: failedPlan,
+  args: { case: 'unit' },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_failed_agent_test' } } as never,
+  workflowRunId: 'wf_failed_agent_test',
+  scriptPath: '/tmp/runtime-failed-agent-workflow.js',
+})
+const failedTranscriptDirMatch = failedResult.match(/Transcript dir: (.+)/)
+assert.ok(failedTranscriptDirMatch?.[1])
+const failedJournalRaw = await readFile(join(failedTranscriptDirMatch[1], 'journal.jsonl'), 'utf8')
+assert.match(failedJournalRaw, /"agentId":"failed-agent"/)
+assert.match(failedJournalRaw, /"result":null/)
 
 console.log('workflowScriptRuntime.test.ts passed')
