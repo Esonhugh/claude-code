@@ -81,4 +81,16 @@ assert.match(
 )
 assert.doesNotMatch(bundledResumeText, /scriptPath: "bundled:code-review"/)
 
+const namedPlanResumeText = formatWorkflowStatus(workflowState({
+  workflowName: 'deep-research',
+  workflowRunId: 'wf_225081eb-6e0',
+  scriptPath: undefined,
+  runArgs: 'Research workflow resume prompt behavior in one concise pass.',
+}), { detail: true })
+assert.match(
+  namedPlanResumeText,
+  /Workflow\(\{name: "deep-research", args: "Research workflow resume prompt behavior in one concise pass\.", resumeFromRunId: "wf_225081eb-6e0"\}\)/,
+)
+assert.doesNotMatch(namedPlanResumeText, /Resume unavailable/)
+
 console.log('formatWorkflowStatus.test.ts passed')

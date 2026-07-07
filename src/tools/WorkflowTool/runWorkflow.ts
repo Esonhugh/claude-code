@@ -17,6 +17,7 @@ import {
   recordWorkflowEvent,
   registerWorkflowTask,
   startWorkflowPhase,
+  workflowResumeCall,
   type WorkflowAgentResult,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type {
@@ -751,6 +752,9 @@ export async function runWorkflowPlan({
             }),
           ),
         )
+        if (workflowTask.abortController?.signal.aborted) {
+          throw new Error('Workflow aborted')
+        }
         const batchResults = batchSettled.flatMap(result =>
           result.status === 'fulfilled' ? [result.value] : [],
         )
@@ -835,8 +839,8 @@ export async function runWorkflowPlan({
           cwd,
           workflowRunId,
           status: abortStatus,
-          ...(abortStatus === 'paused' && scriptPath
-            ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
+          ...(abortStatus === 'paused'
+            ? { resumePrompt: workflowResumeCall({ ...workflowTask, workflowRunId, scriptPath }) }
             : {}),
         })
         return

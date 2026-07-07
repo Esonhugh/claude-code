@@ -408,6 +408,30 @@ const context = {
   )
   assert.doesNotMatch(pausedBundledTask.summary ?? '', /scriptPath: "bundled:code-review"/)
 
+  const namedPlanPauseTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-named-plan-pause',
+    workflowName: 'deep-research',
+    workflowRunId: 'wf_225081eb-6e0',
+    scriptPath: undefined,
+    runArgs: 'Research workflow resume prompt behavior in one concise pass.',
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [namedPlanPauseTask.id]: namedPlanPauseTask } }))
+  pauseWorkflowTask(namedPlanPauseTask.id, setAppState)
+  const pausedNamedPlanTask = state.tasks[namedPlanPauseTask.id] as LocalWorkflowTaskState
+  assert.match(
+    pausedNamedPlanTask.summary ?? '',
+    /Workflow\(\{name: "deep-research", args: "Research workflow resume prompt behavior in one concise pass\.", resumeFromRunId: "wf_225081eb-6e0"\}\)/,
+  )
+  assert.doesNotMatch(pausedNamedPlanTask.summary ?? '', /Workflow resume unavailable/)
+
+  completeWorkflowTask(namedPlanPauseTask.id, setAppState)
+  const completedNamedPlanTask = state.tasks[namedPlanPauseTask.id] as LocalWorkflowTaskState
+  assert.equal(completedNamedPlanTask.status, 'completed')
+  assert.equal(completedNamedPlanTask.summary, 'Workflow completed')
+  assert.equal(completedNamedPlanTask.liveAgents, undefined)
+  assert.equal(completedNamedPlanTask.agentControllers, undefined)
+
   const failedAgentController = new AbortController()
   const failedAgentTask: LocalWorkflowTaskState = {
     ...runningTask,

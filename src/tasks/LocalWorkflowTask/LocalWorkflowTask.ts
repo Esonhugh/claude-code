@@ -376,12 +376,19 @@ function agentEvent(
 
 export function workflowResumeCall(task: LocalWorkflowTaskState): string | undefined {
   if (!task.workflowRunId) return undefined
+  const workflowRunId = JSON.stringify(task.workflowRunId)
   if (task.scriptPath?.startsWith('bundled:')) {
     const workflowName = task.scriptPath.slice('bundled:'.length) || task.workflowName
-    return `Workflow({name: "${workflowName}", resumeFromRunId: "${task.workflowRunId}"})`
+    return `Workflow({name: ${JSON.stringify(workflowName)}, resumeFromRunId: ${workflowRunId}})`
   }
   if (task.scriptPath) {
-    return `Workflow({scriptPath: "${task.scriptPath}", resumeFromRunId: "${task.workflowRunId}"})`
+    return `Workflow({scriptPath: ${JSON.stringify(task.scriptPath)}, resumeFromRunId: ${workflowRunId}})`
+  }
+  if (task.workflowName) {
+    const args = task.runArgs === undefined
+      ? ''
+      : `, args: ${JSON.stringify(task.runArgs)}`
+    return `Workflow({name: ${JSON.stringify(task.workflowName)}${args}, resumeFromRunId: ${workflowRunId}})`
   }
   return undefined
 }
@@ -690,7 +697,7 @@ export function completeWorkflowTask(
   setAppState: SetAppState,
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
-    if (task.status !== 'running') return task
+    if (terminalStatus(task.status)) return task
     return {
       ...task,
       status: 'completed',
