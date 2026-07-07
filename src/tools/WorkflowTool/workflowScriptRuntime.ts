@@ -17,6 +17,7 @@ import {
   recordWorkflowEvent,
   registerWorkflowTask,
   startWorkflowPhase,
+  workflowResumeCall,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowAgentErrorKind } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowArgs, WorkflowDryRunPhase, WorkflowDryRunPlan, WorkflowPermissionMode, WorkflowProgressEvent } from './workflowSpec.js'
@@ -821,12 +822,13 @@ export async function runWorkflowScript({
         results: [],
         resumeCacheEntries: journal.entries(),
       })
+      const resumeCall = workflowResumeCall({ ...workflowTask, scriptPath, workflowRunId })
       await updateWorkflowRunSessionStatus({
         cwd,
         workflowRunId,
         status: abortStatus,
-        ...(abortStatus === 'paused' && scriptPath
-          ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
+        ...(abortStatus === 'paused' && resumeCall
+          ? { resumePrompt: resumeCall }
           : {}),
       })
       return

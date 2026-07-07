@@ -70,4 +70,15 @@ assert.match(text, /1 skipped/)
 assert.match(text, /1 live\/aborting/)
 assert.match(text, /1 blocked by concurrency limit/)
 
+const bundledResumeText = formatWorkflowStatus(workflowState({
+  workflowName: 'code-review',
+  workflowRunId: 'wf_fcc6c814-236',
+  scriptPath: 'bundled:code-review',
+}), { detail: true })
+assert.match(
+  bundledResumeText,
+  /Workflow\(\{name: "code-review", resumeFromRunId: "wf_fcc6c814-236"\}\)/,
+)
+assert.doesNotMatch(bundledResumeText, /scriptPath: "bundled:code-review"/)
+
 console.log('formatWorkflowStatus.test.ts passed')

@@ -1,5 +1,6 @@
 import {
   getWorkflowChildAgentSummary,
+  workflowResumeCall,
   type LocalWorkflowTaskState,
 } from './LocalWorkflowTask.js'
 
@@ -39,11 +40,10 @@ function formatWorkflowArgs(args: LocalWorkflowTaskState['runArgs']): string {
 }
 
 export function formatWorkflowResumeInstruction(task: LocalWorkflowTaskState): string {
-  if (task.scriptPath && task.workflowRunId) {
-    return `Resume by calling: Workflow({scriptPath: "${task.scriptPath}", resumeFromRunId: "${task.workflowRunId}"})`
-  }
-  if (!task.scriptPath) return 'Resume unavailable: this workflow was not launched from a script path.'
-  return 'Resume unavailable: workflow run ID is missing.'
+  if (!task.workflowRunId) return 'Resume unavailable: workflow run ID is missing.'
+  const resumeCall = workflowResumeCall(task)
+  if (resumeCall) return `Resume by calling: ${resumeCall}`
+  return 'Resume unavailable: this workflow was not launched from a script path.'
 }
 
 export function formatWorkflowStatus(

@@ -6,6 +6,7 @@ import { WorkflowTool } from '../../tools/WorkflowTool/WorkflowTool.js'
 import type { AgentId } from '../../types/ids.js'
 import {
   completeWorkflowAgent,
+  completeWorkflowTask,
   killWorkflowTask,
   pauseWorkflowTask,
   recordWorkflowAgentController,
@@ -337,7 +338,7 @@ const context = {
     setAppState,
   })
 
-  const completedProgressTask = state.tasks[completionMetricsTask.id] as LocalWorkflowTaskState
+  let completedProgressTask = state.tasks[completionMetricsTask.id] as LocalWorkflowTaskState
   assert.equal(completedProgressTask.results[0]?.tokenCount, 12)
   assert.equal(completedProgressTask.results[0]?.toolUseCount, 1)
   assert.equal(completedProgressTask.tokenCount, 12)
@@ -346,6 +347,10 @@ const context = {
   assert.equal(completedProgressTask.agentControllers?.['agent-1'], undefined)
   assert.deepEqual(completedProgressTask.liveAgents?.['agent-2'], { tokenCount: 20, toolUseCount: 2 })
   assert.ok(completedProgressTask.agentControllers?.['agent-2'])
+  completeWorkflowTask(completionMetricsTask.id, setAppState)
+  completedProgressTask = state.tasks[completionMetricsTask.id] as LocalWorkflowTaskState
+  assert.equal(completedProgressTask.liveAgents, undefined)
+  assert.equal(completedProgressTask.agentControllers, undefined)
 
   const workflowAbortController = new AbortController()
   const pauseAgentAbortController = new AbortController()
@@ -355,6 +360,8 @@ const context = {
       ...prev.tasks,
       'w-running': {
         ...(prev.tasks['w-running'] as LocalWorkflowTaskState),
+        workflowRunId: 'wf_file_resume',
+        scriptPath: '/tmp/workflow.js',
         abortController: workflowAbortController,
         agentControllers: {
           'agent-1': { abortController: pauseAgentAbortController },
@@ -372,6 +379,8 @@ const context = {
   assert.equal(pauseAgentAbortController.signal.reason, 'workflow-paused')
   assert.equal(pausedRunningTask.abortController, undefined)
   assert.equal(pausedRunningTask.currentAgentId, undefined)
+  assert.deepEqual(pausedRunningTask.liveAgents, {})
+  assert.deepEqual(pausedRunningTask.agentControllers, {})
   assert.match(pausedRunningTask.summary ?? '', /Resume the paused workflow by calling: Workflow\(\{scriptPath:/)
   const pauseEvent = pausedRunningTask.events.at(-1)
   assert.equal(pauseEvent?.type, 'workflow_progress')
@@ -382,6 +391,22 @@ const context = {
   pausedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.equal(pausedRunningTask.status, 'pending')
   assert.ok(pausedRunningTask.pausedAt)
+
+  const bundledPauseTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-bundled-pause',
+    workflowName: 'code-review',
+    workflowRunId: 'wf_fcc6c814-236',
+    scriptPath: 'bundled:code-review',
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [bundledPauseTask.id]: bundledPauseTask } }))
+  pauseWorkflowTask(bundledPauseTask.id, setAppState)
+  const pausedBundledTask = state.tasks[bundledPauseTask.id] as LocalWorkflowTaskState
+  assert.match(
+    pausedBundledTask.summary ?? '',
+    /Workflow\(\{name: "code-review", resumeFromRunId: "wf_fcc6c814-236"\}\)/,
+  )
+  assert.doesNotMatch(pausedBundledTask.summary ?? '', /scriptPath: "bundled:code-review"/)
 
   const failedAgentController = new AbortController()
   const failedAgentTask: LocalWorkflowTaskState = {

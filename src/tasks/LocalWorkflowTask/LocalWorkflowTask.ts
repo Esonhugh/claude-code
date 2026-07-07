@@ -374,10 +374,20 @@ function agentEvent(
   }
 }
 
+export function workflowResumeCall(task: LocalWorkflowTaskState): string | undefined {
+  if (!task.workflowRunId) return undefined
+  if (task.scriptPath?.startsWith('bundled:')) {
+    const workflowName = task.scriptPath.slice('bundled:'.length) || task.workflowName
+    return `Workflow({name: "${workflowName}", resumeFromRunId: "${task.workflowRunId}"})`
+  }
+  if (task.scriptPath) {
+    return `Workflow({scriptPath: "${task.scriptPath}", resumeFromRunId: "${task.workflowRunId}"})`
+  }
+  return undefined
+}
+
 function buildResumePrompt(task: LocalWorkflowTaskState): string {
-  const scriptPath = task.scriptPath ?? '<script path unavailable>'
-  const workflowRunId = task.workflowRunId ?? '<workflow run id unavailable>'
-  return `Resume the paused workflow by calling: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})`
+  return `Resume the paused workflow by calling: ${workflowResumeCall(task) ?? 'Workflow resume unavailable'}`
 }
 
 export function recordWorkflowEvent({
@@ -688,6 +698,8 @@ export function completeWorkflowTask(
       endTime: Date.now(),
       abortController: undefined,
       currentAgentId: undefined,
+      agentControllers: undefined,
+      liveAgents: undefined,
     }
   })
 }
@@ -766,6 +778,8 @@ export function pauseWorkflowTask(
       summary: `Workflow paused. ${buildResumePrompt(task)}`,
       abortController: undefined,
       currentAgentId: undefined,
+      agentControllers: {},
+      liveAgents: {},
     }
     return appendEvent(pausedTask, progressEvent(pausedTask, 'paused'))
   })
