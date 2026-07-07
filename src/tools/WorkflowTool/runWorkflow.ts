@@ -1,3 +1,5 @@
+import { dirname } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage, NormalizedUserMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -48,8 +50,12 @@ import {
 } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
 import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
+import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
+import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
+const DEFAULT_STALL_MS = 120_000
 const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
 const COMMAND_MESSAGE_RE = new RegExp(`<${COMMAND_MESSAGE_TAG}>${TAG_CONTENT_ESCAPE}<\\/${COMMAND_MESSAGE_TAG}>`)
 
@@ -235,6 +241,13 @@ function formatRunArgs(runArgs: WorkflowArgs | undefined): string {
   return JSON.stringify(runArgs, null, 2)
 }
 
+async function writeWorkflowResult(taskId: string, resultText: string): Promise<string> {
+  const outputFile = getTaskOutputPath(taskId)
+  await mkdir(dirname(outputFile), { recursive: true })
+  await writeFile(outputFile, resultText)
+  return outputFile
+}
+
 function buildAgentPrompt(
   phase: WorkflowDryRunPhase,
   index: number,
@@ -360,6 +373,19 @@ async function runPhaseAgentAttempt({
     agentId: fallbackAgentId,
     setAppState: context.setAppStateForTasks ?? context.setAppState,
   })
+  const progressStartTime = Date.now()
+  let progressTokens = 0
+  let progressToolUses = 0
+  emitTaskProgress({
+    taskId,
+    toolUseId: context.toolUseId,
+    description: `${phase.id}: ${fallbackAgentId}`,
+    startTime: progressStartTime,
+    totalTokens: 0,
+    toolUses: 0,
+    lastToolName: fallbackAgentId,
+    summary: `Workflow agent started: ${fallbackAgentId}`,
+  })
   const agentAbortController = createChildAbortController(workflowAbortController)
   recordWorkflowAgentController({
     taskId,
@@ -370,26 +396,74 @@ async function runPhaseAgentAttempt({
     index,
     userRetryAttempt,
   })
-  const agentContext = { ...context, abortController: agentAbortController }
+  const agentContext = {
+    ...context,
+    abortController: agentAbortController,
+    options: {
+      ...context.options,
+      disableNestedAgentTools: true,
+    },
+  }
 
-  const result = await agentTool.call(input as never, agentContext, canUseTool, assistantMessage, progress => {
-    const metrics = agentProgressMetrics(progress)
-    if (!metrics) return
-    const activities = metrics.activities?.length ? metrics.activities : [undefined]
-    for (const activity of activities) {
-      recordWorkflowAgentProgress({
-        taskId,
-        agentId: fallbackAgentId,
-        tokenCount: metrics.tokenCount,
-        toolUseCount: activity ? 1 : metrics.toolUseCount,
-        prompt: metrics.prompt,
-        activity,
-        setAppState: context.setAppStateForTasks ?? context.setAppState,
-      })
+  const stallMs = context.options.workflowAgentStallMs ?? DEFAULT_STALL_MS
+  let lastProgress = Date.now()
+  const stallTimer = setInterval(() => {
+    if (Date.now() - lastProgress > stallMs) {
+      agentAbortController.abort('stalled')
     }
-  })
+  }, Math.min(stallMs / 2, 30_000))
+
+  let result: Awaited<ReturnType<Tool['call']>>
+  try {
+    result = await agentTool.call(input as never, agentContext, canUseTool, assistantMessage, progress => {
+      lastProgress = Date.now()
+      const metrics = agentProgressMetrics(progress)
+      if (!metrics) return
+      progressTokens += metrics.tokenCount
+      progressToolUses += metrics.toolUseCount
+      emitTaskProgress({
+        taskId,
+        toolUseId: context.toolUseId,
+        description: `${phase.id}: ${fallbackAgentId}`,
+        startTime: progressStartTime,
+        totalTokens: progressTokens,
+        toolUses: progressToolUses,
+        lastToolName: fallbackAgentId,
+        summary: `Workflow agent running: ${fallbackAgentId}`,
+      })
+      const activities = metrics.activities?.length ? metrics.activities : [undefined]
+      for (const activity of activities) {
+        recordWorkflowAgentProgress({
+          taskId,
+          agentId: fallbackAgentId,
+          tokenCount: metrics.tokenCount,
+          toolUseCount: activity ? 1 : metrics.toolUseCount,
+          prompt: metrics.prompt,
+          activity,
+          setAppState: context.setAppStateForTasks ?? context.setAppState,
+        })
+      }
+    })
+  } catch (error) {
+    if (agentAbortController.signal.reason === 'stalled') {
+      throw new Error('stalled')
+    }
+    throw error
+  } finally {
+    clearInterval(stallTimer)
+  }
   const output = result.data as AgentToolOutput
   const agentId = resultAgentId(output, fallbackAgentId)
+  emitTaskProgress({
+    taskId,
+    toolUseId: context.toolUseId,
+    description: `${phase.id}: ${fallbackAgentId}`,
+    startTime: progressStartTime,
+    totalTokens: output.totalTokens ?? progressTokens,
+    toolUses: output.totalToolUseCount ?? progressToolUses,
+    lastToolName: fallbackAgentId,
+    summary: `Workflow agent completed: ${fallbackAgentId}`,
+  })
   const workflowResult: WorkflowAgentResult = {
     phaseId: phase.id,
     agentId,
@@ -592,6 +666,15 @@ export async function runWorkflowPlan({
   const resultsByPhase = new Map<string, WorkflowAgentResult[]>()
   let globalAgentIndex = 0
 
+  const launchEnvelope = [
+    `Workflow launched in background. Task ID: ${workflowTask.id}`,
+    `Run ID: ${workflowRunId}`,
+    ...(scriptPath
+      ? [`To resume after editing the script: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"}) — completed agents return cached results.`]
+      : []),
+    'Use /workflows to watch live progress.',
+  ].join('\n')
+
   const emit = async (event: WorkflowProgressEvent): Promise<void> => {
     runSession = await emitWorkflowEvent({
       cwd,
@@ -602,13 +685,14 @@ export async function runWorkflowPlan({
     })
   }
 
-  try {
-    await emit(createWorkflowProgressEvent({
-      workflowRunId,
-      status: 'running',
-      completedAgents: 0,
-      totalAgents: plan.totalAgents,
-    }))
+  const workflowRun = (async () => {
+    try {
+      await emit(createWorkflowProgressEvent({
+        workflowRunId,
+        status: 'running',
+        completedAgents: 0,
+        totalAgents: plan.totalAgents,
+      }))
     await emit(createWorkflowLogEvent({
       workflowRunId,
       message: `Workflow started: ${plan.name}`,
@@ -703,64 +787,80 @@ export async function runWorkflowPlan({
       completedAgents: allResults.length,
       totalAgents: plan.totalAgents,
     }))
-    await completeWorkflowRunSession({
-      cwd,
-      session: runSession,
-      results: allResults,
-      resumeCacheEntries: resumeRuntime.entries,
-    })
-    return [
-      `Workflow launched in background. Task ID: ${workflowTask.id}`,
-      `Run ID: ${workflowRunId}`,
-      ...(scriptPath
-        ? [`To resume after editing the script: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"}) — completed agents return cached results.`]
-        : []),
-      'Use /workflows to watch live progress.',
-    ].join('\n')
-  } catch (error) {
-    const abortStatus = workflowAbortStatus(workflowTask.abortController?.signal.reason)
-    const allResults = [...resultsByPhase.values()].flat()
-    if (abortStatus) {
-      await updateWorkflowRunSessionProgress({
+      await completeWorkflowRunSession({
         cwd,
         session: runSession,
         results: allResults,
         resumeCacheEntries: resumeRuntime.entries,
       })
-      await updateWorkflowRunSessionStatus({
-        cwd,
-        workflowRunId,
-        status: abortStatus,
-        ...(abortStatus === 'paused' && scriptPath
-          ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
-          : {}),
+      const outputFile = await writeWorkflowResult(
+        workflowTask.id,
+        allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || `Workflow completed. ${allResults.length} agents.`,
+      )
+      emitTaskTerminatedSdk(workflowTask.id, 'completed', {
+        toolUseId: context.toolUseId,
+        summary: `Dynamic workflow "${plan.description}" completed`,
+        outputFile,
+        usage: {
+          total_tokens: allResults.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0),
+          tool_uses: allResults.reduce((sum, result) => sum + (result.toolUseCount ?? 0), 0),
+          duration_ms: Date.now() - workflowTask.startTime,
+        },
       })
-      return [
-        `Workflow ${abortStatus}. Task ID: ${workflowTask.id}`,
-        `Run ID: ${workflowRunId}`,
-        ...(abortStatus === 'paused' && scriptPath
-          ? [`Resume with: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})`]
-          : []),
-      ].join('\n')
-    }
+    } catch (error) {
+    const abortStatus = workflowAbortStatus(workflowTask.abortController?.signal.reason)
+    const allResults = [...resultsByPhase.values()].flat()
+      if (abortStatus) {
+        await updateWorkflowRunSessionProgress({
+          cwd,
+          session: runSession,
+          results: allResults,
+          resumeCacheEntries: resumeRuntime.entries,
+        })
+        await updateWorkflowRunSessionStatus({
+          cwd,
+          workflowRunId,
+          status: abortStatus,
+          ...(abortStatus === 'paused' && scriptPath
+            ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
+            : {}),
+        })
+        return
+      }
 
-    // Abort remaining agents on workflow failure
-    workflowTask.abortController?.abort()
-    const message = error instanceof Error ? error.message : String(error)
-    failWorkflowTask(workflowTask.id, message, setAppState)
-    await emit(createWorkflowProgressEvent({
-      workflowRunId,
-      status: 'failed',
-      completedAgents: allResults.length,
-      totalAgents: plan.totalAgents,
-    }))
-    await failWorkflowRunSession({
-      cwd,
-      session: runSession,
-      results: allResults,
-      error: message,
-      resumeCacheEntries: resumeRuntime.entries,
-    })
-    throw error
+      // Abort remaining agents on workflow failure
+      workflowTask.abortController?.abort()
+      const message = error instanceof Error ? error.message : String(error)
+      failWorkflowTask(workflowTask.id, message, setAppState)
+      await emit(createWorkflowProgressEvent({
+        workflowRunId,
+        status: 'failed',
+        completedAgents: allResults.length,
+        totalAgents: plan.totalAgents,
+      }))
+      await failWorkflowRunSession({
+        cwd,
+        session: runSession,
+        results: allResults,
+        error: message,
+        resumeCacheEntries: resumeRuntime.entries,
+      })
+      const outputFile = await writeWorkflowResult(workflowTask.id, message)
+      emitTaskTerminatedSdk(workflowTask.id, 'failed', {
+        toolUseId: context.toolUseId,
+        summary: `Dynamic workflow "${plan.description}" failed: ${message}`,
+        outputFile,
+        usage: {
+          total_tokens: allResults.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0),
+          tool_uses: allResults.reduce((sum, result) => sum + (result.toolUseCount ?? 0), 0),
+          duration_ms: Date.now() - workflowTask.startTime,
+        },
+      })
+    }
+  })()
+
+  if (context.options.workflowRunInForeground) {
+    await workflowRun
   }
+  return launchEnvelope
 }

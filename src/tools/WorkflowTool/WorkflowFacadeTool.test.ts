@@ -8,7 +8,7 @@ import type { AppState } from '../../state/AppState.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
-import { normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
+import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
 
 const workflowFacadeSource = readFileSync(
   'src/tools/WorkflowTool/WorkflowFacadeTool.ts',
@@ -94,7 +94,6 @@ assert.deepEqual(
   },
 )
 
-const { WorkflowFacadeTool } = await import('./WorkflowFacadeTool.js')
 assert.equal(WorkflowFacadeTool.name, 'Workflow')
 assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
   name: 'research',
@@ -192,7 +191,8 @@ const setState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const launchedPrompts: string[] = []
-const launchedAgents: Array<{ description: string; prompt: string; mode?: string }> = []
+const launchedAgents: Array<{ description: string; prompt: string; mode?: string; disableNestedAgentTools?: boolean }> = []
+let hangNextAgent = false
 const context = {
   getCwd: () => tempRoot,
   getAppState: () => state,
@@ -203,13 +203,20 @@ const context = {
       {
         name: 'Agent',
         aliases: ['Task'],
-        async call(input: { description: string; prompt: string; mode?: string }) {
+        async call(input: { description: string; prompt: string; mode?: string }, agentContext: ToolUseContext) {
           launchedPrompts.push(input.prompt)
           launchedAgents.push({
             description: input.description,
             prompt: input.prompt,
             mode: input.mode,
+            disableNestedAgentTools: agentContext.options.disableNestedAgentTools,
           })
+          if (hangNextAgent) {
+            hangNextAgent = false
+            await new Promise((_, reject) => {
+              agentContext.abortController.signal.addEventListener('abort', () => reject(new Error(String(agentContext.abortController.signal.reason))))
+            })
+          }
           return {
             data: {
               status: 'completed' as const,
@@ -227,6 +234,8 @@ const context = {
     thinkingConfig: {},
     isNonInteractiveSession: true,
     mainLoopModel: 'claude-sonnet-4-5',
+    workflowAgentStallMs: 20,
+    workflowRunInForeground: true,
   },
   abortController: new AbortController(),
   messages: [],
@@ -251,6 +260,29 @@ const directPlanRun = await WorkflowFacadeTool.call(
 )
 assert.match(String(directPlanRun.data), /Workflow launched in background\. Task ID: w/)
 assert.deepEqual(launchedPrompts, ['inspect direct plan\n\nUser input:\ndirect plan args'])
+assert.equal(launchedAgents[0]?.disableNestedAgentTools, true)
+launchedPrompts.length = 0
+
+hangNextAgent = true
+const stalledRun = await WorkflowFacadeTool.call(
+  {
+    plan: {
+      name: 'stalled-plan',
+      description: 'Abort stalled plan agent.',
+      defaults: { maxRetries: 0 },
+      phases: [{ id: 'stall', description: 'Stall agent.', prompt: 'stall forever' }],
+    },
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_stalled_plan' } } as never,
+)
+assert.match(String(stalledRun.data), /Workflow launched in background\. Task ID: w/)
+const stalledTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'stalled-plan',
+)!
+assert.equal(stalledTask.status, 'failed')
+assert.equal(stalledTask.phases[0]?.failedAgentIds.includes('stalled-plan-stall-1'), true)
 launchedPrompts.length = 0
 
 const inlineRun = await WorkflowFacadeTool.call(
@@ -308,6 +340,7 @@ const officialRun = await WorkflowFacadeTool.call(
 )
 
 assert.match(String(officialRun.data), /Workflow launched in background\. Task ID: w/)
+assert.equal(launchedAgents.at(-1)?.disableNestedAgentTools, true)
 const officialWorkflowRunId = String(officialRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(officialWorkflowRunId)
 const officialSession = JSON.parse(

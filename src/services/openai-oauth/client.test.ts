@@ -8,6 +8,12 @@ import { OpenAIAuthCodeListener } from './auth-code-listener.js'
 }
 
 const originalPost = axios.post
+const originalProxyEnv = {
+  https_proxy: process.env.https_proxy,
+  HTTPS_PROXY: process.env.HTTPS_PROXY,
+  http_proxy: process.env.http_proxy,
+  HTTP_PROXY: process.env.HTTP_PROXY,
+}
 const {
   buildOpenAIAuthUrl,
   exchangeOpenAICodeForTokens,
@@ -16,6 +22,10 @@ const {
 } = await import('./client.js')
 
 try {
+  delete process.env.https_proxy
+  delete process.env.HTTPS_PROXY
+  delete process.env.http_proxy
+  delete process.env.HTTP_PROXY
   const pkce = createOpenAIPKCE()
   assert.match(pkce.codeVerifier, /^[A-Za-z0-9._~-]{43,128}$/)
   assert.match(pkce.codeChallenge, /^[A-Za-z0-9_-]+$/)
@@ -127,7 +137,6 @@ try {
     'https://auth.openai.com/deviceauth/callback',
   )
 
-  const originalHttpsProxy = process.env.https_proxy
   process.env.https_proxy = 'http://127.0.0.1:7890'
   try {
     await exchangeOpenAICodeForTokens({
@@ -136,11 +145,7 @@ try {
       port: 1455,
     })
   } finally {
-    if (originalHttpsProxy === undefined) {
-      delete process.env.https_proxy
-    } else {
-      process.env.https_proxy = originalHttpsProxy
-    }
+    delete process.env.https_proxy
   }
   assert.deepEqual(requests[2]!.proxy, {
     protocol: 'http',
@@ -270,6 +275,14 @@ try {
   assert.equal(new URL(observedAuthUrl).searchParams.get('redirect_uri'), 'http://localhost:1455/auth/callback')
 } finally {
   axios.post = originalPost
+  for (const key of Object.keys(originalProxyEnv) as Array<keyof typeof originalProxyEnv>) {
+    const value = originalProxyEnv[key]
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
 }
 
 console.log('openai-oauth client.test.ts passed')

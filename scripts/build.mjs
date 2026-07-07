@@ -6,10 +6,7 @@ import { builtinModules } from 'node:module';
 import { fileURLToPath, pathToFileURL, URL } from 'node:url';
 
 const packageJson = JSON.parse(
-  await fs.promises.readFile(
-    new URL('../package.json', import.meta.url),
-    'utf8',
-  ),
+  fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 );
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
@@ -60,11 +57,9 @@ export const macroValues = {
   'MACRO.VERSION_CHANGELOG': 'null',
 };
 
-const defaultRecoverFeatures = ['AGENT_TRIGGERS'];
-
 export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATURES) {
   return new Set([
-    ...defaultRecoverFeatures,
+    'AGENT_TRIGGERS',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

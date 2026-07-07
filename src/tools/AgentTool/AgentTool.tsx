@@ -936,7 +936,13 @@ export const AgentTool = buildTool({
     const workerTools = assembleToolPool(
       workerPermissionContext,
       appState.mcp.tools,
-    )
+    ).filter(tool => {
+      if (!toolUseContext.options.disableNestedAgentTools) return true
+      return !tool.name.startsWith('mcp__') &&
+        !toolMatchesName(tool, AGENT_TOOL_NAME) &&
+        !toolMatchesName(tool, LEGACY_AGENT_TOOL_NAME) &&
+        tool.name !== 'Workflow'
+    })
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId()

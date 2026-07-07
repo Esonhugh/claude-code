@@ -1,6 +1,7 @@
 import vm from 'node:vm'
 import { availableParallelism } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -38,6 +39,10 @@ import {
 import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScriptPersistence.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import { getCwd } from '../../utils/cwd.js'
+import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
+import { getProjectTempDir } from '../../utils/permissions/filesystem.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
@@ -205,6 +210,62 @@ function tryParseStructuredOutput(text: string): unknown | undefined {
   return undefined
 }
 
+function workflowProgressSnapshot(plan: WorkflowDryRunPlan): Array<{ type: string; index: number; phaseIndex?: number; label?: string; status?: string; message?: string }> {
+  return plan.phases.flatMap((phase, phaseIndex) => [
+    { type: 'phase', index: phaseIndex, label: phase.id, status: 'running', message: phase.description },
+    ...Array.from({ length: phase.fanout }, (_, index) => ({
+      type: 'agent',
+      index,
+      phaseIndex,
+      label: phase.agentLabels?.[index] ?? `${phase.id}-${index + 1}`,
+      status: 'pending',
+    })),
+  ])
+}
+
+function workflowAgentProgressDescription(phase: string, label: string, plan: WorkflowDryRunPlan): string {
+  const isChildWorkflowAgent = !plan.phases.some(item => item.id === phase)
+  return isChildWorkflowAgent ? `▸ ${phase}: ${label}` : `${phase}: ${label}`
+}
+
+function workflowTranscriptDir(workflowRunId: string): string {
+  return join(getProjectTempDir(), 'workflow-runs', workflowRunId)
+}
+
+function workflowLaunchEnvelope({
+  taskId,
+  summary,
+  transcriptDir,
+  scriptPath,
+  workflowRunId,
+}: {
+  taskId: string
+  summary: string
+  transcriptDir: string
+  scriptPath?: string
+  workflowRunId: string
+}): string {
+  const scriptFile = scriptPath ?? '<script file unavailable>'
+  return [
+    `Workflow launched in background. Task ID: ${taskId}`,
+    `Summary: ${summary}`,
+    `Transcript dir: ${transcriptDir}`,
+    `Script file: ${scriptFile}`,
+    `(Edit this file with Write/Edit and re-invoke Workflow with {scriptPath: "${scriptFile}"} to iterate without resending the script.)`,
+    `Run ID: ${workflowRunId}`,
+    `To resume after editing the script: Workflow({scriptPath: "${scriptFile}", resumeFromRunId: "${workflowRunId}"}) — completed agents return cached results (cached results may themselves be empty — inspect journal.jsonl before assuming there is something to recover).`,
+    '',
+    'You will be notified when it completes. Use /workflows to watch live progress.',
+  ].join('\n')
+}
+
+async function writeWorkflowResult(taskId: string, resultText: string): Promise<string> {
+  const outputFile = getTaskOutputPath(taskId)
+  await mkdir(dirname(outputFile), { recursive: true })
+  await writeFile(outputFile, resultText)
+  return outputFile
+}
+
 function workflowAbortStatus(reason: unknown): 'paused' | 'killed' | undefined {
   if (reason === 'workflow-paused') return 'paused'
   if (reason === 'workflow-killed') return 'killed'
@@ -260,7 +321,9 @@ export async function runWorkflowScript({
   const logs: string[] = []
   let agentCount = 0
   let tokenSpent = 0
+  let toolUseSpent = 0
   let currentPhaseId = plan.phases[0]?.id ?? plan.name
+  let childWorkflowProgressName: string | undefined
   const abortController = workflowTask.abortController!
   const semaphore = new Semaphore(MAX_CONCURRENCY)
   const journal = new WorkflowJournal()
@@ -394,9 +457,29 @@ export async function runWorkflowScript({
     }
 
     try {
+      const progressPhase = childWorkflowProgressName ?? phase
+      emitTaskProgress({
+        taskId: workflowTask.id,
+        toolUseId: context.toolUseId,
+        description: workflowAgentProgressDescription(progressPhase, label, plan),
+        startTime: workflowTask.startTime,
+        totalTokens: tokenSpent,
+        toolUses: 0,
+        lastToolName: label,
+        summary: `Workflow agent started: ${label}`,
+        workflowProgress: workflowProgressSnapshot(plan),
+      })
+
       const result = await agentTool.call(
         input as never,
-        { ...context, abortController: agentAbortController },
+        {
+          ...context,
+          abortController: agentAbortController,
+          options: {
+            ...context.options,
+            disableNestedAgentTools: true,
+          },
+        },
         canUseTool, assistantMessage,
         (progress) => {
           lastProgress = Date.now()
@@ -417,6 +500,19 @@ export async function runWorkflowScript({
       const output = result.data as AgentToolOutput
       const text = extractAgentText(output)
       tokenSpent += output.totalTokens ?? 0
+      toolUseSpent += output.totalToolUseCount ?? 0
+
+      emitTaskProgress({
+        taskId: workflowTask.id,
+        toolUseId: context.toolUseId,
+        description: workflowAgentProgressDescription(progressPhase, label, plan),
+        startTime: workflowTask.startTime,
+        totalTokens: tokenSpent,
+        toolUses: toolUseSpent,
+        lastToolName: label,
+        summary: `Workflow agent completed: ${label}`,
+        workflowProgress: workflowProgressSnapshot(plan),
+      })
 
       completeWorkflowAgent({
         taskId: workflowTask.id,
@@ -584,7 +680,13 @@ export async function runWorkflowScript({
       const childArgs = subArgs ?? args
       const child = await loadChildWorkflow(nameOrRef, childArgs)
       if (child.script && hasWorkflowScriptMeta(child.script)) {
-        return await runChildOfficialScript(child.script, childArgs)
+        const parsedChild = parseWorkflowScript(child.script)
+        childWorkflowProgressName = parsedChild.meta.name
+        try {
+          return await runChildOfficialScript(child.script, childArgs)
+        } finally {
+          childWorkflowProgressName = undefined
+        }
       }
       const results = await runChildPlan(child.plan)
       return {
@@ -596,9 +698,18 @@ export async function runWorkflowScript({
     }
   }
 
+  const launchEnvelope = workflowLaunchEnvelope({
+    taskId: workflowTask.id,
+    summary: plan.description,
+    transcriptDir: workflowTranscriptDir(workflowRunId),
+    scriptPath,
+    workflowRunId,
+  })
+
   // --- Execute ---
-  try {
-    await emit(createWorkflowProgressEvent({ workflowRunId, status: 'running', completedAgents: 0, totalAgents: plan.totalAgents }))
+  const workflowRun = (async () => {
+    try {
+      await emit(createWorkflowProgressEvent({ workflowRunId, status: 'running', completedAgents: 0, totalAgents: plan.totalAgents }))
     await emit(createWorkflowLogEvent({ workflowRunId, message: `Workflow script started: ${plan.name}` }))
 
     const parsed = parseWorkflowScript(script)
@@ -651,15 +762,19 @@ export async function runWorkflowScript({
     const resultText = scriptResult != null
       ? (typeof scriptResult === 'string' ? scriptResult : JSON.stringify(scriptResult, null, 2))
       : `Workflow completed. ${agentCount} agents, ${tokenSpent} tokens.`
+    const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+    emitTaskTerminatedSdk(workflowTask.id, 'completed', {
+      toolUseId: context.toolUseId,
+      summary: `Dynamic workflow "${plan.description}" completed`,
+      outputFile,
+      usage: {
+        total_tokens: tokenSpent,
+        tool_uses: toolUseSpent,
+        duration_ms: Date.now() - workflowTask.startTime,
+      },
+    })
 
-    return [
-      `Workflow launched in background. Task ID: ${workflowTask.id}`,
-      `Run ID: ${workflowRunId}`,
-      `Result:\n${resultText}`,
-      logs.length > 0 ? `Logs:\n${logs.join('\n')}` : '',
-      'Use /workflows to watch live progress.',
-    ].filter(Boolean).join('\n')
-  } catch (error) {
+    } catch (error) {
     const abortStatus = workflowAbortStatus(abortController.signal.reason)
     if (abortStatus) {
       await updateWorkflowRunSessionProgress({
@@ -676,13 +791,7 @@ export async function runWorkflowScript({
           ? { resumePrompt: `Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})` }
           : {}),
       })
-      return [
-        `Workflow ${abortStatus}. Task ID: ${workflowTask.id}`,
-        `Run ID: ${workflowRunId}`,
-        ...(abortStatus === 'paused' && scriptPath
-          ? [`Resume with: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"})`]
-          : []),
-      ].join('\n')
+      return
     }
 
     abortController.abort()
@@ -690,7 +799,22 @@ export async function runWorkflowScript({
     failWorkflowTask(workflowTask.id, message, setAppState)
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'failed', completedAgents: agentCount, totalAgents: plan.totalAgents }))
     await failWorkflowRunSession({ cwd, session: runSession, results: [], error: message, resumeCacheEntries: journal.entries() })
-    if (error instanceof Error && error.message.trim() !== '') throw error
-    throw new Error(message)
+    const outputFile = await writeWorkflowResult(workflowTask.id, message)
+    emitTaskTerminatedSdk(workflowTask.id, 'failed', {
+      toolUseId: context.toolUseId,
+      summary: `Dynamic workflow "${plan.description}" failed: ${message}`,
+      outputFile,
+      usage: {
+        total_tokens: tokenSpent,
+        tool_uses: toolUseSpent,
+        duration_ms: Date.now() - workflowTask.startTime,
+      },
+    })
   }
+  })()
+
+  if (context.options.workflowRunInForeground) {
+    await workflowRun
+  }
+  return launchEnvelope
 }

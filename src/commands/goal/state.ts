@@ -8,8 +8,8 @@ import type {
 
 export const GOAL_NO_PROMPT_PLACEHOLDER = '(no goal provided)'
 
-export function getGoalPromptForState(args: string): string {
-  return args.trim() || GOAL_NO_PROMPT_PLACEHOLDER
+export function getGoalPromptForState(args?: string): string {
+  return args?.trim() || GOAL_NO_PROMPT_PLACEHOLDER
 }
 
 export function createActiveGoalStatus(

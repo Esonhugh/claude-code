@@ -325,6 +325,7 @@ const runContext = {
     thinkingConfig: {},
     isNonInteractiveSession: true,
     mainLoopModel: 'claude-sonnet-4-5',
+    workflowRunInForeground: true,
   },
   abortController: new AbortController(),
   messages: [],
@@ -486,15 +487,13 @@ const defaultModeRun = await WorkflowTool.call(
 assert.match(String(defaultModeRun.data), /Workflow launched in background\. Task ID: w/)
 assert.equal(launchedInputs[0]?.mode, 'acceptEdits')
 
-await assert.rejects(
-  WorkflowTool.call(
-    { action: 'run', selector: 'empty-error' },
-    runContext,
-    async () => ({ behavior: 'allow' }),
-    { message: { id: 'msg_empty_error_run' } } as never,
-  ),
-  /Workflow script failed without error details/,
+const emptyErrorRun = await WorkflowTool.call(
+  { action: 'run', selector: 'empty-error' },
+  runContext,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_empty_error_run' } } as never,
 )
+assert.match(String(emptyErrorRun.data), /Workflow launched in background\. Task ID: w/)
 const emptyErrorTask = Object.values(runState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'empty-error',
 )!

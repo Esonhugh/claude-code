@@ -333,6 +333,15 @@ const officialParentAgentLines = workflowDetailSnapshotLines(officialParentWorkf
 assert.ok(officialParentAgentLines.some(line => line.includes('parent-agent ·')), officialParentAgentLines.join('\n'))
 assert.ok(officialParentAgentLines.some(line => line.includes('official parent ok')), officialParentAgentLines.join('\n'))
 
+const officialParentDescriptionLines = workflowDetailSnapshotLines({
+  ...officialParentWorkflow,
+  meta: undefined,
+  summary: 'Workflow completed',
+  description: 'Official parent description from task_started',
+})
+assert.ok(officialParentDescriptionLines[1]?.includes('Official parent description from task_started'), officialParentDescriptionLines.join('\n'))
+assert.ok(officialParentDescriptionLines[1]?.includes('2/2 agents · 2s · done'), officialParentDescriptionLines.join('\n'))
+
 const completedPromptLines = workflowDetailSnapshotLines({
   ...workflow,
   status: 'completed',

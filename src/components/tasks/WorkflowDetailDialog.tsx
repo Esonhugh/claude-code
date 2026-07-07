@@ -49,7 +49,7 @@ function workflowTitle(task: LocalWorkflowTaskState): string {
 }
 
 function workflowDescription(task: LocalWorkflowTaskState): string {
-  return task.meta?.description ?? task.summary ?? task.description.replace(/^Workflow:\s*/i, '')
+  return task.meta?.description ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
 function visibleAgentTotal(task: LocalWorkflowTaskState): number {

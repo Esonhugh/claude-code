@@ -167,6 +167,7 @@ const context = {
       thinkingConfig: {},
       isNonInteractiveSession: true,
       mainLoopModel: 'claude-sonnet-4-5',
+      workflowRunInForeground: true,
     },
     abortController: new AbortController(),
     messages: [],

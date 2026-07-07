@@ -178,6 +178,12 @@ export type ToolUseContext = {
     subagentDepth?: number
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
+    /** Prevent workflow worker agents from recursively spawning agents/workflows. */
+    disableNestedAgentTools?: boolean
+    /** Abort workflow worker agents after this many milliseconds without progress. */
+    workflowAgentStallMs?: number
+    /** Test/runtime override to wait for workflow completion before returning. */
+    workflowRunInForeground?: boolean
   }
   abortController: AbortController
   readFileState: FileStateCache

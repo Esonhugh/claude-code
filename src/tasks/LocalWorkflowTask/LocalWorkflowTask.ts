@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import type { AppState } from '../../state/AppState.js'
 import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
+import { registerTask } from '../../utils/task/framework.js'
+import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPhase,
@@ -23,10 +25,6 @@ function generateWorkflowTaskId(): string {
   return id
 }
 
-function workflowOutputPath(taskId: string): string {
-  return `.claude/tasks/${taskId}.output`
-}
-
 function createWorkflowTaskBase(
   id: string,
   description: string,
@@ -39,7 +37,7 @@ function createWorkflowTaskBase(
     description,
     toolUseId,
     startTime: Date.now(),
-    outputFile: workflowOutputPath(id),
+    outputFile: getTaskOutputPath(id),
     outputOffset: 0,
     notified: false,
   }
@@ -133,6 +131,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   meta?: WorkflowScriptMeta
   sourcePath?: string
   runScriptSnapshot?: string
+  prompt?: string
   pausedAt?: number
   abortController?: AbortController
   phases: LocalWorkflowPhaseState[]
@@ -174,7 +173,7 @@ export function registerWorkflowTask({
 }): LocalWorkflowTaskState {
   const id = generateWorkflowTaskId()
   const taskState: LocalWorkflowTaskState = {
-    ...createWorkflowTaskBase(id, `Workflow: ${plan.name}`, toolUseId),
+    ...createWorkflowTaskBase(id, plan.description, toolUseId),
     type: 'local_workflow',
     status: 'running',
     workflowName: plan.name,
@@ -193,27 +192,15 @@ export function registerWorkflowTask({
     meta: plan.meta,
     sourcePath: plan.sourcePath,
     runScriptSnapshot: plan.runScriptSnapshot,
+    prompt: plan.runScriptSnapshot,
     abortController: new AbortController(),
     phases: plan.phases.map(createPhaseState),
     results: [],
     events: [],
   }
 
-  registerWorkflowTaskState(taskState, setAppState)
+  registerTask(taskState, setAppState)
   return taskState
-}
-
-function registerWorkflowTaskState(
-  task: LocalWorkflowTaskState,
-  setAppState: SetAppState,
-): void {
-  setAppState(prev => ({
-    ...prev,
-    tasks: {
-      ...prev.tasks,
-      [task.id]: task,
-    },
-  }))
 }
 
 function withWorkflowTask(
