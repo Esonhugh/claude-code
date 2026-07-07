@@ -5,6 +5,14 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import {
+  OUTPUT_FILE_TAG,
+  STATUS_TAG,
+  SUMMARY_TAG,
+  TASK_ID_TAG,
+  TASK_NOTIFICATION_TAG,
+  TOOL_USE_ID_TAG,
+} from '../../constants/xml.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import {
   completeWorkflowAgent,
@@ -42,6 +50,7 @@ import { getCwd } from '../../utils/cwd.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
+import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import { getProjectTempDir } from '../../utils/permissions/filesystem.js'
 import {
   appendWorkflowJournalResult,
@@ -265,6 +274,32 @@ async function writeWorkflowResult(taskId: string, resultText: string): Promise<
   await mkdir(dirname(outputFile), { recursive: true })
   await writeFile(outputFile, resultText)
   return outputFile
+}
+
+function enqueueWorkflowCompletionNotification({
+  taskId,
+  toolUseId,
+  summary,
+  outputFile,
+  resultText,
+}: {
+  taskId: string
+  toolUseId?: string
+  summary: string
+  outputFile: string
+  resultText: string
+}): void {
+  const toolUseIdLine = toolUseId
+    ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>`
+    : ''
+  const message = `<${TASK_NOTIFICATION_TAG}>
+<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
+<${OUTPUT_FILE_TAG}>${outputFile}</${OUTPUT_FILE_TAG}>
+<${STATUS_TAG}>completed</${STATUS_TAG}>
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>
+${resultText}
+</${TASK_NOTIFICATION_TAG}>`
+  enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }
 
 function workflowAbortStatus(reason: unknown): 'paused' | 'killed' | undefined {
@@ -802,9 +837,17 @@ export async function runWorkflowScript({
       ? (typeof scriptResult === 'string' ? scriptResult : JSON.stringify(scriptResult, null, 2))
       : `Workflow completed. ${agentCount} agents, ${tokenSpent} tokens.`
     const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+    const summary = `Dynamic workflow "${plan.description}" completed`
+    enqueueWorkflowCompletionNotification({
+      taskId: workflowTask.id,
+      toolUseId: context.toolUseId,
+      summary,
+      outputFile,
+      resultText,
+    })
     emitTaskTerminatedSdk(workflowTask.id, 'completed', {
       toolUseId: context.toolUseId,
-      summary: `Dynamic workflow "${plan.description}" completed`,
+      summary,
       outputFile,
       usage: {
         total_tokens: tokenSpent,

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { setIsInteractive } from '../../bootstrap/state.js'
+import { dequeue } from '../../utils/messageQueueManager.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { classifyWorkflowAgentError, runWorkflowScript } from './workflowScriptRuntime.js'
@@ -155,6 +156,10 @@ assert.equal(notification?.tool_use_id, 'toolu_workflow_test')
 assert.equal(notification?.status, 'completed')
 assert.match(notification?.summary ?? '', /Dynamic workflow "Small real workflow covering phase log args budget agent parallel pipeline workflow\." completed/)
 assert.ok(notification?.output_file)
+const completionNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(completionNotification)
+assert.match(String(completionNotification.value), /<summary>Dynamic workflow "Small real workflow covering phase log args budget agent parallel pipeline workflow\." completed<\/summary>/)
+assert.match(String(completionNotification.value), /"alpha": "alpha-ok"/)
 
 const workflowTask = Object.values(state.tasks).find(
   task => task.type === 'local_workflow',

@@ -3,7 +3,15 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage, NormalizedUserMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
-import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js'
+import {
+  OUTPUT_FILE_TAG,
+  STATUS_TAG,
+  SUMMARY_TAG,
+  TASK_ID_TAG,
+  TASK_NOTIFICATION_TAG,
+  TOOL_USE_ID_TAG,
+  COMMAND_MESSAGE_TAG,
+} from '../../constants/xml.js'
 import { getCwd } from '../../utils/cwd.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import {
@@ -54,6 +62,7 @@ import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
+import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const DEFAULT_STALL_MS = 120_000
@@ -247,6 +256,32 @@ async function writeWorkflowResult(taskId: string, resultText: string): Promise<
   await mkdir(dirname(outputFile), { recursive: true })
   await writeFile(outputFile, resultText)
   return outputFile
+}
+
+function enqueueWorkflowCompletionNotification({
+  taskId,
+  toolUseId,
+  summary,
+  outputFile,
+  resultText,
+}: {
+  taskId: string
+  toolUseId?: string
+  summary: string
+  outputFile: string
+  resultText: string
+}): void {
+  const toolUseIdLine = toolUseId
+    ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>`
+    : ''
+  const message = `<${TASK_NOTIFICATION_TAG}>
+<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
+<${OUTPUT_FILE_TAG}>${outputFile}</${OUTPUT_FILE_TAG}>
+<${STATUS_TAG}>completed</${STATUS_TAG}>
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>
+${resultText}
+</${TASK_NOTIFICATION_TAG}>`
+  enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }
 
 function buildAgentPrompt(
@@ -811,13 +846,22 @@ export async function runWorkflowPlan({
         results: allResults,
         resumeCacheEntries: resumeRuntime.entries,
       })
+      const resultText = allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || `Workflow completed. ${allResults.length} agents.`
       const outputFile = await writeWorkflowResult(
         workflowTask.id,
-        allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || `Workflow completed. ${allResults.length} agents.`,
+        resultText,
       )
+      const summary = `Dynamic workflow "${plan.description}" completed`
+      enqueueWorkflowCompletionNotification({
+        taskId: workflowTask.id,
+        toolUseId: context.toolUseId,
+        summary,
+        outputFile,
+        resultText,
+      })
       emitTaskTerminatedSdk(workflowTask.id, 'completed', {
         toolUseId: context.toolUseId,
-        summary: `Dynamic workflow "${plan.description}" completed`,
+        summary,
         outputFile,
         usage: {
           total_tokens: allResults.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0),

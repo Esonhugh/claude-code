@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { pauseWorkflowTask, type LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { dequeue } from '../../utils/messageQueueManager.js'
 import { runWorkflowPlan } from './runWorkflow.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
@@ -84,6 +85,10 @@ const result = await runWorkflowPlan({
 assert.match(result, /Workflow launched in background\. Task ID: w/)
 const task = Object.values(state.tasks).find(task => task.type === 'local_workflow')
 assert.equal(task?.status, 'completed')
+const completionNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(completionNotification)
+assert.match(String(completionNotification.value), /<summary>Dynamic workflow "Accept short root output\." completed<\/summary>/)
+assert.match(String(completionNotification.value), /## short-root-output-root-1\nok/)
 
 let partialState = {
   tasks: {},
