@@ -14,8 +14,9 @@ import {
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
 import { runWorkflowPlan } from './runWorkflow.js'
 import { runWorkflowScript } from './workflowScriptRuntime.js'
+import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import type { WorkflowDryRunPlan, WorkflowProgressEvent, WorkflowSpec } from './workflowSpec.js'
-import { updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
+import { loadWorkflowRunSession, updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
 import {
   discoverWorkflowSpecs,
   loadWorkflowSpecByNameOrPath,
@@ -145,6 +146,10 @@ const inputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('User-supplied workflow run input/context'),
+    resumeFromRunId: z
+      .string()
+      .optional()
+      .describe('Run ID of a prior workflow invocation to resume from'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -301,7 +306,7 @@ export const WorkflowTool = buildTool({
     return `Workflow ${action}${selector}`
   },
   async call(input, context, canUseTool, assistantMessage) {
-    const { action, selector, plan, runArgs } = input
+    const { action, selector, plan, runArgs, resumeFromRunId } = input
     const cwd = resolveCwd(context)
     if ('getAppState' in context && typeof context.getAppState === 'function' && !shouldEnableWorkflows(context.getAppState().settings)) {
       throw new Error('Workflows are disabled by settings')
@@ -320,6 +325,7 @@ export const WorkflowTool = buildTool({
           canUseTool,
           assistantMessage,
           runArgs,
+          resumeFromRunId,
         }),
       }
     }
@@ -373,6 +379,9 @@ export const WorkflowTool = buildTool({
     }
 
     if (action === 'run') {
+      const priorSession = resumeFromRunId
+        ? await loadWorkflowRunSession({ cwd, workflowRunId: resumeFromRunId })
+        : undefined
       // Use script runtime for script-based workflows
       if (isExecutableWorkflowScript(workflow.spec)) {
         return {
@@ -384,6 +393,10 @@ export const WorkflowTool = buildTool({
             canUseTool,
             assistantMessage,
             scriptPath: workflow.path,
+            resumeFromRunId,
+            resumeJournalEntries: priorSession?.transcriptDir
+              ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
+              : priorSession?.resumeCacheEntries,
           }),
         }
       }
@@ -394,6 +407,7 @@ export const WorkflowTool = buildTool({
           canUseTool,
           assistantMessage,
           runArgs,
+          resumeFromRunId,
           injectRunArgsIntoRootPrompt: shouldInjectRunArgsIntoRootPrompt(workflow.spec, workflow.path),
         }),
       }

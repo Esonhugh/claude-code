@@ -14,7 +14,8 @@ import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
 
 const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 const MAX_RECENT_ACTIVITIES = 5
-export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'workflow-agent-user-retry'
+export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'user-retry'
+export const WORKFLOW_AGENT_SKIPPED_ABORT_REASON = 'user-skip'
 
 function generateWorkflowTaskId(): string {
   const bytes = randomBytes(8)
@@ -807,7 +808,7 @@ export function skipWorkflowAgent(
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
     let skippedPhaseId: string | undefined
-    task.agentControllers?.[agentId]?.abortController.abort('workflow-agent-skipped')
+    task.agentControllers?.[agentId]?.abortController.abort(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
     const { [agentId]: _skippedController, ...agentControllers } = task.agentControllers ?? {}
     const { [agentId]: _skippedLiveAgent, ...liveAgents } = task.liveAgents ?? {}
     const skippedTask = {

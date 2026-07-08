@@ -9,7 +9,9 @@ import {
   resolveWorkflowScriptPath,
 } from './workflowScriptPersistence.js'
 
-assert.match(createWorkflowRunId(), /^wf_[a-z0-9]+_[a-z0-9]+$/)
+const workflowRunIdFormat = createWorkflowRunId()
+assert.match(workflowRunIdFormat, /^wf_[a-z0-9-]{6,}$/)
+assert.equal(workflowRunIdFormat.slice(3).includes('_'), false)
 
 const cwd = await mkdtemp(join(tmpdir(), 'workflow-script-persistence-'))
 const workflowRunId = 'wf_test_123'

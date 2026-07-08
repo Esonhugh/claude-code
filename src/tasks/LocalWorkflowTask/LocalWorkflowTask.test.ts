@@ -691,7 +691,7 @@ assert.deepEqual(manualRetryAttempts, [
   'Manual Retry Workflow: unstable',
   'Manual Retry Workflow: unstable retry 1',
 ])
-assert.equal(manualRetryFirstAbortReason, 'workflow-agent-user-retry')
+assert.equal(manualRetryFirstAbortReason, 'user-retry')
 const manualRetryTask = Object.values(manualRetryState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow',
 )!

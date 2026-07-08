@@ -402,7 +402,7 @@ await assert.rejects(
 launchedPrompts.length = 0
 launchedInputs.length = 0
 const runResult = await WorkflowTool.call(
-  { action: 'run', selector: 'JS Run Workflow', runArgs: 'topic: DSL' },
+  { action: 'run', selector: 'JS Run Workflow', runArgs: 'topic: DSL', resumeFromRunId: 'wf_prior_js' } as never,
   runContext,
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_js_run' } } as never,
@@ -444,6 +444,7 @@ assert.match(runSession.workflowRunId, /^wf_/)
 assert.equal(runSession.workflowName, 'JS Run Workflow')
 assert.equal(runSession.status, 'completed')
 assert.equal(runSession.runArgs, 'topic: DSL')
+assert.equal(runSession.resumeFromRunId, 'wf_prior_js')
 assert.equal(runSession.scriptPath, join(tempRoot, 'docs', 'workflows', 'js-run.js'))
 assert.equal(runSession.runtime.kind, 'javascript-worker')
 assert.equal(runSession.runtime.isolated, true)

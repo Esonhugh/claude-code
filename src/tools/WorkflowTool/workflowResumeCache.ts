@@ -10,6 +10,14 @@ type WorkflowScriptAgentOpts = {
   schema?: object
 }
 
+export type WorkflowScriptIdentityOpts = {
+  schema?: object
+  model?: string
+  effort?: string
+  isolation?: 'worktree' | 'remote'
+  agentType?: string
+}
+
 export type WorkflowResumeCacheEntry = {
   index: number
   identity: string
@@ -62,6 +70,26 @@ export function createWorkflowScriptAgentIdentity(prompt: string, opts?: Workflo
     schema: opts?.schema,
   }))
   return h.digest('hex').slice(0, 16)
+}
+
+export function createWorkflowScriptAgentChainIdentity(input: {
+  previousKey: string
+  prompt: string
+  opts?: WorkflowScriptIdentityOpts
+}): string {
+  const h = createHash('sha256')
+  h.update(input.previousKey)
+  h.update('\0')
+  h.update(input.prompt)
+  h.update('\0')
+  h.update(stableJson({
+    schema: input.opts?.schema,
+    model: input.opts?.model,
+    effort: input.opts?.effort,
+    isolation: input.opts?.isolation,
+    agentType: input.opts?.agentType,
+  }))
+  return `v2:${h.digest('hex')}`
 }
 
 export function recordResumeCacheEntry(input: {

@@ -26,6 +26,7 @@ import {
   registerWorkflowTask,
   startWorkflowPhase,
   workflowResumeCall,
+  WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
   type WorkflowAgentResult,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type {
@@ -258,6 +259,13 @@ async function writeWorkflowResult(taskId: string, resultText: string): Promise<
   return outputFile
 }
 
+function escapeXmlText(value: unknown): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
 function enqueueWorkflowCompletionNotification({
   taskId,
   toolUseId,
@@ -272,14 +280,18 @@ function enqueueWorkflowCompletionNotification({
   resultText: string
 }): void {
   const toolUseIdLine = toolUseId
-    ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>`
+    ? `\n<${TOOL_USE_ID_TAG}>${escapeXmlText(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
+  const escapedResult = escapeXmlText(resultText)
+  const truncatedResult = escapedResult.length > 8000
+    ? `${escapedResult.slice(0, 8000)}\n... (truncated ${escapedResult.length - 8000} chars, full result in ${escapeXmlText(outputFile)})`
+    : escapedResult
   const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
-<${OUTPUT_FILE_TAG}>${outputFile}</${OUTPUT_FILE_TAG}>
+<${TASK_ID_TAG}>${escapeXmlText(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
+<${OUTPUT_FILE_TAG}>${escapeXmlText(outputFile)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>completed</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>
-${resultText}
+<${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
+<result>${truncatedResult}</result>
 </${TASK_NOTIFICATION_TAG}>`
   enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }
@@ -484,6 +496,9 @@ async function runPhaseAgentAttempt({
     if (agentAbortController.signal.reason === 'stalled') {
       throw new Error('stalled')
     }
+    if (agentAbortController.signal.reason === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON) {
+      throw new Error(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON)
+    }
     throw error
   } finally {
     clearInterval(stallTimer)
@@ -618,8 +633,7 @@ async function runPhaseAgent({
       const currentAgentId = userRetryAttempt > 0
         ? userRetryAgentId(baseAgentId, userRetryAttempt)
         : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
-      const task = context.getAppState().tasks?.[taskId]
-      const userRetryRequested = task?.type === 'local_workflow' && task.agentControllers?.[currentAgentId] === undefined
+      const userRetryRequested = error instanceof Error && error.message === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
       if (userRetryRequested) {
         userRetryAttempt += 1
         attempt -= 1
@@ -641,13 +655,6 @@ async function runPhaseAgent({
         status: 'failed',
         error: message,
       }
-      resumeRuntime.entries.push(recordResumeCacheEntry({
-        index: agentIndex,
-        identity,
-        phase: phase.id,
-        label: currentAgentId,
-        result: lastFailedResult,
-      }))
     }
   }
   if (lastFailedResult) return { result: lastFailedResult, cacheHit: false }

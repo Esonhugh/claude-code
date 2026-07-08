@@ -589,13 +589,13 @@ const insertedStepRerun = await WorkflowFacadeTool.call(
   { message: { id: 'msg_facade_inserted_step_rerun' } } as never,
 )
 assert.match(String(insertedStepRerun.data), /Workflow launched in background\. Task ID: w/)
-assert.deepEqual(launchedPrompts, ['prep meta'])
+assert.deepEqual(launchedPrompts, ['prep meta', 'scan meta'])
 const insertedWorkflowRunId = String(insertedStepRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(insertedWorkflowRunId)
 const insertedSession = JSON.parse(
   await readFile(join(tempRoot, '.claude', 'workflow-runs', insertedWorkflowRunId, 'session.json'), 'utf8'),
 )
-assert.equal(insertedSession.events.filter((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit).length, 1)
+assert.equal(insertedSession.events.filter((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit).length, 0)
 
 launchedPrompts.length = 0
 const rerun = await WorkflowFacadeTool.call(

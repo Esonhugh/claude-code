@@ -75,7 +75,13 @@ export async function readWorkflowJournalEntries(
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .map(line => JSON.parse(line) as WorkflowJournalEntry)
+    .flatMap(line => {
+      try {
+        return [JSON.parse(line) as WorkflowJournalEntry]
+      } catch {
+        return []
+      }
+    })
 }
 
 export async function readWorkflowJournalCacheEntries(

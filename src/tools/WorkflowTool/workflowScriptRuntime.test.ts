@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { setIsInteractive } from '../../bootstrap/state.js'
-import { dequeue } from '../../utils/messageQueueManager.js'
+import { dequeue, dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
+import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import { classifyWorkflowAgentError, runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
+import { retryWorkflowAgent, skipWorkflowAgent, type LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
 await import('./WorkflowTool.js')
@@ -37,6 +40,7 @@ assert.equal(
 
 setIsInteractive(false)
 drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
 
 let state = {
   tasks: {},
@@ -106,9 +110,11 @@ const fakeAgentTool = {
   },
 }
 
+const scriptCwd = await mkdtemp(join(tmpdir(), 'workflow-script-results-'))
 const context = {
   getAppState: () => state,
   setAppState,
+  getCwd: () => scriptCwd,
   options: {
     tools: [fakeAgentTool],
     mainLoopModel: 'claude-sonnet-4-6',
@@ -171,6 +177,10 @@ const journalRaw = await readFile(join(transcriptDirMatch[1], 'journal.jsonl'), 
 assert.match(journalRaw, /"type":"started"/)
 assert.match(journalRaw, /"type":"result"/)
 assert.match(journalRaw, /"agentId":"alpha"/)
+const scriptSession = await loadWorkflowRunSession({ cwd: scriptCwd, workflowRunId: 'wf_test' })
+assert.equal(scriptSession?.status, 'completed')
+assert.equal(scriptSession?.results.length, 1)
+assert.equal(scriptSession?.results[0]?.status, 'completed')
 
 const resumedResult = await runWorkflowScript({
   script,
@@ -192,6 +202,371 @@ assert.match(resumedJournalRaw, /"type":"result"/)
 assert.match(resumedJournalRaw, /"agentId":"alpha"/)
 assert.match(resumedJournalRaw, /"result":"alpha-ok"/)
 assert.equal(agentToolCallCount, 1)
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+let duplicateState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setDuplicateState = (updater: (prev: AppState) => AppState): void => {
+  duplicateState = updater(duplicateState)
+}
+let duplicateAgentCallCount = 0
+const duplicateAgentTool = {
+  name: 'Agent',
+  async call() {
+    duplicateAgentCallCount++
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `duplicate-${duplicateAgentCallCount}` }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const duplicateContext = {
+  getAppState: () => duplicateState,
+  setAppState: setDuplicateState,
+  options: {
+    tools: [duplicateAgentTool],
+    mainLoopModel: 'claude-sonnet-4-6',
+    workflowRunInForeground: true,
+  },
+  abortController: new AbortController(),
+  toolUseId: 'toolu_duplicate_identity',
+} as unknown as ToolUseContext
+const duplicateScript = `export const meta = {
+  name: "runtime-duplicate-agent-workflow",
+  description: "Workflow preserving duplicate identical agent calls.",
+  phases: [{ title: "Duplicate", detail: "Duplicate identical calls" }],
+}
+phase("Duplicate")
+const first = await agent("same prompt")
+const second = await agent("same prompt")
+return { first, second }
+`
+const duplicatePlan: WorkflowDryRunPlan = {
+  ...plan,
+  name: 'runtime-duplicate-agent-workflow',
+  description: 'Workflow preserving duplicate identical agent calls.',
+  phases: [
+    {
+      id: 'Duplicate',
+      description: 'Duplicate identical calls',
+      prompt: 'Duplicate calls',
+      dependsOn: [],
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      permissionMode: 'bypassPermissions',
+    },
+  ],
+  totalAgents: 2,
+  runScriptSnapshot: duplicateScript,
+}
+const duplicateResult = await runWorkflowScript({
+  script: duplicateScript,
+  plan: duplicatePlan,
+  context: duplicateContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_duplicate_identity' } } as never,
+  workflowRunId: 'wf_duplicate_identity',
+  scriptPath: '/tmp/runtime-duplicate-agent-workflow.js',
+})
+const duplicateTranscriptDirMatch = duplicateResult.match(/Transcript dir: (.+)/)
+assert.ok(duplicateTranscriptDirMatch?.[1])
+const duplicateResumeResult = await runWorkflowScript({
+  script: duplicateScript,
+  plan: duplicatePlan,
+  context: duplicateContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_duplicate_identity_resume' } } as never,
+  workflowRunId: 'wf_duplicate_identity_resume',
+  scriptPath: '/tmp/runtime-duplicate-agent-workflow.js',
+  resumeFromRunId: 'wf_duplicate_identity',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(duplicateTranscriptDirMatch[1]),
+})
+const duplicateResumeTranscriptDirMatch = duplicateResumeResult.match(/Transcript dir: (.+)/)
+assert.ok(duplicateResumeTranscriptDirMatch?.[1])
+const duplicateNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(duplicateNotification)
+assert.match(String(duplicateNotification.value), /"first": "duplicate-1"/)
+assert.match(String(duplicateNotification.value), /"second": "duplicate-2"/)
+assert.equal(duplicateAgentCallCount, 2)
+
+dequeueAllMatching(command => command.mode === 'task-notification')
+const editedDuplicateScript = `export const meta = {
+  name: "runtime-duplicate-agent-workflow",
+  description: "Workflow preserving duplicate identical agent calls.",
+  phases: [{ title: "Duplicate", detail: "Duplicate identical calls" }],
+}
+phase("Duplicate")
+const inserted = await agent("new prompt")
+const first = await agent("same prompt")
+const second = await agent("same prompt")
+return { inserted, first, second }
+`
+await runWorkflowScript({
+  script: editedDuplicateScript,
+  plan: {
+    ...duplicatePlan,
+    totalAgents: 3,
+    runScriptSnapshot: editedDuplicateScript,
+  },
+  context: duplicateContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_duplicate_identity_edited_resume' } } as never,
+  workflowRunId: 'wf_duplicate_identity_edited_resume',
+  scriptPath: '/tmp/runtime-duplicate-agent-workflow.js',
+  resumeFromRunId: 'wf_duplicate_identity',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(duplicateTranscriptDirMatch[1]),
+})
+const editedDuplicateNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(editedDuplicateNotification)
+assert.match(String(editedDuplicateNotification.value), /"inserted": "duplicate-3"/)
+assert.match(String(editedDuplicateNotification.value), /"first": "duplicate-4"/)
+assert.match(String(editedDuplicateNotification.value), /"second": "duplicate-5"/)
+assert.equal(duplicateAgentCallCount, 5)
+
+dequeueAllMatching(command => command.mode === 'task-notification')
+const vmGlobalScript = `export const meta = {
+  name: "runtime-vm-global-workflow",
+  description: "Workflow verifying VM global injection.",
+  phases: [{ title: "VM", detail: "Global functions" }],
+}
+if (typeof agent !== "function") throw new Error("agent missing")
+if (typeof parallel !== "function") throw new Error("parallel missing")
+if (typeof pipeline !== "function") throw new Error("pipeline missing")
+if (typeof workflow !== "function") throw new Error("workflow missing")
+if (typeof log !== "function") throw new Error("log missing")
+if (typeof phase !== "function") throw new Error("phase missing")
+let evalBlocked = false
+try { eval("1 + 1") } catch { evalBlocked = true }
+if (!evalBlocked) throw new Error("eval should be blocked")
+return "vm-ok"
+`
+const vmGlobalPlan: WorkflowDryRunPlan = {
+  ...plan,
+  name: 'runtime-vm-global-workflow',
+  description: 'Workflow verifying VM global injection.',
+  phases: [
+    {
+      id: 'VM',
+      description: 'Global functions',
+      prompt: 'VM global functions',
+      dependsOn: [],
+      fanout: 0,
+      concurrency: 1,
+      review: 'none',
+      permissionMode: 'bypassPermissions',
+    },
+  ],
+  totalAgents: 0,
+  runScriptSnapshot: vmGlobalScript,
+}
+await runWorkflowScript({
+  script: vmGlobalScript,
+  plan: vmGlobalPlan,
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_vm_global_test' } } as never,
+  workflowRunId: 'wf_vm_global_test',
+  scriptPath: '/tmp/runtime-vm-global-workflow.js',
+})
+const vmGlobalNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(vmGlobalNotification)
+assert.match(String(vmGlobalNotification.value), /vm-ok/)
+
+const functionResultScript = `export const meta = {
+  name: "runtime-function-result-workflow",
+  description: "Workflow rejecting function result.",
+  phases: [{ title: "VM", detail: "Function result" }],
+}
+return function leaked() {}
+`
+const functionResultPlan: WorkflowDryRunPlan = {
+  ...vmGlobalPlan,
+  name: 'runtime-function-result-workflow',
+  description: 'Workflow rejecting function result.',
+  runScriptSnapshot: functionResultScript,
+}
+let functionResultState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const functionResultContext = {
+  ...context,
+  getAppState: () => functionResultState,
+  setAppState: (updater: (prev: AppState) => AppState): void => {
+    functionResultState = updater(functionResultState)
+  },
+  abortController: new AbortController(),
+  toolUseId: 'toolu_function_result',
+} as unknown as ToolUseContext
+await runWorkflowScript({
+  script: functionResultScript,
+  plan: functionResultPlan,
+  context: functionResultContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_function_result_test' } } as never,
+  workflowRunId: 'wf_function_result_test',
+  scriptPath: '/tmp/runtime-function-result-workflow.js',
+})
+const functionResultTask = Object.values(functionResultState.tasks).find(
+  task => task.type === 'local_workflow',
+)
+assert.ok(functionResultTask)
+assert.equal(functionResultTask.status, 'failed')
+assert.match(functionResultTask.error ?? '', /workflow result cannot be a function/)
+
+dequeueAllMatching(command => command.mode === 'task-notification')
+const retryScript = `export const meta = {
+  name: "runtime-retry-agent-workflow",
+  description: "Workflow retrying a script agent.",
+  phases: [{ title: "Retry", detail: "Retry agent" }],
+}
+phase("Retry")
+return await agent("retry me")
+`
+const retryPlan: WorkflowDryRunPlan = {
+  ...plan,
+  name: 'runtime-retry-agent-workflow',
+  description: 'Workflow retrying a script agent.',
+  phases: [
+    {
+      id: 'Retry',
+      description: 'Retry agent',
+      prompt: 'Retry agent',
+      dependsOn: [],
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      permissionMode: 'bypassPermissions',
+    },
+  ],
+  totalAgents: 1,
+  runScriptSnapshot: retryScript,
+}
+let retryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setRetryState = (updater: (prev: AppState) => AppState): void => {
+  retryState = updater(retryState)
+}
+let retryCallCount = 0
+const retryAgentTool = {
+  name: 'Agent',
+  async call() {
+    retryCallCount++
+    if (retryCallCount === 1) {
+      const task = Object.values(retryState.tasks).find(
+        (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+      )
+      assert.ok(task?.currentAgentId)
+      retryWorkflowAgent(task.id, task.currentAgentId, setRetryState)
+      throw new Error('retry requested')
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'retry-ok' }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const retryContext = {
+  getAppState: () => retryState,
+  setAppState: setRetryState,
+  options: {
+    tools: [retryAgentTool],
+    mainLoopModel: 'claude-sonnet-4-6',
+    workflowRunInForeground: true,
+  },
+  abortController: new AbortController(),
+  toolUseId: 'toolu_script_retry',
+} as unknown as ToolUseContext
+await runWorkflowScript({
+  script: retryScript,
+  plan: retryPlan,
+  context: retryContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_retry' } } as never,
+  workflowRunId: `wf_script_retry_${process.pid}`,
+  scriptPath: '/tmp/runtime-retry-agent-workflow.js',
+})
+const retryNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(retryNotification)
+assert.match(String(retryNotification.value), /retry-ok/)
+assert.equal(retryCallCount, 2)
+
+dequeueAllMatching(command => command.mode === 'task-notification')
+const skipScript = `export const meta = {
+  name: "runtime-skip-agent-workflow",
+  description: "Workflow skipping a script agent.",
+  phases: [{ title: "Skip", detail: "Skip agent" }],
+}
+phase("Skip")
+return await agent("skip me")
+`
+let skipState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setSkipState = (updater: (prev: AppState) => AppState): void => {
+  skipState = updater(skipState)
+}
+let skipCallCount = 0
+const skipAgentTool = {
+  name: 'Agent',
+  async call() {
+    skipCallCount++
+    const task = Object.values(skipState.tasks).find(
+      (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+    )
+    assert.ok(task?.currentAgentId)
+    skipWorkflowAgent(task.id, task.currentAgentId, setSkipState)
+    throw new Error('skip requested')
+  },
+}
+await runWorkflowScript({
+  script: skipScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-skip-agent-workflow',
+    description: 'Workflow skipping a script agent.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Skip', description: 'Skip agent', prompt: 'Skip agent' }],
+    runScriptSnapshot: skipScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => skipState,
+    setAppState: setSkipState,
+    options: { ...retryContext.options, tools: [skipAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_skip',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_skip' } } as never,
+  workflowRunId: `wf_script_skip_${process.pid}`,
+  scriptPath: '/tmp/runtime-skip-agent-workflow.js',
+})
+const skipNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(skipNotification)
+assert.match(String(skipNotification.value), /Workflow completed/)
+assert.equal(skipCallCount, 1)
+
+const corruptJournalDir = await mkdtemp(join(tmpdir(), 'workflow-corrupt-journal-'))
+await writeFile(join(corruptJournalDir, 'journal.jsonl'), '{"type":"result","key":"ok","agentId":"ok","result":"ok","timestamp":1}\n{"type"')
+const corruptEntries = await readWorkflowJournalCacheEntries(corruptJournalDir)
+assert.equal(corruptEntries.length, 1)
+assert.equal(corruptEntries[0]?.result, 'ok')
 
 const failedScript = `export const meta = {
   name: "runtime-failed-agent-workflow",
@@ -219,6 +594,7 @@ const failedPlan: WorkflowDryRunPlan = {
   ],
   runScriptSnapshot: failedScript,
 }
+const failedWorkflowRunId = `wf_failed_agent_no_null_${process.pid}`
 const failedResult = await runWorkflowScript({
   script: failedScript,
   plan: failedPlan,
@@ -226,13 +602,14 @@ const failedResult = await runWorkflowScript({
   context,
   canUseTool: async () => ({ behavior: 'allow' }),
   assistantMessage: { message: { id: 'msg_failed_agent_test' } } as never,
-  workflowRunId: 'wf_failed_agent_test',
+  workflowRunId: failedWorkflowRunId,
   scriptPath: '/tmp/runtime-failed-agent-workflow.js',
 })
 const failedTranscriptDirMatch = failedResult.match(/Transcript dir: (.+)/)
 assert.ok(failedTranscriptDirMatch?.[1])
 const failedJournalRaw = await readFile(join(failedTranscriptDirMatch[1], 'journal.jsonl'), 'utf8')
+assert.match(failedJournalRaw, /"type":"started"/)
 assert.match(failedJournalRaw, /"agentId":"failed-agent"/)
-assert.match(failedJournalRaw, /"result":null/)
+assert.doesNotMatch(failedJournalRaw, /"type":"result"/)
 
 console.log('workflowScriptRuntime.test.ts passed')

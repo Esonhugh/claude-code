@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createWorkflowScriptAgentIdentity } from './workflowResumeCache.js'
+import { createWorkflowScriptAgentChainIdentity } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
 import { loadWorkflowRunSession, officialProjectDirName } from './workflowRunSessions.js'
 
@@ -61,6 +61,31 @@ await writeFile(
   })}\n`,
 )
 
+await writeFile(
+  join(officialRunDir, 'wf_paused.json'),
+  `${JSON.stringify({
+    runId: 'wf_paused',
+    workflowName: 'paused-workflow',
+    summary: 'Paused workflow',
+    status: 'paused',
+    startTime: 1783399711654,
+  })}\n`,
+)
+await writeFile(
+  join(officialRunDir, 'wf_killed.json'),
+  `${JSON.stringify({
+    runId: 'wf_killed',
+    workflowName: 'killed-workflow',
+    summary: 'Killed workflow',
+    status: 'killed',
+    startTime: 1783399711654,
+  })}\n`,
+)
+const pausedSession = await loadWorkflowRunSession({ cwd, workflowRunId: 'wf_paused', projectsRoot })
+const killedSession = await loadWorkflowRunSession({ cwd, workflowRunId: 'wf_killed', projectsRoot })
+assert.equal(pausedSession?.status, 'paused')
+assert.equal(killedSession?.status, 'killed')
+
 const officialSession = await loadWorkflowRunSession({ cwd, workflowRunId: officialRunId, projectsRoot })
 assert.ok(officialSession)
 assert.equal(officialSession.workflowRunId, officialRunId)
@@ -70,7 +95,7 @@ assert.equal(officialSession.scriptPath, '/tmp/portable-workflow-ok.js')
 assert.equal(officialSession.resumeCacheEntries.length, 1)
 assert.deepEqual(officialSession.resumeCacheEntries[0], {
   index: 0,
-  identity: createWorkflowScriptAgentIdentity('Reply exactly: workflow-ok', { label: 'portable-agent' }),
+  identity: createWorkflowScriptAgentChainIdentity({ previousKey: '', prompt: 'Reply exactly: workflow-ok' }),
   phase: 'Run',
   label: 'portable-agent',
   result: 'workflow-ok',

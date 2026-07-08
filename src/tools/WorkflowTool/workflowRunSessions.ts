@@ -7,7 +7,7 @@ import type {
   WorkflowDryRunPlan,
   WorkflowProgressEvent,
 } from './workflowSpec.js'
-import { createWorkflowScriptAgentIdentity, type WorkflowResumeCacheEntry } from './workflowResumeCache.js'
+import { createWorkflowScriptAgentChainIdentity, type WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 import type { WorkflowScriptMeta } from './workflowScriptParser.js'
 
 export type WorkflowRunSession = {
@@ -91,6 +91,7 @@ function workflowArgsFromOfficialResult(result: unknown): WorkflowArgs | undefin
 function officialWorkflowResumeEntries(run: OfficialWorkflowRun): WorkflowResumeCacheEntry[] {
   const progress = run.workflowProgress ?? []
   const agents = progress.filter(item => item.type === 'workflow_agent')
+  let previousKey = ''
   return agents.flatMap((agent, agentIndex): WorkflowResumeCacheEntry[] => {
     if (!agent.promptPreview) return []
     const label = agent.label ?? agent.promptPreview
@@ -99,16 +100,29 @@ function officialWorkflowResumeEntries(run: OfficialWorkflowRun): WorkflowResume
         ? (run.result as Record<string, unknown>)[label]
         : undefined
     )
+    const identity = createWorkflowScriptAgentChainIdentity({
+      previousKey,
+      prompt: agent.promptPreview,
+    })
+    previousKey = identity
     if (result === undefined) return []
     return [{
       index: typeof agent.index === 'number' ? Math.max(0, agent.index - 1) : agentIndex,
-      identity: createWorkflowScriptAgentIdentity(agent.promptPreview, { label }),
+      identity,
       phase: agent.phaseTitle,
       label,
       result,
       completedAt: run.startTime ?? Date.now(),
     }]
   })
+}
+
+function officialStatus(status: string | undefined): WorkflowRunSession['status'] {
+  if (status === 'completed') return 'completed'
+  if (status === 'failed') return 'failed'
+  if (status === 'paused') return 'paused'
+  if (status === 'killed') return 'killed'
+  return 'running'
 }
 
 function officialWorkflowRunToSession(run: OfficialWorkflowRun): WorkflowRunSession {
@@ -118,7 +132,7 @@ function officialWorkflowRunToSession(run: OfficialWorkflowRun): WorkflowRunSess
     taskId: run.taskId ?? run.runId,
     workflowRunId: run.runId,
     workflowName: run.workflowName ?? run.summary ?? run.runId,
-    status: run.status === 'completed' ? 'completed' : run.status === 'failed' ? 'failed' : 'running',
+    status: officialStatus(run.status),
     runArgs: workflowArgsFromOfficialResult(run.result),
     scriptPath: run.scriptPath,
     resumeCacheEntries: officialWorkflowResumeEntries(run),
