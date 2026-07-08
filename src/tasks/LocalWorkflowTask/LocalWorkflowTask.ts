@@ -834,8 +834,23 @@ export function skipWorkflowAgent(
         }
       }),
     }
+    const skippedIndex = skippedPhaseId
+      ? task.phases.find(phase => phase.id === skippedPhaseId)?.agentIds.indexOf(agentId) ?? -1
+      : -1
+    const skippedResult = skippedPhaseId && skippedIndex >= 0
+      ? { phaseId: skippedPhaseId, agentId, index: skippedIndex, status: 'skipped' as const }
+      : undefined
+    const skippedTaskWithResult = skippedResult
+      ? {
+          ...skippedTask,
+          results: [
+            ...removeTaskResultsForPhaseIndex(skippedTask.results, skippedResult.phaseId, skippedResult.index),
+            skippedResult,
+          ],
+        }
+      : skippedTask
     return skippedPhaseId
-      ? appendEvent(skippedTask, agentEvent(skippedTask, skippedPhaseId, agentId, 'skipped'))
+      ? appendEvent(skippedTaskWithResult, agentEvent(skippedTaskWithResult, skippedPhaseId, agentId, 'skipped'))
       : task
   })
 }

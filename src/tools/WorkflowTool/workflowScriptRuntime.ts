@@ -188,6 +188,14 @@ function defineSandboxGlobal(sandbox: vm.Context, name: string, value: unknown):
   })
 }
 
+function serializeWorkflowScriptResult(scriptResult: unknown, fallback: string): string {
+  if (scriptResult == null) return fallback
+  if (typeof scriptResult === 'string') return scriptResult
+  const serialized = JSON.stringify(scriptResult, null, 2)
+  if (serialized === undefined) throw new Error('workflow result cannot be serialized')
+  return serialized
+}
+
 // --- Helpers ---
 function findAgentTool(tools: readonly Tool[]): Tool | undefined {
   return tools.find(
@@ -767,34 +775,38 @@ export async function runWorkflowScript({
 
   async function runChildOfficialScript(script: string, subArgs?: WorkflowArgs): Promise<unknown> {
     const parsed = parseWorkflowScript(script)
-    const childSandbox = vm.createContext({
-      args: subArgs,
-      agent: realAgent,
-      pipeline: realPipeline,
-      parallel: realParallel,
-      workflow: () => Promise.reject(childWorkflowNestingError()),
-      phase(title: string) {
-        currentPhaseId = title
-        emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
-      },
-      log(message: string) {
-        if (logs.length < MAX_LOGS) logs.push(String(message))
-        emit(createWorkflowLogEvent({ workflowRunId, message: String(message) }))
-      },
-      budget: Object.freeze({ get total() { return budget.total }, spent: budget.spent, remaining: budget.remaining }),
-      Date: Object.assign(
-        () => { throw new Error('Date() unavailable in workflow scripts (breaks resume)') },
-        { now: () => { throw new Error('Date.now() unavailable') }, parse: Date.parse, UTC: Date.UTC },
-      ),
-      Math: (() => {
-        const m = Object.create(Math)
-        Object.defineProperty(m, 'random', { value: () => { throw new Error('Math.random() unavailable (breaks resume)') } })
-        return Object.freeze(m)
-      })(),
-      URL,
-      console: { log: (msg: unknown) => { if (logs.length < MAX_LOGS) logs.push(String(msg)) } },
+    const childSandbox = vm.createContext(
+      Object.create(null),
+      { codeGeneration: { strings: false, wasm: false } },
+    )
+    defineSandboxGlobal(childSandbox, 'args', subArgs === undefined ? undefined : JSON.parse(JSON.stringify(subArgs)))
+    defineSandboxGlobal(childSandbox, 'agent', realAgent)
+    defineSandboxGlobal(childSandbox, 'pipeline', realPipeline)
+    defineSandboxGlobal(childSandbox, 'parallel', realParallel)
+    defineSandboxGlobal(childSandbox, 'workflow', () => Promise.reject(childWorkflowNestingError()))
+    defineSandboxGlobal(childSandbox, 'phase', (title: string) => {
+      currentPhaseId = title
+      emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
     })
-    return await new vm.Script(`(async () => {\n${parsed.scriptBody}\n})()`, {
+    defineSandboxGlobal(childSandbox, 'log', (message: string) => {
+      if (logs.length < MAX_LOGS) logs.push(String(message))
+      emit(createWorkflowLogEvent({ workflowRunId, message: String(message) }))
+    })
+    defineSandboxGlobal(childSandbox, 'budget', Object.freeze({ get total() { return budget.total }, spent: budget.spent, remaining: budget.remaining }))
+    defineSandboxGlobal(childSandbox, 'Date', Object.assign(
+      () => { throw new Error('Date() unavailable in workflow scripts (breaks resume)') },
+      { now: () => { throw new Error('Date.now() unavailable') }, parse: Date.parse, UTC: Date.UTC },
+    ))
+    defineSandboxGlobal(childSandbox, 'Math', (() => {
+      const m = Object.create(Math)
+      Object.defineProperty(m, 'random', { value: () => { throw new Error('Math.random() unavailable (breaks resume)') } })
+      return Object.freeze(m)
+    })())
+    defineSandboxGlobal(childSandbox, 'URL', URL)
+    defineSandboxGlobal(childSandbox, 'eval', () => { throw new Error('eval() unavailable in workflow scripts (breaks resume)') })
+    defineSandboxGlobal(childSandbox, 'Function', () => { throw new Error('Function() unavailable in workflow scripts (breaks resume)') })
+    defineSandboxGlobal(childSandbox, 'console', { log: (msg: unknown) => { if (logs.length < MAX_LOGS) logs.push(String(msg)) } })
+    return await new vm.Script(`(async (eval, Function) => {\n${parsed.scriptBody}\n})(eval, Function)`, {
       filename: 'child-workflow-script.js',
     }).runInContext(childSandbox, { timeout: SYNC_TIMEOUT_MS })
   }
@@ -886,13 +898,15 @@ export async function runWorkflowScript({
       throw new Error('workflow result cannot be a function')
     }
 
+    const resultText = serializeWorkflowScriptResult(
+      scriptResult,
+      `Workflow completed. ${agentCount} agents, ${tokenSpent} tokens.`,
+    )
+
     completeWorkflowTask(workflowTask.id, setAppState)
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'completed', completedAgents: agentCount, totalAgents: agentCount }))
     await completeWorkflowRunSession({ cwd, session: runSession, results: scriptAgentResults, resumeCacheEntries: journal.entries() })
 
-    const resultText = scriptResult != null
-      ? (typeof scriptResult === 'string' ? scriptResult : JSON.stringify(scriptResult, null, 2))
-      : `Workflow completed. ${agentCount} agents, ${tokenSpent} tokens.`
     const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
     const summary = `Dynamic workflow "${plan.description}" completed`
     enqueueWorkflowCompletionNotification({

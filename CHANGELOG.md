@@ -10,6 +10,30 @@
 - 每个日期条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-09 - Workflow runtime 官方兼容性修复
+
+### 版本状态
+
+- 当前分支：`workflow-enhancement`。
+- 本次变更聚焦 workflow/deep-research runtime 与 official Claude Code 行为兼容性，不调整 `package.json` 版本。
+
+### 变更内容
+
+- 对齐 declarative workflow plan runtime 的 `user-skip` 行为：用户 skip agent 时不再将 phase/workflow 误判为失败，而是记录 `skipped` result 并允许 workflow 正常完成。
+- 修复 `LocalWorkflowTask` skipped agent 状态记录：`skipWorkflowAgent()` 现在同步写入 task-level `results`，避免 UI/session 只在 phase 内看到 skipped 状态。
+- 强化 workflow script VM：main/child official-script runtime 均禁用 string 和 WebAssembly code generation，并在 child runtime 中显式阻断 `eval` / `Function`。
+- 强化 workflow script dry-run loader：official-script loader 同步禁用 string/wasm codegen 和 `eval` / `Function`，避免 child workflow 在加载阶段绕过运行时 VM 限制。
+- 修复 script result 完成顺序：先序列化/校验 workflow script 返回值，再标记 task/session completed，避免 `BigInt` 等不可序列化结果导致 task completed 但 session failed 的状态分裂。
+
+### 测试覆盖
+
+- 新增/更新 `src/tools/WorkflowTool/runWorkflow.test.ts`，覆盖 plan runtime `user-skip` 应完成 workflow 并记录 skipped result。
+- 新增/更新 `src/tools/WorkflowTool/workflowScriptRuntime.test.ts`，覆盖 child workflow VM codegen 限制与不可序列化 script result 的 failed 状态一致性。
+- 已运行 `bun test src/tools/WorkflowTool/runWorkflow.test.ts`。
+- 已运行 `bun test src/tools/WorkflowTool/workflowScriptRuntime.test.ts`。
+- 已运行 `bun test src/tools/WorkflowTool src/tasks/LocalWorkflowTask`，结果 `35 pass, 0 fail`。
+- 已运行 `bun test src --isolate --path-ignore-patterns 'dist/**'`，结果 `140 pass, 0 fail`。
+
 ## 2026-07-05 - v2.1.177 - AgentTool recover parity、goal 恢复与调试能力补齐
 
 ### 版本状态

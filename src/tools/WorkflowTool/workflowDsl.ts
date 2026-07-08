@@ -177,20 +177,25 @@ async function loadOfficialWorkflowScriptSpec({
       cwd,
     }),
   })
-  const sandbox = vm.createContext({
-    args,
-    agent: globals.agent,
-    pipeline: globals.pipeline,
-    parallel: globals.parallel,
-    phase: globals.phase,
-    log: globals.log,
-    workflow: globals.workflow,
-    budget: globals.budget,
-    Date: globals.Date,
-    Math: globals.Math,
-    URL,
-  })
-  const script = new vm.Script(`(async () => {\n${parsed.scriptBody}\n})()`, {
+  const sandbox = vm.createContext(
+    {
+      args,
+      agent: globals.agent,
+      pipeline: globals.pipeline,
+      parallel: globals.parallel,
+      phase: globals.phase,
+      log: globals.log,
+      workflow: globals.workflow,
+      budget: globals.budget,
+      Date: globals.Date,
+      Math: globals.Math,
+      URL,
+      eval: () => { throw new Error('eval() unavailable in workflow scripts (breaks resume)') },
+      Function: () => { throw new Error('Function() unavailable in workflow scripts (breaks resume)') },
+    },
+    { codeGeneration: { strings: false, wasm: false } },
+  )
+  const script = new vm.Script(`(async (eval, Function) => {\n${parsed.scriptBody}\n})(eval, Function)`, {
     filename: filePath,
   })
   let scriptResult: unknown

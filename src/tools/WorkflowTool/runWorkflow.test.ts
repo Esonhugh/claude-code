@@ -317,6 +317,14 @@ await runWorkflowPlan({
   assistantMessage: { message: { id: 'msg_skip_agent' } } as never,
   workflowRunId: 'wf_skip_agent',
 })
+const skipTask = Object.values(skipState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(skipTask)
+assert.equal(skipTask.status, 'completed')
+assert.equal(skipTask.results.length, 1)
+assert.equal(skipTask.results[0]?.status, 'skipped')
+assert.equal(skipTask.phases[0]?.skippedAgentIds.length, 1)
 assert.equal(skipCallCount, 1)
 
 let retryCallCount = 0

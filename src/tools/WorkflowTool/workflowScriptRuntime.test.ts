@@ -380,6 +380,49 @@ const vmGlobalNotification = dequeue(command => command.mode === 'task-notificat
 assert.ok(vmGlobalNotification)
 assert.match(String(vmGlobalNotification.value), /vm-ok/)
 
+const childVmDir = await mkdtemp(join(tmpdir(), 'workflow-child-vm-'))
+const childVmPath = join(childVmDir, 'child.js')
+await writeFile(childVmPath, `export const meta = {
+  name: "runtime-child-vm-workflow",
+  description: "Child workflow verifying VM code generation restrictions.",
+  phases: [{ title: "Child VM", detail: "Function blocked" }],
+}
+phase("Child VM")
+let functionBlocked = false
+try { eval("1 + 1") } catch { functionBlocked = true }
+if (!functionBlocked) throw new Error("eval should be blocked")
+return "child-vm-ok"
+`)
+const childVmScript = `export const meta = {
+  name: "runtime-parent-child-vm-workflow",
+  description: "Parent workflow invoking child script VM.",
+  phases: [{ title: "Parent VM", detail: "Child VM" }],
+}
+return await workflow({ scriptPath: ${JSON.stringify(childVmPath)} })
+`
+await runWorkflowScript({
+  script: childVmScript,
+  plan: {
+    ...vmGlobalPlan,
+    name: 'runtime-parent-child-vm-workflow',
+    description: 'Parent workflow invoking child script VM.',
+    runScriptSnapshot: childVmScript,
+  },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_child_vm_test' } } as never,
+  workflowRunId: 'wf_child_vm_test',
+  scriptPath: join(childVmDir, 'parent.js'),
+})
+const childVmTask = Object.values(state.tasks).find(
+  task => task.type === 'local_workflow' && task.workflowRunId === 'wf_child_vm_test',
+)
+assert.ok(childVmTask)
+assert.equal(childVmTask.status, 'completed', childVmTask.error)
+const childVmNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(childVmNotification)
+assert.match(String(childVmNotification.value), /child-vm-ok/)
+
 const functionResultScript = `export const meta = {
   name: "runtime-function-result-workflow",
   description: "Workflow rejecting function result.",
@@ -421,6 +464,53 @@ const functionResultTask = Object.values(functionResultState.tasks).find(
 assert.ok(functionResultTask)
 assert.equal(functionResultTask.status, 'failed')
 assert.match(functionResultTask.error ?? '', /workflow result cannot be a function/)
+
+const unserializableResultScript = `export const meta = {
+  name: "runtime-unserializable-result-workflow",
+  description: "Workflow failing before completion for unserializable result.",
+  phases: [{ title: "VM", detail: "Unserializable result" }],
+}
+return 1n
+`
+let unserializableResultState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const unserializableResultCwd = await mkdtemp(join(tmpdir(), 'workflow-unserializable-result-'))
+await runWorkflowScript({
+  script: unserializableResultScript,
+  plan: {
+    ...vmGlobalPlan,
+    name: 'runtime-unserializable-result-workflow',
+    description: 'Workflow failing before completion for unserializable result.',
+    runScriptSnapshot: unserializableResultScript,
+  },
+  context: {
+    ...context,
+    getCwd: () => unserializableResultCwd,
+    getAppState: () => unserializableResultState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      unserializableResultState = updater(unserializableResultState)
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_unserializable_result',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_unserializable_result_test' } } as never,
+  workflowRunId: 'wf_unserializable_result_test',
+  scriptPath: '/tmp/runtime-unserializable-result-workflow.js',
+})
+const unserializableResultTask = Object.values(unserializableResultState.tasks).find(
+  task => task.type === 'local_workflow',
+)
+assert.ok(unserializableResultTask)
+assert.equal(unserializableResultTask.status, 'failed')
+assert.match(unserializableResultTask.error ?? '', /serialize|BigInt|JSON/i)
+const unserializableResultSession = await loadWorkflowRunSession({
+  cwd: unserializableResultCwd,
+  workflowRunId: 'wf_unserializable_result_test',
+})
+assert.equal(unserializableResultSession?.status, 'failed')
 
 dequeueAllMatching(command => command.mode === 'task-notification')
 const retryScript = `export const meta = {

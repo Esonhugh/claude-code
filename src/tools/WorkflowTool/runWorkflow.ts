@@ -26,6 +26,7 @@ import {
   registerWorkflowTask,
   startWorkflowPhase,
   workflowResumeCall,
+  WORKFLOW_AGENT_SKIPPED_ABORT_REASON,
   WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
   type WorkflowAgentResult,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -499,6 +500,9 @@ async function runPhaseAgentAttempt({
     if (agentAbortController.signal.reason === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON) {
       throw new Error(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON)
     }
+    if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
+      throw new Error(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
+    }
     throw error
   } finally {
     clearInterval(stallTimer)
@@ -638,6 +642,16 @@ async function runPhaseAgent({
         userRetryAttempt += 1
         attempt -= 1
         continue
+      }
+      const userSkipRequested = error instanceof Error && error.message === WORKFLOW_AGENT_SKIPPED_ABORT_REASON
+      if (userSkipRequested) {
+        const skippedResult: WorkflowAgentResult = {
+          phaseId: phase.id,
+          agentId: currentAgentId,
+          index,
+          status: 'skipped',
+        }
+        return { result: skippedResult, cacheHit: false }
       }
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
