@@ -1,4 +1,4 @@
-import { parseExpressionAt } from 'acorn'
+import { parse } from 'acorn'
 
 export type WorkflowMetaPhase = {
   title: string
@@ -26,9 +26,8 @@ export class WorkflowScriptParseError extends Error {
   }
 }
 
-const META_DECLARATION = /^\s*export\s+const\s+meta\b/
-const META_ASSIGNMENT = /^\s*export\s+const\s+meta\s*=\s*/
-const BODY_PREFIX = /^[;\s]*/
+const META_ASSIGNMENT = /^\s*export\s+const\s+meta\s*=/
+const BODY_PREFIX = /^[;\s]*\n/
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
 type AcornNode = {
@@ -36,6 +35,10 @@ type AcornNode = {
   start: number
   end: number
   [key: string]: unknown
+}
+
+type AcornProgram = AcornNode & {
+  body: AcornNode[]
 }
 
 export function hasWorkflowScriptMeta(source: string): boolean {
@@ -52,32 +55,46 @@ function throwParse(message: string): never {
   throw new WorkflowScriptParseError(message)
 }
 
-function readMetaObject(source: string): AcornNode {
-  if (META_DECLARATION.test(source) && !META_ASSIGNMENT.test(source)) {
-    throwParse('Workflow scripts must be plain JavaScript; TypeScript syntax fails to parse.')
-  }
-  if (/^\s*export\s+(?!const\s+meta\s*=)/.test(source)) {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-
-  const match = META_ASSIGNMENT.exec(source)
-  if (!match) {
-    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
-  }
-
+function parseProgram(source: string): AcornProgram {
   try {
-    const node = parseExpressionAt(source, match[0].length, {
+    return parse(source, {
       ecmaVersion: 'latest',
       sourceType: 'module',
-    }) as unknown as AcornNode
-    if (node.type !== 'ObjectExpression') {
-      throwParse('meta must be a pure literal object')
-    }
-    return node
+      allowAwaitOutsideFunction: true,
+      allowReturnOutsideFunction: true,
+    }) as unknown as AcornProgram
   } catch (error) {
-    if (error instanceof WorkflowScriptParseError) throw error
-    throwParse(`meta must be a pure literal: ${error instanceof Error ? error.message : String(error)}`)
+    const message = error instanceof Error ? error.message : String(error)
+    if (/^\s*export\s*\{/.test(source)) {
+      throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
+    }
+    throwParse(`Script parse error: ${message}. Workflow scripts must be plain JavaScript — TypeScript syntax (type annotations like \`: string[]\`, interfaces, generics) fails to parse.`)
   }
+}
+
+function isMetaExport(node: AcornNode | undefined): boolean {
+  if (!node || node.type !== 'ExportNamedDeclaration') return false
+  const declaration = node.declaration as AcornNode | undefined
+  if (!declaration || declaration.type !== 'VariableDeclaration') return false
+  if (declaration.kind !== 'const') return false
+  const declarations = declaration.declarations as AcornNode[] | undefined
+  if (!declarations || declarations.length !== 1) return false
+  const declarator = declarations[0]
+  const id = declarator?.id as AcornNode | undefined
+  const init = declarator?.init as AcornNode | undefined
+  return id?.type === 'Identifier' && id.name === 'meta' && init?.type === 'ObjectExpression'
+}
+
+function readMetaExport(source: string): { metaExport: AcornNode, metaObject: AcornNode } {
+  const program = parseProgram(source)
+  const metaExport = program.body[0]
+  if (!isMetaExport(metaExport)) {
+    throwParse('`export const meta = { name, description, phases }` must be the FIRST statement in the script')
+  }
+  const declaration = metaExport.declaration as AcornNode
+  const declarations = declaration.declarations as AcornNode[]
+  const metaObject = declarations[0]!.init as AcornNode
+  return { metaExport, metaObject }
 }
 
 function getPropertyKey(property: AcornNode): string {
@@ -85,29 +102,36 @@ function getPropertyKey(property: AcornNode): string {
     throwParse('meta must be a pure literal: computed keys not allowed in meta')
   }
   const key = property.key as AcornNode | undefined
-  if (key?.type === 'Identifier') return String(key.name)
-  if (key?.type === 'Literal') return String(key.value)
-  throwParse('meta must be a pure literal: unsupported property in meta')
+  let value: string
+  if (key?.type === 'Identifier') value = String(key.name)
+  else if (key?.type === 'Literal') value = String(key.value)
+  else throwParse(`meta must be a pure literal: unsupported key type in meta: ${key?.type ?? 'unknown'}`)
+  if (RESERVED_KEYS.has(value)) {
+    throwParse(`meta must be a pure literal: reserved key ${value} not allowed in meta`)
+  }
+  return value
 }
 
-function parseLiteralNode(node: AcornNode | null, path: string): unknown {
-  if (!node) throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+function parseLiteralNode(node: AcornNode | null): unknown {
+  if (!node) throwParse('meta must be a pure literal: sparse arrays not allowed')
   if (node.type === 'SpreadElement') {
     throwParse('meta must be a pure literal: spread not allowed in meta')
   }
 
   if (node.type === 'Literal') {
     if (node.regex || node.bigint !== undefined) {
-      throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+      throwParse(`meta must be a pure literal: unsupported literal in meta: ${node.type}`)
     }
     return node.value
   }
 
-  if (node.type === 'UnaryExpression' && (node.operator === '-' || node.operator === '+')) {
-    const argument = node.argument as AcornNode | undefined
-    if (argument?.type === 'Literal' && typeof argument.value === 'number') {
-      return node.operator === '-' ? -argument.value : argument.value
-    }
+  if (node.type === 'ArrayExpression') {
+    const elements = node.elements as Array<AcornNode | null>
+    return elements.map(element => parseLiteralNode(element))
+  }
+
+  if (node.type === 'ObjectExpression') {
+    return parseObjectExpression(node)
   }
 
   if (node.type === 'TemplateLiteral') {
@@ -116,50 +140,54 @@ function parseLiteralNode(node: AcornNode | null, path: string): unknown {
       throwParse('meta must be a pure literal: template interpolation not allowed in meta')
     }
     const quasis = node.quasis as Array<{ value?: { cooked?: string } }> | undefined
-    return quasis?.[0]?.value?.cooked ?? ''
+    return quasis?.map(quasi => quasi.value?.cooked ?? '').join('') ?? ''
   }
 
-  if (node.type === 'ArrayExpression') {
-    const elements = node.elements as Array<AcornNode | null>
-    return elements.map((element, index) => {
-      if (!element) throwParse('meta must be a pure literal: array holes not allowed in meta')
-      return parseLiteralNode(element, `${path}[${index}]`)
-    })
+  if (node.type === 'UnaryExpression') {
+    const argument = node.argument as AcornNode | undefined
+    if (node.operator === '-' && argument?.type === 'Literal' && typeof argument.value === 'number') {
+      return -argument.value
+    }
+    throwParse('meta must be a pure literal: only negative-number unary allowed in meta')
   }
 
-  if (node.type === 'ObjectExpression') {
-    return parseObjectExpression(node, path)
-  }
-
-  if (node.type === 'ArrowFunctionExpression' || node.type === 'FunctionExpression' || node.type === 'NewExpression') {
-    throwParse('meta must be a pure literal: functions not allowed in meta')
-  }
-
-  throwParse(`meta must be a pure literal: ${path} has unsupported value`)
+  throwParse(`meta must be a pure literal: non-literal node type in meta: ${node.type}`)
 }
 
-function parseObjectExpression(node: AcornNode, path: string): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
+function parseObjectExpression(node: AcornNode): Record<string, unknown> {
+  const result: Record<string, unknown> = Object.create(null)
   for (const entry of node.properties as AcornNode[]) {
-    if (entry.type === 'SpreadElement') {
-      throwParse('meta must be a pure literal: spread not allowed in meta')
+    if (entry.type !== 'Property') {
+      throwParse('meta must be a pure literal: only plain properties allowed in meta')
     }
-    if (entry.kind === 'get' || entry.kind === 'set') {
-      throwParse('meta must be a pure literal: accessors not allowed in meta')
+    if (entry.computed) {
+      throwParse('meta must be a pure literal: computed keys not allowed in meta')
     }
-    if (entry.method) {
-      throwParse('meta must be a pure literal: functions not allowed in meta')
-    }
-    if (entry.shorthand) {
-      throwParse('meta must be a pure literal: shorthand properties not allowed in meta')
+    if (entry.method || entry.kind !== 'init') {
+      throwParse('meta must be a pure literal: methods/accessors not allowed in meta')
     }
     const key = getPropertyKey(entry)
-    if (RESERVED_KEYS.has(key)) {
-      throwParse(`meta must be a pure literal: reserved key ${key} not allowed in meta`)
-    }
-    result[key] = parseLiteralNode(entry.value as AcornNode | undefined ?? null, `${path}.${key}`)
+    result[key] = parseLiteralNode(entry.value as AcornNode | null)
   }
   return result
+}
+
+function normalizePhases(value: unknown): WorkflowMetaPhase[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const phases: WorkflowMetaPhase[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || !(Object.prototype.hasOwnProperty.call(entry, 'title'))) {
+      continue
+    }
+    const candidate = entry as Record<string, unknown>
+    if (typeof candidate.title !== 'string') continue
+    phases.push({
+      title: candidate.title,
+      ...(typeof candidate.detail === 'string' ? { detail: candidate.detail } : {}),
+      ...(typeof candidate.model === 'string' ? { model: candidate.model } : {}),
+    })
+  }
+  return phases.length > 0 ? phases : undefined
 }
 
 function normalizeMeta(value: unknown): WorkflowScriptMeta {
@@ -173,44 +201,20 @@ function normalizeMeta(value: unknown): WorkflowScriptMeta {
   if (typeof meta.description !== 'string' || meta.description.length === 0) {
     throwParse('meta.description must be a non-empty string')
   }
-  if (meta.title !== undefined && typeof meta.title !== 'string') {
-    throwParse('meta.title must be a string when present')
-  }
-  if (meta.whenToUse !== undefined && typeof meta.whenToUse !== 'string') {
-    throwParse('meta.whenToUse must be a string when present')
-  }
-  if (meta.phases !== undefined) {
-    if (!Array.isArray(meta.phases)) throwParse('meta.phases must be an array when present')
-    for (const phase of meta.phases) {
-      if (!phase || typeof phase !== 'object' || Array.isArray(phase)) {
-        throwParse('meta.phases entries must be objects')
-      }
-      const candidate = phase as Record<string, unknown>
-      if (typeof candidate.title !== 'string' || candidate.title.length === 0) {
-        throwParse('meta.phases entries require a non-empty title')
-      }
-      if (candidate.detail !== undefined && typeof candidate.detail !== 'string') {
-        throwParse('meta.phases detail must be a string when present')
-      }
-      if (candidate.model !== undefined && typeof candidate.model !== 'string') {
-        throwParse('meta.phases model must be a string when present')
-      }
-    }
-  }
-
+  const phases = normalizePhases(meta.phases)
   return {
     name: meta.name,
     description: meta.description,
-    ...(typeof meta.title === 'string' ? { title: meta.title } : {}),
+    ...(typeof meta.title === 'string' && meta.title.length > 0 ? { title: meta.title } : {}),
     ...(typeof meta.whenToUse === 'string' ? { whenToUse: meta.whenToUse } : {}),
-    ...(Array.isArray(meta.phases) ? { phases: meta.phases as WorkflowMetaPhase[] } : {}),
+    ...(phases ? { phases } : {}),
   }
 }
 
 export function parseWorkflowScript(source: string): ParsedWorkflowScript {
-  const metaObject = readMetaObject(source)
+  const { metaExport, metaObject } = readMetaExport(source)
   return {
-    meta: normalizeMeta(parseObjectExpression(metaObject, 'meta')),
-    scriptBody: source.slice(metaObject.end).replace(BODY_PREFIX, ''),
+    meta: normalizeMeta(parseObjectExpression(metaObject)),
+    scriptBody: source.slice(metaExport.end).replace(BODY_PREFIX, '').trimStart(),
   }
 }
