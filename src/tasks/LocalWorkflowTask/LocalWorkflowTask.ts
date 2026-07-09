@@ -586,13 +586,19 @@ export function completeWorkflowAgent({
     if (task.status !== 'running') return task
     const registeredAgentIds = registeredAgentIdsForResult(task, result)
     const completedResult = resultWithProgressMetrics(task, registeredAgentIds, result)
+    let priorAgentIdsForIndexForTask: string[] = []
     const nextTask = updatePhase(task, completedResult.phaseId, phase => {
       const priorResultsForIndex = phase.results.filter(
         phaseResult => phaseResult.index === result.index,
       )
-      const priorAgentIdsForIndex = priorResultsForIndex.map(
-        phaseResult => phaseResult.agentId,
+      const priorAgentIdsForIndex = [
+        ...(completedResult.status === 'skipped' ? [phase.agentIds[result.index]] : []),
+        result.agentId,
+        ...priorResultsForIndex.map(phaseResult => phaseResult.agentId),
+      ].filter(
+        (agentId, index, agentIds): agentId is string => Boolean(agentId) && agentIds.indexOf(agentId) === index,
       )
+      priorAgentIdsForIndexForTask = priorAgentIdsForIndex
       const nextPhase = {
         ...phase,
         completedAgentIds: addUnique(
@@ -610,10 +616,22 @@ export function completeWorkflowAgent({
           if (completedResult.agentId.startsWith(`${agentId}-retry-`)) return false
           return !agentId.includes(`-${completedResult.index + 1}-`)
         }),
-        skippedAgentIds: phase.skippedAgentIds.filter(
-          agentId => !priorAgentIdsForIndex.includes(agentId),
-        ),
-        results: [...removePhaseResultsForIndex(phase.results, completedResult.index), completedResult],
+        skippedAgentIds: completedResult.status === 'skipped'
+          ? addUnique(
+              phase.skippedAgentIds.filter(
+                agentId => !priorAgentIdsForIndex.includes(agentId),
+              ),
+              completedResult.agentId,
+            )
+          : phase.skippedAgentIds.filter(
+              agentId => !priorAgentIdsForIndex.includes(agentId),
+            ),
+        agentIds: completedResult.status === 'skipped' && phase.agentIds[completedResult.index]
+          ? phase.agentIds
+              .map((agentId, agentIndex) => agentIndex === completedResult.index ? completedResult.agentId : agentId)
+              .filter((agentId, agentIndex, agentIds) => agentIds.indexOf(agentId) === agentIndex)
+          : phase.agentIds,
+        results: [...phase.results.filter(phaseResult => !priorAgentIdsForIndex.includes(phaseResult.agentId)), completedResult],
         error: undefined,
       }
       return {
@@ -626,10 +644,8 @@ export function completeWorkflowAgent({
       ...nextTask,
       ...liveState,
       results: [
-        ...removeTaskResultsForPhaseIndex(
-          nextTask.results,
-          completedResult.phaseId,
-          completedResult.index,
+        ...nextTask.results.filter(
+          taskResult => taskResult.phaseId !== completedResult.phaseId || taskResult.index !== completedResult.index || !priorAgentIdsForIndexForTask.includes(taskResult.agentId),
         ),
         completedResult,
       ],
@@ -807,51 +823,72 @@ export function skipWorkflowAgent(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    let skippedPhaseId: string | undefined
-    task.agentControllers?.[agentId]?.abortController.abort(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
+    const skippedPhase = task.phases.find(phase => phase.agentIds.includes(agentId))
+    const skippedController = task.agentControllers?.[agentId]
+    const skippedIndex = skippedController?.index ?? skippedPhase?.agentIds.indexOf(agentId) ?? -1
+    if (!skippedPhase || skippedIndex < 0) return task
+
+    skippedController?.abortController.abort(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
     const { [agentId]: _skippedController, ...agentControllers } = task.agentControllers ?? {}
     const { [agentId]: _skippedLiveAgent, ...liveAgents } = task.liveAgents ?? {}
+    const priorResultsForIndex = skippedPhase.results.filter(
+      phaseResult => phaseResult.index === skippedIndex,
+    )
+    const priorAgentIdsForIndex = [
+      skippedPhase.agentIds[skippedIndex],
+      ...priorResultsForIndex.map(phaseResult => phaseResult.agentId),
+    ].filter(
+      (currentAgentId, index, agentIds): currentAgentId is string => Boolean(currentAgentId) && agentIds.indexOf(currentAgentId) === index,
+    )
+    const skippedResult = {
+      phaseId: skippedPhase.id,
+      agentId,
+      index: skippedIndex,
+      status: 'skipped' as const,
+    }
     const skippedTask = {
       ...task,
       agentControllers,
       liveAgents,
       summary: `Workflow agent skipped by user: ${agentId}`,
       phases: task.phases.map(phase => {
-        if (!phase.agentIds.includes(agentId)) return phase
-        skippedPhaseId = phase.id
+        if (phase.id !== skippedPhase.id) return phase
         const nextPhase = {
           ...phase,
-          skippedAgentIds: addUnique(phase.skippedAgentIds, agentId),
-          completedAgentIds: addUnique(phase.completedAgentIds, agentId),
-          results: [
-            ...phase.results,
-            { phaseId: phase.id, agentId, index: phase.agentIds.indexOf(agentId), status: 'skipped' as const },
-          ],
+          failedAgentIds: phase.failedAgentIds.filter(
+            currentAgentId => !priorAgentIdsForIndex.includes(currentAgentId) && currentAgentId !== agentId,
+          ),
+          skippedAgentIds: addUnique(
+            phase.skippedAgentIds.filter(
+              currentAgentId => !priorAgentIdsForIndex.includes(currentAgentId),
+            ),
+            agentId,
+          ),
+          completedAgentIds: addUnique(
+            phase.completedAgentIds.filter(
+              currentAgentId => !priorAgentIdsForIndex.includes(currentAgentId),
+            ),
+            agentId,
+          ),
+          agentIds: phase.agentIds[skippedIndex]
+            ? phase.agentIds
+                .map((currentAgentId, agentIndex) => agentIndex === skippedIndex ? agentId : currentAgentId)
+                .filter((currentAgentId, agentIndex, agentIds) => agentIds.indexOf(currentAgentId) === agentIndex)
+            : phase.agentIds,
+          results: [...removePhaseResultsForIndex(phase.results, skippedIndex), skippedResult],
         }
         return {
           ...nextPhase,
           status: phaseCompleted(nextPhase) ? 'completed' as const : nextPhase.status,
+          error: phaseCompleted(nextPhase) ? undefined : nextPhase.error,
         }
       }),
+      results: [
+        ...removeTaskResultsForPhaseIndex(task.results, skippedResult.phaseId, skippedResult.index),
+        skippedResult,
+      ],
     }
-    const skippedIndex = skippedPhaseId
-      ? task.phases.find(phase => phase.id === skippedPhaseId)?.agentIds.indexOf(agentId) ?? -1
-      : -1
-    const skippedResult = skippedPhaseId && skippedIndex >= 0
-      ? { phaseId: skippedPhaseId, agentId, index: skippedIndex, status: 'skipped' as const }
-      : undefined
-    const skippedTaskWithResult = skippedResult
-      ? {
-          ...skippedTask,
-          results: [
-            ...removeTaskResultsForPhaseIndex(skippedTask.results, skippedResult.phaseId, skippedResult.index),
-            skippedResult,
-          ],
-        }
-      : skippedTask
-    return skippedPhaseId
-      ? appendEvent(skippedTaskWithResult, agentEvent(skippedTaskWithResult, skippedPhaseId, agentId, 'skipped'))
-      : task
+    return appendEvent(skippedTask, agentEvent(skippedTask, skippedPhase.id, agentId, 'skipped'))
   })
 }
 

@@ -651,6 +651,11 @@ async function runPhaseAgent({
           index,
           status: 'skipped',
         }
+        completeWorkflowAgent({
+          taskId,
+          result: skippedResult,
+          setAppState: context.setAppStateForTasks ?? context.setAppState,
+        })
         return { result: skippedResult, cacheHit: false }
       }
       lastError = error

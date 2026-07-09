@@ -327,6 +327,68 @@ assert.equal(skipTask.results[0]?.status, 'skipped')
 assert.equal(skipTask.phases[0]?.skippedAgentIds.length, 1)
 assert.equal(skipCallCount, 1)
 
+let failThenSkipCallCount = 0
+let failThenSkipState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setFailThenSkipState = (updater: (prev: AppState) => AppState): void => {
+  failThenSkipState = updater(failThenSkipState)
+}
+const failThenSkipPlan: WorkflowDryRunPlan = {
+  ...plan,
+  name: 'fail-then-skip',
+  defaults: {
+    ...plan.defaults,
+    maxRetries: 1,
+  },
+}
+const failThenSkipAgentTool = {
+  name: 'Agent',
+  async call() {
+    failThenSkipCallCount++
+    if (failThenSkipCallCount === 1) {
+      throw new Error('first attempt failed')
+    }
+    const task = Object.values(failThenSkipState.tasks).find(
+      (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+    )
+    assert.ok(task)
+    const agentId = task.currentAgentId ?? task.phases[0]?.agentIds[0]
+    assert.ok(agentId)
+    skipWorkflowAgent(task.id, agentId, setFailThenSkipState)
+    throw new Error('aborted by skip')
+  },
+}
+await runWorkflowPlan({
+  plan: failThenSkipPlan,
+  context: {
+    getAppState: () => failThenSkipState,
+    setAppState: setFailThenSkipState,
+    options: {
+      tools: [failThenSkipAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_fail_then_skip_agent',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_fail_then_skip_agent' } } as never,
+  workflowRunId: 'wf_fail_then_skip_agent',
+})
+const failThenSkipTask = Object.values(failThenSkipState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(failThenSkipTask)
+assert.equal(failThenSkipTask.status, 'completed')
+assert.equal(failThenSkipTask.phases[0]?.status, 'completed')
+assert.equal(failThenSkipTask.phases[0]?.failedAgentIds.length, 0)
+assert.deepEqual(failThenSkipTask.phases[0]?.results.map(item => item.status), ['skipped'])
+assert.deepEqual(failThenSkipTask.results.map(item => item.status), ['skipped'])
+assert.equal(failThenSkipTask.phases[0]?.error, undefined)
+assert.equal(failThenSkipCallCount, 2)
+
 let retryCallCount = 0
 let retryState = {
   tasks: {},
