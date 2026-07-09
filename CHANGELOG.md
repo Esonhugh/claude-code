@@ -6,76 +6,54 @@
 
 - 最新变更写在最上方。
 - 如果没有实际发布版本号，不虚构版本号，只使用变更提交日期。
-- 日期以对应变更 commit 的提交时间为准；同一天多个相关提交合并为一个条目。
-- 每个日期条目写明关联 commit 和变更内容。
+- 发布版本条目可以覆盖上一版本 tag 之后的全部提交；非发布条目按对应变更 commit 的提交日期记录。
+- 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-09 - Workflow runtime 官方兼容性修复
+## 2026-07-09 - v2.1.178 - Workflow official parity、OpenAI 兼容与发布准备
 
 ### 版本状态
 
+- 准备发布版本：`v2.1.178`。
 - 当前分支：`workflow-enhancement`。
-- 本次变更聚焦 workflow/deep-research runtime 与 official Claude Code 行为兼容性，不调整 `package.json` 版本。
-
-### 变更内容
-
-- 对齐 declarative workflow plan runtime 的 `user-skip` 行为：用户 skip agent 时不再将 phase/workflow 误判为失败，而是记录 `skipped` result 并允许 workflow 正常完成。
-- 修复 `LocalWorkflowTask` skipped agent 状态记录：`skipWorkflowAgent()` 现在同步写入 task-level `results`，避免 UI/session 只在 phase 内看到 skipped 状态。
-- 强化 workflow script VM：main/child official-script runtime 均禁用 string 和 WebAssembly code generation，并在 child runtime 中显式阻断 `eval` / `Function`。
-- 强化 workflow script dry-run loader：official-script loader 同步禁用 string/wasm codegen 和 `eval` / `Function`，避免 child workflow 在加载阶段绕过运行时 VM 限制。
-- 修复 script result 完成顺序：先序列化/校验 workflow script 返回值，再标记 task/session completed，避免 `BigInt` 等不可序列化结果导致 task completed 但 session failed 的状态分裂。
-
-### 测试覆盖
-
-- 新增/更新 `src/tools/WorkflowTool/runWorkflow.test.ts`，覆盖 plan runtime `user-skip` 应完成 workflow 并记录 skipped result。
-- 新增/更新 `src/tools/WorkflowTool/workflowScriptRuntime.test.ts`，覆盖 child workflow VM codegen 限制与不可序列化 script result 的 failed 状态一致性。
-- 已运行 `bun test src/tools/WorkflowTool/runWorkflow.test.ts`。
-- 已运行 `bun test src/tools/WorkflowTool/workflowScriptRuntime.test.ts`。
-- 已运行 `bun test src/tools/WorkflowTool src/tasks/LocalWorkflowTask`，结果 `35 pass, 0 fail`。
-- 已运行 `bun test src --isolate --path-ignore-patterns 'dist/**'`，结果 `140 pass, 0 fail`。
-
-## 2026-07-08 - Workflow official parity 实现计划与运行时对齐
-
-### 版本状态
-
-- 当前分支：`workflow-enhancement`。
-- 本次变更承接 2026-07-07 的 workflow runtime parity 工作，补充 official Claude Code workflow/deep-research 兼容性计划与实现。
+- 本次发布覆盖 `v2.1.177` 后的提交：`6bee16b`、`0bca872`、`c4b9f7a`、`899769a`、`b5894b0`、`8f8cd56`、`359c7ec`、`0d0866a`、`9d60555`、`d44e93e`、`67640a2`、`c4daef4`、`69358a1`、`fbea91d`。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.178`。
 
 ### 关联提交
 
-- `9d60555` — 2026-07-08 23:04:30 +08:00 — `update: official workflow impl`
-
-### 变更内容
-
-- 新增 `docs/superpowers/plans/2026-07-08-workflow-official-parity-fixes.md`，整理官方 workflow script VM、agent resume cache、journal recovery、skip/retry、session persistence、task notification 与 official run import 的兼容修复计划。
-- 对齐 workflow script VM 注入方式，使用 null-prototype sandbox 与 `codeGeneration` 限制，并通过显式 global 注入提供 `agent`、`parallel`、`pipeline`、`workflow`、`phase`、`log`、`budget` 和 `args`。
-- 引入 script agent chain identity 与 ordered journal cursor，避免重复相同 prompt 或插入新 agent 后错误复用旧缓存。
-- 增强 workflow journal JSONL 容错读取，跳过 malformed line，同时保留可恢复的 completed result。
-- 对齐 workflow agent skip/retry abort reason，新增 `user-retry` / `user-skip` 常量与脚本 runtime retry/skip 行为。
-- 完善 workflow run session persistence、`resumeFromRunId` 传递、official paused/killed 状态导入和 task notification XML escaping/truncation。
-- 更新相关测试预期，使 bundled workflow resume、script persistence run id、WorkflowFacade cache invalidation 与 official chain semantics 一致。
-
-### 测试覆盖
-
-- 新增/更新 `src/tools/WorkflowTool/workflowScriptRuntime.test.ts`、`runWorkflow.test.ts`、`WorkflowTool.test.ts`、`WorkflowFacadeTool.test.ts`、`workflowRunSessions.test.ts`、`workflowScriptPersistence.test.ts`、`LocalWorkflowTask.test.ts` 等 workflow 相关测试。
-- 已运行 workflow focused/subtree 回归与构建验证；后续 2026-07-09 条目补充了最终 isolated source suite 结果。
-
-## 2026-07-07 - Workflow runtime resume parity 与任务状态恢复
-
-### 版本状态
-
-- 当前分支：`workflow-enhancement`。
-- 本次变更围绕 workflow runtime resume parity、暂停/恢复提示、completion output 与 task/session 状态一致性。
-
-### 关联提交
-
+- `6bee16b` — 2026-07-06 01:40:05 +08:00 — `update: add agent no isolation and openai fix`
+- `0bca872` — 2026-07-06 20:56:59 +08:00 — `update: improve workflow ultracode UX`
+- `c4b9f7a` — 2026-07-07 00:41:43 +08:00 — `update: no pr Claude Code co Author`
 - `899769a` — 2026-07-07 09:59:25 +08:00 — `update: align workflow runtime parity`
 - `b5894b0` — 2026-07-07 14:38:23 +08:00 — `update workflow runtime resume parity`
 - `8f8cd56` — 2026-07-07 16:06:13 +08:00 — `fix: align bundled workflow resume prompts`
 - `359c7ec` — 2026-07-07 19:22:25 +08:00 — `fix: resume named workflow plans`
 - `0d0866a` — 2026-07-07 20:54:12 +08:00 — `fix: print workflow completion output`
+- `9d60555` — 2026-07-08 23:04:30 +08:00 — `update: official workflow impl`
+- `d44e93e` — 2026-07-09 01:14:38 +08:00 — `fix: align workflow runtime parity`
+- `67640a2` — 2026-07-09 01:17:36 +08:00 — `docs: update changelog since v2.1.177`
+- `c4daef4` — 2026-07-09 12:27:02 +08:00 — `fix: keep workflow skip state consistent`
+- `69358a1` — 2026-07-09 13:12:21 +08:00 — `docs: design workflow script meta parser parity`
+- `fbea91d` — 2026-07-09 13:20:35 +08:00 — `fix: align workflow script meta parser`
 
 ### 变更内容
+
+#### OpenAI compatibility 与 Agent/attribution 行为
+
+- 修复 OpenAI compatibility 路径，补充 OpenAI compat 测试覆盖，确保相关请求/兼容处理在 OpenAI provider 下保持正确行为。
+- 调整 AgentTool prompt/schema 中 isolation 相关提示，明确不需要隔离时不要传 `isolation`，避免 named agent / teammate routing 被错误导向 worktree subagent。
+- 调整 attribution 设置字段与测试，移除 PR 场景中的 Claude Code co-author 相关默认表述。
+
+#### Workflow ultracode UX 与任务状态展示
+
+- 新增 workflow ultracode UX 改进计划文档，并更新既有 ultracode orchestration UX design。
+- 改进 prompt input / ultracode orchestration 提示与消息处理，使 workflow/orchestration 模式的执行边界和用户提示更明确。
+- 扩展 `LocalWorkflowTask` 与 workflow status formatting，展示 live agent、running/skipped/failed/completed 统计、recent activities 与 concurrency blocked 信息。
+- 更新 WorkflowTool / WorkflowFacadeTool 相关测试和行为，配合 ultracode workflow UX 与 task detail 展示。
+- 调整 OpenAI compatibility 测试与 ultracode orchestration 测试，覆盖 workflow/ultracode 的 prompt 和 routing 行为。
+
+#### Workflow runtime resume parity
 
 - 新增 workflow runtime parity 设计、规格与测试计划文档，明确 workflow resume cache、journal、session state、task list UI 与 binary-side 行为目标。
 - 扩展 `LocalWorkflowTask` 状态模型，记录 workflow run id、script path、run args、events、results、agent controllers、live agent progress、pause/kill/resume 相关状态。
@@ -86,42 +64,39 @@
 - 修复 workflow completion output 打印与 notification，确保完成后输出文件和 inline notification 中包含 workflow result 摘要。
 - 调整 WorkflowDetailDialog snapshot、formatWorkflowStatus、task list summary 等 UI 展示，使 running/paused/completed/failed/skipped 状态和 recent activities 更清晰。
 
-### 测试覆盖
+#### Workflow official parity 收束
 
-- 新增/更新 `workflowJournal.test.ts`、`workflowRunSessions.test.ts`、`workflowFeatureFlags.test.ts`、`WorkflowFacadeTool.test.ts`、`runWorkflow.test.ts`、`workflowScriptRuntime.test.ts`、`LocalWorkflowTask.test.ts` 和 `formatWorkflowStatus.test.ts`。
-- 覆盖 resume cache 命中、failed branch 不缓存、session progress/status persistence、pause/resume prompt、completion output、task notification 与 workflow status formatting。
-
-## 2026-07-06 - v2.1.177 发布准备、OpenAI 兼容与 workflow ultracode UX
-
-### 版本状态
-
-- 当前分支：`workflow-enhancement`。
-- 本次变更记录 `2026-07-05 - v2.1.177` 条目之后的全部 2026-07-06 变更，包括发布准备、OpenAI compatibility、AgentTool isolation 提示和 workflow ultracode UX。
-
-### 关联提交
-
-- `eb94d24` — 2026-07-05 23:20:35 +08:00 — `update: prepare v2.1.177`
-- `6bee16b` — 2026-07-06 01:40:05 +08:00 — `update: add agent no isolation and openai fix`
-- `0bca872` — 2026-07-06 20:56:59 +08:00 — `update: improve workflow ultracode UX`
-- `c4b9f7a` — 2026-07-07 00:41:43 +08:00 — `update: no pr Claude Code co Author`
-
-### 变更内容
-
-- 准备 `v2.1.177` 发布记录并更新 `Makefile` 版本信息，使 changelog 与构建版本状态保持一致。
-- 修复 OpenAI compatibility 路径，补充 OpenAI compat 测试覆盖，确保相关请求/兼容处理在 OpenAI provider 下保持正确行为。
-- 调整 AgentTool prompt/schema 中 isolation 相关提示，明确不需要隔离时不要传 `isolation`，避免 named agent / teammate routing 被错误导向 worktree subagent。
-- 新增 workflow ultracode UX 改进计划文档，并更新既有 ultracode orchestration UX design。
-- 改进 prompt input / ultracode orchestration 提示与消息处理，使 workflow/orchestration 模式的执行边界和用户提示更明确。
-- 扩展 `LocalWorkflowTask` 与 workflow status formatting，展示 live agent、running/skipped/failed/completed 统计、recent activities 与 concurrency blocked 信息。
-- 更新 WorkflowTool / WorkflowFacadeTool 相关测试和行为，配合 ultracode workflow UX 与 task detail 展示。
-- 调整 OpenAI compatibility 测试与 ultracode orchestration 测试，覆盖 workflow/ultracode 的 prompt 和 routing 行为。
-- 调整 attribution 设置字段与测试，移除 PR 场景中的 Claude Code co-author 相关默认表述。
+- 新增 official workflow parity 修复计划，整理 workflow script VM、agent resume cache、journal recovery、skip/retry、session persistence、task notification 与 official run import 的兼容修复路径。
+- 对齐 workflow script VM 注入方式，使用 null-prototype sandbox 与 `codeGeneration` 限制，并通过显式 global 注入提供 `agent`、`parallel`、`pipeline`、`workflow`、`phase`、`log`、`budget` 和 `args`。
+- 引入 script agent chain identity 与 ordered journal cursor，避免重复相同 prompt 或插入新 agent 后错误复用旧缓存。
+- 增强 workflow journal JSONL 容错读取，跳过 malformed line，同时保留可恢复的 completed result。
+- 对齐 workflow agent skip/retry abort reason，新增 `user-retry` / `user-skip` 常量与脚本 runtime retry/skip 行为。
+- 完善 workflow run session persistence、`resumeFromRunId` 传递、official paused/killed 状态导入和 task notification XML escaping/truncation。
+- 对齐 declarative workflow plan runtime 的 `user-skip` 行为：用户 skip agent 时不再将 phase/workflow 误判为失败，而是记录 `skipped` result 并允许 workflow 正常完成。
+- 修复 `LocalWorkflowTask` skipped/retry 状态记录：`skipWorkflowAgent()` 现在按 logical index 清理旧 failed/result 状态并同步写入 task-level `results`，避免 UI/session 只在 phase 内看到 skipped 状态或 retry 后残留 failed 状态。
+- 强化 workflow script VM：main/child official-script runtime 均禁用 string 和 WebAssembly code generation，并在 child runtime 中显式阻断 `eval` / `Function`。
+- 强化 workflow script dry-run loader：official-script loader 同步禁用 string/wasm codegen 和 `eval` / `Function`，避免 child workflow 在加载阶段绕过运行时 VM 限制。
+- 修复 script result 完成顺序：先序列化/校验 workflow script 返回值，再标记 task/session completed，避免 `BigInt` 等不可序列化结果导致 task completed 但 session failed 的状态分裂。
+- 新增 workflow script meta parser 官方兼容性设计与实现计划，明确以 Claude Code `2.1.201` recovered parser 行为为对齐目标。
+- 重写 workflow script `meta` 提取逻辑：改为 full-script Acorn module parse，要求首个 AST statement 为 `export const meta = { ... }`，并从完整 export declaration 之后截取 `scriptBody`。
+- 对齐官方 `meta` literal 提取与 normalization 规则：仅允许纯 literal AST，拒绝 computed key、spread、sparse array、method/accessor、template interpolation、unary plus 与 reserved keys；`phases` 改为官方 loose filtering，非数组或无效条目会被忽略。
 
 ### 测试覆盖
 
 - 新增/更新 `src/services/api/openai-compat.test.ts`，覆盖 OpenAI compatibility 修复。
-- 新增/更新 `formatWorkflowStatus.test.ts`、`WorkflowFacadeTool.test.ts`、`WorkflowTool.test.ts`、`workflowScriptRuntime.test.ts`、`ultracodeOrchestration.test.ts` 和 `attribution.test.ts`。
-- 覆盖 workflow task status formatting、ultracode orchestration prompt/routing、OpenAI compatibility、AgentTool isolation 提示与 attribution 配置行为。
+- 新增/更新 `formatWorkflowStatus.test.ts`、`WorkflowFacadeTool.test.ts`、`WorkflowTool.test.ts`、`workflowScriptRuntime.test.ts`、`ultracodeOrchestration.test.ts`、`attribution.test.ts`、`workflowJournal.test.ts`、`workflowRunSessions.test.ts`、`workflowFeatureFlags.test.ts`、`runWorkflow.test.ts`、`LocalWorkflowTask.test.ts`、`src/tools/WorkflowTool/workflowScriptParser.test.ts` 等 workflow / OpenAI / AgentTool 相关测试。
+- `workflowScriptParser.test.ts` 覆盖 official-style first statement 限制、pure literal 规则、scriptBody 截取、top-level await/return 与 loose `phases` normalization。
+- `runWorkflow.test.ts` 覆盖 plan runtime `user-skip` 应完成 workflow 并记录 skipped result，以及 failed retry 后 user-skip 不残留 failed 状态。
+- `workflowScriptRuntime.test.ts` 覆盖 child workflow VM codegen 限制与不可序列化 script result 的 failed 状态一致性。
+- 已运行 focused AgentTool suite、`bun run lint`、`git diff --check`、`make build`，并完成 `built-claude` binary-side TeamCreate / Agent / SendMessage coordination smoke。
+- 已运行 `bun test src/tools/WorkflowTool/runWorkflow.test.ts`。
+- 已运行 `bun test src/tools/WorkflowTool/workflowScriptRuntime.test.ts`。
+- 已运行 `bun test src/tools/WorkflowTool/workflowScriptParser.test.ts`。
+- 已运行 `bun test src/tools/WorkflowTool/workflowDsl.test.ts src/tools/WorkflowTool/workflowScriptRuntime.test.ts src/tools/WorkflowTool/WorkflowTool.test.ts`。
+- 已运行 `bun test src/tools/WorkflowTool`，结果 `0 fail`。
+- 已运行 `bun test src/tools/WorkflowTool src/tasks/LocalWorkflowTask`，结果 `35 pass, 0 fail`。
+- 已运行 `bun test src --isolate --path-ignore-patterns 'dist/**'`，结果 `140 pass, 0 fail`。
+- 已运行 `make build` 生成 `./built-claude`，并完成 binary-side 交互验证：`deep-research` 完整完成 `25/25 agents`，`code-review` 在 clean diff 下正常完成并返回 `No changes found to review`。
 
 ## 2026-07-05 - v2.1.177 - AgentTool recover parity、goal 恢复与调试能力补齐
 
