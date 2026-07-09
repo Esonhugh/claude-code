@@ -418,7 +418,7 @@ const childVmTask = Object.values(state.tasks).find(
   task => task.type === 'local_workflow' && task.workflowRunId === 'wf_child_vm_test',
 )
 assert.ok(childVmTask)
-assert.equal(childVmTask.status, 'completed', childVmTask.error)
+assert.equal(childVmTask.status, 'completed')
 const childVmNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(childVmNotification)
 assert.match(String(childVmNotification.value), /child-vm-ok/)
