@@ -1347,7 +1347,7 @@ export function ManagePlugins({
       const settingsAfter = getSettings_DEPRECATED()
       const enabledAfter =
         settingsAfter?.enabledPlugins?.[pluginIdNow] !== false
-      if (enabledAfter) {
+      if (operation === 'enable' && enabledAfter) {
         setIsProcessing(false)
         setViewState({ type: 'plugin-options' })
         return
