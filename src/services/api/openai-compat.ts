@@ -157,11 +157,14 @@ function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefi
     }))
 }
 
-function anthropicEffortToOpenAIReasoning(effort: unknown): { effort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' } | undefined {
+function anthropicEffortToOpenAIReasoning(effort: unknown): { effort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' } | undefined {
   if (effort === 'none' || effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh') {
     return { effort }
   }
-  if (effort === 'max' || effort === 'ultracode' || typeof effort === 'number') {
+  if (effort === 'max' || effort === 'ultra') {
+    return { effort: 'max' }
+  }
+  if (effort === 'ultracode' || typeof effort === 'number') {
     return { effort: 'xhigh' }
   }
   return undefined

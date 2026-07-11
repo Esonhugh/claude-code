@@ -12,7 +12,7 @@ import type {
   PermissionUpdate,
 } from './coreTypes.generated.js'
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyZodRawShape = Record<string, any>

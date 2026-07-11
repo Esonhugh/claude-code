@@ -745,8 +745,8 @@ export const SettingsSchema = lazySchema(() =>
       effortLevel: z
         .enum(
           isAnt()
-            ? ['low', 'medium', 'high', 'max']
-            : ['low', 'medium', 'high'],
+            ? ['low', 'medium', 'high', 'xhigh', 'max']
+            : ['low', 'medium', 'high', 'xhigh'],
         )
         .optional()
         .catch(undefined)

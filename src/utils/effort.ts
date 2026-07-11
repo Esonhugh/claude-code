@@ -19,12 +19,35 @@ export const EFFORT_LEVELS = [
   'high',
   'xhigh',
   'max',
+  'ultra',
   'ultracode',
 ] as const
 
-export type OpenAIEffortLevel = 'none' | 'xhigh'
+export type OpenAIEffortLevel = 'none' | 'xhigh' | 'ultra'
 export type UltracodeEffortLevel = 'ultracode'
 export type EffortValue = EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel | number
+export type ConfiguredEffortLevel = Exclude<EffortValue, number | 'ultracode'>
+export type APIEffortLevel = Exclude<ConfiguredEffortLevel, 'ultra'>
+
+const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, APIEffortLevel> = {
+  none: 'none',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'max',
+  ultra: 'max',
+}
+
+const ANTHROPIC_EFFORT_MAP: Record<ConfiguredEffortLevel, EffortLevel> = {
+  none: 'low',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'max',
+  ultra: 'max',
+}
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -103,7 +126,12 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'none' || value === 'xhigh' || value === 'ultracode') return undefined
+  if (
+    value === 'none' ||
+    value === 'ultra' ||
+    value === 'ultracode'
+  )
+    return undefined
   if (value === 'low' || value === 'medium' || value === 'high') {
     return value
   }
@@ -168,17 +196,19 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
-  if (resolved === 'none' || resolved === 'xhigh') {
-    return getAPIProvider() === 'openai' ? resolved : undefined
-  }
-  if (resolved === 'ultracode') {
-    return getAPIProvider() === 'openai' ? 'xhigh' : 'high'
-  }
-  // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
-  if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
+  if (typeof resolved === 'number') return resolved
+
+  const provider = getAPIProvider()
+  if (resolved === 'ultracode') return 'xhigh'
+  const mapped = provider === 'openai'
+    ? OPENAI_EFFORT_MAP[resolved]
+    : ANTHROPIC_EFFORT_MAP[resolved]
+
+  // Anthropic rejects max on models without max-effort capability.
+  if (provider !== 'openai' && mapped === 'max' && !modelSupportsMaxEffort(model)) {
     return 'high'
   }
-  return resolved
+  return mapped
 }
 
 /**
@@ -217,7 +247,8 @@ export function isValidNumericEffort(value: number): boolean {
 export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
   if (typeof value === 'string') {
     if (value === 'none') return 'low'
-    if (value === 'xhigh' || value === 'ultracode') return 'high'
+    if (value === 'xhigh' || value === 'ultra' || value === 'ultracode')
+      return 'high'
     // Runtime guard: value may come from remote config (GrowthBook) where
     // TypeScript types can't help us. Coerce unknown strings to 'high'
     // rather than passing them through unchecked.
@@ -252,6 +283,8 @@ export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel
       return 'No reasoning for latency-critical OpenAI tasks'
     case 'xhigh':
       return 'Deepest OpenAI reasoning'
+    case 'ultra':
+      return 'Codex ultra reasoning (sent as max effort)'
     case 'ultracode':
       return 'xhigh + dynamic workflow orchestration'
   }

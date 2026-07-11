@@ -463,7 +463,8 @@ export function configureEffortParams(
     if (getAPIProvider() === 'openai') {
       ;(outputConfig as { effort?: EffortValue }).effort = effortValue
     } else {
-      outputConfig.effort = convertEffortValueToLevel(effortValue)
+      ;(outputConfig as { effort?: EffortValue }).effort =
+        convertEffortValueToLevel(effortValue)
     }
     betas.push(EFFORT_BETA_HEADER)
   } else if (isAnt()) {
