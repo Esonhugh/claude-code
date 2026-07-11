@@ -444,11 +444,13 @@ export function createSubagentContext(
     // Fields that can be overridden or copied from parent
     options: overrides?.options ?? {
       ...parentContext.options,
-      subagentDepth: (parentContext.options.subagentDepth ?? 0) + 1,
+      subagentDepth: (parentContext.options.subagentDepth ?? parentContext.options.spawnDepth ?? 0) + 1,
+      spawnDepth: (parentContext.options.spawnDepth ?? parentContext.options.subagentDepth ?? 0) + 1,
     },
     messages: overrides?.messages ?? parentContext.messages,
     // Generate new agentId for subagents (each subagent should have its own ID)
     agentId: overrides?.agentId ?? createAgentId(),
+    parentAgentId: parentContext.agentId,
     agentType: overrides?.agentType,
 
     // Create new query tracking chain for subagent with incremented depth

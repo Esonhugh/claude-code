@@ -67,9 +67,17 @@ export type ProgressTracker = {
   toolUseCount: number
   // Track input and output separately to avoid double-counting.
   // input_tokens in Claude API is cumulative per turn (includes all previous context),
-  // so we keep the latest value. output_tokens is per-turn, so we sum those.
+  // so we keep the latest message's value. output_tokens is per-turn, so we sum
+  // deltas for each assistant message UUID to handle in-place usage mutation.
   latestInputTokens: number
+  latestInputSequence: number
   cumulativeOutputTokens: number
+  assistantMessageSnapshots: Map<
+    string,
+    { inputTokens: number; outputTokens: number; sequence: number }
+  >
+  nextAssistantMessageSequence: number
+  seenToolUseIds: Set<string>
   recentActivities: ToolActivity[]
 }
 
@@ -77,7 +85,11 @@ export function createProgressTracker(): ProgressTracker {
   return {
     toolUseCount: 0,
     latestInputTokens: 0,
+    latestInputSequence: -1,
     cumulativeOutputTokens: 0,
+    assistantMessageSnapshots: new Map(),
+    nextAssistantMessageSequence: 0,
+    seenToolUseIds: new Set(),
     recentActivities: [],
   }
 }
@@ -105,15 +117,42 @@ export function updateProgressFromMessage(
   if (message.type !== 'assistant') {
     return
   }
+
   const usage = message.message.usage
-  // Keep latest input (it's cumulative in the API), sum outputs
-  tracker.latestInputTokens =
+  const inputTokens =
     usage.input_tokens +
     (usage.cache_creation_input_tokens ?? 0) +
     (usage.cache_read_input_tokens ?? 0)
-  tracker.cumulativeOutputTokens += usage.output_tokens
-  for (const content of message.message.content) {
+  const outputTokens = usage.output_tokens
+  const previousSnapshot = tracker.assistantMessageSnapshots.get(message.uuid)
+  const sequence =
+    previousSnapshot?.sequence ?? tracker.nextAssistantMessageSequence++
+
+  if (previousSnapshot) {
+    tracker.cumulativeOutputTokens +=
+      outputTokens - previousSnapshot.outputTokens
+  } else {
+    tracker.cumulativeOutputTokens += outputTokens
+  }
+
+  tracker.assistantMessageSnapshots.set(message.uuid, {
+    inputTokens,
+    outputTokens,
+    sequence,
+  })
+
+  if (sequence >= tracker.latestInputSequence) {
+    tracker.latestInputSequence = sequence
+    tracker.latestInputTokens = inputTokens
+  }
+
+  message.message.content.forEach((content, index) => {
     if (content.type === 'tool_use') {
+      const toolUseKey = content.id ?? `${message.uuid}:${index}`
+      if (tracker.seenToolUseIds.has(toolUseKey)) {
+        return
+      }
+      tracker.seenToolUseIds.add(toolUseKey)
       tracker.toolUseCount++
       // Omit StructuredOutput from preview - it's an internal tool
       if (content.name !== SYNTHETIC_OUTPUT_TOOL_NAME) {
@@ -133,7 +172,7 @@ export function updateProgressFromMessage(
         })
       }
     }
-  }
+  })
   while (tracker.recentActivities.length > MAX_RECENT_ACTIVITIES) {
     tracker.recentActivities.shift()
   }
@@ -149,6 +188,25 @@ export function getProgressUpdate(tracker: ProgressTracker): AgentProgress {
         : undefined,
     recentActivities: [...tracker.recentActivities],
   }
+}
+
+export function refreshLastAssistantProgress(
+  tracker: ProgressTracker,
+  messages: Message[],
+  resolveActivityDescription?: ActivityDescriptionResolver,
+  tools?: Tools,
+): void {
+  const lastAssistant = messages.findLast(
+    (message): message is Extract<Message, { type: 'assistant' }> =>
+      message.type === 'assistant',
+  )
+  if (!lastAssistant) return
+  updateProgressFromMessage(
+    tracker,
+    lastAssistant,
+    resolveActivityDescription,
+    tools,
+  )
 }
 
 /**
@@ -170,6 +228,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   prompt: string
   selectedAgent?: AgentDefinition
   agentType: string
+  parentAgentId?: string
+  spawnDepth: number
   model?: string
   abortController?: AbortController
   unregisterCleanup?: () => void
@@ -214,7 +274,7 @@ export function isLocalAgentTask(task: unknown): task is LocalAgentTaskState {
  * the gate changes, change it here.
  */
 export function isPanelAgentTask(t: unknown): t is LocalAgentTaskState {
-  return isLocalAgentTask(t) && t.agentType !== 'main-session'
+  return isLocalAgentTask(t) && t.agentType !== 'main-session' && t.parentAgentId === undefined
 }
 
 export function queuePendingMessage(
@@ -447,6 +507,16 @@ export function updateAgentProgress(
   })
 }
 
+export function publishAgentProgress(
+  taskId: string,
+  tracker: ProgressTracker,
+  setAppState: SetAppState,
+): AgentProgress {
+  const progress = getProgressUpdate(tracker)
+  updateAgentProgress(taskId, progress, setAppState)
+  return progress
+}
+
 /**
  * Update the background summary for an agent task.
  * Called by the periodic summarization service to store a 1-2 sentence progress summary.
@@ -579,6 +649,8 @@ export function registerAsyncAgent({
   setAppState,
   parentAbortController,
   toolUseId,
+  parentAgentId,
+  spawnDepth,
 }: {
   agentId: string
   description: string
@@ -587,6 +659,8 @@ export function registerAsyncAgent({
   setAppState: SetAppState
   parentAbortController?: AbortController
   toolUseId?: string
+  parentAgentId?: string
+  spawnDepth: number
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(
     agentId,
@@ -606,6 +680,8 @@ export function registerAsyncAgent({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    parentAgentId,
+    spawnDepth,
     abortController,
     retrieved: false,
     lastReportedToolCount: 0,
@@ -646,6 +722,8 @@ export function registerAgentForeground({
   setAppState,
   autoBackgroundMs,
   toolUseId,
+  parentAgentId,
+  spawnDepth,
 }: {
   agentId: string
   description: string
@@ -654,6 +732,8 @@ export function registerAgentForeground({
   setAppState: SetAppState
   autoBackgroundMs?: number
   toolUseId?: string
+  parentAgentId?: string
+  spawnDepth: number
 }): {
   taskId: string
   backgroundSignal: Promise<void>
@@ -678,6 +758,8 @@ export function registerAgentForeground({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    parentAgentId,
+    spawnDepth,
     abortController,
     unregisterCleanup,
     retrieved: false,

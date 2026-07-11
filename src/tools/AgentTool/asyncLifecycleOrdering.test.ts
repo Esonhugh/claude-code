@@ -60,6 +60,7 @@ registerAsyncAgent({
   selectedAgent,
   setAppState,
   toolUseId: 'toolu_test',
+  spawnDepth: 1,
 })
 
 let resolveWorktree: (() => void) | undefined
@@ -105,5 +106,76 @@ assert.equal(task.status, 'completed')
 assert.equal((task.result as AgentToolResult).agentId, 'agent-ordering-test')
 
 await lifecycle
+
+const streamingMessage = makeAssistantMessage()
+streamingMessage.uuid = crypto.randomUUID()
+streamingMessage.message.content = [
+  {
+    type: 'tool_use',
+    id: 'toolu_streaming',
+    name: 'Read',
+    input: { file_path: '/tmp/example' },
+  },
+] as never
+streamingMessage.message.usage.input_tokens = 0
+streamingMessage.message.usage.output_tokens = 0
+
+registerAsyncAgent({
+  agentId: 'agent-progress-test',
+  description: 'Progress test',
+  prompt: 'read once',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_parent',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-progress-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    yield streamingMessage as never
+    streamingMessage.message.usage.input_tokens = 200
+    streamingMessage.message.usage.output_tokens = 12
+    yield {
+      type: 'user',
+      uuid: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_streaming',
+            content: 'ok',
+          },
+        ],
+      },
+    } as never
+  },
+  metadata: {
+    prompt: 'read once',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Progress test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_parent',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-progress-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => ({}),
+})
+
+const progressTask = state.tasks['agent-progress-test']
+assert.ok(isLocalAgentTask(progressTask))
+assert.equal(progressTask.progress?.tokenCount, 212)
+assert.equal(progressTask.progress?.toolUseCount, 1)
 
 console.log('asyncLifecycleOrdering.test.ts passed')

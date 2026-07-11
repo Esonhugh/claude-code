@@ -43,6 +43,39 @@ const workflowChildAgentTask: LocalAgentTaskState = {
   },
 } as unknown as LocalAgentTaskState
 
+const nestedChildAgentTask: LocalAgentTaskState = {
+  id: 'nested-child-agent',
+  type: 'local_agent',
+  status: 'running',
+  description: 'Nested child agent',
+  prompt: 'Run nested child agent',
+  startTime: 1_500,
+  outputFile: '.claude/tasks/nested-child-agent.output',
+  outputOffset: 0,
+  notified: false,
+  parentAgentId: 'agent-1',
+  spawnDepth: 2,
+  progress: {
+    tokenCount: 100,
+    toolUseCount: 1,
+  },
+} as unknown as LocalAgentTaskState
+
+const topLevelDepthOneAgentTask: LocalAgentTaskState = {
+  ...agentTask,
+  id: 'top-level-depth-one-agent',
+  agentId: 'top-level-depth-one-agent',
+  description: 'Top level depth one agent',
+  prompt: 'Run top level depth one agent',
+  startTime: 1_750,
+  parentAgentId: undefined,
+  spawnDepth: 1,
+  progress: {
+    tokenCount: 700,
+    toolUseCount: 3,
+  },
+} as unknown as LocalAgentTaskState
+
 const workflowTask: LocalWorkflowTaskState = {
   id: 'workflow-1',
   type: 'local_workflow',
@@ -99,24 +132,27 @@ const workflowTask: LocalWorkflowTaskState = {
 
 const tasks = {
   [agentTask.id]: agentTask,
+  [nestedChildAgentTask.id]: nestedChildAgentTask,
+  [topLevelDepthOneAgentTask.id]: topLevelDepthOneAgentTask,
   [workflowChildAgentTask.id]: workflowChildAgentTask,
   [workflowTask.id]: workflowTask,
 } as unknown as AppState['tasks']
 
 assert.deepEqual(
   getVisibleAgentTasks(tasks).map(task => task.id),
-  ['agent-1', 'workflow-1'],
+  ['agent-1', 'top-level-depth-one-agent', 'workflow-1'],
 )
 
 const rows = getCoordinatorSessionRows({
   tasks,
-  selectedIndex: 2,
+  selectedIndex: 3,
   viewingAgentTaskId: undefined,
   nameByAgentId: new Map([['agent-1', 'researcher']]),
   now: 5_000,
 })
 
-assert.equal(rows.length, 3)
+assert.equal(rows.length, 4)
+assert.equal(rows.some(row => row.id === 'nested-child-agent'), false)
 assert.deepEqual(rows[0], {
   id: 'main',
   taskId: undefined,
@@ -133,12 +169,16 @@ assert.equal(rows[1]?.kind, 'agent')
 assert.equal(rows[1]?.label, 'agent researcher')
 assert.equal(rows[1]?.meta, '1.5k tok · 2 tools')
 assert.equal(rows[1]?.statusText, 'running · Read(src/index.ts)')
-assert.equal(rows[2]?.id, 'workflow-1')
-assert.equal(rows[2]?.kind, 'workflow')
-assert.equal(rows[2]?.selected, true)
-assert.equal(rows[2]?.label, 'tmux-agent-smoke')
-assert.equal(rows[2]?.meta, '1/1 agents · 19.6k tok')
-assert.equal(rows[2]?.statusText, 'done · 2s')
+assert.equal(rows[2]?.id, 'top-level-depth-one-agent')
+assert.equal(rows[2]?.kind, 'agent')
+assert.equal(rows[2]?.label, 'agent Top level depth one agent')
+assert.equal(rows[2]?.meta, '700 tok · 3 tools')
+assert.equal(rows[3]?.id, 'workflow-1')
+assert.equal(rows[3]?.kind, 'workflow')
+assert.equal(rows[3]?.selected, true)
+assert.equal(rows[3]?.label, 'tmux-agent-smoke')
+assert.equal(rows[3]?.meta, '1/1 agents · 19.6k tok')
+assert.equal(rows[3]?.statusText, 'done · 2s')
 
 const stagedWorkflowRows = getCoordinatorSessionRows({
   tasks: {
@@ -182,6 +222,7 @@ assert.equal(
   'workflow-1',
 )
 assert.equal(getCoordinatorTaskAtIndex(tasks, 0)?.id, undefined)
-assert.equal(getCoordinatorTaskAtIndex(tasks, 2)?.id, 'workflow-1')
+assert.equal(getCoordinatorTaskAtIndex(tasks, 2)?.id, 'top-level-depth-one-agent')
+assert.equal(getCoordinatorTaskAtIndex(tasks, 3)?.id, 'workflow-1')
 
 console.log('CoordinatorAgentStatus.test.ts passed')

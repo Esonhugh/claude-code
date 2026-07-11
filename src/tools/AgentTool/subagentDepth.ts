@@ -5,10 +5,12 @@ export const MAX_SUBAGENT_DEPTH = 5
 export const SUBAGENT_DEPTH_LIMIT_MESSAGE =
   'Subagent nesting limit reached (5). Complete the task directly instead of spawning another agent.'
 
-type OptionsWithDepth = Pick<ToolUseContext['options'], 'subagentDepth'>
+type OptionsWithDepth = Pick<ToolUseContext['options'], 'subagentDepth'> & {
+  spawnDepth?: number
+}
 
 export function getCurrentSubagentDepth(options: OptionsWithDepth): number {
-  return options.subagentDepth ?? 0
+  return options.subagentDepth ?? options.spawnDepth ?? 0
 }
 
 export function getNextSubagentDepth(options: OptionsWithDepth): number {

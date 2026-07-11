@@ -273,6 +273,10 @@ export type AgentMetadata = {
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */
   description?: string
+  /** Parent agent id for recursive agent hierarchy. Optional for top-level and older metadata. */
+  parentAgentId?: string
+  /** Stable recursive spawn depth. Optional for older metadata. */
+  spawnDepth?: number
 }
 
 /**

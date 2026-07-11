@@ -253,6 +253,7 @@ export function buildAgentMetadataForTesting({
   cwd,
   name,
   toolUseId,
+  parentAgentId,
   spawnDepth,
 }: {
   agentType: string
@@ -262,6 +263,7 @@ export function buildAgentMetadataForTesting({
   cwd?: string
   name?: string
   toolUseId?: string
+  parentAgentId?: string
   spawnDepth?: number
 }) {
   return {
@@ -272,6 +274,7 @@ export function buildAgentMetadataForTesting({
     ...(description && { description }),
     ...(name && { name }),
     ...(toolUseId && { toolUseId }),
+    ...(parentAgentId && { parentAgentId }),
     ...(spawnDepth !== undefined && { spawnDepth }),
   }
 }
@@ -333,6 +336,8 @@ export async function* runAgent({
   description,
   name,
   toolUseId,
+  parentAgentId,
+  spawnDepth,
   onMcpServersBlocked,
   transcriptSubdir,
   onQueryProgress,
@@ -395,6 +400,10 @@ export async function* runAgent({
   name?: string
   /** Parent tool_use id for attribution and notifications. */
   toolUseId?: string
+  /** Parent agent id for recursive agent hierarchy. */
+  parentAgentId?: string
+  /** Stable recursive spawn depth. */
+  spawnDepth?: number
   /** Whether this agent was spawned by a skill-triggered flow. */
   spawnedBySkill?: boolean
   /** Non-fatal notification hook for blocked/unavailable MCP servers. */
@@ -773,6 +782,7 @@ export async function* runAgent({
     mcpResources: toolUseContext.options.mcpResources,
     agentDefinitions: toolUseContext.options.agentDefinitions,
     subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
+    spawnDepth: spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
     // Fork children (useExactTools path) need querySource on context.options
     // for the recursive-fork guard at AgentTool.tsx call() — it checks
     // options.querySource === 'agent:builtin:fork'. This survives autocompact
@@ -833,7 +843,8 @@ export async function* runAgent({
       cwd,
       name,
       toolUseId,
-      spawnDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
+      parentAgentId,
+      spawnDepth: spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
     }),
   ).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 

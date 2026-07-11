@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mock } from 'bun:test'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { getDefaultAppState } from '../../state/AppStateStore.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
+import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { createAssistantMessage } from '../../utils/messages.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 import {
   createTeammateContext,
@@ -20,23 +25,59 @@ import {
 } from './runAgent.js'
 import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
 
+function createTestAssistantMessage(text: string) {
+  return createAssistantMessage({ content: text })
+}
+
+async function* createControlledAgentStream() {
+  yield createTestAssistantMessage('controlled agent done')
+}
+
+mock.module('./runAgent.js', () => ({
+  runAgent: () => createControlledAgentStream(),
+}))
+
 type TestContext = {
-  getAppState: () => {
-    toolPermissionContext: ReturnType<typeof getEmptyToolPermissionContext>
-    mcp: { clients: never[]; tools: never[] }
-    tasks: Record<string, never>
-    agentNameRegistry: Map<string, never>
-  }
+  getAppState: () => ReturnType<typeof getDefaultAppState>
   setAppState: (updater: unknown) => void
   setAppStateForTasks?: (updater: (prev: ReturnType<TestContext['getAppState']>) => unknown) => void
+  waitForTaskLifecycle: (taskId: string) => Promise<void>
 }
 
 function createContext(subagentDepth: number): TestContext {
-  const state = {
+  const defaultState = getDefaultAppState()
+  let state = {
+    ...defaultState,
     toolPermissionContext: getEmptyToolPermissionContext(),
-    mcp: { clients: [], tools: [] },
+    mcp: {
+      ...defaultState.mcp,
+      clients: [],
+      tools: [],
+    },
+    agentDefinitions: {
+      activeAgents: [GENERAL_PURPOSE_AGENT],
+      inactiveAgents: [],
+      allowedAgentTypes: undefined,
+    },
     tasks: {},
     agentNameRegistry: new Map(),
+  }
+  const taskLifecycleWaiters = new Map<string, () => void>()
+  const isTaskLifecycleComplete = (taskId: string) => {
+    const task = state.tasks[taskId]
+    return (
+      task?.notified &&
+      task.status !== 'running' &&
+      state.speculation.status === 'idle'
+    )
+  }
+  const resolveTaskLifecycleWaiters = () => {
+    for (const [taskId, resolve] of taskLifecycleWaiters) {
+      if (isTaskLifecycleComplete(taskId)) {
+        taskLifecycleWaiters.delete(taskId)
+        resolve()
+      }
+    }
   }
 
   return {
@@ -61,7 +102,18 @@ function createContext(subagentDepth: number): TestContext {
     abortController: new AbortController(),
     readFileState: createFileStateCacheWithSizeLimit(10),
     getAppState: () => state,
-    setAppState: () => {},
+    setAppState: updater => {
+      state = typeof updater === 'function' ? updater(state) : updater
+      resolveTaskLifecycleWaiters()
+    },
+    waitForTaskLifecycle: taskId => {
+      if (isTaskLifecycleComplete(taskId)) {
+        return Promise.resolve()
+      }
+      return new Promise<void>(resolve => {
+        taskLifecycleWaiters.set(taskId, resolve)
+      })
+    },
     setInProgressToolUseIDs: () => {},
     setResponseLength: () => {},
     updateFileHistoryState: () => {},
@@ -96,6 +148,7 @@ assert.deepEqual(
     cwd: undefined,
     name: 'worker-name',
     toolUseId: 'toolu_metadata',
+    parentAgentId: 'agent-parent',
     spawnDepth: 2,
   }),
   {
@@ -105,6 +158,7 @@ assert.deepEqual(
     worktreeBranch: 'agent-test',
     name: 'worker-name',
     toolUseId: 'toolu_metadata',
+    parentAgentId: 'agent-parent',
     spawnDepth: 2,
   },
 )
@@ -126,6 +180,32 @@ assert.deepEqual(
 const depthContext = createContext(0) as never as { options: { subagentDepth?: number } }
 depthContext.options.subagentDepth = 1
 assert.equal(getAgentOptionsSubagentDepthForTesting(depthContext as never), 1)
+
+const spawnDepthOnlyContext = createContext(0) as never as TestContext & {
+  agentId: string
+  options: { subagentDepth?: number; spawnDepth?: number }
+}
+spawnDepthOnlyContext.agentId = 'agent-parent'
+delete spawnDepthOnlyContext.options.subagentDepth
+spawnDepthOnlyContext.options.spawnDepth = 1
+const spawnDepthOnlyResult = await AgentTool.call(
+  {
+    description: 'spawn depth only',
+    prompt: 'reply ok',
+    subagent_type: 'general-purpose',
+    run_in_background: true,
+  },
+  spawnDepthOnlyContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_spawn_depth_only' } } as never,
+)
+assert.equal(spawnDepthOnlyResult.data.status, 'async_launched')
+const spawnDepthOnlyTask = spawnDepthOnlyContext.getAppState().tasks[
+  spawnDepthOnlyResult.data.agentId
+] as LocalAgentTaskState | undefined
+assert.equal(spawnDepthOnlyTask?.parentAgentId, 'agent-parent')
+spawnDepthOnlyTask?.abortController?.abort()
+await spawnDepthOnlyContext.waitForTaskLifecycle(spawnDepthOnlyResult.data.agentId)
 
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const configDir = mkdtempSync(join(tmpdir(), 'agent-tool-stale-team-test-'))
@@ -410,6 +490,17 @@ getRootSetAppStateForTesting(contextWithRootSetter as never)(state => state)
 assert.equal(rootSetCalls, 1)
 assert.equal(isolatedSetCalls, 0)
 
+const resumeAgentSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'resumeAgent.ts'),
+  'utf8',
+)
+const runAgentParamsBlock = resumeAgentSource.match(
+  /const runAgentParams:[\s\S]*?\n {2}}\n\n {2}\/\/ Skip name-registry write/,
+)?.[0]
+assert.ok(runAgentParamsBlock)
+assert.match(runAgentParamsBlock, /parentAgentId:\s*meta\?\.parentAgentId/)
+assert.match(runAgentParamsBlock, /spawnDepth:\s*meta\?\.spawnDepth \?\? 1/)
+
 const debugParams = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',
   selectedAgentType: 'general-purpose',
@@ -428,6 +519,8 @@ const debugParams = buildAgentLaunchDebugParams({
   childSubagentDepth: 1,
   availableToolNames: ['Agent', 'Read'],
   agentDepth: 1,
+  parentAgentId: 'agent-parent',
+  spawnDepth: 1,
   agentSystemPromptChars: 456,
 })
 assert.equal(debugParams.requestedType, 'general purpose')
@@ -446,6 +539,8 @@ assert.deepEqual(debugParams.requiredMcpServers, [])
 assert.deepEqual(debugParams.availableMcpServers, ['github'])
 assert.equal(debugParams.childSubagentDepth, 1)
 assert.equal(debugParams.agentDepth, 1)
+assert.equal(debugParams.parentAgentId, 'agent-parent')
+assert.equal(debugParams.spawnDepth, 1)
 assert.equal(debugParams.agentSystemPromptChars, 456)
 assert.deepEqual(debugParams.availableToolNames, ['Agent', 'Read'])
 assert.equal(JSON.stringify(debugParams).includes('reply ready'), false)

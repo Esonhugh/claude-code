@@ -32,7 +32,8 @@ function isPanelAgentTask(t: unknown): t is LocalAgentTaskState {
     t !== null &&
     'type' in t &&
     t.type === 'local_agent' &&
-    !('agentType' in t && t.agentType === 'main-session')
+    !('agentType' in t && t.agentType === 'main-session') &&
+    !('parentAgentId' in t && t.parentAgentId !== undefined)
   )
 }
 

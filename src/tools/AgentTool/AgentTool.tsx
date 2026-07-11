@@ -30,13 +30,13 @@ import {
   enqueueAgentNotification,
   failAgentTask as failAsyncAgent,
   getProgressUpdate,
-  getTokenCountFromTracker,
   isLocalAgentTask,
   killAsyncAgent,
+  publishAgentProgress,
+  refreshLastAssistantProgress,
   registerAgentForeground,
   registerAsyncAgent,
   unregisterAgentForeground,
-  updateAgentProgress as updateAsyncAgentProgress,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import {
@@ -123,6 +123,7 @@ import { getPrompt } from './prompt.js'
 import { runAgent } from './runAgent.js'
 import {
   assertCanSpawnNestedSubagent,
+  getCurrentSubagentDepth,
   getNextSubagentDepth,
 } from './subagentDepth.js'
 import {
@@ -331,6 +332,8 @@ export function buildAgentLaunchDebugParams({
   childSubagentDepth,
   availableToolNames,
   agentDepth,
+  parentAgentId,
+  spawnDepth,
   agentSystemPromptChars,
 }: {
   requestedType: string
@@ -351,6 +354,8 @@ export function buildAgentLaunchDebugParams({
   childSubagentDepth: number
   availableToolNames: readonly string[]
   agentDepth?: number
+  parentAgentId?: string
+  spawnDepth: number
   agentSystemPromptChars?: number
 }): Record<string, unknown> {
   return {
@@ -374,6 +379,8 @@ export function buildAgentLaunchDebugParams({
     childSubagentDepth,
     availableToolNames,
     agentDepth,
+    parentAgentId,
+    spawnDepth,
     agentSystemPromptChars,
   }
 }
@@ -717,6 +724,10 @@ export const AgentTool = buildTool({
     )
 
     const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
+    const parentAgentId =
+      getCurrentSubagentDepth(toolUseContext.options) && toolUseContext.agentId
+        ? toolUseContext.agentId
+        : undefined
     let agentPrompt: string | undefined
     try {
       agentPrompt = selectedAgent.getSystemPrompt({ toolUseContext })
@@ -1002,6 +1013,8 @@ export const AgentTool = buildTool({
             : workerTools
           ).map(tool => tool.name),
           agentDepth: childSubagentDepth,
+          parentAgentId,
+          spawnDepth: childSubagentDepth,
           agentSystemPromptChars,
         }),
       )}`,
@@ -1015,6 +1028,7 @@ export const AgentTool = buildTool({
         options: {
           ...toolUseContext.options,
           subagentDepth: childSubagentDepth,
+          spawnDepth: childSubagentDepth,
         },
       },
       canUseTool,
@@ -1056,6 +1070,8 @@ export const AgentTool = buildTool({
         isNonInteractiveSession: toolUseContext.options.isNonInteractiveSession,
       }),
       toolUseId: toolUseContext.toolUseId,
+      parentAgentId,
+      spawnDepth: childSubagentDepth,
       onMcpServersBlocked: (serverNames, reason) => {
         toolUseContext.addNotification?.({
           key: `agent-mcp-blocked-${earlyAgentId}`,
@@ -1118,6 +1134,8 @@ export const AgentTool = buildTool({
         // survive when the user presses ESC to cancel the main thread.
         // They are killed explicitly via chat:killAgents.
         toolUseId: toolUseContext.toolUseId,
+        parentAgentId,
+        spawnDepth: childSubagentDepth,
       })
 
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
@@ -1267,6 +1285,8 @@ export const AgentTool = buildTool({
               selectedAgent,
               setAppState: rootSetAppState,
               toolUseId: toolUseContext.toolUseId,
+              parentAgentId,
+              spawnDepth: childSubagentDepth,
               autoBackgroundMs: getAutoBackgroundMs() || undefined,
             })
             foregroundTaskId = registration.taskId
@@ -1394,6 +1414,17 @@ export const AgentTool = buildTool({
                           toolUseContext.options.tools,
                         )
                       }
+                      refreshLastAssistantProgress(
+                        tracker,
+                        agentMessages,
+                        resolveActivity2,
+                        toolUseContext.options.tools,
+                      )
+                      publishAgentProgress(
+                        backgroundedTaskId,
+                        tracker,
+                        rootSetAppState,
+                      )
                       for await (const msg of runAgent({
                         ...runAgentParams,
                         isAsync: true, // Agent is now running in background
@@ -1414,6 +1445,12 @@ export const AgentTool = buildTool({
                             }
                           : undefined,
                       })) {
+                        refreshLastAssistantProgress(
+                          tracker,
+                          agentMessages,
+                          resolveActivity2,
+                          toolUseContext.options.tools,
+                        )
                         agentMessages.push(msg)
 
                         // Track progress for backgrounded agents
@@ -1423,9 +1460,9 @@ export const AgentTool = buildTool({
                           resolveActivity2,
                           toolUseContext.options.tools,
                         )
-                        updateAsyncAgentProgress(
+                        publishAgentProgress(
                           backgroundedTaskId,
-                          getProgressUpdate(tracker),
+                          tracker,
                           rootSetAppState,
                         )
 
@@ -1441,6 +1478,18 @@ export const AgentTool = buildTool({
                           )
                         }
                       }
+                      refreshLastAssistantProgress(
+                        tracker,
+                        agentMessages,
+                        resolveActivity2,
+                        toolUseContext.options.tools,
+                      )
+                      const finalProgress = publishAgentProgress(
+                        backgroundedTaskId,
+                        tracker,
+                        rootSetAppState,
+                      )
+
                       const agentResult = finalizeAgentTool(
                         agentMessages,
                         backgroundedTaskId,
@@ -1486,8 +1535,8 @@ export const AgentTool = buildTool({
                         setAppState: rootSetAppState,
                         finalMessage,
                         usage: {
-                          totalTokens: getTokenCountFromTracker(tracker),
-                          toolUses: agentResult.totalToolUseCount,
+                          totalTokens: finalProgress.tokenCount,
+                          toolUses: finalProgress.toolUseCount,
                           durationMs: agentResult.totalDurationMs,
                         },
                         toolUseId: toolUseContext.toolUseId,
@@ -1579,6 +1628,12 @@ export const AgentTool = buildTool({
               const message = result.value
               if (!message) continue
 
+              refreshLastAssistantProgress(
+                syncTracker,
+                agentMessages,
+                syncResolveActivity,
+                toolUseContext.options.tools,
+              )
               agentMessages.push(message)
 
               // Emit task_progress for the VS Code subagent panel
@@ -1589,6 +1644,12 @@ export const AgentTool = buildTool({
                 toolUseContext.options.tools,
               )
               if (foregroundTaskId) {
+                publishAgentProgress(
+                  foregroundTaskId,
+                  syncTracker,
+                  rootSetAppState,
+                )
+
                 const lastToolName = getLastToolUseName(message)
                 if (lastToolName) {
                   emitTaskProgress(
@@ -1599,16 +1660,6 @@ export const AgentTool = buildTool({
                     agentStartTime,
                     lastToolName,
                   )
-                  // Keep AppState task.progress in sync when SDK summaries are
-                  // enabled, so updateAgentSummary reads correct token/tool counts
-                  // instead of zeros.
-                  if (getSdkAgentProgressSummariesEnabled()) {
-                    updateAsyncAgentProgress(
-                      foregroundTaskId,
-                      getProgressUpdate(syncTracker),
-                      rootSetAppState,
-                    )
-                  }
                 }
               }
 
@@ -1706,6 +1757,20 @@ export const AgentTool = buildTool({
             // the backgrounding transition, this is a no-op. The backgrounded
             // closure owns a separate stop function (stopBackgroundedSummarization).
             stopForegroundSummarization?.()
+
+            refreshLastAssistantProgress(
+              syncTracker,
+              agentMessages,
+              syncResolveActivity,
+              toolUseContext.options.tools,
+            )
+            if (foregroundTaskId && !wasBackgrounded) {
+              publishAgentProgress(
+                foregroundTaskId,
+                syncTracker,
+                rootSetAppState,
+              )
+            }
 
             // Unregister foreground task if agent completed without being backgrounded
             if (foregroundTaskId) {

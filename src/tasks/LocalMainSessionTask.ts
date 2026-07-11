@@ -133,6 +133,7 @@ export function registerMainSessionTask(
     prompt: description,
     selectedAgent,
     agentType: 'main-session',
+    spawnDepth: 0,
     abortController,
     unregisterCleanup,
     retrieved: false,

@@ -176,6 +176,8 @@ export type ToolUseContext = {
     querySource?: QuerySource
     /** Normal AgentTool nesting depth. Main thread is 0; subagents start at 1. */
     subagentDepth?: number
+    /** Stable AgentTool spawn depth persisted across nested agent contexts. */
+    spawnDepth?: number
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
     /** Prevent workflow worker agents from recursively spawning agents/workflows. */
@@ -251,6 +253,7 @@ export type ToolUseContext = {
   ) => void
   setConversationId?: (id: UUID) => void
   agentId?: AgentId // Only set for subagents; use getSessionId() for session ID. Hooks use this to distinguish subagent calls.
+  parentAgentId?: AgentId
   agentType?: string // Subagent type name. For the main thread's --agent type, hooks fall back to getMainThreadAgentType().
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */

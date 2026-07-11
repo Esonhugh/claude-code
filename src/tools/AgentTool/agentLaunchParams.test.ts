@@ -37,6 +37,8 @@ const params = buildAgentLaunchDebugParams({
   childSubagentDepth: 2,
   availableToolNames: ['Read', 'Edit', 'mcp__github-enterprise__search'],
   agentDepth: 2,
+  parentAgentId: 'agent-parent',
+  spawnDepth: 2,
   agentSystemPromptChars: 123,
 })
 
@@ -59,6 +61,8 @@ assert.deepEqual(params.requiredMcpServers, ['github'])
 assert.deepEqual(params.availableMcpServers, ['github-enterprise'])
 assert.equal(params.childSubagentDepth, 2)
 assert.equal(params.agentDepth, 2)
+assert.equal(params.parentAgentId, 'agent-parent')
+assert.equal(params.spawnDepth, 2)
 assert.equal(params.agentSystemPromptChars, 123)
 assert.deepEqual(params.availableToolNames, [
   'Read',

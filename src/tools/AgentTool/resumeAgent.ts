@@ -194,6 +194,8 @@ export async function resumeAgentBackground({
     worktreePath: resumedWorktreePath,
     description: meta?.description,
     contentReplacementState: resumedReplacementState,
+    parentAgentId: meta?.parentAgentId,
+    spawnDepth: meta?.spawnDepth ?? 1,
   }
 
   // Skip name-registry write — original entry persists from the initial spawn
@@ -204,6 +206,8 @@ export async function resumeAgentBackground({
     selectedAgent,
     setAppState: rootSetAppState,
     toolUseId: toolUseContext.toolUseId,
+    parentAgentId: meta?.parentAgentId,
+    spawnDepth: meta?.spawnDepth ?? 1,
   })
 
   const metadata = {

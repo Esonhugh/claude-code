@@ -28,8 +28,8 @@ import {
   enqueueAgentNotification,
   failAgentTask as failAsyncAgent,
   getProgressUpdate,
-  getTokenCountFromTracker,
   isLocalAgentTask,
+  refreshLastAssistantProgress,
   killAsyncAgent,
   type ProgressTracker,
   updateAgentProgress as updateAsyncAgentProgress,
@@ -555,6 +555,12 @@ export async function runAsyncAgentLifecycle({
         }
       : undefined
     for await (const message of makeStream(onCacheSafeParams)) {
+      refreshLastAssistantProgress(
+        tracker,
+        agentMessages,
+        resolveActivity,
+        toolUseContext.options.tools,
+      )
       agentMessages.push(message)
       // Append immediately when UI holds the task (retain). Bootstrap reads
       // disk in parallel and UUID-merges the prefix — disk-write-before-yield
@@ -597,6 +603,15 @@ export async function runAsyncAgentLifecycle({
 
     stopSummarization?.()
 
+    refreshLastAssistantProgress(
+      tracker,
+      agentMessages,
+      resolveActivity,
+      toolUseContext.options.tools,
+    )
+    const finalProgress = getProgressUpdate(tracker)
+    updateAsyncAgentProgress(taskId, finalProgress, rootSetAppState)
+
     const agentResult = finalizeAgentTool(agentMessages, taskId, metadata)
 
     // Mark task completed FIRST so TaskOutput(block=true) unblocks
@@ -631,8 +646,8 @@ export async function runAsyncAgentLifecycle({
       setAppState: rootSetAppState,
       finalMessage,
       usage: {
-        totalTokens: getTokenCountFromTracker(tracker),
-        toolUses: agentResult.totalToolUseCount,
+        totalTokens: finalProgress.tokenCount,
+        toolUses: finalProgress.toolUseCount,
         durationMs: agentResult.totalDurationMs,
       },
       toolUseId: toolUseContext.toolUseId,
