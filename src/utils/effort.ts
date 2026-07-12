@@ -200,12 +200,14 @@ export function resolveAppliedEffort(
   if (typeof resolved === 'number') return resolved
 
   const provider = getAPIProvider()
-  if (resolved === 'ultracode') {
-    return provider === 'openai' ? 'xhigh' : 'max'
-  }
-  const mapped = provider === 'openai'
-    ? OPENAI_EFFORT_MAP[resolved]
-    : ANTHROPIC_EFFORT_MAP[resolved]
+  const mapped =
+    resolved === 'ultracode'
+      ? provider === 'openai'
+        ? 'xhigh'
+        : 'max'
+      : provider === 'openai'
+        ? OPENAI_EFFORT_MAP[resolved]
+        : ANTHROPIC_EFFORT_MAP[resolved]
 
   // Anthropic rejects max on models without max-effort capability.
   if (provider !== 'openai' && mapped === 'max' && !modelSupportsMaxEffort(model)) {

@@ -72,6 +72,11 @@ const outputSchema = lazySchema(() =>
     taskId: z.string(),
     updatedFields: z.array(z.string()),
     error: z.string().optional(),
+    partial: z.boolean().optional(),
+    stage: z.string().optional(),
+    committed: z.array(z.string()).optional(),
+    pending: z.array(z.string()).optional(),
+    retryable: z.boolean().optional(),
     statusChange: z
       .object({
         from: z.string(),
@@ -315,14 +320,22 @@ export const TaskUpdateTool = buildTool({
       const newBlocks = addBlocks.filter(
         id => !existingTask.blocks.includes(id),
       )
-      for (const blockId of newBlocks) {
+      for (const [index, blockId] of newBlocks.entries()) {
         if (!(await blockTask(taskListId, taskId, blockId))) {
+          const committedBlocks = newBlocks.slice(0, index).map(id => `blocks:${id}`)
+          const pendingBlocks = newBlocks.slice(index).map(id => `blocks:${id}`)
+          const committed = [...updatedFields, ...committedBlocks]
           return {
             data: {
               success: false,
               taskId,
               updatedFields,
-              error: `Task #${blockId} not found`,
+              error: `Failed to add block relationship for task #${blockId}`,
+              partial: committed.length > 0,
+              stage: 'addBlocks',
+              committed,
+              pending: pendingBlocks,
+              retryable: true,
             },
           }
         }
@@ -337,14 +350,26 @@ export const TaskUpdateTool = buildTool({
       const newBlockedBy = addBlockedBy.filter(
         id => !existingTask.blockedBy.includes(id),
       )
-      for (const blockerId of newBlockedBy) {
+      for (const [index, blockerId] of newBlockedBy.entries()) {
         if (!(await blockTask(taskListId, blockerId, taskId))) {
+          const committedBlockers = newBlockedBy
+            .slice(0, index)
+            .map(id => `blockedBy:${id}`)
+          const pendingBlockers = newBlockedBy
+            .slice(index)
+            .map(id => `blockedBy:${id}`)
+          const committed = [...updatedFields, ...committedBlockers]
           return {
             data: {
               success: false,
               taskId,
               updatedFields,
-              error: `Task #${blockerId} not found`,
+              error: `Failed to add blocked-by relationship for task #${blockerId}`,
+              partial: committed.length > 0,
+              stage: 'addBlockedBy',
+              committed,
+              pending: pendingBlockers,
+              retryable: true,
             },
           }
         }
@@ -398,6 +423,11 @@ export const TaskUpdateTool = buildTool({
       taskId,
       updatedFields,
       error,
+      partial,
+      stage,
+      committed,
+      pending,
+      retryable,
       statusChange,
       verificationNudgeNeeded,
     } = content as Output
@@ -405,10 +435,13 @@ export const TaskUpdateTool = buildTool({
       // Return as non-error so it doesn't trigger sibling tool cancellation
       // in StreamingToolExecutor. "Task not found" is a benign condition
       // (e.g., task list already cleaned up) that the model can handle.
+      const partialDetails = partial
+        ? ` Partial update at ${stage ?? 'unknown stage'}; committed: ${committed?.join(', ') || 'none'}; pending: ${pending?.join(', ') || 'none'}; retryable: ${retryable === true ? 'yes' : 'no'}.`
+        : ''
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: error || `Task #${taskId} not found`,
+        content: `${error || `Task #${taskId} not found`}${partialDetails}`,
       }
     }
 

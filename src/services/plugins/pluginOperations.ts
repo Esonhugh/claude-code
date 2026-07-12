@@ -516,9 +516,15 @@ export async function uninstallPluginOp(
     ...settings?.enabledPlugins,
   }
   newEnabledPlugins[pluginId] = undefined
-  updateSettingsForSource(settingSource, {
+  const { error } = updateSettingsForSource(settingSource, {
     enabledPlugins: newEnabledPlugins,
   })
+  if (error) {
+    return {
+      success: false,
+      message: `Failed to uninstall plugin: ${error.message}`,
+    }
+  }
 
   clearAllCaches()
 

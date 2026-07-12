@@ -23,6 +23,18 @@ function resetEnv(): void {
 try {
   resetEnv()
   const { configureEffortParams } = await import('./claude.js')
+  const { resolveAppliedEffort, toPersistableEffort } = await import(
+    '../../utils/effort.js'
+  )
+
+  assert.equal(
+    resolveAppliedEffort('claude-sonnet-4-6', 'ultracode'),
+    'high',
+  )
+  assert.equal(
+    resolveAppliedEffort('claude-opus-4-6', 'ultracode'),
+    'max',
+  )
 
   const outputConfig: BetaOutputConfig = {}
   const betas: string[] = []
@@ -39,7 +51,6 @@ try {
   assert.ok(explicitBetas.length > 0)
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  const { resolveAppliedEffort, toPersistableEffort } = await import('../../utils/effort.js')
   const openAIOutputConfig: BetaOutputConfig = {}
   const openAIBetas: string[] = []
   configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas, 'gpt-5.5')
