@@ -562,7 +562,7 @@ Expected: all assertions are present so the plan will fail if future prompt edit
 Run:
 
 ```bash
-git diff -- src/skills/bundled/workflow.ts src/skills/bundled/interactiveTerminal.ts src/skills/bundled/modelInternalSkills.test.ts src/commands/workflows/workflowsPage.behavior.test.ts docs/dynamic-workflow-agent-orchestration.md docs/superpowers/specs/2026-06-29-workflow-tool-parity-improvement-recommendations.md docs/superpowers/specs/2026-06-29-detailed-workflow-and-interactive-terminal-skills-design.md docs/superpowers/plans/2026-06-29-detailed-workflow-and-interactive-terminal-skills.md
+git diff -- src/skills/bundled/workflow.ts src/skills/bundled/interactiveTerminal.ts src/skills/bundled/modelInternalSkills.test.ts src/commands/workflows/workflowsPage.behavior.test.ts docs/architecture/workflow-orchestration.md docs/superpowers/specs/2026-06-29-workflow-tool-parity-improvement-recommendations.md docs/superpowers/specs/2026-06-29-detailed-workflow-and-interactive-terminal-skills-design.md docs/superpowers/plans/2026-06-29-detailed-workflow-and-interactive-terminal-skills.md
 ```
 
 Expected: diff includes only detailed hidden skill prompt updates, focused tests, and docs/spec/plan additions.

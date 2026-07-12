@@ -2,7 +2,7 @@
 
 Status: historical working note.
 
-This document preserves the original implementation plan for the first local feature pass after the Claude Code `2.1.88` base. Completed behavior and validation belong in [`../CHANGELOG.md`](../CHANGELOG.md); use this file only for traceability.
+This document preserves the original implementation plan for the first local feature pass after the Claude Code `2.1.88` base. Completed behavior and validation belong in [`../CHANGELOG.md`](../../../CHANGELOG.md); use this file only for traceability.
 
 ## Scope originally planned
 
@@ -42,7 +42,7 @@ node ./dist/cli.js --help
 
 ## See also
 
-- [`../CHANGELOG.md`](../CHANGELOG.md)
-- [`../README.md`](../README.md)
-- [`BUILD_MANUAL.md`](BUILD_MANUAL.md)
-- [`SECONDARY_DEVELOPMENT_MANUAL.md`](SECONDARY_DEVELOPMENT_MANUAL.md)
+- [`../CHANGELOG.md`](../../../CHANGELOG.md)
+- [`../../README.md`](../../README.md)
+- [`BUILD_MANUAL.md`](../../guides/build.md)
+- [`SECONDARY_DEVELOPMENT_MANUAL.md`](../../guides/secondary-development.md)

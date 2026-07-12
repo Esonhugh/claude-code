@@ -667,7 +667,7 @@ const result = query({
 | Embed | `.../embed` | 获取 CLI 路径 |
 | SDK Tools | `.../sdk-tools` | 工具类型定义（纯类型） |
 
-> 详细的 SDK 导出分析见 `docs/claude-agent-sdk-exports-analysis.md`
+> 详细的 SDK 导出分析见 `docs/architecture/agent-sdk-exports.md`
 
 ---
 
@@ -699,7 +699,7 @@ const result = query({
 3. **Fork** — 共享上下文前缀的分支执行
 4. **Resume** — 恢复中断的代理
 
-> 详细分析见 `docs/agent-architecture-analysis.md`
+> 详细分析见 `docs/architecture/agent.md`
 
 ### 9.2 Hook 系统
 
@@ -772,7 +772,7 @@ my-plugin/
       SKILL.md             # 技能定义
 ```
 
-> 详细分析见 `docs/plugin-marketplace-analysis.md`
+> 详细分析见 `docs/architecture/plugin-marketplace.md`
 
 ---
 
@@ -937,12 +937,12 @@ const result = query({
 
 | 文档 | 内容 |
 |------|------|
-| `docs/agent-architecture-analysis.md` | Agent 子系统 10 种设计模式详解 |
-| `docs/plugin-marketplace-analysis.md` | Plugin 三层架构 13 种设计模式详解 |
-| `docs/claude-agent-sdk-exports-analysis.md` | SDK 5 个入口完整导出分析 |
-| `docs/private-plugin-marketplace-enterprise-design.md` | 企业私有 Plugin 市场设计方案 |
-| `docs/BUILD_MANUAL.md` | 项目构建指南 |
-| `docs/SECONDARY_DEVELOPMENT_MANUAL.md` | 二次开发手册 |
+| `docs/architecture/agent.md` | Agent 子系统 10 种设计模式详解 |
+| `docs/architecture/plugin-marketplace.md` | Plugin 三层架构 13 种设计模式详解 |
+| `docs/architecture/agent-sdk-exports.md` | SDK 5 个入口完整导出分析 |
+| `docs/design/private-plugin-marketplace.md` | 企业私有 Plugin 市场设计方案 |
+| `docs/guides/build.md` | 项目构建指南 |
+| `docs/guides/secondary-development.md` | 二次开发手册 |
 
 ### 社区资源
 

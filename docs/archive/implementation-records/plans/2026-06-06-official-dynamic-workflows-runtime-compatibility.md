@@ -1665,7 +1665,7 @@ git commit -m "feat: resume unchanged workflow agent calls"
 **Files:**
 - Modify: `docs/official-dynamic-workflows-binary-analysis.md`
 - Modify: `docs/workflow-compatibility-experiments.md`
-- Modify: `docs/dynamic-workflow-agent-orchestration.md`
+- Modify: `docs/architecture/workflow-orchestration.md`
 
 - [ ] **Step 1: Update binary analysis implementation status**
 
@@ -1687,7 +1687,7 @@ Local now validates official-style `export const meta` scripts, stores official 
 
 - [ ] **Step 3: Update architecture map**
 
-In `docs/dynamic-workflow-agent-orchestration.md`, add the new modules to the local repository map:
+In `docs/architecture/workflow-orchestration.md`, add the new modules to the local repository map:
 
 ```md
 - `src/tools/WorkflowTool/workflowScriptParser.ts` validates official-style JavaScript workflow metadata.
@@ -1730,7 +1730,7 @@ Expected: no whitespace errors.
 - [ ] **Step 7: Commit docs and final verification updates**
 
 ```bash
-git add docs/official-dynamic-workflows-binary-analysis.md docs/workflow-compatibility-experiments.md docs/dynamic-workflow-agent-orchestration.md
+git add docs/official-dynamic-workflows-binary-analysis.md docs/workflow-compatibility-experiments.md docs/architecture/workflow-orchestration.md
 git commit -m "docs: update workflow runtime compatibility status"
 ```
 

@@ -76,7 +76,7 @@ The release body should include:
 - `scripts/build.mjs`: resolve version dynamically and use it for all build macros.
 - `scripts/package-binary.mjs`: bun-first binary packaging script after local validation.
 - `.github/workflows/release.yml`: tag-triggered release workflow.
-- `README.md` or `docs/BUILD_MANUAL.md`: document how to create a release tag and how local dev versions work.
+- `README.md` or `docs/guides/build.md`: document how to create a release tag and how local dev versions work.
 
 ## Verification plan
 

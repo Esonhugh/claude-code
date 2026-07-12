@@ -40,7 +40,7 @@
 - Modify `README.md`
   - Change current build/version expectations to `0.0.0-dev` for local builds.
   - Document tag release usage.
-- Modify `docs/BUILD_MANUAL.md`
+- Modify `docs/guides/build.md`
   - Change local version expectations to `0.0.0-dev`.
   - Document `CLAUDE_CODE_VERSION` release build override and Bun packaging smoke test.
 
@@ -179,14 +179,14 @@ Replace it with:
 Run:
 
 ```bash
-grep -R "2\.1\.88\|MACRO.VERSION\|package.json" -n scripts src package.json README.md docs/BUILD_MANUAL.md | head -120
+grep -R "2\.1\.88\|MACRO.VERSION\|package.json" -n scripts src package.json README.md docs/guides/build.md | head -120
 ```
 
 Expected at this point:
 
 - `scripts/build.mjs` should still reference `package.json` and `MACRO.VERSION`.
 - `src/main.tsx` references to `MACRO.VERSION` are expected because they consume the build macro.
-- `README.md` and `docs/BUILD_MANUAL.md` may still mention `2.1.88`; those are handled in a documentation task.
+- `README.md` and `docs/guides/build.md` may still mention `2.1.88`; those are handled in a documentation task.
 - There should be no hard-coded `2.1.88` in `scripts/build.mjs` or `package.json`.
 
 - [ ] **Step 5: Verify local dev build version**
@@ -619,7 +619,7 @@ git commit -m "ci: publish binaries from release tags"
 
 **Files:**
 - Modify: `README.md:16-90`
-- Modify: `docs/BUILD_MANUAL.md:5-146`
+- Modify: `docs/guides/build.md:5-146`
 
 - [ ] **Step 1: Update README current baseline section**
 
@@ -664,7 +664,7 @@ The GitHub Actions release workflow validates the tag, builds with `CLAUDE_CODE_
 
 - [ ] **Step 3: Update build manual status**
 
-In `docs/BUILD_MANUAL.md`, replace:
+In `docs/guides/build.md`, replace:
 
 ```markdown
 - Base version: `2.1.88`
@@ -679,7 +679,7 @@ with:
 
 - [ ] **Step 4: Update build manual version expectation**
 
-In `docs/BUILD_MANUAL.md`, replace:
+In `docs/guides/build.md`, replace:
 
 ```text
 2.1.88 (Claude Code)
@@ -693,7 +693,7 @@ with:
 
 - [ ] **Step 5: Add build manual release override section**
 
-After the expected base output block in `docs/BUILD_MANUAL.md`, insert:
+After the expected base output block in `docs/guides/build.md`, insert:
 
 ```markdown
 Release builds inject the tag-derived version through `CLAUDE_CODE_VERSION`:
@@ -712,7 +712,7 @@ Expected release-style output:
 
 - [ ] **Step 6: Add build manual binary packaging section**
 
-Before `## Debugging with source maps and Ink` in `docs/BUILD_MANUAL.md`, insert:
+Before `## Debugging with source maps and Ink` in `docs/guides/build.md`, insert:
 
 ```markdown
 ## Package a local binary
@@ -735,7 +735,7 @@ The binary is written to `dist/release/` with the version, platform, and archite
 - [ ] **Step 7: Commit documentation updates**
 
 ```bash
-git add README.md docs/BUILD_MANUAL.md
+git add README.md docs/guides/build.md
 git commit -m "docs: describe tag-driven release builds"
 ```
 
@@ -751,7 +751,7 @@ git commit -m "docs: describe tag-driven release builds"
 Run:
 
 ```bash
-grep -R "2\.1\.88" -n package.json package-lock.json scripts README.md docs/BUILD_MANUAL.md src | head -80
+grep -R "2\.1\.88" -n package.json package-lock.json scripts README.md docs/guides/build.md src | head -80
 ```
 
 Expected: only documentation references to the base version should remain. There should be no `2.1.88` in `package.json`, root `package-lock.json` metadata, or `scripts/build.mjs`.
@@ -833,7 +833,7 @@ Run:
 
 ```bash
 git status --short
-git diff -- package.json package-lock.json scripts/build.mjs scripts/package-binary.mjs .github/workflows/release.yml README.md docs/BUILD_MANUAL.md
+git diff -- package.json package-lock.json scripts/build.mjs scripts/package-binary.mjs .github/workflows/release.yml README.md docs/guides/build.md
 ```
 
 Expected: diff matches the planned release automation changes and contains no unrelated source changes.
@@ -843,7 +843,7 @@ Expected: diff matches the planned release automation changes and contains no un
 If verification required any fixes, commit them:
 
 ```bash
-git add package.json package-lock.json scripts/build.mjs scripts/package-binary.mjs .github/workflows/release.yml README.md docs/BUILD_MANUAL.md
+git add package.json package-lock.json scripts/build.mjs scripts/package-binary.mjs .github/workflows/release.yml README.md docs/guides/build.md
 git commit -m "fix: finalize release automation checks"
 ```
 

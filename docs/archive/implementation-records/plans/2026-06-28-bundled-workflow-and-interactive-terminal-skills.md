@@ -31,7 +31,7 @@
   - Verifies workflow prompt contains the required structured runtime guidance.
   - Verifies interactive terminal prompt contains the required action/lifecycle guidance.
 
-- Modify: `docs/dynamic-workflow-agent-orchestration.md`
+- Modify: `docs/architecture/workflow-orchestration.md`
   - Update current surface / runtime boundary to mention hidden workflow teaching skill.
   - Keep `/workflows` described as display/management UI, not a text command or launch command.
 
@@ -397,11 +397,11 @@ workflowsPage.behavior.test.ts passed
 ### Task 5: Update workflow documentation boundary
 
 **Files:**
-- Modify: `docs/dynamic-workflow-agent-orchestration.md`
+- Modify: `docs/architecture/workflow-orchestration.md`
 
 - [ ] **Step 1: Update the primitive model section**
 
-In `docs/dynamic-workflow-agent-orchestration.md`, update the `Skill` row in the primitive model table to clarify hidden bundled teaching skills. Replace the `Skill` row with:
+In `docs/architecture/workflow-orchestration.md`, update the `Skill` row in the primitive model table to clarify hidden bundled teaching skills. Replace the `Skill` row with:
 
 ```markdown
 | Skill | Current Claude session following loaded instructions | Main session context while loaded | Reusable procedure, checklist, domain knowledge, or hidden bundled teaching for model-side tool usage |
@@ -508,7 +508,7 @@ If `make build` fails, read the first TypeScript/build error and fix only the ro
 Run:
 
 ```bash
-git diff -- src/skills/bundled/workflow.ts src/skills/bundled/interactiveTerminal.ts src/skills/bundled/index.ts src/skills/bundled/modelInternalSkills.test.ts src/commands/workflows/workflowsPage.behavior.test.ts docs/dynamic-workflow-agent-orchestration.md docs/superpowers/specs/2026-06-28-bundled-workflow-and-interactive-terminal-skills-design.md docs/superpowers/plans/2026-06-28-bundled-workflow-and-interactive-terminal-skills.md
+git diff -- src/skills/bundled/workflow.ts src/skills/bundled/interactiveTerminal.ts src/skills/bundled/index.ts src/skills/bundled/modelInternalSkills.test.ts src/commands/workflows/workflowsPage.behavior.test.ts docs/architecture/workflow-orchestration.md docs/superpowers/specs/2026-06-28-bundled-workflow-and-interactive-terminal-skills-design.md docs/superpowers/plans/2026-06-28-bundled-workflow-and-interactive-terminal-skills.md
 ```
 
 Expected: diff only includes the hidden bundled skills, registration, focused tests, and documentation/plan updates.

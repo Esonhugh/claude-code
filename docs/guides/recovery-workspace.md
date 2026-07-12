@@ -11,8 +11,8 @@
 
 相关手册：
 
-- 编译手册：[docs/BUILD_MANUAL.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/BUILD_MANUAL.md)
-- 二次开发手册：[docs/SECONDARY_DEVELOPMENT_MANUAL.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/SECONDARY_DEVELOPMENT_MANUAL.md)
+- 编译手册：[docs/guides/build.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/guides/build.md)
+- 二次开发手册：[docs/guides/secondary-development.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/guides/secondary-development.md)
 
 友链：
 
@@ -492,5 +492,5 @@ CLAUDE_RECOVERY_SKIP_GLOBAL_ENV=1 npm run cli:run
 
 ## 文档索引
 
-- [docs/BUILD_MANUAL.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/BUILD_MANUAL.md)
-- [docs/SECONDARY_DEVELOPMENT_MANUAL.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/SECONDARY_DEVELOPMENT_MANUAL.md)
+- [docs/guides/build.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/guides/build.md)
+- [docs/guides/secondary-development.md](/Users/test/Downloads/claude-code/package/claude-code-2.1.88/docs/guides/secondary-development.md)

@@ -12,7 +12,7 @@
 
 ## File Structure
 
-- Create: `docs/dynamic-workflow-agent-orchestration.md`
+- Create: `docs/architecture/workflow-orchestration.md`
   - Human-facing architecture document for Claude Code dynamic workflows, subagents, agent teams, skills, hooks, permissions, and worktrees.
   - Includes official mental model, local repository map, and staged secondary-development roadmap.
 - Modify: `docs/README.md`
@@ -43,11 +43,11 @@
 ### Task 1: Write the architecture document
 
 **Files:**
-- Create: `docs/dynamic-workflow-agent-orchestration.md`
+- Create: `docs/architecture/workflow-orchestration.md`
 
 - [ ] **Step 1: Create the architecture document**
 
-Create `docs/dynamic-workflow-agent-orchestration.md` with this content:
+Create `docs/architecture/workflow-orchestration.md` with this content:
 
 ```markdown
 # Dynamic Workflow and Agent Orchestration
@@ -139,7 +139,7 @@ Workflow execution must not directly call shell or filesystem operations. Workfl
 Run:
 
 ```bash
-grep -nE 'TB[D]|TO[D]O|implement[[:space:]]+later|fill[[:space:]]+in|placeholde[r]' docs/dynamic-workflow-agent-orchestration.md || true
+grep -nE 'TB[D]|TO[D]O|implement[[:space:]]+later|fill[[:space:]]+in|placeholde[r]' docs/architecture/workflow-orchestration.md || true
 ```
 
 Expected: no output.
@@ -149,7 +149,7 @@ Expected: no output.
 Run:
 
 ```bash
-git diff --check -- docs/dynamic-workflow-agent-orchestration.md
+git diff --check -- docs/architecture/workflow-orchestration.md
 ```
 
 Expected: no output.
@@ -166,7 +166,7 @@ Expected: no output.
 Open `docs/README.md` and add this bullet in the most relevant documentation list:
 
 ```markdown
-- [Dynamic Workflow and Agent Orchestration](./dynamic-workflow-agent-orchestration.md) — explains Claude Code workflow, subagent, agent team, skill, hook, permission, and worktree primitives for secondary development.
+- [Dynamic Workflow and Agent Orchestration](../../../architecture/workflow-orchestration.md) — explains Claude Code workflow, subagent, agent team, skill, hook, permission, and worktree primitives for secondary development.
 ```
 
 If `docs/README.md` has no existing list, add this section near the top after the title:
@@ -174,7 +174,7 @@ If `docs/README.md` has no existing list, add this section near the top after th
 ```markdown
 ## Architecture and secondary development
 
-- [Dynamic Workflow and Agent Orchestration](./dynamic-workflow-agent-orchestration.md) — explains Claude Code workflow, subagent, agent team, skill, hook, permission, and worktree primitives for secondary development.
+- [Dynamic Workflow and Agent Orchestration](../../../architecture/workflow-orchestration.md) — explains Claude Code workflow, subagent, agent team, skill, hook, permission, and worktree primitives for secondary development.
 ```
 
 - [ ] **Step 2: Verify the link target exists**
@@ -182,7 +182,7 @@ If `docs/README.md` has no existing list, add this section near the top after th
 Run:
 
 ```bash
-test -f docs/dynamic-workflow-agent-orchestration.md
+test -f docs/architecture/workflow-orchestration.md
 ```
 
 Expected: command exits 0.
@@ -192,7 +192,7 @@ Expected: command exits 0.
 Run:
 
 ```bash
-git diff --check -- docs/README.md docs/dynamic-workflow-agent-orchestration.md
+git diff --check -- docs/README.md docs/architecture/workflow-orchestration.md
 ```
 
 Expected: no output.
@@ -818,11 +818,11 @@ Planned agents: 4
 ### Task 8: Document future runtime integration points
 
 **Files:**
-- Modify: `docs/dynamic-workflow-agent-orchestration.md`
+- Modify: `docs/architecture/workflow-orchestration.md`
 
 - [ ] **Step 1: Add integration details**
 
-Append this section to `docs/dynamic-workflow-agent-orchestration.md`:
+Append this section to `docs/architecture/workflow-orchestration.md`:
 
 ```markdown
 ## Runtime integration points
@@ -852,7 +852,7 @@ Runtime implementation should preserve the current feature-gated import pattern.
 Run:
 
 ```bash
-git diff --check -- docs/dynamic-workflow-agent-orchestration.md
+git diff --check -- docs/architecture/workflow-orchestration.md
 ```
 
 Expected: no output.
@@ -869,7 +869,7 @@ Expected: no output.
 Run:
 
 ```bash
-grep -R -nE 'TB[D]|TO[D]O|implement[[:space:]]+later|fill[[:space:]]+in|placeholde[r]' docs/dynamic-workflow-agent-orchestration.md docs/workflows docs/superpowers/specs/2026-06-05-dynamic-workflow-agent-orchestration-design.md docs/superpowers/plans/2026-06-05-dynamic-workflow-agent-orchestration.md || true
+grep -R -nE 'TB[D]|TO[D]O|implement[[:space:]]+later|fill[[:space:]]+in|placeholde[r]' docs/architecture/workflow-orchestration.md docs/workflows docs/superpowers/specs/2026-06-05-dynamic-workflow-agent-orchestration-design.md docs/superpowers/plans/2026-06-05-dynamic-workflow-agent-orchestration.md || true
 ```
 
 Expected: no output.
@@ -924,7 +924,7 @@ Run:
 
 ```bash
 git status --short
-git diff -- docs/dynamic-workflow-agent-orchestration.md docs/README.md docs/workflows scripts/workflow-dry-run.mjs src/tools/WorkflowTool docs/superpowers/specs/2026-06-05-dynamic-workflow-agent-orchestration-design.md docs/superpowers/plans/2026-06-05-dynamic-workflow-agent-orchestration.md
+git diff -- docs/architecture/workflow-orchestration.md docs/README.md docs/workflows scripts/workflow-dry-run.mjs src/tools/WorkflowTool docs/superpowers/specs/2026-06-05-dynamic-workflow-agent-orchestration-design.md docs/superpowers/plans/2026-06-05-dynamic-workflow-agent-orchestration.md
 ```
 
 Expected: diff is limited to dynamic workflow and agent orchestration documentation, dry-run fixtures, and dry-run validation foundation.

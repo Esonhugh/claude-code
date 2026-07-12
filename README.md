@@ -173,22 +173,22 @@ This codebase still contains recovery-era type surfaces. When fixing types:
 Start here:
 
 - [`docs/README.md`](docs/README.md) — documentation index and reading order.
-- [`docs/BUILD_MANUAL.md`](docs/BUILD_MANUAL.md) — build, run, and troubleshooting guide.
-- [`docs/SECONDARY_DEVELOPMENT_MANUAL.md`](docs/SECONDARY_DEVELOPMENT_MANUAL.md) — secondary development practices.
-- [`docs/claude-code-internals-index.md`](docs/claude-code-internals-index.md) — Claude Code runtime and Agent implementation index.
+- [`docs/guides/build.md`](docs/guides/build.md) — build, run, and troubleshooting guide.
+- [`docs/guides/secondary-development.md`](docs/guides/secondary-development.md) — secondary development practices.
+- [`docs/architecture/runtime-internals.md`](docs/architecture/runtime-internals.md) — Claude Code runtime and Agent implementation index.
 - [`CHANGELOG.md`](CHANGELOG.md) — strict local change log starting from base `2.1.88`.
 
 Architecture references:
 
-- [`docs/agent-architecture-analysis.md`](docs/agent-architecture-analysis.md)
-- [`docs/agent-team-architecture.md`](docs/agent-team-architecture.md)
-- [`docs/plugin-marketplace-analysis.md`](docs/plugin-marketplace-analysis.md)
-- [`docs/claude-agent-sdk-exports-analysis.md`](docs/claude-agent-sdk-exports-analysis.md)
+- [`docs/architecture/agent.md`](docs/architecture/agent.md)
+- [`docs/architecture/agent-team.md`](docs/architecture/agent-team.md)
+- [`docs/architecture/plugin-marketplace.md`](docs/architecture/plugin-marketplace.md)
+- [`docs/architecture/agent-sdk-exports.md`](docs/architecture/agent-sdk-exports.md)
 
 Design proposals and learning material:
 
-- [`docs/private-plugin-marketplace-enterprise-design.md`](docs/private-plugin-marketplace-enterprise-design.md)
-- [`docs/beginner-agent-development-guide.md`](docs/beginner-agent-development-guide.md)
+- [`docs/design/private-plugin-marketplace.md`](docs/design/private-plugin-marketplace.md)
+- [`docs/guides/agent-development.md`](docs/guides/agent-development.md)
 
 ## Change tracking
 

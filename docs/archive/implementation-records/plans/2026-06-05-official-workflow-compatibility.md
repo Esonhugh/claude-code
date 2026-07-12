@@ -51,7 +51,7 @@ This plan intentionally targets practical compatibility rather than byte-for-byt
 - Create: `src/tools/WorkflowTool/workflowOrchestrator.test.ts` — tests for JS orchestration helpers.
 - Create: `src/tools/WorkflowTool/workflowCompatibilityBenchmark.test.ts` — tests for benchmark normalization and gap scoring.
 - Modify: `docs/workflow-compatibility-experiments.md` — update matrix with implemented compatibility coverage and remaining deliberate divergences.
-- Modify: `docs/dynamic-workflow-agent-orchestration.md` — update local repository map and compatibility boundary after implementation.
+- Modify: `docs/architecture/workflow-orchestration.md` — update local repository map and compatibility boundary after implementation.
 
 ---
 
@@ -580,7 +580,7 @@ Expected: PASS.
 **Files:**
 - Modify: `src/tools/WorkflowTool/workflowDiscovery.ts`
 - Modify: `src/tools/WorkflowTool/workflowDiscovery.test.ts`
-- Modify: `docs/dynamic-workflow-agent-orchestration.md`
+- Modify: `docs/architecture/workflow-orchestration.md`
 - Modify: `docs/workflow-compatibility-experiments.md`
 
 - [ ] **Step 1: Write failing user discovery precedence tests**
@@ -678,7 +678,7 @@ Expected: PASS.
 
 Modify `docs/workflow-compatibility-experiments.md` row W5 to state that user `~/.claude/workflows/` discovery is implemented with project shadowing precedence.
 
-Modify `docs/dynamic-workflow-agent-orchestration.md` current workflow surface to include user workflow discovery.
+Modify `docs/architecture/workflow-orchestration.md` current workflow surface to include user workflow discovery.
 
 - [ ] **Step 6: Run workflow tests**
 
@@ -1674,7 +1674,7 @@ Expected: PASS.
 - Modify: `src/commands/workflows/workflows.ts`
 - Modify: `src/tasks/LocalWorkflowTask/formatWorkflowStatus.ts`
 - Modify: `src/commands/workflows/workflows.test.ts`
-- Modify: `docs/dynamic-workflow-agent-orchestration.md`
+- Modify: `docs/architecture/workflow-orchestration.md`
 
 - [ ] **Step 1: Write failing detail/control command tests**
 
