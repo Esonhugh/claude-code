@@ -8,6 +8,14 @@ import type {
 
 export type WorkflowDetailAgentStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'interrupted'
 
+function workflowResultStatus(result: WorkflowAgentResult | undefined): WorkflowDetailAgentStatus | undefined {
+  if (!result) return undefined
+  if (result.status === 'running') return 'running'
+  if (result.status === 'failed') return 'failed'
+  if (result.status === 'skipped') return 'skipped'
+  return 'done'
+}
+
 export function workflowDetailStatusWord(status: LocalWorkflowTaskState['status']): string {
   if (status === 'completed') return 'done'
   if (status === 'failed') return 'failed'
@@ -119,28 +127,24 @@ export function workflowDetailAgentStatus(
 ): WorkflowDetailAgentStatus {
   const phase = workflowDetailAgentPhase(task, agentId)
   if (phase?.completedAgentIds.includes(agentId)) {
-    const result = workflowDetailAgentResult(task, agentId)
-    if (result?.status === 'failed') return 'failed'
-    if (result?.status === 'skipped') return 'skipped'
-    return 'done'
+    return workflowResultStatus(workflowDetailAgentResult(task, agentId)) ?? 'done'
   }
+  const result = workflowDetailAgentResult(task, agentId)
+  if (task.status === 'pending' || task.status === 'killed' || task.status === 'failed') {
+    return workflowResultStatus(result) ?? 'interrupted'
+  }
+  if (phase?.failedAgentIds.includes(agentId)) return 'failed'
+  if (phase?.skippedAgentIds.includes(agentId)) return 'skipped'
   if (phase) {
     const index = phase.agentIds.indexOf(agentId)
     if (index >= 0) {
-      const resultAtIndex = phase.results.find(result => result.index === index)
-      if (resultAtIndex) {
-        if (resultAtIndex.status === 'failed') return 'failed'
-        if (resultAtIndex.status === 'skipped') return 'skipped'
-        return 'done'
-      }
+      const resultStatus = workflowResultStatus(phase.results.find(currentResult => currentResult.index === index))
+      if (resultStatus) return resultStatus
     }
   }
-  if (task.status === 'pending' || task.status === 'killed') return 'interrupted'
   if (task.liveAgents?.[agentId]) return 'running'
-  if (task.status === 'completed' || task.status === 'failed') {
-    const result = workflowDetailAgentResult(task, agentId)
-    if (result) return result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'done'
-    return task.status === 'completed' ? 'done' : 'interrupted'
+  if (task.status === 'completed') {
+    return workflowResultStatus(workflowDetailAgentResult(task, agentId)) ?? 'done'
   }
   return 'queued'
 }

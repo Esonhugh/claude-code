@@ -48,6 +48,21 @@ function terminalStatus(status: LocalWorkflowTaskState['status']): boolean {
   return status === 'completed' || status === 'failed' || status === 'killed'
 }
 
+function workflowAgentIsControllable(task: LocalWorkflowTaskState, agentId: string): boolean {
+  const controller = task.agentControllers?.[agentId]
+  if (!controller) return false
+  const phase = task.phases.find(currentPhase => currentPhase.agentIds.includes(agentId))
+  if (!phase) return false
+  if (
+    phase.completedAgentIds.includes(agentId) ||
+    phase.failedAgentIds.includes(agentId) ||
+    phase.skippedAgentIds.includes(agentId)
+  ) return false
+  const index = phase.agentIds.indexOf(agentId)
+  const result = phase.results.find(currentResult => currentResult.index === index)
+  return !result || result.status === 'running'
+}
+
 export type WorkflowPhaseStatus =
   | 'pending'
   | 'running'
@@ -744,6 +759,8 @@ export function failWorkflowTask(
       endTime: Date.now(),
       abortController: undefined,
       currentAgentId: undefined,
+      agentControllers: undefined,
+      liveAgents: undefined,
     }
   })
 }
@@ -774,6 +791,8 @@ function endWorkflowTask(
           endTime: Date.now(),
           abortController: undefined,
           currentAgentId: undefined,
+          agentControllers: undefined,
+          liveAgents: undefined,
         },
       },
     }
@@ -822,7 +841,7 @@ export function skipWorkflowAgent(
   setAppState: SetAppState,
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
-    if (task.status !== 'running') return task
+    if (task.status !== 'running' || !workflowAgentIsControllable(task, agentId)) return task
     const skippedPhase = task.phases.find(phase => phase.agentIds.includes(agentId))
     const skippedController = task.agentControllers?.[agentId]
     const skippedIndex = skippedController?.index ?? skippedPhase?.agentIds.indexOf(agentId) ?? -1
@@ -898,7 +917,7 @@ export function retryWorkflowAgent(
   setAppState: SetAppState,
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
-    if (task.status !== 'running') return task
+    if (task.status !== 'running' || !workflowAgentIsControllable(task, agentId)) return task
     let retryPhaseId: string | undefined
     let retryAgentId: string | undefined
     const controller = task.agentControllers?.[agentId]

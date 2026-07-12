@@ -7,6 +7,7 @@ import type { AgentId } from '../../types/ids.js'
 import {
   completeWorkflowAgent,
   completeWorkflowTask,
+  failWorkflowTask,
   killWorkflowTask,
   pauseWorkflowTask,
   recordWorkflowAgentController,
@@ -468,11 +469,40 @@ const context = {
   assert.equal(failedAgentState.liveAgents?.['agent-1'], undefined)
   assert.equal(failedAgentState.agentControllers?.['agent-1'], undefined)
 
+  const terminalFailureAbortController = new AbortController()
+  const terminalFailureAgentAbortController = new AbortController()
+  const terminalFailureTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-terminal-failure',
+    abortController: terminalFailureAbortController,
+    currentAgentId: 'agent-1',
+    liveAgents: {
+      'agent-1': { tokenCount: 7, toolUseCount: 1 },
+    },
+    agentControllers: {
+      'agent-1': { abortController: terminalFailureAgentAbortController },
+    },
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [terminalFailureTask.id]: terminalFailureTask } }))
+  failWorkflowTask(terminalFailureTask.id, 'terminal boom', setAppState)
+  const terminalFailureState = state.tasks[terminalFailureTask.id] as LocalWorkflowTaskState
+  assert.equal(terminalFailureState.status, 'failed')
+  assert.equal(terminalFailureAbortController.signal.aborted, true)
+  assert.equal(terminalFailureAgentAbortController.signal.aborted, true)
+  assert.equal(terminalFailureState.abortController, undefined)
+  assert.equal(terminalFailureState.currentAgentId, undefined)
+  assert.equal(terminalFailureState.liveAgents, undefined)
+  assert.equal(terminalFailureState.agentControllers, undefined)
+
+  const restartableRunningTask = {
+    ...runningTask,
+    phases: runningTask.phases.map(phase => ({ ...phase })),
+  }
   setAppState(prev => ({
     ...prev,
     tasks: {
       ...prev.tasks,
-      'w-running': runningTask,
+      'w-running': restartableRunningTask,
     },
   }))
 
@@ -532,6 +562,22 @@ const context = {
   assert.equal(completedMismatchTask.liveAgents?.['workflow-label'], undefined)
   assert.equal(completedMismatchTask.agentControllers?.['workflow-label'], undefined)
 
+  setAppState(prev => ({
+    ...prev,
+    tasks: {
+      ...prev.tasks,
+      'w-running': {
+        ...(prev.tasks['w-running'] as LocalWorkflowTaskState),
+        phases: restartableRunningTask.phases.map(phase => ({ ...phase })),
+      },
+    },
+  }))
+  recordWorkflowAgentController({
+    taskId: 'w-running',
+    agentId: 'agent-1',
+    abortController: new AbortController(),
+    setAppState,
+  })
   retryWorkflowAgent('w-running', 'agent-1', setAppState)
   updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.deepEqual(updatedRunningTask.phases[0]!.skippedAgentIds, [])
@@ -543,6 +589,43 @@ const context = {
   if (retryEvent?.type === 'workflow_agent') {
     assert.equal(retryEvent.status, 'running')
   }
+
+  const nonRunningControlTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-non-running-control',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['completed-agent', 'failed-agent', 'running-agent'],
+        completedAgentIds: ['completed-agent', 'failed-agent'],
+        skippedAgentIds: [],
+        failedAgentIds: ['failed-agent'],
+        results: [
+          { phaseId: 'phase', agentId: 'completed-agent', index: 0, status: 'completed' },
+          { phaseId: 'phase', agentId: 'failed-agent', index: 1, status: 'failed', error: 'boom' },
+        ],
+      },
+    ],
+    liveAgents: {
+      'running-agent': { tokenCount: 1, toolUseCount: 0 },
+    },
+    agentControllers: {
+      'running-agent': { abortController: new AbortController() },
+    },
+    results: [
+      { phaseId: 'phase', agentId: 'completed-agent', index: 0, status: 'completed' },
+      { phaseId: 'phase', agentId: 'failed-agent', index: 1, status: 'failed', error: 'boom' },
+    ],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [nonRunningControlTask.id]: nonRunningControlTask } }))
+  skipWorkflowAgent(nonRunningControlTask.id, 'completed-agent', setAppState)
+  retryWorkflowAgent(nonRunningControlTask.id, 'failed-agent', setAppState)
+  const unchangedNonRunningControlTask = state.tasks[nonRunningControlTask.id] as LocalWorkflowTaskState
+  assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.agentIds, ['completed-agent', 'failed-agent', 'running-agent'])
+  assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.completedAgentIds, ['completed-agent', 'failed-agent'])
+  assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.failedAgentIds, ['failed-agent'])
+  assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.results, nonRunningControlTask.phases[0]!.results)
 
 let retryState = {
   tasks: {},

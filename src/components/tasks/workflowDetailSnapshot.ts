@@ -168,7 +168,6 @@ function agentStatusLine(task: LocalWorkflowTaskState, agentId: string): string 
   const model = task.defaultModel ?? 'gpt-5.5[1m]'
   const attempt = retryAttempt(agentId)
   const retrySuffix = attempt > 0 ? ` · attempt ${attempt + 1} (user retry)` : ''
-  if (task.status === 'running') return `⏺ Running · ${model}${retrySuffix}`
   return `${agentStatusIcon(task, agentId)} ${agentStatusLabel(task, agentId)} · ${model}${retrySuffix}`
 }
 
@@ -237,8 +236,18 @@ function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: s
 }
 
 export function workflowDetailControlText(task: LocalWorkflowTaskState, options: WorkflowDetailSnapshotOptions = {}): string {
-  if (task.status === 'running' && options.showAgentDetail && options.selectedAgentId) return '↑↓ agent · x stop · r restart · p pause · esc back · s save'
-  if (task.status === 'running' && options.selectedAgentId) return '↑↓ select · x stop · r restart · p pause · esc back · s save'
+  if (task.status === 'running' && options.showAgentDetail && options.selectedAgentId) {
+    const selectedAgentStatus = workflowDetailAgentStatus(task, options.selectedAgentId)
+    return selectedAgentStatus === 'running'
+      ? '↑↓ agent · x stop · r restart · p pause · esc back · s save'
+      : '↑↓ agent · p pause · esc back · s save'
+  }
+  if (task.status === 'running' && options.selectedAgentId) {
+    const selectedAgentStatus = workflowDetailAgentStatus(task, options.selectedAgentId)
+    return selectedAgentStatus === 'running'
+      ? '↑↓ select · x stop · r restart · p pause · esc back · s save'
+      : '↑↓ select · p pause · esc back · s save'
+  }
   if (task.status === 'running') return '↑↓ select · x stop workflow · p pause · esc back · s save'
   if (task.status === 'pending' && options.showAgentDetail && options.selectedAgentId) return '↑↓ agent · p resume · esc back · s save'
   if (task.status === 'pending') return '↑↓ select · p resume · esc back · s save'

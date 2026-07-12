@@ -155,6 +155,19 @@ export const TaskUpdateTool = buildTool({
       }
     }
 
+    for (const dependencyId of [...(addBlocks ?? []), ...(addBlockedBy ?? [])]) {
+      if (!(await getTask(taskListId, dependencyId))) {
+        return {
+          data: {
+            success: false,
+            taskId,
+            updatedFields: [],
+            error: `Task #${dependencyId} not found`,
+          },
+        }
+      }
+    }
+
     const updatedFields: string[] = []
 
     // Update basic fields if provided and different from current value
@@ -303,7 +316,16 @@ export const TaskUpdateTool = buildTool({
         id => !existingTask.blocks.includes(id),
       )
       for (const blockId of newBlocks) {
-        await blockTask(taskListId, taskId, blockId)
+        if (!(await blockTask(taskListId, taskId, blockId))) {
+          return {
+            data: {
+              success: false,
+              taskId,
+              updatedFields,
+              error: `Task #${blockId} not found`,
+            },
+          }
+        }
       }
       if (newBlocks.length > 0) {
         updatedFields.push('blocks')
@@ -316,7 +338,16 @@ export const TaskUpdateTool = buildTool({
         id => !existingTask.blockedBy.includes(id),
       )
       for (const blockerId of newBlockedBy) {
-        await blockTask(taskListId, blockerId, taskId)
+        if (!(await blockTask(taskListId, blockerId, taskId))) {
+          return {
+            data: {
+              success: false,
+              taskId,
+              updatedFields,
+              error: `Task #${blockerId} not found`,
+            },
+          }
+        }
       }
       if (newBlockedBy.length > 0) {
         updatedFields.push('blockedBy')

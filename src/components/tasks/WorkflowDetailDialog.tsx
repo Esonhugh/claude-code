@@ -164,7 +164,9 @@ export function WorkflowDetailDialog({
   const currentPhase = visiblePhases[Math.min(selectedPhase, visiblePhases.length - 1)]
   const agentIds = currentPhase?.agentIds ?? []
   const currentAgentId = agentIds[Math.min(selectedAgent, agentIds.length - 1)]
+  const currentAgentStatus = currentAgentId ? workflowDetailAgentStatus(workflow, currentAgentId) : undefined
   const isRunning = workflow.status === 'running'
+  const canControlCurrentAgent = isRunning && currentAgentStatus === 'running'
 
   // Layout — in agent detail mode, left pane is wider for agent names
   const availableRows = Math.max(8, termRows - 14)
@@ -234,9 +236,9 @@ export function WorkflowDetailDialog({
       else setSelectedAgent(a => Math.max(0, a - 1))
     } else if (k === 'return' || k === 'right') { e.preventDefault(); drillIn() }
     else if (k === 'left') { e.preventDefault(); goBack() }
-    else if (k === 'x' && isRunning && currentAgentId && level !== 'phases' && onSkipAgent) { e.preventDefault(); onSkipAgent(currentAgentId) }
+    else if (k === 'x' && canControlCurrentAgent && currentAgentId && level !== 'phases' && onSkipAgent) { e.preventDefault(); onSkipAgent(currentAgentId) }
     else if (k === 'x' && isRunning && level === 'phases' && onKill) { e.preventDefault(); onKill() }
-    else if (k === 'r' && isRunning && currentAgentId && level !== 'phases' && onRetryAgent) { e.preventDefault(); onRetryAgent(currentAgentId) }
+    else if (k === 'r' && canControlCurrentAgent && currentAgentId && level !== 'phases' && onRetryAgent) { e.preventDefault(); onRetryAgent(currentAgentId) }
     else if (k === 'p' && isRunning && onPause) { e.preventDefault(); onPause() }
     else if (k === ' ') { e.preventDefault(); close() }
   }
@@ -395,7 +397,7 @@ export function WorkflowDetailDialog({
   } else {
     hints.push('↑↓ select · ⏎/→ expand · esc back')
   }
-  if (isRunning && currentAgentId && level !== 'phases') hints.push('x stop')
+  if (canControlCurrentAgent && currentAgentId && level !== 'phases') hints.push('x stop')
   if (isRunning && level === 'phases' && onKill) hints.push('x stop workflow')
 
   return (

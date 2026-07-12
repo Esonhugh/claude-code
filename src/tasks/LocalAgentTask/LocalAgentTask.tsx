@@ -826,7 +826,11 @@ export function backgroundAgentTask(
 ): boolean {
   const state = getAppState()
   const task = state.tasks[taskId]
-  if (!isLocalAgentTask(task) || task.isBackgrounded) {
+  if (
+    !isLocalAgentTask(task) ||
+    task.status !== 'running' ||
+    task.isBackgrounded
+  ) {
     return false
   }
 

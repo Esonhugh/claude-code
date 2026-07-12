@@ -225,11 +225,12 @@ assert.doesNotMatch(runningDetailResult.value, /\/workflows resume w-test/)
 
 const skipResult = await call('skip-agent w-test synthesis a3', context)
 assert.equal(skipResult.type, 'text')
-assert.match(skipResult.value, /synthesis: completed 1\/1 \[██████████\] skipped 1\/1/)
+assert.match(skipResult.value, /synthesis: running 0\/1 \[░░░░░░░░░░\] skipped 0\/1/)
 
 const retryResult = await call('retry-agent w-test synthesis a3', context)
 assert.equal(retryResult.type, 'text')
 assert.match(retryResult.value, /synthesis: running 0\/1/)
+assert.doesNotMatch(retryResult.value, /retries: 1/)
 
 const pauseResult = await call('pause w-test', context)
 assert.equal(pauseResult.type, 'text')

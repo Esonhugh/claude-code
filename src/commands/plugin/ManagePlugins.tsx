@@ -1418,33 +1418,55 @@ export function ManagePlugins({
       const isBuiltin = pluginScope === 'builtin'
       if (isBuiltin || isInstallableScope(pluginScope)) {
         const newPending = new Map(pendingToggles)
+        setProcessError(null)
         // Omit scope — see handleSingleOperation's enable/disable comment.
         if (currentPending) {
           // Cancel: reverse the operation back to the original state
           newPending.delete(pluginId)
           void (async () => {
+            const operation = currentPending === 'will-disable' ? 'enable' : 'disable'
             try {
-              if (currentPending === 'will-disable') {
-                await enablePluginOp(pluginId)
-              } else {
-                await disablePluginOp(pluginId)
+              const result =
+                operation === 'enable'
+                  ? await enablePluginOp(pluginId)
+                  : await disablePluginOp(pluginId)
+              if (!result.success) {
+                throw new Error(result.message)
               }
               clearAllCaches()
             } catch (err) {
+              setPendingToggles(prev => {
+                const next = new Map(prev)
+                next.set(pluginId, currentPending)
+                return next
+              })
+              const errorMsg = err instanceof Error ? err.message : String(err)
+              setProcessError(`Failed to ${operation}: ${errorMsg}`)
               logError(err)
             }
           })()
         } else {
-          newPending.set(pluginId, isEnabled ? 'will-disable' : 'will-enable')
+          const nextPending = isEnabled ? 'will-disable' : 'will-enable'
+          const operation = isEnabled ? 'disable' : 'enable'
+          newPending.set(pluginId, nextPending)
           void (async () => {
             try {
-              if (isEnabled) {
-                await disablePluginOp(pluginId)
-              } else {
-                await enablePluginOp(pluginId)
+              const result =
+                operation === 'disable'
+                  ? await disablePluginOp(pluginId)
+                  : await enablePluginOp(pluginId)
+              if (!result.success) {
+                throw new Error(result.message)
               }
               clearAllCaches()
             } catch (err) {
+              setPendingToggles(prev => {
+                const next = new Map(prev)
+                next.delete(pluginId)
+                return next
+              })
+              const errorMsg = err instanceof Error ? err.message : String(err)
+              setProcessError(`Failed to ${operation}: ${errorMsg}`)
               logError(err)
             }
           })()
@@ -2852,6 +2874,12 @@ export function ManagePlugins({
           </Byline>
         </Text>
       </Box>
+
+      {processError && (
+        <Box marginLeft={1}>
+          <Text color="error">{processError}</Text>
+        </Box>
+      )}
 
       {/* Reload disclaimer for plugin changes */}
       {pendingToggles.size > 0 && (

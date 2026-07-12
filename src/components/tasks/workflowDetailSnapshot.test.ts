@@ -107,20 +107,41 @@ assertLine(agentSelectedLines[3], '╭ Phases ────────┬ scan �
 assertLine(agentSelectedLines[4], '│   1 scan   1/2  │  ⏺ scan-a                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
 assertLine(agentSelectedLines[5], '│                 │ ❯⏺ scan-b                   gpt-5.5[1m]    0 tok · 0 tools                                 │')
 assertLine(agentSelectedLines[6], '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
-assertLine(agentSelectedLines[8], '↑↓ select · x stop · r restart · p pause · esc back · s save')
+assertLine(agentSelectedLines[8], '↑↓ select · p pause · esc back · s save')
+
+const actionableRunningAgentWorkflow: LocalWorkflowTaskState = {
+  ...workflow,
+  phases: [
+    {
+      ...workflow.phases[0]!,
+      failedAgentIds: [],
+    },
+  ],
+  liveAgents: {
+    'scan-b': { tokenCount: 1, toolUseCount: 0 },
+  },
+}
+assertLine(
+  workflowDetailSnapshotLines(actionableRunningAgentWorkflow, { selectedAgentId: 'scan-b' })[8],
+  '↑↓ select · x stop · r restart · p pause · esc back · s save',
+)
 
 const agentDetailLines = workflowDetailSnapshotLines(workflow, { selectedAgentId: 'scan-b', showAgentDetail: true })
 assertLine(agentDetailLines[3], '╭ scan · 2 agents┬ scan-b ─────────────────────────────────────────────────────────────────────────────────────╮')
-assertLine(agentDetailLines[4], '│   ⏺ scan-a     │ ⏺ Running · gpt-5.5[1m]                                                                    │')
+assertLine(agentDetailLines[4], '│   ⏺ scan-a     │ ✗ Failed · gpt-5.5[1m]                                                                     │')
 assertLine(agentDetailLines[5], '│ ❯ ⏺ scan-b     │ 0 tok · 0 tool calls                                                                       │')
 assertLine(agentDetailLines[7], '│                │ Prompt                                                                                     │')
 assertLine(agentDetailLines[8], '│                │   Scan UI state.                                                                           │')
 assertLine(agentDetailLines[10], '│                │ Activity                                                                                   │')
 assertLine(agentDetailLines[11], '│                │   Still running…                                                                           │')
 assertLine(agentDetailLines[13], '│                │ Outcome                                                                                    │')
-assertLine(agentDetailLines[14], '│                │   Waiting for an agent slot.                                                                           │')
+assertLine(agentDetailLines[14], '│                │   failed                                                                                   │')
 assertLine(agentDetailLines.at(-3), '╰────────────────┴────────────────────────────────────────────────────────────────────────────────────────────╯')
-assertLine(agentDetailLines.at(-1), '↑↓ agent · x stop · r restart · p pause · esc back · s save')
+assertLine(agentDetailLines.at(-1), '↑↓ agent · p pause · esc back · s save')
+assertLine(
+  workflowDetailSnapshotLines(actionableRunningAgentWorkflow, { selectedAgentId: 'scan-b', showAgentDetail: true }).at(-1),
+  '↑↓ agent · x stop · r restart · p pause · esc back · s save',
+)
 
 const retryDetailLines = workflowDetailSnapshotLines({
   ...workflow,
@@ -134,7 +155,7 @@ const retryDetailLines = workflowDetailSnapshotLines({
         {
           phaseId: 'scan',
           agentId: 'scan-b (retry 1)',
-          index: 1,
+          index: 0,
           status: 'running',
         },
       ],
@@ -143,7 +164,7 @@ const retryDetailLines = workflowDetailSnapshotLines({
 }, { selectedAgentId: 'scan-b (retry 1)', showAgentDetail: true })
 assertLine(retryDetailLines[4], '│ ❯ ⏺ scan-b (retry 1)│ ⏺ Running · gpt-5.5[1m] · attempt 2 (user retry)                                      │')
 assert.ok(retryDetailLines[13]?.includes('Outcome'), retryDetailLines.join('\n'))
-assert.ok(retryDetailLines[14]?.includes('Waiting for an agent slot.'), retryDetailLines.join('\n'))
+assert.ok(retryDetailLines[14]?.includes('Still running…'), retryDetailLines.join('\n'))
 
 const liveProgressWorkflow: LocalWorkflowTaskState = {
   ...workflow,
@@ -225,6 +246,19 @@ const staleLiveAgentKilledWorkflow: LocalWorkflowTaskState = {
 assert.equal(workflowDetailAgentStatus(staleLiveAgentKilledWorkflow, 'scan-b'), 'interrupted')
 assertLine(
   workflowDetailSnapshotLines(staleLiveAgentKilledWorkflow, { selectedAgentId: 'scan-b', showAgentDetail: true })[4],
+  '│   ✓ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │',
+)
+
+const staleLiveAgentFailedWorkflow: LocalWorkflowTaskState = {
+  ...workflow,
+  status: 'failed',
+  liveAgents: {
+    'scan-b': { tokenCount: 5, toolUseCount: 1, activity: 'Bash(sleep 20)' },
+  },
+}
+assert.equal(workflowDetailAgentStatus(staleLiveAgentFailedWorkflow, 'scan-b'), 'interrupted')
+assertLine(
+  workflowDetailSnapshotLines(staleLiveAgentFailedWorkflow, { selectedAgentId: 'scan-b', showAgentDetail: true })[4],
   '│   ✓ scan-a     │ ◌ Stopped · gpt-5.5[1m]                                                                    │',
 )
 
