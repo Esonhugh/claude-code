@@ -450,7 +450,13 @@ export function configureEffortParams(
   betas: string[],
   model: string,
 ): void {
-  if (!modelSupportsEffort(model) || 'effort' in outputConfig) {
+  if ('effort' in outputConfig) {
+    return
+  }
+  if (
+    !modelSupportsEffort(model) &&
+    !(getAPIProvider() === 'openai' && typeof effortValue === 'string')
+  ) {
     return
   }
 

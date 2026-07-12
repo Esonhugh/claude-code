@@ -39,12 +39,28 @@ try {
   assert.ok(explicitBetas.length > 0)
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  const { resolveAppliedEffort, toPersistableEffort } = await import('../../utils/effort.js')
   const openAIOutputConfig: BetaOutputConfig = {}
   const openAIBetas: string[] = []
   configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas, 'gpt-5.5')
 
   assert.equal(openAIOutputConfig.effort, undefined)
   assert.equal(openAIBetas.length, 0)
+
+  const ultracodeOutputConfig: BetaOutputConfig = {}
+  const ultracodeBetas: string[] = []
+  configureEffortParams(
+    resolveAppliedEffort('gpt-5.5', 'ultracode'),
+    ultracodeOutputConfig,
+    {},
+    ultracodeBetas,
+    'gpt-5.5',
+  )
+
+  assert.equal(ultracodeOutputConfig.effort, 'xhigh')
+  assert.ok(ultracodeBetas.length > 0)
+  assert.equal(toPersistableEffort('ultra'), undefined)
+  assert.equal(toPersistableEffort('ultracode'), undefined)
 
   delete process.env.CLAUDE_CODE_USE_OPENAI
   process.env.CLAUDE_CODE_USE_BEDROCK = '1'

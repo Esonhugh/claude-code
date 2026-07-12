@@ -27,24 +27,25 @@ export type OpenAIEffortLevel = 'none' | 'xhigh' | 'ultra'
 export type UltracodeEffortLevel = 'ultracode'
 export type EffortValue = EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel | number
 export type ConfiguredEffortLevel = Exclude<EffortValue, number | 'ultracode'>
-export type APIEffortLevel = Exclude<ConfiguredEffortLevel, 'ultra'>
+export type OpenAIAPIEffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'ultra'
+export type AnthropicAPIEffortLevel = 'low' | 'medium' | 'high' | 'max'
 
-const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, APIEffortLevel> = {
+const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, OpenAIAPIEffortLevel> = {
   none: 'none',
   low: 'low',
   medium: 'medium',
   high: 'high',
   xhigh: 'xhigh',
-  max: 'max',
-  ultra: 'max',
+  max: 'ultra',
+  ultra: 'ultra',
 }
 
-const ANTHROPIC_EFFORT_MAP: Record<ConfiguredEffortLevel, EffortLevel> = {
+const ANTHROPIC_EFFORT_MAP: Record<ConfiguredEffortLevel, AnthropicAPIEffortLevel> = {
   none: 'low',
   low: 'low',
   medium: 'medium',
   high: 'high',
-  xhigh: 'xhigh',
+  xhigh: 'max',
   max: 'max',
   ultra: 'max',
 }
@@ -199,7 +200,9 @@ export function resolveAppliedEffort(
   if (typeof resolved === 'number') return resolved
 
   const provider = getAPIProvider()
-  if (resolved === 'ultracode') return 'xhigh'
+  if (resolved === 'ultracode') {
+    return provider === 'openai' ? 'xhigh' : 'max'
+  }
   const mapped = provider === 'openai'
     ? OPENAI_EFFORT_MAP[resolved]
     : ANTHROPIC_EFFORT_MAP[resolved]

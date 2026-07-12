@@ -94,7 +94,7 @@ try {
     output_config: { effort: 'max' },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'max' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
 
   requests.length = 0
   await rootURLClient.beta.messages.create({
@@ -104,7 +104,7 @@ try {
     output_config: { effort: 'ultra' },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'max' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
 
   const {
     EFFORT_LEVELS,
@@ -120,8 +120,8 @@ try {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   assert.equal(resolveAppliedEffort('gpt-5.5', 'none'), 'none')
   assert.equal(resolveAppliedEffort('gpt-5.5', 'xhigh'), 'xhigh')
-  assert.equal(resolveAppliedEffort('gpt-5.5', 'max'), 'max')
-  assert.equal(resolveAppliedEffort('gpt-5.5', 'ultra'), 'max')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'max'), 'ultra')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'ultra'), 'ultra')
   assert.equal(resolveAppliedEffort('gpt-5.5', 'ultracode'), 'xhigh')
   const appliedUltra = resolveAppliedEffort('gpt-5.5', 'ultra')
 
@@ -133,7 +133,7 @@ try {
     output_config: { effort: appliedUltra },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'max' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
   if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
 
