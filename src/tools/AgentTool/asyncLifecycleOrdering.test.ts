@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { AppState } from '../../state/AppState.js'
+import { getCommandQueue } from '../../utils/messageQueueManager.js'
 import {
   isLocalAgentTask,
   registerAsyncAgent,
@@ -47,6 +48,7 @@ let state = {
   tasks: {},
   toolPermissionContext: getEmptyToolPermissionContext(),
   mcp: { tools: [], clients: [] },
+  speculation: { status: 'idle' },
 } as unknown as AppState
 
 const setAppState = (fn: (prev: AppState) => AppState) => {
@@ -106,6 +108,101 @@ assert.equal(task.status, 'completed')
 assert.equal((task.result as AgentToolResult).agentId, 'agent-ordering-test')
 
 await lifecycle
+
+registerAsyncAgent({
+  agentId: 'agent-postprocess-warning-test',
+  description: 'Post-processing warning test',
+  prompt: 'finish despite cleanup failure',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_warning',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-postprocess-warning-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    yield makeAssistantMessage() as never
+  },
+  metadata: {
+    prompt: 'finish despite cleanup failure',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Post-processing warning test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_warning',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-postprocess-warning-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => {
+    throw new Error('/private/worktree cleanup failed')
+  },
+})
+
+const warningTask = state.tasks['agent-postprocess-warning-test']
+assert.ok(isLocalAgentTask(warningTask))
+assert.equal(warningTask.status, 'completed')
+assert.deepEqual(warningTask.warnings, [
+  'Agent post-processing could not complete. Review the agent output before continuing.',
+])
+const warningNotifications = getCommandQueue().filter(command =>
+  String(command.value).includes('agent-postprocess-warning-test'),
+)
+assert.equal(warningNotifications.length, 1)
+assert.match(String(warningNotifications[0]?.value), /<status>completed<\/status>/)
+assert.doesNotMatch(String(warningNotifications[0]?.value), /private\/worktree/)
+
+registerAsyncAgent({
+  agentId: 'agent-failed-usage-test',
+  description: 'Failed usage test',
+  prompt: 'fail after response',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_failed_usage',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-failed-usage-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    yield makeAssistantMessage() as never
+    throw new Error('stream failed')
+  },
+  metadata: {
+    prompt: 'fail after response',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Failed usage test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_failed_usage',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-failed-usage-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => ({}),
+})
+
+const failedNotification = getCommandQueue().find(command =>
+  String(command.value).includes('agent-failed-usage-test'),
+)
+assert.ok(failedNotification)
+assert.match(String(failedNotification.value), /<status>failed<\/status>/)
+assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
 
 const streamingMessage = makeAssistantMessage()
 streamingMessage.uuid = crypto.randomUUID()

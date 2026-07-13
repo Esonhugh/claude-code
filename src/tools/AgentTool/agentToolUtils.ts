@@ -22,6 +22,7 @@ import type {
 } from '../../Tool.js'
 import { toolMatchesName } from '../../Tool.js'
 import {
+  addAgentTaskWarning,
   completeAgentTask as completeAsyncAgent,
   createActivityDescriptionResolver,
   createProgressTracker,
@@ -538,11 +539,11 @@ export async function runAsyncAgentLifecycle({
 }): Promise<void> {
   let stopSummarization: (() => void) | undefined
   const agentMessages: MessageType[] = []
+  const tracker = createProgressTracker()
+  const resolveActivity = createActivityDescriptionResolver(
+    toolUseContext.options.tools,
+  )
   try {
-    const tracker = createProgressTracker()
-    const resolveActivity = createActivityDescriptionResolver(
-      toolUseContext.options.tools,
-    )
     const onCacheSafeParams = enableSummarization
       ? (params: CacheSafeParams) => {
           const { stop } = startAgentSummarization(
@@ -622,22 +623,43 @@ export async function runAsyncAgentLifecycle({
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
 
+    const postProcessingWarning =
+      'Agent post-processing could not complete. Review the agent output before continuing.'
     if (feature('TRANSCRIPT_CLASSIFIER')) {
-      const handoffWarning = await classifyHandoffIfNeeded({
-        agentMessages,
-        tools: toolUseContext.options.tools,
-        toolPermissionContext:
-          toolUseContext.getAppState().toolPermissionContext,
-        abortSignal: abortController.signal,
-        subagentType: metadata.agentType,
-        totalToolUseCount: agentResult.totalToolUseCount,
-      })
-      if (handoffWarning) {
-        finalMessage = `${handoffWarning}\n\n${finalMessage}`
+      try {
+        const handoffWarning = await classifyHandoffIfNeeded({
+          agentMessages,
+          tools: toolUseContext.options.tools,
+          toolPermissionContext:
+            toolUseContext.getAppState().toolPermissionContext,
+          abortSignal: abortController.signal,
+          subagentType: metadata.agentType,
+          totalToolUseCount: agentResult.totalToolUseCount,
+        })
+        if (handoffWarning) {
+          finalMessage = `${handoffWarning}\n\n${finalMessage}`
+        }
+      } catch (error) {
+        logForDebugging(
+          `Agent handoff classification failed after completion: ${errorMessage(error)}`,
+          { level: 'warn' },
+        )
+        addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
+        finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
       }
     }
 
-    const worktreeResult = await getWorktreeResult()
+    let worktreeResult: Awaited<ReturnType<typeof getWorktreeResult>> = {}
+    try {
+      worktreeResult = await getWorktreeResult()
+    } catch (error) {
+      logForDebugging(
+        `Agent worktree post-processing failed after completion: ${errorMessage(error)}`,
+        { level: 'warn' },
+      )
+      addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
+      finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
+    }
 
     enqueueAgentNotification({
       taskId,
@@ -655,6 +677,25 @@ export async function runAsyncAgentLifecycle({
     })
   } catch (error) {
     stopSummarization?.()
+    const currentTask = toolUseContext.getAppState().tasks[taskId]
+    if (isLocalAgentTask(currentTask) && currentTask.status === 'completed') {
+      const postProcessingWarning =
+        'Agent post-processing could not complete. Review the agent output before continuing.'
+      logForDebugging(
+        `Agent post-processing failed after completion: ${errorMessage(error)}`,
+        { level: 'warn' },
+      )
+      addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
+      enqueueAgentNotification({
+        taskId,
+        description,
+        status: 'completed',
+        setAppState: rootSetAppState,
+        finalMessage: postProcessingWarning,
+        toolUseId: toolUseContext.toolUseId,
+      })
+      return
+    }
     if (error instanceof AbortError) {
       // killAsyncAgent is a no-op if TaskStop already set status='killed' —
       // but only this catch handler has agentMessages, so the notification
@@ -672,6 +713,13 @@ export async function runAsyncAgentLifecycle({
         reason:
           'user_kill_async' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+      refreshLastAssistantProgress(
+        tracker,
+        agentMessages,
+        resolveActivity,
+        toolUseContext.options.tools,
+      )
+      const terminalProgress = getProgressUpdate(tracker)
       const worktreeResult = await getWorktreeResult()
       const partialResult = extractPartialResult(agentMessages)
       enqueueAgentNotification({
@@ -681,12 +729,24 @@ export async function runAsyncAgentLifecycle({
         setAppState: rootSetAppState,
         toolUseId: toolUseContext.toolUseId,
         finalMessage: partialResult,
+        usage: {
+          totalTokens: terminalProgress.tokenCount,
+          toolUses: terminalProgress.toolUseCount,
+          durationMs: Date.now() - metadata.startTime,
+        },
         ...worktreeResult,
       })
       return
     }
     const msg = errorMessage(error)
     failAsyncAgent(taskId, msg, rootSetAppState)
+    refreshLastAssistantProgress(
+      tracker,
+      agentMessages,
+      resolveActivity,
+      toolUseContext.options.tools,
+    )
+    const terminalProgress = getProgressUpdate(tracker)
     const worktreeResult = await getWorktreeResult()
     enqueueAgentNotification({
       taskId,
@@ -695,6 +755,11 @@ export async function runAsyncAgentLifecycle({
       error: msg,
       setAppState: rootSetAppState,
       toolUseId: toolUseContext.toolUseId,
+      usage: {
+        totalTokens: terminalProgress.tokenCount,
+        toolUses: terminalProgress.toolUseCount,
+        durationMs: Date.now() - metadata.startTime,
+      },
       ...worktreeResult,
     })
   } finally {

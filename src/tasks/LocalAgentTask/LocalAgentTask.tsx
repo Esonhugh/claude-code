@@ -234,6 +234,7 @@ export type LocalAgentTaskState = TaskStateBase & {
   abortController?: AbortController
   unregisterCleanup?: () => void
   error?: string
+  warnings?: string[]
   result?: AgentToolResult
   progress?: AgentProgress
   retrieved: boolean
@@ -352,24 +353,16 @@ export function enqueueAgentNotification({
   worktreePath?: string
   worktreeBranch?: string
 }): void {
-  // Atomically check and set notified flag to prevent duplicate notifications.
-  // If the task was already marked as notified (e.g., by TaskStopTool), skip
-  // enqueueing to avoid sending redundant messages to the model.
+  // Check whether another terminal path already delivered this notification.
+  // The flag is set only after queue insertion succeeds so a transient enqueue
+  // failure remains retryable instead of permanently suppressing delivery.
   let shouldEnqueue = false
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.notified) {
-      return task
-    }
-    shouldEnqueue = true
-    return {
-      ...task,
-      notified: true,
-    }
+    shouldEnqueue = !task.notified
+    return task
   })
 
-  if (!shouldEnqueue) {
-    return
-  }
+  if (!shouldEnqueue) return
 
   // Abort any active speculation — background task state changed, so speculated
   // results may reference stale task output. The prompt suggestion text is
@@ -403,6 +396,10 @@ export function enqueueAgentNotification({
 </${TASK_NOTIFICATION_TAG}>`
 
   enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
+    ...task,
+    notified: true,
+  }))
 }
 
 /**
@@ -606,6 +603,21 @@ export function completeAgentTask(
 /**
  * Fail an agent task with error.
  */
+export function addAgentTaskWarning(
+  taskId: string,
+  warning: string,
+  setAppState: SetAppState,
+): void {
+  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task =>
+    task.warnings?.includes(warning)
+      ? task
+      : {
+          ...task,
+          warnings: [...(task.warnings ?? []), warning],
+        },
+  )
+}
+
 export function failAgentTask(
   taskId: string,
   error: string,

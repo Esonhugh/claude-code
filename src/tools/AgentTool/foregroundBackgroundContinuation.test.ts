@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
+import { setSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import {
@@ -50,9 +51,25 @@ let releaseBackgroundContinuation: (() => void) | undefined
 const backgroundMayFinish = new Promise<void>(resolve => {
   releaseBackgroundContinuation = resolve
 })
+let summaryStarts = 0
+let summaryStops = 0
+
+mock.module('../../services/AgentSummary/agentSummary.js', () => ({
+  startAgentSummarization() {
+    summaryStarts += 1
+    return {
+      stop() {
+        summaryStops += 1
+      },
+    }
+  },
+}))
 
 mock.module('./runAgent.js', () => ({
-  async *runAgent() {
+  async *runAgent(params: {
+    onCacheSafeParams?: (params: Record<string, unknown>) => void
+  }) {
+    params.onCacheSafeParams?.({})
     toolUseYields += 1
     yield makeAssistantMessage('tool', [
       {
@@ -123,6 +140,7 @@ function createContext(): TestContext {
   } as never
 }
 
+setSdkAgentProgressSummariesEnabled(true)
 const context = createContext()
 const callPromise = AgentTool.call(
   {
@@ -160,5 +178,8 @@ assert.equal(toolUseYields, 1)
 assert.equal(task.progress?.toolUseCount, 1)
 assert.match(JSON.stringify(task.result), /done/)
 assert.equal(task.result?.totalToolUseCount, 1)
+assert.equal(summaryStarts, 1)
+assert.equal(summaryStops, 1)
+setSdkAgentProgressSummariesEnabled(false)
 
 console.log('foregroundBackgroundContinuation.test.ts passed')

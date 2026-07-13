@@ -1406,9 +1406,9 @@ export const AgentTool = buildTool({
                   // Capture the taskId for use in the async callback
                   const backgroundedTaskId = foregroundTaskId
                   wasBackgrounded = true
-                  // Stop foreground summarization; the backgrounded closure
-                  // below owns its own independent stop function.
-                  stopForegroundSummarization?.()
+                  // Keep the existing summarizer alive while ownership moves to
+                  // the background continuation. Its cache-safe params and timer
+                  // remain valid for the same underlying agent stream.
 
                   // Workload: inherited via ALS at `void` invocation time,
                   // same as the async-from-start path above.
@@ -1453,12 +1453,6 @@ export const AgentTool = buildTool({
                         tracker,
                         rootSetAppState,
                       )
-                      if (getSdkAgentProgressSummariesEnabled()) {
-                        // Foreground and background share the same stream/cache
-                        // params, so transfer ownership of the existing summary
-                        // task instead of restarting the agent to get a new one.
-                        stopForegroundSummarization = undefined
-                      }
                       for await (const msg of backgroundIterator) {
                         refreshLastAssistantProgress(
                           tracker,
@@ -1770,9 +1764,9 @@ export const AgentTool = buildTool({
               toolUseContext.setToolJSX(null)
             }
 
-            // Stop foreground summarization unless ownership moved to the
-            // background continuation.
-            stopForegroundSummarization?.()
+            // The background continuation owns the existing summarizer after
+            // handoff and stops it when that continuation reaches a terminal state.
+            if (!wasBackgrounded) stopForegroundSummarization?.()
 
             refreshLastAssistantProgress(
               syncTracker,
