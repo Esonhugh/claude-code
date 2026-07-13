@@ -10,6 +10,67 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-13 - Agent 状态可靠性、provider effort 路由与文档整理
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.178`。
+- 本条目汇总 `v2.1.178` 后截至 2026-07-13 的提交，包括 Agent async lifecycle 收束与 tmux CLI 验收规范。
+
+### 关联提交
+
+- `e9f92dd` — 2026-07-09 16:38:19 +08:00 — `version update: v2.1.178`
+- `13f7cec` — 2026-07-09 16:43:47 +08:00 — `fix: type error`
+- `7a2b301` — 2026-07-10 21:43:56 +08:00 — `docs: plan agent progress count fixes`
+- `6c2f287` — 2026-07-11 15:08:37 +08:00 — `update: agent token counts`
+- `cebda16` — 2026-07-11 23:47:18 +08:00 — `update: fix bug of plugin uninstalled`
+- `566b666` — 2026-07-12 01:55:54 +08:00 — `feat: route effort levels by API provider`
+- `a4dcff6` — 2026-07-12 15:14:50 +08:00 — `fix: keep agent and UI state aligned with execution`
+- `2ddc97f` — 2026-07-12 15:57:10 +08:00 — `update: fix claude openai effort converts`
+- `56b91a6` — 2026-07-12 18:14:49 +08:00 — `update: refactor of documents folder`
+- `4419da4` — 2026-07-12 20:35:00 +08:00 — `fix: make phase one state updates reliable`
+- `27090b9` — 2026-07-13 — `fix: preserve async agent terminal state`
+- `8932622` — 2026-07-13 — `docs: add tmux CLI validation skill`
+- `de56c0d` — 2026-07-13 — `test: add tmux validation skill evals`
+
+### 变更内容
+
+#### Agent 进度、usage 与异步生命周期
+
+- 重构 Agent progress tracker 和 token/tool-use 聚合，使 foreground、background、resume、nested agent 与 SDK task progress 使用一致的累计口径，并补齐主会话、Coordinator 和 task detail 的展示数据。
+- 修复 foreground 转 background 时的执行与 UI 状态衔接，避免 continuation 重复消费 stream、重复启动 summarizer 或提前停止进度摘要；同一 agent stream 现在只启动一次 summarizer，并由最终 terminal path 负责停止。
+- 完善 async agent terminal notification：completed、killed 和 failed 路径携带最终 token、tool-use 与 duration usage，notification 仅在成功入队后标记 `notified`，避免瞬时入队失败永久丢失通知。
+- 将 agent 已完成后的 handoff classification、worktree cleanup 等 post-processing 失败降级为可见 warning，不再把已经完成的任务反转为 failed，也不向用户泄露内部 worktree 错误路径。
+
+#### Agent、Workflow 与 UI 状态一致性
+
+- 修复 AgentTool foreground/background continuation、nested depth 与 task state 更新顺序，确保实际执行状态、`LocalAgentTask`、任务列表和 Coordinator 展示保持一致。
+- 改进 `TaskUpdateTool` phase-one 状态更新的原子性与失败处理，避免局部更新、retry/skip 残留状态或并发更新覆盖。
+- 调整 Workflow detail model、snapshot 和 dialog 状态派生，统一 running、completed、failed、skipped 等状态和最近活动展示。
+- 修复插件启停失败时的 UI 回滚与 plugin operation 状态更新，避免卸载或 toggle 失败后界面与实际插件状态分裂。
+
+#### Provider effort 路由
+
+- 将 effort 解析按 API provider 分流：Claude 与 OpenAI compatibility 分别执行各自支持的 effort 转换，补齐 `ultra` 等级在 provider 边界的降级与映射。
+- 修复 Claude/OpenAI 请求构造中的 effort conversion，避免 OpenAI 专属值进入 Claude 请求，或在兼容转换中丢失用户选择。
+- 同步 SDK schema、runtime types、settings types 与测试，使 provider-specific effort 行为在 CLI、SDK 和持久化配置中保持一致。
+
+#### 文档结构与 CLI 验收规范
+
+- 重组 `docs/` 为 `architecture`、`design`、`guides`、`research`、`archive` 等目录，归档历史 implementation records、plans、specs 和 test plans。
+- 更新根 `README.md`、`docs/README.md` 及文档内部链接，补充 Agent progress、UI state 和 provider effort 可靠性设计记录。
+- 新增 `tmux-cli-workflow-validation` project skill，明确 Agent、Workflow、slash command 与 TUI 必须通过最新 `built-claude`、脚本驱动 tmux、pane/debug log 和独立证据目录完成 binary-side 验收，禁止用 parent-side 同名工具替代证据。
+
+### 测试覆盖
+
+- 新增或更新 `LocalAgentTask.progress.test.ts`、`AgentTool.nesting.test.ts`、`foregroundProgressUpdate.test.ts`、`foregroundBackgroundContinuation.test.ts` 和 `asyncLifecycleOrdering.test.ts`，覆盖进度累计、nested agent、foreground/background handoff、summarizer 生命周期、terminal usage 与 post-processing warning。
+- 新增或更新 `TaskUpdateTool.test.ts`、`LocalWorkflowTask.test.ts`、workflow detail snapshot 测试和 Coordinator status 测试，覆盖任务状态原子更新及 UI 派生一致性。
+- 新增 `ManagePlugins.toggleFailure.test.tsx`、`pluginOperations.test.ts`，覆盖插件操作失败与 UI 回滚。
+- 更新 `claude-effort.test.ts`、`openai-compat.test.ts` 及 effort 相关 schema/type 测试，覆盖 provider-specific effort 转换。
+- 新增 `tmux-cli-workflow-validation/evals/evals.json`，覆盖 binary-side 证据边界、并行 slash command 验收和 Workflow→Agent→notification 链路。
+- 已运行 `bun test src/tools/AgentTool/asyncLifecycleOrdering.test.ts src/tools/AgentTool/foregroundBackgroundContinuation.test.ts`，两个测试脚本均通过。
+- 已运行 `bun run lint`、`git diff --cached --check` 和 `make build`，均通过；构建产物为 `./built-claude`。
+
 ## 2026-07-09 - v2.1.178 - Workflow official parity、OpenAI 兼容与发布准备
 
 ### 版本状态
