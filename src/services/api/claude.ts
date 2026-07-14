@@ -460,10 +460,7 @@ export function configureEffortParams(
   }
 
   if (effortValue === undefined) {
-    if (getAPIProvider() === 'firstParty') {
-      outputConfig.effort = 'high'
-    }
-    betas.push(EFFORT_BETA_HEADER)
+    return
   } else if (typeof effortValue === 'string') {
     if (getAPIProvider() === 'openai') {
       ;(outputConfig as { effort?: EffortValue }).effort = effortValue

@@ -13,7 +13,7 @@ import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import { classifyWorkflowAgentError, runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
-import { retryWorkflowAgent, skipWorkflowAgent, type LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { killWorkflowTask, retryWorkflowAgent, skipWorkflowAgent, type LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
 await import('./WorkflowTool.js')
@@ -498,6 +498,8 @@ const functionResultContext = {
   abortController: new AbortController(),
   toolUseId: 'toolu_function_result',
 } as unknown as ToolUseContext
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
 await runWorkflowScript({
   script: functionResultScript,
   plan: functionResultPlan,
@@ -513,6 +515,19 @@ const functionResultTask = Object.values(functionResultState.tasks).find(
 assert.ok(functionResultTask)
 assert.equal(functionResultTask.status, 'failed')
 assert.match(functionResultTask.error ?? '', /workflow result cannot be a function/)
+const functionResultNotification = dequeue(
+  command =>
+    command.mode === 'task-notification' &&
+    String(command.value).includes(functionResultTask.id),
+)
+assert.ok(functionResultNotification)
+assert.match(String(functionResultNotification.value), /<status>failed<\/status>/)
+const functionResultSdkNotification = drainSdkEvents().find(
+  event =>
+    event.subtype === 'task_notification' &&
+    event.task_id === functionResultTask.id,
+)
+assert.equal(functionResultSdkNotification?.status, 'failed')
 
 const unserializableResultScript = `export const meta = {
   name: "runtime-unserializable-result-workflow",
@@ -750,5 +765,75 @@ const failedJournalRaw = await readFile(join(failedTranscriptDirMatch[1], 'journ
 assert.match(failedJournalRaw, /"type":"started"/)
 assert.match(failedJournalRaw, /"agentId":"failed-agent"/)
 assert.doesNotMatch(failedJournalRaw, /"type":"result"/)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const killedScript = `export const meta = {
+  name: "runtime-killed-workflow",
+  description: "Workflow emitting a stopped terminal event when killed.",
+  phases: [{ title: "Kill", detail: "Kill running agent" }],
+}
+phase("Kill")
+return await parallel(Array.from({ length: 20 }, (_, index) =>
+  () => agent(\`wait for kill \${index}\`),
+))
+`
+let killedState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setKilledState = (updater: (prev: AppState) => AppState): void => {
+  killedState = updater(killedState)
+}
+let killedAgentCallCount = 0
+const killedAgentTool = {
+  name: 'Agent',
+  async call() {
+    killedAgentCallCount++
+    const task = Object.values(killedState.tasks).find(
+      (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+    )
+    assert.ok(task)
+    if (task.status === 'running') {
+      killWorkflowTask(task.id, setKilledState)
+      throw new Error('killed by test')
+    }
+    throw new Error('agent launched after workflow kill')
+  },
+}
+await runWorkflowScript({
+  script: killedScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-killed-workflow',
+    description: 'Workflow emitting a stopped terminal event when killed.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Kill', description: 'Kill running agent', prompt: 'Kill running agent' }],
+    totalAgents: 20,
+    runScriptSnapshot: killedScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => killedState,
+    setAppState: setKilledState,
+    options: { ...retryContext.options, tools: [killedAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_killed',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_killed' } } as never,
+  workflowRunId: `wf_script_killed_${process.pid}`,
+  scriptPath: '/tmp/runtime-killed-workflow.js',
+})
+const killedTask = Object.values(killedState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(killedTask)
+assert.equal(killedTask.status, 'killed')
+assert.equal(killedAgentCallCount, 1)
+const killedSdkNotification = drainSdkEvents().find(
+  event =>
+    event.subtype === 'task_notification' && event.task_id === killedTask.id,
+)
+assert.equal(killedSdkNotification?.status, 'stopped')
 
 console.log('workflowScriptRuntime.test.ts passed')

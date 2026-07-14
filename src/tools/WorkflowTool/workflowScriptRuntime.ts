@@ -134,17 +134,37 @@ export type WorkflowScriptResult = {
 
 // --- Semaphore ---
 class Semaphore {
-  private queue: Array<() => void> = []
+  private queue: Array<{
+    resolve: (acquired: boolean) => void
+    signal: AbortSignal
+    onAbort: () => void
+  }> = []
   private active = 0
   constructor(private max: number) {}
-  async acquire(): Promise<void> {
-    if (this.active < this.max) { this.active++; return }
-    await new Promise<void>(resolve => this.queue.push(resolve))
+  async acquire(signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false
+    if (this.active < this.max) {
+      this.active++
+      return true
+    }
+    return await new Promise<boolean>(resolve => {
+      const onAbort = () => {
+        const index = this.queue.findIndex(entry => entry.onAbort === onAbort)
+        if (index >= 0) this.queue.splice(index, 1)
+        resolve(false)
+      }
+      this.queue.push({ resolve, signal, onAbort })
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
   }
   release(): void {
     this.active--
     const next = this.queue.shift()
-    if (next) { this.active++; next() }
+    if (next) {
+      next.signal.removeEventListener('abort', next.onAbort)
+      this.active++
+      next.resolve(true)
+    }
   }
 }
 
@@ -301,15 +321,17 @@ function escapeXmlText(value: unknown): string {
     .replace(/>/g, '&gt;')
 }
 
-function enqueueWorkflowCompletionNotification({
+function enqueueWorkflowNotification({
   taskId,
   toolUseId,
+  status,
   summary,
   outputFile,
   resultText,
 }: {
   taskId: string
   toolUseId?: string
+  status: 'completed' | 'failed'
   summary: string
   outputFile: string
   resultText: string
@@ -324,7 +346,7 @@ function enqueueWorkflowCompletionNotification({
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${escapeXmlText(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXmlText(outputFile)}</${OUTPUT_FILE_TAG}>
-<${STATUS_TAG}>completed</${STATUS_TAG}>
+<${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
 <result>${truncatedResult}</result>
 </${TASK_NOTIFICATION_TAG}>`
@@ -496,7 +518,8 @@ export async function runWorkflowScript({
 
     // Stall retry loop
     for (let attempt = 1; attempt <= MAX_STALL_RETRIES; attempt++) {
-      await semaphore.acquire()
+      const acquired = await semaphore.acquire(abortController.signal)
+      if (!acquired) return null
       try {
         const result = await runSingleAgent(prompt, opts, label, phase, stallMs, agentIndex)
         const completedAt = Date.now()
@@ -956,9 +979,10 @@ export async function runWorkflowScript({
 
     const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
     const summary = `Dynamic workflow "${plan.description}" completed`
-    enqueueWorkflowCompletionNotification({
+    enqueueWorkflowNotification({
       taskId: workflowTask.id,
       toolUseId: context.toolUseId,
+      status: 'completed',
       summary,
       outputFile,
       resultText,
@@ -992,6 +1016,17 @@ export async function runWorkflowScript({
           ? { resumePrompt: resumeCall }
           : {}),
       })
+      if (abortStatus === 'killed') {
+        emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
+          toolUseId: context.toolUseId,
+          summary: `Dynamic workflow "${plan.description}" stopped`,
+          usage: {
+            total_tokens: tokenSpent,
+            tool_uses: toolUseSpent,
+            duration_ms: Date.now() - workflowTask.startTime,
+          },
+        })
+      }
       return
     }
 
@@ -1001,9 +1036,18 @@ export async function runWorkflowScript({
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'failed', completedAgents: agentCount, totalAgents: plan.totalAgents }))
     await failWorkflowRunSession({ cwd, session: runSession, results: scriptAgentResults, error: message, resumeCacheEntries: journal.entries() })
     const outputFile = await writeWorkflowResult(workflowTask.id, message)
+    const summary = `Dynamic workflow "${plan.description}" failed: ${message}`
+    enqueueWorkflowNotification({
+      taskId: workflowTask.id,
+      toolUseId: context.toolUseId,
+      status: 'failed',
+      summary,
+      outputFile,
+      resultText: message,
+    })
     emitTaskTerminatedSdk(workflowTask.id, 'failed', {
       toolUseId: context.toolUseId,
-      summary: `Dynamic workflow "${plan.description}" failed: ${message}`,
+      summary,
       outputFile,
       usage: {
         total_tokens: tokenSpent,

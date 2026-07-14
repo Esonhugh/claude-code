@@ -182,7 +182,7 @@ export async function call(
 
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone(
-      'Usage: /effort [none|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Deepest OpenAI reasoning (OpenAI only, this session only)\n- max: Maximum capability with deepest reasoning\n- ultra: Codex ultra reasoning, currently sent as xhigh effort (this session only)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
+      'Usage: /effort [none|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended capability for supported Anthropic and OpenAI models (this session only)\n- max: Maximum capability; sent as ultra on OpenAI\n- ultra: Ultra effort; sent as max on Anthropic (this session only)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
     )
     return
   }

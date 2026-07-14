@@ -212,7 +212,7 @@ export type AgentDefinition = {
   maxTurns?: number
   background?: boolean
   memory?: 'user' | 'project' | 'local'
-  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | number
+  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'ultracode' | number
   permissionMode?: PermissionMode
 }
 

@@ -103,7 +103,11 @@ import {
   saveGlobalConfig,
 } from './utils/config.js'
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js'
-import { getInitialEffortSetting, parseEffortValue } from './utils/effort.js'
+import {
+  EFFORT_LEVELS,
+  getInitialEffortSetting,
+  parseEffortValue,
+} from './utils/effort.js'
 import {
   getInitialFastModeSetting,
   isFastModeEnabled,
@@ -1627,13 +1631,12 @@ async function run(): Promise<CommanderCommand> {
     .addOption(
       new Option(
         '--effort <level>',
-        `Effort level for the current session (low, medium, high, max)`,
+        `Effort level for the current session (${EFFORT_LEVELS.join(', ')})`,
       ).argParser((rawValue: string) => {
-        const value = rawValue.toLowerCase()
-        const allowed = ['low', 'medium', 'high', 'max']
-        if (!allowed.includes(value)) {
+        const value = parseEffortValue(rawValue)
+        if (typeof value !== 'string') {
           throw new InvalidArgumentError(
-            `It must be one of: ${allowed.join(', ')}`,
+            `It must be one of: ${EFFORT_LEVELS.join(', ')}`,
           )
         }
         return value
@@ -3471,7 +3474,9 @@ async function run(): Promise<CommanderCommand> {
         ? Promise.resolve({ clients: [], tools: [], commands: [] })
         : claudeaiConfigPromise.then(configs =>
             Object.keys(configs).length > 0
-              ? prefetchAllMcpResources(configs)
+              ? prefetchAllMcpResources(configs, {
+                  includeCodexApps: false,
+                })
               : { clients: [], tools: [], commands: [] },
           )
       // Merge with dedup by name: each prefetchAllMcpResources call independently
@@ -3779,6 +3784,7 @@ async function run(): Promise<CommanderCommand> {
         const connectMcpBatch = (
           configs: Record<string, ScopedMcpServerConfig>,
           label: string,
+          includeCodexApps = true,
         ): Promise<void> => {
           if (Object.keys(configs).length === 0) return Promise.resolve()
           headlessStore.setState(prev => ({
@@ -3812,6 +3818,7 @@ async function run(): Promise<CommanderCommand> {
               }))
             },
             configs,
+            { includeCodexApps },
           ).catch(err =>
             logForDebugging(`[MCP] ${label} connect error: ${err}`),
           )
@@ -3892,7 +3899,7 @@ async function run(): Promise<CommanderCommand> {
             claudeaiConfigs,
             nonPluginConfigs,
           )
-          return connectMcpBatch(dedupedClaudeAi, 'claudeai')
+          return connectMcpBatch(dedupedClaudeAi, 'claudeai', false)
         })
         let claudeaiTimer: ReturnType<typeof setTimeout> | undefined
         const claudeaiTimedOut = await Promise.race([

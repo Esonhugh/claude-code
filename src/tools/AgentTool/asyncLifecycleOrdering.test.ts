@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
 
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { AppState } from '../../state/AppState.js'
 import { getCommandQueue } from '../../utils/messageQueueManager.js'
+import { AbortError } from '../../utils/errors.js'
 import {
   isLocalAgentTask,
   registerAsyncAgent,
@@ -43,6 +45,20 @@ const selectedAgent = {
   baseDir: 'built-in' as const,
   getSystemPrompt: () => 'general',
 }
+
+let summaryStarts = 0
+let summaryStops = 0
+
+mock.module('../../services/AgentSummary/agentSummary.js', () => ({
+  startAgentSummarization() {
+    summaryStarts += 1
+    return {
+      stop() {
+        summaryStops += 1
+      },
+    }
+  },
+}))
 
 let state = {
   tasks: {},
@@ -203,6 +219,149 @@ const failedNotification = getCommandQueue().find(command =>
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
 assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
+
+registerAsyncAgent({
+  agentId: 'agent-summary-replacement-test',
+  description: 'Summary replacement test',
+  prompt: 'replace summary safely',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_summary_replacement',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-summary-replacement-test',
+  abortController: new AbortController(),
+  async *makeStream(onCacheSafeParams) {
+    onCacheSafeParams?.({} as never)
+    onCacheSafeParams?.({} as never)
+    yield makeAssistantMessage() as never
+  },
+  metadata: {
+    prompt: 'replace summary safely',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Summary replacement test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_summary_replacement',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-summary-replacement-test',
+  enableSummarization: true,
+  getWorktreeResult: async () => ({}),
+})
+
+assert.equal(summaryStarts, 2)
+assert.equal(summaryStops, 2)
+
+registerAsyncAgent({
+  agentId: 'agent-failed-cleanup-test',
+  description: 'Failed cleanup test',
+  prompt: 'fail despite cleanup failure',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_failed_cleanup',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-failed-cleanup-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    throw new Error('stream failed before cleanup')
+    yield makeAssistantMessage() as never
+  },
+  metadata: {
+    prompt: 'fail despite cleanup failure',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Failed cleanup test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_failed_cleanup',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-failed-cleanup-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => {
+    throw new Error('/private/failed cleanup failed')
+  },
+})
+
+const failedCleanupTask = state.tasks['agent-failed-cleanup-test']
+assert.ok(isLocalAgentTask(failedCleanupTask))
+assert.equal(failedCleanupTask.status, 'failed')
+const failedCleanupNotification = getCommandQueue().find(command =>
+  String(command.value).includes('agent-failed-cleanup-test'),
+)
+assert.ok(failedCleanupNotification)
+assert.match(
+  String(failedCleanupNotification.value),
+  /<status>failed<\/status>/,
+)
+
+registerAsyncAgent({
+  agentId: 'agent-killed-cleanup-test',
+  description: 'Killed cleanup test',
+  prompt: 'stop despite cleanup failure',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_killed_cleanup',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-killed-cleanup-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    throw new AbortError('stopped')
+    yield makeAssistantMessage() as never
+  },
+  metadata: {
+    prompt: 'stop despite cleanup failure',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Killed cleanup test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_killed_cleanup',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-killed-cleanup-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => {
+    throw new Error('/private/killed cleanup failed')
+  },
+})
+
+const killedCleanupTask = state.tasks['agent-killed-cleanup-test']
+assert.ok(isLocalAgentTask(killedCleanupTask))
+assert.equal(killedCleanupTask.status, 'killed')
+const killedCleanupNotification = getCommandQueue().find(command =>
+  String(command.value).includes('agent-killed-cleanup-test'),
+)
+assert.ok(killedCleanupNotification)
+assert.match(
+  String(killedCleanupNotification.value),
+  /<status>killed<\/status>/,
+)
 
 const streamingMessage = makeAssistantMessage()
 streamingMessage.uuid = crypto.randomUUID()

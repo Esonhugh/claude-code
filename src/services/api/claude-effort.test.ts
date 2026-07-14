@@ -23,22 +23,52 @@ function resetEnv(): void {
 try {
   resetEnv()
   const { configureEffortParams } = await import('./claude.js')
-  const { resolveAppliedEffort, toPersistableEffort } = await import(
-    '../../utils/effort.js'
-  )
+  const {
+    getSupportedEffortLevelsForModel,
+    resolveAppliedEffort,
+    toPersistableEffort,
+  } = await import('../../utils/effort.js')
 
   assert.equal(
     resolveAppliedEffort('claude-sonnet-4-6', 'ultracode'),
-    'high',
+    'max',
   )
   assert.equal(
     resolveAppliedEffort('claude-opus-4-6', 'ultracode'),
     'max',
   )
   assert.equal(
+    resolveAppliedEffort('claude-opus-4-7', 'xhigh'),
+    'xhigh',
+  )
+  assert.equal(
     resolveAppliedEffort('claude-opus-4-6', 'xhigh'),
     'max',
   )
+  assert.equal(
+    resolveAppliedEffort('claude-sonnet-4-6', 'xhigh'),
+    'max',
+  )
+
+  assert.deepEqual(getSupportedEffortLevelsForModel('claude-opus-4-7'), [
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  ])
+  assert.deepEqual(getSupportedEffortLevelsForModel('claude-opus-4-6'), [
+    'low',
+    'medium',
+    'high',
+    'max',
+  ])
+  assert.deepEqual(getSupportedEffortLevelsForModel('claude-sonnet-4-6'), [
+    'low',
+    'medium',
+    'high',
+    'max',
+  ])
 
   const xhighOutputConfig: BetaOutputConfig = {}
   const xhighBetas: string[] = []
@@ -53,12 +83,26 @@ try {
   assert.equal((xhighOutputConfig as { effort?: string }).effort, 'max')
   assert.ok(xhighBetas.length > 0)
 
+  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'unset'
+  const unsetOutputConfig: BetaOutputConfig = {}
+  const unsetBetas: string[] = []
+  configureEffortParams(
+    resolveAppliedEffort('claude-opus-4-6', 'medium'),
+    unsetOutputConfig,
+    {},
+    unsetBetas,
+    'claude-opus-4-6',
+  )
+  assert.equal(unsetOutputConfig.effort, undefined)
+  assert.equal(unsetBetas.length, 0)
+  delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+
   const outputConfig: BetaOutputConfig = {}
   const betas: string[] = []
   configureEffortParams(undefined, outputConfig, {}, betas, 'gpt-5.5')
 
-  assert.equal(outputConfig.effort, 'high')
-  assert.ok(betas.length > 0)
+  assert.equal(outputConfig.effort, undefined)
+  assert.equal(betas.length, 0)
 
   const explicitOutputConfig: BetaOutputConfig = {}
   const explicitBetas: string[] = []

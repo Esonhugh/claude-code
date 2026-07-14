@@ -20,6 +20,7 @@ export type EffortLevel =
   | 'xhigh'
   | 'max'
   | 'ultra'
+  | 'ultracode'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyZodRawShape = Record<string, any>
@@ -71,7 +72,7 @@ export type Options = {
   resume?: boolean
   sessionId?: string
   sessionName?: string
-  effort?: EffortLevel
+  effort?: EffortLevel | number
   plugins?: SdkPluginConfig[]
   settingsOverrides?: Record<string, unknown>
   hooks?: Record<string, unknown>
@@ -105,7 +106,7 @@ export type SDKSessionOptions = {
   disallowedTools?: string[]
   agents?: Record<string, AgentDefinition>
   signal?: AbortSignal
-  effort?: EffortLevel
+  effort?: EffortLevel | number
   sessionId?: string
 }
 

@@ -538,6 +538,8 @@ export async function runAsyncAgentLifecycle({
   }>
 }): Promise<void> {
   let stopSummarization: (() => void) | undefined
+  const postProcessingWarning =
+    'Agent post-processing could not complete. Review the agent output before continuing.'
   const agentMessages: MessageType[] = []
   const tracker = createProgressTracker()
   const resolveActivity = createActivityDescriptionResolver(
@@ -546,6 +548,7 @@ export async function runAsyncAgentLifecycle({
   try {
     const onCacheSafeParams = enableSummarization
       ? (params: CacheSafeParams) => {
+          stopSummarization?.()
           const { stop } = startAgentSummarization(
             taskId,
             asAgentId(taskId),
@@ -623,8 +626,6 @@ export async function runAsyncAgentLifecycle({
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
 
-    const postProcessingWarning =
-      'Agent post-processing could not complete. Review the agent output before continuing.'
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       try {
         const handoffWarning = await classifyHandoffIfNeeded({
@@ -679,8 +680,6 @@ export async function runAsyncAgentLifecycle({
     stopSummarization?.()
     const currentTask = toolUseContext.getAppState().tasks[taskId]
     if (isLocalAgentTask(currentTask) && currentTask.status === 'completed') {
-      const postProcessingWarning =
-        'Agent post-processing could not complete. Review the agent output before continuing.'
       logForDebugging(
         `Agent post-processing failed after completion: ${errorMessage(error)}`,
         { level: 'warn' },
@@ -720,7 +719,16 @@ export async function runAsyncAgentLifecycle({
         toolUseContext.options.tools,
       )
       const terminalProgress = getProgressUpdate(tracker)
-      const worktreeResult = await getWorktreeResult()
+      let worktreeResult: Awaited<ReturnType<typeof getWorktreeResult>> = {}
+      try {
+        worktreeResult = await getWorktreeResult()
+      } catch (cleanupError) {
+        logForDebugging(
+          `Agent worktree post-processing failed after kill: ${errorMessage(cleanupError)}`,
+          { level: 'warn' },
+        )
+        addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
+      }
       const partialResult = extractPartialResult(agentMessages)
       enqueueAgentNotification({
         taskId,
@@ -747,7 +755,16 @@ export async function runAsyncAgentLifecycle({
       toolUseContext.options.tools,
     )
     const terminalProgress = getProgressUpdate(tracker)
-    const worktreeResult = await getWorktreeResult()
+    let worktreeResult: Awaited<ReturnType<typeof getWorktreeResult>> = {}
+    try {
+      worktreeResult = await getWorktreeResult()
+    } catch (cleanupError) {
+      logForDebugging(
+        `Agent worktree post-processing failed after failure: ${errorMessage(cleanupError)}`,
+        { level: 'warn' },
+      )
+      addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
+    }
     enqueueAgentNotification({
       taskId,
       description,

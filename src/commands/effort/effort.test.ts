@@ -6,7 +6,10 @@ import { getEffortValueDescription, isEffortLevel } from '../../utils/effort.js'
 
 assert.equal(isEffortLevel('xhigh'), true)
 assert.equal(isEffortLevel('ultracode'), true)
-assert.equal(getEffortValueDescription('xhigh'), 'Deepest OpenAI reasoning')
+assert.equal(
+  getEffortValueDescription('xhigh'),
+  'Extended capability for long-horizon work',
+)
 assert.equal(
   getEffortValueDescription('ultracode'),
   'xhigh + dynamic workflow orchestration',
@@ -15,7 +18,7 @@ assert.equal(
 const xhighResult = executeEffort('xhigh')
 assert.equal(
   xhighResult.message,
-  'Set effort level to xhigh (this session only): Deepest OpenAI reasoning',
+  'Set effort level to xhigh (this session only): Extended capability for long-horizon work',
 )
 assert.deepEqual(xhighResult.effortUpdate, { value: 'xhigh' })
 
@@ -28,7 +31,7 @@ assert.deepEqual(result.effortUpdate, { value: 'ultracode' })
 
 assert.equal(
   showCurrentEffort('ultracode', 'claude-opus-4-7').message,
-  'Current effort level: ultracode → xhigh (xhigh + dynamic workflow orchestration; this session only)',
+  'Current effort level: ultracode → max (xhigh + dynamic workflow orchestration; this session only)',
 )
 
 assert.match(
@@ -36,9 +39,13 @@ assert.match(
   /Valid options are: none, low, medium, high, xhigh, max, ultra, ultracode, auto/,
 )
 
+const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
+delete process.env.CLAUDE_CODE_USE_OPENAI
 assert.equal(
   showCurrentEffort('ultra', 'claude-opus-4-6').message,
-  'Current effort level: ultra → xhigh (Codex ultra reasoning, sent as xhigh effort; this session only)',
+  'Current effort level: ultra → max (Ultra effort, sent as max on Anthropic; this session only)',
 )
+if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
 
 console.log('effort.test.ts passed')

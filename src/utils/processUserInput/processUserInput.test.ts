@@ -13,5 +13,10 @@ assert.match(
   /workflow_keyword_request/,
   'ultracode keyword turns must attach the workflow reminder for the model-visible turn',
 )
+assert.match(
+  source,
+  /promptResult\.effort = 'ultracode'/,
+  'ultracode keyword turns must enable the orchestration effort mode',
+)
 
 console.log('processUserInput.test.ts passed')

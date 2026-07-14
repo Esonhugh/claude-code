@@ -1169,7 +1169,16 @@ export const AgentDefinitionSchema = lazySchema(() =>
         ),
       effort: z
         .union([
-          z.enum(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+          z.enum([
+            'none',
+            'low',
+            'medium',
+            'high',
+            'xhigh',
+            'max',
+            'ultra',
+            'ultracode',
+          ]),
           z.number().int(),
         ])
         .optional()

@@ -21,22 +21,23 @@ export const EFFORT_LEVELS = [
   'ultracode',
 ] as const
 
-export const MODEL_EFFORT_LEVELS = [
-  'none',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'ultra',
-] as const
-
 export type OpenAIEffortLevel = 'none' | 'xhigh' | 'ultra'
 export type UltracodeEffortLevel = 'ultracode'
 export type EffortValue = EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel | number
 export type ConfiguredEffortLevel = Exclude<EffortValue, number | 'ultracode'>
-export type OpenAIAPIEffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh'
-export type AnthropicAPIEffortLevel = 'low' | 'medium' | 'high' | 'max'
+export type OpenAIAPIEffortLevel =
+  | 'none'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'ultra'
+export type AnthropicAPIEffortLevel =
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
 
 const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, OpenAIAPIEffortLevel> = {
   none: 'none',
@@ -44,16 +45,19 @@ const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, OpenAIAPIEffortLevel> = {
   medium: 'medium',
   high: 'high',
   xhigh: 'xhigh',
-  max: 'xhigh',
-  ultra: 'xhigh',
+  max: 'ultra',
+  ultra: 'ultra',
 }
 
-const ANTHROPIC_EFFORT_MAP: Record<ConfiguredEffortLevel, AnthropicAPIEffortLevel> = {
+const ANTHROPIC_EFFORT_MAP: Record<
+  ConfiguredEffortLevel,
+  AnthropicAPIEffortLevel
+> = {
   none: 'low',
   low: 'low',
   medium: 'medium',
   high: 'high',
-  xhigh: 'max',
+  xhigh: 'xhigh',
   max: 'max',
   ultra: 'max',
 }
@@ -68,8 +72,17 @@ export function modelSupportsEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Supported by a subset of Claude 4 models
-  if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
+  // Supported by current Claude effort-capable model families.
+  if (
+    m.includes('fable-5') ||
+    m.includes('mythos-5') ||
+    m.includes('mythos-preview') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-6') ||
+    m.includes('sonnet-5') ||
+    m.includes('sonnet-4-6')
+  ) {
     return true
   }
   // Exclude any other known legacy models (haiku, older opus/sonnet variants)
@@ -87,14 +100,25 @@ export function modelSupportsEffort(model: string): boolean {
   return getAPIProvider() === 'firstParty'
 }
 
-// @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
-// Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
+// @[MODEL LAUNCH]: Add new models to the max-effort allowlist.
+// Max is available on the current Claude 5 families, Mythos Preview, Opus
+// 4.6–4.8, and Sonnet 4.6.
 export function modelSupportsMaxEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
   }
-  if (model.toLowerCase().includes('opus-4-6')) {
+  const m = model.toLowerCase()
+  if (
+    m.includes('fable-5') ||
+    m.includes('mythos-5') ||
+    m.includes('mythos-preview') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-6') ||
+    m.includes('sonnet-5') ||
+    m.includes('sonnet-4-6')
+  ) {
     return true
   }
   // @ts-ignore - recovered code
@@ -104,7 +128,36 @@ export function modelSupportsMaxEffort(model: string): boolean {
   return false
 }
 
-export function isEffortLevel(value: string): value is EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel {
+export function modelSupportsXHighEffort(model: string): boolean {
+  const m = model.toLowerCase()
+  return (
+    m.includes('fable-5') ||
+    m.includes('mythos-5') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-4-7') ||
+    m.includes('sonnet-5')
+  )
+}
+
+export function getSupportedEffortLevelsForModel(
+  model: string,
+): readonly (OpenAIAPIEffortLevel | AnthropicAPIEffortLevel)[] {
+  if (getAPIProvider() === 'openai') {
+    return ['none', 'low', 'medium', 'high', 'xhigh', 'ultra']
+  }
+
+  return [
+    'low',
+    'medium',
+    'high',
+    ...(modelSupportsXHighEffort(model) ? (['xhigh'] as const) : []),
+    ...(modelSupportsMaxEffort(model) ? (['max'] as const) : []),
+  ]
+}
+
+export function isEffortLevel(
+  value: string,
+): value is EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(value)
 }
 
@@ -221,8 +274,17 @@ export function resolveAppliedEffort(
         ? OPENAI_EFFORT_MAP[resolved]
         : ANTHROPIC_EFFORT_MAP[resolved]
 
-  // Anthropic rejects max on models without max-effort capability.
-  if (provider !== 'openai' && mapped === 'max' && !modelSupportsMaxEffort(model)) {
+  // Anthropic support is model-specific: preserve native xhigh where
+  // available, otherwise use the strongest supported level.
+  if (provider !== 'openai' && mapped === 'xhigh') {
+    if (modelSupportsXHighEffort(model)) return mapped
+    return modelSupportsMaxEffort(model) ? 'max' : 'high'
+  }
+  if (
+    provider !== 'openai' &&
+    mapped === 'max' &&
+    !modelSupportsMaxEffort(model)
+  ) {
     return 'high'
   }
   return mapped
@@ -299,9 +361,9 @@ export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel
     case 'none':
       return 'No reasoning for latency-critical OpenAI tasks'
     case 'xhigh':
-      return 'Deepest OpenAI reasoning'
+      return 'Extended capability for long-horizon work'
     case 'ultra':
-      return 'Codex ultra reasoning, sent as xhigh effort'
+      return 'Ultra effort, sent as max on Anthropic'
     case 'ultracode':
       return 'xhigh + dynamic workflow orchestration'
   }
