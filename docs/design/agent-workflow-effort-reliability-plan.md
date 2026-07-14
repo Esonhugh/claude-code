@@ -165,7 +165,7 @@ totalTokens =
 - Normalized effort 仅用于颜色、图标或排序，不作为权威文本。
 - Applied 暂指本地请求构造前的解析值；不可计算时显示明确的 unavailable/reason，不以普通 `null` 掩盖分叉。
 - Update `/effort` help, argument hint and invalid-option text from one shared list or a deliberately filtered user-facing list.
-- 审查已确认保持当前 OpenAI mapping：`max → ultra`、`ultra → ultra`、`ultracode → xhigh`。本计划只修内部一致性，不修改 wire mapping，也不宣称它已经获得外部协议验证。
+- Provider wire mapping 独立维护：OpenAI `none/low/medium/high/xhigh/max` 原样发送，配置 `ultra → max`、`ultracode → xhigh`；Anthropic `low/medium/high/xhigh/max` 原样发送，配置 `none → low`、`ultra → max`，`ultracode` 按模型能力解析为 `max` 或降级为 `high`。
 
 ### 5.8 Plugin uninstall consistency
 
@@ -447,7 +447,7 @@ Mitigation:
 3. **Plugin uninstall**：settings 写入失败立即返回失败，零破坏性清理，不做自动补偿或强制卸载。
 4. **TaskUpdate**：采用明确 partial result；安全位置允许 best-effort rollback，但不实现完整跨文件事务。
 5. **Effort UI**：采用 configured → applied；相同值简写为单值，normalized 仅用于视觉表现。
-6. **OpenAI wire**：保持当前 `max → ultra`、`ultra → ultra`、`ultracode → xhigh` mapping；先修内部一致性，协议验证另立任务。
+6. **Provider wire**：OpenAI 与 Anthropic 使用独立 wire union 和 map；`ultra` 是 OpenAI/Codex 配置能力并在请求前映射为 OpenAI `max`，Anthropic 不接收 `ultra`，`ultracode` 仍是 orchestration keyword。
 7. **交付拆分**：按四个领域阶段实施，每阶段完成后暂停供用户审查。
 8. **实施纪律**：每项 bug 先增加最小失败测试，再做最小修复；不自动创建 commit。
 

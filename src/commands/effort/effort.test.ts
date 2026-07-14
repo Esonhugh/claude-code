@@ -28,12 +28,17 @@ assert.deepEqual(result.effortUpdate, { value: 'ultracode' })
 
 assert.equal(
   showCurrentEffort('ultracode', 'claude-opus-4-7').message,
-  'Current effort level: ultracode (xhigh + dynamic workflow orchestration; this session only)',
+  'Current effort level: ultracode → xhigh (xhigh + dynamic workflow orchestration; this session only)',
 )
 
 assert.match(
   executeEffort('invalid').message,
-  /Valid options are: none, low, medium, high, xhigh, max, ultracode, auto/,
+  /Valid options are: none, low, medium, high, xhigh, max, ultra, ultracode, auto/,
+)
+
+assert.equal(
+  showCurrentEffort('ultra', 'claude-opus-4-6').message,
+  'Current effort level: ultra → xhigh (Codex ultra reasoning, sent as xhigh effort; this session only)',
 )
 
 console.log('effort.test.ts passed')

@@ -272,9 +272,10 @@ import {
 } from 'src/utils/model/model.js'
 import { getModelOptions } from 'src/utils/model/modelOptions.js'
 import {
+  modelAcceptsConfiguredEffort,
   modelSupportsEffort,
   modelSupportsMaxEffort,
-  EFFORT_LEVELS,
+  MODEL_EFFORT_LEVELS,
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
@@ -1218,8 +1219,8 @@ function runHeadlessStreaming(
       ...(hasEffort && {
         supportsEffort: true,
         supportedEffortLevels: modelSupportsMaxEffort(resolvedModel)
-          ? [...EFFORT_LEVELS]
-          : EFFORT_LEVELS.filter(l => l !== 'max'),
+          ? [...MODEL_EFFORT_LEVELS]
+          : MODEL_EFFORT_LEVELS.filter(l => l !== 'max'),
       }),
       ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),
       ...(hasFastMode && { supportsFastMode: true }),
@@ -3843,7 +3844,7 @@ function runHeadlessStreaming(
           const model = getMainLoopModel()
           // modelSupportsEffort gate matches claude.ts — applied.effort must
           // mirror what actually goes to the API, not just what's configured.
-          const effort = modelSupportsEffort(model)
+          const effort = modelAcceptsConfiguredEffort(model)
             ? resolveAppliedEffort(model, currentAppState.effortValue)
             : undefined
           sendControlResponseSuccess(message, {

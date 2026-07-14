@@ -6,11 +6,9 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/grow
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
-import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 import { isAnt } from 'src/utils/userType.js'
 
-
-export type { EffortLevel }
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export const EFFORT_LEVELS = [
   'none',
@@ -23,11 +21,21 @@ export const EFFORT_LEVELS = [
   'ultracode',
 ] as const
 
+export const MODEL_EFFORT_LEVELS = [
+  'none',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+] as const
+
 export type OpenAIEffortLevel = 'none' | 'xhigh' | 'ultra'
 export type UltracodeEffortLevel = 'ultracode'
 export type EffortValue = EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel | number
 export type ConfiguredEffortLevel = Exclude<EffortValue, number | 'ultracode'>
-export type OpenAIAPIEffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'ultra'
+export type OpenAIAPIEffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh'
 export type AnthropicAPIEffortLevel = 'low' | 'medium' | 'high' | 'max'
 
 const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, OpenAIAPIEffortLevel> = {
@@ -36,8 +44,8 @@ const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, OpenAIAPIEffortLevel> = {
   medium: 'medium',
   high: 'high',
   xhigh: 'xhigh',
-  max: 'ultra',
-  ultra: 'ultra',
+  max: 'xhigh',
+  ultra: 'xhigh',
 }
 
 const ANTHROPIC_EFFORT_MAP: Record<ConfiguredEffortLevel, AnthropicAPIEffortLevel> = {
@@ -187,6 +195,10 @@ export function getEffortEnvOverride(): EffortValue | null | undefined {
  * Returns undefined when no effort parameter should be sent (env set to
  * 'unset', or no default exists for the model).
  */
+export function modelAcceptsConfiguredEffort(model: string): boolean {
+  return getAPIProvider() === 'openai' || modelSupportsEffort(model)
+}
+
 export function resolveAppliedEffort(
   model: string,
   appStateEffortValue: EffortValue | undefined,
@@ -283,13 +295,13 @@ export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.6 only; maps to xhigh on OpenAI)'
+      return 'Maximum capability with deepest reasoning'
     case 'none':
       return 'No reasoning for latency-critical OpenAI tasks'
     case 'xhigh':
       return 'Deepest OpenAI reasoning'
     case 'ultra':
-      return 'Codex ultra reasoning (sent as max effort)'
+      return 'Codex ultra reasoning, sent as xhigh effort'
     case 'ultracode':
       return 'xhigh + dynamic workflow orchestration'
   }

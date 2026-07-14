@@ -63,6 +63,11 @@ import { createWorkflowRunId } from './workflowScriptPersistence.js'
 import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import {
+  createProgressTracker,
+  getProgressUpdate,
+  updateProgressFromMessage,
+} from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 
@@ -101,8 +106,7 @@ type WorkflowAgentRunResult = {
 }
 
 type AgentProgressMetrics = {
-  tokenCount: number
-  toolUseCount: number
+  message?: AssistantMessage
   prompt?: string
   activities?: string[]
 }
@@ -141,15 +145,13 @@ function agentProgressMetrics(progress: unknown): AgentProgressMetrics | undefin
   const message = (data as { message?: unknown }).message
   if (!message || typeof message !== 'object') {
     return typeof prompt === 'string' && prompt.trim() !== ''
-      ? { tokenCount: 0, toolUseCount: 0, prompt: prompt.trim() }
+      ? { prompt: prompt.trim() }
       : undefined
   }
   if ((message as { type?: unknown }).type === 'user') {
     const activity = commandActivityFromUser(message as NormalizedUserMessage)
     return typeof prompt === 'string' && prompt.trim() !== '' || activity
       ? {
-          tokenCount: 0,
-          toolUseCount: activity ? 1 : 0,
           prompt: typeof prompt === 'string' && prompt.trim() !== '' ? prompt.trim() : undefined,
           activities: activity ? [activity] : undefined,
         }
@@ -157,19 +159,12 @@ function agentProgressMetrics(progress: unknown): AgentProgressMetrics | undefin
   }
   if ((message as { type?: unknown }).type !== 'assistant') {
     return typeof prompt === 'string' && prompt.trim() !== ''
-      ? { tokenCount: 0, toolUseCount: 0, prompt: prompt.trim() }
+      ? { prompt: prompt.trim() }
       : undefined
   }
   const assistant = message as AssistantMessage
-  const tokenCount =
-    assistant.message.usage.input_tokens +
-    assistant.message.usage.output_tokens +
-    (assistant.message.usage.cache_creation_input_tokens ?? 0) +
-    (assistant.message.usage.cache_read_input_tokens ?? 0)
-  const toolUseCount = assistant.message.content.filter(block => block.type === 'tool_use').length
   return {
-    tokenCount,
-    toolUseCount,
+    message: assistant,
     prompt: typeof prompt === 'string' && prompt.trim() !== '' ? prompt.trim() : undefined,
     activities: toolActivitiesFromAssistant(assistant),
   }
@@ -425,6 +420,7 @@ async function runPhaseAgentAttempt({
   const progressStartTime = Date.now()
   let progressTokens = 0
   let progressToolUses = 0
+  const progressTracker = createProgressTracker()
   emitTaskProgress({
     taskId,
     toolUseId: context.toolUseId,
@@ -468,8 +464,14 @@ async function runPhaseAgentAttempt({
       lastProgress = Date.now()
       const metrics = agentProgressMetrics(progress)
       if (!metrics) return
-      progressTokens += metrics.tokenCount
-      progressToolUses += metrics.toolUseCount
+      const previousTokens = progressTokens
+      const previousToolUses = progressToolUses
+      if (metrics.message) {
+        updateProgressFromMessage(progressTracker, metrics.message)
+        const update = getProgressUpdate(progressTracker)
+        progressTokens = update.tokenCount
+        progressToolUses = update.toolUseCount
+      }
       emitTaskProgress({
         taskId,
         toolUseId: context.toolUseId,
@@ -480,13 +482,18 @@ async function runPhaseAgentAttempt({
         lastToolName: fallbackAgentId,
         summary: `Workflow agent running: ${fallbackAgentId}`,
       })
-      const activities = metrics.activities?.length ? metrics.activities : [undefined]
-      for (const activity of activities) {
+      const tokenDelta = progressTokens - previousTokens
+      const toolUseDelta = progressToolUses - previousToolUses
+      const activities = metrics.message
+        ? toolUseDelta > 0 ? (metrics.activities?.slice(-toolUseDelta) ?? []) : []
+        : (metrics.activities ?? [])
+      const updates = activities.length > 0 ? activities : [undefined]
+      for (const [activityIndex, activity] of updates.entries()) {
         recordWorkflowAgentProgress({
           taskId,
           agentId: fallbackAgentId,
-          tokenCount: metrics.tokenCount,
-          toolUseCount: activity ? 1 : metrics.toolUseCount,
+          tokenCount: activityIndex === 0 ? tokenDelta : 0,
+          toolUseCount: activity && metrics.message ? 1 : activityIndex === 0 ? toolUseDelta : 0,
           prompt: metrics.prompt,
           activity,
           setAppState: context.setAppStateForTasks ?? context.setAppState,
@@ -525,8 +532,8 @@ async function runPhaseAgentAttempt({
     index,
     status: 'completed',
     output: extractAgentOutput(output),
-    tokenCount: output.totalTokens ?? 0,
-    toolUseCount: output.totalToolUseCount ?? 0,
+    tokenCount: output.totalTokens ?? progressTokens,
+    toolUseCount: output.totalToolUseCount ?? progressToolUses,
     durationMs: output.totalDurationMs ?? 0,
   }
   completeWorkflowAgent({

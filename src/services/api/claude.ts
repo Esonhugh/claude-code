@@ -69,9 +69,8 @@ import {
 } from '../../utils/context.js'
 import {
   type EffortValue,
-  convertEffortValueToLevel,
   resolveAppliedEffort,
-  modelSupportsEffort,
+  modelAcceptsConfiguredEffort,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -454,8 +453,8 @@ export function configureEffortParams(
     return
   }
   if (
-    !modelSupportsEffort(model) &&
-    !(getAPIProvider() === 'openai' && typeof effortValue === 'string')
+    !modelAcceptsConfiguredEffort(model) ||
+    (getAPIProvider() === 'openai' && typeof effortValue !== 'string')
   ) {
     return
   }
@@ -469,8 +468,7 @@ export function configureEffortParams(
     if (getAPIProvider() === 'openai') {
       ;(outputConfig as { effort?: EffortValue }).effort = effortValue
     } else {
-      ;(outputConfig as { effort?: EffortValue }).effort =
-        convertEffortValueToLevel(effortValue)
+      ;(outputConfig as { effort?: EffortValue }).effort = effortValue
     }
     betas.push(EFFORT_BETA_HEADER)
   } else if (isAnt()) {

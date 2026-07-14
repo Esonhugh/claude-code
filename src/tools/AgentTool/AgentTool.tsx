@@ -24,6 +24,7 @@ import {
 } from '../../services/analytics/index.js'
 import { clearDumpState } from '../../services/api/dumpPrompts.js'
 import {
+  addAgentTaskWarning,
   completeAgentTask as completeAsyncAgent,
   createActivityDescriptionResolver,
   createProgressTracker,
@@ -1294,11 +1295,22 @@ export const AgentTool = buildTool({
               autoBackgroundMs: getAutoBackgroundMs() || undefined,
             })
             foregroundTaskId = registration.taskId
+            logForDebugging(
+              `[AgentLifecycle] foreground_registered agent_id=${syncAgentId} task_id=${foregroundTaskId}`,
+            )
             const foregroundTask = toolUseContext.getAppState().tasks[foregroundTaskId]
             if (isLocalAgentTask(foregroundTask)) {
               foregroundAbortController = foregroundTask.abortController
               const abortForeground = () => {
-                if (!wasBackgrounded) foregroundAbortController?.abort()
+                const currentTask = foregroundTaskId
+                  ? toolUseContext.getAppState().tasks[foregroundTaskId]
+                  : undefined
+                if (
+                  !wasBackgrounded &&
+                  !(isLocalAgentTask(currentTask) && currentTask.isBackgrounded)
+                ) {
+                  foregroundAbortController?.abort()
+                }
               }
               toolUseContext.abortController.signal.addEventListener(
                 'abort',
@@ -1336,6 +1348,7 @@ export const AgentTool = buildTool({
             onCacheSafeParams:
               summaryTaskId && getSdkAgentProgressSummariesEnabled()
                 ? (params: CacheSafeParams) => {
+                    stopForegroundSummarization?.()
                     const { stop } = startAgentSummarization(
                       summaryTaskId,
                       syncAgentId,
@@ -1343,6 +1356,9 @@ export const AgentTool = buildTool({
                       rootSetAppState,
                     )
                     stopForegroundSummarization = stop
+                    logForDebugging(
+                      `[AgentLifecycle] summarizer_started agent_id=${syncAgentId} task_id=${summaryTaskId}`,
+                    )
                   }
                 : undefined,
           })[Symbol.asyncIterator]()
@@ -1406,6 +1422,9 @@ export const AgentTool = buildTool({
                   // Capture the taskId for use in the async callback
                   const backgroundedTaskId = foregroundTaskId
                   wasBackgrounded = true
+                  logForDebugging(
+                    `[AgentLifecycle] foreground_to_background agent_id=${syncAgentId} task_id=${backgroundedTaskId} pending_next=true`,
+                  )
                   // Keep the existing summarizer alive while ownership moves to
                   // the background continuation. Its cache-safe params and timer
                   // remain valid for the same underlying agent stream.
@@ -1424,16 +1443,15 @@ export const AgentTool = buildTool({
                     for await (const msg of agentIterator) yield msg
                   })()
                   void runWithAgentContext(syncAgentContext, async () => {
+                    const tracker = createProgressTracker()
+                    const resolveActivity2 = createActivityDescriptionResolver(
+                      toolUseContext.options.tools,
+                    )
                     try {
                       // Continue the same iterator in the background. Restarting
                       // runAgent here would replay the original prompt and repeat
                       // any tool uses already completed in the foreground.
                       // Initialize progress tracking from existing messages
-                      const tracker = createProgressTracker()
-                      const resolveActivity2 =
-                        createActivityDescriptionResolver(
-                          toolUseContext.options.tools,
-                        )
                       for (const existingMsg of agentMessages) {
                         updateProgressFromMessage(
                           tracker,
@@ -1510,32 +1528,66 @@ export const AgentTool = buildTool({
                       // cleanupWorktreeIfNeeded can hang — they must not gate
                       // the status transition (gh-20236).
                       completeAsyncAgent(agentResult, rootSetAppState)
+                      logForDebugging(
+                        `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=completed tool_uses=${agentResult.totalToolUseCount}`,
+                      )
 
                       // Extract text from agent result content for the notification
                       let finalMessage = extractTextContent(
                         agentResult.content,
                         '\n',
                       )
+                      const postProcessingWarning =
+                        'Agent post-processing could not complete. Review the agent output before continuing.'
 
                       if (feature('TRANSCRIPT_CLASSIFIER')) {
-                        const backgroundedAppState =
-                          toolUseContext.getAppState()
-                        const handoffWarning = await classifyHandoffIfNeeded({
-                          agentMessages,
-                          tools: toolUseContext.options.tools,
-                          toolPermissionContext:
-                            backgroundedAppState.toolPermissionContext,
-                          abortSignal: task.abortController!.signal,
-                          subagentType: selectedAgent.agentType,
-                          totalToolUseCount: agentResult.totalToolUseCount,
-                        })
-                        if (handoffWarning) {
-                          finalMessage = `${handoffWarning}\n\n${finalMessage}`
+                        try {
+                          const backgroundedAppState =
+                            toolUseContext.getAppState()
+                          const handoffWarning = await classifyHandoffIfNeeded({
+                            agentMessages,
+                            tools: toolUseContext.options.tools,
+                            toolPermissionContext:
+                              backgroundedAppState.toolPermissionContext,
+                            abortSignal: task.abortController!.signal,
+                            subagentType: selectedAgent.agentType,
+                            totalToolUseCount: agentResult.totalToolUseCount,
+                          })
+                          if (handoffWarning) {
+                            finalMessage = `${handoffWarning}\n\n${finalMessage}`
+                          }
+                        } catch (error) {
+                          logForDebugging(
+                            `Agent handoff classification failed after completion: ${errorMessage(error)}`,
+                            { level: 'warn' },
+                          )
+                          addAgentTaskWarning(
+                            backgroundedTaskId,
+                            postProcessingWarning,
+                            rootSetAppState,
+                          )
+                          finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
                         }
                       }
 
                       // Clean up worktree before notification so we can include it
-                      const worktreeResult = await cleanupWorktreeIfNeeded()
+                      let worktreeResult: Awaited<
+                        ReturnType<typeof cleanupWorktreeIfNeeded>
+                      > = {}
+                      try {
+                        worktreeResult = await cleanupWorktreeIfNeeded()
+                      } catch (error) {
+                        logForDebugging(
+                          `Agent worktree post-processing failed after completion: ${errorMessage(error)}`,
+                          { level: 'warn' },
+                        )
+                        addAgentTaskWarning(
+                          backgroundedTaskId,
+                          postProcessingWarning,
+                          rootSetAppState,
+                        )
+                        finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
+                      }
 
                       enqueueAgentNotification({
                         taskId: backgroundedTaskId,
@@ -1556,6 +1608,9 @@ export const AgentTool = buildTool({
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
                         killAsyncAgent(backgroundedTaskId, rootSetAppState)
+                        logForDebugging(
+                          `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=killed`,
+                        )
                         logEvent('tengu_agent_tool_terminated', {
                           agent_type:
                             metadata.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1567,9 +1622,20 @@ export const AgentTool = buildTool({
                           reason:
                             'user_cancel_background' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                         })
-                        const worktreeResult = await cleanupWorktreeIfNeeded()
+                        let worktreeResult: Awaited<
+                          ReturnType<typeof cleanupWorktreeIfNeeded>
+                        > = {}
+                        try {
+                          worktreeResult = await cleanupWorktreeIfNeeded()
+                        } catch (cleanupError) {
+                          logForDebugging(
+                            `Agent worktree post-processing failed after kill: ${errorMessage(cleanupError)}`,
+                            { level: 'warn' },
+                          )
+                        }
                         const partialResult =
                           extractPartialResult(agentMessages)
+                        const progress = getProgressUpdate(tracker)
                         enqueueAgentNotification({
                           taskId: backgroundedTaskId,
                           description,
@@ -1577,6 +1643,11 @@ export const AgentTool = buildTool({
                           setAppState: rootSetAppState,
                           toolUseId: toolUseContext.toolUseId,
                           finalMessage: partialResult,
+                          usage: {
+                            totalTokens: progress.tokenCount,
+                            toolUses: progress.toolUseCount,
+                            durationMs: Date.now() - metadata.startTime,
+                          },
                           ...worktreeResult,
                         })
                         return
@@ -1587,7 +1658,21 @@ export const AgentTool = buildTool({
                         errMsg,
                         rootSetAppState,
                       )
-                      const worktreeResult = await cleanupWorktreeIfNeeded()
+                      logForDebugging(
+                        `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=failed`,
+                      )
+                      let worktreeResult: Awaited<
+                        ReturnType<typeof cleanupWorktreeIfNeeded>
+                      > = {}
+                      try {
+                        worktreeResult = await cleanupWorktreeIfNeeded()
+                      } catch (cleanupError) {
+                        logForDebugging(
+                          `Agent worktree post-processing failed after failure: ${errorMessage(cleanupError)}`,
+                          { level: 'warn' },
+                        )
+                      }
+                      const progress = getProgressUpdate(tracker)
                       enqueueAgentNotification({
                         taskId: backgroundedTaskId,
                         description,
@@ -1595,10 +1680,20 @@ export const AgentTool = buildTool({
                         error: errMsg,
                         setAppState: rootSetAppState,
                         toolUseId: toolUseContext.toolUseId,
+                        usage: {
+                          totalTokens: progress.tokenCount,
+                          toolUses: progress.toolUseCount,
+                          durationMs: Date.now() - metadata.startTime,
+                        },
                         ...worktreeResult,
                       })
                     } finally {
-                      stopForegroundSummarization?.()
+                      if (stopForegroundSummarization) {
+                        stopForegroundSummarization()
+                        logForDebugging(
+                          `[AgentLifecycle] summarizer_stopped agent_id=${syncAgentId} task_id=${backgroundedTaskId} owner=background`,
+                        )
+                      }
                       clearInvokedSkillsForAgent(syncAgentId)
                       clearDumpState(syncAgentId)
                       // Note: worktree cleanup is done before enqueueAgentNotification
@@ -1766,7 +1861,12 @@ export const AgentTool = buildTool({
 
             // The background continuation owns the existing summarizer after
             // handoff and stops it when that continuation reaches a terminal state.
-            if (!wasBackgrounded) stopForegroundSummarization?.()
+            if (!wasBackgrounded && stopForegroundSummarization) {
+              stopForegroundSummarization()
+              logForDebugging(
+                `[AgentLifecycle] summarizer_stopped agent_id=${syncAgentId} task_id=${foregroundTaskId ?? 'none'} owner=foreground`,
+              )
+            }
 
             refreshLastAssistantProgress(
               syncTracker,

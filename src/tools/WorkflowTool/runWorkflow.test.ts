@@ -64,15 +64,53 @@ const plan: WorkflowDryRunPlan = {
   totalAgents: 1,
 }
 
+let observedPlanLiveTokens: number | undefined
+let observedPlanLiveToolUses: number | undefined
 const fakeAgentTool = {
   name: 'Agent',
-  async call() {
+  async call(
+    _input: unknown,
+    _context: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    const progressMessage = {
+      type: 'assistant',
+      uuid: '00000000-0000-4000-8000-000000000001',
+      timestamp: '2026-07-13T00:00:00.000Z',
+      message: {
+        id: 'msg_workflow_progress',
+        role: 'assistant',
+        model: 'claude-test',
+        content: [
+          { type: 'tool_use', id: 'toolu_a', name: 'Read', input: { file_path: 'a' } },
+          { type: 'tool_use', id: 'toolu_b', name: 'Read', input: { file_path: 'b' } },
+        ],
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 10,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+        },
+      },
+    }
+    onProgress?.({ data: { type: 'agent_progress', message: progressMessage } })
+    onProgress?.({ data: { type: 'agent_progress', message: progressMessage } })
+    progressMessage.message.usage.output_tokens = 15
+    onProgress?.({ data: { type: 'agent_progress', message: progressMessage } })
+    const liveTask = Object.values(state.tasks).find(
+      task => task.type === 'local_workflow',
+    )
+    const liveAgent = Object.values(liveTask?.liveAgents ?? {})[0]
+    observedPlanLiveTokens = liveAgent?.tokenCount
+    observedPlanLiveToolUses = liveAgent?.toolUseCount
     return {
       data: {
         status: 'completed',
         content: [{ type: 'text', text: 'ok' }],
-        totalTokens: 1,
-        totalToolUseCount: 0,
         totalDurationMs: 1,
       },
     }
@@ -104,6 +142,12 @@ const result = await runWorkflowPlan({
 assert.match(result, /Workflow launched in background\. Task ID: w/)
 const task = Object.values(state.tasks).find(task => task.type === 'local_workflow')
 assert.equal(task?.status, 'completed')
+assert.equal(observedPlanLiveTokens, 115)
+assert.equal(observedPlanLiveToolUses, 2)
+assert.equal(task?.tokenCount, 115)
+assert.equal(task?.toolUseCount, 2)
+assert.equal(task?.results[0]?.tokenCount, 115)
+assert.equal(task?.results[0]?.toolUseCount, 2)
 const completionNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(completionNotification)
 assert.match(String(completionNotification.value), /<summary>Dynamic workflow "Accept short root output\." completed<\/summary>/)

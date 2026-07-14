@@ -35,6 +35,23 @@ try {
     resolveAppliedEffort('claude-opus-4-6', 'ultracode'),
     'max',
   )
+  assert.equal(
+    resolveAppliedEffort('claude-opus-4-6', 'xhigh'),
+    'max',
+  )
+
+  const xhighOutputConfig: BetaOutputConfig = {}
+  const xhighBetas: string[] = []
+  configureEffortParams(
+    resolveAppliedEffort('claude-opus-4-6', 'xhigh'),
+    xhighOutputConfig,
+    {},
+    xhighBetas,
+    'claude-opus-4-6',
+  )
+
+  assert.equal((xhighOutputConfig as { effort?: string }).effort, 'max')
+  assert.ok(xhighBetas.length > 0)
 
   const outputConfig: BetaOutputConfig = {}
   const betas: string[] = []

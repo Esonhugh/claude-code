@@ -90,20 +90,63 @@ const plan: WorkflowDryRunPlan = {
 }
 
 let agentToolCallCount = 0
+let observedScriptLiveTokens: number | undefined
+let observedScriptLiveToolUses: number | undefined
 const fakeAgentTool = {
   name: 'Agent',
-  async call(_input: unknown, agentContext: ToolUseContext) {
+  async call(
+    _input: unknown,
+    agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
     agentToolCallCount++
     assert.equal(agentContext.options.disableNestedAgentTools, true)
     if (typeof _input === 'object' && _input && 'prompt' in _input && _input.prompt === 'fail-agent') {
       throw new Error('agent failed intentionally')
     }
+    onProgress?.({
+      data: {
+        type: 'agent_progress',
+        message: {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000010',
+          timestamp: '2026-07-14T00:00:00.000Z',
+          message: {
+            id: 'msg_script_progress',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_script_live',
+                name: 'Read',
+                input: { file_path: 'package.json' },
+              },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: 50,
+              output_tokens: 5,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+        },
+      },
+    })
+    const liveTask = Object.values(state.tasks).find(
+      task => task.type === 'local_workflow',
+    )
+    const liveAgent = Object.values(liveTask?.liveAgents ?? {})[0]
+    observedScriptLiveTokens = liveAgent?.tokenCount
+    observedScriptLiveToolUses = liveAgent?.toolUseCount
     return {
       data: {
         status: 'completed',
         content: [{ type: 'text', text: 'alpha-ok' }],
-        totalTokens: 7,
-        totalToolUseCount: 1,
         totalDurationMs: 3,
       },
     }
@@ -171,6 +214,10 @@ const workflowTask = Object.values(state.tasks).find(
   task => task.type === 'local_workflow',
 )
 assert.ok(workflowTask)
+assert.equal(observedScriptLiveTokens, 55)
+assert.equal(observedScriptLiveToolUses, 1)
+assert.equal(workflowTask.tokenCount, 55)
+assert.equal(workflowTask.toolUseCount, 1)
 const transcriptDirMatch = result.match(/Transcript dir: (.+)/)
 assert.ok(transcriptDirMatch?.[1])
 const journalRaw = await readFile(join(transcriptDirMatch[1], 'journal.jsonl'), 'utf8')
@@ -181,6 +228,8 @@ const scriptSession = await loadWorkflowRunSession({ cwd: scriptCwd, workflowRun
 assert.equal(scriptSession?.status, 'completed')
 assert.equal(scriptSession?.results.length, 1)
 assert.equal(scriptSession?.results[0]?.status, 'completed')
+assert.equal(scriptSession?.results[0]?.tokenCount, 55)
+assert.equal(scriptSession?.results[0]?.toolUseCount, 1)
 
 const resumedResult = await runWorkflowScript({
   script,

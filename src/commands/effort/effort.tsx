@@ -9,6 +9,7 @@ import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import {
   type EffortValue,
   getDisplayedEffortLevel,
+  resolveAppliedEffort,
   getEffortEnvOverride,
   getEffortValueDescription,
   isEffortLevel,
@@ -78,9 +79,20 @@ export function showCurrentEffort(
     return { message: `Effort level: auto (currently ${level})` }
   }
   const description = getEffortValueDescription(effectiveValue)
-  const suffix = effectiveValue === 'xhigh' || effectiveValue === 'ultracode' ? '; this session only' : ''
+  const suffix =
+    effectiveValue === 'none' ||
+    effectiveValue === 'xhigh' ||
+    effectiveValue === 'ultra' ||
+    effectiveValue === 'ultracode'
+      ? '; this session only'
+      : ''
+  const applied = resolveAppliedEffort(model, appStateEffort)
+  const displayValue =
+    applied !== undefined && applied !== effectiveValue
+      ? `${effectiveValue} → ${applied}`
+      : String(effectiveValue)
   return {
-    message: `Current effort level: ${effectiveValue} (${description}${suffix})`,
+    message: `Current effort level: ${displayValue} (${description}${suffix})`,
   }
 }
 
@@ -121,7 +133,7 @@ export function executeEffort(args: string): EffortCommandResult {
 
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: none, low, medium, high, xhigh, max, ultracode, auto`,
+      message: `Invalid argument: ${args}. Valid options are: none, low, medium, high, xhigh, max, ultra, ultracode, auto`,
     }
   }
 
@@ -170,7 +182,7 @@ export async function call(
 
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone(
-      'Usage: /effort [none|low|medium|high|xhigh|max|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Deepest OpenAI reasoning (OpenAI only, this session only)\n- max: Maximum capability with deepest reasoning (Opus 4.6 only; maps to xhigh on OpenAI)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
+      'Usage: /effort [none|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Deepest OpenAI reasoning (OpenAI only, this session only)\n- max: Maximum capability with deepest reasoning\n- ultra: Codex ultra reasoning, currently sent as xhigh effort (this session only)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
     )
     return
   }

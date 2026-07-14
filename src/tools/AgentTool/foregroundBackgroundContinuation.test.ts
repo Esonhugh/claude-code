@@ -9,6 +9,7 @@ import {
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { Message } from '../../types/message.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import { getCommandQueue } from '../../utils/messageQueueManager.js'
 import { AgentTool } from './AgentTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 
@@ -43,16 +44,11 @@ const makeAssistantMessage = (
   }) as unknown as Message
 
 let toolUseYields = 0
-let releaseForeground: (() => void) | undefined
-const foregroundReachedTool = new Promise<void>(resolve => {
-  releaseForeground = resolve
-})
-let releaseBackgroundContinuation: (() => void) | undefined
-const backgroundMayFinish = new Promise<void>(resolve => {
-  releaseBackgroundContinuation = resolve
-})
 let summaryStarts = 0
 let summaryStops = 0
+let runMode: 'completed' | 'failed' = 'completed'
+let currentForegroundReachedTool: (() => void) | undefined
+let currentBackgroundMayFinish: Promise<void> = Promise.resolve()
 
 mock.module('../../services/AgentSummary/agentSummary.js', () => ({
   startAgentSummarization() {
@@ -70,6 +66,7 @@ mock.module('./runAgent.js', () => ({
     onCacheSafeParams?: (params: Record<string, unknown>) => void
   }) {
     params.onCacheSafeParams?.({})
+    params.onCacheSafeParams?.({})
     toolUseYields += 1
     yield makeAssistantMessage('tool', [
       {
@@ -79,8 +76,9 @@ mock.module('./runAgent.js', () => ({
         input: { command: 'side-effect' },
       },
     ] as never)
-    releaseForeground?.()
-    await backgroundMayFinish
+    currentForegroundReachedTool?.()
+    await currentBackgroundMayFinish
+    if (runMode === 'failed') throw new Error('background continuation failed')
     yield makeAssistantMessage('done', [
       { type: 'text', text: 'done' },
     ] as never)
@@ -140,46 +138,73 @@ function createContext(): TestContext {
   } as never
 }
 
-setSdkAgentProgressSummariesEnabled(true)
-const context = createContext()
-const callPromise = AgentTool.call(
-  {
-    description: 'background continuation',
-    prompt: 'run one side effect then finish',
-    subagent_type: 'general-purpose',
-  },
-  context,
-  async () => ({ behavior: 'allow' }),
-  { message: { id: 'msg_parent' } } as never,
-)
+async function runBackgroundContinuation(mode: 'completed' | 'failed') {
+  runMode = mode
+  let releaseBackgroundContinuation: (() => void) | undefined
+  currentBackgroundMayFinish = new Promise<void>(resolve => {
+    releaseBackgroundContinuation = resolve
+  })
+  const foregroundReachedTool = new Promise<void>(resolve => {
+    currentForegroundReachedTool = resolve
+  })
+  const context = createContext()
+  const callPromise = AgentTool.call(
+    {
+      description: `background continuation ${mode}`,
+      prompt: 'run one side effect then finish',
+      subagent_type: 'general-purpose',
+    },
+    context,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: `msg_parent_${mode}` } } as never,
+  )
 
-await foregroundReachedTool
-const taskId = Object.keys(context.getAppState().tasks)[0]
-assert.ok(taskId)
-assert.equal(
-  backgroundAgentTask(taskId, context.getAppState, context.setAppState),
-  true,
-)
+  await foregroundReachedTool
+  const taskId = Object.keys(context.getAppState().tasks)[0]
+  assert.ok(taskId)
+  assert.equal(
+    backgroundAgentTask(taskId, context.getAppState, context.setAppState),
+    true,
+  )
 
-const launched = await callPromise
-assert.equal(launched.data.status, 'async_launched')
-releaseBackgroundContinuation?.()
+  const launched = await callPromise
+  assert.equal(launched.data.status, 'async_launched')
+  releaseBackgroundContinuation?.()
 
-for (let i = 0; i < 20; i++) {
-  const task = context.getAppState().tasks[taskId]
-  if (isLocalAgentTask(task) && task.status === 'completed') break
-  await new Promise(resolve => setTimeout(resolve, 10))
+  for (let i = 0; i < 20; i++) {
+    const task = context.getAppState().tasks[taskId]
+    if (isLocalAgentTask(task) && task.status !== 'running') break
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+
+  return { context, taskId }
 }
 
-const task = context.getAppState().tasks[taskId]
-assert.ok(isLocalAgentTask(task))
-assert.equal(task.status, 'completed')
+setSdkAgentProgressSummariesEnabled(true)
+const completedRun = await runBackgroundContinuation('completed')
+const completedTask = completedRun.context.getAppState().tasks[completedRun.taskId]
+assert.ok(isLocalAgentTask(completedTask))
+assert.equal(completedTask.status, 'completed')
 assert.equal(toolUseYields, 1)
-assert.equal(task.progress?.toolUseCount, 1)
-assert.match(JSON.stringify(task.result), /done/)
-assert.equal(task.result?.totalToolUseCount, 1)
-assert.equal(summaryStarts, 1)
-assert.equal(summaryStops, 1)
+assert.equal(completedTask.progress?.toolUseCount, 1)
+assert.match(JSON.stringify(completedTask.result), /done/)
+assert.equal(completedTask.result?.totalToolUseCount, 1)
+assert.equal(summaryStarts, 2)
+assert.equal(summaryStops, 2)
+
+const failedRun = await runBackgroundContinuation('failed')
+const failedTask = failedRun.context.getAppState().tasks[failedRun.taskId]
+assert.ok(isLocalAgentTask(failedTask))
+assert.equal(failedTask.status, 'failed')
+const failedNotification = getCommandQueue().find(command =>
+  String(command.value).includes(failedRun.taskId),
+)
+assert.ok(failedNotification)
+assert.match(String(failedNotification.value), /<status>failed<\/status>/)
+assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
+assert.match(String(failedNotification.value), /<tool_uses>1<\/tool_uses>/)
+assert.equal(summaryStarts, 4)
+assert.equal(summaryStops, 4)
 setSdkAgentProgressSummariesEnabled(false)
 
 console.log('foregroundBackgroundContinuation.test.ts passed')

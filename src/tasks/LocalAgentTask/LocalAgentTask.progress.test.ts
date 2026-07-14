@@ -105,7 +105,7 @@ updateProgressFromMessage(tracker, {
 
 const progress = getProgressUpdate(tracker)
 
-assert.equal(progress.tokenCount, 150)
+assert.equal(progress.tokenCount, 140)
 assert.equal(progress.toolUseCount, 3)
 assert.deepEqual(
   progress.recentActivities?.map(activity => activity.toolName),
@@ -167,8 +167,27 @@ for (const message of [replayFirst, replaySecond]) {
 for (const message of [replayFirst, replaySecond]) {
   updateProgressFromMessage(replayTracker, message)
 }
-assert.equal(getProgressUpdate(replayTracker).tokenCount, 163)
+assert.equal(getProgressUpdate(replayTracker).tokenCount, 155)
 assert.equal(getProgressUpdate(replayTracker).toolUseCount, 2)
+
+const compactedTracker = createProgressTracker()
+updateProgressFromMessage(
+  compactedTracker,
+  assistantMessage({
+    uuid: '00000000-0000-4000-8000-000000000008',
+    inputTokens: 500,
+    outputTokens: 10,
+  }),
+)
+updateProgressFromMessage(
+  compactedTracker,
+  assistantMessage({
+    uuid: '00000000-0000-4000-8000-000000000009',
+    inputTokens: 100,
+    outputTokens: 20,
+  }),
+)
+assert.equal(getProgressUpdate(compactedTracker).tokenCount, 120)
 
 const selectedAgent = {
   agentType: 'general-purpose',

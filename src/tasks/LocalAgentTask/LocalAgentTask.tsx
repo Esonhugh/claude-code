@@ -65,13 +65,11 @@ const MAX_RECENT_ACTIVITIES = 5
 
 export type ProgressTracker = {
   toolUseCount: number
-  // Track input and output separately to avoid double-counting.
-  // input_tokens in Claude API is cumulative per turn (includes all previous context),
-  // so we keep the latest message's value. output_tokens is per-turn, so we sum
-  // deltas for each assistant message UUID to handle in-place usage mutation.
-  latestInputTokens: number
-  latestInputSequence: number
-  cumulativeOutputTokens: number
+  // External token surfaces report the latest complete response context size.
+  // Keep the latest assistant message's full usage snapshot; updates to the same
+  // UUID replace that snapshot instead of accumulating lifecycle usage.
+  latestTokenCount: number
+  latestAssistantSequence: number
   assistantMessageSnapshots: Map<
     string,
     { inputTokens: number; outputTokens: number; sequence: number }
@@ -84,9 +82,8 @@ export type ProgressTracker = {
 export function createProgressTracker(): ProgressTracker {
   return {
     toolUseCount: 0,
-    latestInputTokens: 0,
-    latestInputSequence: -1,
-    cumulativeOutputTokens: 0,
+    latestTokenCount: 0,
+    latestAssistantSequence: -1,
     assistantMessageSnapshots: new Map(),
     nextAssistantMessageSequence: 0,
     seenToolUseIds: new Set(),
@@ -95,7 +92,7 @@ export function createProgressTracker(): ProgressTracker {
 }
 
 export function getTokenCountFromTracker(tracker: ProgressTracker): number {
-  return tracker.latestInputTokens + tracker.cumulativeOutputTokens
+  return tracker.latestTokenCount
 }
 
 /**
@@ -128,22 +125,15 @@ export function updateProgressFromMessage(
   const sequence =
     previousSnapshot?.sequence ?? tracker.nextAssistantMessageSequence++
 
-  if (previousSnapshot) {
-    tracker.cumulativeOutputTokens +=
-      outputTokens - previousSnapshot.outputTokens
-  } else {
-    tracker.cumulativeOutputTokens += outputTokens
-  }
-
   tracker.assistantMessageSnapshots.set(message.uuid, {
     inputTokens,
     outputTokens,
     sequence,
   })
 
-  if (sequence >= tracker.latestInputSequence) {
-    tracker.latestInputSequence = sequence
-    tracker.latestInputTokens = inputTokens
+  if (sequence >= tracker.latestAssistantSequence) {
+    tracker.latestAssistantSequence = sequence
+    tracker.latestTokenCount = inputTokens + outputTokens
   }
 
   message.message.content.forEach((content, index) => {

@@ -50,6 +50,11 @@ import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScript
 import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import { getCwd } from '../../utils/cwd.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import {
+  createProgressTracker,
+  getProgressUpdate,
+  updateProgressFromMessage,
+} from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
@@ -495,7 +500,12 @@ export async function runWorkflowScript({
       try {
         const result = await runSingleAgent(prompt, opts, label, phase, stallMs, agentIndex)
         const completedAt = Date.now()
-        scriptAgentResults.push({
+        const completedResult = context.getAppState().tasks[workflowTask.id]?.type === 'local_workflow'
+          ? context.getAppState().tasks[workflowTask.id].results.find(
+              current => current.phaseId === phase && current.index === agentIndex,
+            )
+          : undefined
+        scriptAgentResults.push(completedResult ?? {
           phaseId: phase,
           agentId: label,
           index: agentIndex,
@@ -586,6 +596,9 @@ export async function runWorkflowScript({
 
     try {
       const progressPhase = childWorkflowProgressName ?? phase
+      const progressTracker = createProgressTracker()
+      let progressTokens = 0
+      let progressToolUses = 0
       emitTaskProgress({
         taskId: workflowTask.id,
         toolUseId: context.toolUseId,
@@ -611,14 +624,46 @@ export async function runWorkflowScript({
         canUseTool, assistantMessage,
         (progress) => {
           lastProgress = Date.now()
-          // Update liveAgents with progress info for UI
-          const p = progress?.data as { summary?: string } | undefined
-          if (p?.summary) {
+          const data = progress?.data as
+            | { type?: string; message?: unknown; summary?: string }
+            | undefined
+          let tokenDelta = 0
+          let toolUseDelta = 0
+          if (
+            data?.type === 'agent_progress' &&
+            data.message &&
+            typeof data.message === 'object' &&
+            (data.message as { type?: unknown }).type === 'assistant'
+          ) {
+            const previousTokens = progressTokens
+            const previousToolUses = progressToolUses
+            updateProgressFromMessage(
+              progressTracker,
+              data.message as AssistantMessage,
+            )
+            const update = getProgressUpdate(progressTracker)
+            progressTokens = update.tokenCount
+            progressToolUses = update.toolUseCount
+            tokenDelta = progressTokens - previousTokens
+            toolUseDelta = progressToolUses - previousToolUses
+          }
+          if (tokenDelta !== 0 || toolUseDelta !== 0 || data?.summary) {
             recordWorkflowAgentProgress({
               taskId: workflowTask.id, agentId: label,
-              tokenCount: 0, toolUseCount: 0,
-              activity: p.summary, prompt: prompt.slice(0, 200),
+              tokenCount: tokenDelta, toolUseCount: toolUseDelta,
+              activity: data?.summary, prompt: prompt.slice(0, 200),
               setAppState,
+            })
+            emitTaskProgress({
+              taskId: workflowTask.id,
+              toolUseId: context.toolUseId,
+              description: workflowAgentProgressDescription(progressPhase, label, plan),
+              startTime: workflowTask.startTime,
+              totalTokens: tokenSpent + progressTokens,
+              toolUses: toolUseSpent + progressToolUses,
+              lastToolName: label,
+              summary: data?.summary ?? `Workflow agent running: ${label}`,
+              workflowProgress: workflowProgressSnapshot(plan),
             })
           }
         },
@@ -627,8 +672,10 @@ export async function runWorkflowScript({
 
       const output = result.data as AgentToolOutput
       const text = extractAgentText(output)
-      tokenSpent += output.totalTokens ?? 0
-      toolUseSpent += output.totalToolUseCount ?? 0
+      const finalTokens = output.totalTokens ?? progressTokens
+      const finalToolUses = output.totalToolUseCount ?? progressToolUses
+      tokenSpent += finalTokens
+      toolUseSpent += finalToolUses
 
       emitTaskProgress({
         taskId: workflowTask.id,
@@ -647,8 +694,8 @@ export async function runWorkflowScript({
         result: {
           phaseId: phase, agentId: label, index: agentIndex,
           status: 'completed', output: text, prompt,
-          tokenCount: output.totalTokens ?? 0,
-          toolUseCount: output.totalToolUseCount ?? 0,
+          tokenCount: finalTokens,
+          toolUseCount: finalToolUses,
           durationMs: output.totalDurationMs ?? 0,
         },
         setAppState,
