@@ -26,6 +26,15 @@ import {
   useKeybindings,
 } from '../../keybindings/useKeybinding.js'
 import { getBuiltinPluginDefinition } from '../../plugins/builtinPlugins.js'
+import {
+  buildCodexAppPluginProjections,
+  type CodexAppPluginProjection,
+} from '../../services/apps/pluginProjection.js'
+import {
+  getDisabledCodexAppConnectorIds,
+  refreshCodexAppToolExposure,
+  setCodexAppEnabled,
+} from '../../services/apps/preferences.js'
 import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js'
 import type {
   MCPServerConnection,
@@ -44,7 +53,7 @@ import {
   uninstallPluginOp,
   updatePluginOp,
 } from '../../services/plugins/pluginOperations.js'
-import { useAppState } from '../../state/AppState.js'
+import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { Tool } from '../../Tool.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import { count } from '../../utils/array.js'
@@ -110,6 +119,8 @@ type Props = {
   targetPlugin?: string
   targetMarketplace?: string
   action?: 'enable' | 'disable' | 'uninstall'
+  /** Legacy embedding hook; the top-level Codex Apps tab owns this UI. */
+  includeCodexApps?: boolean
 }
 
 type FlaggedPluginInfo = {
@@ -139,6 +150,7 @@ type ViewState =
   | { type: 'confirm-data-cleanup'; size: { bytes: number; human: string } }
   | { type: 'flagged-detail'; plugin: FlaggedPluginInfo }
   | { type: 'failed-plugin-details'; plugin: FailedPluginInfo }
+  | { type: 'codex-app-details'; app: CodexAppPluginProjection }
   | { type: 'mcp-detail'; client: MCPServerConnection }
   | { type: 'mcp-tools'; client: MCPServerConnection }
   | { type: 'mcp-tool-detail'; client: MCPServerConnection; tool: Tool }
@@ -526,10 +538,16 @@ export function ManagePlugins({
   targetPlugin,
   targetMarketplace,
   action,
+  includeCodexApps = false,
 }: Props): React.ReactNode {
   // App state for MCP access
   const mcpClients = useAppState(s => s.mcp.clients)
   const mcpTools = useAppState(s => s.mcp.tools)
+  const setAppState = useSetAppState()
+  const codexAppPlugins = useMemo(
+    () => buildCodexAppPluginProjections(mcpTools),
+    [mcpTools],
+  )
   const pluginErrors = useAppState(s => s.plugins.errors)
   const flaggedPlugins = getFlaggedPlugins()
 
@@ -566,6 +584,9 @@ export function ManagePlugins({
   const [favoritePluginIds, setFavoritePluginIds] = useState<Set<string>>(() =>
     getFavoritePluginIds(),
   )
+  const [disabledCodexAppIds, setDisabledCodexAppIds] = useState<Set<string>>(
+    () => getDisabledCodexAppConnectorIds(),
+  )
   const [loading, setLoading] = useState(true)
   const [pendingToggles, setPendingToggles] = useState<
     Map<string, 'will-enable' | 'will-disable'>
@@ -593,6 +614,12 @@ export function ManagePlugins({
     } else if (
       typeof viewState === 'object' &&
       viewState.type === 'failed-plugin-details'
+    ) {
+      setViewState('plugin-list')
+      setProcessError(null)
+    } else if (
+      typeof viewState === 'object' &&
+      viewState.type === 'codex-app-details'
     ) {
       setViewState('plugin-list')
       setProcessError(null)
@@ -808,13 +835,14 @@ export function ManagePlugins({
     const scopeOrder: Record<string, number> = {
       flagged: -1,
       favorite: 0,
-      project: 1,
-      local: 2,
-      user: 3,
-      enterprise: 4,
-      managed: 5,
-      dynamic: 6,
-      builtin: 7,
+      'codex-app': 1,
+      project: 2,
+      local: 3,
+      user: 4,
+      enterprise: 5,
+      managed: 6,
+      dynamic: 7,
+      builtin: 8,
     }
 
     // Build final list by merging plugins (with their child MCPs) and standalone MCPs
@@ -865,6 +893,27 @@ export function ManagePlugins({
       itemsByScope.get(scope)!.push(mcp)
     }
 
+    // Codex Apps are runtime-only plugin projections. Favorite only changes
+    // their display scope; enabled only controls local AI tool exposure.
+    for (const app of includeCodexApps ? codexAppPlugins : []) {
+      const isFavorite = favoritePluginIds.has(app.pluginId)
+      const isEnabled = !disabledCodexAppIds.has(app.connectorId)
+      const scope = isFavorite ? 'favorite' : 'codex-app'
+      if (!itemsByScope.has(scope)) itemsByScope.set(scope, [])
+      itemsByScope.get(scope)!.push({
+          type: 'codex-app',
+          id: app.pluginId,
+          name: app.displayName,
+          description: app.description,
+          marketplace: app.marketplace,
+          scope,
+          status: isEnabled ? 'available' : 'disabled',
+          isEnabled,
+          isFavorite,
+          app,
+      })
+    }
+
     // Add failed plugins to their respective scope groups
     for (const failedPlugin of failedPluginItems) {
       const scope = failedPlugin.scope
@@ -913,6 +962,7 @@ export function ManagePlugins({
         const item = items[i]!
         if (
           item.type === 'plugin' ||
+          item.type === 'codex-app' ||
           item.type === 'failed-plugin' ||
           item.type === 'flagged-plugin'
         ) {
@@ -955,6 +1005,9 @@ export function ManagePlugins({
     pluginStates,
     mcpClients,
     pluginErrors,
+    codexAppPlugins,
+    includeCodexApps,
+    disabledCodexAppIds,
     pendingToggles,
     flaggedPlugins,
     favoritePluginIds,
@@ -1001,6 +1054,47 @@ export function ManagePlugins({
   const [detailsMenuIndex, setDetailsMenuIndex] = useState(0)
   const [isProcessing, setIsProcessing] = useState(false)
   const [processError, setProcessError] = useState<string | null>(null)
+
+  const updateCodexAppEnabled = useCallback(
+    (app: CodexAppPluginProjection, enabled: boolean) => {
+      try {
+        setCodexAppEnabled(app.connectorId, enabled)
+        setDisabledCodexAppIds(getDisabledCodexAppConnectorIds())
+        setAppState(previous => ({
+          ...previous,
+          mcp: {
+            ...previous.mcp,
+            tools: refreshCodexAppToolExposure(previous.mcp.tools),
+          },
+        }))
+        setProcessError(null)
+      } catch (error) {
+        setProcessError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to update Codex App state',
+        )
+      }
+    },
+    [setAppState],
+  )
+
+  const updateCodexAppFavorite = useCallback(
+    (app: CodexAppPluginProjection) => {
+      try {
+        togglePluginFavorite(app.pluginId)
+        setFavoritePluginIds(getFavoritePluginIds())
+        setProcessError(null)
+      } catch (error) {
+        setProcessError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to update Codex App favorite',
+        )
+      }
+    },
+    [],
+  )
 
   // Configuration state
   const [configNeeded, setConfigNeeded] =
@@ -1475,6 +1569,8 @@ export function ManagePlugins({
       }
     } else if (item?.type === 'mcp') {
       void toggleMcpServer(item.client.name)
+    } else if (item?.type === 'codex-app') {
+      updateCodexAppEnabled(item.app, !item.isEnabled)
     }
   }, [
     selectedIndex,
@@ -1482,6 +1578,7 @@ export function ManagePlugins({
     pendingToggles,
     pluginStates,
     toggleMcpServer,
+    updateCodexAppEnabled,
   ])
 
   // Handle accept (Enter) in plugin-list
@@ -1524,6 +1621,10 @@ export function ManagePlugins({
           scope: item.scope,
         },
       })
+      setDetailsMenuIndex(0)
+      setProcessError(null)
+    } else if (item?.type === 'codex-app') {
+      setViewState({ type: 'codex-app-details', app: item.app })
       setDetailsMenuIndex(0)
       setProcessError(null)
     } else if (item?.type === 'mcp') {
@@ -1778,6 +1879,42 @@ export function ManagePlugins({
     favoritePluginIds,
   ])
 
+  const codexAppDetailsMenuItems = React.useMemo(() => {
+    if (
+      typeof viewState !== 'object' ||
+      viewState.type !== 'codex-app-details'
+    ) {
+      return []
+    }
+
+    const app = viewState.app
+    const isFavorite = favoritePluginIds.has(app.pluginId)
+    const isEnabled = !disabledCodexAppIds.has(app.connectorId)
+    return [
+      {
+        label: isFavorite ? 'Remove from favorites' : 'Add to favorites',
+        action: () => updateCodexAppFavorite(app),
+      },
+      {
+        label: isEnabled ? 'Disable Codex App' : 'Enable Codex App',
+        action: () => updateCodexAppEnabled(app, !isEnabled),
+      },
+      {
+        label: 'Back to plugin list',
+        action: () => {
+          setViewState('plugin-list')
+          setProcessError(null)
+        },
+      },
+    ]
+  }, [
+    viewState,
+    favoritePluginIds,
+    disabledCodexAppIds,
+    updateCodexAppEnabled,
+    updateCodexAppFavorite,
+  ])
+
   // Plugin-details navigation
   useKeybindings(
     {
@@ -1800,6 +1937,30 @@ export function ManagePlugins({
     {
       context: 'Select',
       isActive: viewState === 'plugin-details' && !!selectedPlugin,
+    },
+  )
+
+  useKeybindings(
+    {
+      'select:previous': () => {
+        if (detailsMenuIndex > 0) {
+          setDetailsMenuIndex(detailsMenuIndex - 1)
+        }
+      },
+      'select:next': () => {
+        if (detailsMenuIndex < codexAppDetailsMenuItems.length - 1) {
+          setDetailsMenuIndex(detailsMenuIndex + 1)
+        }
+      },
+      'select:accept': () => {
+        codexAppDetailsMenuItems[detailsMenuIndex]?.action()
+      },
+    },
+    {
+      context: 'Select',
+      isActive:
+        typeof viewState === 'object' &&
+        viewState.type === 'codex-app-details',
     },
   )
 
@@ -2471,6 +2632,118 @@ export function ManagePlugins({
     )
   }
 
+  // Codex App projection detail view
+  if (
+    typeof viewState === 'object' &&
+    viewState.type === 'codex-app-details'
+  ) {
+    const app = viewState.app
+    const visibleTools = app.tools.slice(0, 8)
+    const isEnabled = !disabledCodexAppIds.has(app.connectorId)
+    const isFavorite = favoritePluginIds.has(app.pluginId)
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text bold>{app.displayName}</Text>
+          <Text dimColor> Codex App</Text>
+        </Box>
+        <Box>
+          <Text dimColor>Connector: </Text>
+          <Text>{app.connectorName}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>Connector ID: </Text>
+          <Text>{app.connectorId}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>Runtime: </Text>
+          <Text>shared codex_apps MCP</Text>
+        </Box>
+        <Box>
+          <Text dimColor>Status: </Text>
+          <Text color={isEnabled ? 'success' : 'warning'}>
+            {isEnabled ? 'Enabled' : 'Disabled'}
+          </Text>
+          <Text dimColor>
+            {isEnabled
+              ? ' (authorization is checked on use)'
+              : ' (hidden from the AI tool pool)'}
+          </Text>
+        </Box>
+        <Box>
+          <Text dimColor>Favorite: </Text>
+          <Text color={isFavorite ? 'warning' : undefined}>
+            {isFavorite ? 'Yes ★' : 'No'}
+          </Text>
+        </Box>
+        {app.description && (
+          <Box marginTop={1}>
+            <Text>{app.description}</Text>
+          </Box>
+        )}
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>
+            Tools ({app.tools.length})
+          </Text>
+          {visibleTools.map(tool => (
+            <Text key={tool.name} dimColor>
+              {'  '}{tool.name}
+            </Text>
+          ))}
+          {app.tools.length > visibleTools.length && (
+            <Text dimColor>
+              {'  '}… and {app.tools.length - visibleTools.length} more
+            </Text>
+          )}
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor italic>
+            Favorite and enablement are local preferences; install, uninstall,
+            and authentication are managed by ChatGPT.
+          </Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          {codexAppDetailsMenuItems.map((item, index) => {
+            const isSelected = index === detailsMenuIndex
+            return (
+              <Box key={item.label}>
+                <Text>{isSelected ? `${figures.pointer} ` : '  '}</Text>
+                <Text bold={isSelected}>{item.label}</Text>
+              </Box>
+            )
+          })}
+        </Box>
+        {processError && (
+          <Box marginTop={1}>
+            <Text color="error">{processError}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Byline>
+            <ConfigurableShortcutHint
+              action="select:previous"
+              context="Select"
+              fallback="↑"
+              description="navigate"
+            />
+            <ConfigurableShortcutHint
+              action="select:accept"
+              context="Select"
+              fallback="Enter"
+              description="select"
+            />
+            <ConfigurableShortcutHint
+              action="confirm:no"
+              context="Confirmation"
+              fallback="Esc"
+              description="back"
+            />
+          </Byline>
+        </Box>
+      </Box>
+    )
+  }
+
   // Failed plugin detail view
   if (
     typeof viewState === 'object' &&
@@ -2818,6 +3091,8 @@ export function ManagePlugins({
               return 'Built-in'
             case 'favorite':
               return 'Favorite'
+            case 'codex-app':
+              return 'Codex Apps'
             default:
               return scope
           }

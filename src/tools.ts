@@ -76,6 +76,7 @@ import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
 import { ReadMcpResourceTool } from './tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { ToolSearchTool } from './tools/ToolSearchTool/ToolSearchTool.js'
+import { filterEnabledCodexAppTools } from './services/apps/preferences.js'
 import { EnterPlanModeTool } from './tools/EnterPlanModeTool/EnterPlanModeTool.js'
 import { EnterWorktreeTool } from './tools/EnterWorktreeTool/EnterWorktreeTool.js'
 import { ExitWorktreeTool } from './tools/ExitWorktreeTool/ExitWorktreeTool.js'
@@ -358,7 +359,11 @@ export function assembleToolPool(
   const builtInTools = getTools(permissionContext)
 
   // Filter out MCP tools that are in the deny list
-  const allowedMcpTools = filterToolsByDenyRules(mcpTools, permissionContext)
+  const enabledMcpTools = filterEnabledCodexAppTools(mcpTools)
+  const allowedMcpTools = filterToolsByDenyRules(
+    enabledMcpTools,
+    permissionContext,
+  )
 
   // Sort each partition for prompt-cache stability, keeping built-ins as a
   // contiguous prefix. The server's claude_code_system_cache_policy places a
@@ -394,5 +399,5 @@ export function getMergedTools(
   mcpTools: Tools,
 ): Tools {
   const builtInTools = getTools(permissionContext)
-  return [...builtInTools, ...mcpTools]
+  return [...builtInTools, ...filterEnabledCodexAppTools(mcpTools)]
 }

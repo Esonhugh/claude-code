@@ -95,6 +95,118 @@ app-server
 - `dist/codex/codex-rs/app-server/src/request_processors/apps_processor.rs`：`app/list`、缓存和异步更新；
 - `dist/codex/codex-rs/core/src/context/apps_instructions.rs`：模型侧 Apps 使用说明。
 
+### 3.1.1 能力分类：App、Connector、Plugin、MCP 不是同义词
+
+当前 `dist/codex` 已经把这些概念拆成独立领域对象，不能用一个“远程 MCP server”类型概括全部能力：
+
+| 层级 | 主要职责 | 是否执行工具 | 关键源码 |
+| --- | --- | --- | --- |
+| App / Connector directory | 发现、安装链接、品牌、分类、review、workspace 可见性和分页缓存 | 否 | `codex-rs/connectors/src/lib.rs`、`app_info.rs`、`directory_cache.rs` |
+| Accessible connector snapshot | 从可信 Apps tools 反推当前账号可调用的 connector，并与 directory/plugin 来源合并 | 否 | `connectors/src/accessible.rs`、`merge.rs`、`snapshot.rs` |
+| App policy | default → app → tool 的 enabled、destructive/open-world 和 approval 策略 | 否；在暴露和调用前裁决 | `connectors/src/app_tool_policy.rs`、`core/src/mcp_tool_exposure.rs`、`core/src/mcp_tool_call.rs` |
+| Codex Apps MCP adapter | 信任 connector metadata，规范化 namespace/name，处理 file params | 是，最终走 MCP `tools/call` | `codex-mcp/src/codex_apps.rs`、`rmcp_client.rs` |
+| Plugin package | 一个可安装/选择的能力包，可同时声明 skills、MCP servers、Apps connector IDs、hooks 和 UI metadata | 自身不是执行协议 | `plugin/src/manifest.rs`、`core/src/plugins/*` |
+| MCP catalog / extension overlay | 合并用户配置、兼容内建、插件注册和 host extension 的 MCP server，并按来源优先级解析冲突 | 负责实例化执行连接 | `codex-mcp/src/catalog.rs`、`core/src/mcp.rs`、`ext/extension-api/src/contributors/mcp.rs` |
+| Tool exposure / discovery | 将 direct/deferred tools 分开，使用 `tool_search` 的 BM25 索引按需把工具加入下一次模型请求 | 不执行业务工具 | `core/src/mcp_tool_exposure.rs`、`tools/src/tool_discovery.rs`、`core/src/tools/handlers/tool_search.rs` |
+| App-server control plane | 向 rich client 提供实验性 `app/list`、分页、cached-first 更新通知和 enabled 状态 | 否 | `app-server/src/request_processors/apps_processor.rs`、`app-server-protocol/src/protocol/v2/apps.rs` |
+
+因此可用如下关系理解：
+
+```text
+Plugin（分发/组合单元）
+  ├── Skills（说明和工作流）
+  ├── MCP server declarations（本地或远程执行端）
+  ├── App connector IDs（引用 ChatGPT connector）
+  └── Hooks / UI metadata
+
+Connector Directory（可发现全集）
+          +
+codex_apps tools（当前账号可访问子集）
+          +
+Plugin connector declarations（包归属/provenance）
+          ↓ merge + policy
+AppInfo / tool_search / app/list
+          ↓
+真正调用仍进入 MCP manager
+```
+
+另外，Codex 还有两类不属于 Apps MCP 的工具通道：
+
+- Responses API 原生工具，例如 `web_search`；它们由模型服务执行，不经过 MCP；
+- thread/client 注入的 dynamic tools；Codex 发送动态 tool call 事件，由 app-server 客户端返回 `DynamicToolResponse`，也不经过 MCP。对应 `core/src/tools/handlers/dynamic.rs`。
+
+这说明“所有 Codex 工具都使用 MCP”并不成立；但“ChatGPT App/Connector 的在线业务动作最终以 MCP tool 执行”在当前实现中成立。
+
+### 3.1.2 两个 host-owned Apps runtime 路径
+
+当前 `dist/codex` 存在两条同语义、不同部署代际的 host-owned 配置：
+
+1. `codex_apps_mcp_server_config()` 构造 legacy compatibility endpoint：ChatGPT production 为 `/backend-api/wham/apps`；
+2. `hosted_plugin_runtime_mcp_server_config()` 构造 plugin-service endpoint：ChatGPT production 为 `/backend-api/ps/mcp`。
+
+`codex-rs/ext/mcp/src/lib.rs` 的 `HostedPluginRuntimeExtension` 以 extension overlay 的形式，用同一个保留逻辑名 `codex_apps` 注册 `/ps/mcp`；`core/src/mcp.rs` 同时保留 `/wham/apps` compatibility registration。最终由 MCP catalog 的来源优先级和 feature projection 决定生效配置，而不是调用方根据 server 名自行选择 URL。
+
+这对本移植有两个直接影响：
+
+- connector metadata、命名、权限、ToolSearch 和 wire call 应属于与 endpoint 无关的 Apps adapter；
+- transport 应引入内部的 runtime variant/capability negotiation。当前写死 `/wham/apps` 可作为已验证的 legacy MVP，但不能被描述为完整的当前 Codex parity；在 `/ps/mcp` 请求契约和返回 metadata 完成真实 OAuth 验证前，不应盲目切换生产默认值。
+
+### 3.1.3 将单个 App 投影为 remote plugin
+
+可以在产品/UI 和 discovery 层把每个 connector 投影成类似 `CodexApp_GitHub` 的 synthetic remote plugin，但不能据此为每个 App 创建独立 MCP server，也不能伪造真实 backend remote-plugin identity。
+
+当前 `dist/codex` 已经支持真实 remote plugin 携带 Apps：
+
+- `codex-plugin/src/lib.rs` 的 `PluginCapabilitySummary` 同时包含 `has_skills`、`mcp_server_names` 和 `app_connector_ids`；
+- `.codex-plugin/plugin.json` 可通过 `apps` 指向 `.app.json`，其中每条 `AppDeclaration` 保存展示名、connector ID 和 category；
+- `core-plugins/src/remote.rs` 的 remote plugin release 同时返回 `skills`、`mcp_servers`、`app_ids`、`app_manifest` 和 `app_templates`；
+- 安装 remote plugin 调用 `/ps/plugins/{remote_plugin_id}/install?includeAppsNeedingAuth=true`，响应会单独返回 `app_ids_needing_auth`，证明“plugin 已安装”和“connector 已授权”是两个状态；
+- 多个 plugins 可以声明同一个 connector，`effective_apps()` 会按 connector ID 去重，同时 connector snapshot 保留所有 plugin display-name provenance；
+- 当一个已启用 plugin 同时声明同名 App 和 MCP server 且当前 auth 支持 Apps route 时，`apply_app_mcp_routing_policy()` 会保留 App、移除重复 MCP server，说明 App route 是首选执行投影，而不是再建一条连接。
+
+因此推荐把对象分成两个 variant：
+
+```ts
+type AppPluginProjection =
+  | {
+      kind: 'backend-remote-plugin'
+      pluginId: string
+      remotePluginId: string       // 仅使用 backend 实际返回的 ID
+      connectorIds: string[]       // 可为 0、1 或多个
+      installAction: 'plugin-service'
+    }
+  | {
+      kind: 'connector-projection'
+      pluginId: `codex-app-${string}@chatgpt-connectors`
+      connectorId: string
+      displayName: string          // 例如 CodexApp_GitHub
+      installAction: 'connector-auth-or-directory'
+      canonicalRemotePluginId?: string
+    }
+```
+
+`CodexApp_GitHub` 的建议含义是：
+
+```text
+synthetic plugin identity: codex-app-github@chatgpt-connectors
+connector identity:       backend 返回的稳定 connector_id
+tool provenance:          codex_apps + connector_id
+tool execution:           共享 codex_apps MCP transport
+authentication:           ChatGPT backend 管理的 GitHub connector auth
+optional package owner:   backend 明确返回的 canonical remote_plugin_id
+```
+
+必须遵守以下边界：
+
+1. synthetic `pluginId` 只用于本地分组、搜索、mention 和 UI，不得传给 `/ps/plugins/{id}/install`；只有 backend 返回并验证过的 `remotePluginId` 才能调用 plugin-service mutation；
+2. connector 授权不能等同于 plugin 安装。至少区分 `discoverable`、`plugin-installed`、`auth-required`、`accessible`、`disabled`；
+3. 一 App 一投影只是 canonical fallback。若真实 plugin 同时含 GitHub connector、skills 和其他 connectors，应显示真实 plugin，并把 GitHub projection 作为其 capability/provenance，而不是复制安装项；
+4. 多个真实 plugins 引用同一 GitHub connector 时只保留一个 connector runtime/tool namespace，UI 可列出多个 `pluginDisplayNames`；
+5. 每个 App 不创建一个 MCP client。所有 projections 仍共享受信任的 `codex_apps` registration、OAuth provider、tools cache 和 `tools/list_changed` 生命周期；
+6. 第一阶段若只有 `/wham/apps` tools，没有 plugin catalog/directory，只能为已经 accessible 的 connectors 创建只读 projection，不能声称支持安装、卸载、branding 或 marketplace。
+
+该抽象的价值主要在 control plane：它让现有 plugin picker、ToolSearch source、mention、enable/disable 和 handoff UI 能统一展示 Apps；执行层仍维持 App/Connector 与 Plugin 的多对多关系。
+
 ### 3.2 一台 MCP server 承载多个 App
 
 普通 MCP server 通常只有 server/tool 两级命名。当前 `dist/codex` 实现从每个 MCP tool 的标准 `_meta` 对象读取 Connector 扩展字段，而不是从 tool 顶层读取：
@@ -398,6 +510,22 @@ type AccessibleApp = {
 
 ## 8. 实施阶段
 
+### 8.0 当前实现状态（2026-07-14）
+
+当前分支已落地第一批可运行的 ToolSet 骨架，但尚未达到下文 Phase 0–5 的完整 MVP：
+
+- 已完成：`src/services/apps/toolSet.ts` 在 `CLAUDE_CODE_ENABLE_CODEX_APPS=1`、OpenAI provider、ChatGPT OAuth 三条件同时满足时，向现有 MCP runtime 注入 host-owned `codex_apps`；公共 MCP schema 未暴露 trust，`src/services/apps/trust.ts` 使用模块私有 `Symbol` 标记可信 registration，同名项目配置会被宿主 registration 覆盖；
+- 已完成：`src/services/apps/auth.ts` 严格拒绝 API key、`OPENAI_AUTH_TOKEN`、Claude/Anthropic auth 和非 OpenAI provider；`src/services/apps/transport.ts` 固定连接 `https://chatgpt.com/backend-api/wham/apps`，按请求读取共享 OAuth 身份，发送 Bearer、account ID、product SKU、originator，并在 401 后 force refresh、重试一次；transport 复用其他 HTTP API client 的 `getProxyFetchOptions()`，支持 `https_proxy`、`HTTPS_PROXY`、`http_proxy`、`HTTP_PROXY`（小写优先），Node dispatcher 同时遵守 `NO_PROXY`；OAuth token exchange/refresh 继续使用现有 `getOpenAIProxyConfig()`；
+- 已完成：`src/services/apps/toolMetadata.ts` 读取 connector metadata 及兼容别名；`src/services/apps/toolNormalization.ts` 建立 connector namespace；`src/services/mcp/client.ts` 只对可信 registration 启用该 adapter，保留原始 wire tool name，模型名和 permission name 独立；
+- 已完成：工具继续进入 `appState.mcp.tools` 并由 `assembleToolPool()` 统一组装；交互、print/prefetch 和 Claude.ai 第二批连接已避免重复注册；`codex_apps` 已在 `addMcpConfig()` 中设为保留名；
+- 已验证：`src/services/apps/toolNormalization.test.ts`、`src/services/apps/toolSet.test.ts`，相关 OpenAI auth/refresh 测试，定向 ESLint，以及 `bun run build`；真实交互中使用 `~/.codex/auth.json` 的 ChatGPT OAuth、`http_proxy/https_proxy=http://127.0.0.1:7890` 成功连接 `/backend-api/wham/apps`，MCP initialize/list 完成并返回 177 tools；无代理时连接超时，证明当前网络环境的 env proxy 路径确实生效；
+- 新确认的 parity 差距：当前 `dist/codex` 的 host extension 会把同名 `codex_apps` overlay 到 `/backend-api/ps/mcp`，而本实现仅支持已实测的 `/wham/apps`；后续必须先验证 `/ps/mcp` 再决定 runtime 选择策略；
+- 交互中发现的 UI 差距：通用 `/mcp` 详情错误显示 `Re-authenticate`/`Clear authentication`。Apps 的宿主认证归 `~/.codex/auth.json` 和 OpenAI OAuth owner 管理，不能使用普通 MCP OAuth/keychain 操作；应隐藏这两个动作或改为只读的“Managed by OpenAI OAuth”，并将重新认证导向现有 `/login`；
+- 尚未完成：真实 OAuth backend fixture/联调、`tools/list` cursor 循环、普通 MCP connector 保留 metadata 主动 strip、名称 64 字符截断/hash/collision、ToolSearch 专用 searchHint/instructions、logout/account switch 主动断连、connector auth UI、`openai/fileParams`、App policy、account-scoped LKG cache 和 accessible Apps UI；
+- 当前启用方式：仅供实验验证，必须同时设置 `CLAUDE_CODE_USE_OPENAI=1` 与 `CLAUDE_CODE_ENABLE_CODEX_APPS=1`，并通过现有 OpenAI browser/device OAuth 登录。不要配置 API key，也不要配置 `CODEX_CONNECTORS_TOKEN`。
+
+后续 agent 应从未完成列表继续，不应重复创建第二套工具池或第二套 token store。
+
 ### Phase 0：协议、认证和产品边界确认
 
 目标：在写生产 transport 前取得可重复、脱敏的真实协议样本。
@@ -412,6 +540,8 @@ type AccessibleApp = {
 6. 确认文件上传 endpoint、大小限制、provided-file shape；
 7. 确认 connector auth failure/link elicitation 的正式 result schema；
 8. 决定与现有 Claude.ai connectors 并存时的产品优先级。
+9. 对 `/backend-api/wham/apps` 与 `/backend-api/ps/mcp` 分别保存脱敏 initialize、tools/list 和 tools/call fixture，确认两者是兼容部署、替代关系还是按产品/账号分流；
+10. 定义内部 runtime variant（例如 `legacy-wham` / `hosted-plugin-service`），禁止将 endpoint 作为公共 `.mcp.json` 可配置项，也禁止仅凭 HTTP 404 在携带 OAuth token 时向任意 origin fallback。
 
 退出条件：协议 fixture 可离线驱动 adapter 测试；只接受 OpenAI 模式下的 ChatGPT OAuth；API key、通用 bearer token、Claude.ai/Anthropic 凭证均被资格门拒绝；未决项有明确 owner。
 
@@ -509,7 +639,7 @@ src/cli/print.ts
 
 1. 实现 `getCodexAppsEligibility()`：严格检查 OpenAI provider、`isChatGPT`、access token 和受支持的 ChatGPT origin；
 2. 复用 `checkAndRefreshOpenAITokenIfNeeded()`，定义按请求读取最新 OAuth token 的 host auth provider；
-3. endpoint 只从受信任 ChatGPT backend 推导，不接受项目级 MCP URL 或任意 `OPENAI_BASE_URL`；
+3. endpoint 只从受信任 ChatGPT backend 和内部 runtime variant 推导，不接受项目级 MCP URL 或任意 `OPENAI_BASE_URL`；第一版保留已验证的 `/wham/apps`，完成 fixture 后评估默认使用 `/ps/mcp`；
 4. 构造 Streamable HTTP transport，发送经 fixture 验证的 Authorization、`chatgpt-account-id`、product SKU/originator headers；
 5. 401 时强制 refresh 并重试一次；refresh/login 失败进入 `needs-auth`，不得回退 API key 或环境 bearer token；
 6. 交互模式异步启动，不阻塞首屏；headless 模式有限等待，超时后不挂住主请求；
@@ -611,6 +741,10 @@ src/components/apps/*               # 或扩展 src/components/mcp/*
 6. UI 第一版优先扩展 `/mcp`：按 App 分组 tools，显示 connected/needs-auth/disabled；
 7. 只有具备合法 Connector Directory API 时才实现 discoverable/not-installed Apps；
 8. 如外部 rich client 确实需要，再定义 `app/list`/updated API；不要为表面 wire parity 复制整个 Codex app-server。
+9. host-owned Apps 连接的 UI 不得暴露普通 MCP OAuth 的 `Re-authenticate`/`Clear authentication`；认证状态来自 OpenAI OAuth owner，操作入口只能跳转到现有 `/login`/logout 生命周期。
+10. 为 accessible connector 建立 `connector-projection`，例如 `CodexApp_GitHub`；只读 projection 可由可信 tool metadata 生成，但安装/卸载能力必须等待真实 remote plugin catalog identity；
+11. connector projection 与 backend remote plugin 按 connector ID/canonical remote-plugin metadata 合并，避免一个 GitHub 同时出现为“App”和“Plugin”两个互相竞争的安装项；
+12. ToolSearch/mention 可以把 projection 当作 discovery source，但实际返回的 callable tools 仍引用共享 `codex_apps` server 和原始 wire tool name。
 
 ## 9. 测试计划
 
@@ -749,7 +883,10 @@ Phase 0 取得协议/认证/文件 fixture
 
 ### 14.1 当前状态与固定决策
 
-当前只完成了源码研究和移植计划，尚未在 `src/` 实现 Codex Apps。固定决策如下：
+当前已完成第一版 OAuth-only Codex Apps runtime、工具投影和 `/plugin` 顶层
+`Codex Apps` Tab（含本地 Favorite/enablement UI）；fileParams、App policy、
+connector re-auth 的跳转/完成流程和 directory control plane 仍未实现。页面已能
+记录并显示最近一次真实工具调用观测到的授权与可用性状态。固定决策如下：
 
 1. 目标项目只在 OpenAI provider 模式启用 Apps；
 2. 只接受 `~/.codex/auth.json` 中 `auth_mode: "chatgpt"` 的 ChatGPT OAuth；browser OAuth 和 device-code OAuth 都可，API key、`OPENAI_AUTH_TOKEN`、Claude.ai OAuth 和 `CODEX_CONNECTORS_TOKEN` 均不可；
@@ -759,6 +896,36 @@ Phase 0 取得协议/认证/文件 fixture
 6. 模型名称、权限名称和 wire tool name 必须分离；
 7. Connector 的第三方 OAuth token 永远由 ChatGPT backend 持有，目标项目只处理 auth failure、跳转和刷新；
 8. 第一版继续复用现有 `Tool[]`、`appState.mcp.tools`、`assembleToolPool()` 和 `ToolSearch`，不新建工具 runtime。
+
+当前实现还增加了一层**runtime-only connector projection**：每个可信 connector 在
+`/plugin` 的 OAuth-only 顶层 `Codex Apps` Tab 中直接显示 connector name，例如
+`GitHub`。它不是可安装 marketplace artifact，不拥有独立 MCP transport，
+不会调用 plugin install/enable/disable/uninstall API。Favorite 和 enable/disable
+是本地偏好：禁用只按 connector ID 从 AI 工具池过滤，不会关闭共享 MCP 或改变
+ChatGPT 授权。所有投影仍共享内部 `codex_apps` MCP。
+
+### 14.1.1 已落地实现快照（2026-07-15）
+
+| 能力 | 状态 | 关键相对路径 |
+|---|---|---|
+| OpenAI + ChatGPT OAuth-only eligibility | 已实现 | `src/services/apps/auth.ts` |
+| 受信任 Apps registration/transport 与 HTTPS proxy | 已实现 | `src/services/apps/trust.ts`、`transport.ts`、`toolSet.ts` |
+| connector metadata、wire/model name、ToolSearch hint | 已实现 | `src/services/apps/toolMetadata.ts`、`toolNormalization.ts`、`src/services/mcp/client.ts` |
+| 生命周期接入 `appState.mcp.tools` | 已实现 | `src/services/mcp/config.ts`、`useManageMCPConnections.ts` |
+| 每 connector 的 plugin-like projection | 已实现（runtime-only） | `src/services/apps/pluginProjection.ts` |
+| `/plugin` 顶层 Codex Apps Tab、Favorite、详情页 | 已实现 | `src/commands/plugin/PluginSettings.tsx`、`ManageCodexApps.tsx`、`UnifiedInstalledCell.tsx` |
+| connector 本地 enable/disable | 已实现 | `src/services/apps/preferences.ts`、`src/tools.ts`、`src/hooks/useMergedTools.ts` |
+| 每 connector 的授权/可用性观测状态 | 已实现 | `src/services/apps/status.ts`、`src/services/mcp/client.ts`、`ManageCodexApps.tsx` |
+| connector 远端安装/卸载 | 有意不实现 | 必须等待真实 backend remote-plugin identity/control plane |
+| connector 第三方 OAuth 管理 | 有意不在本地实现 | ChatGPT backend 持有；当前只在调用时检查授权 |
+| auth-failure 识别与状态显示 | 已实现 | 只接受可信 error result 且校验 connector ID；尚未实现完整 URL elicitation/hard refresh |
+| fileParams、App policy、auth-failure elicitation、directory | 未实现 | 继续按 Phase 6–8 实施 |
+
+projection 的本地 ID 为
+`codex-app-<sanitized-name>-<sha256(connector-id)[0..8]>@chatgpt-connectors`。
+这个 ID 只用于 UI key、搜索和去重，绝不能传入任何 plugin-service mutation。
+projection 仅从同时满足 `mcpInfo.serverName === "codex_apps"` 且具有可信解析后
+`connectorInfo.id` 的 `Tool` 聚合；它不会按工具名反推 connector。
 
 ### 14.2 上游 Codex 源码地图
 
@@ -782,6 +949,8 @@ Phase 0 取得协议/认证/文件 fixture
 | Directory 请求鉴权 | `dist/codex/codex-rs/chatgpt/src/chatgpt_client.rs` | Bearer、`ChatGPT-Account-ID`、`OAI-Product-Sku`、account ID 要求 |
 | Directory + accessible 合并 | `dist/codex/codex-rs/chatgpt/src/connectors.rs` | discoverable/accessibility 合并和 cache context |
 | `app/list` control plane | `dist/codex/codex-rs/app-server/src/request_processors/apps_processor.rs` | cached-first、并行加载、updated notification、force refresh、分页 |
+| App 状态数据模型 | `dist/codex/codex-rs/connectors/src/app_info.rs`、`app-server-protocol/src/protocol/v2/apps.rs` | 只有 `is_accessible` 与 `is_enabled`，没有静态 connector OAuth health 字段 |
+| 上游 TUI App 状态文案 | `dist/codex/codex-rs/tui/src/chatwidget/connectors.rs` | `connector_status_label()` 只区分 Installed、Installed · Disabled、Can be installed |
 | App/tool policy | `dist/codex/codex-rs/connectors/src/app_tool_policy.rs` | enabled/approval precedence、managed constraints、保守 annotations |
 | Tool 注册与 ToolSearch | `dist/codex/codex-rs/core/src/tools/handlers/mcp.rs` | namespace ToolSpec、search text、raw wire name 调用 |
 | 调用、权限、auth failure | `dist/codex/codex-rs/core/src/mcp_tool_call.rs` | policy、approval、file rewrite、auth elicitation、hard refresh |
@@ -814,6 +983,10 @@ Phase 0 取得协议/认证/文件 fixture
 | ToolSearch | `src/tools/ToolSearchTool/ToolSearchTool.ts`、`src/tools/ToolSearchTool/prompt.ts` | 使用 connector name/description/plugin provenance 作为搜索文本 |
 | app mention 输入 | `src/utils/attachments.ts` | 可选处理 `app://<connector_id>`，不得隐式授权或安装 |
 | 新模块 | `src/services/apps/` | 建议放 `auth.ts`、`trust.ts`、`types.ts`、`toolNormalization.ts`、`fileParams.ts`、`policy.ts`、`authFailure.ts`、`cache.ts` |
+| connector plugin 投影 | `src/services/apps/pluginProjection.ts` | 已实现 runtime-only 投影；不要拆成每 App 一个 MCP server |
+| connector 本地偏好 | `src/services/apps/preferences.ts`、`src/utils/settings/types.ts` | `disabledCodexApps` 按 connector ID 存储；Favorite 复用 synthetic plugin ID |
+| `/plugin` Codex Apps UI | `src/commands/plugin/PluginSettings.tsx`、`src/commands/plugin/ManageCodexApps.tsx`、`src/commands/plugin/UnifiedInstalledCell.tsx` | 已实现 OAuth-only 顶层 Tab、搜索、Favorite、本地启停和详情；不得接入远端 plugin mutation |
+| App 运行时观测状态 | `src/services/apps/status.ts`、`src/services/mcp/client.ts` | account + connector scoped 内存状态；真实调用成功为 ready，可信 auth failure 为 needs-auth，其他 MCP error 为 last-call-failed；重启后恢复 unchecked |
 
 不要直接修改 `dist/codex`；它是参考实现。生产改动应落在当前 TypeScript 项目的 `src/`。
 
@@ -891,6 +1064,20 @@ MCP 401
 | install URL | 本地构造 `https://chatgpt.com/apps/<slug>/<id>` | 固定模板构造并加强 URL/ID 校验 |
 | tools cache key | account/user/workspace，不含 backend origin | 加入 origin 和 product SKU |
 | Directory cache key | 包含 ChatGPT base URL/account/user/workspace | 保持至少同等隔离 |
+| App 列表状态 | 只有 `isAccessible`、`isEnabled`；TUI 显示 Installed/Disabled/Can be installed | 额外显示最近一次真实只读调用观测到的 checking/ready/needs-auth/error/cancelled/unchecked，不从 link metadata 猜测健康度 |
+
+这里的运行时状态是 account-scoped 的 last-known observation。状态写入
+`~/.claude/cache/codex-app-status-v1.json`，账号身份只保存 SHA-256 key，文件权限为
+`0600`，不保存 token、email、工具参数、返回数据或原始账号 ID。新进程读取 24 小时
+TTL 内的观测值，并用 `fs.watchFile` 接收其它 CLI 进程的 `checking -> terminal state`
+更新；切换 ChatGPT OAuth 账号不会复用旧账号状态。这个缓存不是 backend health API，
+所以 UI 使用 “last successful read-only call” 和时间戳表述，不把 connector catalog 的
+available/enabled 字段猜测成已授权或健康。
+
+只有 tool annotation 明确给出 `readOnlyHint: true` 时，调用才允许更新健康状态。
+创建、修改、删除、发送、安装、启用、交易/下单等工具即使成功也不计为健康检查；
+没有声明安全只读工具的 App 保持 `not yet verified`，不得为了消除 unchecked 自动调用
+未知或写入型工具。
 
 ### 14.7 推荐的实现批次
 
@@ -933,3 +1120,77 @@ bun run build
 ```
 
 开发时优先先跑新增的 `src/services/apps/*.test.ts`、相关 MCP、ToolSearch 和 permissions 测试，再跑全量命令。不得用 `npm install` 或生成新的 npm lockfile。交付说明必须列出：修改文件、实际运行的命令、未运行项及原因、真实 backend 是否验证、仍未解决的协议假设。
+
+### 14.10 本次真实验证记录
+
+在 `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:7890`、OpenAI 模式、
+`CLAUDE_CODE_ENABLE_CODEX_APPS=1` 和当前 `~/.codex/auth.json` ChatGPT OAuth
+凭据下，真实 Apps endpoint 返回 9 个 connector、177 个 tools：
+
+- Apple Music 2；Document Control 3；GitHub 89；Gmail 21；Hotline 1；
+  IBKR 27；OpenAI Platform 3；Plugin Management 4；Sites 27；
+- OAuth 模式下 `/plugin` 顶栏顺序为 `Discover`、`Installed`、`Marketplaces`、
+  `Codex Apps`、`Errors`；API key 模式下不会渲染 `Codex Apps` Tab；
+- Installed 不再重复显示 Apps；Codex Apps Tab 直接显示 `GitHub`、`Gmail`、
+  `Interactive Brokers (IBKR)` 等 connector name，不显示 `CodexApp_` 前缀；
+- 搜索 `GitHub` 后进入详情页，显示真实 connector ID、共享
+  `codex_apps` runtime 和 89 个 tools；
+- AI 端到端调用已验证：ToolSearch 选择模型可见名称
+  `mcp__codex_apps__github__search_repositories`，执行层使用原始 wire name
+  `github_search_repositories` 调用共享 MCP，并成功返回
+  `openai/openai-python`；
+- 交互权限流也已用 IBKR 验证：AI 选择 Codex Apps 的
+  `get_account_positions`，终端显示一次允许/持久允许/拒绝三项 permission prompt；
+  选择一次允许后，共享 MCP 使用原始 IBKR wire name 成功返回持仓。验证没有
+  写入长期 allow rule，也没有执行交易或修改；
+- 新的顶层 Tab 中 IBKR 本地偏好闭环已验证：Space 禁用后列表显示 disabled，同一会话的
+  ToolSearch 不再暴露 IBKR；重新启用后无需重连便恢复 permission prompt 和调用。
+  Favorite 后条目移动到现有 `Favorite` scope 并显示星标，移除后回到
+  `Codex Apps` scope。测试结束后已恢复为未收藏、已启用；
+- GitHub、Gmail、IBKR、Document Control、Hotline 和 Sites 的显式只读 MCP 调用成功；
+  Apple Music 返回需要重新授权，证明“可发现/available”不等于第三方 connector 已
+  授权或可用。Hotline 那次 assistant 文本摘要为 `ERROR`，但原始 tool result 没有
+  `is_error`，因此 UI 正确记录 MCP/read-access 为 `ready`；健康状态不得从模型生成的
+  自然语言反推。未调用、没有安全参数或没有声明 `readOnlyHint` 的 App 保持
+  `not yet verified (checked on use)`；
+- 状态跨进程闭环已验证：进程 A 的 IBKR 只读持仓调用成功后退出，完全新启动的进程 B
+  打开 `/plugin -> Codex Apps` 直接显示 IBKR `ready`。B 保持页面打开时，进程 C 的
+  Gmail 调用让 B 实时渲染 `checking now -> ready`，Apple Music 调用则实时渲染
+  `checking now -> needs authentication`；
+- 本地 enable/disable 与远端可用性分离：IBKR `ready` 时按 Space 禁用，显示
+  `disabled · last call succeeded`；重新启用后显示 `enabled · ready`，开关动作本身
+  不覆盖最近一次只读观测；
+- 代理链路已通过真实请求验证；实现使用代理感知的 HTTP client，不把 token
+  写入代理 URL、日志或 fixture。
+- 代理是纯 opt-in：仅在 `https_proxy`、`HTTPS_PROXY`、`http_proxy` 或
+  `HTTP_PROXY` 至少一个显式存在时注入代理；四者都不存在时不返回
+  `proxy`/`dispatcher`/`unix`，保持原生 fetch 直连，不默认劫持到 7890；
+
+本次定向验证命令：
+
+```bash
+bun test src/services/apps/pluginProjection.test.ts \
+  src/services/apps/preferences.test.ts \
+  src/services/apps/status.test.ts \
+  src/services/apps/toolNormalization.test.ts \
+  src/services/apps/toolSet.test.ts
+bun run lint
+bun run build
+make build
+```
+
+结果：状态功能加入前 17 tests passed；加入状态转换、只读门和安全持久化测试后相关
+Apps suite 为 29 tests passed；`bun run lint`、`bun run build` 和 `make build` 通过。
+定向 ESLint 仅报告 `client.ts` 既有的 `no-async-promise-executor` warning，Codex Apps
+UI 新增代码无 warning。
+
+全量 `bun test` 也已启动，但仓库其它功能的既有/环境相关失败后没有自行退出，手动
+SIGINT 结束：`runWorkflow.test.ts` 的 paused/running、`AgentTool.nesting.test.ts` 的
+Agent Teams 资格门、`openaiModelOptions.test.ts` 的动态模型缓存、`LogoV2/uiName.test.ts`
+的本地 EsonClaw 品牌名，以及 `pluginOperations.test.ts` 的卸载 mock。上述失败不经过
+Codex Apps 路径，本次没有覆盖用户现有 Workflow/品牌/plugin 改动。
+
+基础调用与本地偏好交互 debug log 分别位于
+`~/.claude/debug/9f76c658-4a85-4394-9e98-b1b71e4cd27c.txt` 和
+`~/.claude/debug/c2db62a6-bfba-4e44-874c-8a587db86bd8.txt`；其中可能包含账号、
+持仓或请求上下文，handoff 时只引用路径，不提交日志内容。

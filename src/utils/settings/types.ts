@@ -607,6 +607,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Favorite plugins using plugin-id@marketplace-id format. Favorite installed plugins are prioritized in the Installed plugins view.',
         ),
+      disabledCodexApps: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'ChatGPT connector IDs hidden from the AI tool pool. The shared host-owned codex_apps MCP remains connected so disabled Apps can still be managed and re-enabled.',
+        ),
       // Extra marketplaces for this repository (usually for project settings)
       extraKnownMarketplaces: z
         .record(z.string(), ExtraKnownMarketplaceSchema())

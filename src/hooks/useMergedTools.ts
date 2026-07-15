@@ -2,8 +2,8 @@
 import { useMemo } from 'react'
 import type { Tools, ToolPermissionContext } from '../Tool.js'
 import { assembleToolPool } from '../tools.js'
-import { useAppState } from '../state/AppState.js'
 import { mergeAndFilterTools } from '../utils/toolPool.js'
+import { filterEnabledCodexAppTools } from '../services/apps/preferences.js'
 
 /**
  * React hook that assembles the full tool pool for the REPL.
@@ -29,10 +29,12 @@ export function useMergedTools(
     // It handles: getTools() + MCP deny-rule filtering + dedup + MCP CLI exclusion.
     const assembled = assembleToolPool(toolPermissionContext, mcpTools)
 
-    return mergeAndFilterTools(
-      initialTools,
-      assembled,
-      toolPermissionContext.mode,
+    return filterEnabledCodexAppTools(
+      mergeAndFilterTools(
+        initialTools,
+        assembled,
+        toolPermissionContext.mode,
+      ),
     )
   }, [
     initialTools,

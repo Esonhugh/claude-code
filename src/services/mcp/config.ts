@@ -40,6 +40,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
+import { withCodexAppsToolSet } from '../apps/toolSet.js'
 import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
 import { expandEnvVarsInString } from './envExpansion.js'
 import {
@@ -627,6 +628,11 @@ export async function addMcpConfig(
   config: unknown,
   scope: ConfigScope,
 ): Promise<void> {
+  if (name === 'codex_apps') {
+    throw new Error(
+      'Cannot add MCP server "codex_apps": this name is reserved for the host-owned OpenAI OAuth ToolSet.',
+    )
+  }
   if (name.match(/[^a-zA-Z0-9_-]/)) {
     throw new Error(
       `Invalid name ${name}. Names can only contain letters, numbers, hyphens, and underscores.`,
@@ -1092,7 +1098,7 @@ export async function getClaudeCodeMcpConfigs(
       filtered[name] = serverConfig
     }
 
-    return { servers: filtered, errors: [] }
+    return { servers: withCodexAppsToolSet(filtered), errors: [] }
   }
 
   // Load other scopes — unless the managed policy locks MCP to plugin-only.
@@ -1247,7 +1253,7 @@ export async function getClaudeCodeMcpConfigs(
     filtered[name] = serverConfig as ScopedMcpServerConfig
   }
 
-  return { servers: filtered, errors: mcpErrors }
+  return { servers: withCodexAppsToolSet(filtered), errors: mcpErrors }
 }
 
 /**

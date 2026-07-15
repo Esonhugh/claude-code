@@ -5,6 +5,7 @@ import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutH
 import { Byline } from '../../components/design-system/Byline.js'
 import { Pane } from '../../components/design-system/Pane.js'
 import { Tab, Tabs } from '../../components/design-system/Tabs.js'
+import { getCodexAppsEligibility } from '../../services/apps/auth.js'
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { Box, Text } from '../../ink.js'
 import {
@@ -30,6 +31,7 @@ import { AddMarketplace } from './AddMarketplace.js'
 import { BrowseMarketplace } from './BrowseMarketplace.js'
 import { DiscoverPlugins } from './DiscoverPlugins.js'
 import { ManageMarketplaces } from './ManageMarketplaces.js'
+import { ManageCodexApps } from './ManageCodexApps.js'
 import { ManagePlugins } from './ManagePlugins.js'
 import { formatErrorMessage, getErrorGuidance } from './PluginErrors.js'
 import { type ParsedCommand, parsePluginArgs } from './parseArgs.js'
@@ -38,7 +40,12 @@ import { ValidatePlugin } from './ValidatePlugin.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
-type TabId = 'discover' | 'installed' | 'marketplaces' | 'errors'
+type TabId =
+  | 'discover'
+  | 'installed'
+  | 'marketplaces'
+  | 'codex-apps'
+  | 'errors'
 
 function MarketplaceList({
   onComplete,
@@ -741,6 +748,7 @@ export function PluginSettings({
   const [result, setResult] = useState<string | null>(null)
   const [childSearchActive, setChildSearchActive] = useState(false)
   const setAppState = useSetAppState()
+  const showCodexApps = getCodexAppsEligibility().eligible
 
   // Error count for the Errors tab badge — counts loader errors + background
   // marketplace install failures. Does NOT count marketplace-on-disk load
@@ -789,6 +797,7 @@ export function PluginSettings({
     const tab = tabId as TabId
     setActiveTab(tab)
     setError(null)
+    setChildSearchActive(false)
     switch (tab) {
       case 'discover':
         setViewState({ type: 'discover-plugins' })
@@ -798,6 +807,8 @@ export function PluginSettings({
         break
       case 'marketplaces':
         setViewState({ type: 'manage-marketplaces' })
+        break
+      case 'codex-apps':
         break
       case 'errors':
         // No viewState change needed — ErrorsTabContent renders inside <Tab id="errors">
@@ -956,7 +967,8 @@ export function PluginSettings({
           ) : undefined
         }
       >
-        <Tab id="discover" title="Discover">
+        {[
+        <Tab key="discover" id="discover" title="Discover">
           {viewState.type === 'browse-marketplace' ? (
             <BrowseMarketplace
               error={error}
@@ -984,8 +996,8 @@ export function PluginSettings({
               }
             />
           )}
-        </Tab>
-        <Tab id="installed" title="Installed">
+        </Tab>,
+        <Tab key="installed" id="installed" title="Installed">
           <ManagePlugins
             setViewState={setViewState}
             setResult={setResult}
@@ -1005,8 +1017,8 @@ export function PluginSettings({
               viewState.type === 'manage-plugins' ? viewState.action : undefined
             }
           />
-        </Tab>
-        <Tab id="marketplaces" title="Marketplaces">
+        </Tab>,
+        <Tab key="marketplaces" id="marketplaces" title="Marketplaces">
           <ManageMarketplaces
             setViewState={setViewState}
             error={error}
@@ -1025,14 +1037,23 @@ export function PluginSettings({
                 : undefined
             }
           />
-        </Tab>
-        <Tab id="errors" title={errorsTabTitle}>
+        </Tab>,
+        ...(showCodexApps
+          ? [<Tab key="codex-apps" id="codex-apps" title="Codex Apps">
+            <ManageCodexApps
+              onBack={() => onComplete()}
+              onSearchModeChange={setChildSearchActive}
+            />
+          </Tab>]
+          : []),
+        <Tab key="errors" id="errors" title={errorsTabTitle}>
           <ErrorsTabContent
             setViewState={setViewState}
             setActiveTab={setActiveTab}
             markPluginsChanged={markPluginsChanged}
           />
-        </Tab>
+        </Tab>,
+        ]}
       </Tabs>
     </Pane>
   )

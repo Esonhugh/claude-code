@@ -59,10 +59,17 @@ export function buildMcpToolName(serverName: string, toolName: string): string {
  */
 export function getToolNameForPermissionCheck(tool: {
   name: string
-  mcpInfo?: { serverName: string; toolName: string }
+  mcpInfo?: {
+    serverName: string
+    toolName: string
+    permissionToolName?: string
+  }
 }): string {
   return tool.mcpInfo
-    ? buildMcpToolName(tool.mcpInfo.serverName, tool.mcpInfo.toolName)
+    ? buildMcpToolName(
+        tool.mcpInfo.serverName,
+        tool.mcpInfo.permissionToolName ?? tool.mcpInfo.toolName,
+      )
     : tool.name
 }
 

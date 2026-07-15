@@ -6,9 +6,11 @@ import type { Command } from '../../commands.js'
 import type { Tool } from '../../Tool.js'
 import {
   clearServerCache,
+  clearFetchToolsCache,
   fetchCommandsForClient,
   fetchResourcesForClient,
   fetchToolsForClient,
+  getFetchToolsCacheKey,
   getMcpToolsCommandsAndResources,
   reconnectMcpServerImpl,
 } from './client.js'
@@ -629,9 +631,9 @@ export function useManageMCPConnections(
                 try {
                   // Grab cached promise before invalidating to log previous count
                   const previousToolsPromise = fetchToolsForClient.cache.get(
-                    client.name,
+                    getFetchToolsCacheKey(client),
                   )
-                  fetchToolsForClient.cache.delete(client.name)
+                  clearFetchToolsCache(client.name)
                   const newTools = await fetchToolsForClient(client)
                   const newCount = newTools.length
                   if (previousToolsPromise) {
@@ -957,6 +959,7 @@ export function useManageMCPConnections(
           getMcpToolsCommandsAndResources(
             onConnectionAttempt,
             enabledClaudeaiConfigs,
+            { includeCodexApps: false },
           ).catch(error => {
             logMCPError(
               'useManageMcpConnections',

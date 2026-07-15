@@ -124,6 +124,22 @@ import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { AssistantMessage } from 'src/types/message.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { classifyMcpToolForCollapse } from '../../tools/MCPTool/classifyForCollapse.js'
+import { readCodexAppsConnectorInfo } from '../apps/toolMetadata.js'
+import {
+  recordCodexAppToolCancelled,
+  recordCodexAppToolFailure,
+  recordCodexAppToolStarted,
+  recordCodexAppToolSuccess,
+  shouldTrackCodexAppVerification,
+} from '../apps/status.js'
+import {
+  buildCodexAppsModelToolName,
+  buildCodexAppsSearchHint,
+  normalizeCodexAppsTitle,
+} from '../apps/toolNormalization.js'
+import { withCodexAppsToolSet } from '../apps/toolSet.js'
+import { createCodexAppsTransport } from '../apps/transport.js'
+import { isHostOwnedCodexAppsConfig } from '../apps/trust.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
 import { sleep } from '../../utils/sleep.js'
 import {
@@ -582,7 +598,8 @@ export function getServerCacheKey(
   name: string,
   serverRef: ScopedMcpServerConfig,
 ): string {
-  return `${name}-${jsonStringify(serverRef)}`
+  const trust = isHostOwnedCodexAppsConfig(serverRef) ? 'host-owned' : 'normal'
+  return `${name}-${trust}-${jsonStringify(serverRef)}`
 }
 
 /**
@@ -616,7 +633,10 @@ export const connectToServer = memoize(
       // to remote MCP's directly.
       const sessionIngressToken = getSessionIngressAuthToken()
 
-      if (serverRef.type === 'sse') {
+      if (isHostOwnedCodexAppsConfig(serverRef)) {
+        transport = createCodexAppsTransport()
+        logMCPDebug(name, `Host-owned Codex Apps transport initialized`)
+      } else if (serverRef.type === 'sse') {
         // Create an auth provider for this server
         const authProvider = new ClaudeAuthProvider(name, serverRef)
 
@@ -1392,7 +1412,7 @@ export const connectToServer = memoize(
         // Also clear fetch caches (keyed by server name). Reconnection
         // creates a new connection object; without clearing, the next
         // fetch would return stale tools/resources from the old connection.
-        fetchToolsForClient.cache.delete(name)
+        clearFetchToolsCache(name)
         fetchResourcesForClient.cache.delete(name)
         fetchCommandsForClient.cache.delete(name)
         if (feature('MCP_SKILLS')) {
@@ -1670,7 +1690,7 @@ export async function clearServerCache(
   // Clear from cache (both connection and fetch caches so reconnect
   // fetches fresh tools/resources/commands instead of stale ones)
   connectToServer.cache.delete(key)
-  fetchToolsForClient.cache.delete(name)
+  clearFetchToolsCache(name)
   fetchResourcesForClient.cache.delete(name)
   fetchCommandsForClient.cache.delete(name)
   if (feature('MCP_SKILLS')) {
@@ -1719,6 +1739,11 @@ export function areMcpConfigsEqual(
 ): boolean {
   // Quick type check first
   if (a.type !== b.type) return false
+  if (
+    isHostOwnedCodexAppsConfig(a) !== isHostOwnedCodexAppsConfig(b)
+  ) {
+    return false
+  }
 
   // Compare by serializing - this handles all config variations
   // We exclude 'scope' from comparison since it's metadata, not connection config
@@ -1730,6 +1755,21 @@ export function areMcpConfigsEqual(
 // Max cache size for fetch* caches. Keyed by server name (stable across
 // reconnects), bounded to prevent unbounded growth with many MCP servers.
 const MCP_FETCH_CACHE_SIZE = 20
+
+const CODEX_APPS_FETCH_CACHE_SUFFIX = '#host-owned-codex-apps'
+
+export function getFetchToolsCacheKey(client: MCPServerConnection): string {
+  return client.type === 'connected' && isHostOwnedCodexAppsConfig(client.config)
+    ? `${client.name}${CODEX_APPS_FETCH_CACHE_SUFFIX}`
+    : client.name
+}
+
+export function clearFetchToolsCache(name: string): void {
+  fetchToolsForClient.cache.delete(name)
+  fetchToolsForClient.cache.delete(
+    `${name}${CODEX_APPS_FETCH_CACHE_SUFFIX}`,
+  )
+}
 
 /**
  * Encode MCP tool input for the auto-mode security classifier.
@@ -1771,19 +1811,39 @@ export const fetchToolsForClient = memoizeWithLRU(
       // Convert MCP tools to our Tool format
       return toolsToProcess
         .map((tool): Tool => {
-          const fullyQualifiedName = buildMcpToolName(client.name, tool.name)
+          const connectorInfo = isHostOwnedCodexAppsConfig(client.config)
+            ? readCodexAppsConnectorInfo(tool._meta)
+            : undefined
+          const appsNames = connectorInfo
+            ? buildCodexAppsModelToolName(tool.name, connectorInfo)
+            : undefined
+          const fullyQualifiedName =
+            appsNames?.name ?? buildMcpToolName(client.name, tool.name)
           return {
             ...MCPTool,
             // In skip-prefix mode, use the original name for model invocation so MCP tools
             // can override builtins by name. mcpInfo is used for permission checking.
             name: skipPrefix ? tool.name : fullyQualifiedName,
-            mcpInfo: { serverName: client.name, toolName: tool.name },
+            mcpInfo: {
+              serverName: client.name,
+              toolName: tool.name,
+              ...(appsNames && {
+                permissionToolName: appsNames.permissionToolName,
+              }),
+            },
+            ...(connectorInfo && { connectorInfo }),
             isMcp: true,
             // Collapse whitespace: _meta is open to external MCP servers, and
             // a newline here would inject orphan lines into the deferred-tool
             // list (formatDeferredToolLine joins on '\n').
-            searchHint:
-              typeof tool._meta?.['anthropic/searchHint'] === 'string'
+            searchHint: connectorInfo
+              ? buildCodexAppsSearchHint(
+                  connectorInfo,
+                  typeof tool._meta?.['anthropic/searchHint'] === 'string'
+                    ? tool._meta['anthropic/searchHint']
+                    : undefined,
+                )
+              : typeof tool._meta?.['anthropic/searchHint'] === 'string'
                 ? tool._meta['anthropic/searchHint']
                     .replace(/\s+/g, ' ')
                     .trim() || undefined
@@ -1864,6 +1924,12 @@ export const fetchToolsForClient = memoizeWithLRU(
 
               const startTime = Date.now()
               const MAX_SESSION_RETRIES = 1
+              const isReadOnlyVerification = shouldTrackCodexAppVerification(
+                tool.annotations?.readOnlyHint,
+              )
+              if (connectorInfo.id && isReadOnlyVerification) {
+                recordCodexAppToolStarted(connectorInfo.id)
+              }
               for (let attempt = 0; ; attempt++) {
                 try {
                   const connectedClient = await ensureConnectedClient(client)
@@ -1886,6 +1952,10 @@ export const fetchToolsForClient = memoizeWithLRU(
                         : undefined,
                     handleElicitation: context.handleElicitation,
                   })
+
+                  if (connectorInfo.id && isReadOnlyVerification) {
+                    recordCodexAppToolSuccess(connectorInfo.id)
+                  }
 
                   // Emit progress when tool completes successfully
                   if (onProgress && toolUseId) {
@@ -1927,6 +1997,20 @@ export const fetchToolsForClient = memoizeWithLRU(
                       `Retrying tool '${tool.name}' after session recovery`,
                     )
                     continue
+                  }
+
+                  if (connectorInfo.id && isReadOnlyVerification) {
+                    if (error instanceof Error && error.name === 'AbortError') {
+                      recordCodexAppToolCancelled(connectorInfo.id)
+                    } else {
+                      recordCodexAppToolFailure(
+                        connectorInfo.id,
+                        error instanceof
+                          McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+                          ? error.mcpMeta?._meta
+                          : undefined,
+                      )
+                    }
                   }
 
                   // Emit progress when tool fails
@@ -1981,7 +2065,11 @@ export const fetchToolsForClient = memoizeWithLRU(
             userFacingName() {
               // Prefer title annotation if available, otherwise use tool name
               const displayName = tool.annotations?.title || tool.name
-              return `${client.name} - ${displayName} (MCP)`
+              const normalizedDisplayName = connectorInfo
+                ? normalizeCodexAppsTitle(displayName, connectorInfo)
+                : displayName
+              const serverDisplayName = connectorInfo?.name ?? client.name
+              return `${serverDisplayName} - ${normalizedDisplayName} (MCP)`
             },
             ...(isClaudeInChromeMCPServer(client.name) &&
             (client.config.type === 'stdio' || !client.config.type)
@@ -2002,7 +2090,7 @@ export const fetchToolsForClient = memoizeWithLRU(
       return []
     }
   },
-  (client: MCPServerConnection) => client.name,
+  getFetchToolsCacheKey,
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2240,11 +2328,16 @@ export async function getMcpToolsCommandsAndResources(
     resources?: ServerResource[]
   }) => void,
   mcpConfigs?: Record<string, ScopedMcpServerConfig>,
+  options: { includeCodexApps?: boolean } = {},
 ): Promise<void> {
   let resourceToolsAdded = false
 
+  const sourceConfigs = mcpConfigs ?? (await getAllMcpConfigs()).servers
+  const effectiveConfigs = withCodexAppsToolSet(sourceConfigs, {
+    include: options.includeCodexApps !== false,
+  })
   const allConfigEntries = Object.entries(
-    mcpConfigs ?? (await getAllMcpConfigs()).servers,
+    effectiveConfigs,
   )
 
   // Partition into disabled and active entries — disabled servers should
@@ -2416,6 +2509,7 @@ export async function getMcpToolsCommandsAndResources(
 // mcpConfigs object ref leaked — main.tsx creates fresh config objects each call.
 export function prefetchAllMcpResources(
   mcpConfigs: Record<string, ScopedMcpServerConfig>,
+  options: { includeCodexApps?: boolean } = {},
 ): Promise<{
   clients: MCPServerConnection[]
   tools: Tool[]
@@ -2425,7 +2519,10 @@ export function prefetchAllMcpResources(
     let pendingCount = 0
     let completedCount = 0
 
-    pendingCount = Object.keys(mcpConfigs).length
+    const effectiveConfigs = withCodexAppsToolSet(mcpConfigs, {
+      include: options.includeCodexApps !== false,
+    })
+    pendingCount = Object.keys(effectiveConfigs).length
 
     if (pendingCount === 0) {
       void resolve({
@@ -2466,7 +2563,7 @@ export function prefetchAllMcpResources(
           commands,
         })
       }
-    }, mcpConfigs).catch(error => {
+    }, effectiveConfigs, { includeCodexApps: false }).catch(error => {
       logMCPError(
         'prefetchAllMcpResources',
         `Failed to get MCP resources: ${errorMessage(error)}`,

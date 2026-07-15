@@ -3,6 +3,7 @@ import * as React from 'react'
 import { Box, color, Text, useTheme } from '../../ink.js'
 import { plural } from '../../utils/stringUtils.js'
 import type { UnifiedInstalledItem } from './unifiedTypes.js'
+import { codexAppListStatusLabel } from '../../services/apps/status.js'
 
 type Props = {
   item: UnifiedInstalledItem
@@ -50,6 +51,49 @@ export function UnifiedInstalledCell({
         <Text dimColor> · {item.marketplace}</Text>
         <Text dimColor={!isSelected}> · {statusIcon} </Text>
         <Text dimColor={!isSelected}>{statusText}</Text>
+      </Box>
+    )
+  }
+
+  if (item.type === 'codex-app') {
+    const statusIcon = item.isEnabled
+      ? color('success', theme)(figures.tick)
+      : color('inactive', theme)(figures.radioOff)
+    const statusText = item.isEnabled ? 'enabled' : 'disabled'
+    const runtimeStatus = item.runtimeStatus
+    const usabilityIcon =
+      runtimeStatus.kind === 'ready'
+        ? color('success', theme)(figures.tick)
+        : runtimeStatus.kind === 'checking'
+          ? color('suggestion', theme)(figures.arrowRight)
+        : runtimeStatus.kind === 'needs-auth'
+          ? color('warning', theme)(figures.warning)
+          : runtimeStatus.kind === 'error'
+            ? color('error', theme)(figures.cross)
+            : color('inactive', theme)(figures.radioOff)
+    const usabilityText = codexAppListStatusLabel(
+      runtimeStatus,
+      item.isEnabled,
+    )
+    return (
+      <Box>
+        <Text color={isSelected ? 'suggestion' : undefined}>
+          {isSelected ? `${figures.pointer} ` : '  '}
+        </Text>
+        <Text color={isSelected ? 'suggestion' : undefined}>{item.name}</Text>
+        {item.isFavorite && <Text color="warning"> ★</Text>}
+        <Text dimColor={!isSelected}>
+          {' '}
+          <Text backgroundColor="userMessageBackground">Codex App</Text>
+        </Text>
+        <Text dimColor={!isSelected}>
+          {' '}
+          · {statusIcon} {statusText}
+        </Text>
+        <Text dimColor={!isSelected}>
+          {' '}
+          · {usabilityIcon} {usabilityText}
+        </Text>
       </Box>
     )
   }
