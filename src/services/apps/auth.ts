@@ -1,11 +1,10 @@
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
 import type { CodexAppsEligibility } from './types.js'
 
 export function getCodexAppsEligibility(): CodexAppsEligibility {
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_CODEX_APPS)) {
+  if (process.env.CLAUDE_CODE_DISABLE_CODEX_APPS === '1') {
     return { eligible: false, reason: 'feature-disabled' }
   }
   if (getAPIProvider() !== 'openai') {
@@ -30,8 +29,8 @@ export async function requireCodexAppsOAuth({
 }: {
   forceRefresh?: boolean
 } = {}): Promise<OpenAIAuthInfo> {
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_CODEX_APPS)) {
-    throw new Error('Codex Apps is not enabled')
+  if (process.env.CLAUDE_CODE_DISABLE_CODEX_APPS === '1') {
+    throw new Error('Codex Apps is disabled')
   }
   if (getAPIProvider() !== 'openai') {
     throw new Error('Codex Apps requires the OpenAI provider')

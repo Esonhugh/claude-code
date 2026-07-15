@@ -514,7 +514,7 @@ type AccessibleApp = {
 
 当前分支已落地第一批可运行的 ToolSet 骨架，但尚未达到下文 Phase 0–5 的完整 MVP：
 
-- 已完成：`src/services/apps/toolSet.ts` 在 `CLAUDE_CODE_ENABLE_CODEX_APPS=1`、OpenAI provider、ChatGPT OAuth 三条件同时满足时，向现有 MCP runtime 注入 host-owned `codex_apps`；公共 MCP schema 未暴露 trust，`src/services/apps/trust.ts` 使用模块私有 `Symbol` 标记可信 registration，同名项目配置会被宿主 registration 覆盖；
+- 已完成：`src/services/apps/toolSet.ts` 在 OpenAI provider、ChatGPT OAuth 且未设置 `CLAUDE_CODE_DISABLE_CODEX_APPS=1` 时，默认向现有 MCP runtime 注入 host-owned `codex_apps`；公共 MCP schema 未暴露 trust，`src/services/apps/trust.ts` 使用模块私有 `Symbol` 标记可信 registration，同名项目配置会被宿主 registration 覆盖；
 - 已完成：`src/services/apps/auth.ts` 严格拒绝 API key、`OPENAI_AUTH_TOKEN`、Claude/Anthropic auth 和非 OpenAI provider；`src/services/apps/transport.ts` 固定连接 `https://chatgpt.com/backend-api/wham/apps`，按请求读取共享 OAuth 身份，发送 Bearer、account ID、product SKU、originator，并在 401 后 force refresh、重试一次；transport 复用其他 HTTP API client 的 `getProxyFetchOptions()`，支持 `https_proxy`、`HTTPS_PROXY`、`http_proxy`、`HTTP_PROXY`（小写优先），Node dispatcher 同时遵守 `NO_PROXY`；OAuth token exchange/refresh 继续使用现有 `getOpenAIProxyConfig()`；
 - 已完成：`src/services/apps/toolMetadata.ts` 读取 connector metadata 及兼容别名；`src/services/apps/toolNormalization.ts` 建立 connector namespace；`src/services/mcp/client.ts` 只对可信 registration 启用该 adapter，保留原始 wire tool name，模型名和 permission name 独立；
 - 已完成：工具继续进入 `appState.mcp.tools` 并由 `assembleToolPool()` 统一组装；交互、print/prefetch 和 Claude.ai 第二批连接已避免重复注册；`codex_apps` 已在 `addMcpConfig()` 中设为保留名；
@@ -522,7 +522,7 @@ type AccessibleApp = {
 - 新确认的 parity 差距：当前 `dist/codex` 的 host extension 会把同名 `codex_apps` overlay 到 `/backend-api/ps/mcp`，而本实现仅支持已实测的 `/wham/apps`；后续必须先验证 `/ps/mcp` 再决定 runtime 选择策略；
 - 交互中发现的 UI 差距：通用 `/mcp` 详情错误显示 `Re-authenticate`/`Clear authentication`。Apps 的宿主认证归 `~/.codex/auth.json` 和 OpenAI OAuth owner 管理，不能使用普通 MCP OAuth/keychain 操作；应隐藏这两个动作或改为只读的“Managed by OpenAI OAuth”，并将重新认证导向现有 `/login`；
 - 尚未完成：真实 OAuth backend fixture/联调、`tools/list` cursor 循环、普通 MCP connector 保留 metadata 主动 strip、名称 64 字符截断/hash/collision、ToolSearch 专用 searchHint/instructions、logout/account switch 主动断连、connector auth UI、`openai/fileParams`、App policy、account-scoped LKG cache 和 accessible Apps UI；
-- 当前启用方式：仅供实验验证，必须同时设置 `CLAUDE_CODE_USE_OPENAI=1` 与 `CLAUDE_CODE_ENABLE_CODEX_APPS=1`，并通过现有 OpenAI browser/device OAuth 登录。不要配置 API key，也不要配置 `CODEX_CONNECTORS_TOKEN`。
+- 当前启用方式：设置 `CLAUDE_CODE_USE_OPENAI=1` 并通过现有 OpenAI browser/device OAuth 登录后默认启用；设置 `CLAUDE_CODE_DISABLE_CODEX_APPS=1` 可显式禁用。不要配置 API key，也不要配置 `CODEX_CONNECTORS_TOKEN`。
 
 后续 agent 应从未完成列表继续，不应重复创建第二套工具池或第二套 token store。
 
@@ -1124,7 +1124,7 @@ bun run build
 ### 14.10 本次真实验证记录
 
 在 `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:7890`、OpenAI 模式、
-`CLAUDE_CODE_ENABLE_CODEX_APPS=1` 和当前 `~/.codex/auth.json` ChatGPT OAuth
+未设置 `CLAUDE_CODE_DISABLE_CODEX_APPS=1`，并使用当前 `~/.codex/auth.json` ChatGPT OAuth
 凭据下，真实 Apps endpoint 返回 9 个 connector、177 个 tools：
 
 - Apple Music 2；Document Control 3；GitHub 89；Gmail 21；Hotline 1；

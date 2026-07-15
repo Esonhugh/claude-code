@@ -10,7 +10,7 @@ import {
 import { withCodexAppsToolSet } from './toolSet.js'
 
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
-const originalApps = process.env.CLAUDE_CODE_ENABLE_CODEX_APPS
+const originalAppsDisabled = process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
 const originalProxyEnv = {
   https_proxy: process.env.https_proxy,
   HTTPS_PROXY: process.env.HTTPS_PROXY,
@@ -21,8 +21,11 @@ const originalProxyEnv = {
 afterEach(() => {
   if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
-  if (originalApps === undefined) delete process.env.CLAUDE_CODE_ENABLE_CODEX_APPS
-  else process.env.CLAUDE_CODE_ENABLE_CODEX_APPS = originalApps
+  if (originalAppsDisabled === undefined) {
+    delete process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
+  } else {
+    process.env.CLAUDE_CODE_DISABLE_CODEX_APPS = originalAppsDisabled
+  }
   for (const [key, value] of Object.entries(originalProxyEnv)) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -32,7 +35,7 @@ afterEach(() => {
 
 describe('Codex Apps ToolSet eligibility', () => {
   it('is absent outside the OpenAI provider', () => {
-    process.env.CLAUDE_CODE_ENABLE_CODEX_APPS = '1'
+    delete process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
     delete process.env.CLAUDE_CODE_USE_OPENAI
     getOpenAIAuthInfo.cache.set(undefined, {
       accessToken: 'oauth-token',
@@ -42,7 +45,7 @@ describe('Codex Apps ToolSet eligibility', () => {
   })
 
   it('rejects OpenAI API-key authentication', () => {
-    process.env.CLAUDE_CODE_ENABLE_CODEX_APPS = '1'
+    delete process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     getOpenAIAuthInfo.cache.set(undefined, {
       accessToken: 'api-key',
@@ -52,7 +55,7 @@ describe('Codex Apps ToolSet eligibility', () => {
   })
 
   it('installs a trusted host-owned config only for ChatGPT OAuth', () => {
-    process.env.CLAUDE_CODE_ENABLE_CODEX_APPS = '1'
+    delete process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     getOpenAIAuthInfo.cache.set(undefined, {
       accessToken: 'oauth-token',
@@ -74,8 +77,21 @@ describe('Codex Apps ToolSet eligibility', () => {
     )
   })
 
-  it('is disabled by default even when ChatGPT OAuth is present', () => {
-    delete process.env.CLAUDE_CODE_ENABLE_CODEX_APPS
+  it('is enabled by default when ChatGPT OAuth is present', () => {
+    delete process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    getOpenAIAuthInfo.cache.set(undefined, {
+      accessToken: 'oauth-token',
+      isChatGPT: true,
+    })
+    assert.equal(
+      isHostOwnedCodexAppsConfig(withCodexAppsToolSet({}).codex_apps!),
+      true,
+    )
+  })
+
+  it('is disabled only when CLAUDE_CODE_DISABLE_CODEX_APPS=1', () => {
+    process.env.CLAUDE_CODE_DISABLE_CODEX_APPS = '1'
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     getOpenAIAuthInfo.cache.set(undefined, {
       accessToken: 'oauth-token',
