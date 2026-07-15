@@ -5,7 +5,7 @@ import { getCwd } from '../../utils/cwd.js'
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
-import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
+import { hasWorkflowScriptMeta, parseWorkflowScript } from './workflowScriptParser.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { runWorkflowPlan } from './runWorkflow.js'
 import { runWorkflowScript } from './workflowScriptRuntime.js'
@@ -35,12 +35,12 @@ export type NormalizedWorkflowFacadeInput =
   | {
       kind: 'saved-workflow'
       selector: string
+      script?: string
       args?: WorkflowArgs
       resumeFromRunId?: string
     }
   | {
       kind: 'inline-script'
-      name: string
       script: string
       args?: WorkflowArgs
       resumeFromRunId?: string
@@ -48,6 +48,7 @@ export type NormalizedWorkflowFacadeInput =
   | {
       kind: 'script-path'
       scriptPath: string
+      script?: string
       args?: WorkflowArgs
       resumeFromRunId?: string
     }
@@ -104,6 +105,12 @@ function shouldInjectRunArgsIntoRootPrompt(workflow: WorkflowSpec, sourcePath: s
   return !workflow.runScriptSnapshot || (sourcePath.startsWith('bundled:') && !isExecutableWorkflowScript(workflow))
 }
 
+function inlineWorkflowName(script: string): string | undefined {
+  return hasWorkflowScriptMeta(script)
+    ? parseWorkflowScript(script).meta.name
+    : undefined
+}
+
 function resolveCwd(context: WorkflowFacadeToolContext | unknown): string {
   if (
     context &&
@@ -138,21 +145,23 @@ export function normalizeWorkflowFacadeInput(
     }
   }
 
-  if (typeof input.script === 'string') {
-    if (typeof input.name !== 'string' || input.name.trim() === '') {
-      throw new Error('Workflow script input requires a name')
-    }
+  if (typeof input.name === 'string' && input.name.trim() !== '') {
     return {
-      kind: 'inline-script',
-      name: input.name.trim(),
-      script: input.script,
+      kind: 'saved-workflow',
+      selector: input.name.trim(),
+      ...(input.script !== undefined ? { script: input.script } : {}),
       args: input.args,
       resumeFromRunId: input.resumeFromRunId,
     }
   }
 
-  if (typeof input.name === 'string' && input.name.trim() !== '') {
-    return { kind: 'saved-workflow', selector: input.name.trim(), args: input.args, resumeFromRunId: input.resumeFromRunId }
+  if (typeof input.script === 'string') {
+    return {
+      kind: 'inline-script',
+      script: input.script,
+      args: input.args,
+      resumeFromRunId: input.resumeFromRunId,
+    }
   }
 
   if ('plan' in input && input.plan !== undefined) {
@@ -170,7 +179,9 @@ export const WorkflowFacadeTool = buildTool({
     return 'Run an official-compatible workflow script or saved workflow'
   },
   async prompt() {
-    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script, name }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.
+    return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.
+
+Pass the script inline via \`script\`; do not write it to a file first. The script's \`meta.name\` is the workflow's runtime name. Top-level \`name\` selects a saved workflow, and \`scriptPath\` takes precedence over both \`name\` and \`script\`.
 
 Inline official-style scripts must start with an uncommented \`export const meta = { name, description, phases }\` as the first statement. Phase entries must be objects with a string \`title\`, for example:
 
@@ -210,10 +221,14 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
   async checkPermissions(input, context) {
     const cwd = resolveCwd(context)
     const normalized = normalizeWorkflowFacadeInput(input as WorkflowFacadeInput)
+    if (normalized.kind === 'saved-workflow' && normalized.script) {
+      await loadWorkflowSpecByNameOrPath(cwd, normalized.selector, normalized.args)
+    }
     const previewInput =
       normalized.kind === 'saved-workflow'
         ? {
             name: normalized.selector,
+            ...(normalized.script !== undefined ? { script: normalized.script } : {}),
             args: normalized.args,
             ...(normalized.resumeFromRunId
               ? { resumeFromRunId: normalized.resumeFromRunId }
@@ -236,7 +251,6 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
                   : {}),
               }
             : {
-                name: normalized.name,
                 script: normalized.script,
                 args: normalized.args,
                 ...(normalized.resumeFromRunId
@@ -254,7 +268,7 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
     if (normalized.kind === 'saved-workflow') return `Workflow ${normalized.selector}`
     if (normalized.kind === 'script-path') return `Workflow ${normalized.scriptPath}`
     if (normalized.kind === 'plan') return 'Workflow plan'
-    return `Workflow ${normalized.name}`
+    return `Workflow ${inlineWorkflowName(normalized.script) ?? 'inline script'}`
   },
   async call(input, context, canUseTool, assistantMessage) {
     const cwd = resolveCwd(context)
@@ -280,7 +294,22 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
         normalized.selector,
         normalized.args,
       )
-      if (workflow.plan.requiresInput && !normalizeWorkflowRunArgs(normalized.args)) {
+      const workflowRunId = normalized.script ? createWorkflowRunId() : undefined
+      const scriptPath = normalized.script
+        ? await persistWorkflowScript({
+            cwd,
+            workflowRunId: workflowRunId!,
+            name: inlineWorkflowName(normalized.script) ?? workflow.commandName,
+            script: normalized.script,
+          })
+        : workflow.path
+      const spec = normalized.script
+        ? await loadWorkflowScriptSpec(scriptPath, normalized.args, { cwd })
+        : workflow.spec
+      const plan = normalized.script
+        ? validateWorkflowSpec(spec) as WorkflowDryRunPlan
+        : workflow.plan
+      if (plan.requiresInput && !normalizeWorkflowRunArgs(normalized.args)) {
         throw new Error(`Workflow ${workflow.commandName} requires workflow input`)
       }
       const priorSession = normalized.resumeFromRunId
@@ -290,16 +319,17 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
         ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
         : priorSession?.resumeCacheEntries
       // Use script runtime for script-based workflows
-      if (isExecutableWorkflowScript(workflow.spec)) {
+      if (isExecutableWorkflowScript(spec)) {
         return {
           data: await runWorkflowScript({
-            script: workflow.spec.runScriptSnapshot,
-            plan: workflow.plan,
+            script: spec.runScriptSnapshot!,
+            plan,
             args: normalized.args,
             context,
             canUseTool,
             assistantMessage,
-            scriptPath: workflow.path,
+            workflowRunId,
+            scriptPath,
             resumeFromRunId: normalized.resumeFromRunId,
             resumeJournalEntries,
           }),
@@ -307,13 +337,15 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
       }
       return {
         data: await runWorkflowPlan({
-          plan: workflow.plan,
+          plan,
           context,
           canUseTool,
           assistantMessage,
           runArgs: normalized.args,
+          workflowRunId,
+          scriptPath,
           resumeFromRunId: normalized.resumeFromRunId,
-          injectRunArgsIntoRootPrompt: shouldInjectRunArgsIntoRootPrompt(workflow.spec, workflow.path),
+          injectRunArgsIntoRootPrompt: shouldInjectRunArgsIntoRootPrompt(spec, scriptPath),
         }),
       }
     }
@@ -325,7 +357,7 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
         : await persistWorkflowScript({
             cwd,
             workflowRunId,
-            name: normalized.name,
+            name: inlineWorkflowName(normalized.script) ?? 'workflow',
             script: normalized.script,
           })
     const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args, { cwd })

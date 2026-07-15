@@ -22,19 +22,29 @@ assert.match(workflowFacadeSource, /must start with an uncommented/)
 assert.match(workflowFacadeSource, /export const meta =/)
 assert.match(workflowFacadeSource, /Phase entries must be objects with a string/)
 assert.match(workflowFacadeSource, /Do not comment out the meta export/)
+assert.match(workflowFacadeSource, /Pass the script inline via/)
+assert.match(workflowFacadeSource, /selects a saved workflow/)
+assert.doesNotMatch(workflowFacadeSource, /top-level.*name.*required separately from.*meta\.name/)
 assert.doesNotMatch(workflowFacadeSource, /every substantive task/)
 
+const inlineScript =
+  'export default workflow({ name: "research", description: "Research", phases: [] })'
 assert.deepEqual(
-  normalizeWorkflowFacadeInput({
-    name: 'research',
-    script:
-      'export default workflow({ name: "research", description: "Research", phases: [] })',
-  }),
+  normalizeWorkflowFacadeInput({ script: inlineScript }),
   {
     kind: 'inline-script',
-    name: 'research',
-    script:
-      'export default workflow({ name: "research", description: "Research", phases: [] })',
+    script: inlineScript,
+    args: undefined,
+    resumeFromRunId: undefined,
+  },
+)
+
+assert.deepEqual(
+  normalizeWorkflowFacadeInput({ name: 'research', script: inlineScript }),
+  {
+    kind: 'saved-workflow',
+    selector: 'research',
+    script: inlineScript,
     args: undefined,
     resumeFromRunId: undefined,
   },
@@ -128,8 +138,35 @@ await writeFile(
   }
   phase('Scope')`,
 )
+const inlinePermissionScript = `export const meta = {
+  name: 'inline-permission-preview',
+  description: 'Preview inline permission phases.',
+  phases: [{ title: 'Inline scope', detail: 'Scope inline topic' }],
+}
+phase('Inline scope')`
+const inlinePermissionPreview = await WorkflowFacadeTool.checkPermissions(
+  { script: inlinePermissionScript, args: 'inline topic' },
+  { getCwd: () => tempRoot } as never,
+)
+assert.equal(inlinePermissionPreview.behavior, 'ask')
+assert.equal(inlinePermissionPreview.updatedInput?.args, 'inline topic')
+assert.deepEqual(inlinePermissionPreview.updatedInput?.plan, {
+  name: 'inline-permission-preview',
+  description: 'Preview inline permission phases.',
+  phases: [{ title: 'Inline scope', detail: 'Scope inline topic' }],
+  runScriptSnapshot: inlinePermissionScript,
+})
+
 const permissionPreview = await WorkflowFacadeTool.checkPermissions(
-  { scriptPath: permissionScriptPath, args: 'topic' },
+  {
+    scriptPath: permissionScriptPath,
+    script: `export const meta = {
+      name: 'ignored-inline-override',
+      description: 'Must not override scriptPath preview.',
+      phases: [],
+    }`,
+    args: 'topic',
+  },
   { getCwd: () => tempRoot } as never,
 )
 assert.equal(permissionPreview.behavior, 'ask')
@@ -291,7 +328,6 @@ launchedPrompts.length = 0
 
 const inlineRun = await WorkflowFacadeTool.call(
   {
-    name: 'inline-research',
     args: { topic: 'facade' },
     script: `export default workflow({
       name: 'Inline Research',
@@ -311,7 +347,7 @@ const inlineRun = await WorkflowFacadeTool.call(
 
 assert.match(String(inlineRun.data), /Workflow launched in background\. Task ID: w/)
 assert.match(String(inlineRun.data), /Run ID: wf_/)
-assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*inline-research\.js", resumeFromRunId: "wf_[^"]+"}\)/)
+assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*workflow\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=facade'])
 const taskId = String(inlineRun.data).match(/Task ID: (\S+)/)?.[1]
 const workflowRunId = String(inlineRun.data).match(/Run ID: (\S+)/)?.[1]
@@ -322,13 +358,12 @@ const session = JSON.parse(
 )
 assert.equal(session.taskId, taskId)
 assert.equal(session.workflowRunId, workflowRunId)
-assert.match(session.scriptPath, /inline-research\.js$/)
+assert.match(session.scriptPath, /workflow\.js$/)
 assert.deepEqual(session.runArgs, { topic: 'facade' })
 
 launchedPrompts.length = 0
 const officialRun = await WorkflowFacadeTool.call(
   {
-    name: 'official-inline',
     args: { topic: 'meta' },
     script: `export const meta = {
       name: 'official-inline',
@@ -366,7 +401,6 @@ launchedPrompts.length = 0
 launchedAgents.length = 0
 const defaultModeRun = await WorkflowFacadeTool.call(
   {
-    name: 'official-default-mode',
     args: { topic: 'mode' },
     script: `export const meta = {
       name: 'official-default-mode',
@@ -397,7 +431,6 @@ await writeFile(
 launchedPrompts.length = 0
 const childWorkflowRun = await WorkflowFacadeTool.call(
   {
-    name: 'official-child-parent',
     args: { topic: 'child' },
     script: `export const meta = {
       name: 'official-child-parent',
@@ -466,7 +499,6 @@ assert.deepEqual(launchedPrompts, ['local child local'])
 await assert.rejects(
   WorkflowFacadeTool.call(
     {
-      name: 'official-empty-error',
       script: `export const meta = {
         name: 'official-empty-error',
         description: 'Official empty error workflow',
@@ -614,7 +646,7 @@ const rerun = await WorkflowFacadeTool.call(
 )
 
 assert.match(String(rerun.data), /Workflow launched in background\. Task ID: w/)
-assert.match(String(rerun.data), /Workflow\({scriptPath: ".*inline-research\.js", resumeFromRunId: "wf_[^"]+"}\)/)
+assert.match(String(rerun.data), /Workflow\({scriptPath: ".*workflow\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=rerun'])
 const rerunWorkflowRunId = String(rerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(rerunWorkflowRunId)
@@ -629,7 +661,6 @@ launchedPrompts.length = 0
 launchedAgents.length = 0
 const complexRun = await WorkflowFacadeTool.call(
   {
-    name: 'complex-secondary-validation',
     args: {
       topic: 'official parity',
       attempts: 2,
@@ -701,6 +732,6 @@ assert.deepEqual(
 )
 assert.deepEqual(complexSession.runArgs.reviewers, ['cross-check', 'refute'])
 assert.equal(complexSession.results.length, 6)
-assert.match(complexSession.scriptPath, /complex-secondary-validation\.js$/)
+assert.match(complexSession.scriptPath, /workflow\.js$/)
 
 console.log('WorkflowFacadeTool.test.ts passed')
