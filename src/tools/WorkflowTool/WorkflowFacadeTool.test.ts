@@ -18,6 +18,10 @@ assert.match(workflowFacadeSource, /workflow-scale orchestration/)
 assert.match(workflowFacadeSource, /For focused tasks/)
 assert.match(workflowFacadeSource, /do not call this tool/)
 assert.match(workflowFacadeSource, /avoid workflow/)
+assert.match(workflowFacadeSource, /must start with an uncommented/)
+assert.match(workflowFacadeSource, /export const meta =/)
+assert.match(workflowFacadeSource, /Phase entries must be objects with a string/)
+assert.match(workflowFacadeSource, /Do not comment out the meta export/)
 assert.doesNotMatch(workflowFacadeSource, /every substantive task/)
 
 assert.deepEqual(

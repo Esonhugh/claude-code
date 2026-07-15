@@ -172,6 +172,24 @@ export const WorkflowFacadeTool = buildTool({
   async prompt() {
     return `Use this tool to run dynamic workflows. It accepts a saved workflow name, { script, name }, { scriptPath }, or { plan }. Workflow scripts orchestrate agents and must not directly perform shell or filesystem work.
 
+Inline official-style scripts must start with an uncommented \`export const meta = { name, description, phases }\` as the first statement. Phase entries must be objects with a string \`title\`, for example:
+
+\`\`\`js
+export const meta = {
+  name: 'parallel-review',
+  description: 'Review two areas concurrently.',
+  phases: [{ title: 'Review' }],
+}
+phase('Review')
+const reports = await parallel([
+  () => agent('Review area A'),
+  () => agent('Review area B'),
+])
+return reports
+\`\`\`
+
+Do not comment out the meta export. Without it, the script is treated as the legacy workflow DSL, where official-style globals and top-level await/return semantics do not apply.
+
 Use this facade only for workflow-scale orchestration or when the user explicitly asks to run a workflow/script/plan. For focused tasks, use direct tools or a small number of subagents instead. If the user asks to avoid workflow orchestration, do not call this tool.`
   },
   get inputSchema(): InputSchema {
