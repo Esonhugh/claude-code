@@ -64,6 +64,19 @@ assert.deepEqual(
   },
 )
 
+assert.deepEqual(
+  normalizeWorkflowFacadeInput({
+    scriptPath: '',
+    name: 'official-compatible-research',
+  }),
+  {
+    kind: 'saved-workflow',
+    selector: 'official-compatible-research',
+    args: undefined,
+    resumeFromRunId: undefined,
+  },
+)
+
 assert.deepEqual(normalizeWorkflowFacadeInput('official-compatible-research'), {
   kind: 'saved-workflow',
   selector: 'official-compatible-research',

@@ -136,7 +136,7 @@ export function normalizeWorkflowFacadeInput(
     throw new Error('Workflow input must be a workflow name or an object')
   }
 
-  if (typeof input.scriptPath === 'string') {
+  if (typeof input.scriptPath === 'string' && input.scriptPath !== '') {
     return {
       kind: 'script-path',
       scriptPath: input.scriptPath,
