@@ -10,12 +10,14 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-16 - Workflow facade 官方契约与发布验收收束
+## 2026-07-16 - v2.1.200 - Workflow facade 官方契约与发布验收收束
 
 ### 版本状态
 
-- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.178`。
-- 本条目覆盖 2026-07-15 CHANGELOG 更新提交 `21184d5` 之后至 2026-07-16 的提交。
+- 准备发布版本：`v2.1.200`。
+- 本次发布覆盖 `v2.1.178` 后至 2026-07-16 的提交。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.200`。
 
 ### 关联提交
 
@@ -23,6 +25,8 @@
 - `3272f0b` — 2026-07-15 — `update: add restriction of tmux cli validation and type checks`
 - `f48a1d8` — 2026-07-16 — `fix: align inline workflows with official contract`
 - `60a8942` — 2026-07-16 — `fix: ignore empty workflow script paths`
+- `ac8dbcc` — 2026-07-16 — `docs: update release readiness changelog`
+- `a71396f` — 2026-07-16 — `release: prepare v2.1.200`
 
 ### 变更内容
 
@@ -43,7 +47,7 @@
 - `make release-check` 通过：`package.json` 保持 `0.0.0-dev`，TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均通过。
 - Workflow facade、DSL、script parser 和 script runtime focused tests 均通过。
 - 最新 `built-claude` binary-side 验收确认：inline `{ script }` Workflow `2/2 agents · 28.8k tok done`；单 Agent `3 tool uses · 27.6k tokens` 完成；`/deep-research` `25/25 agents · 790.2k tok done`；`/code-review` `10/45 agents · 415.6k tok done`，且父 CLI 均恢复交互。
-- Workflow stop 的自动化 lifecycle tests 已覆盖 killed notification、SDK `stopped` event 和 abort-aware fan-out；普通 binary-side stop 交互仍待单独覆盖，不计为通过项。
+- Workflow stop 的自动化 lifecycle tests 已覆盖 killed notification、SDK `stopped` event 和 abort-aware fan-out；binary-side 验收确认同一 Workflow 从 `running` 转为 `killed`、两个子 Agent 同步停止、主 prompt 恢复交互且 Git 工作区无变化。
 
 ## 2026-07-15 - Effort 能力、Workflow 生命周期与 Codex Apps 集成
 
