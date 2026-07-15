@@ -1,5 +1,5 @@
 
-VERSION := 2.1.178
+VERSION := 2.1.200
 FILE := ./dist/release/claude-code-v$(VERSION)-darwin-arm64
 CLAUDE_NPM_PACKAGE := @anthropic-ai/claude-code
 CLAUDE_VERSION ?= latest
