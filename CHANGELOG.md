@@ -10,6 +10,41 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-16 - Workflow facade 官方契约与发布验收收束
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.178`。
+- 本条目覆盖 2026-07-15 CHANGELOG 更新提交 `21184d5` 之后至 2026-07-16 的提交。
+
+### 关联提交
+
+- `ac53549` — 2026-07-15 — `feat: enable Codex Apps by default`
+- `3272f0b` — 2026-07-15 — `update: add restriction of tmux cli validation and type checks`
+- `f48a1d8` — 2026-07-16 — `fix: align inline workflows with official contract`
+- `60a8942` — 2026-07-16 — `fix: ignore empty workflow script paths`
+
+### 变更内容
+
+#### Workflow facade 官方契约
+
+- 对齐 official Workflow resolver：允许仅通过 `{ script }` 运行 inline workflow；顶层 `name` 保持 saved workflow selector 语义；输入优先级为 `scriptPath > name > script > plan`。
+- official-style inline script 的运行名称和持久化文件名来自脚本内 `meta.name`；`{ name, script }` 先解析 saved workflow，再使用传入脚本覆盖执行内容。
+- 修复空字符串 `scriptPath` 错误抢占有效 `name` 或 `script` 的问题，并增加输入归一化和权限预览回归测试。
+- 更新模型可见工具说明，明确 `{ script }`、`meta.name`、首条未注释 `export const meta` 和参数优先级。
+
+#### Codex Apps 与发布检查
+
+- 默认启用 OAuth-only Codex Apps 集成，并保留 Apps 状态、偏好设置、MCP transport 和工具投影能力。
+- 强化 tmux CLI 验收和类型检查约束；`make release-check` 统一执行 package version guard、TypeScript、ESLint、missing imports/assets audit 和 diff whitespace 检查。
+
+### 测试与 binary-side 验收
+
+- `make release-check` 通过：`package.json` 保持 `0.0.0-dev`，TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均通过。
+- Workflow facade、DSL、script parser 和 script runtime focused tests 均通过。
+- 最新 `built-claude` binary-side 验收确认：inline `{ script }` Workflow `2/2 agents · 28.8k tok done`；单 Agent `3 tool uses · 27.6k tokens` 完成；`/deep-research` `25/25 agents · 790.2k tok done`；`/code-review` `10/45 agents · 415.6k tok done`，且父 CLI 均恢复交互。
+- Workflow stop 的自动化 lifecycle tests 已覆盖 killed notification、SDK `stopped` event 和 abort-aware fan-out；普通 binary-side stop 交互仍待单独覆盖，不计为通过项。
+
 ## 2026-07-15 - Effort 能力、Workflow 生命周期与 Codex Apps 集成
 
 ### 版本状态
