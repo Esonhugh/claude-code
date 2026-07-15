@@ -10,6 +10,47 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-15 - Effort 能力、Workflow 生命周期与 Codex Apps 集成
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.178`。
+- 本条目覆盖上次 CHANGELOG 更新提交 `a8961db`（2026-07-13）之后至 2026-07-15 的提交。
+
+### 关联提交
+
+- `388cded` — 2026-07-14 — `fix: harden agent workflows and effort handling`
+- `7f2f1b6` — 2026-07-15 — `fix: align effort capabilities and workflow lifecycle`
+- `1328492` — 2026-07-15 — `feat: add OAuth-only Codex Apps integration`
+- `6c14f86` — 2026-07-15 — `fix: clarify inline workflow script contract`
+
+### 变更内容
+
+#### Provider effort 能力与 wire mapping
+
+- 统一 CLI、SDK schema/runtime/generated types 和请求构造中的 effort 能力表达，保留内部 `ultracode` 编排模式，并按 provider/model 暴露实际支持等级。
+- OpenAI compatibility 将 `max` 映射为 `ultra`、将 `ultracode` 映射为 `xhigh`；Anthropic 将 `ultra` 和 `ultracode` 映射为 `max`，并仅为支持的模型保留原生 `xhigh`。
+- 修复 `CLAUDE_CODE_EFFORT_LEVEL=unset|auto` 仍可能补发默认 effort 的问题，并补齐 `--effort`、`/effort`、SDK capability 与 provider request 测试。
+
+#### Agent 与 Workflow 生命周期可靠性
+
+- 修复 Agent foreground/background continuation、progress/usage 聚合、summarizer ownership 和 terminal notification 顺序，避免重复消费 stream、重复摘要或 post-processing 失败反转已完成状态。
+- failed/killed Agent 的 worktree cleanup 失败改为可见 warning，不再吞掉 terminal notification；completed、failed、killed 路径保留最终 usage。
+- Workflow failed 路径补发 XML notification，killed 路径补发 SDK `stopped` event，并使并发 semaphore 感知 abort，停止后不再继续启动排队 Agent。
+- 补充 inline Workflow facade 的模型可见脚本契约，明确首条语句必须是未注释的 `export const meta`、phase metadata 格式、`parallel()` thunk 用法以及 official-style 与 legacy DSL 的边界。
+
+#### OAuth-only Codex Apps 集成
+
+- 新增 Codex Apps 管理界面、OAuth 登录与偏好设置，支持 Apps 状态查询、信任确认、tool metadata/normalization、tool-set 管理及 MCP transport 配置。
+- 将 Codex Apps 投影到现有 plugin/MCP 管理与 merged tools 数据流，补齐连接状态、启停、重连、工具展示和配置持久化。
+- 新增 Apps auth、projection、preferences、status、tool normalization 和 tool-set 测试，覆盖 OAuth-only 边界及 MCP 工具转换行为。
+
+### 测试与 binary-side 验收
+
+- 已运行 effort、OpenAI compatibility、Agent lifecycle、Workflow facade/DSL/parser/runtime focused tests，均通过；已运行 `bun run lint`、`git diff --check` 和 `make build`。
+- 最新 `built-claude` binary-side 验收确认：并发 Agent `2/2` 完成；inline Workflow `2/2 agents · 40.4k tok done`；`/code-review` `8/45 agents · 192.2k tok done`；`/deep-research` `25/25 agents · 960.8k tok done`，且父 CLI 均恢复交互。
+- Workflow facade 契约修复后的首次 inline 生成及 binary-side stop 验收因 API connectivity error 未进入调度阶段，不计入通过项；自动化 lifecycle tests 已覆盖 failed/killed notification、`stopped` event 与 abort-aware fan-out。
+
 ## 2026-07-13 - Agent 状态可靠性、provider effort 路由与文档整理
 
 ### 版本状态
