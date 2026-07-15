@@ -523,8 +523,9 @@ export async function runWorkflowScript({
       try {
         const result = await runSingleAgent(prompt, opts, label, phase, stallMs, agentIndex)
         const completedAt = Date.now()
-        const completedResult = context.getAppState().tasks[workflowTask.id]?.type === 'local_workflow'
-          ? context.getAppState().tasks[workflowTask.id].results.find(
+        const currentTask = context.getAppState().tasks[workflowTask.id]
+        const completedResult = currentTask?.type === 'local_workflow'
+          ? currentTask.results.find(
               current => current.phaseId === phase && current.index === agentIndex,
             )
           : undefined

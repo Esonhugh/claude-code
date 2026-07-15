@@ -527,7 +527,12 @@ const functionResultSdkNotification = drainSdkEvents().find(
     event.subtype === 'task_notification' &&
     event.task_id === functionResultTask.id,
 )
-assert.equal(functionResultSdkNotification?.status, 'failed')
+assert.equal(
+  functionResultSdkNotification?.subtype === 'task_notification'
+    ? functionResultSdkNotification.status
+    : undefined,
+  'failed',
+)
 
 const unserializableResultScript = `export const meta = {
   name: "runtime-unserializable-result-workflow",
@@ -834,6 +839,11 @@ const killedSdkNotification = drainSdkEvents().find(
   event =>
     event.subtype === 'task_notification' && event.task_id === killedTask.id,
 )
-assert.equal(killedSdkNotification?.status, 'stopped')
+assert.equal(
+  killedSdkNotification?.subtype === 'task_notification'
+    ? killedSdkNotification.status
+    : undefined,
+  'stopped',
+)
 
 console.log('workflowScriptRuntime.test.ts passed')

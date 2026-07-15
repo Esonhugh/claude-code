@@ -75,7 +75,7 @@ export function buildCodexAppPluginProjections(
   }
 
   return [...grouped.entries()]
-    .map(([connectorId, connector]) => {
+    .map<CodexAppPluginProjection>(([connectorId, connector]) => {
       const slug = sanitizeCodexAppsName(connector.connectorName).replace(
         /_/g,
         '-',

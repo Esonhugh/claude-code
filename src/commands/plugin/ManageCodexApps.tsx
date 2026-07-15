@@ -307,7 +307,7 @@ export function ManageCodexApps({
   if (view.type === 'details') {
     const app = view.app
     const visibleTools = app.tools.slice(0, 8)
-    const readOnlyToolCount = app.tools.filter((tool) => tool.isReadOnly()).length
+    const readOnlyToolCount = app.tools.filter((tool) => tool.isReadOnly({})).length
     return (
       <Box flexDirection="column">
         <Box>

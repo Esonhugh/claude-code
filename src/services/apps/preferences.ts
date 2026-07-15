@@ -1,4 +1,4 @@
-import type { Tool, Tools } from '../../Tool.js'
+import type { Tool } from '../../Tool.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -60,7 +60,7 @@ export function filterEnabledCodexAppTools<T extends Tool>(
   )
 }
 
-export function refreshCodexAppToolExposure(tools: Tools): Tools {
+export function refreshCodexAppToolExposure(tools: readonly Tool[]): Tool[] {
   // A new array identity invalidates merged/deferred tool memoization while
   // retaining the full catalog for /plugin management and later re-enable.
   return [...tools]

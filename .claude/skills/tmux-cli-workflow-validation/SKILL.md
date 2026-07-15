@@ -60,6 +60,8 @@ version: 0.2.0
    ```
 
 6. 默认保留 tmux session、pane、驱动脚本、stdout/stderr 和 debug log。未经用户要求不删除。
+7. 多特性验收必须严格串行：一次只启动一个目标的 tmux/built-claude 进程；该目标完成并记录终态后，才能启动下一个目标，避免同时触发多个 AI Agent。
+8. 每个目标结束后必须立即更新对应的结果表行，记录 binary-side 入口、实际 Agent/Workflow 进度、终态、session、pane/debug 证据路径和限制；未完成目标不得标记为 passed。
 
 ## 必须脚本驱动
 

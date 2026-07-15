@@ -25,7 +25,7 @@ export function withCodexAppsToolSet(
     return configs
   }
   const eligibility = getCodexAppsEligibility()
-  if (!eligibility.eligible) {
+  if (eligibility.eligible === false) {
     logForDebugging(
       `[Codex Apps] ToolSet registration skipped: ${eligibility.reason}`,
     )

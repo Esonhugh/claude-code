@@ -9,7 +9,7 @@ CLAUDE_PLATFORM_PACKAGE ?= auto
 CLAUDE_BINARY_OUT ?= official-claude
 CLAUDE_KEEP_PACK ?= 0
 
-.PHONY: build test download-claude clean-download-claude
+.PHONY: build test release-check download-claude clean-download-claude
 
 build:
 	CLAUDE_CODE_VERSION=$(VERSION) bun package:binary
@@ -17,6 +17,13 @@ build:
 
 test:
 	./built-claude --dangerously-skip-permissions
+
+release-check:
+	node -e "const p=require('./package.json'); if (p.version !== '0.0.0-dev') { console.error('package.json version must stay 0.0.0-dev, got ' + p.version); process.exit(1); }"
+	bunx tsc --noEmit --pretty false
+	bun run lint
+	bun run audit:missing
+	git diff --check
 
 download-claude:
 	mkdir -p $(CLAUDE_PACK_DIR)
