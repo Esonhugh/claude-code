@@ -10,6 +10,38 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-16 - `/cd` 目录补全与 Effort 配置修正
+
+### 版本状态
+
+- 非发布变更，未新增版本号；当前最新发布版本仍为 `v2.1.200`。
+- 本条目覆盖 `v2.1.200` tag（`3fb49ec`）之后至 2026-07-16 的提交。
+- `package.json` 仍保持 `0.0.0-dev`，`Makefile` 默认构建版本仍为 `2.1.200`。
+
+### 关联提交
+
+- `39124c5` — 2026-07-16 — `feat: add directory completion for /cd`
+- `10ae12c` — 2026-07-16 — `update: effort fix`
+
+### 变更内容
+
+#### `/cd` 目录补全
+
+- 为 `/cd` 命令接入仅包含目录的路径补全，并允许在命令后的路径参数为空时开始提示。
+- 保持 `/add-dir` 原有行为：只有用户开始输入路径后才显示目录建议，路径以空白结尾时清除建议。
+
+#### Effort 配置与显示
+
+- 允许 `xhigh`、`max`、`ultra` 和 `ultracode` 写入 settings 并跨会话保留；`none` 与数字 effort 仍不持久化。
+- `ultracode` 统一按 `xhigh` 作为 provider 映射输入：支持原生 `xhigh` 的 Anthropic 模型保留 `xhigh`，其他模型按既有能力回退；OpenAI 仍发送 `xhigh`。
+- Effort 状态提示和请求后缀显示实际应用值，不再把 `ultra`、`ultracode` 等统一折叠为基础等级；同步修正 `/effort` 帮助、有效选项和 session-only 文案。
+- 扩展 settings schema、Model Picker 初始化及 Anthropic/OpenAI effort 回归测试，覆盖新增持久化和映射行为。
+
+### 检查结果
+
+- 与 `v2.1.200` 相比共修改 10 个文件，新增 65 行、删除 51 行。
+- `git diff --check v2.1.200..HEAD` 通过。
+
 ## 2026-07-16 - v2.1.200 - Workflow facade 官方契约与发布验收收束
 
 ### 版本状态
