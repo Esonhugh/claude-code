@@ -30,7 +30,6 @@ import { type HookCommand, HooksSchema } from '../../schemas/hooks.js'
 import { count } from '../array.js'
 import { isAnt } from 'src/utils/userType.js'
 
-
 /**
  * Schema for environment variables
  */
@@ -749,11 +748,7 @@ export const SettingsSchema = lazySchema(() =>
             'enabled automatically for supported models.',
         ),
       effortLevel: z
-        .enum(
-          isAnt()
-            ? ['low', 'medium', 'high', 'xhigh', 'max']
-            : ['low', 'medium', 'high', 'xhigh'],
-        )
+        .enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode'])
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),

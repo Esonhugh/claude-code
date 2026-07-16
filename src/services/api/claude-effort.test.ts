@@ -38,6 +38,10 @@ try {
     'max',
   )
   assert.equal(
+    resolveAppliedEffort('claude-opus-4-7', 'ultracode'),
+    'xhigh',
+  )
+  assert.equal(
     resolveAppliedEffort('claude-opus-4-7', 'xhigh'),
     'xhigh',
   )
@@ -131,8 +135,8 @@ try {
 
   assert.equal(ultracodeOutputConfig.effort, 'xhigh')
   assert.ok(ultracodeBetas.length > 0)
-  assert.equal(toPersistableEffort('ultra'), undefined)
-  assert.equal(toPersistableEffort('ultracode'), undefined)
+  assert.equal(toPersistableEffort('ultra'), 'ultra')
+  assert.equal(toPersistableEffort('ultracode'), 'ultracode')
 
   delete process.env.CLAUDE_CODE_USE_OPENAI
   process.env.CLAUDE_CODE_USE_BEDROCK = '1'

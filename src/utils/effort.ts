@@ -8,7 +8,14 @@ import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type EffortLevel =
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra'
+  | 'ultracode'
 
 export const EFFORT_LEVELS = [
   'none',
@@ -181,31 +188,27 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 
 /**
  * Numeric values are model-default only and not persisted.
- * 'max' is session-scoped for external users (ants can persist it).
  * Write sites call this before saving to settings so the Zod schema
- * (which only accepts string levels) never rejects a write.
+ * never rejects a write.
  */
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
   if (
-    value === 'none' ||
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh' ||
+    value === 'max' ||
     value === 'ultra' ||
     value === 'ultracode'
-  )
-    return undefined
-  if (value === 'low' || value === 'medium' || value === 'high') {
-    return value
-  }
-  if (value === 'max' && isAnt()) {
+  ) {
     return value
   }
   return undefined
 }
 
 export function getInitialEffortSetting(): EffortLevel | undefined {
-  // toPersistableEffort filters 'max' for non-ants on read, so a manually
-  // edited settings.json doesn't leak session-scoped max into a fresh session.
   return toPersistableEffort(getInitialSettings().effortLevel)
 }
 
@@ -265,14 +268,11 @@ export function resolveAppliedEffort(
   if (typeof resolved === 'number') return resolved
 
   const provider = getAPIProvider()
+  const configured = resolved === 'ultracode' ? 'xhigh' : resolved
   const mapped =
-    resolved === 'ultracode'
-      ? provider === 'openai'
-        ? 'xhigh'
-        : 'max'
-      : provider === 'openai'
-        ? OPENAI_EFFORT_MAP[resolved]
-        : ANTHROPIC_EFFORT_MAP[resolved]
+    provider === 'openai'
+      ? OPENAI_EFFORT_MAP[configured]
+      : ANTHROPIC_EFFORT_MAP[configured]
 
   // Anthropic support is model-specific: preserve native xhigh where
   // available, otherwise use the strongest supported level.
@@ -316,7 +316,7 @@ export function getEffortSuffix(
   if (effortValue === undefined) return ''
   const resolved = resolveAppliedEffort(model, effortValue)
   if (resolved === undefined) return ''
-  return ` with ${convertEffortValueToLevel(resolved)} effort`
+  return ` with ${resolved} effort`
 }
 
 export function isValidNumericEffort(value: number): boolean {

@@ -7,6 +7,7 @@ import {
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import {
+  EFFORT_LEVELS,
   type EffortValue,
   getDisplayedEffortLevel,
   resolveAppliedEffort,
@@ -79,13 +80,7 @@ export function showCurrentEffort(
     return { message: `Effort level: auto (currently ${level})` }
   }
   const description = getEffortValueDescription(effectiveValue)
-  const suffix =
-    effectiveValue === 'none' ||
-    effectiveValue === 'xhigh' ||
-    effectiveValue === 'ultra' ||
-    effectiveValue === 'ultracode'
-      ? '; this session only'
-      : ''
+  const suffix = effectiveValue === 'none' ? '; this session only' : ''
   const applied = resolveAppliedEffort(model, appStateEffort)
   const displayValue =
     applied !== undefined && applied !== effectiveValue
@@ -133,7 +128,7 @@ export function executeEffort(args: string): EffortCommandResult {
 
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: none, low, medium, high, xhigh, max, ultra, ultracode, auto`,
+      message: `Invalid argument: ${args}. Valid options are: ${EFFORT_LEVELS.join(', ')}, auto`,
     }
   }
 
@@ -182,7 +177,7 @@ export async function call(
 
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone(
-      'Usage: /effort [none|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended capability for supported Anthropic and OpenAI models (this session only)\n- max: Maximum capability; sent as ultra on OpenAI\n- ultra: Ultra effort; sent as max on Anthropic (this session only)\n- ultracode: xhigh + dynamic workflow orchestration (this session only)\n- auto: Use the default effort level for your model',
+      'Usage: /effort [none|low|medium|high|xhigh|max|ultra|ultracode|auto]\n\nEffort levels:\n- none: No reasoning for latency-critical OpenAI tasks (this session only)\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended capability for supported Anthropic and OpenAI models\n- max: Maximum capability; sent as ultra on OpenAI\n- ultra: Ultra effort; sent as max on Anthropic\n- ultracode: xhigh + dynamic workflow orchestration\n- auto: Use the default effort level for your model',
     )
     return
   }

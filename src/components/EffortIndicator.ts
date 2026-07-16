@@ -7,8 +7,9 @@ import {
 import {
   type EffortLevel,
   type EffortValue,
-  getDisplayedEffortLevel,
+  convertEffortValueToLevel,
   modelSupportsEffort,
+  resolveAppliedEffort,
 } from '../utils/effort.js'
 
 /**
@@ -20,8 +21,9 @@ export function getEffortNotificationText(
   model: string,
 ): string | undefined {
   if (!modelSupportsEffort(model)) return undefined
-  const level = getDisplayedEffortLevel(model, effortValue)
-  return `${effortLevelToSymbol(level)} ${level} · /effort`
+  const applied = resolveAppliedEffort(model, effortValue)
+  const level = convertEffortValueToLevel(applied ?? 'high')
+  return `${effortLevelToSymbol(level)} ${applied ?? level} · /effort`
 }
 
 export function effortLevelToSymbol(level: EffortLevel): string {

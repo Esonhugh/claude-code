@@ -89,7 +89,8 @@ export function ModelPicker({
   const effortValue = useAppState(s => s.effortValue)
   const [effort, setEffort] = useState<EffortLevel | undefined>(
     effortValue !== undefined
-      ? convertEffortValueToLevel(effortValue)
+      ? (toPersistableEffort(effortValue) ??
+        convertEffortValueToLevel(effortValue))
       : undefined,
   )
 

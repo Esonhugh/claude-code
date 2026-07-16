@@ -114,7 +114,7 @@ try {
   } = await import('../../utils/effort.js')
   assert.equal(EFFORT_LEVELS.includes('ultra' as any), true)
   assert.equal(parseEffortValue('ultra'), 'ultra')
-  assert.equal(toPersistableEffort('ultra' as any), undefined)
+  assert.equal(toPersistableEffort('ultra' as any), 'ultra')
 
   const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
