@@ -840,10 +840,20 @@ export function useTypeahead({
 
         if (
           parsedCommand &&
-          parsedCommand.commandName === 'add-dir' &&
-          parsedCommand.args
+          (parsedCommand.commandName === 'add-dir' ||
+            parsedCommand.commandName === 'cd')
         ) {
           const { args } = parsedCommand
+
+          // Keep command completion active until the command is followed by a space.
+          if (!args && !value.endsWith(' ')) {
+            return
+          }
+
+          // Keep the existing add-dir behavior: only suggest after a path starts.
+          if (parsedCommand.commandName === 'add-dir' && !args) {
+            return
+          }
 
           // Clear suggestions if args end with whitespace (user is done with path)
           if (args.match(/\s+$/)) {
@@ -852,7 +862,12 @@ export function useTypeahead({
             return
           }
 
-          const dirSuggestions = await getDirectoryCompletions(args)
+          const dirSuggestions =
+            parsedCommand.commandName === 'cd'
+              ? await getPathCompletions(args, {
+                  includeFiles: false,
+                })
+              : await getDirectoryCompletions(args)
           if (dirSuggestions.length > 0) {
             setSuggestionsState(prev => ({
               suggestions: dirSuggestions,
