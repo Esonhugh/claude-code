@@ -30,6 +30,7 @@
 - `92fdb6c` — 2026-07-19 — `update: bundle test`
 - `19f6ae0` — 2026-07-19 — `docs: clarify OpenAI usage authentication states`
 - `03af8cc` — 2026-07-19 — `update: release validation tools`
+- `16b341b` — 2026-07-19 — `fix: align Codex Apps with active credentials`
 
 ### 变更内容
 
