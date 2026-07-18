@@ -10,6 +10,55 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-19 - v1.2.202 - Terminal Tool、功能验收 Skill 与 Codex Apps 集成
+
+### 版本状态
+
+- 准备发布版本：`v1.2.202`。
+- 本次发布覆盖 `master`（`3df519a`）之后至 2026-07-19 的全部提交。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `1.2.202`。
+
+### 关联提交
+
+- `375159f` — 2026-07-19 — `feat: add Claude Code feature validation skill`
+- `c6e07d4` — 2026-07-19 — `refactor: rename interactive terminal to Terminal`
+- `4bb7a73` — 2026-07-19 — `feat: integrate Codex Apps with ChatGPT subscriptions`
+
+### 变更内容
+
+#### InteractiveTerminal 重命名为 Terminal Tool
+
+- 将 `InteractiveTerminal` 工具、task、command、bundled skill 和 UI preview 统一重命名为 `Terminal`，同步更新工具 schema、模型提示、结果格式和后台任务展示。
+- 保留并强化持久 PTY session 的 `open`、`write`、`read`、`resize`、`signal`、`status`、`list` 和 `close` 生命周期；补充 shell 解析和 Bun PTY driver 行为。
+- 扩展 Terminal Tool、task state、dialog preview、PTY session manager、shell resolution 和 binary integration 测试，移除旧 `InteractiveTerminalTool` 实现与测试路径。
+
+#### Claude Code 功能验收 Skill
+
+- 新增 `claude-code-feature-validation` skill，根据功能类型路由 source tests、构建检查、tmux TUI 验收、official parity 和外部状态验证。
+- 补充 validation routing 参考文档与 eval cases，明确何时需要真实 binary、tmux、官方 CLI 对照及证据留存。
+
+#### Codex Apps mention 与补全
+
+- 新增 `@codex-app:{app-name}` mention 语法，仅从当前已发现且已过滤的 `codex_apps` 工具池解析对应 App，不恢复禁用 connector、不授予未发现能力，也不绕过工具权限。
+- 将已选择 App 的名称、connector ID 和工具名称作为不可信 metadata 注入模型上下文，并引导 deferred tool 通过 `ToolSearch` 按需加载。
+- PromptInput 在裸 `@` 和 `@codex-app:` 前缀下展示真实 Codex Apps 补全；补全项沿用统一 suggestion UI，并与文件、MCP resource 和 agent mention 区分。
+- 防止 Codex App mention 被文件或 MCP resource mention 解析器重复处理，并避免 slash command / skill 展开内容误触发。
+
+#### ChatGPT subscription 检测与 Usage UI
+
+- 对齐 Codex 的 OpenAI plan 解析规则，从 ID token 的 `chatgpt_plan_type` claim 识别并规范化 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等订阅名称。
+- ChatGPT OAuth 优先于环境中的 OpenAI API credential，避免 subscription 和 Codex Apps eligibility 被环境变量错误覆盖；Usage 请求前主动刷新 OAuth token。
+- OpenAI 模式不再错误回退 Anthropic Usage；启动 pane 显示 ChatGPT plan，并使用 `/backend-api/wham/usage` 的权威 `plan_type` 更新最终标题。
+- `/status` 的 Usage tab 展示 ChatGPT Codex limits、account、reset time 和 reset credits；无可用数据时显示 OpenAI-specific 状态，不再永久停留在 loading 文案。
+
+### 测试与交互验收
+
+- Terminal Tool、PTY session manager、shell resolution、Codex App mention、attachment 隔离、PromptInput completion、OpenAI auth 和 ChatGPT Usage focused tests 通过。
+- `make release-check` 通过：`package.json` version guard、TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均通过。
+- `make build` 通过。
+- tmux binary-side 验收确认：启动 pane 显示权威 `ChatGPT Pro`，`/status` Usage 成功加载 limits，`/mcp` 显示 `codex_apps` connected，输入 `@codex-app:` 可列出真实 Apps。
+
 ## 2026-07-16 - v2.1.201 - `/cd` 目录补全与 Effort 配置修正
 
 ### 版本状态
