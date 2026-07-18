@@ -264,7 +264,11 @@ export function Usage(): React.ReactNode {
   if (!utilization) {
     return (
       <Box flexDirection="column" gap={1}>
-        <Text dimColor>Loading usage data…</Text>
+        <Text dimColor>
+          {isLoading
+            ? 'Loading usage data…'
+            : 'Usage data is unavailable for the current OpenAI authentication.'}
+        </Text>
         <Text dimColor>
           <ConfigurableShortcutHint
             action="confirm:no"

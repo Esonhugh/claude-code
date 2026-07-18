@@ -231,6 +231,11 @@ import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { findRelevantMemories } from '../memdir/findRelevantMemories.js'
+import {
+  extractCodexAppMentions,
+  resolveCodexAppMentions,
+  type ResolvedCodexAppMention,
+} from '../services/apps/pluginProjection.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
@@ -343,6 +348,10 @@ export type AlreadyReadFileAttachment = {
 export type AgentMentionAttachment = {
   type: 'agent_mention'
   agentType: string
+}
+
+export type CodexAppMentionAttachment = ResolvedCodexAppMention & {
+  type: 'codex_app_mention'
 }
 
 export type AsyncHookResponseAttachment = {
@@ -629,6 +638,7 @@ export type Attachment =
       model?: string
     }
   | AgentMentionAttachment
+  | CodexAppMentionAttachment
   | {
       type: 'task_status'
       taskId: string
@@ -800,6 +810,13 @@ export async function getAttachments(
         maybe('mcp_resources', () =>
           processMcpResourceAttachments(input, context),
         ),
+        ...(!options?.skipSkillDiscovery
+          ? [
+              maybe('codex_app_mentions', () =>
+                Promise.resolve(processCodexAppMentions(input, context)),
+              ),
+            ]
+          : []),
         maybe('agent_mentions', () =>
           Promise.resolve(
             processAgentMentions(
@@ -2096,6 +2113,19 @@ async function processAtMentionedFiles(
   return results.filter(Boolean) as Attachment[]
 }
 
+function processCodexAppMentions(
+  input: string,
+  toolUseContext: ToolUseContext,
+): CodexAppMentionAttachment[] {
+  return resolveCodexAppMentions(
+    extractCodexAppMentions(input),
+    toolUseContext.options.tools,
+  ).map(app => ({
+    type: 'codex_app_mention' as const,
+    ...app,
+  }))
+}
+
 function processAgentMentions(
   input: string,
   agents: AgentDefinition[],
@@ -2906,7 +2936,11 @@ export function extractAtMentionedFiles(content: string): string[] {
   // Extract quoted mentions first (skip agent mentions like @"code-reviewer (agent)")
   let match
   while ((match = quotedAtMentionRegex.exec(content)) !== null) {
-    if (match[2] && !match[2].endsWith(' (agent)')) {
+    if (
+      match[2] &&
+      !match[2].endsWith(' (agent)') &&
+      !match[2].startsWith('codex-app:')
+    ) {
       quotedMatches.push(match[2]) // The content inside quotes
     }
   }
@@ -2917,7 +2951,7 @@ export function extractAtMentionedFiles(content: string): string[] {
     // @ts-ignore - recovered code
     const filename = match.slice(match.indexOf('@') + 1)
     // Don't include if it starts with a quote (already handled as quoted)
-    if (!filename.startsWith('"')) {
+    if (!filename.startsWith('"') && !filename.startsWith('codex-app:')) {
       regularMatches.push(filename)
     }
   })
@@ -2933,7 +2967,11 @@ export function extractMcpResourceMentions(content: string): string[] {
   const matches = content.match(atMentionRegex) || []
 
   // Remove the prefix (everything before @) from each match
-  return uniq(matches.map(match => match.slice(match.indexOf('@') + 1)))
+  return uniq(
+    matches
+      .map(match => match.slice(match.indexOf('@') + 1))
+      .filter(mention => !mention.startsWith('codex-app:')),
+  )
 }
 
 export function extractAgentMentions(content: string): string[] {

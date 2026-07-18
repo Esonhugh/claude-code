@@ -35,6 +35,7 @@ function getIcon(itemId: string): string {
   if (itemId.startsWith('file-')) return '+'
   if (itemId.startsWith('mcp-resource-')) return '◇'
   if (itemId.startsWith('agent-')) return '*'
+  if (itemId.startsWith('codex-app-')) return '◇'
   return '+'
 }
 
@@ -45,7 +46,8 @@ function isUnifiedSuggestion(itemId: string): boolean {
   return (
     itemId.startsWith('file-') ||
     itemId.startsWith('mcp-resource-') ||
-    itemId.startsWith('agent-')
+    itemId.startsWith('agent-') ||
+    itemId.startsWith('codex-app-')
   )
 }
 

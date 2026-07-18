@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -7,6 +10,9 @@ import test from 'node:test'
 
 const originalFetch = globalThis.fetch
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
+const originalOpenAIAuthToken = process.env.OPENAI_AUTH_TOKEN
+const originalOpenAIApiKey = process.env.OPENAI_API_KEY
+const originalHome = process.env.HOME
 const authModule = await import('../../utils/auth.js')
 const axios = (await import('axios')).default
 const { consumeRateLimitResetCredit, fetchUtilization } = await import('./usage.js')
@@ -52,6 +58,42 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
     } else {
       process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
     }
+  }
+})
+
+test('fetchUtilization does not fall back to Claude usage in OpenAI API mode', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-openai-api-'))
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_API_KEY = 'test-api-key'
+  process.env.HOME = homeDir
+  delete process.env.OPENAI_AUTH_TOKEN
+  authModule.getOpenAIAuthInfo.cache.clear?.()
+
+  try {
+    assert.equal(await fetchUtilization(), null)
+  } finally {
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalOpenAIAuthToken === undefined) {
+      delete process.env.OPENAI_AUTH_TOKEN
+    } else {
+      process.env.OPENAI_AUTH_TOKEN = originalOpenAIAuthToken
+    }
+    if (originalOpenAIApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAIApiKey
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
   }
 })
 
@@ -154,7 +196,7 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
     assert.equal(utilization?.rate_limit_reset_credits?.available_count, 3)
     assert.deepEqual(utilization?.chatgpt_limits, [
       {
-        title: 'ChatGPT Codex weekly usage (plus)',
+        title: 'ChatGPT Codex weekly usage (Plus)',
         limit: {
           utilization: 45,
           resets_at: '2026-07-10T12:00:08.000Z',

@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import type { Tool } from '../../Tool.js'
-import { buildCodexAppPluginProjections } from './pluginProjection.js'
+import {
+  buildCodexAppPluginProjections,
+  extractCodexAppMentions,
+  resolveCodexAppMentions,
+} from './pluginProjection.js'
 
 function appTool({
   name,
@@ -81,5 +85,52 @@ describe('buildCodexAppPluginProjections', () => {
         }),
       ]),
     ).toEqual([])
+  })
+})
+
+describe('Codex App mentions', () => {
+  const tools = [
+    appTool({
+      name: 'mcp__codex_apps__github__search',
+      connectorId: 'connector_github',
+      connectorName: 'GitHub',
+      description: 'Work with repositories',
+    }),
+    appTool({
+      name: 'mcp__codex_apps__github__fetch',
+      connectorId: 'connector_github',
+      connectorName: 'GitHub',
+    }),
+    appTool({
+      name: 'mcp__codex_apps__gmail__search',
+      connectorId: 'connector_gmail',
+      connectorName: 'Gmail',
+    }),
+  ]
+
+  test('extracts and deduplicates @codex-app mentions', () => {
+    expect(
+      extractCodexAppMentions(
+        'Use @codex-app:GitHub and @codex-app:github, not x@codex-app:gmail',
+      ),
+    ).toEqual(['GitHub'])
+  })
+
+  test('resolves mentions against discovered connector names', () => {
+    expect(resolveCodexAppMentions(['github'], tools)).toEqual([
+      {
+        appName: 'GitHub',
+        connectorId: 'connector_github',
+        description: 'Work with repositories',
+        toolNames: [
+          'mcp__codex_apps__github__fetch',
+          'mcp__codex_apps__github__search',
+        ],
+      },
+    ])
+  })
+
+  test('ignores unknown apps instead of granting new capabilities', () => {
+    expect(resolveCodexAppMentions(['unknown'], tools)).toEqual([])
   })
 })

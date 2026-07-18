@@ -5,6 +5,13 @@ import { sanitizeCodexAppsName } from './toolNormalization.js'
 
 export const CODEX_APPS_PLUGIN_MARKETPLACE = 'chatgpt-connectors'
 
+export type ResolvedCodexAppMention = {
+  appName: string
+  connectorId: string
+  description?: string
+  toolNames: string[]
+}
+
 export type CodexAppPluginProjection = {
   kind: 'connector-projection'
   /** Local discovery/UI identity. Never send this to plugin-service mutations. */
@@ -26,6 +33,52 @@ function shortConnectorHash(connectorId: string): string {
 
 function projectionDisplayName(connectorName: string): string {
   return connectorName.trim() || 'App'
+}
+
+export function extractCodexAppMentions(content: string): string[] {
+  const mentions: string[] = []
+  const seen = new Set<string>()
+  const mentionRegex = /(^|\s)@codex-app:([a-zA-Z0-9][\w.-]*)\b/g
+  let match: RegExpExecArray | null
+
+  while ((match = mentionRegex.exec(content)) !== null) {
+    const appName = match[2]
+    if (!appName) continue
+    const normalizedName = sanitizeCodexAppsName(appName)
+    if (seen.has(normalizedName)) continue
+    seen.add(normalizedName)
+    mentions.push(appName)
+  }
+
+  return mentions
+}
+
+export function resolveCodexAppMentions(
+  mentions: readonly string[],
+  tools: readonly Tool[],
+): ResolvedCodexAppMention[] {
+  if (mentions.length === 0) return []
+
+  const projections = buildCodexAppPluginProjections(tools)
+  const projectionsByName = new Map(
+    projections.map(projection => [
+      sanitizeCodexAppsName(projection.connectorName),
+      projection,
+    ]),
+  )
+
+  return mentions.flatMap(mention => {
+    const projection = projectionsByName.get(sanitizeCodexAppsName(mention))
+    if (!projection) return []
+    return [
+      {
+        appName: projection.displayName,
+        connectorId: projection.connectorId,
+        description: projection.description,
+        toolNames: projection.toolNames,
+      },
+    ]
+  })
 }
 
 /**

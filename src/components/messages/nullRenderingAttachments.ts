@@ -17,6 +17,7 @@ const NULL_RENDERING_TYPES = [
   'hook_cancelled',
   'command_permissions',
   'agent_mention',
+  'codex_app_mention',
   'budget_usd',
   'critical_system_reminder',
   'workflow_keyword_request',

@@ -1,7 +1,11 @@
 import { randomUUID } from 'crypto'
 import axios from 'axios'
-import { getOpenAIAuthInfo } from '../../utils/auth.js'
+import {
+  formatOpenAIPlanName,
+  getOpenAIAuthInfo,
+} from '../../utils/auth.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
+import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
 import type {
   ChatGPTMonthlyCreditLimit,
   ChatGPTUsageCredits,
@@ -60,6 +64,7 @@ function getChatGPTRequestHeaders(): Record<string, string> | null {
 }
 
 export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
+  await checkAndRefreshOpenAITokenIfNeeded()
   const headers = getChatGPTRequestHeaders()
   if (!headers) return null
 
@@ -167,7 +172,8 @@ function buildChatGPTLimits(
   secondaryWindow: RateLimit | null,
   monthlyCreditLimit: ChatGPTMonthlyCreditLimit | null,
 ): UsageLimit[] {
-  const planSuffix = data.plan_type ? ` (${data.plan_type})` : ''
+  const planName = formatOpenAIPlanName(data.plan_type)
+  const planSuffix = planName ? ` (${planName})` : ''
   const limits: UsageLimit[] = []
 
   if (primaryWindow) {

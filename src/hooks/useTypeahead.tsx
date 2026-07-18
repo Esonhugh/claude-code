@@ -71,6 +71,7 @@ import {
   startBackgroundCacheRefresh,
 } from './fileSuggestions.js'
 import { generateUnifiedSuggestions } from './unifiedSuggestions.js'
+import { buildCodexAppPluginProjections } from '../services/apps/pluginProjection.js'
 
 // Unicode-aware character class for file path tokens:
 // \p{L} = letters (CJK, Latin, Cyrillic, etc.)
@@ -491,6 +492,11 @@ export function useTypeahead({
     undefined,
   )
   const mcpResources = useAppState(s => s.mcp.resources)
+  const mcpTools = useAppState(s => s.mcp.tools)
+  const codexApps = useMemo(
+    () => buildCodexAppPluginProjections(mcpTools),
+    [mcpTools],
+  )
   const store = useAppStateStore()
   const promptSuggestion = useAppState(s => s.promptSuggestion)
   // PromptInput hides suggestion ghost text in teammate view — mirror that
@@ -570,6 +576,7 @@ export function useTypeahead({
         searchToken,
         mcpResources,
         agents,
+        codexApps,
         isAtSymbol,
       )
       // Discard stale results if a newer query was initiated while waiting
@@ -601,6 +608,7 @@ export function useTypeahead({
     },
     [
       mcpResources,
+      codexApps,
       setSuggestionsState,
       setSuggestionType,
       setMaxColumnWidth,
@@ -1486,6 +1494,7 @@ export function useTypeahead({
             searchToken,
             mcpResources,
             agents,
+            codexApps,
             isAtSymbol,
           )
         } else {
@@ -1522,6 +1531,7 @@ export function useTypeahead({
     cursorOffset,
     updateSuggestions,
     mcpResources,
+    codexApps,
     setSuggestionsState,
     agents,
     debouncedFetchFileSuggestions,

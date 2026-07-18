@@ -5,6 +5,8 @@ import { generateFileSuggestions } from 'src/hooks/fileSuggestions.js'
 import type { ServerResource } from 'src/services/mcp/types.js'
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import type { CodexAppPluginProjection } from 'src/services/apps/pluginProjection.js'
+import { sanitizeCodexAppsName } from 'src/services/apps/toolNormalization.js'
 import { truncateToWidth } from 'src/utils/format.js'
 import { logError } from 'src/utils/log.js'
 import type { Theme } from 'src/utils/theme.js'
@@ -35,10 +37,18 @@ type AgentSuggestionSource = {
   color?: keyof Theme
 }
 
+type CodexAppSuggestionSource = {
+  type: 'codex_app'
+  displayText: string
+  description: string
+  appName: string
+}
+
 type SuggestionSource =
   | FileSuggestionSource
   | McpResourceSuggestionSource
   | AgentSuggestionSource
+  | CodexAppSuggestionSource
 
 /**
  * Creates a unified suggestion item from a source
@@ -63,6 +73,13 @@ function createSuggestionFromSource(source: SuggestionSource): SuggestionItem {
         displayText: source.displayText,
         description: source.description,
         color: source.color,
+      }
+    case 'codex_app':
+      return {
+        id: `codex-app-${source.appName}`,
+        displayText: source.displayText,
+        description: source.description,
+        metadata: { type: 'codex_app', appName: source.appName },
       }
   }
 }
@@ -112,16 +129,44 @@ export async function generateUnifiedSuggestions(
   query: string,
   mcpResources: Record<string, ServerResource[]>,
   agents: AgentDefinition[],
+  codexApps: readonly CodexAppPluginProjection[],
   showOnEmpty = false,
 ): Promise<SuggestionItem[]> {
   if (!query && !showOnEmpty) {
     return []
   }
 
+  const codexAppPrefix = 'codex-app:'
+  if (query.toLowerCase().startsWith(codexAppPrefix)) {
+    const appQuery = sanitizeCodexAppsName(query.slice(codexAppPrefix.length))
+    return codexApps
+      .filter(app => {
+        if (!appQuery || appQuery === 'app') return true
+        return sanitizeCodexAppsName(app.connectorName).includes(appQuery)
+      })
+      .slice(0, MAX_UNIFIED_SUGGESTIONS)
+      .map(app =>
+        createSuggestionFromSource({
+          type: 'codex_app',
+          displayText: `${codexAppPrefix}${sanitizeCodexAppsName(app.connectorName)}`,
+          description: truncateDescription(
+            app.description || app.connectorName,
+          ),
+          appName: sanitizeCodexAppsName(app.connectorName),
+        }),
+      )
+  }
+
   const [fileSuggestions, agentSources] = await Promise.all([
     generateFileSuggestions(query, showOnEmpty),
     Promise.resolve(generateAgentSuggestions(agents, query, showOnEmpty)),
   ])
+  const codexAppSources: CodexAppSuggestionSource[] = codexApps.map(app => ({
+    type: 'codex_app' as const,
+    displayText: `${codexAppPrefix}${sanitizeCodexAppsName(app.connectorName)}`,
+    description: truncateDescription(app.description || app.connectorName),
+    appName: sanitizeCodexAppsName(app.connectorName),
+  }))
 
   const fileSources: FileSuggestionSource[] = fileSuggestions.map(
     suggestion => ({
@@ -148,13 +193,22 @@ export async function generateUnifiedSuggestions(
     }))
 
   if (!query) {
-    const allSources = [...fileSources, ...mcpSources, ...agentSources]
+    const allSources = [
+      ...codexAppSources,
+      ...fileSources,
+      ...mcpSources,
+      ...agentSources,
+    ]
     return allSources
       .slice(0, MAX_UNIFIED_SUGGESTIONS)
       .map(createSuggestionFromSource)
   }
 
-  const nonFileSources: SuggestionSource[] = [...mcpSources, ...agentSources]
+  const nonFileSources: SuggestionSource[] = [
+    ...codexAppSources,
+    ...mcpSources,
+    ...agentSources,
+  ]
 
   // Score non-file sources with Fuse.js
   // File sources are already scored by Rust/nucleo

@@ -18,8 +18,7 @@ export type {
 
 export async function fetchUtilization(): Promise<Utilization | null> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
-    const chatGPTUtilization = await fetchChatGPTUtilization()
-    if (chatGPTUtilization) return chatGPTUtilization
+    return fetchChatGPTUtilization()
   }
 
   return fetchClaudeCodeUtilization()
