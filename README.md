@@ -10,7 +10,7 @@
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
 - 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.201`
+- 当前本地发布线：`2.1.202`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -29,7 +29,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.201` |
+| 本地发布线 | `2.1.202` |
 | 源码版本 | `0.0.0-dev` |
 | 包管理器 | `bun@1.3.14` |
 | Node.js | `>=18` |
@@ -87,13 +87,13 @@ bun ./dist/cli.js --help
 | Effort | 支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并按 Anthropic/OpenAI provider 和模型能力映射。 |
 | Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
-| Codex Apps | OpenAI + ChatGPT OAuth 模式下可将 Codex Apps 作为 host-owned MCP tools 接入，并支持逐项隐藏。 |
-| Terminal | 提供持久 PTY pane，可通过 `new-session`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 执行多轮 CLI/TUI、按键、resize、signal、compact/full/save-file 读取，并通过 model-internal skill 引导正确调用。 |
+| Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载。 |
+| Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `open`、`write`、`read`、`resize`、`signal`、`status`、`list`、`close` 生命周期，以及 compact/full/save-file 输出。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
-| 状态与用量 UI | Settings Status 显示 OpenAI Account，Usage/Stats 区分 Claude 与 ChatGPT/OpenAI 用量；Model Picker 支持 effort 显示、切换和持久化。 |
+| 状态与用量 UI | 自动识别 ChatGPT `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan；启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits，Model Picker 支持 effort 显示、切换和持久化。 |
 | 自主 Goal | `/goal` 注册 StopHook 并驱动自主执行；目标状态显示在 Prompt footer 和 Status line，并支持 compact/session restore 与自动清理。 |
 | 会话命令 | 新增 `/goal`、`/cd`、`/reload-skills`、`/workflows`，并为 `/cd` 增加仅目录路径补全。 |
-| Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`，以及 user、project、plugin skill 分层加载。 |
+| Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
 | 调试与构建 | 提供 Bun 构建、binary-only npm 发布、source map/Ink/代理调试、CCH attestation、官方 CLI 对照和 tmux/PTY 验收资料。 |
@@ -116,12 +116,14 @@ CLAUDE_CODE_USE_OPENAI=1 claude
 /login
 ```
 
-OpenAI 凭证读取优先级为：
+OpenAI 模型 API 凭证读取优先级为：
 
 1. `OPENAI_AUTH_TOKEN`
 2. `OPENAI_API_KEY`
 3. `~/.codex/auth.json` 中的 API key
 4. `~/.codex/auth.json` 中的 ChatGPT OAuth access token
+
+Subscription、Usage 和 Codex Apps 会独立读取 `~/.codex/auth.json` 中的 ChatGPT OAuth session，不改变模型 API 的凭据优先级。
 
 API key 示例：
 
@@ -130,6 +132,30 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_API_KEY=<your-api-key> claude
 ```
 
 OAuth 登录结果保存在 `~/.codex/auth.json`，文件权限为 `0600`。不要提交或分享该文件。
+
+### Codex Apps mention
+
+ChatGPT OAuth 可用且 `codex_apps` MCP 已连接时，在 PromptInput 输入以下前缀即可浏览已发现 Apps：
+
+```text
+@codex-app:
+```
+
+也可以直接选择具体 App：
+
+```text
+@codex-app:github 检查当前仓库的 pull requests
+@codex-app:gmail 查找与发布相关的邮件
+```
+
+mention 只会解析当前已发现且已过滤的 App 工具，不会恢复禁用 connector、创建未发现工具或绕过工具权限。若工具仍处于 deferred 状态，模型会通过 `ToolSearch` 按需加载。
+
+可通过以下界面确认连接和 subscription 状态：
+
+```text
+/mcp
+/status → Usage
+```
 
 ### Effort 配置
 

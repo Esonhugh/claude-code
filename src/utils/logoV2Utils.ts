@@ -2,7 +2,7 @@ import { getDirectConnectServerUrl, getSessionId } from '../bootstrap/state.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import type { LogOption } from '../types/logs.js'
 import {
-  getOpenAIAuthInfo,
+  getChatGPTOAuthInfo,
   getSubscriptionName,
   isClaudeAISubscriber,
 } from './auth.js'
@@ -259,7 +259,7 @@ export function getLogoDisplayData(): {
   const cwd = serverUrl
     ? `${displayPath} in ${serverUrl.replace(/^https?:\/\//, '')}`
     : displayPath
-  const openAIAuth = getOpenAIAuthInfo()
+  const openAIAuth = getChatGPTOAuthInfo()
   const billingType =
     openAIAuth?.isChatGPT && openAIAuth.planDisplayName
       ? `ChatGPT ${openAIAuth.planDisplayName}`

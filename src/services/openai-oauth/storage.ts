@@ -1,7 +1,11 @@
 import { chmod, mkdir, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
-import { getOpenAIApiKey, getOpenAIAuthInfo } from '../../utils/auth.js'
+import {
+  getChatGPTOAuthInfo,
+  getOpenAIApiKey,
+  getOpenAIAuthInfo,
+} from '../../utils/auth.js'
 import type { OpenAIAuthDotJson } from './types.js'
 
 export function getOpenAIAuthPath(homeDir: string = process.env.HOME ?? homedir()): string {
@@ -21,6 +25,7 @@ async function writeOpenAIAuthFile(
   })
   await chmod(authPath, 0o600)
   getOpenAIAuthInfo.cache.clear?.()
+  getChatGPTOAuthInfo.cache.clear?.()
   getOpenAIApiKey.cache.clear?.()
   return authPath
 }

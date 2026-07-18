@@ -2091,54 +2091,62 @@ export function decodeOpenAIIdTokenClaims(
  * Read OpenAI auth from ~/.codex/auth.json.
  * Used when CLAUDE_CODE_USE_OPENAI=1.
  */
-export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
-  let data: {
-    auth_mode?: string
-    OPENAI_API_KEY?: string
-    tokens?: {
-      access_token?: string
-      account_id?: string
-      account_name?: string
-      email?: string
-      id_token?: string
-    }
-    account?: { name?: string; email?: string }
-  } | null = null
+type OpenAIAuthFile = {
+  auth_mode?: string
+  OPENAI_API_KEY?: string
+  tokens?: {
+    access_token?: string
+    account_id?: string
+    account_name?: string
+    email?: string
+    id_token?: string
+  }
+  account?: { name?: string; email?: string }
+}
+
+function readOpenAIAuthFile(): OpenAIAuthFile | null {
   try {
     const content = readFileSync(
       join(process.env.HOME ?? homedir(), '.codex', 'auth.json'),
       'utf-8',
     )
-    data = JSON.parse(content) as typeof data
+    return JSON.parse(content) as OpenAIAuthFile
   } catch {
-    data = null
+    return null
   }
+}
 
-  if (data?.auth_mode === 'chatgpt' && data.tokens?.access_token) {
-    const idTokenClaims = decodeOpenAIIdTokenClaims(data.tokens.id_token)
-    const planType = idTokenClaims?.chatgptPlanType
-    return {
-      accessToken: data.tokens.access_token,
-      accountId: data.tokens.account_id,
-      isChatGPT: true,
-      accountName:
-        data.tokens.account_name ?? data.account?.name ?? idTokenClaims?.name,
-      email: data.tokens.email ?? data.account?.email ?? idTokenClaims?.email,
-      planType,
-      planDisplayName: formatOpenAIPlanName(planType) ?? undefined,
-    }
+export const getChatGPTOAuthInfo = memoize((): OpenAIAuthInfo | null => {
+  const data = readOpenAIAuthFile()
+  if (data?.auth_mode !== 'chatgpt' || !data.tokens?.access_token) return null
+
+  const idTokenClaims = decodeOpenAIIdTokenClaims(data.tokens.id_token)
+  const planType = idTokenClaims?.chatgptPlanType
+  return {
+    accessToken: data.tokens.access_token,
+    accountId: data.tokens.account_id,
+    isChatGPT: true,
+    accountName:
+      data.tokens.account_name ?? data.account?.name ?? idTokenClaims?.name,
+    email: data.tokens.email ?? data.account?.email ?? idTokenClaims?.email,
+    planType,
+    planDisplayName: formatOpenAIPlanName(planType) ?? undefined,
   }
+})
 
+export const getOpenAIAuthInfo = memoize((): OpenAIAuthInfo | null => {
   if (process.env.OPENAI_AUTH_TOKEN) {
     return { accessToken: process.env.OPENAI_AUTH_TOKEN, isChatGPT: false }
   }
   if (process.env.OPENAI_API_KEY) {
     return { accessToken: process.env.OPENAI_API_KEY, isChatGPT: false }
   }
+
+  const data = readOpenAIAuthFile()
   if (data?.OPENAI_API_KEY) {
     return { accessToken: data.OPENAI_API_KEY, isChatGPT: false }
   }
-  return null
+  return getChatGPTOAuthInfo()
 })
 
 export const getOpenAIApiKey = memoize((): string | null => {

@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import axios from 'axios'
 import {
   formatOpenAIPlanName,
-  getOpenAIAuthInfo,
+  getChatGPTOAuthInfo,
 } from '../../utils/auth.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
@@ -49,7 +49,7 @@ type ChatGPTUsageResponse = {
 }
 
 function getChatGPTRequestHeaders(): Record<string, string> | null {
-  const auth = getOpenAIAuthInfo()
+  const auth = getChatGPTOAuthInfo()
   if (!auth?.isChatGPT) return null
 
   return {
@@ -125,7 +125,7 @@ function mapChatGPTUsageToUtilization(
 }
 
 function getChatGPTAccountDisplay(): Utilization['openai_account'] {
-  const auth = getOpenAIAuthInfo()
+  const auth = getChatGPTOAuthInfo()
   if (!auth?.accountName && !auth?.email) return null
   return {
     name: auth.accountName ?? null,

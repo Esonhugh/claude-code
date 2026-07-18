@@ -21,10 +21,12 @@ try {
   const {
     decodeOpenAIIdTokenClaims,
     formatOpenAIPlanName,
+    getChatGPTOAuthInfo,
     getOpenAIAuthInfo,
     getOpenAIApiKey,
   } = await import('./auth.js')
   getOpenAIAuthInfo.cache.clear?.()
+  getChatGPTOAuthInfo.cache.clear?.()
   getOpenAIApiKey.cache.clear?.()
 
   assert.deepEqual(getOpenAIAuthInfo(), {
@@ -43,6 +45,10 @@ try {
   )
   getOpenAIAuthInfo.cache.clear?.()
   assert.deepEqual(getOpenAIAuthInfo(), {
+    accessToken: 'sk-env-token',
+    isChatGPT: false,
+  })
+  assert.deepEqual(getChatGPTOAuthInfo(), {
     accessToken: 'chatgpt-token',
     accountId: undefined,
     isChatGPT: true,
@@ -60,6 +66,7 @@ try {
     JSON.stringify({ OPENAI_API_KEY: 'sk-auth-json-token' }),
   )
   getOpenAIAuthInfo.cache.clear?.()
+  getChatGPTOAuthInfo.cache.clear?.()
   getOpenAIApiKey.cache.clear?.()
 
   assert.deepEqual(getOpenAIAuthInfo(), {
@@ -116,8 +123,10 @@ try {
   const { getLogoDisplayData } = await import('./logoV2Utils.js')
   assert.equal(getLogoDisplayData().billingType, 'ChatGPT Plus')
 } finally {
-  const { getOpenAIAuthInfo, getOpenAIApiKey } = await import('./auth.js')
+  const { getChatGPTOAuthInfo, getOpenAIAuthInfo, getOpenAIApiKey } =
+    await import('./auth.js')
   getOpenAIAuthInfo.cache.clear?.()
+  getChatGPTOAuthInfo.cache.clear?.()
   getOpenAIApiKey.cache.clear?.()
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome

@@ -10,14 +10,14 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-19 - v1.2.202 - Terminal Tool、功能验收 Skill 与 Codex Apps 集成
+## 2026-07-19 - v2.1.202 - Terminal Tool、功能验收 Skill 与 Codex Apps 集成
 
 ### 版本状态
 
-- 准备发布版本：`v1.2.202`。
+- 准备发布版本：`v2.1.202`。
 - 本次发布覆盖 `master`（`3df519a`）之后至 2026-07-19 的全部提交。
 - `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
-- `Makefile` 默认构建版本更新为 `1.2.202`。
+- `Makefile` 默认构建版本更新为 `2.1.202`。
 
 ### 关联提交
 
@@ -48,7 +48,7 @@
 #### ChatGPT subscription 检测与 Usage UI
 
 - 对齐 Codex 的 OpenAI plan 解析规则，从 ID token 的 `chatgpt_plan_type` claim 识别并规范化 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等订阅名称。
-- ChatGPT OAuth 优先于环境中的 OpenAI API credential，避免 subscription 和 Codex Apps eligibility 被环境变量错误覆盖；Usage 请求前主动刷新 OAuth token。
+- 保持 `OPENAI_AUTH_TOKEN`、`OPENAI_API_KEY`、auth file API key、ChatGPT OAuth 的原始模型 API 凭据优先级；subscription、Usage 与 Codex Apps 独立读取 ChatGPT OAuth，且 Usage 请求前主动刷新 token。
 - OpenAI 模式不再错误回退 Anthropic Usage；启动 pane 显示 ChatGPT plan，并使用 `/backend-api/wham/usage` 的权威 `plan_type` 更新最终标题。
 - `/status` 的 Usage tab 展示 ChatGPT Codex limits、account、reset time 和 reset credits；无可用数据时显示 OpenAI-specific 状态，不再永久停留在 loading 文案。
 

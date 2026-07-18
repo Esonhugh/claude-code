@@ -19,7 +19,7 @@ const { consumeRateLimitResetCredit, fetchUtilization } = await import('./usage.
 
 test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, {
     accessToken: 'test-token',
     accountId: 'account-123',
     isChatGPT: true,
@@ -53,6 +53,7 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
   } finally {
     axios.post = originalAxiosPost
     authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
     if (originalOpenAI === undefined) {
       delete process.env.CLAUDE_CODE_USE_OPENAI
     } else {
@@ -68,11 +69,13 @@ test('fetchUtilization does not fall back to Claude usage in OpenAI API mode', a
   process.env.HOME = homeDir
   delete process.env.OPENAI_AUTH_TOKEN
   authModule.getOpenAIAuthInfo.cache.clear?.()
+  authModule.getChatGPTOAuthInfo.cache.clear?.()
 
   try {
     assert.equal(await fetchUtilization(), null)
   } finally {
     authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
     if (originalOpenAI === undefined) {
       delete process.env.CLAUDE_CODE_USE_OPENAI
     } else {
@@ -99,7 +102,7 @@ test('fetchUtilization does not fall back to Claude usage in OpenAI API mode', a
 
 test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is active', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, {
     accessToken: 'test-token',
     accountId: 'account-123',
     isChatGPT: true,
@@ -231,6 +234,7 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
   } finally {
     axios.get = originalAxiosGet
     authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
     globalThis.fetch = originalFetch
     if (originalOpenAI === undefined) {
       delete process.env.CLAUDE_CODE_USE_OPENAI
