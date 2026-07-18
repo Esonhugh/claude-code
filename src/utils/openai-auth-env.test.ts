@@ -75,6 +75,16 @@ try {
   })
   assert.equal(getOpenAIApiKey(), 'sk-openai-api-env-token')
 
+  delete process.env.OPENAI_API_KEY
+  getOpenAIAuthInfo.cache.clear?.()
+  getOpenAIApiKey.cache.clear?.()
+  assert.deepEqual(getOpenAIAuthInfo(), {
+    accessToken: 'sk-auth-json-token',
+    isChatGPT: false,
+  })
+  assert.equal(getOpenAIApiKey(), 'sk-auth-json-token')
+  assert.equal(getChatGPTOAuthInfo(), null)
+
   const payload = Buffer.from(
     JSON.stringify({
       name: 'Alice',
@@ -109,6 +119,7 @@ try {
     }),
   )
   getOpenAIAuthInfo.cache.clear?.()
+  getChatGPTOAuthInfo.cache.clear?.()
   assert.deepEqual(getOpenAIAuthInfo(), {
     accessToken: 'chatgpt-token',
     accountId: undefined,
