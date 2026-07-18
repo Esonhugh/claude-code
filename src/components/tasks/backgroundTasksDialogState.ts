@@ -3,7 +3,7 @@ import {
   isBackgroundTask,
 } from '../../tasks/types.js'
 
-export type BackgroundTasksDialogScope = 'all' | 'interactive-terminal'
+export type BackgroundTasksDialogScope = 'all' | 'terminal'
 
 export type BackgroundTasksDialogViewState =
   | { mode: 'list' }
@@ -21,7 +21,7 @@ export function getScopedBackgroundTasks(
       !(task.type === 'local_agent' && task.id === foregroundedTaskId),
   )
 
-  if (scope === 'interactive-terminal') {
+  if (scope === 'terminal') {
     return backgroundTasks.filter(task => task.type === 'interactive_terminal')
   }
 

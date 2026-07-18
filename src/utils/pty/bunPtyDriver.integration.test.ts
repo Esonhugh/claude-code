@@ -6,10 +6,11 @@ import test from 'node:test'
 
 import {
   resolveDefaultShell,
-  resolveInteractiveTerminalCommand,
+  resolveTerminalCommand,
 } from '../shell/resolveDefaultShell.js'
 import { createBunPtyDriver } from './bunPtyDriver.js'
 import { PtySessionManager } from './PtySessionManager.js'
+import { DEFAULT_MAX_BUFFERED_CHUNKS } from './types.js'
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
   const start = Date.now()
@@ -21,16 +22,17 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void
   }
 }
 
-test('Bun PTY driver starts the resolved interactive terminal shell and emits output', async () => {
+test('Bun PTY driver starts the resolved terminal shell and emits output', async () => {
   const driver = createBunPtyDriver()
-  const shell = resolveInteractiveTerminalCommand()
+  const resolved = resolveTerminalCommand()
+  const shell = resolved.command
   const sessionId = 'term_test'
 
-  assert.equal(driver.resolveDefaultCommand(), shell)
+  assert.equal(shell, resolved.command)
 
   driver.open({
     command: shell,
-    args: shell.endsWith('pwsh') || shell === 'powershell' ? ['-NoLogo'] : [],
+    args: resolved.args,
     cwd: process.cwd(),
     cols: 80,
     rows: 24,
@@ -65,7 +67,7 @@ test('falls back from invalid SHELL to configured/default shell command', () => 
   try {
     process.env.SHELL = '/definitely/missing-shell'
     const fallback = resolveDefaultShell() === 'powershell' ? 'powershell' : 'bash'
-    assert.equal(resolveInteractiveTerminalCommand(), fallback)
+    assert.match(resolveTerminalCommand().command, new RegExp(`${fallback}$`))
   } finally {
     if (originalShell === undefined) {
       delete process.env.SHELL
@@ -117,7 +119,7 @@ test('Bun PTY driver starts an explicit bash command with explicit args', async 
   }
 })
 
-test('Bun PTY driver throws when the explicit command cannot be resolved', () => {
+test('Bun PTY driver throws when the resolved executable is missing', () => {
   const driver = createBunPtyDriver()
 
   assert.throws(
@@ -131,9 +133,7 @@ test('Bun PTY driver throws when the explicit command cannot be resolved', () =>
         sessionId: 'term_missing_bin',
       })
     },
-    {
-      message: 'Unable to resolve terminal command: definitely-not-found-bin',
-    },
+    /Executable not found in \$PATH: "definitely-not-found-bin"/,
   )
 })
 
@@ -145,9 +145,10 @@ test('supports a real interrupt flow against a live PTY shell', async () => {
     exitedSessionTtlMs: 60_000,
   })
 
+  const resolved = resolveTerminalCommand()
   const opened = manager.open({
-    command: resolveInteractiveTerminalCommand(),
-    args: [],
+    command: resolved.command,
+    args: resolved.args,
     cwd: process.cwd(),
     cols: 80,
     rows: 24,
@@ -156,8 +157,76 @@ test('supports a real interrupt flow against a live PTY shell', async () => {
   manager.write(opened.sessionId, 'sleep 5\r')
   const signaled = manager.signal(opened.sessionId, 'SIGINT')
 
-  assert.equal(typeof signaled.state, 'string')
+  assert.equal(signaled.state, 'closed')
+  assert.equal(signaled.exitCode, 130)
+  assert.equal(signaled.signal, 'SIGINT')
+  assert.equal(manager.status(opened.sessionId).state, 'closed')
+})
 
-  const closed = manager.close(opened.sessionId, false)
+test('Bun PTY driver keeps naturally exited sessions readable until explicit disposal', async () => {
+  const driver = createBunPtyDriver()
+  const manager = new PtySessionManager({
+    driver,
+    maxBufferedChunks: 64,
+    exitedSessionTtlMs: 60_000,
+  })
+
+  const opened = manager.open({
+    command: '/bin/sh',
+    args: ['-c', 'printf TERMINAL_L5_OK; sleep 0.1'],
+    cwd: process.cwd(),
+    cols: 80,
+    rows: 24,
+  })
+
+  await waitFor(() => manager.status(opened.sessionId).state === 'closed')
+
+  assert.equal(manager.status(opened.sessionId).state, 'closed')
+  assert.equal(manager.status(opened.sessionId).exitCode, 0)
+  assert.equal(
+    manager.read(opened.sessionId, 0).chunks.map(chunk => chunk.text).join(''),
+    'TERMINAL_L5_OK',
+  )
+  assert.equal(
+    manager.list().find(session => session.sessionId === opened.sessionId)?.state,
+    'closed',
+  )
+
+  manager.reapExpiredSessions(Date.now() + 60_001)
+  assert.throws(() => manager.status(opened.sessionId), /Unknown PTY session/)
+})
+
+test('Bun PTY driver bounds queued output and clears runtime session on close', async () => {
+  const driver = createBunPtyDriver()
+  const resolved = resolveTerminalCommand()
+  const sessionId = 'term_queue_bound'
+  driver.open({
+    command: resolved.command,
+    args: resolved.args,
+    cwd: process.cwd(),
+    cols: 80,
+    rows: 24,
+    sessionId,
+  })
+
+  driver.write(
+    sessionId,
+    `for i in {1..${DEFAULT_MAX_BUFFERED_CHUNKS + 50}}; do echo QUEUE_$i; done\r`,
+  )
+
+  let chunks = 0
+  await waitFor(() => {
+    let chunk = driver.write(sessionId, '')
+    while (chunk) {
+      chunks += 1
+      chunk = driver.write(sessionId, '')
+    }
+    return chunks > 0
+  })
+
+  assert.ok(chunks <= DEFAULT_MAX_BUFFERED_CHUNKS)
+
+  const closed = driver.close(sessionId)
   assert.equal(closed.state, 'closed')
+  assert.throws(() => driver.status(sessionId), /Unknown PTY session/)
 })

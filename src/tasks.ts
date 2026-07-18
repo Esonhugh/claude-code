@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
 import type { Task, TaskType } from './Task.js'
 import { DreamTask } from './tasks/DreamTask/DreamTask.js'
-import { InteractiveTerminalTask } from './tasks/InteractiveTerminalTask.js'
+import { TerminalTask } from './tasks/TerminalTask.js'
 import { LocalAgentTask } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalShellTask } from './tasks/LocalShellTask/LocalShellTask.js'
 import { RemoteAgentTask } from './tasks/RemoteAgentTask/RemoteAgentTask.js'
@@ -27,7 +27,7 @@ function getMonitorMcpTask(): Task | null {
 export function getAllTasks(): Task[] {
   const tasks: Task[] = [
     LocalShellTask,
-    InteractiveTerminalTask,
+    TerminalTask,
     LocalAgentTask,
     RemoteAgentTask,
     DreamTask,

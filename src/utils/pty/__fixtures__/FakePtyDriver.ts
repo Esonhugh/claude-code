@@ -6,11 +6,15 @@ import type {
 } from '../types.js'
 
 interface FakePtyDriverSession {
+  outputQueue: Array<Omit<TerminalOutputChunk, 'start' | 'end'>>
   status: PtyDriverSessionStatus
 }
 
 export class FakePtyDriver implements PtyDriver {
+  readonly killedSignals: Array<{ sessionId: string; signal: 'SIGINT' | 'SIGTERM' }> = []
+  readonly writes: Array<{ sessionId: string; data: string }> = []
   private readonly sessions = new Map<string, FakePtyDriverSession>()
+  readonly disposedSessions: string[] = []
 
   open(options: PtyDriverOpenOptions): PtyDriverSessionStatus {
     const status: PtyDriverSessionStatus = {
@@ -19,6 +23,7 @@ export class FakePtyDriver implements PtyDriver {
     }
 
     this.sessions.set(options.sessionId, {
+      outputQueue: [],
       status,
     })
 
@@ -30,13 +35,19 @@ export class FakePtyDriver implements PtyDriver {
     data: string,
   ): Omit<TerminalOutputChunk, 'start' | 'end'> | null {
     const session = this.sessions.get(sessionId)
-    if (!session || session.status.state === 'closed') {
+    if (!session) {
       return null
     }
 
     if (!data) {
+      return session.outputQueue.shift() ?? null
+    }
+
+    if (session.status.state === 'closed') {
       return null
     }
+
+    this.writes.push({ sessionId, data })
 
     return {
       text: data,
@@ -67,6 +78,8 @@ export class FakePtyDriver implements PtyDriver {
       throw new Error(`Unknown PTY session: ${sessionId}`)
     }
 
+    this.killedSignals.push({ sessionId, signal })
+
     session.status = {
       state: 'closed',
       exitCode: signal === 'SIGTERM' ? 143 : 130,
@@ -93,5 +106,34 @@ export class FakePtyDriver implements PtyDriver {
     }
 
     return { ...session.status }
+  }
+
+  finishNaturally(
+    sessionId: string,
+    output: string,
+    exitCode = 0,
+  ): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Unknown PTY session: ${sessionId}`)
+    }
+
+    session.outputQueue.push({
+      text: output,
+      stream: 'stdout',
+      timestamp: Date.now(),
+    })
+    session.status = {
+      state: 'closed',
+      exitCode,
+      exitedAt: Date.now(),
+      pid: session.status.pid,
+      signal: null,
+    }
+  }
+
+  dispose(sessionId: string): void {
+    this.disposedSessions.push(sessionId)
+    this.sessions.delete(sessionId)
   }
 }

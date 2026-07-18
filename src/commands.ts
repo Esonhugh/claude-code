@@ -24,7 +24,7 @@ import doctor from './commands/doctor/index.js'
 import memory from './commands/memory/index.js'
 import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
-import interactiveTerminal from './commands/interactive-terminal/index.js'
+import terminal from './commands/terminal/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
@@ -288,7 +288,7 @@ const COMMANDS = memoize((): Command[] => [
   heapDump,
   help,
   ide,
-  interactiveTerminal,
+  terminal,
   init,
   keybindings,
   installGitHubApp,

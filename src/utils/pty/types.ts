@@ -13,6 +13,13 @@ export const INITIAL_TERMINAL_SIZE = {
   rows: 30,
 } as const
 
+export const MAX_TERMINAL_SIZE = {
+  cols: 1000,
+  rows: 1000,
+} as const
+
+export const DEFAULT_MAX_BUFFERED_CHUNKS = 200
+
 export const SPECIAL_KEYS = [
   'ENTER',
   'TAB',
@@ -45,7 +52,9 @@ export interface TerminalReadResult {
 }
 
 export interface TerminalSessionRecord {
+  args: string[]
   cols: number
+  command: string
   cwd: string
   exitedAt?: number
   exitCode?: number | null
@@ -71,9 +80,9 @@ export interface OpenTerminalSessionOptions {
 }
 
 export interface PtyDriverOpenOptions {
-  args?: string[]
+  args: string[]
   cols: number
-  command?: string
+  command: string
   cwd: string
   env?: Record<string, string>
   rows: number
@@ -90,6 +99,7 @@ export interface PtyDriverSessionStatus {
 
 export interface PtyDriver {
   close(sessionId: string): PtyDriverSessionStatus
+  dispose?(sessionId: string): void
   kill?(sessionId: string, signal: 'SIGINT' | 'SIGTERM'): PtyDriverSessionStatus
   open(options: PtyDriverOpenOptions): PtyDriverSessionStatus
   resize?(sessionId: string, cols: number, rows: number): void

@@ -21,9 +21,9 @@ import {
   type DreamTaskState,
 } from 'src/tasks/DreamTask/DreamTask.js'
 import {
-  InteractiveTerminalTask,
-  type InteractiveTerminalTaskState,
-} from 'src/tasks/InteractiveTerminalTask.js'
+  TerminalTask,
+  type TerminalTaskState,
+} from 'src/tasks/TerminalTask.js'
 import { InProcessTeammateTask } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
@@ -49,12 +49,12 @@ import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
-import { getTerminalManager, terminalTaskRegistry } from '../../tools/InteractiveTerminalTool/InteractiveTerminalTool.js'
+import { getTerminalManager, terminalTaskRegistry } from '../../tools/TerminalTool/TerminalTool.js'
 import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
 import {
-  interactiveTerminalPreviewHeight,
-  interactiveTerminalPreviewLines,
-} from './interactiveTerminalPreview.js'
+  terminalPreviewHeight,
+  terminalPreviewLines,
+} from './terminalPreview.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
@@ -86,12 +86,12 @@ type Props = {
   scope?: BackgroundTasksDialogScope
 }
 
-function InteractiveTerminalDetailDialog({
+function TerminalDetailDialog({
   task,
   onBack,
   setAppState,
 }: {
-  task: DeepImmutable<InteractiveTerminalTaskState>
+  task: DeepImmutable<TerminalTaskState>
   onBack: () => void
   setAppState: (updater: (prev: any) => any) => void
 }): React.ReactNode {
@@ -106,6 +106,7 @@ function InteractiveTerminalDetailDialog({
           return
         }
         const manager = getTerminalManager()
+        const status = manager.status(task.sessionId)
         const preview = manager.getRenderedPreview(task.sessionId)
         setAppState(prev => {
           const existing = prev.tasks?.[taskId]
@@ -118,8 +119,8 @@ function InteractiveTerminalDetailDialog({
               ...prev.tasks,
               [taskId]: {
                 ...existing,
-                cols: manager.status(task.sessionId).cols,
-                rows: manager.status(task.sessionId).rows,
+                cols: status.cols,
+                rows: status.rows,
                 preview,
               },
             },
@@ -134,7 +135,7 @@ function InteractiveTerminalDetailDialog({
 
   return (
     <Dialog
-      title="Interactive terminal details"
+      title="Terminal details"
       onCancel={onBack}
       color="background"
       inputGuide={() => (
@@ -161,10 +162,10 @@ function InteractiveTerminalDetailDialog({
           borderStyle="round"
           paddingX={1}
           flexDirection="column"
-          height={interactiveTerminalPreviewHeight(task.rows)}
+          height={terminalPreviewHeight(task.rows)}
         >
           {renderAnsiPreviewLines(
-            interactiveTerminalPreviewLines(task.preview, task.rows, task.rows).join('\n'),
+            terminalPreviewLines(task.preview, task.rows, task.rows).join('\n'),
             task.cols,
           ).map(renderAnsiPreviewLine)}
         </Box>
@@ -186,7 +187,7 @@ type ListItem =
       type: 'interactive_terminal'
       label: string
       status: string
-      task: DeepImmutable<InteractiveTerminalTaskState>
+      task: DeepImmutable<TerminalTaskState>
     }
   | {
       id: string
@@ -301,7 +302,7 @@ export function BackgroundTasksDialog({
   // Memoize the sorted and categorized items together to ensure stable references
   const {
     bashTasks,
-    interactiveTerminalTasks,
+    terminalTasks,
     remoteSessions,
     agentTasks,
     teammateTasks,
@@ -328,7 +329,7 @@ export function BackgroundTasksDialog({
       return bTime - aTime
     })
     const bash = sorted.filter(item => item.type === 'local_bash')
-    const interactiveTerminals = sorted.filter(
+    const terminals = sorted.filter(
       item => item.type === 'interactive_terminal',
     )
     const remote = sorted.filter(item => item.type === 'remote_agent')
@@ -356,7 +357,7 @@ export function BackgroundTasksDialog({
         : []
     return {
       bashTasks: bash,
-      interactiveTerminalTasks: interactiveTerminals,
+      terminalTasks: terminals,
       remoteSessions: remote,
       agentTasks: agent,
       mcpMonitors: monitorMcp,
@@ -369,7 +370,7 @@ export function BackgroundTasksDialog({
         ...leaderItem,
         ...teammates,
         ...bash,
-        ...interactiveTerminals,
+        ...terminals,
         ...monitorMcp,
         ...remote,
         ...agent,
@@ -431,7 +432,7 @@ export function BackgroundTasksDialog({
         currentSelection.type === 'interactive_terminal' &&
         currentSelection.status === 'running'
       ) {
-        void killInteractiveTerminalTask(currentSelection.id)
+        void killTerminalTask(currentSelection.id)
       } else if (
         currentSelection.type === 'local_agent' &&
         currentSelection.status === 'running'
@@ -495,8 +496,8 @@ export function BackgroundTasksDialog({
     await LocalShellTask.kill(taskId, setAppState)
   }
 
-  async function killInteractiveTerminalTask(taskId: string): Promise<void> {
-    await InteractiveTerminalTask.kill(taskId, setAppState)
+  async function killTerminalTask(taskId: string): Promise<void> {
+    await TerminalTask.kill(taskId, setAppState)
   }
 
   async function killAgentTask(taskId: string): Promise<void> {
@@ -580,7 +581,7 @@ export function BackgroundTasksDialog({
         )
       case 'interactive_terminal':
         return (
-          <InteractiveTerminalDetailDialog
+          <TerminalDetailDialog
             task={task}
             onBack={goBackToList}
             setAppState={setAppState}
@@ -701,8 +702,8 @@ export function BackgroundTasksDialog({
   }
 
   const runningBashCount = count(bashTasks, _ => _.status === 'running')
-  const runningInteractiveTerminalCount = count(
-    interactiveTerminalTasks,
+  const runningTerminalCount = count(
+    terminalTasks,
     _ => _.status === 'running',
   )
   const runningAgentCount =
@@ -729,11 +730,11 @@ export function BackgroundTasksDialog({
             </Text>,
           ]
         : []),
-      ...(runningInteractiveTerminalCount > 0
+      ...(runningTerminalCount > 0
         ? [
-            <Text key="interactive-terminals">
-              {runningInteractiveTerminalCount}{' '}
-              {runningInteractiveTerminalCount !== 1 ? 'interactive terminals' : 'interactive terminal'}
+            <Text key="terminals">
+              {runningTerminalCount}{' '}
+              {runningTerminalCount !== 1 ? 'terminals' : 'terminal'}
             </Text>,
           ]
         : []),
@@ -811,8 +812,8 @@ export function BackgroundTasksDialog({
       >
         {allSelectableItems.length === 0 ? (
           <Text dimColor>
-            {scope === 'interactive-terminal'
-              ? 'No interactive terminals currently running'
+            {scope === 'terminal'
+              ? 'No terminals currently running'
               : 'No tasks currently running'}
           </Text>
         ) : (
@@ -860,7 +861,7 @@ export function BackgroundTasksDialog({
               </Box>
             )}
 
-            {interactiveTerminalTasks.length > 0 && (
+            {terminalTasks.length > 0 && (
               <Box
                 flexDirection="column"
                 marginTop={
@@ -868,10 +869,10 @@ export function BackgroundTasksDialog({
                 }
               >
                 <Text dimColor>
-                  <Text bold>{'  '}Interactive terminals</Text> ({interactiveTerminalTasks.length})
+                  <Text bold>{'  '}Terminals</Text> ({terminalTasks.length})
                 </Text>
                 <Box flexDirection="column">
-                  {interactiveTerminalTasks.map(item => (
+                  {terminalTasks.map(item => (
                     <Item
                       key={item.id}
                       item={item}
@@ -886,7 +887,7 @@ export function BackgroundTasksDialog({
               <Box
                 flexDirection="column"
                 marginTop={
-                  teammateTasks.length > 0 || bashTasks.length > 0 || interactiveTerminalTasks.length > 0 ? 1 : 0
+                  teammateTasks.length > 0 || bashTasks.length > 0 || terminalTasks.length > 0 ? 1 : 0
                 }
               >
                 <Text dimColor>
@@ -958,7 +959,6 @@ export function BackgroundTasksDialog({
               </Box>
             )}
 
-
             {dreamTasks.length > 0 && (
               <Box
                 flexDirection="column"
@@ -967,7 +967,8 @@ export function BackgroundTasksDialog({
                   bashTasks.length > 0 ||
                   mcpMonitors.length > 0 ||
                   remoteSessions.length > 0 ||
-                  agentTasks.length > 0                    ? 1
+                  agentTasks.length > 0
+                    ? 1
                     : 0
                 }
               >

@@ -1,12 +1,10 @@
-import { accessSync, constants as fsConstants } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
-import { resolveInteractiveTerminalCommand } from '../shell/resolveDefaultShell.js'
 import type {
   PtyDriver,
   PtyDriverOpenOptions,
   PtyDriverSessionStatus,
   TerminalOutputChunk,
 } from './types.js'
+import { DEFAULT_MAX_BUFFERED_CHUNKS } from './types.js'
 
 interface BunPtySession {
   outputQueue: Array<Omit<TerminalOutputChunk, 'start' | 'end'>>
@@ -15,76 +13,21 @@ interface BunPtySession {
   status: PtyDriverSessionStatus
 }
 
-function buildShellArgs(command: string): string[] {
-  if (command === 'powershell' || command.endsWith('/pwsh')) {
-    return ['-NoLogo']
-  }
-  return []
-}
-
-function getExecutableCandidates(command: string): string[] {
-  const baseCandidates =
-    command === 'powershell' ? ['pwsh', 'powershell'] : [command]
-
-  if (process.platform !== 'win32') {
-    return baseCandidates
-  }
-
-  const pathExts = (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM')
-    .split(';')
-    .filter(Boolean)
-
-  return baseCandidates.flatMap(candidate => {
-    const lower = candidate.toLowerCase()
-    if (pathExts.some(ext => lower.endsWith(ext.toLowerCase()))) {
-      return [candidate]
-    }
-    return [candidate, ...pathExts.map(ext => `${candidate}${ext.toLowerCase()}`)]
-  })
-}
-
-function resolveCommandPath(command: string): string {
-  const candidates = getExecutableCandidates(command)
-
-  for (const candidate of candidates) {
-    if (isAbsolute(candidate)) {
-      accessSync(candidate, fsConstants.X_OK)
-      return candidate
-    }
-
-    const pathEntries = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
-    for (const entry of pathEntries) {
-      const fullPath = join(entry, candidate)
-      try {
-        accessSync(fullPath, fsConstants.X_OK)
-        return fullPath
-      } catch {
-        // Try next candidate/path.
-      }
-    }
-  }
-
-  throw new Error(`Unable to resolve terminal command: ${command}`)
-}
-
 export function createBunPtyDriver(): PtyDriver & {
   resolveDefaultCommand(): string
 } {
   if (typeof Bun === 'undefined' || typeof Bun.spawn !== 'function') {
-    throw new Error('InteractiveTerminal requires Bun terminal PTY support')
+    throw new Error('Terminal requires Bun terminal PTY support')
   }
 
   const sessions = new Map<string, BunPtySession>()
 
   return {
     resolveDefaultCommand() {
-      return resolveInteractiveTerminalCommand()
+      throw new Error('Default command resolution is handled by PtySessionManager')
     },
 
     open(options: PtyDriverOpenOptions): PtyDriverSessionStatus {
-      const command = options.command ?? resolveInteractiveTerminalCommand()
-      const resolvedCommand = resolveCommandPath(command)
-      const args = options.args ?? buildShellArgs(command)
       const session = {
         outputQueue: [],
         status: {
@@ -93,7 +36,7 @@ export function createBunPtyDriver(): PtyDriver & {
       } as Pick<BunPtySession, 'outputQueue' | 'status'> &
         Partial<Pick<BunPtySession, 'proc' | 'terminal'>>
 
-      const proc = Bun.spawn([resolvedCommand, ...args], {
+      const proc = Bun.spawn([options.command, ...options.args], {
         cwd: options.cwd,
         env: {
           ...process.env,
@@ -108,6 +51,9 @@ export function createBunPtyDriver(): PtyDriver & {
               stream: 'stdout',
               timestamp: Date.now(),
             })
+            while (session.outputQueue.length > DEFAULT_MAX_BUFFERED_CHUNKS) {
+              session.outputQueue.shift()
+            }
           },
         },
       })
@@ -179,7 +125,9 @@ export function createBunPtyDriver(): PtyDriver & {
         pid: session.proc.pid,
         signal,
       }
-      return { ...session.status }
+      const status = { ...session.status }
+      sessions.delete(sessionId)
+      return status
     },
 
     close(sessionId: string) {
@@ -197,7 +145,13 @@ export function createBunPtyDriver(): PtyDriver & {
           signal: session.status.signal ?? null,
         }
       }
-      return { ...session.status }
+      const status = { ...session.status }
+      sessions.delete(sessionId)
+      return status
+    },
+
+    dispose(sessionId: string) {
+      sessions.delete(sessionId)
     },
   }
 }

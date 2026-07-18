@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 
 import type { TaskStateBase } from '../../Task.js'
-import type { InteractiveTerminalTaskState } from '../../tasks/InteractiveTerminalTask.js'
+import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
 import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js'
 import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
 
@@ -19,10 +19,10 @@ function createTaskBase(id: string, description: string, startTime: number): Tas
   }
 }
 
-const interactiveTerminalTask = (
+const terminalTask = (
   id: string,
   startTime: number,
-): InteractiveTerminalTaskState => ({
+): TerminalTaskState => ({
   ...createTaskBase(id, `terminal ${id}`, startTime),
   type: 'interactive_terminal',
   sessionId: `session-${id}`,
@@ -48,9 +48,9 @@ const shellTask = (id: string, startTime: number): LocalShellTaskState => ({
 const singleInteractive = getBackgroundTasksDialogInitialState({
   tasks: {
     shell: shellTask('shell', 1),
-    term: interactiveTerminalTask('term', 2),
+    term: terminalTask('term', 2),
   },
-  scope: 'interactive-terminal',
+  scope: 'terminal',
 })
 assert.deepEqual(singleInteractive, {
   viewState: { mode: 'detail', itemId: 'term' },
@@ -61,10 +61,10 @@ assert.deepEqual(singleInteractive, {
 const multipleInteractive = getBackgroundTasksDialogInitialState({
   tasks: {
     shell: shellTask('shell', 1),
-    termA: interactiveTerminalTask('termA', 3),
-    termB: interactiveTerminalTask('termB', 2),
+    termA: terminalTask('termA', 3),
+    termB: terminalTask('termB', 2),
   },
-  scope: 'interactive-terminal',
+  scope: 'terminal',
 })
 assert.deepEqual(multipleInteractive, {
   viewState: { mode: 'list' },
@@ -76,7 +76,7 @@ const noInteractive = getBackgroundTasksDialogInitialState({
   tasks: {
     shell: shellTask('shell', 1),
   },
-  scope: 'interactive-terminal',
+  scope: 'terminal',
 })
 assert.deepEqual(noInteractive, {
   viewState: { mode: 'list' },

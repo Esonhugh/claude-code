@@ -5,7 +5,9 @@ import type { TerminalSpecialKey } from './types.js'
 import { FakePtyDriver } from './__fixtures__/FakePtyDriver.js'
 import { PtySessionManager } from './PtySessionManager.js'
 import {
+  DEFAULT_MAX_BUFFERED_CHUNKS,
   INITIAL_TERMINAL_SIZE,
+  MAX_TERMINAL_SIZE,
   SESSION_STATES,
 } from './types.js'
 import { keyToSequence } from './keyMap.js'
@@ -14,6 +16,8 @@ describe('pty shared types and key map', () => {
   it('exposes the session states and initial size constants', () => {
     assert.deepEqual(SESSION_STATES, ['starting', 'running', 'exited', 'closed', 'failed'])
     assert.deepEqual(INITIAL_TERMINAL_SIZE, { cols: 120, rows: 30 })
+    assert.deepEqual(MAX_TERMINAL_SIZE, { cols: 1000, rows: 1000 })
+    assert.equal(DEFAULT_MAX_BUFFERED_CHUNKS, 200)
   })
 
   it('maps supported keys to terminal sequences', () => {
@@ -150,16 +154,53 @@ describe('PtySessionManager', () => {
     assert.equal(resized.rows, 40)
   })
 
-  it('supports sending SIGINT to an open session', () => {
+  it('rejects terminal sizes above the centralized maximum', () => {
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),
+    })
+
+    assert.throws(
+      () => manager.open({ cwd: '/tmp/project', cols: 1001 }),
+      /Invalid terminal cols: 1001/,
+    )
+
+    const session = manager.open({ cwd: '/tmp/project' })
+    assert.throws(
+      () => manager.resize(session.sessionId, 80, 1001),
+      /Invalid terminal rows: 1001/,
+    )
+  })
+
+  it('routes send-signal SIGINT to driver.kill instead of writing CTRL_C', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({
+      driver,
     })
 
     const session = manager.open({ cwd: '/tmp/project' })
     const signaled = manager.signal(session.sessionId, 'SIGINT')
 
-    assert.equal(signaled.state, 'running')
-    assert.equal(signaled.nextCursor, Buffer.byteLength('', 'utf8'))
+    assert.equal(signaled.state, 'closed')
+    assert.equal(signaled.exitCode, 130)
+    assert.deepEqual(driver.killedSignals, [
+      { sessionId: session.sessionId, signal: 'SIGINT' },
+    ])
+    assert.deepEqual(driver.writes, [])
+  })
+
+  it('keeps CTRL_C as a send-keys write sequence', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({
+      driver,
+    })
+
+    const session = manager.open({ cwd: '/tmp/project' })
+    manager.write(session.sessionId, '')
+
+    assert.deepEqual(driver.killedSignals, [])
+    assert.deepEqual(driver.writes, [
+      { sessionId: session.sessionId, data: '' },
+    ])
   })
 
   it('trims raw activity cursors while read keeps returning the current screen snapshot', () => {
@@ -211,7 +252,7 @@ describe('PtySessionManager', () => {
     assert.equal(preview.includes('Claude is thinking... 100%'), true)
   })
 
-  it('keeps the final rendered preview after close', () => {
+  it('keeps final status and rendered preview after driver close cleanup', () => {
     const manager = new PtySessionManager({
       driver: new FakePtyDriver(),
     })
@@ -220,7 +261,40 @@ describe('PtySessionManager', () => {
     manager.write(session.sessionId, 'Claude complete')
     manager.close(session.sessionId)
 
+    assert.equal(manager.status(session.sessionId).state, 'closed')
     assert.equal(manager.getRenderedPreview(session.sessionId).includes('Claude complete'), true)
+  })
+
+  it('observes naturally exited driver sessions before TTL disposal', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({
+      driver,
+      exitedSessionTtlMs: 100,
+    })
+    const session = manager.open({ cwd: '/tmp/project', cols: 40, rows: 6 })
+
+    driver.finishNaturally(session.sessionId, 'TERMINAL_L5_OK', 0)
+
+    const status = manager.status(session.sessionId)
+    assert.equal(status.state, 'closed')
+    assert.equal(status.exitCode, 0)
+    assert.equal(manager.getRenderedPreview(session.sessionId), 'TERMINAL_L5_OK')
+    assert.equal(
+      manager.read(session.sessionId, 0).chunks.map(chunk => chunk.text).join(''),
+      'TERMINAL_L5_OK',
+    )
+    assert.equal(
+      manager.list().find(item => item.sessionId === session.sessionId)?.state,
+      'closed',
+    )
+    assert.throws(
+      () => manager.write(session.sessionId, 'after close'),
+      /SESSION_ALREADY_CLOSED: term-1/,
+    )
+
+    manager.reapExpiredSessions(Date.now() + 101)
+    assert.deepEqual(driver.disposedSessions, [session.sessionId])
+    assert.throws(() => manager.status(session.sessionId), /Unknown PTY session/)
   })
 
   it('reaps closed sessions after the configured TTL', () => {

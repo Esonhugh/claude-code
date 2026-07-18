@@ -1,5 +1,8 @@
+import { resolveTerminalCommand } from '../shell/resolveDefaultShell.js'
 import {
+  DEFAULT_MAX_BUFFERED_CHUNKS,
   INITIAL_TERMINAL_SIZE,
+  MAX_TERMINAL_SIZE,
   type OpenTerminalSessionOptions,
   type PtyDriver,
   type TerminalOutputChunk,
@@ -36,17 +39,23 @@ export class PtySessionManager {
   constructor(options: PtySessionManagerOptions) {
     this.driver = options.driver
     this.exitedSessionTtlMs = options.exitedSessionTtlMs ?? 60_000
-    this.maxBufferedChunks = options.maxBufferedChunks ?? Number.POSITIVE_INFINITY
+    this.maxBufferedChunks = options.maxBufferedChunks ?? DEFAULT_MAX_BUFFERED_CHUNKS
   }
 
   open(options: OpenTerminalSessionOptions): TerminalSessionRecord {
     const sessionId = `term-${this.nextSessionId++}`
     const startedAt = Date.now()
-    const cols = options.cols ?? INITIAL_TERMINAL_SIZE.cols
-    const rows = options.rows ?? INITIAL_TERMINAL_SIZE.rows
-    const status = this.driver.open({
-      args: options.args,
+    const cols = this.validateSize('cols', options.cols ?? INITIAL_TERMINAL_SIZE.cols)
+    const rows = this.validateSize('rows', options.rows ?? INITIAL_TERMINAL_SIZE.rows)
+    const resolved = resolveTerminalCommand({
       command: options.command,
+      cwd: options.cwd,
+      env: options.env,
+    })
+    const args = options.args ?? resolved.args
+    const status = this.driver.open({
+      args,
+      command: resolved.command,
       cols,
       cwd: options.cwd,
       env: options.env,
@@ -55,7 +64,9 @@ export class PtySessionManager {
     })
 
     const record: TerminalSessionRecord = {
+      args,
       cols,
+      command: resolved.command,
       cwd: options.cwd,
       lastActivityAt: startedAt,
       lowestAvailableCursor: 0,
@@ -88,7 +99,9 @@ export class PtySessionManager {
   read(_sessionId: string, _cursor: number): TerminalReadResult {
     this.reapExpiredSessions()
     const session = this.getSession(_sessionId)
-    this.drainDriverOutput(_sessionId, session)
+    if (session.record.state === 'running') {
+      this.refreshRunningSession(_sessionId, session)
+    }
     const text = renderedPreview(session.renderer)
     const end = Buffer.byteLength(text, 'utf8')
 
@@ -113,16 +126,18 @@ export class PtySessionManager {
   status(sessionId: string): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getSession(sessionId)
-    this.drainDriverOutput(sessionId, session)
-    this.applyDriverStatus(session.record, this.driver.status(sessionId))
+    if (session.record.state === 'running') {
+      this.refreshRunningSession(sessionId, session)
+    }
     return this.cloneRecord(session.record)
   }
 
   list(): TerminalSessionRecord[] {
     this.reapExpiredSessions()
     return Array.from(this.sessions, ([sessionId, session]) => {
-      this.drainDriverOutput(sessionId, session)
-      this.applyDriverStatus(session.record, this.driver.status(sessionId))
+      if (session.record.state === 'running') {
+        this.refreshRunningSession(sessionId, session)
+      }
       return this.cloneRecord(session.record)
     })
   }
@@ -130,13 +145,17 @@ export class PtySessionManager {
   getRenderedPreview(sessionId: string): string {
     this.reapExpiredSessions()
     const session = this.getSession(sessionId)
-    this.drainDriverOutput(sessionId, session)
+    if (session.record.state === 'running') {
+      this.refreshRunningSession(sessionId, session)
+    }
     return renderedPreview(session.renderer)
   }
 
   resize(sessionId: string, cols: number, rows: number): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getWritableSession(sessionId)
+    cols = this.validateSize('cols', cols)
+    rows = this.validateSize('rows', rows)
     this.driver.resize?.(sessionId, cols, rows)
     session.record.cols = cols
     session.record.rows = rows
@@ -149,10 +168,6 @@ export class PtySessionManager {
     this.reapExpiredSessions()
     const session = this.getWritableSession(sessionId)
     session.record.lastActivityAt = Date.now()
-    if (signal === 'SIGINT') {
-      this.write(sessionId, '')
-      return this.status(sessionId)
-    }
     const status = this.driver.kill?.(sessionId, signal) ?? this.driver.close(sessionId)
     this.applyDriverStatus(session.record, status)
     return this.cloneRecord(session.record)
@@ -172,6 +187,7 @@ export class PtySessionManager {
         continue
       }
       if (now - session.record.lastActivityAt >= this.exitedSessionTtlMs) {
+        this.driver.dispose?.(sessionId)
         this.sessions.delete(sessionId)
       }
     }
@@ -196,6 +212,12 @@ export class PtySessionManager {
     session.record.nextCursor = end
     session.record.lastActivityAt = Date.now()
     this.trimBuffer(session)
+  }
+
+  private refreshRunningSession(sessionId: string, session: ManagedSession): void {
+    this.drainDriverOutput(sessionId, session)
+    this.applyDriverStatus(session.record, this.driver.status(sessionId))
+    this.drainDriverOutput(sessionId, session)
   }
 
   private drainDriverOutput(sessionId: string, session: ManagedSession): void {
@@ -231,6 +253,9 @@ export class PtySessionManager {
 
   private getWritableSession(sessionId: string): ManagedSession {
     const session = this.getSession(sessionId)
+    if (session.record.state === 'running') {
+      this.refreshRunningSession(sessionId, session)
+    }
     if (session.record.state === 'closed' || session.record.state === 'exited') {
       throw new Error(`SESSION_ALREADY_CLOSED: ${sessionId}`)
     }
@@ -252,5 +277,13 @@ export class PtySessionManager {
     return {
       ...record,
     }
+  }
+
+  private validateSize(name: 'cols' | 'rows', value: number): number {
+    const max = MAX_TERMINAL_SIZE[name]
+    if (!Number.isInteger(value) || value <= 0 || value > max) {
+      throw new Error(`Invalid terminal ${name}: ${value}. Must be between 1 and ${max}`)
+    }
+    return value
   }
 }

@@ -88,7 +88,7 @@ bun ./dist/cli.js --help
 | Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下可将 Codex Apps 作为 host-owned MCP tools 接入，并支持逐项隐藏。 |
-| InteractiveTerminal | 提供持久 PTY session，可执行多轮 CLI/TUI、按键、resize、signal、compact/full/save-file 读取，并通过 model-internal skill 引导正确调用。 |
+| Terminal | 提供持久 PTY pane，可通过 `new-session`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 执行多轮 CLI/TUI、按键、resize、signal、compact/full/save-file 读取，并通过 model-internal skill 引导正确调用。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
 | 状态与用量 UI | Settings Status 显示 OpenAI Account，Usage/Stats 区分 Claude 与 ChatGPT/OpenAI 用量；Model Picker 支持 effort 显示、切换和持久化。 |
 | 自主 Goal | `/goal` 注册 StopHook 并驱动自主执行；目标状态显示在 Prompt footer 和 Status line，并支持 compact/session restore 与自动清理。 |

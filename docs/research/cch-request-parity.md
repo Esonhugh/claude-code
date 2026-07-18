@@ -91,7 +91,7 @@ Bash
 Edit
 Glob
 Grep
-InteractiveTerminal
+Terminal
 Read
 Skill
 ToolSearch
@@ -119,15 +119,15 @@ Write
 |---|---|
 | `Glob` | `src/tools.ts:207`：当 `hasEmbeddedSearchTools()` 为 false 时加入 `GlobTool` / `GrepTool` |
 | `Grep` | 同上 |
-| `InteractiveTerminal` | `src/tools.ts:203` 默认 base tool |
+| `Terminal` | `src/tools.ts:203` 默认 base tool |
 | `WorkflowTool` | `src/tools.ts:130` / `src/tools.ts:239` workflow tools 展开后包含多个 workflow 相关工具 |
 
-初步判断：official 的二进制/运行配置更精简，可能满足 `hasEmbeddedSearchTools()`，因此不需要暴露 `Glob` / `Grep`；同时 official 当前运行场景没有暴露 `InteractiveTerminal` 和第二个 workflow facade/tool。built 当前项目配置则把这些工具直接带入 API schema。
+初步判断：official 的二进制/运行配置更精简，可能满足 `hasEmbeddedSearchTools()`，因此不需要暴露 `Glob` / `Grep`；同时 official 当前运行场景没有暴露 `Terminal` 和第二个 workflow facade/tool。built 当前项目配置则把这些工具直接带入 API schema。
 
 更细归因：
 
 - `Glob` / `Grep` 是 build/runtime gate 差异，不应在普通源码构建中硬删。`src/utils/embeddedTools.ts:15` 只有 `EMBEDDED_SEARCH_TOOLS` truthy 且 entrypoint 不是 `sdk-ts` / `sdk-py` / `sdk-cli` / `local-agent` 时返回 true；`src/tools.ts:204` 注释说明 ant-native build 内嵌 `bfs` / `ugrep` 后，才移除 dedicated `Glob` / `Grep`。
-- `InteractiveTerminal` 当前是默认基础工具：`src/tools.ts:203` 直接加入 `InteractiveTerminalTool`，`src/tools/InteractiveTerminalTool/InteractiveTerminalTool.ts` 未提供 print-mode gate。若要对齐 official，需要先确认 official 是 release gate、settings gate 还是非交互模式 gate，而不是直接删除。
+- `Terminal` 当前是默认基础工具：`src/tools.ts:203` 直接加入 `TerminalTool`，`src/tools/TerminalTool/TerminalTool.ts` 未提供 print-mode gate。若要对齐 official，需要先确认 official 是 release gate、settings gate 还是非交互模式 gate，而不是直接删除。
 - `WorkflowTool` 与 `Workflow` 来自同一个 `workflowTools` 数组：`src/tools.ts:130` 初始化 bundled workflows 并返回 `WorkflowTool` 与 `WorkflowFacadeTool`；`src/tools.ts:239` 在默认 base tools 中展开。`src/tools.ts:293` 的 simple mode 只有 `isWorkflowScriptsFeatureEnabled()` 时才加入 workflow tools，但正常模式总是加入两个 facade。若 official 只暴露 `Workflow`，最小候选是给 inspect/status 型 `WorkflowTool` 加 runtime gate，保留 facade；仍需 official runtime 证据。
 
 Debug log 也显示 deferred tool 规模不同：
@@ -216,7 +216,7 @@ official system_without_billing_hash: 82957f19d47aeb30
 - input schema；
 - potential cache churn。
 
-当前差异中 `Glob` / `Grep` / `InteractiveTerminal` / `WorkflowTool` 是最明显的 built-only inline tools。
+当前差异中 `Glob` / `Grep` / `Terminal` / `WorkflowTool` 是最明显的 built-only inline tools。
 
 ### Mechanism B: Dynamic tool loading / deferred tools
 
@@ -266,7 +266,7 @@ official system_without_billing_hash: 82957f19d47aeb30
 
 ## Likely root causes
 
-1. **工具差异来自基础工具集和运行时 gate 不一致。** 证据指向 `src/tools.ts:198` 的 base tools 与 `hasEmbeddedSearchTools()`、workflow tools、InteractiveTerminal 是否启用。
+1. **工具差异来自基础工具集和运行时 gate 不一致。** 证据指向 `src/tools.ts:198` 的 base tools 与 `hasEmbeddedSearchTools()`、workflow tools、Terminal 是否启用。
 2. **`output_config` 差异来自 effort wire behavior 不一致。** built 当前链路没有写入 `output_config.effort`；official 对同一模型/场景发送了 `high`。
 3. **system prompt 差异来自 prompt 内容源和上下文注入差异。** CCH、SDK prefix 已一致；大头在 default/system guidance 与 session-specific/plugin/memory guidance。
 4. **token 节约不是单点优化。** official 同时减少 inline tools、减少 deferred pool、使用更短 prompt variant，并可能更好地标注 cache control。
@@ -286,7 +286,7 @@ official system_without_billing_hash: 82957f19d47aeb30
 
 - `hasEmbeddedSearchTools()` 在 official 与 built 的实际值；
 - `Workflow` / `WorkflowTool` 是否双重暴露；
-- `InteractiveTerminal` 是否应该在 non-interactive `--print` / Agent SDK preset 中暴露。
+- `Terminal` 是否应该在 non-interactive `--print` / Agent SDK preset 中暴露。
 
 ### Task 2: Effort/output_config parity
 

@@ -78,7 +78,7 @@ Current workflow surface:
 - `pauseWorkflowTask()` and `resumeWorkflowTask()` provide workflow-level pause/resume state transitions exposed through `WorkflowTool` and `/workflows`; `WorkflowTool.pause` also persists official-style paused session state and resume prompt text under `.claude/workflow-runs/<workflowRunId>/session.json`.
 - `killWorkflowTask()`, `skipWorkflowAgent()`, and `retryWorkflowAgent()` update workflow task state for the runtime; skip and retry controls now append official-style `workflow_agent` events in local task state.
 
-InteractiveTerminal has its own hidden bundled teaching skill for model-side tool usage. The existing interactive terminal slash command remains a display/management surface; the teaching skill explains the `InteractiveTerminal` lifecycle and when to prefer it over `Bash`.
+Terminal has its own hidden bundled teaching skill for model-side tool usage. The existing terminal display/management surface remains UI-only; the teaching skill explains the `Terminal` lifecycle, tmux-style actions such as `new-session`/`send-keys`/`capture-pane`, and when to prefer it over `Bash`.
 
 Official compatibility boundary from `/opt/homebrew/bin/claude` 2.1.150 experiments:
 
