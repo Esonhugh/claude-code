@@ -1,3 +1,4 @@
+import { getOpenAIAuthInfo } from '../../utils/auth.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   consumeChatGPTRateLimitResetCredit,
@@ -18,13 +19,20 @@ export type {
 
 export async function fetchUtilization(): Promise<Utilization | null> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
-    return fetchChatGPTUtilization()
+    return getOpenAIAuthInfo()?.isChatGPT
+      ? fetchChatGPTUtilization()
+      : null
   }
 
   return fetchClaudeCodeUtilization()
 }
 
 export async function consumeRateLimitResetCredit(): Promise<void> {
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) return
+  if (
+    !isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
+    !getOpenAIAuthInfo()?.isChatGPT
+  ) {
+    return
+  }
   await consumeChatGPTRateLimitResetCredit()
 }

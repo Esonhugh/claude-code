@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect } from 'react'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { stringWidth } from '../../ink/stringWidth.js'
@@ -15,8 +15,6 @@ import {
 } from '../../utils/logoV2Utils.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { renderModelSetting } from '../../utils/model/model.js'
-import { fetchChatGPTUtilization } from '../../services/api/usage-chatgpt.js'
-import { formatOpenAIPlanName } from '../../utils/auth.js'
 import { OffscreenFreeze } from '../OffscreenFreeze.js'
 import { AnimatedClawd } from './AnimatedClawd.js'
 import { Clawd, getCustomClawd } from './Clawd.js'
@@ -46,17 +44,7 @@ export function CondensedLogo(): ReactNode {
     billingType: initialBillingType,
     agentName: agentNameFromSettings,
   } = getLogoDisplayData()
-  const [billingType, setBillingType] = useState(initialBillingType)
-
-  useEffect(() => {
-    if (!initialBillingType.startsWith('ChatGPT ')) return
-    void fetchChatGPTUtilization()
-      .then(utilization => {
-        const planName = formatOpenAIPlanName(utilization?.plan_type)
-        if (planName) setBillingType(`ChatGPT ${planName}`)
-      })
-      .catch(() => {})
-  }, [initialBillingType])
+  const billingType = initialBillingType
 
   // Prefer AppState.agent (set from --agent CLI flag) over settings
   const agentName = agent ?? agentNameFromSettings

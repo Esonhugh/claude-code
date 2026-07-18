@@ -121,7 +121,18 @@ try {
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   const { getLogoDisplayData } = await import('./logoV2Utils.js')
+  const { setAuthoritativeChatGPTPlanTypeForTest } = await import(
+    '../services/api/usage-chatgpt.js'
+  )
   assert.equal(getLogoDisplayData().billingType, 'ChatGPT Plus')
+
+  setAuthoritativeChatGPTPlanTypeForTest('pro')
+  assert.equal(getLogoDisplayData().billingType, 'ChatGPT Pro')
+
+  process.env.OPENAI_API_KEY = 'sk-openai-api-env-token'
+  getOpenAIAuthInfo.cache.clear?.()
+  assert.equal(getLogoDisplayData().billingType, 'API Usage Billing')
+  setAuthoritativeChatGPTPlanTypeForTest(null)
 } finally {
   const { getChatGPTOAuthInfo, getOpenAIAuthInfo, getOpenAIApiKey } =
     await import('./auth.js')

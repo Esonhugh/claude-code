@@ -19,6 +19,11 @@ const { consumeRateLimitResetCredit, fetchUtilization } = await import('./usage.
 
 test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
   authModule.getChatGPTOAuthInfo.cache.set(undefined, {
     accessToken: 'test-token',
     accountId: 'account-123',
@@ -62,18 +67,31 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
   }
 })
 
-test('fetchUtilization does not fall back to Claude usage in OpenAI API mode', async () => {
+test('fetchUtilization does not show ChatGPT usage when OpenAI API key is active', async () => {
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-openai-api-'))
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  process.env.OPENAI_API_KEY = 'test-api-key'
+  process.env.OPENAI_API_KEY = 'dummy-api-key'
   process.env.HOME = homeDir
   delete process.env.OPENAI_AUTH_TOKEN
   authModule.getOpenAIAuthInfo.cache.clear?.()
-  authModule.getChatGPTOAuthInfo.cache.clear?.()
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, {
+    accessToken: 'test-chatgpt-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+
+  const originalAxiosGet = axios.get
+  let requestCount = 0
+  axios.get = (async () => {
+    requestCount += 1
+    return { data: { plan_type: 'pro' } }
+  }) as typeof axios.get
 
   try {
     assert.equal(await fetchUtilization(), null)
+    assert.equal(requestCount, 0)
   } finally {
+    axios.get = originalAxiosGet
     authModule.getOpenAIAuthInfo.cache.clear?.()
     authModule.getChatGPTOAuthInfo.cache.clear?.()
     if (originalOpenAI === undefined) {
@@ -102,6 +120,11 @@ test('fetchUtilization does not fall back to Claude usage in OpenAI API mode', a
 
 test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is active', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
   authModule.getChatGPTOAuthInfo.cache.set(undefined, {
     accessToken: 'test-token',
     accountId: 'account-123',

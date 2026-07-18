@@ -33,6 +33,18 @@ type ChatGPTSpendControlLimit = {
   reset_at?: number | null
 }
 
+let authoritativePlanType: string | null = null
+
+export function getAuthoritativeChatGPTPlanType(): string | null {
+  return authoritativePlanType
+}
+
+export function setAuthoritativeChatGPTPlanTypeForTest(
+  planType: string | null,
+): void {
+  authoritativePlanType = planType
+}
+
 type ChatGPTUsageResponse = {
   plan_type?: string | null
   rate_limit?: ChatGPTRateLimitDetails | null
@@ -76,6 +88,7 @@ export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
     },
   )
 
+  authoritativePlanType = response.data.plan_type ?? null
   return mapChatGPTUsageToUtilization(response.data)
 }
 

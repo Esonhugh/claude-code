@@ -49,6 +49,7 @@ import {
   refreshGrowthBookAfterAuthChange,
 } from './services/analytics/growthbook.js'
 import { fetchBootstrapData } from './services/api/bootstrap.js'
+import { fetchChatGPTUtilization } from './services/api/usage-chatgpt.js'
 import {
   type DownloadResult,
   downloadSessionFiles,
@@ -89,6 +90,7 @@ import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { count, uniq } from './utils/array.js'
 import { installAsciicastRecorder } from './utils/asciicast.js'
 import {
+  getOpenAIAuthInfo,
   getSubscriptionType,
   isClaudeAISubscriber,
   prefetchAwsCredentialsAndBedRockInfoIfSafe,
@@ -5198,6 +5200,9 @@ async function run(): Promise<CommanderCommand> {
             ? hookMessages
             : undefined
 
+        if (getOpenAIAuthInfo()?.isChatGPT) {
+          await fetchChatGPTUtilization().catch(() => null)
+        }
         await launchRepl(
           root,
           { getFpsMetrics, stats, initialState },

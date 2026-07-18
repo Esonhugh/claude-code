@@ -1,8 +1,10 @@
 import { getDirectConnectServerUrl, getSessionId } from '../bootstrap/state.js'
+import { getAuthoritativeChatGPTPlanType } from '../services/api/usage-chatgpt.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import type { LogOption } from '../types/logs.js'
 import {
-  getChatGPTOAuthInfo,
+  formatOpenAIPlanName,
+  getOpenAIAuthInfo,
   getSubscriptionName,
   isClaudeAISubscriber,
 } from './auth.js'
@@ -259,13 +261,19 @@ export function getLogoDisplayData(): {
   const cwd = serverUrl
     ? `${displayPath} in ${serverUrl.replace(/^https?:\/\//, '')}`
     : displayPath
-  const openAIAuth = getChatGPTOAuthInfo()
-  const billingType =
-    openAIAuth?.isChatGPT && openAIAuth.planDisplayName
-      ? `ChatGPT ${openAIAuth.planDisplayName}`
-      : isClaudeAISubscriber()
-        ? getSubscriptionName()
+  const openAIAuth = getOpenAIAuthInfo()
+  const authoritativePlanName = formatOpenAIPlanName(
+    getAuthoritativeChatGPTPlanType(),
+  )
+  const billingType = openAIAuth
+    ? openAIAuth.isChatGPT && authoritativePlanName
+      ? `ChatGPT ${authoritativePlanName}`
+      : openAIAuth.isChatGPT && openAIAuth.planDisplayName
+        ? `ChatGPT ${openAIAuth.planDisplayName}`
         : 'API Usage Billing'
+    : isClaudeAISubscriber()
+      ? getSubscriptionName()
+      : 'API Usage Billing'
   const agentName = getInitialSettings().agent
 
   return {
