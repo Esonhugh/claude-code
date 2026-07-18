@@ -1,0 +1,31 @@
+{
+  "skill_name": "claude-runtime-debug",
+  "evals": [
+    {
+      "id": 1,
+      "name": "noninteractive-debug",
+      "prompt": "我想检查 ./built-claude --print 的输出格式和 exit code 是否跟 ./official-claude 一致，同时打开 --debug-file。给我一个可执行的 debug 步骤和最终报告格式。",
+      "expected_output": "分别捕获两个二进制的 stdout/stderr、exit code 和 debug files，保持配置一致并给出脱敏报告。",
+      "files": [],
+      "assertions": [
+        "对两个二进制都使用非交互式 --print commands。",
+        "分别捕获 stdout、stderr 和 exit code。",
+        "使用或检查 --debug/--debug-file 行为。",
+        "保持配置等价并脱敏 secrets。"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "interactive-smoke-boundary",
+      "prompt": "用 InteractiveTerminal 快速检查 built-claude 的 /skills 是否能打开，并验证 Esc 后还能继续输入。这次只需要诊断，不需要正式 Agent/Workflow 验收。",
+      "expected_output": "把 /skills 输入 binary stdin，记录 PTY 输入与 UI observation，并明确这只是 smoke diagnosis。",
+      "files": [],
+      "assertions": [
+        "slash command 被写入 binary stdin，而不是宿主 shell。",
+        "记录 InteractiveTerminal session 或 snapshot evidence。",
+        "检查 Esc 后恢复可交互。",
+        "不把 quick check 描述成正式 Agent/Workflow 验收。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "skill_name": "claude-agent-workflow-validation",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我刚修复了 AgentTool 的 foreground-to-background continuation 和 summarizer ownership。请用最新 built-claude 做真实 CLI 回归验收：必须脚本驱动 tmux，让 CLI 内的 Agent 先前台运行再转后台，检查 stream 不重启、summarizer 只停止一次、终态通知正常；保留 pane 和 debug log，不要用你当前会话的 Agent tool 代替。",
+      "expected_output": "从当前源码重新构建 built-claude；创建唯一 tmux session 和证据目录；通过 CLI stdin 触发 binary-side Agent；区分 UI 证据、debug 流程证据与自动化测试证据；准确报告通过、未覆盖和证据路径。",
+      "files": [],
+      "assertions": [
+        "本轮运行 make build，且记录 build 前、CLI 前和 CLI 后 Git 状态。",
+        "使用唯一 tmux session、evidence directory、config directory 和固定 launcher 驱动 built-claude。",
+        "Agent 由 binary-side CLI stdin 触发，parent-side Agent/Workflow 不计入证据。",
+        "分别保存 ready、submitted、running、terminal pane 与 debug marker 检索结果。",
+        "分开报告 runtime state 与 validation verdict；缺少 stream/summarizer marker 时标为 not covered。"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "并行检查 /deep-research 和 /code-review 是否能正常调度 Agent。请直接开两个 tmux，在两个最新 built-claude 里分别运行命令，让它们只读审查当前未提交 AgentTool lifecycle 改动。我要看到各自的 Workflow 入口、Agent fan-out、token/进度、最终状态和证据文件；长任务没结束就报告 running，不能假装完成。",
+      "expected_output": "使用两个相互隔离的 tmux/built-claude 进程并行执行 slash command；保存独立输入、pane、debug log、Task/Run ID；不混用证据；正确区分 running 与 done；检查运行前后 Git 状态。",
+      "files": [],
+      "assertions": [
+        "两个目标分别使用唯一 tmux session、evidence directory、config directory、input、debug log 和 marker。",
+        "两个 slash command 均通过各自 built-claude stdin 输入，不由宿主 shell 或 parent Skill 执行。",
+        "分别记录 Workflow 入口、Agent fan-out、Task/Run ID、token/进度和 runtime state。",
+        "长任务未结束时 validation verdict 为 running，不将局部输出报告为 passed。",
+        "CLI 前后 Git 状态被保存并按目标关联，证据没有跨 session 混用。"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "我已经在你当前会话里调用 Workflow tool 跑通了一个 Agent，这能算 built-claude 的 Workflow 验收吗？如果不能，请纠正并重新验证：在 tmux 的 built-claude 里运行一个 inline Workflow，由它启动 Agent 返回 marker，再由父 CLI 收到完成通知。不要删除之前的日志。",
+      "expected_output": "明确拒绝将 parent-side Workflow 计为 binary-side 证据；披露并排除误调用；从当前源码构建后在唯一 tmux session 内触发 Workflow→Agent→notification 链路；保留旧证据和新证据并报告关联信息。",
+      "files": [],
+      "assertions": [
+        "明确将 parent-side Workflow 标为 invalid evidence 并从 binary-side 统计排除。",
+        "不删除旧日志；新验证使用新的 tmux session、evidence directory 和 config directory。",
+        "inline Workflow 由 built-claude stdin 触发，并产生 binary-side Workflow/Agent 标识。",
+        "保存 Workflow 启动、Agent marker、completion notification 和 prompt 恢复的关联证据。",
+        "缺少任一链路证据时报告 not covered 或 running，而不是 passed。"
+      ]
+    }
+  ]
+}

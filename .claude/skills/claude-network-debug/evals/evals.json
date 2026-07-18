@@ -1,0 +1,45 @@
+{
+  "skill_name": "claude-network-debug",
+  "evals": [
+    {
+      "id": 0,
+      "name": "proxy-parity-debug",
+      "prompt": "built-claude 和 official-claude 疑似 HTTPS_PROXY 行为不同。设计最小抓流对比，不泄露 token，只报告 CONNECT 目标、状态、字节数和 artifact 路径。",
+      "expected_output": "使用 loopback transparent proxy，保持配置一致，解释 HTTPS CONNECT 不透明性。",
+      "files": [],
+      "assertions": [
+        "保持 official/local 配置等价。",
+        "显式绑定 127.0.0.1 并使用 HTTP_PROXY/HTTPS_PROXY。",
+        "只报告脱敏 metadata。",
+        "解释没有 MITM 时 HTTPS body 不可见。"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "sse-websocket-proxy",
+      "prompt": "验证 http-proxy-debug.mjs 对本地 SSE 流式响应和 WebSocket/Upgrade 是否可用，输出证据和限制。",
+      "expected_output": "经 loopback proxy 路由 mock endpoints，检查 JSONL/byte-count evidence 并说明 TLS visibility。",
+      "files": [],
+      "assertions": [
+        "使用本地 SSE 和 WebSocket/Upgrade mock endpoints。",
+        "通过 bundled transparent proxy 路由。",
+        "检查 request/response、upgrade 或 byte-count 证据。",
+        "说明 HTTP/2/TLS/SSE/WebSocket visibility 限制。"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "mitm-cch-security",
+      "prompt": "用 MITM runner 对比 built-claude 和 official-claude 的 CCH/request summary，不泄露 prompt、token、headers/body、stdout/stderr 或证书材料。",
+      "expected_output": "使用 loopback MITM runner，将 stdout 和 artifacts 留在本地，只报告最小 summary 并说明清理。",
+      "files": [],
+      "assertions": [
+        "使用 run-claude-mitm-cch.mjs 并重定向 runner stdout。",
+        "将 summary、keys、logs、stdout/stderr 和 body artifacts 标为敏感。",
+        "禁止 0.0.0.0 和全局安装 CA。",
+        "只报告最小化 summary facts。",
+        "说明清理 artifact root 和 output summary。"
+      ]
+    }
+  ]
+}
