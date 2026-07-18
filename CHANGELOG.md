@@ -48,9 +48,9 @@
 #### ChatGPT subscription 检测与 Usage UI
 
 - 对齐 Codex 的 OpenAI plan 解析规则，从 ID token 的 `chatgpt_plan_type` claim 识别并规范化 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等订阅名称。
-- 保持 `OPENAI_AUTH_TOKEN`、`OPENAI_API_KEY`、auth file API key、ChatGPT OAuth 的原始模型 API 凭据优先级；subscription、Usage 与 Codex Apps 独立读取 ChatGPT OAuth，且 Usage 请求前主动刷新 token。
-- OpenAI 模式不再错误回退 Anthropic Usage；启动 pane 显示 ChatGPT plan，并使用 `/backend-api/wham/usage` 的权威 `plan_type` 更新最终标题。
-- `/status` 的 Usage tab 展示 ChatGPT Codex limits、account、reset time 和 reset credits；无可用数据时显示 OpenAI-specific 状态，不再永久停留在 loading 文案。
+- 保持 `OPENAI_AUTH_TOKEN`、`OPENAI_API_KEY`、auth file API key、ChatGPT OAuth 的原始模型 API 凭据优先级，并以当前实际选中的模型凭据统一驱动计费、Usage 与 Codex Apps 状态。
+- 当前模型使用 ChatGPT OAuth 时，Usage 请求前主动刷新 token，启动 pane 使用 `/backend-api/wham/usage` 的权威 `plan_type` 显示 ChatGPT plan；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。
+- OpenAI 模式不再错误回退 Anthropic Usage；`/status` 的 Usage tab 在 ChatGPT OAuth 模式下展示 Codex limits、account、reset time 和 reset credits，在 API credential 模式下显示 OpenAI-specific unavailable 状态。
 
 ### 测试与交互验收
 
