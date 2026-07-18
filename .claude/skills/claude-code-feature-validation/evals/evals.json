@@ -1,0 +1,65 @@
+{
+  "skill_name": "claude-code-feature-validation",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我新增了一个纯 TypeScript formatter，并补了单测。请验收这个 feature 是否可以交付，不需要启动 CLI。",
+      "expected_output": "读取 diff 和调用链，建立变更契约，选择 L0 + L1（必要时 L2），运行聚焦测试，不机械执行 make build 或 tmux，并按 assertion 报告证据与未覆盖项。",
+      "files": [],
+      "assertions": [
+        "根据真实 diff 识别 pure logic surface。",
+        "运行最小相关测试并记录 exact command、exit code 和结果。",
+        "不会仅为纯逻辑改动无条件启动 tmux。",
+        "测试通过只用于其覆盖的 assertions。"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "我改了 src/foo.ts 和 src/components/Foo.tsx，相关测试是 src/foo.test.ts 与 src/components/Foo.test.tsx。只需验证这些普通单测，不涉及 CLI、按键或终端交互。",
+      "expected_output": "选择 L0 + L1，执行 bun test src/foo.test.ts src/components/Foo.test.tsx；不会因为 .test.tsx 或 React 组件而调用交互式 validation skill 或启动 tmux。",
+      "files": [],
+      "assertions": [
+        "使用 bun test 并精确传入两个相关测试路径。",
+        "不会因为 .test.tsx 扩大到全量测试。",
+        "不会调用 claude-agent-workflow-validation 或启动 tmux。",
+        "记录 exact command、exit code 和测试结果。"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我改了一个 tool schema 和 tools registry，还更新了 CLI 里的调用。请做完整 validation。",
+      "expected_output": "选择 L0 + L1 + L2 + L3，检查 schema/registry/export，运行聚焦测试与类型检查，从 Makefile 确认并构建当前 built-claude；若入口需真实交互则升级 L5。",
+      "files": [],
+      "assertions": [
+        "检查 schema、registry、export 和调用链可达性。",
+        "运行相关 tests 和类型检查。",
+        "读取 Makefile 并在本轮运行 make build。",
+        "记录 build 前后 Git 状态和 binary metadata。"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "我修复了 Agent foreground 转 background 后重复 stream 和 completion notification 丢失的问题。请验收，当前会话的 Agent tool 已经跑通过一次。",
+      "expected_output": "使用通用 skill 建立 assertions 并选择 L0 + L1 + L3 + L5；调用 claude-agent-workflow-validation 执行严格 scripted tmux 验收；明确排除 parent-side Agent 结果，关联同次运行 pane/debug/ID，无法触发的竞态路径标 not covered 或自动化测试覆盖。",
+      "files": [],
+      "assertions": [
+        "运行聚焦 lifecycle/behavior tests，并区分受控故障测试与真实 CLI 证据。",
+        "本轮构建最新 built-claude。",
+        "L5 使用 claude-agent-workflow-validation 的 scripted tmux 路径。",
+        "parent-side Agent 结果被明确排除于 binary-side evidence。",
+        "runtime done 不自动判定 validation passed。"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "只改了 README 里 built-claude 的启动命令，帮我确认改动没写错。",
+      "expected_output": "选择 L0，核对 README 命令与 Makefile/当前项目约定一致；除非发现行为代码也变化，不运行 build、全量测试或 tmux。",
+      "files": [],
+      "assertions": [
+        "核对文档命令与当前 Makefile 和项目约定。",
+        "不把文档改动扩大为无必要的完整运行时验收。",
+        "报告验证范围和限制。"
+      ]
+    }
+  ]
+}
