@@ -1,7 +1,4 @@
-import {
-  getChatGPTOAuthInfo,
-  type OpenAIAuthInfo,
-} from '../../utils/auth.js'
+import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
 import type { CodexAppsEligibility } from './types.js'
@@ -14,7 +11,7 @@ export function getCodexAppsEligibility(): CodexAppsEligibility {
     return { eligible: false, reason: 'provider-not-openai' }
   }
 
-  const auth = getChatGPTOAuthInfo()
+  const auth = getOpenAIAuthInfo()
   if (!auth?.isChatGPT || !auth.accessToken) {
     return { eligible: false, reason: 'chatgpt-oauth-required' }
   }
@@ -24,7 +21,7 @@ export function getCodexAppsEligibility(): CodexAppsEligibility {
 
 /**
  * Resolve fresh ChatGPT OAuth credentials immediately before an Apps request.
- * Model API credentials are intentionally ignored here.
+ * The credential selected for model requests must be ChatGPT OAuth.
  */
 export async function requireCodexAppsOAuth({
   forceRefresh = false,
@@ -39,7 +36,7 @@ export async function requireCodexAppsOAuth({
   }
 
   await checkAndRefreshOpenAITokenIfNeeded({ force: forceRefresh })
-  const auth = getChatGPTOAuthInfo()
+  const auth = getOpenAIAuthInfo()
   if (!auth?.isChatGPT || !auth.accessToken) {
     throw new Error(
       'Codex Apps requires ChatGPT OAuth authentication; API keys and bearer-token overrides are not supported',

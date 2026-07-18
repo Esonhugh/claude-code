@@ -24,6 +24,12 @@
 - `375159f` — 2026-07-19 — `feat: add Claude Code feature validation skill`
 - `c6e07d4` — 2026-07-19 — `refactor: rename interactive terminal to Terminal`
 - `4bb7a73` — 2026-07-19 — `feat: integrate Codex Apps with ChatGPT subscriptions`
+- `5f91915` — 2026-07-19 — `release: prepare v1.2.202`（后续修正为 `v2.1.202`）
+- `e93a6cd` — 2026-07-19 — `fix: restore OpenAI credential precedence`
+- `10fe3f9` — 2026-07-19 — `fix: fix up bug of openai apikey order and usage data`
+- `92fdb6c` — 2026-07-19 — `update: bundle test`
+- `19f6ae0` — 2026-07-19 — `docs: clarify OpenAI usage authentication states`
+- `03af8cc` — 2026-07-19 — `update: release validation tools`
 
 ### 变更内容
 
