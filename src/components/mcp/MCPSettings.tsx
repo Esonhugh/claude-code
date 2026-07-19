@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo } from 'react'
 import type { CommandResultDisplay } from '../../commands.js'
+import {
+  CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
+  CODEX_APPS_SERVER_NAME,
+} from '../../services/apps/types.js'
+import { isHostOwnedCodexAppsConfig } from '../../services/apps/trust.js'
 import { ClaudeAuthProvider } from '../../services/mcp/auth.js'
 import type {
   McpClaudeAIProxyServerConfig,
@@ -90,8 +95,20 @@ export function MCPSettings({ onComplete }: Props): React.ReactNode {
               Boolean(tokens) || hasSessionAuth || hasToolsAndConnected
           }
 
+          if (isHostOwnedCodexAppsConfig(client.config)) {
+            isAuthenticated = client.type === 'connected'
+          }
+
           const baseInfo = {
             name: client.name,
+            ...(isHostOwnedCodexAppsConfig(client.config) && {
+              displayName:
+                client.name === CODEX_APPS_SERVER_NAME
+                  ? 'Connectors API (/wham/apps)'
+                  : client.name === CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME
+                    ? 'Hosted Plugin Runtime API (/ps/mcp)'
+                    : client.name,
+            }),
             client,
             scope,
           }

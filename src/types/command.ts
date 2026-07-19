@@ -185,6 +185,7 @@ export type CommandBase = {
   name: string
   aliases?: string[]
   isMcp?: boolean
+  mcpServerName?: string
   argumentHint?: string // Hint text for command arguments (displayed in gray after command)
   whenToUse?: string // From the "Skill" spec. Detailed usage scenarios for when to use this command
   version?: string // Version of the command/skill

@@ -7,7 +7,11 @@ import { getMCPUserAgent } from '../../utils/http.js'
 import { getProxyFetchOptions } from '../../utils/proxy.js'
 import { OPENAI_OAUTH_ORIGINATOR } from '../openai-oauth/client.js'
 import { requireCodexAppsOAuth } from './auth.js'
-import { CODEX_APPS_MCP_URL } from './types.js'
+import type { CodexAppsMcpConfig } from './types.js'
+import {
+  CODEX_APPS_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+} from './types.js'
 
 export function getCodexAppsProxyFetchOptions(): ReturnType<
   typeof getProxyFetchOptions
@@ -18,11 +22,18 @@ export function getCodexAppsProxyFetchOptions(): ReturnType<
   return getProxyFetchOptions()
 }
 
+const CODEX_APPS_MCP_URLS = [
+  CODEX_APPS_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+]
+
 export function isAllowedCodexAppsRequestUrl(value: string | URL): boolean {
   try {
     const url = new URL(value)
-    const allowed = new URL(CODEX_APPS_MCP_URL)
-    return url.origin === allowed.origin && url.pathname === allowed.pathname
+    return CODEX_APPS_MCP_URLS.some(value => {
+      const allowed = new URL(value)
+      return url.origin === allowed.origin && url.pathname === allowed.pathname
+    })
   } catch {
     return false
   }
@@ -66,15 +77,14 @@ const fetchWithCodexAppsOAuth: FetchLike = async (input, init) => {
   return requestWithOAuth(input, init, true)
 }
 
-export function createCodexAppsTransport(): StreamableHTTPClientTransport {
+export function createCodexAppsTransport(
+  config: CodexAppsMcpConfig,
+): StreamableHTTPClientTransport {
   const options: StreamableHTTPClientTransportOptions = {
     fetch: fetchWithCodexAppsOAuth,
     requestInit: {
       ...getCodexAppsProxyFetchOptions(),
     },
   }
-  return new StreamableHTTPClientTransport(
-    new URL(CODEX_APPS_MCP_URL),
-    options,
-  )
+  return new StreamableHTTPClientTransport(new URL(config.url), options)
 }

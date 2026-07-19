@@ -42,6 +42,7 @@ import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 import { Spinner } from '../Spinner.js'
 import TextInput from '../TextInput.js'
 import { CapabilitiesSection } from './CapabilitiesSection.js'
+import { isHostOwnedCodexAppsConfig } from '../../services/apps/trust.js'
 import type {
   ClaudeAIServerInfo,
   HTTPServerInfo,
@@ -271,7 +272,9 @@ export function MCPRemoteServerMenu({
     }
   })
 
-  const capitalizedServerName = capitalize(String(server.name))
+  const capitalizedServerName =
+    server.displayName ?? capitalize(String(server.name))
+  const isHostOwnedCodexApps = isHostOwnedCodexAppsConfig(server.client.config)
 
   // Count MCP prompts for this server (skills are shown in /skills, not here)
   const serverCommandsCount = filterMcpPromptsByServer(
@@ -690,7 +693,7 @@ export function MCPRemoteServerMenu({
         value: 'claudeai-auth',
       })
     }
-  } else {
+  } else if (!isHostOwnedCodexApps) {
     if (isEffectivelyAuthenticated) {
       menuOptions.push({
         label: 'Re-authenticate',
@@ -764,7 +767,8 @@ export function MCPRemoteServerMenu({
             )}
           </Box>
 
-          {server.transport !== 'claudeai-proxy' && (
+          {server.transport !== 'claudeai-proxy' &&
+            !isHostOwnedCodexApps && (
             <Box>
               <Text bold>Auth: </Text>
               {isEffectivelyAuthenticated ? (

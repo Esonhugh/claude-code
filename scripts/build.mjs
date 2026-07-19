@@ -60,6 +60,7 @@ export const macroValues = {
 export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATURES) {
   return new Set([
     'AGENT_TRIGGERS',
+    'MCP_SKILLS',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

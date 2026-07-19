@@ -9,6 +9,7 @@ import type {
 
 export interface StdioServerInfo {
   name: string
+  displayName?: string
   client: MCPServerConnection
   transport: 'stdio'
   command?: string
@@ -23,6 +24,7 @@ export interface StdioServerInfo {
 
 export interface SSEServerInfo {
   name: string
+  displayName?: string
   client: MCPServerConnection
   transport?: 'sse'
   url?: string
@@ -35,6 +37,7 @@ export interface SSEServerInfo {
 
 export interface HTTPServerInfo {
   name: string
+  displayName?: string
   client: MCPServerConnection
   transport?: 'http'
   url?: string
@@ -49,6 +52,7 @@ export interface ClaudeAIServerInfo {
   type?: 'claude_ai' | 'claudeai-proxy'
   transport?: 'claudeai-proxy'
   name: string
+  displayName?: string
   client: MCPServerConnection
   config?: McpClaudeAIProxyServerConfig
   scope: ConfigScope

@@ -4,6 +4,8 @@ import { getCodexAppsEligibility } from './auth.js'
 import { markHostOwnedCodexAppsConfig } from './trust.js'
 import {
   CODEX_APPS_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
   CODEX_APPS_SERVER_NAME,
   type CodexAppsMcpConfig,
 } from './types.js'
@@ -32,14 +34,28 @@ export function withCodexAppsToolSet(
     return configs
   }
 
-  const appsConfig: CodexAppsMcpConfig = {
+  const connectorConfig: CodexAppsMcpConfig = {
     type: 'http',
     url: CODEX_APPS_MCP_URL,
     scope: 'dynamic',
   }
-  logForDebugging('[Codex Apps] Host-owned ToolSet registration materialized')
+  const pluginRuntimeConfig: CodexAppsMcpConfig = {
+    type: 'http',
+    url: CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+    scope: 'dynamic',
+  }
+  logForDebugging(
+    '[Codex Apps] Host-owned connector and plugin runtimes materialized',
+  )
   return {
     ...configs,
-    [CODEX_APPS_SERVER_NAME]: markHostOwnedCodexAppsConfig(appsConfig),
+    [CODEX_APPS_SERVER_NAME]: markHostOwnedCodexAppsConfig(
+      connectorConfig,
+      'connectors',
+    ),
+    [CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]: markHostOwnedCodexAppsConfig(
+      pluginRuntimeConfig,
+      'plugins',
+    ),
   }
 }

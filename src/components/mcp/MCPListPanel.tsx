@@ -3,6 +3,7 @@ import React, { useCallback, useState } from 'react'
 import type { CommandResultDisplay } from '../../commands.js'
 import { Box, color, Link, Text, useTheme } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
+import { isHostOwnedCodexAppsConfig } from '../../services/apps/trust.js'
 import type { ConfigScope } from '../../services/mcp/types.js'
 import { describeMcpConfigFilePath } from '../../services/mcp/utils.js'
 import { isDebugMode } from '../../utils/debug.js'
@@ -84,7 +85,9 @@ export function MCPListPanel({
   // Non-claudeai servers grouped by scope
   const serversByScope = React.useMemo(() => {
     const regularServers = servers.filter(
-      s => s.client.config.type !== 'claudeai-proxy',
+      s =>
+        s.client.config.type !== 'claudeai-proxy' &&
+        !isHostOwnedCodexAppsConfig(s.client.config),
     )
     return groupServersByScope(regularServers)
   }, [servers])
@@ -94,6 +97,14 @@ export function MCPListPanel({
       servers
         .filter(s => s.client.config.type === 'claudeai-proxy')
         .sort((a, b) => a.name.localeCompare(b.name)),
+    [servers],
+  )
+
+  const codexAppsServers = React.useMemo(
+    () =>
+      servers.filter(server =>
+        isHostOwnedCodexAppsConfig(server.client.config),
+      ),
     [servers],
   )
 
@@ -124,12 +135,21 @@ export function MCPListPanel({
     for (const agentServer of agentServers) {
       items.push({ type: 'agent-server', agentServer })
     }
+    for (const server of codexAppsServers) {
+      items.push({ type: 'server', server })
+    }
     // Dynamic (built-in) servers come last
     for (const server of dynamicServers) {
       items.push({ type: 'server', server })
     }
     return items
-  }, [serversByScope, claudeAiServers, agentServers, dynamicServers])
+  }, [
+    serversByScope,
+    claudeAiServers,
+    agentServers,
+    codexAppsServers,
+    dynamicServers,
+  ])
 
   const handleCancel = useCallback((): void => {
     onComplete('MCP dialog dismissed', {
@@ -217,7 +237,9 @@ export function MCPListPanel({
         <Text color={isSelected ? 'suggestion' : undefined}>
           {isSelected ? `${figures.pointer} ` : '  '}
         </Text>
-        <Text color={isSelected ? 'suggestion' : undefined}>{server.name}</Text>
+        <Text color={isSelected ? 'suggestion' : undefined}>
+          {server.displayName ?? server.name}
+        </Text>
         <Text dimColor={!isSelected}> · {statusIcon} </Text>
         <Text dimColor={!isSelected}>{statusText}</Text>
       </Box>
@@ -306,6 +328,15 @@ export function MCPListPanel({
                   </Box>
                 ),
               )}
+            </Box>
+          )}
+
+          {codexAppsServers.length > 0 && (
+            <Box flexDirection="column" marginBottom={1}>
+              <Box paddingLeft={2}>
+                <Text bold>Codex Apps</Text>
+              </Box>
+              {codexAppsServers.map(server => renderServerItem(server))}
             </Box>
           )}
 

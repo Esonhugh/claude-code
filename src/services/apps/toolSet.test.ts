@@ -2,12 +2,22 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import { getOpenAIAuthInfo } from '../../utils/auth.js'
 import type { ScopedMcpServerConfig } from '../mcp/types.js'
-import { isHostOwnedCodexAppsConfig } from './trust.js'
 import {
+  getHostOwnedCodexAppsKind,
+  isHostOwnedCodexAppsConfig,
+} from './trust.js'
+import {
+  createCodexAppsTransport,
   getCodexAppsProxyFetchOptions,
   isAllowedCodexAppsRequestUrl,
 } from './transport.js'
+import { shouldUseSharedMcpAuth } from '../mcp/client.js'
 import { withCodexAppsToolSet } from './toolSet.js'
+import {
+  CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
+  CODEX_APPS_SERVER_NAME,
+} from './types.js'
 
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalAppsDisabled = process.env.CLAUDE_CODE_DISABLE_CODEX_APPS
@@ -69,12 +79,51 @@ describe('Codex Apps ToolSet eligibility', () => {
     }
     assert.equal(isHostOwnedCodexAppsConfig(untrusted), false)
 
-    const configs = withCodexAppsToolSet({ codex_apps: untrusted })
-    assert.equal(isHostOwnedCodexAppsConfig(configs.codex_apps!), true)
+    const configs = withCodexAppsToolSet({
+      [CODEX_APPS_SERVER_NAME]: untrusted,
+      [CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]: untrusted,
+    })
     assert.equal(
-      configs.codex_apps?.type === 'http' && configs.codex_apps.url,
+      isHostOwnedCodexAppsConfig(configs[CODEX_APPS_SERVER_NAME]!),
+      true,
+    )
+    assert.equal(
+      isHostOwnedCodexAppsConfig(
+        configs[CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]!,
+      ),
+      true,
+    )
+    assert.equal(
+      getHostOwnedCodexAppsKind(configs[CODEX_APPS_SERVER_NAME]!),
+      'connectors',
+    )
+    assert.equal(
+      getHostOwnedCodexAppsKind(
+        configs[CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]!,
+      ),
+      'plugins',
+    )
+    assert.equal(
+      configs[CODEX_APPS_SERVER_NAME]?.type === 'http' &&
+        configs[CODEX_APPS_SERVER_NAME].url,
       'https://chatgpt.com/backend-api/wham/apps',
     )
+    assert.equal(
+      configs[CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]?.type === 'http' &&
+        configs[CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME].url,
+      CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+    )
+    assert.equal(
+      shouldUseSharedMcpAuth(configs[CODEX_APPS_SERVER_NAME]!),
+      false,
+    )
+    assert.equal(
+      shouldUseSharedMcpAuth(
+        configs[CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]!,
+      ),
+      false,
+    )
+    assert.equal(shouldUseSharedMcpAuth(untrusted), true)
   })
 
   it('is enabled by default when ChatGPT OAuth is present', () => {
@@ -84,8 +133,15 @@ describe('Codex Apps ToolSet eligibility', () => {
       accessToken: 'oauth-token',
       isChatGPT: true,
     })
+    const configs = withCodexAppsToolSet({})
     assert.equal(
-      isHostOwnedCodexAppsConfig(withCodexAppsToolSet({}).codex_apps!),
+      isHostOwnedCodexAppsConfig(configs[CODEX_APPS_SERVER_NAME]!),
+      true,
+    )
+    assert.equal(
+      isHostOwnedCodexAppsConfig(
+        configs[CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]!,
+      ),
       true,
     )
   })
@@ -102,10 +158,16 @@ describe('Codex Apps ToolSet eligibility', () => {
 })
 
 describe('Codex Apps transport origin boundary', () => {
-  it('accepts only the fixed ChatGPT Apps endpoint', () => {
+  it('accepts only the two fixed ChatGPT Apps endpoints', () => {
     assert.equal(
       isAllowedCodexAppsRequestUrl(
         'https://chatgpt.com/backend-api/wham/apps?session=1',
+      ),
+      true,
+    )
+    assert.equal(
+      isAllowedCodexAppsRequestUrl(
+        'https://chatgpt.com/backend-api/ps/mcp?session=1',
       ),
       true,
     )
@@ -121,7 +183,7 @@ describe('Codex Apps transport origin boundary', () => {
     )
   })
 
-  it('uses https_proxy with the same precedence as other HTTP API clients', () => {
+  it('uses https_proxy for both Codex Apps clients', () => {
     process.env.https_proxy = 'http://127.0.0.1:7890'
     process.env.HTTPS_PROXY = 'http://127.0.0.1:7891'
     process.env.http_proxy = 'http://127.0.0.1:7892'
@@ -132,6 +194,25 @@ describe('Codex Apps transport origin boundary', () => {
     } else {
       assert.ok(options.dispatcher)
     }
+
+    const connectorTransport = createCodexAppsTransport({
+      type: 'http',
+      url: 'https://chatgpt.com/backend-api/wham/apps',
+      scope: 'dynamic',
+    })
+    const pluginTransport = createCodexAppsTransport({
+      type: 'http',
+      url: CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+      scope: 'dynamic',
+    })
+    assert.deepEqual(
+      (connectorTransport as unknown as { _requestInit: object })._requestInit,
+      options,
+    )
+    assert.deepEqual(
+      (pluginTransport as unknown as { _requestInit: object })._requestInit,
+      options,
+    )
   })
 
   it('uses the default direct fetch path when no proxy is configured', () => {

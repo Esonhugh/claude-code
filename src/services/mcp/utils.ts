@@ -44,20 +44,22 @@ export function filterToolsByServer(tools: Tool[], serverName: string): Tool[] {
 /**
  * True when a command belongs to the given MCP server.
  *
- * MCP **prompts** are named `mcp__<server>__<prompt>` (wire-format constraint);
- * MCP **skills** are named `<server>:<skill>` (matching plugin/nested-dir skill
- * naming). Both live in `mcp.commands`, so cleanup and filtering must match
- * either shape.
+ * MCP **prompts** are named `mcp__<server>__<prompt>` (wire-format constraint).
+ * MCP **skills** may use provider-defined catalog names, so their server owner is
+ * stored explicitly instead of inferred from the user-facing name.
  */
 export function commandBelongsToServer(
   command: Command,
   serverName: string,
 ): boolean {
+  if (command.mcpServerName !== undefined) {
+    return command.mcpServerName === serverName
+  }
+
   const normalized = normalizeNameForMCP(serverName)
-  const name = command.name
-  if (!name) return false
   return (
-    name.startsWith(`mcp__${normalized}__`) || name.startsWith(`${normalized}:`)
+    command.name.startsWith(`mcp__${normalized}__`) ||
+    command.name.startsWith(`${normalized}:`)
   )
 }
 

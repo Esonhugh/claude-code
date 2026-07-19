@@ -114,11 +114,13 @@ import { normalizeNameForMCP } from './normalization.js'
 import { getLoggingSafeMcpBaseUrl } from './utils.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const fetchMcpSkillsForClient = feature('MCP_SKILLS')
-  ? (
-      require('../../skills/mcpSkills.js') as typeof import('../../skills/mcpSkills.js')
-    ).fetchMcpSkillsForClient
+const mcpSkillsModule = feature('MCP_SKILLS')
+  ? (require('../../skills/mcpSkills.js') as typeof import('../../skills/mcpSkills.js'))
   : null
+const fetchMcpSkillsForClient = mcpSkillsModule?.fetchMcpSkillsForClient ?? null
+if (mcpSkillsModule) {
+  mcpSkillsModule.registerMcpSkillClientResolver(ensureConnectedClient)
+}
 
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { AssistantMessage } from 'src/types/message.js'
@@ -139,7 +141,10 @@ import {
 } from '../apps/toolNormalization.js'
 import { withCodexAppsToolSet } from '../apps/toolSet.js'
 import { createCodexAppsTransport } from '../apps/transport.js'
-import { isHostOwnedCodexAppsConfig } from '../apps/trust.js'
+import {
+  getHostOwnedCodexAppsKind,
+  isHostOwnedCodexAppsConfig,
+} from '../apps/trust.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
 import { sleep } from '../../utils/sleep.js'
 import {
@@ -329,6 +334,17 @@ export function clearMcpAuthCache(): void {
   void unlink(getMcpAuthCachePath()).catch(() => {
     // Cache file may not exist
   })
+}
+
+export function shouldUseSharedMcpAuth(
+  config: ScopedMcpServerConfig,
+): boolean {
+  return (
+    !isHostOwnedCodexAppsConfig(config) &&
+    (config.type === 'claudeai-proxy' ||
+      config.type === 'http' ||
+      config.type === 'sse')
+  )
 }
 
 /**
@@ -634,7 +650,7 @@ export const connectToServer = memoize(
       const sessionIngressToken = getSessionIngressAuthToken()
 
       if (isHostOwnedCodexAppsConfig(serverRef)) {
-        transport = createCodexAppsTransport()
+        transport = createCodexAppsTransport(serverRef)
         logMCPDebug(name, `Host-owned Codex Apps transport initialized`)
       } else if (serverRef.type === 'sse') {
         // Create an auth provider for this server
@@ -1416,7 +1432,7 @@ export const connectToServer = memoize(
         fetchResourcesForClient.cache.delete(name)
         fetchCommandsForClient.cache.delete(name)
         if (feature('MCP_SKILLS')) {
-          fetchMcpSkillsForClient!.cache.delete(name)
+          fetchMcpSkillsForClient!.clearCacheForServer(name)
         }
 
         connectToServer.cache.delete(key)
@@ -1694,7 +1710,7 @@ export async function clearServerCache(
   fetchResourcesForClient.cache.delete(name)
   fetchCommandsForClient.cache.delete(name)
   if (feature('MCP_SKILLS')) {
-    fetchMcpSkillsForClient!.cache.delete(name)
+    fetchMcpSkillsForClient!.clearCacheForServer(name)
   }
 }
 
@@ -1789,6 +1805,7 @@ export function mcpToolInputToAutoClassifierInput(
 export const fetchToolsForClient = memoizeWithLRU(
   async (client: MCPServerConnection): Promise<Tool[]> => {
     if (client.type !== 'connected') return []
+    if (getHostOwnedCodexAppsKind(client.config) === 'plugins') return []
 
     try {
       if (!client.capabilities?.tools) {
@@ -1811,9 +1828,10 @@ export const fetchToolsForClient = memoizeWithLRU(
       // Convert MCP tools to our Tool format
       return toolsToProcess
         .map((tool): Tool => {
-          const connectorInfo = isHostOwnedCodexAppsConfig(client.config)
-            ? readCodexAppsConnectorInfo(tool._meta)
-            : undefined
+          const connectorInfo =
+            getHostOwnedCodexAppsKind(client.config) === 'connectors'
+              ? readCodexAppsConnectorInfo(tool._meta)
+              : undefined
           const appsNames = connectorInfo
             ? buildCodexAppsModelToolName(tool.name, connectorInfo)
             : undefined
@@ -2407,9 +2425,7 @@ export async function getMcpToolsCommandsAndResources(
       // Each probe is a network round-trip for connect-401 plus OAuth
       // discovery, and print mode awaits the whole batch (main.tsx:3503).
       if (
-        (config.type === 'claudeai-proxy' ||
-          config.type === 'http' ||
-          config.type === 'sse') &&
+        shouldUseSharedMcpAuth(config) &&
         ((await isMcpAuthCached(name)) ||
           ((config.type === 'http' || config.type === 'sse') &&
             hasMcpDiscoveryButNoToken(name, config)))
