@@ -55,7 +55,7 @@ try {
     requests[0]!.headers?.['chatgpt-account-id'],
     'account-123',
   )
-  assert.deepEqual(requests[0]!.params, { client_version: '0.140.0' })
+  assert.deepEqual(requests[0]!.params, { client_version: 'test' })
   assert.deepEqual(getGlobalConfig().openAIModelOptionsCache, [
     { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])

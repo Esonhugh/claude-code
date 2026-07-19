@@ -71,7 +71,7 @@ export async function fetchOpenAIModelOptions(): Promise<ModelOption[] | null> {
             }
           : {}),
       },
-      ...(auth.isChatGPT ? { params: { client_version: '0.140.0' } } : {}),
+      ...(auth.isChatGPT ? { params: { client_version: MACRO.VERSION } } : {}),
       timeout: 5000,
     })
 
@@ -90,23 +90,29 @@ export async function fetchOpenAIModelOptions(): Promise<ModelOption[] | null> {
 export function parseOpenAIModelOptions(data: OpenAIModelsResponse): ModelOption[] {
   if (Array.isArray(data.models)) {
     return data.models
-      .filter(model => model.visibility !== 'hide')
       .filter(model => model.supported_in_api !== false)
       .filter(model => typeof model.slug === 'string' && model.slug.length > 0)
       .filter(model => isOpenAIListableModel(model.slug as string))
-      .map(model => ({
-        value: model.slug as string,
-        label:
+      .map(model => {
+        const label =
           typeof model.display_name === 'string'
             ? model.display_name
             : typeof model.name === 'string'
               ? model.name
-              : (model.slug as string),
-        description:
-          typeof model.description === 'string'
-            ? model.description
-            : 'OpenAI model',
-      }))
+              : (model.slug as string)
+        const hasDescription = typeof model.description === 'string'
+        const description = hasDescription
+          ? (model.description as string)
+          : 'OpenAI model'
+        const isHidden = model.visibility === 'hide'
+        return {
+          value: model.slug as string,
+          label: isHidden ? `${label} (Hidden)` : label,
+          description: isHidden
+            ? `Hidden by OpenAI; API support is enabled.${hasDescription ? ` ${description}` : ''}`
+            : description,
+        }
+      })
   }
 
   if (!Array.isArray(data.data)) {
@@ -115,22 +121,28 @@ export function parseOpenAIModelOptions(data: OpenAIModelsResponse): ModelOption
 
   return data.data
     .filter(model => typeof model.id === 'string' && model.id.length > 0)
-    .filter(model => model.visibility !== 'hide')
     .filter(model => model.supported_in_api !== false)
     .filter(model => isOpenAIListableModel(model.id as string))
-    .map(model => ({
-      value: model.id as string,
-      label:
+    .map(model => {
+      const label =
         typeof model.display_name === 'string'
           ? model.display_name
           : typeof model.name === 'string'
             ? model.name
-            : (model.id as string),
-      description:
-        typeof model.description === 'string'
-          ? model.description
-          : 'OpenAI model',
-    }))
+            : (model.id as string)
+      const hasDescription = typeof model.description === 'string'
+      const description = hasDescription
+        ? (model.description as string)
+        : 'OpenAI model'
+      const isHidden = model.visibility === 'hide'
+      return {
+        value: model.id as string,
+        label: isHidden ? `${label} (Hidden)` : label,
+        description: isHidden
+          ? `Hidden by OpenAI; API support is enabled.${hasDescription ? ` ${description}` : ''}`
+          : description,
+      }
+    })
 }
 
 function isOpenAIListableModel(model: string): boolean {

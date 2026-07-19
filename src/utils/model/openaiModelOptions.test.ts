@@ -36,16 +36,35 @@ try {
         { id: 'gpt-disabled', supported_in_api: false },
       ],
     }),
-    [{ value: 'gpt-5.6', label: 'GPT-5.6', description: 'Online' }],
+    [
+      { value: 'gpt-5.6', label: 'GPT-5.6', description: 'Online' },
+      {
+        value: 'codex-auto-review',
+        label: 'codex-auto-review (Hidden)',
+        description: 'Hidden by OpenAI; API support is enabled.',
+      },
+    ],
   )
   assert.deepEqual(
     openAIModelOptions.parseOpenAIModelOptions({
       models: [
         { slug: 'gpt-5.5', display_name: 'GPT-5.5' },
-        { slug: 'codex-auto-review', visibility: 'hide' },
+        {
+          slug: 'codex-auto-review',
+          visibility: 'hide',
+          description: 'Internal review model',
+        },
       ],
     }),
-    [{ value: 'gpt-5.5', label: 'GPT-5.5', description: 'OpenAI model' }],
+    [
+      { value: 'gpt-5.5', label: 'GPT-5.5', description: 'OpenAI model' },
+      {
+        value: 'codex-auto-review',
+        label: 'codex-auto-review (Hidden)',
+        description:
+          'Hidden by OpenAI; API support is enabled. Internal review model',
+      },
+    ],
   )
 
   assert.deepEqual(
@@ -104,7 +123,7 @@ try {
   await openAIModelOptions.fetchOpenAIModelOptions()
   assert.equal(requests[0]!.url, 'https://chatgpt.com/backend-api/codex/models')
   assert.equal(requests[0]!.headers?.['chatgpt-account-id'], 'account-123')
-  assert.deepEqual(requests[0]!.params, { client_version: '0.140.0' })
+  assert.deepEqual(requests[0]!.params, { client_version: 'test' })
 } finally {
   axios.get = originalAxiosGet
   const authModule = await import('../auth.js')
