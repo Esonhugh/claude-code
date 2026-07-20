@@ -50,6 +50,7 @@ import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { getTerminalManager, terminalTaskRegistry } from '../../tools/TerminalTool/TerminalTool.js'
+import { syncTerminalTaskAfterStatus } from '../../tools/TerminalTool/taskState.js'
 import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
 import {
   terminalPreviewHeight,
@@ -113,16 +114,28 @@ function TerminalDetailDialog({
           if (!existing || existing.type !== 'interactive_terminal') {
             return prev
           }
+          const updated = syncTerminalTaskAfterStatus(existing, {
+            isRunning: status.state === 'running',
+            cols: status.cols,
+            rows: status.rows,
+            preview,
+          })
+          if (
+            updated.cols === existing.cols &&
+            updated.rows === existing.rows &&
+            updated.preview === existing.preview &&
+            updated.closed === existing.closed
+          ) {
+            return prev
+          }
+          if (updated.closed) {
+            terminalTaskRegistry.delete(task.sessionId)
+          }
           return {
             ...prev,
             tasks: {
               ...prev.tasks,
-              [taskId]: {
-                ...existing,
-                cols: status.cols,
-                rows: status.rows,
-                preview,
-              },
+              [taskId]: updated,
             },
           }
         })

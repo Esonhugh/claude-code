@@ -705,7 +705,7 @@ test('syncs naturally exited panes to completed task state while preserving fina
   assert.equal(task?.status, 'completed')
 })
 
-test('preserves send-signal semantics by invoking driver kill', async () => {
+test('preserves send-signal semantics by closing the session', async () => {
   const opened = await TerminalTool.call(
     {
       action: 'new-session',
@@ -733,7 +733,17 @@ test('preserves send-signal semantics by invoking driver kill', async () => {
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
   )
-  assert.equal((status.data as { exitCode: number }).exitCode, 130)
+  assert.equal((status.data as { isRunning: boolean }).isRunning, false)
+  assert.equal((status.data as { exitCode: number | null }).exitCode, 130)
+  assert.equal(terminalTaskRegistry.has(target), false)
+
+  const closed = await TerminalTool.call(
+    { action: 'kill-pane', target },
+    createContext(),
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal((closed.data as { closed: boolean }).closed, true)
 })
 
 test('TerminalTask.kill stops runtime session and clears registry', async () => {

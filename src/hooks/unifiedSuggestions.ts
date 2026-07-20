@@ -142,17 +142,17 @@ export async function generateUnifiedSuggestions(
     return codexApps
       .filter(app => {
         if (!appQuery || appQuery === 'app') return true
-        return sanitizeCodexAppsName(app.connectorName).includes(appQuery)
+        return app.mentionName.includes(appQuery)
       })
       .slice(0, MAX_UNIFIED_SUGGESTIONS)
       .map(app =>
         createSuggestionFromSource({
           type: 'codex_app',
-          displayText: `${codexAppPrefix}${sanitizeCodexAppsName(app.connectorName)}`,
+          displayText: `${codexAppPrefix}${app.mentionName}`,
           description: truncateDescription(
             app.description || app.connectorName,
           ),
-          appName: sanitizeCodexAppsName(app.connectorName),
+          appName: app.mentionName,
         }),
       )
   }
@@ -161,12 +161,14 @@ export async function generateUnifiedSuggestions(
     generateFileSuggestions(query, showOnEmpty),
     Promise.resolve(generateAgentSuggestions(agents, query, showOnEmpty)),
   ])
-  const codexAppSources: CodexAppSuggestionSource[] = codexApps.map(app => ({
-    type: 'codex_app' as const,
-    displayText: `${codexAppPrefix}${sanitizeCodexAppsName(app.connectorName)}`,
-    description: truncateDescription(app.description || app.connectorName),
-    appName: sanitizeCodexAppsName(app.connectorName),
-  }))
+  const codexAppSources: CodexAppSuggestionSource[] = showOnEmpty
+    ? codexApps.map(app => ({
+        type: 'codex_app' as const,
+        displayText: `${codexAppPrefix}${app.mentionName}`,
+        description: truncateDescription(app.description || app.connectorName),
+        appName: app.mentionName,
+      }))
+    : []
 
   const fileSources: FileSuggestionSource[] = fileSuggestions.map(
     suggestion => ({

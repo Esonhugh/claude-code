@@ -5201,7 +5201,7 @@ async function run(): Promise<CommanderCommand> {
             : undefined
 
         if (getOpenAIAuthInfo()?.isChatGPT) {
-          await fetchChatGPTUtilization().catch(() => null)
+          void fetchChatGPTUtilization().catch(() => null)
         }
         await launchRepl(
           root,

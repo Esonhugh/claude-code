@@ -130,6 +130,33 @@ describe('Codex App mentions', () => {
     ])
   })
 
+  test('resolves colliding sanitized names to distinct connectors', () => {
+    const collidingTools = [
+      appTool({
+        name: 'mcp__codex_apps__foo_bar__search',
+        connectorId: 'connector_foo_bar',
+        connectorName: 'Foo Bar',
+      }),
+      appTool({
+        name: 'mcp__codex_apps__foo_bar_alt__search',
+        connectorId: 'connector_foo_bar_alt',
+        connectorName: 'foo_bar',
+      }),
+    ]
+    const projections = buildCodexAppPluginProjections(collidingTools)
+
+    expect(projections.map(projection => projection.mentionName)).toEqual([
+      'foo_bar-21d7cd4c',
+      'foo_bar-9b5a8e8a',
+    ])
+    expect(
+      resolveCodexAppMentions(
+        projections.map(projection => projection.mentionName),
+        collidingTools,
+      ).map(app => app.connectorId),
+    ).toEqual(['connector_foo_bar', 'connector_foo_bar_alt'])
+  })
+
   test('ignores unknown apps instead of granting new capabilities', () => {
     expect(resolveCodexAppMentions(['unknown'], tools)).toEqual([])
   })

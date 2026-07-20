@@ -176,6 +176,9 @@ export class PtySessionManager {
   close(sessionId: string, _force = false): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getSession(sessionId)
+    if (session.record.state === 'closed' || session.record.state === 'exited') {
+      return this.cloneRecord(session.record)
+    }
     this.applyDriverStatus(session.record, this.driver.close(sessionId))
     session.record.lastActivityAt = Date.now()
     return this.cloneRecord(session.record)

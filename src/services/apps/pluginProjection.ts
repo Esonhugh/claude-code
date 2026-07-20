@@ -21,6 +21,7 @@ export type CodexAppPluginProjection = {
   marketplace: typeof CODEX_APPS_PLUGIN_MARKETPLACE
   connectorId: string
   connectorName: string
+  mentionName: string
   description?: string
   status: 'available'
   toolNames: string[]
@@ -35,6 +36,10 @@ function projectionDisplayName(connectorName: string): string {
   return connectorName.trim() || 'App'
 }
 
+function normalizeMentionName(value: string): string {
+  return value.toLowerCase()
+}
+
 export function extractCodexAppMentions(content: string): string[] {
   const mentions: string[] = []
   const seen = new Set<string>()
@@ -44,7 +49,7 @@ export function extractCodexAppMentions(content: string): string[] {
   while ((match = mentionRegex.exec(content)) !== null) {
     const appName = match[2]
     if (!appName) continue
-    const normalizedName = sanitizeCodexAppsName(appName)
+    const normalizedName = normalizeMentionName(appName)
     if (seen.has(normalizedName)) continue
     seen.add(normalizedName)
     mentions.push(appName)
@@ -61,14 +66,11 @@ export function resolveCodexAppMentions(
 
   const projections = buildCodexAppPluginProjections(tools)
   const projectionsByName = new Map(
-    projections.map(projection => [
-      sanitizeCodexAppsName(projection.connectorName),
-      projection,
-    ]),
+    projections.map(projection => [projection.mentionName, projection]),
   )
 
   return mentions.flatMap(mention => {
-    const projection = projectionsByName.get(sanitizeCodexAppsName(mention))
+    const projection = projectionsByName.get(normalizeMentionName(mention))
     if (!projection) return []
     return [
       {
@@ -127,13 +129,22 @@ export function buildCodexAppPluginProjections(
     }
   }
 
+  const mentionNameCounts = new Map<string, number>()
+  for (const connector of grouped.values()) {
+    const mentionName = sanitizeCodexAppsName(connector.connectorName)
+    mentionNameCounts.set(mentionName, (mentionNameCounts.get(mentionName) ?? 0) + 1)
+  }
+
   return [...grouped.entries()]
     .map<CodexAppPluginProjection>(([connectorId, connector]) => {
-      const slug = sanitizeCodexAppsName(connector.connectorName).replace(
-        /_/g,
-        '-',
-      )
-      const pluginName = `codex-app-${slug}-${shortConnectorHash(connectorId)}`
+      const sanitizedName = sanitizeCodexAppsName(connector.connectorName)
+      const connectorHash = shortConnectorHash(connectorId)
+      const mentionName =
+        mentionNameCounts.get(sanitizedName) === 1
+          ? sanitizedName
+          : `${sanitizedName}-${connectorHash}`
+      const slug = sanitizedName.replace(/_/g, '-')
+      const pluginName = `codex-app-${slug}-${connectorHash}`
       const sortedTools = [...connector.tools].sort((a, b) =>
         a.name.localeCompare(b.name),
       )
@@ -145,6 +156,7 @@ export function buildCodexAppPluginProjections(
         marketplace: CODEX_APPS_PLUGIN_MARKETPLACE,
         connectorId,
         connectorName: connector.connectorName,
+        mentionName,
         description: connector.description,
         status: 'available' as const,
         toolNames: sortedTools.map(tool => tool.name),

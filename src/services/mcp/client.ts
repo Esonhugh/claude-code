@@ -1945,7 +1945,7 @@ export const fetchToolsForClient = memoizeWithLRU(
               const isReadOnlyVerification = shouldTrackCodexAppVerification(
                 tool.annotations?.readOnlyHint,
               )
-              if (connectorInfo.id && isReadOnlyVerification) {
+              if (connectorInfo?.id && isReadOnlyVerification) {
                 recordCodexAppToolStarted(connectorInfo.id)
               }
               for (let attempt = 0; ; attempt++) {
@@ -1971,7 +1971,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                     handleElicitation: context.handleElicitation,
                   })
 
-                  if (connectorInfo.id && isReadOnlyVerification) {
+                  if (connectorInfo?.id && isReadOnlyVerification) {
                     recordCodexAppToolSuccess(connectorInfo.id)
                   }
 
@@ -2017,7 +2017,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                     continue
                   }
 
-                  if (connectorInfo.id && isReadOnlyVerification) {
+                  if (connectorInfo?.id && isReadOnlyVerification) {
                     if (error instanceof Error && error.name === 'AbortError') {
                       recordCodexAppToolCancelled(connectorInfo.id)
                     } else {

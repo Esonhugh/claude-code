@@ -69,6 +69,7 @@ export const TerminalTask: Task = {
             ...task,
             status: 'killed',
             closed: true,
+            notified: true,
             endTime: Date.now(),
           },
         },

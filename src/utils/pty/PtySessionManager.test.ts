@@ -171,7 +171,7 @@ describe('PtySessionManager', () => {
     )
   })
 
-  it('routes send-signal SIGINT to driver.kill instead of writing CTRL_C', () => {
+  it('routes send-signal SIGINT to driver.kill and closes the session', () => {
     const driver = new FakePtyDriver()
     const manager = new PtySessionManager({
       driver,
@@ -186,6 +186,31 @@ describe('PtySessionManager', () => {
       { sessionId: session.sessionId, signal: 'SIGINT' },
     ])
     assert.deepEqual(driver.writes, [])
+  })
+
+  it('routes send-signal SIGTERM to driver.kill', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({ driver })
+    const session = manager.open({ cwd: '/tmp/project' })
+
+    const signaled = manager.signal(session.sessionId, 'SIGTERM')
+
+    assert.equal(signaled.state, 'closed')
+    assert.equal(signaled.exitCode, 143)
+    assert.deepEqual(driver.killedSignals, [
+      { sessionId: session.sessionId, signal: 'SIGTERM' },
+    ])
+  })
+
+  it('closes an already signaled session idempotently', () => {
+    const manager = new PtySessionManager({ driver: new FakePtyDriver() })
+    const session = manager.open({ cwd: '/tmp/project' })
+
+    manager.signal(session.sessionId, 'SIGTERM')
+    const closed = manager.close(session.sessionId)
+
+    assert.equal(closed.state, 'closed')
+    assert.equal(closed.exitCode, 143)
   })
 
   it('keeps CTRL_C as a send-keys write sequence', () => {

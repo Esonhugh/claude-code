@@ -21,6 +21,7 @@ export function syncTerminalTaskAfterStatus(
     preview: nextPreview,
     closed: isClosed,
     status: isClosed ? 'completed' : task.status,
+    notified: isClosed ? true : task.notified,
     endTime: isClosed ? task.endTime ?? Date.now() : task.endTime,
   }
 }

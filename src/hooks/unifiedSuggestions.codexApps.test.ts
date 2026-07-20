@@ -61,4 +61,32 @@ describe('Codex App suggestions', () => {
       }),
     ])
   })
+
+  test('keeps colliding sanitized app names distinct', async () => {
+    const collidingApps = buildCodexAppPluginProjections([
+      appTool('mcp__codex_apps__foo_bar__search', 'connector_foo_bar', 'Foo Bar'),
+      appTool(
+        'mcp__codex_apps__foo_bar_alt__search',
+        'connector_foo_bar_alt',
+        'foo_bar',
+      ),
+    ])
+
+    expect(
+      await generateUnifiedSuggestions('codex-app:foo', {}, [], collidingApps, true),
+    ).toEqual([
+      expect.objectContaining({
+        id: 'codex-app-foo_bar-21d7cd4c',
+        displayText: 'codex-app:foo_bar-21d7cd4c',
+      }),
+      expect.objectContaining({
+        id: 'codex-app-foo_bar-9b5a8e8a',
+        displayText: 'codex-app:foo_bar-9b5a8e8a',
+      }),
+    ])
+  })
+
+  test('does not offer app mentions for a non-@ completion query', async () => {
+    expect(await generateUnifiedSuggestions('gmail', {}, [], apps)).toEqual([])
+  })
 })

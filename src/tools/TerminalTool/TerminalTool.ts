@@ -94,6 +94,7 @@ registerTerminalTaskRuntimeKiller((task, setAppState) => {
         preview,
         status: 'killed',
         closed: true,
+        notified: true,
         endTime: Date.now(),
       },
     },
@@ -127,6 +128,9 @@ function refreshTerminalTaskPreview(
       preview,
     }),
   )
+  if (status.state !== 'running') {
+    terminalTaskRegistry.delete(sessionId)
+  }
 }
 
 function invalidInput(message: string, details: Record<string, unknown>): ErrorOutput {
@@ -364,6 +368,9 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
               preview,
             }),
           )
+          if (!status.isRunning) {
+            terminalTaskRegistry.delete(parsed.data.target)
+          }
           return { data: status }
         }
         case 'kill-pane': {
@@ -381,6 +388,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             preview,
             status: 'completed',
             closed: true,
+            notified: true,
             endTime: Date.now(),
           }))
           terminalTaskRegistry.delete(parsed.data.target)
