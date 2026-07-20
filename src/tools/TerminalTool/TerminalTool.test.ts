@@ -11,6 +11,10 @@ import { FileStateCache } from '../../utils/fileStateCache.js'
 import { FakePtyDriver } from '../../utils/pty/__fixtures__/FakePtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import { resolveTerminalCommand } from '../../utils/shell/resolveDefaultShell.js'
+import {
+  getCommandQueue,
+  resetCommandQueue,
+} from '../../utils/messageQueueManager.js'
 import { capturePaneActionSchema } from './actionSchemas.js'
 import {
   getTerminalManager,
@@ -91,6 +95,7 @@ function createFakeTerminalManager(): PtySessionManager {
 
 beforeEach(() => {
   resetTerminalManagerForTesting(createFakeTerminalManager())
+  resetCommandQueue()
 })
 
 test('TerminalTool exposes the Terminal tool name without old alias', () => {
@@ -644,7 +649,7 @@ test('refreshes task preview on display-message for large terminal redraw output
   )
 })
 
-test('syncs naturally exited panes to completed task state while preserving final preview', async () => {
+test('polls naturally exited panes and enqueues exactly one completion notification', async () => {
   const driver = new FakePtyDriver()
   resetTerminalManagerForTesting(new PtySessionManager({ driver }))
   const context = createContext()
@@ -665,36 +670,7 @@ test('syncs naturally exited panes to completed task state while preserving fina
   const target = String((opened.data as { target: string }).target)
   driver.finishNaturally(target, 'TERMINAL_L5_OK', 0)
 
-  const captured = await TerminalTool.call(
-    { action: 'capture-pane', target, cursor: 0, maxBytes: 4096 },
-    context,
-    allowPermission,
-    TEST_ASSISTANT_MESSAGE,
-  )
-  assert.equal((captured.data as { text: string }).text, 'TERMINAL_L5_OK')
-  assert.equal((captured.data as { isRunning: boolean }).isRunning, false)
-
-  const status = await TerminalTool.call(
-    { action: 'display-message', target },
-    context,
-    allowPermission,
-    TEST_ASSISTANT_MESSAGE,
-  )
-  assert.equal((status.data as { isRunning: boolean }).isRunning, false)
-  assert.equal((status.data as { exitCode: number }).exitCode, 0)
-
-  const listed = await TerminalTool.call(
-    { action: 'list-panes' },
-    context,
-    allowPermission,
-    TEST_ASSISTANT_MESSAGE,
-  )
-  assert.equal(
-    (listed.data as { panes: Array<{ target: string; state: string }> }).panes.find(
-      pane => pane.target === target,
-    )?.state,
-    'closed',
-  )
+  await new Promise(resolve => setTimeout(resolve, 1_100))
 
   const task = Object.values(context.getAppState().tasks).find(
     (value): value is TerminalTask =>
@@ -703,6 +679,21 @@ test('syncs naturally exited panes to completed task state while preserving fina
   assert.equal(task?.preview, 'TERMINAL_L5_OK')
   assert.equal(task?.closed, true)
   assert.equal(task?.status, 'completed')
+  assert.equal(task?.notified, true)
+  assert.equal(terminalTaskRegistry.has(target), false)
+
+  const notifications = getCommandQueue().filter(
+    command => command.mode === 'task-notification',
+  )
+  assert.equal(notifications.length, 1)
+  assert.match(String(notifications[0]?.value), /<status>completed<\/status>/)
+  assert.match(String(notifications[0]?.value), new RegExp(`<task-id>${task?.id}<\\/task-id>`))
+
+  await new Promise(resolve => setTimeout(resolve, 1_100))
+  assert.equal(
+    getCommandQueue().filter(command => command.mode === 'task-notification').length,
+    1,
+  )
 })
 
 test('preserves send-signal semantics by closing the session', async () => {

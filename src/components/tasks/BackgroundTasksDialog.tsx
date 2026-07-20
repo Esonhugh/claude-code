@@ -49,6 +49,7 @@ import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
+import { enqueueTerminalTaskNotification } from '../../tasks/TerminalTask.js'
 import { getTerminalManager, terminalTaskRegistry } from '../../tools/TerminalTool/TerminalTool.js'
 import { syncTerminalTaskAfterStatus } from '../../tools/TerminalTool/taskState.js'
 import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
@@ -109,6 +110,7 @@ function TerminalDetailDialog({
         const manager = getTerminalManager()
         const status = manager.status(task.sessionId)
         const preview = manager.getRenderedPreview(task.sessionId)
+        let completed = false
         setAppState(prev => {
           const existing = prev.tasks?.[taskId]
           if (!existing || existing.type !== 'interactive_terminal') {
@@ -128,9 +130,7 @@ function TerminalDetailDialog({
           ) {
             return prev
           }
-          if (updated.closed) {
-            terminalTaskRegistry.delete(task.sessionId)
-          }
+          completed = updated.closed
           return {
             ...prev,
             tasks: {
@@ -139,6 +139,10 @@ function TerminalDetailDialog({
             },
           }
         })
+        if (completed) {
+          enqueueTerminalTaskNotification(taskId, setAppState)
+          terminalTaskRegistry.delete(task.sessionId)
+        }
       } catch {
         // Ignore refresh errors in read-only preview mode.
       }

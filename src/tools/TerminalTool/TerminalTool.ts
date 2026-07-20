@@ -2,7 +2,10 @@ import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createTaskStateBase, generateTaskId } from '../../Task.js'
-import { registerTerminalTaskRuntimeKiller } from '../../tasks/TerminalTask.js'
+import {
+  enqueueTerminalTaskNotification,
+  registerTerminalTaskRuntimeKiller,
+} from '../../tasks/TerminalTask.js'
 import { createBunPtyDriver } from '../../utils/pty/bunPtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
@@ -65,10 +68,57 @@ export function getTerminalManager(): PtySessionManager {
 
 export function resetTerminalManagerForTesting(manager?: PtySessionManager): void {
   terminalManagerInstance = manager
+  for (const poller of terminalTaskPollers.values()) {
+    clearInterval(poller)
+  }
+  terminalTaskPollers.clear()
   terminalTaskRegistry.clear()
 }
 
 export const terminalTaskRegistry = new Map<string, string>()
+const terminalTaskPollers = new Map<string, ReturnType<typeof setInterval>>()
+const TERMINAL_TASK_POLL_INTERVAL_MS = 1000
+
+function stopTerminalTaskPolling(sessionId: string): void {
+  const poller = terminalTaskPollers.get(sessionId)
+  if (!poller) {
+    return
+  }
+  clearInterval(poller)
+  terminalTaskPollers.delete(sessionId)
+}
+
+function completeTerminalTask(
+  sessionId: string,
+  setAppState: Parameters<typeof updateTaskState>[1],
+): void {
+  const taskId = terminalTaskRegistry.get(sessionId)
+  if (taskId) {
+    enqueueTerminalTaskNotification(taskId, setAppState)
+  }
+  terminalTaskRegistry.delete(sessionId)
+  stopTerminalTaskPolling(sessionId)
+}
+
+function startTerminalTaskPolling(
+  sessionId: string,
+  setAppState: Parameters<typeof updateTaskState>[1],
+): void {
+  stopTerminalTaskPolling(sessionId)
+  const poller = setInterval(() => {
+    if (!terminalTaskRegistry.has(sessionId)) {
+      stopTerminalTaskPolling(sessionId)
+      return
+    }
+    try {
+      refreshTerminalTaskPreview(sessionId, setAppState, getTerminalManager())
+    } catch {
+      stopTerminalTaskPolling(sessionId)
+    }
+  }, TERMINAL_TASK_POLL_INTERVAL_MS)
+  poller.unref()
+  terminalTaskPollers.set(sessionId, poller)
+}
 
 registerTerminalTaskRuntimeKiller((task, setAppState) => {
   const manager = getTerminalManager()
@@ -82,6 +132,7 @@ registerTerminalTaskRuntimeKiller((task, setAppState) => {
     status = manager.status(task.sessionId)
   }
   const preview = manager.getRenderedPreview(task.sessionId)
+  stopTerminalTaskPolling(task.sessionId)
   terminalTaskRegistry.delete(task.sessionId)
   setAppState(prev => ({
     ...prev,
@@ -129,7 +180,7 @@ function refreshTerminalTaskPreview(
     }),
   )
   if (status.state !== 'running') {
-    terminalTaskRegistry.delete(sessionId)
+    completeTerminalTask(sessionId, setAppState)
   }
 }
 
@@ -284,6 +335,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             },
             context.setAppState,
           )
+          startTerminalTaskPolling(target, context.setAppState)
           const { sessionId: _sessionId, ...openedOutput } = opened
           return { data: { ...openedOutput, target } }
         }
@@ -369,7 +421,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             }),
           )
           if (!status.isRunning) {
-            terminalTaskRegistry.delete(parsed.data.target)
+            completeTerminalTask(parsed.data.target, context.setAppState)
           }
           return { data: status }
         }
@@ -388,10 +440,9 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             preview,
             status: 'completed',
             closed: true,
-            notified: true,
             endTime: Date.now(),
           }))
-          terminalTaskRegistry.delete(parsed.data.target)
+          completeTerminalTask(parsed.data.target, context.setAppState)
           return { data: closed }
         }
         default:

@@ -51,7 +51,7 @@ describe('syncTerminalTaskAfterStatus', () => {
     assert.equal(updated.preview, 'existing preview')
     assert.equal(updated.closed, true)
     assert.equal(updated.status, 'completed')
-    assert.equal(updated.notified, true)
+    assert.equal(updated.notified, false)
     assert.equal(typeof updated.endTime, 'number')
   })
 })
