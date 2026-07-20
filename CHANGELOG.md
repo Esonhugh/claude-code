@@ -28,6 +28,7 @@
 - `0ce3afc` — 2026-07-20 — `release: prepare v2.1.203`
 - `49cfc32` — 2026-07-20 — `remove: handoff`（仅删除临时交接文档，无运行时变更）
 - `231eead` — 2026-07-20 — `fix: gate ChatGPT status by provider`
+- `50988a1` — 2026-07-20 — `docs: complete v2.1.203 commit inventory`
 
 ### 变更内容
 
@@ -54,6 +55,7 @@
 - 为 Codex Apps OAuth fetch 增加可注入依赖边界，以纯 mock 覆盖 `401` 后强制 refresh 且只重试一次，避免测试读取或刷新真实凭据。
 - 为 Background Tasks detail dialog 与后台 poller 复用的 Terminal refresh 路径补充自然退出、完成通知和 registry 清理断言。
 - 修复非 OpenAI provider 仍因本机 ChatGPT OAuth 显示 `ChatGPT Pro` 并预取 ChatGPT utilization 的问题；只有启用 OpenAI provider 时才读取并展示 ChatGPT plan/usage。
+- 修复 OpenAI bootstrap 测试未恢复 model options cache 导致组合测试依赖执行顺序的问题。
 
 ### 发布验收
 

@@ -5,6 +5,7 @@ import axios from 'axios'
 const originalAxiosGet = axios.get
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalNodeEnv = process.env.NODE_ENV
+let restoreGlobalConfig: (() => void) | undefined
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -17,6 +18,13 @@ try {
   const authModule = await import('../../utils/auth.js')
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
   const { fetchBootstrapData } = await import('./bootstrap.js')
+  const originalOpenAIModelOptionsCache = getGlobalConfig().openAIModelOptionsCache
+  restoreGlobalConfig = () => {
+    saveGlobalConfig(current => ({
+      ...current,
+      openAIModelOptionsCache: originalOpenAIModelOptionsCache,
+    }))
+  }
 
   saveGlobalConfig(current => ({
     ...current,
@@ -60,6 +68,7 @@ try {
     { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])
 } finally {
+  restoreGlobalConfig?.()
   axios.get = originalAxiosGet
   const authModule = await import('../../utils/auth.js')
   authModule.getOpenAIAuthInfo.cache.clear?.()
