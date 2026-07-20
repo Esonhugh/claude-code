@@ -12,9 +12,13 @@ const originalHome = process.env.HOME
 const originalOpenAIAuthToken = process.env.OPENAI_AUTH_TOKEN
 const originalOpenAIApiKey = process.env.OPENAI_API_KEY
 const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
+const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
+const originalNodeEnv = process.env.NODE_ENV
 const homeDir = await mkdtemp(join(tmpdir(), 'openai-auth-env-'))
 
 try {
+  process.env.NODE_ENV = 'test'
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
   process.env.HOME = homeDir
   process.env.OPENAI_AUTH_TOKEN = 'sk-env-token'
 
@@ -130,11 +134,14 @@ try {
     planDisplayName: 'Plus',
   })
 
-  process.env.CLAUDE_CODE_USE_OPENAI = '1'
   const { getLogoDisplayData } = await import('./logoV2Utils.js')
   const { setAuthoritativeChatGPTPlanTypeForTest } = await import(
     '../services/api/usage-chatgpt.js'
   )
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  assert.equal(getLogoDisplayData().billingType, 'API Usage Billing')
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
   assert.equal(getLogoDisplayData().billingType, 'ChatGPT Plus')
 
   setAuthoritativeChatGPTPlanTypeForTest('pro')
@@ -158,6 +165,10 @@ try {
   else process.env.OPENAI_API_KEY = originalOpenAIApiKey
   if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
+  if (originalAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+  else process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV
+  else process.env.NODE_ENV = originalNodeEnv
   await rm(homeDir, { recursive: true, force: true })
 }
 

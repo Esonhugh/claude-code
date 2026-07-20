@@ -15,6 +15,7 @@ import {
   truncateToWidth,
   truncateToWidthNoEllipsis,
 } from './format.js'
+import { getAPIProvider } from './model/providers.js'
 import { getStoredChangelogFromMemory, parseChangelog } from './releaseNotes.js'
 import { gt } from './semver.js'
 import { loadMessageLogs } from './sessionStorage.js'
@@ -261,10 +262,11 @@ export function getLogoDisplayData(): {
   const cwd = serverUrl
     ? `${displayPath} in ${serverUrl.replace(/^https?:\/\//, '')}`
     : displayPath
-  const openAIAuth = getOpenAIAuthInfo()
-  const authoritativePlanName = formatOpenAIPlanName(
-    getAuthoritativeChatGPTPlanType(),
-  )
+  const isOpenAIProvider = getAPIProvider() === 'openai'
+  const openAIAuth = isOpenAIProvider ? getOpenAIAuthInfo() : null
+  const authoritativePlanName = isOpenAIProvider
+    ? formatOpenAIPlanName(getAuthoritativeChatGPTPlanType())
+    : null
   const billingType = openAIAuth
     ? openAIAuth.isChatGPT && authoritativePlanName
       ? `ChatGPT ${authoritativePlanName}`

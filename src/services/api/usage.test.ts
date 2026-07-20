@@ -15,7 +15,11 @@ const originalOpenAIApiKey = process.env.OPENAI_API_KEY
 const originalHome = process.env.HOME
 const authModule = await import('../../utils/auth.js')
 const axios = (await import('axios')).default
-const { consumeRateLimitResetCredit, fetchUtilization } = await import('./usage.js')
+const {
+  consumeRateLimitResetCredit,
+  fetchUtilization,
+  prefetchChatGPTUtilization,
+} = await import('./usage.js')
 
 test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
@@ -59,6 +63,35 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
     axios.post = originalAxiosPost
     authModule.getOpenAIAuthInfo.cache.clear?.()
     authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+  }
+})
+
+test('prefetchChatGPTUtilization ignores ChatGPT auth outside the OpenAI provider', async () => {
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+
+  const originalAxiosGet = axios.get
+  let requestCount = 0
+  axios.get = (async () => {
+    requestCount += 1
+    return { data: { plan_type: 'pro' } }
+  }) as typeof axios.get
+
+  try {
+    await prefetchChatGPTUtilization()
+    assert.equal(requestCount, 0)
+  } finally {
+    axios.get = originalAxiosGet
+    authModule.getOpenAIAuthInfo.cache.clear?.()
     if (originalOpenAI === undefined) {
       delete process.env.CLAUDE_CODE_USE_OPENAI
     } else {

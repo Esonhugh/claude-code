@@ -17,6 +17,16 @@ export type {
   Utilization,
 } from './usage-types.js'
 
+export function prefetchChatGPTUtilization(): Promise<unknown> | null {
+  if (
+    !isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
+    !getOpenAIAuthInfo()?.isChatGPT
+  ) {
+    return null
+  }
+  return fetchChatGPTUtilization()
+}
+
 export async function fetchUtilization(): Promise<Utilization | null> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
     return getOpenAIAuthInfo()?.isChatGPT

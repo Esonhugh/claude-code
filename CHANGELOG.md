@@ -15,7 +15,7 @@
 ### 版本状态
 
 - 准备发布版本：`v2.1.203`。
-- 本次发布覆盖 `v2.1.202` tag 之后至当前 release preparation 工作区；运行时范围包含下方 4 个已提交变更及本轮发布验收修复。
+- 本次发布覆盖 `v2.1.202` tag 之后至当前 release preparation 工作区；下方列出运行时变更，另包含 release preparation 提交和仅删除临时交接文档的维护提交。
 - `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.203`。
 
@@ -25,6 +25,8 @@
 - `c2f2ed1` — 2026-07-19 — `fix: expose supported hidden OpenAI models`
 - `8246689` — 2026-07-20 — `fix: harden Codex app and terminal lifecycles`
 - `3143e6f` — 2026-07-20 — `fix: deliver terminal completion notifications`
+- `0ce3afc` — 2026-07-20 — `release: prepare v2.1.203`
+- `49cfc32` — 2026-07-20 — `remove: handoff`（仅删除临时交接文档，无运行时变更）
 
 ### 变更内容
 
@@ -50,10 +52,11 @@
 
 - 为 Codex Apps OAuth fetch 增加可注入依赖边界，以纯 mock 覆盖 `401` 后强制 refresh 且只重试一次，避免测试读取或刷新真实凭据。
 - 为 Background Tasks detail dialog 与后台 poller 复用的 Terminal refresh 路径补充自然退出、完成通知和 registry 清理断言。
+- 修复非 OpenAI provider 仍因本机 ChatGPT OAuth 显示 `ChatGPT Pro` 并预取 ChatGPT utilization 的问题；只有启用 OpenAI provider 时才读取并展示 ChatGPT plan/usage。
 
 ### 发布验收
 
-- Codex Apps、OpenAI model options 与 Terminal lifecycle focused tests 通过，覆盖 OAuth `401` exactly-once refresh、hidden model 展示、PTY session manager 生命周期和 Terminal task 完成通知。
+- Codex Apps、OpenAI model options、provider-gated ChatGPT plan/usage 与 Terminal lifecycle focused tests 通过，覆盖 OAuth `401` exactly-once refresh、hidden model 展示、非 OpenAI provider 的 ChatGPT 预取边界、PTY session manager 生命周期和 Terminal task 完成通知。
 - 最新 `built-claude` scripted tmux 验收已确认 `v2.1.203` 启动、OpenAI API credential 的 `API Usage Billing` 状态、安全连接失败后的可见错误，以及受控 Responses SSE 驱动的真实 Terminal PTY 自然退出、capture、display-message 和 completion notification 回注。
 - 发布验收使用 dummy OpenAI credential 与受控 Responses SSE；未使用真实 OpenAI/ChatGPT 凭据或外部 endpoint。
 
