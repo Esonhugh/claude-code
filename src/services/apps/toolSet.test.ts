@@ -7,6 +7,7 @@ import {
   isHostOwnedCodexAppsConfig,
 } from './trust.js'
 import {
+  createCodexAppsOAuthFetch,
   createCodexAppsTransport,
   getCodexAppsProxyFetchOptions,
   isAllowedCodexAppsRequestUrl,
@@ -181,6 +182,42 @@ describe('Codex Apps transport origin boundary', () => {
       isAllowedCodexAppsRequestUrl('https://chatgpt.com/redirect'),
       false,
     )
+  })
+
+  it('refreshes OAuth and retries exactly once after a 401', async () => {
+    const authRequests: boolean[] = []
+    const requests: Array<{
+      authorization: string | null
+      accountId: string | null
+    }> = []
+    const fetchWithOAuth = createCodexAppsOAuthFetch({
+      resolveAuth: async ({ forceRefresh = false } = {}) => {
+        authRequests.push(forceRefresh)
+        return {
+          accessToken: forceRefresh ? 'refreshed-token' : 'oauth-token',
+          accountId: 'account-123',
+          isChatGPT: true,
+        }
+      },
+      fetch: async (_input, init) => {
+        const headers = new Headers(init?.headers)
+        requests.push({
+          authorization: headers.get('authorization'),
+          accountId: headers.get('chatgpt-account-id'),
+        })
+        return new Response(null, { status: requests.length === 1 ? 401 : 200 })
+      },
+      userAgent: () => 'claude-code/test',
+    })
+
+    const response = await fetchWithOAuth(CODEX_APPS_PLUGIN_RUNTIME_MCP_URL)
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(authRequests, [false, true])
+    assert.deepEqual(requests, [
+      { authorization: 'Bearer oauth-token', accountId: 'account-123' },
+      { authorization: 'Bearer refreshed-token', accountId: 'account-123' },
+    ])
   })
 
   it('uses https_proxy for both Codex Apps clients', () => {

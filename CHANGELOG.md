@@ -10,6 +10,53 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-20 - v2.1.203 - Codex Apps Skills、OpenAI 模型与 Terminal 生命周期修复
+
+### 版本状态
+
+- 准备发布版本：`v2.1.203`。
+- 本次发布覆盖 `v2.1.202` tag 之后至当前 release preparation 工作区；运行时范围包含下方 4 个已提交变更及本轮发布验收修复。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.203`。
+
+### 关联提交
+
+- `eef7e23` — 2026-07-19 — `feat: add hosted Codex Apps MCP skills`
+- `c2f2ed1` — 2026-07-19 — `fix: expose supported hidden OpenAI models`
+- `8246689` — 2026-07-20 — `fix: harden Codex app and terminal lifecycles`
+- `3143e6f` — 2026-07-20 — `fix: deliver terminal completion notifications`
+
+### 变更内容
+
+#### Codex Apps hosted MCP skills
+
+- 新增 host-owned `codex_apps_plugins` MCP runtime，通过 `mcp/skill` resources 发现并按需读取 hosted skills，同时保持 Apps tools 与 skills 投影相互独立，避免重复暴露工具。
+- 对 hosted skill 的来源、名称、URI、分页、内容大小和缓存进行限制；仅允许可信的 `codex_apps` 与 `codex_apps_plugins` server 进入该加载路径。
+- Codex Apps transport 仅向固定 ChatGPT Apps MCP endpoint 注入 OAuth 与 account 信息，并在 `401` 后强制刷新 token 重试一次。
+- 修复同名 connector 的 mention 冲突，为重复的 `@codex-app:{name}` 追加稳定短标识；补全仍只展示当前已发现且已过滤的 Apps。
+
+#### OpenAI hidden model 展示
+
+- OpenAI 与 ChatGPT Codex 模型列表不再无条件过滤 `visibility: "hide"` 的模型；名称符合支持范围且 `supported_in_api !== false` 时，可在 Model Picker 中以 `(Hidden)` 标识显示。
+- 保持 unsupported model 与非 OpenAI-family model 的过滤边界，不改变 Anthropic 模型列表行为。
+
+#### Terminal 生命周期与完成通知
+
+- 收紧 `send-signal`、task kill 和 pane 自然退出的状态同步：终止 session 后更新 task 终态、清理 runtime registry 与 polling 状态。
+- Terminal task 定时刷新 pane preview 与状态；自然退出后仅入队一次 `<task-notification>`，避免完成通知丢失或重复。
+- Background Tasks detail dialog 复用 Terminal task 的统一刷新与完成路径，持续刷新 preview，并在发现终态后完成通知和 registry 清理。
+
+#### 发布验收补充修复
+
+- 为 Codex Apps OAuth fetch 增加可注入依赖边界，以纯 mock 覆盖 `401` 后强制 refresh 且只重试一次，避免测试读取或刷新真实凭据。
+- 为 Background Tasks detail dialog 与后台 poller 复用的 Terminal refresh 路径补充自然退出、完成通知和 registry 清理断言。
+
+### 发布验收
+
+- Codex Apps、OpenAI model options 与 Terminal lifecycle focused tests 通过，覆盖 OAuth `401` exactly-once refresh、hidden model 展示、PTY session manager 生命周期和 Terminal task 完成通知。
+- 最新 `built-claude` scripted tmux 验收已确认 `v2.1.203` 启动、OpenAI API credential 的 `API Usage Billing` 状态、安全连接失败后的可见错误，以及受控 Responses SSE 驱动的真实 Terminal PTY 自然退出、capture、display-message 和 completion notification 回注。
+- 发布验收使用 dummy OpenAI credential 与受控 Responses SSE；未使用真实 OpenAI/ChatGPT 凭据或外部 endpoint。
+
 ## 2026-07-19 - v2.1.202 - Terminal Tool、功能验收 Skill 与 Codex Apps 集成
 
 ### 版本状态

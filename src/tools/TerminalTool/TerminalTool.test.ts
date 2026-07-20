@@ -18,6 +18,7 @@ import {
 import { capturePaneActionSchema } from './actionSchemas.js'
 import {
   getTerminalManager,
+  refreshTerminalTaskPreview,
   TerminalTool,
   resetTerminalManagerForTesting,
   terminalTaskRegistry,
@@ -690,6 +691,44 @@ test('polls naturally exited panes and enqueues exactly one completion notificat
   assert.match(String(notifications[0]?.value), new RegExp(`<task-id>${task?.id}<\\/task-id>`))
 
   await new Promise(resolve => setTimeout(resolve, 1_100))
+  assert.equal(
+    getCommandQueue().filter(command => command.mode === 'task-notification').length,
+    1,
+  )
+})
+
+test('refreshes a naturally exited pane through the shared detail path', async () => {
+  const driver = new FakePtyDriver()
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const context = createContext()
+  const opened = await TerminalTool.call(
+    {
+      action: 'new-session',
+      command: '/bin/sh',
+      args: ['-c', 'printf TERMINAL_DETAIL_OK'],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const target = String((opened.data as { target: string }).target)
+  driver.finishNaturally(target, 'TERMINAL_DETAIL_OK', 0)
+  refreshTerminalTaskPreview(target, context.setAppState, manager)
+
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.equal(task?.preview, 'TERMINAL_DETAIL_OK')
+  assert.equal(task?.closed, true)
+  assert.equal(task?.status, 'completed')
+  assert.equal(task?.notified, true)
+  assert.equal(terminalTaskRegistry.has(target), false)
   assert.equal(
     getCommandQueue().filter(command => command.mode === 'task-notification').length,
     1,

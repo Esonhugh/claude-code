@@ -49,9 +49,7 @@ import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
-import { enqueueTerminalTaskNotification } from '../../tasks/TerminalTask.js'
-import { getTerminalManager, terminalTaskRegistry } from '../../tools/TerminalTool/TerminalTool.js'
-import { syncTerminalTaskAfterStatus } from '../../tools/TerminalTool/taskState.js'
+import { refreshTerminalTaskPreview } from '../../tools/TerminalTool/TerminalTool.js'
 import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
 import {
   terminalPreviewHeight,
@@ -103,46 +101,7 @@ function TerminalDetailDialog({
     }
     const timer = setInterval(() => {
       try {
-        const taskId = terminalTaskRegistry.get(task.sessionId)
-        if (!taskId) {
-          return
-        }
-        const manager = getTerminalManager()
-        const status = manager.status(task.sessionId)
-        const preview = manager.getRenderedPreview(task.sessionId)
-        let completed = false
-        setAppState(prev => {
-          const existing = prev.tasks?.[taskId]
-          if (!existing || existing.type !== 'interactive_terminal') {
-            return prev
-          }
-          const updated = syncTerminalTaskAfterStatus(existing, {
-            isRunning: status.state === 'running',
-            cols: status.cols,
-            rows: status.rows,
-            preview,
-          })
-          if (
-            updated.cols === existing.cols &&
-            updated.rows === existing.rows &&
-            updated.preview === existing.preview &&
-            updated.closed === existing.closed
-          ) {
-            return prev
-          }
-          completed = updated.closed
-          return {
-            ...prev,
-            tasks: {
-              ...prev.tasks,
-              [taskId]: updated,
-            },
-          }
-        })
-        if (completed) {
-          enqueueTerminalTaskNotification(taskId, setAppState)
-          terminalTaskRegistry.delete(task.sessionId)
-        }
+        refreshTerminalTaskPreview(task.sessionId, setAppState)
       } catch {
         // Ignore refresh errors in read-only preview mode.
       }

@@ -164,10 +164,10 @@ function updateTerminalTask(
   updateTaskState(taskId, setAppState, updater)
 }
 
-function refreshTerminalTaskPreview(
+export function refreshTerminalTaskPreview(
   sessionId: string,
   setAppState: Parameters<typeof updateTaskState>[1],
-  manager: PtySessionManager,
+  manager: PtySessionManager = getTerminalManager(),
 ): void {
   const status = manager.status(sessionId)
   const preview = manager.getRenderedPreview(sessionId)
