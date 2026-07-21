@@ -27,6 +27,7 @@
 - `3143e6f` — 2026-07-20 — `fix: deliver terminal completion notifications`
 - `0ce3afc` — 2026-07-20 — `release: prepare v2.1.203`
 - `49cfc32` — 2026-07-20 — `remove: handoff`（仅删除临时交接文档，无运行时变更）
+- `231eead` — 2026-07-20 — `fix: gate ChatGPT status by provider`
 
 ### 变更内容
 

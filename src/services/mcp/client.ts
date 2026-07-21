@@ -1429,7 +1429,7 @@ export const connectToServer = memoize(
         // creates a new connection object; without clearing, the next
         // fetch would return stale tools/resources from the old connection.
         clearFetchToolsCache(name)
-        fetchResourcesForClient.cache.delete(name)
+        clearFetchResourcesCache(name)
         fetchCommandsForClient.cache.delete(name)
         if (feature('MCP_SKILLS')) {
           fetchMcpSkillsForClient!.clearCacheForServer(name)
@@ -1707,7 +1707,7 @@ export async function clearServerCache(
   // fetches fresh tools/resources/commands instead of stale ones)
   connectToServer.cache.delete(key)
   clearFetchToolsCache(name)
-  fetchResourcesForClient.cache.delete(name)
+  clearFetchResourcesCache(name)
   fetchCommandsForClient.cache.delete(name)
   if (feature('MCP_SKILLS')) {
     fetchMcpSkillsForClient!.clearCacheForServer(name)
@@ -1783,6 +1783,19 @@ export function getFetchToolsCacheKey(client: MCPServerConnection): string {
 export function clearFetchToolsCache(name: string): void {
   fetchToolsForClient.cache.delete(name)
   fetchToolsForClient.cache.delete(
+    `${name}${CODEX_APPS_FETCH_CACHE_SUFFIX}`,
+  )
+}
+
+function getFetchResourcesCacheKey(client: MCPServerConnection): string {
+  return client.type === 'connected' && isHostOwnedCodexAppsConfig(client.config)
+    ? `${client.name}${CODEX_APPS_FETCH_CACHE_SUFFIX}`
+    : client.name
+}
+
+export function clearFetchResourcesCache(name: string): void {
+  fetchResourcesForClient.cache.delete(name)
+  fetchResourcesForClient.cache.delete(
     `${name}${CODEX_APPS_FETCH_CACHE_SUFFIX}`,
   )
 }
@@ -2115,6 +2128,7 @@ export const fetchToolsForClient = memoizeWithLRU(
 export const fetchResourcesForClient = memoizeWithLRU(
   async (client: MCPServerConnection): Promise<ServerResource[]> => {
     if (client.type !== 'connected') return []
+    if (getHostOwnedCodexAppsKind(client.config) === 'plugins') return []
 
     try {
       if (!client.capabilities?.resources) {
@@ -2141,7 +2155,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
       return []
     }
   },
-  (client: MCPServerConnection) => client.name,
+  getFetchResourcesCacheKey,
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2282,6 +2296,9 @@ export async function reconnectMcpServerImpl(
     }
 
     const supportsResources = !!client.capabilities?.resources
+    const supportsGenericResources =
+      supportsResources &&
+      getHostOwnedCodexAppsKind(client.config) !== 'plugins'
 
     const [tools, mcpCommands, mcpSkills, resources] = await Promise.all([
       fetchToolsForClient(client),
@@ -2289,13 +2306,15 @@ export async function reconnectMcpServerImpl(
       feature('MCP_SKILLS') && supportsResources
         ? fetchMcpSkillsForClient!(client)
         : Promise.resolve([]),
-      supportsResources ? fetchResourcesForClient(client) : Promise.resolve([]),
+      supportsGenericResources
+        ? fetchResourcesForClient(client)
+        : Promise.resolve([]),
     ])
     const commands = [...mcpCommands, ...mcpSkills]
 
     // Check if we need to add resource tools
     const resourceTools: Tool[] = []
-    if (supportsResources) {
+    if (supportsGenericResources) {
       // Only add resource tools if no other server has them
       const hasResourceTools = [ListMcpResourcesTool, ReadMcpResourceTool].some(
         tool => tools.some(t => toolMatchesName(t, tool.name)),
@@ -2458,6 +2477,8 @@ export async function getMcpToolsCommandsAndResources(
       }
 
       const supportsResources = !!client.capabilities?.resources
+      const supportsGenericResources =
+        supportsResources && getHostOwnedCodexAppsKind(client.config) !== 'plugins'
 
       const [tools, mcpCommands, mcpSkills, resources] = await Promise.all([
         fetchToolsForClient(client),
@@ -2467,7 +2488,7 @@ export async function getMcpToolsCommandsAndResources(
           ? fetchMcpSkillsForClient!(client)
           : Promise.resolve([]),
         // Fetch resources if supported
-        supportsResources
+        supportsGenericResources
           ? fetchResourcesForClient(client)
           : Promise.resolve([]),
       ])
@@ -2476,7 +2497,7 @@ export async function getMcpToolsCommandsAndResources(
       // If this server resources and we haven't added resource tools yet,
       // include our resource tools with this client's tools
       const resourceTools: Tool[] = []
-      if (supportsResources && !resourceToolsAdded) {
+      if (supportsGenericResources && !resourceToolsAdded) {
         resourceToolsAdded = true
         resourceTools.push(ListMcpResourcesTool, ReadMcpResourceTool)
       }

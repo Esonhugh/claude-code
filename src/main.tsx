@@ -5199,7 +5199,7 @@ async function run(): Promise<CommanderCommand> {
             ? hookMessages
             : undefined
 
-        void prefetchChatGPTUtilization()?.catch(() => null)
+        await prefetchChatGPTUtilization()?.catch(() => null)
         await launchRepl(
           root,
           { getFpsMetrics, stats, initialState },

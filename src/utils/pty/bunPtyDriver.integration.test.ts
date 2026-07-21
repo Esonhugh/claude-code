@@ -157,10 +157,69 @@ test('supports a real interrupt flow against a live PTY shell', async () => {
   manager.write(opened.sessionId, 'sleep 5\r')
   const signaled = manager.signal(opened.sessionId, 'SIGINT')
 
-  assert.equal(signaled.state, 'closed')
-  assert.equal(signaled.exitCode, 130)
-  assert.equal(signaled.signal, 'SIGINT')
-  assert.equal(manager.status(opened.sessionId).state, 'closed')
+  assert.equal(signaled.state, 'running')
+  await waitFor(() => manager.status(opened.sessionId).state === 'closed')
+
+  const closed = manager.status(opened.sessionId)
+  assert.equal(closed.state, 'closed')
+  assert.equal(closed.exitCode, 130)
+  assert.equal(closed.signal, 'SIGINT')
+})
+
+test('records a trapped signal when the shell exits with its conventional signal code', async () => {
+  const driver = createBunPtyDriver()
+  const manager = new PtySessionManager({
+    driver,
+    maxBufferedChunks: 64,
+    exitedSessionTtlMs: 60_000,
+  })
+
+  const opened = manager.open({
+    command: '/bin/sh',
+    args: [
+      '-lc',
+      `trap 'exit 143' TERM; printf READY; while :; do sleep 0.05; done`,
+    ],
+    cwd: process.cwd(),
+    cols: 80,
+    rows: 24,
+  })
+
+  await waitFor(() => manager.getRenderedPreview(opened.sessionId).includes('READY'))
+  manager.signal(opened.sessionId, 'SIGTERM')
+  await waitFor(() => manager.status(opened.sessionId).state === 'closed')
+
+  const closed = manager.status(opened.sessionId)
+  assert.equal(closed.exitCode, 143)
+  assert.equal(closed.signal, 'SIGTERM')
+})
+
+test('does not retain a signal that the process ignores before a natural exit', async () => {
+  const driver = createBunPtyDriver()
+  const manager = new PtySessionManager({
+    driver,
+    maxBufferedChunks: 64,
+    exitedSessionTtlMs: 60_000,
+  })
+
+  const opened = manager.open({
+    command: '/bin/sh',
+    args: [
+      '-lc',
+      `trap '' TERM; printf READY; sleep 0.2; exit 0`,
+    ],
+    cwd: process.cwd(),
+    cols: 80,
+    rows: 24,
+  })
+
+  await waitFor(() => manager.getRenderedPreview(opened.sessionId).includes('READY'))
+  manager.signal(opened.sessionId, 'SIGTERM')
+  await waitFor(() => manager.status(opened.sessionId).state === 'closed')
+
+  const closed = manager.status(opened.sessionId)
+  assert.equal(closed.exitCode, 0)
+  assert.equal(closed.signal, null)
 })
 
 test('Bun PTY driver keeps naturally exited sessions readable until explicit disposal', async () => {
@@ -228,5 +287,8 @@ test('Bun PTY driver bounds queued output and clears runtime session on close', 
 
   const closed = driver.close(sessionId)
   assert.equal(closed.state, 'closed')
+  assert.equal(driver.status(sessionId).state, 'closed')
+
+  driver.dispose?.(sessionId)
   assert.throws(() => driver.status(sessionId), /Unknown PTY session/)
 })

@@ -21,7 +21,7 @@ const MAX_PACKAGE_URI_CHARS = 1_024
 const MAX_RESOURCE_URI_CHARS = 2_048
 const MAX_RESOURCE_CONTENT_BYTES = 1024 * 1024
 const MAX_CACHED_SERVERS = 20
-const HOST_OWNED_CACHE_SUFFIX = '#host-owned-codex-apps'
+const CACHE_TTL_MS = 30_000
 
 type SkillDescriptor = {
   name: string
@@ -29,10 +29,16 @@ type SkillDescriptor = {
   resourceUri: string
 }
 
+type SkillCacheEntry = {
+  client: ConnectedMCPServer['client']
+  expiresAt: number
+  promise: Promise<Command[]>
+}
+
 type FetchMcpSkillsForClient = ((
   client: ConnectedMCPServer,
 ) => Promise<Command[]>) & {
-  cache: Map<string, Promise<Command[]>>
+  cache: Map<string, SkillCacheEntry>
   clearCacheForServer: (name: string) => void
 }
 
@@ -282,12 +288,6 @@ function buildSkillCommand(
   }
 }
 
-function getCacheKey(client: ConnectedMCPServer): string {
-  return isHostOwnedCodexAppsConfig(client.config)
-    ? `${client.name}${HOST_OWNED_CACHE_SUFFIX}`
-    : client.name
-}
-
 async function loadSkills(
   client: ConnectedMCPServer,
 ): Promise<Command[] | null> {
@@ -306,31 +306,43 @@ async function loadSkills(
 }
 
 const fetchImpl = (async (client: ConnectedMCPServer) => {
-  const key = getCacheKey(client)
-  const cached = fetchImpl.cache.get(key)
+  const cached = fetchImpl.cache.get(client.name)
+  if (
+    cached &&
+    cached.client === client.client &&
+    cached.expiresAt > Date.now()
+  ) {
+    fetchImpl.cache.delete(client.name)
+    fetchImpl.cache.set(client.name, cached)
+    return cached.promise
+  }
   if (cached) {
-    fetchImpl.cache.delete(key)
-    fetchImpl.cache.set(key, cached)
-    return cached
+    fetchImpl.cache.delete(client.name)
   }
 
-  const next = loadSkills(client).then(skills => {
+  const clientIdentity = client.client
+  const promise = loadSkills(client).then(skills => {
     if (skills) return skills
-    fetchImpl.cache.delete(key)
+    if (fetchImpl.cache.get(client.name)?.client === clientIdentity) {
+      fetchImpl.cache.delete(client.name)
+    }
     return []
   })
   if (fetchImpl.cache.size >= MAX_CACHED_SERVERS) {
     const oldest = fetchImpl.cache.keys().next().value
     if (oldest !== undefined) fetchImpl.cache.delete(oldest)
   }
-  fetchImpl.cache.set(key, next)
-  return next
+  fetchImpl.cache.set(client.name, {
+    client: client.client,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+    promise,
+  })
+  return promise
 }) as FetchMcpSkillsForClient
 
 fetchImpl.cache = new Map()
 fetchImpl.clearCacheForServer = (name: string) => {
   fetchImpl.cache.delete(name)
-  fetchImpl.cache.delete(`${name}${HOST_OWNED_CACHE_SUFFIX}`)
 }
 
 export const fetchMcpSkillsForClient = fetchImpl

@@ -48,7 +48,9 @@ const TEST_ASSISTANT_MESSAGE: AssistantMessage = {
   },
 }
 
-function createContext(): ToolUseContext {
+function createContext(
+  overrides: Partial<ToolUseContext> = {},
+): ToolUseContext {
   let appState: TestAppState = {
     toolPermissionContext: { mode: 'default' } as AppState['toolPermissionContext'],
     tasks: {},
@@ -82,6 +84,7 @@ function createContext(): ToolUseContext {
     updateFileHistoryState: _updater => {},
     updateAttributionState: _updater => {},
     messages: [],
+    ...overrides,
   }
 }
 
@@ -512,6 +515,50 @@ test('returns SESSION_NOT_FOUND for a missing pane', async () => {
   )
 })
 
+test('uses the shared task state setter and routes subagent notifications', async () => {
+  let rootState: TestAppState = {
+    toolPermissionContext: { mode: 'default' } as AppState['toolPermissionContext'],
+    tasks: {},
+  }
+  const agentId = 'a1234567890abcdef' as ToolUseContext['agentId']
+  const context = createContext({
+    agentId,
+    setAppState: _updater => {},
+    setAppStateForTasks: updater => {
+      rootState = updater(rootState as AppState) as TestAppState
+    },
+    getAppState: () => rootState as AppState,
+  })
+  const driver = new FakePtyDriver()
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cwd: process.cwd(), cols: 80, rows: 24 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+  driver.finishNaturally(target, 'subagent output', 0)
+
+  await refreshTerminalTaskPreview(
+    target,
+    context.setAppStateForTasks!,
+    manager,
+  )
+
+  const task = Object.values(rootState.tasks).find(
+    (value): value is TerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.equal(task?.agentId, agentId)
+  assert.equal(task?.status, 'completed')
+  assert.equal(
+    getCommandQueue().find(command => command.mode === 'task-notification')?.agentId,
+    agentId,
+  )
+})
+
 test('records the resolved default shell in task state for new-session', async () => {
   const context = createContext()
   const result = await TerminalTool.call(
@@ -680,8 +727,10 @@ test('polls naturally exited panes and enqueues exactly one completion notificat
   assert.equal(task?.preview, 'TERMINAL_L5_OK')
   assert.equal(task?.closed, true)
   assert.equal(task?.status, 'completed')
+  assert.equal(task?.exitCode, 0)
   assert.equal(task?.notified, true)
   assert.equal(terminalTaskRegistry.has(target), false)
+  assert.equal(readFileSync(task!.outputFile, 'utf8'), 'TERMINAL_L5_OK')
 
   const notifications = getCommandQueue().filter(
     command => command.mode === 'task-notification',
@@ -694,6 +743,43 @@ test('polls naturally exited panes and enqueues exactly one completion notificat
   assert.equal(
     getCommandQueue().filter(command => command.mode === 'task-notification').length,
     1,
+  )
+})
+
+test('marks non-zero natural exits as failed', async () => {
+  const driver = new FakePtyDriver()
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const context = createContext()
+  const opened = await TerminalTool.call(
+    {
+      action: 'new-session',
+      command: '/bin/sh',
+      args: ['-c', 'printf TERMINAL_FAIL; exit 7'],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+  driver.finishNaturally(target, 'TERMINAL_FAIL', 7)
+
+  await refreshTerminalTaskPreview(target, context.setAppState, manager)
+
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.equal(task?.status, 'failed')
+  assert.equal(task?.exitCode, 7)
+  assert.equal(task?.notified, true)
+  assert.equal(readFileSync(task!.outputFile, 'utf8'), 'TERMINAL_FAIL')
+  assert.match(
+    String(getCommandQueue().find(command => command.mode === 'task-notification')?.value),
+    /<status>failed<\/status>/,
   )
 })
 
@@ -718,7 +804,7 @@ test('refreshes a naturally exited pane through the shared detail path', async (
 
   const target = String((opened.data as { target: string }).target)
   driver.finishNaturally(target, 'TERMINAL_DETAIL_OK', 0)
-  refreshTerminalTaskPreview(target, context.setAppState, manager)
+  await refreshTerminalTaskPreview(target, context.setAppState, manager)
 
   const task = Object.values(context.getAppState().tasks).find(
     (value): value is TerminalTask =>
@@ -735,7 +821,12 @@ test('refreshes a naturally exited pane through the shared detail path', async (
   )
 })
 
-test('preserves send-signal semantics by closing the session', async () => {
+test('preserves send-signal termination while the process exits asynchronously', async () => {
+  const driver = new FakePtyDriver()
+  driver.kill = driver.signalAsynchronously.bind(driver)
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const context = createContext()
   const opened = await TerminalTool.call(
     {
       action: 'new-session',
@@ -743,7 +834,7 @@ test('preserves send-signal semantics by closing the session', async () => {
       cols: 80,
       rows: 24,
     },
-    createContext(),
+    context,
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
   )
@@ -751,7 +842,85 @@ test('preserves send-signal semantics by closing the session', async () => {
   const target = String((opened.data as { target: string }).target)
   const signaled = await TerminalTool.call(
     { action: 'send-signal', target, signal: 'SIGINT' },
-    createContext(),
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal((signaled.data as { accepted: boolean }).accepted, true)
+  assert.equal((signaled.data as { isRunning: boolean }).isRunning, true)
+
+  driver.finishSignal(target)
+  await refreshTerminalTaskPreview(target, context.setAppState, manager)
+
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.equal(task?.status, 'killed')
+  assert.equal(task?.signal, 'SIGINT')
+  assert.equal(task?.notified, true)
+  assert.match(
+    String(getCommandQueue().find(command => command.mode === 'task-notification')?.value),
+    /<status>killed<\/status>/,
+  )
+})
+
+test('does not treat a later natural exit as killed when a signal was ignored', async () => {
+  const driver = new FakePtyDriver()
+  driver.kill = driver.signalAsynchronously.bind(driver)
+  const manager = new PtySessionManager({ driver })
+  resetTerminalManagerForTesting(manager)
+  const context = createContext()
+  const opened = await TerminalTool.call(
+    {
+      action: 'new-session',
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const target = String((opened.data as { target: string }).target)
+  await TerminalTool.call(
+    { action: 'send-signal', target, signal: 'SIGINT' },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  driver.finishNaturally(target, 'continued', 0)
+  await refreshTerminalTaskPreview(target, context.setAppState, manager)
+
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.equal(task?.status, 'completed')
+  assert.equal(task?.signal, null)
+  assert.equal(task?.terminationReason, undefined)
+})
+
+test('preserves send-signal semantics by closing and killing the task', async () => {
+  const context = createContext()
+  const opened = await TerminalTool.call(
+    {
+      action: 'new-session',
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+
+  const target = String((opened.data as { target: string }).target)
+  const signaled = await TerminalTool.call(
+    { action: 'send-signal', target, signal: 'SIGINT' },
+    context,
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
   )
@@ -759,17 +928,27 @@ test('preserves send-signal semantics by closing the session', async () => {
 
   const status = await TerminalTool.call(
     { action: 'display-message', target },
-    createContext(),
+    context,
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((status.data as { isRunning: boolean }).isRunning, false)
   assert.equal((status.data as { exitCode: number | null }).exitCode, 130)
   assert.equal(terminalTaskRegistry.has(target), false)
+  const task = Object.values(context.getAppState().tasks).find(
+    (value): value is TerminalTask =>
+      value.type === 'interactive_terminal' && value.sessionId === target,
+  )
+  assert.equal(task?.status, 'killed')
+  assert.equal(task?.signal, 'SIGINT')
+  assert.match(
+    String(getCommandQueue().find(command => command.mode === 'task-notification')?.value),
+    /<status>killed<\/status>/,
+  )
 
   const closed = await TerminalTool.call(
     { action: 'kill-pane', target },
-    createContext(),
+    context,
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
   )

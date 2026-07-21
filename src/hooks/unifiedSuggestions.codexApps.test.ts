@@ -62,7 +62,7 @@ describe('Codex App suggestions', () => {
     ])
   })
 
-  test('keeps colliding sanitized app names distinct', async () => {
+  test('keeps colliding sanitized app names distinct and matches hash prefixes', async () => {
     const collidingApps = buildCodexAppPluginProjections([
       appTool('mcp__codex_apps__foo_bar__search', 'connector_foo_bar', 'Foo Bar'),
       appTool(
@@ -82,6 +82,20 @@ describe('Codex App suggestions', () => {
       expect.objectContaining({
         id: 'codex-app-foo_bar-9b5a8e8a',
         displayText: 'codex-app:foo_bar-9b5a8e8a',
+      }),
+    ])
+    expect(
+      await generateUnifiedSuggestions(
+        'codex-app:foo_bar-2',
+        {},
+        [],
+        collidingApps,
+        true,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: 'codex-app-foo_bar-21d7cd4c',
+        displayText: 'codex-app:foo_bar-21d7cd4c',
       }),
     ])
   })

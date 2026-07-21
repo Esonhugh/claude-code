@@ -10,9 +10,16 @@ import {
 import type { TaskStateBase } from '../Task.js'
 import type { Task } from '../Task.js'
 import type { SetAppState } from '../Task.js'
+import type { AgentId } from '../types/ids.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
 import { updateTaskState } from '../utils/task/framework.js'
 import { escapeXml } from '../utils/xml.js'
+
+export type TerminalTerminationReason =
+  | 'signal'
+  | 'kill-pane'
+  | 'task-stop'
+  | 'driver-error'
 
 export type TerminalTaskState = TaskStateBase & {
   type: 'interactive_terminal'
@@ -23,6 +30,11 @@ export type TerminalTaskState = TaskStateBase & {
   rows: number
   preview: string
   closed: boolean
+  exitCode?: number | null
+  signal?: NodeJS.Signals | null
+  terminationReason?: TerminalTerminationReason
+  terminalError?: string
+  agentId?: AgentId
 }
 
 export function isTerminalTask(
@@ -87,6 +99,7 @@ export function enqueueTerminalTaskNotification(
   enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
+    agentId: task.agentId,
   })
 }
 
@@ -109,24 +122,18 @@ export const TerminalTask: Task = {
       return
     }
 
-    setAppState(prev => {
-      const task = prev.tasks[taskId]
-      if (!isTerminalTask(task)) {
-        return prev
+    updateTaskState<TerminalTaskState>(taskId, setAppState, task => {
+      if (!isTerminalTask(task) || task.status !== 'running') {
+        return task
       }
       return {
-        ...prev,
-        tasks: {
-          ...prev.tasks,
-          [taskId]: {
-            ...task,
-            status: 'killed',
-            closed: true,
-            notified: true,
-            endTime: Date.now(),
-          },
-        },
+        ...task,
+        status: 'killed',
+        closed: true,
+        terminationReason: 'task-stop',
+        endTime: Date.now(),
       }
     })
+    enqueueTerminalTaskNotification(taskId, setAppState)
   },
 }

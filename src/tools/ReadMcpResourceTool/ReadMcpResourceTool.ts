@@ -3,6 +3,7 @@ import {
   ReadResourceResultSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod/v4'
+import { getHostOwnedCodexAppsKind } from '../../services/apps/trust.js'
 import { ensureConnectedClient } from '../../services/mcp/client.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -89,6 +90,12 @@ export const ReadMcpResourceTool = buildTool({
 
     if (!client.capabilities?.resources) {
       throw new Error(`Server "${serverName}" does not support resources`)
+    }
+
+    if (getHostOwnedCodexAppsKind(client.config) === 'plugins') {
+      throw new Error(
+        `Server "${serverName}" does not expose generic MCP resources`,
+      )
     }
 
     const connectedClient = await ensureConnectedClient(client)

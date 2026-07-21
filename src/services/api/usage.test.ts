@@ -100,6 +100,164 @@ test('prefetchChatGPTUtilization ignores ChatGPT auth outside the OpenAI provide
   }
 })
 
+test('prefetchChatGPTUtilization waits for ChatGPT usage before resolving', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-prefetch-'))
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+
+  const originalAxiosGet = axios.get
+  let resolveUsage: (() => void) | undefined
+  let markRequestStarted: (() => void) | undefined
+  const requestStarted = new Promise<void>(resolve => {
+    markRequestStarted = resolve
+  })
+  let requestCount = 0
+  let settled = false
+  axios.get = (async () => {
+    requestCount += 1
+    markRequestStarted?.()
+    await new Promise<void>(resolve => {
+      resolveUsage = resolve
+    })
+    return { data: { plan_type: 'pro' } }
+  }) as typeof axios.get
+
+  try {
+    const prefetch = prefetchChatGPTUtilization()
+    assert.ok(prefetch)
+    const completed = prefetch.then(() => {
+      settled = true
+    })
+
+    await requestStarted
+    assert.equal(requestCount, 1)
+    assert.equal(settled, false)
+
+    resolveUsage?.()
+    await completed
+    assert.equal(settled, true)
+  } finally {
+    axios.get = originalAxiosGet
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
+
+test('prefetchChatGPTUtilization skips OpenAI API key auth without requesting usage', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-openai-api-prefetch-'))
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_API_KEY = 'dummy-api-key'
+  delete process.env.OPENAI_AUTH_TOKEN
+  authModule.getOpenAIAuthInfo.cache.clear?.()
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, {
+    accessToken: 'test-chatgpt-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+
+  const originalAxiosGet = axios.get
+  let requestCount = 0
+  axios.get = (async () => {
+    requestCount += 1
+    await new Promise(() => {})
+  }) as typeof axios.get
+
+  try {
+    assert.equal(prefetchChatGPTUtilization(), null)
+    assert.equal(requestCount, 0)
+  } finally {
+    axios.get = originalAxiosGet
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalOpenAIAuthToken === undefined) {
+      delete process.env.OPENAI_AUTH_TOKEN
+    } else {
+      process.env.OPENAI_AUTH_TOKEN = originalOpenAIAuthToken
+    }
+    if (originalOpenAIApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAIApiKey
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
+
+test('awaited ChatGPT prefetch continues when usage rejects', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reject-'))
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, {
+    accessToken: 'test-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
+
+  const originalAxiosGet = axios.get
+  let requestCount = 0
+  axios.get = (async () => {
+    requestCount += 1
+    throw new Error('usage unavailable')
+  }) as typeof axios.get
+
+  try {
+    await prefetchChatGPTUtilization()?.catch(() => null)
+    assert.equal(requestCount, 1)
+  } finally {
+    axios.get = originalAxiosGet
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
+
 test('fetchUtilization does not show ChatGPT usage when OpenAI API key is active', async () => {
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-openai-api-'))
   process.env.CLAUDE_CODE_USE_OPENAI = '1'

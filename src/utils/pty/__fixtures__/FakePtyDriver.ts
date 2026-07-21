@@ -8,6 +8,7 @@ import type {
 interface FakePtyDriverSession {
   outputQueue: Array<Omit<TerminalOutputChunk, 'start' | 'end'>>
   status: PtyDriverSessionStatus
+  pendingSignal?: 'SIGINT' | 'SIGTERM'
 }
 
 export class FakePtyDriver implements PtyDriver {
@@ -91,6 +92,35 @@ export class FakePtyDriver implements PtyDriver {
     return { ...session.status }
   }
 
+  signalAsynchronously(
+    sessionId: string,
+    signal: 'SIGINT' | 'SIGTERM',
+  ): PtyDriverSessionStatus {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Unknown PTY session: ${sessionId}`)
+    }
+    this.killedSignals.push({ sessionId, signal })
+    session.pendingSignal = signal
+    return { ...session.status }
+  }
+
+  finishSignal(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session?.pendingSignal) {
+      throw new Error(`No pending signal for PTY session: ${sessionId}`)
+    }
+    const signal = session.pendingSignal
+    session.pendingSignal = undefined
+    session.status = {
+      state: 'closed',
+      exitCode: signal === 'SIGTERM' ? 143 : 130,
+      exitedAt: Date.now(),
+      pid: session.status.pid,
+      signal,
+    }
+  }
+
   close(sessionId: string): PtyDriverSessionStatus {
     const session = this.sessions.get(sessionId)
     if (!session) {
@@ -108,6 +138,18 @@ export class FakePtyDriver implements PtyDriver {
     return { ...session.status }
   }
 
+  enqueueOutput(sessionId: string, output: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Unknown PTY session: ${sessionId}`)
+    }
+    session.outputQueue.push({
+      text: output,
+      stream: 'stdout',
+      timestamp: Date.now(),
+    })
+  }
+
   finishNaturally(
     sessionId: string,
     output: string,
@@ -118,11 +160,7 @@ export class FakePtyDriver implements PtyDriver {
       throw new Error(`Unknown PTY session: ${sessionId}`)
     }
 
-    session.outputQueue.push({
-      text: output,
-      stream: 'stdout',
-      timestamp: Date.now(),
-    })
+    this.enqueueOutput(sessionId, output)
     session.status = {
       state: 'closed',
       exitCode,
