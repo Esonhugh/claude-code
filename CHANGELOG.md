@@ -10,43 +10,14 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-21 - Terminal 与 Hosted Codex Apps 生命周期加固
-
-### 关联提交
-
-- `5aaa0e3` — 2026-07-21 — `fix: harden terminal and hosted app lifecycles`
-- `cad9f94` — 2026-07-21 — `docs: plan instruction footprint reduction`（仅新增执行计划，无运行时变更）
-
-### 变更内容
-
-#### Terminal 终态与 PTY 生命周期
-
-- Terminal task 改由统一后台 poller 同步状态和 preview；进程自然退出后自动停止轮询、清理 runtime registry、持久化最终输出，并向创建任务的 Agent 仅发送一次完成通知。
-- 根据真实 PTY 状态区分 `completed`、`failed` 与 `killed`，保留 `exitCode`、`signal`、termination reason 和 driver error，避免非零退出或 signal 被误报为成功。
-- signal、close 和状态刷新在进程结束后继续 drain 尾部输出；Bun PTY driver 等待真实进程退出后再确认 signal，不再提前删除 session。
-- exited、closed 和 failed session 在 TTL 到期后主动 dispose，避免必须依赖后续 Terminal 操作才能回收。
-- Background Tasks detail dialog 移除重复 polling，展示状态不再决定 Terminal task 是否完成。
-
-#### Hosted Codex Apps 与 ChatGPT 状态
-
-- Host-owned Codex Apps plugin resources 仅用于 hosted skill 发现，不再作为 generic MCP resources 暴露；对应 List/Read resource tools、缓存键和重连清理遵循相同边界。
-- Hosted MCP skill 缓存绑定 client identity 并增加 TTL；严格限制 skill metadata、`skill:` URI、分页、数量、内容大小和 frontmatter 可控制的执行属性。
-- Codex Apps mention 补全同时匹配规范化前后的查询，改善包含空格或特殊形式的输入匹配。
-- CLI 启动前等待 ChatGPT utilization 预取完成，避免初始 plan/usage 状态竞态；API key 和非 OpenAI provider 仍不会请求 ChatGPT subscription usage。
-
-#### 测试稳定性
-
-- 隔离 OpenAI bootstrap 测试使用的 model options cache，避免组合测试结果依赖执行顺序（`2341b70`）。
-- 扩展 Terminal、PTY、hosted MCP skills/resources、Codex Apps suggestions 和 ChatGPT usage focused tests，覆盖自然退出、signal、尾部输出、缓存替换及 provider/auth 边界。
-
-## 2026-07-20 - v2.1.203 - Codex Apps Skills、OpenAI 模型与 Terminal 生命周期修复
+## 2026-07-21 - v2.1.203 - Explore/Plan Agent、Codex Apps 与 Terminal 生命周期修复
 
 ### 版本状态
 
 - 准备发布版本：`v2.1.203`。
-- 本次发布覆盖 `v2.1.202` tag 之后至当前 release preparation 工作区；下方列出运行时变更，另包含 release preparation 提交和仅删除临时交接文档的维护提交。
+- 本次发布覆盖 `v2.1.202` tag 之后至 2026-07-21 的提交。
 - `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
-- `Makefile` 默认构建版本更新为 `2.1.203`。
+- `Makefile` 默认构建版本为 `2.1.203`。
 
 ### 关联提交
 
@@ -57,38 +28,46 @@
 - `0ce3afc` — 2026-07-20 — `release: prepare v2.1.203`
 - `49cfc32` — 2026-07-20 — `remove: handoff`（仅删除临时交接文档，无运行时变更）
 - `231eead` — 2026-07-20 — `fix: gate ChatGPT status by provider`
+- `5aaa0e3` — 2026-07-21 — `fix: harden terminal and hosted app lifecycles`
+- `cad9f94` — 2026-07-21 — `docs: plan instruction footprint reduction`（仅新增执行计划，无运行时变更）
+- `0fa556f` — 2026-07-21 — `update: add feature Explore Agent`
 
 ### 变更内容
+
+#### Explore 与 Plan 内置 Agent
+
+- 对齐 Claude Code `2.1.201` 的内置 Agent 注册逻辑，默认启用只读代码搜索 `Explore` Agent 和只读方案设计 `Plan` Agent。
+- 移除恢复构建专用的 `BUILTIN_EXPLORE_PLAN_AGENTS` 编译期 gate，改用 `tengu_slate_ibis` GrowthBook gate；未取得远端配置时默认启用。
+- 支持通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 显式关闭 `Explore` 和 `Plan`。
+- 新增内置 Agent 注册回归测试，覆盖默认启用和环境变量关闭路径。
 
 #### Codex Apps hosted MCP skills
 
 - 新增 host-owned `codex_apps_plugins` MCP runtime，通过 `mcp/skill` resources 发现并按需读取 hosted skills，同时保持 Apps tools 与 skills 投影相互独立，避免重复暴露工具。
 - 对 hosted skill 的来源、名称、URI、分页、内容大小和缓存进行限制；仅允许可信的 `codex_apps` 与 `codex_apps_plugins` server 进入该加载路径。
 - Codex Apps transport 仅向固定 ChatGPT Apps MCP endpoint 注入 OAuth 与 account 信息，并在 `401` 后强制刷新 token 重试一次。
-- 修复同名 connector 的 mention 冲突，为重复的 `@codex-app:{name}` 追加稳定短标识；补全仍只展示当前已发现且已过滤的 Apps。
+- Host-owned plugin resources 仅用于 hosted skill 发现，不再作为 generic MCP resources 暴露；缓存绑定 client identity 并增加 TTL。
+- 修复同名 connector 的 mention 冲突，并改善包含空格或特殊形式的 Codex Apps mention 补全。
 
-#### OpenAI hidden model 展示
+#### OpenAI 模型与 ChatGPT 状态
 
 - OpenAI 与 ChatGPT Codex 模型列表不再无条件过滤 `visibility: "hide"` 的模型；名称符合支持范围且 `supported_in_api !== false` 时，可在 Model Picker 中以 `(Hidden)` 标识显示。
-- 保持 unsupported model 与非 OpenAI-family model 的过滤边界，不改变 Anthropic 模型列表行为。
+- CLI 启动前等待 ChatGPT utilization 预取完成，避免初始 plan/usage 状态竞态；API key 和非 OpenAI provider 不会请求 ChatGPT subscription usage。
+- 隔离 OpenAI bootstrap 测试使用的 model options cache，避免组合测试结果依赖执行顺序。
 
-#### Terminal 生命周期与完成通知
+#### Terminal 终态与 PTY 生命周期
 
-- 收紧 `send-signal`、task kill 和 pane 自然退出的状态同步：终止 session 后更新 task 终态、清理 runtime registry 与 polling 状态。
-- Terminal task 定时刷新 pane preview 与状态；自然退出后仅入队一次 `<task-notification>`，避免完成通知丢失或重复。
-- Background Tasks detail dialog 复用 Terminal task 的统一刷新与完成路径，持续刷新 preview，并在发现终态后完成通知和 registry 清理。
-
-#### 发布验收补充修复
-
-- 为 Codex Apps OAuth fetch 增加可注入依赖边界，以纯 mock 覆盖 `401` 后强制 refresh 且只重试一次，避免测试读取或刷新真实凭据。
-- 为 Background Tasks detail dialog 与后台 poller 复用的 Terminal refresh 路径补充自然退出、完成通知和 registry 清理断言。
-- 修复非 OpenAI provider 仍因本机 ChatGPT OAuth 显示 `ChatGPT Pro` 并预取 ChatGPT utilization 的问题；只有启用 OpenAI provider 时才读取并展示 ChatGPT plan/usage。
+- Terminal task 由统一后台 poller 同步状态和 preview；进程自然退出后自动停止轮询、清理 runtime registry、持久化最终输出，并仅发送一次完成通知。
+- 根据真实 PTY 状态区分 `completed`、`failed` 与 `killed`，保留 `exitCode`、`signal`、termination reason 和 driver error。
+- signal、close 和状态刷新在进程结束后继续 drain 尾部输出；Bun PTY driver 等待真实进程退出后再确认 signal。
+- exited、closed 和 failed session 在 TTL 到期后主动 dispose；Background Tasks detail dialog 不再维护重复 polling。
 
 ### 发布验收
 
-- Codex Apps、OpenAI model options、provider-gated ChatGPT plan/usage 与 Terminal lifecycle focused tests 通过，覆盖 OAuth `401` exactly-once refresh、hidden model 展示、非 OpenAI provider 的 ChatGPT 预取边界、PTY session manager 生命周期和 Terminal task 完成通知。
-- 最新 `built-claude` scripted tmux 验收已确认 `v2.1.203` 启动、OpenAI API credential 的 `API Usage Billing` 状态、安全连接失败后的可见错误，以及受控 Responses SSE 驱动的真实 Terminal PTY 自然退出、capture、display-message 和 completion notification 回注。
-- 发布验收使用 dummy OpenAI credential 与受控 Responses SSE；未使用真实 OpenAI/ChatGPT 凭据或外部 endpoint。
+- Codex Apps、OpenAI model options、provider-gated ChatGPT plan/usage、Terminal lifecycle 与 AgentTool focused tests 通过。
+- `make build` 通过；最新 `built-claude` scripted tmux 验收已确认 `v2.1.203` 启动及 Terminal PTY 生命周期。
+- 本地 `built-claude` 真实交互成功调用 `subagent_type: "Explore"`；debug log 确认请求精确解析为 `Explore` 并完成前台 Agent 生命周期。
+- 使用 dummy OpenAI credential 与受控 Responses SSE 完成相关发布验收，未使用真实 OpenAI/ChatGPT 凭据或外部 endpoint。
 
 ## 2026-07-19 - v2.1.202 - Terminal Tool、功能验收 Skill 与 Codex Apps 集成
 
