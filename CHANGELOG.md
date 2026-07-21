@@ -10,6 +10,35 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
+## 2026-07-21 - Terminal 与 Hosted Codex Apps 生命周期加固
+
+### 关联提交
+
+- `5aaa0e3` — 2026-07-21 — `fix: harden terminal and hosted app lifecycles`
+- `cad9f94` — 2026-07-21 — `docs: plan instruction footprint reduction`（仅新增执行计划，无运行时变更）
+
+### 变更内容
+
+#### Terminal 终态与 PTY 生命周期
+
+- Terminal task 改由统一后台 poller 同步状态和 preview；进程自然退出后自动停止轮询、清理 runtime registry、持久化最终输出，并向创建任务的 Agent 仅发送一次完成通知。
+- 根据真实 PTY 状态区分 `completed`、`failed` 与 `killed`，保留 `exitCode`、`signal`、termination reason 和 driver error，避免非零退出或 signal 被误报为成功。
+- signal、close 和状态刷新在进程结束后继续 drain 尾部输出；Bun PTY driver 等待真实进程退出后再确认 signal，不再提前删除 session。
+- exited、closed 和 failed session 在 TTL 到期后主动 dispose，避免必须依赖后续 Terminal 操作才能回收。
+- Background Tasks detail dialog 移除重复 polling，展示状态不再决定 Terminal task 是否完成。
+
+#### Hosted Codex Apps 与 ChatGPT 状态
+
+- Host-owned Codex Apps plugin resources 仅用于 hosted skill 发现，不再作为 generic MCP resources 暴露；对应 List/Read resource tools、缓存键和重连清理遵循相同边界。
+- Hosted MCP skill 缓存绑定 client identity 并增加 TTL；严格限制 skill metadata、`skill:` URI、分页、数量、内容大小和 frontmatter 可控制的执行属性。
+- Codex Apps mention 补全同时匹配规范化前后的查询，改善包含空格或特殊形式的输入匹配。
+- CLI 启动前等待 ChatGPT utilization 预取完成，避免初始 plan/usage 状态竞态；API key 和非 OpenAI provider 仍不会请求 ChatGPT subscription usage。
+
+#### 测试稳定性
+
+- 隔离 OpenAI bootstrap 测试使用的 model options cache，避免组合测试结果依赖执行顺序（`2341b70`）。
+- 扩展 Terminal、PTY、hosted MCP skills/resources、Codex Apps suggestions 和 ChatGPT usage focused tests，覆盖自然退出、signal、尾部输出、缓存替换及 provider/auth 边界。
+
 ## 2026-07-20 - v2.1.203 - Codex Apps Skills、OpenAI 模型与 Terminal 生命周期修复
 
 ### 版本状态
