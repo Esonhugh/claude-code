@@ -61,8 +61,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
 const DEFAULT_OPENAI_MODEL = 'gpt-5.5'
 
 function mapModel(model: string): string {
-  if (model.startsWith('gpt-') || model.startsWith('o') || model.startsWith('codex')) return model
-  return DEFAULT_OPENAI_MODEL
+  return model
 }
 
 // OpenAI Responses API requires function_call IDs to start with 'fc_'
