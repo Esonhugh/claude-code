@@ -83,12 +83,12 @@ bun ./dist/cli.js --help
 
 | 领域 | 本地特性与更新 |
 | --- | --- |
-| OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件。 |
+| OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；Model Picker 也会显示符合支持范围的 hidden 模型，并以 `(Hidden)` 标识。 |
 | Effort | 支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并按 Anthropic/OpenAI provider 和模型能力映射。 |
-| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation。 |
+| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认注册只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
-| Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载。 |
-| Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出。 |
+| Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
+| Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；统一后台 poller 会同步终态、drain 尾部输出、持久化最终结果并发送一次完成通知。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
 | 状态与用量 UI | 当前模型使用 ChatGPT OAuth 时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
 | 自主 Goal | `/goal` 注册 StopHook 并驱动自主执行；目标状态显示在 Prompt footer 和 Status line，并支持 compact/session restore 与自动清理。 |
@@ -96,7 +96,7 @@ bun ./dist/cli.js --help
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
-| 调试与构建 | 提供 Bun 构建、binary-only npm 发布、source map/Ink/代理调试、CCH attestation、官方 CLI 对照和 tmux/PTY 验收资料。 |
+| 调试与构建 | 提供 Bun 构建、binary-only npm 发布、source map/Ink/代理调试、CCH attestation、官方 CLI 对照和 tmux/PTY 验收资料；平台 binary 会内嵌并在运行时提取 ripgrep，避免依赖系统安装。 |
 
 ## 配置与使用示例
 
@@ -324,9 +324,54 @@ Codex Apps 需要同时满足：
 
 该设置只将对应 Apps 从模型可用 tool pool 中隐藏；host-owned `codex_apps` MCP 仍保持连接，以支持管理和重新启用。
 
+除 Apps tools 外，`codex_apps_plugins` runtime 还会通过 `mcp/skill` resources 发现 hosted skills，并在调用时按需读取。两类投影相互独立：hosted skills 不会重复暴露 Apps tools，host-owned plugin resources 也不会作为普通 MCP resources 出现在 `@` 补全中。
+
+hosted skill 加载具有以下边界：
+
+- 只接受可信的 `codex_apps` 与 `codex_apps_plugins` 来源；
+- 校验 skill 名称、resource URI、分页和内容大小；
+- 缓存绑定当前 client identity 并设置 TTL，避免跨账户复用；
+- Codex Apps transport 只向固定 Apps MCP endpoint 注入 ChatGPT OAuth 和 account 信息；遇到 `401` 时强制刷新 token，并且只重试一次。
+
+### Terminal Tool
+
+`Terminal` 提供持久 PTY session，可用于需要多轮输入、特殊按键、窗口 resize 或 signal 的交互式程序：
+
+```json
+{
+  "action": "new-session",
+  "command": "bun repl",
+  "cwd": "/path/to/project",
+  "cols": 120,
+  "rows": 30
+}
+```
+
+创建 session 后，使用返回的 pane target 调用 `send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message` 或 `kill-pane`；`list-panes` 可列出尚未回收的 pane。`capture-pane` 支持 `compact`、`full` 和 `save_file` 三种输出模式。
+
+Terminal task 由统一后台 poller 跟踪真实 PTY 状态：
+
+- 进程自然退出后停止轮询、清理 runtime registry、持久化最终输出，并只发送一次完成通知；
+- 根据真实退出状态区分 `completed`、`failed` 和 `killed`，保留 `exitCode`、`signal`、termination reason 与 driver error；
+- signal、close 和状态刷新会继续 drain 尾部输出，避免丢失进程退出前的最后内容；
+- exited、closed 和 failed session 会在 TTL 到期后主动 dispose。
+
+`send-signal` 表达操作系统 signal；需要向前台程序发送键盘 `Ctrl+C` 时，应使用 `send-keys` 的 `CTRL_C`。
+
 ### Agent 与后台任务
 
-Agent 支持前台执行、后台执行、命名续跑和可选隔离。模型可使用的典型输入为：
+默认内置两个只读专业 Agent：
+
+- `Explore`：快速搜索和理解代码库；
+- `Plan`：在不修改代码的前提下分析调用链并设计实施方案。
+
+可通过以下环境变量同时关闭它们：
+
+```bash
+CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1 claude
+```
+
+Agent 还支持前台执行、后台执行、命名续跑和可选隔离。模型可使用的典型输入为：
 
 ```json
 {
