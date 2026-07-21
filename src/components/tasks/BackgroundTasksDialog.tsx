@@ -49,7 +49,6 @@ import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
-import { refreshTerminalTaskPreview } from '../../tools/TerminalTool/TerminalTool.js'
 import { renderAnsiPreviewLine, renderAnsiPreviewLines } from './ansiPreviewRenderer.js'
 import {
   terminalPreviewHeight,
@@ -89,26 +88,10 @@ type Props = {
 function TerminalDetailDialog({
   task,
   onBack,
-  setAppState,
 }: {
   task: DeepImmutable<TerminalTaskState>
   onBack: () => void
-  setAppState: (updater: (prev: any) => any) => void
 }): React.ReactNode {
-  useEffect(() => {
-    if (task.closed) {
-      return
-    }
-    const timer = setInterval(() => {
-      try {
-        refreshTerminalTaskPreview(task.sessionId, setAppState)
-      } catch {
-        // Ignore refresh errors in read-only preview mode.
-      }
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [task.closed, task.sessionId, setAppState])
-
   return (
     <Dialog
       title="Terminal details"
@@ -557,11 +540,7 @@ export function BackgroundTasksDialog({
         )
       case 'interactive_terminal':
         return (
-          <TerminalDetailDialog
-            task={task}
-            onBack={goBackToList}
-            setAppState={setAppState}
-          />
+          <TerminalDetailDialog task={task} onBack={goBackToList} />
         )
       case 'local_agent':
         return (

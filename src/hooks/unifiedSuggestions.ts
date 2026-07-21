@@ -138,11 +138,15 @@ export async function generateUnifiedSuggestions(
 
   const codexAppPrefix = 'codex-app:'
   if (query.toLowerCase().startsWith(codexAppPrefix)) {
-    const appQuery = sanitizeCodexAppsName(query.slice(codexAppPrefix.length))
+    const rawAppQuery = query.slice(codexAppPrefix.length).trim().toLowerCase()
+    const sanitizedAppQuery = sanitizeCodexAppsName(rawAppQuery)
     return codexApps
       .filter(app => {
-        if (!appQuery || appQuery === 'app') return true
-        return app.mentionName.includes(appQuery)
+        if (!rawAppQuery || rawAppQuery === 'app') return true
+        return (
+          app.mentionName.includes(rawAppQuery) ||
+          app.mentionName.includes(sanitizedAppQuery)
+        )
       })
       .slice(0, MAX_UNIFIED_SUGGESTIONS)
       .map(app =>

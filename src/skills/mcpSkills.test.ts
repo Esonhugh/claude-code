@@ -11,9 +11,15 @@ import {
 import { markHostOwnedCodexAppsConfig } from '../services/apps/trust.js'
 import {
   clearFetchToolsCache,
+  connectToServer,
+  fetchCommandsForClient,
+  fetchResourcesForClient,
   fetchToolsForClient,
+  getMcpToolsCommandsAndResources,
+  getServerCacheKey,
 } from '../services/mcp/client.js'
 import { commandBelongsToServer } from '../services/mcp/utils.js'
+import { ReadMcpResourceTool } from '../tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import './loadSkillsDir.js'
 import {
   fetchMcpSkillsForClient,
@@ -57,10 +63,182 @@ afterEach(() => {
   fetchMcpSkillsForClient.cache.clear()
   clearFetchToolsCache(CODEX_APPS_SERVER_NAME)
   clearFetchToolsCache(CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME)
+  fetchResourcesForClient.cache.clear()
+  fetchCommandsForClient.cache.clear()
+  connectToServer.cache.clear()
   registerMcpSkillClientResolver(async client => client)
 })
 
 describe('fetchMcpSkillsForClient', () => {
+  it('does not expose hosted plugin skill resources through generic MCP resources', async () => {
+    let genericResourceLists = 0
+    const skillResource = {
+      uri: 'skill://Plugin_demo/review',
+      name: 'Plugin_demo/review',
+      mimeType: 'mcp/skill',
+      _meta: { plugin_name: 'github', skill_name: 'review' },
+    }
+    const client = connectedClient(
+      {
+        async request(params) {
+          if (params.method === 'resources/list') {
+            genericResourceLists++
+            return { resources: [skillResource] }
+          }
+          if (params.method === 'prompts/list') return { prompts: [] }
+          if (params.method === 'tools/list') return { tools: [] }
+          throw new Error(`Unexpected request ${params.method}`)
+        },
+        async listResources() {
+          return { resources: [skillResource] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: '# Review repositories' }] }
+        },
+      } as Pick<
+        ConnectedMCPServer['client'],
+        'request' | 'listResources' | 'readResource'
+      >,
+      true,
+      CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
+    )
+    connectToServer.cache.set(
+      getServerCacheKey(client.name, client.config),
+      client,
+    )
+
+    const attempts: Array<{
+      tools: string[]
+      commands: string[]
+      resources?: unknown[]
+    }> = []
+    await getMcpToolsCommandsAndResources(
+      ({ tools, commands, resources }) => {
+        attempts.push({
+          tools: tools.map(tool => tool.name),
+          commands: commands.map(command => command.name),
+          resources,
+        })
+      },
+      { [CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME]: client.config },
+      { includeCodexApps: false },
+    )
+
+    assert.deepEqual(attempts, [
+      {
+        tools: [],
+        commands: [],
+        resources: undefined,
+      },
+    ])
+    assert.equal(genericResourceLists, 0)
+  })
+
+  it('rejects generic resource reads for the hosted plugin runtime', async () => {
+    let genericResourceReads = 0
+    const client = connectedClient(
+      {
+        async request(params) {
+          if (params.method === 'resources/read') {
+            genericResourceReads++
+            return { contents: [{ uri: params.params.uri, text: '# hidden' }] }
+          }
+          throw new Error(`Unexpected request ${params.method}`)
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource() {
+          return { contents: [] }
+        },
+      } as Pick<
+        ConnectedMCPServer['client'],
+        'request' | 'listResources' | 'readResource'
+      >,
+      true,
+      CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
+    )
+
+    await assert.rejects(
+      ReadMcpResourceTool.call(
+        {
+          server: CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
+          uri: 'skill://Plugin_demo/review/SKILL.md',
+        },
+        { options: { mcpClients: [client] } } as never,
+      ),
+      /does not expose generic MCP resources/,
+    )
+    assert.equal(genericResourceReads, 0)
+  })
+
+  it('keeps generic resources available for ordinary MCP servers', async () => {
+    let genericResourceLists = 0
+    const client = connectedClient(
+      {
+        async request(params) {
+          if (params.method === 'resources/list') {
+            genericResourceLists++
+            return {
+              resources: [
+                {
+                  uri: 'file:///ordinary-resource',
+                  name: 'ordinary-resource',
+                  mimeType: 'text/plain',
+                },
+              ],
+            }
+          }
+          if (params.method === 'prompts/list') return { prompts: [] }
+          if (params.method === 'tools/list') return { tools: [] }
+          throw new Error(`Unexpected request ${params.method}`)
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource() {
+          return { contents: [] }
+        },
+      } as Pick<
+        ConnectedMCPServer['client'],
+        'request' | 'listResources' | 'readResource'
+      >,
+      false,
+      'ordinary_resources',
+    )
+    connectToServer.cache.set(
+      getServerCacheKey(client.name, client.config),
+      client,
+    )
+
+    const attempts: Array<{
+      tools: string[]
+      resources?: unknown[]
+    }> = []
+    await getMcpToolsCommandsAndResources(
+      ({ tools, resources }) => {
+        attempts.push({ tools: tools.map(tool => tool.name), resources })
+      },
+      { ordinary_resources: client.config },
+      { includeCodexApps: false },
+    )
+
+    assert.deepEqual(attempts, [
+      {
+        tools: ['ListMcpResourcesTool', 'ReadMcpResourceTool'],
+        resources: [
+          {
+            uri: 'file:///ordinary-resource',
+            name: 'ordinary-resource',
+            mimeType: 'text/plain',
+            server: 'ordinary_resources',
+          },
+        ],
+      },
+    ])
+    assert.equal(genericResourceLists, 1)
+  })
+
   it('loads skills but not duplicate tools from the hosted plugin runtime', async () => {
     let toolLists = 0
     const client = connectedClient(
@@ -526,31 +704,37 @@ describe('fetchMcpSkillsForClient', () => {
     assert.equal(attempts, 2)
   })
 
-  it('does not share the trusted cache with an ordinary server named codex_apps', async () => {
-    let untrustedLists = 0
-    let trustedLists = 0
-    const untrustedClient = connectedClient(
-      {
-        async listResources() {
-          untrustedLists++
-          return { resources: [] }
-        },
-        async readResource() {
-          return { contents: [] }
-        },
-      },
-      false,
-    )
-    const trustedClient = connectedClient({
+  it('does not reuse skill discovery across connected clients with the same name', async () => {
+    let firstLists = 0
+    let secondLists = 0
+    const firstClient = connectedClient({
       async listResources() {
-        trustedLists++
+        firstLists++
         return {
           resources: [
             {
-              uri: 'skill://apps/demo/trusted',
-              name: 'trusted',
+              uri: 'skill://apps/demo/first',
+              name: 'first',
               mimeType: 'mcp/skill',
-              _meta: { plugin_name: 'demo', skill_name: 'trusted' },
+              _meta: { plugin_name: 'demo', skill_name: 'first' },
+            },
+          ],
+        }
+      },
+      async readResource() {
+        return { contents: [] }
+      },
+    })
+    const secondClient = connectedClient({
+      async listResources() {
+        secondLists++
+        return {
+          resources: [
+            {
+              uri: 'skill://apps/demo/second',
+              name: 'second',
+              mimeType: 'mcp/skill',
+              _meta: { plugin_name: 'demo', skill_name: 'second' },
             },
           ],
         }
@@ -560,21 +744,15 @@ describe('fetchMcpSkillsForClient', () => {
       },
     })
 
-    assert.deepEqual(await fetchMcpSkillsForClient(untrustedClient), [])
     assert.deepEqual(
-      (await fetchMcpSkillsForClient(trustedClient)).map(skill => skill.name),
-      ['demo:trusted'],
+      (await fetchMcpSkillsForClient(firstClient)).map(skill => skill.name),
+      ['demo:first'],
     )
-    assert.equal(untrustedLists, 0)
-    assert.equal(trustedLists, 1)
-
-    fetchMcpSkillsForClient.cache.clear()
     assert.deepEqual(
-      (await fetchMcpSkillsForClient(trustedClient)).map(skill => skill.name),
-      ['demo:trusted'],
+      (await fetchMcpSkillsForClient(secondClient)).map(skill => skill.name),
+      ['demo:second'],
     )
-    assert.deepEqual(await fetchMcpSkillsForClient(untrustedClient), [])
-    assert.equal(untrustedLists, 0)
-    assert.equal(trustedLists, 2)
+    assert.equal(firstLists, 1)
+    assert.equal(secondLists, 1)
   })
 })

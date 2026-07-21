@@ -29,11 +29,20 @@ interface ManagedSession {
   renderer: TerminalScreenRenderer
 }
 
+export type TerminalSessionSnapshot = {
+  status: TerminalSessionRecord
+  preview: string
+}
+
 export class PtySessionManager {
   private readonly driver: PtyDriver
   private readonly exitedSessionTtlMs: number
   private readonly maxBufferedChunks: number
   private readonly sessions = new Map<string, ManagedSession>()
+  private readonly reapTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >()
   private nextSessionId = 1
 
   constructor(options: PtySessionManagerOptions) {
@@ -99,9 +108,7 @@ export class PtySessionManager {
   read(_sessionId: string, _cursor: number): TerminalReadResult {
     this.reapExpiredSessions()
     const session = this.getSession(_sessionId)
-    if (session.record.state === 'running') {
-      this.refreshRunningSession(_sessionId, session)
-    }
+    this.refreshSession(_sessionId, session)
     const text = renderedPreview(session.renderer)
     const end = Buffer.byteLength(text, 'utf8')
 
@@ -126,18 +133,24 @@ export class PtySessionManager {
   status(sessionId: string): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getSession(sessionId)
-    if (session.record.state === 'running') {
-      this.refreshRunningSession(sessionId, session)
-    }
+    this.refreshSession(sessionId, session)
     return this.cloneRecord(session.record)
+  }
+
+  snapshot(sessionId: string): TerminalSessionSnapshot {
+    this.reapExpiredSessions()
+    const session = this.getSession(sessionId)
+    this.refreshSession(sessionId, session)
+    return {
+      status: this.cloneRecord(session.record),
+      preview: renderedPreview(session.renderer),
+    }
   }
 
   list(): TerminalSessionRecord[] {
     this.reapExpiredSessions()
     return Array.from(this.sessions, ([sessionId, session]) => {
-      if (session.record.state === 'running') {
-        this.refreshRunningSession(sessionId, session)
-      }
+      this.refreshSession(sessionId, session)
       return this.cloneRecord(session.record)
     })
   }
@@ -145,9 +158,7 @@ export class PtySessionManager {
   getRenderedPreview(sessionId: string): string {
     this.reapExpiredSessions()
     const session = this.getSession(sessionId)
-    if (session.record.state === 'running') {
-      this.refreshRunningSession(sessionId, session)
-    }
+    this.refreshSession(sessionId, session)
     return renderedPreview(session.renderer)
   }
 
@@ -167,29 +178,45 @@ export class PtySessionManager {
   signal(sessionId: string, signal: 'SIGINT' | 'SIGTERM'): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getWritableSession(sessionId)
-    session.record.lastActivityAt = Date.now()
     const status = this.driver.kill?.(sessionId, signal) ?? this.driver.close(sessionId)
     this.applyDriverStatus(session.record, status)
+    this.drainDriverOutput(sessionId, session)
     return this.cloneRecord(session.record)
   }
 
   close(sessionId: string, _force = false): TerminalSessionRecord {
     this.reapExpiredSessions()
     const session = this.getSession(sessionId)
-    if (session.record.state === 'closed' || session.record.state === 'exited') {
+    if (session.record.state === 'running') {
+      this.refreshSession(sessionId, session)
+    }
+    if (
+      session.record.state === 'closed' ||
+      session.record.state === 'exited' ||
+      session.record.state === 'failed'
+    ) {
       return this.cloneRecord(session.record)
     }
     this.applyDriverStatus(session.record, this.driver.close(sessionId))
-    session.record.lastActivityAt = Date.now()
+    this.drainDriverOutput(sessionId, session)
     return this.cloneRecord(session.record)
   }
 
   reapExpiredSessions(now = Date.now()): void {
     for (const [sessionId, session] of this.sessions) {
-      if (session.record.state !== 'closed' && session.record.state !== 'exited') {
+      if (
+        session.record.state !== 'closed' &&
+        session.record.state !== 'exited' &&
+        session.record.state !== 'failed'
+      ) {
         continue
       }
       if (now - session.record.lastActivityAt >= this.exitedSessionTtlMs) {
+        const timer = this.reapTimers.get(sessionId)
+        if (timer) {
+          clearTimeout(timer)
+          this.reapTimers.delete(sessionId)
+        }
         this.driver.dispose?.(sessionId)
         this.sessions.delete(sessionId)
       }
@@ -199,6 +226,7 @@ export class PtySessionManager {
   private appendOutput(
     session: ManagedSession,
     output: Omit<TerminalOutputChunk, 'start' | 'end'> | null,
+    updateLastActivity = true,
   ): void {
     if (!output) {
       return
@@ -213,14 +241,18 @@ export class PtySessionManager {
     })
     applyTerminalOutput(session.renderer, output.text)
     session.record.nextCursor = end
-    session.record.lastActivityAt = Date.now()
+    if (updateLastActivity) {
+      session.record.lastActivityAt = Date.now()
+    }
     this.trimBuffer(session)
   }
 
-  private refreshRunningSession(sessionId: string, session: ManagedSession): void {
+  private refreshSession(sessionId: string, session: ManagedSession): void {
     this.drainDriverOutput(sessionId, session)
-    this.applyDriverStatus(session.record, this.driver.status(sessionId))
-    this.drainDriverOutput(sessionId, session)
+    if (session.record.state === 'running') {
+      this.applyDriverStatus(session.record, this.driver.status(sessionId))
+      this.drainDriverOutput(sessionId, session)
+    }
   }
 
   private drainDriverOutput(sessionId: string, session: ManagedSession): void {
@@ -229,7 +261,7 @@ export class PtySessionManager {
       if (!output) {
         break
       }
-      this.appendOutput(session, output)
+      this.appendOutput(session, output, session.record.state === 'running')
     }
   }
 
@@ -257,9 +289,13 @@ export class PtySessionManager {
   private getWritableSession(sessionId: string): ManagedSession {
     const session = this.getSession(sessionId)
     if (session.record.state === 'running') {
-      this.refreshRunningSession(sessionId, session)
+      this.refreshSession(sessionId, session)
     }
-    if (session.record.state === 'closed' || session.record.state === 'exited') {
+    if (
+      session.record.state === 'closed' ||
+      session.record.state === 'exited' ||
+      session.record.state === 'failed'
+    ) {
       throw new Error(`SESSION_ALREADY_CLOSED: ${sessionId}`)
     }
     return session
@@ -269,11 +305,29 @@ export class PtySessionManager {
     record: TerminalSessionRecord,
     status: ReturnType<PtyDriver['status']>,
   ): void {
+    const wasRunning = record.state === 'running'
     record.state = status.state
     record.exitCode = status.exitCode
     record.exitedAt = status.exitedAt
     record.pid = status.pid
     record.signal = status.signal
+    if (
+      wasRunning &&
+      status.state !== 'running' &&
+      status.state !== 'starting'
+    ) {
+      record.lastActivityAt = Date.now()
+      const existing = this.reapTimers.get(record.sessionId)
+      if (existing) {
+        clearTimeout(existing)
+      }
+      const timer = setTimeout(() => {
+        this.reapTimers.delete(record.sessionId)
+        this.reapExpiredSessions()
+      }, this.exitedSessionTtlMs)
+      timer.unref?.()
+      this.reapTimers.set(record.sessionId, timer)
+    }
   }
 
   private cloneRecord(record: TerminalSessionRecord): TerminalSessionRecord {

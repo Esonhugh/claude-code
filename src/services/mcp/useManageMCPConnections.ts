@@ -6,6 +6,7 @@ import type { Command } from '../../commands.js'
 import type { Tool } from '../../Tool.js'
 import {
   clearServerCache,
+  clearFetchResourcesCache,
   clearFetchToolsCache,
   fetchCommandsForClient,
   fetchResourcesForClient,
@@ -719,7 +720,7 @@ export function useManageMCPConnections(
                   type: 'resources' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                 })
                 try {
-                  fetchResourcesForClient.cache.delete(client.name)
+                  clearFetchResourcesCache(client.name)
                   if (feature('MCP_SKILLS')) {
                     // Skills are discovered from resources, so refresh them too.
                     // Invalidate prompts cache as well: we write commands here,

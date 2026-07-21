@@ -1,26 +1,76 @@
-import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
+import type {
+  TerminalTaskState,
+  TerminalTerminationReason,
+} from '../../tasks/TerminalTask.js'
+import type {
+  PtyDriverSessionStatus,
+  TerminalSessionRecord,
+} from '../../utils/pty/types.js'
 
 type StatusSyncInput = {
-  isRunning: boolean
+  status: PtyDriverSessionStatus &
+    Partial<Pick<TerminalSessionRecord, 'cols' | 'rows'>>
   preview: string
-  cols?: number
-  rows?: number
+  terminationReason?: TerminalTerminationReason
+  error?: string
 }
 
 export function syncTerminalTaskAfterStatus(
   task: TerminalTaskState,
   input: StatusSyncInput,
 ): TerminalTaskState {
+  if (task.status !== 'running') {
+    return task
+  }
+
   const nextPreview = input.preview || task.preview
-  const isClosed = !input.isRunning
+  const nextCols = input.status.cols ?? task.cols
+  const nextRows = input.status.rows ?? task.rows
+  const isRunning =
+    input.status.state === 'running' || input.status.state === 'starting'
+
+  if (isRunning && !input.error) {
+    if (
+      nextCols === task.cols &&
+      nextRows === task.rows &&
+      nextPreview === task.preview
+    ) {
+      return task
+    }
+    return {
+      ...task,
+      cols: nextCols,
+      rows: nextRows,
+      preview: nextPreview,
+    }
+  }
+
+  const terminationReason = input.error
+    ? 'driver-error'
+    : input.terminationReason
+  const status =
+    terminationReason === 'signal' ||
+    terminationReason === 'kill-pane' ||
+    terminationReason === 'task-stop'
+      ? 'killed'
+      : input.status.state === 'failed' ||
+          (input.status.exitCode !== undefined &&
+            input.status.exitCode !== null &&
+            input.status.exitCode !== 0)
+        ? 'failed'
+        : 'completed'
 
   return {
     ...task,
-    cols: input.cols ?? task.cols,
-    rows: input.rows ?? task.rows,
+    cols: nextCols,
+    rows: nextRows,
     preview: nextPreview,
-    closed: isClosed,
-    status: isClosed ? 'completed' : task.status,
-    endTime: isClosed ? task.endTime ?? Date.now() : task.endTime,
+    closed: true,
+    status,
+    exitCode: input.status.exitCode,
+    signal: input.status.signal,
+    terminationReason,
+    terminalError: input.error,
+    endTime: task.endTime ?? Date.now(),
   }
 }

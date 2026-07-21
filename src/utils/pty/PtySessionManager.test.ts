@@ -300,9 +300,11 @@ describe('PtySessionManager', () => {
 
     driver.finishNaturally(session.sessionId, 'TERMINAL_L5_OK', 0)
 
-    const status = manager.status(session.sessionId)
+    const snapshot = manager.snapshot(session.sessionId)
+    const status = snapshot.status
     assert.equal(status.state, 'closed')
     assert.equal(status.exitCode, 0)
+    assert.equal(snapshot.preview, 'TERMINAL_L5_OK')
     assert.equal(manager.getRenderedPreview(session.sessionId), 'TERMINAL_L5_OK')
     assert.equal(
       manager.read(session.sessionId, 0).chunks.map(chunk => chunk.text).join(''),
@@ -320,6 +322,78 @@ describe('PtySessionManager', () => {
     manager.reapExpiredSessions(Date.now() + 101)
     assert.deepEqual(driver.disposedSessions, [session.sessionId])
     assert.throws(() => manager.status(session.sessionId), /Unknown PTY session/)
+  })
+
+  it('starts the TTL when an idle running session is observed exiting', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({
+      driver,
+      exitedSessionTtlMs: 100,
+    })
+    const session = manager.open({ cwd: '/tmp/project' })
+    const originalNow = Date.now
+    let now = session.lastActivityAt + 1_000
+    Date.now = () => now
+
+    try {
+      driver.finishNaturally(session.sessionId, 'late exit', 0)
+      const snapshot = manager.snapshot(session.sessionId)
+
+      assert.equal(snapshot.status.state, 'closed')
+      assert.equal(snapshot.preview, 'late exit')
+      assert.equal(snapshot.status.lastActivityAt, now)
+
+      now += 99
+      assert.equal(manager.status(session.sessionId).state, 'closed')
+      now += 2
+      assert.throws(() => manager.status(session.sessionId), /Unknown PTY session/)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it('preserves queued tail output when signaling and closing sessions', () => {
+    const signalDriver = new FakePtyDriver()
+    const signalManager = new PtySessionManager({ driver: signalDriver })
+    const signaled = signalManager.open({ cwd: '/tmp/project' })
+    signalDriver.enqueueOutput(signaled.sessionId, 'signal tail')
+
+    signalManager.signal(signaled.sessionId, 'SIGINT')
+    assert.equal(signalManager.snapshot(signaled.sessionId).preview, 'signal tail')
+
+    const closeDriver = new FakePtyDriver()
+    const closeManager = new PtySessionManager({ driver: closeDriver })
+    const closed = closeManager.open({ cwd: '/tmp/project' })
+    closeDriver.enqueueOutput(closed.sessionId, 'close tail')
+
+    closeManager.close(closed.sessionId)
+    assert.equal(closeManager.snapshot(closed.sessionId).preview, 'close tail')
+  })
+
+  it('drains output queued after a session is observed closed without extending its TTL', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({
+      driver,
+      exitedSessionTtlMs: 100,
+    })
+    const session = manager.open({ cwd: '/tmp/project' })
+    const originalNow = Date.now
+    let now = session.startedAt + 1_000
+    Date.now = () => now
+
+    try {
+      driver.finishNaturally(session.sessionId, '', 0)
+      assert.equal(manager.status(session.sessionId).state, 'closed')
+
+      now += 50
+      driver.enqueueOutput(session.sessionId, 'late tail')
+      assert.equal(manager.snapshot(session.sessionId).preview, 'late tail')
+
+      now += 51
+      assert.throws(() => manager.status(session.sessionId), /Unknown PTY session/)
+    } finally {
+      Date.now = originalNow
+    }
   })
 
   it('reaps closed sessions after the configured TTL', () => {

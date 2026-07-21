@@ -8,8 +8,15 @@ import {
 } from '../../tasks/TerminalTask.js'
 import { createBunPtyDriver } from '../../utils/pty/bunPtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
-import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
+import type {
+  TerminalTaskState,
+  TerminalTerminationReason,
+} from '../../tasks/TerminalTask.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
+import {
+  appendTaskOutput,
+  evictTaskOutput,
+} from '../../utils/task/diskOutput.js'
 import {
   actionSchema,
   capturePaneActionSchema,
@@ -41,6 +48,7 @@ import {
 } from './UI.js'
 import { syncTerminalTaskAfterStatus } from './taskState.js'
 import { DEFAULT_MAX_BUFFERED_CHUNKS } from '../../utils/pty/types.js'
+import { errorMessage } from '../../utils/errors.js'
 
 const inputSchema = lazySchema(() => actionSchema)
 type InputSchema = ReturnType<typeof inputSchema>
@@ -73,10 +81,12 @@ export function resetTerminalManagerForTesting(manager?: PtySessionManager): voi
   }
   terminalTaskPollers.clear()
   terminalTaskRegistry.clear()
+  terminalTerminationReasons.clear()
 }
 
 export const terminalTaskRegistry = new Map<string, string>()
 const terminalTaskPollers = new Map<string, ReturnType<typeof setInterval>>()
+const terminalTerminationReasons = new Map<string, TerminalTerminationReason>()
 const TERMINAL_TASK_POLL_INTERVAL_MS = 1000
 
 function stopTerminalTaskPolling(sessionId: string): void {
@@ -88,16 +98,35 @@ function stopTerminalTaskPolling(sessionId: string): void {
   terminalTaskPollers.delete(sessionId)
 }
 
-function completeTerminalTask(
+async function finalizeTerminalTask(
   sessionId: string,
   setAppState: Parameters<typeof updateTaskState>[1],
-): void {
+  input: Parameters<typeof syncTerminalTaskAfterStatus>[1],
+): Promise<void> {
   const taskId = terminalTaskRegistry.get(sessionId)
-  if (taskId) {
-    enqueueTerminalTaskNotification(taskId, setAppState)
+  if (!taskId) {
+    return
   }
+
   terminalTaskRegistry.delete(sessionId)
+  terminalTerminationReasons.delete(sessionId)
   stopTerminalTaskPolling(sessionId)
+
+  let finalTask: TerminalTaskState | undefined
+  updateTaskState<TerminalTaskState>(taskId, setAppState, task => {
+    const updated = syncTerminalTaskAfterStatus(task, input)
+    if (updated !== task && updated.status !== 'running') {
+      finalTask = updated
+    }
+    return updated
+  })
+
+  if (!finalTask) {
+    return
+  }
+  appendTaskOutput(taskId, finalTask.preview)
+  await evictTaskOutput(taskId)
+  enqueueTerminalTaskNotification(taskId, setAppState)
 }
 
 function startTerminalTaskPolling(
@@ -110,46 +139,38 @@ function startTerminalTaskPolling(
       stopTerminalTaskPolling(sessionId)
       return
     }
-    try {
-      refreshTerminalTaskPreview(sessionId, setAppState, getTerminalManager())
-    } catch {
-      stopTerminalTaskPolling(sessionId)
-    }
+    void refreshTerminalTaskPreview(
+      sessionId,
+      setAppState,
+      getTerminalManager(),
+    ).catch(error =>
+      finalizeTerminalTask(sessionId, setAppState, {
+        status: { state: 'failed' },
+        preview: '',
+        terminationReason: 'driver-error',
+        error: errorMessage(error),
+      }),
+    )
   }, TERMINAL_TASK_POLL_INTERVAL_MS)
   poller.unref()
   terminalTaskPollers.set(sessionId, poller)
 }
 
-registerTerminalTaskRuntimeKiller((task, setAppState) => {
+registerTerminalTaskRuntimeKiller(async (task, setAppState) => {
   const manager = getTerminalManager()
-  let status
   try {
-    status = manager.signal(task.sessionId, 'SIGTERM')
+    manager.signal(task.sessionId, 'SIGTERM')
   } catch (error) {
     if (!(error instanceof Error && error.message.startsWith('SESSION_ALREADY_CLOSED:'))) {
       throw error
     }
-    status = manager.status(task.sessionId)
   }
-  const preview = manager.getRenderedPreview(task.sessionId)
-  stopTerminalTaskPolling(task.sessionId)
-  terminalTaskRegistry.delete(task.sessionId)
-  setAppState(prev => ({
-    ...prev,
-    tasks: {
-      ...prev.tasks,
-      [task.id]: {
-        ...task,
-        cols: status.cols,
-        rows: status.rows,
-        preview,
-        status: 'killed',
-        closed: true,
-        notified: true,
-        endTime: Date.now(),
-      },
-    },
-  }))
+  await refreshTerminalTaskPreview(
+    task.sessionId,
+    setAppState,
+    manager,
+    'task-stop',
+  )
 })
 
 function updateTerminalTask(
@@ -164,24 +185,38 @@ function updateTerminalTask(
   updateTaskState(taskId, setAppState, updater)
 }
 
-export function refreshTerminalTaskPreview(
+export async function refreshTerminalTaskPreview(
   sessionId: string,
   setAppState: Parameters<typeof updateTaskState>[1],
   manager: PtySessionManager = getTerminalManager(),
-): void {
-  const status = manager.status(sessionId)
-  const preview = manager.getRenderedPreview(sessionId)
-  updateTerminalTask(sessionId, setAppState, task =>
-    syncTerminalTaskAfterStatus(task, {
-      isRunning: status.state === 'running',
-      cols: status.cols,
-      rows: status.rows,
-      preview,
-    }),
-  )
-  if (status.state !== 'running') {
-    completeTerminalTask(sessionId, setAppState)
+  terminationReason?: TerminalTerminationReason,
+): Promise<void> {
+  const snapshot = manager.snapshot(sessionId)
+  if (
+    snapshot.status.state === 'running' ||
+    snapshot.status.state === 'starting'
+  ) {
+    if (terminationReason) {
+      terminalTerminationReasons.set(sessionId, terminationReason)
+    }
+    updateTerminalTask(sessionId, setAppState, task =>
+      syncTerminalTaskAfterStatus(task, {
+        status: snapshot.status,
+        preview: snapshot.preview,
+      }),
+    )
+    return
   }
+  const pendingTerminationReason =
+    terminationReason ?? terminalTerminationReasons.get(sessionId)
+  await finalizeTerminalTask(sessionId, setAppState, {
+    status: snapshot.status,
+    preview: snapshot.preview,
+    terminationReason:
+      pendingTerminationReason === 'signal' && !snapshot.status.signal
+        ? undefined
+        : pendingTerminationReason,
+  })
 }
 
 function invalidInput(message: string, details: Record<string, unknown>): ErrorOutput {
@@ -205,7 +240,7 @@ function invalidAction(action: unknown): ErrorOutput {
 }
 
 function formatError(error: unknown): ErrorOutput {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = errorMessage(error)
   if (message.startsWith('Unknown PTY session: ')) {
     return {
       error: {
@@ -282,6 +317,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   },
   renderToolResultMessage,
   async call(input, context, canUseTool, assistantMessage, _onProgress) {
+    const setTaskAppState = context.setAppStateForTasks ?? context.setAppState
     try {
       switch (input.action) {
         case 'new-session': {
@@ -332,10 +368,11 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
               rows: opened.rows,
               preview: String(opened.preview ?? ''),
               closed: false,
+              agentId: context.agentId,
             },
-            context.setAppState,
+            setTaskAppState,
           )
-          startTerminalTaskPolling(target, context.setAppState)
+          startTerminalTaskPolling(target, setTaskAppState)
           const { sessionId: _sessionId, ...openedOutput } = opened
           return { data: { ...openedOutput, target } }
         }
@@ -350,7 +387,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const manager = getTerminalManager()
           const written = handleWrite(manager, parsed.data)
-          refreshTerminalTaskPreview(parsed.data.target, context.setAppState, manager)
+          await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: written }
         }
         case 'capture-pane': {
@@ -362,7 +399,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const manager = getTerminalManager()
           const read = handleRead(manager, parsed.data)
-          refreshTerminalTaskPreview(parsed.data.target, context.setAppState, manager)
+          await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: read }
         }
         case 'list-panes': {
@@ -385,7 +422,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const manager = getTerminalManager()
           const resized = handleResize(manager, parsed.data)
-          refreshTerminalTaskPreview(parsed.data.target, context.setAppState, manager)
+          await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: resized }
         }
         case 'send-signal': {
@@ -399,7 +436,12 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const manager = getTerminalManager()
           const signalResult = handleSignal(manager, parsed.data)
-          refreshTerminalTaskPreview(parsed.data.target, context.setAppState, manager)
+          await refreshTerminalTaskPreview(
+            parsed.data.target,
+            setTaskAppState,
+            manager,
+            'signal',
+          )
           return { data: signalResult }
         }
         case 'display-message': {
@@ -411,18 +453,11 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
           }
           const manager = getTerminalManager()
           const status = handleStatus(manager, parsed.data)
-          const preview = manager.getRenderedPreview(parsed.data.target)
-          updateTerminalTask(parsed.data.target, context.setAppState, task =>
-            syncTerminalTaskAfterStatus(task, {
-              isRunning: status.isRunning,
-              cols: status.cols,
-              rows: status.rows,
-              preview,
-            }),
+          await refreshTerminalTaskPreview(
+            parsed.data.target,
+            setTaskAppState,
+            manager,
           )
-          if (!status.isRunning) {
-            completeTerminalTask(parsed.data.target, context.setAppState)
-          }
           return { data: status }
         }
         case 'kill-pane': {
@@ -433,16 +468,14 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             }
           }
           const manager = getTerminalManager()
+          const wasRunning = manager.status(parsed.data.target).state === 'running'
           const closed = handleClose(manager, parsed.data)
-          const preview = manager.getRenderedPreview(parsed.data.target)
-          updateTerminalTask(parsed.data.target, context.setAppState, task => ({
-            ...task,
-            preview,
-            status: 'completed',
-            closed: true,
-            endTime: Date.now(),
-          }))
-          completeTerminalTask(parsed.data.target, context.setAppState)
+          await refreshTerminalTaskPreview(
+            parsed.data.target,
+            setTaskAppState,
+            manager,
+            wasRunning ? 'kill-pane' : undefined,
+          )
           return { data: closed }
         }
         default:

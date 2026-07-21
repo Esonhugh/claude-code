@@ -11,6 +11,7 @@ interface BunPtySession {
   proc: Bun.Subprocess
   terminal: Bun.Terminal
   status: PtyDriverSessionStatus
+  pendingSignal?: 'SIGINT' | 'SIGTERM'
 }
 
 export function createBunPtyDriver(): PtyDriver & {
@@ -34,7 +35,7 @@ export function createBunPtyDriver(): PtyDriver & {
           state: 'running',
         },
       } as Pick<BunPtySession, 'outputQueue' | 'status'> &
-        Partial<Pick<BunPtySession, 'proc' | 'terminal'>>
+        Partial<Pick<BunPtySession, 'proc' | 'terminal' | 'pendingSignal'>>
 
       const proc = Bun.spawn([options.command, ...options.args], {
         cwd: options.cwd,
@@ -72,12 +73,20 @@ export function createBunPtyDriver(): PtyDriver & {
 
       void proc.exited.then(exitCode => {
         if (session.status.state === 'running') {
+          const signalCode = proc.signalCode as NodeJS.Signals | null
+          const signal =
+            signalCode ??
+            (session.pendingSignal === 'SIGTERM' && exitCode === 143
+              ? 'SIGTERM'
+              : session.pendingSignal === 'SIGINT' && exitCode === 130
+                ? 'SIGINT'
+                : null)
           session.status = {
             state: 'closed',
             exitCode,
             exitedAt: Date.now(),
             pid: proc.pid,
-            signal: null,
+            signal,
           }
         }
       })
@@ -117,17 +126,9 @@ export function createBunPtyDriver(): PtyDriver & {
       if (!session) {
         throw new Error(`Unknown PTY session: ${sessionId}`)
       }
+      session.pendingSignal = signal
       session.proc.kill(signal)
-      session.status = {
-        state: 'closed',
-        exitCode: signal === 'SIGTERM' ? 143 : 130,
-        exitedAt: Date.now(),
-        pid: session.proc.pid,
-        signal,
-      }
-      const status = { ...session.status }
-      sessions.delete(sessionId)
-      return status
+      return { ...session.status }
     },
 
     close(sessionId: string) {
@@ -145,9 +146,7 @@ export function createBunPtyDriver(): PtyDriver & {
           signal: session.status.signal ?? null,
         }
       }
-      const status = { ...session.status }
-      sessions.delete(sessionId)
-      return status
+      return { ...session.status }
     },
 
     dispose(sessionId: string) {
