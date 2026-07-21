@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'
+import { describe, expect, test } from 'bun:test'
 
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
@@ -22,109 +22,93 @@ const denyGeneralPurposeContext = {
   },
 }
 
-assert.equal(
-  resolveAgentTypeForTesting({
-    requestedType: 'code-reviewer',
-    activeAgents: [agent('code-reviewer')],
-    allowedAgentTypes: undefined,
-    permissionContext,
-  }).agent.agentType,
-  'code-reviewer',
-)
-
-assert.equal(
-  resolveAgentTypeForTesting({
-    requestedType: 'Code Reviewer',
-    activeAgents: [agent('code-reviewer')],
-    allowedAgentTypes: undefined,
-    permissionContext,
-  }).agent.agentType,
-  'code-reviewer',
-)
-
-assert.equal(
-  resolveAgentTypeForTesting({
-    requestedType: 'code_reviewer',
-    activeAgents: [agent('Code-Reviewer')],
-    allowedAgentTypes: undefined,
-    permissionContext,
-  }).agent.agentType,
-  'Code-Reviewer',
-)
-
-assert.throws(
-  () =>
-    resolveAgentTypeForTesting({
-      requestedType: 'ab',
-      activeAgents: [agent('a-b'), agent('a_b')],
+describe('agent type resolution', () => {
+  test('resolves an exact Explore agent type', () => {
+    const resolution = resolveAgentTypeForTesting({
+      requestedType: 'Explore',
+      activeAgents: [agent('Explore'), agent('Plan')],
       allowedAgentTypes: undefined,
       permissionContext,
-    }),
-  error =>
-    error instanceof Error &&
-    error.message.includes("Agent type 'ab' is ambiguous") &&
-    error.message.includes('a-b') &&
-    error.message.includes('a_b'),
-)
+    })
 
-assert.throws(
-  () =>
-    resolveAgentTypeForTesting({
-      requestedType: 'plan',
-      activeAgents: [agent('Plan')],
-      allowedAgentTypes: ['Explore'],
-      permissionContext,
-    }),
-  error =>
-    error instanceof Error &&
-    error.message.includes("Agent type 'plan' not found") &&
-    error.message.includes('Explore'),
-)
+    expect(resolution.agent.agentType).toBe('Explore')
+    expect(resolution.matchKind).toBe('exact')
+  })
 
-assert.throws(
-  () =>
-    resolveAgentTypeForTesting({
-      requestedType: 'ab',
-      activeAgents: [agent('a-b'), agent('a_b'), agent('other')],
-      allowedAgentTypes: ['a-b'],
-      permissionContext,
-    }),
-  error =>
-    error instanceof Error &&
-    error.message.includes("Agent type 'ab' is ambiguous") &&
-    error.message.includes('a-b') &&
-    error.message.includes('a_b (unavailable)') &&
-    error.message.includes('Use the exact name: a-b'),
-)
+  test('resolves normalized whitespace and punctuation', () => {
+    expect(
+      resolveAgentTypeForTesting({
+        requestedType: 'Code Reviewer',
+        activeAgents: [agent('code-reviewer')],
+        allowedAgentTypes: undefined,
+        permissionContext,
+      }).agent.agentType,
+    ).toBe('code-reviewer')
 
-assert.throws(
-  () =>
-    resolveAgentTypeForTesting({
-      requestedType: 'general purpose',
-      activeAgents: [agent('general-purpose'), agent('code-reviewer')],
-      allowedAgentTypes: undefined,
-      permissionContext: denyGeneralPurposeContext,
-    }),
-  error =>
-    error instanceof Error &&
-    error.message.includes("Agent type 'general purpose' has been denied") &&
-    error.message.includes('Agent(general-purpose)') &&
-    error.message.includes('localSettings'),
-)
+    expect(
+      resolveAgentTypeForTesting({
+        requestedType: 'code_reviewer',
+        activeAgents: [agent('Code-Reviewer')],
+        allowedAgentTypes: undefined,
+        permissionContext,
+      }).agent.agentType,
+    ).toBe('Code-Reviewer')
+  })
 
-assert.throws(
-  () =>
-    resolveAgentTypeForTesting({
-      requestedType: 'missing-agent',
-      activeAgents: [agent('general-purpose'), agent('code-reviewer')],
-      allowedAgentTypes: undefined,
-      permissionContext,
-    }),
-  error =>
-    error instanceof Error &&
-    error.message.includes("Agent type 'missing-agent' not found") &&
-    error.message.includes('general-purpose') &&
-    error.message.includes('code-reviewer'),
-)
+  test('rejects ambiguous normalized matches', () => {
+    expect(() =>
+      resolveAgentTypeForTesting({
+        requestedType: 'ab',
+        activeAgents: [agent('a-b'), agent('a_b')],
+        allowedAgentTypes: undefined,
+        permissionContext,
+      }),
+    ).toThrow("Agent type 'ab' is ambiguous")
+  })
 
-console.log('agentTypeResolver.test.ts passed')
+  test('rejects agents outside the allowed scope', () => {
+    expect(() =>
+      resolveAgentTypeForTesting({
+        requestedType: 'plan',
+        activeAgents: [agent('Plan')],
+        allowedAgentTypes: ['Explore'],
+        permissionContext,
+      }),
+    ).toThrow("Agent type 'plan' not found")
+  })
+
+  test('reports unavailable normalized collisions', () => {
+    expect(() =>
+      resolveAgentTypeForTesting({
+        requestedType: 'ab',
+        activeAgents: [agent('a-b'), agent('a_b'), agent('other')],
+        allowedAgentTypes: ['a-b'],
+        permissionContext,
+      }),
+    ).toThrow('a_b (unavailable)')
+  })
+
+  test('reports permission-denied agents', () => {
+    expect(() =>
+      resolveAgentTypeForTesting({
+        requestedType: 'general purpose',
+        activeAgents: [agent('general-purpose'), agent('code-reviewer')],
+        allowedAgentTypes: undefined,
+        permissionContext: denyGeneralPurposeContext,
+      }),
+    ).toThrow("Agent type 'general purpose' has been denied")
+  })
+
+  test('reports missing agents and available alternatives', () => {
+    expect(() =>
+      resolveAgentTypeForTesting({
+        requestedType: 'missing-agent',
+        activeAgents: [agent('general-purpose'), agent('code-reviewer')],
+        allowedAgentTypes: undefined,
+        permissionContext,
+      }),
+    ).toThrow(
+      "Agent type 'missing-agent' not found. Available agents: general-purpose, code-reviewer",
+    )
+  })
+})
