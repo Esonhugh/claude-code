@@ -92,6 +92,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Test ripgrep packaging logic
+        run: bun run test:ripgrep
+
       - name: Type check
         run: bunx tsc --noEmit --pretty false
 
@@ -192,6 +195,7 @@ jobs:
           ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-$(bun -e 'console.log(process.platform)')-$(bun -e 'console.log(process.arch)')${EXT}"
           "$ARTIFACT" --version
           "$ARTIFACT" --help
+          CLAUDE_CODE_VERIFY_EMBEDDED_RIPGREP=1 "$ARTIFACT"
 
       - name: Upload binary to release
         env:

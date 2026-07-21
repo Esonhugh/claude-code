@@ -11,8 +11,8 @@ export type ResolveRipgrepConfigInput = {
   arch: string
   platform: NodeJS.Platform
   dirname: string
-  execPath: string
   bundled: boolean
+  embeddedRipgrepPath?: string
   userWantsSystemRipgrep: boolean
   systemRipgrepPath: string
   vendoredRipgrepExists: boolean
@@ -33,8 +33,8 @@ export function resolveRipgrepConfig({
   arch,
   platform,
   dirname,
-  execPath,
   bundled,
+  embeddedRipgrepPath,
   userWantsSystemRipgrep,
   systemRipgrepPath,
   vendoredRipgrepExists,
@@ -43,13 +43,8 @@ export function resolveRipgrepConfig({
     return { mode: 'system', command: 'rg', args: [] }
   }
 
-  if (bundled) {
-    return {
-      mode: 'embedded',
-      command: execPath,
-      args: ['--no-config'],
-      argv0: 'rg',
-    }
+  if (bundled && embeddedRipgrepPath) {
+    return { mode: 'embedded', command: embeddedRipgrepPath, args: [] }
   }
 
   const vendoredRipgrepPath = getVendoredRipgrepPath({ arch, platform, dirname })

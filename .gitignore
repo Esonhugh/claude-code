@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.bun-build
+/embedded-cli.js
 
 official-claude
 built-claude

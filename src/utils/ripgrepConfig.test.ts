@@ -7,7 +7,6 @@ const base = {
   arch: 'arm64',
   platform: 'darwin' as NodeJS.Platform,
   dirname: '/app/dist',
-  execPath: '/app/claude',
   systemRipgrepPath: '/opt/homebrew/bin/rg',
   userWantsSystemRipgrep: false,
 }
@@ -42,13 +41,42 @@ assert.deepEqual(
   resolveRipgrepConfig({
     ...base,
     bundled: true,
+    embeddedRipgrepPath: '/cache/ripgrep/rg',
     vendoredRipgrepExists: false,
   }),
   {
     mode: 'embedded',
-    command: '/app/claude',
-    args: ['--no-config'],
-    argv0: 'rg',
+    command: '/cache/ripgrep/rg',
+    args: [],
+  },
+)
+
+assert.deepEqual(
+  resolveRipgrepConfig({
+    ...base,
+    bundled: true,
+    embeddedRipgrepPath: undefined,
+    vendoredRipgrepExists: false,
+  }),
+  {
+    mode: 'system',
+    command: 'rg',
+    args: [],
+  },
+)
+
+assert.deepEqual(
+  resolveRipgrepConfig({
+    ...base,
+    bundled: true,
+    embeddedRipgrepPath: '/cache/ripgrep/rg',
+    userWantsSystemRipgrep: true,
+    vendoredRipgrepExists: false,
+  }),
+  {
+    mode: 'system',
+    command: 'rg',
+    args: [],
   },
 )
 

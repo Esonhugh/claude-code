@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
+import { getEmbeddedRipgrepPath } from './embeddedRipgrep.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
@@ -42,8 +43,8 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     arch: process.arch,
     platform: process.platform,
     dirname: __dirname,
-    execPath: process.execPath,
     bundled: isInBundledMode(),
+    embeddedRipgrepPath: getEmbeddedRipgrepPath(),
     userWantsSystemRipgrep,
     systemRipgrepPath,
     vendoredRipgrepExists: fs.existsSync(vendoredRipgrepPath),
