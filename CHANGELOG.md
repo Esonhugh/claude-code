@@ -39,6 +39,8 @@
 - `0fa556f` — 2026-07-21 — `update: add feature Explore Agent`
 - `3da5846` — 2026-07-21 — `docs: consolidate v2.1.203 changelog`
 
+发布证据整理和本条目维护提交（包括 `5e475c6`、`94d8d58` 及后续同类提交）不改变发布功能范围，因此不重复列入关联提交清单。
+
 ### 变更内容
 
 #### Explore 与 Plan 内置 Agent
