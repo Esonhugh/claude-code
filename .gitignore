@@ -5,3 +5,4 @@ dist/
 
 official-claude
 built-claude
+.claude-test-evidence/

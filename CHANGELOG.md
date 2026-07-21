@@ -28,9 +28,16 @@
 - `0ce3afc` — 2026-07-20 — `release: prepare v2.1.203`
 - `49cfc32` — 2026-07-20 — `remove: handoff`（仅删除临时交接文档，无运行时变更）
 - `231eead` — 2026-07-20 — `fix: gate ChatGPT status by provider`
+- `50988a1` — 2026-07-21 — `docs: complete v2.1.203 commit inventory`
+- `2341b70` — 2026-07-21 — `test: isolate OpenAI bootstrap cache`
 - `5aaa0e3` — 2026-07-21 — `fix: harden terminal and hosted app lifecycles`
 - `cad9f94` — 2026-07-21 — `docs: plan instruction footprint reduction`（仅新增执行计划，无运行时变更）
+- `199f088` — 2026-07-21 — `fix: embed platform ripgrep in packaged binaries`
+- `e3b64c5` — 2026-07-21 — `merge: integrate origin/master`
+- `ce05dff` — 2026-07-21 — `fix: simplify embedded ripgrep validation`
+- `b79b677` — 2026-07-21 — `refactor: reduce model instruction overhead`
 - `0fa556f` — 2026-07-21 — `update: add feature Explore Agent`
+- `3da5846` — 2026-07-21 — `docs: consolidate v2.1.203 changelog`
 
 ### 变更内容
 
@@ -61,6 +68,11 @@
 - 根据真实 PTY 状态区分 `completed`、`failed` 与 `killed`，保留 `exitCode`、`signal`、termination reason 和 driver error。
 - signal、close 和状态刷新在进程结束后继续 drain 尾部输出；Bun PTY driver 等待真实进程退出后再确认 signal。
 - exited、closed 和 failed session 在 TTL 到期后主动 dispose；Background Tasks detail dialog 不再维护重复 polling。
+
+#### 打包与模型指令
+
+- 打包产物嵌入当前平台的 ripgrep，并在运行时进行最小有效性检查，避免依赖系统安装或错误接受无效二进制。
+- 精简模型指令中的重复内容，降低提示开销，同时保持 Agent、工具和交互约束不变。
 
 ### 发布验收
 

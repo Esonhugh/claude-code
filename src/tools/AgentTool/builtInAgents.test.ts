@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'
+import { afterEach, describe, expect, test } from 'bun:test'
 
 import {
   areExplorePlanAgentsEnabled,
@@ -8,23 +8,37 @@ import {
 const originalDisableExplorePlanAgents =
   process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS
 
-try {
-  delete process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS
-  assert.equal(areExplorePlanAgentsEnabled(), true)
-  assert.ok(getBuiltInAgents().some(agent => agent.agentType === 'Explore'))
-  assert.ok(getBuiltInAgents().some(agent => agent.agentType === 'Plan'))
-
-  process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS = '1'
-  assert.equal(areExplorePlanAgentsEnabled(), false)
-  assert.ok(!getBuiltInAgents().some(agent => agent.agentType === 'Explore'))
-  assert.ok(!getBuiltInAgents().some(agent => agent.agentType === 'Plan'))
-} finally {
+afterEach(() => {
   if (originalDisableExplorePlanAgents === undefined) {
     delete process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS
   } else {
     process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS =
       originalDisableExplorePlanAgents
   }
-}
+})
 
-console.log('builtInAgents.test.ts passed')
+describe('Explore and Plan built-in agents', () => {
+  test('are enabled by default', () => {
+    delete process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS
+
+    expect(areExplorePlanAgentsEnabled()).toBe(true)
+    expect(getBuiltInAgents().some(agent => agent.agentType === 'Explore')).toBe(
+      true,
+    )
+    expect(getBuiltInAgents().some(agent => agent.agentType === 'Plan')).toBe(
+      true,
+    )
+  })
+
+  test('can be disabled by environment variable', () => {
+    process.env.CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS = '1'
+
+    expect(areExplorePlanAgentsEnabled()).toBe(false)
+    expect(getBuiltInAgents().some(agent => agent.agentType === 'Explore')).toBe(
+      false,
+    )
+    expect(getBuiltInAgents().some(agent => agent.agentType === 'Plan')).toBe(
+      false,
+    )
+  })
+})
