@@ -17,7 +17,9 @@ export function getEmbeddedRipgrepPath(): string | undefined {
   const source = fs.readFileSync(sourcePath)
   try {
     if (fs.statSync(targetPath).size === source.byteLength) return targetPath
-  } catch {}
+  } catch {
+    // Extract the embedded binary when the cached copy is absent or unreadable.
+  }
 
   const temporaryPath = `${targetPath}.tmp.${process.pid}.${Date.now()}`
   fs.mkdirSync(path.dirname(targetPath), { recursive: true })

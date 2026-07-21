@@ -39,7 +39,7 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     dirname: __dirname,
   })
 
-  return resolveRipgrepConfig({
+  const config = resolveRipgrepConfig({
     arch: process.arch,
     platform: process.platform,
     dirname: __dirname,
@@ -49,6 +49,10 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     systemRipgrepPath,
     vendoredRipgrepExists: fs.existsSync(vendoredRipgrepPath),
   })
+  logForDebugging(
+    `[ripgrep] mode=${config.mode} command=${config.command} args=${JSON.stringify(config.args)}${config.argv0 ? ` argv0=${config.argv0}` : ''}`,
+  )
+  return config
 })
 
 export function ripgrepCommand(): {
@@ -112,6 +116,9 @@ function ripGrepRaw(
   // Use single-threaded mode only if explicitly requested for this call's retry
   const threadArgs = singleThread ? ['-j', '1'] : []
   const fullArgs = [...rgArgs, ...threadArgs, ...args, target]
+  logForDebugging(
+    `[ripgrep] invoke command=${rgPath} args=${JSON.stringify(fullArgs)}${argv0 ? ` argv0=${argv0}` : ''}`,
+  )
   // Allow timeout to be configured via env var (in seconds), otherwise use platform defaults
   // WSL has severe performance penalty for file reads (3-5x slower on WSL2)
   const defaultTimeout = getPlatform() === 'wsl' ? 60_000 : 20_000
@@ -585,7 +592,7 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
     }
 
     logForDebugging(
-      `Ripgrep first use test: ${working ? 'PASSED' : 'FAILED'} (mode=${config.mode}, path=${config.command})`,
+      `[ripgrep] first-use-test=${working ? 'passed' : 'failed'} mode=${config.mode} command=${config.command}`,
     )
 
     // Log telemetry for actual ripgrep availability

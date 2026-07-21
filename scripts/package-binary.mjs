@@ -82,7 +82,6 @@ const generatedEntrypoint = path.join(projectDir, 'embedded-cli.js');
 const generatedEntrypointContents = embeddedEntrypointContents
   .replace('__CLAUDE_CODE_RIPGREP_BINARY__', JSON.stringify(ripgrepBinaryPath))
   .replace('__CLAUDE_CODE_RIPGREP_VERSION__', ripgrepPackageJson.version)
-  .replace("'../src/utils/embeddedRipgrep.ts'", "'./src/utils/embeddedRipgrep.ts'")
   .replace("'./cli.js'", "'./dist/cli.js'");
 if (generatedEntrypointContents.includes('__CLAUDE_CODE_')) {
   throw new Error('Failed to generate embedded ripgrep entrypoint.');

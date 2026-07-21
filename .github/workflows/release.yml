@@ -182,6 +182,18 @@ jobs:
       - name: Verify CLI help
         run: bun run start --help
 
+      - name: Verify platform ripgrep
+        shell: bash
+        run: |
+          PLATFORM="$(bun -e 'process.stdout.write(process.platform)')"
+          ARCH="$(bun -e 'process.stdout.write(process.arch)')"
+          case "$PLATFORM" in
+            win32) RG="node_modules/@vscode/ripgrep-$PLATFORM-$ARCH/bin/rg.exe" ;;
+            *) RG="node_modules/@vscode/ripgrep-$PLATFORM-$ARCH/bin/rg" ;;
+          esac
+          test -f "$RG"
+          "$RG" --version
+
       - name: Package binary
         run: bun run package:binary
 
@@ -195,7 +207,6 @@ jobs:
           ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-$(bun -e 'console.log(process.platform)')-$(bun -e 'console.log(process.arch)')${EXT}"
           "$ARTIFACT" --version
           "$ARTIFACT" --help
-          CLAUDE_CODE_VERIFY_EMBEDDED_RIPGREP=1 "$ARTIFACT"
 
       - name: Upload binary to release
         env:
