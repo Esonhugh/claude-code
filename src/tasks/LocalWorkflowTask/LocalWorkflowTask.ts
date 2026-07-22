@@ -90,6 +90,18 @@ export type WorkflowAgentResult = {
   durationMs?: number
 }
 
+export type WorkflowAgentAttemptState = {
+  attemptId: string
+  logicalAgentId: string
+  agentId: string
+  phaseId: string
+  index?: number
+  attempt: number
+  retryOfAttemptId?: string
+  status: 'running' | 'completed' | 'failed' | 'skipped' | 'interrupted'
+  error?: string
+}
+
 export type WorkflowChildAgentSummary = {
   completed: number
   failed: number
@@ -137,6 +149,10 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   runArgs?: WorkflowArgs
   summary?: string
   agentCount?: number
+  plannedMaxAgents?: number
+  startedAgentAttempts?: number
+  retryCount?: number
+  agentAttempts?: WorkflowAgentAttemptState[]
   progressVersion?: number
   defaultModel?: string
   tokenCount?: number
@@ -177,6 +193,7 @@ export function registerWorkflowTask({
   workflowRunId,
   scriptPath,
   defaultModel,
+  dynamicAgentCount = false,
 }: {
   plan: WorkflowDryRunPlan
   setAppState: SetAppState
@@ -186,6 +203,7 @@ export function registerWorkflowTask({
   workflowRunId?: string
   scriptPath?: string
   defaultModel?: string
+  dynamicAgentCount?: boolean
 }): LocalWorkflowTaskState {
   const id = generateWorkflowTaskId()
   const taskState: LocalWorkflowTaskState = {
@@ -197,7 +215,11 @@ export function registerWorkflowTask({
     scriptPath,
     runArgs,
     summary: 'Workflow started',
-    agentCount: plan.totalAgents,
+    agentCount: dynamicAgentCount ? 0 : plan.totalAgents,
+    plannedMaxAgents: plan.totalAgents,
+    startedAgentAttempts: 0,
+    retryCount: 0,
+    agentAttempts: [],
     progressVersion: 1,
     defaultModel: plan.defaults.model ?? defaultModel,
     tokenCount: 0,
@@ -285,6 +307,27 @@ function addUnique(values: string[], value: string): string[] {
   return values.includes(value) ? values : [...values, value]
 }
 
+function agentIdsByAttemptIndex(
+  task: LocalWorkflowTaskState,
+  phaseId: string,
+  values: string[],
+  value: string,
+  index?: number,
+): string[] {
+  if (values.includes(value)) return values
+  const indexes = new Map(
+    (task.agentAttempts ?? [])
+      .filter(attempt => attempt.phaseId === phaseId && attempt.index !== undefined)
+      .map(attempt => [attempt.agentId, attempt.index] as const),
+  )
+  if (index !== undefined) indexes.set(value, index)
+  return [...values, value].sort(
+    (left, right) =>
+      (indexes.get(left) ?? Number.MAX_SAFE_INTEGER) -
+      (indexes.get(right) ?? Number.MAX_SAFE_INTEGER),
+  )
+}
+
 function removeValue(values: string[], value: string): string[] {
   return values.filter(item => item !== value)
 }
@@ -306,18 +349,41 @@ function removeTaskResultsForPhaseIndex(
   )
 }
 
-function phaseCompleted(phase: LocalWorkflowPhaseState): boolean {
-  return (
-    phase.agentIds.length > 0 &&
-    phase.completedAgentIds.length >= phase.agentIds.length &&
-    phase.failedAgentIds.length === 0
+export function workflowPhaseTerminalAgentCount(
+  phase: LocalWorkflowPhaseState,
+): number {
+  const terminalIndexes = new Set(
+    phase.results.flatMap(result =>
+      result.status === 'completed' || result.status === 'failed' || result.status === 'skipped'
+        ? [result.index]
+        : [],
+    ),
+  )
+  for (const agentId of [
+    ...phase.completedAgentIds,
+    ...phase.failedAgentIds,
+    ...phase.skippedAgentIds,
+  ]) {
+    const index = phase.agentIds.indexOf(agentId)
+    if (index >= 0) terminalIndexes.add(index)
+  }
+  return terminalIndexes.size
+}
+
+export function workflowTerminalAgentCount(
+  task: LocalWorkflowTaskState,
+): number {
+  return task.phases.reduce(
+    (sum, phase) => sum + workflowPhaseTerminalAgentCount(phase),
+    0,
   )
 }
 
-function completedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce(
-    (sum, phase) => sum + phase.completedAgentIds.length,
-    0,
+function phaseCompleted(phase: LocalWorkflowPhaseState): boolean {
+  return (
+    phase.agentIds.length > 0 &&
+    phase.failedAgentIds.length === 0 &&
+    workflowPhaseTerminalAgentCount(phase) >= phase.agentIds.length
   )
 }
 
@@ -368,7 +434,7 @@ function progressEvent(
     type: 'workflow_progress',
     workflowRunId: task.workflowRunId ?? task.id,
     status,
-    completedAgents: completedAgents(task),
+    completedAgents: workflowTerminalAgentCount(task),
     totalAgents: task.agentCount ?? 0,
     timestamp: Date.now(),
   }
@@ -444,32 +510,126 @@ export function recordWorkflowAgentStarted({
   phaseId,
   agentId,
   setAppState,
+  logicalAgentId = agentId,
+  attempt = 0,
+  retryOfAttemptId,
+  recordAttempt = true,
+  index,
 }: {
   taskId: string
   phaseId: string
   agentId: string
   setAppState: SetAppState
+  logicalAgentId?: string
+  attempt?: number
+  retryOfAttemptId?: string
+  recordAttempt?: boolean
+  index?: number
 }): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    const hasLogicalAgent = task.agentAttempts?.some(current =>
+      current.phaseId === phaseId && current.logicalAgentId === logicalAgentId,
+    ) ?? task.phases.some(phase => phase.agentIds.includes(agentId))
+    const isNewAgent = !hasLogicalAgent
+    const attemptId = `${phaseId}:${logicalAgentId}:attempt:${attempt}`
+    const isNewAttempt = recordAttempt && !task.agentAttempts?.some(current => current.attemptId === attemptId)
+    const priorAttempt = task.agentAttempts?.findLast(current =>
+      current.phaseId === phaseId &&
+      current.logicalAgentId === logicalAgentId &&
+      current.attempt < attempt,
+    )
     const updated = updatePhase(
-      { ...task, currentAgentId: agentId },
+      {
+        ...task,
+        currentAgentId: agentId,
+        agentCount: isNewAgent
+          ? Math.max(task.agentCount ?? 0, task.phases.reduce((count, phase) => count + phase.agentIds.length, 0) + 1)
+          : task.agentCount,
+        startedAgentAttempts: (task.startedAgentAttempts ?? 0) + (isNewAttempt ? 1 : 0),
+        retryCount: (task.retryCount ?? 0) + (isNewAttempt && attempt > 0 ? 1 : 0),
+        agentAttempts: isNewAttempt
+          ? [
+              ...(task.agentAttempts ?? []).map(current =>
+                current.phaseId === phaseId &&
+                current.logicalAgentId === logicalAgentId &&
+                current.status === 'running'
+                  ? { ...current, status: 'interrupted' as const, error: 'retried' }
+                  : current,
+              ),
+              {
+                attemptId,
+                logicalAgentId,
+                agentId,
+                phaseId,
+                index,
+                attempt,
+                retryOfAttemptId,
+                status: 'running',
+              },
+            ]
+          : task.agentAttempts,
+      },
       phaseId,
       phase => ({
         ...phase,
         status: 'running',
-        agentIds: addUnique(phase.agentIds, agentId),
+        agentIds: agentIdsByAttemptIndex(
+          task,
+          phaseId,
+          priorAttempt
+            ? phase.agentIds.map(current => current === priorAttempt.agentId ? agentId : current)
+            : phase.agentIds,
+          agentId,
+          index,
+        ),
+        failedAgentIds: priorAttempt
+          ? removeValue(phase.failedAgentIds, priorAttempt.agentId)
+          : phase.failedAgentIds,
+        skippedAgentIds: priorAttempt
+          ? removeValue(phase.skippedAgentIds, priorAttempt.agentId)
+          : phase.skippedAgentIds,
+        completedAgentIds: priorAttempt
+          ? removeValue(phase.completedAgentIds, priorAttempt.agentId)
+          : phase.completedAgentIds,
+        results: priorAttempt
+          ? removePhaseResultsForIndex(phase.results, phase.agentIds.indexOf(priorAttempt.agentId))
+          : phase.results,
+        error: priorAttempt ? undefined : phase.error,
       }),
     )
+    const retainedAgentState = priorAttempt
+      ? removeLiveAgentState(updated, [priorAttempt.agentId])
+      : {
+          liveAgents: updated.liveAgents,
+          agentControllers: updated.agentControllers,
+        }
     // Register a liveAgents entry so the agent shows as 'running' in UI
     return {
       ...updated,
+      ...retainedAgentState,
       liveAgents: {
-        ...updated.liveAgents,
-        [agentId]: updated.liveAgents?.[agentId] ?? { tokenCount: 0, toolUseCount: 0 },
+        ...retainedAgentState.liveAgents,
+        [agentId]: retainedAgentState.liveAgents?.[agentId] ?? { tokenCount: 0, toolUseCount: 0 },
       },
     }
   })
+}
+
+function updateWorkflowAgentAttempt(
+  task: LocalWorkflowTaskState,
+  agentId: string,
+  status: WorkflowAgentAttemptState['status'],
+  error?: string,
+): Pick<LocalWorkflowTaskState, 'agentAttempts'> {
+  const agentAttempts = task.agentAttempts ?? []
+  const attemptIndex = agentAttempts.findLastIndex(attempt => attempt.agentId === agentId && attempt.status === 'running')
+  if (attemptIndex < 0) return { agentAttempts }
+  return {
+    agentAttempts: agentAttempts.map((attempt, index) =>
+      index === attemptIndex ? { ...attempt, status, ...(error ? { error } : {}) } : attempt,
+    ),
+  }
 }
 
 export function recordWorkflowAgentController({
@@ -601,7 +761,6 @@ export function completeWorkflowAgent({
     if (task.status !== 'running') return task
     const registeredAgentIds = registeredAgentIdsForResult(task, result)
     const completedResult = resultWithProgressMetrics(task, registeredAgentIds, result)
-    let priorAgentIdsForIndexForTask: string[] = []
     const nextTask = updatePhase(task, completedResult.phaseId, phase => {
       const priorResultsForIndex = phase.results.filter(
         phaseResult => phaseResult.index === result.index,
@@ -613,7 +772,6 @@ export function completeWorkflowAgent({
       ].filter(
         (agentId, index, agentIds): agentId is string => Boolean(agentId) && agentIds.indexOf(agentId) === index,
       )
-      priorAgentIdsForIndexForTask = priorAgentIdsForIndex
       const nextPhase = {
         ...phase,
         completedAgentIds: addUnique(
@@ -655,12 +813,18 @@ export function completeWorkflowAgent({
       }
     })
     const liveState = removeLiveAgentState(nextTask, registeredAgentIds)
+    const attemptState = updateWorkflowAgentAttempt(
+      nextTask,
+      registeredAgentIds.find(agentId => nextTask.agentAttempts?.some(attempt => attempt.agentId === agentId && attempt.status === 'running')) ?? completedResult.agentId,
+      completedResult.status === 'skipped' ? 'skipped' : 'completed',
+    )
     return {
       ...nextTask,
       ...liveState,
+      ...attemptState,
       results: [
         ...nextTask.results.filter(
-          taskResult => taskResult.phaseId !== completedResult.phaseId || taskResult.index !== completedResult.index || !priorAgentIdsForIndexForTask.includes(taskResult.agentId),
+          taskResult => taskResult.phaseId !== completedResult.phaseId || taskResult.index !== completedResult.index,
         ),
         completedResult,
       ],
@@ -676,6 +840,7 @@ export function failWorkflowAgent({
   taskId,
   phaseId,
   agentId,
+  index,
   error,
   errorKind,
   setAppState,
@@ -683,6 +848,7 @@ export function failWorkflowAgent({
   taskId: string
   phaseId: string
   agentId: string
+  index?: number
   error: string
   errorKind?: WorkflowAgentErrorKind
   setAppState: SetAppState
@@ -693,7 +859,7 @@ export function failWorkflowAgent({
     const failedResult: WorkflowAgentResult = {
       phaseId,
       agentId,
-      index: Math.max(phase?.agentIds.indexOf(agentId) ?? -1, 0),
+      index: index ?? Math.max(phase?.agentIds.indexOf(agentId) ?? -1, 0),
       status: 'failed',
       error,
       errorKind,
@@ -712,6 +878,7 @@ export function failWorkflowAgent({
     return {
       ...nextTask,
       ...removeLiveAgentState(nextTask, [agentId]),
+      ...updateWorkflowAgentAttempt(nextTask, agentId, 'failed', error),
       results: [
         ...removeTaskResultsForPhaseIndex(
           nextTask.results,
@@ -867,6 +1034,7 @@ export function skipWorkflowAgent(
     }
     const skippedTask = {
       ...task,
+      ...updateWorkflowAgentAttempt(task, agentId, 'skipped'),
       agentControllers,
       liveAgents,
       summary: `Workflow agent skipped by user: ${agentId}`,
@@ -933,6 +1101,11 @@ export function retryWorkflowAgent(
       liveAgents,
       currentAgentId: nextAgentId,
       summary: `Workflow agent retry requested by user: ${agentId}`,
+      agentAttempts: (task.agentAttempts ?? []).map(attempt =>
+        attempt.agentId === agentId && attempt.status === 'running'
+          ? { ...attempt, status: 'interrupted' as const, error: WORKFLOW_AGENT_USER_RETRY_ABORT_REASON }
+          : attempt,
+      ),
       phases: task.phases.map(phase => {
         if (!phase.agentIds.includes(agentId)) return phase
         retryPhaseId = phase.id

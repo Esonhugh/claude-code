@@ -1,4 +1,8 @@
-import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  workflowPhaseTerminalAgentCount,
+  workflowTerminalAgentCount,
+  type LocalWorkflowTaskState,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
   visibleWorkflowPhases,
@@ -25,10 +29,6 @@ type WorkflowDetailSnapshotOptions = {
 export function initialSelectedWorkflowAgentIndex(task?: LocalWorkflowTaskState): number | null {
   if (task?.status !== 'running') return null
   return visibleWorkflowPhases(task).some(phase => phase.agentIds.length > 0) ? 0 : null
-}
-
-function completedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce((sum, phase) => sum + phase.completedAgentIds.length, 0)
 }
 
 function elapsedSeconds(task: LocalWorkflowTaskState): number {
@@ -79,7 +79,7 @@ function phaseLabel(
   if (!phase) return ''.padEnd(LEFT_WIDTH)
   const marker = selected ? '❯ ' : '  '
   return pad(
-    `${marker}${phaseIndex + 1} ${displayPhaseId(task, phaseIndex, phases)}   ${phase.completedAgentIds.length}/${phase.agentIds.length}`,
+    `${marker}${phaseIndex + 1} ${displayPhaseId(task, phaseIndex, phases)}   ${workflowPhaseTerminalAgentCount(phase)}/${phase.agentIds.length}`,
     LEFT_WIDTH,
   )
 }
@@ -113,7 +113,7 @@ function agentRow(task: LocalWorkflowTaskState, agentId: string, selected: boole
   const { tokens, toolCalls } = workflowDetailAgentMetrics(task, agentId)
   const marker = selected ? '❯' : ' '
   const status = workflowDetailAgentStatus(task, agentId)
-  const icon = status === 'interrupted' && selected ? '◌' : '⏺'
+  const icon = agentStatusIcon(task, agentId)
   const suffix = status === 'interrupted' && selected ? ' · stopped' : ''
   return pad(
     `${marker}${icon} ${pad(agentId, 24)} ${pad(model, 14)} ${tokens} tok · ${toolCalls} ${toolCalls === 1 ? 'tool' : 'tools'}${suffix}`,
@@ -122,7 +122,7 @@ function agentRow(task: LocalWorkflowTaskState, agentId: string, selected: boole
 }
 
 function formatHeader(task: LocalWorkflowTaskState): string[] {
-  const completed = completedAgents(task)
+  const completed = workflowTerminalAgentCount(task)
   const total = visibleAgentTotal(task)
   const description = workflowDescription(task)
   const statusWord = workflowDetailStatusWord(task.status)
@@ -197,7 +197,7 @@ function formatAgentDetailPanel(task: LocalWorkflowTaskState, selectedAgentId: s
   const leftRows = agentIds.map(agentId => {
     const selected = agentId === selectedAgentId
     const marker = selected ? '❯ ' : '  '
-    const icon = task.status === 'running' ? '⏺' : agentStatusIcon(task, agentId)
+    const icon = agentStatusIcon(task, agentId)
     return `${marker}${icon} ${agentId}`
   })
   const detailLeftWidth = Math.max(LEFT_WIDTH, ...leftRows.map(row => stringWidth(row) + 1))

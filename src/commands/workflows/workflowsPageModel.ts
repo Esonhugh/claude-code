@@ -1,4 +1,7 @@
-import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  workflowTerminalAgentCount,
+  type LocalWorkflowTaskState,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { TaskState } from '../../tasks/types.js'
 import type { Theme } from '../../utils/theme.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
@@ -21,13 +24,6 @@ function isLocalWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
     task !== null &&
     'type' in task &&
     task.type === 'local_workflow'
-  )
-}
-
-function completedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce(
-    (sum, phase) => sum + phase.completedAgentIds.length,
-    0,
   )
 }
 
@@ -56,7 +52,7 @@ function elapsedMs(task: LocalWorkflowTaskState): number {
 }
 
 function toWorkflowPageItem(task: LocalWorkflowTaskState): WorkflowPageItem {
-  const completed = completedAgents(task)
+  const completed = workflowTerminalAgentCount(task)
   const total = visibleAgentTotal(task)
   const { icon, color } = statusIcon(task.status)
   const tokenCount = task.tokenCount ?? task.results.reduce((sum, r) => sum + (r.tokenCount ?? 0), 0)

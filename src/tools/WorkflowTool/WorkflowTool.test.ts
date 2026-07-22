@@ -287,7 +287,7 @@ const runContext = {
                 agentId: 'schema-agent-1' as AgentId,
                 structured_output: { ok: true, value: 'validated' },
               },
-            }
+            } as never
           }
           if (input.prompt.includes('schema raw')) {
             return {
@@ -415,6 +415,7 @@ assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
 assert.equal(launchedInputs[0]?.mode, 'plan')
 assert.equal(launchedInputs[0]?.hasStructuredOutputTool, false)
+
 const jsTask = Object.values(runState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'JS Run Workflow',
 )!

@@ -3,7 +3,10 @@ import {
   formatWorkflowResumeInstruction,
   formatWorkflowStatus,
 } from '../../tasks/LocalWorkflowTask/formatWorkflowStatus.js'
-import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  workflowTerminalAgentCount,
+  type LocalWorkflowTaskState,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { formatWorkflowDryRun } from '../../tools/WorkflowTool/formatWorkflowDryRun.js'
 import {
@@ -93,10 +96,6 @@ function isLocalWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
   )
 }
 
-function completedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce((sum, phase) => sum + phase.completedAgentIds.length, 0)
-}
-
 function totalAgents(task: LocalWorkflowTaskState): number {
   return task.agentCount ?? task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
 }
@@ -127,7 +126,7 @@ function formatWorkflowRuns(context: WorkflowCommandContext | unknown): string {
   for (const task of tasks) {
     const tokens = task.tokenCount ? ` · ${task.tokenCount} tok` : ''
     lines.push(
-      `- ${task.id}: ${workflowTaskName(task)} [${task.status}] ${completedAgents(task)}/${totalAgents(task)} agents${tokens}`,
+      `- ${task.id}: ${workflowTaskName(task)} [${task.status}] ${workflowTerminalAgentCount(task)}/${totalAgents(task)} agents${tokens}`,
       `  /workflows detail ${task.id}`,
     )
   }

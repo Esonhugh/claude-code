@@ -88,7 +88,6 @@ type AgentToolInput = {
 
 type AgentToolOutput = {
   status?: string
-  agentId?: string
   content?: Array<{ type: string; text?: string }>
   totalTokens?: number
   totalToolUseCount?: number
@@ -337,10 +336,6 @@ function extractAgentOutput(output: AgentToolOutput): string {
   return text || output.status || 'completed'
 }
 
-function resultAgentId(output: AgentToolOutput, fallback: string): string {
-  return output.agentId || fallback
-}
-
 function maxRetriesFor(plan: WorkflowDryRunPlan): number {
   return plan.defaults.maxRetries ?? 0
 }
@@ -411,11 +406,29 @@ async function runPhaseAgentAttempt({
   const fallbackAgentId = userRetryAttempt > 0
     ? userRetryAgentId(baseAgentId, userRetryAttempt)
     : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
+  const physicalAttempt = attempt + userRetryAttempt
+  const taskSetAppState = context.setAppStateForTasks ?? context.setAppState
+  const appState = context.getAppState()
+  const taskState = appState.tasks[taskId]
+  const existingAttempt = taskState?.type === 'local_workflow'
+    ? taskState.agentAttempts?.find(current =>
+        current.phaseId === phase.id &&
+        current.logicalAgentId === baseAgentId &&
+        current.attempt === physicalAttempt,
+      )
+    : undefined
   recordWorkflowAgentStarted({
     taskId,
     phaseId: phase.id,
     agentId: fallbackAgentId,
-    setAppState: context.setAppStateForTasks ?? context.setAppState,
+    logicalAgentId: baseAgentId,
+    attempt: physicalAttempt,
+    retryOfAttemptId: physicalAttempt > 0
+      ? `${phase.id}:${baseAgentId}:attempt:${physicalAttempt - 1}`
+      : undefined,
+    recordAttempt: !existingAttempt,
+    index,
+    setAppState: taskSetAppState,
   })
   const progressStartTime = Date.now()
   let progressTokens = 0
@@ -515,7 +528,7 @@ async function runPhaseAgentAttempt({
     clearInterval(stallTimer)
   }
   const output = result.data as AgentToolOutput
-  const agentId = resultAgentId(output, fallbackAgentId)
+  const agentId = fallbackAgentId
   emitTaskProgress({
     taskId,
     toolUseId: context.toolUseId,
@@ -594,6 +607,8 @@ async function runPhaseAgent({
       taskId,
       phaseId: phase.id,
       agentId: cachedResult.agentId,
+      recordAttempt: false,
+      index,
       setAppState: context.setAppStateForTasks ?? context.setAppState,
     })
     completeWorkflowAgent({
@@ -641,29 +656,26 @@ async function runPhaseAgent({
     } catch (error) {
       if (workflowAbortController.signal.aborted) throw error
       const baseAgentId = workflowAgentName(plan, phase, index)
-      const currentAgentId = userRetryAttempt > 0
-        ? userRetryAgentId(baseAgentId, userRetryAttempt)
-        : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
       const userRetryRequested = error instanceof Error && error.message === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
       if (userRetryRequested) {
         userRetryAttempt += 1
         attempt -= 1
         continue
       }
-      const userSkipRequested = error instanceof Error && error.message === WORKFLOW_AGENT_SKIPPED_ABORT_REASON
-      if (userSkipRequested) {
-        const skippedResult: WorkflowAgentResult = {
-          phaseId: phase.id,
-          agentId: currentAgentId,
-          index,
-          status: 'skipped',
-        }
-        completeWorkflowAgent({
-          taskId,
-          result: skippedResult,
-          setAppState: context.setAppStateForTasks ?? context.setAppState,
-        })
-        return { result: skippedResult, cacheHit: false }
+      const currentTask = context.getAppState().tasks[taskId]
+      const currentAgentId = currentTask?.type === 'local_workflow'
+        ? currentTask.phases.find(currentPhase => currentPhase.id === phase.id)?.agentIds[index]
+          ?? (userRetryAttempt > 0
+            ? userRetryAgentId(baseAgentId, userRetryAttempt)
+            : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`)
+        : userRetryAttempt > 0
+          ? userRetryAgentId(baseAgentId, userRetryAttempt)
+          : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
+      const currentResult = currentTask?.type === 'local_workflow'
+        ? currentTask.phases.find(currentPhase => currentPhase.id === phase.id)?.results.find(result => result.index === index)
+        : undefined
+      if (currentResult?.status === 'skipped') {
+        return { result: currentResult, cacheHit: false }
       }
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
@@ -671,6 +683,7 @@ async function runPhaseAgent({
         taskId,
         phaseId: phase.id,
         agentId: currentAgentId,
+        index,
         error: message,
         setAppState: context.setAppStateForTasks ?? context.setAppState,
       })

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,8 +29,22 @@ await appendWorkflowJournalResult(dir, {
   phase: 'phase-a',
   label: 'agent-a',
   index: 0,
+  status: 'completed',
+  attempt: 0,
   result: 'agent output',
   timestamp: completedAt,
+})
+await appendWorkflowJournalResult(dir, {
+  key: 'phase-a:agent-b:1',
+  agentId: 'agent-b',
+  phase: 'phase-a',
+  label: 'agent-b',
+  index: 1,
+  status: 'failed',
+  attempt: 0,
+  error: 'API Error: test failure',
+  result: null,
+  timestamp: completedAt + 1,
 })
 
 const raw = await readFile(workflowJournalPath(dir), 'utf8')
@@ -51,9 +65,32 @@ assert.deepEqual(lines[1], {
   phase: 'phase-a',
   label: 'agent-a',
   index: 0,
+  status: 'completed',
+  attempt: 0,
   result: 'agent output',
   timestamp: completedAt,
 })
+assert.deepEqual(lines[2], {
+  type: 'result',
+  key: 'phase-a:agent-b:1',
+  agentId: 'agent-b',
+  phase: 'phase-a',
+  label: 'agent-b',
+  index: 1,
+  status: 'failed',
+  attempt: 0,
+  error: 'API Error: test failure',
+  result: null,
+  timestamp: completedAt + 1,
+})
+
+await appendFile(workflowJournalPath(dir), `${JSON.stringify({
+  type: 'result',
+  key: 'legacy-statusless',
+  agentId: 'legacy-statusless',
+  result: 'must not resume',
+  timestamp: completedAt + 2,
+})}\n`)
 
 const cache = await readWorkflowJournalCacheEntries(dir)
 assert.deepEqual(cache, [

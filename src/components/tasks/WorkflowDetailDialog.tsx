@@ -5,7 +5,11 @@ import { Dialog } from '../../components/design-system/Dialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import instances from '../../ink/instances.js'
-import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  workflowPhaseTerminalAgentCount,
+  workflowTerminalAgentCount,
+  type LocalWorkflowTaskState,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { Theme } from '../../utils/theme.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import { stringWidth } from '../../ink/stringWidth.js'
@@ -36,10 +40,6 @@ type AgentStatus = WorkflowDetailAgentStatus
 type AgentPane = 'left' | 'right'
 
 // ─── Helpers ───────────────────────────────────────────────
-function completedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce((sum, phase) => sum + phase.completedAgentIds.length, 0)
-}
-
 function elapsedMs(task: LocalWorkflowTaskState): number {
   return Math.max(0, ((task.endTime ?? Date.now()) - task.startTime - (task.totalPausedMs ?? 0)))
 }
@@ -245,7 +245,7 @@ export function WorkflowDetailDialog({
 
   // Header
   const total = visibleAgentTotal(workflow)
-  const done = completedAgents(workflow)
+  const done = workflowTerminalAgentCount(workflow)
   const statusWord = workflowDetailStatusWord(workflow.status)
   const statsText = `${done}/${total} ${total === 1 ? 'agent' : 'agents'} · ${formatDuration(elapsedMs(workflow))} · ${statusWord}`
 
@@ -268,13 +268,15 @@ export function WorkflowDetailDialog({
     for (let i = 0; i < visiblePhases.length; i++) {
       const phase = visiblePhases[i]!
       const sel = level === 'phases' && i === selectedPhase
-      const phaseDone = phase.completedAgentIds.length >= phase.agentIds.length && phase.agentIds.length > 0
-      const phaseRunning = !phaseDone && phase.status === 'running'
+      const phaseTerminal = workflowPhaseTerminalAgentCount(phase)
+      const phaseFailed = phase.failedAgentIds.length > 0
+      const phaseDone = !phaseFailed && phaseTerminal >= phase.agentIds.length && phase.agentIds.length > 0
+      const phaseRunning = !phaseFailed && phaseTerminal < phase.agentIds.length && phase.status === 'running'
       const phaseNotStarted = phase.agentIds.length === 0 && phase.status !== 'running'
       const pName = workflowDetailPhaseName(workflow, phase, i)
-      const progress = phase.agentIds.length > 0 ? `${phase.completedAgentIds.length}/${phase.agentIds.length}` : ''
-      const icon = phaseDone ? '✓' : phaseRunning ? '⊛' : phaseNotStarted ? String(i + 1) : '⬤'
-      const iconColor: keyof Theme | undefined = phaseDone ? 'success' : phaseRunning ? 'suggestion' : undefined
+      const progress = phase.agentIds.length > 0 ? `${phaseTerminal}/${phase.agentIds.length}` : ''
+      const icon = phaseDone ? '✓' : phaseFailed ? '✗' : phaseRunning ? '⊛' : phaseNotStarted ? String(i + 1) : '⬤'
+      const iconColor: keyof Theme | undefined = phaseDone ? 'success' : phaseFailed ? 'error' : phaseRunning ? 'suggestion' : undefined
       const label = progress ? `${pName} ${progress}` : pName
       leftNodes.push(
         <Box key={phase.id} width={leftW}>

@@ -11,10 +11,12 @@ import {
   killWorkflowTask,
   pauseWorkflowTask,
   recordWorkflowAgentController,
+  recordWorkflowAgentStarted,
   failWorkflowAgent,
   recordWorkflowAgentProgress,
   retryWorkflowAgent,
   skipWorkflowAgent,
+  workflowPhaseTerminalAgentCount,
   type LocalWorkflowTaskState,
 } from './LocalWorkflowTask.js'
 
@@ -232,11 +234,55 @@ const context = {
   assert.match(String(statusResult.data), /Progress: \[██████████\] 3\/3 \(100%\)/)
   assert.match(String(statusResult.data), /Tokens: 3/)
   assert.match(String(statusResult.data), /Tool uses: 0/)
-  assert.match(String(statusResult.data), /- research: completed 2\/2 \[██████████\] skipped 0\/2 retries: 0/)
-  assert.match(String(statusResult.data), /- synthesis: completed 1\/1 \[██████████\] skipped 0\/1 retries: 0/)
+  assert.match(String(statusResult.data), /- research: completed 2\/2 \[██████████\] skipped 0\/2/)
+  assert.match(String(statusResult.data), /- synthesis: completed 1\/1 \[██████████\] skipped 0\/1/)
 
   killWorkflowTask(task.id, setAppState)
   assert.equal((state.tasks[task.id] as LocalWorkflowTaskState).status, 'completed')
+
+  const orderedTask: LocalWorkflowTaskState = {
+    ...task,
+    id: 'w-ordered',
+    status: 'running',
+    notified: false,
+    agentCount: 0,
+    startedAgentAttempts: 0,
+    retryCount: 0,
+    agentAttempts: [],
+    phases: [
+      {
+        id: 'parallel',
+        status: 'running',
+        agentIds: [],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    results: [],
+  }
+  setAppState(prev => ({
+    ...prev,
+    tasks: { ...prev.tasks, [orderedTask.id]: orderedTask },
+  }))
+  for (const [agentId, index] of [
+    ['agent-a', 0],
+    ['agent-c', 2],
+    ['agent-b', 1],
+  ] as const) {
+    recordWorkflowAgentStarted({
+      taskId: orderedTask.id,
+      phaseId: 'parallel',
+      agentId,
+      index,
+      setAppState,
+    })
+  }
+  assert.deepEqual(
+    (state.tasks[orderedTask.id] as LocalWorkflowTaskState).phases[0]?.agentIds,
+    ['agent-a', 'agent-b', 'agent-c'],
+  )
 
   const runningTask: LocalWorkflowTaskState = {
     ...task,
@@ -469,6 +515,45 @@ const context = {
   assert.equal(failedAgentState.liveAgents?.['agent-1'], undefined)
   assert.equal(failedAgentState.agentControllers?.['agent-1'], undefined)
 
+  const mixedOutcomeTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-mixed-outcome',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['failed-agent', 'successful-agent'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    results: [],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [mixedOutcomeTask.id]: mixedOutcomeTask } }))
+  failWorkflowAgent({
+    taskId: mixedOutcomeTask.id,
+    phaseId: 'phase',
+    agentId: 'failed-agent',
+    index: 0,
+    error: 'mixed failure',
+    setAppState,
+  })
+  completeWorkflowAgent({
+    taskId: mixedOutcomeTask.id,
+    result: {
+      phaseId: 'phase',
+      agentId: 'successful-agent',
+      index: 1,
+      status: 'completed',
+    },
+    setAppState,
+  })
+  const mixedOutcomeState = state.tasks[mixedOutcomeTask.id] as LocalWorkflowTaskState
+  assert.equal(workflowPhaseTerminalAgentCount(mixedOutcomeState.phases[0]!), 2)
+  assert.equal(mixedOutcomeState.phases[0]!.status, 'failed')
+
   const terminalFailureAbortController = new AbortController()
   const terminalFailureAgentAbortController = new AbortController()
   const terminalFailureTask: LocalWorkflowTaskState = {
@@ -497,6 +582,16 @@ const context = {
   const restartableRunningTask = {
     ...runningTask,
     phases: runningTask.phases.map(phase => ({ ...phase })),
+    agentAttempts: [
+      {
+        attemptId: 'phase:agent-1:attempt:0',
+        logicalAgentId: 'agent-1',
+        agentId: 'agent-1',
+        phaseId: 'phase',
+        attempt: 0,
+        status: 'running' as const,
+      },
+    ],
   }
   setAppState(prev => ({
     ...prev,
@@ -518,6 +613,7 @@ const context = {
   let updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
   assert.deepEqual(updatedRunningTask.phases[0]!.skippedAgentIds, ['agent-1'])
   assert.deepEqual(updatedRunningTask.phases[0]!.completedAgentIds, ['agent-1'])
+  assert.equal(updatedRunningTask.agentAttempts?.[0]?.status, 'skipped')
   const skipEvent = updatedRunningTask.events.at(-1)
   assert.equal(skipEvent?.type, 'workflow_agent')
   if (skipEvent?.type === 'workflow_agent') {
@@ -584,6 +680,25 @@ const context = {
   assert.deepEqual(updatedRunningTask.phases[0]!.completedAgentIds, [])
   assert.deepEqual(updatedRunningTask.phases[0]!.agentIds, ['agent-1 (retry 1)'])
   assert.equal(updatedRunningTask.currentAgentId, 'agent-1 (retry 1)')
+  assert.equal(updatedRunningTask.liveAgents?.['agent-1'], undefined)
+  assert.equal(updatedRunningTask.agentControllers?.['agent-1'], undefined)
+  recordWorkflowAgentStarted({
+    taskId: 'w-running',
+    phaseId: 'phase',
+    agentId: 'agent-1 (retry 1)',
+    logicalAgentId: 'agent-1',
+    attempt: 1,
+    retryOfAttemptId: 'phase:agent-1:attempt:0',
+    index: 0,
+    setAppState,
+  })
+  updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
+  assert.equal(updatedRunningTask.liveAgents?.['agent-1'], undefined)
+  assert.equal(updatedRunningTask.agentControllers?.['agent-1'], undefined)
+  assert.deepEqual(updatedRunningTask.liveAgents?.['agent-1 (retry 1)'], {
+    tokenCount: 0,
+    toolUseCount: 0,
+  })
   const retryEvent = updatedRunningTask.events.at(-1)
   assert.equal(retryEvent?.type, 'workflow_agent')
   if (retryEvent?.type === 'workflow_agent') {
@@ -783,6 +898,28 @@ assert.equal(manualRetryTask.results.length, 1)
 assert.equal(manualRetryTask.results[0]!.agentId, 'unstable (retry 1)')
 assert.deepEqual(manualRetryTask.phases[0]!.completedAgentIds, ['unstable (retry 1)'])
 assert.equal(manualRetryTask.phases[0]!.failedAgentIds.length, 0)
+assert.equal(manualRetryTask.agentCount, 1)
+assert.equal(manualRetryTask.startedAgentAttempts, 2)
+assert.equal(manualRetryTask.retryCount, 1)
+assert.deepEqual(manualRetryTask.agentAttempts?.map(attempt => ({
+  agentId: attempt.agentId,
+  attempt: attempt.attempt,
+  retryOfAttemptId: attempt.retryOfAttemptId,
+  status: attempt.status,
+})), [
+  {
+    agentId: 'unstable',
+    attempt: 0,
+    retryOfAttemptId: undefined,
+    status: 'interrupted',
+  },
+  {
+    agentId: 'unstable (retry 1)',
+    attempt: 1,
+    retryOfAttemptId: 'unstable:unstable:attempt:0',
+    status: 'completed',
+  },
+])
 
 let teamState = {
   tasks: {},

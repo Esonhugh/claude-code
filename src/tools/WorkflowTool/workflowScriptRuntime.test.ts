@@ -214,6 +214,8 @@ const workflowTask = Object.values(state.tasks).find(
   task => task.type === 'local_workflow',
 )
 assert.ok(workflowTask)
+assert.equal(workflowTask.agentCount, 1)
+assert.equal(workflowTask.plannedMaxAgents, 1)
 assert.equal(observedScriptLiveTokens, 55)
 assert.equal(observedScriptLiveToolUses, 1)
 assert.equal(workflowTask.tokenCount, 55)
@@ -327,6 +329,74 @@ const duplicateResult = await runWorkflowScript({
 })
 const duplicateTranscriptDirMatch = duplicateResult.match(/Transcript dir: (.+)/)
 assert.ok(duplicateTranscriptDirMatch?.[1])
+const duplicateTask = Object.values(duplicateState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(duplicateTask?.agentCount, 2)
+assert.equal(duplicateTask?.plannedMaxAgents, 2)
+
+let duplicateLabelState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const duplicateLabelAgentTool = {
+  name: 'Agent',
+  async call() {
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'duplicate-label-result' }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const duplicateLabelScript = `export const meta = {
+  name: "runtime-duplicate-label-workflow",
+  description: "Workflow preserving duplicate explicit labels.",
+  phases: [{ title: "Duplicate", detail: "Duplicate labels" }],
+}
+phase("Duplicate")
+return await parallel([
+  () => agent("first", { label: "same" }),
+  () => agent("second", { label: "same" }),
+])
+`
+await runWorkflowScript({
+  script: duplicateLabelScript,
+  plan: {
+    ...duplicatePlan,
+    name: 'runtime-duplicate-label-workflow',
+    description: 'Workflow preserving duplicate explicit labels.',
+    runScriptSnapshot: duplicateLabelScript,
+  },
+  context: {
+    ...duplicateContext,
+    getAppState: () => duplicateLabelState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      duplicateLabelState = updater(duplicateLabelState)
+    },
+    options: {
+      ...duplicateContext.options,
+      tools: [duplicateLabelAgentTool],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_duplicate_label_identity',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_duplicate_label_identity' } } as never,
+  workflowRunId: 'wf_duplicate_label_identity',
+  scriptPath: '/tmp/runtime-duplicate-label-workflow.js',
+})
+const duplicateLabelTask = Object.values(duplicateLabelState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(duplicateLabelTask?.agentCount, 2)
+assert.deepEqual(duplicateLabelTask?.phases[0]?.agentIds, ['same', 'same [2]'])
+dequeueAllMatching(command => command.mode === 'task-notification')
+
 const duplicateResumeResult = await runWorkflowScript({
   script: duplicateScript,
   plan: duplicatePlan,
@@ -651,19 +721,296 @@ const retryContext = {
   abortController: new AbortController(),
   toolUseId: 'toolu_script_retry',
 } as unknown as ToolUseContext
-await runWorkflowScript({
+const retryWorkflowRunId = `wf_script_retry_${process.pid}`
+const retryResult = await runWorkflowScript({
   script: retryScript,
   plan: retryPlan,
   context: retryContext,
   canUseTool: async () => ({ behavior: 'allow' }),
   assistantMessage: { message: { id: 'msg_script_retry' } } as never,
-  workflowRunId: `wf_script_retry_${process.pid}`,
+  workflowRunId: retryWorkflowRunId,
   scriptPath: '/tmp/runtime-retry-agent-workflow.js',
 })
 const retryNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(retryNotification)
 assert.match(String(retryNotification.value), /retry-ok/)
 assert.equal(retryCallCount, 2)
+const retryTask = Object.values(retryState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(retryTask?.agentCount, 1)
+assert.equal(retryTask?.startedAgentAttempts, 2)
+assert.equal(retryTask?.retryCount, 1)
+assert.deepEqual(retryTask?.agentAttempts.map(attempt => ({
+  agentId: attempt.agentId,
+  attempt: attempt.attempt,
+  retryOfAttemptId: attempt.retryOfAttemptId,
+  status: attempt.status,
+})), [
+  {
+    agentId: 'agent-1',
+    attempt: 0,
+    retryOfAttemptId: undefined,
+    status: 'interrupted',
+  },
+  {
+    agentId: 'agent-1 (retry 1)',
+    attempt: 1,
+    retryOfAttemptId: 'Retry:agent-1:attempt:0',
+    status: 'completed',
+  },
+])
+assert.deepEqual(retryTask?.phases[0]?.agentIds, ['agent-1 (retry 1)'])
+assert.deepEqual(retryTask?.phases[0]?.completedAgentIds, ['agent-1 (retry 1)'])
+const retryTranscriptDirMatch = retryResult.match(/Transcript dir: (.+)/)
+assert.ok(retryTranscriptDirMatch?.[1])
+const retryJournalRaw = await readFile(join(retryTranscriptDirMatch[1], 'journal.jsonl'), 'utf8')
+assert.match(retryJournalRaw, /"agentId":"agent-1".*"attemptId":"Retry:agent-1:attempt:0"/)
+assert.match(retryJournalRaw, /"agentId":"agent-1".*"status":"interrupted"/)
+assert.match(retryJournalRaw, /"agentId":"agent-1 \(retry 1\)".*"attemptId":"Retry:agent-1:attempt:1"/)
+assert.match(retryJournalRaw, /"retryOfAttemptId":"Retry:agent-1:attempt:0"/)
+assert.equal((await readWorkflowJournalCacheEntries(retryTranscriptDirMatch[1])).length, 1)
+
+let automaticRetryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+let automaticRetryCallCount = 0
+let automaticRetryStartedCleanly = false
+const automaticRetryAgentTool = {
+  name: 'Agent',
+  async call() {
+    automaticRetryCallCount++
+    if (automaticRetryCallCount === 1) {
+      throw new Error('stalled')
+    }
+    const runningTask = Object.values(automaticRetryState.tasks).find(
+      (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+    )
+    automaticRetryStartedCleanly =
+      runningTask?.liveAgents?.['agent-1'] === undefined &&
+      runningTask?.agentControllers?.['agent-1'] === undefined &&
+      runningTask?.liveAgents?.['agent-1 (retry 1)'] !== undefined &&
+      runningTask?.agentControllers?.['agent-1 (retry 1)'] !== undefined
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'automatic-retry-ok' }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+await runWorkflowScript({
+  script: retryScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-automatic-retry-agent-workflow',
+    defaults: { ...retryPlan.defaults, maxRetries: 1 },
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => automaticRetryState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      automaticRetryState = updater(automaticRetryState)
+    },
+    options: { ...retryContext.options, tools: [automaticRetryAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_automatic_retry',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_automatic_retry' } } as never,
+  workflowRunId: `wf_script_automatic_retry_${process.pid}`,
+  scriptPath: '/tmp/runtime-automatic-retry-agent-workflow.js',
+})
+assert.equal(automaticRetryCallCount, 2)
+assert.equal(automaticRetryStartedCleanly, true)
+const automaticRetryTask = Object.values(automaticRetryState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(automaticRetryTask?.startedAgentAttempts, 2)
+assert.equal(automaticRetryTask?.retryCount, 1)
+assert.deepEqual(automaticRetryTask?.phases[0]?.agentIds, ['agent-1 (retry 1)'])
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+let schemaState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const schemaToolsSeen: string[][] = []
+const schemaAgentTool = {
+  name: 'Agent',
+  async call(_input: unknown, agentContext: ToolUseContext) {
+    schemaToolsSeen.push(agentContext.options.tools.map(tool => tool.name))
+    const structuredOutputTool = agentContext.options.tools.find(
+      tool => tool.name === 'StructuredOutput',
+    )
+    assert.ok(structuredOutputTool)
+    const structuredOutput = await structuredOutputTool.call(
+      { ok: true },
+      agentContext,
+      async () => ({ behavior: 'allow' }),
+      { message: { id: 'msg_schema_output' } } as never,
+    ) as { structured_output?: unknown }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'structured output returned' }],
+        structured_output: structuredOutput.structured_output,
+      },
+    }
+  },
+}
+const schemaScript = `export const meta = {
+  name: "runtime-schema-agent-workflow",
+  description: "Workflow using schema output.",
+  phases: [{ title: "Schema", detail: "Schema agent" }],
+}
+phase("Schema")
+return await agent("return schema", {
+  label: "schema-agent",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["ok"],
+    properties: { ok: { type: "boolean" } },
+  },
+})
+`
+await runWorkflowScript({
+  script: schemaScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-schema-agent-workflow',
+    description: 'Workflow using schema output.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Schema', description: 'Schema agent', prompt: 'Schema agent' }],
+    runScriptSnapshot: schemaScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => schemaState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      schemaState = updater(schemaState)
+    },
+    options: { ...retryContext.options, tools: [schemaAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_schema',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_schema' } } as never,
+  workflowRunId: `wf_script_schema_${process.pid}`,
+  scriptPath: '/tmp/runtime-schema-agent-workflow.js',
+})
+assert.equal(schemaToolsSeen.length, 1)
+assert.ok(schemaToolsSeen[0]?.includes('StructuredOutput'))
+const schemaTask = Object.values(schemaState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(schemaTask?.status, 'completed')
+assert.deepEqual(JSON.parse(schemaTask?.results[0]?.output ?? 'null'), { ok: true })
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+let invalidSchemaState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const invalidSchemaAgentTool = {
+  name: 'Agent',
+  async call(_input: unknown, agentContext: ToolUseContext) {
+    const structuredOutputTool = agentContext.options.tools.find(
+      tool => tool.name === 'StructuredOutput',
+    )
+    assert.ok(structuredOutputTool)
+    await structuredOutputTool.call(
+      { ok: 'not-a-boolean' },
+      agentContext,
+      async () => ({ behavior: 'allow' }),
+      { message: { id: 'msg_invalid_schema_output' } } as never,
+    )
+    throw new Error('StructuredOutput unexpectedly accepted an invalid payload')
+  },
+}
+const invalidSchemaResult = await runWorkflowScript({
+  script: schemaScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-invalid-schema-agent-workflow',
+    description: 'Workflow rejecting invalid schema output.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Schema', description: 'Schema agent', prompt: 'Schema agent' }],
+    runScriptSnapshot: schemaScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => invalidSchemaState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      invalidSchemaState = updater(invalidSchemaState)
+    },
+    options: { ...retryContext.options, tools: [invalidSchemaAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_invalid_schema',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_invalid_schema' } } as never,
+  workflowRunId: `wf_script_invalid_schema_${process.pid}`,
+  scriptPath: '/tmp/runtime-invalid-schema-agent-workflow.js',
+})
+const invalidSchemaTask = Object.values(invalidSchemaState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(invalidSchemaTask?.phases[0]?.completedAgentIds.length, 0)
+assert.equal(invalidSchemaTask?.phases[0]?.failedAgentIds.length, 1)
+const invalidSchemaTranscriptDir = invalidSchemaResult.match(/Transcript dir: (.+)/)?.[1]
+assert.ok(invalidSchemaTranscriptDir)
+assert.equal((await readWorkflowJournalCacheEntries(invalidSchemaTranscriptDir)).length, 0)
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+let missingSchemaState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const missingSchemaAgentTool = {
+  name: 'Agent',
+  async call() {
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: '{"ok":true}' }],
+      },
+    }
+  },
+}
+await runWorkflowScript({
+  script: schemaScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-missing-schema-agent-workflow',
+    description: 'Workflow missing schema output.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Schema', description: 'Schema agent', prompt: 'Schema agent' }],
+    runScriptSnapshot: schemaScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => missingSchemaState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      missingSchemaState = updater(missingSchemaState)
+    },
+    options: { ...retryContext.options, tools: [missingSchemaAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_missing_schema',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_missing_schema' } } as never,
+  workflowRunId: `wf_script_missing_schema_${process.pid}`,
+  scriptPath: '/tmp/runtime-missing-schema-agent-workflow.js',
+})
+const missingSchemaTask = Object.values(missingSchemaState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(missingSchemaTask?.status, 'completed')
+assert.equal(missingSchemaTask?.phases[0]?.completedAgentIds.length, 0)
+assert.equal(missingSchemaTask?.phases[0]?.failedAgentIds.length, 1)
 
 dequeueAllMatching(command => command.mode === 'task-notification')
 const skipScript = `export const meta = {
@@ -722,7 +1069,7 @@ assert.match(String(skipNotification.value), /Workflow completed/)
 assert.equal(skipCallCount, 1)
 
 const corruptJournalDir = await mkdtemp(join(tmpdir(), 'workflow-corrupt-journal-'))
-await writeFile(join(corruptJournalDir, 'journal.jsonl'), '{"type":"result","key":"ok","agentId":"ok","result":"ok","timestamp":1}\n{"type"')
+await writeFile(join(corruptJournalDir, 'journal.jsonl'), '{"type":"result","key":"ok","agentId":"ok","status":"completed","result":"ok","timestamp":1}\n{"type"')
 const corruptEntries = await readWorkflowJournalCacheEntries(corruptJournalDir)
 assert.equal(corruptEntries.length, 1)
 assert.equal(corruptEntries[0]?.result, 'ok')
@@ -733,7 +1080,10 @@ const failedScript = `export const meta = {
   phases: [{ title: "Fail", detail: "Failing agent" }],
 }
 phase("Fail")
-return await agent("fail-agent", { label: "failed-agent" })
+return await parallel([
+  () => agent("fail-agent", { label: "failed-agent-a" }),
+  () => agent("fail-agent", { label: "failed-agent-b" }),
+])
 `
 const failedPlan: WorkflowDryRunPlan = {
   ...plan,
@@ -745,15 +1095,17 @@ const failedPlan: WorkflowDryRunPlan = {
       description: 'Failing agent',
       prompt: 'Failing agent',
       dependsOn: [],
-      fanout: 1,
-      concurrency: 1,
+      fanout: 2,
+      concurrency: 2,
       review: 'none',
       permissionMode: 'bypassPermissions',
     },
   ],
+  totalAgents: 2,
   runScriptSnapshot: failedScript,
 }
 const failedWorkflowRunId = `wf_failed_agent_no_null_${process.pid}`
+const failedCallCountBefore = agentToolCallCount
 const failedResult = await runWorkflowScript({
   script: failedScript,
   plan: failedPlan,
@@ -768,8 +1120,37 @@ const failedTranscriptDirMatch = failedResult.match(/Transcript dir: (.+)/)
 assert.ok(failedTranscriptDirMatch?.[1])
 const failedJournalRaw = await readFile(join(failedTranscriptDirMatch[1], 'journal.jsonl'), 'utf8')
 assert.match(failedJournalRaw, /"type":"started"/)
-assert.match(failedJournalRaw, /"agentId":"failed-agent"/)
-assert.doesNotMatch(failedJournalRaw, /"type":"result"/)
+assert.match(failedJournalRaw, /"agentId":"failed-agent-a"/)
+assert.match(failedJournalRaw, /"agentId":"failed-agent-b"/)
+assert.match(failedJournalRaw, /"type":"result"/)
+assert.match(failedJournalRaw, /"status":"failed"/)
+assert.match(failedJournalRaw, /"errorKind":"agent_failed"/)
+assert.equal(agentToolCallCount, failedCallCountBefore + 2)
+assert.doesNotMatch(failedJournalRaw, /"retryOfAttemptId"/)
+assert.equal((await readWorkflowJournalCacheEntries(failedTranscriptDirMatch[1])).length, 0)
+const failedTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState =>
+    task.type === 'local_workflow' && task.workflowRunId === failedWorkflowRunId,
+)
+assert.equal(failedTask?.agentCount, 2)
+assert.equal(failedTask?.startedAgentAttempts, 2)
+assert.equal(failedTask?.retryCount, 0)
+assert.deepEqual(failedTask?.results.map(result => ({
+  agentId: result.agentId,
+  index: result.index,
+  status: result.status,
+})).sort((left, right) => left.index - right.index), [
+  { agentId: 'failed-agent-a', index: 0, status: 'failed' },
+  { agentId: 'failed-agent-b', index: 1, status: 'failed' },
+])
+assert.deepEqual(failedTask?.agentAttempts.map(attempt => ({
+  agentId: attempt.agentId,
+  attempt: attempt.attempt,
+  status: attempt.status,
+})).sort((left, right) => left.agentId.localeCompare(right.agentId)), [
+  { agentId: 'failed-agent-a', attempt: 0, status: 'failed' },
+  { agentId: 'failed-agent-b', attempt: 0, status: 'failed' },
+])
 
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')

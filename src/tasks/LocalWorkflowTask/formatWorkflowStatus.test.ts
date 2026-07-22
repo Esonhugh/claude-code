@@ -70,6 +70,49 @@ assert.match(text, /1 skipped/)
 assert.match(text, /1 live\/aborting/)
 assert.match(text, /1 blocked by concurrency limit/)
 
+const retriedText = formatWorkflowStatus(workflowState({
+  retryCount: 2,
+  phases: [
+    {
+      id: 'phase-1',
+      status: 'completed',
+      agentIds: ['agent_done'],
+      completedAgentIds: ['agent_done'],
+      failedAgentIds: [],
+      skippedAgentIds: [],
+      results: [
+        {
+          phaseId: 'phase-1',
+          agentId: 'agent_done',
+          index: 0,
+          status: 'completed',
+        },
+      ],
+    },
+  ],
+}))
+assert.match(retriedText, /Retries: 2/)
+assert.doesNotMatch(retriedText, /phase-1:.*retries:/)
+
+const failedTerminalText = formatWorkflowStatus(workflowState({
+  status: 'completed',
+  agentCount: 2,
+  phases: [
+    {
+      id: 'phase-1',
+      status: 'failed',
+      agentIds: ['agent_done', 'agent_failed'],
+      completedAgentIds: ['agent_done'],
+      failedAgentIds: ['agent_failed'],
+      skippedAgentIds: [],
+      results: [],
+    },
+  ],
+}))
+assert.match(failedTerminalText, /Agents: 2\/2/)
+assert.match(failedTerminalText, /Progress: \[██████████\] 2\/2 \(100%\)/)
+assert.match(failedTerminalText, /phase-1: failed 2\/2 \[██████████\]/)
+
 const bundledResumeText = formatWorkflowStatus(workflowState({
   workflowName: 'code-review',
   workflowRunId: 'wf_fcc6c814-236',

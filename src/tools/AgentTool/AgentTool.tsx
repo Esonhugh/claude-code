@@ -87,6 +87,7 @@ import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { BackgroundHint } from '../BashTool/UI.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { spawnTeammate } from '../shared/spawnMultiAgent.js'
+import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { setAgentColor } from './agentColorManager.js'
 import {
   agentToolResultSchema,
@@ -94,6 +95,7 @@ import {
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
+  getAgentTerminalError,
   getLastToolUseName,
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
@@ -945,10 +947,15 @@ export const AgentTool = buildTool({
       ...appState.toolPermissionContext,
       mode: selectedAgent.permissionMode ?? 'acceptEdits',
     }
-    const workerTools = assembleToolPool(
-      workerPermissionContext,
-      appState.mcp.tools,
-    ).filter(tool => {
+    const workerTools = [
+      ...assembleToolPool(
+        workerPermissionContext,
+        appState.mcp.tools,
+      ).filter(tool => !toolMatchesName(tool, SYNTHETIC_OUTPUT_TOOL_NAME)),
+      ...toolUseContext.options.tools.filter(
+        tool => toolMatchesName(tool, SYNTHETIC_OUTPUT_TOOL_NAME),
+      ),
+    ].filter(tool => {
       if (!toolUseContext.options.disableNestedAgentTools) return true
       return !tool.name.startsWith('mcp__') &&
         !toolMatchesName(tool, AGENT_TOOL_NAME) &&
@@ -1881,6 +1888,9 @@ export const AgentTool = buildTool({
                 rootSetAppState,
               )
             }
+
+            const terminalAgentError = getAgentTerminalError(agentMessages)
+            syncAgentError ??= terminalAgentError
 
             // Unregister foreground task if agent completed without being backgrounded
             if (foregroundTaskId) {

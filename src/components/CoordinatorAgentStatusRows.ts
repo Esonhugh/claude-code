@@ -1,6 +1,9 @@
 import type { AppState } from '../state/AppState.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
-import type { LocalWorkflowTaskState } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  workflowTerminalAgentCount,
+  type LocalWorkflowTaskState,
+} from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
 
 export type CoordinatorPanelTask = LocalAgentTaskState | LocalWorkflowTaskState
@@ -93,10 +96,6 @@ function taskElapsed(task: CoordinatorPanelTask, now: number): string {
   return formatDuration(elapsedMs)
 }
 
-function workflowCompletedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce((sum, phase) => sum + phase.completedAgentIds.length, 0)
-}
-
 function workflowStatusText(task: LocalWorkflowTaskState, now: number): string {
   if (task.status === 'completed') return `done · ${taskElapsed(task, now)}`
   if (task.status === 'failed') return `failed · ${taskElapsed(task, now)}`
@@ -143,7 +142,7 @@ function agentRowMeta(task: LocalAgentTaskState): string {
 }
 
 function workflowRowMeta(task: LocalWorkflowTaskState): string {
-  const completed = workflowCompletedAgents(task)
+  const completed = workflowTerminalAgentCount(task)
   const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
   const total = task.agentCount ?? started
   const tokenCount = task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0)

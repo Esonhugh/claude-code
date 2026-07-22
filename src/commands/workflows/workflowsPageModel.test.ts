@@ -78,6 +78,8 @@ assert.equal(items[2]!.icon, '✗')
 assert.equal(items[2]!.iconColor, 'error')
 assert.equal(items[1]!.completedAgents, 2)
 assert.equal(items[1]!.totalAgents, 4)
+assert.equal(items[2]!.completedAgents, 2)
+assert.equal(items[2]!.totalAgents, 2)
 
 const stagedRunning = getWorkflowPageItems({
   staged: workflowTask({

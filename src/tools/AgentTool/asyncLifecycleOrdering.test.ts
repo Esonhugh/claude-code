@@ -38,6 +38,19 @@ function makeAssistantMessage() {
   }
 }
 
+function makeApiErrorMessage() {
+  return {
+    ...makeAssistantMessage(),
+    isApiErrorMessage: true,
+    error: 'unknown',
+    message: {
+      ...makeAssistantMessage().message,
+      model: '<synthetic>',
+      content: [{ type: 'text' as const, text: 'API Error: test failure' }],
+    },
+  }
+}
+
 const selectedAgent = {
   agentType: 'general-purpose',
   whenToUse: 'general',
@@ -219,6 +232,52 @@ const failedNotification = getCommandQueue().find(command =>
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
 assert.match(String(failedNotification.value), /<total_tokens>12<\/total_tokens>/)
+
+registerAsyncAgent({
+  agentId: 'agent-api-error-test',
+  description: 'API error test',
+  prompt: 'surface API failure',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_api_error',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-api-error-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    yield makeApiErrorMessage() as never
+  },
+  metadata: {
+    prompt: 'surface API failure',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'API error test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_api_error',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-api-error-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => ({}),
+})
+
+const apiErrorTask = state.tasks['agent-api-error-test']
+assert.ok(isLocalAgentTask(apiErrorTask))
+assert.equal(apiErrorTask.status, 'failed')
+const apiErrorNotification = getCommandQueue().find(command =>
+  String(command.value).includes('agent-api-error-test'),
+)
+assert.ok(apiErrorNotification)
+assert.match(String(apiErrorNotification.value), /<status>failed<\/status>/)
+assert.match(String(apiErrorNotification.value), /API Error: test failure/)
 
 registerAsyncAgent({
   agentId: 'agent-summary-replacement-test',

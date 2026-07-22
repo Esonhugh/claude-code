@@ -255,10 +255,29 @@ export const agentToolResultSchema = lazySchema(() =>
         })
         .nullable(),
     }),
+    structured_output: z.unknown().optional(),
   }),
 )
 
 export type AgentToolResult = z.input<ReturnType<typeof agentToolResultSchema>>
+
+function structuredOutputFromMessages(messages: MessageType[]): unknown {
+  const attachment = messages.findLast(
+    message => message.type === 'attachment' && message.attachment.type === 'structured_output',
+  )
+  return attachment?.type === 'attachment' && attachment.attachment.type === 'structured_output'
+    ? attachment.attachment.data
+    : undefined
+}
+
+export function getAgentTerminalError(messages: MessageType[]): Error | undefined {
+  const lastAssistantMessage = getLastAssistantMessage(messages)
+  if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
+    return undefined
+  }
+  const message = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  return new Error(message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed')
+}
 
 export function countToolUses(messages: MessageType[]): number {
   let count = 0
@@ -299,6 +318,8 @@ export function finalizeAgentTool(
   if (lastAssistantMessage === undefined) {
     throw new Error('No assistant messages found')
   }
+  const terminalError = getAgentTerminalError(agentMessages)
+  if (terminalError) throw terminalError
   // Extract text content from the agent's response. If the final assistant
   // message is a pure tool_use block (loop exited mid-turn), fall back to
   // the most recent assistant message that has text content.
@@ -347,6 +368,7 @@ export function finalizeAgentTool(
     })
   }
 
+  const structuredOutput = structuredOutputFromMessages(agentMessages)
   return {
     agentId,
     agentType,
@@ -356,6 +378,9 @@ export function finalizeAgentTool(
     totalTokens,
     totalToolUseCount,
     usage: lastAssistantMessage.message.usage,
+    ...(structuredOutput === undefined
+      ? {}
+      : { structured_output: structuredOutput }),
   }
 }
 

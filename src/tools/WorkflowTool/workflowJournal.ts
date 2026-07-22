@@ -6,6 +6,10 @@ export type WorkflowJournalStartedEntry = {
   type: 'started'
   key: string
   agentId: string
+  logicalAgentId?: string
+  attemptId?: string
+  attempt?: number
+  retryOfAttemptId?: string
   phase?: string
   label?: string
   index?: number
@@ -16,9 +20,16 @@ export type WorkflowJournalResultEntry = {
   type: 'result'
   key: string
   agentId: string
+  logicalAgentId?: string
+  attemptId?: string
   phase?: string
   label?: string
   index?: number
+  status?: 'completed' | 'failed' | 'skipped' | 'interrupted'
+  attempt?: number
+  retryOfAttemptId?: string
+  error?: string
+  errorKind?: 'concurrency_limit' | 'stalled' | 'permission_denied' | 'agent_failed'
   result: unknown
   timestamp: number
 }
@@ -89,7 +100,7 @@ export async function readWorkflowJournalCacheEntries(
 ): Promise<WorkflowResumeCacheEntry[]> {
   const entries = await readWorkflowJournalEntries(transcriptDir)
   return entries.flatMap((entry, index): WorkflowResumeCacheEntry[] => {
-    if (entry.type !== 'result') return []
+    if (entry.type !== 'result' || entry.status !== 'completed') return []
     return [
       {
         index: entry.index ?? index,

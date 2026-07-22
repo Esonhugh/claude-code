@@ -1,6 +1,8 @@
 import {
   getWorkflowChildAgentSummary,
+  workflowPhaseTerminalAgentCount,
   workflowResumeCall,
+  workflowTerminalAgentCount,
   type LocalWorkflowTaskState,
 } from './LocalWorkflowTask.js'
 
@@ -8,18 +10,8 @@ function elapsedMs(task: LocalWorkflowTaskState): number {
   return Math.max(0, (task.endTime ?? Date.now()) - task.startTime)
 }
 
-function completedAgents(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce(
-    (sum, phase) => sum + phase.completedAgentIds.length,
-    0,
-  )
-}
-
 function retryCount(task: LocalWorkflowTaskState): number {
-  return task.phases.reduce(
-    (sum, phase) => sum + phase.failedAgentIds.length,
-    0,
-  )
+  return task.retryCount ?? 0
 }
 
 function progressBar(completed: number, total: number): string {
@@ -50,7 +42,7 @@ export function formatWorkflowStatus(
   task: LocalWorkflowTaskState,
   options: { detail?: boolean } = {},
 ): string {
-  const completed = completedAgents(task)
+  const completed = workflowTerminalAgentCount(task)
   const total = task.agentCount ?? 0
   const lines = [
     `Workflow: ${task.workflowName ?? task.description}`,
@@ -93,10 +85,10 @@ export function formatWorkflowStatus(
   )
 
   for (const phase of task.phases) {
-    const phaseCompleted = phase.completedAgentIds.length
+    const phaseCompleted = workflowPhaseTerminalAgentCount(phase)
     const phaseTotal = phase.agentIds.length
     lines.push(
-      `- ${phase.id}: ${phase.status} ${phaseCompleted}/${phaseTotal} [${progressBar(phaseCompleted, phaseTotal)}] skipped ${phase.skippedAgentIds.length}/${phaseTotal} retries: ${phase.failedAgentIds.length}`,
+      `- ${phase.id}: ${phase.status} ${phaseCompleted}/${phaseTotal} [${progressBar(phaseCompleted, phaseTotal)}] skipped ${phase.skippedAgentIds.length}/${phaseTotal}`,
     )
   }
 

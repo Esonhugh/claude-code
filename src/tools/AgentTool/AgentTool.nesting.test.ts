@@ -24,6 +24,7 @@ import {
   getRootSetAppStateForTesting,
 } from './runAgent.js'
 import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
+import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 
 function createTestAssistantMessage(text: string) {
   return createAssistantMessage({ content: text })
@@ -33,8 +34,12 @@ async function* createControlledAgentStream() {
   yield createTestAssistantMessage('controlled agent done')
 }
 
+let controlledAvailableToolNames: string[] = []
 mock.module('./runAgent.js', () => ({
-  runAgent: () => createControlledAgentStream(),
+  runAgent: (params: { availableTools: Array<{ name: string }> }) => {
+    controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
+    return createControlledAgentStream()
+  },
 }))
 
 type TestContext = {
@@ -180,6 +185,32 @@ assert.deepEqual(
 const depthContext = createContext(0) as never as { options: { subagentDepth?: number } }
 depthContext.options.subagentDepth = 1
 assert.equal(getAgentOptionsSubagentDepthForTesting(depthContext as never), 1)
+
+const structuredOutputResult = createSyntheticOutputTool({
+  type: 'object',
+  additionalProperties: false,
+  required: ['ok'],
+  properties: { ok: { type: 'boolean' } },
+})
+if (!('tool' in structuredOutputResult)) {
+  throw new Error(structuredOutputResult.error)
+}
+const structuredOutputContext = createContext(0) as never as {
+  options: { tools: Array<{ name: string }> }
+}
+structuredOutputContext.options.tools = [structuredOutputResult.tool]
+controlledAvailableToolNames = []
+await AgentTool.call(
+  {
+    description: 'structured output worker',
+    prompt: 'return structured output',
+    subagent_type: 'general-purpose',
+  },
+  structuredOutputContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_structured_output_worker' } } as never,
+)
+assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
 
 const spawnDepthOnlyContext = createContext(0) as never as TestContext & {
   agentId: string
