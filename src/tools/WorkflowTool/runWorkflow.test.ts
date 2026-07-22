@@ -433,6 +433,60 @@ assert.deepEqual(failThenSkipTask.results.map(item => item.status), ['skipped'])
 assert.equal(failThenSkipTask.phases[0]?.error, undefined)
 assert.equal(failThenSkipCallCount, 2)
 
+let duplicateLabelState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setDuplicateLabelState = (updater: (prev: AppState) => AppState): void => {
+  duplicateLabelState = updater(duplicateLabelState)
+}
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'duplicate-label-plan',
+    defaults: {
+      ...plan.defaults,
+      maxConcurrency: 2,
+      maxAgents: 2,
+    },
+    phases: [
+      {
+        ...plan.phases[0]!,
+        id: 'duplicate',
+        fanout: 2,
+        concurrency: 2,
+        agentLabels: ['same', 'same'],
+      },
+    ],
+    totalAgents: 2,
+  },
+  context: {
+    getAppState: () => duplicateLabelState,
+    setAppState: setDuplicateLabelState,
+    options: {
+      tools: [fakeAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_duplicate_label_plan',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_duplicate_label_plan' } } as never,
+  workflowRunId: 'wf_duplicate_label_plan',
+})
+const duplicateLabelTask = Object.values(duplicateLabelState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(duplicateLabelTask)
+assert.deepEqual(duplicateLabelTask.phases[0]?.agentIds, ['same', 'same [2]'])
+assert.equal(duplicateLabelTask.agentCount, 2)
+assert.equal(duplicateLabelTask.startedAgentAttempts, 2)
+assert.deepEqual(
+  duplicateLabelTask.agentAttempts?.map(attempt => attempt.logicalAgentId),
+  ['same', 'same [2]'],
+)
+
 let retryCallCount = 0
 let retryState = {
   tasks: {},
@@ -489,6 +543,82 @@ const retryTask = Object.values(retryState.tasks).find(
 assert.ok(retryTask)
 assert.equal(retryTask.status, 'completed')
 assert.equal(retryCallCount, 2)
+
+let manualAutomaticRetryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setManualAutomaticRetryState = (updater: (prev: AppState) => AppState): void => {
+  manualAutomaticRetryState = updater(manualAutomaticRetryState)
+}
+let manualAutomaticRetryCallCount = 0
+const manualAutomaticRetryAgentTool = {
+  name: 'Agent',
+  async call() {
+    manualAutomaticRetryCallCount++
+    const task = Object.values(manualAutomaticRetryState.tasks).find(
+      (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+    )
+    assert.ok(task)
+    if (manualAutomaticRetryCallCount === 1) {
+      const agentId = task.currentAgentId ?? task.phases[0]?.agentIds[0]
+      assert.ok(agentId)
+      retryWorkflowAgent(task.id, agentId, setManualAutomaticRetryState)
+      throw new Error('aborted by retry')
+    }
+    if (manualAutomaticRetryCallCount === 2) {
+      throw new Error('temporary failure')
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'manual plus automatic retry ok' }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'manual-automatic-retry-plan',
+    defaults: { ...plan.defaults, maxRetries: 1 },
+  },
+  context: {
+    getAppState: () => manualAutomaticRetryState,
+    setAppState: setManualAutomaticRetryState,
+    options: {
+      tools: [manualAutomaticRetryAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_manual_automatic_retry',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_manual_automatic_retry' } } as never,
+  workflowRunId: 'wf_manual_automatic_retry',
+})
+const manualAutomaticRetryTask = Object.values(manualAutomaticRetryState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(manualAutomaticRetryTask)
+assert.equal(manualAutomaticRetryTask.status, 'completed')
+assert.equal(manualAutomaticRetryCallCount, 3)
+assert.deepEqual(
+  manualAutomaticRetryTask.agentAttempts?.map(attempt => ({
+    agentId: attempt.agentId,
+    attempt: attempt.attempt,
+    status: attempt.status,
+  })),
+  [
+    { agentId: 'manual-automatic-retry-plan-root-1', attempt: 0, status: 'interrupted' },
+    { agentId: 'manual-automatic-retry-plan-root-1 (retry 1)', attempt: 1, status: 'failed' },
+    { agentId: 'manual-automatic-retry-plan-root-1 (retry 2)', attempt: 2, status: 'completed' },
+  ],
+)
 
 let pauseCompletionState = {
   tasks: {},

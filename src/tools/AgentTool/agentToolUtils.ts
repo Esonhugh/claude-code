@@ -58,6 +58,7 @@ import { emitTaskProgress as emitTaskProgressEvent } from '../../utils/task/sdkP
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
+import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 export type ResolvedAgentTools = {
@@ -183,6 +184,14 @@ export function resolveAgentTools(
   const resolved: Tool[] = []
   const resolvedToolsSet = new Set<Tool>()
   let allowedAgentTypes: string[] | undefined
+
+  const requiredStructuredOutputTool = availableToolMap.get(
+    SYNTHETIC_OUTPUT_TOOL_NAME,
+  )
+  if (requiredStructuredOutputTool) {
+    resolved.push(requiredStructuredOutputTool)
+    resolvedToolsSet.add(requiredStructuredOutputTool)
+  }
 
   for (const toolSpec of agentTools) {
     // Parse the tool spec to extract the base tool name and any permission pattern

@@ -352,13 +352,17 @@ function removeTaskResultsForPhaseIndex(
 export function workflowPhaseTerminalAgentCount(
   phase: LocalWorkflowPhaseState,
 ): number {
-  const terminalIndexes = new Set(
-    phase.results.flatMap(result =>
-      result.status === 'completed' || result.status === 'failed' || result.status === 'skipped'
-        ? [result.index]
-        : [],
-    ),
-  )
+  const terminalIndexes = new Set<number>()
+  for (const result of phase.results) {
+    if (
+      result.status !== 'completed' &&
+      result.status !== 'failed' &&
+      result.status !== 'skipped'
+    ) continue
+    if (result.index >= 0 && result.index < phase.agentIds.length) {
+      terminalIndexes.add(result.index)
+    }
+  }
   for (const agentId of [
     ...phase.completedAgentIds,
     ...phase.failedAgentIds,

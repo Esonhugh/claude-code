@@ -23,6 +23,7 @@ import {
   getAgentOptionsSubagentDepthForTesting,
   getRootSetAppStateForTesting,
 } from './runAgent.js'
+import { resolveAgentTools } from './agentToolUtils.js'
 import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 
@@ -35,9 +36,19 @@ async function* createControlledAgentStream() {
 }
 
 let controlledAvailableToolNames: string[] = []
+let controlledResolvedToolNames: string[] = []
 mock.module('./runAgent.js', () => ({
-  runAgent: (params: { availableTools: Array<{ name: string }> }) => {
+  runAgent: (params: {
+    agentDefinition: Parameters<typeof resolveAgentTools>[0]
+    availableTools: Parameters<typeof resolveAgentTools>[1]
+    isAsync: boolean
+  }) => {
     controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
+    controlledResolvedToolNames = resolveAgentTools(
+      params.agentDefinition,
+      params.availableTools,
+      params.isAsync,
+    ).resolvedTools.map(tool => tool.name)
     return createControlledAgentStream()
   },
 }))
@@ -211,6 +222,48 @@ await AgentTool.call(
   { message: { id: 'msg_structured_output_worker' } } as never,
 )
 assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
+assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
+
+const restrictedAgent = {
+  ...GENERAL_PURPOSE_AGENT,
+  agentType: 'restricted-structured-output',
+  tools: ['Read'],
+}
+const restrictedStructuredOutputContext = createContext(0) as never as TestContext & {
+  options: {
+    tools: Array<{ name: string }>
+    agentDefinitions: {
+      activeAgents: typeof restrictedAgent[]
+      inactiveAgents: []
+      allowedAgentTypes: undefined
+    }
+  }
+}
+restrictedStructuredOutputContext.options.tools = [structuredOutputResult.tool]
+restrictedStructuredOutputContext.options.agentDefinitions = {
+  activeAgents: [restrictedAgent],
+  inactiveAgents: [],
+  allowedAgentTypes: undefined,
+}
+restrictedStructuredOutputContext.setAppState((prev: ReturnType<TestContext['getAppState']>) => ({
+  ...prev,
+  agentDefinitions: restrictedStructuredOutputContext.options.agentDefinitions,
+}))
+controlledAvailableToolNames = []
+controlledResolvedToolNames = []
+await AgentTool.call(
+  {
+    description: 'restricted structured output worker',
+    prompt: 'return structured output',
+    subagent_type: 'restricted-structured-output',
+  },
+  restrictedStructuredOutputContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_restricted_structured_output_worker' } } as never,
+)
+assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
+assert.ok(controlledResolvedToolNames.includes('Read'))
+assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
 
 const spawnDepthOnlyContext = createContext(0) as never as TestContext & {
   agentId: string

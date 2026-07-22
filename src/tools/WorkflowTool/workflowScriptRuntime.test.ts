@@ -13,7 +13,13 @@ import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import { classifyWorkflowAgentError, runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
-import { killWorkflowTask, retryWorkflowAgent, skipWorkflowAgent, type LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  killWorkflowTask,
+  retryWorkflowAgent,
+  skipWorkflowAgent,
+  workflowPhaseTerminalAgentCount,
+  type LocalWorkflowTaskState,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
 await import('./WorkflowTool.js')
@@ -1011,6 +1017,64 @@ const missingSchemaTask = Object.values(missingSchemaState.tasks).find(
 assert.equal(missingSchemaTask?.status, 'completed')
 assert.equal(missingSchemaTask?.phases[0]?.completedAgentIds.length, 0)
 assert.equal(missingSchemaTask?.phases[0]?.failedAgentIds.length, 1)
+
+dequeueAllMatching(command => command.mode === 'task-notification')
+const multiPhaseScript = `export const meta = {
+  name: "runtime-multi-phase-workflow",
+  description: "Workflow using phase-local agent indexes.",
+  phases: [{ title: "First" }, { title: "Second" }],
+}
+phase("First")
+await agent("first", { label: "first-agent" })
+phase("Second")
+await agent("second", { label: "second-agent" })
+`
+let multiPhaseState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+await runWorkflowScript({
+  script: multiPhaseScript,
+  plan: {
+    ...plan,
+    name: 'runtime-multi-phase-workflow',
+    description: 'Workflow using phase-local agent indexes.',
+    phases: [
+      { ...plan.phases[0]!, id: 'First' },
+      { ...plan.phases[0]!, id: 'Second' },
+    ],
+    totalAgents: 2,
+    runScriptSnapshot: multiPhaseScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => multiPhaseState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      multiPhaseState = updater(multiPhaseState)
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_multi_phase',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_multi_phase' } } as never,
+  workflowRunId: `wf_script_multi_phase_${process.pid}`,
+  scriptPath: '/tmp/runtime-multi-phase-workflow.js',
+})
+const multiPhaseTask = Object.values(multiPhaseState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(multiPhaseTask)
+assert.deepEqual(
+  multiPhaseTask.phases.map(phase => ({
+    agentIds: phase.agentIds,
+    resultIndexes: phase.results.map(result => result.index),
+    terminalCount: workflowPhaseTerminalAgentCount(phase),
+  })),
+  [
+    { agentIds: ['first-agent'], resultIndexes: [0], terminalCount: 1 },
+    { agentIds: ['second-agent'], resultIndexes: [0], terminalCount: 1 },
+  ],
+)
 
 dequeueAllMatching(command => command.mode === 'task-notification')
 const skipScript = `export const meta = {

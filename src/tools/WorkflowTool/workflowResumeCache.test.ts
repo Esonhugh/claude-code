@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   createAgentCallIdentity,
+  createWorkflowScriptAgentChainIdentity,
   createWorkflowResumeCursor,
   recordResumeCacheEntry,
   type WorkflowResumeCacheEntry,
@@ -72,6 +73,30 @@ assert.deepEqual(insertedStepCursor.lookup(1, firstIdentity), {
 assert.notEqual(
   createAgentCallIdentity({ index: 0, phase: 'Scan', prompt: 'Find files', opts: { label: 'scan' } }),
   createAgentCallIdentity({ index: 0, phase: 'Scan', prompt: 'Find changed files', opts: { label: 'scan' } }),
+)
+assert.notEqual(
+  createWorkflowScriptAgentChainIdentity({
+    previousKey: '',
+    prompt: 'same prompt',
+    opts: { label: 'old-label', phase: 'Scan' },
+  }),
+  createWorkflowScriptAgentChainIdentity({
+    previousKey: '',
+    prompt: 'same prompt',
+    opts: { label: 'new-label', phase: 'Scan' },
+  }),
+)
+assert.notEqual(
+  createWorkflowScriptAgentChainIdentity({
+    previousKey: '',
+    prompt: 'same prompt',
+    opts: { label: 'worker', phase: 'Scan' },
+  }),
+  createWorkflowScriptAgentChainIdentity({
+    previousKey: '',
+    prompt: 'same prompt',
+    opts: { label: 'worker', phase: 'Verify' },
+  }),
 )
 
 console.log('workflowResumeCache.test.ts passed')

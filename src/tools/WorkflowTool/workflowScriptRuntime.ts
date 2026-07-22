@@ -413,6 +413,7 @@ export async function runWorkflowScript({
   const scriptAgentResults: WorkflowAgentResult[] = []
   const agentLabelOccurrences = new Map<string, number>()
   const assignedAgentIds = new Set<string>()
+  const phaseAgentCounts = new Map<string, number>()
   let workflowAgentIdentitySeed = ''
 
   const emit = async (event: WorkflowProgressEvent): Promise<void> => {
@@ -458,6 +459,9 @@ export async function runWorkflowScript({
     agentLabelOccurrences.set(requestedAgentId, labelOccurrence + 1)
     assignedAgentIds.add(agentId)
     const logicalAgentId = agentId
+    const phase = opts?.phase || currentPhaseId
+    const phaseAgentIndex = phaseAgentCounts.get(phase) ?? 0
+    phaseAgentCounts.set(phase, phaseAgentIndex + 1)
     const identityKey = createWorkflowScriptAgentChainIdentity({
       previousKey: workflowAgentIdentitySeed,
       prompt,
@@ -466,11 +470,11 @@ export async function runWorkflowScript({
         model: opts?.model,
         isolation: opts?.isolation,
         agentType: opts?.agentType,
+        label: logicalAgentId,
+        phase,
       },
     })
     workflowAgentIdentitySeed = identityKey
-    const phase = opts?.phase || currentPhaseId
-    const agentIndex = agentCount
     agentCount++
 
     startWorkflowPhase(workflowTask.id, phase, setAppState)
@@ -483,7 +487,7 @@ export async function runWorkflowScript({
       attempt: 0,
       phase,
       label: agentId,
-      index: agentIndex,
+      index: phaseAgentIndex,
       timestamp: Date.now(),
     })
 
@@ -497,7 +501,7 @@ export async function runWorkflowScript({
         logicalAgentId,
         attempt: 0,
         recordAttempt: false,
-        index: agentIndex,
+        index: phaseAgentIndex,
         setAppState,
       })
       const output = typeof cached.result === 'string'
@@ -506,7 +510,7 @@ export async function runWorkflowScript({
       const cachedAgentResult: WorkflowAgentResult = {
         phaseId: phase,
         agentId: agentId,
-        index: agentIndex,
+        index: phaseAgentIndex,
         status: 'completed',
         output,
         prompt,
@@ -525,7 +529,7 @@ export async function runWorkflowScript({
         agentId: agentId,
         phase,
         label: agentId,
-        index: agentIndex,
+        index: phaseAgentIndex,
         status: 'completed',
         logicalAgentId,
         attemptId: `${phase}:${logicalAgentId}:attempt:0`,
@@ -555,7 +559,7 @@ export async function runWorkflowScript({
         logicalAgentId,
         attempt,
         retryOfAttemptId,
-        index: agentIndex,
+        index: phaseAgentIndex,
         setAppState,
       })
       if (attempt > 0) {
@@ -568,7 +572,7 @@ export async function runWorkflowScript({
           retryOfAttemptId,
           phase,
           label: agentId,
-          index: agentIndex,
+          index: phaseAgentIndex,
           timestamp: Date.now(),
         })
       }
@@ -576,23 +580,23 @@ export async function runWorkflowScript({
       const acquired = await semaphore.acquire(abortController.signal)
       if (!acquired) return null
       try {
-        const result = await runSingleAgent(prompt, opts, attemptAgentId, logicalAgentId, attempt, phase, stallMs, agentIndex)
+        const result = await runSingleAgent(prompt, opts, attemptAgentId, logicalAgentId, attempt, phase, stallMs, phaseAgentIndex)
         const completedAt = Date.now()
         const currentTask = context.getAppState().tasks[workflowTask.id]
         const completedResult = currentTask?.type === 'local_workflow'
           ? currentTask.results.find(
-              current => current.phaseId === phase && current.index === agentIndex,
+              current => current.phaseId === phase && current.index === phaseAgentIndex,
             )
           : undefined
         scriptAgentResults.push(completedResult ?? {
           phaseId: phase,
           agentId: attemptAgentId,
-          index: agentIndex,
+          index: phaseAgentIndex,
           status: 'completed',
           output: typeof result === 'string' ? result : JSON.stringify(result) ?? String(result),
           prompt,
         })
-        journal.record(identityKey, result, { index: agentIndex, phase, label: agentId, completedAt })
+        journal.record(identityKey, result, { index: phaseAgentIndex, phase, label: agentId, completedAt })
         await appendWorkflowJournalResult(transcriptDir, {
           key: identityKey,
           agentId: attemptAgentId,
@@ -602,7 +606,7 @@ export async function runWorkflowScript({
           retryOfAttemptId,
           phase,
           label: agentId,
-          index: agentIndex,
+          index: phaseAgentIndex,
           status: 'completed',
           result,
           timestamp: completedAt,
@@ -623,7 +627,7 @@ export async function runWorkflowScript({
             retryOfAttemptId,
             phase,
             label: agentId,
-            index: agentIndex,
+            index: phaseAgentIndex,
             status: 'interrupted',
             error: msg,
             result: null,
@@ -638,7 +642,7 @@ export async function runWorkflowScript({
           scriptAgentResults.push({
             phaseId: phase,
             agentId: attemptAgentId,
-            index: agentIndex,
+            index: phaseAgentIndex,
             status: 'skipped',
             prompt,
           })
@@ -651,7 +655,7 @@ export async function runWorkflowScript({
             retryOfAttemptId,
             phase,
             label: agentId,
-            index: agentIndex,
+            index: phaseAgentIndex,
             status: 'skipped',
             result: null,
             timestamp: Date.now(),
@@ -662,12 +666,12 @@ export async function runWorkflowScript({
         const errorKind = classifyWorkflowAgentError(error)
         failWorkflowAgent({
           taskId: workflowTask.id, phaseId: phase, agentId: attemptAgentId,
-          index: agentIndex, error: msg, errorKind, setAppState,
+          index: phaseAgentIndex, error: msg, errorKind, setAppState,
         })
         scriptAgentResults.push({
           phaseId: phase,
           agentId: attemptAgentId,
-          index: agentIndex,
+          index: phaseAgentIndex,
           status: 'failed',
           error: msg,
           errorKind,
@@ -682,7 +686,7 @@ export async function runWorkflowScript({
           retryOfAttemptId,
           phase,
           label: agentId,
-          index: agentIndex,
+          index: phaseAgentIndex,
           status: 'failed',
           error: msg,
           errorKind,
@@ -700,13 +704,13 @@ export async function runWorkflowScript({
   async function runSingleAgent(
     prompt: string, opts: AgentOpts | undefined,
     agentId: string, logicalAgentId: string, attempt: number,
-    phase: string, stallMs: number, agentIndex: number,
+    phase: string, stallMs: number, phaseAgentIndex: number,
   ): Promise<unknown> {
     const agentAbortController = createChildAbortController(abortController)
     recordWorkflowAgentController({
       taskId: workflowTask.id, agentId,
       abortController: agentAbortController, setAppState,
-      baseAgentId: logicalAgentId, index: agentIndex, userRetryAttempt: attempt,
+      baseAgentId: logicalAgentId, index: phaseAgentIndex, userRetryAttempt: attempt,
     })
 
     // Stall timer
@@ -852,7 +856,7 @@ export async function runWorkflowScript({
       completeWorkflowAgent({
         taskId: workflowTask.id,
         result: {
-          phaseId: phase, agentId: agentId, index: agentIndex,
+          phaseId: phase, agentId: agentId, index: phaseAgentIndex,
           status: 'completed', output: typeof agentResult === 'string' ? agentResult : JSON.stringify(agentResult), prompt,
           tokenCount: finalTokens,
           toolUseCount: finalToolUses,

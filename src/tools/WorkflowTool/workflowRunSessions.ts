@@ -103,6 +103,10 @@ function officialWorkflowResumeEntries(run: OfficialWorkflowRun): WorkflowResume
     const identity = createWorkflowScriptAgentChainIdentity({
       previousKey,
       prompt: agent.promptPreview,
+      opts: {
+        label,
+        phase: agent.phaseTitle,
+      },
     })
     previousKey = identity
     if (result === undefined) return []

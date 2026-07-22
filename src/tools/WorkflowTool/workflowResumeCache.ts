@@ -16,6 +16,8 @@ export type WorkflowScriptIdentityOpts = {
   effort?: string
   isolation?: 'worktree' | 'remote'
   agentType?: string
+  label?: string
+  phase?: string
 }
 
 export type WorkflowResumeCacheEntry = {
@@ -88,8 +90,10 @@ export function createWorkflowScriptAgentChainIdentity(input: {
     effort: input.opts?.effort,
     isolation: input.opts?.isolation,
     agentType: input.opts?.agentType,
+    label: input.opts?.label,
+    phase: input.opts?.phase,
   }))
-  return `v2:${h.digest('hex')}`
+  return `v3:${h.digest('hex')}`
 }
 
 export function recordResumeCacheEntry(input: {

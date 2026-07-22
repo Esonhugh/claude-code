@@ -219,7 +219,13 @@ function workflowAgentName(
   index: number,
 ): string {
   const label = phase.agentLabels?.[index]
-  if (label) return label
+  if (label) {
+    const occurrence = phase.agentLabels
+      ?.slice(0, index + 1)
+      .filter(current => current === label)
+      .length ?? 1
+    return occurrence === 1 ? label : `${label} [${occurrence}]`
+  }
   if (phase.displayName && phase.fanout === 1) return phase.displayName
   if (phase.displayName) return `${phase.displayName}-${index + 1}`
   return `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${index + 1}`
@@ -351,12 +357,15 @@ function formatAgentDescription(
     phase.fanout > 1
       ? `${plan.name}: ${phase.id} ${index + 1}/${phase.fanout}`
       : `${plan.name}: ${phase.id}`
-  if (userRetryAttempt > 0) return `${base} retry ${userRetryAttempt}`
-  return attempt === 0 ? base : `${base} retry ${attempt}/${maxRetriesFor(plan)}`
+  const physicalAttempt = attempt + userRetryAttempt
+  if (physicalAttempt === 0) return base
+  return userRetryAttempt > 0
+    ? `${base} retry ${physicalAttempt}`
+    : `${base} retry ${attempt}/${maxRetriesFor(plan)}`
 }
 
-function userRetryAgentId(baseAgentId: string, userRetryAttempt: number): string {
-  return userRetryAttempt > 0 ? `${baseAgentId} (retry ${userRetryAttempt})` : baseAgentId
+function retryAgentId(baseAgentId: string, physicalAttempt: number): string {
+  return physicalAttempt > 0 ? `${baseAgentId} (retry ${physicalAttempt})` : baseAgentId
 }
 
 async function runPhaseAgentAttempt({
@@ -403,10 +412,8 @@ async function runPhaseAgentAttempt({
       : {}),
   }
   const baseAgentId = workflowAgentName(plan, phase, index)
-  const fallbackAgentId = userRetryAttempt > 0
-    ? userRetryAgentId(baseAgentId, userRetryAttempt)
-    : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
   const physicalAttempt = attempt + userRetryAttempt
+  const fallbackAgentId = retryAgentId(baseAgentId, physicalAttempt)
   const taskSetAppState = context.setAppStateForTasks ?? context.setAppState
   const appState = context.getAppState()
   const taskState = appState.tasks[taskId]
@@ -663,14 +670,11 @@ async function runPhaseAgent({
         continue
       }
       const currentTask = context.getAppState().tasks[taskId]
+      const physicalAttempt = attempt + userRetryAttempt
       const currentAgentId = currentTask?.type === 'local_workflow'
         ? currentTask.phases.find(currentPhase => currentPhase.id === phase.id)?.agentIds[index]
-          ?? (userRetryAttempt > 0
-            ? userRetryAgentId(baseAgentId, userRetryAttempt)
-            : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`)
-        : userRetryAttempt > 0
-          ? userRetryAgentId(baseAgentId, userRetryAttempt)
-          : attempt === 0 ? baseAgentId : `${baseAgentId}-retry-${attempt}`
+          ?? retryAgentId(baseAgentId, physicalAttempt)
+        : retryAgentId(baseAgentId, physicalAttempt)
       const currentResult = currentTask?.type === 'local_workflow'
         ? currentTask.phases.find(currentPhase => currentPhase.id === phase.id)?.results.find(result => result.index === index)
         : undefined

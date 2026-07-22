@@ -284,6 +284,24 @@ const context = {
     ['agent-a', 'agent-b', 'agent-c'],
   )
 
+  const globalIndexPhase: LocalWorkflowTaskState['phases'][number] = {
+    id: 'second-phase',
+    status: 'completed',
+    agentIds: ['agent-b'],
+    completedAgentIds: ['agent-b'],
+    skippedAgentIds: [],
+    failedAgentIds: [],
+    results: [
+      {
+        phaseId: 'second-phase',
+        agentId: 'agent-b',
+        index: 1,
+        status: 'completed',
+      },
+    ],
+  }
+  assert.equal(workflowPhaseTerminalAgentCount(globalIndexPhase), 1)
+
   const runningTask: LocalWorkflowTaskState = {
     ...task,
     id: 'w-running',
