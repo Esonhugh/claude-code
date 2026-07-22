@@ -39,6 +39,84 @@
         "保存 Workflow 启动、Agent marker、completion notification 和 prompt 恢复的关联证据。",
         "缺少任一链路证据时报告 not covered 或 running，而不是 passed。"
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "请阅读 @docs/fix-workflow-agent-failure.md，并验收 handoff 中列出的 workflow Agent failure 修复。handoff 引用的旧 session 已经证明过根因，你可以直接把它当作本轮回归通过证据吗？请给出本轮 binary-side 验收范围、证据和限制。",
+      "expected_output": "将 handoff 的旧全局 binary session 限定为历史根因证据，不能作为当前源码回归通过证据；先运行 handoff 指定的聚焦 Bun tests 和静态检查，再读取 Makefile、记录三次 Git 基线、重新构建当前 built-claude，并为可交互复现的修复路径创建新的隔离 tmux 运行；把无法稳定由普通 CLI 触发的故障路径明确归为自动化测试、受控 fault injection 或 not covered。",
+      "files": [
+        "docs/fix-workflow-agent-failure.md"
+      ],
+      "assertions": [
+        "明确指出 handoff session 使用全局安装 binary，不能证明当前源码修复已通过。",
+        "旧 session、Task ID、Run ID、journal 和 subagent 日志只作为历史根因证据，不与新运行证据拼接。",
+        "运行 handoff 相关的聚焦 Bun tests、bunx tsc --noEmit --pretty false、bun run lint 和 git diff --check，并将结果限定为对应自动化 assertions。",
+        "本轮读取 Makefile、运行 make build，并记录 build 前、CLI 前、CLI 后 Git 状态和 built-claude metadata。",
+        "新的每个场景使用唯一 tmux session、evidence directory、HOME、CLAUDE_CONFIG_DIR、input 和 debug log。",
+        "逐项区分真实 CLI 覆盖、自动化测试覆盖、受控 fault injection 和 not covered，不以旧日志补齐新运行缺口。"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "按照 @docs/fix-workflow-agent-failure.md 验收 synthetic API Error 修复：让 workflow 内 Agent 的最终 assistant message 带 isApiErrorMessage: true 和 error: unknown。我要确认它不再被当成 completed，UI 显示失败，journal/resume 也不会把错误文本缓存成成功。请使用最新 built-claude；如果普通交互无法稳定制造该错误，不要声称通过。",
+      "expected_output": "先用自动化测试或受控 fault injection 稳定产生带错误 metadata 的终态，再在脚本驱动的 tmux built-claude 中收集同一次运行的 pane、task、journal、debug 和 ID 证据；断言 Agent/workflow runtime 为 failed、completedAgentIds 不含该 attempt、failedAgentIds 包含该 attempt、UI 为失败状态、journal 明确记录失败且 resume cache 不复用它。无法将内部状态与同次 binary 运行关联时对应 assertion 为 not covered，而不是根据文本前缀或单一 glyph 判定通过。",
+      "files": [
+        "docs/fix-workflow-agent-failure.md"
+      ],
+      "assertions": [
+        "错误分类依赖 isApiErrorMessage/error metadata，不依赖匹配本地化或供应商相关的 API Error 文本。",
+        "受控场景由 tmux 中 built-claude 的 binary-side Workflow→Agent 链路触发，parent-side Agent/Workflow 不计入结果。",
+        "同次运行证据表明 failed attempt 未进入 completedAgentIds、进入 failedAgentIds，并且用户可见状态为 ✗。",
+        "journal 写入带 status、error 和 errorKind 的显式失败生命周期而非成功 result，resume cache 不复用该失败输出。",
+        "保留失败 attempt 的 usage、duration 和 tool-use 统计；无法稳定注入或缺少内部 marker 时标为 not covered。"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "请针对 @docs/fix-workflow-agent-failure.md 中 StructuredOutput 契约和 workflow 提前 completed 的问题做回归验收。分别覆盖工具缺失、空输出，以及 structured output parse/schema validation 失败；这些情况下都不能先写 completed。还要验证选定结构化输出协议的成功路径。普通 CLI 不容易稳定触发时应如何报告？",
+      "expected_output": "通过聚焦自动化测试或明确标注的受控 fault injection 分别覆盖 StructuredOutput 不可用、空输出、parse 失败、schema validation 失败和成功协议，并仅对能够在最新 built-claude 中真实触发的入口执行 scripted tmux 验收；检查 prompt、runtime 与 Agent 可用工具契约一致，失败发生在 completeWorkflowAgent(completed) 之前，task/journal/resume 均保留失败语义。普通 CLI 无法稳定触发的内部路径报告为自动化测试覆盖或 not covered，不用 UI 成功路径冒充。",
+      "files": [
+        "docs/fix-workflow-agent-failure.md"
+      ],
+      "assertions": [
+        "分别建立 StructuredOutput 工具缺失、空输出、parse 失败和 schema validation 失败 assertions，不合并成一个泛化成功结论。",
+        "验证 schema prompt、runtime 与 Agent 实际可用工具一致；若仍要求 StructuredOutput，则必须有 binary-side 工具可用性证据；若改用返回协议，则 prompt 不再要求不存在的工具。",
+        "工具缺失必须确定性失败而不是重复 ToolSearch 刷新 stall timer 并无限运行。",
+        "任一结构化输出步骤失败时，不产生 completed lifecycle、成功 journal result 或可复用 resume cache。",
+        "只有 Agent 成功、输出存在、结构化结果提取成功且 schema 验证通过后，才能断言 completeWorkflowAgent(completed)。",
+        "成功路径验证选定协议：工具方案应限定当前 schema Agent、兼容 nested Agent 过滤、反馈 schema error 并直接读取 tool result；非工具方案不得依赖脆弱的最终文本正则。",
+        "普通 CLI 无法稳定触发的内部故障路径明确标记为自动化测试覆盖、受控 fault injection 或 not covered。"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "依据 @docs/fix-workflow-agent-failure.md 验收 retry：同一个 logical Agent 第一次失败，手动 retry 后第二次成功。请确认首次失败不会消失，两个物理 attempt 可以稳定关联，journal/resume 正确，Retries 不会因为后来成功而下降。",
+      "expected_output": "在同一个最新 built-claude workflow 运行中保存第一次 failed attempt、手动 retry、第二次 completed attempt 和最终 prompt 的连续证据；区分 logicalAgentId、attemptId、attempt、retryOfAttemptId 与展示名，不把 angle-B (retry 1) 当唯一身份；核对 task state、journal、resume 和 UI 均保留首次失败及第二次成功，历史 retryCount 保持 1。若 retry 无法在同一运行完成或证据跨 session，只能报告 running/not covered。",
+      "files": [
+        "docs/fix-workflow-agent-failure.md"
+      ],
+      "assertions": [
+        "第一次 attempt 和 retry attempt 具有独立稳定 attemptId，同时共享 logicalAgentId，并记录 attempt/retryOfAttemptId。",
+        "首次 attempt 在 retry 成功后仍保持 failed 历史，第二次 attempt 独立记录 completed，不能用展示名承担状态关联。",
+        "journal 记录两个 attempt 的 status、error、errorKind 和关联身份；failed/interrupted/stopped attempt 不进入 resume cache，只有验证成功的 completed attempt 可缓存。",
+        "retryCount 是单调的历史重试数，成功 retry 后仍为 1，不由当前 failedAgentIds.length 推导。",
+        "pane、task state、journal、debug marker、Task/Run/Agent ID 均来自同一次 tmux 运行；跨 session 或未达终态时不判 passed。"
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "请用最新 built-claude 运行一次 high effort 的 bundled code-review，专门验收 @docs/fix-workflow-agent-failure.md 中 Agent 总数和 Retries 指标修复。static plan 最大 45 个 Agent，但本次运行可能只实际启动 9 个，不能把 45 当成本次实际总数。",
+      "expected_output": "脚本驱动 tmux 中的 /code-review，关联同次运行的 workflow plan、started/result journal entries、task state、pane 和 debug log；分别报告 plannedMaxAgents、startedAgentAttempts、active/completed/failed attempts、logicalAgents 和 retryCount。不得用 static plan 45 覆盖实际启动数，也不得把当前 failedAgentIds 数量当历史 retries；workflow 未完成时报告当前进度和 running。",
+      "files": [
+        "docs/fix-workflow-agent-failure.md"
+      ],
+      "assertions": [
+        "/code-review 通过 built-claude stdin 输入，并记录 binary-side Workflow Task/Run ID 和 Agent fan-out。",
+        "plannedMaxAgents 与 actual startedAgentAttempts 分开记录，UI 不把 static maximum 45 显示为本次实际总数。",
+        "started、active、completed、failed attempt 数来自同次运行可关联的 task/journal/debug 证据，而非 prompt 中的理论计划。",
+        "logicalAgents、物理 attempts 和 retryCount 分开统计，Retries 不等于 failedAgentIds.length。",
+        "动态 fan-out 尚未结束时报告已启动数、当前已知计划和 runtime state running，不将局部计数判为 passed。"
+      ]
     }
   ]
 }
