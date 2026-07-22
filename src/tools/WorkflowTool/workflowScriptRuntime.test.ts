@@ -259,6 +259,24 @@ assert.match(resumedJournalRaw, /"type":"result"/)
 assert.match(resumedJournalRaw, /"agentId":"alpha"/)
 assert.match(resumedJournalRaw, /"result":"alpha-ok"/)
 assert.equal(agentToolCallCount, 1)
+
+const changedModeScript = script.replace('{ label: "alpha" }', '{ label: "alpha", mode: "plan" }')
+await runWorkflowScript({
+  script: changedModeScript,
+  plan: {
+    ...plan,
+    runScriptSnapshot: changedModeScript,
+  },
+  args: { case: 'unit' },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_changed_mode_test' } } as never,
+  workflowRunId: 'wf_changed_mode_test',
+  scriptPath: '/tmp/runtime-small-workflow.js',
+  resumeFromRunId: 'wf_test',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(transcriptDirMatch[1]),
+})
+assert.equal(agentToolCallCount, 2)
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 let duplicateState = {

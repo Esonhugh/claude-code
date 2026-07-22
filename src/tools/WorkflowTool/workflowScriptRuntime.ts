@@ -471,6 +471,7 @@ export async function runWorkflowScript({
         isolation: opts?.isolation,
         agentType: opts?.agentType,
         label: logicalAgentId,
+        mode: mapPermissionMode(opts?.mode ?? plan.defaults.permissionMode),
         phase,
       },
     })
@@ -707,10 +708,11 @@ export async function runWorkflowScript({
     phase: string, stallMs: number, phaseAgentIndex: number,
   ): Promise<unknown> {
     const agentAbortController = createChildAbortController(abortController)
+    const attemptId = `${phase}:${logicalAgentId}:attempt:${attempt}`
     recordWorkflowAgentController({
       taskId: workflowTask.id, agentId,
       abortController: agentAbortController, setAppState,
-      baseAgentId: logicalAgentId, index: phaseAgentIndex, userRetryAttempt: attempt,
+      logicalAgentId, attempt, attemptId, index: phaseAgentIndex,
     })
 
     // Stall timer
@@ -825,6 +827,12 @@ export async function runWorkflowScript({
       clearInterval(stallTimer)
 
       const output = result.data as AgentToolOutput
+      if (agentAbortController.signal.reason === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON) {
+        throw new Error(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON)
+      }
+      if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
+        throw new Error(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
+      }
       if (output.status && output.status !== 'completed') {
         throw new Error(extractAgentText(output))
       }
@@ -863,6 +871,7 @@ export async function runWorkflowScript({
           durationMs: output.totalDurationMs ?? 0,
         },
         setAppState,
+        attemptId,
       })
 
       return agentResult

@@ -17,6 +17,7 @@ export type WorkflowScriptIdentityOpts = {
   isolation?: 'worktree' | 'remote'
   agentType?: string
   label?: string
+  mode?: string
   phase?: string
 }
 
@@ -91,6 +92,7 @@ export function createWorkflowScriptAgentChainIdentity(input: {
     isolation: input.opts?.isolation,
     agentType: input.opts?.agentType,
     label: input.opts?.label,
+    mode: input.opts?.mode === 'default' ? undefined : input.opts?.mode,
     phase: input.opts?.phase,
   }))
   return `v3:${h.digest('hex')}`

@@ -322,6 +322,128 @@ await runWorkflowPlan({
 })
 assert.equal(resumeFailedCallCount, 1)
 
+const topologyCwd = await mkdtemp(join(tmpdir(), 'workflow-cache-topology-'))
+const cachedTopologyPlan: WorkflowDryRunPlan = {
+  ...plan,
+  name: 'cache-topology-plan',
+  phases: [{
+    ...plan.phases[0]!,
+    id: 'topology',
+    agentLabels: ['kept'],
+    agentPrompts: ['Keep work.'],
+  }],
+}
+let cachedTopologyState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setCachedTopologyState = (updater: (prev: AppState) => AppState): void => {
+  cachedTopologyState = updater(cachedTopologyState)
+}
+await runWorkflowPlan({
+  plan: cachedTopologyPlan,
+  context: {
+    getAppState: () => cachedTopologyState,
+    setAppState: setCachedTopologyState,
+    getCwd: () => topologyCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'cached kept output' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_cache_topology_source',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_cache_topology_source' } } as never,
+  workflowRunId: 'wf_cache_topology_source',
+})
+
+let insertedTopologyCallCount = 0
+let insertedTopologyState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setInsertedTopologyState = (updater: (prev: AppState) => AppState): void => {
+  insertedTopologyState = updater(insertedTopologyState)
+}
+await runWorkflowPlan({
+  plan: {
+    ...cachedTopologyPlan,
+    defaults: {
+      ...cachedTopologyPlan.defaults,
+      maxConcurrency: 2,
+      maxAgents: 2,
+    },
+    phases: [{
+      ...cachedTopologyPlan.phases[0]!,
+      fanout: 2,
+      concurrency: 2,
+      agentLabels: ['inserted', 'kept'],
+      agentPrompts: ['Inserted work.', 'Keep work.'],
+    }],
+    totalAgents: 2,
+  },
+  context: {
+    getAppState: () => insertedTopologyState,
+    setAppState: setInsertedTopologyState,
+    getCwd: () => topologyCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          insertedTopologyCallCount++
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'fresh inserted output' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_cache_topology_inserted',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_cache_topology_inserted' } } as never,
+  workflowRunId: 'wf_cache_topology_inserted',
+  resumeFromRunId: 'wf_cache_topology_source',
+})
+assert.equal(insertedTopologyCallCount, 1)
+const insertedTopologyTask = Object.values(insertedTopologyState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(insertedTopologyTask)
+assert.deepEqual(insertedTopologyTask.phases[0]?.agentIds, ['inserted', 'kept'])
+assert.deepEqual(
+  insertedTopologyTask.phases[0]?.results
+    .toSorted((left, right) => left.index - right.index)
+    .map(result => ({
+      agentId: result.agentId,
+      index: result.index,
+      output: result.output,
+    })),
+  [
+    { agentId: 'inserted', index: 0, output: 'fresh inserted output' },
+    { agentId: 'kept', index: 1, output: 'cached kept output' },
+  ],
+)
+
 let skipCallCount = 0
 let skipState = {
   tasks: {},
@@ -446,19 +568,19 @@ await runWorkflowPlan({
     name: 'duplicate-label-plan',
     defaults: {
       ...plan.defaults,
-      maxConcurrency: 2,
-      maxAgents: 2,
+      maxConcurrency: 3,
+      maxAgents: 3,
     },
     phases: [
       {
         ...plan.phases[0]!,
         id: 'duplicate',
-        fanout: 2,
-        concurrency: 2,
-        agentLabels: ['same', 'same'],
+        fanout: 3,
+        concurrency: 3,
+        agentLabels: ['same', 'same [2]', 'same'],
       },
     ],
-    totalAgents: 2,
+    totalAgents: 3,
   },
   context: {
     getAppState: () => duplicateLabelState,
@@ -479,12 +601,16 @@ const duplicateLabelTask = Object.values(duplicateLabelState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
 assert.ok(duplicateLabelTask)
-assert.deepEqual(duplicateLabelTask.phases[0]?.agentIds, ['same', 'same [2]'])
-assert.equal(duplicateLabelTask.agentCount, 2)
-assert.equal(duplicateLabelTask.startedAgentAttempts, 2)
+assert.deepEqual(duplicateLabelTask.phases[0]?.agentIds, ['same', 'same [2]', 'same [3]'])
+assert.equal(duplicateLabelTask.agentCount, 3)
+assert.equal(duplicateLabelTask.startedAgentAttempts, 3)
 assert.deepEqual(
   duplicateLabelTask.agentAttempts?.map(attempt => attempt.logicalAgentId),
-  ['same', 'same [2]'],
+  ['same', 'same [2]', 'same [3]'],
+)
+assert.deepEqual(
+  duplicateLabelTask.phases[0]?.results.map(result => result.index),
+  [0, 1, 2],
 )
 
 let retryCallCount = 0
@@ -619,6 +745,187 @@ assert.deepEqual(
     { agentId: 'manual-automatic-retry-plan-root-1 (retry 2)', attempt: 2, status: 'completed' },
   ],
 )
+
+let automaticManualRetryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setAutomaticManualRetryState = (updater: (prev: AppState) => AppState): void => {
+  automaticManualRetryState = updater(automaticManualRetryState)
+}
+let automaticManualRetryCallCount = 0
+const automaticManualRetryAgentTool = {
+  name: 'Agent',
+  async call() {
+    automaticManualRetryCallCount++
+    if (automaticManualRetryCallCount === 1) {
+      throw new Error('automatic retry trigger')
+    }
+    const task = Object.values(automaticManualRetryState.tasks).find(
+      (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+    )
+    assert.ok(task)
+    if (automaticManualRetryCallCount === 2) {
+      const agentId = task.currentAgentId ?? task.phases[0]?.agentIds[0]
+      assert.equal(agentId, 'automatic-manual-retry-plan-root-1 (retry 1)')
+      retryWorkflowAgent(task.id, agentId, setAutomaticManualRetryState)
+      throw new Error('aborted by manual retry')
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'automatic plus manual retry ok' }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'automatic-manual-retry-plan',
+    defaults: { ...plan.defaults, maxRetries: 1 },
+  },
+  context: {
+    getAppState: () => automaticManualRetryState,
+    setAppState: setAutomaticManualRetryState,
+    options: {
+      tools: [automaticManualRetryAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_automatic_manual_retry',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_automatic_manual_retry' } } as never,
+  workflowRunId: 'wf_automatic_manual_retry',
+})
+const automaticManualRetryTask = Object.values(automaticManualRetryState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(automaticManualRetryTask)
+assert.equal(automaticManualRetryTask.status, 'completed')
+assert.equal(automaticManualRetryCallCount, 3)
+assert.deepEqual(automaticManualRetryTask.phases[0]?.agentIds, [
+  'automatic-manual-retry-plan-root-1 (retry 2)',
+])
+assert.deepEqual(
+  automaticManualRetryTask.agentAttempts?.map(attempt => ({
+    agentId: attempt.agentId,
+    attempt: attempt.attempt,
+    status: attempt.status,
+  })),
+  [
+    { agentId: 'automatic-manual-retry-plan-root-1', attempt: 0, status: 'failed' },
+    { agentId: 'automatic-manual-retry-plan-root-1 (retry 1)', attempt: 1, status: 'interrupted' },
+    { agentId: 'automatic-manual-retry-plan-root-1 (retry 2)', attempt: 2, status: 'completed' },
+  ],
+)
+
+let lateCompletionState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setLateCompletionState = (updater: (prev: AppState) => AppState): void => {
+  lateCompletionState = updater(lateCompletionState)
+}
+let lateCompletionCallCount = 0
+const lateCompletionAgentTool = {
+  name: 'Agent',
+  async call() {
+    lateCompletionCallCount++
+    if (lateCompletionCallCount === 1) {
+      const task = Object.values(lateCompletionState.tasks).find(
+        (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+      )
+      assert.ok(task)
+      const agentId = task.currentAgentId ?? task.phases[0]?.agentIds[0]
+      assert.ok(agentId)
+      retryWorkflowAgent(task.id, agentId, setLateCompletionState)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return {
+        data: {
+          status: 'completed',
+          content: [{ type: 'text', text: 'late stale result' }],
+          totalDurationMs: 1,
+        },
+      }
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'active retry result' }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+await runWorkflowPlan({
+  plan: { ...plan, name: 'late-completion-plan' },
+  context: {
+    getAppState: () => lateCompletionState,
+    setAppState: setLateCompletionState,
+    options: {
+      tools: [lateCompletionAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_late_completion',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_late_completion' } } as never,
+  workflowRunId: 'wf_late_completion',
+})
+const lateCompletionTask = Object.values(lateCompletionState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(lateCompletionTask)
+assert.equal(lateCompletionTask.status, 'completed')
+assert.equal(lateCompletionTask.results[0]?.agentId, 'late-completion-plan-root-1 (retry 1)')
+assert.equal(lateCompletionTask.results[0]?.output, 'active retry result')
+
+let asyncOutputState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setAsyncOutputState = (updater: (prev: AppState) => AppState): void => {
+  asyncOutputState = updater(asyncOutputState)
+}
+await runWorkflowPlan({
+  plan: { ...plan, name: 'async-output-plan' },
+  context: {
+    getAppState: () => asyncOutputState,
+    setAppState: setAsyncOutputState,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          return {
+            data: {
+              status: 'async_launched',
+              agentId: 'background-agent',
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_async_output',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_async_output' } } as never,
+  workflowRunId: 'wf_async_output',
+})
+const asyncOutputTask = Object.values(asyncOutputState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(asyncOutputTask)
+assert.equal(asyncOutputTask.status, 'failed')
+assert.equal(asyncOutputTask.results.some(result => result.status === 'completed'), false)
 
 let pauseCompletionState = {
   tasks: {},

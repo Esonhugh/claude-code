@@ -722,6 +722,22 @@ const context = {
   if (retryEvent?.type === 'workflow_agent') {
     assert.equal(retryEvent.status, 'running')
   }
+  completeWorkflowAgent({
+    taskId: 'w-running',
+    result: {
+      phaseId: 'phase',
+      agentId: 'agent-1',
+      index: 0,
+      status: 'completed',
+      output: 'late stale result',
+    },
+    setAppState,
+  })
+  updatedRunningTask = state.tasks['w-running'] as LocalWorkflowTaskState
+  assert.equal(updatedRunningTask.phases[0]?.results[0]?.status, 'running')
+  assert.equal(updatedRunningTask.phases[0]?.results[0]?.agentId, 'agent-1 (retry 1)')
+  assert.equal(updatedRunningTask.results.some(result => result.output === 'late stale result'), false)
+  assert.equal(updatedRunningTask.agentAttempts?.at(-1)?.status, 'running')
 
   const nonRunningControlTask: LocalWorkflowTaskState = {
     ...runningTask,

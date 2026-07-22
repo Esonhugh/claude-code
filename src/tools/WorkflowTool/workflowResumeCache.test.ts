@@ -98,5 +98,17 @@ assert.notEqual(
     opts: { label: 'worker', phase: 'Verify' },
   }),
 )
+assert.notEqual(
+  createWorkflowScriptAgentChainIdentity({
+    previousKey: '',
+    prompt: 'same prompt',
+    opts: { label: 'worker', phase: 'Scan', mode: 'bypassPermissions' },
+  }),
+  createWorkflowScriptAgentChainIdentity({
+    previousKey: '',
+    prompt: 'same prompt',
+    opts: { label: 'worker', phase: 'Scan', mode: 'plan' },
+  }),
+)
 
 console.log('workflowResumeCache.test.ts passed')

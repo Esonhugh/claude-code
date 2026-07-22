@@ -535,7 +535,7 @@ await writeFile(
     phases: [{ title: 'Scan', detail: 'Scan topic' }],
   }
   phase('Scan')
-  await agent('scan ' + args.topic, { label: 'scan', mode: 'default' })`,
+  await agent('scan ' + args.topic, { label: 'scan' })`,
 )
 launchedPrompts.length = 0
 const cachedRerun = await WorkflowFacadeTool.call(

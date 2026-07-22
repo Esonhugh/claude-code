@@ -218,17 +218,24 @@ function workflowAgentName(
   phase: WorkflowDryRunPhase,
   index: number,
 ): string {
-  const label = phase.agentLabels?.[index]
-  if (label) {
-    const occurrence = phase.agentLabels
-      ?.slice(0, index + 1)
-      .filter(current => current === label)
-      .length ?? 1
-    return occurrence === 1 ? label : `${label} [${occurrence}]`
+  const assigned = new Set<string>()
+  for (let currentIndex = 0; currentIndex <= index; currentIndex++) {
+    const requested = phase.agentLabels?.[currentIndex]
+      || (phase.displayName && phase.fanout === 1
+        ? phase.displayName
+        : phase.displayName
+          ? `${phase.displayName}-${currentIndex + 1}`
+          : `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${currentIndex + 1}`)
+    let agentId = requested
+    let occurrence = 2
+    while (assigned.has(agentId)) {
+      agentId = `${requested} [${occurrence}]`
+      occurrence++
+    }
+    if (currentIndex === index) return agentId
+    assigned.add(agentId)
   }
-  if (phase.displayName && phase.fanout === 1) return phase.displayName
-  if (phase.displayName) return `${phase.displayName}-${index + 1}`
-  return `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${index + 1}`
+  throw new Error(`Invalid workflow agent index: ${index}`)
 }
 
 function formatUpstreamOutputs(
@@ -452,14 +459,16 @@ async function runPhaseAgentAttempt({
     summary: `Workflow agent started: ${fallbackAgentId}`,
   })
   const agentAbortController = createChildAbortController(workflowAbortController)
+  const attemptId = `${phase.id}:${baseAgentId}:attempt:${physicalAttempt}`
   recordWorkflowAgentController({
     taskId,
     agentId: fallbackAgentId,
     abortController: agentAbortController,
     setAppState: context.setAppStateForTasks ?? context.setAppState,
-    baseAgentId,
+    logicalAgentId: baseAgentId,
+    attempt: physicalAttempt,
+    attemptId,
     index,
-    userRetryAttempt,
   })
   const agentContext = {
     ...context,
@@ -535,6 +544,15 @@ async function runPhaseAgentAttempt({
     clearInterval(stallTimer)
   }
   const output = result.data as AgentToolOutput
+  if (agentAbortController.signal.reason === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON) {
+    throw new Error(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON)
+  }
+  if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
+    throw new Error(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
+  }
+  if (output.status !== 'completed') {
+    throw new Error(`Workflow agent returned non-completed status: ${output.status ?? 'unknown'}`)
+  }
   const agentId = fallbackAgentId
   emitTaskProgress({
     taskId,
@@ -560,6 +578,7 @@ async function runPhaseAgentAttempt({
     taskId,
     result: workflowResult,
     setAppState: context.setAppStateForTasks ?? context.setAppState,
+    attemptId,
   })
   return workflowResult
 }
@@ -610,27 +629,35 @@ async function runPhaseAgent({
   const cacheLookup = resumeRuntime.cursor.lookup(agentIndex, identity)
   if (cacheLookup.cacheHit) {
     const cachedResult = cacheLookup.result as WorkflowAgentResult
+    const agentId = workflowAgentName(plan, phase, index)
+    const result: WorkflowAgentResult = {
+      ...cachedResult,
+      phaseId: phase.id,
+      agentId,
+      index,
+    }
     recordWorkflowAgentStarted({
       taskId,
       phaseId: phase.id,
-      agentId: cachedResult.agentId,
+      agentId,
+      logicalAgentId: agentId,
       recordAttempt: false,
       index,
       setAppState: context.setAppStateForTasks ?? context.setAppState,
     })
     completeWorkflowAgent({
       taskId,
-      result: cachedResult,
+      result,
       setAppState: context.setAppStateForTasks ?? context.setAppState,
     })
     resumeRuntime.entries.push(recordResumeCacheEntry({
       index: agentIndex,
       identity,
       phase: phase.id,
-      label: cachedResult.agentId,
-      result: cachedResult,
+      label: agentId,
+      result,
     }))
-    return { result: cachedResult, cacheHit: true }
+    return { result, cacheHit: true }
   }
 
   let lastError: unknown
