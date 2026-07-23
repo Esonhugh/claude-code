@@ -15,8 +15,8 @@
 ### 版本状态
 
 - 非发布变更，未新增版本号；`Makefile` 保持 `2.1.203`，`package.json` 保持 `0.0.0-dev`。
-- 本条目覆盖 `v2.1.203` tag 之后的 Workflow 修复提交，以及当前工作区中的审计修正。
-- 当前工作区仍标记为 `[not ready]`；只有最终四路门禁同轮通过后才可改变该状态。
+- 本条目覆盖 `v2.1.203` tag 之后的 Workflow 修复提交，以及 `44dceca` 中的最终审计修正。
+- `44dceca` 仍标记为 `[not ready]`，未创建 tag 或 release。
 
 ### 关联提交
 
@@ -27,7 +27,7 @@
 - `500103b` — 2026-07-22 — `[not ready] fix workflow retry identity edge cases`
 - `fc1f1cc` — 2026-07-22 — `fix workflow retry and resume consistency`
 - `aac126c` — 2026-07-23 — `require runtime interaction in validation skills`
-- 当前工作区（待提交）— 修正非完成 resume cache、Workflow-run 范围 label 唯一性、worker permission mode 传播、恢复与 phase-level permission snapshot；阻止子 Agent 显式提升父会话权限；移除未采用的 run-level Agent hard cap，并以 bounded concurrency 调度大规模 fan-out。
+- `44dceca` — 2026-07-23 — `[not ready] fix workflow agent scheduling consistency`：修正非完成 resume cache、Workflow-run 范围 label 唯一性、worker permission mode 传播、恢复与 phase-level permission snapshot；阻止普通子 Agent 显式提升父会话权限；移除 script Workflow 的 run-level Agent lifetime hard cap，并以 bounded concurrency 调度大规模 fan-out。
 
 ### 变更内容
 
@@ -56,10 +56,15 @@
 
 ### 验证状态
 
-- 当前 runtime/test 基线的 43 项受影响测试与 1001-Agent bounded fan-out/no runtime hard-cap probe已通过；`make release-check`、`make build`、direct Agent foreground→background、Workflow 内 Agent 调度、`/workflows` 和 `/code-review high` 也已形成通过证据。
-- 前一轮 `/deep-research` 输入明确禁止 web，但 bundled workflow 固定使用 WebSearch/WebFetch；拒绝 fetch 后该 Workflow 以 `failed` 终止，因此前一轮 Binary interaction 与整体门禁均为 `failed`，不能作为发布通过依据。
-- 本条目、研究文档与门禁报告完成收敛后，必须从该最终文档基线重新执行同轮四路门禁；只有全部路径明确 `passed` 才能提交。
-- 最终发布结论以 `docs/gate-check/2026-07-23-workflow-agent-release-gate.md` 记录的同轮证据为准。
+- 受影响测试集 `bun test src/tools/AgentTool src/tools/WorkflowTool src/tasks/LocalWorkflowTask`：`43 pass / 0 fail`；其中 1001-Agent probe 确认全部 logical Agents 均执行，活跃并发保持 `<=16`，不存在 script Workflow lifetime launch hard cap。
+- `make release-check` 通过：TypeScript、ESLint、missing imports/assets audit 与 `git diff --check` 均无错误。
+- `make build` 生成 `built-claude` `2.1.203`；制品大小 `83,165,218` bytes，SHA-256 为 `2fdedf15c7f6da8f5abbc5d9ea2b9132cdc8cf381da5704819bbd6bc42a5f2d9`。
+- direct Agent foreground→background 验收通过：Agent ID `a5c594be473d36b80`；foreground registration、background continuation 和 terminal marker 各一次，通知一次，父 prompt 恢复且无遗留进程。
+- inline Workflow 与 `/workflows` 验收通过：Task ID `wu7njp229`，Run ID `wf_c1087f76-1c4`，两个 Agent 完成；列表、详情和 Agent terminal 页面均可加载，通知一次，父 prompt 恢复且无遗留进程。
+- `/deep-research` 按 bundled workflow 真实执行 Search/Fetch 并通过：Task ID `wp000spsy`，Run ID `wf_b7e492de-a87`，`26` 个 Agent 完成，处理 `75` 次 WebFetch 权限确认，通知一次，父 prompt 恢复且无遗留进程。
+- `/code-review high` 重试后通过：Task ID `w45l90fg7`，Run ID `wf_cc8bf130-c2d`，`25/25` Agents 完成，通知一次，父 prompt 恢复且无遗留进程。首次运行 `ws8ku7z6e` 被只读 Bash 权限对话框阻塞并按 `running` 留档，随后使用新 session 重试，不与通过证据拼接。
+- 审查提出的 named teammate 在父会话 `bypassPermissions` 下继承 bypass，按当前产品约定视为默认行为；要求恢复 1000-Agent lifetime hard cap 与既定设计冲突，不采纳。恢复中的 `bubble` definition 变化仅影响低概率权限提示行为，不影响本轮主路径验收。
+- 原始 pane、debug log、Task/Run/Agent ID、通知与清理证据保存在 `/tmp/cc-final-gate-final-pBPF94/`；未删除 debug evidence。详细结论见 `docs/gate-check/2026-07-23-workflow-agent-release-gate.md`。
 
 ## 2026-07-21 - v2.1.203 - Explore/Plan Agent、Codex Apps 与 Terminal 生命周期修复
 
