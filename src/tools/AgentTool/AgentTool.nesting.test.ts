@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
+import { setMainLoopModelOverride } from '../../bootstrap/state.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { createAssistantMessage } from '../../utils/messages.js'
@@ -37,18 +37,30 @@ async function* createControlledAgentStream() {
 
 let controlledAvailableToolNames: string[] = []
 let controlledResolvedToolNames: string[] = []
+let controlledPermissionMode: Parameters<typeof resolveAgentTools>[0]['permissionMode']
+let controlledCanShowPermissionPrompts: boolean | undefined
+let controlledMainLoopModel: string | undefined
 mock.module('./runAgent.js', () => ({
   runAgent: (params: {
     agentDefinition: Parameters<typeof resolveAgentTools>[0]
     availableTools: Parameters<typeof resolveAgentTools>[1]
     isAsync: boolean
+    canShowPermissionPrompts?: boolean
+    permissionMode?: Parameters<typeof resolveAgentTools>[0]['permissionMode']
+    toolUseContext: { options: { mainLoopModel: string } }
   }) => {
     controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
     controlledResolvedToolNames = resolveAgentTools(
-      params.agentDefinition,
+      {
+        ...params.agentDefinition,
+        permissionMode: params.permissionMode,
+      },
       params.availableTools,
       params.isAsync,
     ).resolvedTools.map(tool => tool.name)
+    controlledPermissionMode = params.permissionMode
+    controlledCanShowPermissionPrompts = params.canShowPermissionPrompts
+    controlledMainLoopModel = params.toolUseContext.options.mainLoopModel
     return createControlledAgentStream()
   },
 }))
@@ -164,6 +176,7 @@ assert.deepEqual(
     cwd: undefined,
     name: 'worker-name',
     toolUseId: 'toolu_metadata',
+    permissionMode: 'plan',
     parentAgentId: 'agent-parent',
     spawnDepth: 2,
   }),
@@ -174,6 +187,7 @@ assert.deepEqual(
     worktreeBranch: 'agent-test',
     name: 'worker-name',
     toolUseId: 'toolu_metadata',
+    permissionMode: 'plan',
     parentAgentId: 'agent-parent',
     spawnDepth: 2,
   },
@@ -223,6 +237,143 @@ await AgentTool.call(
 )
 assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
 assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
+
+controlledPermissionMode = undefined
+controlledMainLoopModel = undefined
+const planModeContext = createContext(0) as never as TestContext & {
+  options: { mainLoopModel: string }
+}
+planModeContext.options.mainLoopModel = 'claude-opus-4-6[1m]'
+setMainLoopModelOverride('opusplan')
+try {
+  await AgentTool.call(
+    {
+      description: 'plan mode worker',
+      prompt: 'inspect only',
+      subagent_type: 'general-purpose',
+      mode: 'plan',
+    },
+    planModeContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_plan_mode_worker' } } as never,
+  )
+} finally {
+  setMainLoopModelOverride(undefined)
+}
+assert.equal(controlledPermissionMode, 'plan')
+assert.ok(controlledResolvedToolNames.includes('ExitPlanMode'))
+assert.doesNotMatch(controlledMainLoopModel ?? '', /\[1m\]/)
+
+controlledPermissionMode = undefined
+const inheritedPlanModeContext = createContext(0) as never as TestContext
+inheritedPlanModeContext.setAppState((prev: ReturnType<TestContext['getAppState']>) => ({
+  ...prev,
+  toolPermissionContext: {
+    ...prev.toolPermissionContext,
+    mode: 'plan',
+  },
+}))
+await AgentTool.call(
+  {
+    description: 'inherited plan mode worker',
+    prompt: 'inspect only',
+    subagent_type: 'general-purpose',
+  },
+  inheritedPlanModeContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_inherited_plan_mode_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'plan')
+assert.ok(controlledResolvedToolNames.includes('ExitPlanMode'))
+
+controlledPermissionMode = undefined
+const blockedEscalationContext = createContext(0) as never as TestContext
+await AgentTool.call(
+  {
+    description: 'blocked permission escalation worker',
+    prompt: 'inspect only',
+    subagent_type: 'general-purpose',
+    mode: 'bypassPermissions',
+  },
+  blockedEscalationContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_blocked_permission_escalation_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'default')
+
+const bubbleAgent = {
+  ...GENERAL_PURPOSE_AGENT,
+  agentType: 'bubble-agent',
+  permissionMode: 'bubble' as const,
+}
+const autoBubbleContext = createContext(0) as never as TestContext & {
+  options: {
+    agentDefinitions: {
+      activeAgents: typeof bubbleAgent[]
+      inactiveAgents: []
+      allowedAgentTypes: undefined
+    }
+  }
+}
+autoBubbleContext.options.agentDefinitions = {
+  activeAgents: [bubbleAgent],
+  inactiveAgents: [],
+  allowedAgentTypes: undefined,
+}
+autoBubbleContext.setAppState((prev: ReturnType<TestContext['getAppState']>) => ({
+  ...prev,
+  toolPermissionContext: {
+    ...prev.toolPermissionContext,
+    mode: 'auto',
+  },
+  agentDefinitions: autoBubbleContext.options.agentDefinitions,
+}))
+controlledPermissionMode = undefined
+controlledCanShowPermissionPrompts = undefined
+await AgentTool.call(
+  {
+    description: 'bubble prompt worker',
+    prompt: 'inspect only',
+    subagent_type: 'bubble-agent',
+  },
+  autoBubbleContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_bubble_prompt_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'auto')
+assert.equal(controlledCanShowPermissionPrompts, true)
+
+for (const parentMode of ['plan', 'dontAsk'] as const) {
+  const restrictedBubbleContext = createContext(0) as never as TestContext & {
+    options: typeof autoBubbleContext.options
+  }
+  restrictedBubbleContext.options.agentDefinitions =
+    autoBubbleContext.options.agentDefinitions
+  restrictedBubbleContext.setAppState(
+    (prev: ReturnType<TestContext['getAppState']>) => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        mode: parentMode,
+      },
+      agentDefinitions: restrictedBubbleContext.options.agentDefinitions,
+    }),
+  )
+  controlledPermissionMode = undefined
+  controlledCanShowPermissionPrompts = undefined
+  await AgentTool.call(
+    {
+      description: `${parentMode} bubble prompt worker`,
+      prompt: 'inspect only',
+      subagent_type: 'bubble-agent',
+    },
+    restrictedBubbleContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: `msg_${parentMode}_bubble_prompt_worker` } } as never,
+  )
+  assert.equal(controlledPermissionMode, parentMode)
+  assert.equal(controlledCanShowPermissionPrompts, undefined)
+}
 
 const restrictedAgent = {
   ...GENERAL_PURPOSE_AGENT,
@@ -573,17 +724,6 @@ const contextWithRootSetter = {
 getRootSetAppStateForTesting(contextWithRootSetter as never)(state => state)
 assert.equal(rootSetCalls, 1)
 assert.equal(isolatedSetCalls, 0)
-
-const resumeAgentSource = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), 'resumeAgent.ts'),
-  'utf8',
-)
-const runAgentParamsBlock = resumeAgentSource.match(
-  /const runAgentParams:[\s\S]*?\n {2}}\n\n {2}\/\/ Skip name-registry write/,
-)?.[0]
-assert.ok(runAgentParamsBlock)
-assert.match(runAgentParamsBlock, /parentAgentId:\s*meta\?\.parentAgentId/)
-assert.match(runAgentParamsBlock, /spawnDepth:\s*meta\?\.spawnDepth \?\? 1/)
 
 const debugParams = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',

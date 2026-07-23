@@ -25,10 +25,15 @@ import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
-import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
+import type {
+  Tool,
+  Tools,
+  ToolUseContext,
+} from '../../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
+import type { PermissionMode } from '../../types/permissions.js'
 import type {
   AssistantMessage,
   Message,
@@ -81,6 +86,7 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { applyRequestedAgentPermissionMode } from './permissionMode.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -253,6 +259,7 @@ export function buildAgentMetadataForTesting({
   cwd,
   name,
   toolUseId,
+  permissionMode,
   parentAgentId,
   spawnDepth,
 }: {
@@ -263,6 +270,7 @@ export function buildAgentMetadataForTesting({
   cwd?: string
   name?: string
   toolUseId?: string
+  permissionMode?: PermissionMode
   parentAgentId?: string
   spawnDepth?: number
 }) {
@@ -274,6 +282,7 @@ export function buildAgentMetadataForTesting({
     ...(description && { description }),
     ...(name && { name }),
     ...(toolUseId && { toolUseId }),
+    ...(permissionMode && { permissionMode }),
     ...(parentAgentId && { parentAgentId }),
     ...(spawnDepth !== undefined && { spawnDepth }),
   }
@@ -326,6 +335,7 @@ export async function* runAgent({
   maxTurns,
   preserveToolUseResults,
   availableTools,
+  permissionMode: requestedPermissionMode,
   allowedTools,
   onCacheSafeParams,
   contentReplacementState,
@@ -368,6 +378,8 @@ export async function* runAgent({
    * Always contains the full tool pool assembled with the worker's own permission
    * mode, independent of the parent's tool restrictions. */
   availableTools: Tools
+  /** Effective permission mode selected by the Agent tool caller. */
+  permissionMode?: PermissionMode
   /** Tool permission rules to add to the agent's session allow rules.
    * When provided, replaces ALL allow rules so the agent only has what's
    * explicitly listed (parent approvals don't leak through). */
@@ -423,7 +435,15 @@ export async function* runAgent({
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
-  const permissionMode = appState.toolPermissionContext.mode
+  const requestedAgentPermissionMode =
+    requestedPermissionMode ?? agentDefinition.permissionMode
+  const launchPermissionContext = requestedAgentPermissionMode
+    ? applyRequestedAgentPermissionMode(
+        appState.toolPermissionContext,
+        requestedAgentPermissionMode,
+      )
+    : appState.toolPermissionContext
+  const permissionMode = launchPermissionContext.mode
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
@@ -502,29 +522,14 @@ export async function* runAgent({
       ? systemContextNoGit
       : baseSystemContext
 
-  // Override permission mode if agent defines one
-  // However, don't override if parent is in bypassPermissions or acceptEdits mode - those should always take precedence
-  // For async agents, also set shouldAvoidPermissionPrompts since they can't show UI
-  const agentPermissionMode = agentDefinition.permissionMode
+  // Reapply the effective launch mode to fresh parent snapshots. This preserves
+  // rule updates while allowing later parent changes only to tighten the worker.
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
-    let toolPermissionContext = state.toolPermissionContext
-
-    // Override permission mode if agent defines one (unless parent is bypassPermissions, acceptEdits, or auto)
-    if (
-      agentPermissionMode &&
-      state.toolPermissionContext.mode !== 'bypassPermissions' &&
-      state.toolPermissionContext.mode !== 'acceptEdits' &&
-      !(
-        feature('TRANSCRIPT_CLASSIFIER') &&
-        state.toolPermissionContext.mode === 'auto'
-      )
-    ) {
-      toolPermissionContext = {
-        ...toolPermissionContext,
-        mode: agentPermissionMode,
-      }
-    }
+    let toolPermissionContext = applyRequestedAgentPermissionMode(
+      state.toolPermissionContext,
+      permissionMode,
+    )
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
@@ -533,7 +538,7 @@ export async function* runAgent({
     const shouldAvoidPrompts =
       canShowPermissionPrompts !== undefined
         ? !canShowPermissionPrompts
-        : agentPermissionMode === 'bubble'
+        : permissionMode === 'bubble'
           ? false
           : isAsync
     if (shouldAvoidPrompts) {
@@ -592,7 +597,11 @@ export async function* runAgent({
 
   const resolvedTools = useExactTools
     ? availableTools
-    : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
+    : resolveAgentTools(
+        { ...agentDefinition, permissionMode },
+        availableTools,
+        isAsync,
+      ).resolvedTools
 
   const additionalWorkingDirectories = Array.from(
     // @ts-ignore - recovered code
@@ -843,6 +852,7 @@ export async function* runAgent({
       cwd,
       name,
       toolUseId,
+      permissionMode,
       parentAgentId,
       spawnDepth: spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
     }),

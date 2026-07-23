@@ -361,7 +361,7 @@ const previewRunResult = await WorkflowTool.call(
 assert.match(String(previewRunResult.data), /Workflow launched in background\. Task ID: w/)
 assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /official run topic/)
-assert.equal(launchedInputs[0]?.mode, 'acceptEdits')
+assert.equal(launchedInputs[0]?.mode, undefined)
 
 launchedPrompts.length = 0
 launchedInputs.length = 0
@@ -487,7 +487,7 @@ const defaultModeRun = await WorkflowTool.call(
   { message: { id: 'msg_default_mode_run' } } as never,
 )
 assert.match(String(defaultModeRun.data), /Workflow launched in background\. Task ID: w/)
-assert.equal(launchedInputs[0]?.mode, 'acceptEdits')
+assert.equal(launchedInputs[0]?.mode, undefined)
 
 const emptyErrorRun = await WorkflowTool.call(
   { action: 'run', selector: 'empty-error' },

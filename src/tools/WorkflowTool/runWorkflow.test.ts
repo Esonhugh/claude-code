@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
@@ -16,7 +16,11 @@ import {
 assert.equal(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON, 'user-retry')
 assert.equal(WORKFLOW_AGENT_SKIPPED_ABORT_REASON, 'user-skip')
 import { dequeue, dequeueAllMatching } from '../../utils/messageQueueManager.js'
-import { runWorkflowPlan } from './runWorkflow.js'
+import {
+  allocateWorkflowAgentNames,
+  runWorkflowPlan,
+  snapshotWorkflowAgentContext,
+} from './runWorkflow.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
@@ -322,6 +326,438 @@ await runWorkflowPlan({
 })
 assert.equal(resumeFailedCallCount, 1)
 
+const inheritedModeCwd = await mkdtemp(join(tmpdir(), 'workflow-inherited-mode-cache-'))
+const inheritedModePlan: WorkflowDryRunPlan = {
+  ...plan,
+  defaults: { ...plan.defaults, permissionMode: 'default' },
+  phases: [{ ...plan.phases[0]!, permissionMode: 'default' }],
+}
+let inheritedModeSourceState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'plan' },
+} as unknown as AppState
+await runWorkflowPlan({
+  plan: inheritedModePlan,
+  context: {
+    getAppState: () => inheritedModeSourceState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      inheritedModeSourceState = updater(inheritedModeSourceState)
+    },
+    getCwd: () => inheritedModeCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'plan mode source' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_inherited_mode_source',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_inherited_mode_source' } } as never,
+  workflowRunId: 'wf_inherited_mode_source',
+})
+let inheritedModeResumeCallCount = 0
+let inheritedModeResumeState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'bypassPermissions' },
+} as unknown as AppState
+await runWorkflowPlan({
+  plan: inheritedModePlan,
+  context: {
+    getAppState: () => inheritedModeResumeState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      inheritedModeResumeState = updater(inheritedModeResumeState)
+    },
+    getCwd: () => inheritedModeCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          inheritedModeResumeCallCount++
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'bypass mode rerun' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_inherited_mode_resume',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_inherited_mode_resume' } } as never,
+  workflowRunId: 'wf_inherited_mode_resume',
+  resumeFromRunId: 'wf_inherited_mode_source',
+})
+assert.equal(inheritedModeResumeCallCount, 1)
+
+let queuedDefaultModeState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'plan' },
+} as unknown as AppState
+const queuedDefaultModeInputs: Array<{
+  description: string
+  mode?: string
+  inheritedMode?: string
+  sessionAllowRules?: readonly string[]
+}> = []
+let queuedDefaultModeCalls = 0
+const queuedDefaultModeCwd = await mkdtemp(
+  join(tmpdir(), 'workflow-declarative-queued-mode-'),
+)
+await runWorkflowPlan({
+  plan: {
+    ...inheritedModePlan,
+    name: 'queued-default-mode',
+    defaults: {
+      ...inheritedModePlan.defaults,
+      maxConcurrency: 2,
+    },
+    phases: [{
+      ...inheritedModePlan.phases[0]!,
+      fanout: 2,
+      concurrency: 1,
+      agentLabels: ['queued-one', 'queued-two'],
+    }],
+    totalAgents: 2,
+  },
+  context: {
+    getAppState: () => queuedDefaultModeState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      queuedDefaultModeState = updater(queuedDefaultModeState)
+    },
+    getCwd: () => queuedDefaultModeCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call(
+          input: {
+            description: string
+            prompt: string
+            mode?: string
+          },
+          agentContext: ToolUseContext,
+        ) {
+          const permissionContext =
+            agentContext.getAppState().toolPermissionContext
+          queuedDefaultModeInputs.push({
+            description: input.description,
+            mode: input.mode,
+            inheritedMode: permissionContext.mode,
+            sessionAllowRules: permissionContext.alwaysAllowRules?.session,
+          })
+          queuedDefaultModeCalls++
+          if (queuedDefaultModeCalls === 1) {
+            queuedDefaultModeState = {
+              ...queuedDefaultModeState,
+              toolPermissionContext: {
+                ...queuedDefaultModeState.toolPermissionContext,
+                mode: 'bypassPermissions',
+                alwaysAllowRules: { session: ['Bash(git status:*)'] },
+              },
+            } as unknown as AppState
+          }
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: input.prompt }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_queued_default_mode',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: {
+    message: { id: 'msg_queued_default_mode' },
+  } as never,
+  workflowRunId: 'wf_queued_default_mode',
+})
+assert.deepEqual(
+  queuedDefaultModeInputs
+    .map(input => ({
+      label: input.description.includes('1/2')
+        ? 'queued-one'
+        : 'queued-two',
+      mode: input.mode,
+      inheritedMode: input.inheritedMode,
+      sessionAllowRules: input.sessionAllowRules,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label)),
+  [
+    {
+      label: 'queued-one',
+      mode: 'plan',
+      inheritedMode: 'plan',
+      sessionAllowRules: undefined,
+    },
+    {
+      label: 'queued-two',
+      mode: 'plan',
+      inheritedMode: 'plan',
+      sessionAllowRules: ['Bash(git status:*)'],
+    },
+  ].sort((left, right) => left.label.localeCompare(right.label)),
+)
+
+let blockedEscalationState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const blockedEscalationInputs: Array<{
+  mode?: string
+  inheritedMode?: string
+}> = []
+const blockedEscalationCwd = await mkdtemp(
+  join(tmpdir(), 'workflow-declarative-blocked-escalation-'),
+)
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'blocked-permission-escalation',
+  },
+  context: {
+    getAppState: () => blockedEscalationState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      blockedEscalationState = updater(blockedEscalationState)
+    },
+    getCwd: () => blockedEscalationCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call(
+          input: { mode?: string },
+          agentContext: ToolUseContext,
+        ) {
+          blockedEscalationInputs.push({
+            mode: input.mode,
+            inheritedMode:
+              agentContext.getAppState().toolPermissionContext.mode,
+          })
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'blocked escalation' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_blocked_permission_escalation',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: {
+    message: { id: 'msg_blocked_permission_escalation' },
+  } as never,
+  workflowRunId: 'wf_blocked_permission_escalation',
+})
+assert.deepEqual(blockedEscalationInputs, [
+  { mode: undefined, inheritedMode: 'default' },
+])
+const blockedEscalationSnapshot = snapshotWorkflowAgentContext(
+  'bypassPermissions',
+  {
+    getAppState: () => ({
+      toolPermissionContext: { mode: 'default' },
+    }),
+  } as unknown as ToolUseContext,
+)
+assert.equal(blockedEscalationSnapshot.inputMode, undefined)
+assert.equal(blockedEscalationSnapshot.identityMode, 'default')
+assert.equal(
+  blockedEscalationSnapshot.context.getAppState().toolPermissionContext.mode,
+  'default',
+)
+
+const nonCompletedCacheCwd = await mkdtemp(join(tmpdir(), 'workflow-non-completed-cache-'))
+let nonCompletedCacheState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setNonCompletedCacheState = (updater: (prev: AppState) => AppState): void => {
+  nonCompletedCacheState = updater(nonCompletedCacheState)
+}
+await runWorkflowPlan({
+  plan,
+  context: {
+    getAppState: () => nonCompletedCacheState,
+    setAppState: setNonCompletedCacheState,
+    getCwd: () => nonCompletedCacheCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'cache source output' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_non_completed_cache_source',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_non_completed_cache_source' } } as never,
+  workflowRunId: 'wf_non_completed_cache_source',
+})
+const nonCompletedCacheSession = await loadWorkflowRunSession({
+  cwd: nonCompletedCacheCwd,
+  workflowRunId: 'wf_non_completed_cache_source',
+})
+assert.ok(nonCompletedCacheSession?.resumeCacheEntries[0])
+const completedCacheEntry = nonCompletedCacheSession.resumeCacheEntries[0]
+for (const status of ['running', 'failed'] as const) {
+  const sourceEntry = completedCacheEntry
+  await writeFile(
+    join(
+      nonCompletedCacheCwd,
+      '.claude',
+      'workflow-runs',
+      'wf_non_completed_cache_source',
+      'session.json',
+    ),
+    `${JSON.stringify({
+      ...nonCompletedCacheSession,
+      resumeCacheEntries: [{
+        ...sourceEntry,
+        result: { ...sourceEntry.result as object, status },
+      }],
+    }, null, 2)}\n`,
+  )
+  let resumedAgentCallCount = 0
+  let resumedState = {
+    tasks: {},
+    toolPermissionContext: { mode: 'default' },
+  } as unknown as AppState
+  await runWorkflowPlan({
+    plan,
+    context: {
+      getAppState: () => resumedState,
+      setAppState: (updater: (prev: AppState) => AppState): void => {
+        resumedState = updater(resumedState)
+      },
+      getCwd: () => nonCompletedCacheCwd,
+      options: {
+        tools: [{
+          name: 'Agent',
+          async call() {
+            resumedAgentCallCount++
+            return {
+              data: {
+                status: 'completed',
+                content: [{ type: 'text', text: `${status} cache rerun` }],
+                totalDurationMs: 1,
+              },
+            }
+          },
+        }],
+        mainLoopModel: 'claude-sonnet-4-6',
+        workflowRunInForeground: true,
+      },
+      abortController: new AbortController(),
+      toolUseId: `toolu_non_completed_cache_${status}`,
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: `msg_non_completed_cache_${status}` } } as never,
+    workflowRunId: `wf_non_completed_cache_${status}`,
+    resumeFromRunId: 'wf_non_completed_cache_source',
+  })
+  assert.equal(resumedAgentCallCount, 1)
+  const resumedTask = Object.values(resumedState.tasks).find(
+    (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+  )
+  assert.equal(resumedTask?.status, 'completed')
+  assert.equal(resumedTask?.results[0]?.output, `${status} cache rerun`)
+}
+
+await writeFile(
+  join(
+    nonCompletedCacheCwd,
+    '.claude',
+    'workflow-runs',
+    'wf_non_completed_cache_source',
+    'session.json',
+  ),
+  `${JSON.stringify({
+    ...nonCompletedCacheSession,
+    resumeCacheEntries: [
+      {
+        ...completedCacheEntry,
+        result: { ...completedCacheEntry.result as object, status: 'running' },
+      },
+      completedCacheEntry,
+    ],
+  }, null, 2)}\n`,
+)
+let staleThenCompletedCallCount = 0
+let staleThenCompletedState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+await runWorkflowPlan({
+  plan,
+  context: {
+    getAppState: () => staleThenCompletedState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      staleThenCompletedState = updater(staleThenCompletedState)
+    },
+    getCwd: () => nonCompletedCacheCwd,
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          staleThenCompletedCallCount++
+          throw new Error('completed cache entry should be reused')
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_stale_then_completed_cache',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_stale_then_completed_cache' } } as never,
+  workflowRunId: 'wf_stale_then_completed_cache',
+  resumeFromRunId: 'wf_non_completed_cache_source',
+})
+assert.equal(staleThenCompletedCallCount, 0)
+const staleThenCompletedTask = Object.values(staleThenCompletedState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(staleThenCompletedTask?.results[0]?.output, 'cache source output')
+
 const topologyCwd = await mkdtemp(join(tmpdir(), 'workflow-cache-topology-'))
 const cachedTopologyPlan: WorkflowDryRunPlan = {
   ...plan,
@@ -612,6 +1048,98 @@ assert.deepEqual(
   duplicateLabelTask.phases[0]?.results.map(result => result.index),
   [0, 1, 2],
 )
+
+let crossPhaseLabelState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'cross-phase-label-plan',
+    defaults: {
+      ...plan.defaults,
+      maxAgents: 2,
+    },
+    phases: [
+      {
+        ...plan.phases[0]!,
+        id: 'first',
+        agentLabels: ['same'],
+      },
+      {
+        ...plan.phases[0]!,
+        id: 'second',
+        dependsOn: ['first'],
+        agentLabels: ['same'],
+      },
+    ],
+    totalAgents: 2,
+  },
+  context: {
+    getAppState: () => crossPhaseLabelState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      crossPhaseLabelState = updater(crossPhaseLabelState)
+    },
+    options: {
+      tools: [{
+        name: 'Agent',
+        async call() {
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'cross phase output' }],
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_cross_phase_label_plan',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_cross_phase_label_plan' } } as never,
+  workflowRunId: 'wf_cross_phase_label_plan',
+})
+const crossPhaseLabelTask = Object.values(crossPhaseLabelState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.deepEqual(crossPhaseLabelTask?.phases.map(phase => phase.agentIds), [
+  ['same'],
+  ['same [2]'],
+])
+assert.deepEqual(
+  crossPhaseLabelTask?.agentAttempts?.map(attempt => attempt.logicalAgentId),
+  ['same', 'same [2]'],
+)
+
+const largeLabels = Array.from({ length: 1000 }, () => 'same')
+let largeLabelReadCount = 0
+const largeLabelPhase = {
+  ...plan.phases[0]!,
+  fanout: 1000,
+  agentLabels: new Proxy(largeLabels, {
+    get(target, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) {
+        largeLabelReadCount++
+      }
+      return Reflect.get(target, property, receiver)
+    },
+  }),
+}
+const largeLabelNames = allocateWorkflowAgentNames(
+  { ...plan, name: 'large-duplicate-label-plan' },
+  largeLabelPhase,
+)
+assert.equal(largeLabelReadCount, 1000)
+assert.equal(largeLabelNames.length, 1000)
+assert.equal(largeLabelNames[0], 'same')
+assert.equal(largeLabelNames[1], 'same [2]')
+assert.equal(largeLabelNames[999], 'same [1000]')
+assert.equal(new Set(largeLabelNames).size, 1000)
 
 let retryCallCount = 0
 let retryState = {

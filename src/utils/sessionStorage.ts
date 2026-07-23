@@ -42,6 +42,7 @@ import {
   type SessionId,
 } from '../types/ids.js'
 import type { AttributionSnapshotMessage } from '../types/logs.js'
+import type { PermissionMode } from '../types/permissions.js'
 import {
   type ContentReplacementEntry,
   type ContextCollapseCommitEntry,
@@ -273,6 +274,8 @@ export type AgentMetadata = {
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */
   description?: string
+  /** Effective permission mode used by the original agent run. Optional for older metadata. */
+  permissionMode?: PermissionMode
   /** Parent agent id for recursive agent hierarchy. Optional for top-level and older metadata. */
   parentAgentId?: string
   /** Stable recursive spawn depth. Optional for older metadata. */

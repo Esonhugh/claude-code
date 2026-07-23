@@ -1,4 +1,5 @@
 import vm from 'node:vm'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { availableParallelism } from 'node:os'
 import { dirname, join } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -29,7 +30,11 @@ import {
   WORKFLOW_AGENT_SKIPPED_ABORT_REASON,
   WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import type { WorkflowAgentErrorKind, WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import type {
+  LocalWorkflowTaskState,
+  WorkflowAgentErrorKind,
+  WorkflowAgentResult,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowArgs, WorkflowDryRunPhase, WorkflowDryRunPlan, WorkflowPermissionMode, WorkflowProgressEvent } from './workflowSpec.js'
 import { createWorkflowScriptAgentChainIdentity, type WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 import {
@@ -68,13 +73,13 @@ import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
+import { snapshotWorkflowAgentContext } from './runWorkflow.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const MAX_LOGS = 1000
 const SYNC_TIMEOUT_MS = 5000
 const MAX_CONCURRENCY = Math.min(16, Math.max(2, availableParallelism() - 2))
-const MAX_AGENT_CAP = 1000
 const DEFAULT_STALL_MS = 120_000
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 
@@ -201,10 +206,6 @@ class WorkflowJournal {
   }
 }
 
-function mapPermissionMode(mode: WorkflowPermissionMode | undefined): WorkflowPermissionMode | undefined {
-  return mode === 'default' ? undefined : mode
-}
-
 function defineSandboxGlobal(sandbox: vm.Context, name: string, value: unknown): void {
   Object.defineProperty(sandbox, name, {
     value,
@@ -251,17 +252,50 @@ function buildSchemaPrompt(schema: object): string {
   )
 }
 
-function workflowProgressSnapshot(plan: WorkflowDryRunPlan): Array<{ type: string; index: number; phaseIndex?: number; label?: string; status?: string; message?: string }> {
-  return plan.phases.flatMap((phase, phaseIndex) => [
-    { type: 'phase', index: phaseIndex, label: phase.id, status: 'running', message: phase.description },
-    ...Array.from({ length: phase.fanout }, (_, index) => ({
-      type: 'agent',
-      index,
-      phaseIndex,
-      label: phase.agentLabels?.[index] ?? `${phase.id}-${index + 1}`,
-      status: 'pending',
-    })),
-  ])
+function workflowProgressSnapshot(
+  plan: WorkflowDryRunPlan,
+  task?: LocalWorkflowTaskState,
+): Array<{
+  type: string
+  index: number
+  phaseIndex?: number
+  label?: string
+  status?: string
+  message?: string
+}> {
+  return plan.phases.flatMap((phase, phaseIndex) => {
+    const phaseState = task?.phases.find(item => item.id === phase.id)
+    const labels = phaseState?.agentIds.length
+      ? phaseState.agentIds
+      : Array.from(
+          { length: phase.fanout },
+          (_, index) => phase.agentLabels?.[index] ?? `${phase.id}-${index + 1}`,
+        )
+    return [
+      {
+        type: 'phase',
+        index: phaseIndex,
+        label: phase.id,
+        status: phaseState?.status ?? 'pending',
+        message: phase.description,
+      },
+      ...labels.map((label, index) => ({
+        type: 'agent',
+        index,
+        phaseIndex,
+        label,
+        status: phaseState?.completedAgentIds.includes(label)
+          ? 'completed'
+          : phaseState?.failedAgentIds.includes(label)
+            ? 'failed'
+            : phaseState?.skippedAgentIds.includes(label)
+              ? 'skipped'
+              : phaseState?.agentIds.includes(label)
+                ? 'running'
+                : 'pending',
+      })),
+    ]
+  })
 }
 
 function workflowAgentProgressDescription(phase: string, label: string, plan: WorkflowDryRunPlan): string {
@@ -397,7 +431,14 @@ export async function runWorkflowScript({
 
   const transcriptDir = workflowTranscriptDir(workflowRunId)
   let runSession = await startWorkflowRunSession({
-    cwd, taskId: workflowTask.id, plan, runArgs: args, workflowRunId, scriptPath, transcriptDir, resumeFromRunId,
+    cwd,
+    taskId: workflowTask.id,
+    plan,
+    runArgs: args,
+    workflowRunId,
+    scriptPath,
+    transcriptDir,
+    resumeFromRunId,
   })
 
   const logs: string[] = []
@@ -415,6 +456,14 @@ export async function runWorkflowScript({
   const assignedAgentIds = new Set<string>()
   const phaseAgentCounts = new Map<string, number>()
   let workflowAgentIdentitySeed = ''
+  const workflowAgentIdentityScope = new AsyncLocalStorage<{ seed: string }>()
+  const currentWorkflowProgress = () => {
+    const task = context.getAppState().tasks[workflowTask.id]
+    return workflowProgressSnapshot(
+      plan,
+      task?.type === 'local_workflow' ? task : undefined,
+    )
+  }
 
   const emit = async (event: WorkflowProgressEvent): Promise<void> => {
     recordWorkflowEvent({ taskId: workflowTask.id, event, setAppState })
@@ -432,19 +481,12 @@ export async function runWorkflowScript({
       throw new Error('WorkflowBudgetExceededError: token budget exhausted')
     }
   }
-  function checkAgentCap() {
-    if (agentCount >= MAX_AGENT_CAP) {
-      throw new Error(`Workflow agent cap exceeded: ${MAX_AGENT_CAP}`)
-    }
-  }
-
   // --- Real agent() with stall detection, retry, schema, worktree ---
   async function realAgent(
     prompt: string,
     opts?: AgentOpts,
   ): Promise<unknown> {
     if (abortController.signal.aborted) return null
-    checkAgentCap()
     checkBudget()
 
     const requestedAgentId = opts?.label || `agent-${agentCount + 1}`
@@ -462,8 +504,13 @@ export async function runWorkflowScript({
     const phase = opts?.phase || currentPhaseId
     const phaseAgentIndex = phaseAgentCounts.get(phase) ?? 0
     phaseAgentCounts.set(phase, phaseAgentIndex + 1)
+    const agentLaunch = snapshotWorkflowAgentContext(
+      opts?.mode ?? plan.defaults.permissionMode,
+      context,
+    )
+    const identityScope = workflowAgentIdentityScope.getStore()
     const identityKey = createWorkflowScriptAgentChainIdentity({
-      previousKey: workflowAgentIdentitySeed,
+      previousKey: identityScope?.seed ?? workflowAgentIdentitySeed,
       prompt,
       opts: {
         schema: opts?.schema,
@@ -471,11 +518,12 @@ export async function runWorkflowScript({
         isolation: opts?.isolation,
         agentType: opts?.agentType,
         label: logicalAgentId,
-        mode: mapPermissionMode(opts?.mode ?? plan.defaults.permissionMode),
+        mode: agentLaunch.identityMode,
         phase,
       },
     })
-    workflowAgentIdentitySeed = identityKey
+    if (identityScope) identityScope.seed = identityKey
+    else workflowAgentIdentitySeed = identityKey
     agentCount++
 
     startWorkflowPhase(workflowTask.id, phase, setAppState)
@@ -581,7 +629,18 @@ export async function runWorkflowScript({
       const acquired = await semaphore.acquire(abortController.signal)
       if (!acquired) return null
       try {
-        const result = await runSingleAgent(prompt, opts, attemptAgentId, logicalAgentId, attempt, phase, stallMs, phaseAgentIndex)
+        const result = await runSingleAgent(
+          prompt,
+          opts,
+          agentLaunch.inputMode,
+          agentLaunch.context,
+          attemptAgentId,
+          logicalAgentId,
+          attempt,
+          phase,
+          stallMs,
+          phaseAgentIndex,
+        )
         const completedAt = Date.now()
         const currentTask = context.getAppState().tasks[workflowTask.id]
         const completedResult = currentTask?.type === 'local_workflow'
@@ -704,6 +763,8 @@ export async function runWorkflowScript({
 
   async function runSingleAgent(
     prompt: string, opts: AgentOpts | undefined,
+    permissionMode: WorkflowPermissionMode | undefined,
+    agentContext: ToolUseContext,
     agentId: string, logicalAgentId: string, attempt: number,
     phase: string, stallMs: number, phaseAgentIndex: number,
   ): Promise<unknown> {
@@ -740,7 +801,7 @@ export async function runWorkflowScript({
       prompt: prompt + schemaPrompt,
       subagent_type: opts?.agentType,
       model: opts?.model as AgentToolInput['model'],
-      mode: mapPermissionMode(opts?.mode ?? plan.defaults.permissionMode),
+      mode: permissionMode,
       ...(opts?.isolation === 'worktree' ? { isolation: 'worktree' } : {}),
     }
 
@@ -758,22 +819,24 @@ export async function runWorkflowScript({
         toolUses: 0,
         lastToolName: agentId,
         summary: `Workflow agent started: ${agentId}`,
-        workflowProgress: workflowProgressSnapshot(plan),
+        workflowProgress: currentWorkflowProgress(),
       })
 
       const result = await agentTool.call(
         input as never,
         {
-          ...context,
+          ...agentContext,
           abortController: agentAbortController,
           options: {
-            ...context.options,
+            ...agentContext.options,
             tools: structuredOutputTool
               ? [
-                  ...context.options.tools.filter(tool => tool.name !== STRUCTURED_OUTPUT_TOOL_NAME),
+                  ...agentContext.options.tools.filter(
+                    tool => tool.name !== STRUCTURED_OUTPUT_TOOL_NAME,
+                  ),
                   structuredOutputTool,
                 ]
-              : context.options.tools,
+              : agentContext.options.tools,
             disableNestedAgentTools: true,
           },
         },
@@ -819,7 +882,7 @@ export async function runWorkflowScript({
               toolUses: toolUseSpent + progressToolUses,
               lastToolName: agentId,
               summary: data?.summary ?? `Workflow agent running: ${agentId}`,
-              workflowProgress: workflowProgressSnapshot(plan),
+              workflowProgress: currentWorkflowProgress(),
             })
           }
         },
@@ -849,18 +912,6 @@ export async function runWorkflowScript({
         throw new Error(`Workflow agent ${agentId} did not return structured output`)
       }
 
-      emitTaskProgress({
-        taskId: workflowTask.id,
-        toolUseId: context.toolUseId,
-        description: workflowAgentProgressDescription(progressPhase, agentId, plan),
-        startTime: workflowTask.startTime,
-        totalTokens: tokenSpent,
-        toolUses: toolUseSpent,
-        lastToolName: agentId,
-        summary: `Workflow agent completed: ${agentId}`,
-        workflowProgress: workflowProgressSnapshot(plan),
-      })
-
       completeWorkflowAgent({
         taskId: workflowTask.id,
         result: {
@@ -872,6 +923,18 @@ export async function runWorkflowScript({
         },
         setAppState,
         attemptId,
+      })
+
+      emitTaskProgress({
+        taskId: workflowTask.id,
+        toolUseId: context.toolUseId,
+        description: workflowAgentProgressDescription(progressPhase, agentId, plan),
+        startTime: workflowTask.startTime,
+        totalTokens: tokenSpent,
+        toolUses: toolUseSpent,
+        lastToolName: agentId,
+        summary: `Workflow agent completed: ${agentId}`,
+        workflowProgress: currentWorkflowProgress(),
       })
 
       return agentResult
@@ -891,24 +954,51 @@ export async function runWorkflowScript({
   }
 
   // --- parallel(): Promise.allSettled, errors → null ---
+  async function mapWithConcurrency<T, R>(
+    items: T[],
+    mapper: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    const results = new Array<R>(items.length)
+    let nextIndex = 0
+    const workers = Array.from(
+      { length: Math.min(MAX_CONCURRENCY, items.length) },
+      async () => {
+        while (!abortController.signal.aborted) {
+          const index = nextIndex++
+          if (index >= items.length) return
+          results[index] = await mapper(items[index]!, index)
+        }
+      },
+    )
+    await Promise.all(workers)
+    return results
+  }
+
+  // --- parallel(): bounded fan-out, errors → null ---
   async function realParallel<T>(thunks: Array<() => Promise<T> | T>): Promise<Array<T | null>> {
     if (abortController.signal.aborted) return thunks.map(() => null)
     checkBudget()
-    const results = await Promise.allSettled(thunks.map(async thunk => await thunk()))
-    return results.map((r, i) => {
-      if (r.status === 'fulfilled') return r.value
-      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason)
-      logs.push(`parallel[${i}] failed: ${msg}`)
-      return null
-    })
+    const parentSeed = workflowAgentIdentityScope.getStore()?.seed ?? workflowAgentIdentitySeed
+    return mapWithConcurrency(thunks, (thunk, index) =>
+      workflowAgentIdentityScope.run({ seed: parentSeed }, async () => {
+        try {
+          return await thunk()
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
+          logs.push(`parallel[${index}] failed: ${msg}`)
+          return null
+        }
+      }),
+    )
   }
 
   // --- pipeline(): no barrier between stages, per-item ---
   async function realPipeline<T>(items: T[], ...stages: Array<(val: any, orig: any, idx: number) => any>): Promise<any[]> {
     if (abortController.signal.aborted) return items.map(() => null)
     checkBudget()
-    return Promise.all(
-      items.map(async (item, index) => {
+    const parentSeed = workflowAgentIdentityScope.getStore()?.seed ?? workflowAgentIdentitySeed
+    return mapWithConcurrency(items, (item, index) =>
+      workflowAgentIdentityScope.run({ seed: parentSeed }, async () => {
         let value: unknown = item
         for (const stage of stages) {
           if (value === null) break

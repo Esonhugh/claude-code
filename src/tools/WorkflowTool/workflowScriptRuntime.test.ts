@@ -199,11 +199,20 @@ assert.equal(started?.workflow_name, 'runtime-small-workflow')
 assert.equal(started?.description, 'Small real workflow covering phase log args budget agent parallel pipeline workflow.')
 assert.equal(started?.prompt, script)
 
-const progress = events.find(event => event.subtype === 'task_progress')
+const progressEvents = events.filter(event => event.subtype === 'task_progress')
+const progress = progressEvents[0]
 assert.equal(progress?.task_id, started?.task_id)
 assert.equal(progress?.tool_use_id, 'toolu_workflow_test')
 assert.equal(progress?.description, 'Parallel: alpha')
 assert.equal(progress?.last_tool_name, 'alpha')
+assert.equal(
+  progressEvents.some(event =>
+    event.workflow_progress?.some(item =>
+      item.type === 'agent' && item.label === 'alpha' && item.status === 'completed'
+    )
+  ),
+  true,
+)
 
 const notification = events.find(event => event.subtype === 'task_notification')
 assert.equal(notification?.task_id, started?.task_id)
@@ -217,7 +226,9 @@ assert.match(String(completionNotification.value), /<summary>Dynamic workflow "S
 assert.match(String(completionNotification.value), /"alpha": "alpha-ok"/)
 
 const workflowTask = Object.values(state.tasks).find(
-  task => task.type === 'local_workflow',
+  (task): task is LocalWorkflowTaskState =>
+    task.type === 'local_workflow' &&
+    task.workflowName === 'runtime-small-workflow',
 )
 assert.ok(workflowTask)
 assert.equal(workflowTask.agentCount, 1)
@@ -277,6 +288,199 @@ await runWorkflowScript({
   resumeJournalEntries: await readWorkflowJournalCacheEntries(transcriptDirMatch[1]),
 })
 assert.equal(agentToolCallCount, 2)
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+let inheritedModeState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'plan' },
+} as unknown as AppState
+let inheritedModeAgentCallCount = 0
+const inheritedModeAgentTool = {
+  name: 'Agent',
+  async call() {
+    inheritedModeAgentCallCount++
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `inherited-mode-${inheritedModeAgentCallCount}` }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const inheritedModeContext = {
+  ...context,
+  getAppState: () => inheritedModeState,
+  setAppState: (updater: (prev: AppState) => AppState): void => {
+    inheritedModeState = updater(inheritedModeState)
+  },
+  options: {
+    ...context.options,
+    tools: [inheritedModeAgentTool],
+  },
+  abortController: new AbortController(),
+  toolUseId: 'toolu_inherited_mode',
+} as unknown as ToolUseContext
+const inheritedModePlan: WorkflowDryRunPlan = {
+  ...plan,
+  defaults: {
+    ...plan.defaults,
+    permissionMode: 'default',
+  },
+  phases: plan.phases.map(phase => ({
+    ...phase,
+    permissionMode: 'default',
+  })),
+}
+const inheritedModeSourceResult = await runWorkflowScript({
+  script,
+  plan: inheritedModePlan,
+  args: { case: 'unit' },
+  context: inheritedModeContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_inherited_mode_source' } } as never,
+  workflowRunId: 'wf_inherited_mode_source',
+  scriptPath: '/tmp/runtime-small-workflow.js',
+})
+const inheritedModeTranscriptDirMatch = inheritedModeSourceResult.match(/Transcript dir: (.+)/)
+assert.ok(inheritedModeTranscriptDirMatch?.[1])
+inheritedModeState = {
+  ...inheritedModeState,
+  toolPermissionContext: { mode: 'bypassPermissions' },
+} as unknown as AppState
+await runWorkflowScript({
+  script,
+  plan: inheritedModePlan,
+  args: { case: 'unit' },
+  context: inheritedModeContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_inherited_mode_resume' } } as never,
+  workflowRunId: 'wf_inherited_mode_resume',
+  scriptPath: '/tmp/runtime-small-workflow.js',
+  resumeFromRunId: 'wf_inherited_mode_source',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(inheritedModeTranscriptDirMatch[1]),
+})
+assert.equal(inheritedModeAgentCallCount, 2)
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+let queuedDefaultModeState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'plan' },
+} as unknown as AppState
+const queuedDefaultModeInputs: Array<{
+  prompt?: string
+  mode?: string
+  inheritedMode?: string
+}> = []
+let releaseQueuedDefaultModeAgent: (() => void) | undefined
+let queuedDefaultModeCalls = 0
+const queuedDefaultModeAgentTool = {
+  name: 'Agent',
+  async call(
+    input: { prompt?: string; mode?: string },
+    agentContext: ToolUseContext,
+  ) {
+    queuedDefaultModeInputs.push({
+      ...input,
+      inheritedMode:
+        agentContext.getAppState().toolPermissionContext.mode,
+    })
+    queuedDefaultModeCalls++
+    if (queuedDefaultModeCalls === 1) {
+      await new Promise<void>(resolve => {
+        releaseQueuedDefaultModeAgent = resolve
+      })
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `queued-default-mode-${queuedDefaultModeCalls}` }],
+      },
+    }
+  },
+}
+const queuedDefaultModeContext = {
+  ...context,
+  getAppState: () => queuedDefaultModeState,
+  setAppState: (updater: (prev: AppState) => AppState): void => {
+    queuedDefaultModeState = updater(queuedDefaultModeState)
+  },
+  options: {
+    ...context.options,
+    tools: [queuedDefaultModeAgentTool],
+  },
+  abortController: new AbortController(),
+  toolUseId: 'toolu_queued_default_mode',
+} as unknown as ToolUseContext
+const queuedDefaultModeScript = `export const meta = {
+  name: "runtime-queued-default-mode",
+  description: "Snapshot inherited mode before a queued Agent launch.",
+  phases: [{ title: "Queued", detail: "Two queued default-mode agents" }],
+}
+phase("Queued")
+return await parallel([
+  () => agent("queued-one", { label: "queued-one", mode: "default" }),
+  () => agent("queued-two", { label: "queued-two", mode: "default" }),
+])
+`
+const queuedDefaultModeRun = runWorkflowScript({
+  script: queuedDefaultModeScript,
+  plan: {
+    ...inheritedModePlan,
+    name: 'runtime-queued-default-mode',
+    description: 'Snapshot inherited mode before a queued Agent launch.',
+    defaults: {
+      ...inheritedModePlan.defaults,
+      maxConcurrency: 1,
+    },
+    phases: [
+      {
+        ...inheritedModePlan.phases[0]!,
+        id: 'Queued',
+        description: 'Two queued default-mode agents',
+      },
+    ],
+    totalAgents: 2,
+    runScriptSnapshot: queuedDefaultModeScript,
+  },
+  context: queuedDefaultModeContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_queued_default_mode' } } as never,
+  workflowRunId: 'wf_queued_default_mode',
+  scriptPath: '/tmp/runtime-queued-default-mode.js',
+})
+while (!releaseQueuedDefaultModeAgent) {
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
+queuedDefaultModeState = {
+  ...queuedDefaultModeState,
+  toolPermissionContext: { mode: 'bypassPermissions' },
+} as unknown as AppState
+releaseQueuedDefaultModeAgent()
+await queuedDefaultModeRun
+assert.deepEqual(
+  queuedDefaultModeInputs
+    .map(input => ({
+      prompt: input.prompt,
+      mode: input.mode,
+      inheritedMode: input.inheritedMode,
+    }))
+    .sort((left, right) =>
+      String(left.prompt).localeCompare(String(right.prompt)),
+    ),
+  [
+    {
+      prompt: 'queued-one',
+      mode: 'plan',
+      inheritedMode: 'plan',
+    },
+    {
+      prompt: 'queued-two',
+      mode: 'plan',
+      inheritedMode: 'plan',
+    },
+  ],
+)
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 let duplicateState = {
@@ -475,6 +679,107 @@ assert.match(String(editedDuplicateNotification.value), /"second": "duplicate-5"
 assert.equal(duplicateAgentCallCount, 5)
 
 dequeueAllMatching(command => command.mode === 'task-notification')
+
+let parallelIdentityState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+let parallelIdentityCalls = 0
+const parallelIdentityAgentTool = {
+  name: 'Agent',
+  async call(input: { prompt?: string }) {
+    parallelIdentityCalls++
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `${input.prompt}-result` }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const parallelIdentityContext = {
+  ...duplicateContext,
+  getAppState: () => parallelIdentityState,
+  setAppState: (updater: (prev: AppState) => AppState): void => {
+    parallelIdentityState = updater(parallelIdentityState)
+  },
+  options: {
+    ...duplicateContext.options,
+    tools: [parallelIdentityAgentTool],
+  },
+  abortController: new AbortController(),
+  toolUseId: 'toolu_parallel_identity',
+} as unknown as ToolUseContext
+const parallelIdentityScript = `export const meta = {
+  name: "runtime-parallel-identity",
+  description: "Stable parallel resume identities.",
+  phases: [{ title: "Parallel", detail: "Two parallel agents" }],
+}
+phase("Parallel")
+return await parallel([
+  async () => {
+    if (args.delayFirst) {
+      await Promise.resolve()
+    }
+    return agent("first", { label: "first" })
+  },
+  async () => {
+    if (!args.delayFirst) {
+      await Promise.resolve()
+    }
+    return agent("second", { label: "second" })
+  },
+])
+`
+const parallelIdentityPlan: WorkflowDryRunPlan = {
+  ...duplicatePlan,
+  name: 'runtime-parallel-identity',
+  description: 'Stable parallel resume identities.',
+  phases: [{
+    ...duplicatePlan.phases[0]!,
+    id: 'Parallel',
+    description: 'Two parallel agents',
+    fanout: 2,
+    concurrency: 2,
+    agentLabels: ['first', 'second'],
+  }],
+  totalAgents: 2,
+  runScriptSnapshot: parallelIdentityScript,
+}
+const parallelIdentityResult = await runWorkflowScript({
+  script: parallelIdentityScript,
+  plan: parallelIdentityPlan,
+  args: { delayFirst: true },
+  context: parallelIdentityContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_parallel_identity' } } as never,
+  workflowRunId: 'wf_parallel_identity',
+  scriptPath: '/tmp/runtime-parallel-identity.js',
+})
+const parallelIdentityTranscriptDir = parallelIdentityResult.match(
+  /Transcript dir: (.+)/,
+)?.[1]
+assert.ok(parallelIdentityTranscriptDir)
+await runWorkflowScript({
+  script: parallelIdentityScript,
+  plan: parallelIdentityPlan,
+  args: { delayFirst: false },
+  context: parallelIdentityContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_parallel_identity_resume' } } as never,
+  workflowRunId: 'wf_parallel_identity_resume',
+  scriptPath: '/tmp/runtime-parallel-identity.js',
+  resumeFromRunId: 'wf_parallel_identity',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(
+    parallelIdentityTranscriptDir,
+  ),
+})
+assert.equal(parallelIdentityCalls, 2)
+dequeueAllMatching(command => command.mode === 'task-notification')
+
 const vmGlobalScript = `export const meta = {
   name: "runtime-vm-global-workflow",
   description: "Workflow verifying VM global injection.",
@@ -1308,5 +1613,83 @@ assert.equal(
     : undefined,
   'stopped',
 )
+
+const largeFanoutCount = 1_001
+const largeFanoutScript = `export const meta = {
+  name: "runtime-large-fanout-workflow",
+  description: "Workflow with bounded large fanout.",
+  phases: [{ title: "Fanout", detail: "Run many agents" }],
+}
+phase("Fanout")
+return await parallel(Array.from({ length: ${largeFanoutCount} }, (_, index) =>
+  () => agent(\`fanout \${index}\`),
+))
+`
+let largeFanoutState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setLargeFanoutState = (updater: (prev: AppState) => AppState): void => {
+  largeFanoutState = updater(largeFanoutState)
+}
+let largeFanoutCalls = 0
+let activeLargeFanoutCalls = 0
+let maxActiveLargeFanoutCalls = 0
+const largeFanoutAgentTool = {
+  name: 'Agent',
+  async call() {
+    largeFanoutCalls++
+    activeLargeFanoutCalls++
+    maxActiveLargeFanoutCalls = Math.max(
+      maxActiveLargeFanoutCalls,
+      activeLargeFanoutCalls,
+    )
+    await Promise.resolve()
+    activeLargeFanoutCalls--
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'ok' }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+await runWorkflowScript({
+  script: largeFanoutScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-large-fanout-workflow',
+    description: 'Workflow with bounded large fanout.',
+    phases: [{
+      ...retryPlan.phases[0]!,
+      id: 'Fanout',
+      description: 'Run many agents',
+      prompt: 'Run many agents',
+      fanout: largeFanoutCount,
+      concurrency: 16,
+    }],
+    totalAgents: largeFanoutCount,
+    runScriptSnapshot: largeFanoutScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => largeFanoutState,
+    setAppState: setLargeFanoutState,
+    options: { ...retryContext.options, tools: [largeFanoutAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_large_fanout',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_large_fanout' } } as never,
+  workflowRunId: `wf_script_large_fanout_${process.pid}`,
+  scriptPath: '/tmp/runtime-large-fanout-workflow.js',
+})
+assert.equal(largeFanoutCalls, largeFanoutCount)
+assert.equal(maxActiveLargeFanoutCalls <= 16, true)
+const largeFanoutTask = Object.values(largeFanoutState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(largeFanoutTask?.agentCount, largeFanoutCount)
 
 console.log('workflowScriptRuntime.test.ts passed')

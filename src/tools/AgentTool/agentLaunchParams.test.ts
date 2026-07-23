@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
+import { getEmptyToolPermissionContext } from '../../Tool.js'
 import {
   buildAgentLaunchDebugParams,
   normalizeAgentDescription,
   shouldPreserveAgentToolUseResults,
 } from './AgentTool.js'
+import {
+  applyRequestedAgentPermissionMode,
+  shouldBubbleAgentPermissionPrompts,
+} from './permissionMode.js'
 
 assert.equal(
   normalizeAgentDescription('  Launch\n\tparams   should   normalize  '),
@@ -73,5 +78,111 @@ assert.deepEqual(params.availableToolNames, [
 const serialized = JSON.stringify(params)
 assert.equal(serialized.includes('Launch params should not leak'), false)
 assert.equal(serialized.includes('worker-name'), false)
+
+const requestedPlanContext = applyRequestedAgentPermissionMode(
+  {
+    ...getEmptyToolPermissionContext(),
+    mode: 'bypassPermissions',
+    isBypassPermissionsModeAvailable: true,
+    prePlanMode: 'bypassPermissions',
+    strippedDangerousRules: {
+      userSettings: ['Bash(node:*)'],
+    },
+  },
+  'plan',
+)
+assert.equal(requestedPlanContext.mode, 'plan')
+assert.equal(requestedPlanContext.isBypassPermissionsModeAvailable, false)
+assert.equal(requestedPlanContext.prePlanMode, undefined)
+assert.equal(requestedPlanContext.strippedDangerousRules, undefined)
+
+const cleanPlanContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'plan' as const,
+  isBypassPermissionsModeAvailable: false,
+}
+assert.equal(
+  applyRequestedAgentPermissionMode(cleanPlanContext, 'plan'),
+  cleanPlanContext,
+)
+
+const dontAskContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'dontAsk' as const,
+}
+assert.equal(
+  applyRequestedAgentPermissionMode(dontAskContext, 'plan').mode,
+  'dontAsk',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(dontAskContext, 'bubble').mode,
+  'dontAsk',
+)
+
+const planContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'plan' as const,
+}
+assert.equal(
+  applyRequestedAgentPermissionMode(planContext, 'bubble').mode,
+  'plan',
+)
+
+const defaultContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'default' as const,
+}
+assert.equal(
+  applyRequestedAgentPermissionMode(defaultContext, 'acceptEdits').mode,
+  'default',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(defaultContext, 'bypassPermissions').mode,
+  'default',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(defaultContext, 'dontAsk').mode,
+  'dontAsk',
+)
+
+const acceptEditsContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'acceptEdits' as const,
+}
+assert.equal(
+  applyRequestedAgentPermissionMode(acceptEditsContext, 'default').mode,
+  'default',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(acceptEditsContext, 'bypassPermissions').mode,
+  'acceptEdits',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(acceptEditsContext, 'auto').mode,
+  'acceptEdits',
+)
+
+const autoContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'auto' as const,
+}
+assert.equal(
+  applyRequestedAgentPermissionMode(autoContext, 'dontAsk').mode,
+  'dontAsk',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(autoContext, 'default').mode,
+  'default',
+)
+assert.equal(
+  applyRequestedAgentPermissionMode(autoContext, 'bubble').mode,
+  'auto',
+)
+
+assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'auto'), true)
+assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'default'), true)
+assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'plan'), false)
+assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'dontAsk'), false)
+assert.equal(shouldBubbleAgentPermissionPrompts(undefined, 'default'), false)
 
 console.log('agentLaunchParams.test.ts passed')

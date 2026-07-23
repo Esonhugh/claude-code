@@ -247,7 +247,7 @@ Total agent count across a workflow's lifetime is capped at 1000.
 A single parallel()/pipeline() call accepts at most 4096 items.
 ```
 
-This is consistent with the blog's “tens to hundreds of parallel subagents” framing, with the nuance that actual simultaneous concurrency is capped while large item sets are queued.
+This is consistent with the blog's “tens to hundreds of parallel subagents” framing, with the nuance that actual simultaneous concurrency is capped while large item sets are queued. These limits are observations of the official 2.1.165 binary, not requirements for this repository: the local script runtime intentionally keeps bounded active concurrency but does not impose a fixed run-lifetime Agent launch cap. The declarative `defaults.maxAgents` planning guard remains separate.
 
 ## Safety and permissions
 
@@ -422,7 +422,7 @@ Priority goals:
 5. Persist every inline workflow script to an editable `scriptPath` and return both `scriptPath` and `workflowRunId` from launched runs.
 6. Store progress in official-style event categories: `workflow_progress`, `workflow_agent`, `workflow_phase`, and `workflow_log`.
 7. Support prefix-cache resume semantics: unchanged completed `agent()` calls should return cached results, while the first edited or new call and all following calls run live.
-8. Mirror the official concurrency model closely enough for compatibility testing: queue large `pipeline`/`parallel` inputs, enforce a per-run agent cap, and make cap differences explicit when local defaults are intentionally lower.
+8. Mirror the official concurrency model closely enough for compatibility testing, including queued large `pipeline`/`parallel` inputs and explicit concurrency differences when local defaults are intentionally lower.
 9. Restore clean-room equivalents for confirmed built-ins, especially `code-review` and `deep-research`, using the same high-level quality patterns: fan-out, deduplication, adversarial verification, voting, and synthesis.
 10. Keep workflow scripts as orchestration only: direct filesystem, shell, and external side effects should happen through spawned agents under normal tool permissions and hooks.
 
@@ -442,7 +442,7 @@ Recommended code improvements:
 
 1. Split workflow concerns into focused modules: script parsing/validation, registry/discovery, runtime execution, event persistence, resume cache, and UI/status formatting.
 2. Make workflow event types explicit and shared across runner, task state, `/workflows`, and compatibility tooling to avoid string drift.
-3. Centralize cap enforcement for concurrent agents, total agents, `pipeline`/`parallel` item counts, and token budget exhaustion.
+3. Centralize bounded-concurrency, `pipeline`/`parallel` item-count, and token-budget enforcement; keep the local omission of a fixed script run-lifetime Agent cap explicit and tested.
 4. Replace ad hoc script execution paths with one deterministic VM boundary that exposes only documented workflow globals.
 5. Add unit tests for `meta` validation edge cases: non-first export, computed keys, spreads, template interpolation, TypeScript syntax, missing fields, and reserved keys.
 6. Add runtime tests for deterministic guards, especially `Date.now()`, `new Date()`, bare `Date()`, `new Date(value)`, and `Math.random()` behavior.

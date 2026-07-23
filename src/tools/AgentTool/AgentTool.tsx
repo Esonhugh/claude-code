@@ -125,6 +125,10 @@ import {
 import { getPrompt } from './prompt.js'
 import { runAgent } from './runAgent.js'
 import {
+  applyRequestedAgentPermissionMode,
+  shouldBubbleAgentPermissionPrompts,
+} from './permissionMode.js'
+import {
   assertCanSpawnNestedSubagent,
   getCurrentSubagentDepth,
   getNextSubagentDepth,
@@ -499,9 +503,11 @@ export const AgentTool = buildTool({
     description = normalizeAgentDescription(description)
     const model = isCoordinatorMode() ? undefined : modelParam
 
-    // Get app state for permission mode and agent filtering
+    // Get app state for permission mode and agent filtering.
     const appState = toolUseContext.getAppState()
-    const permissionMode = appState.toolPermissionContext.mode
+    const requestedPermissionContext = spawnMode
+      ? applyRequestedAgentPermissionMode(appState.toolPermissionContext, spawnMode)
+      : appState.toolPermissionContext
     // In-process teammates get a no-op setAppState; setAppStateForTasks
     // reaches the root store so task registration/progress/kill stay visible.
     const rootSetAppState =
@@ -593,6 +599,17 @@ export const AgentTool = buildTool({
       )
     }
 
+    const permissionMode = selectedAgent.permissionMode
+      ? applyRequestedAgentPermissionMode(
+          requestedPermissionContext,
+          selectedAgent.permissionMode,
+        ).mode
+      : requestedPermissionContext.mode
+    const workerPermissionContext = applyRequestedAgentPermissionMode(
+      appState.toolPermissionContext,
+      permissionMode,
+    )
+
     let teamName = appState.teamContext?.teamName
     let shouldSpawnTeammate = Boolean(
       teamName && name && !isForkPath && !isolation && !cwd,
@@ -624,7 +641,7 @@ export const AgentTool = buildTool({
           description,
           team_name: teamName,
           use_splitpane: true,
-          plan_mode_required: spawnMode === 'plan',
+          plan_mode_required: permissionMode === 'plan',
           model: model ?? agentDef?.model,
           agent_type: subagent_type,
           invokingRequestId: assistantMessage?.requestId,
@@ -943,10 +960,6 @@ export const AgentTool = buildTool({
     // permission mode, so they aren't affected by the parent's tool
     // restrictions. This is computed here so that runAgent doesn't need to
     // import from tools.ts (which would create a circular dependency).
-    const workerPermissionContext = {
-      ...appState.toolPermissionContext,
-      mode: selectedAgent.permissionMode ?? 'acceptEdits',
-    }
     const workerTools = [
       ...assembleToolPool(
         workerPermissionContext,
@@ -1035,12 +1048,19 @@ export const AgentTool = buildTool({
         ...toolUseContext,
         options: {
           ...toolUseContext.options,
+          mainLoopModel: resolvedAgentModel,
           subagentDepth: childSubagentDepth,
           spawnDepth: childSubagentDepth,
         },
       },
       canUseTool,
       isAsync: shouldRunAsync,
+      canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
+        selectedAgent.permissionMode,
+        permissionMode,
+      )
+        ? true
+        : undefined,
       querySource:
         toolUseContext.options.querySource ??
         getQuerySourceForAgent(
@@ -1065,6 +1085,7 @@ export const AgentTool = buildTool({
           ? { systemPrompt: asSystemPrompt(enhancedSystemPrompt) }
           : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
+      permissionMode,
       // Pass parent conversation when the fork-subagent path needs full
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,

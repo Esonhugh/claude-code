@@ -1,6 +1,7 @@
 import { dirname } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage, NormalizedUserMessage } from '../../types/message.js'
+import type { PermissionMode } from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import {
@@ -70,6 +71,7 @@ import {
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
+import { applyRequestedAgentPermissionMode } from '../AgentTool/permissionMode.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const DEFAULT_STALL_MS = 120_000
@@ -175,8 +177,50 @@ function findAgentTool(tools: readonly Tool[]): Tool | undefined {
   )
 }
 
-function mapPermissionMode(mode: WorkflowPermissionMode): WorkflowPermissionMode | undefined {
-  return mode === 'default' ? undefined : mode
+export function snapshotWorkflowAgentContext(
+  mode: WorkflowPermissionMode | undefined,
+  context: ToolUseContext,
+): {
+  identityMode: PermissionMode
+  inputMode: WorkflowPermissionMode | undefined
+  context: ToolUseContext
+} {
+  const inheritedPermissionContext = context.getAppState().toolPermissionContext
+  const requestedMode = mode && mode !== 'default' ? mode : undefined
+  const permissionContext = requestedMode
+    ? applyRequestedAgentPermissionMode(inheritedPermissionContext, requestedMode)
+    : inheritedPermissionContext
+  const effectiveMode = permissionContext.mode
+  let inputMode: WorkflowPermissionMode | undefined
+  if (effectiveMode === 'plan' || effectiveMode === 'dontAsk') {
+    inputMode = effectiveMode
+  } else if (effectiveMode !== inheritedPermissionContext.mode) {
+    inputMode = effectiveMode as WorkflowPermissionMode
+  }
+  return {
+    identityMode: effectiveMode,
+    inputMode,
+    context: {
+      ...context,
+      getAppState: () => {
+        const state = context.getAppState()
+        const currentPermissionContext = state.toolPermissionContext
+        const launchPermissionContext = requestedMode
+          ? applyRequestedAgentPermissionMode(
+              currentPermissionContext,
+              requestedMode,
+            )
+          : currentPermissionContext
+        const toolPermissionContext =
+          launchPermissionContext.mode === effectiveMode
+            ? launchPermissionContext
+            : { ...launchPermissionContext, mode: effectiveMode }
+        return toolPermissionContext === currentPermissionContext
+          ? state
+          : { ...state, toolPermissionContext }
+      },
+    },
+  }
 }
 
 function mapModel(model: string | undefined): 'sonnet' | 'opus' | 'haiku' | undefined {
@@ -213,29 +257,29 @@ function workflowCwd(context: ToolUseContext): string {
   return getCwd()
 }
 
-function workflowAgentName(
+export function allocateWorkflowAgentNames(
   plan: WorkflowDryRunPlan,
   phase: WorkflowDryRunPhase,
-  index: number,
-): string {
-  const assigned = new Set<string>()
-  for (let currentIndex = 0; currentIndex <= index; currentIndex++) {
-    const requested = phase.agentLabels?.[currentIndex]
+  assigned = new Set<string>(),
+  nextOccurrences = new Map<string, number>(),
+): string[] {
+  return Array.from({ length: phase.fanout }, (_, index) => {
+    const requested = phase.agentLabels?.[index]
       || (phase.displayName && phase.fanout === 1
         ? phase.displayName
         : phase.displayName
-          ? `${phase.displayName}-${currentIndex + 1}`
-          : `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${currentIndex + 1}`)
+          ? `${phase.displayName}-${index + 1}`
+          : `${slug(plan.name) || 'workflow'}-${slug(phase.id) || 'phase'}-${index + 1}`)
     let agentId = requested
-    let occurrence = 2
+    let occurrence = nextOccurrences.get(requested) ?? 2
     while (assigned.has(agentId)) {
       agentId = `${requested} [${occurrence}]`
       occurrence++
     }
-    if (currentIndex === index) return agentId
+    nextOccurrences.set(requested, occurrence)
     assigned.add(agentId)
-  }
-  throw new Error(`Invalid workflow agent index: ${index}`)
+    return agentId
+  })
 }
 
 function formatUpstreamOutputs(
@@ -378,6 +422,7 @@ function retryAgentId(baseAgentId: string, physicalAttempt: number): string {
 async function runPhaseAgentAttempt({
   agentTool,
   phase,
+  agentId,
   index,
   attempt,
   plan,
@@ -387,10 +432,12 @@ async function runPhaseAgentAttempt({
   taskId,
   prompt,
   workflowAbortController,
+  permissionMode,
   userRetryAttempt = 0,
 }: {
   agentTool: Tool
   phase: WorkflowDryRunPhase
+  agentId: string
   index: number
   attempt: number
   plan: WorkflowDryRunPlan
@@ -400,6 +447,7 @@ async function runPhaseAgentAttempt({
   taskId: string
   prompt: string
   workflowAbortController: AbortController
+  permissionMode: WorkflowPermissionMode | undefined
   userRetryAttempt?: number
 }): Promise<WorkflowAgentResult> {
   const description = formatAgentDescription(plan, phase, index, attempt, userRetryAttempt)
@@ -410,15 +458,15 @@ async function runPhaseAgentAttempt({
     prompt,
     subagent_type: phase.agentType,
     model: mapModel(phase.model),
-    mode: mapPermissionMode(phase.permissionMode),
+    mode: permissionMode,
     ...(teamName
       ? {
-          name: workflowAgentName(plan, phase, index),
+          name: agentId,
           team_name: teamName,
         }
       : {}),
   }
-  const baseAgentId = workflowAgentName(plan, phase, index)
+  const baseAgentId = agentId
   const physicalAttempt = attempt + userRetryAttempt
   const fallbackAgentId = retryAgentId(baseAgentId, physicalAttempt)
   const taskSetAppState = context.setAppStateForTasks ?? context.setAppState
@@ -553,7 +601,6 @@ async function runPhaseAgentAttempt({
   if (output.status !== 'completed') {
     throw new Error(`Workflow agent returned non-completed status: ${output.status ?? 'unknown'}`)
   }
-  const agentId = fallbackAgentId
   emitTaskProgress({
     taskId,
     toolUseId: context.toolUseId,
@@ -566,7 +613,7 @@ async function runPhaseAgentAttempt({
   })
   const workflowResult: WorkflowAgentResult = {
     phaseId: phase.id,
-    agentId,
+    agentId: fallbackAgentId,
     index,
     status: 'completed',
     output: extractAgentOutput(output),
@@ -586,6 +633,7 @@ async function runPhaseAgentAttempt({
 async function runPhaseAgent({
   agentTool,
   phase,
+  agentId,
   index,
   agentIndex,
   plan,
@@ -598,9 +646,11 @@ async function runPhaseAgent({
   resumeRuntime,
   runArgs,
   injectRunArgsIntoRootPrompt,
+  agentLaunch,
 }: {
   agentTool: Tool
   phase: WorkflowDryRunPhase
+  agentId: string
   index: number
   agentIndex: number
   plan: WorkflowDryRunPlan
@@ -613,6 +663,7 @@ async function runPhaseAgent({
   resumeRuntime: WorkflowResumeRuntime
   runArgs?: WorkflowArgs
   injectRunArgsIntoRootPrompt: boolean
+  agentLaunch: ReturnType<typeof snapshotWorkflowAgentContext>
 }): Promise<WorkflowAgentRunResult> {
   const prompt = buildAgentPrompt(phase, index, resultsByPhase, runArgs, injectRunArgsIntoRootPrompt)
   const identity = createAgentCallIdentity({
@@ -620,16 +671,20 @@ async function runPhaseAgent({
     phase: phase.id,
     prompt,
     opts: {
-      label: workflowAgentName(plan, phase, index),
+      label: agentId,
       model: phase.model,
       agentType: phase.agentType,
-      permissionMode: phase.permissionMode,
+      permissionMode: agentLaunch.identityMode,
     },
   })
   const cacheLookup = resumeRuntime.cursor.lookup(agentIndex, identity)
-  if (cacheLookup.cacheHit) {
+  if (
+    cacheLookup.cacheHit &&
+    cacheLookup.result !== null &&
+    typeof cacheLookup.result === 'object' &&
+    (cacheLookup.result as { status?: unknown }).status === 'completed'
+  ) {
     const cachedResult = cacheLookup.result as WorkflowAgentResult
-    const agentId = workflowAgentName(plan, phase, index)
     const result: WorkflowAgentResult = {
       ...cachedResult,
       phaseId: phase.id,
@@ -668,15 +723,17 @@ async function runPhaseAgent({
       const result = await runPhaseAgentAttempt({
         agentTool,
         phase,
+        agentId,
         index,
         attempt,
         plan,
-        context,
+        context: agentLaunch.context,
         canUseTool,
         assistantMessage,
         taskId,
         prompt,
         workflowAbortController,
+        permissionMode: agentLaunch.inputMode,
         userRetryAttempt,
       })
       resumeRuntime.entries.push(recordResumeCacheEntry({
@@ -689,7 +746,7 @@ async function runPhaseAgent({
       return { result, cacheHit: false }
     } catch (error) {
       if (workflowAbortController.signal.aborted) throw error
-      const baseAgentId = workflowAgentName(plan, phase, index)
+      const baseAgentId = agentId
       const userRetryRequested = error instanceof Error && error.message === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
       if (userRetryRequested) {
         userRetryAttempt += 1
@@ -789,17 +846,26 @@ export async function runWorkflowPlan({
     ? await loadWorkflowRunSession({ cwd, workflowRunId: resumeFromRunId })
     : undefined
   const resumeRuntime: WorkflowResumeRuntime = {
-    cursor: createWorkflowResumeCursor(priorSession?.resumeCacheEntries ?? []),
+    cursor: createWorkflowResumeCursor(
+      (priorSession?.resumeCacheEntries ?? []).filter(entry =>
+        entry.result !== null &&
+        typeof entry.result === 'object' &&
+        (entry.result as { status?: unknown }).status === 'completed'
+      ),
+    ),
     entries: [],
   }
   const resultsByPhase = new Map<string, WorkflowAgentResult[]>()
+  const assignedAgentIds = new Set<string>()
+  const nextAgentLabelOccurrences = new Map<string, number>()
   let globalAgentIndex = 0
 
+  const resumeCall = workflowResumeCall(workflowTask)
   const launchEnvelope = [
     `Workflow launched in background. Task ID: ${workflowTask.id}`,
     `Run ID: ${workflowRunId}`,
-    ...(scriptPath
-      ? [`To resume after editing the script: Workflow({scriptPath: "${scriptPath}", resumeFromRunId: "${workflowRunId}"}) — completed agents return cached results.`]
+    ...(resumeCall
+      ? [`To resume after editing the script: ${resumeCall} — completed agents return cached results.`]
       : []),
     'Use /workflows to watch live progress.',
   ].join('\n')
@@ -828,12 +894,22 @@ export async function runWorkflowPlan({
     }))
 
     for (const phase of workflowPhaseExecutionOrder(plan.phases)) {
+      const phaseAgentIds = allocateWorkflowAgentNames(
+        plan,
+        phase,
+        assignedAgentIds,
+        nextAgentLabelOccurrences,
+      )
       startWorkflowPhase(workflowTask.id, phase.id, setAppState)
       await emit(createWorkflowPhaseEvent({
         workflowRunId,
         phaseId: phase.id,
         status: 'running',
       }))
+      const agentLaunch = snapshotWorkflowAgentContext(
+        phase.permissionMode,
+        context,
+      )
       const results: WorkflowAgentResult[] = []
       for (let index = 0; index < phase.fanout; index += phase.concurrency) {
         const batchIndexes = Array.from(
@@ -849,6 +925,7 @@ export async function runWorkflowPlan({
             runPhaseAgent({
               agentTool,
               phase,
+              agentId: phaseAgentIds[batchRun.batchIndex]!,
               index: batchRun.batchIndex,
               agentIndex: batchRun.agentIndex,
               plan,
@@ -861,6 +938,7 @@ export async function runWorkflowPlan({
               resumeRuntime,
               runArgs,
               injectRunArgsIntoRootPrompt,
+              agentLaunch,
             }),
           ),
         )

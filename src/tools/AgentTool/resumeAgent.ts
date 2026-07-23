@@ -33,6 +33,10 @@ import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
+import {
+  applyRequestedAgentPermissionMode,
+  shouldBubbleAgentPermissionPrompts,
+} from './permissionMode.js'
 
 export type ResumeAgentResult = {
   agentId: string
@@ -58,7 +62,6 @@ export async function resumeAgentBackground({
   // reaches the root store so task registration/progress/kill stay visible.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
-  const permissionMode = appState.toolPermissionContext.mode
 
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),
@@ -149,6 +152,14 @@ export async function resumeAgentBackground({
     }
   }
 
+  const workerPermissionContext = applyRequestedAgentPermissionMode(
+    appState.toolPermissionContext,
+    meta?.permissionMode ??
+      selectedAgent.permissionMode ??
+      appState.toolPermissionContext.mode,
+  )
+  const permissionMode = workerPermissionContext.mode
+
   // Resolve model for analytics metadata (runAgent resolves its own internally)
   const resolvedAgentModel = getAgentModel(
     selectedAgent.model,
@@ -157,10 +168,6 @@ export async function resumeAgentBackground({
     permissionMode,
   )
 
-  const workerPermissionContext = {
-    ...appState.toolPermissionContext,
-    mode: selectedAgent.permissionMode ?? 'acceptEdits',
-  }
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
     : assembleToolPool(workerPermissionContext, appState.mcp.tools)
@@ -174,6 +181,12 @@ export async function resumeAgentBackground({
     toolUseContext,
     canUseTool,
     isAsync: true,
+    canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
+      selectedAgent.permissionMode,
+      permissionMode,
+    )
+      ? true
+      : undefined,
     querySource: getQuerySourceForAgent(
       selectedAgent.agentType,
       isBuiltInAgent(selectedAgent),
@@ -186,6 +199,7 @@ export async function resumeAgentBackground({
       ? { systemPrompt: forkParentSystemPrompt }
       : undefined,
     availableTools: workerTools,
+    permissionMode,
     // Transcript already contains the parent context slice from the
     // original fork. Re-supplying it would cause duplicate tool_use IDs.
     forkContextMessages: undefined,

@@ -321,7 +321,14 @@ function agentIdsByAttemptIndex(
       .filter(attempt => attempt.phaseId === phaseId && attempt.index !== undefined)
       .map(attempt => [attempt.agentId, attempt.index] as const),
   )
-  if (index !== undefined) indexes.set(value, index)
+  if (index !== undefined) {
+    const insertionIndex = values.findIndex(
+      current => (indexes.get(current) ?? Number.MAX_SAFE_INTEGER) > index,
+    )
+    const next = [...values]
+    next.splice(insertionIndex < 0 ? next.length : insertionIndex, 0, value)
+    return next
+  }
   return [...values, value].sort(
     (left, right) =>
       (indexes.get(left) ?? Number.MAX_SAFE_INTEGER) -
@@ -506,7 +513,9 @@ export function startWorkflowPhase(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
-    return updatePhase(task, phaseId, phase => ({ ...phase, status: 'running' }))
+    const phase = task.phases.find(current => current.id === phaseId)
+    if (phase?.status === 'running') return task
+    return updatePhase(task, phaseId, current => ({ ...current, status: 'running' }))
   })
 }
 

@@ -10,13 +10,13 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-22 - Workflow Agent 失败记账、重试身份与恢复一致性修复
+## 2026-07-23 - Workflow Agent 调度、恢复与权限一致性修复
 
 ### 版本状态
 
-- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.203`。
-- 本条目覆盖 `v2.1.203` tag 之后至 2026-07-22 的提交，以及当前工作区中针对两个 `[not ready]` Workflow 修复提交的审计修正。
-- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- 非发布变更，未新增版本号；`Makefile` 保持 `2.1.203`，`package.json` 保持 `0.0.0-dev`。
+- 本条目覆盖 `v2.1.203` tag 之后的 Workflow 修复提交，以及当前工作区中的审计修正。
+- 当前工作区仍标记为 `[not ready]`；只有最终四路门禁同轮通过后才可改变该状态。
 
 ### 关联提交
 
@@ -25,43 +25,41 @@
 - `cc70099` — 2026-07-22 — `test: cover workflow agent failure validation`
 - `e4e8130` — 2026-07-22 — `[not ready] fix workflow agent failure accounting`
 - `500103b` — 2026-07-22 — `[not ready] fix workflow retry identity edge cases`
-- 当前工作区（待提交）— 修正上述 Workflow 提交审计中确认的 cache topology、retry attempt、stale completion、label collision 与 permission identity 问题。
+- `fc1f1cc` — 2026-07-22 — `fix workflow retry and resume consistency`
+- `aac126c` — 2026-07-23 — `require runtime interaction in validation skills`
+- 当前工作区（待提交）— 修正非完成 resume cache、Workflow-run 范围 label 唯一性、worker permission mode 传播、恢复与 phase-level permission snapshot；阻止子 Agent 显式提升父会话权限；移除未采用的 run-level Agent hard cap，并以 bounded concurrency 调度大规模 fan-out。
 
 ### 变更内容
 
-#### Workflow Agent 失败与终态记账
+#### Workflow Agent 失败、重试与终态记账
 
-- Agent terminal API error 不再被当作成功结果；structured-output Agent 只有在 schema 输出验证完成后才进入 `completed`。
-- Workflow journal 仅将 `completed` result 写入 resume cache，失败、跳过和中断 attempt 不再污染后续恢复。
-- Local Workflow task 显式记录 logical agent、physical attempt、`attemptId`、retry lineage 和 attempt 终态；`agentCount` 表示逻辑 Agent 数，`startedAgentAttempts` 与 `retryCount` 分别表示实际启动次数和重试次数。
-- Workflow 状态页、详情页和 Coordinator 行统一按 completed、failed、skipped 等 terminal outcome 计算进度；失败 phase 使用独立失败状态，不再显示成成功完成。
-- declarative Workflow 只接受 AgentTool 的 `completed` 输出；`async_launched` 等非完成状态不会再被静默记为 Workflow 成功。
-
-#### Retry attempt 与迟到结果隔离
-
-- manual retry 与 automatic retry 共用连续递增的 physical attempt 序列，controller 直接保存 `logicalAgentId`、`attempt` 和 `attemptId`，不再从展示字符串推导 retry 身份。
-- automatic retry 运行期间触发 manual retry 时，会正确进入下一 attempt，不再回退到已使用的 retry 编号或在 phase 中残留重复 Agent ID。
-- Agent 被 retry 或 skip 后即使旧调用迟到 resolve，旧 attempt 也不能覆盖当前 active attempt 的结果、状态和 usage。
-- 移除 completion 路径中依赖 `-retry-` 名称格式的关联启发式，改由结构化 attempt identity 判断结果归属。
+- Agent terminal API error 不再被当作成功；structured-output Agent 只有在 schema 输出验证完成后才进入 `completed`。
+- Local Workflow task 分离 logical agent 与 physical attempt，记录 `attemptId`、retry lineage 和 attempt 终态；`agentCount`、`startedAgentAttempts` 与 `retryCount` 分别表示逻辑 Agent 数、实际启动次数与重试次数。
+- automatic retry 与 manual retry 共用连续 attempt 序列；旧 attempt 的迟到结果不能覆盖当前 active attempt。
+- Workflow 状态页、详情页和 Coordinator 行按 terminal outcome 计算 completed、failed、skipped 与进度；失败 phase 不再显示为成功完成。
+- declarative Workflow 只接受 AgentTool 的 `completed` 输出；`async_launched` 等非完成状态不会静默记为成功。
 
 #### Resume cache 与 Agent identity
 
-- declarative Workflow cache hit 会使用当前调用的 `phaseId`、phase-local `index` 和 Agent ID 重建结果，不再把旧运行的 topology 坐标写回当前 task/session。
-- 在已有 phase 前插入新 Agent 时，保留的 Agent 仍可按 identity 命中 cache，同时不会覆盖新插入 Agent 的结果。
-- script Workflow resume identity 新增 effective permission mode；修改 `plan`、`bypassPermissions` 等执行权限会产生 cache miss，`default` 与未显式指定仍按相同有效语义处理。
-- Agent label 分配保证 runtime ID 唯一，包括显式 label 与自动后缀冲突的情况，例如 `same`、`same [2]`、`same` 会稳定分配为三个不同 logical ID。
+- Workflow journal 和 declarative resume 仅复用 `completed` result；`running`、`failed`、跳过和中断值不会污染或遮蔽后续恢复。
+- cache hit 使用当前调用的 `phaseId`、phase-local `index` 和 Agent ID 重建结果，避免旧 topology 坐标写回当前 task/session。
+- resume identity 使用实际生效的 permission mode；`default` 按调度时的父会话权限快照解析，权限变化会产生 cache miss。
+- Agent label 在整个 Workflow run 内保持唯一，覆盖显式 label、自动后缀冲突与跨 phase 重名；suffix 分配保持线性。
 
-#### OpenAI 模型名与项目说明
+#### Agent permission mode 与运行边界
 
-- OpenAI compatibility 不再把未匹配本地前缀规则的模型名静默替换为默认模型，调用方选择的模型名会原样传递给 provider。
-- README 补充 Explore/Plan Agent、Codex Apps hosted skills、Terminal PTY 生命周期、内嵌 ripgrep 和 hidden OpenAI models 的当前行为说明。
-- 新增 Workflow failure validation eval cases，覆盖 Agent API error、structured output、partial branch failure、resume cache、phase-local accounting 与 restricted tool resolution。
+- AgentTool 显式 `mode` 会进入 normal worker 的 tool permission context，不再只影响 teammate 或 cache identity；子 Agent 只能保持或收紧父会话权限，不能从 `default`/`plan` 提升到 `acceptEdits` 或 `bypassPermissions`。
+- 显式 `plan` worker 清除父会话遗留的 bypass 可用状态；`dontAsk`、`plan` 和 `auto` 不会被 `bubble` 放宽，`acceptEdits` 也不能提升到 `auto`；声明式 Workflow 同一 phase 的 concurrency batch 复用一次调度时 permission snapshot。
+- background Agent metadata 保存原始 effective permission mode，resume 时继续按当前父会话做 non-escalation 后恢复，避免继承新默认值造成权限漂移。
+- child context 使用已解析的 Agent model，避免把带显示格式的模型文本传入子调用。
+- 删除 script Workflow 固定的 run-level Agent launch hard cap；声明式 workflow spec 的 `defaults.maxAgents` 规划校验仍保留。`parallel()`/`pipeline()` 只物化 bounded concurrency 的活跃分支，避免大 fan-out 在 semaphore 前创建全部 Agent 状态。
 
-### 验证结果
+### 验证状态
 
-- Workflow、AgentTool、LocalWorkflowTask、Workflow facade、状态页和详情页相关的 13 个 focused test 文件通过。
-- 新增回归覆盖 stale cache topology、label suffix collision、automatic → manual retry、旧 attempt 迟到完成、`async_launched` 和 permission mode cache miss。
-- `bunx tsc --noEmit --pretty false`、`bun run lint`、`git diff --check` 和 `make build` 通过；构建产物版本仍为 `2.1.203`。
+- 当前 runtime/test 基线的 43 项受影响测试与 1001-Agent bounded fan-out/no runtime hard-cap probe已通过；`make release-check`、`make build`、direct Agent foreground→background、Workflow 内 Agent 调度、`/workflows` 和 `/code-review high` 也已形成通过证据。
+- 前一轮 `/deep-research` 输入明确禁止 web，但 bundled workflow 固定使用 WebSearch/WebFetch；拒绝 fetch 后该 Workflow 以 `failed` 终止，因此前一轮 Binary interaction 与整体门禁均为 `failed`，不能作为发布通过依据。
+- 本条目、研究文档与门禁报告完成收敛后，必须从该最终文档基线重新执行同轮四路门禁；只有全部路径明确 `passed` 才能提交。
+- 最终发布结论以 `docs/gate-check/2026-07-23-workflow-agent-release-gate.md` 记录的同轮证据为准。
 
 ## 2026-07-21 - v2.1.203 - Explore/Plan Agent、Codex Apps 与 Terminal 生命周期修复
 
