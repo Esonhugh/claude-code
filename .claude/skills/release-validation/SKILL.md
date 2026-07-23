@@ -10,21 +10,22 @@ version: 0.1.0
 
 ## 强制规则
 
-1. 开始前读取 `CLAUDE.md`、`Makefile`、相关 diff、当前 Git 状态和待发布版本。
-2. 使用一条消息并行启动四个独立 Agent；每个 Agent 必须明确写明 **只读验证，不得修改源码、测试、文档、配置、版本或提交**。允许验证命令生成必要的 binary、日志、tmux evidence 和临时 config root，但必须报告路径与 Git side effects。
-3. 四路职责不得互相替代：
+1. 开始前读取 `CLAUDE.md`、`Makefile`、相关 diff，并运行 `scripts/capture-release-baseline.py` 动态记录当前 `HEAD`、分支、Git 状态、版本和 binary 信息。Agent brief 只能引用本轮 baseline 文件，禁止手写或沿用上一轮 commit/hash。
+2. Binary interaction 必须使用 `scripts/run-binary-gate.py`。该脚本先执行独立 readiness smoke，只有 smoke 通过才串行启动完整交互矩阵；readiness 失败时停止，不得继续 fan-out 或把 driver/fixture 错误归因于产品 runtime。
+3. 使用一条消息并行启动四个独立 Agent；每个 Agent 必须明确写明 **只读验证，不得修改源码、测试、文档、配置、版本或提交**。允许验证命令生成必要的 binary、日志、tmux evidence 和临时 config root，但必须报告路径与 Git side effects。
+4. 四路职责不得互相替代：
    - Feature tests：确认 feature 契约和相关 `bun test` 通过，检查测试是否覆盖关键状态矩阵。
    - Release checks：运行并核对 `make release-check` 的全部阶段。
    - Binary interaction：本轮 `make build` 后，用脚本驱动 tmux 验证 `built-claude`；交互场景必须覆盖本次改动、直接受影响的 runtime 入口和相邻组件，通用启动 smoke test 不算 feature 交互验收。
    - Release/docs audit：检查版本、release 范围、README、CHANGELOG、Makefile 与实际代码和验证证据一致。
-4. **Feature 验收是不可拆分的组合门禁：无论改动是否直接用户可见，相关 `bun test` 和本轮 `built-claude` 中所有受影响交互流程的 scripted tmux 验收必须同时 `passed`。内部改动必须通过其真实调用入口触发，并检查相邻组件和副作用；任一失败、仍在运行或证据不足，feature 均不得判定为通过。单测与交互证据不能互相替代。**
-5. Agent 发现 bug、异常、文档不符、测试缺口或证据不足时，不得自行编辑。它只报告证据、复现命令、文件与行号。
-6. 任一路不是明确 `passed`，整体 release gate 即不通过。
-7. 需要修复时，由主会话阅读相关实现、先补最小失败测试、完成最小修复并运行相关验证。
-8. **任何修复都会使此前四路结果失效。修复完成后必须从头重新并行运行全部四个 Agent，不能只重跑失败项。**
-9. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
-10. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
-11. 不打印、复制或保存 token、API key、OAuth credential；交互测试使用 dummy credential 或安全的现有认证环境。
+5. **Feature 验收是不可拆分的组合门禁：无论改动是否直接用户可见，相关 `bun test` 和本轮 `built-claude` 中所有受影响交互流程的 scripted tmux 验收必须同时 `passed`。内部改动必须通过其真实调用入口触发，并检查相邻组件和副作用；任一失败、仍在运行或证据不足，feature 均不得判定为通过。单测与交互证据不能互相替代。**
+6. Agent 发现 bug、异常、文档不符、测试缺口或证据不足时，不得自行编辑。它只报告证据、复现命令、文件与行号。
+7. 任一路不是明确 `passed`，整体 release gate 即不通过。
+8. 需要修复时，由主会话阅读相关实现、先补最小失败测试、完成最小修复并运行相关验证。
+9. **任何修复都会使此前四路结果失效。修复完成后必须从头重新并行运行全部四个 Agent，不能只重跑失败项。**
+10. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
+11. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
+12. 不打印、复制或保存 token、API key、OAuth credential；交互测试使用 dummy credential 或安全的现有认证环境。
 
 ## 四个 Agent 的固定任务
 
@@ -53,6 +54,7 @@ make release-check
 只读验收：
 
 - 读取 `Makefile` 并在本轮运行 `make build`；
+- build 完成后再次运行 `scripts/capture-release-baseline.py`，然后调用 `scripts/run-binary-gate.py --repo <repo> --evidence-root <unique-/tmp-path>`；不得临时重写另一套 driver；
 - 使用 `.claude/skills/claude-agent-workflow-validation` 的 scripted tmux 证据边界；
 - 运行当前 `built-claude`，不能使用旧产物或 parent-side 工具代替；
 - 从 diff 和调用链列出受影响的真实入口、相邻组件与副作用，并逐项执行对应交互流程；内部实现不得以“用户不可见”为由跳过；
