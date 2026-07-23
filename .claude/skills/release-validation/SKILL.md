@@ -1,6 +1,6 @@
 ---
 name: release-validation
-description: Use this skill automatically before declaring a release ready, or when the user asks for release validation, 发布验收, release-check, binary-side verification, README/CHANGELOG accuracy, or a final release gate. It launches four independent read-only Agents in parallel to validate feature tests, make release-check, current built-claude scripted tmux behavior, and release/docs consistency. If any finding requires a fix, fix it outside the validation Agents and rerun all four gates from the beginning.
+description: Use this skill automatically before declaring a release ready, or when the user asks for release validation, 发布验收, release-check, binary-side verification, README/CHANGELOG accuracy, or a final release gate. It requires both related bun tests and current-binary scripted tmux coverage for every runtime change, including internal changes, affected adjacent components, and side effects, alongside make release-check and release/docs consistency. If any finding requires a fix, fix it outside the validation Agents and rerun all four gates from the beginning.
 version: 0.1.0
 ---
 
@@ -11,19 +11,20 @@ version: 0.1.0
 ## 强制规则
 
 1. 开始前读取 `CLAUDE.md`、`Makefile`、相关 diff、当前 Git 状态和待发布版本。
-2. 使用一条消息并行启动四个独立 Agent；每个 Agent 必须明确写明 **只读验证，不得修改、创建、删除、格式化或提交文件**。
+2. 使用一条消息并行启动四个独立 Agent；每个 Agent 必须明确写明 **只读验证，不得修改源码、测试、文档、配置、版本或提交**。允许验证命令生成必要的 binary、日志、tmux evidence 和临时 config root，但必须报告路径与 Git side effects。
 3. 四路职责不得互相替代：
    - Feature tests：确认 feature 契约和相关 `bun test` 通过，检查测试是否覆盖关键状态矩阵。
    - Release checks：运行并核对 `make release-check` 的全部阶段。
-   - Binary interaction：本轮 `make build` 后，用脚本驱动 tmux 验证 `built-claude` 的真实用户可见行为。
+   - Binary interaction：本轮 `make build` 后，用脚本驱动 tmux 验证 `built-claude`；交互场景必须覆盖本次改动、直接受影响的 runtime 入口和相邻组件，通用启动 smoke test 不算 feature 交互验收。
    - Release/docs audit：检查版本、release 范围、README、CHANGELOG、Makefile 与实际代码和验证证据一致。
-4. Agent 发现 bug、异常、文档不符、测试缺口或证据不足时，不得自行编辑。它只报告证据、复现命令、文件与行号。
-5. 任一路不是明确 `passed`，整体 release gate 即不通过。
-6. 需要修复时，由主会话阅读相关实现、先补最小失败测试、完成最小修复并运行相关验证。
-7. **任何修复都会使此前四路结果失效。修复完成后必须从头重新并行运行全部四个 Agent，不能只重跑失败项。**
-8. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
-9. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
-10. 不打印、复制或保存 token、API key、OAuth credential；交互测试使用 dummy credential 或安全的现有认证环境。
+4. **Feature 验收是不可拆分的组合门禁：无论改动是否直接用户可见，相关 `bun test` 和本轮 `built-claude` 中所有受影响交互流程的 scripted tmux 验收必须同时 `passed`。内部改动必须通过其真实调用入口触发，并检查相邻组件和副作用；任一失败、仍在运行或证据不足，feature 均不得判定为通过。单测与交互证据不能互相替代。**
+5. Agent 发现 bug、异常、文档不符、测试缺口或证据不足时，不得自行编辑。它只报告证据、复现命令、文件与行号。
+6. 任一路不是明确 `passed`，整体 release gate 即不通过。
+7. 需要修复时，由主会话阅读相关实现、先补最小失败测试、完成最小修复并运行相关验证。
+8. **任何修复都会使此前四路结果失效。修复完成后必须从头重新并行运行全部四个 Agent，不能只重跑失败项。**
+9. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
+10. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
+11. 不打印、复制或保存 token、API key、OAuth credential；交互测试使用 dummy credential 或安全的现有认证环境。
 
 ## 四个 Agent 的固定任务
 
@@ -31,9 +32,9 @@ version: 0.1.0
 
 只读检查并执行：
 
-- 从 diff、实现和测试建立 user-visible feature assertions；
+- 从 diff、实现和测试建立 feature assertions，包括内部契约、共享 runtime 路径和用户可见行为；
 - 运行最小相关 `bun test`，必要时运行更广但仍相关的 suite；
-- 检查主路径、认证/状态矩阵、错误路径和回归边界是否有断言；
+- 检查主路径、认证/状态矩阵、错误路径、相邻组件和回归边界是否有断言；
 - 报告 exact command、pass/fail 数量、遗漏覆盖和文件行号；
 - 不得修改测试或代码。
 
@@ -54,9 +55,11 @@ make release-check
 - 读取 `Makefile` 并在本轮运行 `make build`；
 - 使用 `.claude/skills/claude-agent-workflow-validation` 的 scripted tmux 证据边界；
 - 运行当前 `built-claude`，不能使用旧产物或 parent-side 工具代替；
+- 从 diff 和调用链列出受影响的真实入口、相邻组件与副作用，并逐项执行对应交互流程；内部实现不得以“用户不可见”为由跳过；
+- Agent 启动、路由或生命周期相关改动必须逐项尝试直接 Agent、Workflow/WorkflowTool 内 Agent、nested Agent、foreground/background continuation、task/notification；共享路径变化不能只验直接 Agent；
 - 使用 dummy credential 覆盖 API credential 分支；需要 OAuth 分支时不得暴露凭据；
-- 保存 startup、submitted、terminal pane 等绝对证据路径；
-- 检查进程终态和 Git 前后状态；
+- 保存 startup、submitted、running、terminal pane 和必要 debug marker 等绝对证据路径；
+- 检查进程终态、重复启动/通知、遗留 task/process、配置与 Git 前后状态等副作用；
 - 不得修改代码或文档。
 
 ### Agent 4 — Release and docs audit
@@ -75,7 +78,7 @@ make release-check
 每个 Agent 返回：
 
 ```markdown
-Verdict: passed | failed | not-covered
+Verdict: passed | failed | running | not covered
 Commands:
 - ...
 Evidence:
@@ -111,6 +114,8 @@ Git side effects:
 - exact commands；
 - focused tests、`make release-check`、`make build` 结果；
 - tmux session/证据绝对路径；
+- 受影响交互流程矩阵及逐项 verdict；
+- 重复启动/通知、遗留 task/process、错误状态、配置和 Git 副作用检查；
 - README/CHANGELOG/version 审计结果；
 - 尚未覆盖的风险；
 - 是否执行 commit/push/tag/release。

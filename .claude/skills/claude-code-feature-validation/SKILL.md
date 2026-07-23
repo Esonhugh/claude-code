@@ -1,6 +1,6 @@
 ---
 name: claude-code-feature-validation
-description: Use this skill automatically whenever validating a Claude Code repository change: a new feature, modified feature, bug fix, refactor, CLI command, tool, Agent/Workflow behavior, task lifecycle, React Ink/TUI interaction, packaging, or official/local compatibility. It selects the smallest sufficient validation ladder from diff inspection, focused tests, type/lint checks, build, direct runtime checks, scripted tmux, and official parity, then reports evidence-backed passed/failed/not-covered results. Also trigger for Chinese requests mentioning feature 验收、改动验证、回归、CLI/TUI 验收、构建验证或官方对照. Delegate strict binary-side Agent/Workflow/slash-command/task/TUI evidence to claude-agent-workflow-validation; parent-assistant tools never count as binary evidence.
+description: Use this skill automatically whenever validating a Claude Code repository change: a new feature, modified feature, bug fix, refactor, CLI command, tool, Agent/Workflow behavior, task lifecycle, React Ink/TUI interaction, packaging, or official/local compatibility. Runtime changes, including internal or not directly user-visible changes, require both related bun tests and current-binary scripted tmux coverage of affected entry points, adjacent consumers, and side effects. Also trigger for Chinese requests mentioning feature 验收、改动验证、回归、CLI/TUI 验收、构建验证或官方对照. Delegate strict binary-side Agent/Workflow/slash-command/task/TUI evidence to claude-agent-workflow-validation; parent-assistant tools never count as binary evidence.
 version: 0.1.0
 ---
 
@@ -11,12 +11,13 @@ version: 0.1.0
 ## 核心原则
 
 1. **先理解改动，再选择验证。** 阅读相关 diff、实现、调用链、测试和项目脚本，不对未读代码设计具体断言。
-2. **从用户可见契约反推 assertions。** 验证改动声称提供或修复的行为，而不只是实现细节。
+2. **从 feature 契约和调用链反推 assertions。** 同时验证内部契约、真实 runtime 入口、相邻消费者、用户可见行为和副作用，而不只是实现细节。
 3. **验证层级与风险匹配。** 默认从最小范围开始；只有当前层不能证明行为时才升级。
 4. **测试和运行时证据互补。** 自动化测试证明可重复逻辑；真实 CLI/TUI 验收证明进程内集成和用户可见行为。
-5. **结论必须绑定证据。** 缺少必要证据时标记 `not covered`，仍运行标记 `running`，不得用推测补齐。
-6. **不制造额外副作用。** 不 commit、push、创建 PR、发布、修改共享配置或删除用户状态，除非用户明确授权。
-7. **尊重当前工作区。** 不覆盖或清理既有未提交改动。验证前后检查 Git 可见状态，将构建产物与被测运行副作用分开。
+5. **所有 runtime feature 必须双重通过。** 无论改动是否直接用户可见，只要进入 `built-claude` 并影响功能或共享 runtime 路径，就必须同时通过相关 `bun test` 与本轮 binary 的 scripted tmux 交互验收。内部改动要通过其真实调用入口触发，并覆盖直接受影响的相邻组件和副作用。任一失败、仍在运行或证据不足时，整体 feature 必须标记为 `failed`、`running` 或 `not covered`；build、`make release-check`、L4 或 parent-side 工具均不能替代交互证据。
+6. **结论必须绑定证据。** 缺少必要证据时标记 `not covered`，仍运行标记 `running`，不得用推测补齐。
+7. **不制造额外副作用。** 不 commit、push、创建 PR、发布、修改共享配置或删除用户状态，除非用户明确授权。
+8. **尊重当前工作区。** 不覆盖或清理既有未提交改动。验证前后检查 Git 可见状态，将构建产物与被测运行副作用分开。
 
 ## 第一步：建立变更契约
 
@@ -26,7 +27,8 @@ version: 0.1.0
 - affected surfaces：纯函数、状态、组件、命令、tool schema、CLI 入口、TUI、Agent/Workflow、构建或发布产物；
 - user-visible contract：用户输入、状态迁移、输出、错误行为和副作用；
 - regressions at risk：最可能被破坏的相邻行为；
-- exclusions：本轮明确不验证的内容及原因。
+- interaction impact：改动进入 binary 后的真实调用入口、直接消费者、相邻组件和可能副作用；
+- exclusions：本轮明确不验证的内容及原因。进入 `built-claude` 的受影响 runtime 流程不能仅因“用户不可见”而排除。
 
 从 `git diff`、相关文件和测试中确认这些事实，不仅依赖用户描述或 commit message。
 
@@ -85,7 +87,7 @@ L0 只能证明静态事实，不能证明运行时行为。
 bun test path/to/foo.test.ts path/to/Foo.test.tsx
 ```
 
-先从 diff、用户指定路径和相邻实现确定测试文件；不要仅按扩展名扩大到全量 suite。出现 `.test.tsx` 只说明它是测试文件，不代表需要交互式验收。只有 assertion 依赖真实 CLI stdin、TTY、按键、resize、terminal render 或进程内生命周期时才升级到 L5。
+先从 diff、用户指定路径和相邻实现确定测试文件；不要仅按扩展名扩大到全量 suite。出现 `.test.tsx` 只说明它是测试文件，不代表仅凭文件类型触发 L5；但只要改动进入 `built-claude` 并影响功能或共享 runtime 路径，无论是否直接用户可见，都必须同时执行 L5，不能因 L1 已通过而省略交互验收。
 
 ### L2 — 类型、lint 与仓库检查
 
@@ -109,20 +111,20 @@ bun test path/to/foo.test.ts path/to/Foo.test.tsx
 
 适用于 `--print`、stdout/stderr、exit code、debug flags、settings/env 或无需持续 TTY 的单进程行为。使用最小、确定、无副作用输入，保存命令、输出、exit code 和相关 debug log。
 
-如果行为只存在于交互式 CLI 进程内，不要用 L4 替代 L5。快速单进程诊断使用 `claude-runtime-debug`；网络问题使用 `claude-network-debug`。
+L4 是非交互断言的补充证据，不能替代 runtime 改动必须执行的 L5。行为只存在于交互式 CLI 进程内时也不能用 L4 替代 L5。快速单进程诊断使用 `claude-runtime-debug`；网络问题使用 `claude-network-debug`。
 
 ### L5 — Scripted tmux 真实交互验收
 
-以下目标必须升级到 L5：
+进入 `built-claude` 并影响功能或共享 runtime 路径的改动必须执行 L5，并与相关 L1 `bun test` 共同构成通过门槛。先从 diff 和调用链列出真实入口、直接消费者、相邻组件和可能副作用，再逐项执行相关交互流程；内部实现不得以“用户不可见”为由跳过。以下类型一旦受本轮改动影响，必须覆盖：
 
 - slash command stdin dispatch；
-- Agent、Workflow、WorkflowTool 或 nested Agent；
+- Agent 启动、路由或生命周期：直接 Agent、Workflow/WorkflowTool 内 Agent、nested Agent、foreground/background continuation、task/notification；共享启动或执行路径发生变化时，这些关联流程必须逐项尝试，不能只验直接 Agent；
 - `/deep-research`、`/code-review`；
 - task lifecycle、foreground/background continuation、notification、scheduling；
 - React Ink/TUI、按键、resize、signal、terminal preview；
 - 必须在真实 CLI 中确认的交互状态。
 
-此层必须通过 `Skill` 工具调用并遵循 `claude-agent-workflow-validation`，不能只在报告中提到它或自行用简化交互替代。它要求 tmux 中运行本轮新构建的 `built-claude`，通过脚本完成 readiness、literal stdin、分阶段 pane capture、debug marker 和终态检查。
+此层必须通过 `Skill` 工具调用并遵循 `claude-agent-workflow-validation`，不能只在报告中提到它或自行用简化交互替代。它要求 tmux 中运行本轮新构建的 `built-claude`，通过脚本完成 readiness、literal stdin、分阶段 pane capture、debug marker 和终态检查。每个流程还要检查重复启动/通知、遗留 task/process、错误状态、配置或工作区污染等与改动相关的副作用。
 
 调用专项 skill 前先完成 L0/L1，并在需要当前 binary 时完成 L3。调用后由专项 skill 驱动 tmux；不要在 parent-side 启动 `Agent` 来模拟被测 Agent。当前 assistant 会话的 `Agent`、`Workflow`、`Skill`、Task/Run 查询均不能作为 binary-side 证据；无法在 binary 中触发时必须报告 `not covered`。
 
@@ -135,11 +137,11 @@ bun test path/to/foo.test.ts path/to/Foo.test.tsx
 | 改动类型 | 最低建议层级 | 必须关注 |
 |---|---|---|
 | 文档/说明 | L0 | 内容与实现一致、链接和命令准确 |
-| 纯函数/内部逻辑 | L0 + L1 | 主路径、边界、回归测试 |
-| bug fix | L0 + L1 | 最小失败测试复现根因 |
-| React Ink 组件/状态 | L0 + L1 | render/state；真实交互则 L3 + L5 |
-| command/tool/schema/注册 | L0 + L1 + L2 + L3 | 注册可达、schema、构建制品 |
-| `--print`/非交互 CLI | L0 + L1 + L3 + L4 | stdout/stderr、exit code、debug |
+| 纯函数/内部逻辑 | L0 + L1；进入 binary runtime 时加 L3 + L5 | 主路径、边界、真实调用入口、相邻消费者、副作用 |
+| bug fix | L0 + L1 + 对应 runtime 层级 | 最小失败测试复现根因；进入 binary 时必须尝试相关交互流程 |
+| React Ink 组件/状态 | L0 + L1 + L3 + L5 | render/state、真实交互、相邻状态与终端副作用 |
+| command/tool/schema/注册 | L0 + L1 + L2 + L3；进入 runtime 时加 L5 | 注册可达、schema、构建制品、真实调用流程 |
+| `--print`/非交互 CLI | L0 + L1 + L3 + L4 + L5 | 非交互输出证据，以及相关真实 CLI 流程和副作用 |
 | slash command/TUI | L0 + L1 + L3 + L5 | stdin、pane、prompt 恢复、终端状态 |
 | Agent/Workflow/task 调度 | L0 + L1 + L3 + L5 | binary-side ID、进度、通知、debug marker |
 | packaging/release path | L0 + L2 + L3 | 制品路径、版本、release checks |
@@ -157,8 +159,8 @@ bun test path/to/foo.test.ts path/to/Foo.test.tsx
 | CLI 入口已接收 | exact input + submitted pane/output + 无解析错误 | `failed` / `not covered` |
 | Agent/Workflow 已启动 | running pane + 稳定 binary-side ID | `not covered` |
 | routing/handoff/ownership 正确 | 同次运行 debug marker + 关联 ID | `not covered` |
-| 用户可见终态正常 | terminal pane/output + prompt/exit + process state | `running` / `failed` / `stopped` |
-| 无非预期仓库副作用 | CLI 前后 Git 状态对照 | `not covered` |
+| 相关交互流程终态正常 | terminal pane/output + prompt/exit + process/task state | `running` / `failed` / `stopped` |
+| 无非预期副作用 | 重复启动/通知、遗留 task/process、配置及 CLI 前后 Git 状态检查 | `not covered` |
 
 普通运行无法稳定触发的故障路径，明确写为“自动化测试覆盖”“受控 fault injection”或 `not covered`，不能假称真实交互已覆盖。
 
@@ -167,7 +169,7 @@ bun test path/to/foo.test.ts path/to/Foo.test.tsx
 - 先读取失败输出并定位阶段：test、typecheck、build、readiness、dispatch、runtime 或 assertion evidence。
 - 不盲目重复相同命令。
 - 允许重试时记录原因；L5 必须使用新 session、evidence 和 config roots，保留旧证据。
-- 测试失败不自动证明整个 feature 失败；只将对应 assertion 标为 `failed`，其余按证据判定。
+- 测试失败不污染无关 assertion；但相关 L1 `bun test` 或必要 L5 交互验收任一失败时，整体 feature 不得标记为 `passed`。
 - 环境阻塞时标记 `not covered`，说明阻塞和用户可执行的最小后续命令。
 
 ## Skill 边界
@@ -188,6 +190,7 @@ bun test path/to/foo.test.ts path/to/Foo.test.tsx
 ## 范围与变更契约
 - Changed behavior:
 - Affected surfaces:
+- Interaction impact:
 - Validation ladder:
 - Exclusions:
 
@@ -198,6 +201,10 @@ bun test path/to/foo.test.ts path/to/Foo.test.tsx
 ## 执行结果
 | Layer | Command / binary-side entry | Result | Evidence |
 |---|---|---|---|
+
+## 受影响交互流程与副作用
+| Flow / consumer | Trigger | Runtime verdict | Side-effect checks | Evidence |
+|---|---|---|---|---|
 
 ## 发现
 1. ...

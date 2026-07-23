@@ -4,48 +4,51 @@
     {
       "id": 1,
       "prompt": "我新增了一个纯 TypeScript formatter，并补了单测。请验收这个 feature 是否可以交付，不需要启动 CLI。",
-      "expected_output": "读取 diff 和调用链，建立变更契约，选择 L0 + L1（必要时 L2），运行聚焦测试，不机械执行 make build 或 tmux，并按 assertion 报告证据与未覆盖项。",
+      "expected_output": "读取 diff 和调用链，建立变更契约，选择 L0 + L1（必要时 L2）；若 formatter 进入 built-claude runtime，则构建并从真实消费入口执行 L5，检查相邻消费者和副作用；只有明确不进入 binary runtime 时才可不启动 tmux。",
       "files": [],
       "assertions": [
-        "根据真实 diff 识别 pure logic surface。",
+        "根据真实 diff 和调用链识别 pure logic surface 及其 runtime 消费入口。",
         "运行最小相关测试并记录 exact command、exit code 和结果。",
-        "不会仅为纯逻辑改动无条件启动 tmux。",
-        "测试通过只用于其覆盖的 assertions。"
+        "进入 built-claude runtime 时执行当前 binary 的相关交互流程；不进入时明确给出证据。",
+        "测试与交互证据不能互相替代。"
       ]
     },
     {
       "id": 5,
       "prompt": "我改了 src/foo.ts 和 src/components/Foo.tsx，相关测试是 src/foo.test.ts 与 src/components/Foo.test.tsx。只需验证这些普通单测，不涉及 CLI、按键或终端交互。",
-      "expected_output": "选择 L0 + L1，执行 bun test src/foo.test.ts src/components/Foo.test.tsx；不会因为 .test.tsx 或 React 组件而调用交互式 validation skill 或启动 tmux。",
+      "expected_output": "执行 bun test src/foo.test.ts src/components/Foo.test.tsx；再从 diff 和调用链判断改动是否进入 built-claude runtime。若进入，则构建当前 binary 并通过 claude-agent-workflow-validation 执行受影响组件的交互流程和副作用检查；用户声称不涉及交互不能覆盖代码事实。",
       "files": [],
       "assertions": [
         "使用 bun test 并精确传入两个相关测试路径。",
         "不会因为 .test.tsx 扩大到全量测试。",
-        "不会调用 claude-agent-workflow-validation 或启动 tmux。",
-        "记录 exact command、exit code 和测试结果。"
+        "根据调用链决定并执行进入 runtime 的 L5，而非仅依赖用户声明。",
+        "记录自动化测试和交互验收的独立结果。"
       ]
     },
     {
       "id": 2,
       "prompt": "我改了一个 tool schema 和 tools registry，还更新了 CLI 里的调用。请做完整 validation。",
-      "expected_output": "选择 L0 + L1 + L2 + L3，检查 schema/registry/export，运行聚焦测试与类型检查，从 Makefile 确认并构建当前 built-claude；若入口需真实交互则升级 L5。",
+      "expected_output": "选择 L0 + L1 + L2 + L3 + L5，检查 schema/registry/export，运行聚焦测试与类型检查，从 Makefile 确认并构建当前 built-claude，再通过真实 CLI 消费入口验证 tool schema 和 registry 交互流程及副作用。",
       "files": [],
       "assertions": [
         "检查 schema、registry、export 和调用链可达性。",
         "运行相关 tests 和类型检查。",
         "读取 Makefile 并在本轮运行 make build。",
-        "记录 build 前后 Git 状态和 binary metadata。"
+        "记录 build 前后 Git 状态和 binary metadata。",
+        "使用本轮 built-claude 完成相关交互流程和副作用检查。"
       ]
     },
     {
       "id": 3,
       "prompt": "我修复了 Agent foreground 转 background 后重复 stream 和 completion notification 丢失的问题。请验收，当前会话的 Agent tool 已经跑通过一次。",
-      "expected_output": "使用通用 skill 建立 assertions 并选择 L0 + L1 + L3 + L5；调用 claude-agent-workflow-validation 执行严格 scripted tmux 验收；明确排除 parent-side Agent 结果，关联同次运行 pane/debug/ID，无法触发的竞态路径标 not covered 或自动化测试覆盖。",
+      "expected_output": "使用通用 skill 建立 assertions 并选择 L0 + L1 + L3 + L5；调用 claude-agent-workflow-validation 执行严格 scripted tmux 验收；除直接 Agent 外，逐项尝试复用共享路径的 Workflow/WorkflowTool、nested Agent、foreground/background、task/notification，并检查重复 stream/notification、遗留 task/process 和 Git/config 副作用。",
       "files": [],
       "assertions": [
         "运行聚焦 lifecycle/behavior tests，并区分受控故障测试与真实 CLI 证据。",
         "本轮构建最新 built-claude。",
         "L5 使用 claude-agent-workflow-validation 的 scripted tmux 路径。",
+        "逐项尝试直接 Agent、Workflow/WorkflowTool、nested Agent、foreground/background 和 task/notification 相关流程。",
+        "检查重复 stream/notification、遗留 task/process 和 Git/config 副作用。",
         "parent-side Agent 结果被明确排除于 binary-side evidence。",
         "runtime done 不自动判定 validation passed。"
       ]
