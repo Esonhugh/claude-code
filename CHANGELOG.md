@@ -10,27 +10,28 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-23 - Workflow/Agent 调度与深度研究兼容性修复
+## 2026-07-24 - v2.1.204 - Workflow/Agent 失败记账、重试恢复与 OpenAI Web Search
 
 ### 版本状态
 
-- 非发布变更，未新增版本号；`Makefile` 保持 `2.1.203`，`package.json` 保持 `0.0.0-dev`。
-- 本条目覆盖 `v2.1.203` tag 之后的 Workflow/Agent 修复提交和当前待提交修正。
-- 当前提交继续标记 `[not ready]`；不创建 tag 或 release。
+- 准备发布版本：`v2.1.204`。
+- 本次发布覆盖 `v2.1.203` tag 之后至 2026-07-24 的提交。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.204`。
 
 ### 关联提交
 
 - `f9f637a` — 2026-07-21 — `update: README`
 - `a9af0b1` — 2026-07-21 — `remove: name incorrect`
 - `cc70099` — 2026-07-22 — `test: cover workflow agent failure validation`
-- `e4e8130` — 2026-07-22 — `[not ready] fix workflow agent failure accounting`
-- `500103b` — 2026-07-22 — `[not ready] fix workflow retry identity edge cases`
+- `e4e8130` — 2026-07-22 — `fix workflow agent failure accounting`
+- `500103b` — 2026-07-22 — `fix workflow retry identity edge cases`
 - `fc1f1cc` — 2026-07-22 — `fix workflow retry and resume consistency`
 - `aac126c` — 2026-07-23 — `require runtime interaction in validation skills`
-- `44dceca` — 2026-07-23 — `[not ready] fix workflow agent scheduling consistency`
+- `44dceca` — 2026-07-23 — `fix workflow agent scheduling consistency`
 - `efa2fff` — 2026-07-23 — `update: Chaneglogs`
 - `ea2b350` — 2026-07-23 — `update: validate release check example scripts`
-- 当前待提交变更：补齐 OpenAI Responses server-side WebSearch 映射、收敛 bundled deep-research worker 职责，并强化持久化 release gate driver。
+- `31a07f1` — 2026-07-24 — `enable OpenAI web search workflows`
 
 ### 变更内容
 
@@ -62,12 +63,12 @@
 ### 验证状态
 
 - Round 7 Feature tests 通过：AgentTool、WorkflowTool、LocalWorkflowTask、OpenAI compatibility、bundled workflow 和 release driver 相关测试均成功，TypeScript 通过；1001-Agent probe 完成 1001 个 logical/physical executions，最大 physical concurrency 为 8（`<=16`）。
-- 一次完整 `make release-check` 通过：version guard、TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均成功。
-- 本轮 `make build` 生成 `2.1.203` binary（SHA-256 `92de658c9bf9b451d2c462c9f764fce9d0989ac11922993cd43f807569154fb7`）；persisted binary driver 的 readiness、direct/nested Agent、foreground/background continuation、Workflow 内 Agent、`/workflows`、`/deep-research` 和 `/code-review high` 全部通过。
+- v2.1.204 发布准备时重跑 `make release-check` 通过：version guard、TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均成功。
+- 发布准备时 `make build` 生成 `2.1.204` binary（SHA-256 `0ec7399407c672eb315130110d4d792955739fef2ee8dfeaddfa075beceeeacf`），`./built-claude --version` 输出 `2.1.204 (Claude Code)`；本次相对上一轮仅为 `Makefile` 版本号变更，无运行时逻辑改动。
+- 下列 binary-side 交互证据来自同一份源码在上一轮 `2.1.203` 构建下的验收（`31a07f1` 当时为待提交改动，现已提交，源码内容一致）：persisted binary driver 的 readiness、direct/nested Agent、foreground/background continuation、Workflow 内 Agent、`/workflows`、`/deep-research` 和 `/code-review high` 全部通过。
 - `/deep-research` 实际完成固定 25 workers：WebSearch `5/5`、WebFetch `15/15`（11 成功、4 个符合契约的外部来源失败）、Verify `3/3`、Synthesize `1/1`；无 retry、替代工具、重复通知或遗留 tmux session。
 - Release/docs audit 确认版本、README、CHANGELOG 范围和实现一致，diff/file-list 扫描未发现高置信度敏感信息；其唯一 placeholder finding 已由最终报告刷新关闭。
 - 完整结论见 `docs/gate-check/2026-07-23-workflow-agent-release-gate.md`；原始 pane、debug log、Task/Run/Agent ID 和 cleanup evidence 保存在 `/tmp/cc-release-final-20260723/final-round-7/`。
-- 当前提交仍标记 `[not ready]`；PR、tag、release 不执行。
 
 ## 2026-07-21 - v2.1.203 - Explore/Plan Agent、Codex Apps 与 Terminal 生命周期修复
 

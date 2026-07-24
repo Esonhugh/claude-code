@@ -10,7 +10,7 @@
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
 - 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.203`
+- 当前本地发布线：`2.1.204`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -29,7 +29,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.203` |
+| 本地发布线 | `2.1.204` |
 | 源码版本 | `0.0.0-dev` |
 | 包管理器 | `bun@1.3.14` |
 | Node.js | `>=18` |
@@ -83,7 +83,7 @@ bun ./dist/cli.js --help
 
 | 领域 | 本地特性与更新 |
 | --- | --- |
-| OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；Model Picker 也会显示符合支持范围的 hidden 模型，并以 `(Hidden)` 标识。 |
+| OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；启用 server-side `WebSearch`，将 Anthropic web-search schema、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为 Anthropic-compatible stream 事件；Model Picker 也会显示符合支持范围的 hidden 模型，并以 `(Hidden)` 标识。 |
 | Effort | 支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并按 Anthropic/OpenAI provider 和模型能力映射。 |
 | Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认注册只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
