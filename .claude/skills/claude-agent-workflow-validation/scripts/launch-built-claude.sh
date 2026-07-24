@@ -7,12 +7,20 @@ set -eu
 : "${CC_VALIDATION_HOME:?missing CC_VALIDATION_HOME}"
 
 cd "$CC_VALIDATION_REPO_ROOT"
-export HOME="$CC_VALIDATION_HOME"
-export CLAUDE_CONFIG_DIR="$CC_VALIDATION_CONFIG_DIR"
-export XDG_CACHE_HOME="$CC_VALIDATION_HOME/.cache"
-export XDG_CONFIG_HOME="$CC_VALIDATION_HOME/.config"
-export XDG_DATA_HOME="$CC_VALIDATION_HOME/.local/share"
-exec "$CC_VALIDATION_REPO_ROOT/built-claude" \
+exec env -i \
+  HOME="$CC_VALIDATION_HOME" \
+  CLAUDE_CONFIG_DIR="$CC_VALIDATION_CONFIG_DIR" \
+  XDG_CACHE_HOME="$CC_VALIDATION_HOME/.cache" \
+  XDG_CONFIG_HOME="$CC_VALIDATION_HOME/.config" \
+  XDG_DATA_HOME="$CC_VALIDATION_HOME/.local/share" \
+  PATH="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+  SHELL="${SHELL:-/bin/sh}" \
+  USER="${USER:-}" \
+  LANG="${LANG:-en_US.UTF-8}" \
+  TERM="${TERM:-xterm-256color}" \
+  CLAUDE_CODE_USE_OPENAI=1 \
+  CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1 \
+  "$CC_VALIDATION_REPO_ROOT/built-claude" \
   --dangerously-skip-permissions \
   --debug \
   --debug-file "$CC_VALIDATION_EVIDENCE_DIR/debug.log"

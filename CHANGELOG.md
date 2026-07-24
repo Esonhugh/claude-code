@@ -10,13 +10,13 @@
 - 每个条目写明关联 commit 和变更内容。
 - `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
 
-## 2026-07-23 - Workflow Agent 调度、恢复与权限一致性修复
+## 2026-07-23 - Workflow/Agent 调度与深度研究兼容性修复
 
 ### 版本状态
 
 - 非发布变更，未新增版本号；`Makefile` 保持 `2.1.203`，`package.json` 保持 `0.0.0-dev`。
-- 本条目覆盖 `v2.1.203` tag 之后的 Workflow 修复提交，以及 `44dceca` 中的最终审计修正。
-- `44dceca` 仍标记为 `[not ready]`，未创建 tag 或 release。
+- 本条目覆盖 `v2.1.203` tag 之后的 Workflow/Agent 修复提交和当前待提交修正。
+- 当前提交继续标记 `[not ready]`；不创建 tag 或 release。
 
 ### 关联提交
 
@@ -27,44 +27,47 @@
 - `500103b` — 2026-07-22 — `[not ready] fix workflow retry identity edge cases`
 - `fc1f1cc` — 2026-07-22 — `fix workflow retry and resume consistency`
 - `aac126c` — 2026-07-23 — `require runtime interaction in validation skills`
-- `44dceca` — 2026-07-23 — `[not ready] fix workflow agent scheduling consistency`：修正非完成 resume cache、Workflow-run 范围 label 唯一性、worker permission mode 传播、恢复与 phase-level permission snapshot；阻止普通子 Agent 显式提升父会话权限；移除 script Workflow 的 run-level Agent lifetime hard cap，并以 bounded concurrency 调度大规模 fan-out。
+- `44dceca` — 2026-07-23 — `[not ready] fix workflow agent scheduling consistency`
+- `efa2fff` — 2026-07-23 — `update: Chaneglogs`
+- `ea2b350` — 2026-07-23 — `update: validate release check example scripts`
+- 当前待提交变更：补齐 OpenAI Responses server-side WebSearch 映射、收敛 bundled deep-research worker 职责，并强化持久化 release gate driver。
 
 ### 变更内容
 
 #### Workflow Agent 失败、重试与终态记账
 
-- Agent terminal API error 不再被当作成功；structured-output Agent 只有在 schema 输出验证完成后才进入 `completed`。
-- Local Workflow task 分离 logical agent 与 physical attempt，记录 `attemptId`、retry lineage 和 attempt 终态；`agentCount`、`startedAgentAttempts` 与 `retryCount` 分别表示逻辑 Agent 数、实际启动次数与重试次数。
-- automatic retry 与 manual retry 共用连续 attempt 序列；旧 attempt 的迟到结果不能覆盖当前 active attempt。
-- Workflow 状态页、详情页和 Coordinator 行按 terminal outcome 计算 completed、failed、skipped 与进度；失败 phase 不再显示为成功完成。
-- declarative Workflow 只接受 AgentTool 的 `completed` 输出；`async_launched` 等非完成状态不会静默记为成功。
+- Agent terminal/API/structured-output 失败不再被当作成功；Local Workflow task 分离 logical Agent 与 physical attempt，并记录连续 retry lineage。
+- automatic/manual retry 共用连续 attempt identity；旧 attempt 的迟到结果不能覆盖当前 active attempt。
+- Workflow 状态页、详情页和 Coordinator 行按 terminal outcome 计算 completed、failed、skipped 与进度。
 
-#### Resume cache 与 Agent identity
+#### Resume、identity 与权限边界
 
-- Workflow journal 和 declarative resume 仅复用 `completed` result；`running`、`failed`、跳过和中断值不会污染或遮蔽后续恢复。
-- cache hit 使用当前调用的 `phaseId`、phase-local `index` 和 Agent ID 重建结果，避免旧 topology 坐标写回当前 task/session。
-- resume identity 使用实际生效的 permission mode；`default` 按调度时的父会话权限快照解析，权限变化会产生 cache miss。
-- Agent label 在整个 Workflow run 内保持唯一，覆盖显式 label、自动后缀冲突与跨 phase 重名；suffix 分配保持线性。
+- Workflow journal 和 declarative resume 仅复用 `completed` result；非完成 entry 不会污染或遮蔽后续完成 entry。
+- resume identity 使用实际生效的 permission mode；Agent label 在整个 Workflow run 内唯一，重复 suffix 分配保持线性。
+- Agent 显式 `mode` 进入 worker permission context；子 Agent 只能保持或收紧父会话权限。父会话为 `bypassPermissions` 且子 Agent未显式收紧时默认继承 bypass。
+- foreground → background continuation 继续消费原 Agent stream，不重复启动 Agent。
 
-#### Agent permission mode 与运行边界
+#### Script Workflow 与 deep-research
 
-- AgentTool 显式 `mode` 会进入 normal worker 的 tool permission context，不再只影响 teammate 或 cache identity；子 Agent 只能保持或收紧父会话权限，不能从 `default`/`plan` 提升到 `acceptEdits` 或 `bypassPermissions`。
-- 显式 `plan` worker 清除父会话遗留的 bypass 可用状态；`dontAsk`、`plan` 和 `auto` 不会被 `bubble` 放宽，`acceptEdits` 也不能提升到 `auto`；声明式 Workflow 同一 phase 的 concurrency batch 复用一次调度时 permission snapshot。
-- background Agent metadata 保存原始 effective permission mode，resume 时继续按当前父会话做 non-escalation 后恢复，避免继承新默认值造成权限漂移。
-- child context 使用已解析的 Agent model，避免把带显示格式的模型文本传入子调用。
-- 删除 script Workflow 固定的 run-level Agent launch hard cap；声明式 workflow spec 的 `defaults.maxAgents` 规划校验仍保留。`parallel()`/`pipeline()` 只物化 bounded concurrency 的活跃分支，避免大 fan-out 在 semaphore 前创建全部 Agent 状态。
+- 删除 script Workflow 固定的 run-level Agent lifetime hard cap；声明式 spec 的 `defaults.maxAgents` 规划校验保留。`parallel()`/`pipeline()` 继续以最多 16 个活跃槽位执行大规模 fan-out。
+- OpenAI/ChatGPT provider 启用 server-side `WebSearch`，将 Anthropic web-search schema、forced `tool_choice`、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为现有 Anthropic-compatible stream 事件。
+- bundled deep-research 为 5 个 Search worker 和 15 个 Fetch worker分配确定的一对一职责，避免每个 worker重复整个 phase fan-out；3 个 Verify worker各自产生一票，Verify/Synthesize 仅消费上游证据，不再自行调用本地工具或二次委派。
+
+#### 发布门禁
+
+- release validation 使用 repo 外动态 baseline 绑定当前 HEAD、Git 状态和本轮 `built-claude` metadata，不硬编码旧 commit/hash。
+- binary gate 使用隔离副作用目录和正常现有账户认证，清除会覆盖私有 gate auth fixture 的 inherited API/OAuth 环境变量；credential 值不进入 evidence。
+- readiness、Search/Fetch transcript tool-use/result 关联、process cleanup 和 forced-termination 判定均 fail-closed；历史 false-pass fixture 必须被拒绝。
 
 ### 验证状态
 
-- 受影响测试集 `bun test src/tools/AgentTool src/tools/WorkflowTool src/tasks/LocalWorkflowTask`：`43 pass / 0 fail`；其中 1001-Agent probe 确认全部 logical Agents 均执行，活跃并发保持 `<=16`，不存在 script Workflow lifetime launch hard cap。
-- `make release-check` 通过：TypeScript、ESLint、missing imports/assets audit 与 `git diff --check` 均无错误。
-- `make build` 生成 `built-claude` `2.1.203`；制品大小 `83,165,218` bytes，SHA-256 为 `2fdedf15c7f6da8f5abbc5d9ea2b9132cdc8cf381da5704819bbd6bc42a5f2d9`。
-- direct Agent foreground→background 验收通过：Agent ID `a5c594be473d36b80`；foreground registration、background continuation 和 terminal marker 各一次，通知一次，父 prompt 恢复且无遗留进程。
-- inline Workflow 与 `/workflows` 验收通过：Task ID `wu7njp229`，Run ID `wf_c1087f76-1c4`，两个 Agent 完成；列表、详情和 Agent terminal 页面均可加载，通知一次，父 prompt 恢复且无遗留进程。
-- `/deep-research` 按 bundled workflow 真实执行 Search/Fetch 并通过：Task ID `wp000spsy`，Run ID `wf_b7e492de-a87`，`26` 个 Agent 完成，处理 `75` 次 WebFetch 权限确认，通知一次，父 prompt 恢复且无遗留进程。
-- `/code-review high` 重试后通过：Task ID `w45l90fg7`，Run ID `wf_cc8bf130-c2d`，`25/25` Agents 完成，通知一次，父 prompt 恢复且无遗留进程。首次运行 `ws8ku7z6e` 被只读 Bash 权限对话框阻塞并按 `running` 留档，随后使用新 session 重试，不与通过证据拼接。
-- 审查提出的 named teammate 在父会话 `bypassPermissions` 下继承 bypass，按当前产品约定视为默认行为；要求恢复 1000-Agent lifetime hard cap 与既定设计冲突，不采纳。恢复中的 `bubble` definition 变化仅影响低概率权限提示行为，不影响本轮主路径验收。
-- 原始 pane、debug log、Task/Run/Agent ID、通知与清理证据保存在 `/tmp/cc-final-gate-final-pBPF94/`；未删除 debug evidence。详细结论见 `docs/gate-check/2026-07-23-workflow-agent-release-gate.md`。
+- Round 7 Feature tests 通过：AgentTool、WorkflowTool、LocalWorkflowTask、OpenAI compatibility、bundled workflow 和 release driver 相关测试均成功，TypeScript 通过；1001-Agent probe 完成 1001 个 logical/physical executions，最大 physical concurrency 为 8（`<=16`）。
+- 一次完整 `make release-check` 通过：version guard、TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均成功。
+- 本轮 `make build` 生成 `2.1.203` binary（SHA-256 `92de658c9bf9b451d2c462c9f764fce9d0989ac11922993cd43f807569154fb7`）；persisted binary driver 的 readiness、direct/nested Agent、foreground/background continuation、Workflow 内 Agent、`/workflows`、`/deep-research` 和 `/code-review high` 全部通过。
+- `/deep-research` 实际完成固定 25 workers：WebSearch `5/5`、WebFetch `15/15`（11 成功、4 个符合契约的外部来源失败）、Verify `3/3`、Synthesize `1/1`；无 retry、替代工具、重复通知或遗留 tmux session。
+- Release/docs audit 确认版本、README、CHANGELOG 范围和实现一致，diff/file-list 扫描未发现高置信度敏感信息；其唯一 placeholder finding 已由最终报告刷新关闭。
+- 完整结论见 `docs/gate-check/2026-07-23-workflow-agent-release-gate.md`；原始 pane、debug log、Task/Run/Agent ID 和 cleanup evidence 保存在 `/tmp/cc-release-final-20260723/final-round-7/`。
+- 当前提交仍标记 `[not ready]`；PR、tag、release 不执行。
 
 ## 2026-07-21 - v2.1.203 - Explore/Plan Agent、Codex Apps 与 Terminal 生命周期修复
 

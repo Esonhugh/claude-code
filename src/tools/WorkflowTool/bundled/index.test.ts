@@ -29,6 +29,7 @@ assert.equal(codeReview.defaults?.permissionMode, 'plan')
 
 const deepResearch = bundledWorkflows.find(workflow => workflow.name === 'deep-research')
 assert.ok(deepResearch)
+assert.equal(deepResearch.defaults?.maxRetries, 0)
 
 assert.deepEqual(
   deepResearch.phases.map(phase => phase.id),
@@ -74,21 +75,66 @@ assert.match(
   deepResearch.phases.find(phase => phase.id === 'scope')?.prompt ?? '',
   /Structured output only/,
 )
-assert.match(
-  deepResearch.phases.find(phase => phase.id === 'search')?.prompt ?? '',
-  /top 4-6 most relevant results/,
-)
-assert.match(
-  deepResearch.phases.find(phase => phase.id === 'fetch')?.prompt ?? '',
-  /sourceQuality: "unreliable"/,
-)
-assert.match(
-  deepResearch.phases.find(phase => phase.id === 'verify')?.prompt ?? '',
-  /Default to refuted=true if uncertain/,
-)
-assert.match(
-  deepResearch.phases.find(phase => phase.id === 'synthesize')?.prompt ?? '',
-  /Synthesis step was skipped or failed/,
-)
+const searchPhase = deepResearch.phases.find(phase => phase.id === 'search')
+assert.match(searchPhase?.prompt ?? '', /top 4-6 most relevant results/)
+assert.equal(searchPhase?.agentPrompts?.length, 5)
+for (const [index, prompt] of searchPhase?.agentPrompts?.entries() ?? []) {
+  assert.match(prompt, new RegExp(`scoped angle ${index + 1}`))
+  assert.match(prompt, /Use WebSearch exactly once/)
+  assert.match(prompt, /ToolSearch at most once with query select:WebSearch/)
+  assert.match(prompt, /Do not search any other angle, call any other tool, or delegate/)
+}
+
+const fetchPhase = deepResearch.phases.find(phase => phase.id === 'fetch')
+const fetchPrompt = fetchPhase?.prompt ?? ''
+assert.match(fetchPrompt, /sourceQuality: "unreliable"/)
+assert.match(fetchPrompt, /fetch exactly one source/i)
+assert.match(fetchPrompt, /one-based worker number/)
+assert.match(fetchPrompt, /ToolSearch at most once with query select:WebFetch/)
+assert.match(fetchPrompt, /Use WebFetch exactly once/)
+assert.match(fetchPrompt, /even when that source is unavailable, blocked, irrelevant, or paywalled/)
+assert.match(fetchPrompt, /report the failure instead of retrying or substituting another source/)
+assert.match(fetchPrompt, /Do not fetch any other source, call any other tool, or delegate/)
+assert.match(fetchPrompt, /Return selectedSource with oneBasedRank and URL/)
+assert.match(fetchPrompt, /exactly one JSON object with no Markdown fence/)
+assert.equal(fetchPhase?.agentPrompts?.length, 15)
+for (const [index, prompt] of fetchPhase?.agentPrompts?.entries() ?? []) {
+  assert.match(prompt, new RegExp(`source ${index + 1}`))
+  assert.match(prompt, /shared deterministic source list/)
+  assert.match(prompt, /flatten workers in scoped-angle order/)
+  assert.match(prompt, /preserve each worker's result order/)
+  assert.match(prompt, /normalized exact URL \(preserving scheme and query while ignoring fragments\)/)
+  assert.match(prompt, /Do not independently re-rank the sources/)
+  assert.match(prompt, /ToolSearch at most once with query select:WebFetch/)
+  assert.match(prompt, /using WebFetch exactly once/)
+  assert.match(prompt, /even when the source is unavailable, blocked, irrelevant, or paywalled/)
+  assert.match(prompt, /Report a failed fetch instead of retrying or substituting another source/)
+  assert.match(prompt, /Do not fetch any other source, call any other tool, or delegate/)
+  assert.match(
+    prompt,
+    new RegExp(`selectedSource: \\{ oneBasedRank: ${index + 1}, url:`),
+  )
+  assert.match(prompt, /exactly one JSON object with no Markdown fence/)
+}
+
+const verifyPhase = deepResearch.phases.find(phase => phase.id === 'verify')
+const verifyPrompt = verifyPhase?.prompt ?? ''
+assert.match(verifyPrompt, /one of three independent verifier votes/)
+assert.match(verifyPrompt, /Do not call tools or delegate/)
+assert.match(verifyPrompt, /Default to refuted=true if uncertain/)
+assert.equal(verifyPhase?.permissionMode, 'dontAsk')
+assert.equal(verifyPhase?.agentPrompts?.length, 3)
+for (const [index, prompt] of verifyPhase?.agentPrompts?.entries() ?? []) {
+  assert.match(prompt, new RegExp(`verifier vote ${index + 1} of 3`))
+  assert.match(prompt, /Produce exactly one independent vote per claim/)
+  assert.match(prompt, /do not call tools or delegate/)
+}
+
+const synthesizePhase = deepResearch.phases.find(phase => phase.id === 'synthesize')
+const synthesizePrompt = synthesizePhase?.prompt ?? ''
+assert.match(synthesizePrompt, /Use only the upstream verification outputs/)
+assert.match(synthesizePrompt, /do not call tools or delegate/)
+assert.match(synthesizePrompt, /Synthesis step was skipped or failed/)
+assert.equal(synthesizePhase?.permissionMode, 'dontAsk')
 
 console.log('bundled/index.test.ts passed')

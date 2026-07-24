@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -158,7 +161,9 @@ const fakeAgentTool = {
   },
 }
 
+const workflowCwd = await mkdtemp(join(tmpdir(), 'local-workflow-task-'))
 const context = {
+    getCwd: () => workflowCwd,
     getAppState: () => state,
     setAppState,
     options: {

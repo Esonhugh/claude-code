@@ -509,6 +509,7 @@ const duplicateAgentTool = {
 const duplicateContext = {
   getAppState: () => duplicateState,
   setAppState: setDuplicateState,
+  getCwd: () => scriptCwd,
   options: {
     tools: [duplicateAgentTool],
     mainLoopModel: 'claude-sonnet-4-6',
@@ -1042,6 +1043,7 @@ const retryAgentTool = {
 const retryContext = {
   getAppState: () => retryState,
   setAppState: setRetryState,
+  getCwd: () => scriptCwd,
   options: {
     tools: [retryAgentTool],
     mainLoopModel: 'claude-sonnet-4-6',

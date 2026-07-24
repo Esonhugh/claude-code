@@ -184,8 +184,8 @@ export const WebSearchTool = buildTool({
       return supportsWebSearch
     }
 
-    // Foundry only ships models that already support Web Search
-    if (provider === 'foundry') {
+    // Foundry and OpenAI Responses provide server-side Web Search.
+    if (provider === 'foundry' || provider === 'openai') {
       return true
     }
 

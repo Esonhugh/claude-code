@@ -61,7 +61,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
 const DEFAULT_OPENAI_MODEL = 'gpt-5.5'
 
 function mapModel(model: string): string {
-  return model
+  return model.startsWith('claude-') ? DEFAULT_OPENAI_MODEL : model
 }
 
 // OpenAI Responses API requires function_call IDs to start with 'fc_'
@@ -146,14 +146,60 @@ function anthropicMessagesToResponsesInput(
 
 function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefined {
   if (!tools || tools.length === 0) return undefined
-  return tools
-    .filter((t: any) => t.type !== 'server_tool_use' && t.name)
-    .map((t: any) => ({
+  return tools.flatMap<any>((tool: any) => {
+    if (
+      tool.type === 'web_search_20250305' ||
+      tool.type === 'web_search_20260209'
+    ) {
+      if (tool.blocked_domains?.length) {
+        throw new Error(
+          'OpenAI Responses web_search does not support blocked_domains',
+        )
+      }
+      const allowedDomains = tool.allowed_domains?.length
+        ? tool.allowed_domains
+        : undefined
+      return [{
+        type: 'web_search',
+        ...(allowedDomains && {
+          filters: { allowed_domains: allowedDomains },
+        }),
+        ...(tool.user_location && { user_location: tool.user_location }),
+      }]
+    }
+    if (tool.type === 'server_tool_use' || !tool.name) return []
+    return [{
       type: 'function',
-      name: t.name,
-      description: t.description || '',
-      parameters: t.input_schema || { type: 'object', properties: {} },
-    }))
+      name: tool.name,
+      description: tool.description || '',
+      parameters: tool.input_schema || { type: 'object', properties: {} },
+    }]
+  })
+}
+
+function anthropicToolChoiceToResponsesToolChoice(
+  toolChoice: any,
+  tools?: any[],
+): any {
+  if (!toolChoice) return undefined
+  if (toolChoice.type === 'none' || toolChoice.type === 'auto') {
+    return toolChoice.type
+  }
+  if (toolChoice.type === 'any') return 'required'
+  if (toolChoice.type !== 'tool') return undefined
+  if (
+    toolChoice.name === 'web_search' &&
+    tools?.some(candidate => candidate.type === 'web_search')
+  ) {
+    return tools.length === 1
+      ? 'required'
+      : {
+          type: 'allowed_tools',
+          mode: 'required',
+          tools: [{ type: 'web_search' }],
+        }
+  }
+  return { type: 'function', name: toolChoice.name }
 }
 
 function anthropicEffortToOpenAIReasoning(effort: unknown): {
@@ -262,7 +308,66 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
   let hasText = false
   let currentToolCallId: string | null = null
   let currentToolArguments = ''
+  let currentWebSearchCallId: string | null = null
+  let lastWebSearchCallId: string | null = null
+  const webSearchCallIds = new Set<string>()
+  const webSearchCallStatuses = new Map<string, string>()
+  const webSearchInputsEmitted = new Set<string>()
+  const webSearchCitations = new Map<string, any[]>()
+  const webSearchCitationKeys = new Map<string, Set<string>>()
+  let webSearchRequests = 0
+
+  const emitWebSearchInput = (toolUseId: string, action: any) => {
+    if (webSearchInputsEmitted.has(toolUseId)) return
+    const queries = action?.queries
+    const query = typeof action?.query === 'string' && action.query.length > 0
+      ? action.query
+      : Array.isArray(queries) && typeof queries[0] === 'string'
+        ? queries[0]
+        : undefined
+    if (!query) return
+    webSearchInputsEmitted.add(toolUseId)
+    stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ query }) } } as any)
+  }
   let outputTokens = 0
+
+  const incompleteWebSearchError = () => {
+    const toolUseId = [...webSearchCallIds].find(
+      id => webSearchCallStatuses.get(id) !== 'completed',
+    )
+    if (!toolUseId) return null
+    const status = webSearchCallStatuses.get(toolUseId)
+    return new Error(
+      status && status !== 'in_progress'
+        ? `Web search ${toolUseId} ${status}`
+        : `Web search ${toolUseId} did not complete`,
+    )
+  }
+
+  const finishResponse = (rawUsage: any, stopReason: string) => {
+    const webSearchError = incompleteWebSearchError()
+    if (webSearchError) {
+      stream.fail(webSearchError)
+      return
+    }
+    if (hasText || currentToolCallId || currentWebSearchCallId) {
+      stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+      blockIndex++
+    }
+    for (const toolUseId of webSearchCallIds) {
+      stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'web_search_tool_result', tool_use_id: toolUseId, content: webSearchCitations.get(toolUseId) ?? [] } } as any)
+      stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+      blockIndex++
+    }
+    const usage = toAnthropicUsage(rawUsage)
+    usage.server_tool_use.web_search_requests = Math.max(
+      usage.server_tool_use.web_search_requests,
+      webSearchRequests,
+    )
+    stream.push({ type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage } as any)
+    stream.push({ type: 'message_stop' } as any)
+    stream.finish()
+  }
 
   stream.push({
     type: 'message_start',
@@ -280,6 +385,7 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
     store: false,
     stream: true,
     ...(payload.tools && { tools: payload.tools }),
+    ...(payload.tool_choice && { tool_choice: payload.tool_choice }),
     ...(payload.reasoning && { reasoning: payload.reasoning }),
   })
 
@@ -313,8 +419,31 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
             const type = event.type as string
 
             if (type === 'response.output_text.delta') {
+              if (currentWebSearchCallId) {
+                stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+                blockIndex++
+                currentWebSearchCallId = null
+              }
               if (!hasText) { hasText = true; stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } } as any) }
               stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: event.delta } } as any)
+            } else if (type === 'response.output_item.added' && event.item?.type === 'web_search_call') {
+              if (hasText || currentToolCallId || currentWebSearchCallId) {
+                stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+                blockIndex++
+                hasText = false
+                currentToolCallId = null
+                currentWebSearchCallId = null
+                currentToolArguments = ''
+              }
+              currentWebSearchCallId = event.item.id
+              lastWebSearchCallId = event.item.id
+              webSearchCallIds.add(event.item.id)
+              if (typeof event.item.status === 'string') {
+                webSearchCallStatuses.set(event.item.id, event.item.status)
+              }
+              webSearchRequests++
+              stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'server_tool_use', id: event.item.id, name: 'web_search', input: '' } } as any)
+              emitWebSearchInput(event.item.id, event.item.action)
             } else if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
               if (hasText) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++; hasText = false }
               if (currentToolCallId) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++; currentToolArguments = '' }
@@ -337,13 +466,47 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
                   currentToolArguments += remainingArguments
                 }
               }
+            } else if (type === 'response.web_search_call.completed' || (type === 'response.output_item.done' && event.item?.type === 'web_search_call')) {
+              const toolUseId = event.item_id || event.item?.id || lastWebSearchCallId
+              if (toolUseId) {
+                lastWebSearchCallId = toolUseId
+                const status = event.item?.status ?? (type === 'response.web_search_call.completed' ? 'completed' : undefined)
+                if (typeof status === 'string') {
+                  webSearchCallStatuses.set(toolUseId, status)
+                }
+                emitWebSearchInput(toolUseId, event.item?.action)
+                if (currentWebSearchCallId === toolUseId) {
+                  stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+                  blockIndex++
+                  currentWebSearchCallId = null
+                }
+              }
+            } else if (type === 'response.output_text.annotation.added' && event.annotation?.type === 'url_citation') {
+              const toolUseId = webSearchCallIds.has(event.item_id)
+                ? event.item_id
+                : lastWebSearchCallId
+              if (toolUseId) {
+                const title = event.annotation.title || event.annotation.url
+                const citationKey = `${event.annotation.url}\0${title}`
+                const citationKeys = webSearchCitationKeys.get(toolUseId) ?? new Set<string>()
+                if (!citationKeys.has(citationKey)) {
+                  citationKeys.add(citationKey)
+                  webSearchCitationKeys.set(toolUseId, citationKeys)
+                  const citations = webSearchCitations.get(toolUseId) ?? []
+                  citations.push({
+                    type: 'web_search_result',
+                    url: event.annotation.url,
+                    title,
+                  })
+                  webSearchCitations.set(toolUseId, citations)
+                }
+              }
             } else if (type === 'response.completed') {
-              if (hasText || currentToolCallId) stream.push({ type: 'content_block_stop', index: blockIndex } as any)
               outputTokens = event.response?.usage?.output_tokens || 0
-              const stopReason = currentToolCallId ? 'tool_use' : 'end_turn'
-              stream.push({ type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: toAnthropicUsage(event.response?.usage) } as any)
-              stream.push({ type: 'message_stop' } as any)
-              stream.finish()
+              finishResponse(
+                event.response?.usage,
+                currentToolCallId ? 'tool_use' : 'end_turn',
+              )
               return
             } else if (type === 'response.failed' || type === 'error') {
               const msg = event.response?.error?.message || event.error?.message || event.message || 'API error'
@@ -354,10 +517,15 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
         }
         // Stream ended without response.completed
         if (!stream['done']) {
-          if (hasText || currentToolCallId) stream.push({ type: 'content_block_stop', index: blockIndex } as any)
-          stream.push({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: toAnthropicUsage({ output_tokens: outputTokens }) } as any)
-          stream.push({ type: 'message_stop' } as any)
-          stream.finish()
+          const webSearchError = incompleteWebSearchError()
+          if (webSearchError) {
+            stream.fail(webSearchError)
+            return
+          }
+          finishResponse(
+            { output_tokens: outputTokens },
+            currentToolCallId ? 'tool_use' : 'end_turn',
+          )
         }
       } catch (e) { stream.fail(e instanceof Error ? e : new Error(String(e))) }
     })()
@@ -388,6 +556,10 @@ export function createOpenAICompatClient(options: {
       const model = mapModel(params.model || DEFAULT_OPENAI_MODEL)
       const input = anthropicMessagesToResponsesInput(params.messages, params.system)
       const tools = anthropicToolsToResponsesTools(params.tools)
+      const toolChoice = anthropicToolChoiceToResponsesToolChoice(
+        params.tool_choice,
+        tools,
+      )
       // Extract system as instructions (required by chatgpt codex backend)
       const instructions = typeof params.system === 'string'
         ? params.system
@@ -395,7 +567,14 @@ export function createOpenAICompatClient(options: {
           ? params.system.map((b: any) => b.text || '').join('\n')
           : 'You are a helpful coding assistant.'
       const reasoning = anthropicEffortToOpenAIReasoning(params.output_config?.effort)
-      const payload: any = { model, input, instructions, ...(tools && { tools }), ...(reasoning && { reasoning }) }
+      const payload: any = {
+        model,
+        input,
+        instructions,
+        ...(tools && { tools }),
+        ...(toolChoice && { tool_choice: toolChoice }),
+        ...(reasoning && { reasoning }),
+      }
       logForDebugging(`[OpenAI Compat] Responses request model=${model}`)
 
       if (params.stream) {
@@ -410,40 +589,48 @@ export function createOpenAICompatClient(options: {
       // Non-streaming: collect all events
       const promise = (async () => {
         const adapter = await connectSSE(responsesURL, headers, payload, options.maxRetries)
-        let text = ''
-        const toolCalls: any[] = []
-        let currentToolArgs = ''
-        let currentToolName = ''
-        let currentToolId = ''
+        const blocks = new Map<number, any>()
+        const inputJson = new Map<number, string>()
         let stopReason: string = 'end_turn'
-        let inputTokens = 0
-        let outTokens = 0
+        let usage = toAnthropicUsage()
 
         for await (const event of adapter) {
           const e = event as any
-          if (e.type === 'content_block_start' && e.content_block?.type === 'tool_use') {
-            if (currentToolId) { toolCalls.push({ type: 'tool_use', id: currentToolId, name: currentToolName, input: safeJsonParse(currentToolArgs) }) }
-            currentToolId = e.content_block.id; currentToolName = e.content_block.name; currentToolArgs = ''
+          if (e.type === 'content_block_start') {
+            blocks.set(e.index, { ...e.content_block })
           } else if (e.type === 'content_block_delta') {
-            if (e.delta?.type === 'text_delta') text += e.delta.text
-            else if (e.delta?.type === 'input_json_delta') currentToolArgs += e.delta.partial_json
+            const block = blocks.get(e.index)
+            if (e.delta?.type === 'text_delta' && block?.type === 'text') {
+              block.text += e.delta.text
+            } else if (e.delta?.type === 'input_json_delta') {
+              inputJson.set(
+                e.index,
+                (inputJson.get(e.index) ?? '') + e.delta.partial_json,
+              )
+            }
           } else if (e.type === 'message_delta') {
             stopReason = e.delta?.stop_reason || 'end_turn'
-            inputTokens = e.usage?.input_tokens || 0
-            outTokens = e.usage?.output_tokens || 0
+            usage = e.usage ?? usage
           }
         }
-        if (currentToolId) { toolCalls.push({ type: 'tool_use', id: currentToolId, name: currentToolName, input: safeJsonParse(currentToolArgs) }) }
 
-        const content: any[] = []
-        if (text) content.push({ type: 'text', text })
-        content.push(...toolCalls)
+        const content = [...blocks.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([index, block]) => {
+            if (block.type !== 'tool_use' && block.type !== 'server_tool_use') {
+              return block
+            }
+            return {
+              ...block,
+              input: safeJsonParse(inputJson.get(index) ?? ''),
+            }
+          })
 
         return {
           id: `msg_${Date.now()}`, type: 'message', role: 'assistant', model, content,
           container: null, context_management: null,
           stop_reason: stopReason, stop_sequence: null,
-          usage: toAnthropicUsage({ input_tokens: inputTokens, output_tokens: outTokens }),
+          usage,
         }
       })()
       return {

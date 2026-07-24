@@ -31,10 +31,14 @@ let state = {
 const setAppState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
+const workflowCwd = await mkdtemp(join(tmpdir(), 'workflow-run-results-'))
 
-async function waitForCondition(condition: () => boolean, message: string): Promise<void> {
+async function waitForCondition(
+  condition: () => boolean | Promise<boolean>,
+  message: string,
+): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt++) {
-    if (condition()) return
+    if (await condition()) return
     await new Promise(resolve => setTimeout(resolve, 5))
   }
   assert.fail(message)
@@ -124,6 +128,7 @@ const fakeAgentTool = {
 const context = {
   getAppState: () => state,
   setAppState,
+  getCwd: () => workflowCwd,
   options: {
     tools: [fakeAgentTool],
     mainLoopModel: 'claude-sonnet-4-6',
@@ -174,6 +179,7 @@ await runWorkflowPlan({
   },
   context: {
     getAppState: () => notificationEscapeState,
+    getCwd: () => workflowCwd,
     setAppState: setNotificationEscapeState,
     options: {
       tools: [{
@@ -906,6 +912,7 @@ await runWorkflowPlan({
   plan,
   context: {
     getAppState: () => skipState,
+    getCwd: () => workflowCwd,
     setAppState: setSkipState,
     options: {
       tools: [skipAgentTool],
@@ -966,6 +973,7 @@ await runWorkflowPlan({
   plan: failThenSkipPlan,
   context: {
     getAppState: () => failThenSkipState,
+    getCwd: () => workflowCwd,
     setAppState: setFailThenSkipState,
     options: {
       tools: [failThenSkipAgentTool],
@@ -1020,6 +1028,7 @@ await runWorkflowPlan({
   },
   context: {
     getAppState: () => duplicateLabelState,
+    getCwd: () => workflowCwd,
     setAppState: setDuplicateLabelState,
     options: {
       tools: [fakeAgentTool],
@@ -1078,6 +1087,7 @@ await runWorkflowPlan({
   },
   context: {
     getAppState: () => crossPhaseLabelState,
+    getCwd: () => workflowCwd,
     setAppState: (updater: (prev: AppState) => AppState): void => {
       crossPhaseLabelState = updater(crossPhaseLabelState)
     },
@@ -1178,6 +1188,7 @@ await runWorkflowPlan({
   plan,
   context: {
     getAppState: () => retryState,
+    getCwd: () => workflowCwd,
     setAppState: setRetryState,
     options: {
       tools: [retryAgentTool],
@@ -1242,6 +1253,7 @@ await runWorkflowPlan({
   },
   context: {
     getAppState: () => manualAutomaticRetryState,
+    getCwd: () => workflowCwd,
     setAppState: setManualAutomaticRetryState,
     options: {
       tools: [manualAutomaticRetryAgentTool],
@@ -1316,6 +1328,7 @@ await runWorkflowPlan({
   },
   context: {
     getAppState: () => automaticManualRetryState,
+    getCwd: () => workflowCwd,
     setAppState: setAutomaticManualRetryState,
     options: {
       tools: [automaticManualRetryAgentTool],
@@ -1393,6 +1406,7 @@ await runWorkflowPlan({
   plan: { ...plan, name: 'late-completion-plan' },
   context: {
     getAppState: () => lateCompletionState,
+    getCwd: () => workflowCwd,
     setAppState: setLateCompletionState,
     options: {
       tools: [lateCompletionAgentTool],
@@ -1425,6 +1439,7 @@ await runWorkflowPlan({
   plan: { ...plan, name: 'async-output-plan' },
   context: {
     getAppState: () => asyncOutputState,
+    getCwd: () => workflowCwd,
     setAppState: setAsyncOutputState,
     options: {
       tools: [{
@@ -1528,17 +1543,20 @@ assert.match(
   /Workflow\(\{name: "deep-research", args: "Research workflow resume prompt behavior in one concise pass\.", resumeFromRunId: "wf_pause_completion"\}\)/,
 )
 releasePausedAgent()
-await new Promise(resolve => setTimeout(resolve, 20))
+let pauseCompletionSession: Awaited<ReturnType<typeof loadWorkflowRunSession>>
+await waitForCondition(async () => {
+  pauseCompletionSession = await loadWorkflowRunSession({
+    cwd: pauseCompletionCwd,
+    workflowRunId: 'wf_pause_completion',
+  })
+  return pauseCompletionSession?.status === 'paused'
+}, 'paused workflow completion should persist a paused session')
 pauseCompletionTask = pauseCompletionState.tasks[pauseCompletionTask.id] as LocalWorkflowTaskState
 assert.equal(pauseCompletionTask.status, 'pending')
-const pauseCompletionSession = await loadWorkflowRunSession({
-  cwd: pauseCompletionCwd,
-  workflowRunId: 'wf_pause_completion',
-})
-assert.equal(pauseCompletionSession?.status, 'paused')
-assert.equal(pauseCompletionSession?.runArgs, 'Research workflow resume prompt behavior in one concise pass.')
+assert.ok(pauseCompletionSession)
+assert.equal(pauseCompletionSession.runArgs, 'Research workflow resume prompt behavior in one concise pass.')
 assert.equal(
-  pauseCompletionSession?.resumePrompt,
+  pauseCompletionSession.resumePrompt,
   'Workflow({name: "deep-research", args: "Research workflow resume prompt behavior in one concise pass.", resumeFromRunId: "wf_pause_completion"})',
 )
 
