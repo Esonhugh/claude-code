@@ -10,7 +10,6 @@ import {
   formatWelcomeMessage,
   truncatePath,
   getRecentActivitySync,
-  getRecentReleaseNotesSync,
   getLogoDisplayData,
 } from '../../utils/logoV2Utils.js'
 import { truncate } from '../../utils/format.js'
@@ -105,13 +104,6 @@ export function LogoV2(): React.ReactNode {
 
   const config = getGlobalConfig()
 
-  let changelog: string[]
-  try {
-    changelog = getRecentReleaseNotesSync(3)
-  } catch {
-    changelog = []
-  }
-
   // Get company announcements and select one:
   // - First startup (numStartups === 1): show first announcement
   // - All other startups: randomly select from announcements
@@ -122,7 +114,7 @@ export function LogoV2(): React.ReactNode {
       ? announcements[0]
       : announcements[Math.floor(Math.random() * announcements.length)]
   })
-  const { hasReleaseNotes } = checkForReleaseNotesSync(
+  const { hasReleaseNotes, releaseNotes } = checkForReleaseNotesSync(
     config.lastReleaseNotesSeen,
   )
 
@@ -436,7 +428,7 @@ export function LogoV2(): React.ReactNode {
                           ]
                         : [
                             createRecentActivityFeed(activities),
-                            createWhatsNewFeed(changelog),
+                            createWhatsNewFeed(releaseNotes.slice(0, 3)),
                           ]
                 }
                 maxWidth={rightWidth}

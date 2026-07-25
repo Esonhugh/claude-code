@@ -200,9 +200,9 @@ export type GlobalConfig = {
   lastOnboardingVersion?: string
   // Tracks the last version for which release notes were seen, used for managing release notes
   lastReleaseNotesSeen?: string
-  // Timestamp when changelog was last fetched (content stored in ~/.claude/cache/changelog.md)
+  // @deprecated - Removed by migration 12; release notes are bundled.
   changelogLastFetched?: number
-  // @deprecated - Migrated to ~/.claude/cache/changelog.md. Keep for migration support.
+  // @deprecated - Removed by migration 12; release notes are bundled.
   cachedChangelog?: string
   mcpServers?: Record<string, McpServerConfig>
   // claude.ai MCP connectors that have successfully connected at least once.

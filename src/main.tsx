@@ -431,7 +431,6 @@ import {
   clearPluginCache,
   loadAllPluginsCacheOnly,
 } from './utils/plugins/pluginLoader.js'
-import { migrateChangelogFromConfig } from './utils/releaseNotes.js'
 import { SandboxManager } from './utils/sandbox/sandbox-adapter.js'
 import { fetchSession, prepareApiRequest } from './utils/teleport/api.js'
 import {
@@ -590,7 +589,7 @@ async function logStartupTelemetry(): Promise<void> {
 
 // @[MODEL LAUNCH]: Consider any migrations you may need for model strings. See migrateSonnet1mToSonnet45.ts for an example.
 // Bump this when adding a new sync migration so existing users re-run the set.
-const CURRENT_MIGRATION_VERSION = 11
+const CURRENT_MIGRATION_VERSION = 12
 function runMigrations(): void {
   if (getGlobalConfig().migrationVersion !== CURRENT_MIGRATION_VERSION) {
     migrateAutoUpdatesToSettings()
@@ -608,16 +607,18 @@ function runMigrations(): void {
     if (isAnt()) {
       migrateFennecToOpus()
     }
-    saveGlobalConfig(prev =>
-      prev.migrationVersion === CURRENT_MIGRATION_VERSION
-        ? prev
-        : { ...prev, migrationVersion: CURRENT_MIGRATION_VERSION },
-    )
+    saveGlobalConfig(prev => {
+      const {
+        cachedChangelog: _,
+        changelogLastFetched: __,
+        ...config
+      } = prev
+      return {
+        ...config,
+        migrationVersion: CURRENT_MIGRATION_VERSION,
+      }
+    })
   }
-  // Async migration - fire and forget since it's non-blocking
-  migrateChangelogFromConfig().catch(() => {
-    // Silently ignore migration errors - will retry on next startup
-  })
 }
 
 /**

@@ -4,11 +4,13 @@
 
 记录规则：
 
-- 最新变更写在最上方。
-- 如果没有实际发布版本号，不虚构版本号，只使用变更提交日期。
-- 发布版本条目可以覆盖上一版本 tag 之后的全部提交；非发布条目按对应变更 commit 的提交日期记录。
-- 每个条目写明关联 commit 和变更内容。
-- `2.1.88 base` 固定放在最底部，作为所有本地变更的起点。
+- 发布条目标题固定为 `## YYYY-MM-DD - vX.Y.Z - 标题`，按版本号从新到旧排列。
+- 未发布条目标题固定为 `## YYYY-MM-DD - 标题`，不得在标题中包含版本号。
+- 发布条目依次包含 `版本状态`、`关联提交`、`变更内容`、`测试覆盖` 四个三级章节，每个章节至少包含一个顶层 `- ` 条目。
+- `变更内容` 可以使用 `####` 分组，但每条用户可见 release note 必须单独占一行并以顶层 `- ` 开头。
+- 发布条目可以覆盖上一版本 tag 之后的全部提交；未发布条目按对应变更 commit 的提交日期记录。
+- `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
+- `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
 ## 2026-07-24 - v2.1.204 - Workflow/Agent 失败记账、重试恢复与 OpenAI Web Search
 
@@ -60,7 +62,7 @@
 - binary gate 使用隔离副作用目录和正常现有账户认证，清除会覆盖私有 gate auth fixture 的 inherited API/OAuth 环境变量；credential 值不进入 evidence。
 - readiness、Search/Fetch transcript tool-use/result 关联、process cleanup 和 forced-termination 判定均 fail-closed；历史 false-pass fixture 必须被拒绝。
 
-### 验证状态
+### 测试覆盖
 
 - Round 7 Feature tests 通过：AgentTool、WorkflowTool、LocalWorkflowTask、OpenAI compatibility、bundled workflow 和 release driver 相关测试均成功，TypeScript 通过；1001-Agent probe 完成 1001 个 logical/physical executions，最大 physical concurrency 为 8（`<=16`）。
 - v2.1.204 发布准备时重跑 `make release-check` 通过：version guard、TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均成功。
@@ -136,7 +138,7 @@
 - 打包时校验并嵌入当前平台的 ripgrep，运行时提取到本地缓存，避免依赖系统安装。
 - 精简模型指令中的重复内容，降低提示开销，同时保持 Agent、工具和交互约束不变。
 
-### 发布验收
+### 测试覆盖
 
 - Codex Apps、OpenAI model options、provider-gated ChatGPT plan/usage、Terminal lifecycle 与 AgentTool focused tests 通过。
 - `make build` 通过；最新 `built-claude` scripted tmux 验收已确认 `v2.1.203` 启动及 Terminal PTY 生命周期。
@@ -192,7 +194,7 @@
 - 当前模型使用 ChatGPT OAuth 时，Usage 请求前主动刷新 token，启动 pane 使用 `/backend-api/wham/usage` 的权威 `plan_type` 显示 ChatGPT plan；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。
 - OpenAI 模式不再错误回退 Anthropic Usage；`/status` 的 Usage tab 在 ChatGPT OAuth 模式下展示 Codex limits、account、reset time 和 reset credits，在 API credential 模式下显示 OpenAI-specific unavailable 状态。
 
-### 测试与交互验收
+### 测试覆盖
 
 - Terminal Tool、PTY session manager、shell resolution、Codex App mention、attachment 隔离、PromptInput completion、OpenAI auth 和 ChatGPT Usage focused tests 通过。
 - `make release-check` 通过：`package.json` version guard、TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均通过。
@@ -227,7 +229,7 @@
 - Effort 状态提示和请求后缀显示实际应用值，不再把 `ultra`、`ultracode` 等统一折叠为基础等级；同步修正 `/effort` 帮助、有效选项和 session-only 文案。
 - 扩展 settings schema、Model Picker 初始化及 Anthropic/OpenAI effort 回归测试，覆盖新增持久化和映射行为。
 
-### 检查结果
+### 测试覆盖
 
 - 与 `v2.1.200` 相比共修改 10 个文件，新增 65 行、删除 51 行。
 - `git diff --check v2.1.200..HEAD` 通过。
@@ -264,7 +266,7 @@
 - 默认启用 OAuth-only Codex Apps 集成，并保留 Apps 状态、偏好设置、MCP transport 和工具投影能力。
 - 强化 tmux CLI 验收和类型检查约束；`make release-check` 统一执行 package version guard、TypeScript、ESLint、missing imports/assets audit 和 diff whitespace 检查。
 
-### 测试与 binary-side 验收
+### 测试覆盖
 
 - `make release-check` 通过：`package.json` 保持 `0.0.0-dev`，TypeScript、ESLint、missing imports/assets audit 和 `git diff --check` 均通过。
 - Workflow facade、DSL、script parser 和 script runtime focused tests 均通过。
@@ -306,7 +308,7 @@
 - 将 Codex Apps 投影到现有 plugin/MCP 管理与 merged tools 数据流，补齐连接状态、启停、重连、工具展示和配置持久化。
 - 新增 Apps auth、projection、preferences、status、tool normalization 和 tool-set 测试，覆盖 OAuth-only 边界及 MCP 工具转换行为。
 
-### 测试与 binary-side 验收
+### 测试覆盖
 
 - 已运行 effort、OpenAI compatibility、Agent lifecycle、Workflow facade/DSL/parser/runtime focused tests，均通过；已运行 `bun run lint`、`git diff --check` 和 `make build`。
 - 最新 `built-claude` binary-side 验收确认：并发 Agent `2/2` 完成；inline Workflow `2/2 agents · 40.4k tok done`；`/code-review` `8/45 agents · 192.2k tok done`；`/deep-research` `25/25 agents · 960.8k tok done`，且父 CLI 均恢复交互。
@@ -617,7 +619,8 @@
 - 新增本地 CCH attestation 计算与请求体 patch 逻辑，在 first-party provider 请求中将 `x-anthropic-billing-header` 的 `cch=00000` 占位替换为按请求体规范化后计算出的 5 位 hex checksum。
 - 扩展 attribution header / first-party base URL 判定：支持 `CLAUDE_CODE_ATTRIBUTION_HEADER` 强制开启，支持 `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` 将自定义 base URL 视为 first-party 调试目标。
 - 调整默认 effort 行为：first-party provider 且未显式指定 effort 时默认发送 `output_config.effort = high` 并附带 effort beta header；OpenAI 与 Bedrock 路径不套用该默认值。
-- 新增 `claude-debug` skill，将 tmux/InteractiveTerminal、`--print`、`--debug-file`、HTTP_PROXY/HTTPS_PROXY、SSE/WebSocket、透明代理与 MITM/CCH 请求调试流程从 `claude-analysis` 中拆出，明确源码/二进制分析与运行时调试的边界。- 调整 `buildFetch` 请求处理，使 CCH patch 与 `x-client-request-id` 注入都仅在 first-party provider 路径启用；OpenAI、Bedrock、Vertex、Foundry 等 provider 不发送或修改相关 first-party 请求信息。
+- 新增 `claude-debug` skill，将 tmux/InteractiveTerminal、`--print`、`--debug-file`、HTTP_PROXY/HTTPS_PROXY、SSE/WebSocket、透明代理与 MITM/CCH 请求调试流程从 `claude-analysis` 中拆出，明确源码/二进制分析与运行时调试的边界。
+- 调整 `buildFetch` 请求处理，使 CCH patch 与 `x-client-request-id` 注入都仅在 first-party provider 路径启用；OpenAI、Bedrock、Vertex、Foundry 等 provider 不发送或修改相关 first-party 请求信息。
 
 - 新增 Claude 调试脚本与参考文档，包括透明 HTTP/HTTPS proxy、MITM CCH runner、CCH summary 生成与测试脚本，用于对比 `official-claude` 与 `built-claude` 的请求形态、代理链路和 checksum 行为。
 - 新增 CCH 请求形态 parity 报告、CCH checksum attestation 设计/实施计划，以及 InteractiveTerminal 输出压缩设计/实施计划文档。
@@ -685,6 +688,11 @@
 - 已进行本地交互式 device code 登录验证：备份并删除原 `~/.codex/auth.json` 后，使用 `CLAUDE_CODE_USE_OPENAI=1 HTTPS_PROXY=http://127.0.0.1:7890 ./built-claude --dangerously-skip-permissions` 自动进入 OpenAI 登录，完成 device code 授权并确认 `~/.codex/auth.json` 以 `0600` 权限写入 `auth_mode: chatgpt` 与 token 字段。
 
 ## 2026-06-21 - v2.1.172 - OpenAI OAuth 登录、refresh 与 effort 兼容适配
+
+### 版本状态
+
+- 发布版本：`v2.1.172`。
+- `package.json` 保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
 
 ### 关联提交
 

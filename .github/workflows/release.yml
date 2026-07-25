@@ -84,28 +84,14 @@ jobs:
         with:
           bun-version: 1.3.14
 
-      - name: Verify source version is dev
-        shell: bash
-        run: |
-          node -e "const p=require('./package.json'); if (p.version !== '0.0.0-dev') { console.error('package.json version must stay 0.0.0-dev, got ' + p.version); process.exit(1); }"
-
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Run release checks
+        run: make release-check VERSION=${{ needs.validate-tag.outputs.version }}
+
       - name: Test ripgrep packaging logic
         run: bun run test:ripgrep
-
-      - name: Type check
-        run: bunx tsc --noEmit --pretty false
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Audit missing recovered imports
-        run: bun run audit:missing
-
-      - name: Check whitespace
-        run: git diff --check
 
   create-release:
     name: Create GitHub Release
@@ -323,10 +309,8 @@ jobs:
           Commit: ${{ steps.release-commit.outputs.sha }}
 
           Checks run before packaging:
-          - bunx tsc --noEmit --pretty false
-          - bun run lint
-          - bun run audit:missing
-          - git diff --check
+          - make release-check VERSION=${{ needs.validate-tag.outputs.version }}
+          - bun run test:ripgrep
           - bun run start --version
           - bun run start --help
           - packaged binary --version
