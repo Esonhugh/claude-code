@@ -170,9 +170,16 @@ import {
   clearPluginSkillsCache,
 } from './utils/plugins/loadPluginCommands.js'
 import memoize from 'lodash-es/memoize.js'
-import { isUsing3PServices, isClaudeAISubscriber } from './utils/auth.js'
+import {
+  getOpenAIAuthInfo,
+  isUsing3PServices,
+  isClaudeAISubscriber,
+} from './utils/auth.js'
 import { isEnvTruthy } from './utils/envUtils.js'
-import { isFirstPartyAnthropicBaseUrl } from './utils/model/providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './utils/model/providers.js'
 import env from './commands/env/index.js'
 import exit from './commands/exit/index.js'
 import exportCommand from './commands/export/index.js'
@@ -430,7 +437,12 @@ export function meetsAvailabilityRequirement(cmd: Command): boolean {
   for (const a of cmd.availability) {
     switch (a) {
       case 'claude-ai':
-        if (isClaudeAISubscriber()) return true
+        if (getAPIProvider() === 'firstParty' && isClaudeAISubscriber())
+          return true
+        break
+      case 'chatgpt':
+        if (getAPIProvider() === 'openai' && getOpenAIAuthInfo()?.isChatGPT)
+          return true
         break
       case 'console':
         // Console API key user = direct 1P API customer (not 3P, not claude.ai).

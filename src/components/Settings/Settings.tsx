@@ -79,7 +79,7 @@ export function Settings({
       return
     }
     // TODO: Update to "Settings" dialog once we define '/settings'.
-    onClose('Status dialog dismissed', { display: 'system' })
+    onClose(`${defaultTab} dialog dismissed`, { display: 'system' })
   }
 
   // Disable when submenu is open so the submenu's Dialog can handle ESC,

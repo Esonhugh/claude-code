@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildOpenAIProperties } from './Status.js'
-import {
-  formatOpenAIAccountLine,
-  formatResetRowLabel,
-  formatUsageLoadError,
-} from './Usage.js'
+import { formatOpenAIAccountLine, formatUsageLoadError } from './Usage.js'
 
 test('formatUsageLoadError includes axios response status and body', () => {
   const message = formatUsageLoadError({
@@ -29,11 +25,6 @@ test('formatUsageLoadError includes axios network message without response', () 
     message,
     'Failed to load usage data: timeout of 5000ms exceeded',
   )
-})
-
-test('formatResetRowLabel shows reset button only when count is positive', () => {
-  assert.equal(formatResetRowLabel(1), 'Reset: 1            [Reset]')
-  assert.equal(formatResetRowLabel(0), 'Reset: 0')
 })
 
 test('formatOpenAIAccountLine includes name and email when both are present', () => {

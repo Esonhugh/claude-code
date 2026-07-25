@@ -10,6 +10,7 @@ import type {
   ChatGPTMonthlyCreditLimit,
   ChatGPTUsageCredits,
   RateLimit,
+  RateLimitResetResult,
   UsageLimit,
   Utilization,
 } from './usage-types.js'
@@ -75,35 +76,55 @@ function getChatGPTRequestHeaders(): Record<string, string> | null {
   }
 }
 
-export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
-  await checkAndRefreshOpenAITokenIfNeeded()
-  const headers = getChatGPTRequestHeaders()
-  if (!headers) return null
+async function requestWithChatGPTOAuth<T>(
+  request: (headers: Record<string, string>) => Promise<T>,
+): Promise<T | null> {
+  const execute = async (forceRefresh: boolean): Promise<T | null> => {
+    await checkAndRefreshOpenAITokenIfNeeded({ force: forceRefresh })
+    const headers = getChatGPTRequestHeaders()
+    if (!headers) return null
+    return request(headers)
+  }
 
-  const response = await axios.get<ChatGPTUsageResponse>(
-    'https://chatgpt.com/backend-api/wham/usage',
-    {
-      headers,
-      timeout: 5000,
-    },
-  )
-
-  authoritativePlanType = response.data.plan_type ?? null
-  return mapChatGPTUsageToUtilization(response.data)
+  try {
+    return await execute(false)
+  } catch (error) {
+    if (!axios.isAxiosError(error) || error.response?.status !== 401) throw error
+    return execute(true)
+  }
 }
 
-export async function consumeChatGPTRateLimitResetCredit(): Promise<void> {
-  const headers = getChatGPTRequestHeaders()
-  if (!headers) return
+export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
+  const data = await requestWithChatGPTOAuth(async headers => {
+    const response = await axios.get<ChatGPTUsageResponse>(
+      'https://chatgpt.com/backend-api/wham/usage',
+      {
+        headers,
+        timeout: 5000,
+      },
+    )
+    return response.data
+  })
+  if (!data) return null
 
-  await axios.post(
-    'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
-    { redeem_request_id: randomUUID() },
-    {
-      headers,
-      timeout: 5000,
-    },
-  )
+  authoritativePlanType = data.plan_type ?? null
+  return mapChatGPTUsageToUtilization(data)
+}
+
+export async function consumeChatGPTRateLimitResetCredit(): Promise<RateLimitResetResult | null> {
+  const redeemRequestId = randomUUID()
+
+  return requestWithChatGPTOAuth(async headers => {
+    const response = await axios.post<RateLimitResetResult>(
+      'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
+      { redeem_request_id: redeemRequestId },
+      {
+        headers,
+        timeout: 5000,
+      },
+    )
+    return response.data
+  })
 }
 
 function mapChatGPTUsageToUtilization(

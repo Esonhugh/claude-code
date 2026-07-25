@@ -5,7 +5,10 @@ import {
   fetchChatGPTUtilization,
 } from './usage-chatgpt.js'
 import { fetchClaudeCodeUtilization } from './usage-claude.js'
-import type { Utilization } from './usage-types.js'
+import type {
+  RateLimitResetResult,
+  Utilization,
+} from './usage-types.js'
 
 export type {
   ChatGPTMonthlyCreditLimit,
@@ -13,6 +16,7 @@ export type {
   ExtraUsage,
   OpenAIAccount,
   RateLimit,
+  RateLimitResetResult,
   UsageLimit,
   Utilization,
 } from './usage-types.js'
@@ -37,12 +41,12 @@ export async function fetchUtilization(): Promise<Utilization | null> {
   return fetchClaudeCodeUtilization()
 }
 
-export async function consumeRateLimitResetCredit(): Promise<void> {
+export async function consumeRateLimitResetCredit(): Promise<RateLimitResetResult | null> {
   if (
     !isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
     !getOpenAIAuthInfo()?.isChatGPT
   ) {
-    return
+    return null
   }
-  await consumeChatGPTRateLimitResetCredit()
+  return consumeChatGPTRateLimitResetCredit()
 }

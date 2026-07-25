@@ -1524,6 +1524,7 @@ export function REPL({
     shouldContinueAnimation?: true
     showSpinner?: boolean
     isLocalJSXCommand: true
+    isImmediate?: boolean
   } | null>(null)
 
   // Wrapper for setToolJSX that preserves local JSX commands (like /btw).
@@ -1543,6 +1544,7 @@ export function REPL({
         shouldContinueAnimation?: true
         showSpinner?: boolean
         isLocalJSXCommand?: boolean
+        isImmediate?: boolean
         clearLocalJSX?: boolean
       } | null,
     ) => {
@@ -4484,6 +4486,7 @@ export function REPL({
                 jsx,
                 shouldHidePromptInput: false,
                 isLocalJSXCommand: true,
+                isImmediate: true,
               })
             }
           }

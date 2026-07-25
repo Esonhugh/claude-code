@@ -14,12 +14,225 @@ const originalOpenAIAuthToken = process.env.OPENAI_AUTH_TOKEN
 const originalOpenAIApiKey = process.env.OPENAI_API_KEY
 const originalHome = process.env.HOME
 const authModule = await import('../../utils/auth.js')
+const { saveOpenAIAuth } = await import('../openai-oauth/storage.js')
 const axios = (await import('axios')).default
 const {
   consumeRateLimitResetCredit,
   fetchUtilization,
   prefetchChatGPTUtilization,
 } = await import('./usage.js')
+
+test('consumeRateLimitResetCredit refreshes auth before posting the reset request', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reset-'))
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  await saveOpenAIAuth(
+    {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: 'stale-token',
+        refresh_token: 'refresh-token',
+        account_id: 'account-123',
+      },
+      last_refresh: '2020-01-01T00:00:00.000Z',
+    },
+    { homeDir },
+  )
+
+  const originalAxiosPost = axios.post
+  const requests: Array<{ url: string; headers: Record<string, string> }> = []
+  axios.post = (async (
+    url: string,
+    body: unknown,
+    options: { headers: Record<string, string> },
+  ) => {
+    if (url === 'https://auth.openai.com/oauth/token') {
+      return {
+        status: 200,
+        data: {
+          access_token: 'refreshed-token',
+          refresh_token: 'refresh-token',
+        },
+      }
+    }
+    requests.push({ url, headers: options.headers })
+    return { data: { code: 'reset', windows_reset: 2 } }
+  }) as typeof axios.post
+
+  try {
+    assert.deepEqual(await consumeRateLimitResetCredit(), {
+      code: 'reset',
+      windows_reset: 2,
+    })
+
+    assert.equal(
+      requests[0]?.url,
+      'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
+    )
+    assert.equal(requests[0]?.headers.Authorization, 'Bearer refreshed-token')
+  } finally {
+    axios.post = originalAxiosPost
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
+
+test('consumeRateLimitResetCredit retries a 401 with the same redeem request id', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reset-retry-'))
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  await saveOpenAIAuth(
+    {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: 'test-token',
+        refresh_token: 'refresh-token',
+        account_id: 'account-123',
+      },
+      last_refresh: '2099-01-01T00:00:00.000Z',
+    },
+    { homeDir },
+  )
+
+  const originalAxiosPost = axios.post
+  const requests: Array<{
+    body: { redeem_request_id?: string }
+    headers: Record<string, string>
+  }> = []
+  axios.post = (async (
+    url: string,
+    body: { redeem_request_id?: string },
+    options: { headers: Record<string, string> },
+  ) => {
+    if (url === 'https://auth.openai.com/oauth/token') {
+      return {
+        status: 200,
+        data: { access_token: 'refreshed-token' },
+      }
+    }
+
+    requests.push({ body, headers: options.headers })
+    if (requests.length === 1) {
+      const error = new Error('Unauthorized') as Error & {
+        isAxiosError: boolean
+        response: { status: number }
+      }
+      error.isAxiosError = true
+      error.response = { status: 401 }
+      throw error
+    }
+    return { data: { code: 'already_redeemed', windows_reset: 2 } }
+  }) as typeof axios.post
+
+  try {
+    assert.deepEqual(await consumeRateLimitResetCredit(), {
+      code: 'already_redeemed',
+      windows_reset: 2,
+    })
+    assert.equal(requests.length, 2)
+    assert.equal(
+      requests[0]?.body.redeem_request_id,
+      requests[1]?.body.redeem_request_id,
+    )
+    assert.equal(requests[0]?.headers.Authorization, 'Bearer test-token')
+    assert.equal(requests[1]?.headers.Authorization, 'Bearer refreshed-token')
+  } finally {
+    axios.post = originalAxiosPost
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
+
+test('fetchUtilization retries a 401 after forcing an auth refresh', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-fetch-retry-'))
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  await saveOpenAIAuth(
+    {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: 'test-token',
+        refresh_token: 'refresh-token',
+        account_id: 'account-123',
+      },
+      last_refresh: '2099-01-01T00:00:00.000Z',
+    },
+    { homeDir },
+  )
+
+  const originalAxiosGet = axios.get
+  const originalAxiosPost = axios.post
+  const requests: Array<Record<string, string>> = []
+  axios.get = (async (
+    _url: string,
+    options: { headers: Record<string, string> },
+  ) => {
+    requests.push(options.headers)
+    if (requests.length === 1) {
+      const error = new Error('Unauthorized') as Error & {
+        isAxiosError: boolean
+        response: { status: number }
+      }
+      error.isAxiosError = true
+      error.response = { status: 401 }
+      throw error
+    }
+    return { data: { plan_type: 'pro' } }
+  }) as typeof axios.get
+  axios.post = (async (url: string) => {
+    assert.equal(url, 'https://auth.openai.com/oauth/token')
+    return {
+      status: 200,
+      data: { access_token: 'refreshed-token' },
+    }
+  }) as typeof axios.post
+
+  try {
+    const utilization = await fetchUtilization()
+    assert.equal(utilization?.source, 'chatgpt')
+    assert.equal(requests.length, 2)
+    assert.equal(requests[0]?.Authorization, 'Bearer test-token')
+    assert.equal(requests[1]?.Authorization, 'Bearer refreshed-token')
+  } finally {
+    axios.get = originalAxiosGet
+    axios.post = originalAxiosPost
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
 
 test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
@@ -46,11 +259,14 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
     options: { headers: Record<string, string> },
   ) => {
     requests.push({ url, body, headers: options.headers })
-    return { data: {} }
+    return { data: { code: 'reset', windows_reset: 2 } }
   }) as typeof axios.post
 
   try {
-    await consumeRateLimitResetCredit()
+    assert.deepEqual(await consumeRateLimitResetCredit(), {
+      code: 'reset',
+      windows_reset: 2,
+    })
 
     assert.equal(
       requests[0]?.url,

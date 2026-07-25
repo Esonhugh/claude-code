@@ -171,6 +171,8 @@ type LocalJSXCommand = {
 export type CommandAvailability =
   // claude.ai OAuth subscriber (Pro/Max/Team/Enterprise via claude.ai)
   | 'claude-ai'
+  // ChatGPT OAuth auth (not OpenAI API key auth)
+  | 'chatgpt'
   // Console API key user (direct api.anthropic.com, not via claude.ai OAuth)
   | 'console'
 

@@ -36,6 +36,11 @@ export type RateLimitResetCredits = {
   available_count: number
 }
 
+export type RateLimitResetResult = {
+  code: 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_redeemed'
+  windows_reset: number
+}
+
 export type OpenAIAccount = {
   name?: string | null
   email?: string | null
