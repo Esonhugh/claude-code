@@ -31,7 +31,6 @@ const DEFAULTS = {
   fanout: 1,
   concurrency: 1,
   review: 'none' as WorkflowReviewMode,
-  permissionMode: 'acceptEdits' as WorkflowPermissionMode,
   execution: 'agent' as const,
 }
 
@@ -79,7 +78,10 @@ function normalizeDefaults(defaults: WorkflowDefaults | undefined): WorkflowDryR
     throw new Error(`Unsupported review mode: ${String(normalized.review)}`)
   }
 
-  if (!SUPPORTED_PERMISSION_MODES.has(normalized.permissionMode)) {
+  if (
+    normalized.permissionMode !== undefined &&
+    !SUPPORTED_PERMISSION_MODES.has(normalized.permissionMode)
+  ) {
     throw new Error(`Unsupported permission mode: ${String(normalized.permissionMode)}`)
   }
 
@@ -247,7 +249,10 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
       throw new Error(`Unsupported review mode for workflow phase ${id}: ${String(review)}`)
     }
 
-    if (!SUPPORTED_PERMISSION_MODES.has(permissionMode)) {
+    if (
+      permissionMode !== undefined &&
+      !SUPPORTED_PERMISSION_MODES.has(permissionMode)
+    ) {
       throw new Error(`Unsupported permission mode for workflow phase ${id}: ${String(permissionMode)}`)
     }
 

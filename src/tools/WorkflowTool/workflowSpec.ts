@@ -115,7 +115,7 @@ export type WorkflowDryRunPhase = {
   fanout: number
   concurrency: number
   review: WorkflowReviewMode
-  permissionMode: WorkflowPermissionMode
+  permissionMode?: WorkflowPermissionMode
   agentType?: string
   model?: string
   agentLabels?: string[]
@@ -126,7 +126,7 @@ export type WorkflowDryRunPlan = {
   name: string
   description: string
   requiresInput?: boolean
-  defaults: Required<Pick<WorkflowDefaults, 'maxConcurrency' | 'maxAgents' | 'maxRetries' | 'fanout' | 'concurrency' | 'review' | 'permissionMode' | 'execution'>> & Pick<WorkflowDefaults, 'agentType' | 'model'>
+  defaults: Required<Pick<WorkflowDefaults, 'maxConcurrency' | 'maxAgents' | 'maxRetries' | 'fanout' | 'concurrency' | 'review' | 'execution'>> & Pick<WorkflowDefaults, 'permissionMode' | 'agentType' | 'model'>
   phases: WorkflowDryRunPhase[]
   totalAgents: number
   output?: WorkflowOutputSpec

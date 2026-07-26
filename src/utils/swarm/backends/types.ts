@@ -1,4 +1,5 @@
 import type { AgentColorName } from '../../../tools/AgentTool/agentColorManager.js'
+import type { PermissionMode } from '../../permissions/PermissionMode.js'
 
 /**
  * Types of backends available for teammate execution.
@@ -219,6 +220,8 @@ export type TeammateSpawnConfig = TeammateIdentity & {
   parentSessionId: string
   /** Tool permissions to grant this teammate */
   permissions?: string[]
+  /** Effective permission mode inherited or explicitly selected for this teammate */
+  permissionMode?: PermissionMode
   /** Whether this teammate can show permission prompts for unlisted tools.
    * When false (default), unlisted tools are auto-denied. */
   allowPermissionPrompts?: boolean

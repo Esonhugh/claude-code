@@ -7,7 +7,7 @@ function formatPhase(phase: WorkflowDryRunPhase): string {
     `fanout: ${phase.fanout}`,
     `concurrency: ${phase.concurrency}`,
     `review: ${phase.review}`,
-    `permissionMode: ${phase.permissionMode}`,
+    `permissionMode: ${phase.permissionMode ?? 'inherit'}`,
   ]
 
   if (phase.agentType) {

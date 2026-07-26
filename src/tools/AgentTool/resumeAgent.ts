@@ -27,16 +27,16 @@ import type { SystemPrompt } from '../../utils/systemPromptType.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { getParentSessionId } from '../../utils/teammate.js'
 import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
-import { runAsyncAgentLifecycle } from './agentToolUtils.js'
+import {
+  resolveAgentTools,
+  runAsyncAgentLifecycle,
+} from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
-import {
-  applyRequestedAgentPermissionMode,
-  shouldBubbleAgentPermissionPrompts,
-} from './permissionMode.js'
+import { shouldBubbleAgentPermissionPrompts } from './permissionMode.js'
 
 export type ResumeAgentResult = {
   agentId: string
@@ -152,13 +152,14 @@ export async function resumeAgentBackground({
     }
   }
 
-  const workerPermissionContext = applyRequestedAgentPermissionMode(
-    appState.toolPermissionContext,
-    meta?.permissionMode ??
-      selectedAgent.permissionMode ??
-      appState.toolPermissionContext.mode,
-  )
-  const permissionMode = workerPermissionContext.mode
+  const permissionMode = meta?.permissionMode ??
+    (appState.toolPermissionContext.mode === 'bypassPermissions'
+      ? 'bypassPermissions'
+      : (selectedAgent.permissionMode ?? appState.toolPermissionContext.mode))
+  const workerPermissionContext =
+    permissionMode === appState.toolPermissionContext.mode
+      ? appState.toolPermissionContext
+      : { ...appState.toolPermissionContext, mode: permissionMode }
 
   // Resolve model for analytics metadata (runAgent resolves its own internally)
   const resolvedAgentModel = getAgentModel(
@@ -171,6 +172,16 @@ export async function resumeAgentBackground({
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
     : assembleToolPool(workerPermissionContext, appState.mcp.tools)
+  const resolvedAgentTools = isResumedFork
+    ? undefined
+    : resolveAgentTools(
+        { ...selectedAgent, permissionMode },
+        workerTools,
+        true,
+      )
+  const allowedTools = resolvedAgentTools?.hasWildcard
+    ? undefined
+    : resolvedAgentTools?.validTools
 
   const runAgentParams: Parameters<typeof runAgent>[0] = {
     agentDefinition: selectedAgent,
@@ -200,6 +211,7 @@ export async function resumeAgentBackground({
       : undefined,
     availableTools: workerTools,
     permissionMode,
+    allowedTools,
     // Transcript already contains the parent context slice from the
     // original fork. Re-supplying it would cause duplicate tool_use IDs.
     forkContextMessages: undefined,

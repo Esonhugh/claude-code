@@ -54,14 +54,14 @@ assert.equal(plan.defaults.execution, 'agent')
 assert.equal(plan.defaults.fanout, 1)
 assert.equal(plan.defaults.concurrency, 1)
 assert.equal(plan.defaults.review, 'none')
-assert.equal(plan.defaults.permissionMode, 'acceptEdits')
+assert.equal(plan.defaults.permissionMode, undefined)
 
 const researchPhase = plan.phases.find(phase => phase.id === 'research')
 assert.ok(researchPhase)
 assert.equal(researchPhase.fanout, 4)
 assert.equal(researchPhase.concurrency, 1)
 assert.equal(researchPhase.review, 'none')
-assert.equal(researchPhase.permissionMode, 'acceptEdits')
+assert.equal(researchPhase.permissionMode, undefined)
 assert.equal(researchPhase.agentType, 'researcher')
 assert.equal(researchPhase.model, 'claude-sonnet-4-5')
 
@@ -71,7 +71,7 @@ assert.deepEqual(synthesisPhase.dependsOn, ['cross-check'])
 assert.equal(synthesisPhase.fanout, 1)
 assert.equal(synthesisPhase.concurrency, 1)
 assert.equal(synthesisPhase.review, 'synthesis')
-assert.equal(synthesisPhase.permissionMode, 'acceptEdits')
+assert.equal(synthesisPhase.permissionMode, undefined)
 
 const output = formatWorkflowDryRun(plan)
 assert.match(output, /Workflow: Deep Research Dry Run/)
@@ -81,9 +81,9 @@ assert.match(output, /Max agents: 1000/)
 assert.match(output, /Max retries: 0/)
 assert.match(output, /Execution: agent/)
 assert.match(output, /Planned agents: 7/)
-assert.match(output, /- research \| depends: none \| fanout: 4 \| concurrency: 1 \| review: none \| permissionMode: acceptEdits \| agentType: researcher \| model: claude-sonnet-4-5/)
-assert.match(output, /- cross-check \| depends: research \| fanout: 2 \| concurrency: 2 \| review: cross-check \| permissionMode: acceptEdits/)
-assert.match(output, /- synthesis \| depends: cross-check \| fanout: 1 \| concurrency: 1 \| review: synthesis \| permissionMode: acceptEdits/)
+assert.match(output, /- research \| depends: none \| fanout: 4 \| concurrency: 1 \| review: none \| permissionMode: inherit \| agentType: researcher \| model: claude-sonnet-4-5/)
+assert.match(output, /- cross-check \| depends: research \| fanout: 2 \| concurrency: 2 \| review: cross-check \| permissionMode: inherit/)
+assert.match(output, /- synthesis \| depends: cross-check \| fanout: 1 \| concurrency: 1 \| review: synthesis \| permissionMode: inherit/)
 
 const trimmedDependencyPlan = validateWorkflowSpec({
   name: 'Trimmed Dependency',
@@ -120,12 +120,20 @@ const permissionModePlan = validateWorkflowSpec({
       prompt: 'Dont ask prompt.',
       permissionMode: 'dontAsk',
     },
+    {
+      id: 'explicit-default',
+      description: 'Run with explicit default permissions.',
+      prompt: 'Default permissions prompt.',
+      permissionMode: 'default',
+    },
   ],
 })
 assert.equal(permissionModePlan.phases[0]?.permissionMode, 'bypassPermissions')
 assert.equal(permissionModePlan.phases[1]?.permissionMode, 'dontAsk')
+assert.equal(permissionModePlan.phases[2]?.permissionMode, 'default')
 assert.match(formatWorkflowDryRun(permissionModePlan), /permissionMode: bypassPermissions/)
 assert.match(formatWorkflowDryRun(permissionModePlan), /permissionMode: dontAsk/)
+assert.match(formatWorkflowDryRun(permissionModePlan), /permissionMode: default/)
 
 assert.throws(
   () => validateWorkflowSpec({

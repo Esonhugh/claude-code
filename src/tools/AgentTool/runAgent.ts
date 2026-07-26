@@ -86,7 +86,6 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
-import { applyRequestedAgentPermissionMode } from './permissionMode.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -435,15 +434,11 @@ export async function* runAgent({
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
-  const requestedAgentPermissionMode =
-    requestedPermissionMode ?? agentDefinition.permissionMode
-  const launchPermissionContext = requestedAgentPermissionMode
-    ? applyRequestedAgentPermissionMode(
-        appState.toolPermissionContext,
-        requestedAgentPermissionMode,
-      )
-    : appState.toolPermissionContext
-  const permissionMode = launchPermissionContext.mode
+  const permissionMode =
+    requestedPermissionMode ??
+    (appState.toolPermissionContext.mode === 'bypassPermissions'
+      ? 'bypassPermissions'
+      : (agentDefinition.permissionMode ?? appState.toolPermissionContext.mode))
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
@@ -522,14 +517,13 @@ export async function* runAgent({
       ? systemContextNoGit
       : baseSystemContext
 
-  // Reapply the effective launch mode to fresh parent snapshots. This preserves
-  // rule updates while allowing later parent changes only to tighten the worker.
+  // Preserve the resolved launch mode while reading fresh parent rule updates.
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
-    let toolPermissionContext = applyRequestedAgentPermissionMode(
-      state.toolPermissionContext,
-      permissionMode,
-    )
+    let toolPermissionContext =
+      state.toolPermissionContext.mode === permissionMode
+        ? state.toolPermissionContext
+        : { ...state.toolPermissionContext, mode: permissionMode }
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:

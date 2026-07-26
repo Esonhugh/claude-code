@@ -413,6 +413,58 @@ await runWorkflowPlan({
 })
 assert.equal(inheritedModeResumeCallCount, 1)
 
+const omittedBypassSnapshot = snapshotWorkflowAgentContext(
+  undefined,
+  {
+    getAppState: () => ({
+      toolPermissionContext: { mode: 'bypassPermissions' },
+    }),
+  } as unknown as ToolUseContext,
+)
+assert.equal(omittedBypassSnapshot.inputMode, undefined)
+assert.equal(omittedBypassSnapshot.identityMode, 'bypassPermissions')
+assert.equal(
+  omittedBypassSnapshot.context.getAppState().toolPermissionContext.mode,
+  'bypassPermissions',
+)
+
+const explicitDefaultSnapshot = snapshotWorkflowAgentContext(
+  'default',
+  {
+    getAppState: () => ({
+      toolPermissionContext: { mode: 'bypassPermissions' },
+    }),
+  } as unknown as ToolUseContext,
+)
+assert.equal(explicitDefaultSnapshot.inputMode, 'default')
+assert.equal(explicitDefaultSnapshot.identityMode, 'default')
+assert.equal(
+  explicitDefaultSnapshot.context.getAppState().toolPermissionContext.mode,
+  'default',
+)
+
+const explicitInheritedDefaultSnapshot = snapshotWorkflowAgentContext(
+  'default',
+  {
+    getAppState: () => ({
+      toolPermissionContext: { mode: 'default' },
+    }),
+  } as unknown as ToolUseContext,
+)
+assert.equal(explicitInheritedDefaultSnapshot.inputMode, 'default')
+assert.equal(explicitInheritedDefaultSnapshot.identityMode, 'default')
+
+const explicitInheritedAcceptEditsSnapshot = snapshotWorkflowAgentContext(
+  'acceptEdits',
+  {
+    getAppState: () => ({
+      toolPermissionContext: { mode: 'acceptEdits' },
+    }),
+  } as unknown as ToolUseContext,
+)
+assert.equal(explicitInheritedAcceptEditsSnapshot.inputMode, 'acceptEdits')
+assert.equal(explicitInheritedAcceptEditsSnapshot.identityMode, 'acceptEdits')
+
 let queuedDefaultModeState = {
   tasks: {},
   toolPermissionContext: { mode: 'plan' },
@@ -430,16 +482,18 @@ const queuedDefaultModeCwd = await mkdtemp(
 await runWorkflowPlan({
   plan: {
     ...inheritedModePlan,
-    name: 'queued-default-mode',
+    name: 'queued-inherited-mode',
     defaults: {
       ...inheritedModePlan.defaults,
       maxConcurrency: 2,
+      permissionMode: undefined,
     },
     phases: [{
       ...inheritedModePlan.phases[0]!,
       fanout: 2,
       concurrency: 1,
       agentLabels: ['queued-one', 'queued-two'],
+      permissionMode: undefined,
     }],
     totalAgents: 2,
   },
@@ -514,14 +568,14 @@ assert.deepEqual(
   [
     {
       label: 'queued-one',
-      mode: 'plan',
+      mode: undefined,
       inheritedMode: 'plan',
       sessionAllowRules: undefined,
     },
     {
       label: 'queued-two',
-      mode: 'plan',
-      inheritedMode: 'plan',
+      mode: undefined,
+      inheritedMode: 'bypassPermissions',
       sessionAllowRules: ['Bash(git status:*)'],
     },
   ].sort((left, right) => left.label.localeCompare(right.label)),

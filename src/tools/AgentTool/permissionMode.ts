@@ -1,25 +1,14 @@
 import type { ToolPermissionContext } from '../../Tool.js'
 import type { PermissionMode } from '../../types/permissions.js'
 
-const ALLOWED_AGENT_PERMISSION_MODES: Record<
-  PermissionMode,
-  ReadonlySet<PermissionMode>
-> = {
-  bypassPermissions: new Set([
-    'bypassPermissions',
-    'acceptEdits',
-    'auto',
-    'default',
-    'dontAsk',
-    'plan',
-    'bubble',
-  ]),
-  acceptEdits: new Set(['acceptEdits', 'default', 'dontAsk', 'plan', 'bubble']),
-  auto: new Set(['auto', 'acceptEdits', 'default', 'dontAsk', 'plan']),
-  default: new Set(['default', 'dontAsk', 'plan', 'bubble']),
-  bubble: new Set(['default', 'dontAsk', 'plan', 'bubble']),
-  dontAsk: new Set(['dontAsk']),
-  plan: new Set(['plan']),
+const AGENT_PERMISSION_MODE_RANK: Record<PermissionMode, number> = {
+  plan: 0,
+  bubble: 1,
+  default: 1,
+  dontAsk: 1,
+  acceptEdits: 2,
+  auto: 3,
+  bypassPermissions: 4,
 }
 
 export function shouldBubbleAgentPermissionPrompts(
@@ -37,27 +26,13 @@ export function applyRequestedAgentPermissionMode(
   context: ToolPermissionContext,
   requestedMode: PermissionMode,
 ): ToolPermissionContext {
-  const mode = ALLOWED_AGENT_PERMISSION_MODES[context.mode].has(requestedMode)
-    ? requestedMode
-    : context.mode
+  const mode =
+    context.mode === 'auto' && requestedMode === 'acceptEdits'
+      ? context.mode
+      : AGENT_PERMISSION_MODE_RANK[requestedMode] <=
+          AGENT_PERMISSION_MODE_RANK[context.mode]
+        ? requestedMode
+        : context.mode
 
-  if (mode !== 'plan') {
-    return mode === context.mode ? context : { ...context, mode }
-  }
-  if (
-    context.mode === mode &&
-    !context.isBypassPermissionsModeAvailable &&
-    context.prePlanMode === undefined &&
-    context.strippedDangerousRules === undefined
-  ) {
-    return context
-  }
-
-  return {
-    ...context,
-    mode,
-    isBypassPermissionsModeAvailable: false,
-    prePlanMode: undefined,
-    strippedDangerousRules: undefined,
-  }
+  return mode === context.mode ? context : { ...context, mode }
 }

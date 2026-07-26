@@ -26,6 +26,8 @@ import {
 import { resolveAgentTools } from './agentToolUtils.js'
 import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
+import type { SpawnTeammateConfig } from '../shared/spawnMultiAgent.js'
+import { writeTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 
 function createTestAssistantMessage(text: string) {
   return createAssistantMessage({ content: text })
@@ -38,8 +40,25 @@ async function* createControlledAgentStream() {
 let controlledAvailableToolNames: string[] = []
 let controlledResolvedToolNames: string[] = []
 let controlledPermissionMode: Parameters<typeof resolveAgentTools>[0]['permissionMode']
+let controlledAllowedTools: string[] | undefined
 let controlledCanShowPermissionPrompts: boolean | undefined
 let controlledMainLoopModel: string | undefined
+let controlledSpawnTeammateConfig: SpawnTeammateConfig | undefined
+mock.module('../shared/spawnMultiAgent.js', () => ({
+  spawnTeammate: async (config: SpawnTeammateConfig) => {
+    controlledSpawnTeammateConfig = config
+    return {
+      data: {
+        teammate_id: `${config.name}@${config.team_name}`,
+        agent_id: `${config.name}@${config.team_name}`,
+        name: config.name,
+        tmux_session_name: 'test',
+        tmux_window_name: 'test',
+        tmux_pane_id: 'test',
+      },
+    }
+  },
+}))
 mock.module('./runAgent.js', () => ({
   runAgent: (params: {
     agentDefinition: Parameters<typeof resolveAgentTools>[0]
@@ -47,6 +66,7 @@ mock.module('./runAgent.js', () => ({
     isAsync: boolean
     canShowPermissionPrompts?: boolean
     permissionMode?: Parameters<typeof resolveAgentTools>[0]['permissionMode']
+    allowedTools?: string[]
     toolUseContext: { options: { mainLoopModel: string } }
   }) => {
     controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
@@ -59,6 +79,7 @@ mock.module('./runAgent.js', () => ({
       params.isAsync,
     ).resolvedTools.map(tool => tool.name)
     controlledPermissionMode = params.permissionMode
+    controlledAllowedTools = params.allowedTools
     controlledCanShowPermissionPrompts = params.canShowPermissionPrompts
     controlledMainLoopModel = params.toolUseContext.options.mainLoopModel
     return createControlledAgentStream()
@@ -286,6 +307,55 @@ await AgentTool.call(
 assert.equal(controlledPermissionMode, 'plan')
 assert.ok(controlledResolvedToolNames.includes('ExitPlanMode'))
 
+for (const inheritedMode of ['acceptEdits', 'bypassPermissions'] as const) {
+  controlledPermissionMode = undefined
+  const inheritedModeContext = createContext(0) as never as TestContext
+  inheritedModeContext.setAppState(
+    (prev: ReturnType<TestContext['getAppState']>) => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        mode: inheritedMode,
+      },
+    }),
+  )
+  await AgentTool.call(
+    {
+      description: `inherited ${inheritedMode} worker`,
+      prompt: 'inspect only',
+      subagent_type: 'general-purpose',
+    },
+    inheritedModeContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: `msg_inherited_${inheritedMode}_worker` } } as never,
+  )
+  assert.equal(controlledPermissionMode, inheritedMode)
+}
+
+controlledPermissionMode = undefined
+const downgradedBypassContext = createContext(0) as never as TestContext
+downgradedBypassContext.setAppState(
+  (prev: ReturnType<TestContext['getAppState']>) => ({
+    ...prev,
+    toolPermissionContext: {
+      ...prev.toolPermissionContext,
+      mode: 'bypassPermissions',
+    },
+  }),
+)
+await AgentTool.call(
+  {
+    description: 'downgraded bypass worker',
+    prompt: 'inspect only',
+    subagent_type: 'general-purpose',
+    mode: 'default',
+  },
+  downgradedBypassContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_downgraded_bypass_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'default')
+
 controlledPermissionMode = undefined
 const blockedEscalationContext = createContext(0) as never as TestContext
 await AgentTool.call(
@@ -298,6 +368,90 @@ await AgentTool.call(
   blockedEscalationContext as never,
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_blocked_permission_escalation_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'default')
+
+const bypassDefinitionAgent = {
+  ...GENERAL_PURPOSE_AGENT,
+  agentType: 'bypass-definition-agent',
+  permissionMode: 'bypassPermissions' as const,
+}
+const bypassDefinitionContext = createContext(0) as never as TestContext & {
+  options: {
+    agentDefinitions: {
+      activeAgents: typeof bypassDefinitionAgent[]
+      inactiveAgents: []
+      allowedAgentTypes: undefined
+    }
+  }
+}
+bypassDefinitionContext.options.agentDefinitions = {
+  activeAgents: [bypassDefinitionAgent],
+  inactiveAgents: [],
+  allowedAgentTypes: undefined,
+}
+bypassDefinitionContext.setAppState(
+  (prev: ReturnType<TestContext['getAppState']>) => ({
+    ...prev,
+    agentDefinitions: bypassDefinitionContext.options.agentDefinitions,
+  }),
+)
+controlledPermissionMode = undefined
+await AgentTool.call(
+  {
+    description: 'trusted definition elevation worker',
+    prompt: 'inspect only',
+    subagent_type: 'bypass-definition-agent',
+  },
+  bypassDefinitionContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_trusted_definition_elevation_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'bypassPermissions')
+
+controlledPermissionMode = undefined
+await AgentTool.call(
+  {
+    description: 'definition elevation after blocked request worker',
+    prompt: 'inspect only',
+    subagent_type: 'bypass-definition-agent',
+    mode: 'bypassPermissions',
+  },
+  bypassDefinitionContext as never,
+  async () => ({ behavior: 'allow' }),
+  {
+    message: { id: 'msg_definition_elevation_after_blocked_request_worker' },
+  } as never,
+)
+assert.equal(controlledPermissionMode, 'bypassPermissions')
+
+const explicitDefaultDefinitionContext =
+  createContext(0) as never as TestContext & {
+    options: typeof bypassDefinitionContext.options
+  }
+explicitDefaultDefinitionContext.options.agentDefinitions =
+  bypassDefinitionContext.options.agentDefinitions
+explicitDefaultDefinitionContext.setAppState(
+  (prev: ReturnType<TestContext['getAppState']>) => ({
+    ...prev,
+    toolPermissionContext: {
+      ...prev.toolPermissionContext,
+      mode: 'bypassPermissions',
+    },
+    agentDefinitions: explicitDefaultDefinitionContext.options.agentDefinitions,
+  }),
+)
+controlledPermissionMode = undefined
+await AgentTool.call(
+  {
+    description: 'explicit default overrides definition worker',
+    prompt: 'inspect only',
+    subagent_type: 'bypass-definition-agent',
+    mode: 'default',
+  },
+  explicitDefaultDefinitionContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_explicit_default_overrides_definition_worker' } } as never,
 )
 assert.equal(controlledPermissionMode, 'default')
 
@@ -340,7 +494,7 @@ await AgentTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_bubble_prompt_worker' } } as never,
 )
-assert.equal(controlledPermissionMode, 'auto')
+assert.equal(controlledPermissionMode, 'bubble')
 assert.equal(controlledCanShowPermissionPrompts, true)
 
 for (const parentMode of ['plan', 'dontAsk'] as const) {
@@ -371,14 +525,15 @@ for (const parentMode of ['plan', 'dontAsk'] as const) {
     async () => ({ behavior: 'allow' }),
     { message: { id: `msg_${parentMode}_bubble_prompt_worker` } } as never,
   )
-  assert.equal(controlledPermissionMode, parentMode)
-  assert.equal(controlledCanShowPermissionPrompts, undefined)
+  assert.equal(controlledPermissionMode, 'bubble')
+  assert.equal(controlledCanShowPermissionPrompts, true)
 }
 
 const restrictedAgent = {
   ...GENERAL_PURPOSE_AGENT,
   agentType: 'restricted-structured-output',
-  tools: ['Read'],
+  tools: ['Read(example.txt)'],
+  permissionMode: 'default' as const,
 }
 const restrictedStructuredOutputContext = createContext(0) as never as TestContext & {
   options: {
@@ -398,10 +553,15 @@ restrictedStructuredOutputContext.options.agentDefinitions = {
 }
 restrictedStructuredOutputContext.setAppState((prev: ReturnType<TestContext['getAppState']>) => ({
   ...prev,
+  toolPermissionContext: {
+    ...prev.toolPermissionContext,
+    mode: 'bypassPermissions',
+  },
   agentDefinitions: restrictedStructuredOutputContext.options.agentDefinitions,
 }))
 controlledAvailableToolNames = []
 controlledResolvedToolNames = []
+controlledAllowedTools = undefined
 await AgentTool.call(
   {
     description: 'restricted structured output worker',
@@ -412,9 +572,168 @@ await AgentTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_restricted_structured_output_worker' } } as never,
 )
+assert.equal(controlledPermissionMode, 'bypassPermissions')
 assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
 assert.ok(controlledResolvedToolNames.includes('Read'))
 assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
+assert.deepEqual(controlledAllowedTools, ['Read(example.txt)'])
+
+const originalNamedConfigDir = process.env.CLAUDE_CONFIG_DIR
+const namedConfigDir = mkdtempSync(join(tmpdir(), 'agent-tool-named-test-'))
+process.env.CLAUDE_CONFIG_DIR = namedConfigDir
+try {
+  await writeTeamFileAsync('named-team', {
+    name: 'named-team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@named-team',
+    members: [],
+  })
+
+  const namedRestrictedAgent = {
+    ...GENERAL_PURPOSE_AGENT,
+    agentType: 'named-restricted-agent',
+    tools: ['Read(example.txt)', 'MissingTool', 'Bash(npm test)'],
+    disallowedTools: ['Bash'],
+    permissionMode: 'default' as const,
+  }
+  const namedRestrictedContext = createContext(0) as never as TestContext & {
+    options: {
+      tools: Array<{ name: string }>
+      agentDefinitions: {
+        activeAgents: typeof namedRestrictedAgent[]
+        inactiveAgents: []
+        allowedAgentTypes: undefined
+      }
+    }
+  }
+  namedRestrictedContext.options.tools = []
+  namedRestrictedContext.options.agentDefinitions = {
+    activeAgents: [namedRestrictedAgent],
+    inactiveAgents: [],
+    allowedAgentTypes: undefined,
+  }
+  namedRestrictedContext.setAppState(
+    (prev: ReturnType<TestContext['getAppState']>) => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        mode: 'bypassPermissions',
+      },
+      agentDefinitions: namedRestrictedContext.options.agentDefinitions,
+      teamContext: {
+        teamName: 'named-team',
+        teamFilePath: '',
+        leadAgentId: 'team-lead@named-team',
+        teammates: {},
+      },
+    }),
+  )
+  controlledSpawnTeammateConfig = undefined
+  await AgentTool.call(
+    {
+      description: 'named restricted teammate',
+      prompt: 'inspect only',
+      subagent_type: 'named-restricted-agent',
+      name: 'named-worker',
+    },
+    namedRestrictedContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_named_restricted_teammate' } } as never,
+  )
+  assert.equal(
+    controlledSpawnTeammateConfig?.permissionMode,
+    'bypassPermissions',
+  )
+  assert.deepEqual(
+    controlledSpawnTeammateConfig?.permissions,
+    ['Read(example.txt)'],
+  )
+
+  const emptyToolsAgent = {
+    ...GENERAL_PURPOSE_AGENT,
+    agentType: 'named-empty-tools-agent',
+    tools: [],
+  }
+  const emptyToolsNamedContext = createContext(0) as never as TestContext & {
+    options: {
+      agentDefinitions: {
+        activeAgents: typeof emptyToolsAgent[]
+        inactiveAgents: []
+        allowedAgentTypes: undefined
+      }
+    }
+  }
+  emptyToolsNamedContext.options.agentDefinitions = {
+    activeAgents: [emptyToolsAgent],
+    inactiveAgents: [],
+    allowedAgentTypes: undefined,
+  }
+  emptyToolsNamedContext.setAppState(
+    (prev: ReturnType<TestContext['getAppState']>) => ({
+      ...prev,
+      agentDefinitions: emptyToolsNamedContext.options.agentDefinitions,
+      teamContext: {
+        teamName: 'named-team',
+        teamFilePath: '',
+        leadAgentId: 'team-lead@named-team',
+        teammates: {},
+      },
+    }),
+  )
+  controlledSpawnTeammateConfig = undefined
+  await AgentTool.call(
+    {
+      description: 'named empty tools teammate',
+      prompt: 'inspect only',
+      subagent_type: 'named-empty-tools-agent',
+      name: 'empty-tools-worker',
+    },
+    emptyToolsNamedContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_named_empty_tools_teammate' } } as never,
+  )
+  assert.deepEqual(controlledSpawnTeammateConfig?.permissions, [])
+
+  const inheritedNamedContext = createContext(0) as never as TestContext
+  inheritedNamedContext.setAppState(
+    (prev: ReturnType<TestContext['getAppState']>) => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        mode: 'bypassPermissions',
+      },
+      teamContext: {
+        teamName: 'named-team',
+        teamFilePath: '',
+        leadAgentId: 'team-lead@named-team',
+        teammates: {},
+      },
+    }),
+  )
+  controlledSpawnTeammateConfig = undefined
+  await AgentTool.call(
+    {
+      description: 'named inherited teammate',
+      prompt: 'inspect only',
+      subagent_type: 'general-purpose',
+      name: 'inherited-worker',
+    },
+    inheritedNamedContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_named_inherited_teammate' } } as never,
+  )
+  assert.equal(
+    controlledSpawnTeammateConfig?.permissionMode,
+    'bypassPermissions',
+  )
+} finally {
+  if (originalNamedConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = originalNamedConfigDir
+  }
+  rmSync(namedConfigDir, { recursive: true, force: true })
+}
 
 const spawnDepthOnlyContext = createContext(0) as never as TestContext & {
   agentId: string

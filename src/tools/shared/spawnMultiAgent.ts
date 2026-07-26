@@ -5,11 +5,6 @@
 
 import React from 'react'
 import {
-  getChromeFlagOverride,
-  getFlagSettingsPath,
-  getInlinePlugins,
-  getMainLoopModelOverride,
-  getSessionBypassPermissionsMode,
   getSessionId,
 } from '../../bootstrap/state.js'
 import type { AppState } from '../../state/AppState.js'
@@ -49,7 +44,10 @@ import {
   type InProcessSpawnConfig,
   spawnInProcessTeammate,
 } from '../../utils/swarm/spawnInProcess.js'
-import { buildInheritedEnvVars } from '../../utils/swarm/spawnUtils.js'
+import {
+  buildInheritedCliFlags,
+  buildInheritedEnvVars,
+} from '../../utils/swarm/spawnUtils.js'
 import {
   readTeamFileAsync,
   sanitizeAgentName,
@@ -66,8 +64,7 @@ import {
 import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
 import { registerTask } from '../../utils/task/framework.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
-import type { CustomAgentDefinition } from '../AgentTool/loadAgentsDir.js'
-import { isCustomAgent } from '../AgentTool/loadAgentsDir.js'
+import type { AgentDefinition } from '../AgentTool/loadAgentsDir.js'
 
 function getDefaultTeammateModel(leaderModel: string | null): string {
   const configured = getGlobalConfig().teammateDefaultModel
@@ -126,6 +123,8 @@ export type SpawnTeammateConfig = {
   cwd?: string
   use_splitpane?: boolean
   plan_mode_required?: boolean
+  permissionMode?: PermissionMode
+  permissions?: string[]
   model?: string
   agent_type?: string
   description?: string
@@ -143,6 +142,8 @@ type SpawnInput = {
   cwd?: string
   use_splitpane?: boolean
   plan_mode_required?: boolean
+  permissionMode?: PermissionMode
+  permissions?: string[]
   model?: string
   agent_type?: string
   description?: string
@@ -197,67 +198,6 @@ function getTeammateCommand(): string {
   return isInBundledMode() ? process.execPath : process.argv[1]!
 }
 
-/**
- * Builds CLI flags to propagate from the current session to spawned teammates.
- * This ensures teammates inherit important settings like permission mode,
- * model selection, and plugin configuration from their parent.
- *
- * @param options.planModeRequired - If true, don't inherit bypass permissions (plan mode takes precedence)
- * @param options.permissionMode - Permission mode to propagate
- */
-function buildInheritedCliFlags(options?: {
-  planModeRequired?: boolean
-  permissionMode?: PermissionMode
-}): string {
-  const flags: string[] = []
-  const { planModeRequired, permissionMode } = options || {}
-
-  // Propagate permission mode to teammates, but NOT if plan mode is required
-  // Plan mode takes precedence over bypass permissions for safety
-  if (planModeRequired) {
-    // Don't inherit bypass permissions when plan mode is required
-  } else if (
-    permissionMode === 'bypassPermissions' ||
-    getSessionBypassPermissionsMode()
-  ) {
-    flags.push('--dangerously-skip-permissions')
-  } else if (permissionMode === 'acceptEdits') {
-    flags.push('--permission-mode acceptEdits')
-  } else if (permissionMode === 'auto') {
-    // Teammates inherit auto mode so the classifier auto-approves their tool
-    // calls too. The teammate's own startup (permissionSetup.ts) handles
-    // GrowthBook gate checks and setAutoModeActive(true) independently.
-    flags.push('--permission-mode auto')
-  }
-
-  // Propagate --model if explicitly set via CLI
-  const modelOverride = getMainLoopModelOverride()
-  if (modelOverride) {
-    flags.push(`--model ${quote([modelOverride])}`)
-  }
-
-  // Propagate --settings if set via CLI
-  const settingsPath = getFlagSettingsPath()
-  if (settingsPath) {
-    flags.push(`--settings ${quote([settingsPath])}`)
-  }
-
-  // Propagate --plugin-dir for each inline plugin
-  const inlinePlugins = getInlinePlugins()
-  for (const pluginDir of inlinePlugins) {
-    flags.push(`--plugin-dir ${quote([pluginDir])}`)
-  }
-
-  // Propagate --chrome / --no-chrome if explicitly set on the CLI
-  const chromeFlagOverride = getChromeFlagOverride()
-  if (chromeFlagOverride === true) {
-    flags.push('--chrome')
-  } else if (chromeFlagOverride === false) {
-    flags.push('--no-chrome')
-  }
-
-  return flags.join(' ')
-}
 
 /**
  * Generates a unique teammate name by checking existing team members.
@@ -307,7 +247,15 @@ async function handleSpawnSplitPane(
   context: ToolUseContext,
 ): Promise<{ data: SpawnOutput }> {
   const { setAppState, getAppState } = context
-  const { name, prompt, agent_type, cwd, plan_mode_required } = input
+  const {
+    name,
+    prompt,
+    agent_type,
+    cwd,
+    plan_mode_required,
+    permissionMode,
+    permissions,
+  } = input
 
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
@@ -316,6 +264,9 @@ async function handleSpawnSplitPane(
   // Get team name from input or inherit from leader's team context
   const appState = getAppState()
   const teamName = input.team_name || appState.teamContext?.teamName
+  const effectivePermissionMode = plan_mode_required
+    ? 'plan'
+    : permissionMode ?? appState.toolPermissionContext.mode
 
   if (!teamName) {
     throw new Error(
@@ -424,7 +375,8 @@ async function handleSpawnSplitPane(
   // Pass plan_mode_required to prevent inheriting bypass permissions
   let inheritedFlags = buildInheritedCliFlags({
     planModeRequired: plan_mode_required,
-    permissionMode: appState.toolPermissionContext.mode,
+    permissionMode: effectivePermissionMode,
+    allowedTools: permissions,
   })
 
   // If teammate has a custom model, add --model flag (or replace inherited one)
@@ -486,6 +438,7 @@ async function handleSpawnSplitPane(
     teammateColor,
     prompt,
     plan_mode_required,
+    permissionMode: effectivePermissionMode,
     paneId,
     insideTmux,
     backendType: detectionResult.backend.type,
@@ -501,6 +454,7 @@ async function handleSpawnSplitPane(
     prompt,
     color: teammateColor,
     planModeRequired: plan_mode_required,
+    mode: effectivePermissionMode,
     joinedAt: Date.now(),
     tmuxPaneId: paneId,
     cwd: workingDir,
@@ -548,7 +502,15 @@ async function handleSpawnSeparateWindow(
   context: ToolUseContext,
 ): Promise<{ data: SpawnOutput }> {
   const { setAppState, getAppState } = context
-  const { name, prompt, agent_type, cwd, plan_mode_required } = input
+  const {
+    name,
+    prompt,
+    agent_type,
+    cwd,
+    plan_mode_required,
+    permissionMode,
+    permissions,
+  } = input
 
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
@@ -557,6 +519,9 @@ async function handleSpawnSeparateWindow(
   // Get team name from input or inherit from leader's team context
   const appState = getAppState()
   const teamName = input.team_name || appState.teamContext?.teamName
+  const effectivePermissionMode = plan_mode_required
+    ? 'plan'
+    : permissionMode ?? appState.toolPermissionContext.mode
 
   if (!teamName) {
     throw new Error(
@@ -632,7 +597,8 @@ async function handleSpawnSeparateWindow(
   // Pass plan_mode_required to prevent inheriting bypass permissions
   let inheritedFlags = buildInheritedCliFlags({
     planModeRequired: plan_mode_required,
-    permissionMode: appState.toolPermissionContext.mode,
+    permissionMode: effectivePermissionMode,
+    allowedTools: permissions,
   })
 
   // If teammate has a custom model, add --model flag (or replace inherited one)
@@ -701,6 +667,7 @@ async function handleSpawnSeparateWindow(
     teammateColor,
     prompt,
     plan_mode_required,
+    permissionMode: effectivePermissionMode,
     paneId,
     insideTmux: false,
     backendType: 'tmux',
@@ -716,6 +683,7 @@ async function handleSpawnSeparateWindow(
     prompt,
     color: teammateColor,
     planModeRequired: plan_mode_required,
+    mode: effectivePermissionMode,
     joinedAt: Date.now(),
     tmuxPaneId: paneId,
     cwd: workingDir,
@@ -768,6 +736,7 @@ function registerOutOfProcessTeammateTask(
     teammateColor,
     prompt,
     plan_mode_required,
+    permissionMode,
     paneId,
     insideTmux,
     backendType,
@@ -779,6 +748,7 @@ function registerOutOfProcessTeammateTask(
     teammateColor: string
     prompt: string
     plan_mode_required?: boolean
+    permissionMode: PermissionMode
     paneId: string
     insideTmux: boolean
     backendType: BackendType
@@ -810,7 +780,7 @@ function registerOutOfProcessTeammateTask(
     prompt,
     abortController,
     awaitingPlanApproval: false,
-    permissionMode: plan_mode_required ? 'plan' : 'default',
+    permissionMode: plan_mode_required ? 'plan' : permissionMode,
     isIdle: false,
     shutdownRequested: false,
     lastReportedToolCount: 0,
@@ -844,7 +814,14 @@ async function handleSpawnInProcess(
   context: ToolUseContext,
 ): Promise<{ data: SpawnOutput }> {
   const { setAppState, getAppState } = context
-  const { name, prompt, agent_type, plan_mode_required } = input
+  const {
+    name,
+    prompt,
+    agent_type,
+    plan_mode_required,
+    permissionMode,
+    permissions,
+  } = input
 
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
@@ -853,6 +830,9 @@ async function handleSpawnInProcess(
   // Get team name from input or inherit from leader's team context
   const appState = getAppState()
   const teamName = input.team_name || appState.teamContext?.teamName
+  const effectivePermissionMode = plan_mode_required
+    ? 'plan'
+    : permissionMode ?? appState.toolPermissionContext.mode
 
   if (!teamName) {
     throw new Error(
@@ -882,14 +862,13 @@ async function handleSpawnInProcess(
   // Assign a unique color to this teammate
   const teammateColor = assignTeammateColor(teammateId)
 
-  // Look up custom agent definition if agent_type is provided
-  let agentDefinition: CustomAgentDefinition | undefined
+  // Look up the complete definition so built-in, plugin, and custom agents
+  // all preserve their prompts and tool restrictions in-process.
+  let agentDefinition: AgentDefinition | undefined
   if (agent_type) {
-    const allAgents = context.options.agentDefinitions.activeAgents
-    const foundAgent = allAgents.find(a => a.agentType === agent_type)
-    if (foundAgent && isCustomAgent(foundAgent)) {
-      agentDefinition = foundAgent
-    }
+    agentDefinition = context.options.agentDefinitions.activeAgents.find(
+      agent => agent.agentType === agent_type,
+    )
     logForDebugging(
       `[handleSpawnInProcess] agent_type=${agent_type}, found=${!!agentDefinition}`,
     )
@@ -902,6 +881,7 @@ async function handleSpawnInProcess(
     prompt,
     color: teammateColor,
     planModeRequired: plan_mode_required ?? false,
+    permissionMode: effectivePermissionMode,
     model,
   }
 
@@ -939,6 +919,7 @@ async function handleSpawnInProcess(
       // teammate's lifetime, surviving /clear and auto-compact.
       toolUseContext: { ...context, messages: [] },
       abortController: result.abortController,
+      allowedTools: permissions,
       invokingRequestId: input.invokingRequestId,
     })
     logForDebugging(
@@ -1003,6 +984,7 @@ async function handleSpawnInProcess(
     prompt,
     color: teammateColor,
     planModeRequired: plan_mode_required,
+    mode: effectivePermissionMode,
     joinedAt: Date.now(),
     tmuxPaneId: 'in-process',
     cwd: getCwd(),

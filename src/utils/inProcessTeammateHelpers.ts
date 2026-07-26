@@ -67,19 +67,23 @@ export function setAwaitingPlanApproval(
  * Handle plan approval response for an in-process teammate.
  * Called by the message callback when a plan_approval_response arrives.
  *
- * This resets awaitingPlanApproval to false. The permissionMode from the
- * response is handled separately by the agent loop (Task #11).
+ * This resets awaitingPlanApproval to false and applies the leader's mode for
+ * the teammate's next turn.
  *
  * @param taskId - Task ID of the in-process teammate
- * @param _response - The plan approval response message (for future use)
+ * @param response - The plan approval response message
  * @param setAppState - AppState setter
  */
 export function handlePlanApprovalResponse(
   taskId: string,
-  _response: PlanApprovalResponseMessage,
+  response: PlanApprovalResponseMessage,
   setAppState: SetAppState,
 ): void {
-  setAwaitingPlanApproval(taskId, setAppState, false)
+  updateTaskState<InProcessTeammateTaskState>(taskId, setAppState, task => ({
+    ...task,
+    awaitingPlanApproval: false,
+    permissionMode: response.permissionMode ?? task.permissionMode,
+  }))
 }
 
 // ============ Permission Delegation Helpers ============

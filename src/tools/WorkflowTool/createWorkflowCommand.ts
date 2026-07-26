@@ -30,7 +30,7 @@ function buildWorkflowPrompt(
         `Fanout: ${phase.fanout}\n` +
         `Concurrency: ${phase.concurrency}\n` +
         `Review: ${phase.review}\n` +
-        `permissionMode: ${phase.permissionMode}\n` +
+        `permissionMode: ${phase.permissionMode ?? 'inherit'}\n` +
         `agentType: ${phase.agentType ?? 'default'}\n` +
         `model: ${phase.model ?? 'default'}\n` +
         `Prompt: ${phase.prompt}`,
@@ -51,7 +51,7 @@ function buildWorkflowPrompt(
         `- Respect phase dependencies: do not start a phase until all dependencies are complete.\n` +
         `- Respect each phase fanout and concurrency limit.\n` +
         `- For fanout greater than 1, launch separate ${AGENT_TOOL_NAME} workers with independent prompts.\n` +
-        `- Honor each phase permissionMode when spawning workers: use mode \"plan\", \"acceptEdits\", \"bypassPermissions\", or \"dontAsk\" exactly when requested, and omit mode for \"default\".\n` +
+        `- Honor each phase permissionMode when spawning workers: omit mode for \"inherit\"; use mode \"default\", mode \"plan\", mode \"acceptEdits\", mode \"bypassPermissions\", or mode \"dontAsk\" exactly when requested.\n` +
         `- A phase with permissionMode \"plan\" must not edit files or run implementation commands; it may only research, inspect, and propose a plan.\n` +
         `- For cross-check or adversarial review phases, have workers verify prior phase outputs and identify unsupported claims.\n` +
         `- For synthesis phases, include only findings that survived review.\n` +

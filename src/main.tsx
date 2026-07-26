@@ -2994,8 +2994,16 @@ async function run(): Promise<CommanderCommand> {
         activeAgents: getActiveAgentsFromList(allAgents),
       }
 
-      // Look up main thread agent from CLI flag or settings
-      const agentSetting = agentCli ?? getInitialSettings().agent
+      // Teammate --agent-type selects the same full agent definition as --agent,
+      // including its tool restrictions. An explicit --agent still wins.
+      const teammateAgentSetting =
+        storedTeammateOpts?.agentId &&
+        storedTeammateOpts.agentName &&
+        storedTeammateOpts.teamName
+          ? storedTeammateOpts.agentType
+          : undefined
+      const agentSetting =
+        agentCli ?? teammateAgentSetting ?? getInitialSettings().agent
       let mainThreadAgentDefinition:
         | (typeof agentDefinitions.activeAgents)[number]
         | undefined
@@ -3117,59 +3125,6 @@ async function run(): Promise<CommanderCommand> {
           : advisorOption
         if (advisorModel) {
           logForDebugging(`[AdvisorTool] Advisor model: ${advisorModel}`)
-        }
-      }
-
-      // For tmux teammates with --agent-type, append the custom agent's prompt
-      if (
-        isAgentSwarmsEnabled() &&
-        storedTeammateOpts?.agentId &&
-        storedTeammateOpts?.agentName &&
-        storedTeammateOpts?.teamName &&
-        storedTeammateOpts?.agentType
-      ) {
-        // Look up the custom agent definition
-        const customAgent = agentDefinitions.activeAgents.find(
-          a => a.agentType === storedTeammateOpts.agentType,
-        )
-        if (customAgent) {
-          // Get the prompt - need to handle both built-in and custom agents
-          let customPrompt: string | undefined
-          if (customAgent.source === 'built-in') {
-            // Built-in agents have getSystemPrompt that takes toolUseContext
-            // We can't access full toolUseContext here, so skip for now
-            logForDebugging(
-              `[teammate] Built-in agent ${storedTeammateOpts.agentType} - skipping custom prompt (not supported)`,
-            )
-          } else {
-            // Custom agents have getSystemPrompt that takes no args
-            customPrompt = customAgent.getSystemPrompt()
-          }
-
-          // Log agent memory loaded event for tmux teammates
-          if (customAgent.memory) {
-            logEvent('tengu_agent_memory_loaded', {
-              ...(isAnt() && {
-                agent_type:
-                  customAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              }),
-              scope:
-                customAgent.memory as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              source:
-                'teammate' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-            })
-          }
-
-          if (customPrompt) {
-            const customInstructions = `\n# Custom Agent Instructions\n${customPrompt}`
-            appendSystemPrompt = appendSystemPrompt
-              ? `${appendSystemPrompt}\n\n${customInstructions}`
-              : customInstructions
-          }
-        } else {
-          logForDebugging(
-            `[teammate] Custom agent ${storedTeammateOpts.agentType} not found in available agents`,
-          )
         }
       }
 

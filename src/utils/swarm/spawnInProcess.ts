@@ -25,6 +25,7 @@ import type {
 } from '../../tasks/InProcessTeammateTask/types.js'
 import { createAbortController } from '../abortController.js'
 import { formatAgentId } from '../agentId.js'
+import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from '../debug.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
@@ -67,6 +68,8 @@ export type InProcessSpawnConfig = {
   color?: string
   /** Whether teammate must enter plan mode before implementing */
   planModeRequired: boolean
+  /** Effective permission mode inherited or explicitly selected for this teammate */
+  permissionMode: PermissionMode
   /** Optional model override for this teammate */
   model?: string
 }
@@ -105,7 +108,15 @@ export async function spawnInProcessTeammate(
   config: InProcessSpawnConfig,
   context: SpawnContext,
 ): Promise<InProcessSpawnOutput> {
-  const { name, teamName, prompt, color, planModeRequired, model } = config
+  const {
+    name,
+    teamName,
+    prompt,
+    color,
+    planModeRequired,
+    permissionMode,
+    model,
+  } = config
   const { setAppState } = context
 
   // Generate deterministic agent ID
@@ -170,7 +181,7 @@ export async function spawnInProcessTeammate(
       awaitingPlanApproval: false,
       spinnerVerb: sample(getSpinnerVerbs()),
       pastTenseVerb: sample(TURN_COMPLETION_VERBS),
-      permissionMode: planModeRequired ? 'plan' : 'default',
+      permissionMode: planModeRequired ? 'plan' : permissionMode,
       isIdle: false,
       shutdownRequested: false,
       lastReportedToolCount: 0,

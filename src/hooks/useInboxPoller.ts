@@ -634,6 +634,9 @@ export function useInboxPoller({
           },
           teamName,
         )
+        if (teamName) {
+          setMemberMode(teamName, m.from, modeToInherit)
+        }
 
         // Update in-process teammate task state if applicable
         const taskId = findInProcessTeammateTaskId(m.from, currentAppState)

@@ -125,11 +125,14 @@ export class PaneBackendExecutor implements TeammateExecutor {
         .filter(Boolean)
         .join(' ')
 
-      // Build CLI flags to propagate to teammate
+      // Build CLI flags from the effective mode computed by the caller. Fall
+      // back to the current parent mode for legacy executor callers.
       const appState = this.context.getAppState()
       let inheritedFlags = buildInheritedCliFlags({
         planModeRequired: config.planModeRequired,
-        permissionMode: appState.toolPermissionContext.mode,
+        permissionMode:
+          config.permissionMode ?? appState.toolPermissionContext.mode,
+        allowedTools: config.permissions,
       })
 
       // If teammate has a custom model, add --model flag (or replace inherited one)

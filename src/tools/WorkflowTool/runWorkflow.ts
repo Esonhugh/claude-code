@@ -186,17 +186,13 @@ export function snapshotWorkflowAgentContext(
   context: ToolUseContext
 } {
   const inheritedPermissionContext = context.getAppState().toolPermissionContext
-  const requestedMode = mode && mode !== 'default' ? mode : undefined
+  const requestedMode = mode
   const permissionContext = requestedMode
     ? applyRequestedAgentPermissionMode(inheritedPermissionContext, requestedMode)
     : inheritedPermissionContext
   const effectiveMode = permissionContext.mode
-  let inputMode: WorkflowPermissionMode | undefined
-  if (effectiveMode === 'plan' || effectiveMode === 'dontAsk') {
-    inputMode = effectiveMode
-  } else if (effectiveMode !== inheritedPermissionContext.mode) {
-    inputMode = effectiveMode as WorkflowPermissionMode
-  }
+  const inputMode =
+    requestedMode && effectiveMode === requestedMode ? requestedMode : undefined
   return {
     identityMode: effectiveMode,
     inputMode,
@@ -906,10 +902,6 @@ export async function runWorkflowPlan({
         phaseId: phase.id,
         status: 'running',
       }))
-      const agentLaunch = snapshotWorkflowAgentContext(
-        phase.permissionMode,
-        context,
-      )
       const results: WorkflowAgentResult[] = []
       for (let index = 0; index < phase.fanout; index += phase.concurrency) {
         const batchIndexes = Array.from(
@@ -938,7 +930,10 @@ export async function runWorkflowPlan({
               resumeRuntime,
               runArgs,
               injectRunArgsIntoRootPrompt,
-              agentLaunch,
+              agentLaunch: snapshotWorkflowAgentContext(
+                phase.permissionMode,
+                context,
+              ),
             }),
           ),
         )

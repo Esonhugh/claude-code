@@ -97,6 +97,7 @@ import {
   finalizeAgentTool,
   getAgentTerminalError,
   getLastToolUseName,
+  resolveAgentTools,
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
@@ -599,16 +600,20 @@ export const AgentTool = buildTool({
       )
     }
 
-    const permissionMode = selectedAgent.permissionMode
-      ? applyRequestedAgentPermissionMode(
-          requestedPermissionContext,
-          selectedAgent.permissionMode,
-        ).mode
-      : requestedPermissionContext.mode
-    const workerPermissionContext = applyRequestedAgentPermissionMode(
-      appState.toolPermissionContext,
-      permissionMode,
-    )
+    const explicitPermissionMode =
+      spawnMode && requestedPermissionContext.mode === spawnMode
+        ? spawnMode
+        : undefined
+    const permissionMode =
+      explicitPermissionMode ??
+      (appState.toolPermissionContext.mode === 'bypassPermissions'
+        ? 'bypassPermissions'
+        : (selectedAgent.permissionMode ?? appState.toolPermissionContext.mode))
+    const workerPermissionContext = explicitPermissionMode
+      ? requestedPermissionContext
+      : permissionMode === appState.toolPermissionContext.mode
+        ? appState.toolPermissionContext
+        : { ...appState.toolPermissionContext, mode: permissionMode }
 
     let teamName = appState.teamContext?.teamName
     let shouldSpawnTeammate = Boolean(
@@ -626,6 +631,18 @@ export const AgentTool = buildTool({
     // Match recover 201: named teammates route from live team context, excluding
     // fork, isolation, and cwd paths.
     if (shouldSpawnTeammate) {
+      const teammateTools = assembleToolPool(
+        workerPermissionContext,
+        appState.mcp.tools,
+      )
+      const resolvedTeammateTools = resolveAgentTools(
+        { ...selectedAgent, permissionMode },
+        teammateTools,
+        false,
+      )
+      const permissions = resolvedTeammateTools.hasWildcard
+        ? undefined
+        : resolvedTeammateTools.validTools
       const agentDef = subagent_type
         ? toolUseContext.options.agentDefinitions.activeAgents.find(
             a => a.agentType === subagent_type,
@@ -642,6 +659,8 @@ export const AgentTool = buildTool({
           team_name: teamName,
           use_splitpane: true,
           plan_mode_required: permissionMode === 'plan',
+          permissionMode,
+          permissions,
           model: model ?? agentDef?.model,
           agent_type: subagent_type,
           invokingRequestId: assistantMessage?.requestId,
@@ -976,6 +995,17 @@ export const AgentTool = buildTool({
         tool.name !== 'Workflow'
     })
 
+    const resolvedAgentTools = isForkPath
+      ? undefined
+      : resolveAgentTools(
+          { ...selectedAgent, permissionMode },
+          workerTools,
+          shouldRunAsync,
+        )
+    const allowedTools = resolvedAgentTools?.hasWildcard
+      ? undefined
+      : resolvedAgentTools?.validTools
+
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId()
 
@@ -1086,6 +1116,7 @@ export const AgentTool = buildTool({
           : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
       permissionMode,
+      allowedTools,
       // Pass parent conversation when the fork-subagent path needs full
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,

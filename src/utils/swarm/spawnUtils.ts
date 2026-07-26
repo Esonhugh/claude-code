@@ -38,21 +38,25 @@ export function getTeammateCommand(): string {
 export function buildInheritedCliFlags(options?: {
   planModeRequired?: boolean
   permissionMode?: PermissionMode
+  allowedTools?: string[]
 }): string {
   const flags: string[] = []
-  const { planModeRequired, permissionMode } = options || {}
+  const { planModeRequired, permissionMode, allowedTools } = options || {}
 
-  // Propagate permission mode to teammates, but NOT if plan mode is required
-  // Plan mode takes precedence over bypass permissions for safety
+  // An explicit effective mode always wins. The session bypass flag is only a
+  // fallback for legacy callers that do not provide a mode.
   if (planModeRequired) {
-    // Don't inherit bypass permissions when plan mode is required
-  } else if (
-    permissionMode === 'bypassPermissions' ||
-    getSessionBypassPermissionsMode()
-  ) {
+    flags.push('--permission-mode plan')
+  } else if (permissionMode === 'bypassPermissions') {
     flags.push('--dangerously-skip-permissions')
-  } else if (permissionMode === 'acceptEdits') {
-    flags.push('--permission-mode acceptEdits')
+  } else if (permissionMode && permissionMode !== 'bubble') {
+    flags.push(`--permission-mode ${permissionMode}`)
+  } else if (permissionMode === undefined && getSessionBypassPermissionsMode()) {
+    flags.push('--dangerously-skip-permissions')
+  }
+
+  if (allowedTools?.length) {
+    flags.push(`--allowedTools ${quote([allowedTools.join(',')])}`)
   }
 
   // Propagate --model if explicitly set via CLI

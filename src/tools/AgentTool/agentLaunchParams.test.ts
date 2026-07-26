@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import {
   buildAgentLaunchDebugParams,
+  inputSchema,
   normalizeAgentDescription,
   shouldPreserveAgentToolUseResults,
 } from './AgentTool.js'
@@ -22,6 +24,11 @@ assert.equal(
   shouldPreserveAgentToolUseResults({ isNonInteractiveSession: true }),
   false,
 )
+
+const agentToolJsonSchema = zodToJsonSchema(inputSchema()) as {
+  required?: string[]
+}
+assert.deepEqual(agentToolJsonSchema.required, ['description', 'prompt'])
 
 const params = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',
@@ -79,22 +86,25 @@ const serialized = JSON.stringify(params)
 assert.equal(serialized.includes('Launch params should not leak'), false)
 assert.equal(serialized.includes('worker-name'), false)
 
-const requestedPlanContext = applyRequestedAgentPermissionMode(
-  {
-    ...getEmptyToolPermissionContext(),
-    mode: 'bypassPermissions',
-    isBypassPermissionsModeAvailable: true,
-    prePlanMode: 'bypassPermissions',
-    strippedDangerousRules: {
-      userSettings: ['Bash(node:*)'],
-    },
+const bypassPlanContext = {
+  ...getEmptyToolPermissionContext(),
+  mode: 'bypassPermissions' as const,
+  isBypassPermissionsModeAvailable: true,
+  prePlanMode: 'bypassPermissions' as const,
+  strippedDangerousRules: {
+    userSettings: ['Bash(node:*)'],
   },
+}
+const requestedPlanContext = applyRequestedAgentPermissionMode(
+  bypassPlanContext,
   'plan',
 )
 assert.equal(requestedPlanContext.mode, 'plan')
-assert.equal(requestedPlanContext.isBypassPermissionsModeAvailable, false)
-assert.equal(requestedPlanContext.prePlanMode, undefined)
-assert.equal(requestedPlanContext.strippedDangerousRules, undefined)
+assert.equal(requestedPlanContext.isBypassPermissionsModeAvailable, true)
+assert.equal(requestedPlanContext.prePlanMode, 'bypassPermissions')
+assert.deepEqual(requestedPlanContext.strippedDangerousRules, {
+  userSettings: ['Bash(node:*)'],
+})
 
 const cleanPlanContext = {
   ...getEmptyToolPermissionContext(),
@@ -112,11 +122,11 @@ const dontAskContext = {
 }
 assert.equal(
   applyRequestedAgentPermissionMode(dontAskContext, 'plan').mode,
-  'dontAsk',
+  'plan',
 )
 assert.equal(
   applyRequestedAgentPermissionMode(dontAskContext, 'bubble').mode,
-  'dontAsk',
+  'bubble',
 )
 
 const planContext = {
@@ -176,7 +186,7 @@ assert.equal(
 )
 assert.equal(
   applyRequestedAgentPermissionMode(autoContext, 'bubble').mode,
-  'auto',
+  'bubble',
 )
 
 assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'auto'), true)

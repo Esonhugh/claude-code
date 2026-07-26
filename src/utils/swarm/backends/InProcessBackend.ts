@@ -91,6 +91,12 @@ export class InProcessBackend implements TeammateExecutor {
         prompt: config.prompt,
         color: config.color,
         planModeRequired: config.planModeRequired ?? false,
+        permissionMode:
+          config.planModeRequired
+            ? 'plan'
+            : config.permissionMode ??
+              this.context.getAppState().toolPermissionContext.mode,
+        model: config.model,
       },
       this.context,
     )
