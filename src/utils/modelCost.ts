@@ -175,6 +175,12 @@ function trackUnknownModelCost(model: string, shortName: ModelShortName): void {
 // Calculate the cost of a query in US dollars.
 // If the model's costs are not found, use the default model's costs.
 export function calculateUSDCost(resolvedModel: string, usage: Usage): number {
+  // Boundary guard: a usage object can be missing when a request fails without
+  // a normal response body (e.g. the non-streaming fallback recovering from an
+  // overload). Treat missing usage as zero cost rather than crashing the query.
+  if (!usage) {
+    return 0
+  }
   const modelCosts = getModelCosts(resolvedModel, usage)
   return tokensToUSDCost(modelCosts, usage)
 }

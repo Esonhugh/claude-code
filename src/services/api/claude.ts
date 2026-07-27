@@ -2860,14 +2860,13 @@ async function* queryModel(
       usage = updateUsage(EMPTY_USAGE, fallbackUsage)
       // @ts-ignore - recovered code
       stopReason = fallbackMessage.message.stop_reason
+      // Use the normalized `usage` (never undefined) rather than the raw
+      // fallbackUsage, matching the streaming path. A fallback response can
+      // omit usage, which would otherwise crash cost calculation.
       // @ts-ignore - recovered code
-      const fallbackCost = calculateUSDCost(resolvedModel, fallbackUsage)
-      costUSD += addToTotalSessionCost(
-        fallbackCost,
-        // @ts-ignore - recovered code
-        fallbackUsage,
-        options.model,
-      )
+      const fallbackCost = calculateUSDCost(resolvedModel, usage)
+      // @ts-ignore - recovered code
+      costUSD += addToTotalSessionCost(fallbackCost, usage, options.model)
     }
   }
 
