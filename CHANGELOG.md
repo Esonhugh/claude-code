@@ -12,18 +12,22 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-07-26 - Agent 权限继承、Workflow 稳定性与 release notes 校验
+## 2026-07-27 - v2.1.205 - Agent 权限继承、Workflow 稳定性、release notes 校验与用量成本修复
 
 ### 版本状态
 
-- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.204`，`package.json` 仍保持 `0.0.0-dev`。
-- 本条目覆盖 `v2.1.204` tag 之后截至 2026-07-26 的提交，以及当前待提交的 Agent/Workflow runtime 与发布门禁修复。
+- 准备发布版本：`v2.1.205`。
+- 本次发布覆盖 `v2.1.204` tag 之后至 2026-07-27 的提交。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.205`。
 
 ### 关联提交
 
 - `2f0331a` — 2026-07-25 — `update: expose ChatGPT usage and reset controls`
 - `ccbbd3e` — 2026-07-26 — `update: bundle and validate release notes`
 - `b89577c` — 2026-07-26 — `fix: inherit agent permissions across launches`
+- `cca50c2` — 2026-07-27 — `fix: harden agent and workflow launches`
+- `7164ec2` — 2026-07-27 — `fix: undefined of usage.input_token bug`
 
 ### 变更内容
 
@@ -44,9 +48,14 @@
 - `/usage` 和 Settings Usage 支持 ChatGPT 用量窗口及 rate-limit reset credits，reset 操作经过确认并在成功后刷新显示。
 - release notes 改为从内置 `CHANGELOG.md` 读取并按当前 binary version 截断；新增 changelog 格式、版本和发布脚本校验。
 
+#### 用量成本计算修复
+
+- 非流式 fallback 路径在 API 响应缺失 `usage` 时不再崩溃：调用侧改用归一化后的 `usage`，`calculateUSDCost` 增加缺失 `usage` 的边界守卫并按零成本处理，修复 `undefined is not an object (evaluating '$.input_tokens')`。
+
 ### 测试覆盖
 
 - Agent permission、resume、foreground/background continuation、teammate propagation、Workflow stall terminalization、bundled deep-research source-selection 和 release driver focused tests 均通过；TypeScript、ESLint、missing imports/assets audit 与 `git diff --check` 通过。
+- `src/utils/modelCost.test.ts` 覆盖 `calculateUSDCost` 在缺失 `usage` 时返回 0 且不抛异常、正常 `usage` 仍计算正成本。
 - 同一 Round 9 fresh `2.1.204` binary（SHA-256 `7b61f508bebf4c2d71e6d00fa07494194a9723bd0fbd79ebd66afc4714875951`）完成 readiness、direct foreground→background、nested Agent、inline Workflow UI/task/notification、deep-research 和 code-review 交互矩阵；5 个 Search 与 15 个 Fetch worker 均 exact-once，15 个 Fetch URL 全部匹配共享 source rank，且未留下本轮 task/process/tmux 或 Git 副作用。
 
 ## 2026-07-24 - v2.1.204 - Workflow/Agent 失败记账、重试恢复与 OpenAI Web Search

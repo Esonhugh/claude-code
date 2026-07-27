@@ -10,7 +10,7 @@
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
 - 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.204`
+- 当前本地发布线：`2.1.205`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -29,7 +29,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.204` |
+| 本地发布线 | `2.1.205` |
 | 源码版本 | `0.0.0-dev` |
 | 包管理器 | `bun@1.3.14` |
 | Node.js | `>=18` |
@@ -90,7 +90,7 @@ bun ./dist/cli.js --help
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
 | Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；统一后台 poller 会同步终态、drain 尾部输出、持久化最终结果并发送一次完成通知。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
-| 状态与用量 UI | 当前模型使用 ChatGPT OAuth 时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
+| 状态与用量 UI | 当前模型使用 ChatGPT OAuth 时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits，同时展示 ChatGPT 用量窗口与 rate-limit reset credits，reset 操作经二次确认后消耗一个 credit 并刷新显示；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
 | 自主 Goal | `/goal` 注册 StopHook 并驱动自主执行；目标状态显示在 Prompt footer 和 Status line，并支持 compact/session restore 与自动清理。 |
 | 会话命令 | 新增 `/goal`、`/cd`、`/reload-skills`、`/workflows`，并为 `/cd` 增加仅目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
