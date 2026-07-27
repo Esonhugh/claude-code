@@ -18,6 +18,14 @@ exec env -i \
   USER="${USER:-}" \
   LANG="${LANG:-en_US.UTF-8}" \
   TERM="${TERM:-xterm-256color}" \
+  HTTP_PROXY="${HTTP_PROXY:-}" \
+  HTTPS_PROXY="${HTTPS_PROXY:-}" \
+  ALL_PROXY="${ALL_PROXY:-}" \
+  NO_PROXY="${NO_PROXY:-}" \
+  http_proxy="${http_proxy:-}" \
+  https_proxy="${https_proxy:-}" \
+  all_proxy="${all_proxy:-}" \
+  no_proxy="${no_proxy:-}" \
   CLAUDE_CODE_USE_OPENAI=1 \
   CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1 \
   "$CC_VALIDATION_REPO_ROOT/built-claude" \

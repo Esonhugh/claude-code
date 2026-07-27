@@ -152,10 +152,11 @@ export async function resumeAgentBackground({
     }
   }
 
-  const permissionMode = meta?.permissionMode ??
-    (appState.toolPermissionContext.mode === 'bypassPermissions'
-      ? 'bypassPermissions'
-      : (selectedAgent.permissionMode ?? appState.toolPermissionContext.mode))
+  const permissionMode = appState.toolPermissionContext.mode === 'bypassPermissions'
+    ? 'bypassPermissions'
+    : (meta?.permissionMode ??
+      selectedAgent.permissionMode ??
+      appState.toolPermissionContext.mode)
   const workerPermissionContext =
     permissionMode === appState.toolPermissionContext.mode
       ? appState.toolPermissionContext

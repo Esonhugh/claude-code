@@ -164,12 +164,24 @@ try {
     (
       await runCase({
         agentId: 'resume-original-mode',
-        parentMode: 'bypassPermissions',
-        metadataMode: 'default',
+        parentMode: 'default',
+        metadataMode: 'acceptEdits',
       })
     ).permissionMode,
-    'default',
+    'acceptEdits',
   )
+  for (const metadataMode of ['default', 'acceptEdits'] as const) {
+    assert.equal(
+      (
+        await runCase({
+          agentId: `resume-bypass-${metadataMode}`,
+          parentMode: 'bypassPermissions',
+          metadataMode,
+        })
+      ).permissionMode,
+      'bypassPermissions',
+    )
+  }
   assert.equal(
     (
       await runCase({

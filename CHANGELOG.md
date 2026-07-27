@@ -12,6 +12,43 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-07-26 - Agent 权限继承、Workflow 稳定性与 release notes 校验
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.204`，`package.json` 仍保持 `0.0.0-dev`。
+- 本条目覆盖 `v2.1.204` tag 之后截至 2026-07-26 的提交，以及当前待提交的 Agent/Workflow runtime 与发布门禁修复。
+
+### 关联提交
+
+- `2f0331a` — 2026-07-25 — `update: expose ChatGPT usage and reset controls`
+- `ccbbd3e` — 2026-07-26 — `update: bundle and validate release notes`
+- `b89577c` — 2026-07-26 — `fix: inherit agent permissions across launches`
+
+### 变更内容
+
+#### Agent 与 Workflow 权限继承
+
+- Agent tool 的 `mode` 改为可选；未显式指定时继承调用方权限。父会话为 `bypassPermissions` 时，模型直接派发的 direct、resume、named、process/pane 和 in-process Agent，以及省略 `permissionMode` 的 Workflow Agent 均保持 bypass。
+- 普通 Agent mode 按官方权限等级限制提权，同时保留可信 Agent definition 的 `permissionMode` 提权能力；父会话为 bypass 时忽略模型自动生成的较低 mode，避免被意外降为 `default` 或 `acceptEdits`。Workflow 配置中显式声明的 `permissionMode` 仍作为可信 launch context 生效；plan approval 后同步 task 与 team member mode。
+- Agent definition 的 `tools`、`disallowedTools` 及 `Read(example.txt)`、`Bash(npm test)` 等参数化 permission rules 传播到 schema、session allow rules 和子进程 CLI flags。
+
+#### Workflow runtime 与发布门禁
+
+- bundled deep-research 新增单一 passive `select-sources` phase：统一按 Search worker/result 顺序去重并选择 15 个 URL，15 个 Fetch worker只消费各自的 `oneBasedRank`；缺少 rank 时不编造或替换来源，binary gate 校验 Search/WebFetch exact-once、共享 rank 一致性、retry 与意外工具调用。
+- Script Workflow 的 Agent stall 现在同时中止子 controller 并终止 runtime await；即使底层 Agent call 忽略 abort，parallel workflow 仍会将该 Agent 记为 failed 并进入 task/run/notification 终态，不再永久停在 running。
+- built-claude 验证 launcher 在 `env -i` 隔离下仅透传大小写 proxy 变量，不传播 auth 或无关宿主变量；binary driver 等待持久化 task notification，并将 Workflow 未完成时未执行的 UI 检查明确标记为 skipped。
+
+#### ChatGPT usage 与 release notes
+
+- `/usage` 和 Settings Usage 支持 ChatGPT 用量窗口及 rate-limit reset credits，reset 操作经过确认并在成功后刷新显示。
+- release notes 改为从内置 `CHANGELOG.md` 读取并按当前 binary version 截断；新增 changelog 格式、版本和发布脚本校验。
+
+### 测试覆盖
+
+- Agent permission、resume、foreground/background continuation、teammate propagation、Workflow stall terminalization、bundled deep-research source-selection 和 release driver focused tests 均通过；TypeScript、ESLint、missing imports/assets audit 与 `git diff --check` 通过。
+- 同一 Round 9 fresh `2.1.204` binary（SHA-256 `7b61f508bebf4c2d71e6d00fa07494194a9723bd0fbd79ebd66afc4714875951`）完成 readiness、direct foreground→background、nested Agent、inline Workflow UI/task/notification、deep-research 和 code-review 交互矩阵；5 个 Search 与 15 个 Fetch worker 均 exact-once，15 个 Fetch URL 全部匹配共享 source rank，且未留下本轮 task/process/tmux 或 Git 副作用。
+
 ## 2026-07-24 - v2.1.204 - Workflow/Agent 失败记账、重试恢复与 OpenAI Web Search
 
 ### 版本状态

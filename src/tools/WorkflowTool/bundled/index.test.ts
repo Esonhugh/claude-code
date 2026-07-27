@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { validateWorkflowSpec } from '../validateWorkflowSpec.js'
 import { getBundledWorkflowSpecs } from './index.js'
 
 const bundledWorkflows = getBundledWorkflowSpecs()
@@ -30,13 +31,15 @@ assert.equal(codeReview.defaults?.permissionMode, 'plan')
 const deepResearch = bundledWorkflows.find(workflow => workflow.name === 'deep-research')
 assert.ok(deepResearch)
 assert.equal(deepResearch.defaults?.maxRetries, 0)
+assert.equal(validateWorkflowSpec(deepResearch).totalAgents, 26)
 
 assert.deepEqual(
   deepResearch.phases.map(phase => phase.id),
-  ['scope', 'search', 'fetch', 'verify', 'synthesize'],
+  ['scope', 'search', 'select-sources', 'fetch', 'verify', 'synthesize'],
 )
 assert.equal(deepResearch.phases.find(phase => phase.id === 'scope')?.fanout, undefined)
 assert.equal(deepResearch.phases.find(phase => phase.id === 'search')?.fanout, 5)
+assert.equal(deepResearch.phases.find(phase => phase.id === 'select-sources')?.fanout, undefined)
 assert.equal(deepResearch.phases.find(phase => phase.id === 'fetch')?.fanout, 15)
 assert.equal(deepResearch.phases.find(phase => phase.id === 'verify')?.fanout, 3)
 assert.equal(
@@ -69,6 +72,10 @@ assert.match(
 )
 assert.match(
   deepResearch.runScriptSnapshot ?? '',
+  /phase\('Select sources'\)/,
+)
+assert.match(
+  deepResearch.runScriptSnapshot ?? '',
   /stats: \{ sourcesFetched, claimsVerified, claimsRefuted, claimsUsed \}/,
 )
 assert.match(
@@ -85,11 +92,22 @@ for (const [index, prompt] of searchPhase?.agentPrompts?.entries() ?? []) {
   assert.match(prompt, /Do not search any other angle, call any other tool, or delegate/)
 }
 
+const selectSourcesPhase = deepResearch.phases.find(phase => phase.id === 'select-sources')
+assert.equal(selectSourcesPhase?.dependsOn[0], 'search')
+assert.equal(selectSourcesPhase?.permissionMode, 'dontAsk')
+assert.match(selectSourcesPhase?.prompt ?? '', /Return the first 15 unique source objects/)
+assert.match(selectSourcesPhase?.prompt ?? '', /If fewer than 15 unique URLs exist/)
+assert.match(selectSourcesPhase?.prompt ?? '', /do not invent sources/)
+assert.match(selectSourcesPhase?.prompt ?? '', /Do not call tools or delegate/)
+
 const fetchPhase = deepResearch.phases.find(phase => phase.id === 'fetch')
 const fetchPrompt = fetchPhase?.prompt ?? ''
+assert.deepEqual(fetchPhase?.dependsOn, ['select-sources'])
 assert.match(fetchPrompt, /sourceQuality: "unreliable"/)
 assert.match(fetchPrompt, /fetch exactly one source/i)
 assert.match(fetchPrompt, /one-based worker number/)
+assert.match(fetchPrompt, /Use the shared ordered source list from the upstream select-sources output/)
+assert.doesNotMatch(fetchPrompt, /Build one shared deterministic source list/)
 assert.match(fetchPrompt, /ToolSearch at most once with query select:WebFetch/)
 assert.match(fetchPrompt, /Use WebFetch exactly once/)
 assert.match(fetchPrompt, /even when that source is unavailable, blocked, irrelevant, or paywalled/)
@@ -100,13 +118,14 @@ assert.match(fetchPrompt, /exactly one JSON object with no Markdown fence/)
 assert.equal(fetchPhase?.agentPrompts?.length, 15)
 for (const [index, prompt] of fetchPhase?.agentPrompts?.entries() ?? []) {
   assert.match(prompt, new RegExp(`source ${index + 1}`))
-  assert.match(prompt, /shared deterministic source list/)
-  assert.match(prompt, /flatten workers in scoped-angle order/)
-  assert.match(prompt, /preserve each worker's result order/)
-  assert.match(prompt, /normalized exact URL \(preserving scheme and query while ignoring fragments\)/)
-  assert.match(prompt, /Do not independently re-rank the sources/)
+  assert.match(prompt, /Use the shared ordered source list from the upstream select-sources output/)
+  assert.match(prompt, new RegExp(`oneBasedRank ${index + 1}`))
+  assert.match(prompt, /Do not rebuild, deduplicate, or re-rank the source list/)
+  assert.match(prompt, /If that rank is absent/)
+  assert.match(prompt, /do not call WebFetch/)
+  assert.match(prompt, /missingReason: "source list shortfall"/)
   assert.match(prompt, /ToolSearch at most once with query select:WebFetch/)
-  assert.match(prompt, /using WebFetch exactly once/)
+  assert.match(prompt, /in WebFetch exactly once/)
   assert.match(prompt, /even when the source is unavailable, blocked, irrelevant, or paywalled/)
   assert.match(prompt, /Report a failed fetch instead of retrying or substituting another source/)
   assert.match(prompt, /Do not fetch any other source, call any other tool, or delegate/)

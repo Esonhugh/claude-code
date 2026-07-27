@@ -230,7 +230,7 @@ const fullInputSchema = lazySchema(() => {
     mode: permissionModeSchema()
       .optional()
       .describe(
-        'Permission mode for spawned teammate (e.g., "plan" to require plan approval).',
+        'Permission mode for spawned teammate. Omit to inherit the caller mode. A bypassPermissions caller always remains bypassPermissions. Otherwise, use "plan" only when plan approval is required.',
       ),
   })
 
@@ -601,14 +601,17 @@ export const AgentTool = buildTool({
     }
 
     const explicitPermissionMode =
-      spawnMode && requestedPermissionContext.mode === spawnMode
+      appState.toolPermissionContext.mode !== 'bypassPermissions' &&
+      spawnMode &&
+      requestedPermissionContext.mode === spawnMode
         ? spawnMode
         : undefined
     const permissionMode =
-      explicitPermissionMode ??
-      (appState.toolPermissionContext.mode === 'bypassPermissions'
+      appState.toolPermissionContext.mode === 'bypassPermissions'
         ? 'bypassPermissions'
-        : (selectedAgent.permissionMode ?? appState.toolPermissionContext.mode))
+        : (explicitPermissionMode ??
+          selectedAgent.permissionMode ??
+          appState.toolPermissionContext.mode)
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode

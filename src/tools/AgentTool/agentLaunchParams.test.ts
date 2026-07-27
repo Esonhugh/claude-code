@@ -27,8 +27,19 @@ assert.equal(
 
 const agentToolJsonSchema = zodToJsonSchema(inputSchema()) as {
   required?: string[]
+  properties?: {
+    mode?: { description?: string }
+  }
 }
 assert.deepEqual(agentToolJsonSchema.required, ['description', 'prompt'])
+assert.match(
+  agentToolJsonSchema.properties?.mode?.description ?? '',
+  /Omit to inherit the caller mode/,
+)
+assert.match(
+  agentToolJsonSchema.properties?.mode?.description ?? '',
+  /bypassPermissions caller always remains bypassPermissions/,
+)
 
 const params = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',

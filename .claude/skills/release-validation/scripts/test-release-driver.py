@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 
 
 sys.dont_write_bytecode = True
@@ -113,6 +114,42 @@ def deep_research_entries(phase, index, *, error=None, tool_id=None,
             },
         })
     return entries
+
+
+def deep_research_select_sources_entries(count=15):
+    return [{
+        'type': 'assistant',
+        'message': {
+            'role': 'assistant',
+            'content': [{
+                'type': 'text',
+                'text': json.dumps({
+                    'sources': [
+                        {
+                            'oneBasedRank': index,
+                            'url': f'https://example.test/source-{index}',
+                            'title': f'Source {index}',
+                            'originatingSearchWorker': 1,
+                        }
+                        for index in range(1, count + 1)
+                    ],
+                }),
+            }],
+        },
+    }]
+
+
+def write_select_sources_worker(subagents, entries=None, description=None):
+    stem = 'agent-select-sources'
+    (subagents / f'{stem}.meta.json').parent.mkdir(parents=True, exist_ok=True)
+    (subagents / f'{stem}.meta.json').write_text(json.dumps({
+        'agentId': stem,
+        'description': description or 'deep-research: select-sources',
+    }))
+    write_transcript(
+        subagents / f'{stem}.jsonl',
+        deep_research_select_sources_entries() if entries is None else entries,
+    )
 
 
 def assert_driver_behavior(module):
@@ -268,6 +305,28 @@ def assert_driver_behavior(module):
             gate, run_dir, subagents=True
         ) == 'RELEASE_NESTED_CHILD_DONE'
 
+        task_notification = {
+            'type': 'user',
+            'origin': {'kind': 'task-notification'},
+            'message': {
+                'role': 'user',
+                'content': '<task-notification><status>completed</status></task-notification>',
+            },
+        }
+        write_transcript(main_transcript, [])
+        timer = threading.Timer(
+            0.05,
+            lambda: write_transcript(main_transcript, [task_notification]),
+        )
+        timer.start()
+        try:
+            assert module.BinaryGate.wait_for_notification_count(
+                gate, run_dir, 1, timeout=1, interval=0.01
+            ) is True
+        finally:
+            timer.join()
+        assert module.BinaryGate.notification_count(gate, run_dir) == 1
+
     with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
         run_dir = Path(root_string)
         subagents = run_dir / 'config/projects/project/subagents'
@@ -289,6 +348,7 @@ def assert_driver_behavior(module):
                     subagents / f'{stem}.jsonl',
                     deep_research_entries(phase, index),
                 )
+        write_select_sources_worker(subagents)
         for phase, count in (('verify', 3), ('synthesize', 1)):
             for index in range(1, count + 1):
                 stem = f'agent-{phase}-{index}'
@@ -310,6 +370,7 @@ def assert_driver_behavior(module):
                 }])
         evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
         assert evidence['search']['complete'] is True
+        assert evidence['select-sources']['complete'] is True
         assert evidence['fetch']['complete'] is True
         assert evidence['verify']['complete'] is True
         assert evidence['synthesize']['complete'] is True
@@ -383,6 +444,83 @@ def assert_driver_behavior(module):
                 'content': [{'type': 'text', 'text': '{}'}],
             },
         }])
+
+        select_sources_path = subagents / 'agent-select-sources.jsonl'
+        write_select_sources_worker(
+            subagents,
+            deep_research_select_sources_entries(14),
+        )
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+        assert evidence['select-sources']['sources_complete'] is False
+
+        entries = deep_research_select_sources_entries()
+        output = json.loads(entries[0]['message']['content'][0]['text'])
+        output['sources'][1]['url'] = output['sources'][0]['url']
+        entries[0]['message']['content'][0]['text'] = json.dumps(output)
+        write_select_sources_worker(subagents, entries)
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+
+        entries = deep_research_select_sources_entries()
+        entries[0]['message']['content'][0]['text'] = '```json\n{}\n```'
+        write_select_sources_worker(subagents, entries)
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+
+        entries = deep_research_select_sources_entries()
+        entries.append(entries[0].copy())
+        write_select_sources_worker(subagents, entries)
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+
+        entries = deep_research_select_sources_entries()
+        output = json.loads(entries[0]['message']['content'][0]['text'])
+        output['sources'][1]['oneBasedRank'] = 3
+        entries[0]['message']['content'][0]['text'] = json.dumps(output)
+        write_select_sources_worker(subagents, entries)
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+
+        entries = deep_research_select_sources_entries()
+        entries[0]['message']['content'].append({
+            'type': 'tool_use',
+            'id': 'select-sources-bash',
+            'name': 'Bash',
+            'input': {'command': 'pwd'},
+        })
+        write_select_sources_worker(subagents, entries)
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+        assert evidence['select-sources']['violating_logical_indexes'] == ['1']
+
+        write_select_sources_worker(
+            subagents,
+            description='deep-research: select-sources retry 1/1',
+        )
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is False
+
+        write_select_sources_worker(subagents)
+        write_transcript(
+            subagents / 'agent-fetch-2.jsonl',
+            deep_research_entries(
+                'fetch', 2,
+                fetch_url='https://example.test/source-1',
+                selected_url='https://example.test/source-1',
+            ),
+        )
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['fetch']['complete'] is False
+        assert evidence['fetch']['selected_sources_match'] is False
+
+        write_transcript(
+            subagents / 'agent-fetch-2.jsonl',
+            deep_research_entries('fetch', 2),
+        )
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is True
+        assert evidence['fetch']['selected_sources_match'] is True
 
         duplicate_path = subagents / 'agent-search-1.jsonl'
         with duplicate_path.open('a') as stream:
@@ -522,6 +660,7 @@ def assert_driver_behavior(module):
                     )
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         retry_meta = subagents / 'agent-fetch-1.meta.json'
         retry_meta.write_text(json.dumps({
             'agentId': 'agent-fetch-1',
@@ -532,6 +671,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['retry_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         duplicate_use_path = subagents / 'agent-fetch-1.jsonl'
         entries = deep_research_entries('fetch', 1)
         entries[1]['message']['content'].append(
@@ -545,6 +685,7 @@ def assert_driver_behavior(module):
         ] == 2
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         duplicate_result_path = subagents / 'agent-fetch-1.jsonl'
         entries = deep_research_entries('fetch', 1)
         entries[2]['message']['content'].append({
@@ -561,6 +702,7 @@ def assert_driver_behavior(module):
         ] == 1
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -574,6 +716,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -587,6 +730,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['non_external_failure_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -600,6 +744,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -613,6 +758,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -626,6 +772,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -639,6 +786,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-2.jsonl',
             deep_research_entries(
@@ -652,6 +800,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['duplicate_source_logical_indexes'] == ['1', '2']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         output = json.loads(entries[-1]['message']['content'][0]['text'])
         output['fetchedSource'] = output.pop('selectedSource')
@@ -662,6 +811,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         output = json.loads(entries[-1]['message']['content'][0]['text'])
         output['selectedSource']['rank'] = output['selectedSource'].pop('oneBasedRank')
@@ -672,6 +822,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         entries.append(entries[-1].copy())
         write_transcript(subagents / 'agent-fetch-1.jsonl', entries)
@@ -680,6 +831,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['source_mismatch_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         entries[1]['message']['content'].append({
             'type': 'tool_use',
@@ -693,6 +845,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['unexpected_tool_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         entries[1]['message']['content'].append({
             'type': 'tool_use',
@@ -711,6 +864,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['unexpected_tool_logical_indexes'] == []
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         entries[1]['message']['content'].append({
             'type': 'tool_use',
@@ -729,6 +883,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['unexpected_tool_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         entries = deep_research_entries('fetch', 1)
         for suffix in ('a', 'b'):
             entries[1]['message']['content'].append({
@@ -748,6 +903,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['unexpected_tool_logical_indexes'] == ['1']
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -761,6 +917,7 @@ def assert_driver_behavior(module):
         assert evidence['fetch']['non_external_failure_logical_indexes'] == []
 
         write_complete_workers()
+        write_select_sources_worker(subagents)
         write_transcript(
             subagents / 'agent-fetch-1.jsonl',
             deep_research_entries(
@@ -796,11 +953,80 @@ def assert_driver_behavior(module):
         assert cleanup['signal'] == 'SIGTERM'
         assert cleanup['auth_homes']['errors'] == []
 
+    driver = DRIVER_PATH.read_text()
+    assert "page_ok = detail_ok = agent_ok = None" in driver
+    assert "ui_skipped_reason = 'workflow did not complete'" in driver
+    assert "ui_skipped_reason = 'readiness failed'" in driver
+    assert "'skipped_reason': ui_skipped_reason" in driver
+
     launcher = LAUNCHER_PATH.read_text()
     assert 'exec env -i' in launcher
     assert 'CLAUDE_CODE_USE_OPENAI=1' in launcher
+    for name in (
+        'HTTP_PROXY',
+        'HTTPS_PROXY',
+        'ALL_PROXY',
+        'NO_PROXY',
+        'http_proxy',
+        'https_proxy',
+        'all_proxy',
+        'no_proxy',
+    ):
+        assert f'{name}="${{{name}:-}}"' in launcher
     for name in module.AUTH_ENV_VARS:
         assert f'{name}=' not in launcher
+
+    with tempfile.TemporaryDirectory(prefix='release-launcher-test-') as root_string:
+        root = Path(root_string)
+        repo = root / 'repo'
+        evidence = root / 'evidence'
+        config = root / 'config'
+        home = root / 'home'
+        for path in (repo, evidence, config, home):
+            path.mkdir()
+        binary = repo / 'built-claude'
+        binary.write_text('#!/bin/sh\n/usr/bin/env > "$HOME/child.env"\n')
+        binary.chmod(0o755)
+        proxy_env = {
+            name: f'http://{name.lower()}.example.test:7890'
+            for name in (
+                'HTTP_PROXY',
+                'HTTPS_PROXY',
+                'ALL_PROXY',
+                'NO_PROXY',
+                'http_proxy',
+                'https_proxy',
+                'all_proxy',
+                'no_proxy',
+            )
+        }
+        launch_env = {
+            'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+            'CC_VALIDATION_REPO_ROOT': str(repo),
+            'CC_VALIDATION_EVIDENCE_DIR': str(evidence),
+            'CC_VALIDATION_CONFIG_DIR': str(config),
+            'CC_VALIDATION_HOME': str(home),
+            'RELEASE_DRIVER_UNRELATED': 'must-not-pass',
+            **proxy_env,
+            **{name: 'must-not-pass' for name in module.AUTH_ENV_VARS},
+        }
+        subprocess.run(
+            [str(LAUNCHER_PATH)],
+            check=True,
+            env=launch_env,
+            capture_output=True,
+            text=True,
+        )
+        child_env = dict(
+            line.split('=', 1)
+            for line in (home / 'child.env').read_text().splitlines()
+            if '=' in line
+        )
+        assert {name: child_env.get(name) for name in proxy_env} == proxy_env
+        assert child_env['CLAUDE_CODE_USE_OPENAI'] == '1'
+        assert 'RELEASE_DRIVER_UNRELATED' not in child_env
+        for name in module.AUTH_ENV_VARS:
+            assert name not in child_env
 
 
 def main():

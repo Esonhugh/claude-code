@@ -776,13 +776,7 @@ export async function runWorkflowScript({
       logicalAgentId, attempt, attemptId, index: phaseAgentIndex,
     })
 
-    // Stall timer
     let lastProgress = Date.now()
-    const stallTimer = setInterval(() => {
-      if (Date.now() - lastProgress > stallMs) {
-        agentAbortController.abort('stalled')
-      }
-    }, Math.min(stallMs / 2, 30_000))
 
     const description = `${plan.name}: ${agentId}`
     const schemaPrompt = opts?.schema ? buildSchemaPrompt(opts.schema) : ''
@@ -805,6 +799,28 @@ export async function runWorkflowScript({
       ...(opts?.isolation === 'worktree' ? { isolation: 'worktree' } : {}),
     }
 
+    const stallTimer = setInterval(() => {
+      if (Date.now() - lastProgress > stallMs) {
+        agentAbortController.abort('stalled')
+      }
+    }, Math.min(stallMs / 2, 30_000))
+    let rejectOnAbort: ((reason?: unknown) => void) | undefined
+    const aborted = new Promise<never>((_, reject) => {
+      rejectOnAbort = reject
+    })
+    const onAbort = () => {
+      rejectOnAbort?.(
+        new Error(
+          workflowErrorMessage(
+            agentAbortController.signal.reason,
+            'Workflow agent aborted',
+          ),
+        ),
+      )
+    }
+    agentAbortController.signal.addEventListener('abort', onAbort, { once: true })
+    if (agentAbortController.signal.aborted) onAbort()
+
     try {
       const progressPhase = childWorkflowProgressName ?? phase
       const progressTracker = createProgressTracker()
@@ -822,7 +838,7 @@ export async function runWorkflowScript({
         workflowProgress: currentWorkflowProgress(),
       })
 
-      const result = await agentTool.call(
+      const agentCall = agentTool.call(
         input as never,
         {
           ...agentContext,
@@ -887,7 +903,7 @@ export async function runWorkflowScript({
           }
         },
       )
-      clearInterval(stallTimer)
+      const result = await Promise.race([agentCall, aborted])
 
       const output = result.data as AgentToolOutput
       if (agentAbortController.signal.reason === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON) {
@@ -939,7 +955,6 @@ export async function runWorkflowScript({
 
       return agentResult
     } catch (error) {
-      clearInterval(stallTimer)
       if (agentAbortController.signal.reason === 'stalled') {
         throw new Error('stalled')
       }
@@ -950,6 +965,10 @@ export async function runWorkflowScript({
         throw new Error(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
       }
       throw error
+    } finally {
+      clearInterval(stallTimer)
+      agentAbortController.signal.removeEventListener('abort', onAbort)
+      rejectOnAbort = undefined
     }
   }
 

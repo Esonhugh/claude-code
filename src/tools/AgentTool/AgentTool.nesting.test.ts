@@ -332,9 +332,8 @@ for (const inheritedMode of ['acceptEdits', 'bypassPermissions'] as const) {
   assert.equal(controlledPermissionMode, inheritedMode)
 }
 
-controlledPermissionMode = undefined
-const downgradedBypassContext = createContext(0) as never as TestContext
-downgradedBypassContext.setAppState(
+const bypassParentContext = createContext(0) as never as TestContext
+bypassParentContext.setAppState(
   (prev: ReturnType<TestContext['getAppState']>) => ({
     ...prev,
     toolPermissionContext: {
@@ -343,18 +342,26 @@ downgradedBypassContext.setAppState(
     },
   }),
 )
-await AgentTool.call(
-  {
-    description: 'downgraded bypass worker',
-    prompt: 'inspect only',
-    subagent_type: 'general-purpose',
-    mode: 'default',
-  },
-  downgradedBypassContext as never,
-  async () => ({ behavior: 'allow' }),
-  { message: { id: 'msg_downgraded_bypass_worker' } } as never,
-)
-assert.equal(controlledPermissionMode, 'default')
+for (const generatedMode of [
+  'default',
+  'acceptEdits',
+  'dontAsk',
+  'plan',
+] as const) {
+  controlledPermissionMode = undefined
+  await AgentTool.call(
+    {
+      description: `bypass parent with generated ${generatedMode} worker`,
+      prompt: 'inspect only',
+      subagent_type: 'general-purpose',
+      mode: generatedMode,
+    },
+    bypassParentContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: `msg_bypass_parent_generated_${generatedMode}_worker` } } as never,
+  )
+  assert.equal(controlledPermissionMode, 'bypassPermissions')
+}
 
 controlledPermissionMode = undefined
 const blockedEscalationContext = createContext(0) as never as TestContext
@@ -444,12 +451,42 @@ explicitDefaultDefinitionContext.setAppState(
 controlledPermissionMode = undefined
 await AgentTool.call(
   {
-    description: 'explicit default overrides definition worker',
+    description: 'generated default cannot override bypass parent worker',
     prompt: 'inspect only',
     subagent_type: 'bypass-definition-agent',
     mode: 'default',
   },
   explicitDefaultDefinitionContext as never,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_generated_default_cannot_override_bypass_parent_worker' } } as never,
+)
+assert.equal(controlledPermissionMode, 'bypassPermissions')
+
+const explicitDefaultNonBypassContext =
+  createContext(0) as never as TestContext & {
+    options: typeof bypassDefinitionContext.options
+  }
+explicitDefaultNonBypassContext.options.agentDefinitions =
+  bypassDefinitionContext.options.agentDefinitions
+explicitDefaultNonBypassContext.setAppState(
+  (prev: ReturnType<TestContext['getAppState']>) => ({
+    ...prev,
+    toolPermissionContext: {
+      ...prev.toolPermissionContext,
+      mode: 'acceptEdits',
+    },
+    agentDefinitions: explicitDefaultNonBypassContext.options.agentDefinitions,
+  }),
+)
+controlledPermissionMode = undefined
+await AgentTool.call(
+  {
+    description: 'explicit default overrides definition worker',
+    prompt: 'inspect only',
+    subagent_type: 'bypass-definition-agent',
+    mode: 'default',
+  },
+  explicitDefaultNonBypassContext as never,
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_explicit_default_overrides_definition_worker' } } as never,
 )

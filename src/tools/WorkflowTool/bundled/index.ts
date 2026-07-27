@@ -403,7 +403,8 @@ const BUNDLED_WORKFLOWS: WorkflowSpec[] = [
       phases: [
         { title: 'Scope', detail: 'Decompose question into search angles' },
         { title: 'Search', detail: 'Fan-out web searches for scoped angles' },
-        { title: 'Fetch', detail: 'Deduplicate URLs, fetch sources, extract claims' },
+        { title: 'Select sources', detail: 'Build one shared ordered source list' },
+        { title: 'Fetch', detail: 'Fetch selected sources and extract claims' },
         { title: 'Verify', detail: 'Adversarial 3-vote claim verification' },
         { title: 'Synthesize', detail: 'Produce cited report with stats and caveats' },
       ],
@@ -425,6 +426,7 @@ const REPORT_SCHEMA = {
 workflow('deep-research')
 phase('Scope')
 phase('Search')
+phase('Select sources')
 phase('Fetch')
 phase('Verify')
 phase('Synthesize')`,
@@ -454,14 +456,22 @@ phase('Synthesize')`,
         concurrency: 5,
       },
       {
-        id: 'fetch',
-        description: 'URL-dedup, fetch top 15 sources, extract falsifiable claims.',
+        id: 'select-sources',
+        description: 'Deduplicate search results into one shared ordered source list.',
         prompt:
-          'Build one shared deterministic source list from the upstream search results, then fetch exactly one source at your assigned one-based worker number in the top 15. If WebFetch is deferred, you may first call ToolSearch at most once with query select:WebFetch. Use WebFetch exactly once even when that source is unavailable, blocked, irrelevant, or paywalled; report the failure instead of retrying or substituting another source. Do not fetch any other source, call any other tool, or delegate. Return selectedSource with oneBasedRank and URL, sourceQuality as primary, secondary, blog, forum, or unreliable, and 2-5 falsifiable claims with direct quotes. For an unsuccessful or unusable fetch, return claims: [] and sourceQuality: "unreliable". Return exactly one JSON object with no Markdown fence or surrounding prose.',
-        agentPrompts: Array.from({ length: 15 }, (_, index) =>
-          `Build one shared deterministic source list from all upstream search results: flatten workers in scoped-angle order, preserve each worker's result order, keep only the first occurrence of each normalized exact URL (preserving scheme and query while ignoring fragments), then keep the first 15. Do not independently re-rank the sources. If WebFetch is deferred, you may first call ToolSearch at most once with query select:WebFetch. Fetch exactly one source: source ${index + 1} in that one-based order, using WebFetch exactly once even when the source is unavailable, blocked, irrelevant, or paywalled. Report a failed fetch instead of retrying or substituting another source. Do not fetch any other source, call any other tool, or delegate. Return selectedSource: { oneBasedRank: ${index + 1}, url: <the exact WebFetch URL> }, sourceQuality as primary, secondary, blog, forum, or unreliable, and 2-5 falsifiable claims that bear on the research question, each with a direct quote and importance central/supporting/tangential. For an unsuccessful or unusable fetch, return claims: [] and sourceQuality: "unreliable". Return exactly one JSON object with no Markdown fence or surrounding prose.`,
-        ),
+          'Build one shared deterministic source list from all upstream search results. Flatten workers in scoped-angle order, preserve each worker result order, and keep only the first occurrence of each normalized exact URL, preserving scheme and query while ignoring fragments. Return the first 15 unique source objects in order, each with oneBasedRank, url, title, and originating search worker. If fewer than 15 unique URLs exist, return every unique source, include shortfall with the missing count, and do not invent sources. Do not independently re-rank sources. Do not call tools or delegate. Return exactly one JSON object with a sources array and no Markdown fence or surrounding prose.',
         dependsOn: ['search'],
+        permissionMode: 'dontAsk',
+      },
+      {
+        id: 'fetch',
+        description: 'Fetch the 15 selected sources and extract falsifiable claims.',
+        prompt:
+          'Use the shared ordered source list from the upstream select-sources output, then fetch exactly one source at your assigned one-based worker number. Do not rebuild, deduplicate, or re-rank the source list. If WebFetch is deferred, you may first call ToolSearch at most once with query select:WebFetch. Use WebFetch exactly once even when that source is unavailable, blocked, irrelevant, or paywalled; report the failure instead of retrying or substituting another source. Do not fetch any other source, call any other tool, or delegate. Return selectedSource with oneBasedRank and URL, sourceQuality as primary, secondary, blog, forum, or unreliable, and 2-5 falsifiable claims with direct quotes. For an unsuccessful or unusable fetch, return claims: [] and sourceQuality: "unreliable". Return exactly one JSON object with no Markdown fence or surrounding prose.',
+        agentPrompts: Array.from({ length: 15 }, (_, index) =>
+          `Use the shared ordered source list from the upstream select-sources output. Select only the source object with oneBasedRank ${index + 1}. Do not rebuild, deduplicate, or re-rank the source list. If that rank is absent because the upstream list has fewer unique sources, do not call WebFetch; return selectedSource: { oneBasedRank: ${index + 1}, url: null }, sourceQuality: "unreliable", claims: [], and missingReason: "source list shortfall". Otherwise, if WebFetch is deferred, you may first call ToolSearch at most once with query select:WebFetch. Fetch exactly one source: source ${index + 1}, using that source object's exact URL in WebFetch exactly once even when the source is unavailable, blocked, irrelevant, or paywalled. Report a failed fetch instead of retrying or substituting another source. Do not fetch any other source, call any other tool, or delegate. Return selectedSource: { oneBasedRank: ${index + 1}, url: <the exact WebFetch URL> }, sourceQuality as primary, secondary, blog, forum, or unreliable, and 2-5 falsifiable claims that bear on the research question, each with a direct quote and importance central/supporting/tangential. For an unsuccessful or unusable fetch, return claims: [] and sourceQuality: "unreliable". Return exactly one JSON object with no Markdown fence or surrounding prose.`,
+        ),
+        dependsOn: ['select-sources'],
         fanout: 15,
         concurrency: 6,
         review: 'cross-check',

@@ -188,6 +188,21 @@ def assistant_selected_source(entries):
     }
 
 
+def assistant_selected_sources(entries):
+    output = assistant_structured_output(entries)
+    if output is None or not isinstance(output.get('sources'), list):
+        return None
+    return [
+        {
+            'rank': source.get('oneBasedRank'),
+            'url': normalize_source_url(source.get('url')),
+        }
+        if isinstance(source, dict)
+        else {'rank': None, 'url': None}
+        for source in output['sources']
+    ]
+
+
 def tool_occurrence_count(evidence):
     return sum(evidence['tool_use_counts'].values())
 
@@ -823,6 +838,15 @@ class BinaryGate:
             and entry.get('origin', {}).get('kind') == 'task-notification'
         )
 
+    def wait_for_notification_count(
+        self, run_dir, expected, timeout=10, interval=0.1
+    ):
+        return self.wait_until(
+            lambda: self.notification_count(run_dir) == expected,
+            timeout,
+            interval,
+        )
+
     def tool_evidence(self, run_dir, names, paths=None, allowed_names=None):
         ids = {name: set() for name in names}
         unexpected_tool_names = set()
@@ -931,7 +955,11 @@ class BinaryGate:
 
     def deep_research_phase_evidence(self, run_dir):
         attempts = {'search': {}, 'fetch': {}}
-        passive_workers = {'verify': {}, 'synthesize': {}}
+        passive_workers = {
+            'select-sources': {},
+            'verify': {},
+            'synthesize': {},
+        }
         for meta_path in (run_dir / 'config').glob(
             'projects/**/subagents/*.meta.json'
         ):
@@ -954,15 +982,20 @@ class BinaryGate:
             )
             if not match:
                 passive_match = re.fullmatch(
-                    r'(?:deep-research: (verify)(?: (\d+)/(\d+))?'
+                    r'(?:deep-research: (select-sources)'
+                    r'|deep-research: (verify)(?: (\d+)/(\d+))?'
                     r'|deep-research: (synthesize))'
                     r'(?: retry \d+(?:/\d+)?)?',
                     description,
                 )
                 if not passive_match:
                     continue
-                phase = passive_match.group(1) or passive_match.group(4)
-                index = passive_match.group(2) or '1'
+                phase = (
+                    passive_match.group(1)
+                    or passive_match.group(2)
+                    or passive_match.group(5)
+                )
+                index = passive_match.group(3) or '1'
                 all_tools = self.tool_evidence(
                     run_dir,
                     set(),
@@ -971,10 +1004,12 @@ class BinaryGate:
                 )
                 passive_workers[phase].setdefault(index, []).append({
                     'agent_id': metadata.get('agentId') or meta_path.name[6:-10],
-                    'expected_total': int(passive_match.group(3) or 1),
+                    'expected_total': int(passive_match.group(4) or 1),
                     'retry': ' retry ' in description,
                     'transcript': str(transcript_path),
                     'tool_names': all_tools['unexpected_tool_names'],
+                    'structured_output': assistant_structured_output(entries),
+                    'selected_sources': assistant_selected_sources(entries),
                 })
                 continue
             phase, index, total = match.groups()
@@ -1220,7 +1255,7 @@ class BinaryGate:
                 ),
                 'attempts': attempts[phase],
             }
-        passive_required = {'verify': 3, 'synthesize': 1}
+        passive_required = {'select-sources': 1, 'verify': 3, 'synthesize': 1}
         for phase, count in passive_required.items():
             expected_indexes = {str(index) for index in range(1, count + 1)}
             worker_attempts = passive_workers[phase]
@@ -1232,10 +1267,17 @@ class BinaryGate:
                     attempt['retry']
                     or attempt['expected_total'] != count
                     or attempt['tool_names']
+                    or (
+                        phase == 'select-sources'
+                        and (
+                            attempt['structured_output'] is None
+                            or attempt['selected_sources'] is None
+                        )
+                    )
                     for attempt in phase_attempts
                 )
             )
-            result[phase] = {
+            phase_result = {
                 'expected_logical_workers': count,
                 'observed_logical_indexes': sorted(worker_attempts),
                 'violating_logical_indexes': violating_indexes,
@@ -1245,6 +1287,51 @@ class BinaryGate:
                 ),
                 'attempts': worker_attempts,
             }
+            if phase == 'select-sources':
+                selected_sources = (
+                    worker_attempts.get('1', [{}])[0].get('selected_sources')
+                    if len(worker_attempts.get('1', [])) == 1
+                    else None
+                )
+                expected_ranks = list(range(1, 16))
+                selected_urls = (
+                    [source['url'] for source in selected_sources]
+                    if selected_sources is not None
+                    else []
+                )
+                sources_complete = (
+                    selected_sources is not None
+                    and len(selected_sources) == 15
+                    and [source['rank'] for source in selected_sources]
+                    == expected_ranks
+                    and all(selected_urls)
+                    and len(set(selected_urls)) == 15
+                )
+                phase_result.update({
+                    'selected_sources': selected_sources,
+                    'sources_complete': sources_complete,
+                    'complete': phase_result['complete'] and sources_complete,
+                })
+            result[phase] = phase_result
+        selected_sources = result['select-sources'].get('selected_sources')
+        selected_source_by_index = {
+            str(source['rank']): source['url']
+            for source in selected_sources or []
+        }
+        fetch_sources_match = (
+            result['select-sources']['complete']
+            and all(
+                len(phase_attempts) == 1
+                and phase_attempts[0]['selected_source'] is not None
+                and phase_attempts[0]['selected_source']['url']
+                == selected_source_by_index.get(index)
+                for index, phase_attempts in attempts['fetch'].items()
+            )
+        )
+        result['fetch']['selected_sources_match'] = fetch_sources_match
+        result['fetch']['complete'] = (
+            result['fetch']['complete'] and fetch_sources_match
+        )
         return result
 
     def workflow_status(self, run_dir, task_id):
@@ -1322,6 +1409,9 @@ class BinaryGate:
             ),
             240,
         )
+        notification_ready = terminal and self.wait_for_notification_count(
+            run_dir, 1
+        )
         final = self.capture(target, run_dir / '06-final-pane.txt')
         log = self.debug(run_dir)
         markers = self.write_markers(run_dir, log)
@@ -1330,6 +1420,7 @@ class BinaryGate:
         cleanup = self.close(run_dir, session, target)
         passed = (
             terminal
+            and notification_ready
             and len(ids) == 1
             and notifications == 1
             and markers['[AgentLifecycle] foreground_registered'] == 1
@@ -1341,6 +1432,7 @@ class BinaryGate:
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'agent_ids': ids,
+            'notification_ready': notification_ready,
             'notification_count': notifications,
             'marker_counts': markers,
             'parent_prompt_restored': 'RELEASE_FGBG_PARENT_RESTORED' in strip_ansi(final),
@@ -1433,8 +1525,11 @@ return { results }
             )
             status = self.workflow_status(run_dir, task_id)
             terminal = self.capture(target, run_dir / '04-terminal-pane.txt')
-            page_ok = detail_ok = agent_ok = False
+            page_ok = detail_ok = agent_ok = None
+            ui_skipped_reason = 'workflow did not complete'
             if completed and status == 'completed':
+                page_ok = detail_ok = agent_ok = False
+                ui_skipped_reason = None
                 self.send(target, run_dir, '/workflows', 'input-workflows-page.txt')
                 page_ok = self.wait_until(
                     lambda: (
@@ -1465,7 +1560,8 @@ return { results }
             final = self.capture(target, run_dir / '08-final-pane.txt')
         else:
             task_id = run_id = status = None
-            page_ok = detail_ok = agent_ok = False
+            page_ok = detail_ok = agent_ok = None
+            ui_skipped_reason = 'readiness failed'
             terminal = final = ''
         log = self.debug(run_dir)
         markers = self.write_markers(run_dir, log)
@@ -1486,7 +1582,12 @@ return { results }
             'run_id': run_id,
             'agent_ids': ids,
             'notification_count': notifications,
-            'workflow_page': {'page': page_ok, 'detail': detail_ok, 'agent_terminal': agent_ok},
+            'workflow_page': {
+                'page': page_ok,
+                'detail': detail_ok,
+                'agent_terminal': agent_ok,
+                'skipped_reason': ui_skipped_reason,
+            },
             'parent_prompt_restored': '❯' in strip_ansi(final or terminal),
             'marker_counts': markers,
             'cleanup': cleanup,
@@ -1564,6 +1665,7 @@ return { results }
             kind != 'deep-research'
             or (
                 phase_evidence['search']['complete']
+                and phase_evidence['select-sources']['complete']
                 and phase_evidence['fetch']['complete']
                 and phase_evidence['verify']['complete']
                 and phase_evidence['synthesize']['complete']

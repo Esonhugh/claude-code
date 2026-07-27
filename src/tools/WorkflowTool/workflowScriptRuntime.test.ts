@@ -471,12 +471,12 @@ assert.deepEqual(
   [
     {
       prompt: 'queued-one',
-      mode: 'plan',
+      mode: undefined,
       inheritedMode: 'plan',
     },
     {
       prompt: 'queued-two',
-      mode: 'plan',
+      mode: undefined,
       inheritedMode: 'plan',
     },
   ],
@@ -1540,6 +1540,103 @@ assert.deepEqual(failedTask?.agentAttempts.map(attempt => ({
   { agentId: 'failed-agent-a', attempt: 0, status: 'failed' },
   { agentId: 'failed-agent-b', attempt: 0, status: 'failed' },
 ])
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const stalledParallelScript = `export const meta = {
+  name: "runtime-stalled-parallel-workflow",
+  description: "Workflow settling after a parallel agent ignores abort.",
+  phases: [{ title: "Parallel", detail: "One completed and one stalled agent" }],
+}
+phase("Parallel")
+return await parallel([
+  () => agent("complete-agent", { label: "complete-agent", stallMs: 20 }),
+  () => agent("stalled-agent", { label: "stalled-agent", stallMs: 20 }),
+])
+`
+let stalledParallelState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+let releaseStalledAgent: (() => void) | undefined
+const stalledParallelAgentTool = {
+  name: 'Agent',
+  async call(input: { prompt?: string }) {
+    if (input.prompt === 'stalled-agent') {
+      return await new Promise(resolve => {
+        releaseStalledAgent = () => resolve({
+          data: {
+            status: 'completed',
+            content: [{ type: 'text', text: 'released-after-timeout' }],
+          },
+        })
+      })
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'complete-ok' }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const stalledParallelRun = runWorkflowScript({
+  script: stalledParallelScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-stalled-parallel-workflow',
+    description: 'Workflow settling after a parallel agent ignores abort.',
+    phases: [{
+      ...failedPlan.phases[0]!,
+      id: 'Parallel',
+      description: 'One completed and one stalled agent',
+    }],
+    runScriptSnapshot: stalledParallelScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => stalledParallelState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      stalledParallelState = updater(stalledParallelState)
+    },
+    options: { ...context.options, tools: [stalledParallelAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_stalled_parallel',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_stalled_parallel' } } as never,
+  workflowRunId: `wf_script_stalled_parallel_${process.pid}`,
+  scriptPath: '/tmp/runtime-stalled-parallel-workflow.js',
+})
+const stalledParallelCompleted = stalledParallelRun.then(() => true)
+const stalledParallelSettledAfterAbort = await Promise.race([
+  stalledParallelCompleted,
+  new Promise<false>(resolve => setTimeout(() => resolve(false), 250)),
+])
+if (!stalledParallelSettledAfterAbort) releaseStalledAgent?.()
+await stalledParallelCompleted
+assert.equal(stalledParallelSettledAfterAbort, true)
+const stalledParallelTask = Object.values(stalledParallelState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(stalledParallelTask?.status, 'completed')
+assert.deepEqual(
+  stalledParallelTask?.results
+    .map(result => ({ agentId: result.agentId, status: result.status }))
+    .sort((left, right) => left.agentId.localeCompare(right.agentId)),
+  [
+    { agentId: 'complete-agent', status: 'completed' },
+    { agentId: 'stalled-agent', status: 'failed' },
+  ],
+)
+const stalledParallelNotification = dequeue(
+  command =>
+    command.mode === 'task-notification' &&
+    String(command.value).includes(stalledParallelTask?.id ?? ''),
+)
+assert.ok(stalledParallelNotification)
+assert.match(String(stalledParallelNotification.value), /<status>completed<\/status>/)
 
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')
