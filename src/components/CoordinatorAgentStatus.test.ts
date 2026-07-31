@@ -43,6 +43,18 @@ const workflowChildAgentTask: LocalAgentTaskState = {
   },
 } as unknown as LocalAgentTaskState
 
+const workflowGrandchildAgentTask: LocalAgentTaskState = {
+  ...workflowChildAgentTask,
+  id: 'workflow-grandchild-agent',
+  agentId: 'workflow-grandchild-agent',
+  description: 'Workflow grandchild agent',
+  prompt: 'Run workflow grandchild agent',
+  startTime: 2_600,
+  toolUseId: undefined,
+  parentAgentId: 'workflow-child-agent',
+  spawnDepth: 2,
+} as unknown as LocalAgentTaskState
+
 const nestedChildAgentTask: LocalAgentTaskState = {
   id: 'nested-child-agent',
   type: 'local_agent',
@@ -59,6 +71,36 @@ const nestedChildAgentTask: LocalAgentTaskState = {
     tokenCount: 100,
     toolUseCount: 1,
   },
+} as unknown as LocalAgentTaskState
+
+const nestedSiblingAgentTask: LocalAgentTaskState = {
+  ...nestedChildAgentTask,
+  id: 'nested-sibling-agent',
+  agentId: 'nested-sibling-agent',
+  description: 'Nested sibling agent',
+  prompt: 'Run nested sibling agent',
+  startTime: 1_600,
+} as unknown as LocalAgentTaskState
+
+const nestedGrandchildAgentTask: LocalAgentTaskState = {
+  ...nestedChildAgentTask,
+  id: 'nested-grandchild-agent',
+  agentId: 'nested-grandchild-agent',
+  description: 'Nested grandchild agent',
+  prompt: 'Run nested grandchild agent',
+  startTime: 1_550,
+  parentAgentId: 'nested-child-agent',
+  spawnDepth: 3,
+} as unknown as LocalAgentTaskState
+
+const orphanAgentTask: LocalAgentTaskState = {
+  ...nestedChildAgentTask,
+  id: 'orphan-agent',
+  agentId: 'orphan-agent',
+  description: 'Orphan agent',
+  prompt: 'Run orphan agent',
+  startTime: 1_700,
+  parentAgentId: 'missing-parent',
 } as unknown as LocalAgentTaskState
 
 const topLevelDepthOneAgentTask: LocalAgentTaskState = {
@@ -133,8 +175,12 @@ const workflowTask: LocalWorkflowTaskState = {
 const tasks = {
   [agentTask.id]: agentTask,
   [nestedChildAgentTask.id]: nestedChildAgentTask,
+  [nestedSiblingAgentTask.id]: nestedSiblingAgentTask,
+  [nestedGrandchildAgentTask.id]: nestedGrandchildAgentTask,
+  [orphanAgentTask.id]: orphanAgentTask,
   [topLevelDepthOneAgentTask.id]: topLevelDepthOneAgentTask,
   [workflowChildAgentTask.id]: workflowChildAgentTask,
+  [workflowGrandchildAgentTask.id]: workflowGrandchildAgentTask,
   [workflowTask.id]: workflowTask,
 } as unknown as AppState['tasks']
 
@@ -152,7 +198,6 @@ const rows = getCoordinatorSessionRows({
 })
 
 assert.equal(rows.length, 4)
-assert.equal(rows.some(row => row.id === 'nested-child-agent'), false)
 assert.deepEqual(rows[0], {
   id: 'main',
   taskId: undefined,
@@ -166,7 +211,7 @@ assert.deepEqual(rows[0], {
 })
 assert.equal(rows[1]?.id, 'agent-1')
 assert.equal(rows[1]?.kind, 'agent')
-assert.equal(rows[1]?.label, 'agent researcher')
+assert.equal(rows[1]?.label, 'agent (+3) researcher')
 assert.equal(rows[1]?.meta, '1.5k tok · 2 tools')
 assert.equal(rows[1]?.statusText, 'running · Read(src/index.ts)')
 assert.equal(rows[2]?.id, 'top-level-depth-one-agent')
@@ -222,6 +267,7 @@ assert.equal(
   'workflow-1',
 )
 assert.equal(getCoordinatorTaskAtIndex(tasks, 0)?.id, undefined)
+assert.equal(getCoordinatorTaskAtIndex(tasks, 1)?.id, 'agent-1')
 assert.equal(getCoordinatorTaskAtIndex(tasks, 2)?.id, 'top-level-depth-one-agent')
 assert.equal(getCoordinatorTaskAtIndex(tasks, 3)?.id, 'workflow-1')
 

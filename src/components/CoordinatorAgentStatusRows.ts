@@ -1,5 +1,9 @@
 import type { AppState } from '../state/AppState.js'
-import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  isLocalAgentTask,
+  isPanelAgentTask,
+  type LocalAgentTaskState,
+} from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import {
   workflowTerminalAgentCount,
   type LocalWorkflowTaskState,
@@ -29,17 +33,6 @@ type CoordinatorSessionRowsInput = {
   omitMainRow?: boolean
 }
 
-function isPanelAgentTask(t: unknown): t is LocalAgentTaskState {
-  return (
-    typeof t === 'object' &&
-    t !== null &&
-    'type' in t &&
-    t.type === 'local_agent' &&
-    !('agentType' in t && t.agentType === 'main-session') &&
-    !('parentAgentId' in t && t.parentAgentId !== undefined)
-  )
-}
-
 function isPanelWorkflowTask(t: unknown): t is LocalWorkflowTaskState {
   return (
     typeof t === 'object' &&
@@ -65,16 +58,45 @@ function isWorkflowChildAgent(
   return Boolean(task.toolUseId && workflowToolUses.has(task.toolUseId))
 }
 
+function visibleAgentDescendants(
+  tasks: AppState['tasks'],
+): LocalAgentTaskState[] {
+  const workflowToolUses = workflowToolUseIds(tasks)
+  const agents = Object.values(tasks).filter(
+    (task): task is LocalAgentTaskState =>
+      isLocalAgentTask(task) &&
+      task.agentType !== 'main-session' &&
+      task.evictAfter !== 0 &&
+      !isWorkflowChildAgent(task, workflowToolUses),
+  )
+  const workflowChildIds = new Set(
+    Object.values(tasks)
+      .filter(isLocalAgentTask)
+      .filter(task => isWorkflowChildAgent(task, workflowToolUses))
+      .map(task => task.id),
+  )
+  const agentById = new Map(agents.map(task => [task.id, task]))
+
+  return agents.filter(task => {
+    const visited = new Set<string>()
+    let parentId = task.parentAgentId
+    while (parentId && !visited.has(parentId)) {
+      if (workflowChildIds.has(parentId)) return false
+      visited.add(parentId)
+      parentId = agentById.get(parentId)?.parentAgentId
+    }
+    return true
+  })
+}
+
 export function getVisibleAgentTasks(
   tasks: AppState['tasks'],
 ): CoordinatorPanelTask[] {
-  const workflowToolUses = workflowToolUseIds(tasks)
-  return Object.values(tasks)
-    .filter(
-      (t): t is CoordinatorPanelTask =>
-        (isPanelAgentTask(t) && t.evictAfter !== 0 && !isWorkflowChildAgent(t, workflowToolUses)) || isPanelWorkflowTask(t),
-    )
-    .sort((a, b) => a.startTime - b.startTime)
+  const topLevelAgents = visibleAgentDescendants(tasks).filter(isPanelAgentTask)
+  const workflows = Object.values(tasks).filter(isPanelWorkflowTask)
+  return [...topLevelAgents, ...workflows].sort(
+    (a, b) => a.startTime - b.startTime,
+  )
 }
 
 export function getCoordinatorTaskAtIndex(
@@ -127,8 +149,13 @@ function taskIcon(task: CoordinatorPanelTask): string {
   return '●'
 }
 
-function agentRowLabel(task: LocalAgentTaskState, nameByAgentId: Map<string, string>): string {
-  return `agent ${nameByAgentId.get(task.id) ?? task.description ?? task.id}`
+function agentRowLabel(
+  task: LocalAgentTaskState,
+  nameByAgentId: Map<string, string>,
+  descendantCount: number,
+): string {
+  const descendants = descendantCount > 0 ? ` (+${descendantCount})` : ''
+  return `agent${descendants} ${nameByAgentId.get(task.id) ?? task.description ?? task.id}`
 }
 
 function workflowRowLabel(task: LocalWorkflowTaskState): string {
@@ -158,6 +185,22 @@ export function getCoordinatorSessionRows({
   omitMainRow = false,
 }: CoordinatorSessionRowsInput): CoordinatorSessionRow[] {
   const visibleTasks = getVisibleAgentTasks(tasks)
+  const agents = visibleAgentDescendants(tasks)
+  const childrenByParentId = new Map<string, LocalAgentTaskState[]>()
+  for (const agent of agents) {
+    if (!agent.parentAgentId) continue
+    const children = childrenByParentId.get(agent.parentAgentId) ?? []
+    children.push(agent)
+    childrenByParentId.set(agent.parentAgentId, children)
+  }
+  const countDescendants = (taskId: string, visited = new Set<string>()): number => {
+    if (visited.has(taskId)) return 0
+    visited.add(taskId)
+    return (childrenByParentId.get(taskId) ?? []).reduce(
+      (count, child) => count + 1 + countDescendants(child.id, visited),
+      0,
+    )
+  }
   const taskRows = visibleTasks.map((task, index): CoordinatorSessionRow => {
     const selected = selectedIndex === index + (omitMainRow ? 0 : 1)
     if (task.type === 'local_agent') {
@@ -168,7 +211,7 @@ export function getCoordinatorSessionRows({
         selected,
         viewed: viewingAgentTaskId === task.id,
         icon: taskIcon(task),
-        label: agentRowLabel(task, nameByAgentId),
+        label: agentRowLabel(task, nameByAgentId, countDescendants(task.id)),
         meta: agentRowMeta(task),
         statusText: agentStatusText(task, now),
       }
