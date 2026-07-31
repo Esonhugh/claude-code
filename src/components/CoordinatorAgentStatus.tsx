@@ -10,6 +10,7 @@ import figures from "figures";
 import * as React from "react";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { Box, Text } from "../ink.js";
+import { stringWidth } from "../ink/stringWidth.js";
 import { useAppState, useSetAppState } from "../state/AppState.js";
 import {
   enterTeammateView,
@@ -17,16 +18,21 @@ import {
 } from "../state/teammateViewHelpers.js";
 import { isPanelAgentTask } from "../tasks/LocalAgentTask/LocalAgentTask.js";
 import { evictTerminalTask } from "../utils/task/framework.js";
+import { truncateToWidth } from "../utils/truncate.js";
 import {
   type CoordinatorSessionRow,
   getCoordinatorSessionRows,
   getCoordinatorTaskAtIndex,
+  getCoordinatorTaskCount,
+  getCoordinatorTaskIndex,
   getVisibleAgentTasks,
 } from "./CoordinatorAgentStatusRows.js";
 
 export {
   getCoordinatorSessionRows,
   getCoordinatorTaskAtIndex,
+  getCoordinatorTaskCount,
+  getCoordinatorTaskIndex,
   getVisibleAgentTasks,
 };
 export type {
@@ -41,22 +47,18 @@ export function CoordinatorTaskPanel({
 }): React.ReactNode {
   const tasks = useAppState((s) => s.tasks);
   const viewingAgentTaskId = useAppState((s) => s.viewingAgentTaskId);
-  const agentNameRegistry = useAppState((s) => s.agentNameRegistry);
   const coordinatorTaskIndex = useAppState((s) => s.coordinatorTaskIndex);
   const tasksSelected = useAppState((s) => s.footerSelection === "tasks");
   const selectedIndex = tasksSelected ? coordinatorTaskIndex : undefined;
   const setAppState = useSetAppState();
 
-  const visibleTasks = getVisibleAgentTasks(tasks);
+  const visibleTasks = getVisibleAgentTasks(tasks, viewingAgentTaskId);
   const hasAgentTasks = visibleTasks.some(
     (task) => task.type === "local_agent",
   );
   const hasWorkflowTasks = visibleTasks.some(
     (task) => task.type === "local_workflow",
   );
-  const workflowOnly =
-    visibleTasks.length > 0 &&
-    visibleTasks.every((task) => task.type === "local_workflow");
 
   // 1s tick: re-render for elapsed time + evict local agents past their
   // deadline. Workflows stay visible through their task lifecycle.
@@ -83,12 +85,6 @@ export function CoordinatorTaskPanel({
     return () => clearInterval(interval);
   }, [hasAgentTasks, hasWorkflowTasks, setAppState]);
 
-  const nameByAgentId = React.useMemo(() => {
-    const inv = new Map<string, string>();
-    for (const [n, id] of agentNameRegistry) inv.set(id, n);
-    return inv;
-  }, [agentNameRegistry]);
-
   if (visibleTasks.length === 0) {
     return null;
   }
@@ -97,9 +93,13 @@ export function CoordinatorTaskPanel({
     tasks,
     selectedIndex,
     viewingAgentTaskId,
-    nameByAgentId,
-    omitMainRow: workflowOnly,
   });
+  const primaryColumnWidth = Math.max(
+    0,
+    ...rows.map(
+      (row) => stringWidth(treePrefixText(row)) + stringWidth(row.primaryText),
+    ),
+  );
 
   return (
     <Box flexDirection="column" marginTop={0} paddingX={2}>
@@ -108,10 +108,26 @@ export function CoordinatorTaskPanel({
         <SessionRow
           key={row.id}
           row={row}
+          primaryColumnWidth={primaryColumnWidth}
           onClick={() => {
             if (row.kind === "main") {
+              setAppState((prev) =>
+                prev.coordinatorTaskIndex === 0
+                  ? prev
+                  : { ...prev, coordinatorTaskIndex: 0 },
+              );
               exitTeammateView(setAppState);
             } else if (row.kind === "agent" && row.taskId) {
+              const nextIndex = getCoordinatorTaskIndex(
+                tasks,
+                row.taskId,
+                row.taskId,
+              );
+              setAppState((prev) =>
+                nextIndex === undefined || nextIndex === prev.coordinatorTaskIndex
+                  ? prev
+                  : { ...prev, coordinatorTaskIndex: nextIndex },
+              );
               enterTeammateView(row.taskId, setAppState);
             } else if (row.kind === "workflow" && row.taskId) {
               onOpenTasksDialog?.(row.taskId);
@@ -129,36 +145,62 @@ export function CoordinatorTaskPanel({
  */
 export function useCoordinatorTaskCount(): number {
   const tasks = useAppState((s) => s.tasks);
-  return React.useMemo(() => {
-    const visibleTasks = getVisibleAgentTasks(tasks);
-    if (visibleTasks.length === 0) return 0;
-    const workflowOnly = visibleTasks.every(
-      (task) => task.type === "local_workflow",
-    );
-    return workflowOnly ? visibleTasks.length : visibleTasks.length + 1;
-  }, [tasks]);
+  const viewingAgentTaskId = useAppState((s) => s.viewingAgentTaskId);
+  return React.useMemo(
+    () => getCoordinatorTaskCount(tasks, viewingAgentTaskId),
+    [tasks, viewingAgentTaskId],
+  );
+}
+
+function treePrefixText(row: CoordinatorSessionRow): string {
+  if (row.depth === 0) return "";
+  return `${"  ".repeat(Math.max(0, row.depth - 1))}${row.branch === "middle" ? "├─" : "└─"} `;
 }
 
 function SessionRow({
   row,
+  primaryColumnWidth,
   onClick,
 }: {
   row: CoordinatorSessionRow;
+  primaryColumnWidth: number;
   onClick: () => void;
 }): React.ReactNode {
   const { columns } = useTerminalSize();
   const [hover, setHover] = React.useState(false);
   const active = row.selected || hover;
   const prefix = active ? `${figures.pointer} ` : "  ";
+  const treePrefix = treePrefixText(row);
   const meta = row.meta ? ` ${row.meta}` : "";
   const status = row.statusText ? ` ${row.statusText}` : "";
-  // Calculate available width for label: total - prefix(4) - icon(2) - meta - status - padding(2)
-  const fixedWidth = prefix.length + 2 + meta.length + status.length + 2;
-  const maxLabelWidth = Math.max(8, Math.min(32, columns - fixedWidth));
-  const label =
-    row.label.length > maxLabelWidth
-      ? `${row.label.slice(0, Math.max(0, maxLabelWidth - 1))}…`
-      : row.label.padEnd(maxLabelWidth);
+  const availableTextWidth = Math.max(
+    0,
+    columns -
+      stringWidth(prefix) -
+      stringWidth(row.icon) -
+      1 -
+      stringWidth(meta) -
+      stringWidth(status),
+  );
+  const displayedPrimaryWidth = Math.min(primaryColumnWidth, availableTextWidth);
+  const primaryAvailable = Math.max(
+    0,
+    displayedPrimaryWidth - stringWidth(treePrefix),
+  );
+  const primaryText =
+    primaryAvailable > 0 ? truncateToWidth(row.primaryText, primaryAvailable) : "";
+  const primaryPadding = " ".repeat(
+    Math.max(0, displayedPrimaryWidth - stringWidth(treePrefix) - stringWidth(primaryText)),
+  );
+  const secondaryAvailable = Math.max(
+    0,
+    availableTextWidth - displayedPrimaryWidth - (row.secondaryText ? 2 : 0),
+  );
+  const secondaryText =
+    secondaryAvailable > 0
+      ? truncateToWidth(row.secondaryText, secondaryAvailable)
+      : "";
+  const secondary = secondaryText ? `  ${secondaryText}` : "";
   return (
     <Box
       onClick={onClick}
@@ -171,7 +213,10 @@ function SessionRow({
         wrap="truncate"
       >
         {prefix}
-        {row.icon} {label}
+        {row.icon} {treePrefix}
+        {primaryText}
+        {primaryPadding}
+        {secondary}
         {meta}
         {status}
       </Text>

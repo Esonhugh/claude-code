@@ -198,7 +198,7 @@ import { BridgeDialog } from '../BridgeDialog.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import {
   getCoordinatorTaskAtIndex,
-  getVisibleAgentTasks,
+  getCoordinatorTaskIndex,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
 import { getEffortNotificationText } from '../EffortIndicator.js'
@@ -549,13 +549,6 @@ function PromptInput({
     [setAppState],
   )
   const coordinatorTaskCount = useCoordinatorTaskCount()
-  const visibleCoordinatorTasks = useMemo(
-    () => getVisibleAgentTasks(tasks),
-    [tasks],
-  )
-  const coordinatorOmitsMainRow =
-    visibleCoordinatorTasks.length > 0 &&
-    visibleCoordinatorTasks.every(task => task.type === 'local_workflow')
   // The pill (BackgroundTaskStatus) only renders when non-local_agent,
   // non-workflow bg tasks exist. Workflow tasks are represented by the
   // CoordinatorTaskPanel row so selecting deep-research opens the workflow
@@ -574,7 +567,7 @@ function PromptInput({
   const selectedCoordinatorTask = getCoordinatorTaskAtIndex(
     tasks,
     coordinatorTaskIndex,
-    coordinatorOmitsMainRow,
+    viewingAgentTaskId,
   )
   // Clamp index when tasks complete and the list shrinks beneath the cursor
   useEffect(() => {
@@ -585,7 +578,12 @@ function PromptInput({
     } else if (coordinatorTaskIndex < minCoordinatorIndex) {
       setCoordinatorTaskIndex(minCoordinatorIndex)
     }
-  }, [coordinatorTaskCount, coordinatorTaskIndex, minCoordinatorIndex])
+  }, [
+    coordinatorTaskCount,
+    coordinatorTaskIndex,
+    minCoordinatorIndex,
+    setCoordinatorTaskIndex,
+  ])
   const [isPasting, setIsPasting] = useState(false)
   const [isExternalEditorActive, setIsExternalEditorActive] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
@@ -2378,14 +2376,21 @@ function PromptInput({
                 if (teammate) enterTeammateView(teammate.id, setAppState)
               }
             } else if (
-              !coordinatorOmitsMainRow &&
               coordinatorTaskIndex === 0 &&
-              coordinatorTaskCount > 0
+              coordinatorTaskCount > 0 &&
+              selectedCoordinatorTask === undefined
             ) {
+              setCoordinatorTaskIndex(0)
               exitTeammateView(setAppState)
             } else {
               const selectedTask = selectedCoordinatorTask
               if (selectedTask?.type === 'local_agent') {
+                const nextIndex = getCoordinatorTaskIndex(
+                  tasks,
+                  selectedTask.id,
+                  selectedTask.id,
+                )
+                if (nextIndex !== undefined) setCoordinatorTaskIndex(nextIndex)
                 enterTeammateView(selectedTask.id, setAppState)
               } else if (selectedTask?.type === 'local_workflow') {
                 setShowBashesDialog(selectedTask.id)
@@ -2426,10 +2431,7 @@ function PromptInput({
         selectFooterItem(null)
       },
       'footer:close': () => {
-        if (
-          tasksSelected &&
-          coordinatorTaskIndex >= (coordinatorOmitsMainRow ? 0 : 1)
-        ) {
+        if (tasksSelected && selectedCoordinatorTask) {
           const task = selectedCoordinatorTask
           if (!task) return false
           if (task.type === 'local_workflow') {

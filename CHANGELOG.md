@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-07-31 - Coordinator 递归导航与行展示对齐
+
+### 关联提交
+
+- `9a9d4b5` — 2026-07-31 — `fix: collapse nested agents in coordinator status`
+
+### 变更内容
+
+- Coordinator 主视图仅展示顶层 Agent，并将运行中的递归子孙聚合为 `(+N)`；进入 Agent transcript 后按祖先路径和直接子节点递归导航，Workflow Agent 子树不会泄漏为普通顶层 Agent。
+- Agent 行显示真实 `agentType` 和独立 description 列，当前焦点使用 `⏺`、其他 Agent 使用 `◯`；Workflow 独立显示名称和 description，并保持现有连接线、main 行及右侧状态信息。
+- PromptInput 的任务数量、索引和 Enter 切换统一使用当前 Agent context 的 Coordinator 布局，支持 root、child、grandchild transcript 逐层切换。
+
+### 测试覆盖
+
+- Coordinator 行模型测试覆盖递归 `(+N)`、root/child/grandchild 可见集合、索引映射、焦点图标、真实 Agent 类型、Workflow 名称/description、终态 nested Agent 隐藏及 workflow 子树隔离。
+- `bun test src/components/CoordinatorAgentStatus.test.ts`、TypeScript、相关 ESLint、`git diff --check` 和 `make build` 通过；本地 `built-claude` scripted tmux 验证递归键盘导航、transcript 切换、窄终端渲染和 CLI 前后 Git 状态一致。
+
 ## 2026-07-27 - v2.1.205 - Agent 权限继承、Workflow 稳定性、release notes 校验与用量成本修复
 
 ### 版本状态

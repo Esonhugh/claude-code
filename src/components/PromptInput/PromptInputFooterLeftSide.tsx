@@ -29,7 +29,7 @@ import {
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js'
 import { isBackgroundTask } from '../../tasks/types.js'
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { getVisibleAgentTasks } from '../CoordinatorAgentStatus.js'
+import { getCoordinatorTaskCount } from '../CoordinatorAgentStatus.js'
 import { count } from '../../utils/array.js'
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -506,7 +506,7 @@ function ModeIndicator({
 
   // Add "↓ to manage tasks" hint when panel has visible rows
   const hasCoordinatorTasks =
-    isAnt() && getVisibleAgentTasks(tasks).length > 0
+    getCoordinatorTaskCount(tasks, viewingAgentTaskId) > 0
 
   // Tasks pill renders as a Box sibling (not a parts entry) so its
   // click-target Box isn't nested inside <Text wrap="truncate"> — the
