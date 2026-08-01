@@ -81,8 +81,8 @@ export function filterCommandsByServer(
  * capabilities display — skills are a separate feature shown in `/skills`,
  * so they mustn't inflate the "prompts" capability badge.
  *
- * The distinguisher is `loadedFrom === 'mcp'`: MCP skills set it, MCP
- * prompts don't (they use `isMcp: true` instead).
+ * The distinguisher is the MCP skill source marker: MCP skills set
+ * `loadedFrom` to `mcp` or `codex_app`, while MCP prompts use `isMcp: true`.
  */
 export function filterMcpPromptsByServer(
   commands: Command[],
@@ -91,7 +91,10 @@ export function filterMcpPromptsByServer(
   return commands.filter(
     c =>
       commandBelongsToServer(c, serverName) &&
-      !(c.type === 'prompt' && c.loadedFrom === 'mcp'),
+      !(
+        c.type === 'prompt' &&
+        (c.loadedFrom === 'mcp' || c.loadedFrom === 'codex_app')
+      ),
   )
 }
 

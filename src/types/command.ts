@@ -199,7 +199,8 @@ export type CommandBase = {
     | 'plugin'
     | 'managed'
     | 'bundled'
-    | 'mcp' // Where the command was loaded from
+    | 'mcp'
+    | 'codex_app' // Where the command was loaded from
   kind?: 'workflow' // Distinguishes workflow-backed commands (badged in autocomplete)
   immediate?: boolean // If true, command executes immediately without waiting for a stop point (bypasses queue)
   isSensitive?: boolean // If true, args are redacted from the conversation history

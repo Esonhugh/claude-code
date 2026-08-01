@@ -2816,7 +2816,10 @@ const FILTERED_LISTING_MAX = 30
  */
 export function filterToBundledAndMcp(commands: Command[]): Command[] {
   const filtered = commands.filter(
-    cmd => cmd.loadedFrom === 'bundled' || cmd.loadedFrom === 'mcp',
+    cmd =>
+      cmd.loadedFrom === 'bundled' ||
+      cmd.loadedFrom === 'mcp' ||
+      cmd.loadedFrom === 'codex_app',
   )
   if (filtered.length > FILTERED_LISTING_MAX) {
     return filtered.filter(cmd => cmd.loadedFrom === 'bundled')

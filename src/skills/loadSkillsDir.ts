@@ -71,6 +71,7 @@ export type LoadedFrom =
   | 'managed'
   | 'bundled'
   | 'mcp'
+  | 'codex_app'
 
 /**
  * Returns a claude config directory path for a given source.
@@ -371,7 +372,7 @@ export function createSkillCommand({
       // Security: MCP skills are remote and untrusted — never execute inline
       // shell commands (!`…` / ```! … ```) from their markdown body.
       // ${CLAUDE_SKILL_DIR} is meaningless for MCP skills anyway.
-      if (loadedFrom !== 'mcp') {
+      if (loadedFrom !== 'mcp' && loadedFrom !== 'codex_app') {
         finalContent = await executeShellCommandsInPrompt(
           finalContent,
           {

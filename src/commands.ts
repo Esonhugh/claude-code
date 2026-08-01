@@ -574,7 +574,7 @@ export function getMcpSkillCommands(
     return mcpCommands.filter(
       cmd =>
         cmd.type === 'prompt' &&
-        cmd.loadedFrom === 'mcp' &&
+        (cmd.loadedFrom === 'mcp' || cmd.loadedFrom === 'codex_app') &&
         !cmd.disableModelInvocation,
     )
   }
@@ -765,8 +765,14 @@ export function formatDescriptionWithSource(cmd: Command): string {
     return `${cmd.description} (plugin)`
   }
 
-  if (cmd.source === 'builtin' || cmd.source === 'mcp') {
+  if (cmd.source === 'builtin') {
     return cmd.description
+  }
+
+  if (cmd.source === 'mcp') {
+    return cmd.loadedFrom === 'codex_app'
+      ? `${cmd.description} (Codex)`
+      : cmd.description
   }
 
   if (cmd.source === 'bundled') {

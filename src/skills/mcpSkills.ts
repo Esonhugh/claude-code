@@ -8,9 +8,11 @@ import type { ConnectedMCPServer } from '../services/mcp/types.js'
 import { logForDebugging } from '../utils/debug.js'
 import { parseFrontmatter } from '../utils/frontmatterParser.js'
 import { withTimeout } from '../utils/sleep.js'
+import { z } from 'zod/v4'
 import { getMCPSkillBuilders } from './mcpSkillBuilders.js'
 
 const SKILL_MIME_TYPE = 'mcp/skill'
+const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills'
 const DISCOVERY_TIMEOUT_MS = 10_000
 const READ_TIMEOUT_MS = 10_000
 const MAX_RESOURCE_PAGES = 10
@@ -23,10 +25,21 @@ const MAX_RESOURCE_CONTENT_BYTES = 1024 * 1024
 const MAX_CACHED_SERVERS = 20
 const CACHE_TTL_MS = 30_000
 
+const SkillsListEntrySchema = z.object({
+  uri: z.string(),
+  frontmatter: z.record(z.string(), z.unknown()),
+})
+
+const SkillsListResultSchema = z.object({
+  skills: z.array(z.unknown()),
+  nextCursor: z.string().optional(),
+})
+
 type SkillDescriptor = {
   name: string
   description: string
   resourceUri: string
+  loadedFrom: 'mcp' | 'codex_app'
 }
 
 type SkillCacheEntry = {
@@ -113,6 +126,74 @@ function validatedSkillUrl(value: string, maxChars: number): URL | null {
   }
 }
 
+function skillNameFromUri(uri: string): string | null {
+  const parsed = validatedSkillUrl(uri, MAX_RESOURCE_URI_CHARS)
+  if (!parsed || !parsed.pathname.endsWith('/SKILL.md')) return null
+
+  const segments = [
+    parsed.hostname,
+    ...parsed.pathname.split('/').filter(Boolean),
+  ]
+  const skillSegment = segments.at(-2)
+  if (!skillSegment) return null
+
+  try {
+    return decodeURIComponent(skillSegment)
+  } catch {
+    return null
+  }
+}
+
+function validatedSkillResourceUri(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    charCount(value) > MAX_RESOURCE_URI_CHARS ||
+    /[\s<>]/u.test(value) ||
+    [...value].some(char => /\p{Cc}/u.test(char))
+  ) {
+    return null
+  }
+  return skillNameFromUri(value) ? value : null
+}
+
+function isSkillExtensionSupported(client: ConnectedMCPServer): boolean {
+  return client.capabilities.extensions?.[SKILLS_EXTENSION] !== undefined
+}
+
+function isCodexAppsClient(client: ConnectedMCPServer): boolean {
+  return (
+    (client.name === CODEX_APPS_SERVER_NAME ||
+      client.name === CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME) &&
+    isHostOwnedCodexAppsConfig(client.config)
+  )
+}
+
+function descriptorFromSkillEntry(
+  entry: {
+    uri: string
+    frontmatter: Record<string, unknown>
+  },
+  serverName: string,
+): SkillDescriptor | null {
+  const resourceUri = validatedSkillResourceUri(entry.uri)
+  const skillName = normalizedLabel(entry.frontmatter.name)
+  const uriSkillName = resourceUri ? skillNameFromUri(resourceUri) : null
+  if (!resourceUri || !skillName || skillName !== uriSkillName) return null
+
+  const description = normalizedDescription(entry.frontmatter.description)
+  if (description === null) return null
+
+  const name = `${serverName}:${skillName}`
+  if (charCount(name) > MAX_QUALIFIED_NAME_CHARS) return null
+
+  return {
+    name,
+    description,
+    resourceUri,
+    loadedFrom: 'mcp',
+  }
+}
+
 function descriptorFromResource(resource: {
   uri: string
   description?: string
@@ -144,10 +225,65 @@ function descriptorFromResource(resource: {
     name,
     description,
     resourceUri,
+    loadedFrom: 'codex_app',
   }
 }
 
-async function discoverSkillDescriptors(
+async function discoverSkillDescriptorsFromExtension(
+  client: ConnectedMCPServer,
+): Promise<SkillDescriptor[] | null> {
+  const descriptors: SkillDescriptor[] = []
+  const seenNames = new Set<string>()
+  const seenCursors = new Set<string>()
+  const deadline = Date.now() + DISCOVERY_TIMEOUT_MS
+  let cursor: string | undefined
+
+  for (let page = 0; page < MAX_RESOURCE_PAGES; page++) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+
+    let result: z.output<typeof SkillsListResultSchema>
+    try {
+      result = await withTimeout(
+        client.client.request(
+          {
+            method: 'skills/list',
+            ...(cursor ? { params: { cursor } } : {}),
+          },
+          SkillsListResultSchema,
+        ),
+        remaining,
+        'MCP skill discovery timed out',
+      )
+    } catch (error) {
+      logForDebugging(
+        `[mcp-skills] Failed to list skills from ${client.name}: ${error}`,
+        { level: 'warn' },
+      )
+      if (page === 0) return null
+      break
+    }
+
+    for (const candidate of result.skills) {
+      if (descriptors.length >= MAX_SKILLS) break
+      const parsedEntry = SkillsListEntrySchema.safeParse(candidate)
+      if (!parsedEntry.success) continue
+      const descriptor = descriptorFromSkillEntry(parsedEntry.data, client.name)
+      if (!descriptor || seenNames.has(descriptor.name)) continue
+      seenNames.add(descriptor.name)
+      descriptors.push(descriptor)
+    }
+
+    if (descriptors.length >= MAX_SKILLS || !result.nextCursor) break
+    if (seenCursors.has(result.nextCursor)) break
+    seenCursors.add(result.nextCursor)
+    cursor = result.nextCursor
+  }
+
+  return descriptors
+}
+
+async function discoverCodexAppSkillDescriptors(
   client: ConnectedMCPServer,
 ): Promise<SkillDescriptor[] | null> {
   const descriptors: SkillDescriptor[] = []
@@ -204,7 +340,7 @@ async function readSkillContent(
   const result = await withTimeout(
     connectedClient.client.readResource({ uri: descriptor.resourceUri }),
     READ_TIMEOUT_MS,
-    'Codex Apps skill read timed out',
+    'MCP skill read timed out',
   )
   const text = result.contents.find(
     (content): content is Extract<typeof content, { text: string }> =>
@@ -213,12 +349,12 @@ async function readSkillContent(
       typeof content.text === 'string',
   )
   if (!text) {
-    throw new Error('Codex Apps skill did not return matching text content')
+    throw new Error('MCP skill did not return matching text content')
   }
   if (
     new TextEncoder().encode(text.text).byteLength > MAX_RESOURCE_CONTENT_BYTES
   ) {
-    throw new Error('Codex Apps skill exceeds the resource content limit')
+    throw new Error('MCP skill exceeds the resource content limit')
   }
   return text.text
 }
@@ -243,8 +379,7 @@ function buildSkillCommand(
     )
     const command = createSkillCommand({
       ...parsed,
-      // Resource metadata is the trusted catalog surface. SKILL.md frontmatter
-      // is prompt content, not authority over listing or execution behavior.
+      // Catalog metadata is trusted for listing; SKILL.md frontmatter is prompt content.
       displayName: undefined,
       description: descriptor.description,
       hasUserSpecifiedDescription: true,
@@ -263,7 +398,7 @@ function buildSkillCommand(
       markdownContent,
       source: 'mcp',
       baseDir: undefined,
-      loadedFrom: 'mcp',
+      loadedFrom: descriptor.loadedFrom,
       paths: undefined,
     }) as PromptCommand
     return { ...command, mcpServerName: client.name }
@@ -279,7 +414,7 @@ function buildSkillCommand(
         return createSafeCommand(markdown).getPromptForCommand(args, context)
       } catch (error) {
         logForDebugging(
-          `[mcp-skills] Failed to read Codex Apps skill ${descriptor.name}: ${error}`,
+          `[mcp-skills] Failed to read MCP skill ${descriptor.name}: ${error}`,
           { level: 'warn' },
         )
         throw error
@@ -291,16 +426,15 @@ function buildSkillCommand(
 async function loadSkills(
   client: ConnectedMCPServer,
 ): Promise<Command[] | null> {
-  if (
-    (client.name !== CODEX_APPS_SERVER_NAME &&
-      client.name !== CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME) ||
-    !client.capabilities.resources ||
-    !isHostOwnedCodexAppsConfig(client.config)
-  ) {
-    return []
+  if (isCodexAppsClient(client)) {
+    if (!client.capabilities.resources) return []
+    const descriptors = await discoverCodexAppSkillDescriptors(client)
+    if (!descriptors) return null
+    return descriptors.map(descriptor => buildSkillCommand(client, descriptor))
   }
 
-  const descriptors = await discoverSkillDescriptors(client)
+  if (!isSkillExtensionSupported(client)) return []
+  const descriptors = await discoverSkillDescriptorsFromExtension(client)
   if (!descriptors) return null
   return descriptors.map(descriptor => buildSkillCommand(client, descriptor))
 }

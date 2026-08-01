@@ -30,6 +30,7 @@ function connectedClient(
   client: Pick<ConnectedMCPServer['client'], 'listResources' | 'readResource'>,
   trusted = true,
   serverName = CODEX_APPS_SERVER_NAME,
+  extensions: Record<string, object> = {},
 ): ConnectedMCPServer {
   const pluginRuntime = serverName === CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME
   const config = trusted
@@ -53,7 +54,7 @@ function connectedClient(
     client: client as ConnectedMCPServer['client'],
     name: serverName,
     type: 'connected',
-    capabilities: { resources: {} },
+    capabilities: { resources: {}, extensions },
     config,
     cleanup: async () => {},
   }
@@ -443,6 +444,81 @@ describe('fetchMcpSkillsForClient', () => {
     )
   })
 
+  it('discovers a canonical skill-over-MCP skill from a non-Codex server', async () => {
+    const requests: Array<{ method: string; params?: unknown }> = []
+    const readUris: string[] = []
+    const client = connectedClient(
+      {
+        async request(request) {
+          requests.push(request)
+          assert.equal(request.method, 'skills/list')
+          return {
+            skills: [
+              {
+                uri: 42,
+                frontmatter: {},
+              },
+              {
+                uri: 'skill://git-workflow/SKILL.md',
+                frontmatter: {
+                  name: 'git-workflow',
+                  description: 'Review repository changes',
+                },
+                resources: [
+                  {
+                    uri: 'skill://git-workflow/SKILL.md',
+                    digest: 'sha256:demo',
+                  },
+                ],
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          readUris.push(uri)
+          return {
+            contents: [
+              {
+                uri,
+                mimeType: 'text/markdown',
+                text: `---
+name: git-workflow
+description: ignored
+---
+# Review changes`,
+              },
+            ],
+          }
+        },
+      } as Pick<
+        ConnectedMCPServer['client'],
+        'request' | 'listResources' | 'readResource'
+      >,
+      false,
+      'community_skills',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+    const [skill] = await fetchMcpSkillsForClient(client)
+
+    assert.equal(requests.length, 1)
+    assert.deepEqual(readUris, [])
+    assert.equal(skill?.name, 'community_skills:git-workflow')
+    if (skill?.type === 'prompt') {
+      assert.equal(skill.source, 'mcp')
+      assert.equal(skill.loadedFrom, 'mcp')
+    }
+    assert.equal(skill?.mcpServerName, 'community_skills')
+    assert.equal(skill?.type, 'prompt')
+    if (skill?.type === 'prompt') {
+      const prompt = await skill.getPromptForCommand('', {} as never)
+      assert.deepEqual(readUris, ['skill://git-workflow/SKILL.md'])
+      assert.match(prompt[0]?.type === 'text' ? prompt[0].text : '', /Review changes/)
+    }
+  })
+
   it('discovers paginated Codex Apps skills and reads their SKILL.md resources', async () => {
     const listCursors: Array<string | undefined> = []
     const readUris: string[] = []
@@ -531,7 +607,8 @@ describe('fetchMcpSkillsForClient', () => {
     for (const skill of skills) {
       assert.equal(skill.type, 'prompt')
       assert.equal(skill.source, 'mcp')
-      assert.equal(skill.loadedFrom, 'mcp')
+      assert.equal(skill.loadedFrom, 'codex_app')
+      assert.equal(skill.mcpServerName, CODEX_APPS_SERVER_NAME)
       assert.equal(skill.hasUserSpecifiedDescription, true)
       assert.equal(skill.skillRoot, undefined)
       assert.deepEqual(skill.type === 'prompt' && skill.allowedTools, [])

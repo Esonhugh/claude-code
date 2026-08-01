@@ -1087,7 +1087,8 @@ function formatCommandLoadingMetadata(
   if (
     command.loadedFrom === 'skills' ||
     command.loadedFrom === 'plugin' ||
-    command.loadedFrom === 'mcp'
+    command.loadedFrom === 'mcp' ||
+    command.loadedFrom === 'codex_app'
   ) {
     return formatSkillLoadingMetadata(command.name, command.progressMessage)
   }

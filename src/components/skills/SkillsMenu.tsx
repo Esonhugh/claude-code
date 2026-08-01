@@ -26,7 +26,7 @@ import { Dialog } from '../design-system/Dialog.js'
 // Skills are always PromptCommands with CommandBase properties
 type SkillCommand = CommandBase & PromptCommand
 
-type SkillSource = SettingSource | 'plugin' | 'mcp'
+type SkillSource = SettingSource | 'plugin' | 'mcp' | 'codex_app'
 
 type Props = {
   onExit: (
@@ -43,6 +43,9 @@ function getSourceTitle(source: SkillSource): string {
   if (source === 'mcp') {
     return 'MCP skills'
   }
+  if (source === 'codex_app') {
+    return 'Codex skills'
+  }
   return `${capitalize(getSettingSourceName(source))} skills`
 }
 
@@ -52,7 +55,7 @@ function getSourceSubtitle(
 ): string | undefined {
   // MCP skills show server names; file-based skills show filesystem paths.
   // Skill names are `<server>:<skill>`, not `mcp__<server>__…`.
-  if (source === 'mcp') {
+  if (source === 'mcp' || source === 'codex_app') {
     const servers = [
       ...new Set(
         skills
@@ -83,7 +86,8 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
         (cmd.loadedFrom === 'skills' ||
           cmd.loadedFrom === 'commands_DEPRECATED' ||
           cmd.loadedFrom === 'plugin' ||
-          cmd.loadedFrom === 'mcp'),
+          cmd.loadedFrom === 'mcp' ||
+          cmd.loadedFrom === 'codex_app'),
     )
   }, [commands])
 
@@ -96,10 +100,14 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
       flagSettings: [],
       plugin: [],
       mcp: [],
+      codex_app: [],
     }
 
     for (const skill of skills) {
-      const source = skill.source as SkillSource
+      const source: SkillSource =
+        skill.loadedFrom === 'codex_app'
+          ? 'codex_app'
+          : (skill.source as SkillSource)
       if (source in groups) {
         groups[source].push(skill)
       }
@@ -191,6 +199,7 @@ export function SkillsMenu({ onExit, commands }: Props): React.ReactNode {
         {renderSkillGroup('policySettings')}
         {renderSkillGroup('plugin')}
         {renderSkillGroup('mcp')}
+        {renderSkillGroup('codex_app')}
       </Box>
       <Text dimColor italic>
         <ConfigurableShortcutHint

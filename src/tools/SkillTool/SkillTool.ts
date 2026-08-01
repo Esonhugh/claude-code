@@ -79,14 +79,16 @@ import {
  * SkillTool needs this because getCommands() only returns local/bundled skills.
  */
 async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
-  // Only include MCP skills (loadedFrom === 'mcp'), not plain MCP prompts.
+  // Only include MCP skills, not plain MCP prompts.
   // Before this filter, the model could invoke MCP prompts via SkillTool
   // if it guessed the mcp__server__prompt name — they weren't discoverable
   // but were technically reachable.
   const mcpSkills = context
     .getAppState()
     .mcp.commands.filter(
-      cmd => cmd.type === 'prompt' && cmd.loadedFrom === 'mcp',
+      cmd =>
+        cmd.type === 'prompt' &&
+        (cmd.loadedFrom === 'mcp' || cmd.loadedFrom === 'codex_app'),
     )
   if (mcpSkills.length === 0) return getCommands(getProjectRoot())
   const localCommands = await getCommands(getProjectRoot())
