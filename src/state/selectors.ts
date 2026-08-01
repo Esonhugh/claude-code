@@ -5,38 +5,38 @@
 
 import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
-import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  isLocalAgentTask,
+  type LocalAgentTaskState,
+} from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { AppState } from './AppStateStore.js'
+
+export type ViewedAgentTask = InProcessTeammateTaskState | LocalAgentTaskState
+
+/**
+ * Get the currently viewed agent task, if any.
+ * Both in-process teammates and local agents have an independent transcript.
+ */
+export function getViewedAgentTask(
+  appState: Pick<AppState, 'viewingAgentTaskId' | 'tasks'>,
+): ViewedAgentTask | undefined {
+  const { viewingAgentTaskId, tasks } = appState
+  if (!viewingAgentTaskId) return undefined
+
+  const task = tasks[viewingAgentTaskId]
+  if (isInProcessTeammateTask(task) || isLocalAgentTask(task)) return task
+  return undefined
+}
 
 /**
  * Get the currently viewed teammate task, if any.
- * Returns undefined if:
- * - No teammate is being viewed (viewingAgentTaskId is undefined)
- * - The task ID doesn't exist in tasks
- * - The task is not an in-process teammate task
+ * Returns undefined if the current view is the leader or a local agent.
  */
 export function getViewedTeammateTask(
   appState: Pick<AppState, 'viewingAgentTaskId' | 'tasks'>,
 ): InProcessTeammateTaskState | undefined {
-  const { viewingAgentTaskId, tasks } = appState
-
-  // Not viewing any teammate
-  if (!viewingAgentTaskId) {
-    return undefined
-  }
-
-  // Look up the task
-  const task = tasks[viewingAgentTaskId]
-  if (!task) {
-    return undefined
-  }
-
-  // Verify it's an in-process teammate task
-  if (!isInProcessTeammateTask(task)) {
-    return undefined
-  }
-
-  return task
+  const task = getViewedAgentTask(appState)
+  return task && isInProcessTeammateTask(task) ? task : undefined
 }
 
 /**

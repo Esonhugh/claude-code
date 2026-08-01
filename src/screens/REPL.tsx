@@ -380,6 +380,7 @@ import {
   useSetAppState,
   useAppStateStore,
 } from '../state/AppState.js'
+import { getViewedAgentTask } from '../state/selectors.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
 import type { PastedContent } from '../utils/config.js'
@@ -1859,11 +1860,6 @@ export function REPL({
     )
   }
 
-  // Frozen state for transcript mode - stores lengths instead of cloning arrays for memory efficiency
-  const [frozenTranscriptState, setFrozenTranscriptState] = useState<{
-    messagesLength: number
-    streamingToolUsesLength: number
-  } | null>(null)
   // Initialize input with any early input that was captured before REPL was ready.
   // Using lazy initialization ensures cursor offset is set correctly in PromptInput.
   const [inputValue, setInputValueRaw] = useState(() => consumeEarlyInput())
@@ -1948,6 +1944,51 @@ export function REPL({
   const [inProgressToolUseIDs, setInProgressToolUseIDs] = useState<Set<string>>(
     new Set(),
   )
+
+  // Frozen state for transcript mode - stores lengths instead of cloning arrays for memory efficiency
+  const [frozenTranscriptState, setFrozenTranscriptState] = useState<{
+    viewedTaskId?: string
+    messagesLength: number
+    streamingToolUsesLength: number
+  } | null>(null)
+
+  const viewedAgentTask = getViewedAgentTask({ viewingAgentTaskId, tasks })
+  const viewedTeammateTask =
+    viewedAgentTask && isInProcessTeammateTask(viewedAgentTask)
+      ? viewedAgentTask
+      : undefined
+  const frozenViewedTask = frozenTranscriptState?.viewedTaskId
+    ? tasks[frozenTranscriptState.viewedTaskId]
+    : undefined
+  const transcriptTask =
+    frozenViewedTask &&
+    (isInProcessTeammateTask(frozenViewedTask) ||
+      isLocalAgentTask(frozenViewedTask))
+      ? frozenViewedTask
+      : viewedAgentTask
+  const transcriptMessagesSource = transcriptTask
+    ? (transcriptTask.messages ?? [])
+    : deferredMessages
+  const transcriptMessages = frozenTranscriptState
+    ? transcriptMessagesSource.slice(0, frozenTranscriptState.messagesLength)
+    : transcriptMessagesSource
+  const transcriptStreamingToolUses = frozenTranscriptState
+    ? transcriptTask
+      ? []
+      : streamingToolUses.slice(0, frozenTranscriptState.streamingToolUsesLength)
+    : transcriptTask
+      ? []
+      : streamingToolUses
+  const transcriptInProgressToolUseIDs = transcriptTask
+    ? isInProcessTeammateTask(transcriptTask)
+      ? (transcriptTask.inProgressToolUseIDs ?? new Set())
+      : new Set<string>()
+    : inProgressToolUseIDs
+  const transcriptIsLoading = transcriptTask
+    ? transcriptTask.status === 'running'
+    : isLoading
+  const transcriptMessageCount = transcriptMessages.length
+
   const hasInterruptibleToolInProgressRef = useRef(false)
 
   // Remote session hook - manages WebSocket connection and message handling for --remote mode
@@ -5624,13 +5665,19 @@ export function REPL({
       : `running stop hooks… ${completedCount}/${total}`
   }, [messages, isLoading])
 
-  // Callback to capture frozen state when entering transcript mode
+  // Capture the active context when entering transcript mode so the view
+  // remains on the selected agent while the transcript is rendered.
   const handleEnterTranscript = useCallback(() => {
     setFrozenTranscriptState({
-      messagesLength: messages.length,
-      streamingToolUsesLength: streamingToolUses.length,
+      viewedTaskId: viewedAgentTask?.id,
+      messagesLength: viewedAgentTask
+        ? (viewedAgentTask.messages?.length ?? 0)
+        : messages.length,
+      streamingToolUsesLength: viewedAgentTask
+        ? 0
+        : streamingToolUses.length,
     })
-  }, [messages.length, streamingToolUses.length])
+  }, [messages.length, streamingToolUses.length, viewedAgentTask])
 
   // Callback to clear frozen state when exiting transcript mode
   const handleExitTranscript = useCallback(() => {
@@ -5834,7 +5881,8 @@ export function REPL({
     setScreen,
     showAllInTranscript,
     setShowAllInTranscript,
-    messageCount: messages.length,
+    messageCount:
+      screen === 'transcript' ? transcriptMessageCount : messages.length,
     onEnterTranscript: handleEnterTranscript,
     onExitTranscript: handleExitTranscript,
     virtualScrollActive,
@@ -5846,14 +5894,6 @@ export function REPL({
     // first, fires first, bubbles).
     searchBarOpen: searchOpen,
   }
-
-  // Use frozen lengths to slice arrays, avoiding memory overhead of cloning
-  const transcriptMessages = frozenTranscriptState
-    ? deferredMessages.slice(0, frozenTranscriptState.messagesLength)
-    : deferredMessages
-  const transcriptStreamingToolUses = frozenTranscriptState
-    ? streamingToolUses.slice(0, frozenTranscriptState.streamingToolUsesLength)
-    : streamingToolUses
 
   // Handle shift+down for teammate navigation and background task management.
   // Guard onOpenBackgroundTasks when a local-jsx dialog (e.g. /mcp) is open —
@@ -5887,7 +5927,7 @@ export function REPL({
         verbose={true}
         toolJSX={null}
         toolUseConfirmQueue={[]}
-        inProgressToolUseIDs={inProgressToolUseIDs}
+        inProgressToolUseIDs={transcriptInProgressToolUseIDs}
         isMessageSelectorVisible={false}
         conversationId={conversationId}
         screen={screen}
@@ -5895,9 +5935,9 @@ export function REPL({
         streamingToolUses={transcriptStreamingToolUses}
         showAllInTranscript={showAllInTranscript}
         onOpenRateLimitOptions={handleOpenRateLimitOptions}
-        isLoading={isLoading}
+        isLoading={transcriptIsLoading}
         hidePastThinking={true}
-        streamingThinking={streamingThinking}
+        streamingThinking={transcriptTask ? null : streamingThinking}
         scrollRef={transcriptScrollRef}
         jumpRef={jumpRef}
         onSearchMatchesChange={onSearchMatchesChange}
@@ -6053,16 +6093,8 @@ export function REPL({
     return transcriptReturn
   }
 
-  // Get viewed agent task (inlined from selectors for explicit data flow).
-  // viewedAgentTask: teammate OR local_agent — drives the boolean checks
-  // below. viewedTeammateTask: teammate-only narrowed, for teammate-specific
-  // field access (inProgressToolUseIDs).
-  const viewedTask = viewingAgentTaskId ? tasks[viewingAgentTaskId] : undefined
-  const viewedTeammateTask =
-    viewedTask && isInProcessTeammateTask(viewedTask) ? viewedTask : undefined
-  const viewedAgentTask =
-    viewedTeammateTask ??
-    (viewedTask && isLocalAgentTask(viewedTask) ? viewedTask : undefined)
+  // The selected agent owns the visible transcript; the leader owns it when
+  // no agent is selected.
 
   // Bypass useDeferredValue when streaming text is showing so Messages renders
   // the final message in the same frame streaming text clears. Also bypass when
