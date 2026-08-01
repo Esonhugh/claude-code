@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-01 - Coordinator Worker 与嵌套 Agent 生命周期修复
+
+### 关联提交
+
+- `7da0067` — 2026-08-01 — `feat: route nested agents through coordinator worker`
+
+### 变更内容
+
+- Coordinator 模式恢复内置 `worker` Agent 定义，提供自主执行任务所需的工具、权限和运行轮次，并通过系统提示约束 Worker 的任务范围、子 Agent 派生、错误处理和结果汇报。
+- nested Agent 在父 Agent 仍运行时将终态 notification 路由到父 Agent；父 Agent 已结束、不存在或不可消费时回退主线程，避免结果在 Coordinator 上下文中重复展示。
+- Agent 结束时检查未匹配的 `tool_use`；后台或前台任务在工具调用尚未完成时进入 failed 状态，不再使用旧文本结果错误生成 completed 状态。
+
+### 测试覆盖
+
+- `builtInAgents.test.ts`、`LocalAgentTask.progress.test.ts`、`asyncLifecycleOrdering.test.ts` 和 `foregroundBackgroundContinuation.test.ts` 覆盖 Worker 定义、嵌套 notification 路由、重复终态去重、未完成 tool use 失败和前后台续接场景。
+- `make release-check`、TypeScript、ESLint、缺失导入审计、`git diff --check` 及本轮 `built-claude` scripted tmux Agent/Workflow 交互验证通过；`AgentTool.nesting.test.ts` 中额外 worktree 断言受当前 Agent Teams 计划门控影响，未伪造为通过。
+
 ## 2026-08-01 - Skill over MCP 与 Codex Apps 来源展示
 
 ### 关联提交
