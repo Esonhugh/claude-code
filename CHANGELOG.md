@@ -12,56 +12,42 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-08-01 - Coordinator Worker 与嵌套 Agent 生命周期修复
+## 2026-08-01 - v2.1.206 - Coordinator、MCP Skill 与 Agent 生命周期增强
 
-### 关联提交
+### 版本状态
 
-- `7da0067` — 2026-08-01 — `feat: route nested agents through coordinator worker`
-
-### 变更内容
-
-- Coordinator 模式恢复内置 `worker` Agent 定义，提供自主执行任务所需的工具、权限和运行轮次，并通过系统提示约束 Worker 的任务范围、子 Agent 派生、错误处理和结果汇报。
-- nested Agent 在父 Agent 仍运行时将终态 notification 路由到父 Agent；父 Agent 已结束、不存在或不可消费时回退主线程，避免结果在 Coordinator 上下文中重复展示。
-- Agent 结束时检查未匹配的 `tool_use`；后台或前台任务在工具调用尚未完成时进入 failed 状态，不再使用旧文本结果错误生成 completed 状态。
-
-### 测试覆盖
-
-- `builtInAgents.test.ts`、`LocalAgentTask.progress.test.ts`、`asyncLifecycleOrdering.test.ts` 和 `foregroundBackgroundContinuation.test.ts` 覆盖 Worker 定义、嵌套 notification 路由、重复终态去重、未完成 tool use 失败和前后台续接场景。
-- `make release-check`、TypeScript、ESLint、缺失导入审计、`git diff --check` 及本轮 `built-claude` scripted tmux Agent/Workflow 交互验证通过；`AgentTool.nesting.test.ts` 中额外 worktree 断言受当前 Agent Teams 计划门控影响，未伪造为通过。
-
-## 2026-08-01 - Skill over MCP 与 Codex Apps 来源展示
-
-### 关联提交
-
-- `26f95b3` — 2026-08-01 — `feat: expose MCP skill provenance`
-
-### 变更内容
-
-- 非 Codex MCP server 支持通过 `io.modelcontextprotocol/skills` 扩展和 `skills/list` 发现社区 Skill over MCP；技能使用 server-qualified slash 名称，并在调用时通过 `resources/read` 延迟加载规范 `skill://<name>/SKILL.md` 内容。
-- Skill 来源拆分为 `loadedFrom: 'mcp'` 与 `loadedFrom: 'codex_app'`：`/skills` 分别展示 `MCP skills` 和 `Codex skills`，Codex slash autocomplete 描述增加 `(Codex)` 来源标记。
-- 远端 Skill discovery 对分页、重复项、异常条目、URI 和资源大小设置边界；远端 `SKILL.md` frontmatter 不获得工具、hook、model、agent 或 shell 执行权限，MCP 与 Codex Apps 内容均禁止内联 shell 执行。
-
-### 测试覆盖
-
-- `bun test src/skills/mcpSkills.test.ts src/utils/suggestions/commandSuggestions.source.test.ts` 通过（15 pass、0 fail）；TypeScript、相关 ESLint、`git diff --check` 和 `make build` 通过。
-- 本地 `built-claude` 交互验证社区 MCP skill 的 slash suggestion、`MCP skills` 分组、延迟读取和实际调用；真实 Codex Apps 连接验证 `Codex skills` 独立分组及 `(Codex)` autocomplete 来源标记，运行前后 Git 状态一致。
-
-## 2026-07-31 - Coordinator 递归导航与行展示对齐
+- 准备发布版本：`v2.1.206`。
+- 本次发布覆盖 `v2.1.205` tag 之后至 2026-08-01 的全部提交。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.206`。
 
 ### 关联提交
 
 - `9a9d4b5` — 2026-07-31 — `fix: collapse nested agents in coordinator status`
+- `710d4f2` — 2026-07-31 — `fix: align recursive coordinator navigation and rows`
+- `26f95b3` — 2026-08-01 — `feat: expose MCP skill provenance`
+- `7da0067` — 2026-08-01 — `feat: route nested agents through coordinator worker`
+- `51721b7` — 2026-08-01 — `docs: document coordinator worker changes`
 
 ### 变更内容
 
-- Coordinator 主视图仅展示顶层 Agent，并将运行中的递归子孙聚合为 `(+N)`；进入 Agent transcript 后按祖先路径和直接子节点递归导航，Workflow Agent 子树不会泄漏为普通顶层 Agent。
-- Agent 行显示真实 `agentType` 和独立 description 列，当前焦点使用 `⏺`、其他 Agent 使用 `◯`；Workflow 独立显示名称和 description，并保持现有连接线、main 行及右侧状态信息。
-- PromptInput 的任务数量、索引和 Enter 切换统一使用当前 Agent context 的 Coordinator 布局，支持 root、child、grandchild transcript 逐层切换。
+#### Coordinator 与 Agent 生命周期
+
+- Coordinator 主视图聚合递归子 Agent，支持 root、child、grandchild transcript 导航，并隔离 Workflow Agent 子树；Agent 行显示真实类型、description、焦点状态和运行中后代数量。
+- Coordinator 模式恢复内置 `worker` Agent，提供自主执行任务所需的工具、权限和运行轮次，并约束 Worker 的任务范围、子 Agent 派生、错误处理和结果汇报。
+- nested Agent 在父 Agent 仍运行时将终态 notification 路由到父 Agent；父 Agent 已结束、不存在或不可消费时回退主线程，避免结果在 Coordinator 上下文中重复展示。
+- Agent 结束时检查未匹配的 `tool_use`；工具调用尚未完成时进入 failed 状态，不再使用旧文本结果错误生成 completed 状态。
+
+#### MCP Skill 与 Codex Apps 来源
+
+- 非 Codex MCP server 支持通过 `io.modelcontextprotocol/skills` 扩展和 `skills/list` 发现社区 Skill over MCP，并通过 `resources/read` 延迟加载 `skill://<name>/SKILL.md` 内容。
+- Skill 来源拆分为 `MCP skills` 与 `Codex skills`，slash autocomplete 增加 Codex 来源标记；远端 Skill 内容不会获得工具、hook、model、agent 或 shell 执行权限。
 
 ### 测试覆盖
 
-- Coordinator 行模型测试覆盖递归 `(+N)`、root/child/grandchild 可见集合、索引映射、焦点图标、真实 Agent 类型、Workflow 名称/description、终态 nested Agent 隐藏及 workflow 子树隔离。
-- `bun test src/components/CoordinatorAgentStatus.test.ts`、TypeScript、相关 ESLint、`git diff --check` 和 `make build` 通过；本地 `built-claude` scripted tmux 验证递归键盘导航、transcript 切换、窄终端渲染和 CLI 前后 Git 状态一致。
+- Coordinator 行模型、Worker 定义、nested notification 路由、通知去重、未完成 tool use 失败、前后台续接、MCP Skill discovery 和来源展示均有 focused test 覆盖。
+- `make release-check` 通过：CHANGELOG、TypeScript、ESLint、缺失导入审计和 `git diff --check` 全部通过；本轮 `built-claude` scripted tmux 验证通过 direct Agent 前后台生命周期、nested Agent、Workflow/WorkflowTool、task/notification、`/deep-research` 和 `/code-review`。
+- `/deep-research` 验证 5 次 WebSearch 与 15 次 WebFetch exact-once；`AgentTool.nesting.test.ts` 的额外 worktree 断言受当前 Agent Teams 计划门控影响，未将未覆盖部分伪造为通过。
 
 ## 2026-07-27 - v2.1.205 - Agent 权限继承、Workflow 稳定性、release notes 校验与用量成本修复
 
