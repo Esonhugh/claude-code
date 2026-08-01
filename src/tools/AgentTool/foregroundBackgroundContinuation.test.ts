@@ -43,6 +43,23 @@ const makeAssistantMessage = (
     },
   }) as unknown as Message
 
+const makeToolResultMessage = (toolUseId: string): Message =>
+  ({
+    type: 'user',
+    uuid: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: 'ok',
+        },
+      ],
+    },
+  }) as unknown as Message
+
 let toolUseYields = 0
 let summaryStarts = 0
 let summaryStops = 0
@@ -68,14 +85,16 @@ mock.module('./runAgent.js', () => ({
     params.onCacheSafeParams?.({})
     params.onCacheSafeParams?.({})
     toolUseYields += 1
+    const toolUseId = `toolu_side_effect_${toolUseYields}`
     yield makeAssistantMessage('tool', [
       {
         type: 'tool_use',
-        id: `toolu_side_effect_${toolUseYields}`,
+        id: toolUseId,
         name: 'Bash',
         input: { command: 'side-effect' },
       },
     ] as never)
+    yield makeToolResultMessage(toolUseId)
     currentForegroundReachedTool?.()
     await currentBackgroundMayFinish
     if (runMode === 'failed') throw new Error('background continuation failed')

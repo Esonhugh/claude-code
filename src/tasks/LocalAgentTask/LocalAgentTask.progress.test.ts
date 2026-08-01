@@ -10,6 +10,7 @@ import {
   publishAgentProgress,
   refreshLastAssistantProgress,
   registerAgentForeground,
+  registerAsyncAgent,
   updateProgressFromMessage,
 } from './LocalAgentTask.js'
 import {
@@ -261,6 +262,92 @@ assert.match(
   String(notification?.value),
   /<tool-use-id>toolu_parent_continuation<\/tool-use-id>/,
 )
+resetCommandQueue()
+
+registerAsyncAgent({
+  agentId: 'parent-running-agent',
+  description: 'Parent running agent',
+  prompt: 'wait for child',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_parent_running',
+  spawnDepth: 1,
+})
+registerAsyncAgent({
+  agentId: 'child-routes-to-running-parent',
+  description: 'Child routes to running parent',
+  prompt: 'finish child',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_child_running_parent',
+  parentAgentId: 'parent-running-agent',
+  spawnDepth: 2,
+})
+enqueueAgentNotification({
+  taskId: 'child-routes-to-running-parent',
+  description: 'Child routes to running parent',
+  status: 'completed',
+  setAppState,
+  finalMessage: 'child done',
+  toolUseId: 'toolu_child_running_parent',
+})
+const [routedToParent] = getCommandQueue()
+assert.equal(routedToParent?.mode, 'task-notification')
+assert.equal(routedToParent?.agentId, 'parent-running-agent')
+assert.equal(state.tasks['child-routes-to-running-parent']?.notified, true)
+resetCommandQueue()
+
+enqueueAgentNotification({
+  taskId: 'child-routes-to-running-parent',
+  description: 'Child routes to running parent',
+  status: 'completed',
+  setAppState,
+  finalMessage: 'child done again',
+  toolUseId: 'toolu_child_running_parent',
+})
+assert.equal(getCommandQueue().length, 0)
+
+registerAsyncAgent({
+  agentId: 'parent-terminal-agent',
+  description: 'Parent terminal agent',
+  prompt: 'already done',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_parent_terminal',
+  spawnDepth: 1,
+})
+setAppState(prev => ({
+  ...prev,
+  tasks: {
+    ...prev.tasks,
+    'parent-terminal-agent': {
+      ...prev.tasks['parent-terminal-agent']!,
+      status: 'completed',
+    },
+  },
+}))
+registerAsyncAgent({
+  agentId: 'child-routes-to-main-thread',
+  description: 'Child routes to main thread',
+  prompt: 'finish child',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_child_terminal_parent',
+  parentAgentId: 'parent-terminal-agent',
+  spawnDepth: 2,
+})
+enqueueAgentNotification({
+  taskId: 'child-routes-to-main-thread',
+  description: 'Child routes to main thread',
+  status: 'failed',
+  error: 'child failed',
+  setAppState,
+  toolUseId: 'toolu_child_terminal_parent',
+})
+const [routedToMain] = getCommandQueue()
+assert.equal(routedToMain?.mode, 'task-notification')
+assert.equal(routedToMain?.agentId, undefined)
+assert.match(String(routedToMain?.value), /<status>failed<\/status>/)
 resetCommandQueue()
 
 console.log('LocalAgentTask.progress.test.ts passed')

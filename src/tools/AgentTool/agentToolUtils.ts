@@ -302,6 +302,51 @@ export function countToolUses(messages: MessageType[]): number {
   return count
 }
 
+type PendingToolUse = {
+  id?: string
+  name?: string
+}
+
+function findUnresolvedToolUses(messages: MessageType[]): PendingToolUse[] {
+  const pendingToolUses = new Map<string, PendingToolUse>()
+  const unmatchableToolUses: PendingToolUse[] = []
+
+  for (const message of messages) {
+    if (message.type === 'assistant') {
+      for (const block of message.message.content) {
+        if (block.type !== 'tool_use') continue
+        const name = typeof block.name === 'string' ? block.name : undefined
+        if (typeof block.id === 'string' && block.id.length > 0) {
+          pendingToolUses.set(block.id, { id: block.id, name })
+        } else {
+          unmatchableToolUses.push({ name })
+        }
+      }
+      continue
+    }
+
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+      continue
+    }
+
+    for (const block of message.message.content) {
+      if (
+        block.type === 'tool_result' &&
+        typeof block.tool_use_id === 'string'
+      ) {
+        pendingToolUses.delete(block.tool_use_id)
+      }
+    }
+  }
+
+  return [...unmatchableToolUses, ...pendingToolUses.values()]
+}
+
+function formatPendingToolUse(toolUse: PendingToolUse): string {
+  const toolName = toolUse.name ?? 'unknown tool'
+  return toolUse.id ? `${toolName} (${toolUse.id})` : `${toolName} (missing id)`
+}
+
 export function finalizeAgentTool(
   agentMessages: MessageType[],
   agentId: string,
@@ -329,6 +374,11 @@ export function finalizeAgentTool(
   }
   const terminalError = getAgentTerminalError(agentMessages)
   if (terminalError) throw terminalError
+  const unresolvedToolUses = findUnresolvedToolUses(agentMessages)
+  if (unresolvedToolUses.length > 0) {
+    const pending = unresolvedToolUses.map(formatPendingToolUse).join(', ')
+    throw new Error(`Agent stopped with unresolved tool use: ${pending}`)
+  }
   // Extract text content from the agent's response. If the final assistant
   // message is a pure tool_use block (loop exited mid-turn), fall back to
   // the most recent assistant message that has text content.

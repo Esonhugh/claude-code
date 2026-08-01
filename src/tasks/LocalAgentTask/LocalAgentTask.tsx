@@ -19,7 +19,7 @@ import { findToolByName } from '../../Tool.js'
 import type { AgentToolResult } from '../../tools/AgentTool/agentToolUtils.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import { asAgentId } from '../../types/ids.js'
+import { asAgentId, type AgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 import {
   createAbortController,
@@ -347,9 +347,22 @@ export function enqueueAgentNotification({
   // The flag is set only after queue insertion succeeds so a transient enqueue
   // failure remains retryable instead of permanently suppressing delivery.
   let shouldEnqueue = false
-  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    shouldEnqueue = !task.notified
-    return task
+  let routedAgentId: AgentId | undefined
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    if (!isLocalAgentTask(task) || task.notified) {
+      return prev
+    }
+
+    shouldEnqueue = true
+    if (task.parentAgentId) {
+      const parentTask = prev.tasks[task.parentAgentId]
+      if (isLocalAgentTask(parentTask) && parentTask.status === 'running') {
+        routedAgentId = asAgentId(task.parentAgentId)
+      }
+    }
+
+    return prev
   })
 
   if (!shouldEnqueue) return
@@ -385,7 +398,11 @@ export function enqueueAgentNotification({
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
-  enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  enqueuePendingNotification({
+    value: message,
+    mode: 'task-notification',
+    agentId: routedAgentId,
+  })
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
     ...task,
     notified: true,

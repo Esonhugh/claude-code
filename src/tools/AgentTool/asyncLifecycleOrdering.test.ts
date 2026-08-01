@@ -422,6 +422,69 @@ assert.match(
   /<status>killed<\/status>/,
 )
 
+const unresolvedToolUseMessage = makeAssistantMessage()
+unresolvedToolUseMessage.uuid = crypto.randomUUID()
+unresolvedToolUseMessage.message.content = [
+  {
+    type: 'tool_use',
+    id: 'toolu_unresolved',
+    name: 'Read',
+    input: { file_path: '/tmp/unresolved' },
+  },
+] as never
+unresolvedToolUseMessage.message.usage.input_tokens = 30
+unresolvedToolUseMessage.message.usage.output_tokens = 4
+
+registerAsyncAgent({
+  agentId: 'agent-unresolved-tool-use-test',
+  description: 'Unresolved tool use test',
+  prompt: 'stop with pending tool use',
+  selectedAgent,
+  setAppState,
+  toolUseId: 'toolu_parent_unresolved',
+  spawnDepth: 1,
+})
+
+await runAsyncAgentLifecycle({
+  taskId: 'agent-unresolved-tool-use-test',
+  abortController: new AbortController(),
+  async *makeStream() {
+    yield unresolvedToolUseMessage as never
+  },
+  metadata: {
+    prompt: 'stop with pending tool use',
+    resolvedAgentModel: 'claude-sonnet-4-6',
+    isBuiltInAgent: true,
+    startTime: Date.now(),
+    agentType: 'general-purpose',
+    isAsync: true,
+  },
+  description: 'Unresolved tool use test',
+  toolUseContext: {
+    options: { tools: [] },
+    getAppState: () => state,
+    toolUseId: 'toolu_parent_unresolved',
+  } as never,
+  rootSetAppState: setAppState,
+  agentIdForCleanup: 'agent-unresolved-tool-use-test',
+  enableSummarization: false,
+  getWorktreeResult: async () => ({}),
+})
+
+const unresolvedTask = state.tasks['agent-unresolved-tool-use-test']
+assert.ok(isLocalAgentTask(unresolvedTask))
+assert.equal(unresolvedTask.status, 'failed')
+assert.equal(unresolvedTask.result, undefined)
+const unresolvedNotification = getCommandQueue().find(command =>
+  String(command.value).includes('agent-unresolved-tool-use-test'),
+)
+assert.ok(unresolvedNotification)
+assert.match(String(unresolvedNotification.value), /<status>failed<\/status>/)
+assert.match(
+  String(unresolvedNotification.value),
+  /Agent stopped with unresolved tool use: Read \(toolu_unresolved\)/,
+)
+
 const streamingMessage = makeAssistantMessage()
 streamingMessage.uuid = crypto.randomUUID()
 streamingMessage.message.content = [

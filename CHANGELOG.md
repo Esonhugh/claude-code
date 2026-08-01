@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-01 - Skill over MCP 与 Codex Apps 来源展示
+
+### 关联提交
+
+- `26f95b3` — 2026-08-01 — `feat: expose MCP skill provenance`
+
+### 变更内容
+
+- 非 Codex MCP server 支持通过 `io.modelcontextprotocol/skills` 扩展和 `skills/list` 发现社区 Skill over MCP；技能使用 server-qualified slash 名称，并在调用时通过 `resources/read` 延迟加载规范 `skill://<name>/SKILL.md` 内容。
+- Skill 来源拆分为 `loadedFrom: 'mcp'` 与 `loadedFrom: 'codex_app'`：`/skills` 分别展示 `MCP skills` 和 `Codex skills`，Codex slash autocomplete 描述增加 `(Codex)` 来源标记。
+- 远端 Skill discovery 对分页、重复项、异常条目、URI 和资源大小设置边界；远端 `SKILL.md` frontmatter 不获得工具、hook、model、agent 或 shell 执行权限，MCP 与 Codex Apps 内容均禁止内联 shell 执行。
+
+### 测试覆盖
+
+- `bun test src/skills/mcpSkills.test.ts src/utils/suggestions/commandSuggestions.source.test.ts` 通过（15 pass、0 fail）；TypeScript、相关 ESLint、`git diff --check` 和 `make build` 通过。
+- 本地 `built-claude` 交互验证社区 MCP skill 的 slash suggestion、`MCP skills` 分组、延迟读取和实际调用；真实 Codex Apps 连接验证 `Codex skills` 独立分组及 `(Codex)` autocomplete 来源标记，运行前后 Git 状态一致。
+
 ## 2026-07-31 - Coordinator 递归导航与行展示对齐
 
 ### 关联提交
