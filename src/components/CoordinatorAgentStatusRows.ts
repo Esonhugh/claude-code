@@ -1,3 +1,4 @@
+import { getSessionId } from 'src/bootstrap/state.js'
 import type { AppState } from '../state/AppState.js'
 import {
   isLocalAgentTask,

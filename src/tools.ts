@@ -74,6 +74,7 @@ const getSendMessageTool = () =>
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
+import { ReadMcpResourceDirTool } from './tools/ReadMcpResourceDirTool/ReadMcpResourceDirTool.js'
 import { ReadMcpResourceTool } from './tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { ToolSearchTool } from './tools/ToolSearchTool/ToolSearchTool.js'
 import { filterEnabledCodexAppTools } from './services/apps/preferences.js'
@@ -251,6 +252,7 @@ export function getAllBaseTools(): Tools {
     ...(process.env.NODE_ENV === 'test' ? [TestingPermissionTool] : []),
     ListMcpResourcesTool,
     ReadMcpResourceTool,
+    ReadMcpResourceDirTool,
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens at request time in claude.ts
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
@@ -311,6 +313,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   const specialTools = new Set([
     ListMcpResourcesTool.name,
     ReadMcpResourceTool.name,
+    ReadMcpResourceDirTool.name,
     SYNTHETIC_OUTPUT_TOOL_NAME,
   ])
 

@@ -4,7 +4,12 @@ import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
-import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
+import {
+  getCommand,
+  getMcpSkillCommands,
+  getSkillToolCommands,
+  hasCommand,
+} from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
@@ -518,6 +523,7 @@ export async function* runAgent({
       : baseSystemContext
 
   // Preserve the resolved launch mode while reading fresh parent rule updates.
+  let preloadedSkillAllowedTools: string[] = []
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     let toolPermissionContext =
@@ -566,6 +572,22 @@ export async function* runAgent({
           cliArg: state.toolPermissionContext.alwaysAllowRules.cliArg,
           // Use the provided allowedTools as session-level permissions
           session: [...allowedTools],
+          ...(preloadedSkillAllowedTools.length > 0
+            ? { command: preloadedSkillAllowedTools }
+            : {}),
+        },
+      }
+    } else if (preloadedSkillAllowedTools.length > 0) {
+      toolPermissionContext = {
+        ...toolPermissionContext,
+        alwaysAllowRules: {
+          ...toolPermissionContext.alwaysAllowRules,
+          command: [
+            ...new Set([
+              ...(toolPermissionContext.alwaysAllowRules.command ?? []),
+              ...preloadedSkillAllowedTools,
+            ]),
+          ],
         },
       }
     }
@@ -675,7 +697,13 @@ export async function* runAgent({
   // Preload skills from agent frontmatter
   const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
-    const allSkills = await getSkillToolCommands(getProjectRoot())
+    const allSkills = uniqBy(
+      [
+        ...(await getSkillToolCommands(getProjectRoot())),
+        ...getMcpSkillCommands(appState.mcp.commands),
+      ],
+      'name',
+    )
 
     // Filter valid skills and warn about missing ones
     const validSkills: Array<{
@@ -741,6 +769,9 @@ export async function* runAgent({
         }),
       )
     }
+    preloadedSkillAllowedTools = [
+      ...new Set(validSkills.flatMap(({ skill }) => skill.allowedTools ?? [])),
+    ]
   }
 
   // Initialize agent-specific MCP servers (additive to parent's servers)

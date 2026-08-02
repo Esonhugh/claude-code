@@ -178,9 +178,10 @@ export const getPrompt = memoize(async (_cwd: string): Promise<string> => {
 A skill is a packaged workflow listed in system-reminder messages. When a listed skill covers the task, or the user requests one by name (\`/<name>\` or "slash command"), call this tool first and follow the loaded instructions.
 
 - \`skill\`: exact name from the listing, no leading slash. Plugin skills use \`plugin:skill\`.
+- An MCP skill URI explicitly supplied by the user or server instructions uses \`<server>:<uri>\`, for example \`docs:skill://pdf/SKILL.md\`.
 - \`args\`: optional arguments to pass through.
 
-Only listed names or names explicitly typed by the user are valid; never guess a skill name. Built-in CLI commands such as \`/help\` and \`/clear\` are not skills. Never mention a skill without invoking it, and do not invoke one already running. If a <${COMMAND_NAME_TAG}> block is already present this turn, the skill is loaded—follow it instead of calling again.
+Only listed names or MCP skill URIs explicitly supplied by the user or server instructions are valid; never guess either. Built-in CLI commands such as \`/help\` and \`/clear\` are not skills. Never mention a skill without invoking it, and do not invoke one already running. If a <${COMMAND_NAME_TAG}> block is already present this turn, the skill is loaded—follow it instead of calling again.
 `
 })
 

@@ -73,6 +73,19 @@ export type LoadedFrom =
   | 'mcp'
   | 'codex_app'
 
+type McpResourceRoot = {
+  server: string
+  uri: string
+  directoryRead: boolean
+}
+
+function formatMcpResourceInstructions(root: McpResourceRoot): string {
+  const directoryInstructions = root.directoryRead
+    ? ` Call ReadMcpResourceDirTool on "${root.uri}" or a subdirectory URI to list its contents.`
+    : ''
+  return `This skill is served by MCP server "${root.server}" at ${root.uri}. To read a supporting file this skill references by a relative path — for example "templates/invoice.md" — call ReadMcpResourceTool with server "${root.server}" and uri "${root.uri}/templates/invoice.md".${directoryInstructions}`
+}
+
 /**
  * Returns a claude config directory path for a given source.
  */
@@ -284,6 +297,7 @@ export function createSkillCommand({
   userInvocable,
   source,
   baseDir,
+  mcpResourceRoot,
   loadedFrom,
   hooks,
   executionContext,
@@ -307,6 +321,7 @@ export function createSkillCommand({
   userInvocable: boolean
   source: PromptCommand['source']
   baseDir: string | undefined
+  mcpResourceRoot?: McpResourceRoot
   loadedFrom: LoadedFrom
   hooks: HooksSettings | undefined
   executionContext: 'inline' | 'fork' | undefined
@@ -345,7 +360,9 @@ export function createSkillCommand({
     async getPromptForCommand(args, toolUseContext) {
       let finalContent = baseDir
         ? `Base directory for this skill: ${baseDir}\n\n${markdownContent}`
-        : markdownContent
+        : mcpResourceRoot
+          ? `${formatMcpResourceInstructions(mcpResourceRoot)}\n\n${markdownContent}`
+          : markdownContent
 
       finalContent = substituteArguments(
         finalContent,

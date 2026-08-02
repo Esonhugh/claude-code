@@ -53,6 +53,7 @@ import {
 import { ListMcpResourcesTool } from '../../tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
 import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
 import { createMcpAuthTool } from '../../tools/McpAuthTool/McpAuthTool.js'
+import { ReadMcpResourceDirTool } from '../../tools/ReadMcpResourceDirTool/ReadMcpResourceDirTool.js'
 import { ReadMcpResourceTool } from '../../tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { count } from '../../utils/array.js'
@@ -2316,11 +2317,17 @@ export async function reconnectMcpServerImpl(
     const resourceTools: Tool[] = []
     if (supportsGenericResources) {
       // Only add resource tools if no other server has them
-      const hasResourceTools = [ListMcpResourcesTool, ReadMcpResourceTool].some(
-        tool => tools.some(t => toolMatchesName(t, tool.name)),
-      )
+      const hasResourceTools = [
+        ListMcpResourcesTool,
+        ReadMcpResourceTool,
+        ReadMcpResourceDirTool,
+      ].some(tool => tools.some(t => toolMatchesName(t, tool.name)))
       if (!hasResourceTools) {
-        resourceTools.push(ListMcpResourcesTool, ReadMcpResourceTool)
+        resourceTools.push(
+          ListMcpResourcesTool,
+          ReadMcpResourceTool,
+          ReadMcpResourceDirTool,
+        )
       }
     }
 
@@ -2499,7 +2506,11 @@ export async function getMcpToolsCommandsAndResources(
       const resourceTools: Tool[] = []
       if (supportsGenericResources && !resourceToolsAdded) {
         resourceToolsAdded = true
-        resourceTools.push(ListMcpResourcesTool, ReadMcpResourceTool)
+        resourceTools.push(
+          ListMcpResourcesTool,
+          ReadMcpResourceTool,
+          ReadMcpResourceDirTool,
+        )
       }
 
       onConnectionAttempt({

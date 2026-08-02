@@ -176,6 +176,8 @@ import {
 import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from './claudeInChrome/common.js'
 import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from './claudeInChrome/prompt.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
+import { MCP_SKILLS_EXTENSION } from '../services/mcp/directoryRead.js'
+import { isHostOwnedCodexAppsConfig } from '../services/apps/trust.js'
 import type {
   HookEvent,
   SyncHookJSONOutput,
@@ -2174,12 +2176,22 @@ async function processMcpResourceAttachments(
           logEvent('tengu_at_mention_mcp_resource_error', {})
           return null
         }
-
         // Find the MCP client
         const client = mcpClients.find(c => c.name === serverName)
         if (!client || client.type !== 'connected') {
           logEvent('tengu_at_mention_mcp_resource_error', {})
           return null
+        }
+
+        if (
+          !isHostOwnedCodexAppsConfig(client.config) &&
+          client.capabilities.extensions?.[MCP_SKILLS_EXTENSION] !== undefined
+        ) {
+          try {
+            if (new URL(uri).pathname.endsWith('/SKILL.md')) return null
+          } catch {
+            // Let the existing resource lookup reject malformed URIs.
+          }
         }
 
         // Find the resource in available resources to get its metadata

@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict'
-import { afterEach, describe, it } from 'node:test'
+import { createHash } from 'node:crypto'
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 import type { ConnectedMCPServer } from '../services/mcp/types.js'
 import { buildCodexAppPluginProjections } from '../services/apps/pluginProjection.js'
 import {
@@ -19,15 +30,34 @@ import {
   getServerCacheKey,
 } from '../services/mcp/client.js'
 import { commandBelongsToServer } from '../services/mcp/utils.js'
+import { getDefaultAppState } from '../state/AppStateStore.js'
+import { SkillTool } from '../tools/SkillTool/SkillTool.js'
+import { ReadMcpResourceDirTool } from '../tools/ReadMcpResourceDirTool/ReadMcpResourceDirTool.js'
 import { ReadMcpResourceTool } from '../tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import './loadSkillsDir.js'
 import {
+  createMcpSkillResourceRules,
+  readMcpSkillResourceRules,
+  replaceMcpSkillResourceRules,
+} from './mcpSkillResourceGrant.js'
+import {
+  clearMcpSkillUriCache,
+  fetchMcpSkillCommandByUri,
   fetchMcpSkillsForClient,
   registerMcpSkillClientResolver,
 } from './mcpSkills.js'
 
+type TestMcpClient = {
+  request?: (request: {
+    method: string
+    params?: Record<string, unknown>
+  }) => Promise<unknown>
+  listResources: ConnectedMCPServer['client']['listResources']
+  readResource: ConnectedMCPServer['client']['readResource']
+}
+
 function connectedClient(
-  client: Pick<ConnectedMCPServer['client'], 'listResources' | 'readResource'>,
+  client: TestMcpClient,
   trusted = true,
   serverName = CODEX_APPS_SERVER_NAME,
   extensions: Record<string, object> = {},
@@ -51,7 +81,7 @@ function connectedClient(
       }
 
   return {
-    client: client as ConnectedMCPServer['client'],
+    client: client as unknown as ConnectedMCPServer['client'],
     name: serverName,
     type: 'connected',
     capabilities: { resources: {}, extensions },
@@ -60,14 +90,44 @@ function connectedClient(
   }
 }
 
-afterEach(() => {
+const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+let temporaryConfigDir: string | undefined
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+function mcpSkillArchivesDir(): string {
+  assert.ok(temporaryConfigDir)
+  return join(temporaryConfigDir, 'mcp-skill-archives')
+}
+
+async function onlyArchiveSlugDir(): Promise<string> {
+  const entries = await readdir(mcpSkillArchivesDir())
+  assert.equal(entries.length, 1)
+  return join(mcpSkillArchivesDir(), entries[0]!)
+}
+
+beforeEach(async () => {
+  temporaryConfigDir = await mkdtemp(join(tmpdir(), 'mcp-skill-cache-'))
+  process.env.CLAUDE_CONFIG_DIR = temporaryConfigDir
+})
+
+afterEach(async () => {
   fetchMcpSkillsForClient.cache.clear()
+  clearMcpSkillUriCache()
   clearFetchToolsCache(CODEX_APPS_SERVER_NAME)
   clearFetchToolsCache(CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME)
   fetchResourcesForClient.cache.clear()
   fetchCommandsForClient.cache.clear()
   connectToServer.cache.clear()
   registerMcpSkillClientResolver(async client => client)
+  if (temporaryConfigDir) {
+    await rm(temporaryConfigDir, { recursive: true, force: true })
+    temporaryConfigDir = undefined
+  }
+  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
 })
 
 describe('fetchMcpSkillsForClient', () => {
@@ -96,10 +156,7 @@ describe('fetchMcpSkillsForClient', () => {
         async readResource({ uri }) {
           return { contents: [{ uri, text: '# Review repositories' }] }
         },
-      } as Pick<
-        ConnectedMCPServer['client'],
-        'request' | 'listResources' | 'readResource'
-      >,
+      },
       true,
       CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
     )
@@ -152,10 +209,7 @@ describe('fetchMcpSkillsForClient', () => {
         async readResource() {
           return { contents: [] }
         },
-      } as Pick<
-        ConnectedMCPServer['client'],
-        'request' | 'listResources' | 'readResource'
-      >,
+      },
       true,
       CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
     )
@@ -200,10 +254,7 @@ describe('fetchMcpSkillsForClient', () => {
         async readResource() {
           return { contents: [] }
         },
-      } as Pick<
-        ConnectedMCPServer['client'],
-        'request' | 'listResources' | 'readResource'
-      >,
+      },
       false,
       'ordinary_resources',
     )
@@ -226,7 +277,11 @@ describe('fetchMcpSkillsForClient', () => {
 
     assert.deepEqual(attempts, [
       {
-        tools: ['ListMcpResourcesTool', 'ReadMcpResourceTool'],
+        tools: [
+          'ListMcpResourcesTool',
+          'ReadMcpResourceTool',
+          'ReadMcpResourceDirTool',
+        ],
         resources: [
           {
             uri: 'file:///ordinary-resource',
@@ -273,10 +328,7 @@ describe('fetchMcpSkillsForClient', () => {
         async readResource({ uri }) {
           return { contents: [{ uri, text: '# Review repositories' }] }
         },
-      } as Pick<
-        ConnectedMCPServer['client'],
-        'request' | 'listResources' | 'readResource'
-      >,
+      },
       true,
       CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
     )
@@ -338,10 +390,7 @@ describe('fetchMcpSkillsForClient', () => {
       async readResource({ uri }) {
         return { contents: [{ uri, text: '# Review repositories' }] }
       },
-    } as Pick<
-      ConnectedMCPServer['client'],
-      'request' | 'listResources' | 'readResource'
-    >)
+    })
     client.capabilities.tools = {}
 
     const [tools, skills] = await Promise.all([
@@ -393,10 +442,7 @@ describe('fetchMcpSkillsForClient', () => {
       async readResource() {
         return { contents: [] }
       },
-    } as Pick<
-      ConnectedMCPServer['client'],
-      'request' | 'listResources' | 'readResource'
-    >)
+    })
     toolsOnlyClient.capabilities.tools = {}
 
     const tools = await fetchToolsForClient(toolsOnlyClient)
@@ -429,10 +475,7 @@ describe('fetchMcpSkillsForClient', () => {
       async readResource() {
         return { contents: [] }
       },
-    } as Pick<
-      ConnectedMCPServer['client'],
-      'request' | 'listResources' | 'readResource'
-    >)
+    })
     skillsOnlyClient.capabilities.tools = {}
 
     const noTools = await fetchToolsForClient(skillsOnlyClient)
@@ -464,12 +507,6 @@ describe('fetchMcpSkillsForClient', () => {
                   name: 'git-workflow',
                   description: 'Review repository changes',
                 },
-                resources: [
-                  {
-                    uri: 'skill://git-workflow/SKILL.md',
-                    digest: 'sha256:demo',
-                  },
-                ],
               },
             ],
           }
@@ -486,17 +523,14 @@ describe('fetchMcpSkillsForClient', () => {
                 mimeType: 'text/markdown',
                 text: `---
 name: git-workflow
-description: ignored
+description: Review repository changes
 ---
 # Review changes`,
               },
             ],
           }
         },
-      } as Pick<
-        ConnectedMCPServer['client'],
-        'request' | 'listResources' | 'readResource'
-      >,
+      },
       false,
       'community_skills',
       { 'io.modelcontextprotocol/skills': {} },
@@ -504,18 +538,526 @@ description: ignored
     const [skill] = await fetchMcpSkillsForClient(client)
 
     assert.equal(requests.length, 1)
-    assert.deepEqual(readUris, [])
+    assert.deepEqual(readUris, ['skill://git-workflow/SKILL.md'])
     assert.equal(skill?.name, 'community_skills:git-workflow')
     if (skill?.type === 'prompt') {
       assert.equal(skill.source, 'mcp')
       assert.equal(skill.loadedFrom, 'mcp')
+      assert.equal(skill.description, 'Review repository changes')
+      assert.ok(skill.contentLength > 0)
     }
     assert.equal(skill?.mcpServerName, 'community_skills')
     assert.equal(skill?.type, 'prompt')
     if (skill?.type === 'prompt') {
       const prompt = await skill.getPromptForCommand('', {} as never)
+      const promptText = prompt[0]?.type === 'text' ? prompt[0].text : ''
       assert.deepEqual(readUris, ['skill://git-workflow/SKILL.md'])
-      assert.match(prompt[0]?.type === 'text' ? prompt[0].text : '', /Review changes/)
+      assert.match(
+        promptText,
+        /This skill is served by MCP server "community_skills" at skill:\/\/git-workflow\./,
+      )
+      assert.match(promptText, /ReadMcpResourceTool/)
+      assert.doesNotMatch(promptText, /ReadMcpResourceDirTool/)
+      assert.match(promptText, /Review changes/)
+    }
+  })
+
+  it('loads an unlisted skill through skills/get after an empty listing', async () => {
+    const markdown = `---
+name: direct-skill
+description: Direct skill
+---
+# Direct`
+    const requests: Array<{ method: string; params?: unknown }> = []
+    const client = connectedClient(
+      {
+        async request(request) {
+          requests.push(request)
+          if (request.method === 'skills/list') return { skills: [] }
+          if (request.method === 'skills/get') {
+            assert.deepEqual(request.params, {
+              uri: 'skill://direct-skill/SKILL.md',
+            })
+            return {
+              skill: {
+                uri: 'skill://direct-skill/SKILL.md',
+                frontmatter: {
+                  name: 'direct-skill',
+                  description: 'Direct skill',
+                },
+                resources: [
+                  {
+                    uri: 'skill://direct-skill/SKILL.md',
+                    digest: `sha256:${sha256(markdown)}`,
+                  },
+                ],
+              },
+            }
+          }
+          throw new Error(`Unexpected request ${request.method}`)
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'direct_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    assert.deepEqual(await fetchMcpSkillsForClient(client), [])
+    const skill = await fetchMcpSkillCommandByUri(
+      client,
+      'skill://direct-skill/SKILL.md',
+    )
+
+    assert.equal(skill?.name, 'direct_server:direct-skill')
+    assert.deepEqual(
+      requests.map(request => request.method),
+      ['skills/list', 'skills/get'],
+    )
+  })
+
+  it('keeps direct same-name skills distinct by URI path', async () => {
+    const markdown = (description: string) => `---
+name: refunds
+description: ${description}
+---
+# Refunds`
+    const client = connectedClient(
+      {
+        async request(request) {
+          assert.equal(request.method, 'skills/get')
+          const uri = String(request.params?.uri)
+          const description = uri.includes('/billing/')
+            ? 'Billing refunds'
+            : 'Support refunds'
+          return {
+            skill: {
+              uri,
+              frontmatter: { name: 'refunds', description },
+              resources: [
+                {
+                  uri,
+                  digest: `sha256:${sha256(markdown(description))}`,
+                },
+              ],
+            },
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          const description = uri.includes('/billing/')
+            ? 'Billing refunds'
+            : 'Support refunds'
+          return { contents: [{ uri, text: markdown(description) }] }
+        },
+      },
+      false,
+      'direct_paths',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const billing = await fetchMcpSkillCommandByUri(
+      client,
+      'skill://acme/billing/refunds/SKILL.md',
+    )
+    const support = await fetchMcpSkillCommandByUri(
+      client,
+      'skill://acme/support/refunds/SKILL.md',
+    )
+
+    assert.equal(billing?.name, 'direct_paths:acme/billing/refunds')
+    assert.equal(support?.name, 'direct_paths:acme/support/refunds')
+  })
+
+  it('gates direct SkillTool URI loading on canonical permissions without losing the URI', async () => {
+    const markdown = `---
+name: direct-tool-skill
+description: Direct tool skill
+---
+# Direct tool`
+    const requests: string[] = []
+    let reads = 0
+    const client = connectedClient(
+      {
+        async request(request) {
+          requests.push(request.method)
+          if (request.method === 'skills/get') {
+            return {
+              skill: {
+                uri: 'skill://direct-tool-skill/SKILL.md',
+                frontmatter: {
+                  name: 'direct-tool-skill',
+                  description: 'Direct tool skill',
+                },
+                resources: [
+                  {
+                    uri: 'skill://direct-tool-skill/SKILL.md',
+                    digest: `sha256:${sha256(markdown)}`,
+                  },
+                ],
+              },
+            }
+          }
+          throw new Error(`Unexpected request ${request.method}`)
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          reads++
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'direct_tool_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+    const appState = getDefaultAppState()
+    const priorSkillRules = createMcpSkillResourceRules(
+      'prior_server',
+      'skill://prior/SKILL.md',
+      [
+        {
+          uri: 'skill://prior/reference.md',
+          digest: '0'.repeat(64),
+        },
+      ],
+    )
+    let allowRules: string[] = []
+    let denyRules: string[] = []
+    const context = {
+      options: {
+        commands: [],
+        tools: [],
+        mcpClients: [client],
+        mcpResources: {},
+        agentDefinitions: { activeAgents: [], allAgents: [] },
+        mainLoopModel: 'claude-sonnet-4-6',
+      },
+      messages: [],
+      getAppState: () => ({
+        ...appState,
+        toolPermissionContext: {
+          ...appState.toolPermissionContext,
+          alwaysAllowRules: {
+            ...appState.toolPermissionContext.alwaysAllowRules,
+            command: allowRules,
+          },
+          alwaysDenyRules: {
+            ...appState.toolPermissionContext.alwaysDenyRules,
+            command: denyRules,
+          },
+        },
+        mcp: { ...appState.mcp, clients: [client], commands: [] },
+      }),
+      setAppState: () => {},
+    } as never
+    const input = {
+      skill:
+        'direct_tool_server:skill://direct-tool-skill/SKILL.md',
+      args: 'focus',
+    }
+    const originalApiKey = process.env.ANTHROPIC_API_KEY
+    const originalDisableAttachments = process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    process.env.ANTHROPIC_API_KEY = 'test'
+    process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = '1'
+
+    try {
+      assert.deepEqual(await SkillTool.validateInput(input, context), {
+        result: true,
+      })
+      assert.deepEqual(requests, [])
+      assert.equal(reads, 0)
+
+      const pendingDecision = await SkillTool.checkPermissions(input, context)
+      assert.equal(pendingDecision.behavior, 'ask')
+      assert.deepEqual(pendingDecision.updatedInput, input)
+      assert.deepEqual(requests, [])
+      assert.equal(reads, 0)
+
+      denyRules = ['Skill(direct_tool_server:direct-tool-skill)']
+      const deniedDecision = await SkillTool.checkPermissions(input, context)
+      assert.equal(deniedDecision.behavior, 'deny')
+      assert.deepEqual(requests, [])
+      assert.equal(reads, 0)
+
+      denyRules = []
+      allowRules = ['Skill(direct_tool_server:direct-tool-skill)']
+      const allowedDecision = await SkillTool.checkPermissions(input, context)
+      assert.equal(allowedDecision.behavior, 'allow')
+      assert.deepEqual(allowedDecision.updatedInput, input)
+      assert.deepEqual(requests, [])
+      assert.equal(reads, 0)
+
+      const result = await SkillTool.call(
+        allowedDecision.updatedInput as typeof input,
+        context,
+        (async () => ({ behavior: 'allow' })) as never,
+        {
+          type: 'assistant',
+          message: { content: [] },
+        } as never,
+      )
+
+      assert.equal(result.data.commandName, 'direct_tool_server:direct-tool-skill')
+      assert.match(JSON.stringify(result.newMessages), /# Direct tool/)
+      assert.deepEqual(requests, ['skills/get'])
+      assert.equal(reads, 1)
+      assert.ok(result.contextModifier)
+      const modifiedContext = result.contextModifier({
+        getAppState: () => ({
+          ...appState,
+          toolPermissionContext: {
+            ...appState.toolPermissionContext,
+            alwaysAllowRules: {
+              ...appState.toolPermissionContext.alwaysAllowRules,
+              command: priorSkillRules,
+            },
+          },
+        }),
+      } as never)
+      assert.deepEqual(
+        readMcpSkillResourceRules(
+          modifiedContext.getAppState().toolPermissionContext.alwaysAllowRules
+            .command ?? [],
+        ),
+        {
+          scoped: true,
+          scopes: [
+            {
+              server: 'direct_tool_server',
+              skillUri: 'skill://direct-tool-skill/SKILL.md',
+            },
+          ],
+          grants: [
+            {
+              server: 'direct_tool_server',
+              skillUri: 'skill://direct-tool-skill/SKILL.md',
+              uri: 'skill://direct-tool-skill/SKILL.md',
+              digest: sha256(markdown),
+            },
+          ],
+        },
+      )
+    } finally {
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = originalApiKey
+      if (originalDisableAttachments === undefined) {
+        delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      } else {
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = originalDisableAttachments
+      }
+    }
+  })
+
+  it('replaces prior MCP skill grants while preserving unrelated command rules', () => {
+    const firstRules = createMcpSkillResourceRules(
+      'first_server',
+      'skill://first/SKILL.md',
+      [
+        {
+          uri: 'skill://first/reference.md',
+          digest: '0'.repeat(64),
+        },
+      ],
+    )
+    const secondRules = createMcpSkillResourceRules(
+      'second_server',
+      'skill://second/SKILL.md',
+      [
+        {
+          uri: 'skill://second/reference.md',
+          digest: '1'.repeat(64),
+        },
+      ],
+    )
+    const unrelatedRule = 'Bash(git status)'
+    const replaced = replaceMcpSkillResourceRules(
+      [unrelatedRule, ...firstRules],
+      secondRules,
+    )
+
+    assert.equal(replaced[0], unrelatedRule)
+    assert.deepEqual(readMcpSkillResourceRules(replaced), {
+      scoped: true,
+      scopes: [
+        { server: 'second_server', skillUri: 'skill://second/SKILL.md' },
+      ],
+      grants: [
+        {
+          server: 'second_server',
+          skillUri: 'skill://second/SKILL.md',
+          uri: 'skill://second/reference.md',
+          digest: '1'.repeat(64),
+        },
+      ],
+    })
+  })
+
+  it('loads instruction-linked skills through skills/get', async () => {
+    const markdown = `---
+name: instruction-skill
+description: Instruction skill
+---
+# Instruction`
+    const requests: Array<{ method: string; params?: unknown }> = []
+    const client = connectedClient(
+      {
+        async request(request) {
+          requests.push(request)
+          if (request.method === 'skills/list') return { skills: [] }
+          if (request.method === 'skills/get') {
+            return {
+              skill: {
+                uri: 'github://owner/repo/skills/instruction-skill/SKILL.md',
+                frontmatter: {
+                  name: 'instruction-skill',
+                  description: 'Instruction skill',
+                },
+                resources: [
+                  {
+                    uri: 'github://owner/repo/skills/instruction-skill/SKILL.md',
+                    digest: `sha256:${sha256(markdown)}`,
+                  },
+                ],
+              },
+            }
+          }
+          throw new Error(`Unexpected request ${request.method}`)
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'instruction_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+    client.instructions =
+      'Use github://owner/repo/skills/instruction-skill/SKILL.md for this workflow.'
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual(
+      requests.map(request => request.method),
+      ['skills/list', 'skills/get'],
+    )
+    assert.equal(skills[0]?.name, 'instruction_server:instruction-skill')
+  })
+
+  it('rejects skills/get entries that do not match the requested URI', async () => {
+    let reads = 0
+    const client = connectedClient(
+      {
+        async request(request) {
+          assert.equal(request.method, 'skills/get')
+          return {
+            skill: {
+              uri: 'skill://other/SKILL.md',
+              frontmatter: { name: 'other', description: 'Other' },
+            },
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource() {
+          reads++
+          return { contents: [] }
+        },
+      },
+      false,
+      'mismatch_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    assert.equal(
+      await fetchMcpSkillCommandByUri(client, 'skill://requested/SKILL.md'),
+      null,
+    )
+    assert.equal(reads, 0)
+  })
+
+  it('does not call skills/get for Codex Apps clients', async () => {
+    let getRequests = 0
+    const client = connectedClient({
+      async request(request) {
+        if (request.method === 'skills/get') getRequests++
+        throw new Error(`Unexpected request ${request.method}`)
+      },
+      async listResources() {
+        return { resources: [] }
+      },
+      async readResource() {
+        return { contents: [] }
+      },
+    })
+    client.instructions = 'Use skill://unlisted/SKILL.md.'
+
+    assert.deepEqual(await fetchMcpSkillsForClient(client), [])
+    assert.equal(
+      await fetchMcpSkillCommandByUri(client, 'skill://unlisted/SKILL.md'),
+      null,
+    )
+    assert.equal(getRequests, 0)
+  })
+
+  it('advertises MCP directory reads only when the skill extension declares them', async () => {
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://directory-skill/SKILL.md',
+                frontmatter: {
+                  name: 'directory-skill',
+                  description: 'Directory skill',
+                },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return {
+            contents: [
+              {
+                uri,
+                text: `---
+name: directory-skill
+description: Directory skill
+---
+# Directory skill`,
+              },
+            ],
+          }
+        },
+      },
+      false,
+      'directory_skills',
+      { 'io.modelcontextprotocol/skills': { directoryRead: true } },
+    )
+
+    const [skill] = await fetchMcpSkillsForClient(client)
+    assert.equal(skill?.type, 'prompt')
+    if (skill?.type === 'prompt') {
+      const prompt = await skill.getPromptForCommand('', {} as never)
+      const promptText = prompt[0]?.type === 'text' ? prompt[0].text : ''
+      assert.match(promptText, /skill:\/\/directory-skill/)
+      assert.match(promptText, /ReadMcpResourceDirTool/)
     }
   })
 
@@ -626,8 +1168,11 @@ description: ignored
       assert.equal(skill.type === 'prompt' && skill.contentLength, 0)
       if (skill.type === 'prompt') {
         const prompt = await skill.getPromptForCommand('', {} as never)
+        const promptText = prompt[0]?.type === 'text' ? prompt[0].text : ''
         assert.equal(prompt[0]?.type, 'text')
-        assert.match(prompt[0]?.type === 'text' ? prompt[0].text : '', /!`false`/)
+        assert.match(promptText, /!`false`/)
+        assert.doesNotMatch(promptText, /This skill is served by MCP server/)
+        assert.doesNotMatch(promptText, /ReadMcpResourceDirTool/)
       }
     }
     assert.deepEqual(readUris, [
@@ -763,7 +1308,7 @@ description: ignored
     assert.equal(currentReads, 1)
   })
 
-  it('does not cache an initial discovery failure', async () => {
+  it('does not cache an initial Codex Apps discovery failure', async () => {
     let attempts = 0
     const client = connectedClient({
       async listResources() {
@@ -775,6 +1320,32 @@ description: ignored
         return { contents: [] }
       },
     })
+
+    assert.deepEqual(await fetchMcpSkillsForClient(client), [])
+    assert.deepEqual(await fetchMcpSkillsForClient(client), [])
+    assert.equal(attempts, 2)
+  })
+
+  it('does not cache an initial ordinary skills/list failure', async () => {
+    let attempts = 0
+    const client = connectedClient(
+      {
+        async request() {
+          attempts++
+          if (attempts === 1) throw new Error('temporary failure')
+          return { skills: [] }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource() {
+          return { contents: [] }
+        },
+      },
+      false,
+      'retry_skills',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
 
     assert.deepEqual(await fetchMcpSkillsForClient(client), [])
     assert.deepEqual(await fetchMcpSkillsForClient(client), [])
@@ -831,5 +1402,1254 @@ description: ignored
     )
     assert.equal(firstLists, 1)
     assert.equal(secondLists, 1)
+  })
+
+  it('disambiguates same-name skills by their shortest distinguishing path', async () => {
+    const markdownByUri: Record<string, string> = {
+      'skill://acme/billing/refunds/SKILL.md': `---
+name: refunds
+description: Billing refunds
+---
+# Billing`,
+      'skill://acme/support/refunds/SKILL.md': `---
+name: refunds
+description: Support refunds
+---
+# Support`,
+    }
+    const client = connectedClient(
+      {
+        async request(request) {
+          assert.equal(request.method, 'skills/list')
+          return {
+            skills: Object.entries(markdownByUri).map(([uri, markdown]) => ({
+              uri,
+              frontmatter: {
+                name: 'refunds',
+                description: uri.includes('/billing/')
+                  ? 'Billing refunds'
+                  : 'Support refunds',
+              },
+              resources: [
+                { uri, digest: `sha256:${sha256(markdown)}` },
+              ],
+            })),
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: markdownByUri[uri] }] }
+        },
+      },
+      false,
+      'hierarchical_skills',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      [
+        'hierarchical_skills:billing/refunds',
+        'hierarchical_skills:support/refunds',
+      ],
+    )
+    assert.equal(new Set(skills.map(skill => skill.name)).size, 2)
+  })
+
+  it('does not activate a nested SKILL.md that is only supporting content', async () => {
+    const outerMarkdown = `---
+name: outer
+description: Outer skill
+---
+# Outer`
+    const nestedMarkdown = `---
+name: nested
+description: Nested skill
+---
+# Nested`
+    const client = connectedClient(
+      {
+        async request(request) {
+          assert.equal(request.method, 'skills/list')
+          return {
+            skills: [
+              {
+                uri: 'skill://team/outer/SKILL.md',
+                frontmatter: {
+                  name: 'outer',
+                  description: 'Outer skill',
+                },
+                resources: [
+                  {
+                    uri: 'skill://team/outer/SKILL.md',
+                    digest: `sha256:${sha256(outerMarkdown)}`,
+                  },
+                  {
+                    uri: 'skill://team/outer/nested/SKILL.md',
+                    digest: `sha256:${sha256(nestedMarkdown)}`,
+                  },
+                ],
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: outerMarkdown }] }
+        },
+      },
+      false,
+      'nested_skills',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      ['nested_skills:outer'],
+    )
+    assert.equal(skills[0]?.type, 'prompt')
+    if (skills[0]?.type === 'prompt') {
+      assert.equal(skills[0].allowedTools?.length, 3)
+    }
+  })
+
+  it('lists ordinary MCP skills with empty first-page params and up to twenty pages', async () => {
+    const requests: Array<{ method: string; params?: unknown }> = []
+    const client = connectedClient(
+      {
+        async request(request) {
+          requests.push(request)
+          assert.equal(request.method, 'skills/list')
+          const page = requests.length
+          return {
+            skills: [
+              {
+                uri: `skill://skill-${page}/SKILL.md`,
+                frontmatter: {
+                  name: `skill-${page}`,
+                  description: `Skill ${page}`,
+                },
+              },
+            ],
+            nextCursor: page < 25 ? `cursor-${page}` : undefined,
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          const match = /skill-(\d+)/u.exec(uri)
+          return {
+            contents: [
+              {
+                uri,
+                text: `---
+name: skill-${match?.[1]}
+description: Skill ${match?.[1]}
+---
+# Skill ${match?.[1]}`,
+              },
+            ],
+          }
+        },
+      },
+      false,
+      'paged_skills',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.equal(requests.length, 20)
+    assert.deepEqual(requests[0], { method: 'skills/list', params: {} })
+    assert.deepEqual(requests[1], {
+      method: 'skills/list',
+      params: { cursor: 'cursor-1' },
+    })
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      Array.from({ length: 20 }, (_, index) => `paged_skills:skill-${index + 1}`),
+    )
+  })
+
+  it('keeps Codex Apps skill discovery capped at ten resource pages', async () => {
+    const listCursors: Array<string | undefined> = []
+    const client = connectedClient({
+      async listResources(params) {
+        listCursors.push(params?.cursor)
+        const page = listCursors.length
+        return {
+          resources: [
+            {
+              uri: `skill://apps/demo/codex-${page}`,
+              name: `codex-${page}`,
+              mimeType: 'mcp/skill',
+              _meta: { plugin_name: 'demo', skill_name: `codex-${page}` },
+            },
+          ],
+          nextCursor: page < 25 ? `cursor-${page}` : undefined,
+        }
+      },
+      async readResource({ uri }) {
+        return { contents: [{ uri, text: '# Lazy codex skill' }] }
+      },
+    })
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.equal(listCursors.length, 10)
+    assert.deepEqual(listCursors.slice(0, 2), [undefined, 'cursor-1'])
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      Array.from({ length: 10 }, (_, index) => `demo:codex-${index + 1}`),
+    )
+  })
+
+  it('validates canonical resources manifests before loading ordinary MCP skills', async () => {
+    const markdownFor = (name: string, description: string) => `---
+name: ${name}
+description: ${description}
+---
+# ${name}`
+    const validMarkdown = markdownFor('manifest-valid', 'Valid manifest')
+    const mismatchMarkdown = markdownFor(
+      'manifest-mismatch',
+      'Mismatched manifest',
+    )
+    const readUris: string[] = []
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://manifest-valid/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-valid',
+                  description: 'Valid manifest',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-valid/SKILL.md',
+                    digest: `sha256:${sha256(validMarkdown)}`,
+                  },
+                  {
+                    uri: 'skill://manifest-valid/reference.md',
+                    digest: `sha256:${sha256('# Reference')}`,
+                  },
+                ],
+              },
+              {
+                uri: 'skill://manifest-mismatch/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-mismatch',
+                  description: 'Mismatched manifest',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-mismatch/SKILL.md',
+                    digest: `sha256:${'0'.repeat(64)}`,
+                  },
+                ],
+              },
+              {
+                uri: 'skill://manifest-missing/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-missing',
+                  description: 'Missing SKILL resource',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-missing/reference.md',
+                    digest: `sha256:${sha256('# Reference')}`,
+                  },
+                ],
+              },
+              {
+                uri: 'skill://manifest-duplicate/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-duplicate',
+                  description: 'Duplicate resource',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-duplicate/SKILL.md',
+                    digest: `sha256:${sha256('# Duplicate')}`,
+                  },
+                  {
+                    uri: 'skill://manifest-duplicate/SKILL.md',
+                    digest: `sha256:${sha256('# Duplicate')}`,
+                  },
+                ],
+              },
+              {
+                uri: 'skill://manifest-invalid/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-invalid',
+                  description: 'Invalid digest',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-invalid/SKILL.md',
+                    digest: sha256('# Invalid'),
+                  },
+                ],
+              },
+              {
+                uri: 'skill://manifest-outside/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-outside',
+                  description: 'Outside resource',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-outside/SKILL.md',
+                    digest: `sha256:${sha256('# Outside')}`,
+                  },
+                  {
+                    uri: 'skill://other-skill/reference.md',
+                    digest: `sha256:${sha256('# Other')}`,
+                  },
+                ],
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          readUris.push(uri)
+          const text = uri.includes('manifest-mismatch')
+            ? mismatchMarkdown
+            : validMarkdown
+          return { contents: [{ uri, text }] }
+        },
+      },
+      false,
+      'manifest_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual([...readUris].sort(), [
+      'skill://manifest-mismatch/SKILL.md',
+      'skill://manifest-valid/SKILL.md',
+    ])
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      ['manifest_server:manifest-valid'],
+    )
+    assert.equal(skills[0]?.type, 'prompt')
+    if (skills[0]?.type === 'prompt') {
+      assert.equal(skills[0].allowedTools?.length, 3)
+      const appState = getDefaultAppState()
+      const originalApiKey = process.env.ANTHROPIC_API_KEY
+      process.env.ANTHROPIC_API_KEY = 'test'
+      try {
+        const decision = await SkillTool.checkPermissions(
+          { skill: skills[0].name },
+          {
+            options: { commands: [] },
+            getAppState: () => ({
+              ...appState,
+              mcp: { ...appState.mcp, commands: skills },
+            }),
+          } as never,
+        )
+        assert.equal(decision.behavior, 'allow')
+      } finally {
+        if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+        else process.env.ANTHROPIC_API_KEY = originalApiKey
+      }
+    }
+  })
+
+  it('accepts domain-native skill resource URIs with ports', async () => {
+    const markdown = `---
+name: ported
+description: Ported resource
+---
+# Ported`
+    const uri = 'https://localhost:3000/skills/ported/SKILL.md'
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri,
+                frontmatter: {
+                  name: 'ported',
+                  description: 'Ported resource',
+                },
+                resources: [
+                  {
+                    uri,
+                    digest: `sha256:${sha256(markdown)}`,
+                  },
+                ],
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri: requestedUri }) {
+          return { contents: [{ uri: requestedUri, text: markdown }] }
+        },
+      },
+      false,
+      'ported_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      ['ported_server:ported'],
+    )
+  })
+
+  it('requires canonical listing frontmatter to match SKILL.md field-by-field', async () => {
+    const matchingMarkdown = `---
+name: frontmatter-match
+description: Matching frontmatter
+metadata:
+  tier: stable
+---
+# Matching`
+    const mismatchedMarkdown = `---
+name: frontmatter-mismatch
+description: Actual description
+metadata:
+  tier: stable
+---
+# Mismatched`
+    const dynamicMarkdown = `---
+name: dynamic-mismatch
+description: Actual dynamic description
+---
+# Dynamic`
+    const readUris: string[] = []
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://frontmatter-match/SKILL.md',
+                frontmatter: {
+                  name: 'frontmatter-match',
+                  description: 'Matching frontmatter',
+                  metadata: { tier: 'stable' },
+                },
+                resources: [
+                  {
+                    uri: 'skill://frontmatter-match/SKILL.md',
+                    digest: `sha256:${sha256(matchingMarkdown)}`,
+                  },
+                ],
+              },
+              {
+                uri: 'skill://frontmatter-mismatch/SKILL.md',
+                frontmatter: {
+                  name: 'frontmatter-mismatch',
+                  description: 'Listed description',
+                  metadata: { tier: 'stable' },
+                },
+                resources: [
+                  {
+                    uri: 'skill://frontmatter-mismatch/SKILL.md',
+                    digest: `sha256:${sha256(mismatchedMarkdown)}`,
+                  },
+                ],
+              },
+              {
+                uri: 'skill://dynamic-mismatch/SKILL.md',
+                frontmatter: {
+                  name: 'dynamic-mismatch',
+                  description: 'Listed dynamic description',
+                },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          readUris.push(uri)
+          const text = uri.includes('frontmatter-match/SKILL.md')
+            ? matchingMarkdown
+            : uri.includes('frontmatter-mismatch')
+              ? mismatchedMarkdown
+              : dynamicMarkdown
+          return { contents: [{ uri, text }] }
+        },
+      },
+      false,
+      'frontmatter_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual([...readUris].sort(), [
+      'skill://dynamic-mismatch/SKILL.md',
+      'skill://frontmatter-match/SKILL.md',
+      'skill://frontmatter-mismatch/SKILL.md',
+    ])
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      ['frontmatter_server:frontmatter-match'],
+    )
+  })
+
+  it('accepts legacy top-level SHA-256 digests only when content and frontmatter match', async () => {
+    const goodMarkdown = `---
+name: prefixed
+description: Prefixed digest
+---
+# Valid digest skill`
+    const bareMarkdown = `---
+name: bare
+description: Bare digest
+---
+# Valid digest skill`
+    const digest = sha256(goodMarkdown)
+    const readUris: string[] = []
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://prefixed/SKILL.md',
+                digest: `sha256:${digest}`,
+                frontmatter: { name: 'prefixed', description: 'Prefixed digest' },
+              },
+              {
+                uri: 'skill://bare/SKILL.md',
+                digest: sha256(bareMarkdown),
+                frontmatter: { name: 'bare', description: 'Bare digest' },
+              },
+              {
+                uri: 'skill://short/SKILL.md',
+                digest: 'sha256:short',
+                frontmatter: { name: 'short', description: 'Short digest' },
+              },
+              {
+                uri: 'skill://numeric/SKILL.md',
+                digest: 42,
+                frontmatter: { name: 'numeric', description: 'Numeric digest' },
+              },
+              {
+                uri: 'skill://mismatch/SKILL.md',
+                digest: `sha256:${'0'.repeat(64)}`,
+                frontmatter: { name: 'mismatch', description: 'Mismatch' },
+              },
+              {
+                uri: 'skill://frontmatter-mismatch-legacy/SKILL.md',
+                digest: `sha256:${digest}`,
+                frontmatter: {
+                  name: 'frontmatter-mismatch-legacy',
+                  description: 'Spoofed metadata',
+                },
+              },
+              {
+                uri: 'skill://oversized/SKILL.md',
+                digest: 'x'.repeat(4097),
+                frontmatter: { name: 'oversized', description: 'Oversized digest' },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          readUris.push(uri)
+          const text = uri.includes('frontmatter-mismatch-legacy')
+            ? goodMarkdown
+            : uri.includes('mismatch')
+              ? '# Wrong content'
+              : uri.includes('bare')
+                ? bareMarkdown
+                : goodMarkdown
+          return { contents: [{ uri, text }] }
+        },
+      },
+      false,
+      'digest_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual([...readUris].sort(), [
+      'skill://bare/SKILL.md',
+      'skill://frontmatter-mismatch-legacy/SKILL.md',
+      'skill://mismatch/SKILL.md',
+      'skill://prefixed/SKILL.md',
+    ])
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      [
+        'digest_server:prefixed',
+        'digest_server:bare',
+      ],
+    )
+    assert.equal(
+      skills[0]?.type === 'prompt' && skills[0].contentLength > 0,
+      true,
+    )
+  })
+
+  it('sanitizes ordinary MCP skill content after validating its raw digest', async () => {
+    const markdown = `---
+name: sanitized
+description: Sanitized
+argument-hint: "<topic>"
+arguments:
+  - "<first>"
+---
+# Safe\uE000 \u0001<content>`
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://sanitized/SKILL.md',
+                digest: sha256(markdown),
+                frontmatter: {
+                  name: 'sanitized',
+                  description: 'Sanitized',
+                  'argument-hint': '<topic>',
+                  arguments: ['<first>'],
+                },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'sanitize_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const [skill] = await fetchMcpSkillsForClient(client)
+    assert.equal(skill?.type, 'prompt')
+    if (skill?.type !== 'prompt') return
+    assert.equal(skill.argumentHint, '&lt;topic&gt;')
+    assert.deepEqual(skill.argNames, ['&lt;first&gt;'])
+
+    const prompt = await skill.getPromptForCommand('', {} as never)
+    assert.match(
+      prompt[0]?.type === 'text' ? prompt[0].text : '',
+      /# Safe &lt;content&gt;$/,
+    )
+  })
+
+  it('drops ordinary MCP skills whose eager read or command build fails', async () => {
+    const readUris: string[] = []
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://valid/SKILL.md',
+                frontmatter: { name: 'valid', description: 'Valid' },
+              },
+              {
+                uri: 'skill://read-fails/SKILL.md',
+                frontmatter: { name: 'read-fails', description: 'Read fails' },
+              },
+              {
+                uri: 'skill://build-fails/SKILL.md',
+                frontmatter: {
+                  name: 'build-fails',
+                  description: 'Build fails',
+                  model: 42,
+                },
+              },
+              {
+                uri: 'skill://missing-text/SKILL.md',
+                frontmatter: { name: 'missing-text', description: 'Missing text' },
+              },
+              {
+                uri: 'skill://mismatched-uri/SKILL.md',
+                frontmatter: {
+                  name: 'mismatched-uri',
+                  description: 'Mismatched URI',
+                },
+              },
+              {
+                uri: 'skill://oversized-content/SKILL.md',
+                frontmatter: {
+                  name: 'oversized-content',
+                  description: 'Oversized content',
+                },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          readUris.push(uri)
+          if (uri.includes('read-fails')) throw new Error('read failure')
+          if (uri.includes('missing-text')) {
+            return { contents: [{ uri, blob: 'ZGVtbw==' }] }
+          }
+          if (uri.includes('mismatched-uri')) {
+            return {
+              contents: [{ uri: 'skill://other/SKILL.md', text: '# Wrong URI' }],
+            }
+          }
+          if (uri.includes('oversized-content')) {
+            return { contents: [{ uri, text: 'x'.repeat(1024 * 1024 + 1) }] }
+          }
+          const frontmatter = uri.includes('build-fails')
+            ? 'name: build-fails\ndescription: Build fails\nmodel: 42'
+            : 'name: valid\ndescription: Valid'
+          return {
+            contents: [{ uri, text: `---\n${frontmatter}\n---\n# Valid content` }],
+          }
+        },
+      },
+      false,
+      'eager_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const skills = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual([...readUris].sort(), [
+      'skill://build-fails/SKILL.md',
+      'skill://mismatched-uri/SKILL.md',
+      'skill://missing-text/SKILL.md',
+      'skill://oversized-content/SKILL.md',
+      'skill://read-fails/SKILL.md',
+      'skill://valid/SKILL.md',
+    ])
+    assert.deepEqual(
+      skills.map(skill => skill.name),
+      ['eager_server:valid'],
+    )
+    await assert.rejects(readdir(mcpSkillArchivesDir()))
+    if (skills[0]?.type === 'prompt') {
+      const prompt = await skills[0].getPromptForCommand('', {} as never)
+      assert.deepEqual([...readUris].sort(), [
+        'skill://build-fails/SKILL.md',
+        'skill://mismatched-uri/SKILL.md',
+        'skill://missing-text/SKILL.md',
+        'skill://oversized-content/SKILL.md',
+        'skill://read-fails/SKILL.md',
+        'skill://valid/SKILL.md',
+      ])
+      assert.match(
+        prompt[0]?.type === 'text' ? prompt[0].text : '',
+        /# Valid content$/,
+      )
+    }
+  })
+
+  it('caches ordinary MCP SKILL.md content on disk and reuses valid digest entries without TTL', async () => {
+    const markdown = `---
+name: cached
+description: Cached
+---
+# Cached digest skill`
+    const digest = sha256(markdown)
+    const readUris: string[] = []
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://cached/SKILL.md',
+                digest: `sha256:${digest}`,
+                frontmatter: { name: 'cached', description: 'Cached' },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          readUris.push(uri)
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const [firstSkill] = await fetchMcpSkillsForClient(client)
+    assert.equal(
+      firstSkill?.type === 'prompt' && firstSkill.contentLength > 0,
+      true,
+    )
+    const slugDir = await onlyArchiveSlugDir()
+    const metaPath = join(slugDir, 'meta.json')
+    const meta = JSON.parse(await readFile(metaPath, 'utf8')) as {
+      cacheKey: string
+      declaredDigest?: string
+      fetchedAt: number
+    }
+    assert.equal(meta.cacheKey, digest)
+    assert.equal(meta.declaredDigest, digest)
+    assert.equal((await stat(metaPath)).mode & 0o777, 0o600)
+    assert.equal(
+      await readFile(join(slugDir, digest, 'SKILL.md'), 'utf8'),
+      markdown,
+    )
+
+    fetchMcpSkillsForClient.cache.clear()
+    await writeFile(
+      metaPath,
+      JSON.stringify({ ...meta, fetchedAt: Date.now() - 30 * 86400000 }),
+      { mode: 0o600 },
+    )
+    const [cachedSkill] = await fetchMcpSkillsForClient(client)
+
+    assert.deepEqual(readUris, ['skill://cached/SKILL.md'])
+    assert.equal(
+      cachedSkill?.type === 'prompt' && cachedSkill.contentLength > 0,
+      true,
+    )
+  })
+
+  it('invalidates the disk cache when a canonical resource manifest changes', async () => {
+    let manifestVersion = 1
+    let reads = 0
+    const markdown = `---
+name: manifest-cache
+description: Manifest cache
+---
+# Manifest cache`
+    const client = connectedClient(
+      {
+        async request() {
+          const supportingContent = `# Reference ${manifestVersion}`
+          return {
+            skills: [
+              {
+                uri: 'skill://manifest-cache/SKILL.md',
+                frontmatter: {
+                  name: 'manifest-cache',
+                  description: 'Manifest cache',
+                },
+                resources: [
+                  {
+                    uri: 'skill://manifest-cache/SKILL.md',
+                    digest: `sha256:${sha256(markdown)}`,
+                  },
+                  {
+                    uri: 'skill://manifest-cache/reference.md',
+                    digest: `sha256:${sha256(supportingContent)}`,
+                  },
+                ],
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          reads++
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'manifest_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    await fetchMcpSkillsForClient(client)
+    manifestVersion = 2
+    fetchMcpSkillsForClient.clearCacheForServer(client.name)
+    const [updatedSkill] = await fetchMcpSkillsForClient(client)
+
+    assert.equal(reads, 2)
+    assert.equal(updatedSkill?.name, 'manifest_cache_server:manifest-cache')
+  })
+
+  it('misses the disk cache when a declared digest changes', async () => {
+    let version = 1
+    let reads = 0
+    const markdownByVersion = {
+      1: `---
+name: changing
+description: Changing
+---
+# Version one`,
+      2: `---
+name: changing
+description: Changing
+---
+# Version two`,
+    } as const
+    const client = connectedClient(
+      {
+        async request() {
+          const markdown = markdownByVersion[version as 1 | 2]
+          return {
+            skills: [
+              {
+                uri: 'skill://changing/SKILL.md',
+                digest: sha256(markdown),
+                frontmatter: { name: 'changing', description: 'Changing' },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          reads++
+          return {
+            contents: [{ uri, text: markdownByVersion[version as 1 | 2] }],
+          }
+        },
+      },
+      false,
+      'changing_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    await fetchMcpSkillsForClient(client)
+    version = 2
+    fetchMcpSkillsForClient.clearCacheForServer(client.name)
+    const [updatedSkill] = await fetchMcpSkillsForClient(client)
+
+    assert.equal(reads, 2)
+    assert.equal(updatedSkill?.type, 'prompt')
+    if (updatedSkill?.type === 'prompt') {
+      const prompt = await updatedSkill.getPromptForCommand('', {} as never)
+      assert.match(prompt[0]?.type === 'text' ? prompt[0].text : '', /Version two/)
+    }
+  })
+
+  it('does not write a cache entry when the declared digest mismatches', async () => {
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://mismatch-cache/SKILL.md',
+                digest: '0'.repeat(64),
+                frontmatter: {
+                  name: 'mismatch-cache',
+                  description: 'Mismatch cache',
+                },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return { contents: [{ uri, text: '# Different content' }] }
+        },
+      },
+      false,
+      'mismatch_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    assert.deepEqual(await fetchMcpSkillsForClient(client), [])
+    await assert.rejects(readdir(mcpSkillArchivesDir()))
+  })
+
+  it('loads an eagerly read skill when the disk cache root is not writable', async () => {
+    await writeFile(mcpSkillArchivesDir(), 'not a directory')
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://uncached/SKILL.md',
+                frontmatter: { name: 'uncached', description: 'Uncached' },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          return {
+            contents: [
+              {
+                uri,
+                text: `---
+name: uncached
+description: Uncached
+---
+# Still available`,
+              },
+            ],
+          }
+        },
+      },
+      false,
+      'unwritable_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const [skill] = await fetchMcpSkillsForClient(client)
+    assert.equal(skill?.name, 'unwritable_cache_server:uncached')
+  })
+
+  it('does not persist dynamically generated skills without resources', async () => {
+    let reads = 0
+    let version = 1
+    const markdown = () => `---
+name: no-digest
+description: No digest
+---
+# No digest version ${version}`
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://no-digest/SKILL.md',
+                frontmatter: { name: 'no-digest', description: 'No digest' },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          reads++
+          return { contents: [{ uri, text: markdown() }] }
+        },
+      },
+      false,
+      'ttl_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    const [firstSkill] = await fetchMcpSkillsForClient(client)
+    await assert.rejects(readdir(mcpSkillArchivesDir()))
+
+    version = 2
+    fetchMcpSkillsForClient.cache.clear()
+    const [secondSkill] = await fetchMcpSkillsForClient(client)
+
+    assert.equal(reads, 2)
+    assert.equal(firstSkill?.type, 'prompt')
+    assert.equal(secondSkill?.type, 'prompt')
+    if (secondSkill?.type === 'prompt') {
+      assert.equal(secondSkill.allowedTools?.length, 1)
+      const appState = getDefaultAppState()
+      const toolContext = {
+        options: { mcpClients: [client] },
+        getAppState: () => ({
+          ...appState,
+          toolPermissionContext: {
+            ...appState.toolPermissionContext,
+            alwaysAllowRules: {
+              ...appState.toolPermissionContext.alwaysAllowRules,
+              command: secondSkill.allowedTools ?? [],
+            },
+          },
+        }),
+      } as never
+      assert.equal(
+        (
+          await ReadMcpResourceTool.checkPermissions(
+            { server: client.name, uri: 'skill://no-digest/private.md' },
+            toolContext,
+          )
+        ).behavior,
+        'deny',
+      )
+      assert.equal(
+        (
+          await ReadMcpResourceTool.checkPermissions(
+            { server: 'other', uri: 'resource://other/private' },
+            toolContext,
+          )
+        ).behavior,
+        'deny',
+      )
+      assert.equal(
+        (
+          await ReadMcpResourceDirTool.checkPermissions(
+            { server: client.name, uri: 'skill://no-digest' },
+            toolContext,
+          )
+        ).behavior,
+        'deny',
+      )
+      const prompt = await secondSkill.getPromptForCommand('', {} as never)
+      assert.match(prompt[0]?.type === 'text' ? prompt[0].text : '', /version 2/)
+    }
+    await assert.rejects(readdir(mcpSkillArchivesDir()))
+  })
+
+  it('misses the disk cache when cached digest content is corrupted', async () => {
+    let reads = 0
+    const markdown = `---
+name: corrupt
+description: Corrupt
+---
+# Correct cache content`
+    const digest = sha256(markdown)
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://corrupt/SKILL.md',
+                digest,
+                frontmatter: { name: 'corrupt', description: 'Corrupt' },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          reads++
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'corrupt_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    await fetchMcpSkillsForClient(client)
+    const slugDir = await onlyArchiveSlugDir()
+    await rm(join(slugDir, digest), { recursive: true, force: true })
+    await writeFile(join(slugDir, digest), '# Corrupted content')
+
+    fetchMcpSkillsForClient.cache.clear()
+    await fetchMcpSkillsForClient(client)
+
+    assert.equal(reads, 2)
+    assert.equal(await readFile(join(slugDir, digest), 'utf8'), '# Corrupted content')
+  })
+
+  it('misses the disk cache when cached digest content is oversized', async () => {
+    let reads = 0
+    const markdown = `---
+name: oversized-cache
+description: Oversized cache
+---
+# Correct cache content`
+    const digest = sha256(markdown)
+    const client = connectedClient(
+      {
+        async request() {
+          return {
+            skills: [
+              {
+                uri: 'skill://oversized-cache/SKILL.md',
+                digest,
+                frontmatter: {
+                  name: 'oversized-cache',
+                  description: 'Oversized cache',
+                },
+              },
+            ],
+          }
+        },
+        async listResources() {
+          return { resources: [] }
+        },
+        async readResource({ uri }) {
+          reads++
+          return { contents: [{ uri, text: markdown }] }
+        },
+      },
+      false,
+      'oversized_cache_server',
+      { 'io.modelcontextprotocol/skills': {} },
+    )
+
+    await fetchMcpSkillsForClient(client)
+    const slugDir = await onlyArchiveSlugDir()
+    await rm(join(slugDir, digest), { recursive: true, force: true })
+    await writeFile(join(slugDir, digest), 'x'.repeat(1024 * 1024 + 1))
+
+    fetchMcpSkillsForClient.cache.clear()
+    await fetchMcpSkillsForClient(client)
+
+    assert.equal(reads, 2)
+  })
+
+  it('does not use the disk archive cache for Codex Apps skills', async () => {
+    let reads = 0
+    const client = connectedClient({
+      async listResources() {
+        return {
+          resources: [
+            {
+              uri: 'skill://apps/demo/lazy-cache',
+              name: 'lazy-cache',
+              mimeType: 'mcp/skill',
+              _meta: { plugin_name: 'demo', skill_name: 'lazy-cache' },
+            },
+          ],
+        }
+      },
+      async readResource({ uri }) {
+        reads++
+        return { contents: [{ uri, text: '# Codex Apps lazy content' }] }
+      },
+    })
+
+    const [skill] = await fetchMcpSkillsForClient(client)
+    await assert.rejects(readdir(mcpSkillArchivesDir()))
+    fetchMcpSkillsForClient.cache.clear()
+    const [rediscoveredSkill] = await fetchMcpSkillsForClient(client)
+
+    assert.equal(reads, 0)
+    assert.notStrictEqual(rediscoveredSkill, skill)
+    assert.equal(rediscoveredSkill?.type, 'prompt')
+    if (rediscoveredSkill?.type === 'prompt') {
+      await rediscoveredSkill.getPromptForCommand('', {} as never)
+    }
+    assert.equal(reads, 1)
+    await assert.rejects(readdir(mcpSkillArchivesDir()))
   })
 })

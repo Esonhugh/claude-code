@@ -35,6 +35,14 @@ import {
 import { buildPluginCommandTelemetryFields } from 'src/utils/telemetry/pluginTelemetry.js'
 import { z } from 'zod/v4'
 import {
+  hasOnlyMcpSkillResourceRules,
+  replaceMcpSkillResourceRules,
+} from '../../skills/mcpSkillResourceGrant.js'
+import {
+  fetchMcpSkillCommandByUri,
+  parseMcpSkillUriReference,
+} from '../../skills/mcpSkills.js'
+import {
   addInvokedSkill,
   clearInvokedSkillsForAgent,
   getSessionId,
@@ -93,6 +101,44 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
   if (mcpSkills.length === 0) return getCommands(getProjectRoot())
   const localCommands = await getCommands(getProjectRoot())
   return uniqBy([...localCommands, ...mcpSkills], 'name')
+}
+
+function parseDirectMcpSkillCommand(
+  value: string,
+  context: ToolUseContext,
+) {
+  const clients = context
+    .getAppState()
+    .mcp.clients.filter(client => client.type === 'connected')
+  const reference = parseMcpSkillUriReference(value, clients)
+  if (!reference) return null
+  const client = clients.find(candidate => candidate.name === reference.server)
+  return client ? { client, reference } : null
+}
+
+async function resolveListedSkillCommand(
+  value: string,
+  context: ToolUseContext,
+): Promise<{ commandName: string; command: Command } | null> {
+  const command = findCommand(value, await getAllCommands(context))
+  return command ? { commandName: value, command } : null
+}
+
+async function resolveSkillCommand(
+  value: string,
+  context: ToolUseContext,
+): Promise<{ commandName: string; command: Command } | null> {
+  const listed = await resolveListedSkillCommand(value, context)
+  if (listed) return listed
+  const direct = parseDirectMcpSkillCommand(value, context)
+  if (!direct) return null
+  const command = await fetchMcpSkillCommandByUri(
+    direct.client,
+    direct.reference.uri,
+  )
+  return command
+    ? { commandName: direct.reference.commandName, command }
+    : null
 }
 
 // Re-export Progress from centralized types to break import cycles
@@ -400,21 +446,21 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Get available commands (including MCP skills)
-    const commands = await getAllCommands(context)
-
-    // Check if command exists
-    const foundCommand = findCommand(normalizedCommandName, commands)
-    if (!foundCommand) {
-      return {
-        result: false,
-        message: `Unknown skill: ${normalizedCommandName}`,
-        errorCode: 2,
-      }
+    const resolved = await resolveListedSkillCommand(
+      normalizedCommandName,
+      context,
+    )
+    if (!resolved) {
+      return parseDirectMcpSkillCommand(normalizedCommandName, context)
+        ? { result: true }
+        : {
+            result: false,
+            message: `Unknown skill: ${normalizedCommandName}`,
+            errorCode: 2,
+          }
     }
 
-    // Check if command has model invocation disabled
-    if (foundCommand.disableModelInvocation) {
+    if (resolved.command.disableModelInvocation) {
       return {
         result: false,
         message: `Skill ${normalizedCommandName} cannot be used with ${SKILL_TOOL_NAME} tool due to disable-model-invocation`,
@@ -422,8 +468,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Check if command is a prompt-based command
-    if (foundCommand.type !== 'prompt') {
+    if (resolved.command.type !== 'prompt') {
       return {
         result: false,
         message: `Skill ${normalizedCommandName} is not a prompt-based skill`,
@@ -447,9 +492,11 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const appState = context.getAppState()
     const permissionContext = appState.toolPermissionContext
 
-    // Look up the command object to pass as metadata
-    const commands = await getAllCommands(context)
-    const commandObj = findCommand(commandName, commands)
+    const resolved = await resolveListedSkillCommand(commandName, context)
+    const direct = resolved ? null : parseDirectMcpSkillCommand(commandName, context)
+    const commandObj = resolved?.command
+    const permissionCommandName =
+      resolved?.commandName ?? direct?.reference.commandName ?? commandName
 
     // Helper function to check if a rule matches the skill
     // Normalizes both inputs by stripping leading slashes for consistent matching
@@ -459,14 +506,14 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         ? ruleContent.substring(1)
         : ruleContent
 
-      // Check exact match (using normalized commandName)
-      if (normalizedRule === commandName) {
+      // Match the canonical identity for direct MCP URI skills.
+      if (normalizedRule === permissionCommandName) {
         return true
       }
       // Check prefix match (e.g., "review:*" matches "review-pr 123")
       if (normalizedRule.endsWith(':*')) {
         const prefix = normalizedRule.slice(0, -2) // Remove ':*'
-        return commandName.startsWith(prefix)
+        return permissionCommandName.startsWith(prefix)
       }
       return false
     }
@@ -551,7 +598,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         rules: [
           {
             toolName: SKILL_TOOL_NAME,
-            ruleContent: commandName,
+            ruleContent: permissionCommandName,
           },
         ],
         behavior: 'allow' as const,
@@ -563,7 +610,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         rules: [
           {
             toolName: SKILL_TOOL_NAME,
-            ruleContent: `${commandName}:*`,
+            ruleContent: `${permissionCommandName}:*`,
           },
         ],
         behavior: 'allow' as const,
@@ -574,7 +621,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Default behavior: ask user for permission
     return {
       behavior: 'ask',
-      message: `Execute skill: ${commandName}`,
+      message: `Execute skill: ${permissionCommandName}`,
       decisionReason: undefined,
       suggestions,
       updatedInput: { skill, args },
@@ -617,17 +664,19 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    const commands = await getAllCommands(context)
-    const command = findCommand(commandName, commands)
+    const resolved = await resolveSkillCommand(commandName, context)
+    const command = resolved?.command
+
+    const resolvedCommandName = resolved?.commandName ?? commandName
 
     // Track skill usage for ranking
-    recordSkillUsage(commandName)
+    recordSkillUsage(resolvedCommandName)
 
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {
       return executeForkedSkill(
         command,
-        commandName,
+        resolvedCommandName,
         args,
         context,
         canUseTool,
@@ -640,10 +689,11 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const { processPromptSlashCommand } = await import(
       'src/utils/processUserInput/processSlashCommand.js'
     )
+    if (!command) throw new Error(`Unknown skill: ${commandName}`)
     const processedCommand = await processPromptSlashCommand(
-      commandName,
+      resolvedCommandName,
       args || '', // Pass args if provided
-      commands,
+      [command],
       context,
     )
 
@@ -656,19 +706,19 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const model = processedCommand.model
     const effort = command?.type === 'prompt' ? command.effort : undefined
 
-    const isBuiltIn = builtInCommandNames().has(commandName)
+    const isBuiltIn = builtInCommandNames().has(resolvedCommandName)
     const isBundled = command?.type === 'prompt' && command.source === 'bundled'
     const isOfficialSkill =
       command?.type === 'prompt' && isOfficialMarketplaceSkill(command)
     const sanitizedCommandName =
-      isBuiltIn || isBundled || isOfficialSkill ? commandName : 'custom'
+      isBuiltIn || isBundled || isOfficialSkill ? resolvedCommandName : 'custom'
 
     const wasDiscoveredField =
       feature('EXPERIMENTAL_SKILL_SEARCH') &&
       remoteSkillModules!.isSkillSearchEnabled()
         ? {
             was_discovered:
-              context.discoveredSkillNames?.has(commandName) ?? false,
+              context.discoveredSkillNames?.has(resolvedCommandName) ?? false,
           }
         : {}
     const pluginMarketplace =
@@ -684,7 +734,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       // (unredacted, all users); command_name stays in additional_metadata as
       // the redacted variant for general-access dashboards.
       _PROTO_skill_name:
-        commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
+        resolvedCommandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
       execution_context:
         'inline' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       invocation_trigger: (queryDepth > 0
@@ -698,7 +748,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       ...wasDiscoveredField,
       ...(isAnt() && {
         skill_name:
-          commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          resolvedCommandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         ...(command?.type === 'prompt' && {
           skill_source:
             command.source as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -760,7 +810,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     )
 
     logForDebugging(
-      `SkillTool returning ${newMessages.length} newMessages for skill ${commandName}`,
+      `SkillTool returning ${newMessages.length} newMessages for skill ${resolvedCommandName}`,
     )
 
     // Note: addInvokedSkill and registerSkillHooks are called inside
@@ -772,7 +822,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     return {
       data: {
         success: true,
-        commandName,
+        commandName: resolvedCommandName,
         allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
         model,
       },
@@ -796,13 +846,21 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
                   ...appState.toolPermissionContext,
                   alwaysAllowRules: {
                     ...appState.toolPermissionContext.alwaysAllowRules,
-                    command: [
-                      ...new Set([
-                        ...(appState.toolPermissionContext.alwaysAllowRules
-                          .command || []),
-                        ...allowedTools,
-                      ]),
-                    ],
+                    command:
+                      command.type === 'prompt' &&
+                      command.loadedFrom === 'mcp'
+                        ? replaceMcpSkillResourceRules(
+                            appState.toolPermissionContext.alwaysAllowRules
+                              .command || [],
+                            allowedTools,
+                          )
+                        : [
+                            ...new Set([
+                              ...(appState.toolPermissionContext.alwaysAllowRules
+                                .command || []),
+                              ...allowedTools,
+                            ]),
+                          ],
                   },
                 },
               }
@@ -929,6 +987,19 @@ function skillHasOnlySafeProperties(command: Command): boolean {
       typeof value === 'object' &&
       !Array.isArray(value) &&
       Object.keys(value).length === 0
+    ) {
+      continue
+    }
+    if (
+      (key === 'allowedTools' || key === 'mcpServerName') &&
+      command.type === 'prompt' &&
+      command.loadedFrom === 'mcp' &&
+      command.mcpServerName &&
+      command.allowedTools &&
+      hasOnlyMcpSkillResourceRules(
+        command.mcpServerName,
+        command.allowedTools,
+      )
     ) {
       continue
     }
