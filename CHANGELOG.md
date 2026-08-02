@@ -12,6 +12,53 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-02 - v2.1.207 - MCP Skill 生命周期与 Agent transcript 上下文修复
+
+### 版本状态
+
+- 准备发布版本：`v2.1.207`。
+- 本次发布覆盖 `v2.1.206` 之后至 2026-08-02 的 Agent transcript 上下文修复与 MCP Skill over MCP 生命周期实现。
+- `package.json` 仍保持 `0.0.0-dev`；发布产物版本由 tag/构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.207`。
+
+### 关联提交
+
+- `5ac290f` — 2026-08-01 — `fix: preserve agent transcript context`
+- `1ade751` — 2026-08-02 — `feat: implement MCP skill extension lifecycle`
+
+### 变更内容
+
+#### Agent transcript 上下文与会话切换
+
+- 选中 local Agent 或 in-process teammate 时，REPL transcript 使用该任务自己的 messages、运行状态和 in-progress tool use，不再错误回退或混入 leader 会话内容。
+- 进入 transcript 模式时同时冻结当前 task identity、message length 和 streaming tool-use length；即使随后任务状态变化，当前 transcript 仍绑定进入时选中的 Agent，上下文不会在会话之间漂移。
+- 统一 viewed Agent selector，使 local Agent 与 in-process teammate 共享明确的选择语义；无选择、无效 task ID 或非 Agent task 均不静默回退到其他任务。
+
+#### Skill discovery、identity 与完整性
+
+- 普通 MCP server 支持 `io.modelcontextprotocol/skills` 扩展的 `skills/list`、`skills/get`、empty/partial listing 和 direct/unlisted URI activation；Skill identity 绑定 host-assigned server 与完整 URI，不再依赖名称或 `skill:` scheme，并为同名不同路径 Skill 生成可区分的调用名称。
+- `resources[]` 作为完整 manifest 绑定 `SKILL.md` 与 supporting resources，逐文件验证 canonical `sha256:` digest，并要求 listing frontmatter 与实际 `SKILL.md` frontmatter 逐字段一致；content-addressed cache 同时绑定 server identity、URI 和完整 manifest snapshot。
+- 保留无 `resources[]` dynamic Skill 和 legacy single-file Skill 的加载路径，但不为 dynamic content 建立持久 cache，且 supporting-resource 访问默认 fail closed。
+
+#### Resource scope 与目录读取
+
+- `ReadMcpResourceTool` 将 supporting-resource 访问绑定 active Skill 的 originating server、Skill URI 和 manifest grant，在模型看到内容前验证 text/blob 原始内容 digest，并拒绝未列出、跨 server、响应缺项、额外资源和 malformed base64。
+- 新增 `ReadMcpResourceDirTool` 和 `resources/directory/read` pagination；目录访问限制在显式 Skill root 内，结果由 manifest 推导 direct children 和 metadata，拒绝 ancestor traversal、跨 origin、unlisted child 与 incomplete listing。
+- 普通 MCP Skill 顺序激活时替换上一 Skill 的远程资源 scope，避免权限累积；可信 Agent definition 显式 preload 的多 Skill union 保持原有设计。
+
+#### Codex Apps 隔离
+
+- Codex Apps 继续使用独立的 `resources/list + mimeType: "mcp/skill"` lazy materialization，不受普通 MCP Skill extension discovery、resource grants、cache 和 attachment guard 影响。
+- 声明 Skill extension 的普通 MCP server 不能通过 generic attachment preload 绕过 `skills/get`、digest、frontmatter identity 或 SkillTool permission gate；普通 generic MCP resources 与 host-owned Codex Apps 保持原行为。
+
+### 测试覆盖
+
+- `src/state/selectors.test.ts` 覆盖 leader 无选择、无效 task ID、local Agent、in-process teammate 和 teammate-only selector 边界。
+- MCP focused suite 共 `82 pass`、`0 fail`，覆盖 canonical manifest、`skills/get`、direct URI、domain-native URI、same-name disambiguation、frontmatter identity、per-resource digest、directory pagination、cache identity、dynamic fail-closed、root containment 和 sequential scope replacement。
+- `bunx tsc --noEmit --pretty false`、`bun run lint`、`git diff --check`、`git diff --cached --check` 和 `make build` 均通过；发布前重新构建并校验 `2.1.207 (Claude Code)` 产物。
+- scripted tmux runtime validation 通过 canonical list/load/invoke、direct URI、same-name activation、supporting-resource allowlist、directory pagination、same-identity cold/warm cache、dynamic no-manifest denial、ancestor directory denial，以及 OAI/non-OAI settings 下 ordinary MCP 与 Codex Apps materialization 隔离。
+- non-OAI ordinary MCP invocation 已 qualified passed；真实 settings proxy 下的 authenticated OAI ordinary invocation和实际 authorized Codex Apps 调用仍为 `not covered`，未将临时 MITM harness 的失败归因于产品路径。
+
 ## 2026-08-01 - v2.1.206 - Coordinator、MCP Skill 与 Agent 生命周期增强
 
 ### 版本状态
