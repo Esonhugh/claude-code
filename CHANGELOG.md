@@ -12,6 +12,42 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-04 - Agent、Workflow 生命周期验证与重试可靠性修复
+
+### 关联提交
+
+- `c70318b` — 修复并发 teammate 注册时的 Team 配置覆盖与同名冲突。
+- `564d0e3` — 修复 transient Workflow worker 重试，并保留 logical worker 与 attempt 诊断。
+- `604e54f` — 支持发现并合并 persisted Workflow runs。
+- `3c420ae` — 使用稳定 target identity 修复 coordinator Agent 视图导航。
+- `a4bab5c` — 增加 Workflow runtime release gate 覆盖。
+- `9db95a5` — 强制 Agent 与 Workflow 生命周期完成证明。
+
+### 变更内容
+
+#### Team 与 Workflow 可靠性
+
+- 并发 teammate 注册、删除和模式更新在最新 Team 配置上串行提交，避免 stale snapshot 覆盖成员状态，并为同名 teammate 分配稳定名称。
+- transient Workflow worker 只重试失败的 logical worker，成功 worker 不重复执行；deterministic、schema 和 permission failure 不自动重试。
+- Workflow 记录 task、run、phase、logical worker、attempt、error kind 和 terminal 状态，详情保留失败根因与重试链路。
+- 进程重启后可以发现 persisted Workflow runs，并以 live run 优先、按 `workflowRunId` 去重提供只读 fallback。
+
+#### Coordinator 与 Agent transcript
+
+- coordinator 使用稳定 target identity 管理 main、background、Agent 和 Workflow 导航，目标消失时确定性回退到可见祖先或主线程。
+- `local_agent` 与 `in_process_teammate` 统一 viewed-Agent 选择语义；正在查看的 terminal teammate transcript 在退出视图前保持完整。
+
+#### Release validation 生命周期门禁
+
+- binary gate 必须观察真实 Agent terminal marker、assistant transcript、Workflow worker/phase terminal、task notification 和主 prompt 恢复后才允许 cleanup 或判定通过。
+- release driver 对缺少 terminal evidence、notification 或稳定 Task/Run/Agent ID 的场景 fail closed，避免仅凭 pane 文本或状态文件产生假阳性。
+
+### 测试覆盖
+
+- Team、Workflow retry/diagnostics、persisted Workflow、coordinator selector、viewed Agent transcript 和显式 permission mode focused tests 通过。
+- `test-release-driver.py`、`bunx tsc --noEmit --pretty false`、`bun run lint`、`make release-check` 和 `make build` 通过。
+- built binary 生命周期验收通过 Agent 前后台、nested Agent、inline Workflow、`/deep-research`、`/code-review`、deterministic failure detail 和 partial transient retry targets。
+
 ## 2026-08-02 - v2.1.207 - MCP Skill 生命周期与 Agent transcript 上下文修复
 
 ### 版本状态
