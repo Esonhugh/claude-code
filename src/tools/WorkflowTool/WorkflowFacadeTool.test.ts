@@ -429,7 +429,7 @@ const defaultModeRun = await WorkflowFacadeTool.call(
 )
 assert.match(String(defaultModeRun.data), /Workflow launched in background\. Task ID: w/)
 assert.deepEqual(launchedPrompts, ['default mode mode'])
-assert.equal(launchedAgents[0]?.mode, undefined)
+assert.equal(launchedAgents[0]?.mode, 'default')
 
 await writeFile(
   join(tempRoot, '.claude', 'workflows', 'runtime-child.js'),

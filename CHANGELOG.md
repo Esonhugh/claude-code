@@ -12,7 +12,14 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-08-04 - Agent、Workflow 生命周期验证与重试可靠性修复
+## 2026-08-04 - v2.1.208 - Agent、Workflow 生命周期验证与重试可靠性修复
+
+### 版本状态
+
+- 准备发布版本：`v2.1.208`。
+- 本次发布覆盖 `v2.1.207` 之后的 Agent、Workflow、coordinator 和 release validation 生命周期修复。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.208`。
 
 ### 关联提交
 
@@ -22,6 +29,7 @@
 - `3c420ae` — 使用稳定 target identity 修复 coordinator Agent 视图导航。
 - `a4bab5c` — 增加 Workflow runtime release gate 覆盖。
 - `9db95a5` — 强制 Agent 与 Workflow 生命周期完成证明。
+- `95f3743` — `docs: record unreleased workflow validation changes`，记录本次 Agent、Workflow 生命周期验证与重试可靠性修复。
 
 ### 变更内容
 
