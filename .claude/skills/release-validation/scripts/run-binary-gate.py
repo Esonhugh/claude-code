@@ -1701,6 +1701,112 @@ class BinaryGate:
                 return status.group(1)
         return None
 
+    def workflow_completion_proof(
+        self,
+        run_dir,
+        task_id,
+        run_id,
+        *,
+        expected_status='completed',
+    ):
+        status = self.workflow_status(run_dir, task_id)
+        log = self.debug(run_dir)
+        scope = f'task={task_id} run={run_id}'
+        phase_lines = [
+            line for line in log.splitlines()
+            if 'workflow_phase_terminal' in line and scope in line
+        ]
+        worker_start_lines = [
+            line for line in log.splitlines()
+            if 'workflow_worker_start' in line and scope in line
+        ]
+        worker_terminal_lines = [
+            line for line in log.splitlines()
+            if 'workflow_worker_terminal' in line and scope in line
+        ]
+        started_logical = set()
+        terminal_logical = set()
+        terminal_statuses = set()
+        for line in worker_start_lines:
+            match = re.search(r'\blogical=([^ ]+)', line)
+            if match:
+                started_logical.add(match.group(1))
+        for line in worker_terminal_lines:
+            logical = re.search(r'\blogical=([^ ]+)', line)
+            terminal = re.search(r'\bstatus=([^ ]+)', line)
+            if logical:
+                terminal_logical.add(logical.group(1))
+            if terminal:
+                terminal_statuses.add(terminal.group(1))
+        phase_statuses = {
+            match.group(1)
+            for line in phase_lines
+            for match in [re.search(r'\bstatus=([^ ]+)', line)]
+            if match
+        }
+        worker_terminal_complete = (
+            started_logical <= terminal_logical
+            and (
+                terminal_statuses == {expected_status}
+                if expected_status == 'completed'
+                else expected_status in terminal_statuses
+            )
+        )
+        notification_count = self.notification_count(run_dir)
+        complete = (
+            bool(task_id)
+            and bool(run_id)
+            and status == expected_status
+            and notification_count == 1
+            and bool(phase_lines)
+            and bool(worker_start_lines)
+            and worker_terminal_complete
+            and expected_status in phase_statuses
+        )
+        return {
+            'complete': complete,
+            'status': status,
+            'expected_status': expected_status,
+            'task_id': task_id,
+            'run_id': run_id,
+            'notification_count': notification_count,
+            'phase_terminal_count': len(phase_lines),
+            'worker_start_count': len(worker_start_lines),
+            'worker_terminal_count': len(worker_terminal_lines),
+            'started_logical_workers': sorted(started_logical),
+            'terminal_logical_workers': sorted(terminal_logical),
+            'phase_statuses': sorted(phase_statuses),
+            'worker_terminal_statuses': sorted(terminal_statuses),
+        }
+
+    def agent_completion_proof(
+        self,
+        run_dir,
+        *,
+        agent_id,
+        task_id,
+        expected_output,
+    ):
+        log = self.debug(run_dir)
+        marker = re.search(
+            r'\[AgentLifecycle\] background_terminal '
+            rf'agent_id={re.escape(agent_id)} '
+            rf'task_id={re.escape(task_id)} status=([^ ]+)',
+            log,
+        )
+        child_output = self.assistant_text(run_dir, subagents=True)
+        return {
+            'complete': bool(
+                marker
+                and marker.group(1) == 'completed'
+                and expected_output in child_output
+            ),
+            'agent_id': agent_id,
+            'task_id': task_id,
+            'status': marker.group(1) if marker else None,
+            'child_output_observed': expected_output in child_output,
+        }
+
     def workflow_ids(self, run_dir):
         text = self.transcript(run_dir)
         task = re.search(r'Workflow launched in background\. Task ID: ([A-Za-z0-9_-]+)', text)
@@ -1765,17 +1871,44 @@ class BinaryGate:
             ),
             240,
         )
+        log = self.debug(run_dir)
+        ids = self.agent_ids(log)
+        task_match = re.search(
+            r'foreground_to_background agent_id=([^ ]+) task_id=([^ ]+)',
+            log,
+        )
+        agent_proof = {'complete': False}
+        if terminal and task_match:
+            self.wait_until(
+                lambda: self.agent_completion_proof(
+                    run_dir,
+                    agent_id=task_match.group(1),
+                    task_id=task_match.group(2),
+                    expected_output='VERSION :=',
+                )['complete'],
+                30,
+                0.5,
+            )
+            agent_proof = self.agent_completion_proof(
+                run_dir,
+                agent_id=task_match.group(1),
+                task_id=task_match.group(2),
+                expected_output='VERSION :=',
+            )
+        (run_dir / 'agent-completion-proof.json').write_text(
+            json.dumps(agent_proof, indent=2) + '\n'
+        )
         notification_ready = terminal and self.wait_for_notification_count(
             run_dir, 1
         )
         final = self.capture(target, run_dir / '06-final-pane.txt')
         log = self.debug(run_dir)
         markers = self.write_markers(run_dir, log)
-        ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
         cleanup = self.close(run_dir, session, target)
         passed = (
             terminal
+            and agent_proof['complete']
             and notification_ready
             and len(ids) == 1
             and notifications == 1
@@ -1809,7 +1942,11 @@ class BinaryGate:
             )
             self.send(target, run_dir, prompt, 'input-nested.txt')
             terminal = self.wait_until(
-                lambda: 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(run_dir),
+                lambda: (
+                    'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(run_dir)
+                    and 'RELEASE_NESTED_CHILD_DONE'
+                    in self.assistant_text(run_dir, subagents=True)
+                ),
                 360,
                 1,
             )
@@ -1830,11 +1967,11 @@ class BinaryGate:
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
-        cleanup = self.close(run_dir, session, target)
         parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(run_dir)
         child_result = 'RELEASE_NESTED_CHILD_DONE' in self.assistant_text(
             run_dir, subagents=True
         )
+        cleanup = self.close(run_dir, session, target)
         passed = (
             terminal
             and parent_result
@@ -1860,6 +1997,7 @@ class BinaryGate:
     def workflow(self):
         run_dir, session, target, ready = self.start('inline-workflow')
         result = {'label': 'inline-workflow', 'evidence_dir': str(run_dir)}
+        completion_proof = {'complete': False, 'status': None}
         if ready:
             script = """export const meta = { name: 'release-inline-workflow', description: 'Read-only two-agent release probe.', phases: [{ title: 'Probe' }] }
 phase('Probe')
@@ -1876,10 +2014,25 @@ return { results }
             )
             self.capture(target, run_dir / '03-running-pane.txt')
             task_id, run_id = self.workflow_ids(run_dir)
+            completion_proof = {'complete': False}
             completed = launched and self.wait_until(
-                lambda: self.workflow_status(run_dir, task_id) is not None, 420, 1
+                lambda: (
+                    self.workflow_completion_proof(
+                        run_dir,
+                        task_id,
+                        run_id,
+                    )['complete']
+                    or self.workflow_status(run_dir, task_id) in {'failed', 'stopped'}
+                ),
+                420,
+                1,
             )
-            status = self.workflow_status(run_dir, task_id)
+            completion_proof = self.workflow_completion_proof(
+                run_dir,
+                task_id,
+                run_id,
+            )
+            status = completion_proof['status']
             terminal = self.capture(target, run_dir / '04-terminal-pane.txt')
             page_ok = detail_ok = agent_ok = None
             ui_skipped_reason = 'workflow did not complete'
@@ -1934,6 +2087,7 @@ return { results }
         )))
         passed = (
             status == 'completed'
+            and completion_proof['complete']
             and logical_workers == ['probe-a', 'probe-b']
             and completed_logical_workers == logical_workers
             and notifications == 1
@@ -1948,6 +2102,7 @@ return { results }
             'agent_ids': ids,
             'logical_workers': logical_workers,
             'completed_logical_workers': completed_logical_workers,
+            'workflow_completion_proof': completion_proof,
             'notification_count': notifications,
             'workflow_page': {
                 'page': page_ok,
@@ -1990,7 +2145,13 @@ return { results }
             task_id, run_id = self.workflow_ids(run_dir)
             deadline = time.monotonic() + timeout
             status = self.workflow_status(run_dir, task_id)
-            while launched and status is None and time.monotonic() < deadline:
+            completion_proof = {'complete': False, 'status': status}
+            while (
+                launched
+                and not completion_proof['complete']
+                and status not in {'failed', 'stopped'}
+                and time.monotonic() < deadline
+            ):
                 pane = self.capture(target, run_dir / '04-live-pane.txt')
                 plain = strip_ansi(pane)
                 approve = (
@@ -2007,8 +2168,24 @@ return { results }
                     self.tmux('send-keys', '-t', target, 'Enter')
                     time.sleep(0.75)
                 status = self.workflow_status(run_dir, task_id)
+                completion_proof = self.workflow_completion_proof(
+                    run_dir,
+                    task_id,
+                    run_id,
+                )
+                status = completion_proof['status']
                 time.sleep(1)
-            timed_out = launched and status is None
+            completion_proof = self.workflow_completion_proof(
+                run_dir,
+                task_id,
+                run_id,
+            )
+            status = completion_proof['status']
+            timed_out = (
+                launched
+                and status not in {'completed', 'failed', 'stopped'}
+                and not completion_proof['complete']
+            )
             terminal = self.capture(target, run_dir / '05-terminal-pane.txt')
         else:
             task_id = run_id = status = None
@@ -2027,11 +2204,16 @@ return { results }
             if kind == 'deep-research'
             else None
         )
-        cleanup = self.close(run_dir, session, target)
+        workflow_complete = self.workflow_completion_proof(
+            run_dir,
+            task_id,
+            run_id,
+        )
         fetch_ok = (
             kind != 'deep-research'
             or (
-                phase_evidence['search']['complete']
+                workflow_complete['complete']
+                and phase_evidence['search']['complete']
                 and phase_evidence['select-sources']['complete']
                 and phase_evidence['fetch']['complete']
                 and phase_evidence['verify']['complete']
@@ -2039,10 +2221,15 @@ return { results }
                 and self.deep_research_web_tools_complete(web_tools)
             )
         )
+        (run_dir / 'workflow-completion-proof.json').write_text(
+            json.dumps(workflow_complete, indent=2) + '\n'
+        )
+        cleanup = self.close(run_dir, session, target)
         passed = (
             ready
             and launched
             and status == 'completed'
+            and workflow_complete['complete']
             and len(ids) > 0
             and notifications == 1
             and '❯' in strip_ansi(terminal)
@@ -2128,13 +2315,28 @@ return result
             )
             self.capture(target, running_path)
             task_id, run_id = self.workflow_ids(run_dir)
+            completion_proof = {'complete': False}
             if launched:
                 self.wait_until(
-                    lambda: self.workflow_status(run_dir, task_id) is not None,
+                    lambda: self.workflow_completion_proof(
+                        run_dir,
+                        task_id,
+                        run_id,
+                        expected_status='failed',
+                    )['complete'],
                     180,
                     0.5,
                 )
-            status = self.workflow_status(run_dir, task_id)
+            completion_proof = self.workflow_completion_proof(
+                run_dir,
+                task_id,
+                run_id,
+                expected_status='failed',
+            )
+            status = completion_proof['status']
+            (run_dir / 'workflow-completion-proof.json').write_text(
+                json.dumps(completion_proof, indent=2) + '\n'
+            )
             if task_id:
                 self.wait_for_notification_count(run_dir, 1, timeout=60, interval=0.5)
                 prompt_ready = self.wait_until(
@@ -2195,7 +2397,8 @@ return result
         no_retry = marker_counts['workflow_worker_retry_scheduled'] == 0
         cleanup = self.close(run_dir, session, target)
         passed = (
-            ready and launched and status == 'failed' and detail_ok
+            ready and launched and completion_proof['complete']
+            and status == 'failed' and detail_ok
             and marker_ok and no_retry and self.cleanup_passed(cleanup)
         )
         evidence = [
@@ -2500,6 +2703,7 @@ return result
         marker_path = run_dir / 'debug-marker-search.txt'
         task_id = run_id = status = None
         launched = False
+        completion_proof = {'complete': False}
         if ready:
             script = """export const meta = { name: 'release-partial-retry', description: 'Controlled partial transient retry.', phases: [{ title: 'Retry probe' }] }
 phase('Retry probe')
@@ -2527,13 +2731,36 @@ return await parallel([
             task_id, run_id = self.workflow_ids(run_dir)
             if launched:
                 self.wait_until(
-                    lambda: self.workflow_status(run_dir, task_id) is not None,
+                    lambda: (
+                        self.workflow_completion_proof(
+                            run_dir,
+                            task_id,
+                            run_id,
+                        )['complete']
+                        or self.workflow_status(run_dir, task_id) in {'failed', 'stopped'}
+                    ),
                     300,
                     0.5,
                 )
-            status = self.workflow_status(run_dir, task_id)
+            completion_proof = self.workflow_completion_proof(
+                run_dir,
+                task_id,
+                run_id,
+            )
+            status = completion_proof['status']
             self.capture(target, terminal_path)
         else:
+            completion_proof = {'complete': False, 'status': None}
+        (run_dir / 'workflow-completion-proof.json').write_text(
+            json.dumps(completion_proof, indent=2) + '\n'
+        )
+        if status in {'failed', 'stopped'} and not completion_proof['complete']:
+            completion_proof['terminal_proof_incomplete'] = True
+            (run_dir / 'workflow-completion-proof.json').write_text(
+                json.dumps(completion_proof, indent=2) + '\n'
+            )
+            status = completion_proof['status']
+        if not ready:
             running_path.write_text('readiness failed\n')
             terminal_path.write_text('readiness failed\n')
         log = self.debug(run_dir)
@@ -2595,7 +2822,9 @@ return await parallel([
         )
         cleanup = self.close(run_dir, session, target)
         passed = (
-            ready and launched and status == 'completed' and retry_ok
+            ready and launched and status == 'completed'
+            and completion_proof['complete']
+            and retry_ok
             and self.cleanup_passed(cleanup)
         )
         evidence = [
@@ -2650,11 +2879,10 @@ return await parallel([
                 'Transcript retention binary validation. Use TeamCreate once with team_name '
                 '"release-transcript-retention". Launch exactly one named general-purpose '
                 'teammate named retention-worker with run_in_background=true. Its initial task '
-                'must use Bash exactly once to run `sleep 20`, then reply exactly '
-                'RELEASE_RETENTION_WORKER_DONE. Tell it that after replying, if it receives a '
-                'shutdown request, it must approve that request using SendMessage. Immediately '
-                'after launching it, use SendMessage to send retention-worker a structured '
-                'shutdown_request, then return. Do not modify files.'
+                'must reply exactly RELEASE_RETENTION_WORKER_DONE. Tell it that after replying, '
+                'if it receives a shutdown request, it must approve that request using '
+                'SendMessage. Immediately after launching it, use SendMessage to send '
+                'retention-worker a structured shutdown_request, then return. Do not modify files.'
             )
             self.send(target, run_dir, prompt, 'input-transcript-retention.txt')
             registered = self.wait_until(
@@ -2690,9 +2918,17 @@ return await parallel([
                     0.5,
                 )
                 terminal = self.capture(target, terminal_path)
+                worker_assistant_text = self.assistant_text(
+                    run_dir,
+                    subagents=True,
+                )
                 terminal_visible = (
                     retained
+                    and 'RELEASE_RETENTION_WORKER_DONE' in worker_assistant_text
                     and 'RELEASE_RETENTION_WORKER_DONE' in strip_ansi(terminal)
+                )
+                (run_dir / 'worker-assistant-text.txt').write_text(
+                    worker_assistant_text + ('\n' if worker_assistant_text else '')
                 )
                 if retained:
                     self.tmux('send-keys', '-t', target, 'Escape', check=True)

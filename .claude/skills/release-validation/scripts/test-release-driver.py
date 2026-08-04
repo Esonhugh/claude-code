@@ -332,6 +332,57 @@ def assert_driver_behavior(module):
             gate, run_dir, subagents=True
         ) == 'RELEASE_NESTED_CHILD_DONE'
 
+        workflow_run_dir = run_dir / 'workflow-proof'
+        workflow_run_dir.mkdir()
+        gate.workflow_status = lambda _run_dir, _task_id: 'running'
+        assert module.BinaryGate.workflow_completion_proof(
+            gate, workflow_run_dir, 'task-1', 'wf_1'
+        )['complete'] is False
+        (workflow_run_dir / 'debug.log').write_text(
+            '[workflow_worker_start] task=task-1 run=wf_1 phase=p logical=worker agent=a attempt=0\n'
+            '[workflow_worker_terminal] task=task-1 run=wf_1 phase=p logical=worker agent=a attempt=0 status=completed\n'
+            '[workflow_phase_terminal] task=task-1 run=wf_1 phase=p logical=- agent=- attempt=0 status=completed\n'
+        )
+        gate.workflow_status = lambda _run_dir, _task_id: 'completed'
+        assert module.BinaryGate.workflow_completion_proof(
+            gate, workflow_run_dir, 'task-1', 'wf_1'
+        )['complete'] is False
+        workflow_session = workflow_run_dir / 'config/projects/project/session.jsonl'
+        workflow_session.parent.mkdir(parents=True)
+        workflow_session.write_text(
+            json.dumps({
+                'type': 'user',
+                'origin': {'kind': 'task-notification'},
+                'message': {'role': 'user', 'content': 'done'},
+            }) + '\n'
+        )
+        assert module.BinaryGate.workflow_completion_proof(
+            gate, workflow_run_dir, 'task-1', 'wf_1'
+        )['complete'] is True
+
+        retention_terminal = 'RELEASE_RETENTION_WORKER_DONE'
+        user_prompt_path = project / 'retention-user-prompt.jsonl'
+        viewed_pane_path = run_dir / 'retention-viewed-pane.txt'
+        worker_assistant_path = project / 'subagents/retention-worker.jsonl'
+        write_transcript(user_prompt_path, [{
+            'type': 'user',
+            'message': {'role': 'user', 'content': retention_terminal},
+        }])
+        viewed_pane_path.write_text(retention_terminal)
+        assert retention_terminal not in module.BinaryGate.assistant_text(
+            gate, run_dir, subagents=True
+        )
+        write_transcript(worker_assistant_path, [{
+            'type': 'assistant',
+            'message': {
+                'role': 'assistant',
+                'content': [{'type': 'text', 'text': retention_terminal}],
+            },
+        }])
+        assert retention_terminal in module.BinaryGate.assistant_text(
+            gate, run_dir, subagents=True
+        )
+
         task_notification = {
             'type': 'user',
             'origin': {'kind': 'task-notification'},
@@ -1190,6 +1241,11 @@ def assert_driver_behavior(module):
         assert coverage['invalid_targets'] == ['workflow-failure-detail']
 
     driver = DRIVER_PATH.read_text()
+    assert "def workflow_completion_proof(" in driver
+    assert "def agent_completion_proof(" in driver
+    assert "self.workflow_completion_proof(" in driver
+    assert "self.agent_completion_proof(" in driver
+    assert "workflow did not reach a terminal status before timeout" in driver
     assert "'team-concurrency': self.team_concurrency" in driver
     assert "'workflow-retry-partial-failure': self.workflow_retry_partial_failure" in driver
     assert "'workflow-failure-detail': self.workflow_failure_detail" in driver
@@ -1206,7 +1262,8 @@ def assert_driver_behavior(module):
     assert "run_dir / '04-prompt-after-detail-dialog.txt'" in driver
     assert "re.fullmatch(r'\\s*❯\\s*', line)" in driver
     assert "f'/workflows detail {task_id}'" in driver
-    assert "'shutdown_request, then return. Do not modify files.'" in driver
+    assert 'structured shutdown_request' in driver
+    assert 'then return. Do not modify files.' in driver
     assert "status=completed retain=keep" in driver
     assert "input-transcript-retention-exit.txt" not in driver
     assert "passed=marker_ok and no_retry" in driver
