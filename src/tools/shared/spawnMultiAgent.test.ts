@@ -11,7 +11,12 @@ import { buildInheritedCliFlags } from '../../utils/swarm/spawnUtils.js'
 import { spawnInProcessTeammate } from '../../utils/swarm/spawnInProcess.js'
 import { setCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
 import type { InProcessRunnerConfig } from '../../utils/swarm/inProcessRunner.js'
-import { writeTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
+import {
+  appendOrUpdateTeamMemberAsync,
+  mutateTeamFileAsync,
+  readTeamFileAsync,
+  writeTeamFileAsync,
+} from '../../utils/swarm/teamHelpers.js'
 import { GENERAL_PURPOSE_AGENT } from '../AgentTool/built-in/generalPurposeAgent.js'
 import type { AgentDefinition } from '../AgentTool/loadAgentsDir.js'
 
@@ -51,6 +56,152 @@ const { spawnTeammate } = await import('./spawnMultiAgent.js')
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const configDir = mkdtempSync(join(tmpdir(), 'spawn-multi-agent-test-'))
 process.env.CLAUDE_CONFIG_DIR = configDir
+
+await writeTeamFileAsync('concurrent-team', {
+  name: 'concurrent-team',
+  createdAt: Date.now(),
+  leadAgentId: 'team-lead@concurrent-team',
+  members: [],
+})
+
+await Promise.all([
+  appendOrUpdateTeamMemberAsync('concurrent-team', {
+    agentId: 'alpha@concurrent-team',
+    name: 'alpha',
+    agentType: 'general-purpose',
+    model: 'claude-sonnet-4-6',
+    prompt: 'inspect alpha',
+    color: 'blue',
+    planModeRequired: false,
+    mode: 'default' as const,
+    joinedAt: Date.now(),
+    tmuxPaneId: 'pane-alpha',
+    cwd: '/tmp',
+    subscriptions: [] as string[],
+    backendType: 'in-process' as const,
+  }),
+  appendOrUpdateTeamMemberAsync('concurrent-team', {
+    agentId: 'beta@concurrent-team',
+    name: 'beta',
+    agentType: 'general-purpose',
+    model: 'claude-sonnet-4-6',
+    prompt: 'inspect beta',
+    color: 'blue',
+    planModeRequired: false,
+    mode: 'default' as const,
+    joinedAt: Date.now(),
+    tmuxPaneId: 'pane-beta',
+    cwd: '/tmp',
+    subscriptions: [] as string[],
+    backendType: 'in-process' as const,
+  }),
+])
+
+const concurrentTeamFile = await readTeamFileAsync('concurrent-team')
+assert.deepEqual(
+  concurrentTeamFile?.members.map(member => member.name).sort(),
+  ['alpha', 'beta'],
+)
+
+await writeTeamFileAsync('concurrent-dedupe-team', {
+  name: 'concurrent-dedupe-team',
+  createdAt: Date.now(),
+  leadAgentId: 'team-lead@concurrent-dedupe-team',
+  members: [],
+})
+
+await Promise.all([
+  appendOrUpdateTeamMemberAsync('concurrent-dedupe-team', {
+    agentId: 'alpha@concurrent-dedupe-team',
+    name: 'alpha',
+    agentType: 'general-purpose',
+    model: 'claude-sonnet-4-6',
+    prompt: 'inspect alpha once',
+    color: 'blue',
+    planModeRequired: false,
+    mode: 'default' as const,
+    joinedAt: Date.now(),
+    tmuxPaneId: 'pane-alpha-1',
+    cwd: '/tmp',
+    subscriptions: [] as string[],
+    backendType: 'in-process' as const,
+  }),
+  appendOrUpdateTeamMemberAsync('concurrent-dedupe-team', {
+    agentId: 'alpha@concurrent-dedupe-team',
+    name: 'alpha',
+    agentType: 'general-purpose',
+    model: 'claude-sonnet-4-6',
+    prompt: 'inspect alpha twice',
+    color: 'blue',
+    planModeRequired: false,
+    mode: 'default' as const,
+    joinedAt: Date.now(),
+    tmuxPaneId: 'pane-alpha-2',
+    cwd: '/tmp',
+    subscriptions: [] as string[],
+    backendType: 'in-process' as const,
+  }),
+])
+
+const concurrentDedupeTeamFile = await readTeamFileAsync('concurrent-dedupe-team')
+assert.equal(concurrentDedupeTeamFile?.members.length, 1)
+assert.deepEqual(concurrentDedupeTeamFile?.members.map(member => member.agentId), [
+  'alpha@concurrent-dedupe-team',
+])
+
+await writeTeamFileAsync('concurrent-add-remove-team', {
+  name: 'concurrent-add-remove-team',
+  createdAt: Date.now(),
+  leadAgentId: 'team-lead@concurrent-add-remove-team',
+  members: [
+    {
+      agentId: 'alpha@concurrent-add-remove-team',
+      name: 'alpha',
+      joinedAt: Date.now(),
+      tmuxPaneId: 'pane-alpha',
+      cwd: '/tmp',
+      subscriptions: [],
+    },
+  ],
+})
+
+await Promise.all([
+  appendOrUpdateTeamMemberAsync('concurrent-add-remove-team', {
+    agentId: 'beta@concurrent-add-remove-team',
+    name: 'beta',
+    agentType: 'general-purpose',
+    model: 'claude-sonnet-4-6',
+    prompt: 'inspect beta',
+    color: 'blue',
+    planModeRequired: false,
+    mode: 'default' as const,
+    joinedAt: Date.now(),
+    tmuxPaneId: 'pane-beta',
+    cwd: '/tmp',
+    subscriptions: [] as string[],
+    backendType: 'in-process' as const,
+  }),
+  mutateTeamFileAsync('concurrent-add-remove-team', {
+    mutation: 'testRemoveMemberByAgentId',
+    agentId: 'alpha@concurrent-add-remove-team',
+    mutate(teamFile) {
+      const memberIndex = teamFile.members.findIndex(
+        member => member.agentId === 'alpha@concurrent-add-remove-team',
+      )
+      assert.notEqual(memberIndex, -1)
+      teamFile.members.splice(memberIndex, 1)
+      return { result: undefined, changed: true }
+    },
+  }),
+])
+
+const concurrentAddRemoveTeamFile = await readTeamFileAsync(
+  'concurrent-add-remove-team',
+)
+assert.deepEqual(
+  concurrentAddRemoveTeamFile?.members.map(member => member.name).sort(),
+  ['beta'],
+)
 
 setCliTeammateModeOverride('in-process')
 
@@ -93,6 +244,112 @@ assert.equal(
   'Team "default" does not exist. Call spawnTeam first to create the team.',
 )
 assert.equal(setAppStateCalls, 0)
+
+await writeTeamFileAsync('concurrent-spawn-team', {
+  name: 'concurrent-spawn-team',
+  createdAt: Date.now(),
+  leadAgentId: 'team-lead@concurrent-spawn-team',
+  members: [
+    {
+      agentId: 'team-lead@concurrent-spawn-team',
+      name: 'team-lead',
+      joinedAt: Date.now(),
+      tmuxPaneId: '',
+      cwd: '/tmp',
+      subscriptions: [],
+    },
+  ],
+})
+
+let concurrentSpawnState = {
+  ...getDefaultAppState(),
+  mainLoopModel: 'claude-sonnet-4-6' as const,
+  toolPermissionContext: getEmptyToolPermissionContext(),
+  teamContext: {
+    teamName: 'concurrent-spawn-team',
+    teamFilePath: '',
+    leadAgentId: 'team-lead@concurrent-spawn-team',
+    teammates: {},
+  },
+}
+const concurrentSpawnContext = {
+  options: {
+    tools: [],
+    agentDefinitions: {
+      activeAgents: [GENERAL_PURPOSE_AGENT],
+      inactiveAgents: [],
+      allowedAgentTypes: undefined,
+    },
+  },
+  toolUseId: 'toolu_concurrent_spawn_test',
+  getAppState: () => concurrentSpawnState,
+  setAppState: (
+    updater: (prev: typeof concurrentSpawnState) => typeof concurrentSpawnState,
+  ) => {
+    concurrentSpawnState = updater(concurrentSpawnState)
+  },
+} as never
+
+await Promise.all([
+  spawnTeammate(
+    {
+      name: 'alpha',
+      prompt: 'inspect alpha',
+      team_name: 'concurrent-spawn-team',
+    },
+    concurrentSpawnContext,
+  ),
+  spawnTeammate(
+    {
+      name: 'beta',
+      prompt: 'inspect beta',
+      team_name: 'concurrent-spawn-team',
+    },
+    concurrentSpawnContext,
+  ),
+])
+
+const concurrentSpawnTeamFile = await readTeamFileAsync('concurrent-spawn-team')
+assert.deepEqual(
+  concurrentSpawnTeamFile?.members.map(member => member.name).sort(),
+  ['alpha', 'beta', 'team-lead'],
+)
+
+await writeTeamFileAsync('same-name-spawn-team', {
+  name: 'same-name-spawn-team',
+  createdAt: Date.now(),
+  leadAgentId: 'team-lead@same-name-spawn-team',
+  members: [],
+})
+const sameNameResults = await Promise.all([
+  spawnTeammate(
+    {
+      name: 'reviewer',
+      prompt: 'inspect first',
+      team_name: 'same-name-spawn-team',
+    },
+    concurrentSpawnContext,
+  ),
+  spawnTeammate(
+    {
+      name: 'reviewer',
+      prompt: 'inspect second',
+      team_name: 'same-name-spawn-team',
+    },
+    concurrentSpawnContext,
+  ),
+])
+assert.deepEqual(
+  sameNameResults.map(result => result.data.name).sort(),
+  ['reviewer', 'reviewer-2'],
+)
+const sameNameSpawnTeamFile = await readTeamFileAsync('same-name-spawn-team')
+assert.deepEqual(
+  sameNameSpawnTeamFile?.members.map(member => member.name).sort(),
+  ['reviewer', 'reviewer-2'],
+)
+
+const specializedSpawnBaseline = startedInProcessConfigs.length
 
 await writeTeamFileAsync('definition-team', {
   name: 'definition-team',
@@ -193,7 +450,10 @@ for (const definition of specializedDefinitions) {
   )
   startedConfig?.abortController.abort()
 }
-assert.equal(startedInProcessConfigs.length, specializedDefinitions.length)
+assert.equal(
+  startedInProcessConfigs.length - specializedSpawnBaseline,
+  specializedDefinitions.length,
+)
 
 useInProcessBackend = false
 spawnedPaneCommand = undefined

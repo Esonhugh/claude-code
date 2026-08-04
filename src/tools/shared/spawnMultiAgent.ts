@@ -49,10 +49,10 @@ import {
   buildInheritedEnvVars,
 } from '../../utils/swarm/spawnUtils.js'
 import {
+  appendOrUpdateTeamMemberAsync,
   readTeamFileAsync,
   sanitizeAgentName,
   sanitizeName,
-  writeTeamFileAsync,
 } from '../../utils/swarm/teamHelpers.js'
 import {
   assignTeammateColor,
@@ -204,33 +204,60 @@ function getTeammateCommand(): string {
  * If the name already exists, appends a numeric suffix (e.g., tester-2, tester-3).
  * @internal Exported for testing
  */
+function uniqueTeammateName(baseName: string, existingNames: Set<string>): string {
+  if (!existingNames.has(baseName.toLowerCase())) return baseName
+
+  let suffix = 2
+  while (existingNames.has(`${baseName}-${suffix}`.toLowerCase())) suffix++
+  return `${baseName}-${suffix}`
+}
+
 export async function generateUniqueTeammateName(
   baseName: string,
   teamName: string | undefined,
 ): Promise<string> {
-  if (!teamName) {
-    return baseName
-  }
-
+  if (!teamName) return baseName
   const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
-    return baseName
+  return uniqueTeammateName(
+    baseName,
+    new Set(teamFile?.members.map(member => member.name.toLowerCase()) ?? []),
+  )
+}
+
+const pendingTeammateNames = new Map<string, Set<string>>()
+let teammateNameReservationQueue = Promise.resolve()
+
+async function reserveUniqueTeammateName(
+  baseName: string,
+  teamName: string,
+): Promise<string> {
+  const previous = teammateNameReservationQueue
+  let releaseQueue!: () => void
+  teammateNameReservationQueue = new Promise(resolve => {
+    releaseQueue = resolve
+  })
+  await previous
+  try {
+    const teamFile = await readTeamFileAsync(teamName)
+    const reserved = pendingTeammateNames.get(teamName) ?? new Set<string>()
+    const existingNames = new Set([
+      ...(teamFile?.members.map(member => member.name.toLowerCase()) ?? []),
+      ...reserved,
+    ])
+    const uniqueName = uniqueTeammateName(baseName, existingNames)
+    reserved.add(uniqueName.toLowerCase())
+    pendingTeammateNames.set(teamName, reserved)
+    return uniqueName
+  } finally {
+    releaseQueue()
   }
+}
 
-  const existingNames = new Set(teamFile.members.map(m => m.name.toLowerCase()))
-
-  // If the base name doesn't exist, use it as-is
-  if (!existingNames.has(baseName.toLowerCase())) {
-    return baseName
-  }
-
-  // Find the next available suffix
-  let suffix = 2
-  while (existingNames.has(`${baseName}-${suffix}`.toLowerCase())) {
-    suffix++
-  }
-
-  return `${baseName}-${suffix}`
+function releaseTeammateName(teamName: string, name: string): void {
+  const reserved = pendingTeammateNames.get(teamName)
+  if (!reserved) return
+  reserved.delete(name.toLowerCase())
+  if (reserved.size === 0) pendingTeammateNames.delete(teamName)
 }
 
 // ============================================================================
@@ -274,8 +301,7 @@ async function handleSpawnSplitPane(
     )
   }
 
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
+  if (!(await readTeamFileAsync(teamName))) {
     throw new Error(
       `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
     )
@@ -284,7 +310,6 @@ async function handleSpawnSplitPane(
   // Resolve model: 'inherit' → leader's model; undefined → default Opus
   const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
 
-  // Generate unique name if duplicate exists in team
   const uniqueName = await generateUniqueTeammateName(name, teamName)
 
   // Sanitize the name to prevent @ in agent IDs (would break agentName@teamName format)
@@ -446,7 +471,7 @@ async function handleSpawnSplitPane(
   })
 
   // Register agent in the team file
-  teamFile.members.push({
+  await appendOrUpdateTeamMemberAsync(teamName, {
     agentId: teammateId,
     name: sanitizedName,
     agentType: agent_type,
@@ -461,7 +486,6 @@ async function handleSpawnSplitPane(
     subscriptions: [],
     backendType: detectionResult.backend.type,
   })
-  await writeTeamFileAsync(teamName, teamFile)
 
   // Send initial instructions to teammate via mailbox
   // The teammate's inbox poller will pick this up and submit it as their first turn
@@ -529,8 +553,7 @@ async function handleSpawnSeparateWindow(
     )
   }
 
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
+  if (!(await readTeamFileAsync(teamName))) {
     throw new Error(
       `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
     )
@@ -539,7 +562,6 @@ async function handleSpawnSeparateWindow(
   // Resolve model: 'inherit' → leader's model; undefined → default Opus
   const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
 
-  // Generate unique name if duplicate exists in team
   const uniqueName = await generateUniqueTeammateName(name, teamName)
 
   // Sanitize the name to prevent @ in agent IDs (would break agentName@teamName format)
@@ -675,7 +697,7 @@ async function handleSpawnSeparateWindow(
   })
 
   // Register agent in the team file
-  teamFile.members.push({
+  await appendOrUpdateTeamMemberAsync(teamName, {
     agentId: teammateId,
     name: sanitizedName,
     agentType: agent_type,
@@ -690,7 +712,6 @@ async function handleSpawnSeparateWindow(
     subscriptions: [],
     backendType: 'tmux', // This handler always uses tmux directly
   })
-  await writeTeamFileAsync(teamName, teamFile)
 
   // Send initial instructions to teammate via mailbox
   // The teammate's inbox poller will pick this up and submit it as their first turn
@@ -840,8 +861,7 @@ async function handleSpawnInProcess(
     )
   }
 
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
+  if (!(await readTeamFileAsync(teamName))) {
     throw new Error(
       `Team "${teamName}" does not exist. Call spawnTeam first to create the team.`,
     )
@@ -850,7 +870,6 @@ async function handleSpawnInProcess(
   // Resolve model: 'inherit' → leader's model; undefined → default Opus
   const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
 
-  // Generate unique name if duplicate exists in team
   const uniqueName = await generateUniqueTeammateName(name, teamName)
 
   // Sanitize the name to prevent @ in agent IDs
@@ -976,7 +995,7 @@ async function handleSpawnInProcess(
   })
 
   // Register agent in the team file
-  teamFile.members.push({
+  await appendOrUpdateTeamMemberAsync(teamName, {
     agentId: teammateId,
     name: sanitizedName,
     agentType: agent_type,
@@ -991,7 +1010,6 @@ async function handleSpawnInProcess(
     subscriptions: [],
     backendType: 'in-process',
   })
-  await writeTeamFileAsync(teamName, teamFile)
 
   // Note: Do NOT send the prompt via mailbox for in-process teammates.
   // In-process teammates receive the prompt directly via startInProcessTeammate().
@@ -1074,5 +1092,16 @@ export async function spawnTeammate(
   config: SpawnTeammateConfig,
   context: ToolUseContext,
 ): Promise<{ data: SpawnOutput }> {
-  return handleSpawn(config, context)
+  const teamName = config.team_name || context.getAppState().teamContext?.teamName
+  if (!teamName || !config.name) return handleSpawn(config, context)
+
+  const reservedName = await reserveUniqueTeammateName(config.name, teamName)
+  try {
+    return await handleSpawn(
+      { ...config, name: reservedName, team_name: teamName },
+      context,
+    )
+  } finally {
+    releaseTeammateName(teamName, reservedName)
+  }
 }

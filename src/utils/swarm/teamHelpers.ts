@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { mkdir, readFile, rm, writeFile } from 'fs/promises'
+import { lock as lockFile, lockSync as lockFileSync } from '../lockfile.js'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { getSessionCreatedTeams } from '../../bootstrap/state.js'
@@ -61,6 +62,25 @@ export type TeamAllowedPath = {
   addedAt: number // Timestamp when added
 }
 
+export type TeamMember = {
+  agentId: string
+  name: string
+  agentType?: string
+  model?: string
+  prompt?: string
+  color?: string
+  planModeRequired?: boolean
+  joinedAt: number
+  tmuxPaneId: string
+  cwd: string
+  worktreePath?: string
+  sessionId?: string
+  subscriptions: string[]
+  backendType?: BackendType
+  isActive?: boolean // false when idle, undefined/true when active
+  mode?: PermissionMode // Current permission mode for this teammate
+}
+
 export type TeamFile = {
   name: string
   description?: string
@@ -69,29 +89,44 @@ export type TeamFile = {
   leadSessionId?: string // Actual session UUID of the leader (for discovery)
   hiddenPaneIds?: string[] // Pane IDs that are currently hidden from the UI
   teamAllowedPaths?: TeamAllowedPath[] // Paths all teammates can edit without asking
-  members: Array<{
-    agentId: string
-    name: string
-    agentType?: string
-    model?: string
-    prompt?: string
-    color?: string
-    planModeRequired?: boolean
-    joinedAt: number
-    tmuxPaneId: string
-    cwd: string
-    worktreePath?: string
-    sessionId?: string
-    subscriptions: string[]
-    backendType?: BackendType
-    isActive?: boolean // false when idle, undefined/true when active
-    mode?: PermissionMode // Current permission mode for this teammate
-  }>
+  members: TeamMember[]
 }
 
 export type Input = z.infer<ReturnType<typeof inputSchema>>
 // Export SpawnTeamOutput as Output for backward compatibility
 export type Output = SpawnTeamOutput
+
+const TEAM_FILE_LOCK_OPTIONS = {
+  retries: {
+    retries: 30,
+    minTimeout: 5,
+    maxTimeout: 100,
+  },
+  realpath: false,
+} as const
+
+type TeamMutationResult<T> = {
+  result: T
+  changed: boolean
+}
+
+type TeamMutationContext = {
+  teamName: string
+  beforeCount: number
+}
+
+type TeamMutationTiming = {
+  waitMs: number
+}
+
+type TeamMutationParams<T> = {
+  mutation: string
+  agentId?: string | ((teamFile: TeamFile) => string | undefined)
+  mutate: (
+    teamFile: TeamFile,
+    context: TeamMutationContext,
+  ) => TeamMutationResult<T>
+}
 
 /**
  * Sanitizes a name for use in tmux window names, worktree paths, and file paths.
@@ -181,6 +216,251 @@ export async function writeTeamFileAsync(
   await writeFile(getTeamFilePath(teamName), jsonStringify(teamFile, null, 2))
 }
 
+function createTeamMutationLog(
+  event: 'start' | 'commit' | 'abort',
+  mutation: string,
+  {
+    teamName,
+    agentId,
+    beforeCount,
+    afterCount,
+    waitMs,
+    reason,
+  }: {
+    teamName: string
+    agentId?: string
+    beforeCount?: number
+    afterCount?: number
+    waitMs?: number
+    reason?: string
+  },
+): string {
+  const fields = [
+    `team_mutation_${event}`,
+    `teamName=${jsonStringify(teamName)}`,
+    `mutation=${jsonStringify(mutation)}`,
+  ]
+  if (agentId) {
+    fields.push(`agentId=${jsonStringify(agentId)}`)
+  }
+  if (beforeCount !== undefined) {
+    fields.push(`beforeCount=${beforeCount}`)
+  }
+  if (afterCount !== undefined) {
+    fields.push(`afterCount=${afterCount}`)
+  }
+  if (waitMs !== undefined) {
+    fields.push(`lockWaitMs=${waitMs}`)
+  }
+  if (reason) {
+    fields.push(`reason=${jsonStringify(reason)}`)
+  }
+  return `[TeammateTool] ${fields.join(' ')}`
+}
+
+function readTeamFileOrThrow(teamName: string): TeamFile {
+  const teamFile = readTeamFile(teamName)
+  if (!teamFile) {
+    throw new Error(`Team \"${teamName}\" does not exist`)
+  }
+  return teamFile
+}
+
+async function readTeamFileAsyncOrThrow(teamName: string): Promise<TeamFile> {
+  const teamFile = await readTeamFileAsync(teamName)
+  if (!teamFile) {
+    throw new Error(`Team \"${teamName}\" does not exist`)
+  }
+  return teamFile
+}
+
+export function mutateTeamFile<T>(
+  teamName: string,
+  params: TeamMutationParams<T>,
+): T {
+  const teamFilePath = getTeamFilePath(teamName)
+  const teamDir = getTeamDir(teamName)
+  mkdirSync(teamDir, { recursive: true })
+  const lockStartedAt = Date.now()
+  const release = lockFileSync(teamFilePath, TEAM_FILE_LOCK_OPTIONS)
+  const timing: TeamMutationTiming = { waitMs: Date.now() - lockStartedAt }
+  let resolvedAgentId: string | undefined
+
+  try {
+    const latestTeamFile = readTeamFileOrThrow(teamName)
+    resolvedAgentId =
+      typeof params.agentId === 'function'
+        ? params.agentId(latestTeamFile)
+        : params.agentId
+    const context: TeamMutationContext = {
+      teamName,
+      beforeCount: latestTeamFile.members.length,
+    }
+    logForDebugging(
+      createTeamMutationLog('start', params.mutation, {
+        teamName,
+        agentId: resolvedAgentId,
+        beforeCount: context.beforeCount,
+        waitMs: timing.waitMs,
+      }),
+    )
+
+    const { result, changed } = params.mutate(latestTeamFile, context)
+    if (changed) {
+      writeTeamFile(teamName, latestTeamFile)
+      logForDebugging(
+        createTeamMutationLog('commit', params.mutation, {
+          teamName,
+          agentId: resolvedAgentId,
+          beforeCount: context.beforeCount,
+          afterCount: latestTeamFile.members.length,
+          waitMs: timing.waitMs,
+        }),
+      )
+    } else {
+      logForDebugging(
+        createTeamMutationLog('abort', params.mutation, {
+          teamName,
+          agentId: resolvedAgentId,
+          beforeCount: context.beforeCount,
+          afterCount: latestTeamFile.members.length,
+          waitMs: timing.waitMs,
+          reason: 'no_change',
+        }),
+      )
+    }
+    return result
+  } catch (error) {
+    logForDebugging(
+      createTeamMutationLog('abort', params.mutation, {
+        teamName,
+        agentId: resolvedAgentId,
+        waitMs: timing.waitMs,
+        reason: 'mutation_failed',
+      }),
+    )
+    throw error
+  } finally {
+    release()
+  }
+}
+
+export async function mutateTeamFileAsync<T>(
+  teamName: string,
+  params: TeamMutationParams<T>,
+): Promise<T> {
+  const teamFilePath = getTeamFilePath(teamName)
+  const teamDir = getTeamDir(teamName)
+  await mkdir(teamDir, { recursive: true })
+  const lockStartedAt = Date.now()
+  const release = await lockFile(teamFilePath, TEAM_FILE_LOCK_OPTIONS)
+  const timing: TeamMutationTiming = { waitMs: Date.now() - lockStartedAt }
+  let resolvedAgentId: string | undefined
+
+  try {
+    const latestTeamFile = await readTeamFileAsyncOrThrow(teamName)
+    resolvedAgentId =
+      typeof params.agentId === 'function'
+        ? params.agentId(latestTeamFile)
+        : params.agentId
+    const context: TeamMutationContext = {
+      teamName,
+      beforeCount: latestTeamFile.members.length,
+    }
+    logForDebugging(
+      createTeamMutationLog('start', params.mutation, {
+        teamName,
+        agentId: resolvedAgentId,
+        beforeCount: context.beforeCount,
+        waitMs: timing.waitMs,
+      }),
+    )
+
+    const { result, changed } = params.mutate(latestTeamFile, context)
+    if (changed) {
+      await writeTeamFileAsync(teamName, latestTeamFile)
+      logForDebugging(
+        createTeamMutationLog('commit', params.mutation, {
+          teamName,
+          agentId: resolvedAgentId,
+          beforeCount: context.beforeCount,
+          afterCount: latestTeamFile.members.length,
+          waitMs: timing.waitMs,
+        }),
+      )
+    } else {
+      logForDebugging(
+        createTeamMutationLog('abort', params.mutation, {
+          teamName,
+          agentId: resolvedAgentId,
+          beforeCount: context.beforeCount,
+          afterCount: latestTeamFile.members.length,
+          waitMs: timing.waitMs,
+          reason: 'no_change',
+        }),
+      )
+    }
+    return result
+  } catch (error) {
+    logForDebugging(
+      createTeamMutationLog('abort', params.mutation, {
+        teamName,
+        agentId: resolvedAgentId,
+        waitMs: timing.waitMs,
+        reason: 'mutation_failed',
+      }),
+    )
+    throw error
+  } finally {
+    await release()
+  }
+}
+
+function upsertTeamMember(
+  teamFile: TeamFile,
+  member: TeamMember,
+): TeamMutationResult<void> {
+  const existingIndex = teamFile.members.findIndex(
+    existing => existing.agentId === member.agentId,
+  )
+  if (existingIndex === -1) {
+    teamFile.members.push(member)
+    return { result: undefined, changed: true }
+  }
+
+  const existing = teamFile.members[existingIndex]!
+  const mergedMember = {
+    ...existing,
+    ...member,
+    joinedAt: existing.joinedAt,
+  }
+  const changed = jsonStringify(existing) !== jsonStringify(mergedMember)
+  if (changed) teamFile.members[existingIndex] = mergedMember
+  return { result: undefined, changed }
+}
+
+export function appendOrUpdateTeamMember(
+  teamName: string,
+  member: TeamMember,
+): void {
+  mutateTeamFile(teamName, {
+    mutation: 'appendOrUpdateMember',
+    agentId: member.agentId,
+    mutate: teamFile => upsertTeamMember(teamFile, member),
+  })
+}
+
+export async function appendOrUpdateTeamMemberAsync(
+  teamName: string,
+  member: TeamMember,
+): Promise<void> {
+  await mutateTeamFileAsync(teamName, {
+    mutation: 'appendOrUpdateMember',
+    agentId: member.agentId,
+    mutate: teamFile => upsertTeamMember(teamFile, member),
+  })
+}
+
 /**
  * Removes a teammate from the team file by agent ID or name.
  * Used by the leader when processing shutdown approvals.
@@ -197,33 +477,36 @@ export function removeTeammateFromTeamFile(
     return false
   }
 
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'removeTeammate',
+      agentId: teamFile =>
+        identifier.agentId ??
+        teamFile.members.find(member => member.name === identifier.name)?.agentId,
+      mutate(teamFile) {
+        const originalLength = teamFile.members.length
+        teamFile.members = teamFile.members.filter(m => {
+          if (identifier.agentId && m.agentId === identifier.agentId) return false
+          if (identifier.name && m.name === identifier.name) return false
+          return true
+        })
+
+        if (teamFile.members.length === originalLength) {
+          logForDebugging(
+            `[TeammateTool] Teammate ${identifierStr} not found in team file for "${teamName}"`,
+          )
+          return { result: false, changed: false }
+        }
+
+        return { result: true, changed: true }
+      },
+    })
+  } catch (error) {
     logForDebugging(
-      `[TeammateTool] Cannot remove teammate ${identifierStr}: failed to read team file for "${teamName}"`,
+      `[TeammateTool] Cannot remove teammate ${identifierStr}: ${errorMessage(error)}`,
     )
     return false
   }
-
-  const originalLength = teamFile.members.length
-  teamFile.members = teamFile.members.filter(m => {
-    if (identifier.agentId && m.agentId === identifier.agentId) return false
-    if (identifier.name && m.name === identifier.name) return false
-    return true
-  })
-
-  if (teamFile.members.length === originalLength) {
-    logForDebugging(
-      `[TeammateTool] Teammate ${identifierStr} not found in team file for "${teamName}"`,
-    )
-    return false
-  }
-
-  writeTeamFile(teamName, teamFile)
-  logForDebugging(
-    `[TeammateTool] Removed teammate from team file: ${identifierStr}`,
-  )
-  return true
 }
 
 /**
@@ -233,21 +516,25 @@ export function removeTeammateFromTeamFile(
  * @returns true if the pane was added to hidden list, false if team doesn't exist
  */
 export function addHiddenPaneId(teamName: string, paneId: string): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'addHiddenPane',
+      mutate(teamFile) {
+        const hiddenPaneIds = teamFile.hiddenPaneIds ?? []
+        if (hiddenPaneIds.includes(paneId)) {
+          return { result: true, changed: false }
+        }
+        hiddenPaneIds.push(paneId)
+        teamFile.hiddenPaneIds = hiddenPaneIds
+        logForDebugging(
+          `[TeammateTool] Added ${paneId} to hidden panes for team ${teamName}`,
+        )
+        return { result: true, changed: true }
+      },
+    })
+  } catch {
     return false
   }
-
-  const hiddenPaneIds = teamFile.hiddenPaneIds ?? []
-  if (!hiddenPaneIds.includes(paneId)) {
-    hiddenPaneIds.push(paneId)
-    teamFile.hiddenPaneIds = hiddenPaneIds
-    writeTeamFile(teamName, teamFile)
-    logForDebugging(
-      `[TeammateTool] Added ${paneId} to hidden panes for team ${teamName}`,
-    )
-  }
-  return true
 }
 
 /**
@@ -257,22 +544,26 @@ export function addHiddenPaneId(teamName: string, paneId: string): boolean {
  * @returns true if the pane was removed from hidden list, false if team doesn't exist
  */
 export function removeHiddenPaneId(teamName: string, paneId: string): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'removeHiddenPane',
+      mutate(teamFile) {
+        const hiddenPaneIds = teamFile.hiddenPaneIds ?? []
+        const index = hiddenPaneIds.indexOf(paneId)
+        if (index === -1) {
+          return { result: true, changed: false }
+        }
+        hiddenPaneIds.splice(index, 1)
+        teamFile.hiddenPaneIds = hiddenPaneIds
+        logForDebugging(
+          `[TeammateTool] Removed ${paneId} from hidden panes for team ${teamName}`,
+        )
+        return { result: true, changed: true }
+      },
+    })
+  } catch {
     return false
   }
-
-  const hiddenPaneIds = teamFile.hiddenPaneIds ?? []
-  const index = hiddenPaneIds.indexOf(paneId)
-  if (index !== -1) {
-    hiddenPaneIds.splice(index, 1)
-    teamFile.hiddenPaneIds = hiddenPaneIds
-    writeTeamFile(teamName, teamFile)
-    logForDebugging(
-      `[TeammateTool] Removed ${paneId} from hidden panes for team ${teamName}`,
-    )
-  }
-  return true
 }
 
 /**
@@ -286,34 +577,36 @@ export function removeMemberFromTeam(
   teamName: string,
   tmuxPaneId: string,
 ): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'removeMemberByPane',
+      agentId: teamFile =>
+        teamFile.members.find(member => member.tmuxPaneId === tmuxPaneId)?.agentId,
+      mutate(teamFile) {
+        const memberIndex = teamFile.members.findIndex(
+          m => m.tmuxPaneId === tmuxPaneId,
+        )
+        if (memberIndex === -1) {
+          return { result: false, changed: false }
+        }
+
+        teamFile.members.splice(memberIndex, 1)
+        if (teamFile.hiddenPaneIds) {
+          const hiddenIndex = teamFile.hiddenPaneIds.indexOf(tmuxPaneId)
+          if (hiddenIndex !== -1) {
+            teamFile.hiddenPaneIds.splice(hiddenIndex, 1)
+          }
+        }
+
+        logForDebugging(
+          `[TeammateTool] Removed member with pane ${tmuxPaneId} from team ${teamName}`,
+        )
+        return { result: true, changed: true }
+      },
+    })
+  } catch {
     return false
   }
-
-  const memberIndex = teamFile.members.findIndex(
-    m => m.tmuxPaneId === tmuxPaneId,
-  )
-  if (memberIndex === -1) {
-    return false
-  }
-
-  // Remove from members array
-  teamFile.members.splice(memberIndex, 1)
-
-  // Also remove from hiddenPaneIds if present
-  if (teamFile.hiddenPaneIds) {
-    const hiddenIndex = teamFile.hiddenPaneIds.indexOf(tmuxPaneId)
-    if (hiddenIndex !== -1) {
-      teamFile.hiddenPaneIds.splice(hiddenIndex, 1)
-    }
-  }
-
-  writeTeamFile(teamName, teamFile)
-  logForDebugging(
-    `[TeammateTool] Removed member with pane ${tmuxPaneId} from team ${teamName}`,
-  )
-  return true
 }
 
 /**
@@ -327,24 +620,26 @@ export function removeMemberByAgentId(
   teamName: string,
   agentId: string,
 ): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'removeMemberByAgentId',
+      agentId,
+      mutate(teamFile) {
+        const memberIndex = teamFile.members.findIndex(m => m.agentId === agentId)
+        if (memberIndex === -1) {
+          return { result: false, changed: false }
+        }
+
+        teamFile.members.splice(memberIndex, 1)
+        logForDebugging(
+          `[TeammateTool] Removed member ${agentId} from team ${teamName}`,
+        )
+        return { result: true, changed: true }
+      },
+    })
+  } catch {
     return false
   }
-
-  const memberIndex = teamFile.members.findIndex(m => m.agentId === agentId)
-  if (memberIndex === -1) {
-    return false
-  }
-
-  // Remove from members array
-  teamFile.members.splice(memberIndex, 1)
-
-  writeTeamFile(teamName, teamFile)
-  logForDebugging(
-    `[TeammateTool] Removed member ${agentId} from team ${teamName}`,
-  )
-  return true
 }
 
 /**
@@ -359,33 +654,34 @@ export function setMemberMode(
   memberName: string,
   mode: PermissionMode,
 ): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'setMemberMode',
+      agentId: teamFile =>
+        teamFile.members.find(member => member.name === memberName)?.agentId,
+      mutate(teamFile) {
+        const member = teamFile.members.find(m => m.name === memberName)
+        if (!member) {
+          logForDebugging(
+            `[TeammateTool] Cannot set member mode: member ${memberName} not found in team ${teamName}`,
+          )
+          return { result: false, changed: false }
+        }
+
+        if (member.mode === mode) {
+          return { result: true, changed: false }
+        }
+
+        member.mode = mode
+        logForDebugging(
+          `[TeammateTool] Set member ${memberName} in team ${teamName} to mode: ${mode}`,
+        )
+        return { result: true, changed: true }
+      },
+    })
+  } catch {
     return false
   }
-
-  const member = teamFile.members.find(m => m.name === memberName)
-  if (!member) {
-    logForDebugging(
-      `[TeammateTool] Cannot set member mode: member ${memberName} not found in team ${teamName}`,
-    )
-    return false
-  }
-
-  // Only write if the value is actually changing
-  if (member.mode === mode) {
-    return true
-  }
-
-  // Create updated members array immutably
-  const updatedMembers = teamFile.members.map(m =>
-    m.name === memberName ? { ...m, mode } : m,
-  )
-  writeTeamFile(teamName, { ...teamFile, members: updatedMembers })
-  logForDebugging(
-    `[TeammateTool] Set member ${memberName} in team ${teamName} to mode: ${mode}`,
-  )
-  return true
 }
 
 /**
@@ -416,32 +712,32 @@ export function setMultipleMemberModes(
   teamName: string,
   modeUpdates: Array<{ memberName: string; mode: PermissionMode }>,
 ): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
+  try {
+    return mutateTeamFile(teamName, {
+      mutation: 'setMultipleMemberModes',
+      mutate(teamFile) {
+        const updateMap = new Map(modeUpdates.map(u => [u.memberName, u.mode]))
+        let anyChanged = false
+
+        for (const member of teamFile.members) {
+          const newMode = updateMap.get(member.name)
+          if (newMode !== undefined && member.mode !== newMode) {
+            member.mode = newMode
+            anyChanged = true
+          }
+        }
+
+        if (anyChanged) {
+          logForDebugging(
+            `[TeammateTool] Set ${modeUpdates.length} member modes in team ${teamName}`,
+          )
+        }
+        return { result: true, changed: anyChanged }
+      },
+    })
+  } catch {
     return false
   }
-
-  // Build a map of updates for efficient lookup
-  const updateMap = new Map(modeUpdates.map(u => [u.memberName, u.mode]))
-
-  // Create updated members array immutably
-  let anyChanged = false
-  const updatedMembers = teamFile.members.map(member => {
-    const newMode = updateMap.get(member.name)
-    if (newMode !== undefined && member.mode !== newMode) {
-      anyChanged = true
-      return { ...member, mode: newMode }
-    }
-    return member
-  })
-
-  if (anyChanged) {
-    writeTeamFile(teamName, { ...teamFile, members: updatedMembers })
-    logForDebugging(
-      `[TeammateTool] Set ${modeUpdates.length} member modes in team ${teamName}`,
-    )
-  }
-  return true
 }
 
 /**
@@ -456,32 +752,36 @@ export async function setMemberActive(
   memberName: string,
   isActive: boolean,
 ): Promise<void> {
-  const teamFile = await readTeamFileAsync(teamName)
-  if (!teamFile) {
+  try {
+    await mutateTeamFileAsync(teamName, {
+      mutation: 'setMemberActive',
+      agentId: teamFile =>
+        teamFile.members.find(member => member.name === memberName)?.agentId,
+      mutate(teamFile) {
+        const member = teamFile.members.find(m => m.name === memberName)
+        if (!member) {
+          logForDebugging(
+            `[TeammateTool] Cannot set member active: member ${memberName} not found in team ${teamName}`,
+          )
+          return { result: undefined, changed: false }
+        }
+
+        if (member.isActive === isActive) {
+          return { result: undefined, changed: false }
+        }
+
+        member.isActive = isActive
+        logForDebugging(
+          `[TeammateTool] Set member ${memberName} in team ${teamName} to ${isActive ? 'active' : 'idle'}`,
+        )
+        return { result: undefined, changed: true }
+      },
+    })
+  } catch (error) {
     logForDebugging(
-      `[TeammateTool] Cannot set member active: team ${teamName} not found`,
+      `[TeammateTool] Cannot set member active: ${errorMessage(error)}`,
     )
-    return
   }
-
-  const member = teamFile.members.find(m => m.name === memberName)
-  if (!member) {
-    logForDebugging(
-      `[TeammateTool] Cannot set member active: member ${memberName} not found in team ${teamName}`,
-    )
-    return
-  }
-
-  // Only write if the value is actually changing
-  if (member.isActive === isActive) {
-    return
-  }
-
-  member.isActive = isActive
-  await writeTeamFileAsync(teamName, teamFile)
-  logForDebugging(
-    `[TeammateTool] Set member ${memberName} in team ${teamName} to ${isActive ? 'active' : 'idle'}`,
-  )
 }
 
 /**
