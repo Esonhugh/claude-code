@@ -103,6 +103,10 @@ export type AppState = DeepImmutable<{
   // AppState (not local) so the panel can read it directly without prop-drilling
   // through PromptInput → PromptInputFooter.
   coordinatorTaskIndex: number
+  // Stable task identity for coordinator selection. Used to remap the numeric
+  // index when the visible coordinator layout changes while keeping focus on
+  // the same task row.
+  coordinatorTaskTargetId?: string
   viewSelectionMode: 'none' | 'selecting-agent' | 'viewing-agent'
   // Which footer pill is focused (arrow-key navigation below the prompt).
   // Lives in AppState so pill components rendered outside PromptInput
@@ -483,6 +487,7 @@ export function getDefaultAppState(): AppState {
     showTeammateMessagePreview: false,
     selectedIPAgentIndex: -1,
     coordinatorTaskIndex: -1,
+    coordinatorTaskTargetId: undefined,
     viewSelectionMode: 'none',
     footerSelection: null,
     kairosEnabled: false,

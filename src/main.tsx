@@ -4036,6 +4036,7 @@ async function run(): Promise<CommanderCommand> {
         showTeammateMessagePreview: isAgentSwarmsEnabled() ? false : undefined,
         selectedIPAgentIndex: -1,
         coordinatorTaskIndex: -1,
+        coordinatorTaskTargetId: undefined,
         viewSelectionMode: 'none',
         footerSelection: null,
         toolPermissionContext: effectiveToolPermissionContext,

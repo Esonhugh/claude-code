@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useAppState, useAppStateStore } from '../../state/AppState.js'
 import {
   getActiveAgentForInput,
+  getViewedAgentTask,
   getViewedTeammateTask,
 } from '../../state/selectors.js'
 import {
@@ -72,13 +73,14 @@ export function useSwarmBanner(): SwarmBannerInfo {
   }
 
   // Leader with spawned teammates: tmux-attach hint when external, else show
-  // the viewed teammate's name when inside tmux / native panes / in-process.
+  // the viewed agent's name when inside tmux / native panes / in-process.
   const hasTeammates =
     teamContext?.teamName &&
     teamContext.teammates &&
     Object.keys(teamContext.teammates).length > 0
   if (hasTeammates) {
     const viewedTeammate = getViewedTeammateTask(state)
+    const viewedAgent = getViewedAgentTask(state)
     const viewedColor = toThemeColor(viewedTeammate?.identity.color)
     const inProcessMode = isInProcessEnabled()
     const nativePanes = getCachedDetectionResult()?.isNative ?? false
@@ -91,11 +93,24 @@ export function useSwarmBanner(): SwarmBannerInfo {
     }
     if (
       (insideTmux === true || inProcessMode || nativePanes) &&
-      viewedTeammate
+      viewedAgent
     ) {
+      if (viewedAgent.type === 'in_process_teammate') {
+        return {
+          text: `@${viewedAgent.identity.agentName}`,
+          bgColor: viewedColor,
+        }
+      }
+      let name: string | undefined
+      for (const [n, id] of state.agentNameRegistry) {
+        if (id === viewedAgent.id) {
+          name = n
+          break
+        }
+      }
       return {
-        text: `@${viewedTeammate.identity.agentName}`,
-        bgColor: viewedColor,
+        text: name ? `@${name}` : viewedAgent.description,
+        bgColor: getAgentColor(viewedAgent.agentType) ?? 'cyan_FOR_SUBAGENTS_ONLY',
       }
     }
     // insideTmux === null: still loading — fall through.

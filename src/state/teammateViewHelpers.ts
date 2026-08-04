@@ -1,5 +1,7 @@
 import { logEvent } from '../services/analytics/index.js'
+import { logForDebugging } from '../utils/debug.js'
 import { isTerminalTaskStatus } from '../Task.js'
+import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 
 // Inlined from framework.ts — importing creates a cycle through
@@ -8,8 +10,7 @@ const PANEL_GRACE_MS = 30_000
 
 import type { AppState } from './AppState.js'
 
-// Inline type check instead of importing isLocalAgentTask — breaks the
-// teammateViewHelpers → LocalAgentTask runtime edge that creates a cycle
+// Inline type checks instead of importing task guards — breaks runtime edges
 // through BackgroundTasksDialog.
 function isLocalAgent(task: unknown): task is LocalAgentTaskState {
   return (
@@ -17,6 +18,17 @@ function isLocalAgent(task: unknown): task is LocalAgentTaskState {
     task !== null &&
     'type' in task &&
     task.type === 'local_agent'
+  )
+}
+
+function isInProcessTeammate(
+  task: unknown,
+): task is InProcessTeammateTaskState {
+  return (
+    typeof task === 'object' &&
+    task !== null &&
+    'type' in task &&
+    task.type === 'in_process_teammate'
   )
 }
 
@@ -52,13 +64,20 @@ export function enterTeammateView(
     const task = prev.tasks[taskId]
     const prevId = prev.viewingAgentTaskId
     const prevTask = prevId !== undefined ? prev.tasks[prevId] : undefined
-    const switching =
+    const switchingLocal =
       prevId !== undefined &&
       prevId !== taskId &&
       isLocalAgent(prevTask) &&
       prevTask.retain
+    const switchingTeammate =
+      prevId !== undefined &&
+      prevId !== taskId &&
+      isInProcessTeammate(prevTask) &&
+      prevTask.retain
+    const switching = switchingLocal || switchingTeammate
     const needsRetain =
-      isLocalAgent(task) && (!task.retain || task.evictAfter !== undefined)
+      (isLocalAgent(task) && (!task.retain || task.evictAfter !== undefined)) ||
+      (isInProcessTeammate(task) && !task.retain)
     const needsView =
       prev.viewingAgentTaskId !== taskId ||
       prev.viewSelectionMode !== 'viewing-agent'
@@ -66,10 +85,25 @@ export function enterTeammateView(
     let tasks = prev.tasks
     if (switching || needsRetain) {
       tasks = { ...prev.tasks }
-      if (switching) tasks[prevId] = release(prevTask)
-      if (needsRetain) {
-        tasks[taskId] = { ...task, retain: true, evictAfter: undefined }
+      if (switchingLocal) tasks[prevId] = release(prevTask)
+      if (switchingTeammate) {
+        const { [prevId]: _, ...remainingTasks } = tasks
+        tasks = isTerminalTaskStatus(prevTask.status)
+          ? remainingTasks
+          : { ...tasks, [prevId]: { ...prevTask, retain: undefined } }
       }
+      if (needsRetain) {
+        if (isLocalAgent(task)) {
+          tasks[taskId] = { ...task, retain: true, evictAfter: undefined }
+        } else if (isInProcessTeammate(task)) {
+          tasks[taskId] = { ...task, retain: true }
+        }
+      }
+    }
+    if (prev.viewingAgentTaskId !== taskId) {
+      logForDebugging(
+        `[viewed_agent_changed] before=${prevId ?? 'main'} after=${taskId} type=${task?.type ?? 'missing'} reason=${prevId ? 'switch' : 'enter'}`,
+      )
     }
     return {
       ...prev,
@@ -100,11 +134,31 @@ export function exitTeammateView(
       return prev.viewSelectionMode === 'none' ? prev : cleared
     }
     const task = prev.tasks[id]
-    if (!isLocalAgent(task) || !task.retain) return cleared
-    return {
-      ...cleared,
-      tasks: { ...prev.tasks, [id]: release(task) },
+    if (prev.viewingAgentTaskId !== undefined) {
+      logForDebugging(
+        `[viewed_agent_changed] before=${id} after=main type=${task?.type ?? 'missing'} reason=exit`,
+      )
     }
+    if (isLocalAgent(task) && task.retain) {
+      return {
+        ...cleared,
+        tasks: { ...prev.tasks, [id]: release(task) },
+      }
+    }
+    if (isInProcessTeammate(task) && task.retain) {
+      if (isTerminalTaskStatus(task.status)) {
+        const { [id]: _, ...remainingTasks } = prev.tasks
+        return { ...cleared, tasks: remainingTasks }
+      }
+      return {
+        ...cleared,
+        tasks: {
+          ...prev.tasks,
+          [id]: { ...task, retain: undefined },
+        },
+      }
+    }
+    return cleared
   })
 }
 

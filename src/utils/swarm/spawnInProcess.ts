@@ -266,6 +266,10 @@ export function killInProcessTeammate(
     // Abort the controller to stop execution
     teammateTask.abortController?.abort()
 
+    logForDebugging(
+      `[transcript_retention_decision] task=${taskId} status=killed retain=${teammateTask.retain ? 'keep' : 'truncate'}`,
+    )
+
     // Call cleanup handler
     teammateTask.unregisterCleanup?.()
 
@@ -296,9 +300,11 @@ export function killInProcessTeammate(
           notified: true,
           endTime: Date.now(),
           onIdleCallbacks: [], // Clear callbacks to prevent stale references
-          messages: teammateTask.messages?.length
-            ? [teammateTask.messages[teammateTask.messages.length - 1]!]
-            : undefined,
+          messages: teammateTask.retain
+            ? teammateTask.messages
+            : teammateTask.messages?.length
+              ? [teammateTask.messages[teammateTask.messages.length - 1]!]
+              : undefined,
           pendingUserMessages: [],
           inProgressToolUseIDs: undefined,
           abortController: undefined,

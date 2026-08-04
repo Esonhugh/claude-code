@@ -18,6 +18,7 @@ type Props = {
   isLoading: boolean
   viewingAgentName?: string
   viewingAgentColor?: AgentColorName
+  viewingAgentThemeColor?: keyof Theme
 }
 
 /**
@@ -69,6 +70,7 @@ export function PromptInputModeIndicator({
   isLoading,
   viewingAgentName,
   viewingAgentColor,
+  viewingAgentThemeColor,
 }: Props): React.ReactNode {
   const teammateColor = getTeammateThemeColor()
 
@@ -76,7 +78,7 @@ export function PromptInputModeIndicator({
   // Falls back to PromptChar's default (subtle for ants, undefined for external)
   const viewedTeammateThemeColor = viewingAgentColor
     ? AGENT_COLOR_TO_THEME_COLOR[viewingAgentColor]
-    : undefined
+    : viewingAgentThemeColor
 
   return (
     <Box

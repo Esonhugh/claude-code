@@ -36,7 +36,7 @@ import { isBackgroundTask } from '../tasks/types.js'
 import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import { getEffortSuffix } from '../utils/effort.js'
 import { getMainLoopModel } from '../utils/model/model.js'
-import { getViewedTeammateTask } from '../state/selectors.js'
+import { getViewedAgentTask, getViewedTeammateTask } from '../state/selectors.js'
 import { TEARDROP_ASTERISK } from '../constants/figures.js'
 import figures from 'figures'
 import {
@@ -159,10 +159,14 @@ function SpinnerWithVerbInner({
   const showSpinnerTree = expandedView === 'teammates'
   const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
-  // Get foregrounded teammate (if viewing a teammate's transcript)
-  const foregroundedTeammate = viewingAgentTaskId
-    ? getViewedTeammateTask({ viewingAgentTaskId, tasks })
+  const viewedAgent = viewingAgentTaskId
+    ? getViewedAgentTask({ viewingAgentTaskId, tasks })
     : undefined
+  // Get foregrounded teammate (if viewing a teammate's transcript)
+  const foregroundedTeammate =
+    viewedAgent && viewedAgent.type === 'in_process_teammate'
+      ? viewedAgent
+      : undefined
   const { columns } = useTerminalSize()
   const tasksV2 = useTasksV2()
 

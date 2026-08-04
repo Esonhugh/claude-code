@@ -1442,12 +1442,20 @@ export async function runInProcessTeammate(
         toolUseId = task.toolUseId
         task.onIdleCallbacks?.forEach(cb => cb())
         task.unregisterCleanup?.()
+        const viewed = task.retain === true
+        logForDebugging(
+          `[transcript_retention_decision] task=${task.id} status=completed retain=${viewed ? 'keep' : 'truncate'}`,
+        )
         return {
           ...task,
           status: 'completed' as const,
           notified: true,
           endTime: Date.now(),
-          messages: task.messages?.length ? [task.messages.at(-1)!] : undefined,
+          messages: viewed
+            ? task.messages
+            : task.messages?.length
+              ? [task.messages.at(-1)!]
+              : undefined,
           pendingUserMessages: [],
           inProgressToolUseIDs: undefined,
           abortController: undefined,
@@ -1493,6 +1501,10 @@ export async function runInProcessTeammate(
         toolUseId = task.toolUseId
         task.onIdleCallbacks?.forEach(cb => cb())
         task.unregisterCleanup?.()
+        const viewed = task.retain === true
+        logForDebugging(
+          `[transcript_retention_decision] task=${task.id} status=failed retain=${viewed ? 'keep' : 'truncate'}`,
+        )
         return {
           ...task,
           status: 'failed' as const,
@@ -1501,7 +1513,11 @@ export async function runInProcessTeammate(
           isIdle: true,
           endTime: Date.now(),
           onIdleCallbacks: [],
-          messages: task.messages?.length ? [task.messages.at(-1)!] : undefined,
+          messages: viewed
+            ? task.messages
+            : task.messages?.length
+              ? [task.messages.at(-1)!]
+              : undefined,
           pendingUserMessages: [],
           inProgressToolUseIDs: undefined,
           abortController: undefined,

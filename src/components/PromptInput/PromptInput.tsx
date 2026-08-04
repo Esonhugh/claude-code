@@ -83,7 +83,7 @@ import {
 } from '../../services/PromptSuggestion/speculation.js'
 import {
   getActiveAgentForInput,
-  getViewedTeammateTask,
+  getViewedAgentTask,
 } from '../../state/selectors.js'
 import {
   enterTeammateView,
@@ -102,6 +102,7 @@ import {
   AGENT_COLOR_TO_THEME_COLOR,
   AGENT_COLORS,
   type AgentColorName,
+  getAgentColor,
 } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../../types/message.js'
@@ -199,6 +200,7 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import {
   getCoordinatorTaskAtIndex,
   getCoordinatorTaskIndex,
+  resolveCoordinatorSelection,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
 import { getEffortNotificationText } from '../EffortIndicator.js'
@@ -448,6 +450,7 @@ function PromptInput({
   )
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
+  const coordinatorTaskTargetId = useAppState(s => s.coordinatorTaskTargetId)
   const showSpinnerTree = useAppState(s => s.expandedView) === 'teammates'
   const { companion: _companion, companionMuted } = feature('BUDDY')
     ? getGlobalConfig()
@@ -471,16 +474,29 @@ function PromptInput({
   )
   const effortValue = useAppState(s => s.effortValue)
   const settings = useAppState(s => s.settings)
-  const viewedTeammate = getViewedTeammateTask(store.getState())
-  const viewingAgentName = viewedTeammate?.identity.agentName
+  const viewedAgent = getViewedAgentTask(store.getState())
+  const viewedTeammate =
+    viewedAgent?.type === 'in_process_teammate' ? viewedAgent : undefined
+  const viewingAgentName =
+    viewedAgent?.type === 'in_process_teammate'
+      ? viewedAgent.identity.agentName
+      : viewedAgent?.agentType
   // identity.color is typed as `string | undefined` (not AgentColorName) because
   // teammate identity comes from file-based config. Validate before casting to
-  // ensure we only use valid color names (falls back to cyan if invalid).
+  // ensure we only use valid color names (falls back to agent/default color if invalid).
   const viewingAgentColor =
-    viewedTeammate?.identity.color &&
-    AGENT_COLORS.includes(viewedTeammate.identity.color as AgentColorName)
-      ? (viewedTeammate.identity.color as AgentColorName)
+    viewedAgent?.type === 'in_process_teammate'
+      ? viewedAgent.identity.color &&
+        AGENT_COLORS.includes(viewedAgent.identity.color as AgentColorName)
+        ? (viewedAgent.identity.color as AgentColorName)
+        : undefined
       : undefined
+  const viewingAgentThemeColor =
+    viewingAgentColor !== undefined
+      ? AGENT_COLOR_TO_THEME_COLOR[viewingAgentColor]
+      : viewedAgent?.type === 'local_agent'
+        ? (getAgentColor(viewedAgent.agentType) ?? 'promptBorder')
+        : undefined
   // In-process teammates sorted alphabetically for footer team selector
   const inProcessTeammates = useMemo(
     () => getRunningTeammatesSorted(tasks),
@@ -539,16 +555,47 @@ function PromptInput({
   // First ↓ selects the pill, second ↓ moves to row 0. Prevents double-select
   // of pill + row when both bg tasks (pill) and forked agents (rows) are visible.
   const coordinatorTaskIndex = useAppState(s => s.coordinatorTaskIndex)
+  const coordinatorTaskCount = useCoordinatorTaskCount()
   const setCoordinatorTaskIndex = useCallback(
-    (v: number | ((prev: number) => number)) =>
+    (
+      v: number | ((prev: number) => number),
+      options?: { targetId?: string; reason?: string },
+    ) =>
       setAppState(prev => {
         const next = typeof v === 'function' ? v(prev.coordinatorTaskIndex) : v
-        if (next === prev.coordinatorTaskIndex) return prev
-        return { ...prev, coordinatorTaskIndex: next }
+        const nextTargetId = options?.targetId
+        if (
+          next === prev.coordinatorTaskIndex &&
+          nextTargetId === prev.coordinatorTaskTargetId
+        ) {
+          return prev
+        }
+        if (
+          next !== prev.coordinatorTaskIndex ||
+          nextTargetId !== prev.coordinatorTaskTargetId
+        ) {
+          logForDebugging(
+            `[coordinator_selection_changed] before_index=${prev.coordinatorTaskIndex} after_index=${next} before_target=${prev.coordinatorTaskTargetId ?? (prev.coordinatorTaskIndex === -1 ? 'background' : 'main')} after_target=${nextTargetId ?? (next === -1 ? 'background' : 'main')} reason=${options?.reason ?? 'navigation'} visible_targets=${coordinatorTaskCount}`,
+          )
+        }
+        return {
+          ...prev,
+          coordinatorTaskIndex: next,
+          coordinatorTaskTargetId: nextTargetId,
+        }
       }),
-    [setAppState],
+    [coordinatorTaskCount, setAppState],
   )
-  const coordinatorTaskCount = useCoordinatorTaskCount()
+  const resolveCoordinatorTarget = useCallback(
+    (
+      index: number,
+      currentViewingAgentTaskId: string | undefined = viewingAgentTaskId,
+    ): string | undefined => {
+      if (index <= 0) return undefined
+      return getCoordinatorTaskAtIndex(tasks, index, currentViewingAgentTaskId)?.id
+    },
+    [tasks, viewingAgentTaskId],
+  )
   // The pill (BackgroundTaskStatus) only renders when non-local_agent,
   // non-workflow bg tasks exist. Workflow tasks are represented by the
   // CoordinatorTaskPanel row so selecting deep-research opens the workflow
@@ -569,20 +616,45 @@ function PromptInput({
     coordinatorTaskIndex,
     viewingAgentTaskId,
   )
-  // Clamp index when tasks complete and the list shrinks beneath the cursor
+  // Keep coordinator selection pinned to a stable task identity when the row
+  // layout changes while viewing/closing agent transcripts.
   useEffect(() => {
-    if (coordinatorTaskIndex >= coordinatorTaskCount) {
-      setCoordinatorTaskIndex(
-        Math.max(minCoordinatorIndex, coordinatorTaskCount - 1),
+    if (coordinatorTaskTargetId) {
+      const nextSelection = resolveCoordinatorSelection(
+        tasks,
+        coordinatorTaskTargetId,
+        viewingAgentTaskId,
       )
+      if (
+        nextSelection.index !== coordinatorTaskIndex ||
+        nextSelection.targetId !== coordinatorTaskTargetId
+      ) {
+        setCoordinatorTaskIndex(nextSelection.index, {
+          targetId: nextSelection.targetId,
+          reason: 'layout-fallback',
+        })
+        return
+      }
+    }
+
+    if (coordinatorTaskIndex >= coordinatorTaskCount) {
+      const nextIndex = Math.max(minCoordinatorIndex, coordinatorTaskCount - 1)
+      setCoordinatorTaskIndex(nextIndex, {
+        targetId: resolveCoordinatorTarget(nextIndex),
+        reason: 'layout-clamp',
+      })
     } else if (coordinatorTaskIndex < minCoordinatorIndex) {
-      setCoordinatorTaskIndex(minCoordinatorIndex)
+      setCoordinatorTaskIndex(minCoordinatorIndex, { targetId: undefined })
     }
   }, [
     coordinatorTaskCount,
     coordinatorTaskIndex,
+    coordinatorTaskTargetId,
     minCoordinatorIndex,
+    resolveCoordinatorTarget,
     setCoordinatorTaskIndex,
+    tasks,
+    viewingAgentTaskId,
   ])
   const [isPasting, setIsPasting] = useState(false)
   const [isExternalEditorActive, setIsExternalEditorActive] = useState(false)
@@ -708,7 +780,10 @@ function PromptInput({
     )
     if (item === 'tasks') {
       setTeammateFooterIndex(0)
-      setCoordinatorTaskIndex(minCoordinatorIndex)
+      setCoordinatorTaskIndex(minCoordinatorIndex, {
+        targetId: undefined,
+        reason: 'footer-select',
+      })
     }
   }
 
@@ -2315,7 +2390,9 @@ function PromptInput({
           coordinatorTaskCount > 0 &&
           coordinatorTaskIndex > minCoordinatorIndex
         ) {
-          setCoordinatorTaskIndex(prev => prev - 1)
+          setCoordinatorTaskIndex(prev => prev - 1, {
+            targetId: resolveCoordinatorTarget(coordinatorTaskIndex - 1),
+          })
           return
         }
         navigateFooter(-1, true)
@@ -2327,7 +2404,9 @@ function PromptInput({
           coordinatorTaskCount > 0
         ) {
           if (coordinatorTaskIndex < coordinatorTaskCount - 1) {
-            setCoordinatorTaskIndex(prev => prev + 1)
+            setCoordinatorTaskIndex(prev => prev + 1, {
+              targetId: resolveCoordinatorTarget(coordinatorTaskIndex + 1),
+            })
           }
           return
         }
@@ -2380,17 +2459,22 @@ function PromptInput({
               coordinatorTaskCount > 0 &&
               selectedCoordinatorTask === undefined
             ) {
-              setCoordinatorTaskIndex(0)
+              setCoordinatorTaskIndex(0, { targetId: undefined })
               exitTeammateView(setAppState)
             } else {
               const selectedTask = selectedCoordinatorTask
               if (selectedTask?.type === 'local_agent') {
+                exitTeammateView(setAppState)
                 const nextIndex = getCoordinatorTaskIndex(
                   tasks,
                   selectedTask.id,
                   selectedTask.id,
                 )
-                if (nextIndex !== undefined) setCoordinatorTaskIndex(nextIndex)
+                if (nextIndex !== undefined) {
+                  setCoordinatorTaskIndex(nextIndex, {
+                    targetId: selectedTask.id,
+                  })
+                }
                 enterTeammateView(selectedTask.id, setAppState)
               } else if (selectedTask?.type === 'local_workflow') {
                 setShowBashesDialog(selectedTask.id)
@@ -2453,7 +2537,11 @@ function PromptInput({
           }
           stopOrDismissAgent(task.id, setAppState)
           if (task.status !== 'running') {
-            setCoordinatorTaskIndex(i => Math.max(minCoordinatorIndex, i - 1))
+            const nextIndex = Math.max(minCoordinatorIndex, coordinatorTaskIndex - 1)
+            setCoordinatorTaskIndex(nextIndex, {
+              targetId: resolveCoordinatorTarget(nextIndex),
+              reason: 'dismiss',
+            })
           }
           return
         }
@@ -3077,6 +3165,7 @@ function PromptInput({
               isLoading={isLoading}
               viewingAgentName={viewingAgentName}
               viewingAgentColor={viewingAgentColor}
+              viewingAgentThemeColor={viewingAgentThemeColor}
             />
             <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
               {textInputElement}
@@ -3106,6 +3195,7 @@ function PromptInput({
             isLoading={isLoading}
             viewingAgentName={viewingAgentName}
             viewingAgentColor={viewingAgentColor}
+            viewingAgentThemeColor={viewingAgentThemeColor}
           />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
             {textInputElement}

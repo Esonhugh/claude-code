@@ -342,7 +342,7 @@ function ModeIndicator({
     viewedTask?.type === 'in_process_teammate'
   const isViewingCompletedTeammate =
     isViewingTeammate && viewedTask != null && viewedTask.status !== 'running'
-  const hasBackgroundTasks = runningTaskCount > 0 || isViewingTeammate
+  const hasBackgroundTasks = runningTaskCount > 0 || viewedTask !== undefined
 
   // Count primary items (permission mode or coordinator mode, background tasks, and teams)
   const primaryItemCount =

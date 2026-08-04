@@ -17,6 +17,7 @@ import {
   exitTeammateView,
 } from "../state/teammateViewHelpers.js";
 import { isPanelAgentTask } from "../tasks/LocalAgentTask/LocalAgentTask.js";
+import { logForDebugging } from "../utils/debug.js";
 import { evictTerminalTask } from "../utils/task/framework.js";
 import { truncateToWidth } from "../utils/truncate.js";
 import {
@@ -26,6 +27,7 @@ import {
   getCoordinatorTaskCount,
   getCoordinatorTaskIndex,
   getVisibleAgentTasks,
+  resolveCoordinatorSelection,
 } from "./CoordinatorAgentStatusRows.js";
 
 export {
@@ -34,6 +36,7 @@ export {
   getCoordinatorTaskCount,
   getCoordinatorTaskIndex,
   getVisibleAgentTasks,
+  resolveCoordinatorSelection,
 };
 export type {
   CoordinatorPanelTask,
@@ -51,6 +54,27 @@ export function CoordinatorTaskPanel({
   const tasksSelected = useAppState((s) => s.footerSelection === "tasks");
   const selectedIndex = tasksSelected ? coordinatorTaskIndex : undefined;
   const setAppState = useSetAppState();
+  const setCoordinatorSelection = React.useCallback(
+    (index: number, targetId?: string) => {
+      setAppState((prev) => {
+        if (
+          prev.coordinatorTaskIndex === index &&
+          prev.coordinatorTaskTargetId === targetId
+        ) {
+          return prev;
+        }
+        logForDebugging(
+          `[coordinator_selection_changed] before_index=${prev.coordinatorTaskIndex} after_index=${index} before_target=${prev.coordinatorTaskTargetId ?? (prev.coordinatorTaskIndex === -1 ? "background" : "main")} after_target=${targetId ?? (index === -1 ? "background" : "main")} reason=click visible_targets=${getCoordinatorTaskCount(prev.tasks, prev.viewingAgentTaskId)}`,
+        );
+        return {
+          ...prev,
+          coordinatorTaskIndex: index,
+          coordinatorTaskTargetId: targetId,
+        };
+      });
+    },
+    [setAppState],
+  );
 
   const visibleTasks = getVisibleAgentTasks(tasks, viewingAgentTaskId);
   const hasAgentTasks = visibleTasks.some(
@@ -103,7 +127,6 @@ export function CoordinatorTaskPanel({
 
   return (
     <Box flexDirection="column" marginTop={0} paddingX={2}>
-      {/*{!workflowOnly && <Text dimColor>Sessions / background work</Text>} */}
       {rows.map((row) => (
         <SessionRow
           key={row.id}
@@ -111,11 +134,7 @@ export function CoordinatorTaskPanel({
           primaryColumnWidth={primaryColumnWidth}
           onClick={() => {
             if (row.kind === "main") {
-              setAppState((prev) =>
-                prev.coordinatorTaskIndex === 0
-                  ? prev
-                  : { ...prev, coordinatorTaskIndex: 0 },
-              );
+              setCoordinatorSelection(0, undefined);
               exitTeammateView(setAppState);
             } else if (row.kind === "agent" && row.taskId) {
               const nextIndex = getCoordinatorTaskIndex(
@@ -123,11 +142,10 @@ export function CoordinatorTaskPanel({
                 row.taskId,
                 row.taskId,
               );
-              setAppState((prev) =>
-                nextIndex === undefined || nextIndex === prev.coordinatorTaskIndex
-                  ? prev
-                  : { ...prev, coordinatorTaskIndex: nextIndex },
-              );
+              if (nextIndex !== undefined) {
+                setCoordinatorSelection(nextIndex, row.taskId);
+              }
+              exitTeammateView(setAppState);
               enterTeammateView(row.taskId, setAppState);
             } else if (row.kind === "workflow" && row.taskId) {
               onOpenTasksDialog?.(row.taskId);

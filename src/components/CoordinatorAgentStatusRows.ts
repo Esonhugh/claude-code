@@ -274,6 +274,40 @@ export function getCoordinatorTaskIndex(
   return taskIndex + (layout.omitMainRow ? 0 : 1)
 }
 
+export function resolveCoordinatorSelection(
+  tasks: AppState['tasks'],
+  targetId: string,
+  viewingAgentTaskId?: string,
+): { index: number; targetId?: string } {
+  const targetIndex = getCoordinatorTaskIndex(
+    tasks,
+    targetId,
+    viewingAgentTaskId,
+  )
+  if (targetIndex !== undefined) return { index: targetIndex, targetId }
+
+  let current = tasks[targetId]
+  const visited = new Set<string>()
+  while (isLocalAgentTask(current) && !visited.has(current.id)) {
+    visited.add(current.id)
+    const index = getCoordinatorTaskIndex(
+      tasks,
+      current.id,
+      viewingAgentTaskId,
+    )
+    if (index !== undefined) return { index, targetId: current.id }
+    current = current.parentAgentId ? tasks[current.parentAgentId] : undefined
+  }
+
+  const viewedIndex = viewingAgentTaskId
+    ? getCoordinatorTaskIndex(tasks, viewingAgentTaskId, viewingAgentTaskId)
+    : undefined
+  if (viewedIndex !== undefined) {
+    return { index: viewedIndex, targetId: viewingAgentTaskId }
+  }
+  return { index: 0 }
+}
+
 function taskElapsed(task: CoordinatorPanelTask, now: number): string {
   const pausedMs = task.totalPausedMs ?? 0
   const elapsedMs = Math.max(

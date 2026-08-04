@@ -52,6 +52,10 @@ export type InProcessTeammateTaskState = TaskStateBase & {
   // Mailbox messages are stored separately in teamContext.inProcessMailboxes
   messages?: Message[]
 
+  // UI is actively holding this transcript open. When set, terminal-state
+  // cleanup preserves the current transcript until the user exits the view.
+  retain?: true
+
   // Tool use IDs currently being executed (for animation in transcript view)
   inProgressToolUseIDs?: Set<string>
 

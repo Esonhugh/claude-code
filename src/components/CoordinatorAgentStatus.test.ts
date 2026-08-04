@@ -9,6 +9,7 @@ import {
   getCoordinatorTaskCount,
   getCoordinatorTaskIndex,
   getVisibleAgentTasks,
+  resolveCoordinatorSelection,
 } from './CoordinatorAgentStatusRows.js'
 
 const agentTask: LocalAgentTaskState = {
@@ -297,6 +298,25 @@ assert.equal(getCoordinatorTaskAtIndex(tasks, 2)?.id, 'top-level-depth-one-agent
 assert.equal(getCoordinatorTaskAtIndex(tasks, 3)?.id, 'workflow-1')
 assert.equal(getCoordinatorTaskCount(tasks), 4)
 assert.equal(getCoordinatorTaskIndex(tasks, 'workflow-1'), 3)
+assert.deepEqual(resolveCoordinatorSelection(tasks, 'workflow-1'), {
+  index: 3,
+  targetId: 'workflow-1',
+})
+assert.deepEqual(
+  resolveCoordinatorSelection(
+    { [workflowTask.id]: workflowTask } as unknown as AppState['tasks'],
+    'workflow-1',
+  ),
+  { index: 0, targetId: 'workflow-1' },
+)
+assert.equal(
+  getCoordinatorTaskIndex(tasks, 'top-level-depth-one-agent', 'agent-1'),
+  4,
+)
+assert.equal(
+  getCoordinatorTaskIndex(tasks, 'top-level-depth-one-agent', 'nested-child-agent'),
+  4,
+)
 
 function assertLayoutConsistency(
   layoutTasks: AppState['tasks'],
@@ -508,6 +528,33 @@ assertLayoutConsistency(terminalNestedTasks, 'nested-grandchild-agent', [
   'top-level-depth-one-agent',
   'workflow-1',
 ])
+assert.deepEqual(
+  resolveCoordinatorSelection(
+    terminalNestedTasks,
+    'nested-grandchild-agent',
+    'agent-1',
+  ),
+  { index: 2, targetId: 'nested-child-agent' },
+)
+const removedSelectedTasks = {
+  ...tasks,
+} as AppState['tasks']
+delete removedSelectedTasks['top-level-depth-one-agent']
+assert.deepEqual(
+  resolveCoordinatorSelection(
+    removedSelectedTasks,
+    'top-level-depth-one-agent',
+    'agent-1',
+  ),
+  { index: 1, targetId: 'agent-1' },
+)
+assert.deepEqual(
+  resolveCoordinatorSelection(
+    removedSelectedTasks,
+    'top-level-depth-one-agent',
+  ),
+  { index: 0 },
+)
 
 const terminalTopTasks = {
   ...tasks,

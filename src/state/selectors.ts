@@ -59,18 +59,12 @@ export type ActiveAgentForInput =
 export function getActiveAgentForInput(
   appState: AppState,
 ): ActiveAgentForInput {
-  const viewedTask = getViewedTeammateTask(appState)
-  if (viewedTask) {
+  const viewedTask = getViewedAgentTask(appState)
+  if (!viewedTask) {
+    return { type: 'leader' }
+  }
+  if (isInProcessTeammateTask(viewedTask)) {
     return { type: 'viewed', task: viewedTask }
   }
-
-  const { viewingAgentTaskId, tasks } = appState
-  if (viewingAgentTaskId) {
-    const task = tasks[viewingAgentTaskId]
-    if (task?.type === 'local_agent') {
-      return { type: 'named_agent', task }
-    }
-  }
-
-  return { type: 'leader' }
+  return { type: 'named_agent', task: viewedTask }
 }

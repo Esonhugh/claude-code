@@ -82,7 +82,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
     // transcript across the replace (the user's just-appended prompt lives
     // in messages and isn't on disk yet).
     const merged =
-      existing && 'retain' in existing
+      existing?.type === 'local_agent' && task.type === 'local_agent'
         ? {
             ...task,
             retain: existing.retain,
@@ -91,7 +91,14 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
             diskLoaded: existing.diskLoaded,
             pendingMessages: existing.pendingMessages,
           }
-        : task
+        : existing?.type === 'in_process_teammate' && task.type === 'in_process_teammate'
+          ? {
+              ...task,
+              retain: existing.retain,
+              startTime: existing.startTime,
+              messages: existing.messages,
+            }
+          : task
     return { ...prev, tasks: { ...prev.tasks, [task.id]: merged } }
   })
 
@@ -126,7 +133,15 @@ export function evictTerminalTask(
   setAppState(prev => {
     const task = prev.tasks?.[taskId]
     if (!task) return prev
-    if (!canEvictTerminalTask(task)) return prev
+    if (
+      !canEvictTerminalTask({
+        ...task,
+        id: taskId,
+        viewingAgentTaskId: prev.viewingAgentTaskId,
+      })
+    ) {
+      return prev
+    }
     const { [taskId]: _, ...remainingTasks } = prev.tasks
     return { ...prev, tasks: remainingTasks }
   })
