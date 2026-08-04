@@ -152,6 +152,33 @@ def write_select_sources_worker(subagents, entries=None, description=None):
     )
 
 
+
+def make_required_assertion(source_dir, *, assertion_id='assertion-1',
+                            validation_verdict='passed', runtime_state='done',
+                            evidence_name='pane.txt', include_source_run=True,
+                            include_assertion_id=True,
+                            include_runtime_state=True,
+                            evidence_absolute=True, create_evidence=True):
+    evidence_path = source_dir / evidence_name
+    if create_evidence:
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        evidence_path.write_text('evidence\n')
+    assertion = {
+        'validation_verdict': validation_verdict,
+        'observed_evidence_paths': [
+            str(evidence_path if evidence_absolute else Path(evidence_name))
+        ],
+    }
+    if include_assertion_id:
+        assertion['assertion_id'] = assertion_id
+    if include_source_run:
+        assertion['source_run'] = source_dir.name
+    if include_runtime_state:
+        assertion['runtime_state'] = runtime_state
+    return assertion
+
+
+
 def assert_driver_behavior(module):
     with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
         root = Path(root_string)
@@ -953,15 +980,253 @@ def assert_driver_behavior(module):
         assert cleanup['signal'] == 'SIGTERM'
         assert cleanup['auth_homes']['errors'] == []
 
+    required = module.required_targets_for_paths([
+        'src/utils/swarm/teamHelpers.ts',
+        'src/tools/WorkflowTool/workflowScriptRuntime.ts',
+        'src/components/PromptInput/PromptInput.tsx',
+        'src/utils/swarm/inProcessRunner.ts',
+    ])
+    assert required == {
+        'team-concurrency',
+        'workflow-retry-partial-failure',
+        'workflow-failure-detail',
+        'coordinator-selector',
+        'transcript-retention',
+    }
+
+    with tempfile.TemporaryDirectory(prefix='release-driver-targets-') as root_string:
+        root = Path(root_string)
+        repo = root / 'repo'
+        subprocess.run(['git', '-C', str(root), 'init', str(repo)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'user.name', 'Tester'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'user.email', 'tester@example.com'], check=True, capture_output=True)
+        tracked = repo / 'src/utils/swarm/teamHelpers.ts'
+        tracked.parent.mkdir(parents=True, exist_ok=True)
+        tracked.write_text('before\n')
+        staged = repo / 'src/components/PromptInput/PromptInput.tsx'
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_text('baseline staged\n')
+        unstaged = repo / 'src/tools/WorkflowTool/workflowScriptRuntime.ts'
+        unstaged.parent.mkdir(parents=True, exist_ok=True)
+        unstaged.write_text('baseline unstaged\n')
+        subprocess.run([
+            'git', '-C', str(repo), 'add',
+            str(tracked.relative_to(repo)),
+            str(staged.relative_to(repo)),
+            str(unstaged.relative_to(repo)),
+        ], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-m', 'init'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'branch', 'origin/master'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'branch', '-M', 'feature'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'branch', '--set-upstream-to', 'origin/master'], check=True, capture_output=True)
+
+        tracked.write_text('after\n')
+        subprocess.run(['git', '-C', str(repo), 'add', str(tracked.relative_to(repo))], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-m', 'change'], check=True, capture_output=True)
+
+        staged.write_text('staged\n')
+        subprocess.run(['git', '-C', str(repo), 'add', str(staged.relative_to(repo))], check=True, capture_output=True)
+
+        unstaged.write_text('unstaged\n')
+
+        untracked = repo / 'src/utils/swarm/inProcessRunner.ts'
+        untracked.parent.mkdir(parents=True, exist_ok=True)
+        untracked.write_text('untracked\n')
+
+        baseline = {'upstream': 'origin/master'}
+        inputs = module.collect_required_target_inputs(repo, baseline)
+        assert inputs['release_base']['base_ref'] == 'origin/master'
+        assert inputs['release_base']['source'] == 'baseline upstream merge-base'
+        assert inputs['paths_by_source']['committed_release_range'] == [
+            'src/utils/swarm/teamHelpers.ts'
+        ]
+        assert inputs['paths_by_source']['staged'] == [
+            'src/components/PromptInput/PromptInput.tsx'
+        ]
+        assert inputs['paths_by_source']['unstaged'] == [
+            'src/tools/WorkflowTool/workflowScriptRuntime.ts'
+        ]
+        assert inputs['paths_by_source']['untracked'] == [
+            'src/utils/swarm/inProcessRunner.ts'
+        ]
+        assert module.required_targets_for_paths(inputs['all_paths']) == required
+        explicit = module.collect_required_target_inputs(repo, {}, explicit_base_ref='origin/master')
+        assert explicit['release_base']['base_ref'] == 'origin/master'
+        try:
+            module.collect_required_target_inputs(repo, {})
+        except RuntimeError as error:
+            assert '--base-ref <commit-ish>' in str(error)
+        else:
+            raise AssertionError('expected missing upstream to fail closed')
+
+    assert module.submitted_input_pending(
+        '❯ /deep-research inspect workflow behavior\n'
+    ) is True
+    assert module.submitted_input_pending(
+        '❯ /deep-research inspect workflow behavior\n✶ Working…\n❯ \n'
+    ) is False
+    assert module.submitted_input_pending('❯ \n') is False
+
+    assert module.parse_target_list(None) == []
+    assert module.parse_target_list('team-concurrency,workflow') == [
+        'team-concurrency', 'workflow'
+    ]
+    for raw, expected in (
+        ('', 'targets must not be empty'),
+        ('workflow,,team-concurrency', 'empty target'),
+        ('workflow,workflow', 'duplicate target'),
+    ):
+        try:
+            module.parse_target_list(raw)
+        except ValueError as error:
+            assert expected in str(error)
+        else:
+            raise AssertionError(f'expected parse_target_list({raw!r}) to fail')
+
+    planned = module.plan_targets(['team-concurrency'], {'workflow-failure-detail'})
+    assert planned == [
+        'agent-fg-bg',
+        'nested-agent',
+        'workflow',
+        'deep-research',
+        'code-review',
+        'team-concurrency',
+        'workflow-failure-detail',
+    ]
+    try:
+        module.plan_targets(['workflow'], set())
+    except ValueError as error:
+        assert 'already included by default' in str(error)
+    else:
+        raise AssertionError('expected duplicate default target to fail')
+
+    with tempfile.TemporaryDirectory(prefix='release-driver-assertions-') as root_string:
+        root = Path(root_string)
+        source_run = root / 'run-a'
+        source_run.mkdir()
+        foreign_run = root / 'run-b'
+        foreign_run.mkdir()
+        source_runs = {'run-a': source_run.resolve(strict=False)}
+        valid_assertion = make_required_assertion(source_run)
+        assert module.assertion_is_valid(valid_assertion, source_runs) is True
+        assert module.assertion_is_valid(
+            make_required_assertion(source_run, include_assertion_id=False),
+            source_runs,
+        ) is False
+        assert module.assertion_is_valid(
+            make_required_assertion(source_run, include_source_run=False),
+            source_runs,
+        ) is False
+        assert module.assertion_is_valid(
+            make_required_assertion(source_run, include_runtime_state=False),
+            source_runs,
+        ) is False
+        assert module.assertion_is_valid(
+            make_required_assertion(source_run, runtime_state='invalid-state'),
+            source_runs,
+        ) is False
+        assert module.assertion_is_valid(
+            make_required_assertion(source_run, evidence_absolute=False),
+            source_runs,
+        ) is False
+        assert module.assertion_is_valid(
+            make_required_assertion(
+                source_run,
+                create_evidence=False,
+                evidence_name='missing.txt',
+            ),
+            source_runs,
+        ) is False
+        foreign_assertion = make_required_assertion(source_run)
+        foreign_assertion['observed_evidence_paths'] = [str(foreign_run / 'pane.txt')]
+        (foreign_run / 'pane.txt').write_text('foreign\n')
+        assert module.assertion_is_valid(foreign_assertion, source_runs) is False
+
+        coverage = module.validate_required_target_results(
+            required,
+            [
+                {
+                    'label': target,
+                    'validation_verdict': 'passed',
+                    'evidence_dir': str(source_run),
+                    'assertions': [
+                        make_required_assertion(
+                            source_run,
+                            assertion_id=f'{target}-assertion',
+                            evidence_name=f'{target}.txt',
+                        )
+                    ],
+                }
+                for target in required
+            ],
+        )
+        assert coverage['passed'] is True
+        assert coverage['missing_targets'] == []
+        assert coverage['invalid_targets'] == []
+
+        coverage = module.validate_required_target_results(
+            required,
+            [{
+                'label': 'team-concurrency',
+                'validation_verdict': 'passed',
+                'evidence_dir': str(source_run),
+                'assertions': [],
+            }],
+        )
+        assert coverage['passed'] is False
+        assert 'workflow-retry-partial-failure' in coverage['missing_targets']
+        assert coverage['invalid_targets'] == ['team-concurrency']
+
+        coverage = module.validate_required_target_results(
+            {'workflow-failure-detail'},
+            [{
+                'label': 'workflow-failure-detail',
+                'validation_verdict': 'passed',
+                'evidence_dir': str(source_run),
+                'assertions': [foreign_assertion],
+            }],
+        )
+        assert coverage['passed'] is False
+        assert coverage['invalid_targets'] == ['workflow-failure-detail']
+
     driver = DRIVER_PATH.read_text()
+    assert "'team-concurrency': self.team_concurrency" in driver
+    assert "'workflow-retry-partial-failure': self.workflow_retry_partial_failure" in driver
+    assert "'workflow-failure-detail': self.workflow_failure_detail" in driver
+    assert "'coordinator-selector': self.coordinator_selector" in driver
+    assert "'transcript-retention': self.transcript_retention" in driver
+    assert "def team_concurrency(self):" in driver
+    assert "def workflow_retry_partial_failure(self):" in driver
+    assert "def workflow_failure_detail(self):" in driver
+    assert "def coordinator_selector(self):" in driver
+    assert "def transcript_retention(self):" in driver
+    assert "def run_target(self, label, action):" in driver
+    assert "result['repository_state_expected_workflow_artifacts']" in driver
+    assert "result_label = 'inline-workflow' if target == 'workflow' else target" in driver
+    assert "run_dir / '04-prompt-after-detail-dialog.txt'" in driver
+    assert "re.fullmatch(r'\\s*❯\\s*', line)" in driver
+    assert "f'/workflows detail {task_id}'" in driver
+    assert "'shutdown_request, then return. Do not modify files.'" in driver
+    assert "status=completed retain=keep" in driver
+    assert "input-transcript-retention-exit.txt" not in driver
+    assert "passed=marker_ok and no_retry" in driver
+    assert "logical_workers == ['probe-a', 'probe-b']" in driver
+    assert "self.tmux('send-keys', '-t', target, 'Escape', check=True)" in driver
+    assert "'-e', 'CC_VALIDATION_AGENT_TEAMS=1'" in driver
+    assert "CC_VALIDATION_WORKFLOW_FAULT_INJECTION=service_unavailable:transient-worker:attempt:0" in driver
     assert "page_ok = detail_ok = agent_ok = None" in driver
     assert "ui_skipped_reason = 'workflow did not complete'" in driver
     assert "ui_skipped_reason = 'readiness failed'" in driver
     assert "'skipped_reason': ui_skipped_reason" in driver
+    assert "specified/not executable" in driver
+    assert "--base-ref" in driver
+    assert "required_target_inputs" in driver
+    assert "default targets always run" in driver
 
     launcher = LAUNCHER_PATH.read_text()
     assert 'exec env -i' in launcher
     assert 'CLAUDE_CODE_USE_OPENAI=1' in launcher
+    assert 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="${CC_VALIDATION_AGENT_TEAMS:-}"' in launcher
     for name in (
         'HTTP_PROXY',
         'HTTPS_PROXY',

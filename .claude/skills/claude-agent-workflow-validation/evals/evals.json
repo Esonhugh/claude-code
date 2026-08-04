@@ -117,6 +117,42 @@
         "logicalAgents、物理 attempts 和 retryCount 分开统计，Retries 不等于 failedAgentIds.length。",
         "动态 fan-out 尚未结束时报告已启动数、当前已知计划和 runtime state running，不将局部计数判为 passed。"
       ]
+    },
+    {
+      "id": 9,
+      "prompt": "并发启动 3 个 Agent Team teammate，验收 team config 不丢成员、coordinator 可逐个切换，并同时做一个 member active update。必须使用最新 built-claude 和同次运行 debug log。",
+      "expected_output": "通过 tmux 中 built-claude 触发 binary-side Agent Team 并发启动；将 team config、task owner、inbox、pane、coordinator UI 和 team_mutation marker 按 teamName/agentId 关联；任何成员缺失或 marker 缺失都不判 passed。",
+      "files": [],
+      "assertions": [
+        "至少 3 个成功启动 teammate 的 agentId 同时存在于同一 team config、task owner 和 inbox。",
+        "coordinator 可选择每个 agentId，不能只根据 Spawned successfully 文本判定。",
+        "debug log 包含同一 teamName/agentId 的 team_mutation_start 与 commit；仅 pane transcript 不足以证明 registry mutation。",
+        "并发 active update 不覆盖新增成员，CLI 前后 Git 状态无非预期变化。"
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "用受控 fault injection 验收 workflow partial retry：三个 logical worker 中一个成功、两个首次 transient failure；只允许失败 worker 最多重试 2 次，同时 detail 必须显示最终根因。",
+      "expected_output": "同一 built-claude workflow run 内关联 logicalAgentId、attemptId、phase、worker index、errorKind 和 retry markers；证明成功 worker 没重跑，transient worker 重试，deterministic failure 不重试，status/detail 保留原始错误。",
+      "files": [],
+      "assertions": [
+        "成功 logical worker 只有一个 physical attempt，失败 worker 的 retryOfAttemptId 链稳定且最多额外尝试 2 次。",
+        "timeout/network/429/5xx 等保留真实 errorKind，不伪装为 stalled；schema/config/permission failure 不自动重试。",
+        "普通 status 显示失败 worker 数和首个根因，detail 显示 phase/worker/attempt/errorKind/retryable。",
+        "pane、Task/Run ID、journal 和 workflow_worker_* marker 来自同次运行；无法注入时报告 not covered。"
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "验收 coordinator background task selector 和 transcript retention：在 agent、workflow、background pill 与 main 之间键盘切换，并让当前 viewed in-process teammate 到达 terminal 后切出再切回。",
+      "expected_output": "使用 stable target identity 记录每次选择；验证布局变化后不漂移到相邻 row；viewed teammate terminal 时 transcript/header/spinner/banner 保持一致，退出 view 或 grace 后才清理；保存 pane 和内部 marker。",
+      "files": [],
+      "assertions": [
+        "background pill 可被键盘选中，选择 workflow/background 不错误更新 viewingAgentTaskId。",
+        "row collapse、完成或 eviction 后选择回退到最近可见祖先或 main，不按旧 dynamic index 漂移。",
+        "viewed in-process teammate terminal 后 transcript 不立即只剩最后一条，切出/切回行为与 retention policy 一致。",
+        "coordinator_selection_changed、viewed_agent_changed 和 transcript_retention_decision marker 与同次 task ID 关联；缺 marker 为 not covered。"
+      ]
     }
   ]
 }

@@ -31,6 +31,255 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
     'dist',
     'official-claude',
 )
+TARGET_PATH_RULES = (
+    ('team-concurrency', (
+        'src/utils/swarm/',
+        'src/tools/shared/spawnMultiAgent',
+    )),
+    ('workflow-retry-partial-failure', (
+        'src/tools/WorkflowTool/',
+        'src/tasks/LocalWorkflowTask/',
+    )),
+    ('workflow-failure-detail', (
+        'src/tools/WorkflowTool/',
+        'src/tasks/LocalWorkflowTask/',
+        'src/commands/workflows/',
+    )),
+    ('coordinator-selector', (
+        'src/components/CoordinatorAgentStatus',
+        'src/components/PromptInput/',
+        'src/components/tasks/BackgroundTaskStatus',
+        'src/state/AppStateStore',
+    )),
+    ('transcript-retention', (
+        'src/state/selectors',
+        'src/state/teammateViewHelpers',
+        'src/utils/swarm/inProcessRunner',
+        'src/components/TeammateViewHeader',
+        'src/components/Spinner',
+        'src/components/PromptInput/useSwarmBanner',
+    )),
+)
+DEFAULT_TARGETS = (
+    'agent-fg-bg',
+    'nested-agent',
+    'workflow',
+    'deep-research',
+    'code-review',
+)
+ASSERTION_RUNTIME_STATES = {'running', 'done', 'failed', 'stopped'}
+
+
+def submitted_input_pending(pane):
+    plain = strip_ansi(pane)
+    prompt_lines = [line for line in plain.splitlines() if '❯' in line]
+    return bool(prompt_lines and prompt_lines[-1].split('❯', 1)[1].strip())
+
+
+
+def parse_target_list(raw, *, option_name='targets'):
+    if raw is None:
+        return []
+    if raw == '':
+        raise ValueError(f'{option_name} must not be empty')
+    parsed = []
+    seen = set()
+    for index, item in enumerate(raw.split(','), start=1):
+        target = item.strip()
+        if not target:
+            raise ValueError(
+                f'{option_name} contains an empty target at position {index}'
+            )
+        if target in seen:
+            raise ValueError(f'{option_name} contains a duplicate target: {target}')
+        seen.add(target)
+        parsed.append(target)
+    return parsed
+
+
+
+def listed_paths(text):
+    return {
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    }
+
+
+
+def resolve_release_base(repo, baseline, explicit_base_ref=None):
+    if explicit_base_ref:
+        merge_base = command(
+            ['git', '-C', str(repo), 'merge-base', 'HEAD', explicit_base_ref],
+            check=False,
+        )
+        resolved = merge_base.stdout.strip()
+        if merge_base.returncode != 0 or not resolved:
+            raise RuntimeError(
+                f'could not determine merge-base for --base-ref {explicit_base_ref!r}'
+            )
+        return {
+            'base_ref': explicit_base_ref,
+            'merge_base': resolved,
+            'source': '--base-ref merge-base',
+        }
+    upstream = baseline.get('upstream')
+    if not upstream:
+        raise RuntimeError(
+            'baseline did not record an upstream; pass --base-ref <commit-ish> '
+            'to validate committed release-range targets'
+        )
+    merge_base = command(
+        ['git', '-C', str(repo), 'merge-base', 'HEAD', upstream],
+        check=False,
+    )
+    resolved = merge_base.stdout.strip()
+    if merge_base.returncode != 0 or not resolved:
+        raise RuntimeError(
+            'could not determine committed release base from baseline upstream '
+            f'{upstream!r}; pass --base-ref <commit-ish>'
+        )
+    return {
+        'base_ref': upstream,
+        'merge_base': resolved,
+        'source': 'baseline upstream merge-base',
+    }
+
+
+
+def collect_required_target_inputs(repo, baseline, explicit_base_ref=None):
+    release_base = resolve_release_base(repo, baseline, explicit_base_ref)
+    paths_by_source = {
+        'committed_release_range': sorted(listed_paths(command(
+            [
+                'git', '-C', str(repo), 'diff', '--name-only',
+                f"{release_base['merge_base']}..HEAD",
+            ],
+            check=True,
+        ).stdout)),
+        'staged': sorted(listed_paths(command(
+            ['git', '-C', str(repo), 'diff', '--cached', '--name-only'],
+            check=True,
+        ).stdout)),
+        'unstaged': sorted(listed_paths(command(
+            ['git', '-C', str(repo), 'diff', '--name-only'],
+            check=True,
+        ).stdout)),
+        'untracked': sorted(untracked_manifest(repo)),
+    }
+    all_paths = sorted({
+        path
+        for paths in paths_by_source.values()
+        for path in paths
+    })
+    return {
+        'release_base': release_base,
+        'paths_by_source': paths_by_source,
+        'all_paths': all_paths,
+    }
+
+
+
+def required_targets_for_paths(paths):
+    return {
+        target
+        for target, prefixes in TARGET_PATH_RULES
+        if any(
+            path == prefix or path.startswith(prefix)
+            for path in paths
+            for prefix in prefixes
+        )
+    }
+
+
+
+def plan_targets(extra_targets, required_targets):
+    duplicate_defaults = sorted(set(DEFAULT_TARGETS) & set(extra_targets))
+    if duplicate_defaults:
+        raise ValueError(
+            '--targets may only append non-default targets; already included by '
+            f'default: {duplicate_defaults}'
+        )
+    planned = list(DEFAULT_TARGETS)
+    seen = set(planned)
+    for target in extra_targets:
+        if target not in seen:
+            planned.append(target)
+            seen.add(target)
+    for target in sorted(required_targets):
+        if target not in seen:
+            planned.append(target)
+            seen.add(target)
+    return planned
+
+
+
+def assertion_source_runs(runs):
+    source_runs = {}
+    for run in runs:
+        evidence_dir = run.get('evidence_dir')
+        if not isinstance(evidence_dir, str) or not evidence_dir:
+            continue
+        source_run = Path(evidence_dir).name
+        if source_run and source_run not in source_runs:
+            source_runs[source_run] = Path(evidence_dir).resolve(strict=False)
+    return source_runs
+
+
+
+def assertion_is_valid(assertion, source_runs):
+    if not isinstance(assertion, dict):
+        return False
+    if assertion.get('validation_verdict') != 'passed':
+        return False
+    assertion_id = assertion.get('assertion_id')
+    source_run = assertion.get('source_run')
+    runtime_state = assertion.get('runtime_state')
+    evidence_paths = assertion.get('observed_evidence_paths')
+    if not isinstance(assertion_id, str) or not assertion_id.strip():
+        return False
+    if not isinstance(source_run, str) or not source_run.strip():
+        return False
+    if source_run not in source_runs:
+        return False
+    if runtime_state not in ASSERTION_RUNTIME_STATES:
+        return False
+    if not isinstance(evidence_paths, list) or not evidence_paths:
+        return False
+    source_root = source_runs[source_run]
+    for evidence_path in evidence_paths:
+        if not isinstance(evidence_path, str) or not evidence_path.strip():
+            return False
+        absolute_path = Path(evidence_path)
+        if not absolute_path.is_absolute() or not absolute_path.exists():
+            return False
+        if not is_relative_to(absolute_path.resolve(strict=False), source_root):
+            return False
+    return True
+
+
+
+def validate_required_target_results(required_targets, runs):
+    runs_by_label = {run.get('label'): run for run in runs}
+    missing = sorted(required_targets - set(runs_by_label))
+    invalid = []
+    source_runs = assertion_source_runs(runs)
+    for target in sorted(required_targets & set(runs_by_label)):
+        run = runs_by_label[target]
+        assertions = run.get('assertions')
+        valid = (
+            run.get('validation_verdict') == 'passed'
+            and isinstance(assertions, list)
+            and bool(assertions)
+            and all(assertion_is_valid(assertion, source_runs) for assertion in assertions)
+        )
+        if not valid:
+            invalid.append(target)
+    return {
+        'passed': not missing and not invalid,
+        'missing_targets': missing,
+        'invalid_targets': invalid,
+    }
 
 
 def command(args, *, check=False, timeout=120):
@@ -246,7 +495,7 @@ def is_external_source_failure(message):
 
 
 class BinaryGate:
-    def __init__(self, repo, evidence_root, auth_source, baseline_path):
+    def __init__(self, repo, evidence_root, auth_source, baseline_path, *, base_ref=None):
         self.repo = repo.resolve()
         self.evidence_root = evidence_root.resolve()
         self.auth_source = auth_source.expanduser().resolve()
@@ -292,6 +541,11 @@ class BinaryGate:
                 raise RuntimeError(
                     f'baseline {key} does not match current repository state'
                 )
+        required_target_inputs = collect_required_target_inputs(
+            self.repo,
+            self.baseline,
+            explicit_base_ref=base_ref,
+        )
         self.manifest = {
             'started': time.time(),
             'repo': str(self.repo),
@@ -303,6 +557,10 @@ class BinaryGate:
             'baseline_captured_at': self.baseline.get('captured_at'),
             'binary': str(self.binary),
             'binary_sha256': current_state['binary']['sha256'],
+            'required_target_inputs': required_target_inputs,
+            'required_targets': sorted(
+                required_targets_for_paths(required_target_inputs['all_paths'])
+            ),
             'runs': [],
         }
         atexit.register(self.remove_auth_homes)
@@ -551,7 +809,7 @@ class BinaryGate:
             if (
                 'bypass permissions on' in lowered
                 or '? for shortcuts' in lowered
-                or re.search(r'(^|\n)\s*❯\s*$', plain)
+                or any(re.fullmatch(r'\s*❯\s*', line) for line in plain.splitlines())
             ):
                 return True
             last = visible
@@ -577,8 +835,22 @@ class BinaryGate:
             '-e', f'CC_VALIDATION_CONFIG_DIR={config}',
             '-e', f'CC_VALIDATION_HOME={home}',
             '-e', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1',
-            str(self.launcher),
         ]
+        if label in {'team-concurrency', 'transcript-retention'}:
+            args.extend([
+                '-e', 'CC_VALIDATION_AGENT_TEAMS=1',
+                '-e', 'CLAUDE_CODE_TEAMMATE_MODE=in-process',
+            ])
+            settings_path = config / 'settings.json'
+            settings = json.loads(settings_path.read_text())
+            settings['teammateMode'] = 'in-process'
+            settings_path.write_text(json.dumps(settings, indent=2) + '\n')
+        if label == 'workflow-retry-partial-failure':
+            args.extend([
+                '-e',
+                'CC_VALIDATION_WORKFLOW_FAULT_INJECTION=service_unavailable:transient-worker:attempt:0',
+            ])
+        args.append(str(self.launcher))
         result = self.tmux(*args)
         (run_dir / 'tmux-start-stdout.txt').write_text(result.stdout)
         (run_dir / 'tmux-start-stderr.txt').write_text(result.stderr)
@@ -749,6 +1021,86 @@ class BinaryGate:
             json.dumps(self.manifest, indent=2) + '\n'
         )
 
+    def run_target(self, label, action):
+        state_before = self.repository_state()
+        workflow_before = self.workflow_runs_state()
+        task_ids_before = set(self.workflow_task_ids)
+        run_ids_before = set(self.workflow_run_ids)
+        run_count_before = len(self.manifest['runs'])
+        try:
+            action()
+        finally:
+            state_after = self.repository_state()
+            workflow_after = self.workflow_runs_state()
+            if len(self.manifest['runs']) > run_count_before:
+                result = self.manifest['runs'][-1]
+                if result.get('label') != label:
+                    raise RuntimeError(
+                        f'target {label} recorded unexpected result {result.get("label")}'
+                    )
+                new_task_ids = self.workflow_task_ids - task_ids_before
+                new_run_ids = self.workflow_run_ids - run_ids_before
+                expected_task_paths = {
+                    f'{task_id}.json' for task_id in new_task_ids
+                }
+
+                def is_expected_workflow_path(path):
+                    return path in expected_task_paths or any(
+                        path == run_id or path.startswith(f'{run_id}/')
+                        for run_id in new_run_ids
+                    )
+
+                workflow_added = sorted(
+                    set(workflow_after['manifest']) - set(workflow_before['manifest'])
+                )
+                workflow_modified = sorted(
+                    path
+                    for path in (
+                        set(workflow_after['manifest'])
+                        & set(workflow_before['manifest'])
+                    )
+                    if (
+                        workflow_after['manifest'][path]
+                        != workflow_before['manifest'][path]
+                    )
+                )
+                workflow_removed = sorted(
+                    set(workflow_before['manifest']) - set(workflow_after['manifest'])
+                )
+                unexpected_workflow_paths = [
+                    path for path in workflow_added
+                    if not is_expected_workflow_path(path)
+                ]
+                ordinary_state_keys = (
+                    set(state_before)
+                    - {'workflow_runs_exists', 'workflow_runs_sha256'}
+                )
+                ordinary_state_unchanged = all(
+                    state_before[key] == state_after[key]
+                    for key in ordinary_state_keys
+                )
+                workflow_state_expected = (
+                    not workflow_modified
+                    and not workflow_removed
+                    and not unexpected_workflow_paths
+                )
+                result['repository_state_before'] = state_before
+                result['repository_state_after'] = state_after
+                result['repository_state_unchanged'] = (
+                    ordinary_state_unchanged and workflow_state_expected
+                )
+                result['repository_state_expected_workflow_artifacts'] = {
+                    'task_ids': sorted(new_task_ids),
+                    'run_ids': sorted(new_run_ids),
+                    'added_paths': workflow_added,
+                    'unexpected_added_paths': unexpected_workflow_paths,
+                    'modified_paths': workflow_modified,
+                    'removed_paths': workflow_removed,
+                }
+                (self.evidence_root / 'driver-progress.json').write_text(
+                    json.dumps(self.manifest, indent=2) + '\n'
+                )
+
     def readiness_smoke(self):
         run_dir, session, target, ready = self.start('readiness-smoke')
         cleanup = self.close(run_dir, session, target)
@@ -770,9 +1122,13 @@ class BinaryGate:
         self.tmux('paste-buffer', '-b', buffer_name, '-t', target, check=True)
         self.tmux('send-keys', '-t', target, 'Enter', check=True)
         time.sleep(0.5)
-        submitted = self.capture(target, run_dir / '02-submitted-pane.txt')
-        if '[Pasted text' in submitted:
-            self.tmux('send-keys', '-t', target, 'Enter')
+        submitted_path = run_dir / '02-submitted-pane.txt'
+        submitted = self.capture(target, submitted_path)
+        plain = strip_ansi(submitted)
+        if '[Pasted text' in plain or submitted_input_pending(submitted):
+            self.tmux('send-keys', '-t', target, 'Enter', check=True)
+            time.sleep(0.5)
+            self.capture(target, submitted_path)
 
     def debug(self, run_dir):
         path = run_dir / 'debug.log'
@@ -1568,9 +1924,18 @@ return { results }
         ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
         cleanup = self.close(run_dir, session, target)
+        logical_workers = sorted(set(re.findall(
+            r'workflow_worker_start[^\n]*\blogical=([^ ]+)',
+            log,
+        )))
+        completed_logical_workers = sorted(set(re.findall(
+            r'workflow_worker_terminal[^\n]*\blogical=([^ ]+)[^\n]*\bstatus=completed',
+            log,
+        )))
         passed = (
             status == 'completed'
-            and len(ids) == 2
+            and logical_workers == ['probe-a', 'probe-b']
+            and completed_logical_workers == logical_workers
             and notifications == 1
             and page_ok and detail_ok and agent_ok
             and '❯' in strip_ansi(final or terminal)
@@ -1581,6 +1946,8 @@ return { results }
             'task_id': task_id,
             'run_id': run_id,
             'agent_ids': ids,
+            'logical_workers': logical_workers,
+            'completed_logical_workers': completed_logical_workers,
             'notification_count': notifications,
             'workflow_page': {
                 'page': page_ok,
@@ -1716,6 +2083,692 @@ return { results }
         })
         self.record(result)
 
+    def required_assertion(self, run_dir, assertion_id, subject, predicate,
+                           paths, *, runtime_state='done', passed=False,
+                           reason=None):
+        return {
+            'assertion_id': assertion_id,
+            'source_run': run_dir.name,
+            'subject': subject,
+            'predicate': predicate,
+            'required_evidence': [str(path) for path in paths],
+            'observed_evidence_paths': [str(path.resolve()) for path in paths],
+            'runtime_state': runtime_state,
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason_if_not_passed': None if passed else reason,
+        }
+
+    def workflow_failure_detail(self):
+        run_dir, session, target, ready = self.start('workflow-failure-detail')
+        result = {
+            'label': 'workflow-failure-detail',
+            'evidence_dir': str(run_dir),
+        }
+        running_path = run_dir / '03-running-pane.txt'
+        detail_path = run_dir / '04-detail-pane.txt'
+        terminal_path = run_dir / '05-terminal-pane.txt'
+        marker_path = run_dir / 'debug-marker-search.txt'
+        task_id = run_id = status = None
+        launched = detail_ok = marker_ok = no_retry = False
+        if ready:
+            script = """export const meta = { name: 'release-failure-detail', description: 'Deterministic workflow failure diagnostics.', phases: [{ title: 'Failure probe' }] }
+phase('Failure probe')
+const result = await agent('Return any short answer.', { label: 'invalid-schema-worker', schema: { type: 'definitely-invalid-json-schema-type' } })
+if (result === null) throw new Error('release deterministic workflow failure')
+return result
+"""
+            prompt = (
+                'Use Workflow with this exact inline script. Do not modify files.\n'
+                '```js\n' + script + '```'
+            )
+            self.send(target, run_dir, prompt, 'input-workflow-failure-detail.txt')
+            launched = self.wait_until(
+                lambda: 'Workflow launched in background. Task ID:' in self.transcript(run_dir),
+                120,
+            )
+            self.capture(target, running_path)
+            task_id, run_id = self.workflow_ids(run_dir)
+            if launched:
+                self.wait_until(
+                    lambda: self.workflow_status(run_dir, task_id) is not None,
+                    180,
+                    0.5,
+                )
+            status = self.workflow_status(run_dir, task_id)
+            if task_id:
+                self.wait_for_notification_count(run_dir, 1, timeout=60, interval=0.5)
+                prompt_ready = self.wait_until(
+                    lambda: any(
+                        re.fullmatch(r'\s*❯\s*', line)
+                        for line in strip_ansi(self.capture(
+                            target,
+                            run_dir / '04-prompt-after-detail-dialog.txt',
+                            history=False,
+                        )).splitlines()
+                    ),
+                    60,
+                    0.5,
+                )
+                if prompt_ready:
+                    self.send(
+                        target,
+                        run_dir,
+                        f'/workflows detail {task_id}',
+                        'input-workflow-failure-detail-command.txt',
+                    )
+                detail_ok = prompt_ready and self.wait_until(
+                    lambda: all(
+                        text in strip_ansi(self.capture(target, detail_path))
+                        for text in (
+                            'Workflow detail',
+                            'Root cause:',
+                            'Attempts:',
+                            'invalid-schema-worker',
+                            'retryable=false',
+                        )
+                    ),
+                    60,
+                    0.5,
+                )
+            self.capture(target, terminal_path)
+        else:
+            for path in (running_path, detail_path, terminal_path):
+                path.write_text('readiness failed\n')
+        log = self.debug(run_dir)
+        marker_counts = {
+            key: log.count(key)
+            for key in (
+                'workflow_worker_start',
+                'workflow_worker_fail',
+                'workflow_worker_retry_scheduled',
+                'workflow_worker_terminal',
+            )
+        }
+        marker_path.write_text(
+            '\n'.join(f'{key}\t{value}' for key, value in marker_counts.items()) + '\n'
+        )
+        marker_ok = (
+            marker_counts['workflow_worker_start'] == 1
+            and marker_counts['workflow_worker_fail'] == 1
+            and marker_counts['workflow_worker_terminal'] == 1
+        )
+        no_retry = marker_counts['workflow_worker_retry_scheduled'] == 0
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and launched and status == 'failed' and detail_ok
+            and marker_ok and no_retry and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-workflow-failure-detail.txt',
+            running_path,
+            run_dir / '04-prompt-after-detail-dialog.txt',
+            detail_path,
+            terminal_path,
+            marker_path,
+            run_dir / 'debug.log',
+        ]
+        assertions = [
+            self.required_assertion(
+                run_dir,
+                'workflow-deterministic-failure-detail',
+                'Deterministic workflow worker failure',
+                'Failed workflow detail preserves root cause and attempt diagnostics.',
+                evidence,
+                runtime_state='failed',
+                passed=passed,
+                reason='workflow failure detail evidence was incomplete',
+            ),
+            self.required_assertion(
+                run_dir,
+                'workflow-deterministic-failure-no-retry',
+                'Non-retryable workflow worker',
+                'Invalid schema fails once with terminal markers and no retry marker.',
+                [marker_path, run_dir / 'debug.log'],
+                runtime_state='failed',
+                passed=marker_ok and no_retry,
+                reason='retry marker or terminal marker counts were unexpected',
+            ),
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'required failure diagnostics were incomplete',
+            'task_id': task_id,
+            'run_id': run_id,
+            'runtime_state': status,
+            'marker_counts': marker_counts,
+            'assertions': assertions,
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def team_concurrency(self):
+        run_dir, session, target, ready = self.start('team-concurrency')
+        result = {'label': 'team-concurrency', 'evidence_dir': str(run_dir)}
+        running_path = run_dir / '03-running-pane.txt'
+        terminal_path = run_dir / '04-terminal-pane.txt'
+        marker_path = run_dir / 'debug-marker-search.txt'
+        config_evidence = run_dir / 'team-config.json'
+        team_name = 'release-team-concurrency'
+        terminal = False
+        if ready:
+            prompt = (
+                f'Binary-side team concurrency validation. Use TeamCreate once with team_name "{team_name}". '
+                'Then launch exactly three named general-purpose teammates concurrently in one response using the Agent tool, '
+                'with names worker-a, worker-b, and worker-c and the created team. Each teammate must reply exactly with its own '
+                'name and must not use tools or modify files. Wait until all three Agent tool calls have returned, then print '
+                'RELEASE_TEAM_CONCURRENCY_DONE. Do not create tasks, worktrees, commits, or other tools.'
+            )
+            self.send(target, run_dir, prompt, 'input-team-concurrency.txt')
+            self.wait_until(
+                lambda: self.debug(run_dir).count('team_mutation_commit') >= 3,
+                180,
+                0.5,
+            )
+            self.capture(target, running_path)
+            terminal = self.wait_until(
+                lambda: 'RELEASE_TEAM_CONCURRENCY_DONE' in self.assistant_text(run_dir),
+                300,
+                0.5,
+            )
+            self.capture(target, terminal_path)
+        else:
+            running_path.write_text('readiness failed\n')
+            terminal_path.write_text('readiness failed\n')
+        team_files = list((run_dir / 'config' / 'teams').glob('*/config.json'))
+        team_config = None
+        if len(team_files) == 1:
+            try:
+                team_config = json.loads(team_files[0].read_text())
+                config_evidence.write_text(json.dumps(team_config, indent=2) + '\n')
+            except json.JSONDecodeError:
+                config_evidence.write_text('invalid team config\n')
+        else:
+            config_evidence.write_text(
+                json.dumps({'team_config_paths': [str(path) for path in team_files]}, indent=2) + '\n'
+            )
+        log = self.debug(run_dir)
+        marker_counts = {
+            key: log.count(key)
+            for key in ('team_mutation_start', 'team_mutation_commit', 'team_mutation_abort')
+        }
+        marker_path.write_text(
+            '\n'.join(f'{key}\t{value}' for key, value in marker_counts.items()) + '\n'
+        )
+        members = team_config.get('members', []) if isinstance(team_config, dict) else []
+        agent_ids = [member.get('agentId') for member in members if isinstance(member, dict)]
+        worker_names = {
+            member.get('name')
+            for member in members
+            if isinstance(member, dict) and member.get('name') in {'worker-a', 'worker-b', 'worker-c'}
+        }
+        config_ok = (
+            len(members) == 4
+            and len(agent_ids) == 4
+            and len(set(agent_ids)) == 4
+            and worker_names == {'worker-a', 'worker-b', 'worker-c'}
+        )
+        markers_ok = (
+            marker_counts['team_mutation_start'] >= 3
+            and marker_counts['team_mutation_commit'] >= 3
+            and marker_counts['team_mutation_abort'] == 0
+        )
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and terminal and config_ok and markers_ok
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-team-concurrency.txt',
+            running_path,
+            terminal_path,
+            config_evidence,
+            marker_path,
+            run_dir / 'debug.log',
+        ]
+        assertions = [
+            self.required_assertion(
+                run_dir,
+                'team-concurrent-registration',
+                'Concurrent teammate registration',
+                'Leader plus three uniquely named workers remain in one team config.',
+                evidence,
+                passed=passed,
+                reason='team config, pane, or mutation evidence was incomplete',
+            ),
+            self.required_assertion(
+                run_dir,
+                'team-mutation-lock-markers',
+                'Team mutation serialization',
+                'Three registrations commit without abort or member loss.',
+                [config_evidence, marker_path, run_dir / 'debug.log'],
+                passed=passed and markers_ok,
+                reason='team mutation marker counts were incomplete',
+            ),
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'team concurrency assertions were incomplete',
+            'team_name': team_config.get('name') if isinstance(team_config, dict) else None,
+            'member_count': len(members),
+            'agent_ids': agent_ids,
+            'marker_counts': marker_counts,
+            'assertions': assertions,
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def coordinator_selector(self):
+        run_dir, session, target, ready = self.start('coordinator-selector')
+        result = {'label': 'coordinator-selector', 'evidence_dir': str(run_dir)}
+        background_path = run_dir / '03-background-pane.txt'
+        main_path = run_dir / '04-main-pane.txt'
+        agent_path = run_dir / '05-agent-pane.txt'
+        viewed_path = run_dir / '06-viewed-agent-pane.txt'
+        marker_path = run_dir / 'debug-marker-search.txt'
+        task_id = None
+        selected_background = selected_main = selected_agent = viewed_agent = False
+        if ready:
+            prompt = (
+                'Coordinator selector binary validation. Call the Agent tool exactly once in foreground with description '
+                '"release coordinator selector". The general-purpose child must run the harmless command sleep 30, then '
+                'read Makefile and report only the VERSION line. Do not modify files or use other parent tools.'
+            )
+            self.send(target, run_dir, prompt, 'input-coordinator-selector.txt')
+            registered = self.wait_until(
+                lambda: '[AgentLifecycle] foreground_registered' in self.debug(run_dir),
+                90,
+            )
+            if registered:
+                self.tmux('send-keys', '-t', target, 'C-b')
+            transitioned = registered and self.wait_until(
+                lambda: '[AgentLifecycle] foreground_to_background' in self.debug(run_dir),
+                30,
+            )
+            log = self.debug(run_dir)
+            task_match = re.search(
+                r'foreground_to_background agent_id=[^ ]+ task_id=([^ ]+)',
+                log,
+            )
+            task_id = task_match.group(1) if task_match else None
+            if transitioned:
+                self.tmux('send-keys', '-t', target, 'Down')
+                selected_background = self.wait_until(
+                    lambda: 'after_target=background reason=footer-select' in self.debug(run_dir),
+                    30,
+                    0.25,
+                )
+                self.capture(target, background_path)
+                self.tmux('send-keys', '-t', target, 'Down')
+                selected_main = self.wait_until(
+                    lambda: re.search(
+                        r'after_index=0 .*after_target=main reason=navigation',
+                        self.debug(run_dir),
+                    ) is not None,
+                    30,
+                    0.25,
+                )
+                self.capture(target, main_path)
+                self.tmux('send-keys', '-t', target, 'Down')
+                selected_agent = self.wait_until(
+                    lambda: bool(
+                        task_id and f'after_target={task_id} reason=navigation' in self.debug(run_dir)
+                    ),
+                    30,
+                    0.25,
+                )
+                self.capture(target, agent_path)
+                self.tmux('send-keys', '-t', target, 'Enter')
+                viewed_agent = self.wait_until(
+                    lambda: bool(
+                        task_id and f'after={task_id} type=local_agent' in self.debug(run_dir)
+                    ),
+                    30,
+                    0.25,
+                )
+                self.capture(target, viewed_path)
+        for path in (background_path, main_path, agent_path, viewed_path):
+            if not path.exists():
+                path.write_text('required UI state was not reached\n')
+        log = self.debug(run_dir)
+        marker_lines = [
+            line
+            for line in log.splitlines()
+            if 'coordinator_selection_changed' in line or 'viewed_agent_changed' in line
+        ]
+        marker_path.write_text('\n'.join(marker_lines) + ('\n' if marker_lines else ''))
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and bool(task_id) and selected_background and selected_main
+            and selected_agent and viewed_agent and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-coordinator-selector.txt',
+            background_path,
+            main_path,
+            agent_path,
+            viewed_path,
+            marker_path,
+            run_dir / 'debug.log',
+        ]
+        assertions = [
+            self.required_assertion(
+                run_dir,
+                'coordinator-stable-navigation',
+                'Coordinator keyboard selection',
+                'Background, main, and the same stable agent task are selected in order.',
+                evidence,
+                runtime_state='running',
+                passed=passed,
+                reason='coordinator selection markers or pane evidence were incomplete',
+            ),
+            self.required_assertion(
+                run_dir,
+                'coordinator-agent-transcript-open',
+                'Coordinator transcript routing',
+                'Enter opens the selected local agent transcript without changing target identity.',
+                [viewed_path, marker_path, run_dir / 'debug.log'],
+                runtime_state='running',
+                passed=passed and viewed_agent,
+                reason='viewed-agent marker was not correlated with the selected task',
+            ),
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'coordinator selector assertions were incomplete',
+            'task_id': task_id,
+            'selection': {
+                'background': selected_background,
+                'main': selected_main,
+                'agent': selected_agent,
+                'viewed_agent': viewed_agent,
+            },
+            'assertions': assertions,
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def workflow_retry_partial_failure(self):
+        run_dir, session, target, ready = self.start(
+            'workflow-retry-partial-failure'
+        )
+        result = {
+            'label': 'workflow-retry-partial-failure',
+            'evidence_dir': str(run_dir),
+        }
+        running_path = run_dir / '03-running-pane.txt'
+        terminal_path = run_dir / '04-terminal-pane.txt'
+        marker_path = run_dir / 'debug-marker-search.txt'
+        task_id = run_id = status = None
+        launched = False
+        if ready:
+            script = """export const meta = { name: 'release-partial-retry', description: 'Controlled partial transient retry.', phases: [{ title: 'Retry probe' }] }
+phase('Retry probe')
+return await parallel([
+  () => agent('Return exactly stable-worker-ok.', { label: 'stable-worker' }),
+  () => agent('Return exactly transient-worker-ok.', { label: 'transient-worker' }),
+])
+"""
+            prompt = (
+                'Use Workflow with this exact inline script. Do not modify files.\n'
+                '```js\n' + script + '```'
+            )
+            self.send(
+                target,
+                run_dir,
+                prompt,
+                'input-workflow-retry-partial-failure.txt',
+            )
+            launched = self.wait_until(
+                lambda: 'Workflow launched in background. Task ID:'
+                in self.transcript(run_dir),
+                120,
+            )
+            self.capture(target, running_path)
+            task_id, run_id = self.workflow_ids(run_dir)
+            if launched:
+                self.wait_until(
+                    lambda: self.workflow_status(run_dir, task_id) is not None,
+                    300,
+                    0.5,
+                )
+            status = self.workflow_status(run_dir, task_id)
+            self.capture(target, terminal_path)
+        else:
+            running_path.write_text('readiness failed\n')
+            terminal_path.write_text('readiness failed\n')
+        log = self.debug(run_dir)
+        marker_lines = [
+            line
+            for line in log.splitlines()
+            if 'workflow_worker_' in line
+            and (
+                'logical=stable-worker' in line
+                or 'logical=transient-worker' in line
+            )
+        ]
+        marker_path.write_text(
+            '\n'.join(marker_lines) + ('\n' if marker_lines else '')
+        )
+        stable_starts = sum(
+            'workflow_worker_start' in line
+            and 'logical=stable-worker' in line
+            for line in marker_lines
+        )
+        stable_terminals = sum(
+            'workflow_worker_terminal' in line
+            and 'logical=stable-worker' in line
+            and 'status=completed' in line
+            for line in marker_lines
+        )
+        transient_starts = sum(
+            'workflow_worker_start' in line
+            and 'logical=transient-worker' in line
+            for line in marker_lines
+        )
+        transient_failures = sum(
+            'workflow_worker_fail' in line
+            and 'logical=transient-worker' in line
+            and 'kind=service_unavailable' in line
+            and 'retryable=true' in line
+            for line in marker_lines
+        )
+        transient_retries = sum(
+            'workflow_worker_retry_scheduled' in line
+            and 'logical=transient-worker' in line
+            and 'detail=retry=1/2' in line
+            for line in marker_lines
+        )
+        transient_terminals = sum(
+            'workflow_worker_terminal' in line
+            and 'logical=transient-worker' in line
+            and 'attempt=1' in line
+            and 'status=completed' in line
+            for line in marker_lines
+        )
+        retry_ok = (
+            stable_starts == 1
+            and stable_terminals == 1
+            and transient_starts == 2
+            and transient_failures == 1
+            and transient_retries == 1
+            and transient_terminals == 1
+        )
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and launched and status == 'completed' and retry_ok
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-workflow-retry-partial-failure.txt',
+            running_path,
+            terminal_path,
+            marker_path,
+            run_dir / 'debug.log',
+        ]
+        assertions = [
+            self.required_assertion(
+                run_dir,
+                'workflow-partial-transient-retry',
+                'Controlled partial workflow retry',
+                'Only the transient logical worker retries once; the stable worker runs once.',
+                evidence,
+                passed=passed,
+                reason='logical worker retry markers or terminal evidence were incomplete',
+            ),
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'partial retry assertions were incomplete',
+            'task_id': task_id,
+            'run_id': run_id,
+            'runtime_state': status,
+            'marker_counts': {
+                'stable_starts': stable_starts,
+                'stable_terminals': stable_terminals,
+                'transient_starts': transient_starts,
+                'transient_failures': transient_failures,
+                'transient_retries': transient_retries,
+                'transient_terminals': transient_terminals,
+            },
+            'assertions': assertions,
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def transcript_retention(self):
+        run_dir, session, target, ready = self.start('transcript-retention')
+        result = {'label': 'transcript-retention', 'evidence_dir': str(run_dir)}
+        running_path = run_dir / '03-running-pane.txt'
+        viewed_path = run_dir / '04-viewed-pane.txt'
+        terminal_path = run_dir / '05-terminal-viewed-pane.txt'
+        main_path = run_dir / '06-main-pane.txt'
+        marker_path = run_dir / 'debug-marker-search.txt'
+        viewed = retained = exited = terminal_visible = False
+        task_id = None
+        if ready:
+            prompt = (
+                'Transcript retention binary validation. Use TeamCreate once with team_name '
+                '"release-transcript-retention". Launch exactly one named general-purpose '
+                'teammate named retention-worker with run_in_background=true. Its initial task '
+                'must use Bash exactly once to run `sleep 20`, then reply exactly '
+                'RELEASE_RETENTION_WORKER_DONE. Tell it that after replying, if it receives a '
+                'shutdown request, it must approve that request using SendMessage. Immediately '
+                'after launching it, use SendMessage to send retention-worker a structured '
+                'shutdown_request, then return. Do not modify files.'
+            )
+            self.send(target, run_dir, prompt, 'input-transcript-retention.txt')
+            registered = self.wait_until(
+                lambda: 'team_mutation_commit' in self.debug(run_dir),
+                120,
+                0.5,
+            )
+            self.capture(target, running_path)
+            if registered:
+                self.tmux('send-keys', '-t', target, 'Down', check=True)
+                self.tmux('send-keys', '-t', target, 'Right', check=True)
+                self.tmux('send-keys', '-t', target, 'Enter', check=True)
+                viewed = self.wait_until(
+                    lambda: re.search(
+                        r'viewed_agent_changed[^\n]*after=([^ ]+)[^\n]*type=in_process_teammate',
+                        self.debug(run_dir),
+                    ) is not None,
+                    30,
+                    0.25,
+                )
+                self.capture(target, viewed_path)
+                view_match = re.search(
+                    r'viewed_agent_changed[^\n]*after=([^ ]+)[^\n]*type=in_process_teammate',
+                    self.debug(run_dir),
+                )
+                task_id = view_match.group(1) if view_match else None
+                retained = bool(task_id) and self.wait_until(
+                    lambda: (
+                        f'transcript_retention_decision] task={task_id} status=completed retain=keep'
+                        in self.debug(run_dir)
+                    ),
+                    180,
+                    0.5,
+                )
+                terminal = self.capture(target, terminal_path)
+                terminal_visible = (
+                    retained
+                    and 'RELEASE_RETENTION_WORKER_DONE' in strip_ansi(terminal)
+                )
+                if retained:
+                    self.tmux('send-keys', '-t', target, 'Escape', check=True)
+                    exited = self.wait_until(
+                        lambda: (
+                            f'viewed_agent_changed] before={task_id} after=main'
+                            in self.debug(run_dir)
+                        ),
+                        30,
+                        0.25,
+                    )
+                self.capture(target, main_path)
+        for path in (running_path, viewed_path, terminal_path, main_path):
+            if not path.exists():
+                path.write_text('required transcript state was not reached\n')
+        log = self.debug(run_dir)
+        marker_lines = [
+            line
+            for line in log.splitlines()
+            if 'viewed_agent_changed' in line
+            or 'transcript_retention_decision' in line
+        ]
+        marker_path.write_text(
+            '\n'.join(marker_lines) + ('\n' if marker_lines else '')
+        )
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and bool(task_id) and viewed and retained and terminal_visible
+            and exited and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-transcript-retention.txt',
+            running_path,
+            viewed_path,
+            terminal_path,
+            main_path,
+            marker_path,
+            run_dir / 'debug.log',
+        ]
+        assertions = [
+            self.required_assertion(
+                run_dir,
+                'viewed-teammate-terminal-retention',
+                'Viewed in-process teammate transcript',
+                'A viewed teammate reaches terminal while retaining its complete visible transcript.',
+                evidence,
+                passed=passed,
+                reason='view, retention, terminal transcript, or exit evidence was incomplete',
+            ),
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'transcript retention assertions were incomplete',
+            'task_id': task_id,
+            'runtime_state': 'done' if retained else 'running',
+            'viewed': viewed,
+            'retained': retained,
+            'terminal_visible': terminal_visible,
+            'exited': exited,
+            'assertions': assertions,
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def unsupported_required_target(self, label):
+        result = {
+            'label': label,
+            'validation_verdict': 'not covered',
+            'reason': (
+                'specified/not executable: deterministic binary-side fault '
+                'injection or lifecycle assertions are not available'
+            ),
+            'assertions': [],
+        }
+        self.record(result)
+
     def run(self, targets):
         self.evidence_root.mkdir(parents=True, exist_ok=False)
         (self.evidence_root / 'driver-start-manifest.json').write_text(
@@ -1727,11 +2780,17 @@ return { results }
             'workflow': self.workflow,
             'deep-research': lambda: self.slash_workflow('deep-research'),
             'code-review': lambda: self.slash_workflow('code-review'),
+            'team-concurrency': self.team_concurrency,
+            'workflow-retry-partial-failure': self.workflow_retry_partial_failure,
+            'workflow-failure-detail': self.workflow_failure_detail,
+            'coordinator-selector': self.coordinator_selector,
+            'transcript-retention': self.transcript_retention,
         }
         try:
-            self.readiness_smoke()
+            self.run_target('readiness-smoke', self.readiness_smoke)
             for target in targets:
-                actions[target]()
+                result_label = 'inline-workflow' if target == 'workflow' else target
+                self.run_target(result_label, actions[target])
         except Exception as error:
             self.manifest['driver_error'] = repr(error)
         finally:
@@ -1761,11 +2820,17 @@ return { results }
                 )
             )
             expected_runs = len(targets) + 1
+            required_coverage = validate_required_target_results(
+                set(self.manifest['required_targets']),
+                self.manifest['runs'],
+            )
+            self.manifest['required_target_coverage'] = required_coverage
             self.manifest['overall_verdict'] = (
                 'passed'
                 if (
                     'driver_error' not in self.manifest
                     and len(self.manifest['runs']) == expected_runs
+                    and required_coverage['passed']
                     and all(
                         run['validation_verdict'] == 'passed'
                         for run in self.manifest['runs']
@@ -1799,19 +2864,43 @@ def main():
         help='baseline JSON captured after the current make build',
     )
     parser.add_argument(
+        '--base-ref',
+        help=(
+            'explicit commit-ish used to derive the committed release range when '
+            'baseline upstream is unavailable or unsafe'
+        ),
+    )
+    parser.add_argument(
         '--targets',
-        default='agent-fg-bg,nested-agent,workflow,deep-research,code-review',
-        help='comma-separated targets',
+        default=None,
+        help=(
+            'comma-separated extra targets to append after the default matrix; '
+            'default targets always run'
+        ),
     )
     args = parser.parse_args()
-    targets = [target for target in args.targets.split(',') if target]
-    allowed = {'agent-fg-bg', 'nested-agent', 'workflow', 'deep-research', 'code-review'}
-    unknown = set(targets) - allowed
+    try:
+        extra_targets = parse_target_list(args.targets)
+    except ValueError as error:
+        parser.error(str(error))
+    allowed = {
+        *DEFAULT_TARGETS,
+        *(target for target, _ in TARGET_PATH_RULES),
+    }
+    unknown = set(extra_targets) - allowed
     if unknown:
         parser.error(f'unknown targets: {sorted(unknown)}')
-    gate = BinaryGate(
-        args.repo, args.evidence_root, args.auth_source, args.baseline
-    )
+    try:
+        gate = BinaryGate(
+            args.repo,
+            args.evidence_root,
+            args.auth_source,
+            args.baseline,
+            base_ref=args.base_ref,
+        )
+        targets = plan_targets(extra_targets, set(gate.manifest['required_targets']))
+    except (RuntimeError, ValueError) as error:
+        parser.error(str(error))
     return 0 if gate.run(targets) else 1
 
 

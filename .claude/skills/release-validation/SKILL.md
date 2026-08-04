@@ -26,6 +26,20 @@ version: 0.1.0
 10. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
 11. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
 12. 不打印凭据，也不把 token、API key 或 OAuth credential 保存到 evidence/repo；交互测试使用 dummy credential，或仅复制到 evidence/repo 外、权限受限且门禁结束后清理的私有临时 HOME。
+13. Binary driver 必须按 committed release range + staged/unstaged/untracked 合并路径计算 required targets。release range 优先使用 baseline 中可用 upstream/merge-base；若无法安全推导，必须 fail closed 或要求显式 `--base-ref`。`--targets` 只能在默认完整矩阵之后追加额外 target，不得缩减默认矩阵，且必须拒绝空值与重复。修改 team registry、workflow retry/failure、coordinator selection 或 transcript retention 时，分别强制 `team-concurrency`、`workflow-retry-partial-failure`、`workflow-failure-detail`、`coordinator-selector`、`transcript-retention`；required target 未执行、无 assertions、缺稳定 ID/marker/evidence path、跨 run 拼接或仅有 pane 文本时必须 fail closed。
+14. Skill prose、eval assertions 和 executable target 是三层独立覆盖。报告必须区分 `spec exists`、`unit covered`、`fault injection covered`、`binary tmux covered`；任何一层存在不自动代表其他层通过。
+
+## Diff 到 executable target 映射
+
+| 变更区域 | Required target | Binary-side 必要证据 |
+|---|---|---|
+| `src/utils/swarm/`、`spawnMultiAgent` | `team-concurrency` | 同次运行至少 3 个并发 teammate 的 team config/task/inbox/UI 一致性，以及 `team_mutation_*` debug marker |
+| `WorkflowTool`、`LocalWorkflowTask` retry | `workflow-retry-partial-failure` | 受控 transient fault、logical worker/attempt ID、仅失败项重试和 `workflow_worker_*` marker |
+| workflow failure/status | `workflow-failure-detail` | terminal pane、Task/Run ID、status/detail 原始根因和同次运行 failure marker |
+| coordinator/PromptInput/background task | `coordinator-selector` | 键盘选择前后 stable target ID、pane 与 `coordinator_selection_changed` marker |
+| viewed agent/in-process transcript | `transcript-retention` | terminal 前后切出/切回 pane、task ID 与 `transcript_retention_decision` marker |
+
+普通成功路径不能代替受控 fault injection。上表五个专项 target 均有 scripted binary-side handler：`workflow-retry-partial-failure` 仅在隔离 gate 中注入精确匹配 logical worker/attempt 的 transient fault，`transcript-retention` 使用 in-process teammate terminal lifecycle assertions。任一 handler 缺少同次运行的 pane、debug marker、稳定 ID 或 lifecycle 证据时必须 fail closed；任何 required target 未实际执行并通过时，整体 release gate 不通过。
 
 ## 四个 Agent 的固定任务
 
