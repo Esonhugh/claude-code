@@ -26,7 +26,13 @@ import {
   saveWorkflowRunTemplate,
   type WorkflowRunTemplate,
 } from '../../tools/WorkflowTool/workflowRunTemplates.js'
+import {
+  listWorkflowRunSessions,
+  loadWorkflowRunSession,
+  type WorkflowRunSession,
+} from '../../tools/WorkflowTool/workflowRunSessions.js'
 import { getCwd } from '../../utils/cwd.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 type WorkflowCommandContext = {
   getCwd?: () => string
@@ -87,6 +93,18 @@ function formatWorkflowRunsEmpty(): string {
   return 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close'
 }
 
+type WorkflowRunListItem = {
+  taskId: string
+  workflowRunId?: string
+  workflowName: string
+  status: LocalWorkflowTaskState['status'] | WorkflowRunSession['status']
+  completedAgents: number
+  totalAgents: number
+  tokenCount: number
+  startedAt: number
+  source: 'live' | 'persisted'
+}
+
 function isLocalWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
   return (
     typeof task === 'object' &&
@@ -104,30 +122,79 @@ function workflowTaskName(task: LocalWorkflowTaskState): string {
   return task.workflowName ?? task.description.replace(/^Workflow:\s*/i, '')
 }
 
-function formatWorkflowRuns(context: WorkflowCommandContext | unknown): string {
-  const tasks =
-    context &&
+function liveWorkflowTasks(
+  context: WorkflowCommandContext | unknown,
+): LocalWorkflowTaskState[] {
+  return context &&
     typeof context === 'object' &&
     'getAppState' in context &&
     typeof context.getAppState === 'function'
-      ? Object.values(context.getAppState().tasks ?? {})
-          .filter(isLocalWorkflowTask)
-          .sort((a, b) => b.startTime - a.startTime)
-      : []
+    ? Object.values(context.getAppState().tasks ?? {}).filter(isLocalWorkflowTask)
+    : []
+}
 
-  if (tasks.length === 0) return formatWorkflowRunsEmpty()
+function persistedTerminalAgentCount(session: WorkflowRunSession): number {
+  return session.results.filter(result =>
+    result.status === 'completed' ||
+    result.status === 'failed' ||
+    result.status === 'skipped'
+  ).length
+}
+
+async function workflowRunItems(
+  cwd: string,
+  context: WorkflowCommandContext | unknown,
+): Promise<WorkflowRunListItem[]> {
+  const live = liveWorkflowTasks(context)
+  const liveRunIds = new Set(live.flatMap(task =>
+    task.workflowRunId ? [task.workflowRunId] : [],
+  ))
+  const items: WorkflowRunListItem[] = live.map(task => ({
+    taskId: task.id,
+    workflowRunId: task.workflowRunId,
+    workflowName: workflowTaskName(task),
+    status: task.status,
+    completedAgents: workflowTerminalAgentCount(task),
+    totalAgents: totalAgents(task),
+    tokenCount: task.tokenCount ?? 0,
+    startedAt: task.startTime,
+    source: 'live',
+  }))
+  for (const session of await listWorkflowRunSessions(cwd)) {
+    if (liveRunIds.has(session.workflowRunId)) continue
+    items.push({
+      taskId: session.taskId,
+      workflowRunId: session.workflowRunId,
+      workflowName: session.workflowName,
+      status: session.status,
+      completedAgents: persistedTerminalAgentCount(session),
+      totalAgents: session.agentCount ?? session.results.length,
+      tokenCount: session.tokenCount ?? session.results.reduce(
+        (sum, result) => sum + (result.tokenCount ?? 0),
+        0,
+      ),
+      startedAt: session.startedAt,
+      source: 'persisted',
+    })
+  }
+  return items.sort((a, b) => b.startedAt - a.startedAt)
+}
+
+function formatWorkflowRuns(items: WorkflowRunListItem[]): string {
+  if (items.length === 0) return formatWorkflowRunsEmpty()
 
   const lines = [
     'Dynamic workflows',
     '',
-    `${tasks.length} ${tasks.length === 1 ? 'workflow' : 'workflows'} in this session`,
+    `${items.length} ${items.length === 1 ? 'workflow' : 'workflows'} in this session`,
     '',
   ]
-  for (const task of tasks) {
-    const tokens = task.tokenCount ? ` · ${task.tokenCount} tok` : ''
+  for (const item of items) {
+    const tokens = item.tokenCount ? ` · ${item.tokenCount} tok` : ''
+    const source = item.source === 'persisted' ? ' · persisted' : ''
     lines.push(
-      `- ${task.id}: ${workflowTaskName(task)} [${task.status}] ${workflowTerminalAgentCount(task)}/${totalAgents(task)} agents${tokens}`,
-      `  /workflows detail ${task.id}`,
+      `- ${item.taskId}: ${item.workflowName} [${item.status}] ${item.completedAgents}/${item.totalAgents} agents${tokens}${source}`,
+      `  /workflows detail ${item.taskId}`,
     )
   }
   lines.push('', 'Esc to close')
@@ -212,14 +279,83 @@ function workflowTaskFromContext(
   return isLocalWorkflowTask(task) ? task : undefined
 }
 
-function formatWorkflowTaskStatus(
+function persistedWorkflowTask(
+  session: WorkflowRunSession,
+): LocalWorkflowTaskState {
+  const phaseIds = [...new Set(session.results.map(result => result.phaseId))]
+  return {
+    id: session.taskId,
+    type: 'local_workflow',
+    status: session.status === 'paused'
+      ? 'pending'
+      : session.status === 'killed'
+        ? 'killed'
+        : session.status,
+    description: `Workflow: ${session.workflowName}`,
+    workflowName: session.workflowName,
+    workflowRunId: session.workflowRunId,
+    scriptPath: session.scriptPath,
+    runArgs: session.runArgs,
+    startTime: session.startedAt,
+    endTime: session.status === 'running' || session.status === 'paused'
+      ? undefined
+      : session.updatedAt,
+    outputFile: '',
+    outputOffset: 0,
+    notified: true,
+    agentCount: session.agentCount ?? session.results.length,
+    runtime: session.runtime,
+    sourcePath: session.sourcePath,
+    runScriptSnapshot: session.runScriptSnapshot,
+    phases: phaseIds.map(phaseId => {
+      const results = session.results.filter(result => result.phaseId === phaseId)
+      return {
+        id: phaseId,
+        status: results.some(result => result.status === 'failed')
+          ? 'failed' as const
+          : results.every(result => result.status === 'skipped')
+            ? 'skipped' as const
+            : results.every(result => result.status === 'completed')
+              ? 'completed' as const
+              : 'running' as const,
+        agentIds: results.map(result => result.agentId),
+        completedAgentIds: results.filter(result => result.status === 'completed').map(result => result.agentId),
+        skippedAgentIds: results.filter(result => result.status === 'skipped').map(result => result.agentId),
+        failedAgentIds: results.filter(result => result.status === 'failed').map(result => result.agentId),
+        results,
+      }
+    }),
+    results: session.results,
+    events: session.events,
+    error: session.error,
+  }
+}
+
+async function formatWorkflowTaskStatus(
+  cwd: string,
   context: WorkflowCommandContext | unknown,
   selector: string,
   options: { detail?: boolean } = {},
-): string {
+): Promise<string> {
   const task = workflowTaskFromContext(context, selector)
-  if (!task) return `Workflow task not found: ${selector}`
-  return formatWorkflowStatus(task, options)
+  if (task) {
+    logForDebugging(
+      `[workflow_session_loaded] source=live task=${task.id} run=${task.workflowRunId ?? 'unknown'} status=${task.status}`,
+    )
+    return formatWorkflowStatus(task, options)
+  }
+  const persistedByRunId = await loadWorkflowRunSession({
+    cwd,
+    workflowRunId: selector,
+  })
+  const persisted = persistedByRunId ?? (
+    await listWorkflowRunSessions(cwd)
+  ).find(session => session.taskId === selector)
+  if (!persisted) return `Workflow task not found: ${selector}`
+  logForDebugging(
+    `[workflow_session_loaded] source=persisted task=${persisted.taskId} run=${persisted.workflowRunId} status=${persisted.status}`,
+  )
+  return formatWorkflowStatus(persistedWorkflowTask(persisted), options)
 }
 
 function splitAgentControlSelector(
@@ -250,7 +386,10 @@ export async function call(
   const { action, selector } = parseArgs(args)
 
   if (action === 'runs') {
-    return { type: 'text', value: formatWorkflowRuns(context) }
+    return {
+      type: 'text',
+      value: formatWorkflowRuns(await workflowRunItems(cwd, context)),
+    }
   }
 
   if (action === 'list') {
@@ -305,7 +444,7 @@ export async function call(
     if (!selector) return { type: 'text', value: `Usage: /workflows ${action} <workflow-task-id>` }
     return {
       type: 'text',
-      value: formatWorkflowTaskStatus(context, selector, { detail: action === 'detail' }),
+      value: await formatWorkflowTaskStatus(cwd, context, selector, { detail: action === 'detail' }),
     }
   }
 
@@ -317,6 +456,13 @@ export async function call(
         value: `Usage: /workflows ${action} <workflow-task-id> <phase-id> <agent-id>`,
       }
     }
+    const task = workflowTaskFromContext(context, taskId)
+    if (!task) {
+      return {
+        type: 'text',
+        value: `Workflow ${action} requires a live workflow task: ${taskId}`,
+      }
+    }
     const setAppState = workflowSetAppState(context)
     if (!setAppState) return { type: 'text', value: `Workflow ${action} requires AppState access` }
     if (action === 'skip-agent') {
@@ -324,15 +470,22 @@ export async function call(
     } else {
       retryWorkflowAgent(taskId, agentId, setAppState as never)
     }
-    return { type: 'text', value: formatWorkflowTaskStatus(context, taskId) }
+    return { type: 'text', value: await formatWorkflowTaskStatus(cwd, context, task.id) }
   }
 
   if (action === 'pause') {
     if (!selector) return { type: 'text', value: 'Usage: /workflows pause <workflow-task-id>' }
+    const task = workflowTaskFromContext(context, selector)
+    if (!task) {
+      return {
+        type: 'text',
+        value: `Workflow pause requires a live workflow task: ${selector}`,
+      }
+    }
     const setAppState = workflowSetAppState(context)
     if (!setAppState) return { type: 'text', value: 'Workflow pause requires AppState access' }
     pauseWorkflowTask(selector, setAppState as never)
-    return { type: 'text', value: formatWorkflowTaskStatus(context, selector) }
+    return { type: 'text', value: await formatWorkflowTaskStatus(cwd, context, task.id) }
   }
 
   if (action === 'resume') {

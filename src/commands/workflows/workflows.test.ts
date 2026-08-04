@@ -130,6 +130,72 @@ const emptyRunsResult = await call('', { getCwd: () => tempRoot, getAppState: ()
 assert.equal(emptyRunsResult.type, 'text')
 assert.equal(emptyRunsResult.value, 'Dynamic workflows\n\nNo dynamic workflows in this session.\n\nEsc to close')
 
+const persistedRunId = 'wf_persisted'
+const persistedTaskId = 'w-persisted'
+const persistedRunDir = join(tempRoot, '.claude', 'workflow-runs', persistedRunId)
+await mkdir(persistedRunDir, { recursive: true })
+await writeFile(
+  join(persistedRunDir, 'session.json'),
+  `${JSON.stringify({
+    taskId: persistedTaskId,
+    workflowRunId: persistedRunId,
+    workflowName: 'Persisted Workflow',
+    status: 'failed',
+    resumeCacheEntries: [],
+    startedAt: workflowTask.startTime - 1000,
+    updatedAt: workflowTask.startTime,
+    results: [{
+      phaseId: 'research',
+      agentId: 'persisted-agent',
+      index: 0,
+      status: 'failed',
+      error: 'service temporarily unavailable',
+      errorKind: 'service_unavailable',
+    }],
+    events: [],
+    error: 'Workflow phase "research" failed',
+  }, null, 2)}\n`,
+)
+const duplicateLiveRunDir = join(tempRoot, '.claude', 'workflow-runs', workflowTask.workflowRunId)
+await mkdir(duplicateLiveRunDir, { recursive: true })
+await writeFile(
+  join(duplicateLiveRunDir, 'session.json'),
+  `${JSON.stringify({
+    taskId: 'stale-task-id',
+    workflowRunId: workflowTask.workflowRunId,
+    workflowName: 'Stale Persisted Copy',
+    status: 'failed',
+    resumeCacheEntries: [],
+    startedAt: workflowTask.startTime,
+    updatedAt: workflowTask.startTime,
+    results: [],
+    events: [],
+  }, null, 2)}\n`,
+)
+const mergedRunsResult = await call('', context)
+assert.equal(mergedRunsResult.type, 'text')
+assert.match(mergedRunsResult.value, /2 workflows in this session/)
+assert.match(mergedRunsResult.value, /w-test: Research Workflow \[running\]/)
+assert.match(mergedRunsResult.value, /w-persisted: Persisted Workflow \[failed\] 1\/1 agents · persisted/)
+assert.doesNotMatch(mergedRunsResult.value, /Stale Persisted Copy/)
+
+const persistedDetailResult = await call('detail w-persisted', context)
+assert.equal(persistedDetailResult.type, 'text')
+assert.match(persistedDetailResult.value, /Workflow: Persisted Workflow/)
+assert.match(persistedDetailResult.value, /Workflow run ID: wf_persisted/)
+assert.match(persistedDetailResult.value, /Root cause: service_unavailable/)
+assert.doesNotMatch(persistedDetailResult.value, /\/workflows pause w-persisted/)
+
+for (const persistedMutation of [
+  'pause w-persisted',
+  'retry-agent w-persisted research persisted-agent',
+  'skip-agent w-persisted research persisted-agent',
+]) {
+  const persistedMutationResult = await call(persistedMutation, context)
+  assert.equal(persistedMutationResult.type, 'text')
+  assert.match(persistedMutationResult.value, /requires a live workflow task: w-persisted/)
+}
+
 const listResult = await call('list', context)
 assert.equal(listResult.type, 'text')
 assert.match(listResult.value, /Research-Workflow/)
