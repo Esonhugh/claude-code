@@ -16,15 +16,18 @@ import {
 } from '../../constants/xml.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import {
+  classifyWorkflowAgentError,
   completeWorkflowAgent,
   completeWorkflowTask,
   failWorkflowAgent,
   failWorkflowTask,
+  interruptWorkflowAgentAttempt,
   recordWorkflowAgentController,
   recordWorkflowAgentProgress,
   recordWorkflowAgentStarted,
   recordWorkflowEvent,
   registerWorkflowTask,
+  shouldAutomaticallyRetryWorkflowAgent,
   startWorkflowPhase,
   workflowResumeCall,
   WORKFLOW_AGENT_SKIPPED_ABORT_REASON,
@@ -32,7 +35,6 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type {
   LocalWorkflowTaskState,
-  WorkflowAgentErrorKind,
   WorkflowAgentResult,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { WorkflowArgs, WorkflowDryRunPhase, WorkflowDryRunPlan, WorkflowPermissionMode, WorkflowProgressEvent } from './workflowSpec.js'
@@ -51,6 +53,7 @@ import {
   updateWorkflowRunSessionProgress,
   updateWorkflowRunSessionStatus,
 } from './workflowRunSessions.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScriptPersistence.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import { getCwd } from '../../utils/cwd.js'
@@ -74,6 +77,7 @@ import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { snapshotWorkflowAgentContext } from './runWorkflow.js'
+import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -83,20 +87,8 @@ const MAX_CONCURRENCY = Math.min(16, Math.max(2, availableParallelism() - 2))
 const DEFAULT_STALL_MS = 120_000
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 
-export function classifyWorkflowAgentError(
-  error: unknown,
-): WorkflowAgentErrorKind {
-  const message = error instanceof Error ? error.message : String(error)
-  if (/Concurrency limit exceeded for user/i.test(message)) {
-    return 'concurrency_limit'
-  }
-  if (/stalled/i.test(message)) {
-    return 'stalled'
-  }
-  if (/permission denied|not allowed|denied by permission/i.test(message)) {
-    return 'permission_denied'
-  }
-  return 'agent_failed'
+function workflowRetryBudget(maxRetries: number | undefined): number {
+  return maxRetries ?? 2
 }
 
 // --- Types ---
@@ -450,7 +442,21 @@ export async function runWorkflowScript({
   const abortController = workflowTask.abortController!
   const semaphore = new Semaphore(MAX_CONCURRENCY)
   const journal = new WorkflowJournal()
-  if (resumeJournalEntries) journal.loadFrom(resumeJournalEntries)
+  if (resumeJournalEntries) {
+    journal.loadFrom(resumeJournalEntries)
+    logForDebugging(
+      workflowRetryDebugMessage({
+        event: 'workflow_session_loaded',
+        taskId: workflowTask.id,
+        workflowRunId,
+        phaseId: '-',
+        logicalAgentId: '-',
+        agentId: '-',
+        attempt: 0,
+        detail: `resume_entries=${resumeJournalEntries.length}`,
+      }),
+    )
+  }
   const scriptAgentResults: WorkflowAgentResult[] = []
   const agentLabelOccurrences = new Map<string, number>()
   const assignedAgentIds = new Set<string>()
@@ -463,6 +469,24 @@ export async function runWorkflowScript({
       plan,
       task?.type === 'local_workflow' ? task : undefined,
     )
+  }
+  const logWorkflowPhaseTerminals = (fallbackStatus: string) => {
+    const task = context.getAppState().tasks[workflowTask.id]
+    const phases = task?.type === 'local_workflow' ? task.phases : []
+    for (const phase of phases) {
+      logForDebugging(
+        workflowRetryDebugMessage({
+          event: 'workflow_phase_terminal',
+          taskId: workflowTask.id,
+          workflowRunId,
+          phaseId: phase.id,
+          logicalAgentId: '-',
+          agentId: '-',
+          attempt: 0,
+          status: phase.status || fallbackStatus,
+        }),
+      )
+    }
   }
 
   const emit = async (event: WorkflowProgressEvent): Promise<void> => {
@@ -611,6 +635,18 @@ export async function runWorkflowScript({
         index: phaseAgentIndex,
         setAppState,
       })
+      logForDebugging(
+        workflowRetryDebugMessage({
+          event: 'workflow_worker_start',
+          taskId: workflowTask.id,
+          workflowRunId,
+          phaseId: phase,
+          logicalAgentId,
+          agentId: attemptAgentId,
+          attempt,
+          workerIndex: phaseAgentIndex,
+        }),
+      )
       if (attempt > 0) {
         await appendWorkflowJournalStarted(transcriptDir, {
           key: identityKey,
@@ -675,29 +711,6 @@ export async function runWorkflowScript({
       } catch (error) {
         if (abortController.signal.aborted) return null
         const msg = workflowErrorMessage(error, `Workflow agent failed without error details: ${attemptAgentId}`)
-        const userRetryRequested = msg === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
-        const automaticRetryRequested = msg.includes('stalled') && automaticRetries < plan.defaults.maxRetries
-        if (userRetryRequested || automaticRetryRequested) {
-          await appendWorkflowJournalResult(transcriptDir, {
-            key: identityKey,
-            agentId: attemptAgentId,
-            logicalAgentId,
-            attemptId,
-            attempt,
-            retryOfAttemptId,
-            phase,
-            label: agentId,
-            index: phaseAgentIndex,
-            status: 'interrupted',
-            error: msg,
-            result: null,
-            timestamp: Date.now(),
-          })
-          if (automaticRetryRequested) automaticRetries++
-          attempt++
-          logs.push(`[retry] agent "${agentId}" retry ${attempt}${automaticRetryRequested ? `/${plan.defaults.maxRetries}` : ''}`)
-          continue
-        }
         if (msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
           scriptAgentResults.push({
             phaseId: phase,
@@ -722,8 +735,100 @@ export async function runWorkflowScript({
           })
           return null
         }
-        // Non-stall error or max retries — fail gracefully (return null like official parallel)
+        const userRetryRequested = msg === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
         const errorKind = classifyWorkflowAgentError(error)
+        const retryable = shouldAutomaticallyRetryWorkflowAgent(errorKind)
+        if (!userRetryRequested) {
+          logForDebugging(
+            workflowRetryDebugMessage({
+              event: 'workflow_worker_fail',
+              taskId: workflowTask.id,
+              workflowRunId,
+              phaseId: phase,
+              logicalAgentId,
+              agentId: attemptAgentId,
+              attempt,
+              workerIndex: phaseAgentIndex,
+              errorKind,
+              retryable,
+            }),
+          )
+        }
+        const retryBudget = workflowRetryBudget(plan.defaults.maxRetries)
+        const automaticRetryRequested = retryable && automaticRetries < retryBudget
+        if (userRetryRequested || automaticRetryRequested) {
+          if (automaticRetryRequested) {
+            failWorkflowAgent({
+              taskId: workflowTask.id,
+              phaseId: phase,
+              agentId: attemptAgentId,
+              index: phaseAgentIndex,
+              error: msg,
+              errorKind,
+              setAppState,
+            })
+          } else {
+            interruptWorkflowAgentAttempt({
+              taskId: workflowTask.id,
+              agentId: attemptAgentId,
+              error: msg,
+              setAppState,
+            })
+          }
+          await appendWorkflowJournalResult(transcriptDir, {
+            key: identityKey,
+            agentId: attemptAgentId,
+            logicalAgentId,
+            attemptId,
+            attempt,
+            retryOfAttemptId,
+            phase,
+            label: agentId,
+            index: phaseAgentIndex,
+            status: automaticRetryRequested ? 'failed' : 'interrupted',
+            error: msg,
+            ...(automaticRetryRequested ? { errorKind } : {}),
+            result: null,
+            timestamp: Date.now(),
+          })
+          logForDebugging(
+            workflowRetryDebugMessage({
+              event: automaticRetryRequested ? 'workflow_worker_retry_scheduled' : 'workflow_worker_user_retry',
+              taskId: workflowTask.id,
+              workflowRunId,
+              phaseId: phase,
+              logicalAgentId,
+              agentId: attemptAgentId,
+              attempt,
+              workerIndex: phaseAgentIndex,
+              ...(automaticRetryRequested
+                ? { errorKind, retryable: true }
+                : {}),
+              detail: automaticRetryRequested
+                ? `retry=${automaticRetries + 1}/${retryBudget}`
+                : undefined,
+            }),
+          )
+          if (automaticRetryRequested) automaticRetries++
+          attempt++
+          logs.push(`[retry] agent "${agentId}" retry ${attempt}${automaticRetryRequested ? `/${retryBudget}` : ''}`)
+          continue
+        }
+        logForDebugging(
+          workflowRetryDebugMessage({
+            event: 'workflow_worker_terminal',
+            taskId: workflowTask.id,
+            workflowRunId,
+            phaseId: phase,
+            logicalAgentId,
+            agentId: attemptAgentId,
+            attempt,
+            workerIndex: phaseAgentIndex,
+            errorKind,
+            retryable: shouldAutomaticallyRetryWorkflowAgent(errorKind),
+            status: 'failed',
+          }),
+        )
         failWorkflowAgent({
           taskId: workflowTask.id, phaseId: phase, agentId: attemptAgentId,
           index: phaseAgentIndex, error: msg, errorKind, setAppState,
@@ -797,6 +902,13 @@ export async function runWorkflowScript({
       model: opts?.model as AgentToolInput['model'],
       mode: permissionMode,
       ...(opts?.isolation === 'worktree' ? { isolation: 'worktree' } : {}),
+    }
+
+    if (
+      process.env.CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING ===
+      `service_unavailable:${logicalAgentId}:attempt:${attempt}`
+    ) {
+      throw new Error('503 service temporarily unavailable (controlled test fault)')
     }
 
     const stallTimer = setInterval(() => {
@@ -931,8 +1043,14 @@ export async function runWorkflowScript({
       completeWorkflowAgent({
         taskId: workflowTask.id,
         result: {
-          phaseId: phase, agentId: agentId, index: phaseAgentIndex,
-          status: 'completed', output: typeof agentResult === 'string' ? agentResult : JSON.stringify(agentResult), prompt,
+          phaseId: phase,
+          agentId,
+          index: phaseAgentIndex,
+          status: 'completed',
+          output: typeof agentResult === 'string'
+            ? agentResult
+            : JSON.stringify(agentResult),
+          prompt,
           tokenCount: finalTokens,
           toolUseCount: finalToolUses,
           durationMs: output.totalDurationMs ?? 0,
@@ -940,6 +1058,19 @@ export async function runWorkflowScript({
         setAppState,
         attemptId,
       })
+      logForDebugging(
+        workflowRetryDebugMessage({
+          event: 'workflow_worker_terminal',
+          taskId: workflowTask.id,
+          workflowRunId,
+          phaseId: phase,
+          logicalAgentId,
+          agentId,
+          attempt,
+          workerIndex: phaseAgentIndex,
+          status: 'completed',
+        }),
+      )
 
       emitTaskProgress({
         taskId: workflowTask.id,
@@ -1229,8 +1360,9 @@ export async function runWorkflowScript({
     )
 
     completeWorkflowTask(workflowTask.id, setAppState)
+    logWorkflowPhaseTerminals('completed')
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'completed', completedAgents: agentCount, totalAgents: agentCount }))
-    await completeWorkflowRunSession({ cwd, session: runSession, results: scriptAgentResults, resumeCacheEntries: journal.entries() })
+    await completeWorkflowRunSession({ cwd, session: { ...runSession, agentCount }, results: scriptAgentResults, resumeCacheEntries: journal.entries() })
 
     const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
     const summary = `Dynamic workflow "${plan.description}" completed`
@@ -1258,7 +1390,7 @@ export async function runWorkflowScript({
     if (abortStatus) {
       await updateWorkflowRunSessionProgress({
         cwd,
-        session: runSession,
+        session: { ...runSession, agentCount },
         results: scriptAgentResults,
         resumeCacheEntries: journal.entries(),
       })
@@ -1288,8 +1420,9 @@ export async function runWorkflowScript({
     abortController.abort()
     const message = workflowErrorMessage(error, 'Workflow script failed without error details')
     failWorkflowTask(workflowTask.id, message, setAppState)
+    logWorkflowPhaseTerminals('failed')
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'failed', completedAgents: agentCount, totalAgents: agentCount }))
-    await failWorkflowRunSession({ cwd, session: runSession, results: scriptAgentResults, error: message, resumeCacheEntries: journal.entries() })
+    await failWorkflowRunSession({ cwd, session: { ...runSession, agentCount }, results: scriptAgentResults, error: message, resumeCacheEntries: journal.entries() })
     const outputFile = await writeWorkflowResult(workflowTask.id, message)
     const summary = `Dynamic workflow "${plan.description}" failed: ${message}`
     enqueueWorkflowNotification({

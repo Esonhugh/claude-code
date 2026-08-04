@@ -94,6 +94,47 @@ const retriedText = formatWorkflowStatus(workflowState({
 assert.match(retriedText, /Retries: 2/)
 assert.doesNotMatch(retriedText, /phase-1:.*retries:/)
 
+const diagnosticsText = formatWorkflowStatus(workflowState({
+  status: 'failed',
+  agentAttempts: [
+    {
+      attemptId: 'phase-1:agent-1:attempt:0',
+      logicalAgentId: 'agent-1',
+      agentId: 'agent-1',
+      phaseId: 'phase-1',
+      index: 3,
+      attempt: 0,
+      status: 'failed',
+      error: '503 service temporarily unavailable after upstream timeout',
+      errorKind: 'service_unavailable',
+    },
+    {
+      attemptId: 'phase-1:agent-1:attempt:1',
+      logicalAgentId: 'agent-1',
+      agentId: 'agent-1 (retry 1)',
+      phaseId: 'phase-1',
+      index: 3,
+      attempt: 1,
+      retryOfAttemptId: 'phase-1:agent-1:attempt:0',
+      status: 'failed',
+      error: 'network connection reset by peer',
+      errorKind: 'network',
+    },
+  ],
+  results: [{
+    phaseId: 'phase-1',
+    agentId: 'agent-1 (retry 1)',
+    index: 0,
+    status: 'failed',
+    error: 'network connection reset by peer',
+    errorKind: 'network',
+  }],
+}), { detail: true })
+assert.match(diagnosticsText, /Root cause: service_unavailable — 503 service temporarily unavailable after upstream timeout/)
+assert.match(diagnosticsText, /Attempts:/)
+assert.match(diagnosticsText, /phase-1\/agent-1 worker 3 attempt 0: failed \[service_unavailable\] retryable=true/)
+assert.match(diagnosticsText, /phase-1\/agent-1 worker 3 attempt 1: failed \[network\] retryable=true/)
+
 const failedTerminalText = formatWorkflowStatus(workflowState({
   status: 'completed',
   agentCount: 2,

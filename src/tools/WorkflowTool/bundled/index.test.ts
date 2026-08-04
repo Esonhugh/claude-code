@@ -30,7 +30,7 @@ assert.equal(codeReview.defaults?.permissionMode, 'plan')
 
 const deepResearch = bundledWorkflows.find(workflow => workflow.name === 'deep-research')
 assert.ok(deepResearch)
-assert.equal(deepResearch.defaults?.maxRetries, 0)
+assert.equal(deepResearch.defaults?.maxRetries, 2)
 assert.equal(validateWorkflowSpec(deepResearch).totalAgents, 26)
 
 assert.deepEqual(

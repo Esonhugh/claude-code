@@ -1,5 +1,7 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { WorkflowAgentErrorKind } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { isENOENT } from '../../utils/errors.js'
 import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 
 export type WorkflowJournalStartedEntry = {
@@ -29,7 +31,7 @@ export type WorkflowJournalResultEntry = {
   attempt?: number
   retryOfAttemptId?: string
   error?: string
-  errorKind?: 'concurrency_limit' | 'stalled' | 'permission_denied' | 'agent_failed'
+  errorKind?: WorkflowAgentErrorKind
   result: unknown
   timestamp: number
 }
@@ -37,14 +39,6 @@ export type WorkflowJournalResultEntry = {
 export type WorkflowJournalEntry =
   | WorkflowJournalStartedEntry
   | WorkflowJournalResultEntry
-
-function isENOENT(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
-  )
-}
 
 export function workflowJournalPath(transcriptDir: string): string {
   return join(transcriptDir, 'journal.jsonl')

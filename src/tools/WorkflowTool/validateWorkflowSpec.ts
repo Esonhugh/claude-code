@@ -27,7 +27,7 @@ const SUPPORTED_PERMISSION_MODES = new Set<WorkflowPermissionMode>([
 const DEFAULTS = {
   maxConcurrency: Math.min(16, Math.max(1, availableParallelism() - 2)),
   maxAgents: 1000,
-  maxRetries: 0,
+  maxRetries: 2,
   fanout: 1,
   concurrency: 1,
   review: 'none' as WorkflowReviewMode,

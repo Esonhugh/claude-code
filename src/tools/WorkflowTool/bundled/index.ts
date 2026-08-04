@@ -433,7 +433,7 @@ phase('Synthesize')`,
     defaults: {
       maxConcurrency: 6,
       maxAgents: 40,
-      maxRetries: 0,
+      maxRetries: 2,
       permissionMode: 'plan',
     },
     phases: [

@@ -73,8 +73,52 @@ export type WorkflowPhaseStatus =
 export type WorkflowAgentErrorKind =
   | 'concurrency_limit'
   | 'stalled'
+  | 'timeout'
+  | 'network'
+  | 'rate_limited'
+  | 'service_unavailable'
   | 'permission_denied'
   | 'agent_failed'
+
+export function classifyWorkflowAgentError(
+  error: unknown,
+): WorkflowAgentErrorKind {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/Concurrency limit exceeded for user/i.test(message)) {
+    return 'concurrency_limit'
+  }
+  if (/\b429\b|rate limit|too many requests/i.test(message)) {
+    return 'rate_limited'
+  }
+  if (/\b5\d\d\b|service(?:\s+is)?\s+temporarily unavailable|tool temporarily unavailable/i.test(message)) {
+    return 'service_unavailable'
+  }
+  if (/network|econnreset|enotfound|eai_again|connection reset|socket hang up/i.test(message)) {
+    return 'network'
+  }
+  if (/timeout|timed out/i.test(message)) {
+    return 'timeout'
+  }
+  if (/stalled/i.test(message)) {
+    return 'stalled'
+  }
+  if (/permission denied|not allowed|denied by permission/i.test(message)) {
+    return 'permission_denied'
+  }
+  return 'agent_failed'
+}
+
+export function shouldAutomaticallyRetryWorkflowAgent(
+  errorKind: WorkflowAgentErrorKind,
+): boolean {
+  return [
+    'stalled',
+    'timeout',
+    'network',
+    'rate_limited',
+    'service_unavailable',
+  ].includes(errorKind)
+}
 
 export type WorkflowAgentResult = {
   phaseId: string
@@ -100,6 +144,7 @@ export type WorkflowAgentAttemptState = {
   retryOfAttemptId?: string
   status: 'running' | 'completed' | 'failed' | 'skipped' | 'interrupted'
   error?: string
+  errorKind?: WorkflowAgentErrorKind
 }
 
 export type WorkflowChildAgentSummary = {
@@ -635,15 +680,45 @@ function updateWorkflowAgentAttempt(
   agentId: string,
   status: WorkflowAgentAttemptState['status'],
   error?: string,
+  errorKind?: WorkflowAgentErrorKind,
 ): Pick<LocalWorkflowTaskState, 'agentAttempts'> {
   const agentAttempts = task.agentAttempts ?? []
   const attemptIndex = agentAttempts.findLastIndex(attempt => attempt.agentId === agentId && attempt.status === 'running')
   if (attemptIndex < 0) return { agentAttempts }
   return {
     agentAttempts: agentAttempts.map((attempt, index) =>
-      index === attemptIndex ? { ...attempt, status, ...(error ? { error } : {}) } : attempt,
+      index === attemptIndex
+        ? {
+            ...attempt,
+            status,
+            ...(error ? { error } : {}),
+            ...(errorKind ? { errorKind } : {}),
+          }
+        : attempt,
     ),
   }
+}
+
+export function interruptWorkflowAgentAttempt({
+  taskId,
+  agentId,
+  error,
+  errorKind,
+  setAppState,
+}: {
+  taskId: string
+  agentId: string
+  error?: string
+  errorKind?: WorkflowAgentErrorKind
+  setAppState: SetAppState
+}): void {
+  withWorkflowTask(taskId, setAppState, task => {
+    if (task.status !== 'running') return task
+    return withProgressVersion({
+      ...task,
+      ...updateWorkflowAgentAttempt(task, agentId, 'interrupted', error, errorKind),
+    })
+  })
 }
 
 export function recordWorkflowAgentController({
@@ -903,7 +978,7 @@ export function failWorkflowAgent({
     return {
       ...nextTask,
       ...removeLiveAgentState(nextTask, [agentId]),
-      ...updateWorkflowAgentAttempt(nextTask, agentId, 'failed', error),
+      ...updateWorkflowAgentAttempt(nextTask, agentId, 'failed', error, errorKind),
       results: [
         ...removeTaskResultsForPhaseIndex(
           nextTask.results,

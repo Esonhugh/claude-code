@@ -11,9 +11,10 @@ import { dequeue, dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
-import { classifyWorkflowAgentError, runWorkflowScript } from './workflowScriptRuntime.js'
+import { runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 import {
+  classifyWorkflowAgentError,
   killWorkflowTask,
   retryWorkflowAgent,
   skipWorkflowAgent,
@@ -32,6 +33,26 @@ assert.equal(
 assert.equal(
   classifyWorkflowAgentError(new Error('agent stalled after 120000ms')),
   'stalled',
+)
+
+assert.equal(
+  classifyWorkflowAgentError(new Error('request timed out after 30s')),
+  'timeout',
+)
+
+assert.equal(
+  classifyWorkflowAgentError(new Error('network connection reset by peer')),
+  'network',
+)
+
+assert.equal(
+  classifyWorkflowAgentError(new Error('429 too many requests')),
+  'rate_limited',
+)
+
+assert.equal(
+  classifyWorkflowAgentError(new Error('503 service temporarily unavailable')),
+  'service_unavailable',
 )
 
 assert.equal(
@@ -1164,6 +1185,104 @@ const automaticRetryTask = Object.values(automaticRetryState.tasks).find(
 assert.equal(automaticRetryTask?.startedAgentAttempts, 2)
 assert.equal(automaticRetryTask?.retryCount, 1)
 assert.deepEqual(automaticRetryTask?.phases[0]?.agentIds, ['agent-1 (retry 1)'])
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+const partialRetryScript = `export const meta = {
+  name: "runtime-partial-retry-workflow",
+  description: "Retry only the transiently failing parallel worker.",
+  phases: [{ title: "Parallel", detail: "One stable and one transient worker" }],
+}
+phase("Parallel")
+return await parallel([
+  () => agent("stable-worker", { label: "stable-worker" }),
+  () => agent("transient-worker", { label: "transient-worker" }),
+])
+`
+let partialRetryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const partialRetryCalls = new Map<string, number>()
+const partialRetryAgentTool = {
+  name: 'Agent',
+  async call(input: { prompt?: string }) {
+    const prompt = input.prompt ?? ''
+    const calls = (partialRetryCalls.get(prompt) ?? 0) + 1
+    partialRetryCalls.set(prompt, calls)
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `${prompt}-ok` }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const previousWorkflowFaultInjection =
+  process.env.CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING
+process.env.CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING =
+  'service_unavailable:transient-worker:attempt:0'
+try {
+  await runWorkflowScript({
+    script: partialRetryScript,
+    plan: {
+      ...retryPlan,
+      name: 'runtime-partial-retry-workflow',
+      description: 'Retry only the transiently failing parallel worker.',
+      defaults: { ...retryPlan.defaults, maxConcurrency: 2, maxRetries: 2 },
+      phases: [{
+        ...retryPlan.phases[0]!,
+        id: 'Parallel',
+        description: 'One stable and one transient worker',
+        fanout: 2,
+        concurrency: 2,
+      }],
+      totalAgents: 2,
+      runScriptSnapshot: partialRetryScript,
+    },
+    context: {
+      ...retryContext,
+      getAppState: () => partialRetryState,
+      setAppState: (updater: (prev: AppState) => AppState): void => {
+        partialRetryState = updater(partialRetryState)
+      },
+      options: { ...retryContext.options, tools: [partialRetryAgentTool] },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_script_partial_retry',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: 'msg_script_partial_retry' } } as never,
+    workflowRunId: `wf_script_partial_retry_${process.pid}`,
+    scriptPath: '/tmp/runtime-partial-retry-workflow.js',
+  })
+} finally {
+  if (previousWorkflowFaultInjection === undefined) {
+    delete process.env.CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING
+  } else {
+    process.env.CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING =
+      previousWorkflowFaultInjection
+  }
+}
+assert.equal(partialRetryCalls.get('stable-worker'), 1)
+assert.equal(partialRetryCalls.get('transient-worker'), 1)
+const partialRetryTask = Object.values(partialRetryState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(partialRetryTask?.startedAgentAttempts, 3)
+assert.equal(partialRetryTask?.retryCount, 1)
+assert.deepEqual(
+  partialRetryTask?.agentAttempts.map(attempt => ({
+    logicalAgentId: attempt.logicalAgentId,
+    attempt: attempt.attempt,
+    status: attempt.status,
+    errorKind: attempt.errorKind,
+  })).sort((left, right) => left.logicalAgentId.localeCompare(right.logicalAgentId) || left.attempt - right.attempt),
+  [
+    { logicalAgentId: 'stable-worker', attempt: 0, status: 'completed', errorKind: undefined },
+    { logicalAgentId: 'transient-worker', attempt: 0, status: 'failed', errorKind: 'service_unavailable' },
+    { logicalAgentId: 'transient-worker', attempt: 1, status: 'completed', errorKind: undefined },
+  ],
+)
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 let schemaState = {

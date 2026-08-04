@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { isENOENT } from '../../utils/errors.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPlan,
@@ -30,6 +31,9 @@ export type WorkflowRunSession = {
   events: WorkflowProgressEvent[]
   resumePrompt?: string
   error?: string
+  agentCount?: number
+  tokenCount?: number
+  toolUseCount?: number
 }
 
 function taskSessionPath(cwd: string, taskId: string): string {
@@ -150,6 +154,9 @@ function officialWorkflowRunToSession(run: OfficialWorkflowRun): WorkflowRunSess
     updatedAt: startedAt + (run.durationMs ?? 0),
     results: [],
     events: [],
+    agentCount: run.agentCount,
+    tokenCount: run.totalTokens,
+    toolUseCount: run.totalToolCalls,
   }
 }
 
@@ -237,9 +244,46 @@ export async function startWorkflowRunSession({
     updatedAt: now,
     results: [],
     events: [],
+    ...(plan.totalAgents > 0 ? { agentCount: plan.totalAgents } : {}),
   }
   await writeWorkflowRunSession(cwd, session)
   return session
+}
+
+export async function listWorkflowRunSessions(
+  cwd: string,
+): Promise<WorkflowRunSession[]> {
+  const root = join(cwd, '.claude', 'workflow-runs')
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const sessions = await Promise.all(entries.map(async entry => {
+    const path = entry.isDirectory()
+      ? join(root, entry.name, 'session.json')
+      : entry.isFile() && entry.name.endsWith('.json')
+        ? join(root, entry.name)
+        : undefined
+    if (!path) return undefined
+    try {
+      return JSON.parse(await readFile(path, 'utf8')) as WorkflowRunSession
+    } catch {
+      return undefined
+    }
+  }))
+
+  const byRunId = new Map<string, WorkflowRunSession>()
+  for (const session of sessions) {
+    if (!session?.workflowRunId) continue
+    const existing = byRunId.get(session.workflowRunId)
+    if (!existing || session.updatedAt > existing.updatedAt) {
+      byRunId.set(session.workflowRunId, session)
+    }
+  }
+  return [...byRunId.values()].sort((a, b) => b.startedAt - a.startedAt)
 }
 
 export async function loadWorkflowRunSession({
@@ -253,7 +297,8 @@ export async function loadWorkflowRunSession({
 }): Promise<WorkflowRunSession | undefined> {
   try {
     return JSON.parse(await readFile(runSessionPath(cwd, workflowRunId), 'utf8')) as WorkflowRunSession
-  } catch {
+  } catch (error) {
+    if (!isENOENT(error)) throw error
     return loadOfficialWorkflowRunSession({ cwd, workflowRunId, projectsRoot })
   }
 }

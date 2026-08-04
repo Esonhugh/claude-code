@@ -1,6 +1,7 @@
 import {
   getWorkflowChildAgentSummary,
   workflowPhaseTerminalAgentCount,
+  shouldAutomaticallyRetryWorkflowAgent,
   workflowResumeCall,
   workflowTerminalAgentCount,
   type LocalWorkflowTaskState,
@@ -29,6 +30,23 @@ function formatWorkflowArgs(args: LocalWorkflowTaskState['runArgs']): string {
   if (args === undefined) return '(none)'
   if (typeof args === 'string') return args.trim() || '(none)'
   return JSON.stringify(args)
+}
+
+function truncate(value: string, max = 120): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`
+}
+
+function firstRootCause(task: LocalWorkflowTaskState): { error?: string; errorKind?: string } | undefined {
+  const attemptCause = task.agentAttempts?.find(attempt => attempt.status === 'failed' && attempt.error)
+  if (attemptCause) {
+    return { error: attemptCause.error, errorKind: attemptCause.errorKind }
+  }
+  const resultCause = task.results.find(result => result.status === 'failed' && result.error)
+  if (resultCause) {
+    return { error: resultCause.error, errorKind: resultCause.errorKind }
+  }
+  if (task.error) return { error: task.error }
+  return undefined
 }
 
 export function formatWorkflowResumeInstruction(task: LocalWorkflowTaskState): string {
@@ -69,6 +87,7 @@ export function formatWorkflowStatus(
 
   const childSummary = getWorkflowChildAgentSummary(task)
   const liveActivity = childSummary.liveActivities[0]
+  const rootCause = firstRootCause(task)
   lines.push(
     `User input: ${formatWorkflowArgs(task.runArgs)}`,
     `Progress version: ${task.progressVersion ?? 0}`,
@@ -92,12 +111,30 @@ export function formatWorkflowStatus(
     )
   }
 
+  if (rootCause?.error || rootCause?.errorKind) {
+    lines.push(
+      `Root cause: ${rootCause.errorKind ?? 'unknown'}${rootCause.error ? ` — ${truncate(rootCause.error)}` : ''}`,
+    )
+  }
+
   if (task.error) {
     lines.push(`Error: ${task.error}`)
   }
 
   if (options.detail) {
-    lines.push('', 'Workflow detail', 'Events:')
+    lines.push('', 'Workflow detail')
+    if ((task.agentAttempts?.length ?? 0) > 0) {
+      lines.push('Attempts:')
+      for (const attempt of task.agentAttempts ?? []) {
+        const retryable = attempt.errorKind
+          ? shouldAutomaticallyRetryWorkflowAgent(attempt.errorKind)
+          : false
+        lines.push(
+          `  - ${attempt.phaseId}/${attempt.logicalAgentId} worker ${attempt.index ?? 'unknown'} attempt ${attempt.attempt}: ${attempt.status}${attempt.errorKind ? ` [${attempt.errorKind}]` : ''} retryable=${retryable}${attempt.error ? ` — ${truncate(attempt.error)}` : ''}`,
+        )
+      }
+    }
+    lines.push('Events:')
     for (const event of (task.events ?? []).slice(-20)) {
       lines.push(`  - ${event.type}: ${JSON.stringify(event)}`)
     }

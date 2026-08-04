@@ -288,6 +288,78 @@ assert.equal(partialTask.status, 'failed')
 assert.equal(partialTask.results.some(result => result.status === 'completed'), true)
 assert.equal(partialTask.results.some(result => result.status === 'failed'), true)
 
+let unexpectedRejectionState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const unexpectedAgentPrompts = ['completed before unexpected rejection']
+Object.defineProperty(unexpectedAgentPrompts, 1, {
+  get() {
+    throw new Error('unexpected worker setup failure')
+  },
+})
+const unexpectedRejectionAgentTool = {
+  name: 'Agent',
+  async call() {
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'preserved completed output' }],
+        totalTokens: 2,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const unexpectedRejectionCwd = await mkdtemp(
+  join(tmpdir(), 'workflow-unexpected-rejection-'),
+)
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'unexpected-worker-rejection',
+    description: 'Fail closed when a worker promise rejects unexpectedly.',
+    phases: [{
+      ...plan.phases[0]!,
+      fanout: 2,
+      concurrency: 2,
+      agentPrompts: unexpectedAgentPrompts,
+    }],
+    totalAgents: 2,
+  },
+  context: {
+    getAppState: () => unexpectedRejectionState,
+    setAppState: updater => {
+      unexpectedRejectionState = updater(unexpectedRejectionState)
+    },
+    getCwd: () => unexpectedRejectionCwd,
+    options: {
+      tools: [unexpectedRejectionAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_unexpected_rejection',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_unexpected_rejection' } } as never,
+  workflowRunId: 'wf_unexpected_rejection',
+})
+const unexpectedRejectionTask = Object.values(unexpectedRejectionState.tasks).find(
+  task => task.type === 'local_workflow',
+)
+assert.equal(unexpectedRejectionTask?.status, 'failed')
+assert.equal(unexpectedRejectionTask?.error, 'unexpected worker setup failure')
+const unexpectedRejectionSession = await loadWorkflowRunSession({
+  cwd: unexpectedRejectionCwd,
+  workflowRunId: 'wf_unexpected_rejection',
+})
+assert.equal(unexpectedRejectionSession?.status, 'failed')
+assert.equal(unexpectedRejectionSession?.error, 'unexpected worker setup failure')
+assert.equal(unexpectedRejectionSession?.results.length, 1)
+assert.equal(unexpectedRejectionSession?.results[0]?.output, 'preserved completed output')
+
 let resumeFailedCallCount = 0
 const resumeFailedAgentTool = {
   name: 'Agent',
@@ -1286,7 +1358,7 @@ const manualAutomaticRetryAgentTool = {
       throw new Error('aborted by retry')
     }
     if (manualAutomaticRetryCallCount === 2) {
-      throw new Error('temporary failure')
+      throw new Error('network timeout')
     }
     return {
       data: {
@@ -1353,7 +1425,7 @@ const automaticManualRetryAgentTool = {
   async call() {
     automaticManualRetryCallCount++
     if (automaticManualRetryCallCount === 1) {
-      throw new Error('automatic retry trigger')
+      throw new Error('503 service temporarily unavailable')
     }
     const task = Object.values(automaticManualRetryState.tasks).find(
       (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',

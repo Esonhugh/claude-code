@@ -16,6 +16,7 @@ import {
 import { getCwd } from '../../utils/cwd.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import {
+  classifyWorkflowAgentError,
   completeWorkflowAgent,
   completeWorkflowTask,
   failWorkflowAgent,
@@ -25,6 +26,7 @@ import {
   recordWorkflowAgentStarted,
   recordWorkflowEvent,
   registerWorkflowTask,
+  shouldAutomaticallyRetryWorkflowAgent,
   startWorkflowPhase,
   workflowResumeCall,
   WORKFLOW_AGENT_SKIPPED_ABORT_REASON,
@@ -72,6 +74,8 @@ import {
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import { applyRequestedAgentPermissionMode } from '../AgentTool/permissionMode.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const DEFAULT_STALL_MS = 120_000
@@ -390,7 +394,7 @@ function extractAgentOutput(output: AgentToolOutput): string {
 }
 
 function maxRetriesFor(plan: WorkflowDryRunPlan): number {
-  return plan.defaults.maxRetries ?? 0
+  return plan.defaults.maxRetries ?? 2
 }
 
 function formatAgentDescription(
@@ -488,6 +492,18 @@ async function runPhaseAgentAttempt({
     index,
     setAppState: taskSetAppState,
   })
+  logForDebugging(
+    workflowRetryDebugMessage({
+      event: 'workflow_worker_start',
+      taskId,
+      workflowRunId: taskState?.type === 'local_workflow' ? (taskState.workflowRunId ?? '') : '',
+      phaseId: phase.id,
+      logicalAgentId: baseAgentId,
+      agentId: fallbackAgentId,
+      attempt: physicalAttempt,
+      workerIndex: index,
+    }),
+  )
   const progressStartTime = Date.now()
   let progressTokens = 0
   let progressToolUses = 0
@@ -623,6 +639,19 @@ async function runPhaseAgentAttempt({
     setAppState: context.setAppStateForTasks ?? context.setAppState,
     attemptId,
   })
+  logForDebugging(
+    workflowRetryDebugMessage({
+      event: 'workflow_worker_terminal',
+      taskId,
+      workflowRunId: taskState?.type === 'local_workflow' ? (taskState.workflowRunId ?? '') : '',
+      phaseId: phase.id,
+      logicalAgentId: baseAgentId,
+      agentId: fallbackAgentId,
+      attempt: physicalAttempt,
+      workerIndex: index,
+      status: 'completed',
+    }),
+  )
   return workflowResult
 }
 
@@ -743,8 +772,20 @@ async function runPhaseAgent({
     } catch (error) {
       if (workflowAbortController.signal.aborted) throw error
       const baseAgentId = agentId
+      const taskForLog = context.getAppState().tasks[taskId]
       const userRetryRequested = error instanceof Error && error.message === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
       if (userRetryRequested) {
+        logForDebugging(
+          workflowRetryDebugMessage({
+            event: 'workflow_worker_user_retry',
+            taskId,
+            workflowRunId: taskForLog?.type === 'local_workflow' ? (taskForLog.workflowRunId ?? '') : '',
+            phaseId: phase.id,
+            logicalAgentId: baseAgentId,
+            agentId: retryAgentId(baseAgentId, attempt + userRetryAttempt),
+            attempt: attempt + userRetryAttempt,
+          }),
+        )
         userRetryAttempt += 1
         attempt -= 1
         continue
@@ -763,12 +804,29 @@ async function runPhaseAgent({
       }
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
+      const errorKind = classifyWorkflowAgentError(error)
+      const retryable = shouldAutomaticallyRetryWorkflowAgent(errorKind)
+      logForDebugging(
+        workflowRetryDebugMessage({
+          event: 'workflow_worker_fail',
+          taskId,
+          workflowRunId: currentTask?.type === 'local_workflow' ? (currentTask.workflowRunId ?? '') : '',
+          phaseId: phase.id,
+          logicalAgentId: baseAgentId,
+          agentId: currentAgentId,
+          attempt: physicalAttempt,
+          workerIndex: index,
+          errorKind,
+          retryable,
+        }),
+      )
       failWorkflowAgent({
         taskId,
         phaseId: phase.id,
         agentId: currentAgentId,
         index,
         error: message,
+        errorKind,
         setAppState: context.setAppStateForTasks ?? context.setAppState,
       })
       lastFailedResult = {
@@ -777,7 +835,41 @@ async function runPhaseAgent({
         index,
         status: 'failed',
         error: message,
+        errorKind,
       }
+      if (retryable && attempt < maxRetriesFor(plan)) {
+        logForDebugging(
+          workflowRetryDebugMessage({
+            event: 'workflow_worker_retry_scheduled',
+            taskId,
+            workflowRunId: currentTask?.type === 'local_workflow' ? (currentTask.workflowRunId ?? '') : '',
+            phaseId: phase.id,
+            logicalAgentId: baseAgentId,
+            agentId: currentAgentId,
+            attempt: physicalAttempt,
+            workerIndex: index,
+            errorKind,
+            retryable: true,
+            detail: `retry=${attempt + 1}/${maxRetriesFor(plan)}`,
+          }),
+        )
+        continue
+      }
+      logForDebugging(
+        workflowRetryDebugMessage({
+          event: 'workflow_worker_terminal',
+          taskId,
+          workflowRunId: currentTask?.type === 'local_workflow' ? (currentTask.workflowRunId ?? '') : '',
+          phaseId: phase.id,
+          logicalAgentId: baseAgentId,
+          agentId: currentAgentId,
+          attempt: physicalAttempt,
+          workerIndex: index,
+          errorKind,
+          retryable,
+          status: 'failed',
+        }),
+      )
     }
   }
   if (lastFailedResult) return { result: lastFailedResult, cacheHit: false }
@@ -841,6 +933,20 @@ export async function runWorkflowPlan({
   const priorSession = resumeFromRunId
     ? await loadWorkflowRunSession({ cwd, workflowRunId: resumeFromRunId })
     : undefined
+  if (priorSession) {
+    logForDebugging(
+      workflowRetryDebugMessage({
+        event: 'workflow_session_loaded',
+        taskId: workflowTask.id,
+        workflowRunId,
+        phaseId: '-',
+        logicalAgentId: '-',
+        agentId: '-',
+        attempt: 0,
+        detail: `resume_entries=${priorSession.resumeCacheEntries.length}`,
+      }),
+    )
+  }
   const resumeRuntime: WorkflowResumeRuntime = {
     cursor: createWorkflowResumeCursor(
       (priorSession?.resumeCacheEntries ?? []).filter(entry =>
@@ -953,14 +1059,19 @@ export async function runWorkflowPlan({
             cacheHit: batchResult.cacheHit || undefined,
           }))
         }
+        resultsByPhase.set(phase.id, results)
         runSession = await updateWorkflowRunSessionProgress({
           cwd,
           session: runSession,
-          results: [...resultsByPhase.values()].flat().concat(results),
+          results: [...resultsByPhase.values()].flat(),
           resumeCacheEntries: resumeRuntime.entries,
         })
+        const rejected = batchSettled.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === 'rejected',
+        )
+        if (rejected) throw rejected.reason
       }
-      resultsByPhase.set(phase.id, results)
       const hasFailedResults = results.some(result => result.status === 'failed')
       if (hasFailedResults) {
         await emit(createWorkflowPhaseEvent({
@@ -968,6 +1079,18 @@ export async function runWorkflowPlan({
           phaseId: phase.id,
           status: 'failed',
         }))
+        logForDebugging(
+          workflowRetryDebugMessage({
+            event: 'workflow_phase_terminal',
+            taskId: workflowTask.id,
+            workflowRunId,
+            phaseId: phase.id,
+            logicalAgentId: '-',
+            agentId: '-',
+            attempt: 0,
+            status: 'failed',
+          }),
+        )
         throw new Error(`Workflow phase "${phase.id}" failed`)
       }
       await emit(createWorkflowPhaseEvent({
@@ -975,6 +1098,18 @@ export async function runWorkflowPlan({
         phaseId: phase.id,
         status: 'completed',
       }))
+      logForDebugging(
+        workflowRetryDebugMessage({
+          event: 'workflow_phase_terminal',
+          taskId: workflowTask.id,
+          workflowRunId,
+          phaseId: phase.id,
+          logicalAgentId: '-',
+          agentId: '-',
+          attempt: 0,
+          status: 'completed',
+        }),
+      )
       await emit(createWorkflowProgressEvent({
         workflowRunId,
         status: 'running',

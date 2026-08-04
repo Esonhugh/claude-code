@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createWorkflowScriptAgentChainIdentity } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
-import { loadWorkflowRunSession, officialProjectDirName } from './workflowRunSessions.js'
+import {
+  listWorkflowRunSessions,
+  loadWorkflowRunSession,
+  officialProjectDirName,
+} from './workflowRunSessions.js'
 
 const generatedRunId = createWorkflowRunId()
 assert.match(generatedRunId, /^wf_[a-z0-9-]{6,}$/)
 assert.equal(generatedRunId.slice(3).includes('_'), false)
 
 const projectsRoot = await mkdtemp(join(tmpdir(), 'official-workflow-projects-'))
+const localRoot = await mkdtemp(join(tmpdir(), 'local-workflow-runs-'))
 const cwd = '/tmp/example-project'
 const officialRunId = 'wf_f73c6180-2aa'
 const officialRunDir = join(projectsRoot, officialProjectDirName(cwd), 'official-session', 'workflows')
@@ -92,6 +97,9 @@ assert.equal(officialSession.workflowRunId, officialRunId)
 assert.equal(officialSession.workflowName, 'portable-workflow-ok')
 assert.equal(officialSession.status, 'completed')
 assert.equal(officialSession.scriptPath, '/tmp/portable-workflow-ok.js')
+assert.equal(officialSession.agentCount, 1)
+assert.equal(officialSession.tokenCount, 0)
+assert.equal(officialSession.toolUseCount, 0)
 assert.equal(officialSession.resumeCacheEntries.length, 1)
 assert.deepEqual(officialSession.resumeCacheEntries[0], {
   index: 0,
@@ -105,5 +113,63 @@ assert.deepEqual(officialSession.resumeCacheEntries[0], {
   result: 'workflow-ok',
   completedAt: 1783399711654,
 })
+
+const localRunsRoot = join(localRoot, '.claude', 'workflow-runs')
+await mkdir(join(localRunsRoot, 'wf_newer'), { recursive: true })
+const persistedSession = {
+  taskId: 'w-local',
+  workflowRunId: 'wf_newer',
+  workflowName: 'newer',
+  status: 'completed',
+  resumeCacheEntries: [],
+  startedAt: 20,
+  updatedAt: 30,
+  results: [],
+  events: [],
+}
+await writeFile(
+  join(localRunsRoot, 'wf_newer', 'session.json'),
+  `${JSON.stringify(persistedSession)}\n`,
+)
+await writeFile(
+  join(localRunsRoot, 'w-local.json'),
+  `${JSON.stringify({ ...persistedSession, updatedAt: 25 })}\n`,
+)
+await writeFile(
+  join(localRunsRoot, 'invalid.json'),
+  '{invalid json',
+)
+await mkdir(join(localRunsRoot, 'wf_older'), { recursive: true })
+await writeFile(
+  join(localRunsRoot, 'wf_older', 'session.json'),
+  `${JSON.stringify({
+    ...persistedSession,
+    taskId: 'w-older',
+    workflowRunId: 'wf_older',
+    workflowName: 'older',
+    startedAt: 10,
+    updatedAt: 15,
+  })}\n`,
+)
+const listedSessions = await listWorkflowRunSessions(localRoot)
+assert.deepEqual(listedSessions.map(session => session.workflowRunId), [
+  'wf_newer',
+  'wf_older',
+])
+assert.equal(listedSessions[0]?.updatedAt, 30)
+assert.deepEqual(await listWorkflowRunSessions(join(localRoot, 'missing')), [])
+
+await mkdir(join(localRunsRoot, 'wf_corrupt'), { recursive: true })
+const corruptSessionPath = join(localRunsRoot, 'wf_corrupt', 'session.json')
+await writeFile(corruptSessionPath, '{invalid json')
+await assert.rejects(
+  loadWorkflowRunSession({
+    cwd: localRoot,
+    workflowRunId: 'wf_corrupt',
+    projectsRoot,
+  }),
+  SyntaxError,
+)
+assert.equal(await readFile(corruptSessionPath, 'utf8'), '{invalid json')
 
 console.log('workflowRunSessions.test.ts passed')
