@@ -70,7 +70,6 @@ import {
 import {
   type EffortValue,
   resolveAppliedEffort,
-  modelAcceptsConfiguredEffort,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -447,13 +446,11 @@ export function configureEffortParams(
   outputConfig: BetaOutputConfig,
   extraBodyParams: Record<string, unknown>,
   betas: string[],
-  model: string,
 ): void {
   if ('effort' in outputConfig) {
     return
   }
   if (
-    !modelAcceptsConfiguredEffort(model) ||
     (getAPIProvider() === 'openai' && typeof effortValue !== 'string')
   ) {
     return
@@ -1594,7 +1591,6 @@ async function* queryModel(
       outputConfig,
       extraBodyParams,
       betasParams,
-      options.model,
     )
 
     configureTaskBudgetParams(

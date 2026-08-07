@@ -45,6 +45,10 @@ assert.equal(
   showCurrentEffort('ultra', 'claude-opus-4-6').message,
   'Current effort level: ultra → max (Ultra effort, sent as max on Anthropic)',
 )
+assert.equal(
+  showCurrentEffort('max', 'claude-opus-4-6').message,
+  'Current effort level: max (Maximum capability with deepest reasoning)',
+)
 if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
 else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
 

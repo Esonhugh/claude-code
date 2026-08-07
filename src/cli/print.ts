@@ -273,7 +273,6 @@ import {
 import { getModelOptions } from 'src/utils/model/modelOptions.js'
 import {
   getSupportedEffortLevelsForModel,
-  modelAcceptsConfiguredEffort,
   modelSupportsEffort,
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
@@ -3841,11 +3840,7 @@ function runHeadlessStreaming(
         } else if (message.request.subtype === 'get_settings') {
           const currentAppState = getAppState()
           const model = getMainLoopModel()
-          // modelSupportsEffort gate matches claude.ts — applied.effort must
-          // mirror what actually goes to the API, not just what's configured.
-          const effort = modelAcceptsConfiguredEffort(model)
-            ? resolveAppliedEffort(model, currentAppState.effortValue)
-            : undefined
+          const effort = resolveAppliedEffort(model, currentAppState.effortValue)
           sendControlResponseSuccess(message, {
             ...getSettingsWithSources(),
             applied: {

@@ -249,12 +249,9 @@ export function getEffortEnvOverride(): EffortValue | null | undefined {
  *   env CLAUDE_CODE_EFFORT_LEVEL → appState.effortValue → model default
  *
  * Returns undefined when no effort parameter should be sent (env set to
- * 'unset', or no default exists for the model).
+ * 'unset', or no default exists for the model). Configured values are not
+ * downgraded based on model capability.
  */
-export function modelAcceptsConfiguredEffort(model: string): boolean {
-  return getAPIProvider() === 'openai' || modelSupportsEffort(model)
-}
-
 export function resolveAppliedEffort(
   model: string,
   appStateEffortValue: EffortValue | undefined,
@@ -269,25 +266,9 @@ export function resolveAppliedEffort(
 
   const provider = getAPIProvider()
   const configured = resolved === 'ultracode' ? 'xhigh' : resolved
-  const mapped =
-    provider === 'openai'
-      ? OPENAI_EFFORT_MAP[configured]
-      : ANTHROPIC_EFFORT_MAP[configured]
-
-  // Anthropic support is model-specific: preserve native xhigh where
-  // available, otherwise use the strongest supported level.
-  if (provider !== 'openai' && mapped === 'xhigh') {
-    if (modelSupportsXHighEffort(model)) return mapped
-    return modelSupportsMaxEffort(model) ? 'max' : 'high'
-  }
-  if (
-    provider !== 'openai' &&
-    mapped === 'max' &&
-    !modelSupportsMaxEffort(model)
-  ) {
-    return 'high'
-  }
-  return mapped
+  return provider === 'openai'
+    ? OPENAI_EFFORT_MAP[configured]
+    : ANTHROPIC_EFFORT_MAP[configured]
 }
 
 /**
@@ -307,7 +288,7 @@ export function getDisplayedEffortLevel(
  * Build the ` with {level} effort` suffix shown in Logo/Spinner.
  * Returns empty string if the user hasn't explicitly set an effort value.
  * Delegates to resolveAppliedEffort() so the displayed level matches what
- * the API actually receives (including max→high clamp for non-Opus models).
+ * the API actually receives.
  */
 export function getEffortSuffix(
   model: string,

@@ -31,11 +31,11 @@ try {
 
   assert.equal(
     resolveAppliedEffort('claude-sonnet-4-6', 'ultracode'),
-    'max',
+    'xhigh',
   )
   assert.equal(
     resolveAppliedEffort('claude-opus-4-6', 'ultracode'),
-    'max',
+    'xhigh',
   )
   assert.equal(
     resolveAppliedEffort('claude-opus-4-7', 'ultracode'),
@@ -47,13 +47,18 @@ try {
   )
   assert.equal(
     resolveAppliedEffort('claude-opus-4-6', 'xhigh'),
-    'max',
+    'xhigh',
   )
   assert.equal(
     resolveAppliedEffort('claude-sonnet-4-6', 'xhigh'),
+    'xhigh',
+  )
+  assert.equal(
+    resolveAppliedEffort('claude-sonnet-4-6', 'max'),
     'max',
   )
-
+  assert.equal(resolveAppliedEffort('claude-opus-4-5', 'xhigh'), 'xhigh')
+  assert.equal(resolveAppliedEffort('claude-opus-4-5', 'max'), 'max')
   assert.deepEqual(getSupportedEffortLevelsForModel('claude-opus-4-7'), [
     'low',
     'medium',
@@ -81,10 +86,9 @@ try {
     xhighOutputConfig,
     {},
     xhighBetas,
-    'claude-opus-4-6',
   )
 
-  assert.equal((xhighOutputConfig as { effort?: string }).effort, 'max')
+  assert.equal((xhighOutputConfig as { effort?: string }).effort, 'xhigh')
   assert.ok(xhighBetas.length > 0)
 
   process.env.CLAUDE_CODE_EFFORT_LEVEL = 'unset'
@@ -95,7 +99,6 @@ try {
     unsetOutputConfig,
     {},
     unsetBetas,
-    'claude-opus-4-6',
   )
   assert.equal(unsetOutputConfig.effort, undefined)
   assert.equal(unsetBetas.length, 0)
@@ -103,14 +106,14 @@ try {
 
   const outputConfig: BetaOutputConfig = {}
   const betas: string[] = []
-  configureEffortParams(undefined, outputConfig, {}, betas, 'gpt-5.5')
+  configureEffortParams(undefined, outputConfig, {}, betas)
 
   assert.equal(outputConfig.effort, undefined)
   assert.equal(betas.length, 0)
 
   const explicitOutputConfig: BetaOutputConfig = {}
   const explicitBetas: string[] = []
-  configureEffortParams('medium', explicitOutputConfig, {}, explicitBetas, 'gpt-5.5')
+  configureEffortParams('medium', explicitOutputConfig, {}, explicitBetas)
 
   assert.equal(explicitOutputConfig.effort, 'medium')
   assert.ok(explicitBetas.length > 0)
@@ -118,7 +121,7 @@ try {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   const openAIOutputConfig: BetaOutputConfig = {}
   const openAIBetas: string[] = []
-  configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas, 'gpt-5.5')
+  configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas)
 
   assert.equal(openAIOutputConfig.effort, undefined)
   assert.equal(openAIBetas.length, 0)
@@ -130,7 +133,6 @@ try {
     ultracodeOutputConfig,
     {},
     ultracodeBetas,
-    'gpt-5.5',
   )
 
   assert.equal(ultracodeOutputConfig.effort, 'xhigh')
@@ -142,7 +144,7 @@ try {
   process.env.CLAUDE_CODE_USE_BEDROCK = '1'
   const bedrockOutputConfig: BetaOutputConfig = {}
   const bedrockBetas: string[] = []
-  configureEffortParams(undefined, bedrockOutputConfig, {}, bedrockBetas, 'gpt-5.5')
+  configureEffortParams(undefined, bedrockOutputConfig, {}, bedrockBetas)
 
   assert.equal(bedrockOutputConfig.effort, undefined)
 } finally {

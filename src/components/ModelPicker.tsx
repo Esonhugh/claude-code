@@ -146,10 +146,7 @@ export function ModelPicker({
     ? modelSupportsMaxEffort(focusedModel)
     : false
   const focusedDefaultEffort = getDefaultEffortLevelForOption(focusedValue)
-  // Clamp display when 'max' is selected but the focused model doesn't support it.
-  // resolveAppliedEffort() does the same downgrade at API-send time.
-  const displayEffort =
-    effort === 'max' && !focusedSupportsMax ? 'high' : effort
+  const displayEffort = effort
 
   const handleFocus = useCallback(
     (value: string) => {
