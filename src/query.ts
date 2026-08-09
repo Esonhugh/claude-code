@@ -42,6 +42,7 @@ import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   isPromptTooLongMessage,
 } from './services/api/errors.js'
+import { isRateLimitErrorMessage } from './services/rateLimitMessages.js'
 import { logAntError, logForDebugging } from './utils/debug.js'
 import {
   createUserMessage,
@@ -180,6 +181,13 @@ function isWithheldMaxOutputTokens(
 ): msg is AssistantMessage {
   // @ts-ignore - recovered code
   return msg?.type === 'assistant' && msg.apiError === 'max_output_tokens'
+}
+
+function isRateLimitCompactionFailure(message: string): boolean {
+  return (
+    isRateLimitErrorMessage(message) ||
+    /\b429\b|rate[-_ ]?limit|usage_limit_reached/i.test(message)
+  )
 }
 
 export type QueryParams = {
@@ -456,20 +464,21 @@ async function* queryLoop(
     )
 
     queryCheckpoint('query_autocompact_start')
-    const { compactionResult, consecutiveFailures } = await deps.autocompact(
-      messagesForQuery,
-      toolUseContext,
-      {
-        systemPrompt,
-        userContext,
-        systemContext,
+    const { compactionResult, consecutiveFailures, compactionFailure } =
+      await deps.autocompact(
+        messagesForQuery,
         toolUseContext,
-        forkContextMessages: messagesForQuery,
-      },
-      querySource,
-      tracking,
-      snipTokensFreed,
-    )
+        {
+          systemPrompt,
+          userContext,
+          systemContext,
+          toolUseContext,
+          forkContextMessages: messagesForQuery,
+        },
+        querySource,
+        tracking,
+        snipTokensFreed,
+      )
     queryCheckpoint('query_autocompact_end')
 
     if (compactionResult) {
@@ -644,10 +653,26 @@ async function* queryLoop(
         toolUseContext.options.mainLoopModel,
       )
       if (isAtBlockingLimit) {
-        yield createAssistantAPIErrorMessage({
-          content: PROMPT_TOO_LONG_ERROR_MESSAGE,
-          error: 'invalid_request',
-        })
+        if (
+          compactionFailure &&
+          isRateLimitCompactionFailure(compactionFailure.message)
+        ) {
+          yield createAssistantAPIErrorMessage({
+            content: compactionFailure.message,
+            error: 'rate_limit',
+            errorDetails: compactionFailure.message,
+            apiError: {
+              status: 429,
+              type: 'rate_limit_error',
+              message: compactionFailure.message,
+            },
+          })
+        } else {
+          yield createAssistantAPIErrorMessage({
+            content: PROMPT_TOO_LONG_ERROR_MESSAGE,
+            error: 'invalid_request',
+          })
+        }
         return { reason: 'blocking_limit' }
       }
     }

@@ -32,6 +32,9 @@ export type WorkflowJournalResultEntry = {
   retryOfAttemptId?: string
   error?: string
   errorKind?: WorkflowAgentErrorKind
+  tokenCount?: number
+  toolUseCount?: number
+  durationMs?: number
   result: unknown
   timestamp: number
 }

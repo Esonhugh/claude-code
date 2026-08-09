@@ -8,7 +8,7 @@ import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
+import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
@@ -243,6 +243,17 @@ export async function shouldAutoCompact(
   return isAboveAutoCompactThreshold
 }
 
+export type AutoCompactFailure = {
+  message: string
+}
+
+export type AutoCompactResult = {
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+  compactionFailure?: AutoCompactFailure
+}
+
 export async function autoCompactIfNeeded(
   messages: Message[],
   toolUseContext: ToolUseContext,
@@ -250,11 +261,7 @@ export async function autoCompactIfNeeded(
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
-): Promise<{
-  wasCompacted: boolean
-  compactionResult?: CompactionResult
-  consecutiveFailures?: number
-}> {
+): Promise<AutoCompactResult> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
   }
@@ -354,7 +361,8 @@ export async function autoCompactIfNeeded(
       consecutiveFailures: 0,
     }
   } catch (error) {
-    if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
+    const isUserAbort = hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
+    if (!isUserAbort) {
       logError(error)
     }
     // Increment consecutive failure count for circuit breaker.
@@ -368,6 +376,12 @@ export async function autoCompactIfNeeded(
         { level: 'warn' },
       )
     }
-    return { wasCompacted: false, consecutiveFailures: nextFailures }
+    return {
+      wasCompacted: false,
+      consecutiveFailures: nextFailures,
+      ...(isUserAbort
+        ? {}
+        : { compactionFailure: { message: errorMessage(error) } }),
+    }
   }
 }

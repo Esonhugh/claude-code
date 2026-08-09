@@ -122,6 +122,20 @@ type AgentOpts = {
   stallMs?: number
 }
 
+type WorkflowAgentAttemptUsage = Pick<
+  WorkflowAgentResult,
+  'tokenCount' | 'toolUseCount' | 'durationMs'
+>
+
+class WorkflowAgentAttemptError extends Error {
+  constructor(
+    message: string,
+    readonly usage: WorkflowAgentAttemptUsage,
+  ) {
+    super(message)
+    this.name = 'WorkflowAgentAttemptError'
+  }
+}
 
 export type WorkflowScriptResult = {
   result: unknown
@@ -458,6 +472,7 @@ export async function runWorkflowScript({
     )
   }
   const scriptAgentResults: WorkflowAgentResult[] = []
+  const countedFailedAttemptIds = new Set<string>()
   const agentLabelOccurrences = new Map<string, number>()
   const assignedAgentIds = new Set<string>()
   const phaseAgentCounts = new Map<string, number>()
@@ -499,6 +514,27 @@ export async function runWorkflowScript({
     total: budgetTotal ?? null,
     spent: () => tokenSpent,
     remaining: () => budgetTotal == null ? Infinity : Math.max(0, budgetTotal - tokenSpent),
+  }
+  function currentWorkflowTaskUsage(): { tokenCount: number; toolUseCount: number } {
+    const task = context.getAppState().tasks[workflowTask.id]
+    if (task?.type !== 'local_workflow') {
+      return { tokenCount: tokenSpent, toolUseCount: toolUseSpent }
+    }
+    return {
+      tokenCount: task.tokenCount ?? 0,
+      toolUseCount: task.toolUseCount ?? 0,
+    }
+  }
+  function syncRuntimeUsageFromWorkflowTask() {
+    const usage = currentWorkflowTaskUsage()
+    tokenSpent = Math.max(tokenSpent, usage.tokenCount)
+    toolUseSpent = Math.max(toolUseSpent, usage.toolUseCount)
+  }
+  function countFailedAttemptUsage(attemptId: string, result: WorkflowAgentResult | undefined) {
+    if (!result || countedFailedAttemptIds.has(attemptId)) return
+    tokenSpent += result.tokenCount ?? 0
+    toolUseSpent += result.toolUseCount ?? 0
+    countedFailedAttemptIds.add(attemptId)
   }
   function checkBudget() {
     if (budget.total !== null && tokenSpent >= budget.total) {
@@ -607,6 +643,9 @@ export async function runWorkflowScript({
         logicalAgentId,
         attemptId: `${phase}:${logicalAgentId}:attempt:0`,
         attempt: 0,
+        tokenCount: 0,
+        toolUseCount: 0,
+        durationMs: 0,
         result: cached.result,
         timestamp: Date.now(),
       })
@@ -704,6 +743,15 @@ export async function runWorkflowScript({
           label: agentId,
           index: phaseAgentIndex,
           status: 'completed',
+          ...(completedResult?.tokenCount !== undefined
+            ? { tokenCount: completedResult.tokenCount }
+            : {}),
+          ...(completedResult?.toolUseCount !== undefined
+            ? { toolUseCount: completedResult.toolUseCount }
+            : {}),
+          ...(completedResult?.durationMs !== undefined
+            ? { durationMs: completedResult.durationMs }
+            : {}),
           result,
           timestamp: completedAt,
         })
@@ -712,13 +760,38 @@ export async function runWorkflowScript({
         if (abortController.signal.aborted) return null
         const msg = workflowErrorMessage(error, `Workflow agent failed without error details: ${attemptAgentId}`)
         if (msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
-          scriptAgentResults.push({
+          const skippedTask = context.getAppState().tasks[workflowTask.id]
+          const skippedPhase = skippedTask?.type === 'local_workflow'
+            ? skippedTask.phases.find(current => current.id === phase)
+            : undefined
+          const skippedAgentAliases = new Set(
+            [
+              attemptAgentId,
+              logicalAgentId,
+              agentId,
+              skippedPhase?.agentIds[phaseAgentIndex],
+            ].filter((currentAgentId): currentAgentId is string => Boolean(currentAgentId)),
+          )
+          const stateSkippedResult = skippedTask?.type === 'local_workflow'
+            ? [
+                ...skippedTask.results,
+                ...(skippedPhase?.results ?? []),
+              ].find(current =>
+                current.phaseId === phase &&
+                current.index === phaseAgentIndex &&
+                current.status === 'skipped' &&
+                skippedAgentAliases.has(current.agentId),
+              )
+            : undefined
+          const scriptSkippedResult: WorkflowAgentResult = stateSkippedResult ?? {
             phaseId: phase,
             agentId: attemptAgentId,
             index: phaseAgentIndex,
             status: 'skipped',
             prompt,
-          })
+          }
+          scriptAgentResults.push(scriptSkippedResult)
+          syncRuntimeUsageFromWorkflowTask()
           await appendWorkflowJournalResult(transcriptDir, {
             key: identityKey,
             agentId: attemptAgentId,
@@ -730,6 +803,13 @@ export async function runWorkflowScript({
             label: agentId,
             index: phaseAgentIndex,
             status: 'skipped',
+            ...(scriptSkippedResult.tokenCount !== undefined ? { tokenCount: scriptSkippedResult.tokenCount } : {}),
+            ...(scriptSkippedResult.toolUseCount !== undefined ? { toolUseCount: scriptSkippedResult.toolUseCount } : {}),
+            ...(scriptSkippedResult.durationMs !== undefined
+              ? { durationMs: scriptSkippedResult.durationMs }
+              : error instanceof WorkflowAgentAttemptError
+                ? { durationMs: error.usage.durationMs }
+                : {}),
             result: null,
             timestamp: Date.now(),
           })
@@ -757,6 +837,7 @@ export async function runWorkflowScript({
         const retryBudget = workflowRetryBudget(plan.defaults.maxRetries)
         const automaticRetryRequested = retryable && automaticRetries < retryBudget
         if (userRetryRequested || automaticRetryRequested) {
+          let userRetryAttemptUsage: WorkflowAgentAttemptUsage | undefined
           if (automaticRetryRequested) {
             failWorkflowAgent({
               taskId: workflowTask.id,
@@ -766,6 +847,8 @@ export async function runWorkflowScript({
               error: msg,
               errorKind,
               setAppState,
+              attemptId,
+              prompt,
             })
           } else {
             interruptWorkflowAgentAttempt({
@@ -774,7 +857,30 @@ export async function runWorkflowScript({
               error: msg,
               setAppState,
             })
+            syncRuntimeUsageFromWorkflowTask()
+            userRetryAttemptUsage = error instanceof WorkflowAgentAttemptError
+              ? error.usage
+              : undefined
           }
+          const retryFailedTask = context.getAppState().tasks[workflowTask.id]
+          const retryFailedResult = automaticRetryRequested && retryFailedTask?.type === 'local_workflow'
+            ? retryFailedTask.results.find(
+                current =>
+                  current.phaseId === phase &&
+                  current.index === phaseAgentIndex &&
+                  current.agentId === attemptAgentId &&
+                  current.status === 'failed',
+              )
+            : undefined
+          const journalAttemptUsage = automaticRetryRequested
+            ? {
+                ...retryFailedResult,
+                ...(error instanceof WorkflowAgentAttemptError
+                  ? { durationMs: error.usage.durationMs }
+                  : {}),
+              }
+            : userRetryAttemptUsage
+          if (automaticRetryRequested) countFailedAttemptUsage(attemptId, retryFailedResult)
           await appendWorkflowJournalResult(transcriptDir, {
             key: identityKey,
             agentId: attemptAgentId,
@@ -788,6 +894,9 @@ export async function runWorkflowScript({
             status: automaticRetryRequested ? 'failed' : 'interrupted',
             error: msg,
             ...(automaticRetryRequested ? { errorKind } : {}),
+            ...(journalAttemptUsage?.tokenCount !== undefined ? { tokenCount: journalAttemptUsage.tokenCount } : {}),
+            ...(journalAttemptUsage?.toolUseCount !== undefined ? { toolUseCount: journalAttemptUsage.toolUseCount } : {}),
+            ...(journalAttemptUsage?.durationMs !== undefined ? { durationMs: journalAttemptUsage.durationMs } : {}),
             result: null,
             timestamp: Date.now(),
           })
@@ -832,8 +941,19 @@ export async function runWorkflowScript({
         failWorkflowAgent({
           taskId: workflowTask.id, phaseId: phase, agentId: attemptAgentId,
           index: phaseAgentIndex, error: msg, errorKind, setAppState,
+          attemptId, prompt,
         })
-        scriptAgentResults.push({
+        const failedTask = context.getAppState().tasks[workflowTask.id]
+        const failedResult = failedTask?.type === 'local_workflow'
+          ? failedTask.results.find(
+              current =>
+                current.phaseId === phase &&
+                current.index === phaseAgentIndex &&
+                current.agentId === attemptAgentId &&
+                current.status === 'failed',
+            )
+          : undefined
+        const scriptFailedResult: WorkflowAgentResult = failedResult ?? {
           phaseId: phase,
           agentId: attemptAgentId,
           index: phaseAgentIndex,
@@ -841,7 +961,9 @@ export async function runWorkflowScript({
           error: msg,
           errorKind,
           prompt,
-        })
+        }
+        countFailedAttemptUsage(attemptId, scriptFailedResult)
+        scriptAgentResults.push(scriptFailedResult)
         await appendWorkflowJournalResult(transcriptDir, {
           key: identityKey,
           agentId: attemptAgentId,
@@ -855,6 +977,13 @@ export async function runWorkflowScript({
           status: 'failed',
           error: msg,
           errorKind,
+          ...(scriptFailedResult.tokenCount !== undefined ? { tokenCount: scriptFailedResult.tokenCount } : {}),
+          ...(scriptFailedResult.toolUseCount !== undefined ? { toolUseCount: scriptFailedResult.toolUseCount } : {}),
+          ...(scriptFailedResult.durationMs !== undefined
+            ? { durationMs: scriptFailedResult.durationMs }
+            : error instanceof WorkflowAgentAttemptError
+              ? { durationMs: error.usage.durationMs }
+              : {}),
           result: null,
           timestamp: Date.now(),
         })
@@ -933,11 +1062,12 @@ export async function runWorkflowScript({
     agentAbortController.signal.addEventListener('abort', onAbort, { once: true })
     if (agentAbortController.signal.aborted) onAbort()
 
+    const attemptStartedAt = Date.now()
+    let progressTokens = 0
+    let progressToolUses = 0
     try {
       const progressPhase = childWorkflowProgressName ?? phase
       const progressTracker = createProgressTracker()
-      let progressTokens = 0
-      let progressToolUses = 0
       emitTaskProgress({
         taskId: workflowTask.id,
         toolUseId: context.toolUseId,
@@ -1024,14 +1154,24 @@ export async function runWorkflowScript({
       if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
         throw new Error(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
       }
+      const finalTokens = output.totalTokens ?? progressTokens
+      const finalToolUses = output.totalToolUseCount ?? progressToolUses
+      const finalTokenDelta = finalTokens - progressTokens
+      const finalToolUseDelta = finalToolUses - progressToolUses
+      if (finalTokenDelta !== 0 || finalToolUseDelta !== 0) {
+        recordWorkflowAgentProgress({
+          taskId: workflowTask.id, agentId,
+          tokenCount: finalTokenDelta, toolUseCount: finalToolUseDelta,
+          prompt: prompt.slice(0, 200),
+          setAppState,
+        })
+        progressTokens = finalTokens
+        progressToolUses = finalToolUses
+      }
       if (output.status && output.status !== 'completed') {
         throw new Error(extractAgentText(output))
       }
       const text = extractAgentText(output)
-      const finalTokens = output.totalTokens ?? progressTokens
-      const finalToolUses = output.totalToolUseCount ?? progressToolUses
-      tokenSpent += finalTokens
-      toolUseSpent += finalToolUses
 
       const agentResult = opts?.schema
         ? output.structured_output
@@ -1039,6 +1179,9 @@ export async function runWorkflowScript({
       if (opts?.schema && agentResult === undefined) {
         throw new Error(`Workflow agent ${agentId} did not return structured output`)
       }
+
+      tokenSpent += finalTokens
+      toolUseSpent += finalToolUses
 
       completeWorkflowAgent({
         taskId: workflowTask.id,
@@ -1086,16 +1229,31 @@ export async function runWorkflowScript({
 
       return agentResult
     } catch (error) {
+      const attemptUsage = {
+        tokenCount: progressTokens,
+        toolUseCount: progressToolUses,
+        durationMs: Date.now() - attemptStartedAt,
+      }
       if (agentAbortController.signal.reason === 'stalled') {
-        throw new Error('stalled')
+        throw new WorkflowAgentAttemptError('stalled', attemptUsage)
       }
       if (agentAbortController.signal.reason === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON) {
-        throw new Error(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON)
+        throw new WorkflowAgentAttemptError(
+          WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
+          attemptUsage,
+        )
       }
       if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
-        throw new Error(WORKFLOW_AGENT_SKIPPED_ABORT_REASON)
+        throw new WorkflowAgentAttemptError(
+          WORKFLOW_AGENT_SKIPPED_ABORT_REASON,
+          attemptUsage,
+        )
       }
-      throw error
+      if (error instanceof WorkflowAgentAttemptError) throw error
+      throw new WorkflowAgentAttemptError(
+        workflowErrorMessage(error, `Workflow agent failed without error details: ${agentId}`),
+        attemptUsage,
+      )
     } finally {
       clearInterval(stallTimer)
       agentAbortController.signal.removeEventListener('abort', onAbort)
@@ -1354,15 +1512,24 @@ export async function runWorkflowScript({
       throw new Error('workflow result cannot be a function')
     }
 
+    syncRuntimeUsageFromWorkflowTask()
     const resultText = serializeWorkflowScriptResult(
       scriptResult,
       `Workflow completed. ${agentCount} agents, ${tokenSpent} tokens.`,
     )
 
     completeWorkflowTask(workflowTask.id, setAppState)
+    const completedUsage = currentWorkflowTaskUsage()
     logWorkflowPhaseTerminals('completed')
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'completed', completedAgents: agentCount, totalAgents: agentCount }))
-    await completeWorkflowRunSession({ cwd, session: { ...runSession, agentCount }, results: scriptAgentResults, resumeCacheEntries: journal.entries() })
+    await completeWorkflowRunSession({
+      cwd,
+      session: { ...runSession, agentCount },
+      results: scriptAgentResults,
+      resumeCacheEntries: journal.entries(),
+      tokenCount: completedUsage.tokenCount,
+      toolUseCount: completedUsage.toolUseCount,
+    })
 
     const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
     const summary = `Dynamic workflow "${plan.description}" completed`
@@ -1379,8 +1546,8 @@ export async function runWorkflowScript({
       summary,
       outputFile,
       usage: {
-        total_tokens: tokenSpent,
-        tool_uses: toolUseSpent,
+        total_tokens: completedUsage.tokenCount,
+        tool_uses: completedUsage.toolUseCount,
         duration_ms: Date.now() - workflowTask.startTime,
       },
     })
@@ -1388,11 +1555,14 @@ export async function runWorkflowScript({
     } catch (error) {
     const abortStatus = workflowAbortStatus(abortController.signal.reason)
     if (abortStatus) {
+      const abortedUsage = currentWorkflowTaskUsage()
       await updateWorkflowRunSessionProgress({
         cwd,
         session: { ...runSession, agentCount },
         results: scriptAgentResults,
         resumeCacheEntries: journal.entries(),
+        tokenCount: abortedUsage.tokenCount,
+        toolUseCount: abortedUsage.toolUseCount,
       })
       const resumeCall = workflowResumeCall({ ...workflowTask, scriptPath, workflowRunId })
       await updateWorkflowRunSessionStatus({
@@ -1408,8 +1578,8 @@ export async function runWorkflowScript({
           toolUseId: context.toolUseId,
           summary: `Dynamic workflow "${plan.description}" stopped`,
           usage: {
-            total_tokens: tokenSpent,
-            tool_uses: toolUseSpent,
+            total_tokens: abortedUsage.tokenCount,
+            tool_uses: abortedUsage.toolUseCount,
             duration_ms: Date.now() - workflowTask.startTime,
           },
         })
@@ -1420,9 +1590,18 @@ export async function runWorkflowScript({
     abortController.abort()
     const message = workflowErrorMessage(error, 'Workflow script failed without error details')
     failWorkflowTask(workflowTask.id, message, setAppState)
+    const failedUsage = currentWorkflowTaskUsage()
     logWorkflowPhaseTerminals('failed')
     await emit(createWorkflowProgressEvent({ workflowRunId, status: 'failed', completedAgents: agentCount, totalAgents: agentCount }))
-    await failWorkflowRunSession({ cwd, session: { ...runSession, agentCount }, results: scriptAgentResults, error: message, resumeCacheEntries: journal.entries() })
+    await failWorkflowRunSession({
+      cwd,
+      session: { ...runSession, agentCount },
+      results: scriptAgentResults,
+      error: message,
+      resumeCacheEntries: journal.entries(),
+      tokenCount: failedUsage.tokenCount,
+      toolUseCount: failedUsage.toolUseCount,
+    })
     const outputFile = await writeWorkflowResult(workflowTask.id, message)
     const summary = `Dynamic workflow "${plan.description}" failed: ${message}`
     enqueueWorkflowNotification({
@@ -1438,8 +1617,8 @@ export async function runWorkflowScript({
       summary,
       outputFile,
       usage: {
-        total_tokens: tokenSpent,
-        tool_uses: toolUseSpent,
+        total_tokens: failedUsage.tokenCount,
+        tool_uses: failedUsage.toolUseCount,
         duration_ms: Date.now() - workflowTask.startTime,
       },
     })

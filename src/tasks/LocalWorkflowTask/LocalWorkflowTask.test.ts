@@ -8,6 +8,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import { WorkflowTool } from '../../tools/WorkflowTool/WorkflowTool.js'
 import type { AgentId } from '../../types/ids.js'
 import {
+  classifyWorkflowAgentError,
   completeWorkflowAgent,
   completeWorkflowTask,
   failWorkflowTask,
@@ -18,10 +19,21 @@ import {
   failWorkflowAgent,
   recordWorkflowAgentProgress,
   retryWorkflowAgent,
+  shouldAutomaticallyRetryWorkflowAgent,
   skipWorkflowAgent,
   workflowPhaseTerminalAgentCount,
   type LocalWorkflowTaskState,
 } from './LocalWorkflowTask.js'
+
+assert.equal(
+  classifyWorkflowAgentError(new Error('Prompt is too long')),
+  'prompt_too_long',
+)
+assert.equal(
+  classifyWorkflowAgentError(new Error('prompt is too long')),
+  'agent_failed',
+)
+assert.equal(shouldAutomaticallyRetryWorkflowAgent('prompt_too_long'), false)
 
 const workflowPlan = {
   name: 'Runtime Test Workflow',
@@ -506,6 +518,8 @@ const context = {
   const failedAgentTask: LocalWorkflowTaskState = {
     ...runningTask,
     id: 'w-failed-agent',
+    tokenCount: 0,
+    toolUseCount: 0,
     phases: [
       {
         id: 'phase',
@@ -535,8 +549,81 @@ const context = {
   })
   const failedAgentState = state.tasks[failedAgentTask.id] as LocalWorkflowTaskState
   assert.deepEqual(failedAgentState.phases[0]!.failedAgentIds, ['agent-1'])
+  assert.equal(failedAgentState.results[0]?.tokenCount, 7)
+  assert.equal(failedAgentState.results[0]?.toolUseCount, 1)
+  assert.equal(failedAgentState.tokenCount, 7)
+  assert.equal(failedAgentState.toolUseCount, 1)
   assert.equal(failedAgentState.liveAgents?.['agent-1'], undefined)
   assert.equal(failedAgentState.agentControllers?.['agent-1'], undefined)
+
+  const duplicateFailGuardTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-duplicate-fail-guard',
+    tokenCount: 0,
+    toolUseCount: 0,
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['agent-1'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    liveAgents: {
+      'agent-1': { tokenCount: 11, toolUseCount: 2 },
+    },
+    agentControllers: {
+      'agent-1': {
+        abortController: new AbortController(),
+        attemptId: 'phase:agent-1:attempt:0',
+        index: 0,
+      },
+    },
+    agentAttempts: [
+      {
+        attemptId: 'phase:agent-1:attempt:0',
+        logicalAgentId: 'agent-1',
+        agentId: 'agent-1',
+        phaseId: 'phase',
+        index: 0,
+        attempt: 0,
+        status: 'running',
+      },
+    ],
+    results: [],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [duplicateFailGuardTask.id]: duplicateFailGuardTask } }))
+  failWorkflowAgent({
+    taskId: duplicateFailGuardTask.id,
+    phaseId: 'phase',
+    agentId: 'agent-1',
+    index: 0,
+    error: 'first failure',
+    errorKind: 'agent_failed',
+    attemptId: 'phase:agent-1:attempt:0',
+    setAppState,
+  })
+  failWorkflowAgent({
+    taskId: duplicateFailGuardTask.id,
+    phaseId: 'phase',
+    agentId: 'agent-1',
+    index: 0,
+    error: 'duplicate failure',
+    errorKind: 'agent_failed',
+    attemptId: 'phase:agent-1:attempt:0',
+    setAppState,
+  })
+  const duplicateFailGuardState = state.tasks[duplicateFailGuardTask.id] as LocalWorkflowTaskState
+  assert.equal(duplicateFailGuardState.results.length, 1)
+  assert.equal(duplicateFailGuardState.results[0]?.error, 'first failure')
+  assert.equal(duplicateFailGuardState.results[0]?.tokenCount, 11)
+  assert.equal(duplicateFailGuardState.results[0]?.toolUseCount, 2)
+  assert.equal(duplicateFailGuardState.tokenCount, 11)
+  assert.equal(duplicateFailGuardState.toolUseCount, 2)
+  assert.equal(duplicateFailGuardState.agentAttempts?.[0]?.status, 'failed')
 
   const mixedOutcomeTask: LocalWorkflowTaskState = {
     ...runningTask,
@@ -744,6 +831,135 @@ const context = {
   assert.equal(updatedRunningTask.results.some(result => result.output === 'late stale result'), false)
   assert.equal(updatedRunningTask.agentAttempts?.at(-1)?.status, 'running')
 
+  const staleFailedAttempt0Result: LocalWorkflowTaskState['results'][number] = {
+    phaseId: 'phase',
+    agentId: 'logical-agent',
+    index: 0,
+    status: 'failed',
+    error: 'attempt 0 failed',
+    tokenCount: 21,
+    toolUseCount: 3,
+  }
+  const retryStartCleanupTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-retry-start-cleanup',
+    tokenCount: 21,
+    toolUseCount: 3,
+    currentAgentId: undefined,
+    phases: [
+      {
+        id: 'phase',
+        status: 'failed',
+        agentIds: ['logical-agent'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: ['logical-agent'],
+        results: [staleFailedAttempt0Result],
+        error: 'attempt 0 failed',
+      },
+    ],
+    liveAgents: {},
+    agentControllers: {},
+    agentAttempts: [
+      {
+        attemptId: 'phase:logical-agent:attempt:0',
+        logicalAgentId: 'logical-agent',
+        agentId: 'logical-agent',
+        phaseId: 'phase',
+        index: 0,
+        attempt: 0,
+        status: 'failed',
+        error: 'attempt 0 failed',
+      },
+    ],
+    results: [staleFailedAttempt0Result],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [retryStartCleanupTask.id]: retryStartCleanupTask } }))
+  recordWorkflowAgentStarted({
+    taskId: retryStartCleanupTask.id,
+    phaseId: 'phase',
+    agentId: 'logical-agent (retry 1)',
+    logicalAgentId: 'logical-agent',
+    attempt: 1,
+    retryOfAttemptId: 'phase:logical-agent:attempt:0',
+    index: 0,
+    setAppState,
+  })
+  const retryStartCleanupState = state.tasks[retryStartCleanupTask.id] as LocalWorkflowTaskState
+  pauseWorkflowTask(retryStartCleanupTask.id, setAppState)
+  const pausedRetryStartCleanupState = state.tasks[retryStartCleanupTask.id] as LocalWorkflowTaskState
+  const summarizeResults = (results: LocalWorkflowTaskState['results']) => results.map(result => ({
+    agentId: result.agentId,
+    status: result.status,
+    error: result.error,
+    tokenCount: result.tokenCount,
+    toolUseCount: result.toolUseCount,
+  }))
+  assert.deepEqual(
+    {
+      afterStart: {
+        currentAgentId: retryStartCleanupState.currentAgentId,
+        failedAgentIds: retryStartCleanupState.phases[0]?.failedAgentIds,
+        phaseResults: summarizeResults(retryStartCleanupState.phases[0]?.results ?? []),
+        taskResults: summarizeResults(retryStartCleanupState.results),
+        liveAgents: retryStartCleanupState.liveAgents,
+        attempts: retryStartCleanupState.agentAttempts?.map(attemptState => ({
+          agentId: attemptState.agentId,
+          attempt: attemptState.attempt,
+          retryOfAttemptId: attemptState.retryOfAttemptId,
+          status: attemptState.status,
+        })),
+        tokenCount: retryStartCleanupState.tokenCount,
+        toolUseCount: retryStartCleanupState.toolUseCount,
+      },
+      afterPause: {
+        status: pausedRetryStartCleanupState.status,
+        phaseResults: summarizeResults(pausedRetryStartCleanupState.phases[0]?.results ?? []),
+        taskResults: summarizeResults(pausedRetryStartCleanupState.results),
+        tokenCount: pausedRetryStartCleanupState.tokenCount,
+        toolUseCount: pausedRetryStartCleanupState.toolUseCount,
+        liveAgents: pausedRetryStartCleanupState.liveAgents,
+        agentControllers: pausedRetryStartCleanupState.agentControllers,
+      },
+    },
+    {
+      afterStart: {
+        currentAgentId: 'logical-agent (retry 1)',
+        failedAgentIds: [],
+        phaseResults: [],
+        taskResults: [],
+        liveAgents: {
+          'logical-agent (retry 1)': { tokenCount: 0, toolUseCount: 0 },
+        },
+        attempts: [
+          {
+            agentId: 'logical-agent',
+            attempt: 0,
+            retryOfAttemptId: undefined,
+            status: 'failed',
+          },
+          {
+            agentId: 'logical-agent (retry 1)',
+            attempt: 1,
+            retryOfAttemptId: 'phase:logical-agent:attempt:0',
+            status: 'running',
+          },
+        ],
+        tokenCount: 21,
+        toolUseCount: 3,
+      },
+      afterPause: {
+        status: 'pending',
+        phaseResults: [],
+        taskResults: [],
+        tokenCount: 21,
+        toolUseCount: 3,
+        liveAgents: {},
+        agentControllers: {},
+      },
+    },
+  )
+
   const nonRunningControlTask: LocalWorkflowTaskState = {
     ...runningTask,
     id: 'w-non-running-control',
@@ -780,6 +996,198 @@ const context = {
   assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.completedAgentIds, ['completed-agent', 'failed-agent'])
   assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.failedAgentIds, ['failed-agent'])
   assert.deepEqual(unchangedNonRunningControlTask.phases[0]!.results, nonRunningControlTask.phases[0]!.results)
+
+  const pauseUsageTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-pause-usage-solidification',
+    tokenCount: 5,
+    toolUseCount: 1,
+    currentAgentId: 'agent-usage',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['agent-usage'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    liveAgents: {
+      'agent-usage': { tokenCount: 9, toolUseCount: 2 },
+    },
+    agentControllers: {
+      'agent-usage': {
+        abortController: new AbortController(),
+        attemptId: 'phase:agent-usage:attempt:0',
+        index: 0,
+      },
+    },
+    agentAttempts: [
+      {
+        attemptId: 'phase:agent-usage:attempt:0',
+        logicalAgentId: 'agent-usage',
+        agentId: 'agent-usage',
+        phaseId: 'phase',
+        index: 0,
+        attempt: 0,
+        status: 'running',
+      },
+    ],
+    results: [],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [pauseUsageTask.id]: pauseUsageTask } }))
+  pauseWorkflowTask(pauseUsageTask.id, setAppState)
+  pauseWorkflowTask(pauseUsageTask.id, setAppState)
+  const pausedUsageTask = state.tasks[pauseUsageTask.id] as LocalWorkflowTaskState
+
+  const killUsageTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-kill-usage-solidification',
+    tokenCount: 4,
+    toolUseCount: 1,
+    currentAgentId: 'agent-usage',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['agent-usage'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    liveAgents: {
+      'agent-usage': { tokenCount: 8, toolUseCount: 3 },
+    },
+    agentControllers: {
+      'agent-usage': {
+        abortController: new AbortController(),
+        attemptId: 'phase:agent-usage:attempt:0',
+        index: 0,
+      },
+    },
+    agentAttempts: [
+      {
+        attemptId: 'phase:agent-usage:attempt:0',
+        logicalAgentId: 'agent-usage',
+        agentId: 'agent-usage',
+        phaseId: 'phase',
+        index: 0,
+        attempt: 0,
+        status: 'running',
+      },
+    ],
+    results: [],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [killUsageTask.id]: killUsageTask } }))
+  killWorkflowTask(killUsageTask.id, setAppState)
+  killWorkflowTask(killUsageTask.id, setAppState)
+  const killedUsageTask = state.tasks[killUsageTask.id] as LocalWorkflowTaskState
+
+  const skipUsageTask: LocalWorkflowTaskState = {
+    ...runningTask,
+    id: 'w-skip-usage-solidification',
+    tokenCount: 10,
+    toolUseCount: 1,
+    currentAgentId: 'agent-usage',
+    phases: [
+      {
+        id: 'phase',
+        status: 'running',
+        agentIds: ['agent-usage'],
+        completedAgentIds: [],
+        skippedAgentIds: [],
+        failedAgentIds: [],
+        results: [],
+      },
+    ],
+    liveAgents: {
+      'agent-usage': { tokenCount: 6, toolUseCount: 2 },
+    },
+    agentControllers: {
+      'agent-usage': {
+        abortController: new AbortController(),
+        attemptId: 'phase:agent-usage:attempt:0',
+        index: 0,
+      },
+    },
+    agentAttempts: [
+      {
+        attemptId: 'phase:agent-usage:attempt:0',
+        logicalAgentId: 'agent-usage',
+        agentId: 'agent-usage',
+        phaseId: 'phase',
+        index: 0,
+        attempt: 0,
+        status: 'running',
+      },
+    ],
+    results: [],
+  }
+  setAppState(prev => ({ ...prev, tasks: { ...prev.tasks, [skipUsageTask.id]: skipUsageTask } }))
+  skipWorkflowAgent(skipUsageTask.id, 'agent-usage', setAppState)
+  skipWorkflowAgent(skipUsageTask.id, 'agent-usage', setAppState)
+  const skippedUsageTask = state.tasks[skipUsageTask.id] as LocalWorkflowTaskState
+
+  assert.deepEqual(
+    {
+      pause: {
+        status: pausedUsageTask.status,
+        tokenCount: pausedUsageTask.tokenCount,
+        toolUseCount: pausedUsageTask.toolUseCount,
+        liveAgents: pausedUsageTask.liveAgents,
+        agentControllers: pausedUsageTask.agentControllers,
+      },
+      kill: {
+        status: killedUsageTask.status,
+        tokenCount: killedUsageTask.tokenCount,
+        toolUseCount: killedUsageTask.toolUseCount,
+        liveAgents: killedUsageTask.liveAgents,
+        agentControllers: killedUsageTask.agentControllers,
+      },
+      skip: {
+        status: skippedUsageTask.status,
+        tokenCount: skippedUsageTask.tokenCount,
+        toolUseCount: skippedUsageTask.toolUseCount,
+        resultTokenCount: skippedUsageTask.results[0]?.tokenCount,
+        resultToolUseCount: skippedUsageTask.results[0]?.toolUseCount,
+        phaseResultTokenCount: skippedUsageTask.phases[0]?.results[0]?.tokenCount,
+        phaseResultToolUseCount: skippedUsageTask.phases[0]?.results[0]?.toolUseCount,
+        liveAgents: skippedUsageTask.liveAgents,
+        agentControllers: skippedUsageTask.agentControllers,
+      },
+    },
+    {
+      pause: {
+        status: 'pending',
+        tokenCount: 14,
+        toolUseCount: 3,
+        liveAgents: {},
+        agentControllers: {},
+      },
+      kill: {
+        status: 'killed',
+        tokenCount: 12,
+        toolUseCount: 4,
+        liveAgents: undefined,
+        agentControllers: undefined,
+      },
+      skip: {
+        status: 'running',
+        tokenCount: 16,
+        toolUseCount: 3,
+        resultTokenCount: 6,
+        resultToolUseCount: 2,
+        phaseResultTokenCount: 6,
+        phaseResultToolUseCount: 2,
+        liveAgents: {},
+        agentControllers: {},
+      },
+    },
+  )
 
 let retryState = {
   tasks: {},

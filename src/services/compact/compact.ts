@@ -1411,6 +1411,13 @@ async function streamCompactSummary({
       }
 
       if (response) {
+        if (response.isApiErrorMessage) {
+          const responseText = getAssistantMessageText(response)
+          if (responseText?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) {
+            return response
+          }
+          throw new Error(responseText ?? 'API error during compaction')
+        }
         return response
       }
 

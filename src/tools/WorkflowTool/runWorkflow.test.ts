@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
+import { setIsInteractive } from '../../bootstrap/state.js'
 import {
+  killWorkflowTask,
   pauseWorkflowTask,
   retryWorkflowAgent,
   skipWorkflowAgent,
@@ -16,6 +18,7 @@ import {
 assert.equal(WORKFLOW_AGENT_USER_RETRY_ABORT_REASON, 'user-retry')
 assert.equal(WORKFLOW_AGENT_SKIPPED_ABORT_REASON, 'user-skip')
 import { dequeue, dequeueAllMatching } from '../../utils/messageQueueManager.js'
+import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import {
   allocateWorkflowAgentNames,
   runWorkflowPlan,
@@ -32,6 +35,9 @@ const setAppState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const workflowCwd = await mkdtemp(join(tmpdir(), 'workflow-run-results-'))
+
+setIsInteractive(false)
+drainSdkEvents()
 
 async function waitForCondition(
   condition: () => boolean | Promise<boolean>,
@@ -1490,6 +1496,308 @@ assert.deepEqual(
   ],
 )
 
+drainSdkEvents()
+let retryProgressUsageState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setRetryProgressUsageState = (updater: (prev: AppState) => AppState): void => {
+  retryProgressUsageState = updater(retryProgressUsageState)
+}
+let retryProgressUsageCallCount = 0
+const retryProgressUsageAgentTool = {
+  name: 'Agent',
+  async call(
+    _input: unknown,
+    agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    retryProgressUsageCallCount++
+    if (retryProgressUsageCallCount === 1) {
+      onProgress?.({
+        data: {
+          type: 'agent_progress',
+          message: {
+            type: 'assistant',
+            uuid: '00000000-0000-4000-8000-000000000024',
+            timestamp: '2026-07-13T00:00:00.000Z',
+            message: {
+              id: 'msg_retry_progress_manual_attempt',
+              role: 'assistant',
+              model: 'claude-test',
+              content: [
+                { type: 'tool_use', id: 'toolu_retry_progress_manual', name: 'Read', input: { file_path: 'a' } },
+              ],
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              usage: {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_creation_input_tokens: null,
+                cache_read_input_tokens: null,
+              },
+            },
+          },
+        },
+      })
+      const task = Object.values(retryProgressUsageState.tasks).find(
+        (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+      )
+      assert.ok(task)
+      const activeAgentId = task.currentAgentId ?? task.phases[0]?.agentIds[0]
+      assert.equal(activeAgentId, 'retry-progress-usage-plan-root-1')
+      retryWorkflowAgent(task.id, activeAgentId, setRetryProgressUsageState)
+      assert.equal(
+        agentContext.abortController.signal.reason,
+        WORKFLOW_AGENT_USER_RETRY_ABORT_REASON,
+      )
+      throw new Error('aborted by retry')
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'retry progress success' }],
+        totalTokens: 202,
+        totalToolUseCount: 2,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const retryProgressUsageCwd = await mkdtemp(join(tmpdir(), 'workflow-retry-progress-usage-'))
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'retry-progress-usage-plan',
+    defaults: { ...plan.defaults, maxRetries: 1 },
+  },
+  context: {
+    getAppState: () => retryProgressUsageState,
+    getCwd: () => retryProgressUsageCwd,
+    setAppState: setRetryProgressUsageState,
+    options: {
+      tools: [retryProgressUsageAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_retry_progress_usage',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_retry_progress_usage' } } as never,
+  workflowRunId: 'wf_retry_progress_usage',
+})
+const retryProgressUsageTask = Object.values(retryProgressUsageState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(retryProgressUsageTask)
+assert.equal(retryProgressUsageTask.status, 'completed')
+assert.equal(retryProgressUsageCallCount, 2)
+const retryProgressExpectedUsage = { totalTokens: 312, toolUses: 3 }
+const retryProgressFinalResultUsage = { totalTokens: 202, toolUses: 2 }
+const retryProgressUsageSession = await loadWorkflowRunSession({
+  cwd: retryProgressUsageCwd,
+  workflowRunId: 'wf_retry_progress_usage',
+})
+const retryProgressTerminatedEvent = drainSdkEvents().find(
+  event => event.subtype === 'task_notification' &&
+    event.task_id === retryProgressUsageTask.id,
+)
+const retryProgressTerminatedUsage = retryProgressTerminatedEvent &&
+  'usage' in retryProgressTerminatedEvent
+  ? retryProgressTerminatedEvent.usage
+  : undefined
+const retryProgressActualExpected = {
+  actual: {
+    taskTotals: {
+      totalTokens: retryProgressUsageTask.tokenCount,
+      toolUses: retryProgressUsageTask.toolUseCount,
+    },
+    sessionTotals: {
+      totalTokens: retryProgressUsageSession?.tokenCount,
+      toolUses: retryProgressUsageSession?.toolUseCount,
+    },
+    sessionResultsReduce: {
+      totalTokens: retryProgressUsageSession?.results.reduce(
+        (sum, result) => sum + (result.tokenCount ?? 0),
+        0,
+      ),
+      toolUses: retryProgressUsageSession?.results.reduce(
+        (sum, result) => sum + (result.toolUseCount ?? 0),
+        0,
+      ),
+    },
+    taskTerminatedUsage: {
+      totalTokens: retryProgressTerminatedUsage?.total_tokens,
+      toolUses: retryProgressTerminatedUsage?.tool_uses,
+    },
+  },
+  expected: {
+    taskTotals: retryProgressExpectedUsage,
+    sessionTotals: retryProgressExpectedUsage,
+    sessionResultsReduce: retryProgressFinalResultUsage,
+    taskTerminatedUsage: retryProgressExpectedUsage,
+  },
+}
+assert.deepEqual(
+  retryProgressActualExpected.actual,
+  retryProgressActualExpected.expected,
+)
+
+drainSdkEvents()
+let retryProgressFailureUsageState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setRetryProgressFailureUsageState = (updater: (prev: AppState) => AppState): void => {
+  retryProgressFailureUsageState = updater(retryProgressFailureUsageState)
+}
+let retryProgressFailureUsageCallCount = 0
+const retryProgressFailureUsageAgentTool = {
+  name: 'Agent',
+  async call(
+    _input: unknown,
+    _context: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    retryProgressFailureUsageCallCount++
+    if (retryProgressFailureUsageCallCount === 1) {
+      onProgress?.({
+        data: {
+          type: 'agent_progress',
+          message: {
+            type: 'assistant',
+            uuid: '00000000-0000-4000-8000-000000000025',
+            timestamp: '2026-07-13T00:00:00.000Z',
+            message: {
+              id: 'msg_retry_progress_failure_failed_attempt',
+              role: 'assistant',
+              model: 'claude-test',
+              content: [
+                { type: 'tool_use', id: 'toolu_retry_progress_failure_failed', name: 'Read', input: { file_path: 'a' } },
+              ],
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              usage: {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_creation_input_tokens: null,
+                cache_read_input_tokens: null,
+              },
+            },
+          },
+        },
+      })
+      throw new Error('503 service temporarily unavailable')
+    }
+    onProgress?.({
+      data: {
+        type: 'agent_progress',
+        message: {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000026',
+          timestamp: '2026-07-13T00:00:00.000Z',
+          message: {
+            id: 'msg_retry_progress_failure_terminal_attempt',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [
+              { type: 'tool_use', id: 'toolu_retry_progress_failure_terminal_a', name: 'Read', input: { file_path: 'a' } },
+              { type: 'tool_use', id: 'toolu_retry_progress_failure_terminal_b', name: 'Read', input: { file_path: 'b' } },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: 200,
+              output_tokens: 2,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+        },
+      },
+    })
+    throw new Error('terminal agent failure')
+  },
+}
+const retryProgressFailureUsageCwd = await mkdtemp(join(tmpdir(), 'workflow-retry-progress-failure-'))
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'retry-progress-failure-usage-plan',
+    defaults: { ...plan.defaults, maxRetries: 1 },
+  },
+  context: {
+    getAppState: () => retryProgressFailureUsageState,
+    getCwd: () => retryProgressFailureUsageCwd,
+    setAppState: setRetryProgressFailureUsageState,
+    options: {
+      tools: [retryProgressFailureUsageAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_retry_progress_failure_usage',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_retry_progress_failure_usage' } } as never,
+  workflowRunId: 'wf_retry_progress_failure_usage',
+})
+const retryProgressFailureUsageTask = Object.values(retryProgressFailureUsageState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(retryProgressFailureUsageTask)
+assert.equal(retryProgressFailureUsageTask.status, 'failed')
+assert.equal(retryProgressFailureUsageCallCount, 2)
+const retryProgressFailureUsageSession = await loadWorkflowRunSession({
+  cwd: retryProgressFailureUsageCwd,
+  workflowRunId: 'wf_retry_progress_failure_usage',
+})
+const retryProgressFailureTerminatedEvent = drainSdkEvents().find(
+  event => event.subtype === 'task_notification' &&
+    event.task_id === retryProgressFailureUsageTask.id,
+)
+const retryProgressFailureTerminatedUsage = retryProgressFailureTerminatedEvent &&
+  'usage' in retryProgressFailureTerminatedEvent
+  ? retryProgressFailureTerminatedEvent.usage
+  : undefined
+assert.deepEqual(
+  {
+    taskTotals: {
+      totalTokens: retryProgressFailureUsageTask.tokenCount,
+      toolUses: retryProgressFailureUsageTask.toolUseCount,
+    },
+    sessionTotals: {
+      totalTokens: retryProgressFailureUsageSession?.tokenCount,
+      toolUses: retryProgressFailureUsageSession?.toolUseCount,
+    },
+    sessionResultsReduce: {
+      totalTokens: retryProgressFailureUsageSession?.results.reduce(
+        (sum, result) => sum + (result.tokenCount ?? 0),
+        0,
+      ),
+      toolUses: retryProgressFailureUsageSession?.results.reduce(
+        (sum, result) => sum + (result.toolUseCount ?? 0),
+        0,
+      ),
+    },
+    taskTerminatedUsage: {
+      totalTokens: retryProgressFailureTerminatedUsage?.total_tokens,
+      toolUses: retryProgressFailureTerminatedUsage?.tool_uses,
+    },
+  },
+  {
+    taskTotals: retryProgressExpectedUsage,
+    sessionTotals: retryProgressExpectedUsage,
+    sessionResultsReduce: retryProgressFinalResultUsage,
+    taskTerminatedUsage: retryProgressExpectedUsage,
+  },
+)
+
 let lateCompletionState = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -1739,6 +2047,146 @@ assert.equal(pauseAbortSession?.status, 'paused')
 assert.equal(
   pauseAbortSession?.resumePrompt,
   'Workflow({name: "deep-research", args: "Research workflow resume prompt behavior in one concise pass.", resumeFromRunId: "wf_pause_abort"})',
+)
+
+
+drainSdkEvents()
+let killedProgressUsageState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setKilledProgressUsageState = (updater: (prev: AppState) => AppState): void => {
+  killedProgressUsageState = updater(killedProgressUsageState)
+}
+const killedProgressUsageAgentTool = {
+  name: 'Agent',
+  async call(
+    _input: unknown,
+    agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    onProgress?.({
+      data: {
+        type: 'agent_progress',
+        message: {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000027',
+          timestamp: '2026-07-13T00:00:00.000Z',
+          message: {
+            id: 'msg_killed_progress_usage_attempt',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [
+              { type: 'tool_use', id: 'toolu_killed_progress_usage', name: 'Read', input: { file_path: 'a' } },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+        },
+      },
+    })
+    const signal = agentContext.abortController.signal
+    await new Promise<void>(resolve => {
+      if (signal.aborted) {
+        resolve()
+        return
+      }
+      signal.addEventListener('abort', () => resolve(), { once: true })
+    })
+    assert.equal(signal.reason, 'workflow-killed')
+    throw new Error('aborted by workflow kill')
+  },
+}
+const killedProgressUsageCwd = await mkdtemp(join(tmpdir(), 'workflow-killed-progress-usage-'))
+const killedProgressUsageRun = runWorkflowPlan({
+  plan: { ...plan, name: 'killed-progress-usage-plan' },
+  context: {
+    getAppState: () => killedProgressUsageState,
+    getCwd: () => killedProgressUsageCwd,
+    setAppState: setKilledProgressUsageState,
+    options: {
+      tools: [killedProgressUsageAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_killed_progress_usage_plan',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_killed_progress_usage_plan' } } as never,
+  workflowRunId: 'wf_killed_progress_usage',
+})
+await waitForCondition(
+  () => Object.values(killedProgressUsageState.tasks).some(
+    (item): item is LocalWorkflowTaskState => item.type === 'local_workflow' &&
+      item.liveAgents?.['killed-progress-usage-plan-root-1']?.tokenCount === 110,
+  ),
+  'workflow should keep running with live usage before kill',
+)
+const killingProgressUsageTask = Object.values(killedProgressUsageState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(killingProgressUsageTask)
+assert.equal(killingProgressUsageTask.status, 'running')
+killWorkflowTask(killingProgressUsageTask.id, setKilledProgressUsageState)
+await killedProgressUsageRun
+const killedProgressUsageTask = killedProgressUsageState.tasks[killingProgressUsageTask.id] as LocalWorkflowTaskState
+assert.equal(killedProgressUsageTask.status, 'killed')
+const killedProgressUsageSession = await loadWorkflowRunSession({
+  cwd: killedProgressUsageCwd,
+  workflowRunId: 'wf_killed_progress_usage',
+})
+const killedProgressExpectedUsage = { totalTokens: 110, toolUses: 1 }
+assert.deepEqual(
+  {
+    taskStatus: killedProgressUsageTask.status,
+    sessionStatus: killedProgressUsageSession?.status,
+    taskTotals: {
+      totalTokens: killedProgressUsageTask.tokenCount,
+      toolUses: killedProgressUsageTask.toolUseCount,
+    },
+    sessionTotals: {
+      totalTokens: killedProgressUsageSession?.tokenCount,
+      toolUses: killedProgressUsageSession?.toolUseCount,
+    },
+  },
+  {
+    taskStatus: 'killed',
+    sessionStatus: 'killed',
+    taskTotals: killedProgressExpectedUsage,
+    sessionTotals: killedProgressExpectedUsage,
+  },
+)
+const killedProgressSdkNotification = drainSdkEvents().find(
+  event => event.subtype === 'task_notification' &&
+    event.task_id === killedProgressUsageTask.id,
+)
+const killedProgressSdkUsage = killedProgressSdkNotification &&
+  'usage' in killedProgressSdkNotification
+  ? killedProgressSdkNotification.usage
+  : undefined
+assert.deepEqual(
+  {
+    sdkStatus: killedProgressSdkNotification?.subtype === 'task_notification'
+      ? killedProgressSdkNotification.status
+      : undefined,
+    sdkUsage: {
+      totalTokens: killedProgressSdkUsage?.total_tokens,
+      toolUses: killedProgressSdkUsage?.tool_uses,
+    },
+  },
+  {
+    sdkStatus: 'stopped',
+    sdkUsage: killedProgressExpectedUsage,
+  },
 )
 
 console.log('runWorkflow.test.ts passed')

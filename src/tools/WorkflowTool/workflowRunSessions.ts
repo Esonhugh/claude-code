@@ -201,6 +201,58 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`)
 }
 
+const workflowRunSessionMutationQueues = new Map<string, Promise<void>>()
+
+type WorkflowRunSessionMutation = (
+  latest: WorkflowRunSession | undefined,
+) => WorkflowRunSession | undefined
+
+function workflowRunSessionMutationKey(cwd: string, workflowRunId: string): string {
+  return `${cwd}\0${workflowRunId}`
+}
+
+function maxWorkflowRunSessionCount(
+  current: number | undefined,
+  next: number | undefined,
+): number | undefined {
+  if (next === undefined) return current
+  if (current === undefined) return next
+  return Math.max(current, next)
+}
+
+function isTerminalWorkflowRunStatus(status: WorkflowRunSession['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'killed'
+}
+
+async function mutateWorkflowRunSession(
+  cwd: string,
+  workflowRunId: string,
+  mutation: WorkflowRunSessionMutation,
+): Promise<WorkflowRunSession | undefined> {
+  const key = workflowRunSessionMutationKey(cwd, workflowRunId)
+  const previous = workflowRunSessionMutationQueues.get(key) ?? Promise.resolve()
+  let updated: WorkflowRunSession | undefined
+  const current = previous.catch(() => undefined).then(async () => {
+    const latest = await loadWorkflowRunSession({
+      cwd,
+      workflowRunId,
+      includeOfficialFallback: false,
+    })
+    updated = mutation(latest)
+    if (!updated) return
+    await writeWorkflowRunSession(cwd, updated)
+  })
+  workflowRunSessionMutationQueues.set(key, current)
+  try {
+    await current
+    return updated
+  } finally {
+    if (workflowRunSessionMutationQueues.get(key) === current) {
+      workflowRunSessionMutationQueues.delete(key)
+    }
+  }
+}
+
 async function writeWorkflowRunSession(cwd: string, session: WorkflowRunSession): Promise<void> {
   await writeJson(taskSessionPath(cwd, session.taskId), session)
   await writeJson(runSessionPath(cwd, session.workflowRunId), session)
@@ -225,29 +277,30 @@ export async function startWorkflowRunSession({
   transcriptDir?: string
   resumeFromRunId?: string
 }): Promise<WorkflowRunSession> {
-  const now = Date.now()
-  const session = {
-    taskId,
-    workflowRunId,
-    workflowName: plan.name,
-    status: 'running' as const,
-    runArgs,
-    scriptPath,
-    transcriptDir,
-    resumeFromRunId,
-    meta: plan.meta,
-    resumeCacheEntries: [],
-    runtime: plan.runtime,
-    sourcePath: plan.sourcePath,
-    runScriptSnapshot: plan.runScriptSnapshot,
-    startedAt: now,
-    updatedAt: now,
-    results: [],
-    events: [],
-    ...(plan.totalAgents > 0 ? { agentCount: plan.totalAgents } : {}),
-  }
-  await writeWorkflowRunSession(cwd, session)
-  return session
+  const started = await mutateWorkflowRunSession(cwd, workflowRunId, () => {
+    const now = Date.now()
+    return {
+      taskId,
+      workflowRunId,
+      workflowName: plan.name,
+      status: 'running' as const,
+      runArgs,
+      scriptPath,
+      transcriptDir,
+      resumeFromRunId,
+      meta: plan.meta,
+      resumeCacheEntries: [],
+      runtime: plan.runtime,
+      sourcePath: plan.sourcePath,
+      runScriptSnapshot: plan.runScriptSnapshot,
+      startedAt: now,
+      updatedAt: now,
+      results: [],
+      events: [],
+      ...(plan.totalAgents > 0 ? { agentCount: plan.totalAgents } : {}),
+    }
+  })
+  return started!
 }
 
 export async function listWorkflowRunSessions(
@@ -290,15 +343,18 @@ export async function loadWorkflowRunSession({
   cwd,
   workflowRunId,
   projectsRoot,
+  includeOfficialFallback = true,
 }: {
   cwd: string
   workflowRunId: string
   projectsRoot?: string
+  includeOfficialFallback?: boolean
 }): Promise<WorkflowRunSession | undefined> {
   try {
     return JSON.parse(await readFile(runSessionPath(cwd, workflowRunId), 'utf8')) as WorkflowRunSession
   } catch (error) {
     if (!isENOENT(error)) throw error
+    if (!includeOfficialFallback) return undefined
     return loadOfficialWorkflowRunSession({ cwd, workflowRunId, projectsRoot })
   }
 }
@@ -312,13 +368,15 @@ export async function appendWorkflowRunEvent({
   session: WorkflowRunSession
   event: WorkflowProgressEvent
 }): Promise<WorkflowRunSession> {
-  const updated = {
-    ...session,
-    updatedAt: Date.now(),
-    events: [...session.events, event],
-  }
-  await writeWorkflowRunSession(cwd, updated)
-  return updated
+  const updated = await mutateWorkflowRunSession(cwd, session.workflowRunId, latest => {
+    const base = latest ?? session
+    return {
+      ...base,
+      updatedAt: Date.now(),
+      events: [...base.events, event],
+    }
+  })
+  return updated!
 }
 
 export async function updateWorkflowRunSessionStatus({
@@ -334,17 +392,16 @@ export async function updateWorkflowRunSessionStatus({
   event?: WorkflowProgressEvent
   resumePrompt?: string
 }): Promise<WorkflowRunSession | undefined> {
-  const session = await loadWorkflowRunSession({ cwd, workflowRunId })
-  if (!session) return undefined
-  const updated = {
-    ...session,
-    status,
-    updatedAt: Date.now(),
-    events: event ? [...session.events, event] : session.events,
-    ...(resumePrompt !== undefined ? { resumePrompt } : {}),
-  }
-  await writeWorkflowRunSession(cwd, updated)
-  return updated
+  return mutateWorkflowRunSession(cwd, workflowRunId, session => {
+    if (!session || isTerminalWorkflowRunStatus(session.status)) return session
+    return {
+      ...session,
+      status,
+      updatedAt: Date.now(),
+      events: event ? [...session.events, event] : session.events,
+      ...(resumePrompt !== undefined ? { resumePrompt } : {}),
+    }
+  })
 }
 
 export async function updateWorkflowRunSessionProgress({
@@ -352,20 +409,33 @@ export async function updateWorkflowRunSessionProgress({
   session,
   results,
   resumeCacheEntries = session.resumeCacheEntries,
+  agentCount = session.agentCount,
+  tokenCount = session.tokenCount,
+  toolUseCount = session.toolUseCount,
 }: {
   cwd: string
   session: WorkflowRunSession
   results: WorkflowAgentResult[]
   resumeCacheEntries?: WorkflowResumeCacheEntry[]
+  agentCount?: number
+  tokenCount?: number
+  toolUseCount?: number
 }): Promise<WorkflowRunSession> {
-  const updated = {
-    ...session,
-    updatedAt: Date.now(),
-    results,
-    resumeCacheEntries,
-  }
-  await writeWorkflowRunSession(cwd, updated)
-  return updated
+  const updated = await mutateWorkflowRunSession(cwd, session.workflowRunId, latest => {
+    const base = latest ?? session
+    const agentTotal = maxWorkflowRunSessionCount(base.agentCount, agentCount)
+    const tokenTotal = maxWorkflowRunSessionCount(base.tokenCount, tokenCount)
+    const toolUseTotal = maxWorkflowRunSessionCount(base.toolUseCount, toolUseCount)
+    return {
+      ...base,
+      updatedAt: Date.now(),
+      ...(isTerminalWorkflowRunStatus(base.status) ? {} : { results, resumeCacheEntries }),
+      ...(agentTotal !== undefined ? { agentCount: agentTotal } : {}),
+      ...(tokenTotal !== undefined ? { tokenCount: tokenTotal } : {}),
+      ...(toolUseTotal !== undefined ? { toolUseCount: toolUseTotal } : {}),
+    }
+  })
+  return updated!
 }
 
 export async function completeWorkflowRunSession({
@@ -373,19 +443,34 @@ export async function completeWorkflowRunSession({
   session,
   results,
   resumeCacheEntries = session.resumeCacheEntries,
+  agentCount = session.agentCount,
+  tokenCount = session.tokenCount,
+  toolUseCount = session.toolUseCount,
 }: {
   cwd: string
   session: WorkflowRunSession
   results: WorkflowAgentResult[]
   resumeCacheEntries?: WorkflowResumeCacheEntry[]
+  agentCount?: number
+  tokenCount?: number
+  toolUseCount?: number
 }): Promise<void> {
-  await writeWorkflowRunSession(cwd, {
-    ...session,
-    status: 'completed',
-    updatedAt: Date.now(),
-    results,
-    resumeCacheEntries,
-    error: undefined,
+  await mutateWorkflowRunSession(cwd, session.workflowRunId, latest => {
+    const base = latest ?? session
+    const agentTotal = maxWorkflowRunSessionCount(base.agentCount, agentCount)
+    const tokenTotal = maxWorkflowRunSessionCount(base.tokenCount, tokenCount)
+    const toolUseTotal = maxWorkflowRunSessionCount(base.toolUseCount, toolUseCount)
+    return {
+      ...base,
+      status: 'completed',
+      updatedAt: Date.now(),
+      results,
+      resumeCacheEntries,
+      ...(agentTotal !== undefined ? { agentCount: agentTotal } : {}),
+      ...(tokenTotal !== undefined ? { tokenCount: tokenTotal } : {}),
+      ...(toolUseTotal !== undefined ? { toolUseCount: toolUseTotal } : {}),
+      error: undefined,
+    }
   })
 }
 
@@ -395,19 +480,34 @@ export async function failWorkflowRunSession({
   results,
   error,
   resumeCacheEntries = session.resumeCacheEntries,
+  agentCount = session.agentCount,
+  tokenCount = session.tokenCount,
+  toolUseCount = session.toolUseCount,
 }: {
   cwd: string
   session: WorkflowRunSession
   results: WorkflowAgentResult[]
   error: string
   resumeCacheEntries?: WorkflowResumeCacheEntry[]
+  agentCount?: number
+  tokenCount?: number
+  toolUseCount?: number
 }): Promise<void> {
-  await writeWorkflowRunSession(cwd, {
-    ...session,
-    status: 'failed',
-    updatedAt: Date.now(),
-    results,
-    resumeCacheEntries,
-    error,
+  await mutateWorkflowRunSession(cwd, session.workflowRunId, latest => {
+    const base = latest ?? session
+    const agentTotal = maxWorkflowRunSessionCount(base.agentCount, agentCount)
+    const tokenTotal = maxWorkflowRunSessionCount(base.tokenCount, tokenCount)
+    const toolUseTotal = maxWorkflowRunSessionCount(base.toolUseCount, toolUseCount)
+    return {
+      ...base,
+      status: 'failed',
+      updatedAt: Date.now(),
+      results,
+      resumeCacheEntries,
+      ...(agentTotal !== undefined ? { agentCount: agentTotal } : {}),
+      ...(tokenTotal !== undefined ? { tokenCount: tokenTotal } : {}),
+      ...(toolUseTotal !== undefined ? { toolUseCount: toolUseTotal } : {}),
+      error,
+    }
   })
 }

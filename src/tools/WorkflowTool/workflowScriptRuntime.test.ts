@@ -130,6 +130,43 @@ const fakeAgentTool = {
   ) {
     agentToolCallCount++
     assert.equal(agentContext.options.disableNestedAgentTools, true)
+    if (
+      typeof _input === 'object' &&
+      _input &&
+      'prompt' in _input &&
+      _input.prompt === 'prompt-too-long-agent'
+    ) {
+      onProgress?.({
+        data: {
+          type: 'agent_progress',
+          message: {
+            type: 'assistant',
+            uuid: '00000000-0000-4000-8000-000000000013',
+            timestamp: '2026-07-14T00:00:00.000Z',
+            message: {
+              id: 'msg_prompt_too_long_progress',
+              role: 'assistant',
+              model: 'claude-test',
+              content: Array.from({ length: 12 }, (_, index) => ({
+                type: 'tool_use',
+                id: `toolu_prompt_too_long_${index + 1}`,
+                name: 'Read',
+                input: { file_path: `fixture-${index + 1}.txt` },
+              })),
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              usage: {
+                input_tokens: 173_000,
+                output_tokens: 379,
+                cache_creation_input_tokens: null,
+                cache_read_input_tokens: null,
+              },
+            },
+          },
+        },
+      })
+      throw new Error('Prompt is too long')
+    }
     if (typeof _input === 'object' && _input && 'prompt' in _input && _input.prompt === 'fail-agent') {
       throw new Error('agent failed intentionally')
     }
@@ -1123,6 +1160,441 @@ assert.match(retryJournalRaw, /"agentId":"agent-1 \(retry 1\)".*"attemptId":"Ret
 assert.match(retryJournalRaw, /"retryOfAttemptId":"Retry:agent-1:attempt:0"/)
 assert.equal((await readWorkflowJournalCacheEntries(retryTranscriptDirMatch[1])).length, 1)
 
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const userRetryUsageScript = `export const meta = {
+  name: "runtime-user-retry-usage-workflow",
+  description: "Workflow preserving user retry attempt usage.",
+  phases: [{ title: "Retry", detail: "User retry usage agent" }],
+}
+phase("Retry")
+const result = await agent("user-retry-usage-agent", { label: "user-retry-usage-agent" })
+return { result, spent: budget.spent() }
+`
+let userRetryUsageState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setUserRetryUsageState = (updater: (prev: AppState) => AppState): void => {
+  userRetryUsageState = updater(userRetryUsageState)
+}
+let userRetryUsageCallCount = 0
+let userRetryUsageRetriedAgentId: string | undefined
+let userRetryUsageAbortReason: unknown
+const userRetryUsageAgentTool = {
+  name: 'Agent',
+  async call(
+    _input: unknown,
+    agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    userRetryUsageCallCount++
+    if (userRetryUsageCallCount === 1) {
+      onProgress?.({
+        data: {
+          type: 'agent_progress',
+          message: {
+            type: 'assistant',
+            uuid: '00000000-0000-4000-8000-000000000017',
+            timestamp: '2026-07-14T00:00:00.000Z',
+            message: {
+              id: 'msg_user_retry_usage_first_progress',
+              role: 'assistant',
+              model: 'claude-test',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_user_retry_usage_first_1',
+                  name: 'Read',
+                  input: { file_path: 'user-retry-first.txt' },
+                },
+              ],
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              usage: {
+                input_tokens: 10,
+                output_tokens: 1,
+                cache_creation_input_tokens: null,
+                cache_read_input_tokens: null,
+              },
+            },
+          },
+        },
+      })
+      const task = Object.values(userRetryUsageState.tasks).find(
+        (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+      )
+      assert.ok(task?.currentAgentId)
+      userRetryUsageRetriedAgentId = task.currentAgentId
+      retryWorkflowAgent(task.id, task.currentAgentId, setUserRetryUsageState)
+      userRetryUsageAbortReason = agentContext.abortController.signal.reason
+      throw new Error('retry requested')
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'user-retry-usage-ok' }],
+        totalTokens: 20,
+        totalToolUseCount: 2,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const userRetryUsageWorkflowRunId = `wf_script_user_retry_usage_${process.pid}`
+const userRetryUsageResult = await runWorkflowScript({
+  script: userRetryUsageScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-user-retry-usage-workflow',
+    description: 'Workflow preserving user retry attempt usage.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Retry', description: 'User retry usage agent', prompt: 'User retry usage agent' }],
+    runScriptSnapshot: userRetryUsageScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => userRetryUsageState,
+    setAppState: setUserRetryUsageState,
+    options: { ...retryContext.options, tools: [userRetryUsageAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_user_retry_usage',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_user_retry_usage' } } as never,
+  workflowRunId: userRetryUsageWorkflowRunId,
+  scriptPath: '/tmp/runtime-user-retry-usage-workflow.js',
+})
+assert.equal(userRetryUsageCallCount, 2)
+const userRetryUsageTask = Object.values(userRetryUsageState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(userRetryUsageTask)
+const userRetryUsageEvents = drainSdkEvents()
+const userRetryUsageSdkTermination = userRetryUsageEvents.find(
+  event =>
+    event.subtype === 'task_notification' &&
+    event.task_id === userRetryUsageTask.id,
+)
+assert.equal(userRetryUsageSdkTermination?.subtype, 'task_notification')
+assert.ok(userRetryUsageSdkTermination.output_file)
+const userRetryUsageOutput = await readFile(
+  userRetryUsageSdkTermination.output_file,
+  'utf8',
+)
+const userRetryUsageSession = await loadWorkflowRunSession({
+  cwd: scriptCwd,
+  workflowRunId: userRetryUsageWorkflowRunId,
+})
+assert.deepEqual({
+  retriedAgentId: userRetryUsageRetriedAgentId,
+  abortReason: userRetryUsageAbortReason,
+  taskTokens: userRetryUsageTask.tokenCount,
+  taskToolUses: userRetryUsageTask.toolUseCount,
+  sessionTokens: userRetryUsageSession?.tokenCount,
+  sessionToolUses: userRetryUsageSession?.toolUseCount,
+  sdkTokens: userRetryUsageSdkTermination?.usage?.total_tokens,
+  sdkToolUses: userRetryUsageSdkTermination?.usage?.tool_uses,
+  scriptSpent: Number(userRetryUsageOutput.match(/"spent":\s*(\d+)/)?.[1]),
+  sessionResultTokens: userRetryUsageSession?.results[0]?.tokenCount,
+  sessionResultToolUses: userRetryUsageSession?.results[0]?.toolUseCount,
+}, {
+  retriedAgentId: 'user-retry-usage-agent',
+  abortReason: 'user-retry',
+  taskTokens: 31,
+  taskToolUses: 3,
+  sessionTokens: 31,
+  sessionToolUses: 3,
+  sdkTokens: 31,
+  sdkToolUses: 3,
+  scriptSpent: 31,
+  sessionResultTokens: 20,
+  sessionResultToolUses: 2,
+})
+const userRetryUsageTranscriptDir = userRetryUsageResult.match(/Transcript dir: (.+)/)?.[1]
+assert.ok(userRetryUsageTranscriptDir)
+const userRetryUsageJournalRaw = await readFile(join(userRetryUsageTranscriptDir, 'journal.jsonl'), 'utf8')
+const userRetryUsageJournalEntries = userRetryUsageJournalRaw
+  .trim()
+  .split('\n')
+  .map(line => JSON.parse(line) as Record<string, unknown>)
+const userRetryUsageAttempt0Id = 'Retry:user-retry-usage-agent:attempt:0'
+const userRetryUsageRetryAttemptId = 'Retry:user-retry-usage-agent:attempt:1'
+const userRetryUsageInterruptedEntry = userRetryUsageJournalEntries.find(
+  entry =>
+    entry.type === 'result' &&
+    entry.attemptId === userRetryUsageAttempt0Id &&
+    entry.status === 'interrupted',
+)
+const userRetryUsageRetrySuccessEntry = userRetryUsageJournalEntries.find(
+  entry =>
+    entry.type === 'result' &&
+    entry.attemptId === userRetryUsageRetryAttemptId &&
+    entry.retryOfAttemptId === userRetryUsageAttempt0Id &&
+    entry.status === 'completed',
+)
+const userRetryUsageJournalCacheEntries = await readWorkflowJournalCacheEntries(userRetryUsageTranscriptDir)
+assert.deepEqual({
+  interruptedStatus: userRetryUsageInterruptedEntry?.status,
+  interruptedTokens: userRetryUsageInterruptedEntry?.tokenCount,
+  interruptedToolUses: userRetryUsageInterruptedEntry?.toolUseCount,
+  attempt0HasFailedResult: userRetryUsageJournalEntries.some(
+    entry =>
+      entry.type === 'result' &&
+      entry.attemptId === userRetryUsageAttempt0Id &&
+      entry.status === 'failed',
+  ),
+  retrySuccessExists: Boolean(userRetryUsageRetrySuccessEntry),
+  cacheEntryCount: userRetryUsageJournalCacheEntries.length,
+  cacheHasInterruptedResult: userRetryUsageJournalCacheEntries.some(entry => entry.result === null),
+}, {
+  interruptedStatus: 'interrupted',
+  interruptedTokens: 11,
+  interruptedToolUses: 1,
+  attempt0HasFailedResult: false,
+  retrySuccessExists: true,
+  cacheEntryCount: 1,
+  cacheHasInterruptedResult: false,
+})
+assert.match(userRetryUsageResult, /runtime-user-retry-usage-workflow/)
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+drainSdkEvents()
+const parallelUserRetryScript = `export const meta = {
+  name: "runtime-parallel-user-retry-usage-workflow",
+  description: "Workflow preserving parallel user retry attempt usage.",
+  phases: [{ title: "Retry", detail: "Parallel user retry usage agents" }],
+}
+phase("Retry")
+const [retried, neighbor] = await parallel([
+  () => agent("parallel-user-retry-agent", { label: "parallel-user-retry-agent" }),
+  () => agent("parallel-other-agent", { label: "parallel-other-agent" }),
+])
+return { retried, neighbor, spent: budget.spent() }
+`
+let parallelUserRetryState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setParallelUserRetryState = (updater: (prev: AppState) => AppState): void => {
+  parallelUserRetryState = updater(parallelUserRetryState)
+}
+const parallelUserRetryCallCounts = new Map<string, number>()
+let parallelUserRetryRequested = false
+let releaseParallelUserRetryFirstAttempts: (() => void) | undefined
+const parallelUserRetryFirstAttemptsReady = new Promise<void>(resolve => {
+  releaseParallelUserRetryFirstAttempts = resolve
+})
+const maybeRequestParallelUserRetries = () => {
+  if (parallelUserRetryRequested) return
+  const task = Object.values(parallelUserRetryState.tasks).find(
+    (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+  )
+  if (
+    !task?.agentControllers?.['parallel-user-retry-agent'] ||
+    !task.agentControllers['parallel-other-agent']
+  ) {
+    return
+  }
+  parallelUserRetryRequested = true
+  retryWorkflowAgent(task.id, 'parallel-user-retry-agent', setParallelUserRetryState)
+  retryWorkflowAgent(task.id, 'parallel-other-agent', setParallelUserRetryState)
+  releaseParallelUserRetryFirstAttempts?.()
+}
+const parallelUserRetryProgress = (
+  messageId: string,
+  inputTokens: number,
+  outputTokens: number,
+  toolIds: string[],
+) => ({
+  data: {
+    type: 'agent_progress',
+    message: {
+      type: 'assistant',
+      uuid: `00000000-0000-4000-8000-${messageId.padStart(12, '0')}`,
+      timestamp: '2026-07-14T00:00:00.000Z',
+      message: {
+        id: `msg_parallel_user_retry_${messageId}`,
+        role: 'assistant',
+        model: 'claude-test',
+        content: toolIds.map(toolId => ({
+          type: 'tool_use',
+          id: toolId,
+          name: 'Read',
+          input: { file_path: `${toolId}.txt` },
+        })),
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: {
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+        },
+      },
+    },
+  },
+})
+const parallelUserRetryAgentTool = {
+  name: 'Agent',
+  async call(
+    input: { prompt?: string },
+    _agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    const prompt = input.prompt ?? ''
+    const callCount = (parallelUserRetryCallCounts.get(prompt) ?? 0) + 1
+    parallelUserRetryCallCounts.set(prompt, callCount)
+    if (callCount === 1) {
+      if (prompt === 'parallel-user-retry-agent') {
+        onProgress?.(parallelUserRetryProgress(
+          '21',
+          10,
+          1,
+          ['toolu_parallel_user_retry_target_first'],
+        ))
+      } else {
+        onProgress?.(parallelUserRetryProgress(
+          '22',
+          100,
+          4,
+          [
+            'toolu_parallel_user_retry_other_first_1',
+            'toolu_parallel_user_retry_other_first_2',
+          ],
+        ))
+      }
+      maybeRequestParallelUserRetries()
+      if (!parallelUserRetryRequested) {
+        await parallelUserRetryFirstAttemptsReady
+      } else if (prompt === 'parallel-other-agent') {
+        await Promise.resolve()
+      }
+      throw new Error('retry requested')
+    }
+    if (prompt === 'parallel-user-retry-agent') {
+      return {
+        data: {
+          status: 'completed',
+          content: [{ type: 'text', text: 'parallel-user-retry-ok' }],
+          totalTokens: 20,
+          totalToolUseCount: 2,
+          totalDurationMs: 5,
+        },
+      }
+    }
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'parallel-other-ok' }],
+        totalTokens: 30,
+        totalToolUseCount: 3,
+        totalDurationMs: 7,
+      },
+    }
+  },
+}
+const parallelUserRetryWorkflowRunId = `wf_script_parallel_user_retry_usage_${process.pid}`
+const parallelUserRetryResult = await runWorkflowScript({
+  script: parallelUserRetryScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-parallel-user-retry-usage-workflow',
+    description: 'Workflow preserving parallel user retry attempt usage.',
+    defaults: { ...retryPlan.defaults, maxConcurrency: 2 },
+    phases: [{ ...retryPlan.phases[0]!, id: 'Retry', description: 'Parallel user retry usage agents', prompt: 'Parallel user retry usage agents', fanout: 2, concurrency: 2 }],
+    totalAgents: 2,
+    runScriptSnapshot: parallelUserRetryScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => parallelUserRetryState,
+    setAppState: setParallelUserRetryState,
+    options: { ...retryContext.options, tools: [parallelUserRetryAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_parallel_user_retry_usage',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_parallel_user_retry_usage' } } as never,
+  workflowRunId: parallelUserRetryWorkflowRunId,
+  scriptPath: '/tmp/runtime-parallel-user-retry-usage-workflow.js',
+})
+assert.deepEqual(Object.fromEntries(parallelUserRetryCallCounts), {
+  'parallel-user-retry-agent': 2,
+  'parallel-other-agent': 2,
+})
+const parallelUserRetryTask = Object.values(parallelUserRetryState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(parallelUserRetryTask)
+const parallelUserRetryCompletedStateResult = parallelUserRetryTask.results.find(
+  current => current.agentId === 'parallel-user-retry-agent (retry 1)',
+)
+assert.deepEqual({
+  tokenCount: parallelUserRetryCompletedStateResult?.tokenCount,
+  toolUseCount: parallelUserRetryCompletedStateResult?.toolUseCount,
+  durationMs: parallelUserRetryCompletedStateResult?.durationMs,
+}, {
+  tokenCount: 20,
+  toolUseCount: 2,
+  durationMs: 5,
+})
+const parallelUserRetryTranscriptDir = parallelUserRetryResult.match(/Transcript dir: (.+)/)?.[1]
+assert.ok(parallelUserRetryTranscriptDir)
+const parallelUserRetryJournalRaw = await readFile(join(parallelUserRetryTranscriptDir, 'journal.jsonl'), 'utf8')
+const parallelUserRetryJournalEntries = parallelUserRetryJournalRaw
+  .trim()
+  .split('\n')
+  .map(line => JSON.parse(line) as Record<string, unknown>)
+const parallelUserRetryAttempt0Id = 'Retry:parallel-user-retry-agent:attempt:0'
+const parallelUserRetryAttempt1Id = 'Retry:parallel-user-retry-agent:attempt:1'
+const parallelOtherRetryAttempt0Id = 'Retry:parallel-other-agent:attempt:0'
+const parallelUserRetryInterruptedEntry = parallelUserRetryJournalEntries.find(
+  entry =>
+    entry.type === 'result' &&
+    entry.attemptId === parallelUserRetryAttempt0Id &&
+    entry.status === 'interrupted',
+)
+const parallelOtherRetryInterruptedEntry = parallelUserRetryJournalEntries.find(
+  entry =>
+    entry.type === 'result' &&
+    entry.attemptId === parallelOtherRetryAttempt0Id &&
+    entry.status === 'interrupted',
+)
+const parallelUserRetryCompletedEntry = parallelUserRetryJournalEntries.find(
+  entry =>
+    entry.type === 'result' &&
+    entry.attemptId === parallelUserRetryAttempt1Id &&
+    entry.status === 'completed',
+)
+assert.deepEqual({
+  interruptedStatus: parallelUserRetryInterruptedEntry?.status,
+  interruptedTokens: parallelUserRetryInterruptedEntry?.tokenCount,
+  interruptedToolUses: parallelUserRetryInterruptedEntry?.toolUseCount,
+  otherInterruptedStatus: parallelOtherRetryInterruptedEntry?.status,
+  otherInterruptedTokens: parallelOtherRetryInterruptedEntry?.tokenCount,
+  otherInterruptedToolUses: parallelOtherRetryInterruptedEntry?.toolUseCount,
+  completedStatus: parallelUserRetryCompletedEntry?.status,
+  completedTokens: parallelUserRetryCompletedEntry?.tokenCount,
+  completedToolUses: parallelUserRetryCompletedEntry?.toolUseCount,
+  completedDurationMs: parallelUserRetryCompletedEntry?.durationMs,
+}, {
+  interruptedStatus: 'interrupted',
+  interruptedTokens: 11,
+  interruptedToolUses: 1,
+  otherInterruptedStatus: 'interrupted',
+  otherInterruptedTokens: 104,
+  otherInterruptedToolUses: 2,
+  completedStatus: 'completed',
+  completedTokens: parallelUserRetryCompletedStateResult?.tokenCount,
+  completedToolUses: parallelUserRetryCompletedStateResult?.toolUseCount,
+  completedDurationMs: parallelUserRetryCompletedStateResult?.durationMs,
+})
+dequeueAllMatching(command => command.mode === 'task-notification')
+
 let automaticRetryState = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -1185,6 +1657,183 @@ const automaticRetryTask = Object.values(automaticRetryState.tasks).find(
 assert.equal(automaticRetryTask?.startedAgentAttempts, 2)
 assert.equal(automaticRetryTask?.retryCount, 1)
 assert.deepEqual(automaticRetryTask?.phases[0]?.agentIds, ['agent-1 (retry 1)'])
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+
+const automaticRetryUsageScript = `export const meta = {
+  name: "runtime-automatic-retry-usage-workflow",
+  description: "Workflow preserving automatic retry attempt usage.",
+  phases: [{ title: "Retry", detail: "Retry usage agent" }],
+}
+phase("Retry")
+const result = await agent("retry-usage-agent", { label: "retry-usage-agent" })
+return { result, spent: budget.spent() }
+`
+let automaticRetryUsageState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+let automaticRetryUsageCallCount = 0
+const automaticRetryUsageAgentTool = {
+  name: 'Agent',
+  async call(
+    _input: unknown,
+    _agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    automaticRetryUsageCallCount++
+    if (automaticRetryUsageCallCount === 1) {
+      onProgress?.({
+        data: {
+          type: 'agent_progress',
+          message: {
+            type: 'assistant',
+            uuid: '00000000-0000-4000-8000-000000000014',
+            timestamp: '2026-07-14T00:00:00.000Z',
+            message: {
+              id: 'msg_automatic_retry_usage_first_progress',
+              role: 'assistant',
+              model: 'claude-test',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_automatic_retry_usage_first_1',
+                  name: 'Read',
+                  input: { file_path: 'first-1.txt' },
+                },
+                {
+                  type: 'tool_use',
+                  id: 'toolu_automatic_retry_usage_first_2',
+                  name: 'Bash',
+                  input: { command: 'true' },
+                },
+              ],
+              stop_reason: 'tool_use',
+              stop_sequence: null,
+              usage: {
+                input_tokens: 30,
+                output_tokens: 7,
+                cache_creation_input_tokens: null,
+                cache_read_input_tokens: null,
+              },
+            },
+          },
+        },
+      })
+      throw new Error('429 too many requests')
+    }
+    onProgress?.({
+      data: {
+        type: 'agent_progress',
+        message: {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000015',
+          timestamp: '2026-07-14T00:00:00.000Z',
+          message: {
+            id: 'msg_automatic_retry_usage_second_progress',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_automatic_retry_usage_second_1',
+                name: 'Read',
+                input: { file_path: 'second-1.txt' },
+              },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: 20,
+              output_tokens: 4,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+        },
+      },
+    })
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'automatic-retry-usage-ok' }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const automaticRetryUsageResult = await runWorkflowScript({
+  script: automaticRetryUsageScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-automatic-retry-usage-workflow',
+    description: 'Workflow preserving automatic retry attempt usage.',
+    defaults: { ...retryPlan.defaults, maxRetries: 1 },
+    phases: [{ ...retryPlan.phases[0]!, id: 'Retry', description: 'Retry usage agent', prompt: 'Retry usage agent' }],
+    runScriptSnapshot: automaticRetryUsageScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => automaticRetryUsageState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      automaticRetryUsageState = updater(automaticRetryUsageState)
+    },
+    options: { ...retryContext.options, tools: [automaticRetryUsageAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_automatic_retry_usage',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_automatic_retry_usage' } } as never,
+  workflowRunId: `wf_script_automatic_retry_usage_${process.pid}`,
+  scriptPath: '/tmp/runtime-automatic-retry-usage-workflow.js',
+})
+assert.equal(automaticRetryUsageCallCount, 2)
+const automaticRetryUsageTask = Object.values(automaticRetryUsageState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.deepEqual({
+  tokenCount: automaticRetryUsageTask?.tokenCount,
+  toolUseCount: automaticRetryUsageTask?.toolUseCount,
+}, {
+  tokenCount: 61,
+  toolUseCount: 3,
+})
+const automaticRetryUsageEvents = drainSdkEvents()
+const automaticRetryUsageSdkTermination = automaticRetryUsageEvents.find(
+  event =>
+    event.subtype === 'task_notification' &&
+    event.task_id === automaticRetryUsageTask?.id,
+)
+assert.equal(automaticRetryUsageSdkTermination?.subtype, 'task_notification')
+assert.ok(automaticRetryUsageSdkTermination.output_file)
+const automaticRetryUsageTranscriptDir = automaticRetryUsageResult.match(/Transcript dir: (.+)/)?.[1]
+assert.ok(automaticRetryUsageTranscriptDir)
+const automaticRetryUsageOutput = await readFile(
+  automaticRetryUsageSdkTermination.output_file,
+  'utf8',
+)
+const automaticRetryUsageJournalEntries = (
+  await readFile(join(automaticRetryUsageTranscriptDir, 'journal.jsonl'), 'utf8')
+)
+  .trim()
+  .split('\n')
+  .map(line => JSON.parse(line) as Record<string, unknown>)
+const automaticRetryUsageFailedJournalEntry = automaticRetryUsageJournalEntries.find(
+  entry => entry.type === 'result' && entry.status === 'failed',
+)
+assert.deepEqual({
+  sdkTokens: automaticRetryUsageSdkTermination?.usage?.total_tokens,
+  sdkToolUses: automaticRetryUsageSdkTermination?.usage?.tool_uses,
+  scriptSpent: Number(automaticRetryUsageOutput.match(/"spent":\s*(\d+)/)?.[1]),
+  failedJournalDurationType: typeof automaticRetryUsageFailedJournalEntry?.durationMs,
+}, {
+  sdkTokens: 61,
+  sdkToolUses: 3,
+  scriptSpent: 61,
+  failedJournalDurationType: 'number',
+})
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 const partialRetryScript = `export const meta = {
@@ -1462,6 +2111,139 @@ assert.equal(missingSchemaTask?.status, 'completed')
 assert.equal(missingSchemaTask?.phases[0]?.completedAgentIds.length, 0)
 assert.equal(missingSchemaTask?.phases[0]?.failedAgentIds.length, 1)
 
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+let missingSchemaUsageState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const missingSchemaUsageAgentTool = {
+  name: 'Agent',
+  async call(
+    _input: unknown,
+    _agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
+    onProgress?.({
+      data: {
+        type: 'agent_progress',
+        message: {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000016',
+          timestamp: '2026-07-14T00:00:00.000Z',
+          message: {
+            id: 'msg_missing_schema_usage_progress',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_missing_schema_usage_1',
+                name: 'Read',
+                input: { file_path: 'schema-usage-1.txt' },
+              },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: 3,
+              output_tokens: 4,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+        },
+      },
+    })
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        totalTokens: 42,
+        totalToolUseCount: 2,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const missingSchemaUsageScript = `export const meta = {
+  name: "runtime-missing-schema-usage-workflow",
+  description: "Workflow preserving missing schema usage.",
+  phases: [{ title: "Schema", detail: "Missing schema usage agent" }],
+}
+phase("Schema")
+const result = await agent("return schema usage", {
+  label: "missing-schema-usage-agent",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["ok"],
+    properties: { ok: { type: "boolean" } },
+  },
+})
+return { result, spent: budget.spent() }
+`
+const missingSchemaUsageResult = await runWorkflowScript({
+  script: missingSchemaUsageScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-missing-schema-usage-workflow',
+    description: 'Workflow preserving missing schema usage.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Schema', description: 'Missing schema usage agent', prompt: 'Missing schema usage agent' }],
+    runScriptSnapshot: missingSchemaUsageScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => missingSchemaUsageState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      missingSchemaUsageState = updater(missingSchemaUsageState)
+    },
+    options: { ...retryContext.options, tools: [missingSchemaUsageAgentTool] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_missing_schema_usage',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_missing_schema_usage' } } as never,
+  workflowRunId: `wf_script_missing_schema_usage_${process.pid}`,
+  scriptPath: '/tmp/runtime-missing-schema-usage-workflow.js',
+})
+const missingSchemaUsageTask = Object.values(missingSchemaUsageState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(missingSchemaUsageTask?.status, 'completed')
+assert.equal(missingSchemaUsageTask?.phases[0]?.failedAgentIds.length, 1)
+assert.deepEqual({
+  tokenCount: missingSchemaUsageTask?.tokenCount,
+  toolUseCount: missingSchemaUsageTask?.toolUseCount,
+}, {
+  tokenCount: 42,
+  toolUseCount: 2,
+})
+const missingSchemaUsageEvents = drainSdkEvents()
+const missingSchemaUsageSdkTermination = missingSchemaUsageEvents.find(
+  event =>
+    event.subtype === 'task_notification' &&
+    event.task_id === missingSchemaUsageTask?.id,
+)
+assert.equal(missingSchemaUsageSdkTermination?.subtype, 'task_notification')
+assert.ok(missingSchemaUsageSdkTermination.output_file)
+assert.equal(missingSchemaUsageResult.includes('runtime-missing-schema-usage-workflow'), true)
+const missingSchemaUsageOutput = await readFile(
+  missingSchemaUsageSdkTermination.output_file,
+  'utf8',
+)
+assert.deepEqual({
+  sdkTokens: missingSchemaUsageSdkTermination?.usage?.total_tokens,
+  sdkToolUses: missingSchemaUsageSdkTermination?.usage?.tool_uses,
+  scriptSpent: Number(missingSchemaUsageOutput.match(/"spent":\s*(\d+)/)?.[1]),
+}, {
+  sdkTokens: 42,
+  sdkToolUses: 2,
+  scriptSpent: 42,
+})
+
 dequeueAllMatching(command => command.mode === 'task-notification')
 const multiPhaseScript = `export const meta = {
   name: "runtime-multi-phase-workflow",
@@ -1520,6 +2302,7 @@ assert.deepEqual(
   ],
 )
 
+drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')
 const skipScript = `export const meta = {
   name: "runtime-skip-agent-workflow",
@@ -1527,7 +2310,8 @@ const skipScript = `export const meta = {
   phases: [{ title: "Skip", detail: "Skip agent" }],
 }
 phase("Skip")
-return await agent("skip me")
+const skipped = await agent("skip me", { label: "skipped-agent" })
+return { skipped, spent: budget.spent() }
 `
 let skipState = {
   tasks: {},
@@ -1537,19 +2321,65 @@ const setSkipState = (updater: (prev: AppState) => AppState): void => {
   skipState = updater(skipState)
 }
 let skipCallCount = 0
+let skipAbortReason: unknown
 const skipAgentTool = {
   name: 'Agent',
-  async call() {
+  async call(
+    _input: unknown,
+    agentContext: ToolUseContext,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: unknown) => void,
+  ) {
     skipCallCount++
+    onProgress?.({
+      data: {
+        type: 'agent_progress',
+        message: {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000018',
+          timestamp: '2026-07-14T00:00:00.000Z',
+          message: {
+            id: 'msg_skip_usage_progress',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_skip_usage_1',
+                name: 'Read',
+                input: { file_path: 'skip-usage-1.txt' },
+              },
+              {
+                type: 'tool_use',
+                id: 'toolu_skip_usage_2',
+                name: 'Bash',
+                input: { command: 'true' },
+              },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: 10,
+              output_tokens: 3,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+        },
+      },
+    })
     const task = Object.values(skipState.tasks).find(
       (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
     )
     assert.ok(task?.currentAgentId)
     skipWorkflowAgent(task.id, task.currentAgentId, setSkipState)
+    skipAbortReason = agentContext.abortController.signal.reason
     throw new Error('skip requested')
   },
 }
-await runWorkflowScript({
+const skipWorkflowRunId = `wf_script_skip_${process.pid}`
+const skipResult = await runWorkflowScript({
   script: skipScript,
   plan: {
     ...retryPlan,
@@ -1568,13 +2398,87 @@ await runWorkflowScript({
   } as unknown as ToolUseContext,
   canUseTool: async () => ({ behavior: 'allow' }),
   assistantMessage: { message: { id: 'msg_script_skip' } } as never,
-  workflowRunId: `wf_script_skip_${process.pid}`,
+  workflowRunId: skipWorkflowRunId,
   scriptPath: '/tmp/runtime-skip-agent-workflow.js',
 })
 const skipNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(skipNotification)
-assert.match(String(skipNotification.value), /Workflow completed/)
+assert.match(String(skipNotification.value), /<status>completed<\/status>/)
 assert.equal(skipCallCount, 1)
+const skipTask = Object.values(skipState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.ok(skipTask)
+const skipSdkEvents = drainSdkEvents()
+const skipSdkTermination = skipSdkEvents.find(
+  event =>
+    event.subtype === 'task_notification' &&
+    event.task_id === skipTask.id,
+)
+assert.equal(skipSdkTermination?.subtype, 'task_notification')
+assert.ok(skipSdkTermination.output_file)
+const skipOutput = await readFile(skipSdkTermination.output_file, 'utf8')
+const skipSession = await loadWorkflowRunSession({
+  cwd: scriptCwd,
+  workflowRunId: skipWorkflowRunId,
+})
+const skipTranscriptDir = skipResult.match(/Transcript dir: (.+)/)?.[1]
+assert.ok(skipTranscriptDir)
+const skipJournalRaw = await readFile(join(skipTranscriptDir, 'journal.jsonl'), 'utf8')
+const skipJournalEntries = skipJournalRaw
+  .trim()
+  .split('\n')
+  .map(line => JSON.parse(line) as Record<string, unknown>)
+const skipJournalResult = skipJournalEntries.find(entry => entry.type === 'result')
+assert.deepEqual({
+  abortReason: skipAbortReason,
+  taskStatus: skipTask.status,
+  taskTokens: skipTask.tokenCount,
+  taskToolUses: skipTask.toolUseCount,
+  taskResultStatus: skipTask.results[0]?.status,
+  taskResultTokens: skipTask.results[0]?.tokenCount,
+  taskResultToolUses: skipTask.results[0]?.toolUseCount,
+  sessionStatus: skipSession?.status,
+  sessionTokens: skipSession?.tokenCount,
+  sessionToolUses: skipSession?.toolUseCount,
+  sessionResultStatus: skipSession?.results[0]?.status,
+  sessionResultTokens: skipSession?.results[0]?.tokenCount,
+  sessionResultToolUses: skipSession?.results[0]?.toolUseCount,
+  sdkStatus: skipSdkTermination.status,
+  sdkTokens: skipSdkTermination.usage?.total_tokens,
+  sdkToolUses: skipSdkTermination.usage?.tool_uses,
+  scriptSpent: Number(skipOutput.match(/"spent":\s*(\d+)/)?.[1]),
+  journalStatus: skipJournalResult?.status,
+  journalTokens: skipJournalResult?.tokenCount,
+  journalToolUses: skipJournalResult?.toolUseCount,
+  journalDurationType: typeof skipJournalResult?.durationMs,
+  journalHasFailedResult: skipJournalEntries.some(
+    entry => entry.type === 'result' && entry.status === 'failed',
+  ),
+}, {
+  abortReason: 'user-skip',
+  taskStatus: 'completed',
+  taskTokens: 13,
+  taskToolUses: 2,
+  taskResultStatus: 'skipped',
+  taskResultTokens: 13,
+  taskResultToolUses: 2,
+  sessionStatus: 'completed',
+  sessionTokens: 13,
+  sessionToolUses: 2,
+  sessionResultStatus: 'skipped',
+  sessionResultTokens: 13,
+  sessionResultToolUses: 2,
+  sdkStatus: 'completed',
+  sdkTokens: 13,
+  sdkToolUses: 2,
+  scriptSpent: 13,
+  journalStatus: 'skipped',
+  journalTokens: 13,
+  journalToolUses: 2,
+  journalDurationType: 'number',
+  journalHasFailedResult: false,
+})
 
 const corruptJournalDir = await mkdtemp(join(tmpdir(), 'workflow-corrupt-journal-'))
 await writeFile(join(corruptJournalDir, 'journal.jsonl'), '{"type":"result","key":"ok","agentId":"ok","status":"completed","result":"ok","timestamp":1}\n{"type"')
@@ -1659,6 +2563,92 @@ assert.deepEqual(failedTask?.agentAttempts.map(attempt => ({
   { agentId: 'failed-agent-a', attempt: 0, status: 'failed' },
   { agentId: 'failed-agent-b', attempt: 0, status: 'failed' },
 ])
+
+const promptTooLongScript = `export const meta = {
+  name: "runtime-prompt-too-long-workflow",
+  description: "Workflow preserving prompt-too-long failure metrics.",
+  phases: [{ title: "Fail", detail: "Prompt too long agent" }],
+}
+phase("Fail")
+return await parallel([
+  () => agent("prompt-too-long-agent", { label: "prompt-too-long-agent" }),
+])
+`
+const promptTooLongWorkflowRunId = `wf_prompt_too_long_${process.pid}`
+const promptTooLongCallCountBefore = agentToolCallCount
+const promptTooLongResult = await runWorkflowScript({
+  script: promptTooLongScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-prompt-too-long-workflow',
+    description: 'Workflow preserving prompt-too-long failure metrics.',
+    phases: [
+      {
+        ...failedPlan.phases[0]!,
+        fanout: 1,
+        concurrency: 1,
+      },
+    ],
+    totalAgents: 1,
+    runScriptSnapshot: promptTooLongScript,
+  },
+  args: { case: 'unit' },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_prompt_too_long_test' } } as never,
+  workflowRunId: promptTooLongWorkflowRunId,
+  scriptPath: '/tmp/runtime-prompt-too-long-workflow.js',
+})
+assert.equal(agentToolCallCount, promptTooLongCallCountBefore + 1)
+const promptTooLongTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState =>
+    task.type === 'local_workflow' && task.workflowRunId === promptTooLongWorkflowRunId,
+)
+assert.ok(promptTooLongTask)
+assert.equal(promptTooLongTask.retryCount, 0)
+assert.equal(promptTooLongTask.tokenCount, 173_379)
+assert.equal(promptTooLongTask.toolUseCount, 12)
+assert.deepEqual(promptTooLongTask.results.map(result => ({
+  status: result.status,
+  error: result.error,
+  errorKind: result.errorKind,
+  prompt: result.prompt,
+  tokenCount: result.tokenCount,
+  toolUseCount: result.toolUseCount,
+  durationMs: result.durationMs,
+})), [
+  {
+    status: 'failed',
+    error: 'Prompt is too long',
+    errorKind: 'prompt_too_long',
+    prompt: 'prompt-too-long-agent',
+    tokenCount: 173_379,
+    toolUseCount: 12,
+    durationMs: undefined,
+  },
+])
+const promptTooLongTranscriptDirMatch = promptTooLongResult.match(/Transcript dir: (.+)/)
+assert.ok(promptTooLongTranscriptDirMatch?.[1])
+const promptTooLongJournalRaw = await readFile(
+  join(promptTooLongTranscriptDirMatch[1], 'journal.jsonl'),
+  'utf8',
+)
+assert.match(promptTooLongJournalRaw, /"errorKind":"prompt_too_long"/)
+assert.match(promptTooLongJournalRaw, /"tokenCount":173379/)
+assert.match(promptTooLongJournalRaw, /"toolUseCount":12/)
+assert.match(promptTooLongJournalRaw, /"durationMs":\d+/)
+assert.doesNotMatch(promptTooLongJournalRaw, /"retryOfAttemptId"/)
+const promptTooLongSession = await loadWorkflowRunSession({
+  cwd: scriptCwd,
+  workflowRunId: promptTooLongWorkflowRunId,
+})
+assert.equal(promptTooLongSession?.results.length, 1)
+assert.deepEqual(promptTooLongSession?.results[0], promptTooLongTask.results[0])
+assert.equal(promptTooLongSession?.results[0]?.prompt, 'prompt-too-long-agent')
+assert.equal(
+  classifyWorkflowAgentError(new Error('Prompt is too long')),
+  'prompt_too_long',
+)
 
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')

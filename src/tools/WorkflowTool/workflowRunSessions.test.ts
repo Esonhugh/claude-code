@@ -4,12 +4,19 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { createWorkflowScriptAgentChainIdentity } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
 import {
+  appendWorkflowRunEvent,
+  completeWorkflowRunSession,
+  failWorkflowRunSession,
   listWorkflowRunSessions,
   loadWorkflowRunSession,
   officialProjectDirName,
+  startWorkflowRunSession,
+  updateWorkflowRunSessionProgress,
+  updateWorkflowRunSessionStatus,
 } from './workflowRunSessions.js'
 
 const generatedRunId = createWorkflowRunId()
@@ -171,5 +178,423 @@ await assert.rejects(
   SyntaxError,
 )
 assert.equal(await readFile(corruptSessionPath, 'utf8'), '{invalid json')
+
+const staleRoot = await mkdtemp(join(tmpdir(), 'workflow-stale-session-'))
+const staleRunId = 'wf_stale_append'
+const staleSnapshot = await startWorkflowRunSession({
+  cwd: staleRoot,
+  taskId: 'w-stale-append',
+  workflowRunId: staleRunId,
+  plan: {
+    name: 'stale-append-workflow',
+    description: 'stale append workflow',
+    defaults: {
+      maxConcurrency: 1,
+      maxAgents: 1,
+      maxRetries: 0,
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      execution: 'agent',
+    },
+    phases: [],
+    totalAgents: 1,
+  },
+})
+const terminalResults = [{
+  phaseId: 'phase-1',
+  agentId: 'agent-1',
+  index: 0,
+  status: 'completed' as const,
+  output: 'terminal result',
+  tokenCount: 123,
+  toolUseCount: 4,
+}]
+const terminalResumeCacheEntries = [{
+  index: 0,
+  identity: 'terminal-cache-key',
+  phase: 'phase-1',
+  label: 'agent-1',
+  result: 'cached terminal result',
+  completedAt: 1783399711660,
+}]
+await completeWorkflowRunSession({
+  cwd: staleRoot,
+  session: staleSnapshot,
+  results: terminalResults,
+  resumeCacheEntries: terminalResumeCacheEntries,
+  tokenCount: 123,
+  toolUseCount: 4,
+})
+const staleAppendEvent = {
+  type: 'workflow_log' as const,
+  workflowRunId: staleRunId,
+  message: 'late stale event',
+  timestamp: 1783399711661,
+}
+await appendWorkflowRunEvent({
+  cwd: staleRoot,
+  session: staleSnapshot,
+  event: staleAppendEvent,
+})
+const staleFinalSession = await loadWorkflowRunSession({ cwd: staleRoot, workflowRunId: staleRunId })
+assert.ok(staleFinalSession)
+assert.equal(staleFinalSession.status, 'completed')
+assert.deepEqual(staleFinalSession.results, terminalResults)
+assert.deepEqual(staleFinalSession.resumeCacheEntries, terminalResumeCacheEntries)
+assert.equal(staleFinalSession.tokenCount, 123)
+assert.equal(staleFinalSession.toolUseCount, 4)
+assert.deepEqual(staleFinalSession.events.at(-1), staleAppendEvent)
+
+const concurrentAppendRoot = await mkdtemp(join(tmpdir(), 'workflow-concurrent-append-'))
+const concurrentAppendAttempts = 8
+const concurrentAppendCount = 48
+let concurrentAppendActual = {
+  attempt: -1,
+  eventCount: 0,
+  eventIds: [] as string[],
+  missingEventIds: [] as string[],
+}
+let concurrentAppendExpected = concurrentAppendActual
+for (let attempt = 0; attempt < concurrentAppendAttempts; attempt++) {
+  const workflowRunId = `wf_concurrent_append_${attempt}`
+  const appendSnapshot = await startWorkflowRunSession({
+    cwd: concurrentAppendRoot,
+    taskId: `w-concurrent-append-${attempt}`,
+    workflowRunId,
+    plan: {
+      name: 'concurrent-append-workflow',
+      description: 'concurrent append workflow',
+      defaults: {
+        maxConcurrency: 1,
+        maxAgents: 1,
+        maxRetries: 0,
+        fanout: 1,
+        concurrency: 1,
+        review: 'none',
+        execution: 'agent',
+      },
+      phases: [],
+      totalAgents: 1,
+    },
+  })
+  const appendEvents = Array.from({ length: concurrentAppendCount }, (_, index) => ({
+    type: 'workflow_log' as const,
+    workflowRunId,
+    message: `concurrent append ${attempt}:${index}`,
+    timestamp: 1783399711700 + index,
+  }))
+  await Promise.all(appendEvents.map(event => appendWorkflowRunEvent({
+    cwd: concurrentAppendRoot,
+    session: appendSnapshot,
+    event,
+  })))
+  const appendFinalSession = await loadWorkflowRunSession({
+    cwd: concurrentAppendRoot,
+    workflowRunId,
+  })
+  assert.ok(appendFinalSession)
+  const eventIds = appendFinalSession.events
+    .map(event => event.type === 'workflow_log' ? event.message : undefined)
+    .filter((message): message is string => typeof message === 'string')
+    .sort()
+  const expectedEventIds = appendEvents.map(event => event.message).sort()
+  concurrentAppendActual = {
+    attempt,
+    eventCount: eventIds.length,
+    eventIds,
+    missingEventIds: expectedEventIds.filter(eventId => !eventIds.includes(eventId)),
+  }
+  concurrentAppendExpected = {
+    attempt,
+    eventCount: expectedEventIds.length,
+    eventIds: expectedEventIds,
+    missingEventIds: [],
+  }
+  if (concurrentAppendActual.eventCount !== concurrentAppendExpected.eventCount ||
+    concurrentAppendActual.missingEventIds.length > 0) {
+    break
+  }
+}
+
+const terminalRaceRoot = await mkdtemp(join(tmpdir(), 'workflow-terminal-race-'))
+for (const firstStatus of ['completed', 'failed'] as const) {
+  const terminalRaceRunId = `wf_terminal_race_${firstStatus}`
+  const terminalRaceSnapshot = await startWorkflowRunSession({
+    cwd: terminalRaceRoot,
+    taskId: `w-terminal-race-${firstStatus}`,
+    workflowRunId: terminalRaceRunId,
+    plan: {
+      name: 'terminal-race-workflow',
+      description: 'terminal race workflow',
+      defaults: {
+        maxConcurrency: 1,
+        maxAgents: 1,
+        maxRetries: 0,
+        fanout: 1,
+        concurrency: 1,
+        review: 'none',
+        execution: 'agent',
+      },
+      phases: [],
+      totalAgents: 1,
+    },
+  })
+  const failedResults = [{
+    phaseId: 'phase-1',
+    agentId: 'agent-1',
+    index: 0,
+    status: 'failed' as const,
+    error: 'first terminal failure',
+    tokenCount: 321,
+    toolUseCount: 5,
+  }]
+  const complete = () => completeWorkflowRunSession({
+    cwd: terminalRaceRoot,
+    session: terminalRaceSnapshot,
+    results: terminalResults,
+    tokenCount: 123,
+    toolUseCount: 4,
+  })
+  const fail = () => failWorkflowRunSession({
+    cwd: terminalRaceRoot,
+    session: terminalRaceSnapshot,
+    results: failedResults,
+    error: 'first terminal failure',
+    tokenCount: 321,
+    toolUseCount: 5,
+  })
+  await Promise.all(firstStatus === 'completed'
+    ? [complete(), fail()]
+    : [fail(), complete()])
+  const terminalRaceFinalSession = await loadWorkflowRunSession({
+    cwd: terminalRaceRoot,
+    workflowRunId: terminalRaceRunId,
+  })
+  assert.ok(terminalRaceFinalSession)
+  assert.deepEqual({
+    status: terminalRaceFinalSession.status,
+    results: terminalRaceFinalSession.results,
+    tokenCount: terminalRaceFinalSession.tokenCount,
+    toolUseCount: terminalRaceFinalSession.toolUseCount,
+    error: terminalRaceFinalSession.error,
+  }, firstStatus === 'completed' ? {
+    status: 'completed',
+    results: terminalResults,
+    tokenCount: 123,
+    toolUseCount: 4,
+    error: undefined,
+  } : {
+    status: 'failed',
+    results: failedResults,
+    tokenCount: 321,
+    toolUseCount: 5,
+    error: 'first terminal failure',
+  })
+}
+
+const pathAliasRoot = await mkdtemp(join(tmpdir(), 'workflow-path-alias-'))
+const pathAliasCwd = `${pathAliasRoot}/.`
+const pathAliasRunId = 'wf_path_alias'
+const pathAliasSnapshot = await startWorkflowRunSession({
+  cwd: pathAliasRoot,
+  taskId: 'w-path-alias',
+  workflowRunId: pathAliasRunId,
+  plan: {
+    name: 'path-alias-workflow',
+    description: 'path alias workflow',
+    defaults: {
+      maxConcurrency: 1,
+      maxAgents: 1,
+      maxRetries: 0,
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      execution: 'agent',
+    },
+    phases: [],
+    totalAgents: 1,
+  },
+})
+const pathAliasEvents = Array.from({ length: 48 }, (_, index) => ({
+  type: 'workflow_log' as const,
+  workflowRunId: pathAliasRunId,
+  message: `path alias append ${index}`,
+  timestamp: 1783399711750 + index,
+}))
+await Promise.all(pathAliasEvents.map((event, index) => appendWorkflowRunEvent({
+  cwd: index % 2 === 0 ? pathAliasRoot : pathAliasCwd,
+  session: pathAliasSnapshot,
+  event,
+})))
+const pathAliasFinalSession = await loadWorkflowRunSession({
+  cwd: pathAliasRoot,
+  workflowRunId: pathAliasRunId,
+})
+assert.ok(pathAliasFinalSession)
+assert.deepEqual(
+  pathAliasFinalSession.events
+    .map(event => event.type === 'workflow_log' ? event.message : undefined)
+    .filter((message): message is string => typeof message === 'string')
+    .sort(),
+  pathAliasEvents.map(event => event.message).sort(),
+)
+
+const appendCompleteRoot = await mkdtemp(join(tmpdir(), 'workflow-append-complete-'))
+const appendCompleteAttempts = 8
+const appendCompleteEventCount = 48
+let appendCompleteActual = {
+  attempt: -1,
+  status: 'completed',
+  results: [] as WorkflowAgentResult[],
+  tokenCount: 0 as number | undefined,
+  toolUseCount: 0 as number | undefined,
+}
+let appendCompleteExpected = appendCompleteActual
+for (let attempt = 0; attempt < appendCompleteAttempts; attempt++) {
+  const workflowRunId = `wf_append_complete_${attempt}`
+  const appendCompleteSnapshot = await startWorkflowRunSession({
+    cwd: appendCompleteRoot,
+    taskId: `w-append-complete-${attempt}`,
+    workflowRunId,
+    plan: {
+      name: 'append-complete-workflow',
+      description: 'append complete workflow',
+      defaults: {
+        maxConcurrency: 1,
+        maxAgents: 1,
+        maxRetries: 0,
+        fanout: 1,
+        concurrency: 1,
+        review: 'none',
+        execution: 'agent',
+      },
+      phases: [],
+      totalAgents: 1,
+    },
+  })
+  const completedResults = [{
+    phaseId: 'phase-1',
+    agentId: 'agent-1',
+    index: 0,
+    status: 'completed' as const,
+    output: `terminal result ${attempt}`,
+    tokenCount: 700 + attempt,
+    toolUseCount: 70 + attempt,
+  }]
+  const appendCompleteEvents = Array.from({ length: appendCompleteEventCount }, (_, index) => ({
+    type: 'workflow_log' as const,
+    workflowRunId,
+    message: `append complete ${attempt}:${index}`,
+    timestamp: 1783399711800 + index,
+  }))
+  const appendPromises = appendCompleteEvents.map(event => appendWorkflowRunEvent({
+    cwd: appendCompleteRoot,
+    session: appendCompleteSnapshot,
+    event,
+  }))
+  await Promise.all([
+    ...appendPromises,
+    completeWorkflowRunSession({
+      cwd: appendCompleteRoot,
+      session: appendCompleteSnapshot,
+      results: completedResults,
+      tokenCount: 700 + attempt,
+      toolUseCount: 70 + attempt,
+    }),
+  ])
+  const appendCompleteFinalSession = await loadWorkflowRunSession({
+    cwd: appendCompleteRoot,
+    workflowRunId,
+  })
+  assert.ok(appendCompleteFinalSession)
+  appendCompleteActual = {
+    attempt,
+    status: appendCompleteFinalSession.status,
+    results: appendCompleteFinalSession.results,
+    tokenCount: appendCompleteFinalSession.tokenCount,
+    toolUseCount: appendCompleteFinalSession.toolUseCount,
+  }
+  appendCompleteExpected = {
+    attempt,
+    status: 'completed',
+    results: completedResults,
+    tokenCount: 700 + attempt,
+    toolUseCount: 70 + attempt,
+  }
+  if (appendCompleteActual.status !== appendCompleteExpected.status ||
+    JSON.stringify(appendCompleteActual.results) !== JSON.stringify(appendCompleteExpected.results) ||
+    appendCompleteActual.tokenCount !== appendCompleteExpected.tokenCount ||
+    appendCompleteActual.toolUseCount !== appendCompleteExpected.toolUseCount) {
+    break
+  }
+}
+assert.deepEqual({
+  concurrentAppendActual,
+  appendCompleteActual,
+}, {
+  concurrentAppendActual: concurrentAppendExpected,
+  appendCompleteActual: appendCompleteExpected,
+})
+
+const terminalGuardRoot = await mkdtemp(join(tmpdir(), 'workflow-terminal-guard-'))
+const terminalGuardRunId = 'wf_terminal_guard'
+const terminalGuardSnapshot = await startWorkflowRunSession({
+  cwd: terminalGuardRoot,
+  taskId: 'w-terminal-guard',
+  workflowRunId: terminalGuardRunId,
+  plan: {
+    name: 'terminal-guard-workflow',
+    description: 'terminal guard workflow',
+    defaults: {
+      maxConcurrency: 1,
+      maxAgents: 1,
+      maxRetries: 0,
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      execution: 'agent',
+    },
+    phases: [],
+    totalAgents: 0,
+  },
+})
+await completeWorkflowRunSession({
+  cwd: terminalGuardRoot,
+  session: { ...terminalGuardSnapshot, agentCount: 3 },
+  results: terminalResults,
+  tokenCount: 123,
+  toolUseCount: 4,
+})
+await updateWorkflowRunSessionStatus({
+  cwd: terminalGuardRoot,
+  workflowRunId: terminalGuardRunId,
+  status: 'paused',
+})
+await updateWorkflowRunSessionProgress({
+  cwd: terminalGuardRoot,
+  session: { ...terminalGuardSnapshot, agentCount: 2 },
+  results: [],
+  tokenCount: 100,
+  toolUseCount: 3,
+})
+const terminalGuardFinalSession = await loadWorkflowRunSession({
+  cwd: terminalGuardRoot,
+  workflowRunId: terminalGuardRunId,
+})
+assert.ok(terminalGuardFinalSession)
+assert.deepEqual({
+  status: terminalGuardFinalSession.status,
+  results: terminalGuardFinalSession.results,
+  agentCount: terminalGuardFinalSession.agentCount,
+  tokenCount: terminalGuardFinalSession.tokenCount,
+  toolUseCount: terminalGuardFinalSession.toolUseCount,
+}, {
+  status: 'completed',
+  results: terminalResults,
+  agentCount: 3,
+  tokenCount: 123,
+  toolUseCount: 4,
+})
 
 console.log('workflowRunSessions.test.ts passed')

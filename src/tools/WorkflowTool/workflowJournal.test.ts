@@ -43,6 +43,9 @@ await appendWorkflowJournalResult(dir, {
   status: 'failed',
   attempt: 0,
   error: 'API Error: test failure',
+  tokenCount: 42,
+  toolUseCount: 3,
+  durationMs: 9,
   result: null,
   timestamp: completedAt + 1,
 })
@@ -80,6 +83,9 @@ assert.deepEqual(lines[2], {
   status: 'failed',
   attempt: 0,
   error: 'API Error: test failure',
+  tokenCount: 42,
+  toolUseCount: 3,
+  durationMs: 9,
   result: null,
   timestamp: completedAt + 1,
 })

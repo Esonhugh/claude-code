@@ -384,6 +384,18 @@ async function emitWorkflowEvent({
   return appendWorkflowRunEvent({ cwd, session, event })
 }
 
+function latestWorkflowTaskUsage(
+  context: ToolUseContext,
+  taskId: string,
+): Pick<WorkflowRunSession, 'tokenCount' | 'toolUseCount'> {
+  const task = context.getAppState().tasks[taskId]
+  if (task?.type !== 'local_workflow') return {}
+  return {
+    tokenCount: task.tokenCount,
+    toolUseCount: task.toolUseCount,
+  }
+}
+
 function extractAgentOutput(output: AgentToolOutput): string {
   const text = output.content
     ?.map(block => (block.type === 'text' ? block.text ?? '' : ''))
@@ -820,6 +832,7 @@ async function runPhaseAgent({
           retryable,
         }),
       )
+      const failedAttemptId = `${phase.id}:${baseAgentId}:attempt:${physicalAttempt}`
       failWorkflowAgent({
         taskId,
         phaseId: phase.id,
@@ -828,8 +841,19 @@ async function runPhaseAgent({
         error: message,
         errorKind,
         setAppState: context.setAppStateForTasks ?? context.setAppState,
+        attemptId: failedAttemptId,
       })
-      lastFailedResult = {
+      const failedTask = context.getAppState().tasks[taskId]
+      lastFailedResult = failedTask?.type === 'local_workflow'
+        ? failedTask.results.find(
+            result =>
+              result.phaseId === phase.id &&
+              result.index === index &&
+              result.agentId === currentAgentId &&
+              result.status === 'failed',
+          )
+        : undefined
+      lastFailedResult ??= {
         phaseId: phase.id,
         agentId: currentAgentId,
         index,
@@ -1065,6 +1089,7 @@ export async function runWorkflowPlan({
           session: runSession,
           results: [...resultsByPhase.values()].flat(),
           resumeCacheEntries: resumeRuntime.entries,
+          ...latestWorkflowTaskUsage(context, workflowTask.id),
         })
         const rejected = batchSettled.find(
           (result): result is PromiseRejectedResult =>
@@ -1119,6 +1144,7 @@ export async function runWorkflowPlan({
     }
     const allResults = [...resultsByPhase.values()].flat()
     completeWorkflowTask(workflowTask.id, setAppState)
+    const workflowTaskUsage = latestWorkflowTaskUsage(context, workflowTask.id)
     await emit(createWorkflowProgressEvent({
       workflowRunId,
       status: 'completed',
@@ -1130,6 +1156,7 @@ export async function runWorkflowPlan({
         session: runSession,
         results: allResults,
         resumeCacheEntries: resumeRuntime.entries,
+        ...workflowTaskUsage,
       })
       const resultText = allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || `Workflow completed. ${allResults.length} agents.`
       const outputFile = await writeWorkflowResult(
@@ -1149,8 +1176,8 @@ export async function runWorkflowPlan({
         summary,
         outputFile,
         usage: {
-          total_tokens: allResults.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0),
-          tool_uses: allResults.reduce((sum, result) => sum + (result.toolUseCount ?? 0), 0),
+          total_tokens: workflowTaskUsage.tokenCount ?? 0,
+          tool_uses: workflowTaskUsage.toolUseCount ?? 0,
           duration_ms: Date.now() - workflowTask.startTime,
         },
       })
@@ -1158,11 +1185,13 @@ export async function runWorkflowPlan({
     const abortStatus = workflowAbortStatus(workflowTask.abortController?.signal.reason)
     const allResults = [...resultsByPhase.values()].flat()
       if (abortStatus) {
+        const abortedUsage = latestWorkflowTaskUsage(context, workflowTask.id)
         await updateWorkflowRunSessionProgress({
           cwd,
           session: runSession,
           results: allResults,
           resumeCacheEntries: resumeRuntime.entries,
+          ...abortedUsage,
         })
         await updateWorkflowRunSessionStatus({
           cwd,
@@ -1172,6 +1201,17 @@ export async function runWorkflowPlan({
             ? { resumePrompt: workflowResumeCall({ ...workflowTask, workflowRunId, scriptPath }) }
             : {}),
         })
+        if (abortStatus === 'killed') {
+          emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
+            toolUseId: context.toolUseId,
+            summary: `Dynamic workflow "${plan.description}" stopped`,
+            usage: {
+              total_tokens: abortedUsage.tokenCount ?? 0,
+              tool_uses: abortedUsage.toolUseCount ?? 0,
+              duration_ms: Date.now() - workflowTask.startTime,
+            },
+          })
+        }
         return
       }
 
@@ -1179,6 +1219,7 @@ export async function runWorkflowPlan({
       workflowTask.abortController?.abort()
       const message = error instanceof Error ? error.message : String(error)
       failWorkflowTask(workflowTask.id, message, setAppState)
+      const workflowTaskUsage = latestWorkflowTaskUsage(context, workflowTask.id)
       await emit(createWorkflowProgressEvent({
         workflowRunId,
         status: 'failed',
@@ -1191,6 +1232,7 @@ export async function runWorkflowPlan({
         results: allResults,
         error: message,
         resumeCacheEntries: resumeRuntime.entries,
+        ...workflowTaskUsage,
       })
       const outputFile = await writeWorkflowResult(workflowTask.id, message)
       emitTaskTerminatedSdk(workflowTask.id, 'failed', {
@@ -1198,8 +1240,8 @@ export async function runWorkflowPlan({
         summary: `Dynamic workflow "${plan.description}" failed: ${message}`,
         outputFile,
         usage: {
-          total_tokens: allResults.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0),
-          tool_uses: allResults.reduce((sum, result) => sum + (result.toolUseCount ?? 0), 0),
+          total_tokens: workflowTaskUsage.tokenCount ?? 0,
+          tool_uses: workflowTaskUsage.toolUseCount ?? 0,
           duration_ms: Date.now() - workflowTask.startTime,
         },
       })
