@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { createWorkflowScriptAgentChainIdentity } from './workflowResumeCache.js'
@@ -439,6 +441,110 @@ assert.deepEqual(
     .sort(),
   pathAliasEvents.map(event => event.message).sort(),
 )
+
+const crossProcessRoot = await mkdtemp(join(tmpdir(), 'workflow-cross-process-'))
+const crossProcessRunId = 'wf_cross_process'
+await startWorkflowRunSession({
+  cwd: crossProcessRoot,
+  taskId: 'w-cross-process',
+  workflowRunId: crossProcessRunId,
+  plan: {
+    name: 'cross-process-workflow',
+    description: 'cross process workflow',
+    defaults: {
+      maxConcurrency: 1,
+      maxAgents: 1,
+      maxRetries: 0,
+      fanout: 1,
+      concurrency: 1,
+      review: 'none',
+      execution: 'agent',
+    },
+    phases: [],
+    totalAgents: 1,
+  },
+})
+const crossProcessWorkerPath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'workflowRunSessions.crossProcessWorker.ts',
+)
+const crossProcessWorkerCount = 6
+const crossProcessEventCount = 12
+const crossProcessReadyDir = join(crossProcessRoot, 'ready')
+const crossProcessStartPath = join(crossProcessRoot, 'start')
+await mkdir(crossProcessReadyDir)
+const crossProcessWorkers = Array.from({ length: crossProcessWorkerCount }, (_, workerIndex) => {
+  const child = spawn(process.execPath, [
+    crossProcessWorkerPath,
+    crossProcessRoot,
+    crossProcessRunId,
+    String(workerIndex),
+    String(crossProcessEventCount),
+    crossProcessReadyDir,
+    crossProcessStartPath,
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const done = new Promise<void>((resolve, reject) => {
+    let stderr = ''
+    child.stderr.on('data', chunk => { stderr += String(chunk) })
+    child.on('error', reject)
+    child.on('exit', code => {
+      if (code === 0) resolve()
+      else reject(new Error(`cross-process worker ${workerIndex} exited ${code}: ${stderr}`))
+    })
+  })
+  void done.catch(() => undefined)
+  return { child, done }
+})
+const crossProcessWorkerFailure = Promise.race(crossProcessWorkers.map(
+  (worker, workerIndex) => worker.done.then(() => {
+    throw new Error(`cross-process worker ${workerIndex} exited before start`)
+  }),
+))
+const waitForCrossProcessWorkers = async () => {
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    try {
+      await Promise.all(Array.from(
+        { length: crossProcessWorkerCount },
+        (_, index) => access(join(crossProcessReadyDir, String(index))),
+      ))
+      return
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error('timed out waiting for cross-process workers')
+      }
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+}
+try {
+  await Promise.race([waitForCrossProcessWorkers(), crossProcessWorkerFailure])
+  await writeFile(crossProcessStartPath, '')
+  await Promise.all(crossProcessWorkers.map(worker => worker.done))
+} catch (error) {
+  for (const worker of crossProcessWorkers) worker.child.kill()
+  await Promise.allSettled(crossProcessWorkers.map(worker => worker.done))
+  throw error
+}
+const crossProcessFinalSession = await loadWorkflowRunSession({
+  cwd: crossProcessRoot,
+  workflowRunId: crossProcessRunId,
+})
+assert.ok(crossProcessFinalSession)
+const crossProcessEventMessages = crossProcessFinalSession.events
+  .map(event => event.type === 'workflow_log' ? event.message : undefined)
+  .filter((message): message is string => typeof message === 'string')
+  .sort()
+const crossProcessExpectedMessages = Array.from(
+  { length: crossProcessWorkerCount },
+  (_, workerIndex) => Array.from(
+    { length: crossProcessEventCount },
+    (_, eventIndex) => `cross process append ${workerIndex}:${eventIndex}`,
+  ),
+).flat().sort()
+assert.deepEqual(crossProcessEventMessages, crossProcessExpectedMessages)
 
 const appendCompleteRoot = await mkdtemp(join(tmpdir(), 'workflow-append-complete-'))
 const appendCompleteAttempts = 8

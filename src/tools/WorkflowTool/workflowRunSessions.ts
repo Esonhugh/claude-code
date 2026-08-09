@@ -1,8 +1,10 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { isENOENT } from '../../utils/errors.js'
+import * as lockfile from '../../utils/lockfile.js'
+import { canonicalizePath } from '../../utils/sessionStoragePortable.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPlan,
@@ -202,13 +204,33 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 const workflowRunSessionMutationQueues = new Map<string, Promise<void>>()
+const WORKFLOW_RUN_SESSION_LOCK_OPTIONS = {
+  stale: 5_000,
+  retries: {
+    retries: 100,
+    minTimeout: 5,
+    maxTimeout: 100,
+  },
+}
 
 type WorkflowRunSessionMutation = (
   latest: WorkflowRunSession | undefined,
 ) => WorkflowRunSession | undefined
 
-function workflowRunSessionMutationKey(cwd: string, workflowRunId: string): string {
-  return `${cwd}\0${workflowRunId}`
+async function workflowRunSessionLockIdentity(
+  cwd: string,
+  workflowRunId: string,
+): Promise<{
+  cwd: string
+  path: string
+}> {
+  const canonicalCwd = await canonicalizePath(resolve(cwd))
+  const sessionDir = dirname(runSessionPath(canonicalCwd, workflowRunId))
+  await mkdir(sessionDir, { recursive: true })
+  return {
+    cwd: canonicalCwd,
+    path: sessionDir,
+  }
 }
 
 function maxWorkflowRunSessionCount(
@@ -229,26 +251,33 @@ async function mutateWorkflowRunSession(
   workflowRunId: string,
   mutation: WorkflowRunSessionMutation,
 ): Promise<WorkflowRunSession | undefined> {
-  const key = workflowRunSessionMutationKey(cwd, workflowRunId)
-  const previous = workflowRunSessionMutationQueues.get(key) ?? Promise.resolve()
+  const queueKey = runSessionPath(resolve(cwd), workflowRunId)
+  const previous = workflowRunSessionMutationQueues.get(queueKey) ?? Promise.resolve()
   let updated: WorkflowRunSession | undefined
   const current = previous.catch(() => undefined).then(async () => {
-    const latest = await loadWorkflowRunSession({
-      cwd,
-      workflowRunId,
-      includeOfficialFallback: false,
-    })
-    updated = mutation(latest)
-    if (!updated) return
-    await writeWorkflowRunSession(cwd, updated)
+    const identity = await workflowRunSessionLockIdentity(cwd, workflowRunId)
+    let release: (() => Promise<void>) | undefined
+    try {
+      release = await lockfile.lock(identity.path, WORKFLOW_RUN_SESSION_LOCK_OPTIONS)
+      const latest = await loadWorkflowRunSession({
+        cwd: identity.cwd,
+        workflowRunId,
+        includeOfficialFallback: false,
+      })
+      updated = mutation(latest)
+      if (!updated) return
+      await writeWorkflowRunSession(identity.cwd, updated)
+    } finally {
+      await release?.()
+    }
   })
-  workflowRunSessionMutationQueues.set(key, current)
+  workflowRunSessionMutationQueues.set(queueKey, current)
   try {
     await current
     return updated
   } finally {
-    if (workflowRunSessionMutationQueues.get(key) === current) {
-      workflowRunSessionMutationQueues.delete(key)
+    if (workflowRunSessionMutationQueues.get(queueKey) === current) {
+      workflowRunSessionMutationQueues.delete(queueKey)
     }
   }
 }
@@ -457,6 +486,7 @@ export async function completeWorkflowRunSession({
 }): Promise<void> {
   await mutateWorkflowRunSession(cwd, session.workflowRunId, latest => {
     const base = latest ?? session
+    if (isTerminalWorkflowRunStatus(base.status)) return base
     const agentTotal = maxWorkflowRunSessionCount(base.agentCount, agentCount)
     const tokenTotal = maxWorkflowRunSessionCount(base.tokenCount, tokenCount)
     const toolUseTotal = maxWorkflowRunSessionCount(base.toolUseCount, toolUseCount)
@@ -495,6 +525,7 @@ export async function failWorkflowRunSession({
 }): Promise<void> {
   await mutateWorkflowRunSession(cwd, session.workflowRunId, latest => {
     const base = latest ?? session
+    if (isTerminalWorkflowRunStatus(base.status)) return base
     const agentTotal = maxWorkflowRunSessionCount(base.agentCount, agentCount)
     const tokenTotal = maxWorkflowRunSessionCount(base.tokenCount, tokenCount)
     const toolUseTotal = maxWorkflowRunSessionCount(base.toolUseCount, toolUseCount)
