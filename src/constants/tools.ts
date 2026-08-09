@@ -27,12 +27,16 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../tools/SyntheticOutputTool/Synthet
 import { ENTER_WORKTREE_TOOL_NAME } from '../tools/EnterWorktreeTool/constants.js'
 import { EXIT_WORKTREE_TOOL_NAME } from '../tools/ExitWorktreeTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
+import { SET_GOAL_TOOL_NAME } from '../tools/SetGoalTool/constants.js'
 import {
   CRON_CREATE_TOOL_NAME,
   CRON_DELETE_TOOL_NAME,
   CRON_LIST_TOOL_NAME,
 } from '../tools/ScheduleCronTool/prompt.js'
+export const MAIN_THREAD_ONLY_TOOLS = new Set([SET_GOAL_TOOL_NAME])
+
 export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  ...MAIN_THREAD_ONLY_TOOLS,
   TASK_OUTPUT_TOOL_NAME,
   EXIT_PLAN_MODE_V2_TOOL_NAME,
   ENTER_PLAN_MODE_TOOL_NAME,
@@ -103,6 +107,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
  */
 export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   AGENT_TOOL_NAME,
+  SET_GOAL_TOOL_NAME,
   TASK_STOP_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
   SYNTHETIC_OUTPUT_TOOL_NAME,

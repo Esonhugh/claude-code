@@ -1101,12 +1101,11 @@ export const AgentTool = buildTool({
           isBuiltInAgent(selectedAgent),
         ),
       model: isForkPath ? undefined : model,
-      // Fork path: pass parent's system prompt AND parent's exact tool
-      // array (cache-identical prefix). workerTools is rebuilt under
-      // permissionMode 'bubble' which differs from the parent's mode, so
-      // its tool-def serialization diverges and breaks cache at the first
-      // differing tool. useExactTools also inherits the parent's
-      // thinkingConfig and isNonInteractiveSession (see runAgent.ts).
+      // Fork path: pass the parent's system prompt and tool array. runAgent
+      // removes main-thread-only tools before building the child request.
+      // workerTools is rebuilt under permissionMode 'bubble', so its tool-def
+      // serialization would diverge earlier. useExactTools also inherits the
+      // parent's thinkingConfig and isNonInteractiveSession (see runAgent.ts).
       //
       // Normal path: when a cwd override is in effect (worktree isolation
       // or explicit cwd), skip the pre-built system prompt so runAgent's

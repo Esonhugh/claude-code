@@ -89,7 +89,10 @@ import {
 } from '../../utils/telemetry/perfettoTracing.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
-import { resolveAgentTools } from './agentToolUtils.js'
+import {
+  filterToolsForExactAgent,
+  resolveAgentTools,
+} from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -396,11 +399,10 @@ export async function* runAgent({
    * the same tool results are re-replaced (prompt cache stability). When
    * omitted, createSubagentContext clones the parent's state. */
   contentReplacementState?: ContentReplacementState
-  /** When true, use availableTools directly without filtering through
-   * resolveAgentTools(). Also inherits the parent's thinkingConfig and
-   * isNonInteractiveSession instead of overriding them. Used by the fork
-   * subagent path to produce byte-identical API request prefixes for
-   * prompt cache hits. */
+  /** When true, inherit the parent's tools except main-thread-only tools,
+   * without filtering through resolveAgentTools(). Also inherits the parent's
+   * thinkingConfig and isNonInteractiveSession. Used by the fork subagent path
+   * to preserve the API request prefix until the first main-thread-only tool. */
   useExactTools?: boolean
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */
@@ -612,7 +614,7 @@ export async function* runAgent({
   }
 
   const resolvedTools = useExactTools
-    ? availableTools
+    ? filterToolsForExactAgent(availableTools)
     : resolveAgentTools(
         { ...agentDefinition, permissionMode },
         availableTools,

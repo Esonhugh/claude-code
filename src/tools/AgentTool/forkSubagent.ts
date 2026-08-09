@@ -46,8 +46,8 @@ export const FORK_SUBAGENT_TYPE = 'fork'
  *
  * Not registered in builtInAgents — used only when `!subagent_type` and the
  * experiment is active. `tools: ['*']` with `useExactTools` means the fork
- * child receives the parent's exact tool pool (for cache-identical API
- * prefixes). `permissionMode: 'bubble'` surfaces permission prompts to the
+ * child inherits the parent's tool pool except main-thread-only tools.
+ * `permissionMode: 'bubble'` surfaces permission prompts to the
  * parent terminal. `model: 'inherit'` keeps the parent's model for context
  * length parity.
  *
