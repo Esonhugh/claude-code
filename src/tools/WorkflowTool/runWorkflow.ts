@@ -4,6 +4,7 @@ import type { AssistantMessage, NormalizedUserMessage } from '../../types/messag
 import type { PermissionMode } from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { generateTaskId } from '../../Task.js'
 import {
   OUTPUT_FILE_TAG,
   STATUS_TAG,
@@ -51,7 +52,7 @@ import {
   completeWorkflowRunSession,
   failWorkflowRunSession,
   loadWorkflowRunSession,
-  startWorkflowRunSession,
+  tryStartWorkflowRunSession,
   updateWorkflowRunSessionProgress,
   updateWorkflowRunSessionStatus,
   type WorkflowRunSession,
@@ -63,6 +64,7 @@ import {
   type WorkflowResumeCacheEntry,
 } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
+import { workflowErrorMessage } from './workflowScriptParser.js'
 import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
@@ -934,26 +936,47 @@ export async function runWorkflowPlan({
 
   const setAppState = context.setAppStateForTasks ?? context.setAppState
   const teamName = plan.defaults.execution === 'team' ? workflowTeamName(context) : undefined
-  const workflowTask = registerWorkflowTask({
-    plan,
-    setAppState,
-    toolUseId: context.toolUseId,
-    runArgs,
-    teamName,
-    workflowRunId,
-    scriptPath,
-    defaultModel: context.options.mainLoopModel,
-  })
   const cwd = workflowCwd(context)
-  let runSession = await startWorkflowRunSession({
+  const taskId = generateTaskId('local_workflow')
+  const startedRun = await tryStartWorkflowRunSession({
     cwd,
-    taskId: workflowTask.id,
+    taskId,
     plan,
     runArgs,
     workflowRunId,
     scriptPath,
     resumeFromRunId,
   })
+  let runSession = startedRun.session
+  if (!startedRun.started) {
+    return `Workflow run ${workflowRunId} is already ${runSession.status}. Task ID: ${runSession.taskId}`
+  }
+
+  let workflowTask: ReturnType<typeof registerWorkflowTask>
+  try {
+    workflowTask = registerWorkflowTask({
+      plan,
+      setAppState,
+      toolUseId: context.toolUseId,
+      runArgs,
+      teamName,
+      workflowRunId,
+      scriptPath,
+      defaultModel: context.options.mainLoopModel,
+      taskId,
+    })
+  } catch (error) {
+    await failWorkflowRunSession({
+      cwd,
+      session: runSession,
+      results: [],
+      error: workflowErrorMessage(
+        error,
+        'Workflow task registration failed without error details',
+      ),
+    })
+    throw error
+  }
   const priorSession = resumeFromRunId
     ? await loadWorkflowRunSession({ cwd, workflowRunId: resumeFromRunId })
     : undefined

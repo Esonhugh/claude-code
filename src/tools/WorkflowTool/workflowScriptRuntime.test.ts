@@ -308,6 +308,34 @@ assert.equal(scriptSession?.results[0]?.status, 'completed')
 assert.equal(scriptSession?.results[0]?.tokenCount, 55)
 assert.equal(scriptSession?.results[0]?.toolUseCount, 1)
 
+const terminalRerunTaskIds = Object.keys(state.tasks)
+const terminalRerunAgentCalls = agentToolCallCount
+const terminalRerunResult = await runWorkflowScript({
+  script,
+  plan,
+  args: { case: 'terminal-rerun' },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_terminal_rerun_test' } } as never,
+  workflowRunId: 'wf_test',
+  scriptPath: '/tmp/runtime-small-workflow.js',
+})
+assert.equal(
+  terminalRerunResult,
+  `Workflow run wf_test is already completed. Task ID: ${scriptSession?.taskId}`,
+)
+assert.equal(agentToolCallCount, terminalRerunAgentCalls)
+assert.deepEqual(Object.keys(state.tasks), terminalRerunTaskIds)
+assert.deepEqual(drainSdkEvents(), [])
+assert.equal(
+  dequeue(command => command.mode === 'task-notification'),
+  undefined,
+)
+assert.deepEqual(
+  await loadWorkflowRunSession({ cwd: scriptCwd, workflowRunId: 'wf_test' }),
+  scriptSession,
+)
+
 const resumedResult = await runWorkflowScript({
   script,
   plan,
@@ -929,6 +957,198 @@ assert.equal(childVmTask.status, 'completed')
 const childVmNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(childVmNotification)
 assert.match(String(childVmNotification.value), /child-vm-ok/)
+
+const unawaitedChildPath = join(childVmDir, 'unawaited-child.js')
+await writeFile(unawaitedChildPath, `export const meta = {
+  name: "runtime-unawaited-child-workflow",
+  description: "Child workflow failing after asynchronous loading.",
+  phases: [{ title: "Child", detail: "Failing child Agent" }],
+}
+phase("Child")
+return await agent("fail-agent", { label: "unawaited-child-agent" })
+`)
+const unawaitedChildScript = `export const meta = {
+  name: "runtime-unawaited-child-parent-workflow",
+  description: "Parent workflow tracking an unawaited child workflow.",
+  phases: [{ title: "Parent", detail: "Unawaited child" }],
+}
+void workflow({ scriptPath: ${JSON.stringify(unawaitedChildPath)} })
+return "parent-returned"
+`
+await runWorkflowScript({
+  script: unawaitedChildScript,
+  plan: {
+    ...vmGlobalPlan,
+    name: 'runtime-unawaited-child-parent-workflow',
+    description: 'Parent workflow tracking an unawaited child workflow.',
+    runScriptSnapshot: unawaitedChildScript,
+  },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_unawaited_child_test' } } as never,
+  workflowRunId: 'wf_unawaited_child_test',
+  scriptPath: join(childVmDir, 'unawaited-parent.js'),
+})
+const unawaitedChildTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState =>
+    task.type === 'local_workflow' &&
+    task.workflowRunId === 'wf_unawaited_child_test',
+)
+assert.ok(unawaitedChildTask)
+assert.equal(unawaitedChildTask.status, 'failed')
+assert.match(unawaitedChildTask.error ?? '', /unawaited-child-agent.*agent failed intentionally/)
+const unawaitedChildNotification = dequeue(command => command.mode === 'task-notification')
+assert.ok(unawaitedChildNotification)
+assert.match(String(unawaitedChildNotification.value), /status>failed/)
+
+const unawaitedNestedChildPath = join(
+  childVmDir,
+  'unawaited-nested-child.js',
+)
+await writeFile(unawaitedNestedChildPath, `export const meta = {
+  name: "runtime-unawaited-nested-child-workflow",
+  description: "Child workflow rejecting an unawaited nested workflow.",
+  phases: [{ title: "Child", detail: "Rejected nesting" }],
+}
+phase("Child")
+const runtimeResult = await agent("nested-runtime-gate", {
+  label: "nested-runtime-gate",
+})
+if (typeof runtimeResult === "string") {
+  void workflow({ scriptPath: "grandchild.js" })
+}
+return "unexpected-child-success"
+`)
+const unawaitedNestedScript = `export const meta = {
+  name: "runtime-unawaited-nested-parent-workflow",
+  description: "Parent workflow tracking child nesting errors.",
+  phases: [{ title: "Parent", detail: "Child nesting error" }],
+}
+return await workflow({ scriptPath: ${JSON.stringify(unawaitedNestedChildPath)} })
+`
+await runWorkflowScript({
+  script: unawaitedNestedScript,
+  plan: {
+    ...vmGlobalPlan,
+    name: 'runtime-unawaited-nested-parent-workflow',
+    description: 'Parent workflow tracking child nesting errors.',
+    runScriptSnapshot: unawaitedNestedScript,
+  },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: {
+    message: { id: 'msg_unawaited_nested_workflow_test' },
+  } as never,
+  workflowRunId: 'wf_unawaited_nested_workflow_test',
+  scriptPath: join(childVmDir, 'unawaited-nested-parent.js'),
+})
+const unawaitedNestedTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState =>
+    task.type === 'local_workflow' &&
+    task.workflowRunId === 'wf_unawaited_nested_workflow_test',
+)
+assert.equal(unawaitedNestedTask?.status, 'failed')
+assert.match(
+  unawaitedNestedTask?.error ?? '',
+  /workflow\(\) cannot be called from within a child workflow/,
+)
+const unawaitedNestedNotification = dequeue(
+  command => command.mode === 'task-notification',
+)
+assert.ok(unawaitedNestedNotification)
+assert.match(
+  String(unawaitedNestedNotification.value),
+  /workflow\(\) cannot be called from within a child workflow/,
+)
+
+const multipleRuntimeFailureScript = `export const meta = {
+  name: "runtime-multiple-call-failure-workflow",
+  description: "Workflow preserving multiple runtime call failures.",
+  phases: [{ title: "Failures", detail: "Multiple runtime failures" }],
+}
+void workflow({ scriptPath: "missing-runtime-child-a.js" })
+void workflow({ scriptPath: "missing-runtime-child-b.js" })
+return "unexpected-success"
+`
+await runWorkflowScript({
+  script: multipleRuntimeFailureScript,
+  plan: {
+    ...vmGlobalPlan,
+    name: 'runtime-multiple-call-failure-workflow',
+    description: 'Workflow preserving multiple runtime call failures.',
+    runScriptSnapshot: multipleRuntimeFailureScript,
+  },
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: {
+    message: { id: 'msg_multiple_runtime_failure_test' },
+  } as never,
+  workflowRunId: 'wf_multiple_runtime_failure_test',
+  scriptPath: join(childVmDir, 'multiple-runtime-failure-parent.js'),
+})
+const multipleRuntimeFailureTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState =>
+    task.type === 'local_workflow' &&
+    task.workflowRunId === 'wf_multiple_runtime_failure_test',
+)
+assert.equal(multipleRuntimeFailureTask?.status, 'failed')
+assert.match(
+  multipleRuntimeFailureTask?.error ?? '',
+  /missing-runtime-child-a\.js/,
+)
+assert.match(
+  multipleRuntimeFailureTask?.error ?? '',
+  /missing-runtime-child-b\.js/,
+)
+const multipleRuntimeFailureNotification = dequeue(
+  command => command.mode === 'task-notification',
+)
+assert.ok(multipleRuntimeFailureNotification)
+assert.match(
+  String(multipleRuntimeFailureNotification.value),
+  /missing-runtime-child-a\.js/,
+)
+assert.match(
+  String(multipleRuntimeFailureNotification.value),
+  /missing-runtime-child-b\.js/,
+)
+
+const registrationFailureCwd = await mkdtemp(
+  join(tmpdir(), 'workflow-registration-failure-'),
+)
+const registrationFailureWorkflowRunId =
+  `wf_registration_failure_${process.pid}`
+await assert.rejects(
+  runWorkflowScript({
+    script: vmGlobalScript,
+    plan: vmGlobalPlan,
+    context: {
+      ...context,
+      getCwd: () => registrationFailureCwd,
+      setAppState: () => {
+        throw new Error('workflow task registration failed intentionally')
+      },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_registration_failure',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: {
+      message: { id: 'msg_registration_failure' },
+    } as never,
+    workflowRunId: registrationFailureWorkflowRunId,
+    scriptPath: '/tmp/runtime-registration-failure-workflow.js',
+  }),
+  /workflow task registration failed intentionally/,
+)
+const registrationFailureSession = await loadWorkflowRunSession({
+  cwd: registrationFailureCwd,
+  workflowRunId: registrationFailureWorkflowRunId,
+})
+assert.equal(registrationFailureSession?.status, 'failed')
+assert.match(
+  registrationFailureSession?.error ?? '',
+  /workflow task registration failed intentionally/,
+)
 
 const functionResultScript = `export const meta = {
   name: "runtime-function-result-workflow",
@@ -2058,6 +2278,7 @@ const invalidSchemaResult = await runWorkflowScript({
 const invalidSchemaTask = Object.values(invalidSchemaState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
+assert.equal(invalidSchemaTask?.status, 'failed')
 assert.equal(invalidSchemaTask?.phases[0]?.completedAgentIds.length, 0)
 assert.equal(invalidSchemaTask?.phases[0]?.failedAgentIds.length, 1)
 const invalidSchemaTranscriptDir = invalidSchemaResult.match(/Transcript dir: (.+)/)?.[1]
@@ -2107,7 +2328,7 @@ await runWorkflowScript({
 const missingSchemaTask = Object.values(missingSchemaState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(missingSchemaTask?.status, 'completed')
+assert.equal(missingSchemaTask?.status, 'failed')
 assert.equal(missingSchemaTask?.phases[0]?.completedAgentIds.length, 0)
 assert.equal(missingSchemaTask?.phases[0]?.failedAgentIds.length, 1)
 
@@ -2212,7 +2433,7 @@ const missingSchemaUsageResult = await runWorkflowScript({
 const missingSchemaUsageTask = Object.values(missingSchemaUsageState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(missingSchemaUsageTask?.status, 'completed')
+assert.equal(missingSchemaUsageTask?.status, 'failed')
 assert.equal(missingSchemaUsageTask?.phases[0]?.failedAgentIds.length, 1)
 assert.deepEqual({
   tokenCount: missingSchemaUsageTask?.tokenCount,
@@ -2228,6 +2449,7 @@ const missingSchemaUsageSdkTermination = missingSchemaUsageEvents.find(
     event.task_id === missingSchemaUsageTask?.id,
 )
 assert.equal(missingSchemaUsageSdkTermination?.subtype, 'task_notification')
+assert.equal(missingSchemaUsageSdkTermination.status, 'failed')
 assert.ok(missingSchemaUsageSdkTermination.output_file)
 assert.equal(missingSchemaUsageResult.includes('runtime-missing-schema-usage-workflow'), true)
 const missingSchemaUsageOutput = await readFile(
@@ -2237,12 +2459,14 @@ const missingSchemaUsageOutput = await readFile(
 assert.deepEqual({
   sdkTokens: missingSchemaUsageSdkTermination?.usage?.total_tokens,
   sdkToolUses: missingSchemaUsageSdkTermination?.usage?.tool_uses,
-  scriptSpent: Number(missingSchemaUsageOutput.match(/"spent":\s*(\d+)/)?.[1]),
 }, {
   sdkTokens: 42,
   sdkToolUses: 2,
-  scriptSpent: 42,
 })
+assert.match(
+  missingSchemaUsageOutput,
+  /missing-schema-usage-agent.*did not return structured output/,
+)
 
 dequeueAllMatching(command => command.mode === 'task-notification')
 const multiPhaseScript = `export const meta = {
@@ -2516,6 +2740,8 @@ const failedPlan: WorkflowDryRunPlan = {
   totalAgents: 2,
   runScriptSnapshot: failedScript,
 }
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
 const failedWorkflowRunId = `wf_failed_agent_no_null_${process.pid}`
 const failedCallCountBefore = agentToolCallCount
 const failedResult = await runWorkflowScript({
@@ -2563,6 +2789,31 @@ assert.deepEqual(failedTask?.agentAttempts.map(attempt => ({
   { agentId: 'failed-agent-a', attempt: 0, status: 'failed' },
   { agentId: 'failed-agent-b', attempt: 0, status: 'failed' },
 ])
+assert.equal(failedTask?.status, 'failed')
+assert.match(failedTask?.error ?? '', /failed-agent-a.*agent failed intentionally/)
+assert.match(failedTask?.error ?? '', /failed-agent-b.*agent failed intentionally/)
+const failedSession = await loadWorkflowRunSession({
+  cwd: scriptCwd,
+  workflowRunId: failedWorkflowRunId,
+})
+assert.equal(failedSession?.status, 'failed')
+assert.equal(failedSession?.results.filter(result => result.status === 'failed').length, 2)
+const failedNotification = dequeue(
+  command =>
+    command.mode === 'task-notification' &&
+    String(command.value).includes(failedTask?.id ?? ''),
+)
+assert.ok(failedNotification)
+assert.match(String(failedNotification.value), /<status>failed<\/status>/)
+const failedSdkNotification = drainSdkEvents().find(
+  event => event.subtype === 'task_notification' && event.task_id === failedTask?.id,
+)
+assert.equal(
+  failedSdkNotification?.subtype === 'task_notification'
+    ? failedSdkNotification.status
+    : undefined,
+  'failed',
+)
 
 const promptTooLongScript = `export const meta = {
   name: "runtime-prompt-too-long-workflow",
@@ -2605,6 +2856,7 @@ const promptTooLongTask = Object.values(state.tasks).find(
     task.type === 'local_workflow' && task.workflowRunId === promptTooLongWorkflowRunId,
 )
 assert.ok(promptTooLongTask)
+assert.equal(promptTooLongTask.status, 'failed')
 assert.equal(promptTooLongTask.retryCount, 0)
 assert.equal(promptTooLongTask.tokenCount, 173_379)
 assert.equal(promptTooLongTask.toolUseCount, 12)
@@ -2642,12 +2894,102 @@ const promptTooLongSession = await loadWorkflowRunSession({
   cwd: scriptCwd,
   workflowRunId: promptTooLongWorkflowRunId,
 })
+assert.equal(promptTooLongSession?.status, 'failed')
 assert.equal(promptTooLongSession?.results.length, 1)
 assert.deepEqual(promptTooLongSession?.results[0], promptTooLongTask.results[0])
 assert.equal(promptTooLongSession?.results[0]?.prompt, 'prompt-too-long-agent')
 assert.equal(
   classifyWorkflowAgentError(new Error('Prompt is too long')),
   'prompt_too_long',
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const defaultStallScript = `export const meta = {
+  name: "runtime-default-stall-workflow",
+  description: "Workflow without an explicit Agent stall policy.",
+  phases: [{ title: "Default", detail: "No implicit stall timer" }],
+}
+phase("Default")
+return await agent("default-stall-agent", { label: "default-stall-agent" })
+`
+let defaultStallState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const observedIntervalDelays: Array<number | undefined> = []
+const originalSetInterval = globalThis.setInterval
+globalThis.setInterval = ((
+  handler: TimerHandler,
+  timeout?: number,
+  ...args: unknown[]
+) => {
+  observedIntervalDelays.push(timeout)
+  return originalSetInterval(handler, timeout, ...args)
+}) as typeof globalThis.setInterval
+const defaultStallWorkflowRunId = `wf_script_default_stall_${process.pid}`
+try {
+  await runWorkflowScript({
+    script: defaultStallScript,
+    plan: {
+      ...failedPlan,
+      name: 'runtime-default-stall-workflow',
+      description: 'Workflow without an explicit Agent stall policy.',
+      phases: [{
+        ...failedPlan.phases[0]!,
+        id: 'Default',
+        description: 'No implicit stall timer',
+        fanout: 1,
+        concurrency: 1,
+      }],
+      totalAgents: 1,
+      runScriptSnapshot: defaultStallScript,
+    },
+    context: {
+      ...context,
+      getAppState: () => defaultStallState,
+      setAppState: (updater: (prev: AppState) => AppState): void => {
+        defaultStallState = updater(defaultStallState)
+      },
+      options: {
+        ...context.options,
+        tools: [{
+          name: 'Agent',
+          async call() {
+            await Promise.resolve()
+            return {
+              data: {
+                status: 'completed',
+                content: [{ type: 'text', text: 'default-stall-ok' }],
+                totalDurationMs: 1,
+              },
+            }
+          },
+        }],
+      },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_script_default_stall',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: 'msg_script_default_stall' } } as never,
+    workflowRunId: defaultStallWorkflowRunId,
+    scriptPath: '/tmp/runtime-default-stall-workflow.js',
+  })
+} finally {
+  globalThis.setInterval = originalSetInterval
+}
+assert.deepEqual(observedIntervalDelays, [])
+const defaultStallTask = Object.values(defaultStallState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(defaultStallTask?.status, 'completed')
+assert.equal(defaultStallTask?.results[0]?.status, 'completed')
+assert.equal(
+  (await loadWorkflowRunSession({
+    cwd: scriptCwd,
+    workflowRunId: defaultStallWorkflowRunId,
+  }))?.status,
+  'completed',
 )
 
 drainSdkEvents()
@@ -2670,15 +3012,24 @@ let stalledParallelState = {
 let releaseStalledAgent: (() => void) | undefined
 const stalledParallelAgentTool = {
   name: 'Agent',
-  async call(input: { prompt?: string }) {
+  async call(
+    input: { prompt?: string },
+    _context: unknown,
+    _canUseTool: unknown,
+    _assistantMessage: unknown,
+    onProgress?: (progress: { data: { summary: string } }) => void,
+  ) {
     if (input.prompt === 'stalled-agent') {
       return await new Promise(resolve => {
-        releaseStalledAgent = () => resolve({
-          data: {
-            status: 'completed',
-            content: [{ type: 'text', text: 'released-after-timeout' }],
-          },
-        })
+        releaseStalledAgent = () => {
+          onProgress?.({ data: { summary: 'late progress after stalled terminal' } })
+          resolve({
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'released-after-timeout' }],
+            },
+          })
+        }
       })
     }
     return {
@@ -2690,6 +3041,7 @@ const stalledParallelAgentTool = {
     }
   },
 }
+const stalledParallelWorkflowRunId = `wf_script_stalled_parallel_${process.pid}`
 const stalledParallelRun = runWorkflowScript({
   script: stalledParallelScript,
   plan: {
@@ -2715,7 +3067,7 @@ const stalledParallelRun = runWorkflowScript({
   } as unknown as ToolUseContext,
   canUseTool: async () => ({ behavior: 'allow' }),
   assistantMessage: { message: { id: 'msg_script_stalled_parallel' } } as never,
-  workflowRunId: `wf_script_stalled_parallel_${process.pid}`,
+  workflowRunId: stalledParallelWorkflowRunId,
   scriptPath: '/tmp/runtime-stalled-parallel-workflow.js',
 })
 const stalledParallelCompleted = stalledParallelRun.then(() => true)
@@ -2729,9 +3081,23 @@ assert.equal(stalledParallelSettledAfterAbort, true)
 const stalledParallelTask = Object.values(stalledParallelState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(stalledParallelTask?.status, 'completed')
+assert.equal(stalledParallelTask?.status, 'failed')
 assert.deepEqual(
   stalledParallelTask?.results
+    .map(result => ({ agentId: result.agentId, status: result.status }))
+    .sort((left, right) => left.agentId.localeCompare(right.agentId)),
+  [
+    { agentId: 'complete-agent', status: 'completed' },
+    { agentId: 'stalled-agent', status: 'failed' },
+  ],
+)
+const stalledParallelSession = await loadWorkflowRunSession({
+  cwd: scriptCwd,
+  workflowRunId: stalledParallelWorkflowRunId,
+})
+assert.equal(stalledParallelSession?.status, 'failed')
+assert.deepEqual(
+  stalledParallelSession?.results
     .map(result => ({ agentId: result.agentId, status: result.status }))
     .sort((left, right) => left.agentId.localeCompare(right.agentId)),
   [
@@ -2745,7 +3111,556 @@ const stalledParallelNotification = dequeue(
     String(command.value).includes(stalledParallelTask?.id ?? ''),
 )
 assert.ok(stalledParallelNotification)
-assert.match(String(stalledParallelNotification.value), /<status>completed<\/status>/)
+assert.match(String(stalledParallelNotification.value), /<status>failed<\/status>/)
+const stalledParallelSdkNotification = drainSdkEvents().find(
+  event =>
+    event.subtype === 'task_notification' &&
+    event.task_id === stalledParallelTask?.id,
+)
+assert.equal(
+  stalledParallelSdkNotification?.subtype === 'task_notification'
+    ? stalledParallelSdkNotification.status
+    : undefined,
+  'failed',
+)
+releaseStalledAgent?.()
+await Promise.resolve()
+assert.equal(
+  drainSdkEvents().some(
+    event =>
+      event.subtype === 'task_progress' &&
+      event.task_id === stalledParallelTask?.id &&
+      event.summary === 'late progress after stalled terminal',
+  ),
+  false,
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const unawaitedFailureScript = `export const meta = {
+  name: "runtime-unawaited-failure-workflow",
+  description: "Workflow waiting for an unawaited Agent before terminal aggregation.",
+  phases: [{ title: "Unawaited", detail: "Unawaited failing agent" }],
+}
+phase("Unawaited")
+void agent("unawaited-failure-agent", { label: "unawaited-failure-agent" })
+return "script-returned-before-agent"
+`
+let unawaitedFailureState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const unawaitedFailureWorkflowRunId = `wf_script_unawaited_failure_${process.pid}`
+await runWorkflowScript({
+  script: unawaitedFailureScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-unawaited-failure-workflow',
+    description: 'Workflow waiting for an unawaited Agent before terminal aggregation.',
+    phases: [{
+      ...failedPlan.phases[0]!,
+      id: 'Unawaited',
+      description: 'Unawaited failing agent',
+      fanout: 1,
+      concurrency: 1,
+    }],
+    totalAgents: 1,
+    runScriptSnapshot: unawaitedFailureScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => unawaitedFailureState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      unawaitedFailureState = updater(unawaitedFailureState)
+    },
+    options: {
+      ...context.options,
+      tools: [{
+        name: 'Agent',
+        async call() {
+          await Promise.resolve()
+          return {
+            data: {
+              status: 'failed',
+              content: [{ type: 'text', text: 'unawaited agent failed' }],
+            },
+          }
+        },
+      }],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_unawaited_failure',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_unawaited_failure' } } as never,
+  workflowRunId: unawaitedFailureWorkflowRunId,
+  scriptPath: '/tmp/runtime-unawaited-failure-workflow.js',
+})
+const unawaitedFailureTask = Object.values(unawaitedFailureState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(unawaitedFailureTask?.status, 'failed')
+assert.equal(unawaitedFailureTask?.results[0]?.status, 'failed')
+assert.equal(
+  (await loadWorkflowRunSession({
+    cwd: scriptCwd,
+    workflowRunId: unawaitedFailureWorkflowRunId,
+  }))?.status,
+  'failed',
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const chainedUnawaitedFailureScript = `export const meta = {
+  name: "runtime-chained-unawaited-failure-workflow",
+  description: "Workflow waiting for transitively launched Agents.",
+  phases: [{ title: "Chained", detail: "Chained unawaited agent" }],
+}
+phase("Chained")
+void agent("chained-agent-a", { label: "chained-agent-a" }).then(() =>
+  agent("chained-agent-b", { label: "chained-agent-b" }),
+)
+return "script-returned-before-agent-chain"
+`
+let chainedUnawaitedFailureState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const chainedUnawaitedFailureWorkflowRunId = `wf_script_chained_unawaited_failure_${process.pid}`
+await runWorkflowScript({
+  script: chainedUnawaitedFailureScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-chained-unawaited-failure-workflow',
+    description: 'Workflow waiting for transitively launched Agents.',
+    phases: [{
+      ...failedPlan.phases[0]!,
+      id: 'Chained',
+      description: 'Chained unawaited agent',
+      fanout: 2,
+      concurrency: 2,
+    }],
+    totalAgents: 2,
+    runScriptSnapshot: chainedUnawaitedFailureScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => chainedUnawaitedFailureState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      chainedUnawaitedFailureState = updater(chainedUnawaitedFailureState)
+    },
+    options: {
+      ...context.options,
+      tools: [{
+        name: 'Agent',
+        async call(input: { prompt: string }) {
+          await Promise.resolve()
+          return input.prompt === 'chained-agent-a'
+            ? {
+                data: {
+                  status: 'completed',
+                  content: [{ type: 'text', text: 'chained agent a complete' }],
+                  totalDurationMs: 1,
+                },
+              }
+            : {
+                data: {
+                  status: 'failed',
+                  content: [{ type: 'text', text: 'chained agent b failed' }],
+                },
+              }
+        },
+      }],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_chained_unawaited_failure',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_chained_unawaited_failure' } } as never,
+  workflowRunId: chainedUnawaitedFailureWorkflowRunId,
+  scriptPath: '/tmp/runtime-chained-unawaited-failure-workflow.js',
+})
+const chainedUnawaitedFailureTask = Object.values(chainedUnawaitedFailureState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(chainedUnawaitedFailureTask?.status, 'failed')
+assert.deepEqual(
+  chainedUnawaitedFailureTask?.results
+    .map(result => ({ agentId: result.agentId, status: result.status }))
+    .sort((left, right) => left.agentId.localeCompare(right.agentId)),
+  [
+    { agentId: 'chained-agent-a', status: 'completed' },
+    { agentId: 'chained-agent-b', status: 'failed' },
+  ],
+)
+assert.equal(
+  (await loadWorkflowRunSession({
+    cwd: scriptCwd,
+    workflowRunId: chainedUnawaitedFailureWorkflowRunId,
+  }))?.status,
+  'failed',
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const parallelBudgetFailureScript = `export const meta = {
+  name: "runtime-parallel-budget-failure-workflow",
+  description: "Workflow failing when parallel catches an Agent setup error.",
+  phases: [{ title: "Budget failure", detail: "Agent setup failure" }],
+}
+phase("Budget failure")
+const seed = agent("budget-seed-agent", { label: "budget-seed-agent" })
+const results = await parallel([
+  () => seed,
+  async () => {
+    await seed
+    return agent("budget-blocked-agent", { label: "budget-blocked-agent" })
+  },
+])
+return { results }
+`
+let parallelBudgetFailureState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const parallelBudgetFailureWorkflowRunId = `wf_script_parallel_budget_failure_${process.pid}`
+await runWorkflowScript({
+  script: parallelBudgetFailureScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-parallel-budget-failure-workflow',
+    description: 'Workflow failing when parallel catches an Agent setup error.',
+    phases: [{
+      ...failedPlan.phases[0]!,
+      id: 'Budget failure',
+      description: 'Agent setup failure',
+      fanout: 2,
+      concurrency: 1,
+    }],
+    totalAgents: 2,
+    runScriptSnapshot: parallelBudgetFailureScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => parallelBudgetFailureState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      parallelBudgetFailureState = updater(parallelBudgetFailureState)
+    },
+    options: {
+      ...context.options,
+      tools: [{
+        name: 'Agent',
+        async call() {
+          return {
+            data: {
+              status: 'completed',
+              content: [{ type: 'text', text: 'budget seed complete' }],
+              totalTokens: 1,
+              totalToolUseCount: 0,
+              totalDurationMs: 1,
+            },
+          }
+        },
+      }],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_parallel_budget_failure',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_parallel_budget_failure' } } as never,
+  workflowRunId: parallelBudgetFailureWorkflowRunId,
+  scriptPath: '/tmp/runtime-parallel-budget-failure-workflow.js',
+  budgetTotal: 1,
+})
+const parallelBudgetFailureTask = Object.values(parallelBudgetFailureState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(parallelBudgetFailureTask?.status, 'failed')
+assert.match(parallelBudgetFailureTask?.error ?? '', /WorkflowBudgetExceededError/)
+assert.equal(
+  (await loadWorkflowRunSession({
+    cwd: scriptCwd,
+    workflowRunId: parallelBudgetFailureWorkflowRunId,
+  }))?.status,
+  'failed',
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const mixedFailureScript = `export const meta = {
+  name: "runtime-mixed-agent-failure-workflow",
+  description: "Workflow preserving recorded and setup Agent failures.",
+  phases: [{ title: "Mixed failure", detail: "Recorded and setup failures" }],
+}
+phase("Mixed failure")
+const recordedFailure = agent("fail-agent", { label: "recorded-failure-agent" })
+const budgetSeed = agent("budget-seed-agent", { label: "mixed-budget-seed-agent" })
+await parallel([
+  () => recordedFailure,
+  async () => {
+    await budgetSeed
+    return agent("budget-blocked-agent", { label: "mixed-budget-blocked-agent" })
+  },
+])
+return "unexpected-success"
+`
+let mixedFailureState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const mixedFailureWorkflowRunId =
+  `wf_script_mixed_failure_${process.pid}`
+await runWorkflowScript({
+  script: mixedFailureScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-mixed-agent-failure-workflow',
+    description: 'Workflow preserving recorded and setup Agent failures.',
+    phases: [{
+      ...failedPlan.phases[0]!,
+      id: 'Mixed failure',
+      description: 'Recorded and setup failures',
+      fanout: 3,
+      concurrency: 1,
+    }],
+    totalAgents: 3,
+    runScriptSnapshot: mixedFailureScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => mixedFailureState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      mixedFailureState = updater(mixedFailureState)
+    },
+    options: {
+      ...context.options,
+      tools: [fakeAgentTool],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_mixed_failure',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_mixed_failure' } } as never,
+  workflowRunId: mixedFailureWorkflowRunId,
+  scriptPath: '/tmp/runtime-mixed-agent-failure-workflow.js',
+  budgetTotal: 1,
+})
+const mixedFailureTask = Object.values(mixedFailureState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(mixedFailureTask?.status, 'failed')
+assert.match(
+  mixedFailureTask?.error ?? '',
+  /recorded-failure-agent.*agent failed intentionally/,
+)
+assert.match(
+  mixedFailureTask?.error ?? '',
+  /WorkflowBudgetExceededError/,
+)
+assert.deepEqual(
+  mixedFailureTask?.results
+    .map(result => ({
+      agentId: result.agentId,
+      status: result.status,
+    }))
+    .sort((left, right) => left.agentId.localeCompare(right.agentId)),
+  [
+    { agentId: 'mixed-budget-seed-agent', status: 'completed' },
+    { agentId: 'recorded-failure-agent', status: 'failed' },
+  ],
+)
+const mixedFailureSession = await loadWorkflowRunSession({
+  cwd: scriptCwd,
+  workflowRunId: mixedFailureWorkflowRunId,
+})
+assert.equal(mixedFailureSession?.status, 'failed')
+assert.match(
+  mixedFailureSession?.error ?? '',
+  /recorded-failure-agent.*WorkflowBudgetExceededError/,
+)
+const mixedFailureNotification = dequeue(
+  command => command.mode === 'task-notification',
+)
+assert.ok(mixedFailureNotification)
+assert.match(
+  String(mixedFailureNotification.value),
+  /recorded-failure-agent.*WorkflowBudgetExceededError/,
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const asyncChainedFailureScript = `export const meta = {
+  name: "runtime-async-chained-failure-workflow",
+  description: "Workflow waiting for Agents launched after an async continuation.",
+  phases: [{ title: "Async chained", detail: "Async chained failing agent" }],
+}
+phase("Async chained")
+void agent("async-chained-agent-a", { label: "async-chained-agent-a" }).then(async () => {
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  return agent("async-chained-agent-b", { label: "async-chained-agent-b" })
+})
+return "script-returned-before-async-agent-chain"
+`
+let asyncChainedFailureState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const asyncChainedFailureWorkflowRunId = `wf_script_async_chained_failure_${process.pid}`
+await runWorkflowScript({
+  script: asyncChainedFailureScript,
+  plan: {
+    ...failedPlan,
+    name: 'runtime-async-chained-failure-workflow',
+    description: 'Workflow waiting for Agents launched after an async continuation.',
+    phases: [{
+      ...failedPlan.phases[0]!,
+      id: 'Async chained',
+      description: 'Async chained failing agent',
+      fanout: 2,
+      concurrency: 2,
+    }],
+    totalAgents: 2,
+    runScriptSnapshot: asyncChainedFailureScript,
+  },
+  context: {
+    ...context,
+    getAppState: () => asyncChainedFailureState,
+    setAppState: (updater: (prev: AppState) => AppState): void => {
+      asyncChainedFailureState = updater(asyncChainedFailureState)
+    },
+    options: {
+      ...context.options,
+      tools: [{
+        name: 'Agent',
+        async call(input: { prompt: string }) {
+          await Promise.resolve()
+          return input.prompt === 'async-chained-agent-a'
+            ? {
+                data: {
+                  status: 'completed',
+                  content: [{ type: 'text', text: 'async chained agent a complete' }],
+                  totalDurationMs: 1,
+                },
+              }
+            : {
+                data: {
+                  status: 'failed',
+                  content: [{ type: 'text', text: 'async chained agent b failed' }],
+                },
+              }
+        },
+      }],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_async_chained_failure',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_async_chained_failure' } } as never,
+  workflowRunId: asyncChainedFailureWorkflowRunId,
+  scriptPath: '/tmp/runtime-async-chained-failure-workflow.js',
+})
+await Promise.resolve()
+await Promise.resolve()
+const asyncChainedFailureTask = Object.values(asyncChainedFailureState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(asyncChainedFailureTask?.status, 'failed')
+assert.deepEqual(
+  asyncChainedFailureTask?.results
+    .map(result => ({ agentId: result.agentId, status: result.status }))
+    .sort((left, right) => left.agentId.localeCompare(right.agentId)),
+  [
+    { agentId: 'async-chained-agent-a', status: 'completed' },
+    { agentId: 'async-chained-agent-b', status: 'failed' },
+  ],
+)
+assert.equal(
+  (await loadWorkflowRunSession({
+    cwd: scriptCwd,
+    workflowRunId: asyncChainedFailureWorkflowRunId,
+  }))?.status,
+  'failed',
+)
+
+drainSdkEvents()
+dequeueAllMatching(command => command.mode === 'task-notification')
+const unawaitedKillScript = `export const meta = {
+  name: "runtime-unawaited-kill-workflow",
+  description: "Workflow preserving a kill after the script result resolves.",
+  phases: [{ title: "Kill boundary", detail: "Kill from unawaited agent" }],
+}
+phase("Kill boundary")
+void agent("unawaited-kill-agent", { label: "unawaited-kill-agent" })
+return "script-returned-before-kill"
+`
+let unawaitedKillState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setUnawaitedKillState = (updater: (prev: AppState) => AppState): void => {
+  unawaitedKillState = updater(unawaitedKillState)
+}
+const unawaitedKillWorkflowRunId = `wf_script_unawaited_kill_${process.pid}`
+await runWorkflowScript({
+  script: unawaitedKillScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-unawaited-kill-workflow',
+    description: 'Workflow preserving a kill after the script result resolves.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Kill boundary' }],
+    totalAgents: 1,
+    runScriptSnapshot: unawaitedKillScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => unawaitedKillState,
+    setAppState: setUnawaitedKillState,
+    options: {
+      ...retryContext.options,
+      tools: [{
+        name: 'Agent',
+        async call() {
+          await Promise.resolve()
+          const task = Object.values(unawaitedKillState.tasks).find(
+            (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+          )
+          assert.ok(task)
+          killWorkflowTask(task.id, setUnawaitedKillState)
+          throw new Error('killed after script result')
+        },
+      }],
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_unawaited_kill',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_unawaited_kill' } } as never,
+  workflowRunId: unawaitedKillWorkflowRunId,
+  scriptPath: '/tmp/runtime-unawaited-kill-workflow.js',
+})
+const unawaitedKillTask = Object.values(unawaitedKillState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(unawaitedKillTask?.status, 'killed')
+assert.equal(
+  (await loadWorkflowRunSession({
+    cwd: scriptCwd,
+    workflowRunId: unawaitedKillWorkflowRunId,
+  }))?.status,
+  'killed',
+)
+const unawaitedKillSdkNotification = drainSdkEvents().find(
+  event => event.subtype === 'task_notification' && event.task_id === unawaitedKillTask?.id,
+)
+assert.equal(
+  unawaitedKillSdkNotification?.subtype === 'task_notification'
+    ? unawaitedKillSdkNotification.status
+    : undefined,
+  'stopped',
+)
 
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')

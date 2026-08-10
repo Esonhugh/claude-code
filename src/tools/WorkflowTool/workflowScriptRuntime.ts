@@ -6,6 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { generateTaskId } from '../../Task.js'
 import {
   OUTPUT_FILE_TAG,
   STATUS_TAG,
@@ -49,7 +50,7 @@ import {
   appendWorkflowRunEvent,
   completeWorkflowRunSession,
   failWorkflowRunSession,
-  startWorkflowRunSession,
+  tryStartWorkflowRunSession,
   updateWorkflowRunSessionProgress,
   updateWorkflowRunSessionStatus,
 } from './workflowRunSessions.js'
@@ -84,7 +85,6 @@ const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const MAX_LOGS = 1000
 const SYNC_TIMEOUT_MS = 5000
 const MAX_CONCURRENCY = Math.min(16, Math.max(2, availableParallelism() - 2))
-const DEFAULT_STALL_MS = 120_000
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 
 function workflowRetryBudget(maxRetries: number | undefined): number {
@@ -422,23 +422,13 @@ export async function runWorkflowScript({
   if (!agentTool) throw new Error('Workflow script execution requires the Agent tool')
 
   const setAppState = context.setAppStateForTasks ?? context.setAppState
-  const workflowTask = registerWorkflowTask({
-    plan,
-    setAppState,
-    toolUseId: context.toolUseId,
-    runArgs: args,
-    workflowRunId,
-    scriptPath,
-    defaultModel: context.options.mainLoopModel,
-    dynamicAgentCount: true,
-  })
   const cwd = 'getCwd' in context && typeof context.getCwd === 'function'
     ? context.getCwd() : getCwd()
-
   const transcriptDir = workflowTranscriptDir(workflowRunId)
-  let runSession = await startWorkflowRunSession({
+  const taskId = generateTaskId('local_workflow')
+  const startedRun = await tryStartWorkflowRunSession({
     cwd,
-    taskId: workflowTask.id,
+    taskId,
     plan,
     runArgs: args,
     workflowRunId,
@@ -446,6 +436,36 @@ export async function runWorkflowScript({
     transcriptDir,
     resumeFromRunId,
   })
+  let runSession = startedRun.session
+  if (!startedRun.started) {
+    return `Workflow run ${workflowRunId} is already ${runSession.status}. Task ID: ${runSession.taskId}`
+  }
+
+  let workflowTask: ReturnType<typeof registerWorkflowTask>
+  try {
+    workflowTask = registerWorkflowTask({
+      plan,
+      setAppState,
+      toolUseId: context.toolUseId,
+      runArgs: args,
+      workflowRunId,
+      scriptPath,
+      defaultModel: context.options.mainLoopModel,
+      dynamicAgentCount: true,
+      taskId,
+    })
+  } catch (error) {
+    await failWorkflowRunSession({
+      cwd,
+      session: runSession,
+      results: [],
+      error: workflowErrorMessage(
+        error,
+        'Workflow task registration failed without error details',
+      ),
+    })
+    throw error
+  }
 
   const logs: string[] = []
   let agentCount = 0
@@ -472,6 +492,9 @@ export async function runWorkflowScript({
     )
   }
   const scriptAgentResults: WorkflowAgentResult[] = []
+  const pendingRuntimeCalls = new Set<Promise<unknown>>()
+  const runtimeCallErrors: unknown[] = []
+  let runtimeCallGeneration = 0
   const countedFailedAttemptIds = new Set<string>()
   const agentLabelOccurrences = new Map<string, number>()
   const assignedAgentIds = new Set<string>()
@@ -541,8 +564,28 @@ export async function runWorkflowScript({
       throw new Error('WorkflowBudgetExceededError: token budget exhausted')
     }
   }
+  function trackRuntimeCall<T>(call: Promise<T>): Promise<T> {
+    runtimeCallGeneration++
+    pendingRuntimeCalls.add(call)
+    void call.then(
+      () => pendingRuntimeCalls.delete(call),
+      error => {
+        pendingRuntimeCalls.delete(call)
+        runtimeCallErrors.push(error)
+      },
+    )
+    return call
+  }
+
   // --- Real agent() with stall detection, retry, schema, worktree ---
-  async function realAgent(
+  function realAgent(
+    prompt: string,
+    opts?: AgentOpts,
+  ): Promise<unknown> {
+    return trackRuntimeCall(runAgent(prompt, opts))
+  }
+
+  async function runAgent(
     prompt: string,
     opts?: AgentOpts,
   ): Promise<unknown> {
@@ -653,7 +696,7 @@ export async function runWorkflowScript({
       return cached.result
     }
 
-    const stallMs = opts?.stallMs ?? DEFAULT_STALL_MS
+    const stallMs = opts?.stallMs
 
     // Stall/user retry loop
     let attempt = 0
@@ -1000,7 +1043,7 @@ export async function runWorkflowScript({
     permissionMode: WorkflowPermissionMode | undefined,
     agentContext: ToolUseContext,
     agentId: string, logicalAgentId: string, attempt: number,
-    phase: string, stallMs: number, phaseAgentIndex: number,
+    phase: string, stallMs: number | undefined, phaseAgentIndex: number,
   ): Promise<unknown> {
     const agentAbortController = createChildAbortController(abortController)
     const attemptId = `${phase}:${logicalAgentId}:attempt:${attempt}`
@@ -1040,11 +1083,13 @@ export async function runWorkflowScript({
       throw new Error('503 service temporarily unavailable (controlled test fault)')
     }
 
-    const stallTimer = setInterval(() => {
-      if (Date.now() - lastProgress > stallMs) {
-        agentAbortController.abort('stalled')
-      }
-    }, Math.min(stallMs / 2, 30_000))
+    const stallTimer = stallMs !== undefined && Number.isFinite(stallMs) && stallMs > 0
+      ? setInterval(() => {
+          if (Date.now() - lastProgress > stallMs) {
+            agentAbortController.abort('stalled')
+          }
+        }, Math.min(stallMs / 2, 30_000))
+      : undefined
     let rejectOnAbort: ((reason?: unknown) => void) | undefined
     const aborted = new Promise<never>((_, reject) => {
       rejectOnAbort = reject
@@ -1100,6 +1145,15 @@ export async function runWorkflowScript({
         },
         canUseTool, assistantMessage,
         (progress) => {
+          if (agentAbortController.signal.aborted) return
+          const currentTask = context.getAppState().tasks[workflowTask.id]
+          if (
+            currentTask?.type !== 'local_workflow' ||
+            currentTask.status !== 'running' ||
+            currentTask.liveAgents?.[agentId] === undefined
+          ) {
+            return
+          }
           lastProgress = Date.now()
           const data = progress?.data as
             | { type?: string; message?: unknown; summary?: string }
@@ -1255,7 +1309,7 @@ export async function runWorkflowScript({
         attemptUsage,
       )
     } finally {
-      clearInterval(stallTimer)
+      if (stallTimer !== undefined) clearInterval(stallTimer)
       agentAbortController.signal.removeEventListener('abort', onAbort)
       rejectOnAbort = undefined
     }
@@ -1397,7 +1451,11 @@ export async function runWorkflowScript({
     defineSandboxGlobal(childSandbox, 'agent', realAgent)
     defineSandboxGlobal(childSandbox, 'pipeline', realPipeline)
     defineSandboxGlobal(childSandbox, 'parallel', realParallel)
-    defineSandboxGlobal(childSandbox, 'workflow', () => Promise.reject(childWorkflowNestingError()))
+    defineSandboxGlobal(
+      childSandbox,
+      'workflow',
+      () => trackRuntimeCall(Promise.reject(childWorkflowNestingError())),
+    )
     defineSandboxGlobal(childSandbox, 'phase', (title: string) => {
       currentPhaseId = title
       emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
@@ -1426,7 +1484,7 @@ export async function runWorkflowScript({
   }
 
   // --- workflow() sub-call ---
-  async function realWorkflow(nameOrRef: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<unknown> {
+  async function runChildWorkflow(nameOrRef: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<unknown> {
     const parentPhaseId = currentPhaseId
     try {
       const childArgs = subArgs ?? args
@@ -1448,6 +1506,13 @@ export async function runWorkflowScript({
     } finally {
       currentPhaseId = parentPhaseId
     }
+  }
+
+  function realWorkflow(
+    nameOrRef: string | { scriptPath: string },
+    subArgs?: WorkflowArgs,
+  ): Promise<unknown> {
+    return trackRuntimeCall(runChildWorkflow(nameOrRef, subArgs))
   }
 
   const launchEnvelope = workflowLaunchEnvelope({
@@ -1510,6 +1575,41 @@ export async function runWorkflowScript({
     ])
     if (typeof scriptResult === 'function') {
       throw new Error('workflow result cannot be a function')
+    }
+
+    while (true) {
+      const generation = runtimeCallGeneration
+      if (pendingRuntimeCalls.size > 0) {
+        await Promise.allSettled([...pendingRuntimeCalls])
+      }
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (
+        pendingRuntimeCalls.size === 0 &&
+        runtimeCallGeneration === generation
+      ) {
+        break
+      }
+    }
+    if (abortController.signal.aborted) {
+      throw new Error('Workflow aborted')
+    }
+
+    const failedAgents = scriptAgentResults.filter(result => result.status === 'failed')
+    const terminalErrors = [
+      failedAgents.length > 0
+        ? `Workflow agents failed: ${failedAgents
+            .map(result => `${result.agentId}: ${result.error ?? 'unknown error'}`)
+            .join('; ')}`
+        : undefined,
+      ...runtimeCallErrors.map(error =>
+        workflowErrorMessage(
+          error,
+          'Workflow runtime call failed without error details',
+        ),
+      ),
+    ].filter((message): message is string => message !== undefined)
+    if (terminalErrors.length > 0) {
+      throw new Error([...new Set(terminalErrors)].join('; '))
     }
 
     syncRuntimeUsageFromWorkflowTask()

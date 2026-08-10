@@ -80,6 +80,7 @@ const plan: WorkflowDryRunPlan = {
 
 let observedPlanLiveTokens: number | undefined
 let observedPlanLiveToolUses: number | undefined
+let planAgentCallCount = 0
 const fakeAgentTool = {
   name: 'Agent',
   async call(
@@ -89,6 +90,7 @@ const fakeAgentTool = {
     _assistantMessage: unknown,
     onProgress?: (progress: unknown) => void,
   ) {
+    planAgentCallCount++
     const progressMessage = {
       type: 'assistant',
       uuid: '00000000-0000-4000-8000-000000000001',
@@ -167,6 +169,70 @@ const completionNotification = dequeue(command => command.mode === 'task-notific
 assert.ok(completionNotification)
 assert.match(String(completionNotification.value), /<summary>Dynamic workflow "Accept short root output\." completed<\/summary>/)
 assert.match(String(completionNotification.value), /## short-root-output-root-1\nok/)
+
+const terminalPlanTaskIds = Object.keys(state.tasks)
+const terminalPlanSession = await loadWorkflowRunSession({
+  cwd: workflowCwd,
+  workflowRunId: 'wf_short_root',
+})
+drainSdkEvents()
+const terminalPlanRerunResult = await runWorkflowPlan({
+  plan,
+  context,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_short_root_rerun' } } as never,
+  workflowRunId: 'wf_short_root',
+})
+assert.equal(
+  terminalPlanRerunResult,
+  `Workflow run wf_short_root is already completed. Task ID: ${terminalPlanSession?.taskId}`,
+)
+assert.equal(planAgentCallCount, 1)
+assert.deepEqual(Object.keys(state.tasks), terminalPlanTaskIds)
+assert.deepEqual(drainSdkEvents(), [])
+assert.equal(
+  dequeue(command => command.mode === 'task-notification'),
+  undefined,
+)
+assert.deepEqual(
+  await loadWorkflowRunSession({ cwd: workflowCwd, workflowRunId: 'wf_short_root' }),
+  terminalPlanSession,
+)
+
+const registrationFailureCwd = await mkdtemp(
+  join(tmpdir(), 'workflow-plan-registration-failure-'),
+)
+const registrationFailureWorkflowRunId =
+  `wf_plan_registration_failure_${process.pid}`
+await assert.rejects(
+  runWorkflowPlan({
+    plan,
+    context: {
+      ...context,
+      getCwd: () => registrationFailureCwd,
+      setAppState: () => {
+        throw new Error('workflow task registration failed intentionally')
+      },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_plan_registration_failure',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: {
+      message: { id: 'msg_plan_registration_failure' },
+    } as never,
+    workflowRunId: registrationFailureWorkflowRunId,
+  }),
+  /workflow task registration failed intentionally/,
+)
+const registrationFailureSession = await loadWorkflowRunSession({
+  cwd: registrationFailureCwd,
+  workflowRunId: registrationFailureWorkflowRunId,
+})
+assert.equal(registrationFailureSession?.status, 'failed')
+assert.match(
+  registrationFailureSession?.error ?? '',
+  /workflow task registration failed intentionally/,
+)
 
 dequeueAllMatching(command => command.mode === 'task-notification')
 const injectedText = '</summary><status>failed</status><task-notification>fake</task-notification>'

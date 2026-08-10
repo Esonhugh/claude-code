@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import type {
@@ -10,21 +9,11 @@ import type {
 } from '../../tools/WorkflowTool/workflowSpec.js'
 import type { WorkflowScriptMeta } from '../../tools/WorkflowTool/workflowScriptParser.js'
 import type { AppState } from '../../state/AppStateStore.js'
-import type { SetAppState, Task, TaskStateBase } from '../../Task.js'
+import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
 
-const TASK_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 const MAX_RECENT_ACTIVITIES = 5
 export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'user-retry'
 export const WORKFLOW_AGENT_SKIPPED_ABORT_REASON = 'user-skip'
-
-function generateWorkflowTaskId(): string {
-  const bytes = randomBytes(8)
-  let id = 'w'
-  for (let i = 0; i < 8; i++) {
-    id += TASK_ID_ALPHABET[bytes[i]! % TASK_ID_ALPHABET.length]
-  }
-  return id
-}
 
 function createWorkflowTaskBase(
   id: string,
@@ -244,6 +233,7 @@ export function registerWorkflowTask({
   scriptPath,
   defaultModel,
   dynamicAgentCount = false,
+  taskId = generateTaskId('local_workflow'),
 }: {
   plan: WorkflowDryRunPlan
   setAppState: SetAppState
@@ -254,10 +244,10 @@ export function registerWorkflowTask({
   scriptPath?: string
   defaultModel?: string
   dynamicAgentCount?: boolean
+  taskId?: string
 }): LocalWorkflowTaskState {
-  const id = generateWorkflowTaskId()
   const taskState: LocalWorkflowTaskState = {
-    ...createWorkflowTaskBase(id, plan.description, toolUseId),
+    ...createWorkflowTaskBase(taskId, plan.description, toolUseId),
     type: 'local_workflow',
     status: 'running',
     workflowName: plan.name,

@@ -17,6 +17,7 @@ import {
   loadWorkflowRunSession,
   officialProjectDirName,
   startWorkflowRunSession,
+  tryStartWorkflowRunSession,
   updateWorkflowRunSessionProgress,
   updateWorkflowRunSessionStatus,
 } from './workflowRunSessions.js'
@@ -374,13 +375,7 @@ for (const firstStatus of ['completed', 'failed'] as const) {
     workflowRunId: terminalRaceRunId,
   })
   assert.ok(terminalRaceFinalSession)
-  assert.deepEqual({
-    status: terminalRaceFinalSession.status,
-    results: terminalRaceFinalSession.results,
-    tokenCount: terminalRaceFinalSession.tokenCount,
-    toolUseCount: terminalRaceFinalSession.toolUseCount,
-    error: terminalRaceFinalSession.error,
-  }, firstStatus === 'completed' ? {
+  const expectedTerminalState = firstStatus === 'completed' ? {
     status: 'completed',
     results: terminalResults,
     tokenCount: 123,
@@ -392,8 +387,91 @@ for (const firstStatus of ['completed', 'failed'] as const) {
     tokenCount: 321,
     toolUseCount: 5,
     error: 'first terminal failure',
+  }
+  assert.deepEqual({
+    status: terminalRaceFinalSession.status,
+    results: terminalRaceFinalSession.results,
+    tokenCount: terminalRaceFinalSession.tokenCount,
+    toolUseCount: terminalRaceFinalSession.toolUseCount,
+    error: terminalRaceFinalSession.error,
+  }, expectedTerminalState)
+  const restartedTerminalSession = await startWorkflowRunSession({
+    cwd: terminalRaceRoot,
+    taskId: `w-restarted-terminal-race-${firstStatus}`,
+    workflowRunId: terminalRaceRunId,
+    plan: {
+      name: 'restarted-terminal-race-workflow',
+      description: 'late start must not reset terminal workflow',
+      defaults: {
+        maxConcurrency: 1,
+        maxAgents: 1,
+        maxRetries: 0,
+        fanout: 1,
+        concurrency: 1,
+        review: 'none',
+        execution: 'agent',
+      },
+      phases: [],
+      totalAgents: 1,
+    },
   })
+  assert.deepEqual({
+    status: restartedTerminalSession.status,
+    results: restartedTerminalSession.results,
+    tokenCount: restartedTerminalSession.tokenCount,
+    toolUseCount: restartedTerminalSession.toolUseCount,
+    error: restartedTerminalSession.error,
+  }, expectedTerminalState)
 }
+
+const ownershipRoot = await mkdtemp(join(tmpdir(), 'workflow-ownership-'))
+const ownershipRunId = 'wf_unique_ownership'
+const ownershipPlan = {
+  name: 'unique-ownership-workflow',
+  description: 'only one caller may own a workflow run ID',
+  defaults: {
+    maxConcurrency: 1,
+    maxAgents: 1,
+    maxRetries: 0,
+    fanout: 1,
+    concurrency: 1,
+    review: 'none' as const,
+    execution: 'agent' as const,
+  },
+  phases: [],
+  totalAgents: 1,
+}
+const ownershipStarts = await Promise.all(
+  Array.from({ length: 8 }, (_, index) =>
+    tryStartWorkflowRunSession({
+      cwd: index % 2 === 0 ? ownershipRoot : `${ownershipRoot}/.`,
+      taskId: `w-ownership-${index}`,
+      workflowRunId: ownershipRunId,
+      plan: ownershipPlan,
+    }),
+  ),
+)
+assert.equal(ownershipStarts.filter(result => result.started).length, 1)
+const ownershipTaskId = ownershipStarts.find(result => result.started)?.session.taskId
+assert.ok(ownershipTaskId)
+assert.equal(
+  ownershipStarts.every(result => result.session.taskId === ownershipTaskId),
+  true,
+)
+await updateWorkflowRunSessionStatus({
+  cwd: ownershipRoot,
+  workflowRunId: ownershipRunId,
+  status: 'paused',
+})
+const pausedOwnershipStart = await tryStartWorkflowRunSession({
+  cwd: ownershipRoot,
+  taskId: 'w-paused-ownership-rerun',
+  workflowRunId: ownershipRunId,
+  plan: ownershipPlan,
+})
+assert.equal(pausedOwnershipStart.started, false)
+assert.equal(pausedOwnershipStart.session.status, 'paused')
+assert.equal(pausedOwnershipStart.session.taskId, ownershipTaskId)
 
 const pathAliasRoot = await mkdtemp(join(tmpdir(), 'workflow-path-alias-'))
 const pathAliasCwd = `${pathAliasRoot}/.`

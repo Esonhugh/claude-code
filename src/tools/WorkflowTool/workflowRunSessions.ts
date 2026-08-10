@@ -265,7 +265,7 @@ async function mutateWorkflowRunSession(
         includeOfficialFallback: false,
       })
       updated = mutation(latest)
-      if (!updated) return
+      if (!updated || updated === latest) return
       await writeWorkflowRunSession(identity.cwd, updated)
     } finally {
       await release?.()
@@ -287,16 +287,7 @@ async function writeWorkflowRunSession(cwd: string, session: WorkflowRunSession)
   await writeJson(runSessionPath(cwd, session.workflowRunId), session)
 }
 
-export async function startWorkflowRunSession({
-  cwd,
-  taskId,
-  workflowRunId,
-  plan,
-  runArgs,
-  scriptPath,
-  transcriptDir,
-  resumeFromRunId,
-}: {
+type StartWorkflowRunSessionInput = {
   cwd: string
   taskId: string
   workflowRunId: string
@@ -305,8 +296,25 @@ export async function startWorkflowRunSession({
   scriptPath?: string
   transcriptDir?: string
   resumeFromRunId?: string
-}): Promise<WorkflowRunSession> {
-  const started = await mutateWorkflowRunSession(cwd, workflowRunId, () => {
+}
+
+export async function tryStartWorkflowRunSession({
+  cwd,
+  taskId,
+  workflowRunId,
+  plan,
+  runArgs,
+  scriptPath,
+  transcriptDir,
+  resumeFromRunId,
+}: StartWorkflowRunSessionInput): Promise<{
+  session: WorkflowRunSession
+  started: boolean
+}> {
+  let didStart = false
+  const session = await mutateWorkflowRunSession(cwd, workflowRunId, latest => {
+    if (latest) return latest
+    didStart = true
     const now = Date.now()
     return {
       taskId,
@@ -329,7 +337,13 @@ export async function startWorkflowRunSession({
       ...(plan.totalAgents > 0 ? { agentCount: plan.totalAgents } : {}),
     }
   })
-  return started!
+  return { session: session!, started: didStart }
+}
+
+export async function startWorkflowRunSession(
+  input: StartWorkflowRunSessionInput,
+): Promise<WorkflowRunSession> {
+  return (await tryStartWorkflowRunSession(input)).session
 }
 
 export async function listWorkflowRunSessions(
