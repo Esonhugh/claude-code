@@ -29,6 +29,7 @@
 - `50684e4` — 允许主线程通过 `SetGoal` 设置自主完成目标，并隔离 Agent context。
 - `b027a8b` — 收敛未等待的 runtime call，保护 Workflow task、run 与 terminal 状态一致性。
 - `af64f72` — 移除 declarative Workflow 的默认 stall timeout，仅在显式配置正数阈值时启用 stalled 中止与重试。
+- `fb84d33` — 补充本版本 Workflow stall 修复的发布说明；该提交仅维护 release metadata。
 
 ### 变更内容
 
@@ -41,7 +42,7 @@
 
 - 主线程新增 `SetGoal` 工具并复用 `/goal` Stop hook，在目标尚未完成时阻止会话提前结束；Agent context 的工具过滤和运行时校验继续拒绝修改主会话目标。
 - Workflow retry 与失败路径保留 logical worker、attempt、error kind、token、tool use、duration 和原始错误详情；跳过、暂停与终止路径固化相应 task/attempt 状态及当前 usage。
-- 同一 Workflow run 的 session 更新通过 canonical path、进程内 mutation queue 和跨进程文件锁串行提交，并保留第一个 terminal 结果。
+- 同一 Workflow run 的 session 更新通过进程内 mutation queue 与 canonical path 上的跨进程文件锁串行提交，并保留第一个 terminal 结果。
 
 #### Runtime 终态完整性
 
