@@ -28,6 +28,7 @@
 - `92220db` — 串行化同一 Workflow run 的进程内及跨进程 session mutation。
 - `50684e4` — 允许主线程通过 `SetGoal` 设置自主完成目标，并隔离 Agent context。
 - `b027a8b` — 收敛未等待的 runtime call，保护 Workflow task、run 与 terminal 状态一致性。
+- `af64f72` — 移除 declarative Workflow 的默认 stall timeout，仅在显式配置正数阈值时启用 stalled 中止与重试。
 
 ### 变更内容
 
