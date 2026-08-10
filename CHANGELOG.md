@@ -12,6 +12,48 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-10 - v2.1.209 - Workflow 终态、失败诊断与会话一致性修复
+
+### 版本状态
+
+- 准备发布版本：`v2.1.209`。
+- 本次发布覆盖 `v2.1.208` 之后至 2026-08-10 的 effort、自动压缩、主线程目标与 Workflow runtime 修复。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.209`。
+
+### 关联提交
+
+- `5c31e45` — 保持用户显式配置的 effort，不再根据模型 capability 静默降级。
+- `66f9543` — 保留自动压缩与 Workflow failure 的原始错误、usage 和 retry 详情。
+- `92220db` — 串行化同一 Workflow run 的进程内及跨进程 session mutation。
+- `50684e4` — 允许主线程通过 `SetGoal` 设置自主完成目标，并隔离 Agent context。
+- `b027a8b` — 收敛未等待的 runtime call，保护 Workflow task、run 与 terminal 状态一致性。
+
+### 变更内容
+
+#### Effort 与自动压缩错误保真
+
+- 用户显式配置的 `xhigh`、`max`、`ultra` 和 `ultracode` 按 provider 映射后传入 API，模型 capability 仅限制可选档位，不再静默覆盖已有配置。
+- 自动压缩遇到 `429`、rate limit 或 usage limit 时保留原始错误文本并恢复为 rate-limit/429 分类，不再统一伪装成 prompt-too-long；其他 blocking-limit 场景继续返回明确的上下文过长错误。
+
+#### 主线程目标与 Workflow 诊断
+
+- 主线程新增 `SetGoal` 工具并复用 `/goal` Stop hook，在目标尚未完成时阻止会话提前结束；Agent context 的工具过滤和运行时校验继续拒绝修改主会话目标。
+- Workflow retry 与失败路径保留 logical worker、attempt、error kind、token、tool use、duration 和原始错误详情；跳过、暂停与终止路径固化相应 task/attempt 状态及当前 usage。
+- 同一 Workflow run 的 session 更新通过 canonical path、进程内 mutation queue 和跨进程文件锁串行提交，并保留第一个 terminal 结果。
+
+#### Runtime 终态完整性
+
+- Workflow script 返回后等待已启动的 `agent()` 与 child `workflow()` runtime call 收敛，未等待或传递性启动的失败不会被误报为 completed。
+- 重复 Workflow run ID 不再注册第二个 task；task 注册失败会留下可诊断的 failed session，terminal 后的迟到进度不能覆盖 task/run 终态。
+- official-style script runtime 与 declarative Workflow Agent 未显式配置 `stallMs` 时均不附加隐式 stall timeout，可保持 running 直到真实终态；只有调用方显式配置正数 `stallMs` 时才启用 stalled 中止与重试。
+
+### 测试覆盖
+
+- effort、blocking-limit/compact error、SetGoal 隔离、Workflow usage/retry/session concurrency/runtime terminal integrity 均有对应 focused regression tests。
+- 发布门禁要求完整执行 changelog 校验、TypeScript、ESLint、missing asset audit、`git diff --check`、ripgrep packaging tests 与当前源码 binary build/smoke；Python 验证脚本生成的 bytecode/cache 不进入 release payload。
+- binary-side 验收使用 scripted tmux 覆盖直接/嵌套 Agent、Workflow、受控 retry/failure、`/deep-research` 和 `/code-review`；任一缺少稳定 ID、terminal marker、debug evidence 或副作用检查的目标均不得判为通过。
+
 ## 2026-08-04 - v2.1.208 - Agent、Workflow 生命周期验证与重试可靠性修复
 
 ### 版本状态

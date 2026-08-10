@@ -148,13 +148,22 @@ const context = {
 
 dequeueAllMatching(command => command.mode === 'task-notification')
 
-const result = await runWorkflowPlan({
-  plan,
-  context,
-  canUseTool: async () => ({ behavior: 'allow' }),
-  assistantMessage: { message: { id: 'msg_short_root' } } as never,
-  workflowRunId: 'wf_short_root',
-})
+const originalSetInterval = globalThis.setInterval
+let result: string
+try {
+  globalThis.setInterval = (() => {
+    throw new Error('default workflow agent stall timer should not be created')
+  }) as typeof setInterval
+  result = await runWorkflowPlan({
+    plan,
+    context,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: 'msg_short_root' } } as never,
+    workflowRunId: 'wf_short_root',
+  })
+} finally {
+  globalThis.setInterval = originalSetInterval
+}
 
 assert.match(result, /Workflow launched in background\. Task ID: w/)
 const task = Object.values(state.tasks).find(task => task.type === 'local_workflow')

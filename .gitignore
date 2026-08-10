@@ -1,6 +1,8 @@
 node_modules/
 dist/
 *.bun-build
+__pycache__/
+*.py[cod]
 /embedded-cli.js
 
 official-claude

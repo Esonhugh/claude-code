@@ -38,6 +38,13 @@ assert.equal(parsed.uiName, 'Custom UI')
 const invalid = SettingsSchema().safeParse({ uiName: ['P', 'R', 'T', 'S'] })
 assert.equal(invalid.success, false)
 
+const originalEmbeddedRipgrepPath =
+  process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH
+const originalEmbeddedRipgrepVersion =
+  process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION
+delete process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH
+delete process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION
+
 process.env.NODE_ENV = 'test'
 process.env.ANTHROPIC_API_KEY = 'test-key'
 process.env.CLAUDE_CODE_FORCE_FULL_LOGO = '1'
@@ -81,5 +88,17 @@ compactInstance.cleanup()
 
 assert.match(compactStdout.output, /Custom UI/)
 assert.doesNotMatch(compactStdout.output, /Claude Code/)
+
+if (originalEmbeddedRipgrepPath === undefined) {
+  delete process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH
+} else {
+  process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH = originalEmbeddedRipgrepPath
+}
+if (originalEmbeddedRipgrepVersion === undefined) {
+  delete process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION
+} else {
+  process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION =
+    originalEmbeddedRipgrepVersion
+}
 
 console.log('uiName.test.ts passed')

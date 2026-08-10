@@ -29,6 +29,10 @@ import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutpu
 import type { SpawnTeammateConfig } from '../shared/spawnMultiAgent.js'
 import { writeTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 
+const originalAgentTeamsFlag =
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+
 function createTestAssistantMessage(text: string) {
   return createAssistantMessage({ content: text })
 }
@@ -1125,5 +1129,11 @@ assert.equal(debugParams.agentSystemPromptChars, 456)
 assert.deepEqual(debugParams.availableToolNames, ['Agent', 'Read'])
 assert.equal(JSON.stringify(debugParams).includes('reply ready'), false)
 assert.equal(JSON.stringify(debugParams).includes('debug params test'), false)
+
+if (originalAgentTeamsFlag === undefined) {
+  delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+} else {
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = originalAgentTeamsFlag
+}
 
 console.log('AgentTool.nesting.test.ts passed')

@@ -109,7 +109,9 @@ describe('query autocompact failures', () => {
           },
           callModel: async function* () {
             callModelCalls++
-            throw new Error('callModel should not run after blocking-limit preempt')
+            yield await Promise.reject(
+              new Error('callModel should not run after blocking-limit preempt'),
+            )
           },
         },
       })
@@ -174,7 +176,9 @@ describe('query autocompact failures', () => {
           },
           callModel: async function* () {
             callModelCalls++
-            throw new Error('callModel should not run after blocking-limit preempt')
+            yield await Promise.reject(
+              new Error('callModel should not run after blocking-limit preempt'),
+            )
           },
         },
       })

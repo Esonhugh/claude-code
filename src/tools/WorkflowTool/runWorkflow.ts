@@ -80,7 +80,6 @@ import { logForDebugging } from '../../utils/debug.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
-const DEFAULT_STALL_MS = 120_000
 const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
 const COMMAND_MESSAGE_RE = new RegExp(`<${COMMAND_MESSAGE_TAG}>${TAG_CONTENT_ESCAPE}<\\/${COMMAND_MESSAGE_TAG}>`)
 
@@ -553,13 +552,16 @@ async function runPhaseAgentAttempt({
     },
   }
 
-  const stallMs = context.options.workflowAgentStallMs ?? DEFAULT_STALL_MS
+  const stallMs = context.options.workflowAgentStallMs
   let lastProgress = Date.now()
-  const stallTimer = setInterval(() => {
-    if (Date.now() - lastProgress > stallMs) {
-      agentAbortController.abort('stalled')
-    }
-  }, Math.min(stallMs / 2, 30_000))
+  const stallTimer =
+    stallMs !== undefined && Number.isFinite(stallMs) && stallMs > 0
+      ? setInterval(() => {
+          if (Date.now() - lastProgress > stallMs) {
+            agentAbortController.abort('stalled')
+          }
+        }, Math.min(stallMs / 2, 30_000))
+      : undefined
 
   let result: Awaited<ReturnType<Tool['call']>>
   try {
