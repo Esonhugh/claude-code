@@ -12,6 +12,10 @@ test('awaits local SSH session creation before reading the session', () => {
   )
 })
 
+test('forwards the resolved local model to the remote SSH child', () => {
+  assert.match(source, /model: resolvedInitialModel/)
+})
+
 test('accepts root flags before ssh without treating flag values as the subcommand', () => {
   assert.match(source, /rootFlagsWithValues = new Set\(\[/)
   assert.match(source, /'--debug-file'/)

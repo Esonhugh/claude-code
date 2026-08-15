@@ -81,6 +81,18 @@ describe('remote launch command', () => {
     assert.equal(command.includes('OPENAI_AUTH_TOKEN='), false)
   })
 
+  it('forwards the resolved local model to the remote child', () => {
+    const command = buildRemoteLaunchCommand({
+      remoteBinaryPath: '/tmp/claude',
+      remoteSocketPath: '/tmp/api.sock',
+      cwd: '/tmp/project',
+      model: 'gateway-model',
+      oauth: false,
+    })
+
+    assert.match(command, /--model gateway-model/)
+  })
+
   it('prepares the socket directory before opening reverse forwarding', () => {
     const source = readFileSync(new URL('./createSSHSession.ts', import.meta.url), 'utf8')
     const prepareIndex = source.indexOf(

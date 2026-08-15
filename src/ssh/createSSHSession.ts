@@ -57,6 +57,7 @@ type SSHSessionOptions = {
   permissionMode?: string
   dangerouslySkipPermissions?: boolean
   extraCliArgs?: string[]
+  model?: string
 }
 
 type LocalSSHSessionOptions = Omit<
@@ -195,6 +196,7 @@ export function buildRemoteLaunchCommand(options: {
   permissionMode?: string
   dangerouslySkipPermissions?: boolean
   extraCliArgs?: string[]
+  model?: string
   provider?: SSHAuthProxy['provider']
   oauth: boolean
 }): string {
@@ -213,7 +215,13 @@ export function buildRemoteLaunchCommand(options: {
     ...AUTH_ENV_VARS_TO_UNSET.flatMap(key => ['-u', key]),
     ...envArgs,
     options.remoteBinaryPath,
-    ...childArgs(options),
+    ...childArgs({
+      ...options,
+      extraCliArgs: [
+        ...(options.model ? ['--model', options.model] : []),
+        ...(options.extraCliArgs ?? []),
+      ],
+    }),
   ]
   return `cd -- ${quote([options.cwd])} && ${quote(command)}`
 }
@@ -649,6 +657,7 @@ export async function createSSHSession(
     permissionMode: options.permissionMode,
     dangerouslySkipPermissions: options.dangerouslySkipPermissions,
     extraCliArgs: options.extraCliArgs,
+    model: options.model,
     provider: proxy.provider,
     oauth: proxy.authKind === 'oauth',
   })}`

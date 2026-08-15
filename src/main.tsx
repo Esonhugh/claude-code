@@ -4431,6 +4431,7 @@ async function run(): Promise<CommanderCommand> {
                 dangerouslySkipPermissions:
                   _pendingSSH.dangerouslySkipPermissions,
                 extraCliArgs: _pendingSSH.extraCliArgs,
+                model: resolvedInitialModel,
               },
               isTTY
                 ? {
