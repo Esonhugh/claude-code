@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { getSessionId } from '../../bootstrap/state.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import type { AppState } from '../../state/AppState.js'
 import type { AttachmentMessage } from '../../types/message.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -31,6 +32,50 @@ function createContext(initial: GoalStatus, agentId?: string) {
 }
 
 assert.equal(SetGoalTool.name, SET_GOAL_TOOL_NAME)
+assert.equal(SetGoalTool.userFacingName(), SET_GOAL_TOOL_NAME)
+
+const shortGoal = 'finish the feature'
+assert.equal(
+  SetGoalTool.renderToolUseMessage(
+    { goal: shortGoal },
+    { theme: 'dark', verbose: false },
+  ),
+  shortGoal,
+)
+
+const multilineGoal = `first line\n${'x'.repeat(200)}`
+assert.equal(
+  SetGoalTool.renderToolUseMessage(
+    { goal: multilineGoal },
+    { theme: 'dark', verbose: false },
+  ),
+  'first line…',
+)
+assert.equal(
+  SetGoalTool.renderToolUseMessage(
+    { goal: multilineGoal },
+    { theme: 'dark', verbose: true },
+  ),
+  multilineGoal,
+)
+
+const longGoal = 'x'.repeat(200)
+const summarizedGoal = SetGoalTool.renderToolUseMessage(
+  { goal: longGoal },
+  { theme: 'dark', verbose: false },
+)
+assert.equal(typeof summarizedGoal, 'string')
+assert.equal(stringWidth(summarizedGoal as string), 160)
+assert.match(summarizedGoal as string, /…$/)
+
+const wideGoal = '目'.repeat(100)
+const summarizedWideGoal = SetGoalTool.renderToolUseMessage(
+  { goal: wideGoal },
+  { theme: 'dark', verbose: false },
+)
+assert.equal(typeof summarizedWideGoal, 'string')
+assert.equal(stringWidth(summarizedWideGoal as string), 159)
+assert.match(summarizedWideGoal as string, /…$/)
 
 const emptyContext = createContext({ active: false })
 assert.deepEqual(

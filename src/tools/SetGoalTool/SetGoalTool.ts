@@ -14,7 +14,10 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { recordTranscript } from '../../utils/sessionStorage.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { truncate } from '../../utils/truncate.js'
 import { SET_GOAL_TOOL_NAME } from './constants.js'
+
+const MAX_GOAL_DISPLAY_WIDTH = 160
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -54,10 +57,12 @@ The goal activates the same behavior as /goal: work autonomously, verify the res
     return outputSchema()
   },
   userFacingName() {
-    return ''
+    return SET_GOAL_TOOL_NAME
   },
-  renderToolUseMessage() {
-    return null
+  renderToolUseMessage({ goal }, { verbose }) {
+    if (!goal) return null
+    const prompt = getGoalPromptForState(goal)
+    return verbose ? prompt : truncate(prompt, MAX_GOAL_DISPLAY_WIDTH, true)
   },
   renderToolResultMessage() {
     return null
