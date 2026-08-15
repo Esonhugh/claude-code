@@ -1294,18 +1294,22 @@ class BinaryGate:
             evidence['unexpected_tool_names'] = sorted(unexpected_tool_names)
         return evidence
 
-    def deep_research_web_tools_complete(self, web_tools):
+    def deep_research_web_tools_complete(self, web_tools, phase_evidence):
+        selected_sources = phase_evidence['select-sources'].get('selected_sources')
+        if selected_sources is None:
+            return False
+        expected_fetches = len(selected_sources)
         return (
             tool_occurrence_count(web_tools['WebSearch']) == 5
             and len(web_tools['WebSearch']['successful_result_ids']) == 5
             and not web_tools['WebSearch']['failed_result_ids']
             and not web_tools['WebSearch']['invalid_result_ids']
-            and tool_occurrence_count(web_tools['WebFetch']) == 15
+            and tool_occurrence_count(web_tools['WebFetch']) == expected_fetches
             and not web_tools['WebFetch']['invalid_result_ids']
             and (
                 len(web_tools['WebFetch']['successful_result_ids'])
                 + len(web_tools['WebFetch']['failed_result_ids'])
-                == 15
+                == expected_fetches
             )
         )
 
@@ -1418,6 +1422,7 @@ class BinaryGate:
                 ),
                 'transcript': str(transcript_path),
                 'tool': tool,
+                'discovery_tool_occurrences': tool_occurrence_count(discovery),
                 'unexpected_tool_names': (
                     tool_evidence['unexpected_tool_names']
                     if discovery_valid
@@ -1602,7 +1607,10 @@ class BinaryGate:
                 'failed_output_mismatch_logical_indexes': failed_output_mismatch_indexes,
                 'complete': (
                     set(attempts[phase]) == expected_indexes
-                    and set(exact_once_indexes) == expected_indexes
+                    and (
+                        phase == 'fetch'
+                        or set(exact_once_indexes) == expected_indexes
+                    )
                     and all(
                         attempt['expected_total'] == count
                         for phase_attempts in attempts[phase].values()
@@ -1644,49 +1652,111 @@ class BinaryGate:
                 'attempts': worker_attempts,
             }
             if phase == 'select-sources':
-                selected_sources = (
-                    worker_attempts.get('1', [{}])[0].get('selected_sources')
+                selected_attempt = (
+                    worker_attempts.get('1', [{}])[0]
                     if len(worker_attempts.get('1', [])) == 1
-                    else None
+                    else {}
                 )
-                expected_ranks = list(range(1, 16))
+                selected_sources = selected_attempt.get('selected_sources')
+                selected_output = selected_attempt.get('structured_output')
+                selected_count = (
+                    len(selected_sources) if selected_sources is not None else 0
+                )
                 selected_urls = (
                     [source['url'] for source in selected_sources]
                     if selected_sources is not None
                     else []
                 )
+                shortfall = (
+                    selected_output.get('shortfall')
+                    if isinstance(selected_output, dict)
+                    else None
+                )
+                shortfall_complete = (
+                    shortfall is None
+                    if selected_count == 15
+                    else (
+                        isinstance(shortfall, dict)
+                        and shortfall.get('missingCount') == 15 - selected_count
+                    )
+                )
                 sources_complete = (
                     selected_sources is not None
-                    and len(selected_sources) == 15
+                    and selected_count <= 15
                     and [source['rank'] for source in selected_sources]
-                    == expected_ranks
+                    == list(range(1, selected_count + 1))
                     and all(selected_urls)
-                    and len(set(selected_urls)) == 15
+                    and len(set(selected_urls)) == selected_count
+                    and shortfall_complete
                 )
                 phase_result.update({
                     'selected_sources': selected_sources,
+                    'shortfall': shortfall,
                     'sources_complete': sources_complete,
                     'complete': phase_result['complete'] and sources_complete,
                 })
             result[phase] = phase_result
         selected_sources = result['select-sources'].get('selected_sources')
+        selected_count = len(selected_sources) if selected_sources is not None else 0
         selected_source_by_index = {
             str(source['rank']): source['url']
             for source in selected_sources or []
         }
+        selected_indexes = {
+            str(index) for index in range(1, selected_count + 1)
+        }
+        expected_shortfall_indexes = {
+            str(index) for index in range(selected_count + 1, 16)
+        }
+        shortfall_indexes = sorted(
+            index
+            for index, phase_attempts in attempts['fetch'].items()
+            if len(phase_attempts) == 1
+            and not phase_attempts[0]['retry']
+            and phase_attempts[0]['expected_total'] == 15
+            and not phase_attempts[0]['unexpected_tool_names']
+            and phase_attempts[0]['discovery_tool_occurrences'] == 0
+            and phase_attempts[0]['selected_source'] == {
+                'rank': int(index),
+                'url': None,
+            }
+            and phase_attempts[0]['structured_output'] is not None
+            and phase_attempts[0]['structured_output'].get('sourceQuality')
+            == 'unreliable'
+            and phase_attempts[0]['structured_output'].get('claims') == []
+            and phase_attempts[0]['structured_output'].get('missingReason')
+            == 'source list shortfall'
+            and result['fetch']['logical_worker_tool_counts'][index] == {
+                'tool_uses': 0,
+                'tool_use_occurrences': 0,
+                'successful_results': 0,
+                'failed_results': 0,
+                'invalid_results': 0,
+            }
+        )
         fetch_sources_match = (
             result['select-sources']['complete']
+            and set(attempts['fetch'])
+            == selected_indexes | expected_shortfall_indexes
             and all(
-                len(phase_attempts) == 1
-                and phase_attempts[0]['selected_source'] is not None
-                and phase_attempts[0]['selected_source']['url']
-                == selected_source_by_index.get(index)
-                for index, phase_attempts in attempts['fetch'].items()
+                len(attempts['fetch'][index]) == 1
+                and attempts['fetch'][index][0]['selected_source'] is not None
+                and attempts['fetch'][index][0]['selected_source']['url']
+                == selected_source_by_index[index]
+                for index in selected_indexes
             )
         )
         result['fetch']['selected_sources_match'] = fetch_sources_match
+        result['fetch']['shortfall_logical_indexes'] = shortfall_indexes
+        result['fetch']['invalid_shortfall_logical_indexes'] = sorted(
+            expected_shortfall_indexes - set(shortfall_indexes)
+        )
         result['fetch']['complete'] = (
-            result['fetch']['complete'] and fetch_sources_match
+            result['fetch']['complete']
+            and fetch_sources_match
+            and set(result['fetch']['exact_once_logical_indexes'])
+            == selected_indexes
+            and set(shortfall_indexes) == expected_shortfall_indexes
         )
         return result
 
@@ -2218,7 +2288,9 @@ return { results }
                 and phase_evidence['fetch']['complete']
                 and phase_evidence['verify']['complete']
                 and phase_evidence['synthesize']['complete']
-                and self.deep_research_web_tools_complete(web_tools)
+                and self.deep_research_web_tools_complete(
+                    web_tools, phase_evidence
+                )
             )
         )
         (run_dir / 'workflow-completion-proof.json').write_text(

@@ -117,22 +117,55 @@ def deep_research_entries(phase, index, *, error=None, tool_id=None,
 
 
 def deep_research_select_sources_entries(count=15):
+    output = {
+        'sources': [
+            {
+                'oneBasedRank': index,
+                'url': f'https://example.test/source-{index}',
+                'title': f'Source {index}',
+                'originatingSearchWorker': 1,
+            }
+            for index in range(1, count + 1)
+        ],
+    }
+    if count < 15:
+        output['shortfall'] = {'missingCount': 15 - count}
     return [{
         'type': 'assistant',
         'message': {
             'role': 'assistant',
             'content': [{
                 'type': 'text',
+                'text': json.dumps(output),
+            }],
+        },
+    }]
+
+
+def deep_research_shortfall_entries(index):
+    return [{
+        'type': 'user',
+        'message': {
+            'role': 'user',
+            'content': (
+                f'Select only source {index}. The upstream source list has no '
+                'source at that rank.'
+            ),
+        },
+    }, {
+        'type': 'assistant',
+        'message': {
+            'role': 'assistant',
+            'content': [{
+                'type': 'text',
                 'text': json.dumps({
-                    'sources': [
-                        {
-                            'oneBasedRank': index,
-                            'url': f'https://example.test/source-{index}',
-                            'title': f'Source {index}',
-                            'originatingSearchWorker': 1,
-                        }
-                        for index in range(1, count + 1)
-                    ],
+                    'selectedSource': {
+                        'oneBasedRank': index,
+                        'url': None,
+                    },
+                    'sourceQuality': 'unreliable',
+                    'claims': [],
+                    'missingReason': 'source list shortfall',
                 }),
             }],
         },
@@ -456,7 +489,7 @@ def assert_driver_behavior(module):
             gate, run_dir, {'WebSearch', 'WebFetch'}
         )
         assert module.BinaryGate.deep_research_web_tools_complete(
-            gate, web_tools
+            gate, web_tools, evidence
         ) is True
 
         passive_path = subagents / 'agent-verify-1.jsonl'
@@ -513,7 +546,7 @@ def assert_driver_behavior(module):
             gate, run_dir, {'WebSearch', 'WebFetch'}
         )
         assert module.BinaryGate.deep_research_web_tools_complete(
-            gate, web_tools
+            gate, web_tools, evidence
         ) is False
         write_transcript(extra_path, [{
             'type': 'assistant',
@@ -528,9 +561,55 @@ def assert_driver_behavior(module):
             subagents,
             deep_research_select_sources_entries(14),
         )
+        write_transcript(
+            subagents / 'agent-fetch-15.jsonl',
+            deep_research_shortfall_entries(15),
+        )
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is True
+        assert evidence['select-sources']['sources_complete'] is True
+        assert evidence['fetch']['complete'] is True
+        assert evidence['fetch']['shortfall_logical_indexes'] == ['15']
+        assert set(evidence['fetch']['exact_once_logical_indexes']) == {
+            str(index) for index in range(1, 15)
+        }
+        web_tools = module.BinaryGate.tool_evidence(
+            gate, run_dir, {'WebSearch', 'WebFetch'}
+        )
+        assert module.BinaryGate.deep_research_web_tools_complete(
+            gate, web_tools, evidence
+        ) is True
+
+        write_transcript(
+            subagents / 'agent-fetch-15.jsonl',
+            deep_research_entries('fetch', 15),
+        )
+        evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
+        assert evidence['select-sources']['complete'] is True
+        assert evidence['fetch']['complete'] is False
+        assert evidence['fetch']['invalid_shortfall_logical_indexes'] == ['15']
+        web_tools = module.BinaryGate.tool_evidence(
+            gate, run_dir, {'WebSearch', 'WebFetch'}
+        )
+        assert module.BinaryGate.deep_research_web_tools_complete(
+            gate, web_tools, evidence
+        ) is False
+
+        invalid_shortfall_entries = deep_research_select_sources_entries(14)
+        invalid_shortfall_output = json.loads(
+            invalid_shortfall_entries[0]['message']['content'][0]['text']
+        )
+        invalid_shortfall_output['shortfall']['missingCount'] = 2
+        invalid_shortfall_entries[0]['message']['content'][0]['text'] = json.dumps(
+            invalid_shortfall_output
+        )
+        write_select_sources_worker(subagents, invalid_shortfall_entries)
+        write_transcript(
+            subagents / 'agent-fetch-15.jsonl',
+            deep_research_shortfall_entries(15),
+        )
         evidence = module.BinaryGate.deep_research_phase_evidence(gate, run_dir)
         assert evidence['select-sources']['complete'] is False
-        assert evidence['select-sources']['sources_complete'] is False
 
         entries = deep_research_select_sources_entries()
         output = json.loads(entries[0]['message']['content'][0]['text'])
@@ -580,6 +659,10 @@ def assert_driver_behavior(module):
         assert evidence['select-sources']['complete'] is False
 
         write_select_sources_worker(subagents)
+        write_transcript(
+            subagents / 'agent-fetch-15.jsonl',
+            deep_research_entries('fetch', 15),
+        )
         write_transcript(
             subagents / 'agent-fetch-2.jsonl',
             deep_research_entries(

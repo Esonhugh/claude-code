@@ -72,7 +72,7 @@ make release-check
 - 使用 `.claude/skills/claude-agent-workflow-validation` 的 scripted tmux 证据边界；
 - 运行当前 `built-claude`，不能使用旧产物或 parent-side 工具代替；
 - 从 diff 和调用链列出受影响的真实入口、相邻组件与副作用，并逐项执行对应交互流程；内部实现不得以“用户不可见”为由跳过；
-- deep-research 必须证明固定 5 个 Search worker 各成功调用 WebSearch 恰好一次、15 个 Fetch worker 各调用 WebFetch 恰好一次，并逐项记录 WebFetch 成功或外部来源失败；HTTP 403、paywall 或站点阻断属于来源结果，不得伪造为成功，也不得仅因此把调度契约判失败；缺少 tool result、重复调用、重试、替换来源（包括仅 query 不同）或调用目标工具与必要 `ToolSearch` discovery 之外的工具仍失败；
+- deep-research 必须证明固定 5 个 Search worker 各成功调用 WebSearch 恰好一次；select-sources 输出的每个实际 URL 必须由对应 Fetch worker 调用 WebFetch 恰好一次，合法 source shortfall 对应的剩余 Fetch worker 必须返回 `url: null`、`missingReason: "source list shortfall"` 且不调用工具；逐项记录 WebFetch 成功或外部来源失败。HTTP 403、paywall 或站点阻断属于来源结果，不得伪造为成功，也不得仅因此把调度契约判失败；缺少 tool result、重复调用、重试、替换来源（包括仅 query 不同）或调用目标工具与必要 `ToolSearch` discovery 之外的工具仍失败；
 - Agent 启动、路由或生命周期相关改动必须逐项尝试直接 Agent、Workflow/WorkflowTool 内 Agent、nested Agent、foreground/background continuation、task/notification；共享路径变化不能只验直接 Agent；
 - 使用隔离的 dummy credential，或将安全的现有账户认证复制到 evidence/repo 外、权限为 `0700` 且门禁结束后清理的私有临时 HOME；不得打印、保存到 evidence 或改写共享凭据；
 - 保存 startup、submitted、running、terminal pane 和必要 debug marker 等绝对证据路径；
