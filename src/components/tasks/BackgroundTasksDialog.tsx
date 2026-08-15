@@ -114,6 +114,9 @@ function TerminalDetailDialog({
           <Text bold>Command:</Text> {task.command}
         </Text>
         <Text>
+          <Text bold>Args:</Text> {JSON.stringify(task.args)}
+        </Text>
+        <Text>
           <Text bold>CWD:</Text> {task.cwd}
         </Text>
         <Text bold>Preview:</Text>

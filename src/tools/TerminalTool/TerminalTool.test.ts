@@ -580,7 +580,9 @@ test('records the resolved default shell in task state for new-session', async (
       value.type === 'interactive_terminal' && value.sessionId === target,
   )
 
-  assert.equal(task?.command, resolveTerminalCommand().command)
+  const resolved = resolveTerminalCommand()
+  assert.equal(task?.command, resolved.command)
+  assert.deepEqual(task?.args, resolved.args)
 
   await TerminalTool.call(
     { action: 'kill-pane', target },

@@ -25,6 +25,7 @@ export type TerminalTaskState = TaskStateBase & {
   type: 'interactive_terminal'
   sessionId: string
   command: string
+  args: string[]
   cwd: string
   cols: number
   rows: number

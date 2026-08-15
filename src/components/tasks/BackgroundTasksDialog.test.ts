@@ -1,9 +1,16 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict'
+import { Writable } from 'node:stream'
+import React from 'react'
+import stripAnsi from 'strip-ansi'
 
 import type { TaskStateBase } from '../../Task.js'
+import type { ToolUseContext } from '../../Tool.js'
 import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
 import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js'
+import { render } from '../../ink.js'
+import { getDefaultAppState } from '../../state/AppState.js'
+import { AppStateProvider } from '../../state/AppState.js'
 import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
 
 function createTaskBase(id: string, description: string, startTime: number): TaskStateBase {
@@ -27,6 +34,7 @@ const terminalTask = (
   type: 'interactive_terminal',
   sessionId: `session-${id}`,
   command: 'zsh',
+  args: ['-l'],
   cwd: '/tmp',
   cols: 120,
   rows: 30,
@@ -94,5 +102,61 @@ assert.deepEqual(defaultScope, {
   skippedListOnMount: true,
   initialSelectedIndex: 0,
 })
+
+process.env.NODE_ENV = 'test'
+process.env.ANTHROPIC_API_KEY = 'test-key'
+;(globalThis as unknown as { MACRO: { VERSION: string } }).MACRO = {
+  VERSION: '0.0.0-test',
+}
+
+class TestStdout extends Writable {
+  columns = 120
+  rows = 40
+  isTTY = false
+  output = ''
+
+  _write(
+    chunk: string | Buffer,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ) {
+    this.output += chunk.toString()
+    callback()
+  }
+}
+
+const renderedTerminal = terminalTask('rendered', 1)
+renderedTerminal.command = 'python'
+renderedTerminal.args = ['-i', '--quiet']
+const initialState = {
+  ...getDefaultAppState(),
+  tasks: { rendered: renderedTerminal },
+}
+const { BackgroundTasksDialog } = await import('./BackgroundTasksDialog.js')
+const stdout = new TestStdout()
+const instance = await render(
+  React.createElement(
+    AppStateProvider,
+    { initialState } as unknown as React.ComponentProps<typeof AppStateProvider>,
+    React.createElement(BackgroundTasksDialog, {
+      onDone: () => {},
+      toolUseContext: {} as ToolUseContext,
+      initialDetailTaskId: 'rendered',
+      scope: 'terminal',
+    }),
+  ),
+  {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    patchConsole: false,
+  },
+)
+await new Promise(resolve => setImmediate(resolve))
+instance.unmount()
+instance.cleanup()
+
+assert.match(
+  stripAnsi(stdout.output),
+  /Command: python\s+Args: \["-i","--quiet"\]\s+CWD: \/tmp\s+Preview:/,
+)
 
 console.log('BackgroundTasksDialog.test.ts passed')

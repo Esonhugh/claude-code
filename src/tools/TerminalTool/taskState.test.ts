@@ -19,6 +19,7 @@ function createTask(
     notified: false,
     sessionId: 'session-1',
     command: 'bash',
+    args: ['-l'],
     cwd: '/tmp',
     cols: 120,
     rows: 30,

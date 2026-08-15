@@ -363,6 +363,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
               status: 'running',
               sessionId: target,
               command: String(opened.command),
+              args: opened.args,
               cwd: parsed.data.cwd || process.cwd(),
               cols: opened.cols,
               rows: opened.rows,
