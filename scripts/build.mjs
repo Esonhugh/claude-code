@@ -61,6 +61,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
   return new Set([
     'AGENT_TRIGGERS',
     'MCP_SKILLS',
+    'SSH_REMOTE',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

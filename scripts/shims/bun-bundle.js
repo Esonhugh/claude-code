@@ -1,4 +1,8 @@
-const defaultRecoverFeatures = ['AGENT_TRIGGERS'];
+const defaultRecoverFeatures = [
+  'AGENT_TRIGGERS',
+  'MCP_SKILLS',
+  'SSH_REMOTE',
+];
 
 const enabled = new Set([
   ...defaultRecoverFeatures,

@@ -24,6 +24,10 @@ function loadOpenAIAuthInfo(apiKey: string): OpenAIAuthInfo {
   return getOpenAIAuthInfo() ?? { accessToken: apiKey, isChatGPT: false }
 }
 
+function isOpenAITunnelEnabled(): boolean {
+  return Boolean(process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET)
+}
+
 function normalizeOpenAIBaseURL(baseURL: string): string {
   const normalized = baseURL.replace(/\/+$/, '')
   return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`
@@ -281,7 +285,7 @@ async function fetchResponsesWithRetry(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const resp = await fetch(url, {
-        ...getProxyFetchOptions(),
+        ...getProxyFetchOptions({ forOpenAIAPI: true }),
         method: 'POST',
         headers,
         body,
@@ -544,14 +548,32 @@ export function createOpenAICompatClient(options: {
   timeout: number
   defaultHeaders?: Record<string, string>
 }): Anthropic {
+  const tunnel = isOpenAITunnelEnabled()
   const auth = loadOpenAIAuthInfo(options.apiKey)
-  const baseURL = getBaseURL(auth)
+  const baseURL = tunnel ? 'http://localhost' : getBaseURL(auth)
   const responsesURL = `${baseURL}/responses`
-  const headers = buildHeaders(auth)
+  const headers = tunnel
+    ? { 'Content-Type': 'application/json' }
+    : buildHeaders(auth)
 
-  logForDebugging(`[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT})`)
+  logForDebugging(
+    `[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT}, tunnel=${tunnel})`,
+  )
 
   const messagesProxy = {
+    async countTokens(params: any): Promise<{ input_tokens: number }> {
+      const input = anthropicMessagesToResponsesInput(
+        params.messages ?? [],
+        params.system,
+      )
+      const tools = anthropicToolsToResponsesTools(params.tools)
+      const serialized = JSON.stringify({
+        input,
+        ...(tools && { tools }),
+        ...(params.system && { system: params.system }),
+      })
+      return { input_tokens: Math.max(1, Math.ceil(serialized.length / 4)) }
+    },
     create(params: any): any {
       const model = mapModel(params.model || DEFAULT_OPENAI_MODEL)
       const input = anthropicMessagesToResponsesInput(params.messages, params.system)

@@ -23,13 +23,24 @@ import {
 function withoutSSHTunnelVars(
   env: Record<string, string> | undefined,
 ): Record<string, string> {
-  if (!env || !process.env.ANTHROPIC_UNIX_SOCKET) return env || {}
+  if (
+    !env ||
+    (!process.env.ANTHROPIC_UNIX_SOCKET &&
+      !process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET)
+  ) {
+    return env || {}
+  }
   const {
     ANTHROPIC_UNIX_SOCKET: _1,
     ANTHROPIC_BASE_URL: _2,
     ANTHROPIC_API_KEY: _3,
     ANTHROPIC_AUTH_TOKEN: _4,
     CLAUDE_CODE_OAUTH_TOKEN: _5,
+    CLAUDE_CODE_OPENAI_UNIX_SOCKET: _6,
+    CLAUDE_CODE_OPENAI_AUTH_MODE: _7,
+    OPENAI_BASE_URL: _8,
+    OPENAI_API_KEY: _9,
+    OPENAI_AUTH_TOKEN: _10,
     ...rest
   } = env
   return rest

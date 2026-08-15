@@ -160,10 +160,17 @@ export async function getAnthropicClient({
     }),
   }
   if (getAPIProvider() === 'openai') {
-    logForDebugging('[API:auth] OpenAI OAuth token check starting')
-    await checkAndRefreshOpenAITokenIfNeeded()
-    logForDebugging('[API:auth] OpenAI OAuth token check complete')
-    const openaiKey = getOpenAIApiKey()
+    const openAITunnel = Boolean(
+      process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET,
+    )
+    if (!openAITunnel) {
+      logForDebugging('[API:auth] OpenAI OAuth token check starting')
+      await checkAndRefreshOpenAITokenIfNeeded()
+      logForDebugging('[API:auth] OpenAI OAuth token check complete')
+    }
+    const openaiKey = openAITunnel
+      ? 'ssh-openai-placeholder'
+      : getOpenAIApiKey()
     if (!openaiKey) {
       throw new Error(
         'CLAUDE_CODE_USE_OPENAI=1 but no OpenAI OAuth credentials found. ' +

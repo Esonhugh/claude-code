@@ -1015,6 +1015,70 @@ export async function main() {
   // sessions need the local REPL to drive them (interrupt, permissions).
   if (feature('SSH_REMOTE') && _pendingSSH) {
     const rawCliArgs = process.argv.slice(2)
+    const rootFlagsWithValues = new Set([
+      '--add-dir',
+      '--agent',
+      '--agents',
+      '--allowed-tools',
+      '--allowedTools',
+      '--append-system-prompt',
+      '--append-system-prompt-file',
+      '--betas',
+      '--debug-file',
+      '--effort',
+      '--fallback-model',
+      '--file',
+      '--json-schema',
+      '--max-budget-usd',
+      '--max-turns',
+      '--mcp-config',
+      '--model',
+      '--output-format',
+      '--permission-mode',
+      '--plugin-dir',
+      '--prefill',
+      '--session-id',
+      '--setting-sources',
+      '--settings',
+      '--system-prompt',
+      '--system-prompt-file',
+      '--tools',
+    ])
+    const rootFlagsWithOptionalValues = new Set([
+      '--debug',
+      '--from-pr',
+      '--resume',
+      '-d',
+      '-r',
+    ])
+    let sshIndex = -1
+    for (let index = 0; index < rawCliArgs.length; index++) {
+      const arg = rawCliArgs[index]!
+      if (arg === 'ssh') {
+        sshIndex = index
+        break
+      }
+      if (arg === '--' || !arg.startsWith('-')) break
+      if (arg.includes('=')) continue
+      if (
+        rootFlagsWithValues.has(arg) ||
+        (rootFlagsWithOptionalValues.has(arg) &&
+          rawCliArgs[index + 1] &&
+          !rawCliArgs[index + 1]!.startsWith('-'))
+      ) {
+        index++
+      }
+    }
+    if (sshIndex > 0) {
+      const rootFlags = rawCliArgs.slice(0, sshIndex)
+      rawCliArgs.splice(
+        0,
+        rawCliArgs.length,
+        'ssh',
+        ...rawCliArgs.slice(sshIndex + 1),
+        ...rootFlags,
+      )
+    }
     // SSH-specific flags can appear before the host positional (e.g.
     // `ssh --permission-mode auto host /tmp` — standard POSIX flags-before-
     // positionals). Pull them all out BEFORE checking whether a host was
@@ -4345,7 +4409,7 @@ async function run(): Promise<CommanderCommand> {
         try {
           if (_pendingSSH.local) {
             process.stderr.write('Starting local ssh-proxy test session...\n')
-            sshSession = createLocalSSHSession({
+            sshSession = await createLocalSSHSession({
               cwd: _pendingSSH.cwd,
               permissionMode: _pendingSSH.permissionMode,
               dangerouslySkipPermissions:

@@ -28,6 +28,7 @@ if (!fs.existsSync(sourceDir)) {
 }
 
 for (const entry of await fs.promises.readdir(sourceDir)) {
+  if (entry.endsWith('-linux-x64-baseline')) continue
   const match = entry.match(binaryPattern)
   if (!match) continue
   const [, binaryVersion, platform, arch, extension = ''] = match

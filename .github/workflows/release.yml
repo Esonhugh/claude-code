@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate-tag:
     name: Validate release tag
@@ -129,6 +133,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - macos-14
           - windows-latest
     env:
@@ -182,6 +187,20 @@ jobs:
 
       - name: Package binary
         run: bun run package:binary
+
+      - name: Package baseline SSH binary
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        env:
+          CLAUDE_CODE_BINARY_TARGET: bun-linux-x64-baseline
+        run: bun run package:binary
+
+      - name: Verify baseline SSH binary
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-linux-x64-baseline"
+          "$ARTIFACT" --version
+          "$ARTIFACT" --help
 
       - name: Verify packaged binary
         shell: bash
@@ -248,9 +267,24 @@ jobs:
 
       - name: Generate checksums
         shell: bash
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           cd artifacts
-          sha256sum * > SHA256SUMS.txt
+          expected=(
+            "claude-code-v${VERSION}-darwin-arm64"
+            "claude-code-v${VERSION}-linux-arm64"
+            "claude-code-v${VERSION}-linux-x64"
+            "claude-code-v${VERSION}-linux-x64-baseline"
+            "claude-code-v${VERSION}-win32-x64.exe"
+          )
+          for artifact in "${expected[@]}"; do
+            test -f "$artifact" || {
+              echo "Missing release artifact: $artifact" >&2
+              exit 1
+            }
+          done
+          sha256sum "${expected[@]}" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Setup Bun

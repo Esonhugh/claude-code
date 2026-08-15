@@ -3,7 +3,6 @@ import type {
   SDKUserMessage,
   PermissionMode,
   McpServerConfigForProcessTransport,
-  PermissionResult,
   McpServerStatus,
   McpSetServersResult,
   RewindFilesResult,
@@ -62,11 +61,17 @@ export type SDKControlInterruptRequest = {
 }
 
 export type SDKControlPermissionRequest = {
-  subtype: 'permission'
+  subtype: 'can_use_tool'
   tool_name: string
-  tool_input: Record<string, unknown>
+  input: Record<string, unknown>
   tool_use_id: string
-  permissionResult: PermissionResult
+  permission_suggestions?: PermissionUpdate[]
+  blocked_path?: string
+  decision_reason?: string
+  title?: string
+  display_name?: string
+  agent_id?: string
+  description?: string
   [key: string]: unknown
 }
 
@@ -233,7 +238,7 @@ export type SDKControlCancelRequest = {
 }
 
 // Composite message types for stdio transport
-export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKKeepAliveMessage
+export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage
 export type StdinMessage = SDKUserMessage | SDKControlRequest | SDKControlResponse | SDKKeepAliveMessage | SDKUpdateEnvironmentVariablesMessage | SDKControlCancelRequest
 
 // Partial assistant message (streaming chunks)

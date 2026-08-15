@@ -12,6 +12,8 @@ const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalNodeEnv = process.env.NODE_ENV
 const originalClaudeToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const originalHome = process.env.HOME
+const originalOpenAISocket = process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
+const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 
 try {
   const home = mkdtempSync(join(tmpdir(), 'openai-missing-auth-'))
@@ -43,6 +45,11 @@ try {
       return true
     },
   )
+
+  process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET = '/tmp/openai.sock'
+  process.env.CLAUDE_CODE_OPENAI_AUTH_MODE = 'platform'
+  const client = await getAnthropicClient({ maxRetries: 0 })
+  assert.equal(typeof client.beta.messages.create, 'function')
 } finally {
   const authModule = await import('../../utils/auth.js')
   authModule.getOpenAIAuthInfo.cache.clear?.()
@@ -54,6 +61,16 @@ try {
   else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalClaudeToken
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
+  if (originalOpenAISocket === undefined) {
+    delete process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
+  } else {
+    process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET = originalOpenAISocket
+  }
+  if (originalOpenAIAuthMode === undefined) {
+    delete process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
+  } else {
+    process.env.CLAUDE_CODE_OPENAI_AUTH_MODE = originalOpenAIAuthMode
+  }
 }
 
 console.log('openai-missing-auth.test.ts passed')

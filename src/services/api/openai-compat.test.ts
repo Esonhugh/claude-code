@@ -7,6 +7,8 @@ import assert from 'node:assert/strict'
 
 const originalFetch = globalThis.fetch
 const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
+const originalOpenAISocket = process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
+const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 
 try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
@@ -84,6 +86,13 @@ try {
   })
 
   assert.equal(requests[0]!.body.model, 'gpt-5.5')
+
+  const tokenCount = await rootURLClient.beta.messages.countTokens({
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'count this input' }],
+  })
+  assert.equal(typeof tokenCount.input_tokens, 'number')
+  assert.ok(tokenCount.input_tokens > 0)
 
   requests.length = 0
   await rootURLClient.beta.messages.create({
@@ -330,6 +339,44 @@ try {
   )
 
   assert.equal(attempts, 1)
+
+  requests.length = 0
+  process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET = '/tmp/openai.sock'
+  process.env.CLAUDE_CODE_OPENAI_AUTH_MODE = 'chatgpt'
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+      unix: (init as RequestInit & { unix?: string } | undefined)?.unix,
+      accountId: headers.get('chatgpt-account-id'),
+    } as never)
+    return new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const tunneledClient = createOpenAICompatClient({
+    apiKey: 'ssh-openai-placeholder',
+    maxRetries: 0,
+    timeout: 1000,
+  })
+  await tunneledClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+  })
+  assert.equal(requests[0]!.url, 'http://localhost/responses')
+  assert.equal(requests[0]!.authorization, null)
+  assert.equal((requests[0] as never as { unix?: string }).unix, '/tmp/openai.sock')
+  assert.equal((requests[0] as never as { accountId?: string | null }).accountId, null)
+  delete process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
+  delete process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 
   globalThis.fetch = (async () => {
     return new Response(
@@ -659,6 +706,16 @@ try {
   getOpenAIAuthInfo.cache.clear?.()
   if (originalOpenAIBaseURL === undefined) delete process.env.OPENAI_BASE_URL
   else process.env.OPENAI_BASE_URL = originalOpenAIBaseURL
+  if (originalOpenAISocket === undefined) {
+    delete process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
+  } else {
+    process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET = originalOpenAISocket
+  }
+  if (originalOpenAIAuthMode === undefined) {
+    delete process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
+  } else {
+    process.env.CLAUDE_CODE_OPENAI_AUTH_MODE = originalOpenAIAuthMode
+  }
 }
 
 console.log('openai-compat.test.ts passed')

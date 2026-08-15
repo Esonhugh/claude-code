@@ -3001,7 +3001,10 @@ export function REPL({
       setMessages(prev => [...prev, createAgentsKilledMessage()]),
     isMessageSelectorVisible: isMessageSelectorVisible || !!showBashesDialog,
     screen,
-    abortSignal: abortController?.signal,
+    abortSignal:
+      activeRemote.isRemoteMode && !isLoading
+        ? undefined
+        : abortController?.signal,
     popCommandFromQueue: handleQueuedCommandOnCancel,
     vimMode,
     isLocalJSXCommand: toolJSX?.isLocalJSXCommand,
@@ -4759,6 +4762,12 @@ export function REPL({
           imagePasteIds,
         })
         setMessages(prev => [...prev, userMessage])
+
+        // Keep the standard cancel keybinding active while the remote turn is
+        // running. The controller is local lifecycle state; the remote hook
+        // sends the actual stream-json interrupt request.
+        const remoteAbortController = createAbortController()
+        setAbortController(remoteAbortController)
 
         // Send to remote session
         await activeRemote.sendMessage(remoteContent, {

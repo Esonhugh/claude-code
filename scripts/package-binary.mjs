@@ -24,10 +24,24 @@ const defaultVersion = '0.0.0-dev';
 const version = String(
   process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
 ).trim() || defaultVersion;
-const platform = process.platform;
-const arch = process.arch;
+const binaryTarget = process.env.CLAUDE_CODE_BINARY_TARGET?.trim();
+const supportedBaselineTargets = new Set(['bun-linux-x64-baseline']);
+const targetParts = binaryTarget?.match(/^bun-(darwin|linux|windows)-(arm64|x64)(-baseline)?$/);
+if (
+  binaryTarget &&
+  (!targetParts ||
+    (targetParts[3] && !supportedBaselineTargets.has(binaryTarget)))
+) {
+  throw new Error(`Unsupported CLAUDE_CODE_BINARY_TARGET: ${binaryTarget}`);
+}
+const platform = targetParts?.[1] === 'windows'
+  ? 'win32'
+  : targetParts?.[1] ?? process.platform;
+const arch = targetParts?.[2] ?? process.arch;
+const baseline = targetParts?.[3] ?? '';
+const artifactPlatform = `${platform}-${arch}${baseline}`;
 const extension = platform === 'win32' ? '.exe' : '';
-const artifactName = `claude-code-v${version}-${platform}-${arch}${extension}`;
+const artifactName = `claude-code-v${version}-${artifactPlatform}${extension}`;
 const outfile = path.join(releaseDir, artifactName);
 
 function run(command, args, options = {}) {
@@ -103,6 +117,7 @@ run('bun', [
   'build',
   '--compile',
   '--production',
+  ...(binaryTarget ? ['--target', binaryTarget] : []),
   generatedEntrypoint,
   '--outfile',
   outfile,

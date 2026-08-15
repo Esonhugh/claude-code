@@ -9,7 +9,6 @@
  * handed in; useDirectConnect creates its WebSocket inside the effect.
  */
 
-import { randomUUID } from 'crypto'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import {
@@ -155,29 +154,15 @@ export function useSSHSession({
         setToolUseConfirmQueue(q => [...q, toolUseConfirm])
         setIsLoading(false)
       },
+      onPermissionCancelled: (_requestId, toolUseId) => {
+        if (!toolUseId) return
+        setToolUseConfirmQueue(queue =>
+          queue.filter(item => item.toolUseID !== toolUseId),
+        )
+      },
       onConnected: () => {
         logForDebugging('[useSSHSession] connected')
         isConnectedRef.current = true
-      },
-      onReconnecting: (attempt, max) => {
-        logForDebugging(
-          `[useSSHSession] ssh dropped, reconnecting (${attempt}/${max})`,
-        )
-        isConnectedRef.current = false
-        // Surface a transient system message in the transcript so the user
-        // knows what's happening — the next onConnected clears the state.
-        // Any in-flight request is lost; the remote's --continue reloads
-        // history but there's no turn in progress to resume.
-        setIsLoading(false)
-        const msg: MessageType = {
-          type: 'system',
-          subtype: 'informational',
-          content: `SSH connection dropped — reconnecting (attempt ${attempt}/${max})...`,
-          timestamp: new Date().toISOString(),
-          uuid: randomUUID(),
-          level: 'warning',
-        }
-        setMessages(prev => [...prev, msg])
       },
       onDisconnected: () => {
         logForDebugging('[useSSHSession] ssh process exited (giving up)')

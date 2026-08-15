@@ -278,14 +278,16 @@ export function getWebSocketProxyUrl(url: string): string | undefined {
  * Get fetch options for the Anthropic SDK with proxy and mTLS configuration
  * Returns fetch options with appropriate dispatcher for proxy and/or mTLS
  *
- * @param opts.forAnthropicAPI - Enables ANTHROPIC_UNIX_SOCKET tunneling. This
- *   env var is set by `claude ssh` on the remote CLI to route API calls through
- *   an ssh -R forwarded unix socket to a local auth proxy. It MUST NOT leak
- *   into non-Anthropic-API fetch paths (MCP HTTP/SSE transports, etc.) or those
- *   requests get misrouted to api.anthropic.com. Only the Anthropic SDK client
- *   should pass `true` here.
+ * @param opts.forAnthropicAPI - Enables ANTHROPIC_UNIX_SOCKET tunneling.
+ * @param opts.forOpenAIAPI - Enables CLAUDE_CODE_OPENAI_UNIX_SOCKET tunneling.
+ *   These env vars are set by `claude ssh` on the remote CLI to route inference
+ *   through an ssh -R forwarded unix socket. They MUST NOT leak into MCP or
+ *   unrelated fetch paths.
  */
-export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
+export function getProxyFetchOptions(opts?: {
+  forAnthropicAPI?: boolean
+  forOpenAIAPI?: boolean
+}): {
   tls?: TLSConfig
   dispatcher?: undici.Dispatcher
   proxy?: string
@@ -297,11 +299,13 @@ export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
   // ANTHROPIC_UNIX_SOCKET tunnels through the `claude ssh` auth proxy, which
   // hardcodes the upstream to the Anthropic API. Scope to the Anthropic API
   // client so MCP/SSE/other callers don't get their requests misrouted.
-  if (opts?.forAnthropicAPI) {
-    const unixSocket = process.env.ANTHROPIC_UNIX_SOCKET
-    if (unixSocket && typeof Bun !== 'undefined') {
-      return { ...base, unix: unixSocket }
-    }
+  const unixSocket = opts?.forAnthropicAPI
+    ? process.env.ANTHROPIC_UNIX_SOCKET
+    : opts?.forOpenAIAPI
+      ? process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
+      : undefined
+  if (unixSocket && typeof Bun !== 'undefined') {
+    return { ...base, unix: unixSocket }
   }
 
   const proxyUrl = getProxyUrl()
