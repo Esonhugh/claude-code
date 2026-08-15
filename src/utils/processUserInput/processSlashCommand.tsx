@@ -15,9 +15,8 @@ import {
   type Command,
   type CommandBase,
   findCommand,
-  getCommand,
+  findUserInvocableCommand,
   getCommandName,
-  hasCommand,
   type PromptCommand,
 } from 'src/commands.js'
 import { NO_CONTENT_MESSAGE } from 'src/constants/messages.js'
@@ -433,8 +432,15 @@ export async function processSlashCommand(
       ? 'custom'
       : commandName
 
-  // Check if it's a real command before processing
-  if (!hasCommand(commandName, context.options.commands)) {
+  const userInvocableCommand = findUserInvocableCommand(
+    commandName,
+    context.options.commands,
+  )
+  const commandExists = findCommand(commandName, context.options.commands)
+
+  // Check if it's a real command before processing. Model-only skills can share
+  // names with built-in slash commands and must not shadow them.
+  if (!userInvocableCommand && !commandExists) {
     // Check if this looks like a command name vs a file path or other input
     // Also check if it's an actual file path that exists
     let isFilePath = false
@@ -708,7 +714,12 @@ async function getMessagesForSlashCommand(
   canUseTool?: CanUseToolFn,
   uuid?: string,
 ): Promise<SlashCommandResult> {
-  const command = getCommand(commandName, context.options.commands)
+  const command =
+    findUserInvocableCommand(commandName, context.options.commands) ??
+    findCommand(commandName, context.options.commands)
+  if (!command) {
+    throw ReferenceError(`Command ${commandName} not found`)
+  }
 
   // Track skill usage for ranking (only for prompt commands that are user-invocable)
   if (command.type === 'prompt' && command.userInvocable !== false) {

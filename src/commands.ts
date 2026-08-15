@@ -708,15 +708,28 @@ export function filterCommandsForRemoteMode(commands: Command[]): Command[] {
   return commands.filter(cmd => REMOTE_SAFE_COMMANDS.has(cmd))
 }
 
+function commandMatches(commandName: string, command: Command): boolean {
+  return (
+    command.name === commandName ||
+    getCommandName(command) === commandName ||
+    command.aliases?.includes(commandName) === true
+  )
+}
+
 export function findCommand(
   commandName: string,
   commands: Command[],
 ): Command | undefined {
+  return commands.find(command => commandMatches(commandName, command))
+}
+
+export function findUserInvocableCommand(
+  commandName: string,
+  commands: Command[],
+): Command | undefined {
   return commands.find(
-    _ =>
-      _.name === commandName ||
-      getCommandName(_) === commandName ||
-      _.aliases?.includes(commandName),
+    command =>
+      command.userInvocable !== false && commandMatches(commandName, command),
   )
 }
 

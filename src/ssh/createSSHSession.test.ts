@@ -6,7 +6,9 @@ import { describe, it } from 'bun:test'
 import {
   buildRemoteLaunchCommand,
   createLocalSSHSession,
+  createSSHSession,
   resolveSSHConnection,
+  SSHSessionError,
 } from './createSSHSession.js'
 
 type FakeProcess = EventEmitter & {
@@ -91,18 +93,6 @@ describe('remote launch command', () => {
     })
 
     assert.match(command, /--model gateway-model/)
-  })
-
-  it('prepares the socket directory before opening reverse forwarding', () => {
-    const source = readFileSync(new URL('./createSSHSession.ts', import.meta.url), 'utf8')
-    const prepareIndex = source.indexOf(
-      'await prepareRemoteSocketDirectory(connection, remoteSocketDir)',
-    )
-    const spawnIndex = source.indexOf("const proc = spawn(\n      'ssh',")
-
-    assert.notEqual(prepareIndex, -1)
-    assert.notEqual(spawnIndex, -1)
-    assert.ok(prepareIndex < spawnIndex)
   })
 
   it('quotes paths and forwarded values as POSIX shell arguments', () => {
@@ -210,6 +200,179 @@ describe('local SSH session', () => {
       if (previousBaseURL === undefined) delete process.env.OPENAI_BASE_URL
       else process.env.OPENAI_BASE_URL = previousBaseURL
     }
+  })
+})
+
+describe('remote SSH session', () => {
+  const probe = {
+    platform: 'linux-x64' as const,
+    home: '/home/test',
+    cwd: '/work',
+  }
+  const proxy = (stop: () => void = () => {}) => ({
+    socketPath: '/tmp/local.sock',
+    provider: 'anthropic' as const,
+    authKind: 'oauth' as const,
+    stop,
+  })
+
+  it('stops before deployment when the remote probe fails', async () => {
+    let deployCalls = 0
+    let proxyCalls = 0
+    let spawnCalls = 0
+
+    await assert.rejects(
+      createSSHSession(
+        { host: 'host.example', localVersion: '1.2.3' },
+        {},
+        {
+          probeRemote: async () => {
+            throw new SSHSessionError('probe failed')
+          },
+          ensureRemoteBinary: async () => {
+            deployCalls++
+            return '/remote/claude'
+          },
+          startProxy: async () => {
+            proxyCalls++
+            return proxy()
+          },
+          spawnProcess: () => {
+            spawnCalls++
+            return createFakeProcess() as never
+          },
+        },
+      ),
+      /probe failed/,
+    )
+
+    assert.equal(deployCalls, 0)
+    assert.equal(proxyCalls, 0)
+    assert.equal(spawnCalls, 0)
+  })
+
+  it('stops before proxy startup when remote deployment fails', async () => {
+    let proxyCalls = 0
+    let spawnCalls = 0
+
+    await assert.rejects(
+      createSSHSession(
+        { host: 'host.example', localVersion: '1.2.3' },
+        {},
+        {
+          probeRemote: async () => probe,
+          ensureRemoteBinary: async () => {
+            throw new SSHSessionError('deploy failed')
+          },
+          startProxy: async () => {
+            proxyCalls++
+            return proxy()
+          },
+          spawnProcess: () => {
+            spawnCalls++
+            return createFakeProcess() as never
+          },
+        },
+      ),
+      /deploy failed/,
+    )
+
+    assert.equal(proxyCalls, 0)
+    assert.equal(spawnCalls, 0)
+  })
+
+  it('cleans up the proxy and remote socket when reverse forwarding fails', async () => {
+    const calls: string[] = []
+
+    await assert.rejects(
+      createSSHSession(
+        { host: 'host.example', localVersion: '1.2.3' },
+        {},
+        {
+          probeRemote: async () => probe,
+          ensureRemoteBinary: async () => '/remote/claude',
+          startProxy: async () =>
+            proxy(() => {
+              calls.push('stop')
+            }),
+          createRemoteSocketDir: () => '/tmp/claude-ssh-test',
+          prepareRemoteSocketDirectory: async () => {
+            calls.push('prepare')
+          },
+          spawnProcess: () => {
+            calls.push('spawn')
+            throw new Error('spawn failed')
+          },
+          removeRemoteSocketDirectory: async (_connection, path) => {
+            calls.push(`remove:${path}`)
+          },
+        },
+      ),
+      /Failed to start SSH session to host\.example/,
+    )
+
+    assert.deepEqual(calls, [
+      'prepare',
+      'spawn',
+      'stop',
+      'remove:/tmp/claude-ssh-test',
+    ])
+  })
+
+  it('opens reverse forwarding after preparation and cleans up on close', async () => {
+    const proc = createFakeProcess()
+    const calls: string[] = []
+    let spawnedCommand: string | undefined
+    let spawnedArgs: string[] | undefined
+    const session = await createSSHSession(
+      {
+        host: 'host.example',
+        localVersion: '1.2.3',
+        model: 'gateway-model',
+      },
+      {},
+      {
+        probeRemote: async () => probe,
+        ensureRemoteBinary: async () => '/remote/claude',
+        startProxy: async () =>
+          proxy(() => {
+            calls.push('stop')
+          }),
+        createRemoteSocketDir: () => '/tmp/claude-ssh-test',
+        prepareRemoteSocketDirectory: async () => {
+          calls.push('prepare')
+        },
+        spawnProcess: (command, args) => {
+          calls.push('spawn')
+          spawnedCommand = command
+          spawnedArgs = args
+          return proc as never
+        },
+        removeRemoteSocketDirectory: async (_connection, path) => {
+          calls.push(`remove:${path}`)
+        },
+      },
+    )
+
+    assert.equal(session.remoteCwd, '/work')
+    assert.equal(spawnedCommand, 'ssh')
+    assert.ok(spawnedArgs?.includes('ExitOnForwardFailure=yes'))
+    assert.ok(spawnedArgs?.includes('StreamLocalBindUnlink=yes'))
+    assert.ok(
+      spawnedArgs?.includes(
+        '/tmp/claude-ssh-test/api.sock:/tmp/local.sock',
+      ),
+    )
+    assert.deepEqual(calls, ['prepare', 'spawn'])
+
+    proc.emit('close', 0)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(calls, [
+      'prepare',
+      'spawn',
+      'remove:/tmp/claude-ssh-test',
+      'stop',
+    ])
   })
 })
 

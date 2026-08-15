@@ -86,6 +86,16 @@ type LocalSSHSessionDeps = {
   scriptArgs?: string[]
 }
 
+type RemoteSSHSessionDeps = {
+  probeRemote?: typeof probeRemote
+  ensureRemoteBinary?: typeof ensureRemoteBinary
+  startProxy?: () => Promise<SSHAuthProxy>
+  spawnProcess?: SpawnProcess
+  prepareRemoteSocketDirectory?: typeof prepareRemoteSocketDirectory
+  removeRemoteSocketDirectory?: typeof removeRemoteSocketDirectory
+  createRemoteSocketDir?: () => string
+}
+
 export class SSHSessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
@@ -637,18 +647,22 @@ async function ensureRemoteBinary(
 export async function createSSHSession(
   options: SSHSessionOptions,
   progress: SSHSessionProgress = {},
+  deps: RemoteSSHSessionDeps = {},
 ): Promise<SSHSession> {
   const connection = resolveSSHConnection(options.host)
   progress.onProgress?.(`Probing ${connection.host}…`)
-  const probe = await probeRemote(connection, options.cwd)
-  const remoteBinaryPath = await ensureRemoteBinary(
+  const probe = await (deps.probeRemote ?? probeRemote)(connection, options.cwd)
+  const remoteBinaryPath = await (
+    deps.ensureRemoteBinary ?? ensureRemoteBinary
+  )(
     connection,
     probe,
     options.localVersion,
     progress.onProgress,
   )
-  const proxy = await defaultProxy()
-  const remoteSocketDir = `/tmp/claude-ssh-${randomUUID()}`
+  const proxy = await (deps.startProxy ?? defaultProxy)()
+  const remoteSocketDir =
+    deps.createRemoteSocketDir?.() ?? `/tmp/claude-ssh-${randomUUID()}`
   const remoteSocketPath = `${remoteSocketDir}/${REMOTE_SOCKET_NAME}`
   const remoteCommand = `set -eu; trap ${quote([`rm -rf -- ${remoteSocketDir}`])} EXIT HUP INT TERM; ${buildRemoteLaunchCommand({
     remoteBinaryPath,
@@ -661,10 +675,14 @@ export async function createSSHSession(
     provider: proxy.provider,
     oauth: proxy.authKind === 'oauth',
   })}`
+  const cleanupRemoteSocketDirectory =
+    deps.removeRemoteSocketDirectory ?? removeRemoteSocketDirectory
 
   try {
-    await prepareRemoteSocketDirectory(connection, remoteSocketDir)
-    const proc = spawn(
+    await (
+      deps.prepareRemoteSocketDirectory ?? prepareRemoteSocketDirectory
+    )(connection, remoteSocketDir)
+    const proc = (deps.spawnProcess ?? spawn)(
       'ssh',
       [
         ...baseSSHArgs(connection),
@@ -679,18 +697,21 @@ export async function createSSHSession(
         connection.host,
         remoteCommand,
       ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      {
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
     )
     proc.once('close', () => {
-      void removeRemoteSocketDirectory(connection, remoteSocketDir)
+      void cleanupRemoteSocketDirectory(connection, remoteSocketDir)
     })
     proc.once('error', () => {
-      void removeRemoteSocketDirectory(connection, remoteSocketDir)
+      void cleanupRemoteSocketDirectory(connection, remoteSocketDir)
     })
     return createSession(proc, proxy, probe.cwd)
   } catch (error) {
     proxy.stop()
-    await removeRemoteSocketDirectory(connection, remoteSocketDir)
+    await cleanupRemoteSocketDirectory(connection, remoteSocketDir)
     throw new SSHSessionError(`Failed to start SSH session to ${connection.host}`, {
       cause: error,
     })

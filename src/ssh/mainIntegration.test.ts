@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'bun:test'
+import { parseRootSSHArgv } from './rootSSHArgv.js'
 
 const source = readFileSync(new URL('../main.tsx', import.meta.url), 'utf8')
 const replSource = readFileSync(new URL('../screens/REPL.tsx', import.meta.url), 'utf8')
@@ -17,15 +18,80 @@ test('forwards the resolved local model to the remote SSH child', () => {
 })
 
 test('accepts root flags before ssh without treating flag values as the subcommand', () => {
-  assert.match(source, /rootFlagsWithValues = new Set\(\[/)
-  assert.match(source, /'--debug-file'/)
-  assert.match(source, /'--model'/)
-  assert.match(source, /if \(arg === '--' \|\| !arg\.startsWith\('-'\)\) break/)
-  assert.match(
-    source,
-    /'ssh',\s+\.\.\.rawCliArgs\.slice\(sshIndex \+ 1\),\s+\.\.\.rootFlags/,
+  assert.deepEqual(
+    parseRootSSHArgv([
+      '--debug-file',
+      'ssh',
+      '--model',
+      'gateway-model',
+      'ssh',
+      'prod',
+      '/srv/project',
+      '--permission-mode=acceptEdits',
+    ]),
+    {
+      type: 'ssh',
+      pending: {
+        host: 'prod',
+        cwd: '/srv/project',
+        permissionMode: 'acceptEdits',
+        dangerouslySkipPermissions: false,
+        local: false,
+        extraCliArgs: ['--model', 'gateway-model'],
+      },
+      remainingArgs: ['--debug-file', 'ssh'],
+    },
   )
-  assert.doesNotMatch(source, /rawCliArgs\.indexOf\('ssh'\)/)
+})
+
+test('extracts SSH-specific flags on either side of the host', () => {
+  assert.deepEqual(
+    parseRootSSHArgv([
+      'ssh',
+      '--local',
+      '--permission-mode',
+      'auto',
+      '--dangerously-skip-permissions',
+      'host.example',
+      '/work',
+      '--resume',
+      'session-id',
+      '--model=opus',
+      '-c',
+    ]),
+    {
+      type: 'ssh',
+      pending: {
+        host: 'host.example',
+        cwd: '/work',
+        permissionMode: 'auto',
+        dangerouslySkipPermissions: true,
+        local: true,
+        extraCliArgs: [
+          '--continue',
+          '--resume',
+          'session-id',
+          '--model',
+          'opus',
+        ],
+      },
+      remainingArgs: [],
+    },
+  )
+})
+
+test('rejects headless SSH and ignores non-command ssh arguments', () => {
+  assert.deepEqual(parseRootSSHArgv(['--print', 'ssh', 'host.example']), {
+    type: 'error',
+    message:
+      'Error: headless (-p/--print) mode is not supported with claude ssh\n',
+  })
+  assert.deepEqual(parseRootSSHArgv(['--', 'ssh', 'host.example']), {
+    type: 'none',
+  })
+  assert.deepEqual(parseRootSSHArgv(['explain', 'ssh', 'host.example']), {
+    type: 'none',
+  })
 })
 
 test('only trusts adjacent development SSH artifacts', () => {

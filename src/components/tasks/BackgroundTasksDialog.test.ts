@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict'
-import { Writable } from 'node:stream'
+import { Readable, Writable } from 'node:stream'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
@@ -125,6 +125,26 @@ class TestStdout extends Writable {
   }
 }
 
+class TestStdin extends Readable {
+  isTTY = true
+  isRaw = false
+
+  _read() {}
+
+  setRawMode(value: boolean) {
+    this.isRaw = value
+    return this
+  }
+
+  ref() {
+    return this
+  }
+
+  unref() {
+    return this
+  }
+}
+
 const renderedTerminal = terminalTask('rendered', 1)
 renderedTerminal.command = 'python'
 renderedTerminal.args = ['-i', '--quiet']
@@ -134,6 +154,7 @@ const initialState = {
 }
 const { BackgroundTasksDialog } = await import('./BackgroundTasksDialog.js')
 const stdout = new TestStdout()
+const stdin = new TestStdin()
 const instance = await render(
   React.createElement(
     AppStateProvider,
@@ -147,7 +168,9 @@ const instance = await render(
   ),
   {
     stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
+    exitOnCtrlC: false,
   },
 )
 await new Promise(resolve => setImmediate(resolve))

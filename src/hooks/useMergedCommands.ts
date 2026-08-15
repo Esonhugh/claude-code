@@ -8,7 +8,11 @@ export function useMergedCommands(
 ): Command[] {
   return useMemo(() => {
     if (mcpCommands.length > 0) {
-      return uniqBy([...initialCommands, ...mcpCommands], 'name')
+      const initialNames = new Set(initialCommands.map(command => command.name))
+      const uniqueMcpCommands = uniqBy(mcpCommands, 'name').filter(
+        command => !initialNames.has(command.name),
+      )
+      return [...initialCommands, ...uniqueMcpCommands]
     }
     return initialCommands
   }, [initialCommands, mcpCommands])
