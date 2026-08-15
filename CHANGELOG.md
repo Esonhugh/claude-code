@@ -12,6 +12,52 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-16 - v2.1.210 - SSH Remote、安全认证隧道与任务详情增强
+
+### 版本状态
+
+- 准备发布版本：`v2.1.210`。
+- 本次发布覆盖 `v2.1.209` 之后至 2026-08-16 的 SSH Remote、SetGoal 输出、Terminal task 参数展示与发布门禁修复。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.210`。
+
+### 关联提交
+
+- `c0d0f78` — 在 Terminal 后台任务详情中保留并显示原始参数数组。
+- `90d5325` — 在 SetGoal tool output 中显示当前目标内容。
+- `eb8dbc3` — 默认启用安全的 SSH Remote 会话、认证隧道和 Linux remote binary 部署。
+- `d054818` — 将本地解析后的 model 显式传给 SSH remote child。
+- `a036cbf` — 修复 `/terminal` command source 合并冲突，并补齐 SSH lifecycle、managed env、root argv 与 Terminal detail 发布门禁覆盖。
+- `444a7d3` — 修正 deep-research binary gate 对合法 source shortfall 的误判，并严格验证缺失 rank 的零工具调用契约。
+
+### 变更内容
+
+#### SSH Remote 与认证边界
+
+- 默认构建启用 `SSH_REMOTE`，新增 `claude ssh <host-or-config> [dir]`：本地 TUI 通过 stream-json 驱动远端 Linux child，支持 SDK 消息、tool permission allow/deny/cancel、interrupt 与断线清理。
+- SSH host 可以直接使用 `user@host`、`~/.ssh/config` alias，或 settings 中的 `sshConfigs` ID；managed config 可声明 port、identity file 和默认远端目录，命令行 `[dir]` 可覆盖该目录。
+- API/OAuth 凭据仅由本地 provider-aware Unix socket proxy 注入；远端 child 只收到 placeholder 与 reverse-forwarded socket path，不继承本机 OpenAI/Anthropic credential、base URL 或 auth token。
+- 本地 proxy 分别限制 OpenAI `POST /responses` 与 Anthropic `POST /v1/messages`、`POST /v1/messages/count_tokens`，过滤请求和响应中的 credential/cookie headers，限制 request body，并拒绝非 loopback 明文 HTTP upstream。
+- SSH Remote 将本地已解析 model 作为 `--model` 转发给 remote child，使自定义 gateway/model settings 与本地会话保持一致。
+
+#### Remote binary 构建与部署
+
+- SSH Remote 探测远端 Linux architecture，x64 主机使用 `linux-x64-baseline`，ARM64 使用 `linux-arm64`；远端 binary 按版本和 target 缓存在 `~/.cache/claude-ssh/` 并在部署前验证可执行版本。
+- 发布 workflow 新增 `linux-x64-baseline` asset，并在生成 `SHA256SUMS.txt` 前校验完整平台 artifact 集；下载路径先核对 release checksum，再原子写入本地 cache 和远端目标。
+- 开发态仅直接使用当前可执行文件相邻的 `dist/release` artifact，不从工作目录加载同名 binary；只有从 GitHub Release 下载的 asset 才要求 `SHA256SUMS.txt`，checksum 缺失或不匹配时 fail closed。
+
+#### Goal 与 Terminal task 展示
+
+- `SetGoal` tool output 显示当前目标内容，普通模式按显示宽度截断，verbose 模式保留完整多行目标。
+- Terminal 后台任务保存原始 `args` 数组，并在任务详情中以 JSON 形式展示 command、args 与 cwd，避免只看到 executable 而无法还原启动参数。
+- 用户输入 `/terminal` 时保留 `getCommands()` 中同名的内置 slash command 与 bundled Terminal skill；plugin/MCP command source 合并不再误删用户命令，用户侧优先打开 Terminal task 详情，模型侧 Skill lookup 仍保留原有 skill。
+
+### 测试覆盖
+
+- SSH focused tests 覆盖连接配置与输入校验、shell quoting、stream-json init/readiness、消息与 permission control、interrupt、早退/断线、OpenAI/Anthropic auth tunnel、settings env 隔离、header/route/body 安全边界、model forwarding、baseline target、checksum 与 cache 约束。
+- build/release tests 覆盖默认 `SSH_REMOTE` feature、Linux x64 baseline target、release artifact 清单、checksum 生成顺序与 npm platform package 排除规则。
+- SetGoal output、Terminal task details 和 `/terminal` command/skill name collision tests 覆盖短/多行/宽字符目标、后台参数持久化、UI 展示、真实 command source merge 与 user/model invocation 分流；deep-research driver regression 额外覆盖少于 15 个 unique URL 时实际来源 exact-once WebFetch、缺失 rank 的 `url: null`/`missingReason`/zero-tool 契约及非法 shortfall；发布门禁继续要求 focused tests、`make release-check`、当前 `built-claude` scripted tmux 交互和 release/docs audit 同轮通过。
+
 ## 2026-08-10 - v2.1.209 - Workflow 终态、失败诊断与会话一致性修复
 
 ### 版本状态

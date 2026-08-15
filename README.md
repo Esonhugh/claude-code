@@ -10,7 +10,7 @@
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
 - 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.209`
+- 当前本地发布线：`2.1.210`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -29,7 +29,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.209` |
+| 本地发布线 | `2.1.210` |
 | 源码版本 | `0.0.0-dev` |
 | 包管理器 | `bun@1.3.14` |
 | Node.js | `>=18` |
@@ -88,10 +88,11 @@ bun ./dist/cli.js --help
 | Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认注册只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
-| Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；统一的后台 polling 逻辑会按 session 同步终态、drain 尾部输出、持久化最终结果并发送一次完成通知。 |
+| SSH Remote | `claude ssh <host-or-config> [dir]` 在远端 Linux 主机运行 tools、本地渲染 TUI；remote binary 按版本/架构部署，GitHub Release 下载会校验 checksum，OpenAI/Anthropic 凭据只在本地 Unix socket proxy 注入。 |
+| Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；统一的后台 polling 逻辑会按 session 同步终态、drain 尾部输出、持久化最终结果并发送一次完成通知，任务详情保留 command、args 和 cwd。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
 | 状态与用量 UI | 当前模型使用 ChatGPT OAuth 且用量请求成功时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits，同时展示 ChatGPT 用量窗口与 rate-limit reset credits；用量不可用时启动 pane 回退到 OAuth token 中的 plan，`/status` 显示不可用状态。reset 操作经二次确认后消耗一个 credit 并刷新显示；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
-| 自主 Goal | `/goal` 注册 StopHook 并驱动自主执行；目标状态显示在 Prompt footer 和 Status line，并支持 compact/session restore 与自动清理。 |
+| 自主 Goal | `/goal` 或 `SetGoal` 注册 StopHook 并驱动自主执行；目标内容显示在 tool output、Prompt footer 和 Status line，并支持 compact/session restore 与自动清理。 |
 | 会话命令 | 新增 `/goal`、`/cd`、`/reload-skills`、`/workflows`，并为 `/cd` 增加仅目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
@@ -333,6 +334,39 @@ hosted skill 加载具有以下边界：
 - 缓存绑定当前 client identity 并设置 TTL，避免跨账户复用；
 - Codex Apps transport 只向固定的 Apps 与 plugin runtime MCP endpoints 注入 ChatGPT OAuth 和 account 信息；遇到 `401` 时强制刷新 token，并且只重试一次。
 
+### SSH Remote
+
+`claude ssh` 在远端 Linux 主机执行 Claude child 与 tools，本地继续渲染 TUI、处理 permission prompt 和 interrupt：
+
+```bash
+claude ssh user@example.com
+claude ssh my-ssh-alias ~/project
+claude --model gateway-model ssh managed-config-id /srv/project
+```
+
+host 可以是 `user@host`、`~/.ssh/config` alias，或 settings 中的 `sshConfigs` ID：
+
+```json
+{
+  "sshConfigs": [
+    {
+      "id": "managed-config-id",
+      "name": "Managed Linux",
+      "sshHost": "user@example.com",
+      "sshPort": 2222,
+      "sshIdentityFile": "/path/to/private-key",
+      "startDirectory": "~/project"
+    }
+  ]
+}
+```
+
+启动时会探测 Linux architecture，按当前版本选择并部署 `linux-x64-baseline` 或 `linux-arm64` binary。开发态会直接使用当前可执行文件相邻 `dist/release` 中的对应 artifact；不存在相邻 artifact 时才回退到 GitHub Release，且下载必须同时提供对应 asset 与 `SHA256SUMS.txt`，checksum 缺失或不匹配时拒绝启动。remote cache 位于 `~/.cache/claude-ssh/<version>/<target>/claude`。
+
+模型 API/OAuth credential 不会复制到远端。远端 child 仅连接 reverse-forwarded Unix socket，由本地 proxy 按当前 provider 和本地 credential precedence 注入认证；OpenAI/Anthropic API key、OAuth token、account ID、cookie 和本地 base URL 不会通过 SSH child environment 继承。`--model` 或本地 settings 解析出的 model 会显式转发给 remote child。
+
+SSH Remote 当前只支持 interactive TUI；permission allow/deny/cancel、Esc interrupt、正常退出和断线会经 stream-json control channel 转发并清理本地 proxy 与 remote socket directory。
+
 ### Terminal Tool
 
 `Terminal` 提供持久 PTY session，可用于需要多轮输入、特殊按键、窗口 resize 或 signal 的交互式程序：
@@ -349,7 +383,7 @@ hosted skill 加载具有以下边界：
 
 创建 session 后，使用返回的 pane target 调用 `send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message` 或 `kill-pane`；`list-panes` 可列出尚未回收的 pane。`capture-pane` 支持 `compact`、`full` 和 `save_file` 三种输出模式。
 
-Terminal task 由统一的后台 polling 逻辑跟踪真实 PTY 状态；每个 session 使用独立 timer：
+Terminal task 详情会以 JSON 数组保留启动时的 `args`，并与 `command`、`cwd` 一起展示。任务由统一的后台 polling 逻辑跟踪真实 PTY 状态；每个 session 使用独立 timer：
 
 - 进程自然退出后停止轮询、清理 runtime registry、持久化最终输出，并只发送一次完成通知；
 - 根据真实退出状态区分 `completed`、`failed` 和 `killed`，保留 `exitCode`、`signal`、termination reason 与 driver error；
@@ -403,7 +437,7 @@ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 /workflows
 ```
 
-- `/goal`：保存当前自主目标，并在停止前检查目标是否完成。
+- `/goal`：保存当前自主目标，并在停止前检查目标是否完成；主线程也可通过 `SetGoal` 设置同一目标，tool output 会显示目标内容。
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
 - `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
 - `/workflows`：查看 Dynamic Workflow runs，不直接启动 workflow。
