@@ -70,6 +70,17 @@ DEFAULT_TARGETS = (
 ASSERTION_RUNTIME_STATES = {'running', 'done', 'failed', 'stopped'}
 
 
+def code_review_prompt(release_base):
+    diff_range = f'{release_base}..HEAD'
+    return (
+        f'/code-review high Read-only validation of {diff_range} in '
+        'src/tools/AgentTool, src/tools/WorkflowTool, src/tasks/LocalWorkflowTask, '
+        'and src/utils/sessionStorage.ts. Use exactly '
+        f'{diff_range} as the diff range. Do not widen the diff range, inspect '
+        'unrelated commits, modify files, commit, push, release, or create worktrees.'
+    )
+
+
 def submitted_input_pending(pane):
     plain = strip_ansi(pane)
     prompt_lines = [line for line in plain.splitlines() if '❯' in line]
@@ -2197,10 +2208,8 @@ return { results }
             )
             timeout = 1800
         else:
-            prompt = (
-                '/code-review high Read-only validation of current changes in src/tools/AgentTool, '
-                'src/tools/WorkflowTool, src/tasks/LocalWorkflowTask, and src/utils/sessionStorage.ts. '
-                'Do not modify files, commit, push, release, or create worktrees.'
+            prompt = code_review_prompt(
+                self.manifest['required_target_inputs']['release_base']['merge_base']
             )
             timeout = 1200
         approvals = 0

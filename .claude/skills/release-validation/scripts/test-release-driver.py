@@ -1186,6 +1186,13 @@ def assert_driver_behavior(module):
         assert module.required_targets_for_paths(inputs['all_paths']) == required
         explicit = module.collect_required_target_inputs(repo, {}, explicit_base_ref='origin/master')
         assert explicit['release_base']['base_ref'] == 'origin/master'
+        assert 'origin/master..HEAD' not in module.code_review_prompt(
+            explicit['release_base']['merge_base']
+        )
+        assert (
+            f"{explicit['release_base']['merge_base']}..HEAD"
+            in module.code_review_prompt(explicit['release_base']['merge_base'])
+        )
         try:
             module.collect_required_target_inputs(repo, {})
         except RuntimeError as error:
@@ -1216,6 +1223,11 @@ def assert_driver_behavior(module):
             assert expected in str(error)
         else:
             raise AssertionError(f'expected parse_target_list({raw!r}) to fail')
+
+    code_review_prompt = module.code_review_prompt('release-base-sha')
+    assert 'release-base-sha..HEAD' in code_review_prompt
+    assert 'Do not widen the diff range' in code_review_prompt
+    assert 'current changes' not in code_review_prompt
 
     planned = module.plan_targets(['team-concurrency'], {'workflow-failure-detail'})
     assert planned == [
