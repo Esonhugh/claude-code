@@ -29,6 +29,8 @@
 - `d054818` — 将本地解析后的 model 显式传给 SSH remote child。
 - `a036cbf` — 修复 `/terminal` command source 合并冲突，并补齐 SSH lifecycle、managed env、root argv 与 Terminal detail 发布门禁覆盖。
 - `444a7d3` — 修正 deep-research binary gate 对合法 source shortfall 的误判，并严格验证缺失 rank 的零工具调用契约。
+- `7b2e0d2` — 将本地解析后的 model 显式传给 `ssh --local` child。
+- `a563c88` — 将 release code-review gate 限定到显式解析的 release commit range，避免自动扩大审查范围。
 
 ### 变更内容
 
@@ -38,7 +40,7 @@
 - SSH host 可以直接使用 `user@host`、`~/.ssh/config` alias，或 settings 中的 `sshConfigs` ID；managed config 可声明 port、identity file 和默认远端目录，命令行 `[dir]` 可覆盖该目录。
 - API/OAuth 凭据仅由本地 provider-aware Unix socket proxy 注入；远端 child 只收到 placeholder 与 reverse-forwarded socket path，不继承本机 OpenAI/Anthropic credential、base URL 或 auth token。
 - 本地 proxy 分别限制 OpenAI `POST /responses` 与 Anthropic `POST /v1/messages`、`POST /v1/messages/count_tokens`，过滤请求和响应中的 credential/cookie headers，限制 request body，并拒绝非 loopback 明文 HTTP upstream。
-- SSH Remote 将本地已解析 model 作为 `--model` 转发给 remote child，使自定义 gateway/model settings 与本地会话保持一致。
+- SSH Remote 将本地已解析 model 作为 `--model` 转发给 remote child；`ssh --local` 同样显式传递该 model，使自定义 gateway/model settings 在两种 child 启动路径中保持一致。
 
 #### Remote binary 构建与部署
 
@@ -54,9 +56,9 @@
 
 ### 测试覆盖
 
-- SSH focused tests 覆盖连接配置与输入校验、shell quoting、stream-json init/readiness、消息与 permission control、interrupt、早退/断线、OpenAI/Anthropic auth tunnel、settings env 隔离、header/route/body 安全边界、model forwarding、baseline target、checksum 与 cache 约束。
+- SSH focused tests 覆盖连接配置与输入校验、shell quoting、stream-json init/readiness、消息与 permission control、interrupt、早退/断线、OpenAI/Anthropic auth tunnel、settings env 隔离、header/route/body 安全边界、local/remote model forwarding、baseline target、checksum 与 cache 约束。
 - build/release tests 覆盖默认 `SSH_REMOTE` feature、Linux x64 baseline target、release artifact 清单、checksum 生成顺序与 npm platform package 排除规则。
-- SetGoal output、Terminal task details 和 `/terminal` command/skill name collision tests 覆盖短/多行/宽字符目标、后台参数持久化、UI 展示、真实 command source merge 与 user/model invocation 分流；deep-research driver regression 额外覆盖少于 15 个 unique URL 时实际来源 exact-once WebFetch、缺失 rank 的 `url: null`/`missingReason`/zero-tool 契约及非法 shortfall；发布门禁继续要求 focused tests、`make release-check`、当前 `built-claude` scripted tmux 交互和 release/docs audit 同轮通过。
+- SetGoal output、Terminal task details 和 `/terminal` command/skill name collision tests 覆盖短/多行/宽字符目标、后台参数持久化、UI 展示、真实 command source merge 与 user/model invocation 分流；deep-research driver regression 额外覆盖少于 15 个 unique URL 时实际来源 exact-once WebFetch、缺失 rank 的 `url: null`/`missingReason`/zero-tool 契约及非法 shortfall；code-review driver regression 验证使用解析后的 `<release-base>..HEAD` 且禁止扩大 diff range；发布门禁继续要求 focused tests、`make release-check`、当前 `built-claude` scripted tmux 交互和 release/docs audit 同轮通过。
 
 ## 2026-08-10 - v2.1.209 - Workflow 终态、失败诊断与会话一致性修复
 
