@@ -244,6 +244,7 @@ describe('remote SSH session', () => {
     let deployCalls = 0
     let proxyCalls = 0
     let spawnCalls = 0
+    let controlStopCalls = 0
 
     await assert.rejects(
       createSSHSession(
@@ -265,6 +266,9 @@ describe('remote SSH session', () => {
             spawnCalls++
             return createFakeProcess() as never
           },
+          stopControlMaster: async () => {
+            controlStopCalls++
+          },
         },
       ),
       /probe failed/,
@@ -273,11 +277,13 @@ describe('remote SSH session', () => {
     assert.equal(deployCalls, 0)
     assert.equal(proxyCalls, 0)
     assert.equal(spawnCalls, 0)
+    assert.equal(controlStopCalls, 1)
   })
 
   it('stops before proxy startup when remote deployment fails', async () => {
     let proxyCalls = 0
     let spawnCalls = 0
+    let controlStopCalls = 0
 
     await assert.rejects(
       createSSHSession(
@@ -296,6 +302,9 @@ describe('remote SSH session', () => {
             spawnCalls++
             return createFakeProcess() as never
           },
+          stopControlMaster: async () => {
+            controlStopCalls++
+          },
         },
       ),
       /deploy failed/,
@@ -303,6 +312,7 @@ describe('remote SSH session', () => {
 
     assert.equal(proxyCalls, 0)
     assert.equal(spawnCalls, 0)
+    assert.equal(controlStopCalls, 1)
   })
 
   it('cleans up the proxy and remote socket when reverse forwarding fails', async () => {
@@ -330,6 +340,9 @@ describe('remote SSH session', () => {
           removeRemoteSocketDirectory: async (_connection, path) => {
             calls.push(`remove:${path}`)
           },
+          stopControlMaster: async () => {
+            calls.push('stop-control')
+          },
         },
       ),
       /Failed to start SSH session to host\.example/,
@@ -340,12 +353,49 @@ describe('remote SSH session', () => {
       'spawn',
       'stop',
       'remove:/tmp/claude-ssh-test',
+      'stop-control',
     ])
+  })
+
+  it('stops the control master when startup cleanup fails', async () => {
+    const calls: string[] = []
+
+    await assert.rejects(
+      createSSHSession(
+        { host: 'host.example', localVersion: '1.2.3' },
+        {},
+        {
+          probeRemote: async () => probe,
+          ensureRemoteBinary: async () => '/remote/claude',
+          startProxy: async () =>
+            proxy(() => {
+              calls.push('stop')
+            }),
+          createRemoteSocketDir: () => '/tmp/claude-ssh-test',
+          prepareRemoteSocketDirectory: async () => {},
+          spawnProcess: () => {
+            throw new Error('spawn failed')
+          },
+          removeRemoteSocketDirectory: async () => {
+            calls.push('remove')
+            throw new Error('cleanup failed')
+          },
+          stopControlMaster: async () => {
+            calls.push('stop-control')
+          },
+        },
+      ),
+      /cleanup failed/,
+    )
+
+    assert.deepEqual(calls, ['stop', 'remove', 'stop-control'])
   })
 
   it('opens reverse forwarding after preparation and cleans up on close', async () => {
     const proc = createFakeProcess()
     const calls: string[] = []
+    let registeredCleanup: (() => Promise<void>) | undefined
+    let unregisterCalls = 0
     let spawnedCommand: string | undefined
     let spawnedArgs: string[] | undefined
     const session = await createSSHSession(
@@ -375,11 +425,28 @@ describe('remote SSH session', () => {
         removeRemoteSocketDirectory: async (_connection, path) => {
           calls.push(`remove:${path}`)
         },
+        stopControlMaster: async () => {
+          calls.push('stop-control')
+        },
+        registerCleanup: cleanup => {
+          registeredCleanup = cleanup
+          return () => {
+            unregisterCalls++
+          }
+        },
       },
     )
 
     assert.equal(session.remoteCwd, '/work')
     assert.equal(spawnedCommand, 'ssh')
+    const controlPathArg = spawnedArgs?.find(arg => arg.startsWith('ControlPath='))
+    assert.match(
+      controlPathArg ?? '',
+      /^ControlPath=.*[/\\]cc-ssh-[0-9a-f]{24}$/,
+    )
+    assert.ok(
+      Buffer.byteLength(controlPathArg?.slice('ControlPath='.length) ?? '') < 104,
+    )
     assert.ok(spawnedArgs?.includes('ExitOnForwardFailure=yes'))
     assert.ok(spawnedArgs?.includes('StreamLocalBindUnlink=yes'))
     assert.ok(
@@ -388,15 +455,61 @@ describe('remote SSH session', () => {
       ),
     )
     assert.deepEqual(calls, ['prepare', 'spawn'])
+    assert.equal(typeof registeredCleanup, 'function')
 
-    proc.emit('close', 0)
-    await new Promise(resolve => setImmediate(resolve))
+    await registeredCleanup?.()
     assert.deepEqual(calls, [
       'prepare',
       'spawn',
       'remove:/tmp/claude-ssh-test',
       'stop',
+      'stop-control',
     ])
+    assert.equal(unregisterCalls, 1)
+
+    proc.emit('close', 0)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(unregisterCalls, 1)
+  })
+
+  it('stops the proxy and control master when remote socket cleanup fails', async () => {
+    const proc = createFakeProcess()
+    const calls: string[] = []
+    let registeredCleanup: (() => Promise<void>) | undefined
+    let unregisterCalls = 0
+
+    await createSSHSession(
+      { host: 'host.example', localVersion: '1.2.3' },
+      {},
+      {
+        probeRemote: async () => probe,
+        ensureRemoteBinary: async () => '/remote/claude',
+        startProxy: async () =>
+          proxy(() => {
+            calls.push('stop')
+          }),
+        createRemoteSocketDir: () => '/tmp/claude-ssh-test',
+        prepareRemoteSocketDirectory: async () => {},
+        spawnProcess: () => proc as never,
+        removeRemoteSocketDirectory: async () => {
+          calls.push('remove')
+          throw new Error('cleanup failed')
+        },
+        stopControlMaster: async () => {
+          calls.push('stop-control')
+        },
+        registerCleanup: cleanup => {
+          registeredCleanup = cleanup
+          return () => {
+            unregisterCalls++
+          }
+        },
+      },
+    )
+
+    await assert.rejects(registeredCleanup?.(), /cleanup failed/)
+    assert.deepEqual(calls, ['remove', 'stop', 'stop-control'])
+    assert.equal(unregisterCalls, 1)
   })
 })
 
@@ -426,5 +539,41 @@ describe('fork remote binary', () => {
       source,
       /\.cache\/claude-ssh\/\$\{version\}\/\$\{target\}\/claude/,
     )
+  })
+
+  it('does not install an incomplete upload and retries transient deployment failures', () => {
+    const source = readFileSync(
+      new URL('./createSSHSession.ts', import.meta.url),
+      'utf8',
+    )
+
+    assert.match(source, /const SSH_DEPLOY_ATTEMPTS = 3/)
+    assert.match(source, /ControlMaster=auto/)
+    assert.match(source, /ControlPersist=10m/)
+    assert.match(source, /const SSH_DEPLOY_CHUNK_SIZE = 2 \* 1024 \* 1024/)
+    assert.match(source, /baseSSHArgs\(connection, \{ multiplex: false \}\)/)
+    assert.match(source, /const chunkChecksum = createHash\('sha256'\)/)
+    assert.match(source, /proc\.stdin!\.end\(buffer\)/)
+    assert.match(source, /sha256sum "\$chunk"/)
+    assert.match(source, /cat "\$chunk" >>/)
+    assert.match(source, /sha256sum \$\{quote\(\[temporary\]\)\}/)
+    assert.match(source, /test "\$actual" = "\$expected"/)
+    assert.match(
+      source,
+      /for \(let attempt = 1; attempt <= SSH_DEPLOY_ATTEMPTS; attempt\+\+\)/,
+    )
+  })
+
+  it('logs deployment and login lifecycle without credentials', () => {
+    const source = readFileSync(
+      new URL('./createSSHSession.ts', import.meta.url),
+      'utf8',
+    )
+
+    assert.match(source, /\[SSH\] probe start/)
+    assert.match(source, /\[SSH\] deploy chunk start/)
+    assert.match(source, /\[SSH\] remote child spawn start/)
+    assert.match(source, /\[SSH\] session ready/)
+    assert.match(source, /\[SSH\] control master stop/)
   })
 })
