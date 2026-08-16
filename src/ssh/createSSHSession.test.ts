@@ -401,6 +401,18 @@ describe('remote SSH session', () => {
 })
 
 describe('fork remote binary', () => {
+  it('allows slow SSH authentication to complete before timing out commands', () => {
+    const source = readFileSync(
+      new URL('./createSSHSession.ts', import.meta.url),
+      'utf8',
+    )
+
+    assert.match(source, /const SSH_COMMAND_TIMEOUT_MS = 2 \* 60_000/)
+    assert.match(source, /timeout = SSH_COMMAND_TIMEOUT_MS/)
+    assert.match(source, /'ConnectTimeout=30'/)
+    assert.match(source, /'ConnectionAttempts=3'/)
+  })
+
   it('uses a target-aware cache and verifies the fork asset checksum', () => {
     const source = readFileSync(
       new URL('./createSSHSession.ts', import.meta.url),

@@ -29,7 +29,7 @@ import {
 
 const FORK_RELEASES_URL =
   'https://github.com/Esonhugh/claude-code/releases/download'
-const SSH_CONNECT_TIMEOUT_MS = 15_000
+const SSH_COMMAND_TIMEOUT_MS = 2 * 60_000
 const SSH_DOWNLOAD_TIMEOUT_MS = 5 * 60_000
 const SSH_DEPLOY_TIMEOUT_MS = 5 * 60_000
 const REMOTE_SOCKET_NAME = 'api.sock'
@@ -337,7 +337,9 @@ function baseSSHArgs(connection: SSHConnection): string[] {
     '-o',
     'BatchMode=yes',
     '-o',
-    'ConnectTimeout=10',
+    'ConnectTimeout=30',
+    '-o',
+    'ConnectionAttempts=3',
     '-o',
     'ServerAliveInterval=15',
     '-o',
@@ -349,7 +351,7 @@ function baseSSHArgs(connection: SSHConnection): string[] {
 async function runSSH(
   connection: SSHConnection,
   remoteCommand: string,
-  timeout = SSH_CONNECT_TIMEOUT_MS,
+  timeout = SSH_COMMAND_TIMEOUT_MS,
 ): Promise<string> {
   const result = await execFileNoThrowWithCwd(
     'ssh',
@@ -612,7 +614,7 @@ async function removeRemoteSocketDirectory(
     ],
     {
       cwd: process.cwd(),
-      timeout: SSH_CONNECT_TIMEOUT_MS,
+      timeout: SSH_COMMAND_TIMEOUT_MS,
       preserveOutputOnError: true,
       stdin: 'ignore',
     },
@@ -635,7 +637,7 @@ async function ensureRemoteBinary(
       connection.host,
       `test -x ${quote([remotePath])} && ${quote([remotePath])} --version`,
     ],
-    { timeout: SSH_CONNECT_TIMEOUT_MS, preserveOutputOnError: true },
+    { timeout: SSH_COMMAND_TIMEOUT_MS, preserveOutputOnError: true },
   )
   if (check.code === 0 && check.stdout.includes(version)) return remotePath
 
