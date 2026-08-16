@@ -121,6 +121,30 @@ describe('remote launch command', () => {
 })
 
 describe('local SSH session', () => {
+  it('forwards the resolved model to the local child', async () => {
+    const proc = createFakeProcess()
+    let spawnArgs: string[] = []
+
+    await createLocalSSHSession(
+      { cwd: '/tmp/project', model: 'gateway-model' },
+      {
+        startProxy: async () => ({
+          socketPath: '/tmp/local.sock',
+          provider: 'anthropic',
+          authKind: 'oauth',
+          stop() {},
+        }),
+        spawnProcess: (_command, args) => {
+          spawnArgs = args
+          return proc as never
+        },
+        execPath: '/tmp/claude',
+      },
+    )
+
+    assert.deepEqual(spawnArgs.slice(-2), ['--model', 'gateway-model'])
+  })
+
   it('returns a usable session and stops the proxy if child startup fails', async () => {
     const proc = createFakeProcess()
     let proxyStopped = 0

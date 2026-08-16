@@ -4255,6 +4255,7 @@ async function run(): Promise<CommanderCommand> {
               permissionMode: _pendingSSH.permissionMode,
               dangerouslySkipPermissions:
                 _pendingSSH.dangerouslySkipPermissions,
+              model: resolvedInitialModel,
             })
           } else {
             process.stderr.write(`Connecting to ${_pendingSSH.host}…\n`)

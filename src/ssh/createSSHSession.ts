@@ -293,7 +293,12 @@ export async function createLocalSSHSession(
   const cwd = options.cwd ?? process.cwd()
   const args = [
     ...(deps.scriptArgs ?? defaultScriptArgs()),
-    ...childArgs(options),
+    ...childArgs({
+      ...options,
+      extraCliArgs: [
+        ...(options.model ? ['--model', options.model] : []),
+      ],
+    }),
   ]
   const env: NodeJS.ProcessEnv = {
     ...process.env,
