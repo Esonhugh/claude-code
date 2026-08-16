@@ -33,6 +33,8 @@
 - `a563c88` — 将 release code-review gate 限定到显式解析的 release commit range，避免自动扩大审查范围。
 - `91fa57f` — 准备 `v2.1.210` 的版本号、README 与 CHANGELOG 发布元数据。
 - `92728c5` — 补充 local SSH model forwarding 与 bounded code-review gate 的发布说明。
+- `37c0ba0` — 延长 SSH command timeout，并允许较慢的远端认证和连接重试完成。
+- `c8d1585` — 强化 Remote SSH 分块部署、生命周期日志、ControlMaster cleanup 与短 ControlPath。
 - 当前维护本条目的 release metadata commit 因提交时 hash 尚未生成，不在关联提交中自引用；完整范围以 `v2.1.209..HEAD` 为准。
 
 ### 变更内容
@@ -44,10 +46,13 @@
 - API/OAuth 凭据仅由本地 provider-aware Unix socket proxy 注入；远端 child 只收到 placeholder 与 reverse-forwarded socket path，不继承本机 OpenAI/Anthropic credential、base URL 或 auth token。
 - 本地 proxy 分别限制 OpenAI `POST /responses` 与 Anthropic `POST /v1/messages`、`POST /v1/messages/count_tokens`，过滤请求和响应中的 credential/cookie headers，限制 request body，并拒绝非 loopback 明文 HTTP upstream。
 - SSH Remote 将本地已解析 model 作为 `--model` 转发给 remote child；`ssh --local` 同样显式传递该 model，使自定义 gateway/model settings 在两种 child 启动路径中保持一致。
+- SSH 连接允许较慢的远端认证和连接重试完成；ControlMaster 使用系统原生临时目录中的 96-bit 短随机 socket path，避免 macOS OpenSSH 的 Unix socket 路径长度限制并保持 Windows 兼容。
+- SSH Remote 为 probe、部署、proxy、remote child 和 ControlMaster lifecycle 增加 debug log，并在启动失败、断线或正常退出时幂等清理远端 socket、认证 proxy 与本地 ControlMaster。
 
 #### Remote binary 构建与部署
 
 - SSH Remote 探测远端 Linux architecture，x64 主机使用 `linux-x64-baseline`，ARM64 使用 `linux-arm64`；远端 binary 按版本和 target 缓存在 `~/.cache/claude-ssh/` 并在部署前验证可执行版本。
+- Remote binary 改为按 2 MiB 分块上传，每块校验 SHA-256 并对瞬时传输失败重试；全部完成后再次校验完整文件，再通过临时文件和原子 `mv` 安装，避免 partial binary 被执行。
 - 发布 workflow 新增 `linux-x64-baseline` asset，并在生成 `SHA256SUMS.txt` 前校验完整平台 artifact 集；下载路径先核对 release checksum，再原子写入本地 cache 和远端目标。
 - 开发态仅直接使用当前可执行文件相邻的 `dist/release` artifact，不从工作目录加载同名 binary；只有从 GitHub Release 下载的 asset 才要求 `SHA256SUMS.txt`，checksum 缺失或不匹配时 fail closed。
 
