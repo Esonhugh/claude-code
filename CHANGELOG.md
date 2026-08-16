@@ -31,6 +31,9 @@
 - `444a7d3` — 修正 deep-research binary gate 对合法 source shortfall 的误判，并严格验证缺失 rank 的零工具调用契约。
 - `7b2e0d2` — 将本地解析后的 model 显式传给 `ssh --local` child。
 - `a563c88` — 将 release code-review gate 限定到显式解析的 release commit range，避免自动扩大审查范围。
+- `91fa57f` — 准备 `v2.1.210` 的版本号、README 与 CHANGELOG 发布元数据。
+- `92728c5` — 补充 local SSH model forwarding 与 bounded code-review gate 的发布说明。
+- 当前维护本条目的 release metadata commit 因提交时 hash 尚未生成，不在关联提交中自引用；完整范围以 `v2.1.209..HEAD` 为准。
 
 ### 变更内容
 
