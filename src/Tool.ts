@@ -43,6 +43,7 @@ import type {
 import type {
   AdditionalWorkingDirectory,
   PermissionMode,
+  PermissionModeChangeResult,
   PermissionResult,
 } from './types/permissions.js'
 // Import tool progress types from centralized location to break import cycles
@@ -191,6 +192,9 @@ export type ToolUseContext = {
   readFileState: FileStateCache
   getAppState(): AppState
   setAppState(f: (prev: AppState) => AppState): void
+  requestPermissionModeChange?: (
+    mode: PermissionMode,
+  ) => Promise<PermissionModeChangeResult>
   /**
    * Always-shared setAppState for session-scoped infrastructure (background
    * tasks, session hooks). Unlike setAppState, which is no-op for async agents

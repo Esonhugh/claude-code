@@ -10,6 +10,10 @@ import type { RemotePermissionResponse } from '../remote/RemoteSessionManager.js
 import { logForDebugging } from '../utils/debug.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 import type { RemoteMessageContent } from '../utils/teleport/api.js'
+import type {
+  PermissionMode,
+  PermissionModeChangeResult,
+} from '../types/permissions.js'
 
 export type SSHSessionCallbacks = {
   onMessage: (message: SDKMessage) => void
@@ -59,6 +63,13 @@ export class SSHSessionManager {
   private initialized = false
   private disconnected = false
   private pendingPermissionRequests = new Map<string, string>()
+  private pendingPermissionModeRequests = new Map<
+    string,
+    {
+      mode: PermissionMode
+      resolve: (result: PermissionModeChangeResult) => void
+    }
+  >()
 
   constructor(
     private readonly proc: ChildProcess,
@@ -122,6 +133,26 @@ export class SSHSessionManager {
     })
   }
 
+  setPermissionMode(mode: PermissionMode): Promise<PermissionModeChangeResult> {
+    const requestId = randomUUID()
+    logForDebugging(
+      `[SSHSessionManager] setting remote permission mode: ${mode} requestId=${requestId}`,
+    )
+    return new Promise(resolve => {
+      this.pendingPermissionModeRequests.set(requestId, { mode, resolve })
+      if (
+        !this.write({
+          type: 'control_request',
+          request_id: requestId,
+          request: { subtype: 'set_permission_mode', mode },
+        })
+      ) {
+        this.pendingPermissionModeRequests.delete(requestId)
+        resolve({ success: false, error: 'SSH session is not connected' })
+      }
+    })
+  }
+
   sendInterrupt(): void {
     this.write({
       type: 'control_request',
@@ -138,6 +169,7 @@ export class SSHSessionManager {
     this.initialized = false
     this.disconnected = true
     this.pendingPermissionRequests.clear()
+    this.rejectPendingPermissionModeRequests('SSH session disconnected')
     if (this.proc.exitCode === null && this.proc.signalCode === null) {
       this.proc.kill('SIGTERM')
     }
@@ -199,9 +231,27 @@ export class SSHSessionManager {
       this.callbacks.onPermissionCancelled?.(parsed.request_id, toolUseId)
       return
     }
-    if (parsed.type === 'control_response' || parsed.type === 'keep_alive') {
+    if (parsed.type === 'control_response') {
+      const pending = this.pendingPermissionModeRequests.get(
+        parsed.response.request_id,
+      )
+      if (pending) {
+        this.pendingPermissionModeRequests.delete(parsed.response.request_id)
+        if (parsed.response.subtype === 'success') {
+          logForDebugging(
+            `[SSHSessionManager] remote permission mode set: ${pending.mode}`,
+          )
+          pending.resolve({ success: true })
+        } else {
+          logForDebugging(
+            `[SSHSessionManager] remote permission mode rejected: ${pending.mode}: ${parsed.response.error}`,
+          )
+          pending.resolve({ success: false, error: parsed.response.error })
+        }
+      }
       return
     }
+    if (parsed.type === 'keep_alive') return
 
     this.callbacks.onMessage(parsed)
   }
@@ -226,6 +276,13 @@ export class SSHSessionManager {
     }
   }
 
+  private rejectPendingPermissionModeRequests(error: string): void {
+    for (const pending of this.pendingPermissionModeRequests.values()) {
+      pending.resolve({ success: false, error })
+    }
+    this.pendingPermissionModeRequests.clear()
+  }
+
   private handleDisconnected(): void {
     if (this.disconnected) return
     logForDebugging('[SSHSessionManager] SSH child disconnected')
@@ -233,6 +290,7 @@ export class SSHSessionManager {
     this.initialized = false
     this.disconnected = true
     this.pendingPermissionRequests.clear()
+    this.rejectPendingPermissionModeRequests('SSH session disconnected')
     this.stdoutInterface?.close()
     this.stdoutInterface = null
     this.callbacks.onDisconnected?.()

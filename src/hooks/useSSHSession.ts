@@ -24,7 +24,11 @@ import type { SSHSessionManager } from '../ssh/SSHSessionManager.js'
 import type { Tool } from '../Tool.js'
 import { findToolByName } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'
-import type { PermissionAskDecision } from '../types/permissions.js'
+import type {
+  PermissionAskDecision,
+  PermissionMode,
+  PermissionModeChangeResult,
+} from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
 import { gracefulShutdown } from '../utils/gracefulShutdown.js'
 import type { RemoteMessageContent } from '../utils/teleport/api.js'
@@ -32,6 +36,9 @@ import type { RemoteMessageContent } from '../utils/teleport/api.js'
 type UseSSHSessionResult = {
   isRemoteMode: boolean
   sendMessage: (content: RemoteMessageContent) => Promise<boolean>
+  setPermissionMode: (
+    mode: PermissionMode,
+  ) => Promise<PermissionModeChangeResult>
   cancelRequest: () => void
   disconnect: () => void
 }
@@ -208,6 +215,16 @@ export function useSSHSession({
     [setIsLoading],
   )
 
+  const setPermissionMode = useCallback(
+    (mode: PermissionMode): Promise<PermissionModeChangeResult> => {
+      return (
+        managerRef.current?.setPermissionMode(mode) ??
+        Promise.resolve({ success: false, error: 'SSH session is not connected' })
+      )
+    },
+    [],
+  )
+
   const cancelRequest = useCallback(() => {
     managerRef.current?.sendInterrupt()
     setIsLoading(false)
@@ -220,7 +237,19 @@ export function useSSHSession({
   }, [])
 
   return useMemo(
-    () => ({ isRemoteMode, sendMessage, cancelRequest, disconnect }),
-    [isRemoteMode, sendMessage, cancelRequest, disconnect],
+    () => ({
+      isRemoteMode,
+      sendMessage,
+      setPermissionMode,
+      cancelRequest,
+      disconnect,
+    }),
+    [
+      isRemoteMode,
+      sendMessage,
+      setPermissionMode,
+      cancelRequest,
+      disconnect,
+    ],
   )
 }

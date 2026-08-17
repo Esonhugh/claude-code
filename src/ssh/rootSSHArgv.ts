@@ -3,6 +3,7 @@ export type PendingSSH = {
   cwd: string | undefined
   permissionMode: string | undefined
   dangerouslySkipPermissions: boolean
+  allowDangerouslySkipPermissions: boolean
   local: boolean
   extraCliArgs: string[]
 }
@@ -60,6 +61,7 @@ export function createPendingSSH(): PendingSSH {
     cwd: undefined,
     permissionMode: undefined,
     dangerouslySkipPermissions: false,
+    allowDangerouslySkipPermissions: false,
     local: false,
     extraCliArgs: [],
   }
@@ -100,16 +102,21 @@ export function parseRootSSHArgv(
   }
 
   const pending = createPendingSSH()
-  const localIndex = rawCliArgs.indexOf('--local')
-  if (localIndex !== -1) {
-    pending.local = true
-    rawCliArgs.splice(localIndex, 1)
+  const extractBooleanFlag = (flag: string): boolean => {
+    const index = rawCliArgs.indexOf(flag)
+    const equalsIndex = rawCliArgs.indexOf(`${flag}=true`)
+    const found = index !== -1 || equalsIndex !== -1
+    if (index !== -1) rawCliArgs.splice(index, 1)
+    if (equalsIndex !== -1) rawCliArgs.splice(equalsIndex, 1)
+    return found
   }
-  const dangerousIndex = rawCliArgs.indexOf('--dangerously-skip-permissions')
-  if (dangerousIndex !== -1) {
-    pending.dangerouslySkipPermissions = true
-    rawCliArgs.splice(dangerousIndex, 1)
-  }
+  pending.local = extractBooleanFlag('--local')
+  pending.dangerouslySkipPermissions = extractBooleanFlag(
+    '--dangerously-skip-permissions',
+  )
+  pending.allowDangerouslySkipPermissions = extractBooleanFlag(
+    '--allow-dangerously-skip-permissions',
+  )
   const permissionModeIndex = rawCliArgs.indexOf('--permission-mode')
   if (
     permissionModeIndex !== -1 &&

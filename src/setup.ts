@@ -55,6 +55,33 @@ import {
 import { isAnt } from 'src/utils/userType.js'
 
 
+export function isHostManagedSSHRemote(
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return (
+    environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST === '1' &&
+    environment.CLAUDE_CODE_SSH_REMOTE === '1'
+  )
+}
+
+export function shouldRejectRootBypassPermissions({
+  platform = process.platform,
+  uid = typeof process.getuid === 'function' ? process.getuid() : undefined,
+  environment = process.env,
+}: {
+  platform?: NodeJS.Platform
+  uid?: number
+  environment?: NodeJS.ProcessEnv
+} = {}): boolean {
+  return (
+    platform !== 'win32' &&
+    uid === 0 &&
+    environment.IS_SANDBOX !== '1' &&
+    !isEnvTruthy(environment.CLAUDE_CODE_BUBBLEWRAP) &&
+    !isHostManagedSSHRemote(environment)
+  )
+}
+
 export async function setup(
   cwd: string,
   permissionMode: PermissionMode,
@@ -401,20 +428,18 @@ export async function setup(
     permissionMode === 'bypassPermissions' ||
     allowDangerouslySkipPermissions
   ) {
-    // Check if running as root/sudo on Unix-like systems
-    // Allow root if in a sandbox (e.g., TPU devspaces that require root)
-    if (
-      process.platform !== 'win32' &&
-      typeof process.getuid === 'function' &&
-      process.getuid() === 0 &&
-      process.env.IS_SANDBOX !== '1' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_BUBBLEWRAP)
-    ) {
+    // Check if running as root/sudo on Unix-like systems.
+    // Host-managed SSH children inherit the local TUI's explicit bypass choice.
+    if (shouldRejectRootBypassPermissions()) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.error(
         `--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons`,
       )
       process.exit(1)
+    }
+
+    if (isHostManagedSSHRemote()) {
+      logForDiagnosticsNoPII('info', 'ssh_remote_root_bypass_allowed')
     }
 
     if (

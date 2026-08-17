@@ -79,8 +79,20 @@ describe('remote launch command', () => {
     assert.match(command, /CLAUDE_CODE_USE_OPENAI\\=1/)
     assert.match(command, /CLAUDE_CODE_OPENAI_UNIX_SOCKET\\=\/tmp\/api\.sock/)
     assert.match(command, /CLAUDE_CODE_OPENAI_AUTH_MODE\\=chatgpt/)
+    assert.match(command, /CLAUDE_CODE_SSH_REMOTE\\=1/)
     assert.equal(command.includes('OPENAI_API_KEY='), false)
     assert.equal(command.includes('OPENAI_AUTH_TOKEN='), false)
+  })
+
+  it('keeps the managed remote child available for explicit mode changes', () => {
+    const command = buildRemoteLaunchCommand({
+      remoteBinaryPath: '/tmp/claude',
+      remoteSocketPath: '/tmp/api.sock',
+      cwd: '/tmp/project',
+      oauth: true,
+    })
+
+    assert.match(command, /--allow-dangerously-skip-permissions/)
   })
 
   it('forwards the resolved local model to the remote child', () => {
@@ -102,6 +114,7 @@ describe('remote launch command', () => {
       cwd: "/tmp/work dir'quoted",
       permissionMode: 'acceptEdits',
       dangerouslySkipPermissions: true,
+      allowDangerouslySkipPermissions: true,
       extraCliArgs: ['--model', 'model with spaces; touch /tmp/pwned'],
       oauth: true,
     })
@@ -114,6 +127,7 @@ describe('remote launch command', () => {
     assert.match(command, /--permission-prompt-tool stdio/)
     assert.match(command, /--permission-mode acceptEdits/)
     assert.match(command, /--dangerously-skip-permissions/)
+    assert.match(command, /--allow-dangerously-skip-permissions/)
     assert.match(command, /'model with spaces; touch \/tmp\/pwned'/)
     assert.equal(command.includes("--model model with spaces; touch"), false)
     assert.equal(command.includes('exec '), false)
@@ -213,6 +227,7 @@ describe('local SSH session', () => {
         '/tmp/openai.sock',
       )
       assert.equal(spawnEnv?.CLAUDE_CODE_OPENAI_AUTH_MODE, 'chatgpt')
+      assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE, undefined)
       assert.equal(spawnEnv?.OPENAI_API_KEY, undefined)
       assert.equal(spawnEnv?.OPENAI_AUTH_TOKEN, undefined)
       assert.equal(spawnEnv?.OPENAI_BASE_URL, undefined)
@@ -573,6 +588,7 @@ describe('fork remote binary', () => {
     assert.match(source, /\[SSH\] probe start/)
     assert.match(source, /\[SSH\] deploy chunk start/)
     assert.match(source, /\[SSH\] remote child spawn start/)
+    assert.match(source, /sshRemote=true bypass=/)
     assert.match(source, /\[SSH\] session ready/)
     assert.match(source, /\[SSH\] control master stop/)
   })

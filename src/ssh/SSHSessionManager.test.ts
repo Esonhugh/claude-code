@@ -132,6 +132,72 @@ describe('SSHSessionManager', () => {
     assert.match(errors[0] ?? '', /No pending SSH permission request/)
   })
 
+  it('writes permission mode changes as stream-json control input', async () => {
+    const proc = createFakeProcess()
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+    })
+
+    manager.connect()
+    const result = manager.setPermissionMode('bypassPermissions')
+    await nextTick()
+
+    const message = JSON.parse(written.trim())
+    assert.equal(message.type, 'control_request')
+    assert.equal(message.request.subtype, 'set_permission_mode')
+    assert.equal(message.request.mode, 'bypassPermissions')
+    assert.equal(typeof message.request_id, 'string')
+
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: message.request_id,
+          response: { mode: 'bypassPermissions' },
+        },
+      })}\n`,
+    )
+    assert.deepEqual(await result, { success: true })
+  })
+
+  it('reports rejected permission mode changes without changing local state', async () => {
+    const proc = createFakeProcess()
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+    })
+
+    manager.connect()
+    const result = manager.setPermissionMode('bypassPermissions')
+    await nextTick()
+    const message = JSON.parse(written.trim())
+
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: message.request_id,
+          error: 'session was not launched with permission opt-in',
+        },
+      })}\n`,
+    )
+    assert.deepEqual(await result, {
+      success: false,
+      error: 'session was not launched with permission opt-in',
+    })
+  })
+
   it('writes user messages and interrupts as stream-json control input', async () => {
     const proc = createFakeProcess()
     let written = ''

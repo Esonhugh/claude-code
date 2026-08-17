@@ -1014,6 +1014,15 @@ export async function main() {
         process.argv[0]!,
         process.argv[1]!,
         ...parsedSSHArgv.remainingArgs,
+        ...(parsedSSHArgv.pending.permissionMode
+          ? ['--permission-mode', parsedSSHArgv.pending.permissionMode]
+          : []),
+        ...(parsedSSHArgv.pending.dangerouslySkipPermissions
+          ? ['--dangerously-skip-permissions']
+          : []),
+        ...(parsedSSHArgv.pending.allowDangerouslySkipPermissions
+          ? ['--allow-dangerously-skip-permissions']
+          : []),
       ]
     }
   }
@@ -4255,6 +4264,8 @@ async function run(): Promise<CommanderCommand> {
               permissionMode: _pendingSSH.permissionMode,
               dangerouslySkipPermissions:
                 _pendingSSH.dangerouslySkipPermissions,
+              allowDangerouslySkipPermissions:
+                _pendingSSH.allowDangerouslySkipPermissions,
               model: resolvedInitialModel,
             })
           } else {
@@ -4272,6 +4283,8 @@ async function run(): Promise<CommanderCommand> {
                 permissionMode: _pendingSSH.permissionMode,
                 dangerouslySkipPermissions:
                   _pendingSSH.dangerouslySkipPermissions,
+                allowDangerouslySkipPermissions:
+                  _pendingSSH.allowDangerouslySkipPermissions,
                 extraCliArgs: _pendingSSH.extraCliArgs,
                 model: resolvedInitialModel,
               },

@@ -36,6 +36,7 @@ test('accepts root flags before ssh without treating flag values as the subcomma
         cwd: '/srv/project',
         permissionMode: 'acceptEdits',
         dangerouslySkipPermissions: false,
+        allowDangerouslySkipPermissions: false,
         local: false,
         extraCliArgs: ['--model', 'gateway-model'],
       },
@@ -66,6 +67,7 @@ test('extracts SSH-specific flags on either side of the host', () => {
         cwd: '/work',
         permissionMode: 'auto',
         dangerouslySkipPermissions: true,
+        allowDangerouslySkipPermissions: false,
         local: true,
         extraCliArgs: [
           '--continue',
@@ -77,6 +79,58 @@ test('extracts SSH-specific flags on either side of the host', () => {
       },
       remainingArgs: [],
     },
+  )
+})
+
+test('preserves opt-in permission switching on both SSH processes', () => {
+  assert.deepEqual(
+    parseRootSSHArgv([
+      'ssh',
+      'host.example',
+      '--allow-dangerously-skip-permissions',
+    ]),
+    {
+      type: 'ssh',
+      pending: {
+        host: 'host.example',
+        cwd: undefined,
+        permissionMode: undefined,
+        dangerouslySkipPermissions: false,
+        allowDangerouslySkipPermissions: true,
+        local: false,
+        extraCliArgs: [],
+      },
+      remainingArgs: [],
+    },
+  )
+  assert.match(
+    source,
+    /pending\.allowDangerouslySkipPermissions[\s\S]{0,100}--allow-dangerously-skip-permissions/,
+  )
+})
+
+test('does not expose bypass in the local Shift+Tab cycle without opt-in', () => {
+  assert.match(
+    source,
+    /permissionMode,\s+allowDangerouslySkipPermissions,\s+addDirs: addDir/,
+  )
+  assert.doesNotMatch(
+    source,
+    /allowDangerouslySkipPermissions\s*\|\|\s*\(feature\('SSH_REMOTE'\)/,
+  )
+})
+
+test('keeps explicit /yolo available independently of the Shift+Tab opt-in', () => {
+  assert.match(
+    replSource,
+    /mode === 'bypassPermissions'[\s\S]{0,160}isBypassPermissionsModeAvailable: true/,
+  )
+})
+
+test('synchronizes Shift+Tab permission mode changes to the SSH child', () => {
+  assert.match(
+    replSource,
+    /sshRemote\.isRemoteMode[\s\S]{0,300}\.setPermissionMode\(context\.mode\)/,
   )
 })
 

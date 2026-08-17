@@ -75,6 +75,7 @@ import {
   getTurnClassifierDurationMs,
   getTurnClassifierCount,
   resetTurnClassifierDuration,
+  setSessionBypassPermissionsMode,
 } from '../bootstrap/state.js'
 import { asSessionId, asAgentId } from '../types/ids.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -3237,6 +3238,33 @@ export function REPL({
     setToolPermissionContext,
   )
 
+  const requestPermissionModeChange = useCallback(
+    async mode => {
+      const current = store.getState().toolPermissionContext
+      const result = sshRemote.isRemoteMode
+        ? await sshRemote.setPermissionMode(mode)
+        : { success: true as const }
+      if (!result.success) return result
+
+      setSessionBypassPermissionsMode(mode === 'bypassPermissions')
+      const nextContext = applyPermissionUpdate(current, {
+        type: 'setMode',
+        mode,
+        destination: 'session',
+      })
+      setToolPermissionContext(
+        mode === 'bypassPermissions'
+          ? {
+              ...nextContext,
+              isBypassPermissionsModeAvailable: true,
+            }
+          : nextContext,
+      )
+      return result
+    },
+    [sshRemote, setToolPermissionContext, store],
+  )
+
   const requestPrompt = useCallback(
     (title: string, toolInputSummary?: string | null) =>
       (request: PromptRequest): Promise<PromptResponse> =>
@@ -3310,6 +3338,7 @@ export function REPL({
         },
         getAppState: () => store.getState(),
         setAppState,
+        requestPermissionModeChange,
         messages,
         setMessages,
         updateFileHistoryState(
@@ -3423,6 +3452,7 @@ export function REPL({
       customSystemPrompt,
       appendSystemPrompt,
       setConversationId,
+      requestPermissionModeChange,
     ],
   )
 
@@ -6923,7 +6953,33 @@ export function REPL({
                         isLocalJSXCommandActive={isShowingLocalJSXCommand}
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}
-                        setToolPermissionContext={setToolPermissionContext}
+                        setToolPermissionContext={context => {
+                          if (
+                            sshRemote.isRemoteMode &&
+                            context.mode !== toolPermissionContext.mode
+                          ) {
+                            void sshRemote
+                              .setPermissionMode(context.mode)
+                              .then(result => {
+                                if (result.success === true) {
+                                  setSessionBypassPermissionsMode(
+                                    context.mode === 'bypassPermissions',
+                                  )
+                                  setToolPermissionContext(context)
+                                } else {
+                                  setToolPermissionContext(toolPermissionContext)
+                                  addNotification({
+                                    key: 'ssh-permission-mode-rejected',
+                                    text: result.error,
+                                    color: 'error',
+                                    priority: 'high',
+                                  })
+                                }
+                              })
+                            return
+                          }
+                          setToolPermissionContext(context)
+                        }}
                         apiKeyStatus={apiKeyStatus}
                         commands={commands}
                         agents={agentDefinitions.activeAgents}

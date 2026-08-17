@@ -62,6 +62,7 @@ type SSHSessionOptions = {
   localVersion: string
   permissionMode?: string
   dangerouslySkipPermissions?: boolean
+  allowDangerouslySkipPermissions?: boolean
   extraCliArgs?: string[]
   model?: string
 }
@@ -149,6 +150,7 @@ export function resolveSSHConnection(
 function childArgs(options: {
   permissionMode?: string
   dangerouslySkipPermissions?: boolean
+  allowDangerouslySkipPermissions?: boolean
   extraCliArgs?: string[]
 }): string[] {
   return [
@@ -167,6 +169,9 @@ function childArgs(options: {
     ...(options.dangerouslySkipPermissions
       ? ['--dangerously-skip-permissions']
       : []),
+    ...(options.allowDangerouslySkipPermissions
+      ? ['--allow-dangerously-skip-permissions']
+      : []),
     ...(options.extraCliArgs ?? []),
   ]
 }
@@ -180,11 +185,17 @@ const AUTH_ENV_VARS_TO_UNSET = [
   'OPENAI_BASE_URL',
   'CLAUDE_CODE_OPENAI_UNIX_SOCKET',
   'CLAUDE_CODE_OPENAI_AUTH_MODE',
+  'CLAUDE_CODE_SSH_REMOTE',
 ]
 
-function authEnvironment(proxy: SSHAuthProxy, socketPath: string): string[] {
+function authEnvironment(
+  proxy: SSHAuthProxy,
+  socketPath: string,
+  sshRemote: boolean,
+): string[] {
   return [
     'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1',
+    ...(sshRemote ? ['CLAUDE_CODE_SSH_REMOTE=1'] : []),
     `CLAUDE_CODE_USE_OPENAI=${proxy.provider === 'openai' ? '1' : '0'}`,
     'CLAUDE_CODE_USE_BEDROCK=0',
     'CLAUDE_CODE_USE_VERTEX=0',
@@ -213,6 +224,7 @@ export function buildRemoteLaunchCommand(options: {
   cwd: string
   permissionMode?: string
   dangerouslySkipPermissions?: boolean
+  allowDangerouslySkipPermissions?: boolean
   extraCliArgs?: string[]
   model?: string
   provider?: SSHAuthProxy['provider']
@@ -227,7 +239,7 @@ export function buildRemoteLaunchCommand(options: {
       ? { openAIAuthMode: options.oauth ? 'chatgpt' : 'platform' }
       : {}),
   } as SSHAuthProxy
-  const envArgs = authEnvironment(proxy, options.remoteSocketPath)
+  const envArgs = authEnvironment(proxy, options.remoteSocketPath, true)
   const command = [
     'env',
     ...AUTH_ENV_VARS_TO_UNSET.flatMap(key => ['-u', key]),
@@ -235,6 +247,11 @@ export function buildRemoteLaunchCommand(options: {
     options.remoteBinaryPath,
     ...childArgs({
       ...options,
+      // The local TUI is the permission authority. Keep the remote stream-json
+      // child capable of accepting an explicit /yolo control request; the
+      // user's --allow-* flag still controls whether the local Shift+Tab
+      // carousel exposes bypass mode.
+      allowDangerouslySkipPermissions: true,
       extraCliArgs: [
         ...(options.model ? ['--model', options.model] : []),
         ...(options.extraCliArgs ?? []),
@@ -318,7 +335,7 @@ export async function createLocalSSHSession(
   Object.assign(
     env,
     Object.fromEntries(
-      authEnvironment(proxy, proxy.socketPath).map(value => {
+      authEnvironment(proxy, proxy.socketPath, false).map(value => {
         const separator = value.indexOf('=')
         return [value.slice(0, separator), value.slice(separator + 1)]
       }),
@@ -827,6 +844,7 @@ export async function createSSHSession(
     cwd: probe.cwd,
     permissionMode: options.permissionMode,
     dangerouslySkipPermissions: options.dangerouslySkipPermissions,
+    allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions,
     extraCliArgs: options.extraCliArgs,
     model: options.model,
     provider: proxy.provider,
@@ -843,7 +861,7 @@ export async function createSSHSession(
       deps.prepareRemoteSocketDirectory ?? prepareRemoteSocketDirectory
     )(connection, remoteSocketDir)
     logForDebugging(
-      `[SSH] remote child spawn start host=${connection.host} cwd=${probe.cwd} provider=${proxy.provider}`,
+      `[SSH] remote child spawn start host=${connection.host} cwd=${probe.cwd} provider=${proxy.provider} sshRemote=true bypass=${options.permissionMode === 'bypassPermissions' || options.dangerouslySkipPermissions === true}`,
     )
     const proc = (deps.spawnProcess ?? spawn)(
       'ssh',

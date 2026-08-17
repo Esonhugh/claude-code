@@ -424,6 +424,10 @@ export type ToolPermissionRulesBySource = {
  * Context needed for permission checking in tools
  * Note: Uses a simplified DeepImmutable approximation for this types-only file
  */
+export type PermissionModeChangeResult =
+  | { success: true }
+  | { success: false; error: string }
+
 export type ToolPermissionContext = {
   readonly mode: PermissionMode
   readonly additionalWorkingDirectories: ReadonlyMap<
