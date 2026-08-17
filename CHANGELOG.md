@@ -12,6 +12,39 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-17 - v2.1.211 - Remote SSH 部署与生命周期加固
+
+### 版本状态
+
+- 准备发布版本：`v2.1.211`。
+- 本次发布覆盖 `v2.1.210` 之后至 2026-08-17 的 SSH 超时、Remote binary 部署与 ControlMaster 生命周期修复。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.211`。
+
+### 关联提交
+
+- `37c0ba0` — 延长 SSH command timeout，并允许较慢的远端认证和连接重试完成。
+- `c8d1585` — 强化 Remote SSH 分块部署、生命周期日志、ControlMaster cleanup 与短 ControlPath。
+- `b20724c` — 首次补充 Remote SSH 加固说明；本条目将误放在 `v2.1.210` 下的内容移至正确版本。
+- 当前维护本条目的 release metadata commit 因提交时 hash 尚未生成，不在关联提交中自引用；完整范围以 `v2.1.210..HEAD` 为准。
+
+### 变更内容
+
+#### SSH 连接与生命周期
+
+- SSH command timeout 延长至 2 分钟，并使用 30 秒连接超时与 3 次连接尝试，允许较慢的远端认证和连接重试完成。
+- ControlMaster 使用系统原生临时目录中的 96-bit 短随机 socket path，避免 macOS OpenSSH 的 Unix socket 路径长度限制并保持 Windows 兼容。
+- SSH Remote 为 probe、部署、proxy、remote child 和 ControlMaster lifecycle 增加 debug log，并在启动失败、断线或正常退出时幂等清理远端 socket、认证 proxy 与本地 ControlMaster。
+
+#### Remote binary 部署
+
+- Remote binary 改为按 2 MiB 分块上传，每块校验 SHA-256 并对瞬时传输失败重试；全部完成后再次校验完整文件，再通过临时文件和原子 `mv` 安装，避免 partial binary 被执行。
+
+### 测试覆盖
+
+- SSH focused tests 覆盖慢速认证参数、分块上传与 checksum、瞬时失败重试、短 ControlPath，以及启动失败、断线、正常退出和 cleanup 失败时的幂等资源清理。
+- 发布门禁要求 SSH focused tests、`make release-check VERSION=2.1.211`、发布版本 binary 构建与版本输出验证通过；真实 `pojun-master` 验收确认已安装 `v2.1.210` 无法完成 remote binary 部署，而 `./built-claude` `v2.1.211` 命中已校验 remote cache、启动 remote child 并进入远端 TUI。
+
 ## 2026-08-16 - v2.1.210 - SSH Remote、安全认证隧道与任务详情增强
 
 ### 版本状态
@@ -33,9 +66,7 @@
 - `a563c88` — 将 release code-review gate 限定到显式解析的 release commit range，避免自动扩大审查范围。
 - `91fa57f` — 准备 `v2.1.210` 的版本号、README 与 CHANGELOG 发布元数据。
 - `92728c5` — 补充 local SSH model forwarding 与 bounded code-review gate 的发布说明。
-- `37c0ba0` — 延长 SSH command timeout，并允许较慢的远端认证和连接重试完成。
-- `c8d1585` — 强化 Remote SSH 分块部署、生命周期日志、ControlMaster cleanup 与短 ControlPath。
-- 当前维护本条目的 release metadata commit 因提交时 hash 尚未生成，不在关联提交中自引用；完整范围以 `v2.1.209..HEAD` 为准。
+- 当前维护本条目的 release metadata commit 因提交时 hash 尚未生成，不在关联提交中自引用；完整范围以 `v2.1.209..v2.1.210` 为准。
 
 ### 变更内容
 
@@ -46,13 +77,10 @@
 - API/OAuth 凭据仅由本地 provider-aware Unix socket proxy 注入；远端 child 只收到 placeholder 与 reverse-forwarded socket path，不继承本机 OpenAI/Anthropic credential、base URL 或 auth token。
 - 本地 proxy 分别限制 OpenAI `POST /responses` 与 Anthropic `POST /v1/messages`、`POST /v1/messages/count_tokens`，过滤请求和响应中的 credential/cookie headers，限制 request body，并拒绝非 loopback 明文 HTTP upstream。
 - SSH Remote 将本地已解析 model 作为 `--model` 转发给 remote child；`ssh --local` 同样显式传递该 model，使自定义 gateway/model settings 在两种 child 启动路径中保持一致。
-- SSH 连接允许较慢的远端认证和连接重试完成；ControlMaster 使用系统原生临时目录中的 96-bit 短随机 socket path，避免 macOS OpenSSH 的 Unix socket 路径长度限制并保持 Windows 兼容。
-- SSH Remote 为 probe、部署、proxy、remote child 和 ControlMaster lifecycle 增加 debug log，并在启动失败、断线或正常退出时幂等清理远端 socket、认证 proxy 与本地 ControlMaster。
 
 #### Remote binary 构建与部署
 
 - SSH Remote 探测远端 Linux architecture，x64 主机使用 `linux-x64-baseline`，ARM64 使用 `linux-arm64`；远端 binary 按版本和 target 缓存在 `~/.cache/claude-ssh/` 并在部署前验证可执行版本。
-- Remote binary 改为按 2 MiB 分块上传，每块校验 SHA-256 并对瞬时传输失败重试；全部完成后再次校验完整文件，再通过临时文件和原子 `mv` 安装，避免 partial binary 被执行。
 - 发布 workflow 新增 `linux-x64-baseline` asset，并在生成 `SHA256SUMS.txt` 前校验完整平台 artifact 集；下载路径先核对 release checksum，再原子写入本地 cache 和远端目标。
 - 开发态仅直接使用当前可执行文件相邻的 `dist/release` artifact，不从工作目录加载同名 binary；只有从 GitHub Release 下载的 asset 才要求 `SHA256SUMS.txt`，checksum 缺失或不匹配时 fail closed。
 
