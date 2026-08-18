@@ -20,6 +20,9 @@ const keys = [
   'CLAUDE_CODE_OPENAI_AUTH_MODE',
   'CLAUDE_CODE_OPENAI_UNIX_SOCKET',
   'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CLAUDE_CODE_SSH_LOCAL_UI',
+  'CLAUDE_CODE_SSH_REMOTE',
+  'CLAUDE_CODE_SSH_REMOTE_TOKEN',
   'CLAUDE_CODE_USE_OPENAI',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
@@ -77,12 +80,16 @@ test('SSH tunnel routing is not overridden by settings env', () => {
 
 test('host-managed provider routing is not overridden by settings env', () => {
   process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1'
+  process.env.CLAUDE_CODE_SSH_REMOTE = '1'
+  process.env.CLAUDE_CODE_SSH_REMOTE_TOKEN = 'host-token'
   setFlagSettingsInline({
     env: {
       ANTHROPIC_API_KEY: 'settings-key',
       ANTHROPIC_BASE_URL: 'https://settings.example',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'settings-model',
       CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '0',
+      CLAUDE_CODE_SSH_REMOTE: '0',
+      CLAUDE_CODE_SSH_REMOTE_TOKEN: 'settings-token',
       CLAUDE_CODE_USE_OPENAI: '0',
       OPENAI_API_KEY: 'settings-openai-key',
       SSH_TEST_PASSTHROUGH: 'kept',
@@ -94,10 +101,32 @@ test('host-managed provider routing is not overridden by settings env', () => {
   applyConfigEnvironmentVariables()
 
   assert.equal(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1')
+  assert.equal(process.env.CLAUDE_CODE_SSH_REMOTE, '1')
+  assert.equal(process.env.CLAUDE_CODE_SSH_REMOTE_TOKEN, 'host-token')
   assert.equal(process.env.CLAUDE_CODE_USE_OPENAI, undefined)
   assert.equal(process.env.ANTHROPIC_API_KEY, undefined)
   assert.equal(process.env.ANTHROPIC_BASE_URL, undefined)
   assert.equal(process.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined)
   assert.equal(process.env.OPENAI_API_KEY, undefined)
   assert.equal(process.env.SSH_TEST_PASSTHROUGH, 'kept')
+})
+
+test('settings cannot forge SSH session capabilities', () => {
+  setFlagSettingsInline({
+    env: {
+      CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+      CLAUDE_CODE_SSH_LOCAL_UI: '1',
+      CLAUDE_CODE_SSH_REMOTE: '1',
+      CLAUDE_CODE_SSH_REMOTE_TOKEN: 'settings-token',
+    },
+  })
+  resetSettingsCache()
+
+  applySafeConfigEnvironmentVariables()
+  applyConfigEnvironmentVariables()
+
+  assert.equal(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, undefined)
+  assert.equal(process.env.CLAUDE_CODE_SSH_LOCAL_UI, undefined)
+  assert.equal(process.env.CLAUDE_CODE_SSH_REMOTE, undefined)
+  assert.equal(process.env.CLAUDE_CODE_SSH_REMOTE_TOKEN, undefined)
 })

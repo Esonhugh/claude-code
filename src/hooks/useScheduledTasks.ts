@@ -16,6 +16,7 @@ import { createScheduledTaskFireMessage } from '../utils/messages.js'
 import { WORKLOAD_CRON } from '../utils/workloadContext.js'
 
 type Props = {
+  enabled?: boolean
   isLoading: boolean
   /**
    * When true, bypasses the isLoading gate so tasks can enqueue while a
@@ -38,6 +39,7 @@ type Props = {
  * so SDK/-p mode can share it — see print.ts for the headless wiring.
  */
 export function useScheduledTasks({
+  enabled = true,
   isLoading,
   assistantMode = false,
   setMessages,
@@ -58,7 +60,7 @@ export function useScheduledTasks({
     // effect won't re-run on value flip (assistantMode is the only dep),
     // so this guard alone is launch-grain. The mid-session killswitch is
     // the isKilled option below — check() polls it every tick.
-    if (!isKairosCronEnabled()) return
+    if (!enabled || !isKairosCronEnabled()) return
 
     // System-generated — hidden from queue preview and transcript UI.
     // In brief mode, executeForkedSlashCommand runs as a background
@@ -123,7 +125,7 @@ export function useScheduledTasks({
     // assistantMode is stable for the session lifetime; store/setAppState are
     // stable refs from useSyncExternalStore; setMessages is a stable useCallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assistantMode])
+  }, [assistantMode, enabled])
 }
 
 function formatCronFireTime(d: Date): string {

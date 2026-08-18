@@ -152,6 +152,7 @@ export async function showSetupScreens(
   commands?: Command[],
   claudeInChrome?: boolean,
   devChannels?: ChannelEntry[],
+  options?: { skipWorkspaceSetup?: boolean },
 ): Promise<boolean> {
   if (
     ("production" as string) === 'test' ||
@@ -183,13 +184,13 @@ export async function showSetupScreens(
     )
   }
 
-  // Always show the trust dialog in interactive sessions, regardless of permission mode.
-  // The trust dialog is the workspace trust boundary — it warns about untrusted repos
-  // and checks CLAUDE.md external includes. bypassPermissions mode
-  // only affects tool execution permissions, not workspace trust.
-  // Note: non-interactive sessions (CI/CD with -p) never reach showSetupScreens at all.
-  // Skip permission checks in claubbit
-  if (!isEnvTruthy(process.env.CLAUBBIT)) {
+  // The SSH local half owns account onboarding and bypass consent only. The
+  // managed child owns workspace trust, project settings, and project context.
+  const skipWorkspaceSetup = options?.skipWorkspaceSetup === true
+
+  // Always show the trust dialog in interactive local execution sessions,
+  // regardless of permission mode. bypassPermissions only affects tools.
+  if (!skipWorkspaceSetup && !isEnvTruthy(process.env.CLAUBBIT)) {
     // Fast-path: skip TrustDialog import+render when CWD is already trusted.
     // If it returns true, the TrustDialog would auto-resolve regardless of
     // security features, so we can skip the dynamic import and render cycle.
@@ -239,18 +240,16 @@ export async function showSetupScreens(
     }
   }
 
-  // Track current repo path for teleport directory switching (fire-and-forget)
-  // This must happen AFTER trust to prevent untrusted directories from poisoning the mapping
-  void updateGithubRepoPathMapping()
-  if (feature('LODESTONE')) {
-    updateDeepLinkTerminalPreference()
-  }
+  if (!skipWorkspaceSetup) {
+    // Track current repo path for teleport directory switching (fire-and-forget).
+    void updateGithubRepoPathMapping()
+    if (feature('LODESTONE')) {
+      updateDeepLinkTerminalPreference()
+    }
 
-  // Apply full environment variables after trust dialog is accepted OR in bypass mode
-  // In bypass mode (CI/CD, automation), we trust the environment so apply all variables
-  // In normal mode, this happens after the trust dialog is accepted
-  // This includes potentially dangerous environment variables from untrusted sources
-  applyConfigEnvironmentVariables()
+    // Apply project-scoped environment only after local workspace trust.
+    applyConfigEnvironmentVariables()
+  }
 
   if (shouldShowOpenAIAutoLogin()) {
     const { OpenAIOAuthFlow } = await import('./components/OpenAIOAuthFlow.js')

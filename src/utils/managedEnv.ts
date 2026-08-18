@@ -3,6 +3,7 @@ import { clearCACertsCache } from './caCerts.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
+  isHostManagedSessionEnvVar,
   isProviderManagedEnvVar,
   SAFE_ENV_VARS,
 } from './managedEnvConstants.js'
@@ -57,12 +58,15 @@ function withoutHostManagedProviderVars(
   env: Record<string, string> | undefined,
 ): Record<string, string> {
   if (!env) return {}
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
-    return env
-  }
+  const hostManagesProvider = isEnvTruthy(
+    process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,
+  )
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(env)) {
-    if (!isProviderManagedEnvVar(key)) {
+    if (
+      !isHostManagedSessionEnvVar(key) &&
+      (!hostManagesProvider || !isProviderManagedEnvVar(key))
+    ) {
       out[key] = value
     }
   }

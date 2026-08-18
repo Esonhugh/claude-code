@@ -11,9 +11,14 @@
  * VERTEX_REGION_CLAUDE_* is prefix-matched. New providers or new routing
  * config vars (endpoint, project, region, auth) do.
  */
-const PROVIDER_MANAGED_ENV_VARS = new Set([
-  // The flag itself — settings can't unset it once the host set it
+const HOST_MANAGED_SESSION_ENV_VARS = new Set([
   'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CLAUDE_CODE_SSH_LOCAL_UI',
+  'CLAUDE_CODE_SSH_REMOTE',
+  'CLAUDE_CODE_SSH_REMOTE_TOKEN',
+])
+
+const PROVIDER_MANAGED_ENV_VARS = new Set([
   // Provider selection
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
@@ -66,6 +71,10 @@ const PROVIDER_MANAGED_ENV_PREFIXES = [
   // prefix-matched to avoid drift on each launch.
   'VERTEX_REGION_CLAUDE_',
 ]
+
+export function isHostManagedSessionEnvVar(key: string): boolean {
+  return HOST_MANAGED_SESSION_ENV_VARS.has(key.toUpperCase())
+}
 
 export function isProviderManagedEnvVar(key: string): boolean {
   const upper = key.toUpperCase()

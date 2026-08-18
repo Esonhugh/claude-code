@@ -1,12 +1,10 @@
 import * as React from 'react'
-import { handlePlanModeTransition } from '../../bootstrap/state.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
 import { Box, Text } from '../../ink.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import { getExternalEditor } from '../../utils/editor.js'
 import { toIDEDisplayName } from '../../utils/ide.js'
-import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js'
-import { prepareContextForPlanMode } from '../../utils/permissions/permissionSetup.js'
+import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlan, getPlanFilePath } from '../../utils/plans.js'
 import { editFileInEditor } from '../../utils/promptEditor.js'
 import { renderToString } from '../../utils/staticRender.js'
@@ -51,14 +49,25 @@ export async function call(
 
   // If not in plan mode, enable it
   if (currentMode !== 'plan') {
-    handlePlanModeTransition(currentMode, 'plan')
-    setAppState(prev => ({
-      ...prev,
-      toolPermissionContext: applyPermissionUpdate(
-        prepareContextForPlanMode(prev.toolPermissionContext),
-        { type: 'setMode', mode: 'plan', destination: 'session' },
-      ),
-    }))
+    if (context.requestPermissionModeChange) {
+      const result = await context.requestPermissionModeChange('plan')
+      if (result.success === false) {
+        onDone(`Plan mode was not enabled: ${result.error}`)
+        return null
+      }
+    } else {
+      setAppState(prev => ({
+        ...prev,
+        toolPermissionContext: {
+          ...transitionPermissionMode(
+            prev.toolPermissionContext.mode,
+            'plan',
+            prev.toolPermissionContext,
+          ),
+          mode: 'plan',
+        },
+      }))
+    }
     const description = args.trim()
     if (description && description !== 'open') {
       onDone('Enabled plan mode', { shouldQuery: true })

@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { describe, it } from 'bun:test'
-import { SSHSessionManager } from './SSHSessionManager.js'
+import { describe, it, jest } from 'bun:test'
+import {
+  CONTROL_REQUEST_TIMEOUT_MS,
+  SSHSessionManager,
+} from './SSHSessionManager.js'
 
 type FakeProcess = EventEmitter & {
   stdin: PassThrough
@@ -86,6 +89,14 @@ describe('SSHSessionManager', () => {
     manager.respondToPermissionRequest('req-1', {
       behavior: 'allow',
       updatedInput: { command: 'pwd' },
+      updatedPermissions: [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash', ruleContent: 'pwd' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ],
     })
     await nextTick()
 
@@ -97,9 +108,52 @@ describe('SSHSessionManager', () => {
         response: {
           behavior: 'allow',
           updatedInput: { command: 'pwd' },
+          updatedPermissions: [
+            {
+              type: 'addRules',
+              rules: [{ toolName: 'Bash', ruleContent: 'pwd' }],
+              behavior: 'allow',
+              destination: 'session',
+            },
+          ],
         },
       },
     })
+  })
+
+  it('consumes replayed permission responses', async () => {
+    const proc = createFakeProcess()
+    const errors: Error[] = []
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+      onError: error => errors.push(error),
+    })
+
+    manager.connect()
+    proc.stdout.write(
+      '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"},"tool_use_id":"tool-1"}}\n',
+    )
+    await nextTick()
+
+    manager.respondToPermissionRequest('req-1', {
+      behavior: 'allow',
+      updatedInput: { command: 'pwd' },
+    })
+    proc.stdout.write(
+      '{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow","updatedInput":{"command":"pwd"}}}}\n',
+    )
+    await nextTick()
+
+    assert.deepEqual(errors, [])
+    assert.equal(
+      (
+        manager as unknown as {
+          expectedPermissionResponseEchoes: Map<string, unknown>
+        }
+      ).expectedPermissionResponseEchoes.size,
+      0,
+    )
   })
 
   it('removes cancelled permission requests', async () => {
@@ -198,6 +252,214 @@ describe('SSHSessionManager', () => {
     })
   })
 
+  it('times out an unanswered permission mode change', async () => {
+    jest.useFakeTimers()
+    try {
+      const proc = createFakeProcess()
+      const manager = new SSHSessionManager(proc as never, {
+        onMessage() {},
+        onPermissionRequest() {},
+      })
+
+      manager.connect()
+      const result = manager.setPermissionMode('plan')
+      jest.advanceTimersByTime(CONTROL_REQUEST_TIMEOUT_MS)
+
+      assert.deepEqual(await result, {
+        success: false,
+        error: 'SSH permission mode change timed out',
+      })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('rejects remote shell commands without a session capability', async () => {
+    const proc = createFakeProcess()
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+    })
+
+    manager.connect()
+
+    await assert.rejects(
+      manager.runShellCommand('pwd', new AbortController().signal),
+      /unavailable in this SSH session/,
+    )
+  })
+
+  it('runs remote shell commands and correlates their responses', async () => {
+    const proc = createFakeProcess()
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    const controller = new AbortController()
+    const result = manager.runShellCommand('pwd', controller.signal)
+    await nextTick()
+
+    const message = JSON.parse(written.trim())
+    assert.equal(message.type, 'control_request')
+    assert.equal(message.request.subtype, 'run_shell_command')
+    assert.equal(message.request.command, 'pwd')
+    assert.equal(message.request.ssh_remote_token, 'test-ssh-token')
+
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: message.request_id,
+          response: {
+            stdout: '/work\n',
+            stderr: '',
+            code: 0,
+            interrupted: false,
+          },
+        },
+      })}\n`,
+    )
+
+    assert.deepEqual(await result, {
+      stdout: '/work\n',
+      stderr: '',
+      code: 0,
+      interrupted: false,
+    })
+  })
+
+  it('interrupts an active remote shell command through stream-json', async () => {
+    const proc = createFakeProcess()
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    const controller = new AbortController()
+    const result = manager.runShellCommand('sleep 30', controller.signal)
+    controller.abort('user-cancel')
+    await nextTick()
+
+    const messages = written.trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(messages[0].request.subtype, 'run_shell_command')
+    assert.equal(messages[0].request.ssh_remote_token, 'test-ssh-token')
+    assert.equal(messages[1].request.subtype, 'interrupt')
+
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: messages[0].request_id,
+          response: {
+            stdout: '',
+            stderr: '',
+            code: 137,
+            interrupted: true,
+          },
+        },
+      })}\n`,
+    )
+    assert.equal((await result).interrupted, true)
+  })
+
+  it('times out a cancelled shell command without a final shell response', async () => {
+    jest.useFakeTimers()
+    try {
+      const proc = createFakeProcess()
+      const manager = new SSHSessionManager(
+        proc as never,
+        {
+          onMessage() {},
+          onPermissionRequest() {},
+        },
+        'test-ssh-token',
+      )
+
+      manager.connect()
+      const controller = new AbortController()
+      const result = manager.runShellCommand('sleep 30', controller.signal)
+      controller.abort('user-cancel')
+      jest.advanceTimersByTime(CONTROL_REQUEST_TIMEOUT_MS)
+
+      await assert.rejects(result, /SSH shell command cancellation timed out/)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('rejects an active remote shell command on disconnect', async () => {
+    const proc = createFakeProcess()
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    const result = manager.runShellCommand('sleep 30', new AbortController().signal)
+    proc.exitCode = 1
+    proc.emit('close', 1, null)
+
+    await assert.rejects(result, /SSH session disconnected/)
+  })
+
+  it('rejects invalid remote shell command responses', async () => {
+    const proc = createFakeProcess()
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    const result = manager.runShellCommand('pwd', new AbortController().signal)
+    await nextTick()
+    const message = JSON.parse(written.trim())
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: message.request_id,
+          response: { stdout: 1 },
+        },
+      })}\n`,
+    )
+
+    await assert.rejects(result, /Invalid SSH shell command response/)
+  })
+
   it('writes user messages and interrupts as stream-json control input', async () => {
     const proc = createFakeProcess()
     let written = ''
@@ -224,6 +486,72 @@ describe('SSHSessionManager', () => {
     assert.equal(lines[1].type, 'control_request')
     assert.equal(lines[1].request.subtype, 'interrupt')
     assert.equal(typeof lines[1].request_id, 'string')
+  })
+
+  it('consumes interrupt acknowledgements without reporting them as unmatched', async () => {
+    const proc = createFakeProcess()
+    const errors: Error[] = []
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+      onError: error => errors.push(error),
+    })
+
+    manager.connect()
+    manager.sendInterrupt()
+    await nextTick()
+
+    const request = JSON.parse(written.trim())
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: request.request_id,
+          response: {},
+        },
+      })}\n`,
+    )
+    await nextTick()
+
+    assert.deepEqual(errors, [])
+  })
+
+  it('surfaces interrupt acknowledgement errors', async () => {
+    const proc = createFakeProcess()
+    const errors: Error[] = []
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+      onError: error => errors.push(error),
+    })
+
+    manager.connect()
+    manager.sendInterrupt()
+    await nextTick()
+
+    const request = JSON.parse(written.trim())
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: request.request_id,
+          error: 'interrupt failed',
+        },
+      })}\n`,
+    )
+    await nextTick()
+
+    assert.equal(errors[0]?.message, 'interrupt failed')
   })
 
   it('rejects malformed control requests without throwing', async () => {
@@ -254,6 +582,69 @@ describe('SSHSessionManager', () => {
         error: 'Unsupported or invalid control request',
       },
     })
+  })
+
+  it('reports malformed control responses without throwing', async () => {
+    const proc = createFakeProcess()
+    const errors: string[] = []
+    const manager = new SSHSessionManager(proc as never, {
+      onMessage() {},
+      onPermissionRequest() {},
+      onError: error => errors.push(error.message),
+    })
+
+    manager.connect()
+    proc.stdout.write('{"type":"control_response"}\n')
+    proc.stdout.write(
+      '{"type":"control_response","response":{"subtype":"error","request_id":"req-1"}}\n',
+    )
+    await nextTick()
+
+    assert.deepEqual(errors, [
+      'Invalid control response from SSH child',
+      'Invalid control response from SSH child',
+    ])
+    assert.equal(manager.isConnected(), true)
+  })
+
+  it('keeps pending shell requests after unrelated malformed responses', async () => {
+    const proc = createFakeProcess()
+    let written = ''
+    proc.stdin.on('data', chunk => {
+      written += String(chunk)
+    })
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    const result = manager.runShellCommand('pwd', new AbortController().signal)
+    await nextTick()
+    const request = JSON.parse(written.trim())
+
+    proc.stdout.write('{"type":"control_response","response":null}\n')
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: request.request_id,
+          response: {
+            stdout: '/work\n',
+            stderr: '',
+            code: 0,
+            interrupted: false,
+          },
+        },
+      })}\n`,
+    )
+
+    assert.equal((await result).stdout, '/work\n')
   })
 
   it('reports a process that exited before connect', () => {

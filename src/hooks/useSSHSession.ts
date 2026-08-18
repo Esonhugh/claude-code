@@ -9,7 +9,7 @@
  * handed in; useDirectConnect creates its WebSocket inside the effect.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import {
   createSyntheticAssistantMessage,
@@ -21,7 +21,7 @@ import {
 } from '../remote/sdkMessageAdapter.js'
 import type { SSHSession } from '../ssh/createSSHSession.js'
 import type { SSHSessionManager } from '../ssh/SSHSessionManager.js'
-import type { Tool } from '../Tool.js'
+import type { RemoteShellCommandResult, Tool } from '../Tool.js'
 import { findToolByName } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'
 import type {
@@ -39,8 +39,16 @@ type UseSSHSessionResult = {
   setPermissionMode: (
     mode: PermissionMode,
   ) => Promise<PermissionModeChangeResult>
+  runShellCommand: (
+    command: string,
+    signal: AbortSignal,
+  ) => Promise<RemoteShellCommandResult>
   cancelRequest: () => void
   disconnect: () => void
+  permissionMode: PermissionMode | undefined
+  permissionModeRevision: number
+  getPermissionMode: () => PermissionMode | undefined
+  getPermissionModeRevision: () => number
 }
 
 type UseSSHSessionProps = {
@@ -63,6 +71,10 @@ export function useSSHSession({
   const managerRef = useRef<SSHSessionManager | null>(null)
   const hasReceivedInitRef = useRef(false)
   const isConnectedRef = useRef(false)
+  const permissionModeRevisionRef = useRef(0)
+  const permissionModeRef = useRef<PermissionMode | undefined>(undefined)
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>()
+  const [permissionModeRevision, setPermissionModeRevision] = useState(0)
 
   const toolsRef = useRef(tools)
   useEffect(() => {
@@ -73,12 +85,27 @@ export function useSSHSession({
     if (!session) return
 
     hasReceivedInitRef.current = false
+    permissionModeRevisionRef.current = 0
+    permissionModeRef.current = undefined
+    setPermissionModeState(undefined)
+    setPermissionModeRevision(0)
     logForDebugging('[useSSHSession] wiring SSH session manager')
 
     const manager = session.createManager({
       onMessage: sdkMessage => {
         if (isSessionEndMessage(sdkMessage)) {
           setIsLoading(false)
+        }
+
+        if (
+          sdkMessage.type === 'system' &&
+          (sdkMessage.subtype === 'init' || sdkMessage.subtype === 'status') &&
+          sdkMessage.permissionMode
+        ) {
+          permissionModeRevisionRef.current++
+          permissionModeRef.current = sdkMessage.permissionMode
+          setPermissionModeState(sdkMessage.permissionMode)
+          setPermissionModeRevision(permissionModeRevisionRef.current)
         }
 
         // Skip duplicate init messages (one per turn from stream-json mode).
@@ -136,10 +163,13 @@ export function useSSHSession({
               q.filter(i => i.toolUseID !== request.tool_use_id),
             )
           },
-          onAllow(updatedInput) {
+          onAllow(updatedInput, permissionUpdates) {
             manager.respondToPermissionRequest(requestId, {
               behavior: 'allow',
               updatedInput,
+              ...(permissionUpdates.length > 0
+                ? { updatedPermissions: permissionUpdates }
+                : {}),
             })
             setToolUseConfirmQueue(q =>
               q.filter(i => i.toolUseID !== request.tool_use_id),
@@ -210,7 +240,9 @@ export function useSSHSession({
       const m = managerRef.current
       if (!m) return false
       setIsLoading(true)
-      return m.sendMessage(content)
+      const sent = await m.sendMessage(content)
+      if (!sent) setIsLoading(false)
+      return sent
     },
     [setIsLoading],
   )
@@ -221,6 +253,20 @@ export function useSSHSession({
         managerRef.current?.setPermissionMode(mode) ??
         Promise.resolve({ success: false, error: 'SSH session is not connected' })
       )
+    },
+    [],
+  )
+
+  const runShellCommand = useCallback(
+    (
+      command: string,
+      signal: AbortSignal,
+    ): Promise<RemoteShellCommandResult> => {
+      const manager = managerRef.current
+      if (!manager) {
+        return Promise.reject(new Error('SSH session is not connected'))
+      }
+      return manager.runShellCommand(command, signal)
     },
     [],
   )
@@ -236,20 +282,37 @@ export function useSSHSession({
     isConnectedRef.current = false
   }, [])
 
+  const getPermissionMode = useCallback(() => permissionModeRef.current, [])
+
+  const getPermissionModeRevision = useCallback(
+    () => permissionModeRevisionRef.current,
+    [],
+  )
+
   return useMemo(
     () => ({
       isRemoteMode,
       sendMessage,
       setPermissionMode,
+      runShellCommand,
       cancelRequest,
       disconnect,
+      permissionMode,
+      permissionModeRevision,
+      getPermissionMode,
+      getPermissionModeRevision,
     }),
     [
       isRemoteMode,
       sendMessage,
       setPermissionMode,
+      runShellCommand,
       cancelRequest,
       disconnect,
+      permissionMode,
+      permissionModeRevision,
+      getPermissionMode,
+      getPermissionModeRevision,
     ],
   )
 }

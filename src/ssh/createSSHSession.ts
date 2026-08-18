@@ -52,6 +52,7 @@ export type SSHSession = {
   proc: ChildProcess
   proxy: SSHAuthProxy
   remoteCwd: string
+  sshRemoteToken?: string
   createManager: (callbacks: SSHSessionCallbacks) => SSHSessionManager
   getStderrTail: () => string
 }
@@ -67,10 +68,7 @@ type SSHSessionOptions = {
   model?: string
 }
 
-type LocalSSHSessionOptions = Omit<
-  SSHSessionOptions,
-  'host' | 'localVersion' | 'extraCliArgs'
->
+type LocalSSHSessionOptions = Omit<SSHSessionOptions, 'host' | 'localVersion'>
 
 type SSHSessionProgress = {
   onProgress?: (message: string) => void
@@ -185,17 +183,26 @@ const AUTH_ENV_VARS_TO_UNSET = [
   'OPENAI_BASE_URL',
   'CLAUDE_CODE_OPENAI_UNIX_SOCKET',
   'CLAUDE_CODE_OPENAI_AUTH_MODE',
+  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CLAUDE_CODE_SSH_LOCAL_UI',
   'CLAUDE_CODE_SSH_REMOTE',
+  'CLAUDE_CODE_SSH_REMOTE_TOKEN',
 ]
 
 function authEnvironment(
   proxy: SSHAuthProxy,
   socketPath: string,
   sshRemote: boolean,
+  sshRemoteToken?: string,
 ): string[] {
   return [
     'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1',
-    ...(sshRemote ? ['CLAUDE_CODE_SSH_REMOTE=1'] : []),
+    ...(sshRemote
+      ? [
+          'CLAUDE_CODE_SSH_REMOTE=1',
+          `CLAUDE_CODE_SSH_REMOTE_TOKEN=${sshRemoteToken}`,
+        ]
+      : []),
     `CLAUDE_CODE_USE_OPENAI=${proxy.provider === 'openai' ? '1' : '0'}`,
     'CLAUDE_CODE_USE_BEDROCK=0',
     'CLAUDE_CODE_USE_VERTEX=0',
@@ -221,6 +228,7 @@ function authEnvironment(
 export function buildRemoteLaunchCommand(options: {
   remoteBinaryPath: string
   remoteSocketPath: string
+  sshRemoteToken: string
   cwd: string
   permissionMode?: string
   dangerouslySkipPermissions?: boolean
@@ -239,7 +247,12 @@ export function buildRemoteLaunchCommand(options: {
       ? { openAIAuthMode: options.oauth ? 'chatgpt' : 'platform' }
       : {}),
   } as SSHAuthProxy
-  const envArgs = authEnvironment(proxy, options.remoteSocketPath, true)
+  const envArgs = authEnvironment(
+    proxy,
+    options.remoteSocketPath,
+    true,
+    options.sshRemoteToken,
+  )
   const command = [
     'env',
     ...AUTH_ENV_VARS_TO_UNSET.flatMap(key => ['-u', key]),
@@ -287,6 +300,7 @@ function createSession(
   proc: ChildProcess,
   proxy: SSHAuthProxy,
   remoteCwd: string,
+  sshRemoteToken?: string,
 ): SSHSession {
   const stderrLines: string[] = []
   let stderrRemainder = ''
@@ -303,7 +317,9 @@ function createSession(
     proc,
     proxy,
     remoteCwd,
-    createManager: callbacks => new SSHSessionManager(proc, callbacks),
+    sshRemoteToken,
+    createManager: callbacks =>
+      new SSHSessionManager(proc, callbacks, sshRemoteToken),
     getStderrTail: () => [...stderrLines, stderrRemainder].filter(Boolean).join('\n'),
   }
 }
@@ -322,6 +338,7 @@ export async function createLocalSSHSession(
       ...options,
       extraCliArgs: [
         ...(options.model ? ['--model', options.model] : []),
+        ...(options.extraCliArgs ?? []),
       ],
     }),
   ]
@@ -838,9 +855,11 @@ export async function createSSHSession(
   const remoteSocketDir =
     deps.createRemoteSocketDir?.() ?? `/tmp/claude-ssh-${randomUUID()}`
   const remoteSocketPath = `${remoteSocketDir}/${REMOTE_SOCKET_NAME}`
+  const sshRemoteToken = randomBytes(32).toString('hex')
   const remoteCommand = `set -eu; trap ${quote([`rm -rf -- ${remoteSocketDir}`])} EXIT HUP INT TERM; ${buildRemoteLaunchCommand({
     remoteBinaryPath,
     remoteSocketPath,
+    sshRemoteToken,
     cwd: probe.cwd,
     permissionMode: options.permissionMode,
     dangerouslySkipPermissions: options.dangerouslySkipPermissions,
@@ -921,7 +940,7 @@ export async function createSSHSession(
       void cleanup()
     })
     logForDebugging(`[SSH] session ready host=${connection.host} cwd=${probe.cwd}`)
-    return createSession(proc, proxy, probe.cwd)
+    return createSession(proc, proxy, probe.cwd, sshRemoteToken)
   } catch (error) {
     logForDebugging(
       `[SSH] session start failed host=${connection.host} detail=${error instanceof Error ? error.message : String(error)}`,

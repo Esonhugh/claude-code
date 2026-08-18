@@ -91,6 +91,7 @@ export async function processUserInput({
   bridgeOrigin,
   isMeta,
   skipAttachments,
+  skipHooks,
 }: {
   input: string | Array<ContentBlockParam>
   /**
@@ -128,6 +129,7 @@ export async function processUserInput({
    */
   isMeta?: boolean
   skipAttachments?: boolean
+  skipHooks?: boolean
 }): Promise<ProcessUserInputBaseResult> {
   const inputString = typeof input === 'string' ? input : null
   // Immediately show the user input prompt while we are still processing the input.
@@ -140,6 +142,7 @@ export async function processUserInput({
   queryCheckpoint('query_process_user_input_base_start')
 
   const appState = context.getAppState()
+  const isRemoteShellInput = Boolean(context.runRemoteShellCommand)
 
   const result = await processUserInputBase(
     input,
@@ -157,12 +160,12 @@ export async function processUserInput({
     skipSlashCommands,
     bridgeOrigin,
     isMeta,
-    skipAttachments,
+    skipAttachments || isRemoteShellInput,
     preExpansionInput,
   )
   queryCheckpoint('query_process_user_input_base_end')
 
-  if (!result.shouldQuery) {
+  if (!result.shouldQuery || isRemoteShellInput || skipHooks) {
     return result
   }
 

@@ -639,7 +639,7 @@ export const getSlashCommandToolSkills = memoize(
  * 1. Pre-filtering commands in main.tsx before REPL renders (prevents race with CCR init)
  * 2. Preserving local-only commands in REPL's handleRemoteInit after CCR filters
  */
-export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
+const REMOTE_SAFE_COMMAND_LIST: readonly Command[] = [
   session, // Shows QR code / URL for remote session
   exit, // Exit the TUI
   clear, // Clear screen
@@ -657,7 +657,23 @@ export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
   statusline, // Status line toggle
   stickers, // Stickers
   mobile, // Mobile QR code
-])
+]
+
+export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set(
+  REMOTE_SAFE_COMMAND_LIST,
+)
+
+/**
+ * Fixed commands for the local half of an SSH session. This must not depend on
+ * getCommands(): loading the full command list scans local skills, plugins, and
+ * project metadata even though execution belongs to the managed remote child.
+ */
+export function getSSHLocalCommands(): Command[] {
+  return [...REMOTE_SAFE_COMMAND_LIST, yolo].filter(
+    command =>
+      meetsAvailabilityRequirement(command) && isCommandEnabled(command),
+  )
+}
 
 /**
  * Builtin commands of type 'local' that ARE safe to execute when received

@@ -2,11 +2,16 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { useMailbox } from '../context/mailbox.js'
 
 type Props = {
+  enabled?: boolean
   isLoading: boolean
   onSubmitMessage: (content: string) => boolean
 }
 
-export function useMailboxBridge({ isLoading, onSubmitMessage }: Props): void {
+export function useMailboxBridge({
+  enabled = true,
+  isLoading,
+  onSubmitMessage,
+}: Props): void {
   const mailbox = useMailbox()
 
   const subscribe = useMemo(() => mailbox.subscribe.bind(mailbox), [mailbox])
@@ -14,8 +19,8 @@ export function useMailboxBridge({ isLoading, onSubmitMessage }: Props): void {
   const revision = useSyncExternalStore(subscribe, getSnapshot)
 
   useEffect(() => {
-    if (isLoading) return
+    if (!enabled || isLoading) return
     const msg = mailbox.poll()
     if (msg) onSubmitMessage(msg.content)
-  }, [isLoading, revision, mailbox, onSubmitMessage])
+  }, [enabled, isLoading, revision, mailbox, onSubmitMessage])
 }

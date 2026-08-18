@@ -33,6 +33,7 @@ import type {
   PromptInputMode,
 } from '../types/textInputTypes.js'
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
+import { isSSHLocalUI } from '../utils/envUtils.js'
 import {
   generateProgressiveArgumentHint,
   parseArguments,
@@ -161,6 +162,7 @@ type Props = {
     commandArgumentHint?: string
   }
   suppressSuggestions?: boolean
+  enableLocalIOCompletions?: boolean
   markAccepted: () => void
   onModeChange?: (mode: PromptInputMode) => void
 }
@@ -466,6 +468,7 @@ export function useTypeahead({
   setSuggestionsState,
   suggestionsState: { suggestions, selectedSuggestion, commandArgumentHint },
   suppressSuggestions = false,
+  enableLocalIOCompletions = true,
   markAccepted,
   onModeChange,
 }: Props): UseTypeaheadResult {
@@ -571,6 +574,10 @@ export function useTypeahead({
   // Expensive async operation to fetch file/resource suggestions
   const fetchFileSuggestions = useCallback(
     async (searchToken: string, isAtSymbol = false): Promise<void> => {
+      if (!enableLocalIOCompletions) {
+        clearSuggestions()
+        return
+      }
       latestSearchTokenRef.current = searchToken
       const combinedItems = await generateUnifiedSuggestions(
         searchToken,
@@ -613,6 +620,8 @@ export function useTypeahead({
       setSuggestionType,
       setMaxColumnWidth,
       agents,
+      enableLocalIOCompletions,
+      clearSuggestions,
     ],
   )
 
@@ -631,7 +640,11 @@ export function useTypeahead({
   // subsequent tests in the shard. The subscriber still registers so
   // fileSuggestions tests that trigger a refresh directly work correctly.
   useEffect(() => {
-    if (("production" as string) !== 'test') {
+    if (
+      enableLocalIOCompletions &&
+      ("production" as string) !== 'test' &&
+      !isSSHLocalUI()
+    ) {
       startBackgroundCacheRefresh()
     }
     return onIndexBuildComplete(() => {
@@ -641,7 +654,7 @@ export function useTypeahead({
         void fetchFileSuggestions(token, token === '')
       }
     })
-  }, [fetchFileSuggestions])
+  }, [enableLocalIOCompletions, fetchFileSuggestions])
 
   // Debounce the file fetch operation. 50ms sits just above macOS default
   // key-repeat (~33ms) so held-delete/backspace coalesces into one search
@@ -724,7 +737,7 @@ export function useTypeahead({
       }
 
       // Bash mode: check for history-based ghost text completion
-      if (mode === 'bash' && value.trim()) {
+      if (enableLocalIOCompletions && mode === 'bash' && value.trim()) {
         latestBashInputRef.current = value
         const historyMatch = await getShellHistoryCompletion(value)
         // Discard stale results if input changed while waiting
@@ -759,7 +772,7 @@ export function useTypeahead({
         mode !== 'bash'
           ? value.substring(0, effectiveCursorOffset).match(/(^|\s)@([\w-]*)$/)
           : null
-      if (atMatch) {
+      if (enableLocalIOCompletions && atMatch) {
         const partialName = (atMatch[2] ?? '').toLowerCase()
         // Imperative read — reading at call-time fixes staleness for
         // teammates/subagents added mid-session.
@@ -809,7 +822,7 @@ export function useTypeahead({
       }
 
       // Check for # to trigger Slack channel suggestions (requires Slack MCP server)
-      if (mode === 'prompt') {
+      if (enableLocalIOCompletions && mode === 'prompt') {
         const hashMatch = value
           .substring(0, effectiveCursorOffset)
           .match(HASH_CHANNEL_RE)
@@ -840,6 +853,7 @@ export function useTypeahead({
 
       // Handle directory completion for commands
       if (
+        enableLocalIOCompletions &&
         mode === 'prompt' &&
         isCommandInput(value) &&
         effectiveCursorOffset > 0
@@ -1062,7 +1076,7 @@ export function useTypeahead({
 
       // Check for @ symbol to trigger file and MCP resource suggestions
       // Skip @ autocomplete in bash mode - @ has no special meaning in shell commands
-      if (hasAtSymbol && mode !== 'bash') {
+      if (enableLocalIOCompletions && hasAtSymbol && mode !== 'bash') {
         // Get the @ token (including the @ symbol)
         const completionToken = extractCompletionToken(
           value,
@@ -1109,7 +1123,7 @@ export function useTypeahead({
       }
 
       // If we have active file suggestions or the input changed, check for file suggestions
-      if (suggestionType === 'file') {
+      if (enableLocalIOCompletions && suggestionType === 'file') {
         const completionToken = extractCompletionToken(
           value,
           effectiveCursorOffset,
@@ -1150,6 +1164,7 @@ export function useTypeahead({
       debouncedFetchSlackChannels,
       mode,
       suppressSuggestions,
+      enableLocalIOCompletions,
       // Note: using suggestionsRef instead of suggestions to avoid recreating
       // this callback when only selectedSuggestion changes (not the suggestions list)
       allCommandsMaxWidth,
@@ -1448,7 +1463,7 @@ export function useTypeahead({
           }
         }
       }
-    } else if (input.trim() !== '') {
+    } else if (enableLocalIOCompletions && input.trim() !== '') {
       let suggestionType: SuggestionType
       let suggestionItems: SuggestionItem[]
 
@@ -1534,6 +1549,7 @@ export function useTypeahead({
     codexApps,
     setSuggestionsState,
     agents,
+    enableLocalIOCompletions,
     debouncedFetchFileSuggestions,
     debouncedFetchSlackChannels,
     effectiveGhostText,

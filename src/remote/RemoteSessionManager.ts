@@ -7,6 +7,7 @@ import type {
 } from '../entrypoints/sdk/controlTypes.js'
 import { logForDebugging } from '../utils/debug.js'
 import { logError } from '../utils/log.js'
+import type { PermissionUpdate } from '../utils/permissions/PermissionUpdateSchema.js'
 import {
   type RemoteMessageContent,
   sendEventToRemoteSession,
@@ -41,6 +42,7 @@ export type RemotePermissionResponse =
   | {
       behavior: 'allow'
       updatedInput: Record<string, unknown>
+      updatedPermissions?: PermissionUpdate[]
     }
   | {
       behavior: 'deny'
@@ -270,7 +272,12 @@ export class RemoteSessionManager {
         response: {
           behavior: result.behavior,
           ...(result.behavior === 'allow'
-            ? { updatedInput: result.updatedInput }
+            ? {
+                updatedInput: result.updatedInput,
+                ...(result.updatedPermissions?.length
+                  ? { updatedPermissions: result.updatedPermissions }
+                  : {}),
+              }
             : { message: result.message }),
         },
       },

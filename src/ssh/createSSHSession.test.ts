@@ -71,6 +71,7 @@ describe('remote launch command', () => {
     const command = buildRemoteLaunchCommand({
       remoteBinaryPath: '/tmp/claude',
       remoteSocketPath: '/tmp/api.sock',
+      sshRemoteToken: 'test-ssh-token',
       cwd: '/tmp/project',
       provider: 'openai',
       oauth: true,
@@ -80,6 +81,10 @@ describe('remote launch command', () => {
     assert.match(command, /CLAUDE_CODE_OPENAI_UNIX_SOCKET\\=\/tmp\/api\.sock/)
     assert.match(command, /CLAUDE_CODE_OPENAI_AUTH_MODE\\=chatgpt/)
     assert.match(command, /CLAUDE_CODE_SSH_REMOTE\\=1/)
+    assert.match(
+      command,
+      /CLAUDE_CODE_SSH_REMOTE_TOKEN\\=test-ssh-token/,
+    )
     assert.equal(command.includes('OPENAI_API_KEY='), false)
     assert.equal(command.includes('OPENAI_AUTH_TOKEN='), false)
   })
@@ -88,6 +93,7 @@ describe('remote launch command', () => {
     const command = buildRemoteLaunchCommand({
       remoteBinaryPath: '/tmp/claude',
       remoteSocketPath: '/tmp/api.sock',
+      sshRemoteToken: 'test-ssh-token',
       cwd: '/tmp/project',
       oauth: true,
     })
@@ -95,22 +101,27 @@ describe('remote launch command', () => {
     assert.match(command, /--allow-dangerously-skip-permissions/)
   })
 
-  it('forwards the resolved local model to the remote child', () => {
+  it('forwards the resolved local model to the remote child once', () => {
     const command = buildRemoteLaunchCommand({
       remoteBinaryPath: '/tmp/claude',
       remoteSocketPath: '/tmp/api.sock',
+      sshRemoteToken: 'test-ssh-token',
       cwd: '/tmp/project',
       model: 'gateway-model',
+      extraCliArgs: ['--tools', 'Read', '--strict-mcp-config'],
       oauth: false,
     })
 
     assert.match(command, /--model gateway-model/)
+    assert.equal(command.match(/--model/g)?.length, 1)
+    assert.match(command, /--tools Read --strict-mcp-config/)
   })
 
   it('quotes paths and forwarded values as POSIX shell arguments', () => {
     const command = buildRemoteLaunchCommand({
       remoteBinaryPath: "/tmp/claude's binary",
       remoteSocketPath: '/tmp/socket path',
+      sshRemoteToken: 'test-ssh-token',
       cwd: "/tmp/work dir'quoted",
       permissionMode: 'acceptEdits',
       dangerouslySkipPermissions: true,
@@ -135,12 +146,16 @@ describe('remote launch command', () => {
 })
 
 describe('local SSH session', () => {
-  it('forwards the resolved model to the local child', async () => {
+  it('forwards the resolved model and extracted root flags to the local child', async () => {
     const proc = createFakeProcess()
     let spawnArgs: string[] = []
 
     await createLocalSSHSession(
-      { cwd: '/tmp/project', model: 'gateway-model' },
+      {
+        cwd: '/tmp/project',
+        model: 'gateway-model',
+        extraCliArgs: ['--continue', '--resume', 'session-id'],
+      },
       {
         startProxy: async () => ({
           socketPath: '/tmp/local.sock',
@@ -156,7 +171,13 @@ describe('local SSH session', () => {
       },
     )
 
-    assert.deepEqual(spawnArgs.slice(-2), ['--model', 'gateway-model'])
+    assert.deepEqual(spawnArgs.slice(-5), [
+      '--model',
+      'gateway-model',
+      '--continue',
+      '--resume',
+      'session-id',
+    ])
   })
 
   it('returns a usable session and stops the proxy if child startup fails', async () => {
@@ -227,7 +248,9 @@ describe('local SSH session', () => {
         '/tmp/openai.sock',
       )
       assert.equal(spawnEnv?.CLAUDE_CODE_OPENAI_AUTH_MODE, 'chatgpt')
+      assert.equal(spawnEnv?.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1')
       assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE, undefined)
+      assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE_TOKEN, undefined)
       assert.equal(spawnEnv?.OPENAI_API_KEY, undefined)
       assert.equal(spawnEnv?.OPENAI_AUTH_TOKEN, undefined)
       assert.equal(spawnEnv?.OPENAI_BASE_URL, undefined)
@@ -453,6 +476,14 @@ describe('remote SSH session', () => {
     )
 
     assert.equal(session.remoteCwd, '/work')
+    assert.match(session.sshRemoteToken ?? '', /^[0-9a-f]{64}$/)
+    assert.ok(
+      spawnedArgs
+        ?.at(-1)
+        ?.includes(
+          `CLAUDE_CODE_SSH_REMOTE_TOKEN\\=${session.sshRemoteToken}`,
+        ),
+    )
     assert.equal(spawnedCommand, 'ssh')
     const controlPathArg = spawnedArgs?.find(arg => arg.startsWith('ControlPath='))
     assert.match(

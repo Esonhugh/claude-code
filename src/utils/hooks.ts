@@ -160,7 +160,7 @@ import {
 } from './hooks/sessionHooks.js'
 import type { AppState } from '../state/AppState.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
-import { isEnvTruthy } from './envUtils.js'
+import { isEnvTruthy, isSSHLocalUI } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
@@ -4133,6 +4133,10 @@ export async function executeSessionEndHooks(
     timeoutMs?: number
   },
 ): Promise<void> {
+  if (isSSHLocalUI()) {
+    return
+  }
+
   const {
     getAppState,
     setAppState,

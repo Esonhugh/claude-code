@@ -163,7 +163,12 @@ export class DirectConnectSessionManager {
         response: {
           behavior: result.behavior,
           ...(result.behavior === 'allow'
-            ? { updatedInput: result.updatedInput }
+            ? {
+                updatedInput: result.updatedInput,
+                ...(result.updatedPermissions?.length
+                  ? { updatedPermissions: result.updatedPermissions }
+                  : {}),
+              }
             : { message: result.message }),
         },
       },

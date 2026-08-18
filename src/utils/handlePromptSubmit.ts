@@ -73,6 +73,7 @@ type BaseExecutionParams = {
   setAppState: (updater: (prev: AppState) => AppState) => void
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
   canUseTool?: CanUseToolFn
+  skipLocalContext?: boolean
 }
 
 /**
@@ -167,6 +168,7 @@ export async function handlePromptSubmit(
       resetHistory,
       canUseTool,
       onInputChange,
+      skipLocalContext: params.skipLocalContext,
     })
     return
   }
@@ -383,6 +385,7 @@ export async function handlePromptSubmit(
     resetHistory,
     canUseTool,
     onInputChange,
+    skipLocalContext: params.skipLocalContext,
   })
 }
 
@@ -410,6 +413,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     resetHistory,
     canUseTool,
     queuedCommands,
+    skipLocalContext = false,
   } = params
 
   // Note: paste references are already processed before calling this function
@@ -479,7 +483,8 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           mode: cmd.mode,
           setToolJSX,
           context: makeContext(),
-          pastedContents: isFirst ? cmd.pastedContents : undefined,
+          pastedContents:
+            isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
           messages,
           setUserInputOnProcessing: isFirst
             ? setUserInputOnProcessing
@@ -488,11 +493,12 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           querySource,
           canUseTool,
           uuid: cmd.uuid,
-          ideSelection: isFirst ? ideSelection : undefined,
+          ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
           skipSlashCommands: cmd.skipSlashCommands,
           bridgeOrigin: cmd.bridgeOrigin,
           isMeta: cmd.isMeta,
-          skipAttachments: !isFirst,
+          skipAttachments: skipLocalContext || !isFirst,
+          skipHooks: skipLocalContext,
         })
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.
@@ -523,7 +529,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       }
 
       queryCheckpoint('query_process_user_input_end')
-      if (fileHistoryEnabled()) {
+      if (!skipLocalContext && fileHistoryEnabled()) {
         queryCheckpoint('query_file_history_snapshot_start')
         newMessages.filter(selectableUserMessagesFilter).forEach(message => {
           void fileHistoryMakeSnapshot(

@@ -33,28 +33,35 @@ describe('root bypass permission safety', () => {
         environment: {
           CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
           CLAUDE_CODE_SSH_REMOTE: '1',
+          CLAUDE_CODE_SSH_REMOTE_TOKEN: 'test-ssh-token',
         },
       }),
       false,
     )
   })
 
-  it('does not trust either SSH marker by itself', () => {
-    assert.equal(
-      shouldRejectRootBypassPermissions({
-        platform: 'linux',
-        uid: 0,
-        environment: { CLAUDE_CODE_SSH_REMOTE: '1' },
-      }),
-      true,
-    )
-    assert.equal(
-      shouldRejectRootBypassPermissions({
-        platform: 'linux',
-        uid: 0,
-        environment: { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' },
-      }),
-      true,
-    )
+  it('does not trust incomplete SSH markers', () => {
+    for (const environment of [
+      { CLAUDE_CODE_SSH_REMOTE: '1' },
+      { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' },
+      {
+        CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+        CLAUDE_CODE_SSH_REMOTE: '1',
+      },
+      {
+        CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+        CLAUDE_CODE_SSH_REMOTE: '1',
+        CLAUDE_CODE_SSH_REMOTE_TOKEN: '',
+      },
+    ]) {
+      assert.equal(
+        shouldRejectRootBypassPermissions({
+          platform: 'linux',
+          uid: 0,
+          environment,
+        }),
+        true,
+      )
+    }
   })
 })

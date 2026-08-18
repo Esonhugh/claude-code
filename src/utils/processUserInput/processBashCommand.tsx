@@ -46,7 +46,7 @@ export async function processBashCommand(
 
   const userMessage = createUserMessage({
     content: prepareUserContent({
-      inputString: `<bash-input>${inputString}</bash-input>`,
+      inputString: `<bash-input>${escapeXml(inputString)}</bash-input>`,
       precedingInputBlocks,
     }),
   })
@@ -93,15 +93,30 @@ export async function processBashCommand(
       })
     }
 
+    const remoteResult = context.runRemoteShellCommand
+      ? await context.runRemoteShellCommand(
+          inputString,
+          context.abortController.signal,
+        )
+      : undefined
+    if (remoteResult && remoteResult.code !== 0 && !remoteResult.interrupted) {
+      throw new ShellError(
+        remoteResult.stdout,
+        remoteResult.stderr,
+        remoteResult.code,
+        false,
+      )
+    }
+
     // User-initiated `!` commands run outside sandbox. Both shell tools honor
     // dangerouslyDisableSandbox (checked against areUnsandboxedCommandsAllowed()
     // in shouldUseSandbox.ts). PS sandbox is Linux/macOS/WSL2 only — on Windows
     // native, shouldUseSandbox() returns false regardless (unsupported platform).
-    // Lazy-require PowerShellTool so its ~300KB chunk only loads when the
-    // user has actually selected the powershell default shell.
+    // Do not load PowerShellTool for remote commands: managed SSH children always
+    // execute with their POSIX shell, regardless of the local terminal setting.
     type PSMod = typeof import('src/tools/PowerShellTool/PowerShellTool.js')
     let PowerShellTool: PSMod['PowerShellTool'] | null = null
-    if (usePowerShell) {
+    if (!remoteResult && usePowerShell) {
       /* eslint-disable @typescript-eslint/no-require-imports */
       PowerShellTool = (
         require('src/tools/PowerShellTool/PowerShellTool.js') as PSMod
@@ -109,26 +124,27 @@ export async function processBashCommand(
       /* eslint-enable @typescript-eslint/no-require-imports */
     }
     const shellTool = PowerShellTool ?? BashTool
-
-    const response = PowerShellTool
-      ? await PowerShellTool.call(
-          { command: inputString, dangerouslyDisableSandbox: true },
-          bashModeContext,
-          undefined,
-          undefined,
-          onProgress,
-        )
-      : await BashTool.call(
-          {
-            command: inputString,
-            dangerouslyDisableSandbox: true,
-          },
-          bashModeContext,
-          undefined,
-          undefined,
-          onProgress,
-        )
-    const data = response.data
+    const response = remoteResult
+      ? undefined
+      : PowerShellTool
+        ? await PowerShellTool.call(
+            { command: inputString, dangerouslyDisableSandbox: true },
+            bashModeContext,
+            undefined,
+            undefined,
+            onProgress,
+          )
+        : await BashTool.call(
+            {
+              command: inputString,
+              dangerouslyDisableSandbox: true,
+            },
+            bashModeContext,
+            undefined,
+            undefined,
+            onProgress,
+          )
+    const data = remoteResult ?? response?.data
 
     if (!data) {
       throw new Error('No result received from shell command')
@@ -157,9 +173,16 @@ export async function processBashCommand(
         createSyntheticUserCaveatMessage(),
         userMessage,
         ...attachmentMessages,
-        createUserMessage({
-          content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`,
-        }),
+        ...(data.stdout || stderr || !data.interrupted
+          ? [
+              createUserMessage({
+                content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`,
+              }),
+            ]
+          : []),
+        ...(data.interrupted
+          ? [createUserInterruptionMessage({ toolUse: false })]
+          : []),
       ],
       shouldQuery: false,
     }
@@ -170,8 +193,15 @@ export async function processBashCommand(
           messages: [
             createSyntheticUserCaveatMessage(),
             userMessage,
-            createUserInterruptionMessage({ toolUse: false }),
             ...attachmentMessages,
+            ...(e.stdout || e.stderr
+              ? [
+                  createUserMessage({
+                    content: `<bash-stdout>${escapeXml(e.stdout)}</bash-stdout><bash-stderr>${escapeXml(e.stderr)}</bash-stderr>`,
+                  }),
+                ]
+              : []),
+            createUserInterruptionMessage({ toolUse: false }),
           ],
           shouldQuery: false,
         }

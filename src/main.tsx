@@ -172,7 +172,11 @@ import {
   setMainThreadAgentType,
   setTeleportedSessionInfo,
 } from './bootstrap/state.js'
-import { filterCommandsForRemoteMode, getCommands } from './commands.js'
+import {
+  filterCommandsForRemoteMode,
+  getCommands,
+  getSSHLocalCommands,
+} from './commands.js'
 import type { StatsStore } from './context/stats.js'
 import {
   launchAssistantInstallWizard,
@@ -231,6 +235,7 @@ import {
   isBareMode,
   isEnvTruthy,
   isInProtectedNamespace,
+  isSSHLocalUI,
 } from './utils/envUtils.js'
 import { refreshExampleCommands } from './utils/exampleCommands.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
@@ -672,7 +677,10 @@ export function startDeferredPrefetches(): void {
     // modelCapabilities, change detectors). Scripted -p calls don't have a
     // "user is typing" window to hide this work in — it's pure overhead on
     // the critical path.
-    isBareMode()
+    isBareMode() ||
+    // The managed child owns project context, skills, and settings. Running
+    // these prefetches in the local SSH UI would index and watch the wrong host.
+    isSSHLocalUI()
   ) {
     return
   }
@@ -1010,6 +1018,7 @@ export async function main() {
     }
     if (parsedSSHArgv.type === 'ssh') {
       Object.assign(_pendingSSH, parsedSSHArgv.pending)
+      process.env.CLAUDE_CODE_SSH_LOCAL_UI = '1'
       process.argv = [
         process.argv[0]!,
         process.argv[1]!,
@@ -2563,6 +2572,9 @@ async function run(): Promise<CommanderCommand> {
 
       void assertMinVersion()
 
+      const isSSHRemoteSession =
+        feature('SSH_REMOTE') && Boolean(_pendingSSH?.host)
+
       // claude.ai config fetch: -p mode only (interactive uses useManageMCPConnections
       // two-phase loading). Kicked off here to overlap with setup(); awaited
       // before runHeadless so single-turn -p sees connectors. Skipped under
@@ -2571,6 +2583,7 @@ async function run(): Promise<CommanderCommand> {
         Record<string, ScopedMcpServerConfig>
       > =
         isNonInteractiveSession &&
+        !isSSHRemoteSession &&
         !strictMcpConfig &&
         !doesEnterpriseMcpConfigExist() &&
         // --bare / SIMPLE: skip claude.ai proxy servers (datadog, Gmail,
@@ -2599,7 +2612,7 @@ async function run(): Promise<CommanderCommand> {
       // only explicit --mcp-config works. dynamicMcpConfig is spread onto
       // allMcpConfigs downstream so it survives this skip.
       const mcpConfigPromise = (
-        strictMcpConfig || isBareMode()
+        strictMcpConfig || isBareMode() || isSSHRemoteSession
           ? Promise.resolve({
               servers: {} as Record<string, ScopedMcpServerConfig>,
             })
@@ -2680,7 +2693,7 @@ async function run(): Promise<CommanderCommand> {
       // The later REPL-path maybeActivateProactive() calls are idempotent.
       maybeActivateProactive(options)
 
-      let tools = getTools(toolPermissionContext)
+      let tools = isSSHRemoteSession ? [] : getTools(toolPermissionContext)
 
       // Apply coordinator mode tool filtering for headless path
       // (mirrors useMergedTools.ts filtering for REPL/interactive path)
@@ -2745,9 +2758,12 @@ async function run(): Promise<CommanderCommand> {
       const preSetupCwd = getCwd()
       // Register bundled skills/plugins before kicking getCommands() — they're
       // pure in-memory array pushes (<1ms, zero I/O) that getBundledSkills()
-      // reads synchronously. Previously ran inside setup() after ~20ms of
-      // await points, so the parallel getCommands() memoized an empty list.
-      if (process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent') {
+      // reads synchronously. The local half of SSH uses a fixed UI-only command
+      // list and must not initialize project execution facilities.
+      if (
+        process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent' &&
+        !isSSHRemoteSession
+      ) {
         initBuiltinPlugins()
         initBundledSkills()
       }
@@ -2762,10 +2778,12 @@ async function run(): Promise<CommanderCommand> {
         worktreePRNumber,
         messagingSocketPath,
       )
-      const commandsPromise = worktreeEnabled ? null : getCommands(preSetupCwd)
-      const agentDefsPromise = worktreeEnabled
-        ? null
-        : getAgentDefinitionsWithOverrides(preSetupCwd)
+      const commandsPromise =
+        worktreeEnabled || isSSHRemoteSession ? null : getCommands(preSetupCwd)
+      const agentDefsPromise =
+        worktreeEnabled || isSSHRemoteSession
+          ? null
+          : getAgentDefinitionsWithOverrides(preSetupCwd)
       // Suppress transient unhandledRejection if these reject during the
       // ~28ms setupPromise await before Promise.all joins them below.
       commandsPromise?.catch(() => {})
@@ -2878,10 +2896,15 @@ async function run(): Promise<CommanderCommand> {
       const commandsStart = Date.now()
       // Join the promises kicked before setup() (or start fresh if
       // worktreeEnabled gated the early kick). Both memoized by cwd.
-      const [commands, agentDefinitionsResult] = await Promise.all([
-        commandsPromise ?? getCommands(currentCwd),
-        agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd),
-      ])
+      const [commands, agentDefinitionsResult] = isSSHRemoteSession
+        ? [
+            getSSHLocalCommands(),
+            { activeAgents: [], allAgents: [] },
+          ]
+        : await Promise.all([
+            commandsPromise ?? getCommands(currentCwd),
+            agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd),
+          ])
       logForDebugging(
         `[STARTUP] Commands and agents loaded in ${Date.now() - commandsStart}ms`,
       )
@@ -3137,6 +3160,7 @@ async function run(): Promise<CommanderCommand> {
           commands,
           enableClaudeInChrome,
           devChannels,
+          { skipWorkspaceSetup: isSSHRemoteSession },
         )
         logForDebugging(
           `[STARTUP] showSetupScreens() completed in ${Date.now() - setupScreensStart}ms`,
@@ -3236,7 +3260,11 @@ async function run(): Promise<CommanderCommand> {
       // where trust is implicit). This prevents plugin LSP servers from executing
       // code in untrusted directories before user consent.
       // Must be after inline plugins are set (if any) so --plugin-dir LSP servers are included.
-      initializeLspServerManager()
+      if (isSSHLocalUI()) {
+        logForDebugging('[SSH] skipping local LSP manager initialization')
+      } else {
+        initializeLspServerManager()
+      }
 
       // Show settings validation errors after trust is established
       // MCP config errors don't block settings from loading, so exclude them
@@ -3264,6 +3292,7 @@ async function run(): Promise<CommanderCommand> {
       const lastPrefetched = getGlobalConfig().startupPrefetchedAt ?? 0
       const skipStartupPrefetches =
         isBareMode() ||
+        isSSHLocalUI() ||
         (bgRefreshThrottleMs > 0 &&
           Date.now() - lastPrefetched < bgRefreshThrottleMs)
 
@@ -3307,7 +3336,7 @@ async function run(): Promise<CommanderCommand> {
         resolveFastModeStatusFromCache()
       }
 
-      if (!isNonInteractiveSession) {
+      if (!isNonInteractiveSession && !isSSHRemoteSession) {
         void refreshExampleCommands() // Pre-fetch example commands (runs git log, no API call)
       }
 
@@ -3337,19 +3366,28 @@ async function run(): Promise<CommanderCommand> {
       // Prefetch MCP resources after trust dialog (this is where execution happens).
       // Interactive mode only: print mode defers connects until headlessStore exists
       // and pushes per-server (below), so ToolSearch's pending-client handling works
-      // and one slow server doesn't block the batch.
-      const localMcpPromise = isNonInteractiveSession
-        ? Promise.resolve({ clients: [], tools: [], commands: [] })
-        : prefetchAllMcpResources(regularMcpConfigs)
-      const claudeaiMcpPromise = isNonInteractiveSession
-        ? Promise.resolve({ clients: [], tools: [], commands: [] })
-        : claudeaiConfigPromise.then(configs =>
-            Object.keys(configs).length > 0
-              ? prefetchAllMcpResources(configs, {
-                  includeCodexApps: false,
-                })
-              : { clients: [], tools: [], commands: [] },
-          )
+      // and one slow server doesn't block the batch. SSH sessions run their tools
+      // in the managed child, so starting local MCP processes would be discarded
+      // and could execute a remote-intended config on the wrong host.
+      if (isSSHRemoteSession) {
+        logForDebugging(
+          `[SSH] skipping local MCP startup configCount=${Object.keys(regularMcpConfigs).length}`,
+        )
+      }
+      const localMcpPromise =
+        isNonInteractiveSession || isSSHRemoteSession
+          ? Promise.resolve({ clients: [], tools: [], commands: [] })
+          : prefetchAllMcpResources(regularMcpConfigs)
+      const claudeaiMcpPromise =
+        isNonInteractiveSession || isSSHRemoteSession
+          ? Promise.resolve({ clients: [], tools: [], commands: [] })
+          : claudeaiConfigPromise.then(configs =>
+              Object.keys(configs).length > 0
+                ? prefetchAllMcpResources(configs, {
+                    includeCodexApps: false,
+                  })
+                : { clients: [], tools: [], commands: [] },
+            )
       // Merge with dedup by name: each prefetchAllMcpResources call independently
       // adds helper tools (ListMcpResourcesTool, ReadMcpResourceTool) via
       // local dedup flags, so merging two calls can yield duplicates. print.ts
@@ -3373,12 +3411,16 @@ async function run(): Promise<CommanderCommand> {
         init ||
         maintenance ||
         isNonInteractiveSession ||
+        isSSHRemoteSession ||
         options.continue ||
         options.resume
           ? null
           : processSessionStartHooks('startup', {
               agentType: mainThreadAgentDefinition?.agentType,
-              model: resolvedInitialModel,
+              model:
+                !options.model && _pendingSSH.extraCliArgs.includes('--agent')
+                  ? undefined
+                  : resolvedInitialModel,
             })
 
       // MCP never blocks REPL render OR turn 1 TTFT. useManageMCPConnections
@@ -3470,8 +3512,12 @@ async function run(): Promise<CommanderCommand> {
             : undefined,
       })
 
-      // Log context metrics once at initialization
-      void logContextMetrics(regularMcpConfigs, toolPermissionContext)
+      // Log context metrics once at initialization. SSH tools live in the
+      // managed child; metric collection must not connect local MCP servers.
+      void logContextMetrics(
+        isSSHRemoteSession ? {} : regularMcpConfigs,
+        toolPermissionContext,
+      )
 
       void logPermissionContextForAnts(null, 'initialization')
 
@@ -3504,7 +3550,7 @@ async function run(): Promise<CommanderCommand> {
       // are install/upgrade bookkeeping that scripted calls don't need —
       // the next interactive session will reconcile. The await here was
       // blocking -p on a marketplace round-trip.
-      if (isBareMode()) {
+      if (isBareMode() || isSSHRemoteSession) {
         // skip — no-op
       } else if (isNonInteractiveSession) {
         // In headless mode, await to ensure plugin sync completes before CLI exits
@@ -4068,8 +4114,10 @@ async function run(): Promise<CommanderCommand> {
         numStartups: (current.numStartups ?? 0) + 1,
       }))
       setImmediate(() => {
-        void logStartupTelemetry()
-        logSessionTelemetry()
+        if (!isSSHRemoteSession) {
+          void logStartupTelemetry()
+          logSessionTelemetry()
+        }
       })
 
       // Set up per-turn session environment data uploader (ant-only build).
@@ -4266,7 +4314,11 @@ async function run(): Promise<CommanderCommand> {
                 _pendingSSH.dangerouslySkipPermissions,
               allowDangerouslySkipPermissions:
                 _pendingSSH.allowDangerouslySkipPermissions,
-              model: resolvedInitialModel,
+              extraCliArgs: _pendingSSH.extraCliArgs,
+              model:
+                !options.model && _pendingSSH.extraCliArgs.includes('--agent')
+                  ? undefined
+                  : resolvedInitialModel,
             })
           } else {
             process.stderr.write(`Connecting to ${_pendingSSH.host}…\n`)
@@ -4286,7 +4338,10 @@ async function run(): Promise<CommanderCommand> {
                 allowDangerouslySkipPermissions:
                   _pendingSSH.allowDangerouslySkipPermissions,
                 extraCliArgs: _pendingSSH.extraCliArgs,
-                model: resolvedInitialModel,
+                model:
+                  !options.model && _pendingSSH.extraCliArgs.includes('--agent')
+                    ? undefined
+                    : resolvedInitialModel,
               },
               isTTY
                 ? {

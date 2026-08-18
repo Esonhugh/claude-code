@@ -134,6 +134,16 @@ export const SDKControlSetPermissionModeRequestSchema = lazySchema(() =>
     .describe('Sets the permission mode for tool execution handling.'),
 )
 
+export const SDKControlRunShellCommandRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('run_shell_command'),
+      command: z.string(),
+      ssh_remote_token: z.string().min(1),
+    })
+    .describe('Runs a direct shell command in a managed SSH session.'),
+)
+
 export const SDKControlSetModelRequestSchema = lazySchema(() =>
   z
     .object({
@@ -557,6 +567,7 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlPermissionRequestSchema(),
     SDKControlInitializeRequestSchema(),
     SDKControlSetPermissionModeRequestSchema(),
+    SDKControlRunShellCommandRequestSchema(),
     SDKControlSetModelRequestSchema(),
     SDKControlSetMaxThinkingTokensRequestSchema(),
     SDKControlMcpStatusRequestSchema(),

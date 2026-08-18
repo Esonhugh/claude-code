@@ -36,6 +36,8 @@ assert.equal(
   'user slash lookup should prefer the built-in /terminal command over the hidden terminal skill',
 )
 
+const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY
+process.env.ANTHROPIC_API_KEY = 'test-only'
 const slashCommandResult = await processSlashCommand(
   '/terminal',
   [],
@@ -83,7 +85,13 @@ const slashCommandResult = await processSlashCommand(
     onChangeAPIKey: () => {},
   } as never,
   () => {},
-)
+).finally(() => {
+  if (previousAnthropicApiKey === undefined) {
+    delete process.env.ANTHROPIC_API_KEY
+  } else {
+    process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey
+  }
+})
 const slashCommandText = slashCommandResult.messages
   .map(message =>
     'message' in message && typeof message.message.content === 'string'

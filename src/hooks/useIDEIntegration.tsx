@@ -11,6 +11,7 @@ import {
 } from '../utils/ide.js'
 
 type UseIDEIntegrationProps = {
+  enabled?: boolean
   autoConnectIdeFlag?: boolean
   ideToInstallExtension: IdeType | null
   setDynamicMcpConfig: React.Dispatch<
@@ -23,6 +24,7 @@ type UseIDEIntegrationProps = {
 }
 
 export function useIDEIntegration({
+  enabled = true,
   autoConnectIdeFlag,
   ideToInstallExtension,
   setDynamicMcpConfig,
@@ -30,6 +32,8 @@ export function useIDEIntegration({
   setIDEInstallationState,
 }: UseIDEIntegrationProps): void {
   useEffect(() => {
+    if (!enabled) return
+
     function addIde(ide: DetectedIDEInfo | null) {
       if (!ide) {
         return
@@ -79,6 +83,7 @@ export function useIDEIntegration({
       status => setIDEInstallationState(status),
     )
   }, [
+    enabled,
     autoConnectIdeFlag,
     ideToInstallExtension,
     setDynamicMcpConfig,

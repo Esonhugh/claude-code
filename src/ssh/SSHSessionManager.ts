@@ -4,9 +4,11 @@ import { createInterface, type Interface } from 'node:readline'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type {
   SDKControlPermissionRequest,
+  SDKControlRunShellCommandResponse,
   StdoutMessage,
 } from '../entrypoints/sdk/controlTypes.js'
 import type { RemotePermissionResponse } from '../remote/RemoteSessionManager.js'
+import type { RemoteShellCommandResult } from '../Tool.js'
 import { logForDebugging } from '../utils/debug.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 import type { RemoteMessageContent } from '../utils/teleport/api.js'
@@ -14,6 +16,8 @@ import type {
   PermissionMode,
   PermissionModeChangeResult,
 } from '../types/permissions.js'
+
+export const CONTROL_REQUEST_TIMEOUT_MS = 15_000
 
 export type SSHSessionCallbacks = {
   onMessage: (message: SDKMessage) => void
@@ -36,6 +40,49 @@ function isStdoutMessage(value: unknown): value is StdoutMessage {
     value !== null &&
     'type' in value &&
     typeof value.type === 'string'
+  )
+}
+
+type ControlResponseEnvelope = {
+  subtype: 'success' | 'error'
+  request_id: string
+  response?: unknown
+  error?: string
+}
+
+function isControlResponseEnvelope(
+  value: unknown,
+): value is ControlResponseEnvelope {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('subtype' in value) ||
+    (value.subtype !== 'success' && value.subtype !== 'error') ||
+    !('request_id' in value) ||
+    typeof value.request_id !== 'string'
+  ) {
+    return false
+  }
+  return (
+    value.subtype === 'success' ||
+    ('error' in value && typeof value.error === 'string')
+  )
+}
+
+function isShellCommandResponse(
+  value: unknown,
+): value is SDKControlRunShellCommandResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'stdout' in value &&
+    typeof value.stdout === 'string' &&
+    'stderr' in value &&
+    typeof value.stderr === 'string' &&
+    'code' in value &&
+    typeof value.code === 'number' &&
+    'interrupted' in value &&
+    typeof value.interrupted === 'boolean'
   )
 }
 
@@ -68,16 +115,38 @@ export class SSHSessionManager {
     {
       mode: PermissionMode
       resolve: (result: PermissionModeChangeResult) => void
+      timeout: ReturnType<typeof setTimeout>
     }
+  >()
+  private pendingShellRequests = new Map<
+    string,
+    {
+      resolve: (result: RemoteShellCommandResult) => void
+      reject: (error: Error) => void
+      removeAbortListener: () => void
+      cancellationTimeout?: ReturnType<typeof setTimeout>
+    }
+  >()
+  private pendingAcknowledgements = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >()
+  private expectedPermissionResponseEchoes = new Map<
+    string,
+    ReturnType<typeof setTimeout>
   >()
 
   constructor(
     private readonly proc: ChildProcess,
     private readonly callbacks: SSHSessionCallbacks,
+    private readonly sshRemoteToken?: string,
   ) {}
 
   connect(): void {
     if (this.connected || this.disconnected) return
+    logForDebugging(
+      `[SSHSessionManager] connecting capability=${this.sshRemoteToken ? 'present' : 'absent'}`,
+    )
     if (!this.proc.stdout || !this.proc.stdin) {
       this.callbacks.onError?.(
         new Error('SSH child process is missing piped stdin/stdout'),
@@ -118,19 +187,34 @@ export class SSHSessionManager {
       )
       return
     }
-    this.write({
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
+    const timeout = setTimeout(() => {
+      this.expectedPermissionResponseEchoes.delete(requestId)
+    }, CONTROL_REQUEST_TIMEOUT_MS)
+    timeout.unref()
+    this.expectedPermissionResponseEchoes.set(requestId, timeout)
+    if (
+      !this.write({
+        type: 'control_response',
         response: {
-          behavior: result.behavior,
-          ...(result.behavior === 'allow'
-            ? { updatedInput: result.updatedInput }
-            : { message: result.message }),
+          subtype: 'success',
+          request_id: requestId,
+          response: {
+            behavior: result.behavior,
+            ...(result.behavior === 'allow'
+              ? {
+                  updatedInput: result.updatedInput,
+                  ...(result.updatedPermissions?.length
+                    ? { updatedPermissions: result.updatedPermissions }
+                    : {}),
+                }
+              : { message: result.message }),
+          },
         },
-      },
-    })
+      })
+    ) {
+      this.expectedPermissionResponseEchoes.delete(requestId)
+      clearTimeout(timeout)
+    }
   }
 
   setPermissionMode(mode: PermissionMode): Promise<PermissionModeChangeResult> {
@@ -139,7 +223,19 @@ export class SSHSessionManager {
       `[SSHSessionManager] setting remote permission mode: ${mode} requestId=${requestId}`,
     )
     return new Promise(resolve => {
-      this.pendingPermissionModeRequests.set(requestId, { mode, resolve })
+      const timeout = setTimeout(() => {
+        if (!this.pendingPermissionModeRequests.delete(requestId)) return
+        resolve({
+          success: false,
+          error: 'SSH permission mode change timed out',
+        })
+      }, CONTROL_REQUEST_TIMEOUT_MS)
+      timeout.unref()
+      this.pendingPermissionModeRequests.set(requestId, {
+        mode,
+        resolve,
+        timeout,
+      })
       if (
         !this.write({
           type: 'control_request',
@@ -148,17 +244,101 @@ export class SSHSessionManager {
         })
       ) {
         this.pendingPermissionModeRequests.delete(requestId)
+        clearTimeout(timeout)
         resolve({ success: false, error: 'SSH session is not connected' })
       }
     })
   }
 
-  sendInterrupt(): void {
-    this.write({
-      type: 'control_request',
-      request_id: randomUUID(),
-      request: { subtype: 'interrupt' },
+  runShellCommand(
+    command: string,
+    signal: AbortSignal,
+  ): Promise<RemoteShellCommandResult> {
+    if (!this.sshRemoteToken) {
+      logForDebugging(
+        '[SSHSessionManager] direct shell rejected: missing capability',
+      )
+      return Promise.reject(
+        new Error('Direct shell commands are unavailable in this SSH session'),
+      )
+    }
+    if (signal.aborted) {
+      logForDebugging(
+        '[SSHSessionManager] direct shell skipped: signal already aborted',
+      )
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: 137,
+        interrupted: true,
+      })
+    }
+    const requestId = randomUUID()
+    logForDebugging(
+      `[SSHSessionManager] direct shell request sent requestId=${requestId} commandLength=${command.length}`,
+    )
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        logForDebugging(
+          `[SSHSessionManager] direct shell abort requested requestId=${requestId}`,
+        )
+        const pending = this.pendingShellRequests.get(requestId)
+        if (pending && !pending.cancellationTimeout) {
+          const cancellationTimeout = setTimeout(() => {
+            const cancelled = this.pendingShellRequests.get(requestId)
+            if (cancelled?.cancellationTimeout !== cancellationTimeout) return
+            this.pendingShellRequests.delete(requestId)
+            cancelled.removeAbortListener()
+            cancelled.reject(new Error('SSH shell command cancellation timed out'))
+          }, CONTROL_REQUEST_TIMEOUT_MS)
+          cancellationTimeout.unref()
+          pending.cancellationTimeout = cancellationTimeout
+        }
+        this.sendInterrupt()
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      this.pendingShellRequests.set(requestId, {
+        resolve,
+        reject,
+        removeAbortListener: () =>
+          signal.removeEventListener('abort', onAbort),
+      })
+      if (
+        !this.write({
+          type: 'control_request',
+          request_id: requestId,
+          request: {
+            subtype: 'run_shell_command',
+            command,
+            ssh_remote_token: this.sshRemoteToken,
+          },
+        })
+      ) {
+        const pending = this.pendingShellRequests.get(requestId)
+        this.pendingShellRequests.delete(requestId)
+        pending?.removeAbortListener()
+        reject(new Error('SSH session is not connected'))
+      }
     })
+  }
+
+  sendInterrupt(): void {
+    const requestId = randomUUID()
+    const timeout = setTimeout(() => {
+      this.pendingAcknowledgements.delete(requestId)
+    }, CONTROL_REQUEST_TIMEOUT_MS)
+    timeout.unref()
+    this.pendingAcknowledgements.set(requestId, timeout)
+    if (
+      !this.write({
+        type: 'control_request',
+        request_id: requestId,
+        request: { subtype: 'interrupt' },
+      })
+    ) {
+      this.pendingAcknowledgements.delete(requestId)
+      clearTimeout(timeout)
+    }
   }
 
   disconnect(): void {
@@ -170,6 +350,9 @@ export class SSHSessionManager {
     this.disconnected = true
     this.pendingPermissionRequests.clear()
     this.rejectPendingPermissionModeRequests('SSH session disconnected')
+    this.rejectPendingShellRequests('SSH session disconnected')
+    this.clearPendingAcknowledgements()
+    this.clearExpectedPermissionResponseEchoes()
     if (this.proc.exitCode === null && this.proc.signalCode === null) {
       this.proc.kill('SIGTERM')
     }
@@ -232,22 +415,78 @@ export class SSHSessionManager {
       return
     }
     if (parsed.type === 'control_response') {
-      const pending = this.pendingPermissionModeRequests.get(
-        parsed.response.request_id,
-      )
-      if (pending) {
-        this.pendingPermissionModeRequests.delete(parsed.response.request_id)
-        if (parsed.response.subtype === 'success') {
+      if (!isControlResponseEnvelope(parsed.response)) {
+        this.callbacks.onError?.(
+          new Error('Invalid control response from SSH child'),
+        )
+        return
+      }
+      const response = parsed.response
+      const requestId = response.request_id
+      const permissionEchoTimeout =
+        this.expectedPermissionResponseEchoes.get(requestId)
+      if (permissionEchoTimeout) {
+        this.expectedPermissionResponseEchoes.delete(requestId)
+        clearTimeout(permissionEchoTimeout)
+        return
+      }
+      const pendingMode = this.pendingPermissionModeRequests.get(requestId)
+      if (pendingMode) {
+        this.pendingPermissionModeRequests.delete(requestId)
+        clearTimeout(pendingMode.timeout)
+        if (response.subtype === 'success') {
           logForDebugging(
-            `[SSHSessionManager] remote permission mode set: ${pending.mode}`,
+            `[SSHSessionManager] remote permission mode set: ${pendingMode.mode}`,
           )
-          pending.resolve({ success: true })
+          pendingMode.resolve({ success: true })
         } else {
           logForDebugging(
-            `[SSHSessionManager] remote permission mode rejected: ${pending.mode}: ${parsed.response.error}`,
+            `[SSHSessionManager] remote permission mode rejected: ${pendingMode.mode}: ${response.error}`,
           )
-          pending.resolve({ success: false, error: parsed.response.error })
+          pendingMode.resolve({ success: false, error: response.error })
         }
+        return
+      }
+
+      const acknowledgementTimeout = this.pendingAcknowledgements.get(requestId)
+      if (acknowledgementTimeout) {
+        this.pendingAcknowledgements.delete(requestId)
+        clearTimeout(acknowledgementTimeout)
+        if (response.subtype === 'error') {
+          this.callbacks.onError?.(new Error(response.error))
+        }
+        return
+      }
+
+      const pendingShell = this.pendingShellRequests.get(requestId)
+      if (pendingShell) {
+        this.pendingShellRequests.delete(requestId)
+        pendingShell.removeAbortListener()
+        if (pendingShell.cancellationTimeout) {
+          clearTimeout(pendingShell.cancellationTimeout)
+        }
+        if (response.subtype === 'error') {
+          logForDebugging(
+            `[SSHSessionManager] direct shell response error requestId=${requestId}: ${response.error}`,
+          )
+          pendingShell.reject(new Error(response.error))
+          return
+        }
+        if (!isShellCommandResponse(response.response)) {
+          logForDebugging(
+            `[SSHSessionManager] direct shell response invalid requestId=${requestId}`,
+          )
+          pendingShell.reject(new Error('Invalid SSH shell command response'))
+          return
+        }
+        logForDebugging(
+          `[SSHSessionManager] direct shell response received requestId=${requestId} code=${response.response.code} interrupted=${response.response.interrupted} stdoutBytes=${Buffer.byteLength(response.response.stdout)} stderrBytes=${Buffer.byteLength(response.response.stderr)}`,
+        )
+        pendingShell.resolve(response.response)
+      } else {
+        logForDebugging(
+          `[SSHSessionManager] ignoring unmatched control response requestId=${requestId}`,
+        )
       }
       return
     }
@@ -277,10 +516,46 @@ export class SSHSessionManager {
   }
 
   private rejectPendingPermissionModeRequests(error: string): void {
+    if (this.pendingPermissionModeRequests.size > 0) {
+      logForDebugging(
+        `[SSHSessionManager] resolving pending permission mode requests count=${this.pendingPermissionModeRequests.size}: ${error}`,
+      )
+    }
     for (const pending of this.pendingPermissionModeRequests.values()) {
+      clearTimeout(pending.timeout)
       pending.resolve({ success: false, error })
     }
     this.pendingPermissionModeRequests.clear()
+  }
+
+  private clearPendingAcknowledgements(): void {
+    for (const timeout of this.pendingAcknowledgements.values()) {
+      clearTimeout(timeout)
+    }
+    this.pendingAcknowledgements.clear()
+  }
+
+  private clearExpectedPermissionResponseEchoes(): void {
+    for (const timeout of this.expectedPermissionResponseEchoes.values()) {
+      clearTimeout(timeout)
+    }
+    this.expectedPermissionResponseEchoes.clear()
+  }
+
+  private rejectPendingShellRequests(error: string): void {
+    if (this.pendingShellRequests.size > 0) {
+      logForDebugging(
+        `[SSHSessionManager] rejecting pending direct shell requests count=${this.pendingShellRequests.size}: ${error}`,
+      )
+    }
+    for (const pending of this.pendingShellRequests.values()) {
+      pending.removeAbortListener()
+      if (pending.cancellationTimeout) {
+        clearTimeout(pending.cancellationTimeout)
+      }
+      pending.reject(new Error(error))
+    }
+    this.pendingShellRequests.clear()
   }
 
   private handleDisconnected(): void {
@@ -291,6 +566,9 @@ export class SSHSessionManager {
     this.disconnected = true
     this.pendingPermissionRequests.clear()
     this.rejectPendingPermissionModeRequests('SSH session disconnected')
+    this.rejectPendingShellRequests('SSH session disconnected')
+    this.clearPendingAcknowledgements()
+    this.clearExpectedPermissionResponseEchoes()
     this.stdoutInterface?.close()
     this.stdoutInterface = null
     this.callbacks.onDisconnected?.()

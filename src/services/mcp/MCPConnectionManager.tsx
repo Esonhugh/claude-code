@@ -49,10 +49,19 @@ interface MCPConnectionManagerProps {
   children: ReactNode
   dynamicMcpConfig: Record<string, ScopedMcpServerConfig> | undefined
   isStrictMcpConfig: boolean
+  disabled?: boolean
 }
 
-// TODO (ollie): We may be able to get rid of this context by putting these function on app state
-export function MCPConnectionManager({
+const disabledMcpConnectionContext: MCPConnectionContextValue = {
+  reconnectMcpServer: async () => {
+    throw new Error('MCP connections are managed by the remote SSH session')
+  },
+  toggleMcpServer: async () => {
+    throw new Error('MCP connections are managed by the remote SSH session')
+  },
+}
+
+function ActiveMCPConnectionManager({
   children,
   dynamicMcpConfig,
   isStrictMcpConfig,
@@ -71,4 +80,19 @@ export function MCPConnectionManager({
       {children}
     </MCPConnectionContext.Provider>
   )
+}
+
+// TODO (ollie): We may be able to get rid of this context by putting these function on app state
+export function MCPConnectionManager({
+  disabled = false,
+  ...props
+}: MCPConnectionManagerProps): React.ReactNode {
+  if (disabled) {
+    return (
+      <MCPConnectionContext.Provider value={disabledMcpConnectionContext}>
+        {props.children}
+      </MCPConnectionContext.Provider>
+    )
+  }
+  return <ActiveMCPConnectionManager {...props} />
 }

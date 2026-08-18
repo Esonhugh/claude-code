@@ -106,7 +106,10 @@ import {
 } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../../types/message.js'
-import type { PermissionMode } from '../../types/permissions.js'
+import type {
+  PermissionMode,
+  PermissionModeChangeResult,
+} from '../../types/permissions.js'
 import type {
   BaseTextInputProps,
   PromptInputMode,
@@ -155,10 +158,7 @@ import {
   modelDisplayString,
 } from '../../utils/model/model.js'
 import { setAutoModeActive } from '../../utils/permissions/autoModeState.js'
-import {
-  cyclePermissionMode,
-  getNextPermissionMode,
-} from '../../utils/permissions/getNextPermissionMode.js'
+import { getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js'
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlatform } from '../../utils/platform.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
@@ -238,9 +238,13 @@ type Props = {
   ideSelection: IDESelection | undefined
   toolPermissionContext: ToolPermissionContext
   setToolPermissionContext: (ctx: ToolPermissionContext) => void
+  requestPermissionModeChange?: (
+    mode: PermissionMode,
+  ) => Promise<PermissionModeChangeResult>
   apiKeyStatus: VerificationStatus
   commands: Command[]
   agents: AgentDefinition[]
+  enableLocalIOCompletions?: boolean
   isLoading: boolean
   verbose: boolean
   messages: Message[]
@@ -326,9 +330,11 @@ function PromptInput({
   ideSelection,
   toolPermissionContext,
   setToolPermissionContext,
+  requestPermissionModeChange,
   apiKeyStatus,
   commands,
   agents,
+  enableLocalIOCompletions = true,
   isLoading,
   verbose,
   messages,
@@ -667,7 +673,15 @@ function PromptInput({
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false)
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] =
     useState<PermissionMode | null>(null)
+  const permissionModeIntentRef = useRef(toolPermissionContext.mode)
+  const permissionModeIntentGenerationRef = useRef(0)
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    if (permissionModeIntentGenerationRef.current === 0) {
+      permissionModeIntentRef.current = toolPermissionContext.mode
+    }
+  }, [toolPermissionContext.mode])
 
   // Check if cursor is on the first line of input
   const isCursorOnFirstLine = useMemo(() => {
@@ -1631,6 +1645,7 @@ function PromptInput({
     cursorOffset,
     mode,
     agents,
+    enableLocalIOCompletions,
     setSuggestionsState,
     suggestionsState,
     suppressSuggestions: isSearchingHistory || historyIndex > 0,
@@ -2011,11 +2026,18 @@ function PromptInput({
       return
     }
 
-    // Compute the next mode without triggering side effects first
+    // Track the latest user intent separately from confirmed state so rapid
+    // Shift+Tab presses keep advancing while a remote request is in flight.
+    const intentContext = {
+      ...toolPermissionContext,
+      mode: permissionModeIntentRef.current,
+    }
     logForDebugging(
-      `[auto-mode] handleCycleMode: currentMode=${toolPermissionContext.mode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
+      `[auto-mode] handleCycleMode: currentMode=${intentContext.mode} isAutoModeAvailable=${intentContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
     )
-    const nextMode = getNextPermissionMode(toolPermissionContext, teamContext)
+    const nextMode = getNextPermissionMode(intentContext, teamContext)
+    const intentGeneration = ++permissionModeIntentGenerationRef.current
+    permissionModeIntentRef.current = nextMode
 
     // Check if user is entering auto mode for the first time. Gated on the
     // persistent settings flag (hasAutoModeOptIn) rather than the broader
@@ -2026,31 +2048,15 @@ function PromptInput({
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       isEnteringAutoModeFirstTime =
         nextMode === 'auto' &&
-        toolPermissionContext.mode !== 'auto' &&
+        intentContext.mode !== 'auto' &&
         !hasAutoModeOptIn() &&
         !viewingAgentTaskId // Only show for primary agent, not subagents
     }
 
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       if (isEnteringAutoModeFirstTime) {
-        // Store previous mode so we can revert if user declines
-        setPreviousModeBeforeAuto(toolPermissionContext.mode)
+        setPreviousModeBeforeAuto(intentContext.mode)
 
-        // Only update the UI mode label — do NOT call transitionPermissionMode
-        // or cyclePermissionMode yet; we haven't confirmed with the user.
-        setAppState(prev => ({
-          ...prev,
-          toolPermissionContext: {
-            ...prev.toolPermissionContext,
-            mode: 'auto',
-          },
-        }))
-        setToolPermissionContext({
-          ...toolPermissionContext,
-          mode: 'auto',
-        })
-
-        // Show opt-in dialog after 400ms debounce
         if (autoModeOptInTimeoutRef.current) {
           clearTimeout(autoModeOptInTimeoutRef.current)
         }
@@ -2069,14 +2075,9 @@ function PromptInput({
         }
         return
       }
-    }
 
-    // Dismiss auto mode opt-in dialog if showing or pending (user is cycling away).
-    // Do NOT revert to previousModeBeforeAuto here — shift+tab means "advance the
-    // carousel", not "decline". Reverting causes a ping-pong loop: auto reverts to
-    // the prior mode, whose next mode is auto again, forever.
-    // The dialog's own decline button (handleAutoModeOptInDecline) handles revert.
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
+      // Cycling again means the user advanced past auto mode. Dismiss any
+      // pending or visible opt-in prompt without reverting the carousel.
       if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
         if (showAutoModeOptIn) {
           logEvent('tengu_auto_mode_opt_in_dialog_decline', {})
@@ -2087,60 +2088,70 @@ function PromptInput({
           autoModeOptInTimeoutRef.current = null
         }
         setPreviousModeBeforeAuto(null)
-        // Fall through — mode is 'auto', cyclePermissionMode below goes to 'default'.
       }
     }
 
-    // Now that we know this is NOT the first-time auto mode path,
-    // call cyclePermissionMode to apply side effects (e.g. strip
-    // dangerous permissions, activate classifier)
-    const { context: preparedContext } = cyclePermissionMode(
-      toolPermissionContext,
-      teamContext,
-    )
+    const applyModeChange = async () => {
+      if (requestPermissionModeChange) {
+        const result = await requestPermissionModeChange(nextMode)
+        if (result.success === false) {
+          addNotification({
+            key: 'permission-mode-rejected',
+            text: result.error,
+            color: 'error',
+            priority: 'high',
+          })
+          if (
+            intentGeneration === permissionModeIntentGenerationRef.current
+          ) {
+            permissionModeIntentGenerationRef.current = 0
+            permissionModeIntentRef.current = toolPermissionContext.mode
+          }
+          return
+        }
+        if (intentGeneration === permissionModeIntentGenerationRef.current) {
+          permissionModeIntentGenerationRef.current = 0
+          permissionModeIntentRef.current = nextMode
+        }
+      } else {
+        const preparedContext = transitionPermissionMode(
+          toolPermissionContext.mode,
+          nextMode,
+          toolPermissionContext,
+        )
+        setToolPermissionContext({
+          ...preparedContext,
+          mode: nextMode,
+        })
+        permissionModeIntentGenerationRef.current = 0
+        permissionModeIntentRef.current = nextMode
+      }
 
-    logEvent('tengu_mode_cycle', {
-      to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-
-    // Track when user enters plan mode
-    if (nextMode === 'plan') {
-      saveGlobalConfig(current => ({
-        ...current,
-        lastPlanModeUse: Date.now(),
-      }))
+      logEvent('tengu_mode_cycle', {
+        to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      if (nextMode === 'plan') {
+        saveGlobalConfig(current => ({
+          ...current,
+          lastPlanModeUse: Date.now(),
+        }))
+      }
+      syncTeammateMode(nextMode, teamContext?.teamName)
     }
+    void applyModeChange()
 
-    // Set the mode via setAppState directly because setToolPermissionContext
-    // intentionally preserves the existing mode (to prevent coordinator mode
-    // corruption from workers). Then call setToolPermissionContext to trigger
-    // recheck of queued permission prompts.
-    setAppState(prev => ({
-      ...prev,
-      toolPermissionContext: {
-        ...preparedContext,
-        mode: nextMode,
-      },
-    }))
-    setToolPermissionContext({
-      ...preparedContext,
-      mode: nextMode,
-    })
-
-    // If this is a teammate, update config.json so team lead sees the change
-    syncTeammateMode(nextMode, teamContext?.teamName)
-
-    // Close help tips if they're open when mode is cycled
     if (helpOpen) {
       setHelpOpen(false)
     }
   }, [
+    addNotification,
     toolPermissionContext,
     teamContext,
     viewingAgentTaskId,
     viewedTeammate,
     setAppState,
     setToolPermissionContext,
+    requestPermissionModeChange,
     helpOpen,
     showAutoModeOptIn,
   ])
@@ -2148,40 +2159,49 @@ function PromptInput({
   // Handler for auto mode opt-in dialog acceptance
   const handleAutoModeOptInAccept = useCallback(() => {
     if (feature('TRANSCRIPT_CLASSIFIER')) {
-      setShowAutoModeOptIn(false)
-      setPreviousModeBeforeAuto(null)
+      const applyAutoMode = async () => {
+        if (requestPermissionModeChange) {
+          const result = await requestPermissionModeChange('auto')
+          if (result.success === false) {
+            addNotification({
+              key: 'permission-mode-rejected',
+              text: result.error,
+              color: 'error',
+              priority: 'high',
+            })
+            permissionModeIntentGenerationRef.current = 0
+            permissionModeIntentRef.current =
+              previousModeBeforeAuto ?? toolPermissionContext.mode
+            return
+          }
+        } else {
+          const strippedContext = transitionPermissionMode(
+            previousModeBeforeAuto ?? toolPermissionContext.mode,
+            'auto',
+            toolPermissionContext,
+          )
+          setToolPermissionContext({
+            ...strippedContext,
+            mode: 'auto',
+          })
+        }
+        permissionModeIntentGenerationRef.current = 0
+        permissionModeIntentRef.current = 'auto'
+        setShowAutoModeOptIn(false)
+        setPreviousModeBeforeAuto(null)
+      }
+      void applyAutoMode()
 
-      // Now that the user accepted, apply the full transition: activate the
-      // auto mode backend (classifier, beta headers) and strip dangerous
-      // permissions (e.g. Bash(*) always-allow rules).
-      const strippedContext = transitionPermissionMode(
-        previousModeBeforeAuto ?? toolPermissionContext.mode,
-        'auto',
-        toolPermissionContext,
-      )
-      setAppState(prev => ({
-        ...prev,
-        toolPermissionContext: {
-          ...strippedContext,
-          mode: 'auto',
-        },
-      }))
-      setToolPermissionContext({
-        ...strippedContext,
-        mode: 'auto',
-      })
-
-      // Close help tips if they're open when auto mode is enabled
       if (helpOpen) {
         setHelpOpen(false)
       }
     }
   }, [
+    addNotification,
     helpOpen,
-    setHelpOpen,
     previousModeBeforeAuto,
+    requestPermissionModeChange,
     toolPermissionContext,
-    setAppState,
     setToolPermissionContext,
   ])
 
@@ -2214,6 +2234,8 @@ function PromptInput({
           mode: previousModeBeforeAuto,
           isAutoModeAvailable: false,
         })
+        permissionModeIntentGenerationRef.current = 0
+        permissionModeIntentRef.current = previousModeBeforeAuto
         setPreviousModeBeforeAuto(null)
       }
     }

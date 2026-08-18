@@ -286,7 +286,10 @@ import {
   persistPermissionUpdate,
 } from '../utils/permissions/PermissionUpdate.js'
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js'
-import { stripDangerousPermissionsForAutoMode } from '../utils/permissions/permissionSetup.js'
+import {
+  stripDangerousPermissionsForAutoMode,
+  transitionPermissionMode,
+} from '../utils/permissions/permissionSetup.js'
 import {
   getScratchpadDir,
   isScratchpadEnabled,
@@ -983,7 +986,9 @@ export function REPL({
   sshSession,
   thinkingConfig,
 }: Props): React.ReactNode {
-  const isRemoteSession = !!remoteSessionConfig
+  const isRemoteExecutionSession = Boolean(
+    remoteSessionConfig || directConnectConfig || sshSession,
+  )
 
   // Env-var gates hoisted to mount-time — isEnvTruthy does toLowerCase+trim+
   // includes, and these were on the render path (hot during PageUp spam).
@@ -1095,7 +1100,7 @@ export function REPL({
 
   // Watch for skill file changes and reload all commands
   useSkillsChange(
-    isRemoteSession ? undefined : getProjectRoot(),
+    isRemoteExecutionSession ? undefined : getProjectRoot(),
     setLocalCommands,
   )
 
@@ -1114,8 +1119,13 @@ export function REPL({
   const isBriefOnly = useAppState(s => s.isBriefOnly)
 
   const localTools = useMemo(
-    () => getTools(toolPermissionContext),
-    [toolPermissionContext, proactiveActive, isBriefOnly],
+    () => (isRemoteExecutionSession ? [] : getTools(toolPermissionContext)),
+    [
+      isRemoteExecutionSession,
+      toolPermissionContext,
+      proactiveActive,
+      isBriefOnly,
+    ],
   )
 
   useKickOffCheckAndDisableBypassPermissionsIfNeeded()
@@ -1210,12 +1220,13 @@ export function REPL({
   } = useClaudeCodeHintRecommendation()
 
   // Memoize the combined initial tools array to prevent reference changes
-  const combinedInitialTools = useMemo(() => {
-    return [...localTools, ...initialTools]
-  }, [localTools, initialTools])
+  const combinedInitialTools = useMemo(
+    () => (isRemoteExecutionSession ? [] : [...localTools, ...initialTools]),
+    [isRemoteExecutionSession, localTools, initialTools],
+  )
 
   // Initialize plugin management
-  useManagePlugins({ enabled: !isRemoteSession })
+  useManagePlugins({ enabled: !isRemoteExecutionSession })
 
   const tasksV2 = useTasksV2WithCollapseEffect()
 
@@ -1228,27 +1239,28 @@ export function REPL({
   // This ensures that plugin installations from repository and user settings only
   // happen after explicit user consent to trust the current working directory.
   useEffect(() => {
-    if (isRemoteSession) return
+    if (isRemoteExecutionSession) return
     void performStartupChecks(setAppState)
-  }, [setAppState, isRemoteSession])
+  }, [setAppState, isRemoteExecutionSession])
 
   // Allow Claude in Chrome MCP to send prompts through MCP notifications
   // and sync permission mode changes to the Chrome extension
   usePromptsFromClaudeInChrome(
-    isRemoteSession ? EMPTY_MCP_CLIENTS : mcpClients,
+    isRemoteExecutionSession ? EMPTY_MCP_CLIENTS : mcpClients,
     toolPermissionContext.mode,
   )
 
   // Initialize swarm features: teammate hooks and context
   // Handles both fresh spawns and resumed teammate sessions
   useSwarmInitialization(setAppState, initialMessages, {
-    enabled: !isRemoteSession,
+    enabled: !isRemoteExecutionSession,
   })
 
   const mergedTools = useMergedTools(
     combinedInitialTools,
-    mcp.tools,
+    isRemoteExecutionSession ? [] : mcp.tools,
     toolPermissionContext,
+    isRemoteExecutionSession,
   )
 
   // Apply agent tool restrictions if mainThreadAgentDefinition is set
@@ -1274,11 +1286,11 @@ export function REPL({
   // Merge commands from local state, plugins, and MCP
   const commandsWithPlugins = useMergedCommands(
     localCommands,
-    plugins.commands as Command[],
+    isRemoteExecutionSession ? [] : (plugins.commands as Command[]),
   )
   const mergedCommands = useMergedCommands(
     commandsWithPlugins,
-    mcp.commands as Command[],
+    isRemoteExecutionSession ? [] : (mcp.commands as Command[]),
   )
   // Filter out all commands if disableSlashCommands is true
   const commands = useMemo(
@@ -1286,9 +1298,9 @@ export function REPL({
     [disableSlashCommands, mergedCommands],
   )
 
-  useIdeLogging(isRemoteSession ? EMPTY_MCP_CLIENTS : mcp.clients)
+  useIdeLogging(isRemoteExecutionSession ? EMPTY_MCP_CLIENTS : mcp.clients)
   useIdeSelection(
-    isRemoteSession ? EMPTY_MCP_CLIENTS : mcp.clients,
+    isRemoteExecutionSession ? EMPTY_MCP_CLIENTS : mcp.clients,
     setIDESelection,
   )
 
@@ -1917,7 +1929,12 @@ export function REPL({
     return () => clearTimeout(timer)
   }, [inputValue])
 
-  const [inputMode, setInputMode] = useState<PromptInputMode>('prompt')
+  const [inputMode, setInputModeState] = useState<PromptInputMode>('prompt')
+  const inputModeRef = useRef<PromptInputMode>('prompt')
+  const setInputMode = useCallback((mode: PromptInputMode) => {
+    inputModeRef.current = mode
+    setInputModeState(mode)
+  }, [])
   const [stashedPrompt, setStashedPrompt] = useState<
     | {
         text: string
@@ -2022,8 +2039,13 @@ export function REPL({
     setMessages,
     setIsLoading: setIsExternalLoading,
     setToolUseConfirmQueue,
-    tools: combinedInitialTools,
+    tools: [],
   })
+  useEffect(() => {
+    if (sshRemote.isRemoteMode) {
+      logForDebugging('[REPL] disabling local MCP manager for SSH session')
+    }
+  }, [sshRemote.isRemoteMode])
 
   // Use whichever remote mode is active
   const activeRemote = sshRemote.isRemoteMode
@@ -2168,7 +2190,7 @@ export function REPL({
   // saveGlobalConfig writes back-to-back. Reset at submit in onSubmit.
   const tipPickedThisTurnRef = React.useRef(false)
   const pickNewSpinnerTip = useCallback(() => {
-    if (tipPickedThisTurnRef.current) return
+    if (isRemoteExecutionSession || tipPickedThisTurnRef.current) return
     tipPickedThisTurnRef.current = true
     const newMessages = messagesRef.current.slice(bashToolsProcessedIdx.current)
     for (const tool of extractBashToolsFromMessages(newMessages)) {
@@ -2197,7 +2219,7 @@ export function REPL({
         })
       }
     })
-  }, [setAppState, theme])
+  }, [isRemoteExecutionSession, setAppState, theme])
 
   // Resets UI loading state. Does NOT call onTurnComplete - that should be
   // called explicitly only when a query turn actually completes.
@@ -2408,13 +2430,13 @@ export function REPL({
     messages,
     isLoading,
     hasActivePrompt,
-    { enabled: !isRemoteSession },
+    { enabled: !isRemoteExecutionSession },
   )
 
   // Memory survey: shown when the assistant mentions memory and a memory file
   // was read this conversation
   const memorySurvey = useMemorySurvey(messages, isLoading, hasActivePrompt, {
-    enabled: !isRemoteSession,
+    enabled: !isRemoteExecutionSession,
   })
 
   // Frustration detection: show transcript sharing prompt after detecting frustrated messages
@@ -2429,6 +2451,7 @@ export function REPL({
 
   // Initialize IDE integration
   useIDEIntegration({
+    enabled: !isRemoteExecutionSession,
     autoConnectIdeFlag,
     ideToInstallExtension,
     setDynamicMcpConfig,
@@ -3238,20 +3261,20 @@ export function REPL({
     setToolPermissionContext,
   )
 
-  const requestPermissionModeChange = useCallback(
-    async mode => {
+  const permissionModeChangeRef = useRef(Promise.resolve())
+  const permissionModeChangeGenerationRef = useRef(0)
+  const confirmedRemotePermissionModeRef = useRef(toolPermissionContext.mode)
+  const applyConfirmedPermissionMode = useCallback(
+    mode => {
       const current = store.getState().toolPermissionContext
-      const result = sshRemote.isRemoteMode
-        ? await sshRemote.setPermissionMode(mode)
-        : { success: true as const }
-      if (!result.success) return result
-
-      setSessionBypassPermissionsMode(mode === 'bypassPermissions')
-      const nextContext = applyPermissionUpdate(current, {
+      const transitioned = transitionPermissionMode(current.mode, mode, current)
+      const nextContext = applyPermissionUpdate(transitioned, {
         type: 'setMode',
         mode,
         destination: 'session',
       })
+      confirmedRemotePermissionModeRef.current = mode
+      setSessionBypassPermissionsMode(mode === 'bypassPermissions')
       setToolPermissionContext(
         mode === 'bypassPermissions'
           ? {
@@ -3260,10 +3283,86 @@ export function REPL({
             }
           : nextContext,
       )
-      return result
     },
-    [sshRemote, setToolPermissionContext, store],
+    [setToolPermissionContext, store],
   )
+  const requestPermissionModeChange = useCallback(
+    mode => {
+      const generation = ++permissionModeChangeGenerationRef.current
+      let result:
+        | Awaited<ReturnType<typeof sshRemote.setPermissionMode>>
+        | undefined
+      const operation = permissionModeChangeRef.current.then(async () => {
+        const permissionModeRevision = sshRemote.getPermissionModeRevision()
+        if (directConnect.isRemoteMode || remoteSession.isRemoteMode) {
+          result = {
+            success: false,
+            error: 'Permission mode changes are unavailable in this remote session',
+          }
+        } else {
+          result = sshRemote.isRemoteMode
+            ? await sshRemote.setPermissionMode(mode)
+            : { success: true as const }
+        }
+
+        if (result.success) {
+          confirmedRemotePermissionModeRef.current = mode
+          if (generation !== permissionModeChangeGenerationRef.current) return
+          applyConfirmedPermissionMode(mode)
+        } else {
+          if (generation !== permissionModeChangeGenerationRef.current) return
+          if (
+            sshRemote.isRemoteMode &&
+            sshRemote.getPermissionModeRevision() !== permissionModeRevision
+          ) {
+            const remoteMode = sshRemote.getPermissionMode()
+            if (remoteMode) applyConfirmedPermissionMode(remoteMode)
+          } else {
+            applyConfirmedPermissionMode(
+              confirmedRemotePermissionModeRef.current,
+            )
+          }
+        }
+      })
+      permissionModeChangeRef.current = operation.catch(() => {})
+      return operation.then(() => {
+        if (!result) {
+          return {
+            success: false as const,
+            error: 'Permission mode change failed',
+          }
+        }
+        return result
+      })
+    },
+    [
+      applyConfirmedPermissionMode,
+      directConnect.isRemoteMode,
+      remoteSession.isRemoteMode,
+      sshRemote,
+    ],
+  )
+
+  useEffect(() => {
+    const mode = sshRemote.permissionMode
+    if (!sshRemote.isRemoteMode || !mode) {
+      return
+    }
+    const syncRemoteMode = () => {
+      if (store.getState().toolPermissionContext.mode === mode) {
+        confirmedRemotePermissionModeRef.current = mode
+        return
+      }
+      applyConfirmedPermissionMode(mode)
+    }
+    void permissionModeChangeRef.current.then(syncRemoteMode, syncRemoteMode)
+  }, [
+    applyConfirmedPermissionMode,
+    sshRemote.isRemoteMode,
+    sshRemote.permissionMode,
+    sshRemote.permissionModeRevision,
+    store,
+  ])
 
   const requestPrompt = useCallback(
     (title: string, toolInputSummary?: string | null) =>
@@ -3296,6 +3395,7 @@ export function REPL({
       // the closure captured at render time. Also doubles as refreshTools()
       // for mid-query tool list updates.
       const computeTools = () => {
+        if (isRemoteExecutionSession) return []
         const state = store.getState()
         const assembled = assembleToolPool(
           state.toolPermissionContext,
@@ -3323,8 +3423,10 @@ export function REPL({
             s.thinkingEnabled !== false ? thinkingConfig : { type: 'disabled' },
           // Merge fresh from store rather than closing over useMergedClients'
           // memoized output. initialMcpClients is a prop (session-constant).
-          mcpClients: mergeClients(initialMcpClients, s.mcp.clients),
-          mcpResources: s.mcp.resources,
+          mcpClients: isRemoteExecutionSession
+            ? []
+            : mergeClients(initialMcpClients, s.mcp.clients),
+          mcpResources: isRemoteExecutionSession ? {} : s.mcp.resources,
           ideInstallationStatus: ideInstallationStatus,
           isNonInteractiveSession: false,
           dynamicMcpConfig,
@@ -3339,6 +3441,9 @@ export function REPL({
         getAppState: () => store.getState(),
         setAppState,
         requestPermissionModeChange,
+        runRemoteShellCommand: sshRemote.isRemoteMode
+          ? sshRemote.runShellCommand
+          : undefined,
         messages,
         setMessages,
         updateFileHistoryState(
@@ -3433,6 +3538,7 @@ export function REPL({
     [
       commands,
       combinedInitialTools,
+      isRemoteExecutionSession,
       mainThreadAgentDefinition,
       debug,
       initialMcpClients,
@@ -3453,6 +3559,8 @@ export function REPL({
       appendSystemPrompt,
       setConversationId,
       requestPermissionModeChange,
+      sshRemote.isRemoteMode,
+      sshRemote.runShellCommand,
     ],
   )
 
@@ -4306,8 +4414,8 @@ export function REPL({
         }
       })
 
-      // Create file history snapshot for code rewind
-      if (fileHistoryEnabled()) {
+      // The managed remote child owns remote workspace snapshots.
+      if (!isRemoteExecutionSession && fileHistoryEnabled()) {
         void fileHistoryMakeSnapshot(
           (updater: (prev: FileHistoryState) => FileHistoryState) => {
             setAppState(prev => ({
@@ -4319,10 +4427,8 @@ export function REPL({
         )
       }
 
-      // Ensure SessionStart hook context is available before the first API
-      // call. onSubmit calls this internally but the onQuery path below
-      // bypasses onSubmit — hoist here so both paths see hook messages.
-      await awaitPendingHooks()
+      // The managed remote child owns SessionStart hooks.
+      if (!isRemoteExecutionSession) await awaitPendingHooks()
 
       // Route all initial prompts through onSubmit to ensure UserPromptSubmit hooks fire
       // TODO: Simplify by always routing through onSubmit once it supports
@@ -4374,11 +4480,14 @@ export function REPL({
     onQuery,
     mainLoopModel,
     tools,
+    isRemoteExecutionSession,
+    awaitPendingHooks,
+    store,
   ])
 
   const onSubmit = useCallback(
     async (
-      input: string,
+      rawInput: string,
       helpers: PromptInputHelpers,
       speculationAccept?: {
         state: ActiveSpeculationState
@@ -4387,6 +4496,16 @@ export function REPL({
       },
       options?: { fromKeybinding?: boolean },
     ) => {
+      // A full `!command` can arrive in one paste/key event before PromptInput
+      // has stripped the mode prefix. Normalize it against the synchronous mode
+      // ref so direct Enter and typed bash mode use the same command text.
+      const input =
+        !speculationAccept &&
+        inputModeRef.current === 'bash' &&
+        rawInput.startsWith('!')
+          ? rawInput.slice(1)
+          : rawInput
+
       // Re-pin scroll to bottom on submit so the user always sees the new
       // exchange (matches OpenCode's auto-scroll behavior).
       repinScroll()
@@ -4609,6 +4728,10 @@ export function REPL({
         }
       }
 
+      // PromptInput switches input mode and submits within the same input event.
+      // Read the ref so this callback observes that new mode before React renders.
+      const submittedInputMode = inputModeRef.current
+
       // Add to history for direct user submissions.
       // Queued command processing (executeQueuedInput) doesn't call onSubmit,
       // so notifications and already-queued user input won't be added to history here.
@@ -4617,12 +4740,12 @@ export function REPL({
         addToHistory({
           display: speculationAccept
             ? input
-            : prependModeCharacterToInput(input, inputMode),
+            : prependModeCharacterToInput(input, submittedInputMode),
           pastedContents: speculationAccept ? {} : pastedContents,
         })
         // Add the just-submitted command to the front of the ghost-text
         // cache so it's suggested immediately (not after the 60s TTL).
-        if (inputMode === 'bash') {
+        if (submittedInputMode === 'bash') {
           prependToShellHistoryCache(input.trim())
         }
       }
@@ -4642,8 +4765,12 @@ export function REPL({
       // Submit runs "now" (not queued) when not already loading, or when
       // accepting speculation, or in remote mode (which sends via WS and
       // returns early without calling handlePromptSubmit).
+      const isSSHBashCommand =
+        sshRemote.isRemoteMode && submittedInputMode === 'bash'
       const submitsNow =
-        !isLoading || speculationAccept || activeRemote.isRemoteMode
+        !isLoading ||
+        speculationAccept ||
+        (activeRemote.isRemoteMode && !isSSHBashCommand)
       if (stashedPrompt !== undefined && !isSlashCommand && submitsNow) {
         setInputValue(stashedPrompt.text)
         helpers.setCursorOffset(stashedPrompt.cursorOffset)
@@ -4671,7 +4798,7 @@ export function REPL({
         // mode (both setMessages directly with no gap to bridge).
         if (
           !isSlashCommand &&
-          inputMode === 'prompt' &&
+          submittedInputMode === 'prompt' &&
           !speculationAccept &&
           !activeRemote.isRemoteMode
         ) {
@@ -4730,6 +4857,7 @@ export function REPL({
       // plain text go to the remote.
       if (
         activeRemote.isRemoteMode &&
+        !isSSHBashCommand &&
         !(
           isSlashCommand &&
           commands.find(c => {
@@ -4806,15 +4934,15 @@ export function REPL({
         return
       }
 
-      // Ensure SessionStart hook context is available before the first API call.
-      await awaitPendingHooks()
+      // The managed remote child owns SessionStart hooks and attachments.
+      if (!isRemoteExecutionSession) await awaitPendingHooks()
 
       await handlePromptSubmit({
         input,
         helpers,
         queryGuard,
         isExternalLoading,
-        mode: inputMode,
+        mode: submittedInputMode,
         commands,
         onInputChange: setInputValue,
         setPastedContents,
@@ -4839,6 +4967,7 @@ export function REPL({
         streamMode: streamModeRef.current,
         hasInterruptibleToolInProgress:
           hasInterruptibleToolInProgressRef.current,
+        skipLocalContext: isRemoteExecutionSession,
       })
 
       // Restore stash that was deferred above. Two cases:
@@ -4891,6 +5020,7 @@ export function REPL({
       canUseTool,
       remoteSession,
       setMessages,
+      isRemoteExecutionSession,
       awaitPendingHooks,
       repinScroll,
     ],
@@ -5207,35 +5337,37 @@ export function REPL({
     // bottom right corner of the screen if the API key is invalid.
     void reverify()
 
-    // Populate readFileState with CLAUDE.md files at startup
-    const memoryFiles = await getMemoryFiles()
-    if (memoryFiles.length > 0) {
-      const fileList = memoryFiles
-        .map(
-          f =>
-            `  [${f.type}] ${f.path} (${f.content.length} chars)${f.parent ? ` (included by ${f.parent})` : ''}`,
+    if (!isRemoteExecutionSession) {
+      // Populate readFileState with CLAUDE.md files at startup
+      const memoryFiles = await getMemoryFiles()
+      if (memoryFiles.length > 0) {
+        const fileList = memoryFiles
+          .map(
+            f =>
+              `  [${f.type}] ${f.path} (${f.content.length} chars)${f.parent ? ` (included by ${f.parent})` : ''}`,
+          )
+          .join('\n')
+        logForDebugging(
+          `Loaded ${memoryFiles.length} CLAUDE.md/rules files:\n${fileList}`,
         )
-        .join('\n')
-      logForDebugging(
-        `Loaded ${memoryFiles.length} CLAUDE.md/rules files:\n${fileList}`,
-      )
-    } else {
-      logForDebugging('No CLAUDE.md/rules files found')
-    }
-    for (const file of memoryFiles) {
-      // When the injected content doesn't match disk (stripped HTML comments,
-      // stripped frontmatter, MEMORY.md truncation), cache the RAW disk bytes
-      // with isPartialView so Edit/Write require a real Read first while
-      // getChangedFiles + nested_memory dedup still work.
-      readFileState.current.set(file.path, {
-        content: file.contentDiffersFromDisk
-          ? (file.rawContent ?? file.content)
-          : file.content,
-        timestamp: Date.now(),
-        offset: undefined,
-        limit: undefined,
-        isPartialView: file.contentDiffersFromDisk,
-      })
+      } else {
+        logForDebugging('No CLAUDE.md/rules files found')
+      }
+      for (const file of memoryFiles) {
+        // When the injected content doesn't match disk (stripped HTML comments,
+        // stripped frontmatter, MEMORY.md truncation), cache the RAW disk bytes
+        // with isPartialView so Edit/Write require a real Read first while
+        // getChangedFiles + nested_memory dedup still work.
+        readFileState.current.set(file.path, {
+          content: file.contentDiffersFromDisk
+            ? (file.rawContent ?? file.content)
+            : file.content,
+          timestamp: Date.now(),
+          offset: undefined,
+          limit: undefined,
+          isPartialView: file.contentDiffersFromDisk,
+        })
+      }
     }
 
     // Initial message handling is done via the initialMessage effect
@@ -5312,6 +5444,7 @@ export function REPL({
         addNotification,
         setMessages,
         queuedCommands,
+        skipLocalContext: isRemoteExecutionSession,
       })
     },
     [
@@ -5329,6 +5462,7 @@ export function REPL({
       addNotification,
       setAppState,
       onBeforeQuery,
+      isRemoteExecutionSession,
     ],
   )
 
@@ -5348,10 +5482,10 @@ export function REPL({
   }, [inputValue, submitCount])
 
   useEffect(() => {
-    if (submitCount === 1) {
+    if (submitCount === 1 && !isRemoteExecutionSession) {
       startBackgroundHousekeeping()
     }
-  }, [submitCount])
+  }, [submitCount, isRemoteExecutionSession])
 
   // Show notification when Claude is done responding and user is idle
   useEffect(() => {
@@ -5532,13 +5666,17 @@ export function REPL({
       }
 
   useInboxPoller({
-    enabled: isAgentSwarmsEnabled(),
+    enabled: !isRemoteExecutionSession && isAgentSwarmsEnabled(),
     isLoading,
     focusedInputDialog,
     onSubmitMessage: handleIncomingPrompt,
   })
 
-  useMailboxBridge({ isLoading, onSubmitMessage: handleIncomingPrompt })
+  useMailboxBridge({
+    enabled: !isRemoteExecutionSession,
+    isLoading,
+    onSubmitMessage: handleIncomingPrompt,
+  })
 
   // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
   if (feature('AGENT_TRIGGERS')) {
@@ -5550,7 +5688,12 @@ export function REPL({
     // condition would break rules-of-hooks.
     const assistantMode = store.getState().kairosEnabled
     // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-    useScheduledTasks!({ isLoading, assistantMode, setMessages })
+    useScheduledTasks!({
+      enabled: !isRemoteExecutionSession,
+      isLoading,
+      assistantMode,
+      setMessages,
+    })
   }
 
   // Note: Permission polling is now handled by useInboxPoller
@@ -5562,7 +5705,7 @@ export function REPL({
     // eslint-disable-next-line react-hooks/rules-of-hooks
     // biome-ignore lint/correctness/useHookAtTopLevel: conditional for dead code elimination in external builds
     useTaskListWatcher({
-      taskListId,
+      taskListId: isRemoteExecutionSession ? undefined : taskListId,
       isLoading,
       onSubmitTask: handleIncomingPrompt,
     })
@@ -5574,7 +5717,8 @@ export function REPL({
       // Suppress ticks while an initial message is pending — the initial
       // message will be processed asynchronously and a premature tick would
       // race with it, causing concurrent-query enqueue of expanded skill text.
-      isLoading: isLoading || initialMessage !== null,
+      isLoading:
+        isRemoteExecutionSession || isLoading || initialMessage !== null,
       queuedCommandsLength: queuedCommands.length,
       hasActiveLocalJsxUI: isShowingLocalJSXCommand,
       isInPlanMode: toolPermissionContext.mode === 'plan',
@@ -6270,6 +6414,7 @@ export function REPL({
         key={remountKey}
         dynamicMcpConfig={dynamicMcpConfig}
         isStrictMcpConfig={strictMcpConfig}
+        disabled={sshRemote.isRemoteMode}
       >
         <FullscreenLayout
           scrollRef={scrollRef}
@@ -6953,36 +7098,12 @@ export function REPL({
                         isLocalJSXCommandActive={isShowingLocalJSXCommand}
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}
-                        setToolPermissionContext={context => {
-                          if (
-                            sshRemote.isRemoteMode &&
-                            context.mode !== toolPermissionContext.mode
-                          ) {
-                            void sshRemote
-                              .setPermissionMode(context.mode)
-                              .then(result => {
-                                if (result.success === true) {
-                                  setSessionBypassPermissionsMode(
-                                    context.mode === 'bypassPermissions',
-                                  )
-                                  setToolPermissionContext(context)
-                                } else {
-                                  setToolPermissionContext(toolPermissionContext)
-                                  addNotification({
-                                    key: 'ssh-permission-mode-rejected',
-                                    text: result.error,
-                                    color: 'error',
-                                    priority: 'high',
-                                  })
-                                }
-                              })
-                            return
-                          }
-                          setToolPermissionContext(context)
-                        }}
+                        setToolPermissionContext={setToolPermissionContext}
+                        requestPermissionModeChange={requestPermissionModeChange}
                         apiKeyStatus={apiKeyStatus}
                         commands={commands}
                         agents={agentDefinitions.activeAgents}
+                        enableLocalIOCompletions={!isRemoteExecutionSession}
                         isLoading={isLoading}
                         onExit={handleExit}
                         verbose={verbose}

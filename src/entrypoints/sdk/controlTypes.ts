@@ -80,6 +80,19 @@ export type SDKControlSetPermissionModeRequest = {
   mode: PermissionMode
 }
 
+export type SDKControlRunShellCommandRequest = {
+  subtype: 'run_shell_command'
+  command: string
+  ssh_remote_token: string
+}
+
+export type SDKControlRunShellCommandResponse = {
+  stdout: string
+  stderr: string
+  code: number
+  interrupted: boolean
+}
+
 export type SDKControlSetModelRequest = {
   subtype: 'set_model'
   model: string

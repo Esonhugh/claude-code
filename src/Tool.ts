@@ -156,6 +156,13 @@ export type CompactProgressEvent =
   | { type: 'compact_start' }
   | { type: 'compact_end' }
 
+export type RemoteShellCommandResult = {
+  stdout: string
+  stderr: string
+  code: number
+  interrupted: boolean
+}
+
 export type ToolUseContext = {
   options: {
     commands: Command[]
@@ -195,6 +202,10 @@ export type ToolUseContext = {
   requestPermissionModeChange?: (
     mode: PermissionMode,
   ) => Promise<PermissionModeChangeResult>
+  runRemoteShellCommand?: (
+    command: string,
+    signal: AbortSignal,
+  ) => Promise<RemoteShellCommandResult>
   /**
    * Always-shared setAppState for session-scoped infrastructure (background
    * tasks, session hooks). Unlike setAppState, which is no-op for async agents

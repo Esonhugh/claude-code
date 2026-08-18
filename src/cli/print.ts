@@ -213,6 +213,7 @@ import {
   saveMode,
   saveAiGeneratedTitle,
   restoreSessionMetadata,
+  recordTranscript,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
 import {
@@ -309,6 +310,10 @@ import {
   restoreSessionStateFromLog,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
+import { exec as execShell } from 'src/utils/Shell.js'
+import { BashTool } from 'src/tools/BashTool/BashTool.js'
+import { processToolResultBlock } from 'src/utils/toolResultStorage.js'
+import { createRemoteShellTranscript } from 'src/ssh/remoteShellTranscript.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
@@ -1024,6 +1029,8 @@ function runHeadlessStreaming(
   let shutdownPromptInjected = false
   let heldBackResult: StdoutMessage | null = null
   let abortController: AbortController | undefined
+  let shellAbortController: AbortController | undefined
+  let shellCommandRunning = false
   // Same queue sendRequest() enqueues to — one FIFO for everything.
   const output = structuredIO.outbound
 
@@ -1874,7 +1881,7 @@ function runHeadlessStreaming(
   })
 
   const run = async () => {
-    if (running) {
+    if (running || shellCommandRunning) {
       return
     }
 
@@ -2854,6 +2861,7 @@ function runHeadlessStreaming(
           if (abortController) {
             abortController.abort()
           }
+          shellAbortController?.abort('user-cancel')
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
@@ -2866,6 +2874,7 @@ function runHeadlessStreaming(
           if (abortController) {
             abortController.abort()
           }
+          shellAbortController?.abort('user-cancel')
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
@@ -2929,6 +2938,155 @@ function runHeadlessStreaming(
           // that initialize has set up systemPrompt, agents, hooks, etc.
           if (hasCommandsInQueue()) {
             void run()
+          }
+        } else if (message.request.subtype === 'run_shell_command') {
+          const sshRemoteToken = process.env.CLAUDE_CODE_SSH_REMOTE_TOKEN
+          const managedByHost =
+            process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST === '1'
+          const sshRemote = process.env.CLAUDE_CODE_SSH_REMOTE === '1'
+          const capabilityPresent = Boolean(sshRemoteToken)
+          const capabilityMatches =
+            capabilityPresent &&
+            message.request.ssh_remote_token === sshRemoteToken
+          if (
+            !managedByHost ||
+            !sshRemote ||
+            !capabilityPresent ||
+            !capabilityMatches
+          ) {
+            logForDebugging(
+              `[print.ts] direct SSH shell rejected managedByHost=${managedByHost} sshRemote=${sshRemote} capabilityPresent=${capabilityPresent} capabilityMatches=${capabilityMatches}`,
+            )
+            sendControlResponseError(
+              message,
+              'Direct shell commands are only available in managed SSH sessions',
+            )
+          } else if (running) {
+            logForDebugging(
+              '[print.ts] direct SSH shell rejected: model turn running',
+            )
+            sendControlResponseError(message, 'A model turn is already running')
+          } else if (shellAbortController) {
+            logForDebugging(
+              '[print.ts] direct SSH shell rejected: shell command running',
+            )
+            sendControlResponseError(message, 'A shell command is already running')
+          } else if (typeof message.request.command !== 'string') {
+            logForDebugging(
+              '[print.ts] direct SSH shell rejected: invalid command',
+            )
+            sendControlResponseError(message, 'Invalid shell command')
+          } else {
+            const request = message
+            const controller = createAbortController()
+            shellAbortController = controller
+            shellCommandRunning = true
+            logForDebugging(
+              `[print.ts] direct SSH shell start requestId=${message.request_id} commandLength=${message.request.command.length}`,
+            )
+            void (async () => {
+              let shellCommand:
+                | Awaited<ReturnType<typeof execShell>>
+                | undefined
+              try {
+                shellCommand = await execShell(
+                  message.request.command as string,
+                  controller.signal,
+                  'bash',
+                  {
+                    shouldUseSandbox: false,
+                    shouldAutoBackground: false,
+                    onStdout() {},
+                  },
+                )
+                const result = await shellCommand.result
+                const response = {
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                  code: result.code,
+                  interrupted: result.interrupted,
+                }
+                let modelStdout: string | undefined
+                try {
+                  const mapped = await processToolResultBlock(
+                    BashTool,
+                    { ...result, stderr: '' },
+                    randomUUID(),
+                  )
+                  modelStdout =
+                    typeof mapped.content === 'string'
+                      ? mapped.content
+                      : undefined
+                } catch (error) {
+                  logForDebugging(
+                    `[print.ts] Failed to persist direct SSH shell output: ${errorMessage(error)}`,
+                    { level: 'error' },
+                  )
+                }
+                const transcript = createRemoteShellTranscript(
+                  message.request.command as string,
+                  response,
+                  { modelStdout },
+                )
+                mutableMessages.push(...transcript)
+                if (!isSessionPersistenceDisabled()) {
+                  try {
+                    await recordTranscript(mutableMessages)
+                  } catch (error) {
+                    logForDebugging(
+                      `[print.ts] Failed to persist direct SSH shell transcript: ${errorMessage(error)}`,
+                      { level: 'error' },
+                    )
+                  }
+                }
+                logForDebugging(
+                  `[print.ts] direct SSH shell complete requestId=${request.request_id} code=${response.code} interrupted=${response.interrupted} stdoutBytes=${Buffer.byteLength(response.stdout)} stderrBytes=${Buffer.byteLength(response.stderr)} transcriptMessages=${transcript.length} persistedOutput=${modelStdout !== undefined}`,
+                )
+                sendControlResponseSuccess(request, response)
+              } catch (error) {
+                const message = errorMessage(error)
+                const transcript = createRemoteShellTranscript(
+                  request.request.command as string,
+                  { error: message },
+                )
+                mutableMessages.push(...transcript)
+                if (!isSessionPersistenceDisabled()) {
+                  try {
+                    await recordTranscript(mutableMessages)
+                  } catch (persistError) {
+                    logForDebugging(
+                      `[print.ts] Failed to persist direct SSH shell failure transcript: ${errorMessage(persistError)}`,
+                      { level: 'error' },
+                    )
+                  }
+                }
+                logForDebugging(
+                  `[print.ts] direct SSH shell failed requestId=${request.request_id} transcriptMessages=${transcript.length}: ${message}`,
+                  { level: 'error' },
+                )
+                sendControlResponseError(request, message)
+              } finally {
+                shellCommand?.cleanup()
+                if (shellAbortController === controller) {
+                  shellAbortController = undefined
+                  shellCommandRunning = false
+                  const hasQueuedPrompt =
+                    peek(command => command.agentId === undefined) !== undefined
+                  logForDebugging(
+                    `[print.ts] direct SSH shell lifecycle released requestId=${request.request_id} queuedPrompt=${hasQueuedPrompt} inputClosed=${inputClosed}`,
+                  )
+                  if (hasQueuedPrompt) {
+                    void run()
+                  } else if (inputClosed) {
+                    await finalizePendingAsyncHooks()
+                    unsubscribeSkillChanges()
+                    unsubscribeAuthStatus?.()
+                    statusListeners.delete(rateLimitListener)
+                    output.done()
+                  }
+                }
+              }
+            })()
           }
         } else if (message.request.subtype === 'set_permission_mode') {
           const m = message.request // for typescript (TODO: use readonly types to avoid this)
@@ -4210,8 +4368,9 @@ function runHeadlessStreaming(
       void run()
     }
     inputClosed = true
+    shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
-    if (!running) {
+    if (!running && !shellCommandRunning) {
       // If a push-suggestion is in-flight, wait for it to emit before closing
       // the output stream (5 s safety timeout to prevent hanging).
       if (suggestionState.inflightPromise) {

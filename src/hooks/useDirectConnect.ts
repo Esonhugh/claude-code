@@ -134,10 +134,13 @@ export function useDirectConnect({
               queue.filter(item => item.toolUseID !== request.tool_use_id),
             )
           },
-          onAllow(updatedInput, _permissionUpdates, _feedback) {
+          onAllow(updatedInput, permissionUpdates, _feedback) {
             const response: RemotePermissionResponse = {
               behavior: 'allow',
               updatedInput,
+              ...(permissionUpdates.length > 0
+                ? { updatedPermissions: permissionUpdates }
+                : {}),
             }
             manager.respondToPermissionRequest(requestId, response)
             setToolUseConfirmQueue(queue =>

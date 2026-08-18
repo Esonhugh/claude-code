@@ -66,6 +66,10 @@ export function isBareMode(): boolean {
   )
 }
 
+export function isSSHLocalUI(): boolean {
+  return process.env.CLAUDE_CODE_SSH_LOCAL_UI === '1'
+}
+
 /**
  * Parses an array of environment variable strings into a key-value object
  * @param envVars Array of strings in KEY=VALUE format

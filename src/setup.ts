@@ -26,10 +26,11 @@ import { checkAndRestoreTerminalBackup } from './utils/appleTerminalBackup.js'
 import { prefetchApiKeyFromApiKeyHelperIfSafe } from './utils/auth.js'
 import { clearMemoryFileCaches } from './utils/claudemd.js'
 import { getCurrentProjectConfig, getGlobalConfig } from './utils/config.js'
+import { logForDebugging } from './utils/debug.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
 import { env } from './utils/env.js'
 import { envDynamic } from './utils/envDynamic.js'
-import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
+import { isBareMode, isEnvTruthy, isSSHLocalUI } from './utils/envUtils.js'
 import { errorMessage } from './utils/errors.js'
 import { findCanonicalGitRoot, findGitRoot, getIsGit } from './utils/git.js'
 import { initializeFileChangedWatcher } from './utils/hooks/fileChangedWatcher.js'
@@ -60,7 +61,9 @@ export function isHostManagedSSHRemote(
 ): boolean {
   return (
     environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST === '1' &&
-    environment.CLAUDE_CODE_SSH_REMOTE === '1'
+    environment.CLAUDE_CODE_SSH_REMOTE === '1' &&
+    environment.CLAUDE_CODE_SSH_REMOTE_TOKEN !== undefined &&
+    environment.CLAUDE_CODE_SSH_REMOTE_TOKEN !== ''
   )
 }
 
@@ -115,7 +118,10 @@ export async function setup(
   // --bare / SIMPLE: skip UDS messaging server and teammate snapshot.
   // Scripted calls don't receive injected messages and don't use swarm teammates.
   // Explicit --messaging-socket-path is the escape hatch (per #23222 gate pattern).
-  if (!isBareMode() || messagingSocketPath !== undefined) {
+  if (
+    !isSSHLocalUI() &&
+    (!isBareMode() || messagingSocketPath !== undefined)
+  ) {
     // Start UDS messaging server (Mac/Linux only).
     // Enabled by default for ants — creates a socket in tmpdir if no
     // --messaging-socket-path is passed. Awaited so the server is bound
@@ -131,7 +137,7 @@ export async function setup(
   }
 
   // Teammate snapshot — SIMPLE-only gate (no escape hatch, swarm not used in bare)
-  if (!isBareMode() && isAgentSwarmsEnabled()) {
+  if (!isBareMode() && !isSSHLocalUI() && isAgentSwarmsEnabled()) {
     const { captureTeammateModeSnapshot } = await import(
       './utils/swarm/backends/teammateModeSnapshot.js'
     )
@@ -141,7 +147,7 @@ export async function setup(
   // Terminal backup restoration — interactive only. Print mode doesn't
   // interact with terminal settings; the next interactive session will
   // detect and restore any interrupted setup.
-  if (!getIsNonInteractiveSession()) {
+  if (!getIsNonInteractiveSession() && !isSSHLocalUI()) {
     // iTerm2 backup check only when swarms enabled
     if (isAgentSwarmsEnabled()) {
       const restoredIterm2Backup = await checkAndRestoreITerm2Backup()
@@ -189,16 +195,20 @@ export async function setup(
   // IMPORTANT: setCwd() must be called before any other code that depends on the cwd
   setCwd(cwd)
 
-  // Capture hooks configuration snapshot to avoid hidden hook modifications.
-  // IMPORTANT: Must be called AFTER setCwd() so hooks are loaded from the correct directory
-  const hooksStart = Date.now()
-  captureHooksConfigSnapshot()
-  logForDiagnosticsNoPII('info', 'setup_hooks_captured', {
-    duration_ms: Date.now() - hooksStart,
-  })
+  if (!isSSHLocalUI()) {
+    // Capture hooks configuration snapshot to avoid hidden hook modifications.
+    // IMPORTANT: Must be called AFTER setCwd() so hooks are loaded from the correct directory
+    const hooksStart = Date.now()
+    captureHooksConfigSnapshot()
+    logForDiagnosticsNoPII('info', 'setup_hooks_captured', {
+      duration_ms: Date.now() - hooksStart,
+    })
 
-  // Initialize FileChanged hook watcher — sync, reads hook config snapshot
-  initializeFileChangedWatcher(cwd)
+    // Initialize FileChanged hook watcher — sync, reads hook config snapshot
+    initializeFileChangedWatcher(cwd)
+  } else {
+    logForDebugging('[SSH] skipping local hook snapshot and file watcher')
+  }
 
   // Handle worktree creation if requested
   // IMPORTANT: this must be called befiore getCommands(), otherwise /eject won't be available.
@@ -319,7 +329,7 @@ export async function setup(
   // getCommands() kick — see comment there. Moved out of setup() because
   // the await points above (startUdsMessaging, ~20ms) meant getCommands()
   // raced ahead and memoized an empty bundledSkills list.
-  if (!isBareMode()) {
+  if (!isBareMode() && !isSSHLocalUI()) {
     initSessionMemory() // Synchronous - registers hook, gate check happens lazily
     if (feature('CONTEXT_COLLAPSE')) {
       /* eslint-disable @typescript-eslint/no-require-imports */
@@ -343,6 +353,7 @@ export async function setup(
   // on the same directories), and the hot-reload handler fires clearPluginCache()
   // mid-install when policySettings arrives.
   const skipPluginPrefetch =
+    isSSHLocalUI() ||
     (getIsNonInteractiveSession() &&
       isEnvTruthy(process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL)) ||
     // --bare: loadPluginHooks → loadAllPlugins is filesystem work that's
@@ -363,7 +374,7 @@ export async function setup(
   // commit code, and the 49ms attribution hook stat check (measured) is pure
   // overhead. NOT an early-return: the --dangerously-skip-permissions safety
   // gate, tengu_started beacon, and apiKeyHelper prefetch below must still run.
-  if (!isBareMode()) {
+  if (!isBareMode() && !isSSHLocalUI()) {
     if (isAnt()) {
       // Prime repo classification cache for auto-undercover mode. Default is
       // undercover ON until proven internal; if this resolves to internal, clear
