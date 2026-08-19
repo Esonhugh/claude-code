@@ -166,6 +166,16 @@ export function useDirectConnect({
         setToolUseConfirmQueue(queue => [...queue, toolUseConfirm])
         setIsLoading(false)
       },
+      onPermissionCancelled: (requestId, toolUseId) => {
+        logForDebugging(
+          `[useDirectConnect] Permission request cancelled: ${requestId}`,
+        )
+        const idToRemove = toolUseId ?? requestId
+        setToolUseConfirmQueue(queue =>
+          queue.filter(item => item.toolUseID !== idToRemove),
+        )
+        setIsLoading(true)
+      },
       onConnected: () => {
         logForDebugging('[useDirectConnect] Connected')
         isConnectedRef.current = true

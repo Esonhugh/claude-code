@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'bun:test'
-import { shouldRejectRootBypassPermissions } from './setup.js'
+import {
+  shouldPrefetchLogoRecentActivity,
+  shouldRejectRootBypassPermissions,
+} from './setup.js'
+
+describe('Logo recent activity prefetch', () => {
+  it('runs only for ordinary interactive sessions', () => {
+    assert.equal(
+      shouldPrefetchLogoRecentActivity({ bare: false, sshLocalUI: false }),
+      true,
+    )
+    assert.equal(
+      shouldPrefetchLogoRecentActivity({ bare: true, sshLocalUI: false }),
+      false,
+    )
+    assert.equal(
+      shouldPrefetchLogoRecentActivity({ bare: false, sshLocalUI: true }),
+      false,
+    )
+  })
+})
 
 describe('root bypass permission safety', () => {
   it('rejects ordinary root sessions', () => {

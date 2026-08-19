@@ -67,6 +67,16 @@ export function isHostManagedSSHRemote(
   )
 }
 
+export function shouldPrefetchLogoRecentActivity({
+  bare = isBareMode(),
+  sshLocalUI = isSSHLocalUI(),
+}: {
+  bare?: boolean
+  sshLocalUI?: boolean
+} = {}): boolean {
+  return !bare && !sshLocalUI
+}
+
 export function shouldRejectRootBypassPermissions({
   platform = process.platform,
   uid = typeof process.getuid === 'function' ? process.getuid() : undefined,
@@ -423,9 +433,10 @@ export async function setup(
   profileCheckpoint('setup_after_prefetch')
 
   // Pre-fetch data for Logo v2 - await to ensure it's ready before logo renders.
-  // --bare / SIMPLE: skip — release notes are interactive-UI display data,
-  // and getRecentActivity() reads up to 10 session JSONL files.
-  if (!isBareMode()) {
+  // --bare / SIMPLE: skip — release notes are interactive-UI display data.
+  // SSH-local UI also skips because recent activity reads local session JSONL
+  // files while the managed child owns the active execution context.
+  if (shouldPrefetchLogoRecentActivity()) {
     const { hasReleaseNotes } = await checkForReleaseNotes(
       getGlobalConfig().lastReleaseNotesSeen,
     )

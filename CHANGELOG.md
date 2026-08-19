@@ -12,6 +12,49 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-19 - v2.1.212 - SSH 权限同步与远程执行边界
+
+### 版本状态
+
+- 准备发布版本：`v2.1.212`。
+- 本次发布覆盖 `v2.1.211` 之后至 2026-08-19 的 SSH 权限模式同步、远程 shell、既有 Direct Connect 控制协议加固和本地/远端执行边界修复。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.212`。
+
+### 关联提交
+
+- `b82848a` — 同步 SSH 本地 TUI 与 managed remote child 的 bypass 权限状态，并在远端确认成功后更新本地模式。
+- `3fa3cb4` — 将 shell、工具和项目上下文执行收敛到 managed remote child，并隔离本地 SSH UI 的项目设施。
+- 当前维护 Direct Connect 加固、SSH-local 边界和发布元数据的提交因提交时 hash 尚未生成，不在关联提交中自引用；完整范围以最终 `v2.1.211..v2.1.212` 为准。
+
+### 变更内容
+
+#### SSH 权限模式与控制协议
+
+- `/plan`、`/yolo` 和 Shift+Tab 通过 SSH control request 同步到 managed remote child；显式 CLI permission 参数在 remote child 启动命令中转发。本地 UI 只有在远端成功确认 live mode change 后才提交模式变化，失败或乱序响应会恢复已确认状态。
+- root remote child 只有在 host-managed provider、SSH remote marker 和非空随机 capability token 同时成立时才能使用 bypass；settings env 无法伪造或覆盖这些会话能力标记。
+- 永久 permission updates 在 SSH、Direct Connect 和 Remote Session permission response 中保持完整；SSH manager 额外处理 replayed permission response、interrupt acknowledgement、取消超时、断线和 pending request cleanup。
+- 本次发布不新增 Direct Connect transport；它是恢复基线中已有的 HTTP session + WebSocket remote transport。本次仅使用完整 control schema 拒绝 malformed frame，跟踪 pending permission request，并在 server cancellation 到达时移除对应权限提示，避免 stale prompt 和取消后的迟到响应。
+
+#### 远程 shell 与 transcript
+
+- SSH 会话中的 `!command` 直接在 managed remote child 的远端 cwd 执行，不再发送给模型或误在本地主机运行；shell 与模型 turn 串行互斥，并支持中断、部分输出和明确退出状态。
+- 远程 shell 输入、stdout 和 stderr 经过 XML 转义后写入 synthetic transcript，并立即尝试持久化；持久化失败会记录 debug error，但不改变已经成功的 shell 结果。后续模型 turn 可以引用内存中的真实远端输出，同时避免 transcript markup 注入。
+- direct-shell control request 要求匹配每次会话生成的 capability token；缺失、空值或不匹配时 fail closed。
+
+#### 本地与远端执行边界
+
+- 本地 SSH 进程仅保留 TUI、SSH transport、认证 proxy、账户 onboarding 和 permission UI；tools、skills、plugins、agents、hooks、MCP、LSP、scheduler、文件索引、附件、repository context 和 remote transcript 均由 managed remote child 负责。
+- SSH local UI 使用固定安全 slash-command 列表，并跳过本机 `CLAUDE.md`/Memory、Git repository、installed plugins、startup hooks、Logo recent-session preload、background housekeeping 和 spinner plugin predicate 扫描，避免把本机项目上下文泄漏到远端会话。
+- SSH root argv 解析统一处理 `--`、dash-prefixed required values、agent/model precedence、auto-mode aliases 和 attached short options；明确拒绝 remote 不支持的 worktree、tmux 与 SDK URL 组合，并将 remote-owned advisor 参数转发给 managed child。
+- 所有 remote execution session（Remote Session、既有 Direct Connect 和 SSH）当前都禁用本机 IDE integration、local tools 和 local skill watcher，避免本机 IDE/workspace 与远端执行上下文混用。该保守边界是 SSH 隔离所必需的，也意味着即使 Direct Connect server 与本机共享 workspace，remote session 也不会暴露本机 IDE MCP tools。
+
+### 测试覆盖
+
+- 当前六文件 SSH focused suite 共 89 项测试通过，覆盖 permission mode、capability token、direct shell、transcript、argv parsing、部署与 managed control lifecycle；Direct Connect control protocol 的 malformed request、server cancellation、socket close cleanup 和 late response 有专用回归测试；全量源测试按 `src/**/*.test.{ts,tsx}` 文件逐文件隔离执行。
+- TypeScript、ESLint、missing import/asset audit 和 `git diff --check` 通过；实现阶段使用 `pojun-master` root 与 `test` 用户验收远端 shell、模型读取 shell transcript、`/plan`、`/yolo`、Shift+Tab、CLI bypass 和永久 permission rule，ControlMaster cleanup 成功。
+- debug log 证明 remote child 从 `bypass=false` 启动，收到并确认 `bypassPermissions` control request；最新 boundary run 未再观察到本机 Memory、Git repository 或 installed plugins 的加载日志。
+
 ## 2026-08-17 - v2.1.211 - Remote SSH 部署与生命周期加固
 
 ### 版本状态

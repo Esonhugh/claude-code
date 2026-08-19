@@ -1,10 +1,8 @@
 /* eslint-disable eslint-plugin-n/no-unsupported-features/node-builtins */
 
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
-import type {
-  SDKControlPermissionRequest,
-  StdoutMessage,
-} from '../entrypoints/sdk/controlTypes.js'
+import { StdoutMessageSchema } from '../entrypoints/sdk/controlSchemas.js'
+import type { SDKControlPermissionRequest } from '../entrypoints/sdk/controlTypes.js'
 import type { RemotePermissionResponse } from '../remote/RemoteSessionManager.js'
 import { logForDebugging } from '../utils/debug.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
@@ -23,24 +21,20 @@ export type DirectConnectCallbacks = {
     request: SDKControlPermissionRequest,
     requestId: string,
   ) => void
+  onPermissionCancelled?: (
+    requestId: string,
+    toolUseId: string | undefined,
+  ) => void
   onConnected?: () => void
   onDisconnected?: () => void
   onError?: (error: Error) => void
-}
-
-function isStdoutMessage(value: unknown): value is StdoutMessage {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'type' in value &&
-    typeof value.type === 'string'
-  )
 }
 
 export class DirectConnectSessionManager {
   private ws: WebSocket | null = null
   private config: DirectConnectConfig
   private callbacks: DirectConnectCallbacks
+  private pendingPermissionRequests = new Map<string, string>()
 
   constructor(config: DirectConnectConfig, callbacks: DirectConnectCallbacks) {
     this.config = config
@@ -73,17 +67,35 @@ export class DirectConnectSessionManager {
           continue
         }
 
-        if (!isStdoutMessage(raw)) {
+        const result = StdoutMessageSchema().safeParse(raw)
+        if (!result.success) {
+          this.callbacks.onError?.(new Error('Invalid direct-connect message'))
+          if (
+            typeof raw === 'object' &&
+            raw !== null &&
+            'type' in raw &&
+            raw.type === 'control_request' &&
+            'request_id' in raw &&
+            typeof raw.request_id === 'string'
+          ) {
+            this.sendErrorResponse(
+              raw.request_id,
+              'Invalid direct-connect control request',
+            )
+          }
           continue
         }
-        const parsed = raw
+        const parsed = result.data
 
         // Handle control requests (permission requests)
         if (parsed.type === 'control_request') {
           if (parsed.request.subtype === 'can_use_tool') {
+            this.pendingPermissionRequests.set(
+              parsed.request_id,
+              parsed.request.tool_use_id,
+            )
             this.callbacks.onPermissionRequest(
-              // @ts-ignore - recovered code
-              parsed.request,
+              parsed.request as SDKControlPermissionRequest,
               parsed.request_id,
             )
           } else {
@@ -100,12 +112,17 @@ export class DirectConnectSessionManager {
           continue
         }
 
+        if (parsed.type === 'control_cancel_request') {
+          const toolUseId = this.pendingPermissionRequests.get(parsed.request_id)
+          this.pendingPermissionRequests.delete(parsed.request_id)
+          this.callbacks.onPermissionCancelled?.(parsed.request_id, toolUseId)
+          continue
+        }
+
         // Forward SDK messages (assistant, result, system, etc.)
         if (
           parsed.type !== 'control_response' &&
           parsed.type !== 'keep_alive' &&
-          // @ts-ignore - recovered code
-          parsed.type !== 'control_cancel_request' &&
           // @ts-ignore - recovered code
           parsed.type !== 'streamlined_text' &&
           // @ts-ignore - recovered code
@@ -113,12 +130,13 @@ export class DirectConnectSessionManager {
           // @ts-ignore - recovered code
           !(parsed.type === 'system' && parsed.subtype === 'post_turn_summary')
         ) {
-          this.callbacks.onMessage(parsed)
+          this.callbacks.onMessage(parsed as SDKMessage)
         }
       }
     })
 
     this.ws.addEventListener('close', () => {
+      this.pendingPermissionRequests.clear()
       this.callbacks.onDisconnected?.()
     })
 
@@ -150,7 +168,11 @@ export class DirectConnectSessionManager {
     requestId: string,
     result: RemotePermissionResponse,
   ): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (
+      !this.pendingPermissionRequests.delete(requestId) ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
+    ) {
       return
     }
 
@@ -211,6 +233,7 @@ export class DirectConnectSessionManager {
   }
 
   disconnect(): void {
+    this.pendingPermissionRequests.clear()
     if (this.ws) {
       this.ws.close()
       this.ws = null
