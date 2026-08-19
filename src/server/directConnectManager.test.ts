@@ -71,6 +71,16 @@ function createManager(callbacks?: {
 }
 
 describe('DirectConnectSessionManager control protocol', () => {
+  it('reports malformed JSON without throwing', () => {
+    const { socket, errors } = createManager()
+
+    expect(() => socket.emit('message', '{')).not.toThrow()
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toBe('Invalid direct-connect message')
+    expect(socket.sent).toEqual([])
+  })
+
   it('rejects malformed control requests without throwing', () => {
     const { socket, errors } = createManager()
 
@@ -90,6 +100,31 @@ describe('DirectConnectSessionManager control protocol', () => {
           subtype: 'error',
           request_id: 'req-1',
           error: 'Invalid direct-connect control request',
+        },
+      },
+    ])
+  })
+
+  it('rejects unsupported control request subtypes', () => {
+    const { socket, errors } = createManager()
+
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'req-1',
+        request: { subtype: 'interrupt' },
+      }),
+    )
+
+    expect(errors).toEqual([])
+    expect(socket.sent.map(message => JSON.parse(message))).toEqual([
+      {
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: 'req-1',
+          error: 'Unsupported control request subtype: interrupt',
         },
       },
     ])
@@ -154,28 +189,34 @@ describe('DirectConnectSessionManager control protocol', () => {
     expect(socket.sent).toEqual([])
   })
 
-  it('clears pending permissions when the socket closes', () => {
-    const { manager, socket } = createManager()
-    socket.emit(
-      'message',
-      JSON.stringify({
-        type: 'control_request',
-        request_id: 'req-1',
-        request: {
-          subtype: 'can_use_tool',
-          tool_name: 'Bash',
-          input: { command: 'pwd' },
-          tool_use_id: 'tool-1',
-        },
-      }),
-    )
-    socket.emit('close')
+  it.each(['error', 'close']) (
+    'clears pending permissions when the socket emits %s',
+    event => {
+      const { manager, socket, errors } = createManager()
+      socket.emit(
+        'message',
+        JSON.stringify({
+          type: 'control_request',
+          request_id: 'req-1',
+          request: {
+            subtype: 'can_use_tool',
+            tool_name: 'Bash',
+            input: { command: 'pwd' },
+            tool_use_id: 'tool-1',
+          },
+        }),
+      )
+      socket.emit(event)
 
-    manager.respondToPermissionRequest('req-1', {
-      behavior: 'allow',
-      updatedInput: { command: 'pwd' },
-    })
+      manager.respondToPermissionRequest('req-1', {
+        behavior: 'allow',
+        updatedInput: { command: 'pwd' },
+      })
 
-    expect(socket.sent).toEqual([])
-  })
+      expect(socket.sent).toEqual([])
+      expect(errors.map(error => error.message)).toEqual(
+        event === 'error' ? ['WebSocket connection error'] : [],
+      )
+    },
+  )
 })

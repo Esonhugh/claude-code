@@ -191,11 +191,16 @@ export function useSSHSession({
         setToolUseConfirmQueue(q => [...q, toolUseConfirm])
         setIsLoading(false)
       },
-      onPermissionCancelled: (_requestId, toolUseId) => {
-        if (!toolUseId) return
-        setToolUseConfirmQueue(queue =>
-          queue.filter(item => item.toolUseID !== toolUseId),
+      onPermissionCancelled: (requestId, toolUseId) => {
+        logForDebugging(
+          `[useSSHSession] permission request cancelled: ${requestId}`,
         )
+        if (toolUseId) {
+          setToolUseConfirmQueue(queue =>
+            queue.filter(item => item.toolUseID !== toolUseId),
+          )
+        }
+        setIsLoading(true)
       },
       onConnected: () => {
         logForDebugging('[useSSHSession] connected')

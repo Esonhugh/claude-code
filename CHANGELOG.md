@@ -34,7 +34,7 @@
 - `/plan`、`/yolo` 和 Shift+Tab 通过 SSH control request 同步到 managed remote child；显式 CLI permission 参数在 remote child 启动命令中转发。本地 UI 只有在远端成功确认 live mode change 后才提交模式变化，失败或乱序响应会恢复已确认状态。
 - root remote child 只有在 host-managed provider、SSH remote marker 和非空随机 capability token 同时成立时才能使用 bypass；settings env 无法伪造或覆盖这些会话能力标记。
 - 永久 permission updates 在 SSH、Direct Connect 和 Remote Session permission response 中保持完整；SSH manager 额外处理 replayed permission response、interrupt acknowledgement、取消超时、断线和 pending request cleanup。
-- 本次发布不新增 Direct Connect transport；它是恢复基线中已有的 HTTP session + WebSocket remote transport。本次仅使用完整 control schema 拒绝 malformed frame，跟踪 pending permission request，并在 server cancellation 到达时移除对应权限提示，避免 stale prompt 和取消后的迟到响应。
+- 本次发布不新增 Direct Connect transport；它在 `v2.1.211` 中已经是 HTTP session + WebSocket remote transport。本次仅使用完整 control schema 拒绝 malformed frame，跟踪 pending permission request，并在 server cancellation 到达时移除对应权限提示，避免 stale prompt 和取消后的迟到响应。
 
 #### 远程 shell 与 transcript
 
@@ -51,8 +51,8 @@
 
 ### 测试覆盖
 
-- 当前六文件 SSH focused suite 共 89 项测试通过，覆盖 permission mode、capability token、direct shell、transcript、argv parsing、部署与 managed control lifecycle；Direct Connect control protocol 的 malformed request、server cancellation、socket close cleanup 和 late response 有专用回归测试；全量源测试按 `src/**/*.test.{ts,tsx}` 文件逐文件隔离执行。
-- TypeScript、ESLint、missing import/asset audit 和 `git diff --check` 通过；实现阶段使用 `pojun-master` root 与 `test` 用户验收远端 shell、模型读取 shell transcript、`/plan`、`/yolo`、Shift+Tab、CLI bypass 和永久 permission rule，ControlMaster cleanup 成功。
+- 当前六文件 SSH focused suite 共 86 项测试通过，覆盖 permission mode、capability token、direct shell、transcript、argv parsing、部署与 managed control lifecycle；Direct Connect control protocol 的 malformed request、server cancellation、socket close cleanup 和 late response 有专用回归测试。
+- TypeScript、ESLint、missing import/asset audit 和 `git diff --check` 通过；实现阶段使用 `pojun-master` root 与 `test` 用户验收远端 shell、模型读取 shell transcript、`/plan`、`/yolo`、Shift+Tab 和 CLI bypass，ControlMaster cleanup 成功。
 - debug log 证明 remote child 从 `bypass=false` 启动，收到并确认 `bypassPermissions` control request；最新 boundary run 未再观察到本机 Memory、Git repository 或 installed plugins 的加载日志。
 
 ## 2026-08-17 - v2.1.211 - Remote SSH 部署与生命周期加固

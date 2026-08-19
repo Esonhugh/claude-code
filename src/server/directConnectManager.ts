@@ -64,6 +64,7 @@ export class DirectConnectSessionManager {
         try {
           raw = jsonParse(line)
         } catch {
+          this.callbacks.onError?.(new Error('Invalid direct-connect message'))
           continue
         }
 
@@ -141,6 +142,7 @@ export class DirectConnectSessionManager {
     })
 
     this.ws.addEventListener('error', () => {
+      this.pendingPermissionRequests.clear()
       this.callbacks.onError?.(new Error('WebSocket connection error'))
     })
   }
