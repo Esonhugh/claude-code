@@ -433,6 +433,7 @@ export class StructuredIO {
       if (
         message.type !== 'user' &&
         message.type !== 'control_request' &&
+        message.type !== 'control_cancel_request' &&
         message.type !== 'assistant' &&
         message.type !== 'system'
       ) {
@@ -445,6 +446,9 @@ export class StructuredIO {
         if (!message.request) {
           exitWithMessage(`Error: Missing request on control_request`)
         }
+        return message
+      }
+      if (message.type === 'control_cancel_request') {
         return message
       }
       if (message.type === 'assistant' || message.type === 'system') {

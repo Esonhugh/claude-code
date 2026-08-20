@@ -222,6 +222,7 @@ import {
 } from './Notifications.js'
 import PromptInputFooter from './PromptInputFooter.js'
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js'
+import type { RemoteFileSuggestionProvider } from '../../hooks/remoteFileSuggestions.js'
 import { PromptInputModeIndicator } from './PromptInputModeIndicator.js'
 import { PromptInputQueuedCommands } from './PromptInputQueuedCommands.js'
 import { PromptInputStashNotice } from './PromptInputStashNotice.js'
@@ -245,6 +246,7 @@ type Props = {
   commands: Command[]
   agents: AgentDefinition[]
   enableLocalIOCompletions?: boolean
+  remoteFileSuggestionProvider?: RemoteFileSuggestionProvider
   isLoading: boolean
   verbose: boolean
   messages: Message[]
@@ -335,6 +337,7 @@ function PromptInput({
   commands,
   agents,
   enableLocalIOCompletions = true,
+  remoteFileSuggestionProvider,
   isLoading,
   verbose,
   messages,
@@ -1646,6 +1649,7 @@ function PromptInput({
     mode,
     agents,
     enableLocalIOCompletions,
+    remoteFileSuggestionProvider,
     setSuggestionsState,
     suggestionsState,
     suppressSuggestions: isSearchingHistory || historyIndex > 0,

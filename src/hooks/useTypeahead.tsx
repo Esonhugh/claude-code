@@ -73,6 +73,10 @@ import {
 } from './fileSuggestions.js'
 import { generateUnifiedSuggestions } from './unifiedSuggestions.js'
 import { buildCodexAppPluginProjections } from '../services/apps/pluginProjection.js'
+import {
+  type RemoteFileSuggestionProvider,
+  toRemoteFileSuggestionItems,
+} from './remoteFileSuggestions.js'
 
 // Unicode-aware character class for file path tokens:
 // \p{L} = letters (CJK, Latin, Cyrillic, etc.)
@@ -163,6 +167,7 @@ type Props = {
   }
   suppressSuggestions?: boolean
   enableLocalIOCompletions?: boolean
+  remoteFileSuggestionProvider?: RemoteFileSuggestionProvider
   markAccepted: () => void
   onModeChange?: (mode: PromptInputMode) => void
 }
@@ -469,6 +474,7 @@ export function useTypeahead({
   suggestionsState: { suggestions, selectedSuggestion, commandArgumentHint },
   suppressSuggestions = false,
   enableLocalIOCompletions = true,
+  remoteFileSuggestionProvider,
   markAccepted,
   onModeChange,
 }: Props): UseTypeaheadResult {
@@ -558,9 +564,14 @@ export function useTypeahead({
   suggestionsRef.current = suggestions
   // Track the input value when suggestions were manually dismissed to prevent re-triggering
   const dismissedForInputRef = useRef<string | null>(null)
+  const remoteFileSuggestionAbortRef = useRef<AbortController | null>(null)
+  const enableFileCompletions =
+    enableLocalIOCompletions || remoteFileSuggestionProvider !== undefined
 
   // Clear all suggestions
   const clearSuggestions = useCallback(() => {
+    remoteFileSuggestionAbortRef.current?.abort()
+    remoteFileSuggestionAbortRef.current = null
     setSuggestionsState(() => ({
       commandArgumentHint: undefined,
       suggestions: [],
@@ -571,19 +582,71 @@ export function useTypeahead({
     setInlineGhostText(undefined)
   }, [setSuggestionsState])
 
+  const requestFileSuggestionItems = useCallback(
+    async (
+      searchToken: string,
+      isAtSymbol: boolean,
+    ): Promise<SuggestionItem[]> => {
+      if (!remoteFileSuggestionProvider) {
+        if (!enableLocalIOCompletions) return []
+        return generateUnifiedSuggestions(
+          searchToken,
+          mcpResources,
+          agents,
+          codexApps,
+          isAtSymbol,
+        )
+      }
+
+      remoteFileSuggestionAbortRef.current?.abort()
+      const controller = new AbortController()
+      remoteFileSuggestionAbortRef.current = controller
+      try {
+        const response = await remoteFileSuggestionProvider(
+          {
+            query: searchToken,
+            mode: isPathLikeToken(searchToken) ? 'path' : 'fuzzy',
+            show_on_empty: isAtSymbol && searchToken.length === 0,
+            limit: 15,
+          },
+          controller.signal,
+        )
+        return toRemoteFileSuggestionItems(response)
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return []
+        return []
+      } finally {
+        if (remoteFileSuggestionAbortRef.current === controller) {
+          remoteFileSuggestionAbortRef.current = null
+        }
+      }
+    }, [
+      remoteFileSuggestionProvider,
+      enableLocalIOCompletions,
+      mcpResources,
+      agents,
+      codexApps,
+    ],
+  )
+
+  useEffect(
+    () => () => {
+      remoteFileSuggestionAbortRef.current?.abort()
+      remoteFileSuggestionAbortRef.current = null
+    },
+    [],
+  )
+
   // Expensive async operation to fetch file/resource suggestions
   const fetchFileSuggestions = useCallback(
     async (searchToken: string, isAtSymbol = false): Promise<void> => {
-      if (!enableLocalIOCompletions) {
+      if (!enableFileCompletions) {
         clearSuggestions()
         return
       }
       latestSearchTokenRef.current = searchToken
-      const combinedItems = await generateUnifiedSuggestions(
+      const combinedItems = await requestFileSuggestionItems(
         searchToken,
-        mcpResources,
-        agents,
-        codexApps,
         isAtSymbol,
       )
       // Discard stale results if a newer query was initiated while waiting
@@ -614,14 +677,12 @@ export function useTypeahead({
       setMaxColumnWidth(undefined) // No fixed width for file suggestions
     },
     [
-      mcpResources,
-      codexApps,
       setSuggestionsState,
       setSuggestionType,
       setMaxColumnWidth,
-      agents,
-      enableLocalIOCompletions,
+      enableFileCompletions,
       clearSuggestions,
+      requestFileSuggestionItems,
     ],
   )
 
@@ -1076,7 +1137,7 @@ export function useTypeahead({
 
       // Check for @ symbol to trigger file and MCP resource suggestions
       // Skip @ autocomplete in bash mode - @ has no special meaning in shell commands
-      if (enableLocalIOCompletions && hasAtSymbol && mode !== 'bash') {
+      if (enableFileCompletions && hasAtSymbol && mode !== 'bash') {
         // Get the @ token (including the @ symbol)
         const completionToken = extractCompletionToken(
           value,
@@ -1088,7 +1149,11 @@ export function useTypeahead({
 
           // If the token after @ is path-like, use path completion instead of fuzzy search
           // This handles cases like @~/path, @./path, @/path for directory traversal
-          if (isPathLikeToken(searchToken)) {
+          if (
+            enableLocalIOCompletions &&
+            !remoteFileSuggestionProvider &&
+            isPathLikeToken(searchToken)
+          ) {
             latestPathTokenRef.current = searchToken
             const pathSuggestions = await getPathCompletions(searchToken, {
               maxResults: 10,
@@ -1123,7 +1188,7 @@ export function useTypeahead({
       }
 
       // If we have active file suggestions or the input changed, check for file suggestions
-      if (enableLocalIOCompletions && suggestionType === 'file') {
+      if (enableFileCompletions && suggestionType === 'file') {
         const completionToken = extractCompletionToken(
           value,
           effectiveCursorOffset,
@@ -1165,6 +1230,8 @@ export function useTypeahead({
       mode,
       suppressSuggestions,
       enableLocalIOCompletions,
+      enableFileCompletions,
+      remoteFileSuggestionProvider,
       // Note: using suggestionsRef instead of suggestions to avoid recreating
       // this callback when only selectedSuggestion changes (not the suggestions list)
       allCommandsMaxWidth,
@@ -1463,7 +1530,7 @@ export function useTypeahead({
           }
         }
       }
-    } else if (enableLocalIOCompletions && input.trim() !== '') {
+    } else if (enableFileCompletions && input.trim() !== '') {
       let suggestionType: SuggestionType
       let suggestionItems: SuggestionItem[]
 
@@ -1505,11 +1572,8 @@ export function useTypeahead({
             ? completionInfo.token.substring(1)
             : completionInfo.token
 
-          suggestionItems = await generateUnifiedSuggestions(
+          suggestionItems = await requestFileSuggestionItems(
             searchToken,
-            mcpResources,
-            agents,
-            codexApps,
             isAtSymbol,
           )
         } else {
@@ -1550,6 +1614,8 @@ export function useTypeahead({
     setSuggestionsState,
     agents,
     enableLocalIOCompletions,
+    enableFileCompletions,
+    requestFileSuggestionItems,
     debouncedFetchFileSuggestions,
     debouncedFetchSlackChannels,
     effectiveGhostText,
