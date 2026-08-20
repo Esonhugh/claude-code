@@ -5,6 +5,8 @@ import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type {
   SDKControlPermissionRequest,
   SDKControlRunShellCommandResponse,
+  SDKControlSSHFileSuggestionsResponse,
+  SSHFileSuggestionItem,
   StdoutMessage,
 } from '../entrypoints/sdk/controlTypes.js'
 import type { RemotePermissionResponse } from '../remote/RemoteSessionManager.js'
@@ -18,9 +20,21 @@ import type {
 } from '../types/permissions.js'
 
 export const CONTROL_REQUEST_TIMEOUT_MS = 15_000
+export const SSH_FILE_SUGGESTION_TIMEOUT_MS = 2_000
+
+export type SSHFileSuggestionQuery = {
+  query: string
+  mode: 'fuzzy' | 'path'
+  show_on_empty?: boolean
+  limit: number
+}
 
 export type SSHSessionCallbacks = {
   onMessage: (message: SDKMessage) => void
+  onBootstrap?: (bootstrap: {
+    sessionId: string
+    history: SDKMessage[]
+  }) => void
   onPermissionRequest: (
     request: SDKControlPermissionRequest,
     requestId: string,
@@ -50,6 +64,19 @@ type ControlResponseEnvelope = {
   error?: string
 }
 
+type SSHHistoryChunkEnvelope = {
+  type: 'ssh_history_chunk'
+  request_id: string
+  sequence: number
+  messages: SDKMessage[]
+}
+
+type SSHHistoryReplayResponse = {
+  session_id: string
+  count: number
+  last_uuid?: string | null
+}
+
 function isControlResponseEnvelope(
   value: unknown,
 ): value is ControlResponseEnvelope {
@@ -69,6 +96,44 @@ function isControlResponseEnvelope(
   )
 }
 
+function isSSHHistoryChunkEnvelope(
+  value: unknown,
+): value is SSHHistoryChunkEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    value.type === 'ssh_history_chunk' &&
+    'request_id' in value &&
+    typeof value.request_id === 'string' &&
+    'sequence' in value &&
+    typeof value.sequence === 'number' &&
+    Number.isSafeInteger(value.sequence) &&
+    value.sequence >= 0 &&
+    'messages' in value &&
+    Array.isArray(value.messages)
+  )
+}
+
+function isSSHHistoryReplayResponse(
+  value: unknown,
+): value is SSHHistoryReplayResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'session_id' in value &&
+    typeof value.session_id === 'string' &&
+    value.session_id.length > 0 &&
+    'count' in value &&
+    typeof value.count === 'number' &&
+    Number.isSafeInteger(value.count) &&
+    value.count >= 0 &&
+    (!('last_uuid' in value) ||
+      value.last_uuid === null ||
+      typeof value.last_uuid === 'string')
+  )
+}
+
 function isShellCommandResponse(
   value: unknown,
 ): value is SDKControlRunShellCommandResponse {
@@ -84,6 +149,40 @@ function isShellCommandResponse(
     'interrupted' in value &&
     typeof value.interrupted === 'boolean'
   )
+}
+
+function isSSHFileSuggestionsResponse(
+  value: unknown,
+): value is SDKControlSSHFileSuggestionsResponse {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('items' in value) ||
+    !Array.isArray(value.items) ||
+    value.items.length > 50 ||
+    !('incomplete' in value) ||
+    typeof value.incomplete !== 'boolean'
+  ) {
+    return false
+  }
+  return value.items.every(
+    (item: unknown): item is SSHFileSuggestionItem =>
+      typeof item === 'object' &&
+      item !== null &&
+      'path' in item &&
+      typeof item.path === 'string' &&
+      item.path.length > 0 &&
+      !item.path.includes('\0') &&
+      'kind' in item &&
+      (item.kind === 'file' || item.kind === 'directory') &&
+      (!('score' in item) || typeof item.score === 'number'),
+  )
+}
+
+function createAbortError(): Error {
+  const error = new Error('SSH file suggestion request aborted')
+  error.name = 'AbortError'
+  return error
 }
 
 function isPermissionRequest(
@@ -109,6 +208,13 @@ export class SSHSessionManager {
   private connected = false
   private initialized = false
   private disconnected = false
+  private remoteSessionId: string | null = null
+  private pendingHistoryReplay: {
+    requestId: string
+    chunks: Map<number, SDKMessage[]>
+    liveMessages: SDKMessage[]
+    timeout: ReturnType<typeof setTimeout>
+  } | null = null
   private pendingPermissionRequests = new Map<string, string>()
   private pendingPermissionModeRequests = new Map<
     string,
@@ -125,6 +231,15 @@ export class SSHSessionManager {
       reject: (error: Error) => void
       removeAbortListener: () => void
       cancellationTimeout?: ReturnType<typeof setTimeout>
+    }
+  >()
+  private pendingFileSuggestionRequests = new Map<
+    string,
+    {
+      resolve: (response: SDKControlSSHFileSuggestionsResponse) => void
+      reject: (error: Error) => void
+      timeout: ReturnType<typeof setTimeout>
+      removeAbortListener: () => void
     }
   >()
   private pendingAcknowledgements = new Map<
@@ -165,15 +280,27 @@ export class SSHSessionManager {
     })
     if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
       this.handleDisconnected()
+      return
+    }
+
+    if (this.sshRemoteToken && this.callbacks.onBootstrap) {
+      this.startHistoryReplay()
     }
   }
 
-  async sendMessage(content: RemoteMessageContent): Promise<boolean> {
+  async sendMessage(
+    content: RemoteMessageContent,
+    options?: { uuid?: string },
+  ): Promise<boolean> {
+    if (this.pendingHistoryReplay || (this.callbacks.onBootstrap && !this.initialized)) {
+      return false
+    }
     return this.write({
       type: 'user',
+      ...(options?.uuid ? { uuid: options.uuid } : {}),
       message: { role: 'user', content },
       parent_tool_use_id: null,
-      session_id: '',
+      session_id: this.remoteSessionId ?? '',
     })
   }
 
@@ -322,6 +449,68 @@ export class SSHSessionManager {
     })
   }
 
+  getFileSuggestions(
+    request: SSHFileSuggestionQuery,
+    signal: AbortSignal,
+  ): Promise<SDKControlSSHFileSuggestionsResponse> {
+    if (!this.sshRemoteToken) {
+      return Promise.reject(
+        new Error('Remote file suggestions are unavailable in this SSH session'),
+      )
+    }
+    if (this.callbacks.onBootstrap && !this.initialized) {
+      return Promise.reject(new Error('SSH session is not ready'))
+    }
+    if (signal.aborted) return Promise.reject(createAbortError())
+
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        const pending = this.pendingFileSuggestionRequests.get(requestId)
+        if (!pending) return
+        this.pendingFileSuggestionRequests.delete(requestId)
+        clearTimeout(pending.timeout)
+        pending.removeAbortListener()
+        this.write({ type: 'control_cancel_request', request_id: requestId })
+        reject(createAbortError())
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      const timeout = setTimeout(() => {
+        const pending = this.pendingFileSuggestionRequests.get(requestId)
+        if (!pending) return
+        this.pendingFileSuggestionRequests.delete(requestId)
+        pending.removeAbortListener()
+        this.write({ type: 'control_cancel_request', request_id: requestId })
+        reject(new Error('SSH file suggestion request timed out'))
+      }, SSH_FILE_SUGGESTION_TIMEOUT_MS)
+      timeout.unref()
+      this.pendingFileSuggestionRequests.set(requestId, {
+        resolve,
+        reject,
+        timeout,
+        removeAbortListener: () =>
+          signal.removeEventListener('abort', onAbort),
+      })
+      if (
+        !this.write({
+          type: 'control_request',
+          request_id: requestId,
+          request: {
+            subtype: 'ssh_file_suggestions',
+            version: 1,
+            ...request,
+            ssh_remote_token: this.sshRemoteToken,
+          },
+        })
+      ) {
+        this.pendingFileSuggestionRequests.delete(requestId)
+        clearTimeout(timeout)
+        signal.removeEventListener('abort', onAbort)
+        reject(new Error('SSH session is not connected'))
+      }
+    })
+  }
+
   sendInterrupt(): void {
     const requestId = randomUUID()
     const timeout = setTimeout(() => {
@@ -347,10 +536,13 @@ export class SSHSessionManager {
     this.stdoutInterface = null
     this.connected = false
     this.initialized = false
+    this.remoteSessionId = null
     this.disconnected = true
+    this.clearPendingHistoryReplay()
     this.pendingPermissionRequests.clear()
     this.rejectPendingPermissionModeRequests('SSH session disconnected')
     this.rejectPendingShellRequests('SSH session disconnected')
+    this.rejectPendingFileSuggestionRequests('SSH session disconnected')
     this.clearPendingAcknowledgements()
     this.clearExpectedPermissionResponseEchoes()
     if (this.proc.exitCode === null && this.proc.signalCode === null) {
@@ -380,8 +572,14 @@ export class SSHSessionManager {
       return
     }
 
+    if (isSSHHistoryChunkEnvelope(parsed)) {
+      this.handleHistoryChunk(parsed)
+      return
+    }
+
     if (
       !this.initialized &&
+      !this.pendingHistoryReplay &&
       parsed.type === 'system' &&
       parsed.subtype === 'init'
     ) {
@@ -423,6 +621,10 @@ export class SSHSessionManager {
       }
       const response = parsed.response
       const requestId = response.request_id
+      if (this.pendingHistoryReplay?.requestId === requestId) {
+        this.completeHistoryReplay(response)
+        return
+      }
       const permissionEchoTimeout =
         this.expectedPermissionResponseEchoes.get(requestId)
       if (permissionEchoTimeout) {
@@ -459,7 +661,24 @@ export class SSHSessionManager {
       }
 
       const pendingShell = this.pendingShellRequests.get(requestId)
-      if (pendingShell) {
+      const pendingFileSuggestions =
+        this.pendingFileSuggestionRequests.get(requestId)
+      if (pendingFileSuggestions) {
+        this.pendingFileSuggestionRequests.delete(requestId)
+        clearTimeout(pendingFileSuggestions.timeout)
+        pendingFileSuggestions.removeAbortListener()
+        if (response.subtype === 'error') {
+          pendingFileSuggestions.reject(new Error(response.error))
+          return
+        }
+        if (!isSSHFileSuggestionsResponse(response.response)) {
+          pendingFileSuggestions.reject(
+            new Error('Invalid SSH file suggestion response'),
+          )
+          return
+        }
+        pendingFileSuggestions.resolve(response.response)
+      } else if (pendingShell) {
         this.pendingShellRequests.delete(requestId)
         pendingShell.removeAbortListener()
         if (pendingShell.cancellationTimeout) {
@@ -492,7 +711,106 @@ export class SSHSessionManager {
     }
     if (parsed.type === 'keep_alive') return
 
+    if (this.pendingHistoryReplay) {
+      this.pendingHistoryReplay.liveMessages.push(parsed)
+      return
+    }
+
     this.callbacks.onMessage(parsed)
+  }
+
+  private startHistoryReplay(): void {
+    const requestId = randomUUID()
+    const timeout = setTimeout(() => {
+      if (this.pendingHistoryReplay?.requestId !== requestId) return
+      this.pendingHistoryReplay = null
+      this.callbacks.onError?.(new Error('SSH history bootstrap timed out'))
+      this.disconnect()
+    }, CONTROL_REQUEST_TIMEOUT_MS)
+    timeout.unref()
+    this.pendingHistoryReplay = {
+      requestId,
+      chunks: new Map(),
+      liveMessages: [],
+      timeout,
+    }
+    if (
+      !this.write({
+        type: 'control_request',
+        request_id: requestId,
+        request: {
+          subtype: 'replay_history',
+          ssh_remote_token: this.sshRemoteToken,
+        },
+      })
+    ) {
+      this.clearPendingHistoryReplay()
+      this.callbacks.onError?.(new Error('Failed to start SSH history bootstrap'))
+      this.disconnect()
+    }
+  }
+
+  private handleHistoryChunk(chunk: SSHHistoryChunkEnvelope): void {
+    const pending = this.pendingHistoryReplay
+    if (!pending || pending.requestId !== chunk.request_id) {
+      this.callbacks.onError?.(new Error('Unexpected SSH history chunk'))
+      return
+    }
+    if (pending.chunks.has(chunk.sequence)) {
+      this.callbacks.onError?.(new Error('Duplicate SSH history chunk'))
+      return
+    }
+    pending.chunks.set(chunk.sequence, chunk.messages)
+  }
+
+  private completeHistoryReplay(response: ControlResponseEnvelope): void {
+    const pending = this.pendingHistoryReplay
+    if (!pending) return
+    clearTimeout(pending.timeout)
+    this.pendingHistoryReplay = null
+    if (response.subtype === 'error') {
+      this.callbacks.onError?.(
+        new Error(`SSH history bootstrap failed: ${response.error}`),
+      )
+      this.disconnect()
+      return
+    }
+    if (!isSSHHistoryReplayResponse(response.response)) {
+      this.callbacks.onError?.(new Error('Invalid SSH history bootstrap response'))
+      this.disconnect()
+      return
+    }
+    const sequences = [...pending.chunks.keys()].sort((a, b) => a - b)
+    if (sequences.some((sequence, index) => sequence !== index)) {
+      this.callbacks.onError?.(new Error('Incomplete SSH history bootstrap'))
+      this.disconnect()
+      return
+    }
+    const history = sequences.flatMap(sequence => pending.chunks.get(sequence) ?? [])
+    if (history.length !== response.response.count) {
+      this.callbacks.onError?.(new Error('SSH history bootstrap count mismatch'))
+      this.disconnect()
+      return
+    }
+    const lastMessage = history.at(-1) as (SDKMessage & { uuid?: string }) | undefined
+    if (
+      response.response.last_uuid &&
+      lastMessage?.uuid !== response.response.last_uuid
+    ) {
+      this.callbacks.onError?.(new Error('SSH history bootstrap tail mismatch'))
+      this.disconnect()
+      return
+    }
+    this.remoteSessionId = response.response.session_id
+    this.initialized = true
+    this.callbacks.onBootstrap?.({
+      sessionId: response.response.session_id,
+      history,
+    })
+    this.callbacks.onConnected?.()
+    for (const message of pending.liveMessages) {
+      this.callbacks.onMessage(message)
+    }
   }
 
   private write(message: unknown): boolean {
@@ -528,6 +846,12 @@ export class SSHSessionManager {
     this.pendingPermissionModeRequests.clear()
   }
 
+  private clearPendingHistoryReplay(): void {
+    if (!this.pendingHistoryReplay) return
+    clearTimeout(this.pendingHistoryReplay.timeout)
+    this.pendingHistoryReplay = null
+  }
+
   private clearPendingAcknowledgements(): void {
     for (const timeout of this.pendingAcknowledgements.values()) {
       clearTimeout(timeout)
@@ -558,15 +882,27 @@ export class SSHSessionManager {
     this.pendingShellRequests.clear()
   }
 
+  private rejectPendingFileSuggestionRequests(error: string): void {
+    for (const pending of this.pendingFileSuggestionRequests.values()) {
+      clearTimeout(pending.timeout)
+      pending.removeAbortListener()
+      pending.reject(new Error(error))
+    }
+    this.pendingFileSuggestionRequests.clear()
+  }
+
   private handleDisconnected(): void {
     if (this.disconnected) return
     logForDebugging('[SSHSessionManager] SSH child disconnected')
     this.connected = false
     this.initialized = false
+    this.remoteSessionId = null
     this.disconnected = true
+    this.clearPendingHistoryReplay()
     this.pendingPermissionRequests.clear()
     this.rejectPendingPermissionModeRequests('SSH session disconnected')
     this.rejectPendingShellRequests('SSH session disconnected')
+    this.rejectPendingFileSuggestionRequests('SSH session disconnected')
     this.clearPendingAcknowledgements()
     this.clearExpectedPermissionResponseEchoes()
     this.stdoutInterface?.close()

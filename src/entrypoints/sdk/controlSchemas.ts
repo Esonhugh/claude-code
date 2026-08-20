@@ -144,6 +144,32 @@ export const SDKControlRunShellCommandRequestSchema = lazySchema(() =>
     .describe('Runs a direct shell command in a managed SSH session.'),
 )
 
+export const SDKControlReplayHistoryRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('replay_history'),
+      ssh_remote_token: z.string().min(1),
+    })
+    .describe('Replays canonical transcript history for a managed SSH session.'),
+)
+
+export const SDKControlSSHFileSuggestionsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('ssh_file_suggestions'),
+      version: z.literal(1),
+      query: z
+        .string()
+        .max(4096)
+        .refine(query => !query.includes('\0'), 'Query must not contain NUL'),
+      mode: z.enum(['fuzzy', 'path']),
+      show_on_empty: z.boolean().optional(),
+      limit: z.number().int().min(1).max(50),
+      ssh_remote_token: z.string().min(1),
+    })
+    .describe('Queries the remote filesystem in a managed SSH session.'),
+)
+
 export const SDKControlSetModelRequestSchema = lazySchema(() =>
   z
     .object({
@@ -568,6 +594,8 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlInitializeRequestSchema(),
     SDKControlSetPermissionModeRequestSchema(),
     SDKControlRunShellCommandRequestSchema(),
+    SDKControlReplayHistoryRequestSchema(),
+    SDKControlSSHFileSuggestionsRequestSchema(),
     SDKControlSetModelRequestSchema(),
     SDKControlSetMaxThinkingTokensRequestSchema(),
     SDKControlMcpStatusRequestSchema(),
@@ -631,6 +659,19 @@ export const SDKControlCancelRequestSchema = lazySchema(() =>
     .describe('Cancels a currently open control request.'),
 )
 
+export const SSHHistoryMessageSchema = lazySchema(() =>
+  SDKMessageSchema().and(z.object({ timestamp: z.string().optional() })),
+)
+
+export const SSHHistoryChunkSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('ssh_history_chunk'),
+    request_id: z.string(),
+    sequence: z.number().int().nonnegative(),
+    messages: z.array(SSHHistoryMessageSchema()).max(100),
+  }),
+)
+
 export const SDKKeepAliveMessageSchema = lazySchema(() =>
   z
     .object({
@@ -662,6 +703,7 @@ export const StdoutMessageSchema = lazySchema(() =>
     SDKControlRequestSchema(),
     SDKControlCancelRequestSchema(),
     SDKKeepAliveMessageSchema(),
+    SSHHistoryChunkSchema(),
   ]),
 )
 
@@ -670,6 +712,7 @@ export const StdinMessageSchema = lazySchema(() =>
     SDKUserMessageSchema(),
     SDKControlRequestSchema(),
     SDKControlResponseSchema(),
+    SDKControlCancelRequestSchema(),
     SDKKeepAliveMessageSchema(),
     SDKUpdateEnvironmentVariablesMessageSchema(),
   ]),

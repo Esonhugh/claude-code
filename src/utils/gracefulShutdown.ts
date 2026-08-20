@@ -36,6 +36,7 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import type { AppState } from '../state/AppState.js'
+import { quote } from './bash/shellQuote.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
@@ -43,6 +44,7 @@ import { isEnvTruthy } from './envUtils.js'
 import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'
 import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
+import { validateUuid } from './uuid.js'
 
 /**
  * Clean up terminal modes synchronously before process exit.
@@ -137,22 +139,82 @@ function cleanupTerminalModes(): void {
 
 let resumeHintPrinted = false
 
+export type SSHResumeHintContext = {
+  target: string
+  remoteCwd: string
+  remoteSessionId: string
+}
+
+let sshResumeHintContext:
+  | (SSHResumeHintContext & { registration: symbol })
+  | undefined
+
+function assertSafeHintText(value: string, label: string): void {
+  if (!value || /[\0\r\n]/.test(value)) {
+    throw new Error(`Invalid SSH resume ${label}`)
+  }
+}
+
+/**
+ * Registers resume identity owned by the remote SSH transcript. The returned
+ * cleanup is registration-scoped so an old hook cannot clear a newer session.
+ */
+export function registerSSHResumeHintContext(
+  context: SSHResumeHintContext,
+): () => void {
+  assertSafeHintText(context.target, 'target')
+  assertSafeHintText(context.remoteCwd, 'working directory')
+  if (!validateUuid(context.remoteSessionId)) {
+    throw new Error('Invalid SSH resume session ID')
+  }
+
+  const registration = Symbol('ssh-resume-hint')
+  sshResumeHintContext = { ...context, registration }
+  return () => {
+    if (sshResumeHintContext?.registration === registration) {
+      sshResumeHintContext = undefined
+    }
+  }
+}
+
+export function getSSHResumeCommand(): string | null {
+  if (!sshResumeHintContext) return null
+  return quote([
+    'claude',
+    'ssh',
+    sshResumeHintContext.target,
+    sshResumeHintContext.remoteCwd,
+    '--resume',
+    sshResumeHintContext.remoteSessionId,
+  ])
+}
+
 /**
  * Print a hint about how to resume the session.
- * Only shown for interactive sessions with persistence enabled.
+ * Only shown for interactive sessions with a persisted local or SSH transcript.
  */
 function printResumeHint(): void {
   // Only print once (failsafe timer may call this again after normal shutdown)
   if (resumeHintPrinted) {
     return
   }
-  // Only show with TTY, interactive sessions, and persistence
-  if (
-    process.stdout.isTTY &&
-    getIsInteractive() &&
-    !isSessionPersistenceDisabled()
-  ) {
+  // The SSH transcript is persisted remotely, independently of local session
+  // persistence. Prefer its fully-qualified resume command when registered.
+  if (process.stdout.isTTY && getIsInteractive()) {
     try {
+      const sshResumeCommand = getSSHResumeCommand()
+      if (sshResumeCommand) {
+        writeSync(
+          1,
+          chalk.dim(
+            `\nResume this session with:\n${sshResumeCommand}\n`,
+          ),
+        )
+        resumeHintPrinted = true
+        return
+      }
+
+      if (isSessionPersistenceDisabled()) return
       const sessionId = getSessionId()
       // Don't show resume hint if no session file exists (e.g., subcommands like `claude update`)
       if (!sessionIdExists(sessionId)) {
@@ -372,6 +434,7 @@ export function isShuttingDown(): boolean {
 export function resetShutdownState(): void {
   shutdownInProgress = false
   resumeHintPrinted = false
+  sshResumeHintContext = undefined
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
     failsafeTimer = undefined

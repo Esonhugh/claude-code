@@ -93,6 +93,47 @@ export type SDKControlRunShellCommandResponse = {
   interrupted: boolean
 }
 
+export type SDKControlReplayHistoryRequest = {
+  subtype: 'replay_history'
+  ssh_remote_token: string
+}
+
+export type SSHHistoryChunk = {
+  type: 'ssh_history_chunk'
+  request_id: string
+  sequence: number
+  messages: SSHHistoryMessage[]
+}
+
+export type SSHHistoryMessage = SDKMessage & { timestamp?: string }
+
+export type SDKControlReplayHistoryResponse = {
+  session_id: string
+  count: number
+  last_uuid?: string
+}
+
+export type SSHFileSuggestionItem = {
+  path: string
+  kind: 'file' | 'directory'
+  score?: number
+}
+
+export type SDKControlSSHFileSuggestionsRequest = {
+  subtype: 'ssh_file_suggestions'
+  version: 1
+  query: string
+  mode: 'fuzzy' | 'path'
+  show_on_empty?: boolean
+  limit: number
+  ssh_remote_token: string
+}
+
+export type SDKControlSSHFileSuggestionsResponse = {
+  items: SSHFileSuggestionItem[]
+  incomplete: boolean
+}
+
 export type SDKControlSetModelRequest = {
   subtype: 'set_model'
   model: string
@@ -251,7 +292,7 @@ export type SDKControlCancelRequest = {
 }
 
 // Composite message types for stdio transport
-export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage
+export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage | SSHHistoryChunk
 export type StdinMessage = SDKUserMessage | SDKControlRequest | SDKControlResponse | SDKKeepAliveMessage | SDKUpdateEnvironmentVariablesMessage | SDKControlCancelRequest
 
 // Partial assistant message (streaming chunks)

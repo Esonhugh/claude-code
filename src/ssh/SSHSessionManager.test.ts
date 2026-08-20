@@ -488,6 +488,160 @@ describe('SSHSessionManager', () => {
     assert.equal(typeof lines[1].request_id, 'string')
   })
 
+  it('bootstraps remote history before accepting UUID-preserving user input', async () => {
+    const proc = createFakeProcess()
+    const written: Array<Record<string, unknown>> = []
+    proc.stdin.on('data', chunk => {
+      for (const line of String(chunk).trim().split('\n')) {
+        if (line) written.push(JSON.parse(line))
+      }
+    })
+    const bootstraps: Array<{
+      sessionId: string
+      history: Array<Record<string, unknown>>
+    }> = []
+    let connected = 0
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+        onBootstrap: bootstrap =>
+          bootstraps.push(
+            bootstrap as {
+              sessionId: string
+              history: Array<Record<string, unknown>>
+            },
+          ),
+        onConnected: () => connected++,
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    await nextTick()
+
+    assert.equal(await manager.sendMessage('too early', { uuid: 'early' }), false)
+    assert.equal(written[0]?.type, 'control_request')
+    assert.equal(
+      (written[0]?.request as Record<string, unknown>)?.subtype,
+      'replay_history',
+    )
+    const requestId = written[0]?.request_id
+
+    const historicalUser = {
+      type: 'user',
+      uuid: 'history-user',
+      session_id: 'remote-session',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: 'before reconnect' },
+    }
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'ssh_history_chunk',
+        request_id: requestId,
+        sequence: 0,
+        messages: [historicalUser],
+      })}\n`,
+    )
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: {
+            session_id: 'remote-session',
+            count: 1,
+            last_uuid: 'history-user',
+          },
+        },
+      })}\n`,
+    )
+    await nextTick()
+
+    assert.equal(connected, 1)
+    assert.deepEqual(bootstraps, [
+      { sessionId: 'remote-session', history: [historicalUser] },
+    ])
+    assert.equal(
+      await manager.sendMessage('after reconnect', { uuid: 'local-user-id' }),
+      true,
+    )
+    await nextTick()
+    assert.deepEqual(written[1], {
+      type: 'user',
+      uuid: 'local-user-id',
+      message: { role: 'user', content: 'after reconnect' },
+      parent_tool_use_id: null,
+      session_id: 'remote-session',
+    })
+  })
+
+  it('queries and independently cancels remote file suggestions', async () => {
+    const proc = createFakeProcess()
+    const written: Array<Record<string, unknown>> = []
+    proc.stdin.on('data', chunk => {
+      for (const line of String(chunk).trim().split('\n')) {
+        if (line) written.push(JSON.parse(line))
+      }
+    })
+    const manager = new SSHSessionManager(
+      proc as never,
+      { onMessage() {}, onPermissionRequest() {} },
+      'test-ssh-token',
+    )
+    manager.connect()
+
+    const controller = new AbortController()
+    const suggestions = manager.getFileSuggestions(
+      { query: 'src/pri', mode: 'path', limit: 10 },
+      controller.signal,
+    )
+    await nextTick()
+    assert.deepEqual(written[0]?.request, {
+      subtype: 'ssh_file_suggestions',
+      version: 1,
+      query: 'src/pri',
+      mode: 'path',
+      limit: 10,
+      ssh_remote_token: 'test-ssh-token',
+    })
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: written[0]?.request_id,
+          response: {
+            items: [{ path: 'src/print.ts', kind: 'file', score: 1 }],
+            incomplete: false,
+          },
+        },
+      })}\n`,
+    )
+    assert.deepEqual(await suggestions, {
+      items: [{ path: 'src/print.ts', kind: 'file', score: 1 }],
+      incomplete: false,
+    })
+
+    const cancelledController = new AbortController()
+    const cancelled = manager.getFileSuggestions(
+      { query: 'src/a', mode: 'fuzzy', limit: 20 },
+      cancelledController.signal,
+    )
+    cancelledController.abort()
+    await assert.rejects(cancelled, error => {
+      assert.equal((error as Error).name, 'AbortError')
+      return true
+    })
+    await nextTick()
+    assert.deepEqual(written[2], {
+      type: 'control_cancel_request',
+      request_id: written[1]?.request_id,
+    })
+  })
+
   it('consumes interrupt acknowledgements without reporting them as unmatched', async () => {
     const proc = createFakeProcess()
     const errors: Error[] = []

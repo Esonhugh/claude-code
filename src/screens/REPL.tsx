@@ -4928,9 +4928,15 @@ export function REPL({
         setAbortController(remoteAbortController)
 
         // Send to remote session
-        await activeRemote.sendMessage(remoteContent, {
+        const sent = await activeRemote.sendMessage(remoteContent, {
           uuid: userMessage.uuid,
         })
+        if (!sent) {
+          setMessages(previousMessages =>
+            previousMessages.filter(message => message.uuid !== userMessage.uuid),
+          )
+          setAbortController(null)
+        }
         return
       }
 
@@ -5380,7 +5386,10 @@ export function REPL({
   // Don't record conversation if we only have initial messages; optimizes
   // the case where user resumes a conversation then quites before doing
   // anything else
-  useLogMessages(messages, messages.length === initialMessages?.length)
+  useLogMessages(
+    messages,
+    sshRemote.isRemoteMode || messages.length === initialMessages?.length,
+  )
 
   // REPL Bridge: replicate user/assistant messages to the bridge session
   // for remote access via claude.ai. No-op in external builds or when not enabled.
@@ -7104,6 +7113,11 @@ export function REPL({
                         commands={commands}
                         agents={agentDefinitions.activeAgents}
                         enableLocalIOCompletions={!isRemoteExecutionSession}
+                        remoteFileSuggestionProvider={
+                          sshRemote.isRemoteMode
+                            ? sshRemote.remoteFileSuggestionProvider
+                            : undefined
+                        }
                         isLoading={isLoading}
                         onExit={handleExit}
                         verbose={verbose}

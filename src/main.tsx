@@ -4308,6 +4308,7 @@ async function run(): Promise<CommanderCommand> {
           if (_pendingSSH.local) {
             process.stderr.write('Starting local ssh-proxy test session...\n')
             sshSession = await createLocalSSHSession({
+              target: _pendingSSH.host,
               cwd: _pendingSSH.cwd,
               permissionMode: _pendingSSH.permissionMode,
               dangerouslySkipPermissions:

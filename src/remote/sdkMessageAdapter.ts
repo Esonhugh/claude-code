@@ -169,6 +169,38 @@ type ConvertOptions = {
   convertUserTextMessages?: boolean
 }
 
+const DEFAULT_UUID_CACHE_LIMIT = 4096
+
+/**
+ * Bounded insertion-ordered set used to suppress transcript/live echo UUIDs
+ * without retaining an unbounded session-sized index.
+ */
+export class BoundedMessageUuidSet {
+  private readonly uuids = new Set<string>()
+
+  constructor(private readonly limit = DEFAULT_UUID_CACHE_LIMIT) {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error('UUID cache limit must be a positive integer')
+    }
+  }
+
+  /** Returns true when the UUID was not already present. */
+  remember(uuid: string): boolean {
+    if (this.uuids.has(uuid)) return false
+
+    this.uuids.add(uuid)
+    if (this.uuids.size > this.limit) {
+      const oldest = this.uuids.values().next().value
+      if (oldest !== undefined) this.uuids.delete(oldest)
+    }
+    return true
+  }
+
+  clear(): void {
+    this.uuids.clear()
+  }
+}
+
 /**
  * Convert an SDKMessage to REPL message format
  */
@@ -283,6 +315,43 @@ export function convertSDKMessage(
       return { type: 'ignored' }
     }
   }
+}
+
+/**
+ * Project an SSH bootstrap replay into displayable transcript messages.
+ * Transport lifecycle events are intentionally excluded: they are live state,
+ * not part of the canonical conversation transcript.
+ */
+export function convertSDKHistory(history: readonly SDKMessage[]): Message[] {
+  const convertedHistory: Message[] = []
+  const seenUuids = new Set<string>()
+
+  for (const sdkMessage of history) {
+    if (
+      sdkMessage.type !== 'user' &&
+      sdkMessage.type !== 'assistant' &&
+      !(
+        sdkMessage.type === 'system' &&
+        sdkMessage.subtype === 'compact_boundary'
+      )
+    ) {
+      continue
+    }
+
+    const uuid = sdkMessage.uuid
+    if (typeof uuid !== 'string' || seenUuids.has(uuid)) continue
+
+    const converted = convertSDKMessage(sdkMessage, {
+      convertToolResults: true,
+      convertUserTextMessages: true,
+    })
+    if (converted.type !== 'message') continue
+
+    seenUuids.add(uuid)
+    convertedHistory.push(converted.message)
+  }
+
+  return convertedHistory
 }
 
 /**

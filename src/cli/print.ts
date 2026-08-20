@@ -314,6 +314,7 @@ import { exec as execShell } from 'src/utils/Shell.js'
 import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { processToolResultBlock } from 'src/utils/toolResultStorage.js'
 import { createRemoteShellTranscript } from 'src/ssh/remoteShellTranscript.js'
+import { ManagedSSHControlService } from 'src/ssh/remoteSSHControl.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
@@ -899,6 +900,7 @@ export async function runHeadless(
     if (
       message.type !== 'control_response' &&
       message.type !== 'control_request' &&
+      message.type !== 'ssh_history_chunk' &&
       // @ts-ignore - recovered code
       message.type !== 'control_cancel_request' &&
       !(
@@ -1157,6 +1159,11 @@ function runHeadlessStreaming(
   // include Assistant, User, Attachment, and Progress messages.
   // TODO: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
+  const managedSSHControl = new ManagedSSHControlService({
+    getHistory: () => mutableMessages,
+    getSessionId,
+    enqueue: message => output.enqueue(message),
+  })
 
   // Seed the readFileState cache from the transcript (content the model saw,
   // with message timestamps) so getChangedFiles can detect external edits.
@@ -2847,6 +2854,9 @@ function runHeadlessStreaming(
       }
 
       if (message.type === 'control_request') {
+        if (managedSSHControl.handleRequest(message)) {
+          continue
+        }
         if (message.request.subtype === 'interrupt') {
           // Track escapes for attribution (ant-only feature)
           if (feature('COMMIT_ATTRIBUTION')) {
@@ -2879,6 +2889,7 @@ function runHeadlessStreaming(
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
           suggestionState.pendingSuggestion = null
+          managedSSHControl.shutdown()
           sendControlResponseSuccess(message)
           break // exits for-await → falls through to inputClosed=true drain below
         } else if (message.request.subtype === 'initialize') {
@@ -4268,6 +4279,9 @@ function runHeadlessStreaming(
           )
         }
         continue
+      } else if (message.type === 'control_cancel_request') {
+        managedSSHControl.cancel(message.request_id)
+        continue
       } else if (message.type === 'control_response') {
         // Replay control_response messages when replay mode is enabled
         if (options.replayUserMessages) {
@@ -4368,6 +4382,7 @@ function runHeadlessStreaming(
       void run()
     }
     inputClosed = true
+    managedSSHControl.shutdown()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
     if (!running && !shellCommandRunning) {
