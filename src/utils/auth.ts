@@ -356,11 +356,25 @@ export function getAnthropicApiKeyWithSource(
  * from ~/.claude/settings.json or project settings is ignored.
  */
 export function getConfiguredApiKeyHelper(): string | undefined {
-  if (isBareMode()) {
+  return getConfiguredSettingsAuthHelper('apiKeyHelper')
+}
+
+export type SettingsAuthHelperName =
+  | 'apiKeyHelper'
+  | 'awsAuthRefresh'
+  | 'awsCredentialExport'
+  | 'gcpAuthRefresh'
+
+export function getConfiguredSettingsAuthHelper(
+  name: SettingsAuthHelperName,
+): string | undefined {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
+    return undefined
+  }
+  if (name === 'apiKeyHelper' && isBareMode()) {
     return getSettingsForSource('flagSettings')?.apiKeyHelper
   }
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.apiKeyHelper
+  return getSettings_DEPRECATED()?.[name]
 }
 
 /**
@@ -384,8 +398,7 @@ function isApiKeyHelperFromProjectOrLocalSettings(): boolean {
  * Get the configured awsAuthRefresh from settings
  */
 function getConfiguredAwsAuthRefresh(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.awsAuthRefresh
+  return getConfiguredSettingsAuthHelper('awsAuthRefresh')
 }
 
 /**
@@ -409,8 +422,7 @@ export function isAwsAuthRefreshFromProjectSettings(): boolean {
  * Get the configured awsCredentialExport from settings
  */
 function getConfiguredAwsCredentialExport(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.awsCredentialExport
+  return getConfiguredSettingsAuthHelper('awsCredentialExport')
 }
 
 /**
@@ -817,8 +829,7 @@ export function clearAwsCredentialsCache(): void {
  * Get the configured gcpAuthRefresh from settings
  */
 function getConfiguredGcpAuthRefresh(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.gcpAuthRefresh
+  return getConfiguredSettingsAuthHelper('gcpAuthRefresh')
 }
 
 /**

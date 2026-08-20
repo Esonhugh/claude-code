@@ -67,6 +67,30 @@ describe('SSH connection config', () => {
 })
 
 describe('remote launch command', () => {
+  it('rejects local settings flags instead of embedding them in the remote command', () => {
+    const forbiddenArgs = [
+      ['--settings', '/local/settings.json'],
+      ['--settings={"env":{"SSH_CANARY":"local-only"}}'],
+      ['--setting-sources', 'user,project'],
+      ['--managed-settings', '{"SSH_CANARY":"local-only"}'],
+    ]
+
+    for (const extraCliArgs of forbiddenArgs) {
+      assert.throws(
+        () =>
+          buildRemoteLaunchCommand({
+            remoteBinaryPath: '/tmp/claude',
+            remoteSocketPath: '/tmp/api.sock',
+            sshRemoteToken: 'test-ssh-token',
+            cwd: '/tmp/project',
+            extraCliArgs,
+            oauth: true,
+          }),
+        /local-only option cannot be forwarded to an SSH child/,
+      )
+    }
+  })
+
   it('configures an OpenAI socket tunnel without embedding credentials', () => {
     const command = buildRemoteLaunchCommand({
       remoteBinaryPath: '/tmp/claude',
@@ -185,7 +209,7 @@ describe('local SSH session', () => {
     let proxyStopped = 0
     let spawnEnv: NodeJS.ProcessEnv | undefined
     const session = await createLocalSSHSession(
-      { cwd: '/tmp/project' },
+      { cwd: '/tmp/project', target: 'local-test' },
       {
         startProxy: async () => ({
           socketPath: '/tmp/local.sock',
@@ -204,9 +228,16 @@ describe('local SSH session', () => {
     )
 
     assert.equal(session.remoteCwd, '/tmp/project')
+    assert.equal(session.target, 'local-test')
+    assert.match(session.sshRemoteToken ?? '', /^[0-9a-f]{64}$/)
     assert.equal(session.proc, proc)
     assert.equal(typeof session.createManager, 'function')
     assert.equal(spawnEnv?.ANTHROPIC_BASE_URL, 'http://localhost')
+    assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE, '1')
+    assert.equal(
+      spawnEnv?.CLAUDE_CODE_SSH_REMOTE_TOKEN,
+      session.sshRemoteToken,
+    )
 
     proc.emit('error', new Error('spawn failed'))
     await new Promise(resolve => setImmediate(resolve))
@@ -219,9 +250,14 @@ describe('local SSH session', () => {
     const previousApiKey = process.env.OPENAI_API_KEY
     const previousAuthToken = process.env.OPENAI_AUTH_TOKEN
     const previousBaseURL = process.env.OPENAI_BASE_URL
+    const previousCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS
+    const previousClientKeyPassphrase =
+      process.env.CLAUDE_CODE_CLIENT_KEY_PASSPHRASE
     process.env.OPENAI_API_KEY = 'local-api-key'
     process.env.OPENAI_AUTH_TOKEN = 'local-auth-token'
     process.env.OPENAI_BASE_URL = 'https://gateway.example.test'
+    process.env.ANTHROPIC_CUSTOM_HEADERS = 'x-local: secret'
+    process.env.CLAUDE_CODE_CLIENT_KEY_PASSPHRASE = 'local-passphrase'
 
     try {
       await createLocalSSHSession(
@@ -249,11 +285,13 @@ describe('local SSH session', () => {
       )
       assert.equal(spawnEnv?.CLAUDE_CODE_OPENAI_AUTH_MODE, 'chatgpt')
       assert.equal(spawnEnv?.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1')
-      assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE, undefined)
-      assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE_TOKEN, undefined)
+      assert.equal(spawnEnv?.CLAUDE_CODE_SSH_REMOTE, '1')
+      assert.match(spawnEnv?.CLAUDE_CODE_SSH_REMOTE_TOKEN ?? '', /^[0-9a-f]{64}$/)
       assert.equal(spawnEnv?.OPENAI_API_KEY, undefined)
       assert.equal(spawnEnv?.OPENAI_AUTH_TOKEN, undefined)
       assert.equal(spawnEnv?.OPENAI_BASE_URL, undefined)
+      assert.equal(spawnEnv?.ANTHROPIC_CUSTOM_HEADERS, undefined)
+      assert.equal(spawnEnv?.CLAUDE_CODE_CLIENT_KEY_PASSPHRASE, undefined)
     } finally {
       if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = previousApiKey
@@ -261,6 +299,17 @@ describe('local SSH session', () => {
       else process.env.OPENAI_AUTH_TOKEN = previousAuthToken
       if (previousBaseURL === undefined) delete process.env.OPENAI_BASE_URL
       else process.env.OPENAI_BASE_URL = previousBaseURL
+      if (previousCustomHeaders === undefined) {
+        delete process.env.ANTHROPIC_CUSTOM_HEADERS
+      } else {
+        process.env.ANTHROPIC_CUSTOM_HEADERS = previousCustomHeaders
+      }
+      if (previousClientKeyPassphrase === undefined) {
+        delete process.env.CLAUDE_CODE_CLIENT_KEY_PASSPHRASE
+      } else {
+        process.env.CLAUDE_CODE_CLIENT_KEY_PASSPHRASE =
+          previousClientKeyPassphrase
+      }
     }
   })
 })
@@ -476,6 +525,7 @@ describe('remote SSH session', () => {
     )
 
     assert.equal(session.remoteCwd, '/work')
+    assert.equal(session.target, 'host.example')
     assert.match(session.sshRemoteToken ?? '', /^[0-9a-f]{64}$/)
     assert.ok(
       spawnedArgs

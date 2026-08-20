@@ -51,6 +51,7 @@ export type SSHConnection = {
 export type SSHSession = {
   proc: ChildProcess
   proxy: SSHAuthProxy
+  target: string
   remoteCwd: string
   sshRemoteToken?: string
   createManager: (callbacks: SSHSessionCallbacks) => SSHSessionManager
@@ -68,7 +69,9 @@ type SSHSessionOptions = {
   model?: string
 }
 
-type LocalSSHSessionOptions = Omit<SSHSessionOptions, 'host' | 'localVersion'>
+type LocalSSHSessionOptions = Omit<SSHSessionOptions, 'host' | 'localVersion'> & {
+  target?: string
+}
 
 type SSHSessionProgress = {
   onProgress?: (message: string) => void
@@ -107,6 +110,51 @@ export class SSHSessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
     this.name = 'SSHSessionError'
+  }
+}
+
+const LOCAL_ONLY_CHILD_OPTIONS = new Set([
+  '--managed-settings',
+  '--setting-sources',
+  '--settings',
+])
+
+const REMOTE_OPTIONS_WITH_REQUIRED_VALUES = new Set([
+  '--advisor',
+  '--agent',
+  '--agents',
+  '--append-system-prompt',
+  '--append-system-prompt-file',
+  '--effort',
+  '--fallback-model',
+  '--max-budget-usd',
+  '--max-thinking-tokens',
+  '--max-turns',
+  '--model',
+  '--permission-mode',
+  '--plugin-dir',
+  '--resume-session-at',
+  '--rewind-files',
+  '--session-id',
+  '--system-prompt',
+  '--system-prompt-file',
+  '--task-budget',
+  '--thinking',
+  '--workload',
+])
+
+function assertRemoteChildArgs(args: readonly string[]): void {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (arg === '--') return
+    const equals = arg.indexOf('=')
+    const name = equals === -1 ? arg : arg.slice(0, equals)
+    if (LOCAL_ONLY_CHILD_OPTIONS.has(name)) {
+      throw new SSHSessionError(
+        'A local-only option cannot be forwarded to an SSH child',
+      )
+    }
+    if (equals === -1 && REMOTE_OPTIONS_WITH_REQUIRED_VALUES.has(name)) index++
   }
 }
 
@@ -151,6 +199,7 @@ function childArgs(options: {
   allowDangerouslySkipPermissions?: boolean
   extraCliArgs?: string[]
 }): string[] {
+  assertRemoteChildArgs(options.extraCliArgs ?? [])
   return [
     '--print',
     '--input-format',
@@ -177,6 +226,10 @@ function childArgs(options: {
 const AUTH_ENV_VARS_TO_UNSET = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY',
+  'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'OPENAI_API_KEY',
   'OPENAI_AUTH_TOKEN',
@@ -299,6 +352,7 @@ async function defaultProxy(): Promise<SSHAuthProxy> {
 function createSession(
   proc: ChildProcess,
   proxy: SSHAuthProxy,
+  target: string,
   remoteCwd: string,
   sshRemoteToken?: string,
 ): SSHSession {
@@ -316,6 +370,7 @@ function createSession(
   return {
     proc,
     proxy,
+    target,
     remoteCwd,
     sshRemoteToken,
     createManager: callbacks =>
@@ -332,6 +387,7 @@ export async function createLocalSSHSession(
   const spawnProcess = deps.spawnProcess ?? spawn
   const proxy = await startProxy()
   const cwd = options.cwd ?? process.cwd()
+  const sshRemoteToken = randomBytes(32).toString('hex')
   const args = [
     ...(deps.scriptArgs ?? defaultScriptArgs()),
     ...childArgs({
@@ -352,7 +408,7 @@ export async function createLocalSSHSession(
   Object.assign(
     env,
     Object.fromEntries(
-      authEnvironment(proxy, proxy.socketPath, false).map(value => {
+      authEnvironment(proxy, proxy.socketPath, true, sshRemoteToken).map(value => {
         const separator = value.indexOf('=')
         return [value.slice(0, separator), value.slice(separator + 1)]
       }),
@@ -365,7 +421,13 @@ export async function createLocalSSHSession(
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
-    return createSession(proc, proxy, cwd)
+    return createSession(
+      proc,
+      proxy,
+      options.target ?? 'localhost',
+      cwd,
+      sshRemoteToken,
+    )
   } catch (error) {
     proxy.stop()
     throw new SSHSessionError('Failed to start local SSH test session', {
@@ -940,7 +1002,13 @@ export async function createSSHSession(
       void cleanup()
     })
     logForDebugging(`[SSH] session ready host=${connection.host} cwd=${probe.cwd}`)
-    return createSession(proc, proxy, probe.cwd, sshRemoteToken)
+    return createSession(
+      proc,
+      proxy,
+      options.host,
+      probe.cwd,
+      sshRemoteToken,
+    )
   } catch (error) {
     logForDebugging(
       `[SSH] session start failed host=${connection.host} detail=${error instanceof Error ? error.message : String(error)}`,

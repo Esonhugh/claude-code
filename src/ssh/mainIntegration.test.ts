@@ -306,7 +306,7 @@ test('extracts SSH-specific flags on either side of the host', () => {
   )
 })
 
-test('forwards remote policy flags without applying them to the local SSH UI', () => {
+test('keeps local settings flags out of the remote SSH child', () => {
   assert.deepEqual(
     parseRootSSHArgv([
       '--debug',
@@ -327,7 +327,7 @@ test('forwards remote policy flags without applying them to the local SSH UI', (
       '/remote/a',
       '/remote/b',
       '--settings',
-      '/remote/settings.json',
+      '/local/settings.json',
       '--setting-sources=user,project',
       '--bare',
     ]),
@@ -355,16 +355,50 @@ test('forwards remote policy flags without applying them to the local SSH UI', (
           '--add-dir',
           '/remote/a',
           '/remote/b',
-          '--settings',
-          '/remote/settings.json',
-          '--setting-sources',
-          'user,project',
           '--bare',
         ],
       },
-      remainingArgs: ['--debug', '--bare'],
+      remainingArgs: [
+        '--debug',
+        '--settings',
+        '/local/settings.json',
+        '--setting-sources=user,project',
+        '--bare',
+      ],
     },
   )
+})
+
+test('keeps settings local across SSH flag positions and value forms', () => {
+  const inlineSettings =
+    '{"model":"local-model","env":{"SSH_CANARY":"local-only"}}'
+  const cases = [
+    {
+      args: ['--settings=/local/settings.json', 'ssh', 'host.example'],
+      localArgs: ['--settings=/local/settings.json'],
+    },
+    {
+      args: ['ssh', '--settings', inlineSettings, 'host.example'],
+      localArgs: ['--settings', inlineSettings],
+    },
+    {
+      args: [
+        'ssh',
+        'host.example',
+        '--setting-sources',
+        'user,project,local',
+      ],
+      localArgs: ['--setting-sources', 'user,project,local'],
+    },
+  ]
+
+  for (const { args, localArgs } of cases) {
+    const parsed = parseRootSSHArgv(args)
+    assert.equal(parsed.type, 'ssh')
+    if (parsed.type !== 'ssh') continue
+    assert.deepEqual(parsed.pending.extraCliArgs, [])
+    assert.deepEqual(parsed.remainingArgs, localArgs)
+  }
 })
 
 test('finds ssh after variadic root flags and does not consume it as an optional value', () => {
@@ -475,13 +509,11 @@ test('forwards remote required values and advisor ownership', () => {
         extraCliArgs: [
           '--agent',
           '-reviewer',
-          '--settings',
-          '-remote.json',
           '--advisor',
           'opus',
         ],
       },
-      remainingArgs: [],
+      remainingArgs: ['--settings', '-remote.json'],
     },
   )
 })
@@ -508,11 +540,9 @@ test('does not mistake required values for unsupported workspace options', () =>
         extraCliArgs: [
           '--agent',
           '--worktree',
-          '--settings',
-          '--tmux',
         ],
       },
-      remainingArgs: [],
+      remainingArgs: ['--settings', '--tmux'],
     },
   )
 })

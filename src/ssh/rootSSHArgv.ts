@@ -82,8 +82,6 @@ addOptions(
     '--resume-session-at',
     '--rewind-files',
     '--session-id',
-    '--setting-sources',
-    '--settings',
     '--system-prompt',
     '--system-prompt-file',
     '--task-budget',
@@ -92,6 +90,7 @@ addOptions(
   'required',
   'remote',
 )
+addOptions(['--setting-sources', '--settings'], 'required')
 addOptions(['--effort', '--thinking'], 'required', 'both')
 addOptions(['--model'], 'required', 'model')
 addOptions(['-w', '--worktree'], 'optional')
@@ -288,12 +287,28 @@ function extractSSHOptions(
 
     const name = optionName(arg)
     const spec = ROOT_OPTIONS.get(name)
-    if (
-      !spec ||
-      spec.disposition === 'local' ||
-      spec.disposition === 'model'
-    ) {
+    if (!spec) {
       remaining.push(arg)
+      continue
+    }
+
+    if (spec.disposition === 'local' || spec.disposition === 'model') {
+      remaining.push(arg)
+      if (!arg.includes('=')) {
+        if (spec.arity === 'required' && args[index + 1] !== undefined) {
+          remaining.push(args[++index]!)
+        } else if (
+          spec.arity === 'optional' &&
+          args[index + 1] &&
+          !args[index + 1]!.startsWith('-')
+        ) {
+          remaining.push(args[++index]!)
+        } else if (spec.arity === 'variadic') {
+          while (args[index + 1] && !args[index + 1]!.startsWith('-')) {
+            remaining.push(args[++index]!)
+          }
+        }
+      }
       continue
     }
 

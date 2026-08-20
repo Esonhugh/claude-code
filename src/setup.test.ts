@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'bun:test'
 import {
+  shouldPrefetchApiKeyHelper,
   shouldPrefetchLogoRecentActivity,
   shouldRejectRootBypassPermissions,
 } from './setup.js'
+
+describe('API key helper prefetch', () => {
+  it('does not run in a host-managed SSH child', () => {
+    assert.equal(
+      shouldPrefetchApiKeyHelper({
+        CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+        CLAUDE_CODE_SSH_REMOTE: '1',
+        CLAUDE_CODE_SSH_REMOTE_TOKEN: 'test-ssh-token',
+      }),
+      false,
+    )
+    assert.equal(shouldPrefetchApiKeyHelper({}), true)
+  })
+})
 
 describe('Logo recent activity prefetch', () => {
   it('runs only for ordinary interactive sessions', () => {

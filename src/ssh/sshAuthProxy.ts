@@ -10,6 +10,7 @@ import {
 import { getAuthHeaders } from '../utils/http.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../services/openai-oauth/refresh.js'
+import { getProxyFetchOptions } from '../utils/proxy.js'
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com'
 const DEFAULT_OPENAI_UPSTREAM = 'https://api.openai.com/v1'
@@ -181,10 +182,39 @@ type StartSSHAuthProxyOptions = {
   upstream?: string
   getAuth?: () => SSHProxyAuth | Promise<SSHProxyAuth>
   fetch?: ProxyFetch
+  getFetchOptions?: () => Record<string, unknown>
+}
+
+function parseLocalCustomHeaders(value: string | undefined): Headers {
+  const headers = new Headers()
+  if (!value) return headers
+  for (const line of value.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const colon = line.indexOf(':')
+    const name = colon === -1 ? '' : line.slice(0, colon).trim()
+    const headerValue = colon === -1 ? '' : line.slice(colon + 1).trim()
+    const normalized = name.toLowerCase()
+    if (
+      !name ||
+      /[\0\r\n]/.test(line) ||
+      normalized === 'host' ||
+      HOP_BY_HOP_HEADERS.has(normalized) ||
+      AUTH_HEADERS.has(normalized)
+    ) {
+      throw new Error('Invalid ANTHROPIC_CUSTOM_HEADERS')
+    }
+    try {
+      headers.set(name, headerValue)
+    } catch {
+      throw new Error('Invalid ANTHROPIC_CUSTOM_HEADERS')
+    }
+  }
+  return headers
 }
 
 function requestHeaders(
   req: IncomingMessage,
+  customHeaders: Headers,
   authHeaders: Record<string, string>,
   upstream: URL,
 ): Headers {
@@ -205,6 +235,7 @@ function requestHeaders(
       headers.set(name, value)
     }
   }
+  customHeaders.forEach((value, name) => headers.set(name, value))
   for (const [name, value] of Object.entries(authHeaders)) {
     headers.set(name, value)
   }
@@ -249,8 +280,11 @@ async function proxyRequest(
   req: IncomingMessage,
   res: ServerResponse,
   opts: Required<
-    Pick<StartSSHAuthProxyOptions, 'provider' | 'upstream' | 'getAuth' | 'fetch'>
-  >,
+    Pick<
+      StartSSHAuthProxyOptions,
+      'provider' | 'upstream' | 'getAuth' | 'fetch' | 'getFetchOptions'
+    >
+  > & { customHeaders: Headers },
 ): Promise<void> {
   try {
     const requested = new URL(req.url || '/', 'http://unix-socket')
@@ -274,11 +308,17 @@ async function proxyRequest(
     const body = await readRequestBody(req)
     const auth = await opts.getAuth()
     const response = await opts.fetch(upstream, {
+      ...opts.getFetchOptions(),
       method: req.method,
-      headers: requestHeaders(req, auth.headers, upstream),
+      headers: requestHeaders(
+        req,
+        opts.customHeaders,
+        auth.headers,
+        upstream,
+      ),
       body,
       redirect: 'manual',
-    })
+    } as RequestInit)
 
     res.statusCode = response.status
     res.statusMessage = response.statusText
@@ -338,6 +378,11 @@ export async function startSSHAuthProxy(
       (provider === 'openai' ? DEFAULT_OPENAI_UPSTREAM : DEFAULT_UPSTREAM),
   )
   const fetchImpl = options.fetch ?? globalThis.fetch
+  const getFetchOptions = options.getFetchOptions ?? getProxyFetchOptions
+  const customHeaders =
+    provider === 'anthropic'
+      ? parseLocalCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS)
+      : new Headers()
 
   await mkdir(dirname(options.socketPath), { recursive: true })
   rmSync(options.socketPath, { force: true })
@@ -348,6 +393,8 @@ export async function startSSHAuthProxy(
       upstream,
       getAuth,
       fetch: fetchImpl,
+      getFetchOptions,
+      customHeaders,
     })
   })
 

@@ -77,6 +77,12 @@ export function shouldPrefetchLogoRecentActivity({
   return !bare && !sshLocalUI
 }
 
+export function shouldPrefetchApiKeyHelper(
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return !isHostManagedSSHRemote(environment)
+}
+
 export function shouldRejectRootBypassPermissions({
   platform = process.platform,
   uid = typeof process.getuid === 'function' ? process.getuid() : undefined,
@@ -429,7 +435,9 @@ export async function setup(
   // "process started" signal for release health monitoring.
   logEvent('tengu_started', {})
 
-  void prefetchApiKeyFromApiKeyHelperIfSafe(getIsNonInteractiveSession()) // Prefetch safely - only executes if trust already confirmed
+  if (shouldPrefetchApiKeyHelper()) {
+    void prefetchApiKeyFromApiKeyHelperIfSafe(getIsNonInteractiveSession())
+  }
   profileCheckpoint('setup_after_prefetch')
 
   // Pre-fetch data for Logo v2 - await to ensure it's ready before logo renders.

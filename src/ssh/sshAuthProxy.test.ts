@@ -45,6 +45,111 @@ function requestUnixSocket(
 }
 
 describe('SSH auth proxy', () => {
+  it('injects validated local gateway headers after stripping remote credentials', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-proxy-test-'))
+    const previousHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS
+    process.env.ANTHROPIC_CUSTOM_HEADERS =
+      'x-local-gateway: local-value\nx-client-region: test-region'
+    let observedHeaders: Headers | undefined
+    const proxy = await startSSHAuthProxy({
+      socketPath: join(dir, 'proxy.sock'),
+      provider: 'anthropic',
+      getAuth: () => ({
+        kind: 'api-key',
+        headers: { 'x-api-key': 'local-key' },
+      }),
+      fetch: async (_input, init) => {
+        observedHeaders = new Headers(init?.headers)
+        return new Response(null, { status: 204 })
+      },
+    })
+
+    try {
+      const response = await requestUnixSocket(proxy.socketPath, {
+        'x-api-key': 'remote-key',
+        cookie: 'remote-cookie',
+        'x-local-gateway': 'remote-value',
+      })
+      assert.equal(response.statusCode, 204, response.body)
+      assert.equal(observedHeaders?.get('x-api-key'), 'local-key')
+      assert.equal(observedHeaders?.get('x-local-gateway'), 'local-value')
+      assert.equal(observedHeaders?.get('x-client-region'), 'test-region')
+      assert.equal(observedHeaders?.has('cookie'), false)
+    } finally {
+      proxy.stop()
+      if (previousHeaders === undefined) {
+        delete process.env.ANTHROPIC_CUSTOM_HEADERS
+      } else {
+        process.env.ANTHROPIC_CUSTOM_HEADERS = previousHeaders
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects local custom headers that can override routing or auth', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-proxy-test-'))
+    const previousHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS
+    try {
+      for (const value of [
+        'authorization: local-override',
+        'host: attacker.invalid',
+        'connection: close',
+        'x-safe: value\rforged: value',
+      ]) {
+        process.env.ANTHROPIC_CUSTOM_HEADERS = value
+        await assert.rejects(
+          startSSHAuthProxy({
+            socketPath: join(dir, 'proxy.sock'),
+            provider: 'anthropic',
+            getAuth: () => ({
+              kind: 'api-key',
+              headers: { 'x-api-key': 'local-key' },
+            }),
+            fetch: async () => new Response(null, { status: 204 }),
+          }).then(unexpectedProxy => {
+            unexpectedProxy.stop()
+            throw new Error('accepted invalid ANTHROPIC_CUSTOM_HEADERS')
+          }),
+          /Invalid ANTHROPIC_CUSTOM_HEADERS/,
+        )
+      }
+    } finally {
+      if (previousHeaders === undefined) {
+        delete process.env.ANTHROPIC_CUSTOM_HEADERS
+      } else {
+        process.env.ANTHROPIC_CUSTOM_HEADERS = previousHeaders
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('applies explicit local transport options to upstream fetches', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-proxy-test-'))
+    let observedProxy: string | undefined
+    const proxy = await startSSHAuthProxy({
+      socketPath: join(dir, 'proxy.sock'),
+      provider: 'anthropic',
+      getAuth: () => ({
+        kind: 'api-key',
+        headers: { 'x-api-key': 'local-key' },
+      }),
+      getFetchOptions: () => ({ proxy: 'http://local-proxy.test:8080' }),
+      fetch: async (_input, init) => {
+        observedProxy = (init as RequestInit & { proxy?: string }).proxy
+        return new Response(null, { status: 204 })
+      },
+    })
+
+    try {
+      const response = await requestUnixSocket(proxy.socketPath, {})
+      assert.equal(response.statusCode, 204, response.body)
+      assert.equal(observedProxy, 'http://local-proxy.test:8080')
+    } finally {
+      proxy.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('forwards only OpenAI Responses requests with local Platform auth', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-proxy-test-'))
     let observedUrl = ''
