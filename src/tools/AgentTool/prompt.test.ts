@@ -37,9 +37,13 @@ describe('AgentTool prompt', () => {
     expect(prompt).toContain('run_in_background')
     expect(prompt).toContain('do not poll')
     expect(prompt).toContain('single message with multiple Agent tool calls')
+    expect(prompt).toContain('result is not visible to the user')
+    expect(prompt).toContain('SendMessage')
+    expect(prompt).toContain('research or edit')
+    expect(prompt).toContain('isolation: "worktree"')
     expect(prompt).not.toContain('greeting-responder')
     expect(prompt).not.toContain('checks if a number is prime')
-    expect(prompt.length).toBeLessThan(5_500)
+    expect(prompt.length).toBeLessThan(2_800)
   })
 
   test('supports explicitly restoring the inline agent list', async () => {

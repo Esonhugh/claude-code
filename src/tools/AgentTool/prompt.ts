@@ -105,7 +105,7 @@ ${
     forkEnabled
       ? 'A fresh agent with `subagent_type` starts with no conversation context. '
       : 'Each agent starts fresh. '
-  }Provide the goal and why it matters, relevant findings or exclusions, exact scope, whether to research or edit code, and what you expect it to return. Include file paths or commands when known. Do not delegate synthesis with instructions like "based on your findings, fix it"—state the specific change when implementation is required.
+  }Give the goal, relevant findings or exclusions, exact scope, whether to research or edit, and what you expect it to return. Include known paths or commands. For implementation, request the specific change instead of "based on your findings, fix it."
 `
 
   // When the gate is on, the agent list lives in an agent_listing_delta
@@ -154,10 +154,9 @@ ${
     ? ''
     : `
 When NOT to use the ${AGENT_TOOL_NAME} tool:
-- If you want to read a specific file path, use the ${FILE_READ_TOOL_NAME} tool or ${fileSearchHint} instead of the ${AGENT_TOOL_NAME} tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use ${contentSearchHint} instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use the ${FILE_READ_TOOL_NAME} tool instead of the ${AGENT_TOOL_NAME} tool, to find the match more quickly
-- Other tasks that are not related to the agent descriptions above
+- For a known path or code limited to 2-3 files, use ${FILE_READ_TOOL_NAME}.
+- For a targeted filename or symbol search, use ${fileSearchHint} or ${contentSearchHint}.
+- For tasks that do not match an available agent type.
 `
 
   // When listing via attachment, the "launch multiple agents" note is in the
@@ -174,21 +173,19 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 ${whenNotToUseSection}
 
 Usage notes:
-- Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
-- When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
+- Include a 3-5 word description.${concurrencyNote}
+- The result is not visible to the user; relay a concise summary.${
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
     !isInProcessTeammate() &&
     !forkEnabled
       ? `
-- You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, you will be automatically notified when it completes — do not poll, sleep, or proactively check on its progress. Continue with other work or respond to the user instead.
-- **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
+- Use foreground when blocked on the result; use run_in_background only for independent work. Completion is announced automatically—do not poll, sleep, or check proactively.`
       : ''
   }
-- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's ID or name as the \`to\` field. The agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
-- The agent's outputs should generally be trusted
-- Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}
-- If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
+- Resume an existing agent with ${SEND_MESSAGE_TOOL_NAME} using its ID or name as \`to\`; it retains context. ${forkEnabled ? 'A fresh Agent call with subagent_type has no context.' : 'A fresh Agent call has no context.'}
+- Generally trust agent output.
+- Honor agent descriptions that call for proactive use.
 - If the user asks to run agents in parallel, send a single message with multiple ${AGENT_TOOL_NAME} tool calls.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).${
     isAnt()
