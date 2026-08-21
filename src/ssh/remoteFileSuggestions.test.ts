@@ -113,6 +113,22 @@ describe('remote SSH file suggestions', () => {
     assert.deepEqual(response, { items: [], incomplete: true })
   })
 
+  it('keeps the cold fuzzy index building for a later retry', async () => {
+    let providerSignal: AbortSignal | undefined
+    const response = await queryRemoteFileSuggestions(baseRequest, {
+      loadFuzzyIndex: signal => {
+        providerSignal = signal
+        return new Promise(() => {})
+      },
+      getPathSuggestions: async () => [],
+      coldCacheWaitMs: 5,
+      deadlineMs: 50,
+    })
+
+    assert.deepEqual(response, { items: [], incomplete: true })
+    assert.equal(providerSignal?.aborted, false)
+  })
+
   it('aborts an independent in-flight request and its provider', async () => {
     const controller = new AbortController()
     let providerSignal: AbortSignal | undefined

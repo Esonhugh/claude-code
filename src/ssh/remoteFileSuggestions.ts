@@ -239,7 +239,6 @@ export async function queryRemoteFileSuggestions(
     signal?.removeEventListener('abort', cancelProvider)
   })
   if (index.status === 'timeout') {
-    cancelProvider()
     return { items: [], incomplete: true }
   }
 
