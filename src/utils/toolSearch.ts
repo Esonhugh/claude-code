@@ -20,7 +20,7 @@ import {
 } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import {
-  formatDeferredToolLine,
+  formatDeferredToolLines,
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../tools/ToolSearchTool/prompt.js'
@@ -707,7 +707,7 @@ export function getDeferredToolsDelta(
 
   return {
     addedNames: added.map(t => t.name).sort(),
-    addedLines: added.map(formatDeferredToolLine).sort(),
+    addedLines: formatDeferredToolLines(added),
     removedNames: removed.sort(),
   }
 }

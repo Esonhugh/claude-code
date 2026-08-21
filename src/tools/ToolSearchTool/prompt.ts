@@ -118,6 +118,49 @@ export function formatDeferredToolLine(tool: Tool): string {
   return tool.name
 }
 
+const MIN_TOOLS_PER_NAMESPACE_SUMMARY = 4
+
+/**
+ * Format deferred tools for model-facing availability messages. Large MCP
+ * namespaces are summarized because ToolSearch discovers the exact tool by
+ * capability; small namespaces stay explicit so uncommon tools remain easy
+ * to spot without a search round trip.
+ */
+export function formatDeferredToolLines(tools: Tool[]): string[] {
+  const lines: string[] = []
+  const mcpNamespaces = new Map<string, Tool[]>()
+
+  for (const tool of tools) {
+    if (!tool.name.startsWith('mcp__')) {
+      lines.push(formatDeferredToolLine(tool))
+      continue
+    }
+
+    const namespaceEnd = tool.name.indexOf('__', 'mcp__'.length)
+    if (namespaceEnd === -1 || namespaceEnd + 2 === tool.name.length) {
+      lines.push(formatDeferredToolLine(tool))
+      continue
+    }
+
+    const namespace = tool.name.slice(0, namespaceEnd + 2)
+    const namespaceTools = mcpNamespaces.get(namespace) ?? []
+    namespaceTools.push(tool)
+    mcpNamespaces.set(namespace, namespaceTools)
+  }
+
+  for (const [namespace, namespaceTools] of mcpNamespaces) {
+    if (namespaceTools.length >= MIN_TOOLS_PER_NAMESPACE_SUMMARY) {
+      lines.push(
+        `${namespace}* (${namespaceTools.length} tools; use ToolSearch by capability)`,
+      )
+    } else {
+      lines.push(...namespaceTools.map(formatDeferredToolLine))
+    }
+  }
+
+  return lines.sort()
+}
+
 export function getPrompt(): string {
   return PROMPT_HEAD + getToolLocationHint() + PROMPT_TAIL
 }

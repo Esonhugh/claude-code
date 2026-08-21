@@ -193,7 +193,7 @@ import {
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
 import {
-  formatDeferredToolLine,
+  formatDeferredToolLines,
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
@@ -1354,15 +1354,13 @@ async function* queryModel(
   // via persisted deferred_tools_delta attachments instead of this
   // ephemeral prepend (which busts cache whenever the pool changes).
   if (useToolSearch && !isDeferredToolsDeltaEnabled()) {
-    const deferredToolList = tools
-      .filter(t => deferredToolNames.has(t.name))
-      .map(formatDeferredToolLine)
-      .sort()
-      .join('\n')
-    if (deferredToolList) {
+    const deferredToolList = tools.filter(t => deferredToolNames.has(t.name))
+    const formattedDeferredToolList =
+      formatDeferredToolLines(deferredToolList).join('\n')
+    if (formattedDeferredToolList) {
       messagesForAPI = [
         createUserMessage({
-          content: `<available-deferred-tools>\n${deferredToolList}\n</available-deferred-tools>`,
+          content: `<available-deferred-tools>\n${formattedDeferredToolList}\n</available-deferred-tools>`,
           isMeta: true,
         }),
         ...messagesForAPI,

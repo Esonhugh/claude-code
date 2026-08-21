@@ -1867,7 +1867,7 @@ export const fetchToolsForClient = memoizeWithLRU(
             isMcp: true,
             // Collapse whitespace: _meta is open to external MCP servers, and
             // a newline here would inject orphan lines into the deferred-tool
-            // list (formatDeferredToolLine joins on '\n').
+            // list (formatDeferredToolLines joins on '\n').
             searchHint: connectorInfo
               ? buildCodexAppsSearchHint(
                   connectorInfo,
