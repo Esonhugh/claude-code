@@ -31,6 +31,11 @@ describe('path mention encoding', () => {
     )
   })
 
+  test('round trips an incomplete quoted prefix ending in a literal quote', () => {
+    const path = 'shared"'
+    expect(decodePathMentionToken(encodePathMention(path, false))).toBe(path)
+  })
+
   test('does not include trailing sentence punctuation', () => {
     expect(extractPathMentions('open @file.txt, then @other.ts!')).toEqual([
       'file.txt',

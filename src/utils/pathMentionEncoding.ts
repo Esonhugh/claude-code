@@ -16,11 +16,23 @@ export function encodePathMention(path: string, complete: boolean): string {
   return `@"${encodeQuotedContent(path)}${complete ? '" ' : ''}`
 }
 
+function hasUnescapedClosingQuote(value: string): boolean {
+  if (!value.endsWith('"')) return false
+  let precedingBackslashes = 0
+  for (let index = value.length - 2; index >= 0 && value[index] === '\\'; index--) {
+    precedingBackslashes += 1
+  }
+  return precedingBackslashes % 2 === 0
+}
+
 export function decodePathMentionToken(token: string): string {
   const withoutAt = token.startsWith('@') ? token.slice(1) : token
   if (!withoutAt.startsWith('"')) return withoutAt
 
-  const encoded = withoutAt.slice(1, withoutAt.endsWith('"') ? -1 : undefined)
+  const encoded = withoutAt.slice(
+    1,
+    hasUnescapedClosingQuote(withoutAt) ? -1 : undefined,
+  )
   try {
     return JSON.parse(`"${encoded}"`) as string
   } catch {
