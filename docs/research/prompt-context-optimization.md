@@ -144,6 +144,29 @@ Debug log 显示：
 - 输出有顺序、有依赖关系的实施计划。
 - 结尾必须包含 `### Critical Files for Implementation` 和 3–5 个关键路径。
 
+### 4.5 Agent 列表 attachment 默认化
+
+位置：`src/tools/AgentTool/prompt.ts`、`src/utils/attachments.ts`
+
+默认将动态 Agent 列表放入 `agent_listing_delta` attachment，使 Agent 工具 schema 保持静态。保留以下不变量：
+
+- 首轮 attachment 包含完整 Agent 类型、用途和工具权限。
+- 后续轮次只发送新增或移除项。
+- 权限和 `allowedAgentTypes` 过滤逻辑与 AgentTool 一致。
+- `CLAUDE_CODE_AGENT_LIST_IN_MESSAGES=false` 可显式恢复内联列表。
+
+### 4.6 deferred-tool namespace 汇总
+
+位置：`src/tools/ToolSearchTool/prompt.ts`、`src/utils/toolSearch.ts`
+
+同一 MCP namespace 达到 4 个 deferred tools 时，展示层改为 namespace 汇总；较小 namespace 和非 MCP 工具仍显示精确名称。增量状态继续保存全部精确名称，因此去重、连接和断开判断不受影响。
+
+### 4.7 Agent Tool 编排说明
+
+位置：`src/tools/AgentTool/prompt.ts`
+
+合并 background/foreground、fresh-context 和 briefing 的重复说明，同时保留结果转述、禁止轮询、恢复上下文、并行调用、主动触发和 worktree 隔离契约。
+
 ## 5. 优化结果
 
 | 提示词 | 优化前字符 | 优化后字符 | 节省字符 | 降幅 | 估算 token 节省 |
@@ -161,6 +184,15 @@ Debug log 显示：
 
 Explore 和 Plan 请求会在此基础上分别额外减少约 326 和 360 tokens。静态提示词命中 prompt cache 时，主要收益体现在首次 cache creation、缓存失效后的重建以及总上下文容量，而不是每个 cache-read token 的直接减少。
 
+追加优化使用代表性样本测量：
+
+| 场景 | 优化前字符 | 优化后字符 | 节省字符 | 降幅 |
+|---|---:|---:|---:|---:|
+| Agent Tool（12 个 Agent，含编排说明） | 4,525 | 1,686 | 2,839 | 62.7% |
+| deferred tools（同 namespace 26 个） | 935 | 64 | 871 | 93.2% |
+
+Agent attachment 的首轮消息仍携带完整列表，因此 62.7% 主要表示静态工具 schema 的缩减和缓存稳定性收益，而不是首轮总请求等量减少。
+
 ## 6. 回归保护与验证
 
 新增或扩展测试：
@@ -172,6 +204,14 @@ Explore 和 Plan 请求会在此基础上分别额外减少约 326 和 360 token
   - 确认 Explore/Plan 仍包含只读约束。
   - 确认 Plan 仍包含关键文件输出契约。
   - 限制两个 Agent prompt 的长度。
+- `src/tools/AgentTool/prompt.test.ts`
+  - 确认默认使用 attachment，且显式 `false` 可恢复内联列表。
+  - 确认 Agent 编排契约存在并限制静态描述长度。
+- `src/utils/attachments.agentListing.test.ts`
+  - 确认首轮完整公告，后续不重复公告。
+- `src/tools/ToolSearchTool/prompt.test.ts`、`src/utils/toolSearch.test.ts`
+  - 确认只汇总大型 MCP namespace。
+  - 确认展示压缩后仍保留精确增量状态。
 
 已通过：
 
@@ -201,16 +241,6 @@ Binary 交互验证说明：
 - 调查、交易、文档、邮件等插件按任务显式启用。
 - 预计降低 2k–8k+ tokens 的初始上下文。
 
-### P0：默认将 Agent 列表放入 attachment
-
-`src/tools/AgentTool/prompt.ts:shouldInjectAgentListInMessages()` 已支持 `CLAUDE_CODE_AGENT_LIST_IN_MESSAGES` 和 `tengu_agent_list_attach`。
-
-建议完成 A/B 验证后默认启用：
-
-- Agent 工具 schema 保持静态。
-- MCP 异步连接、插件 reload 和权限变化不再使整个 tools block 缓存失效。
-- 优先改善 cache creation，而不仅是字符串总长度。
-
 ### P1：Skill top-K 与 namespace 发现
 
 不要在每个回合列出全部 Skill：
@@ -219,17 +249,6 @@ Binary 交互验证说明：
 - 其他 Skill 通过 DiscoverSkills 或 namespace 查询加载。
 - 已加载 Skill 不重复出现在发现提醒中。
 - 预计减少 2k–5k tokens。
-
-### P1：压缩 deferred-tool 名单
-
-当前 `<available-deferred-tools>` 可能包含约 150 个完整工具名。可以先按 namespace 汇总：
-
-```text
-mcp__codex_apps__gmail__* (18 tools)
-mcp__plugin_skysight-pro__* (42 tools)
-```
-
-模型选择 namespace 后再返回具体工具名。预计减少 0.5k–1.5k tokens。
 
 ### P1：请求构造层增加分项观测
 
