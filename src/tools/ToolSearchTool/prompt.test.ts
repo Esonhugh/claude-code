@@ -50,4 +50,24 @@ describe('formatDeferredToolLines', () => {
       'mcp__zeta__* (4 tools; use ToolSearch by capability)',
     ])
   })
+
+  test('keeps Codex App connectors in separate namespaces', () => {
+    expect(
+      formatDeferredToolLines(
+        tools(
+          'mcp__codex_apps__github__fetch',
+          'mcp__codex_apps__github__issues',
+          'mcp__codex_apps__github__pull_requests',
+          'mcp__codex_apps__github__search',
+          'mcp__codex_apps__gmail__draft',
+          'mcp__codex_apps__gmail__read',
+          'mcp__codex_apps__gmail__search',
+          'mcp__codex_apps__gmail__send',
+        ),
+      ),
+    ).toEqual([
+      'mcp__codex_apps__github__* (4 tools; use ToolSearch by capability)',
+      'mcp__codex_apps__gmail__* (4 tools; use ToolSearch by capability)',
+    ])
+  })
 })

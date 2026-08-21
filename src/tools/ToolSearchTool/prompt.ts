@@ -119,6 +119,26 @@ export function formatDeferredToolLine(tool: Tool): string {
 }
 
 const MIN_TOOLS_PER_NAMESPACE_SUMMARY = 4
+const MCP_TOOL_PREFIX = 'mcp__'
+
+function getMcpNamespace(toolName: string): string | null {
+  if (!toolName.startsWith(MCP_TOOL_PREFIX)) return null
+
+  const serverEnd = toolName.indexOf('__', MCP_TOOL_PREFIX.length)
+  if (serverEnd === -1 || serverEnd + 2 === toolName.length) return null
+
+  // Codex Apps exposes many connectors through one MCP server and encodes the
+  // connector as an extra namespace segment. Keep those capability domains
+  // separate instead of collapsing every installed app into codex_apps__*.
+  if (toolName.slice(MCP_TOOL_PREFIX.length, serverEnd) === 'codex_apps') {
+    const connectorEnd = toolName.indexOf('__', serverEnd + 2)
+    if (connectorEnd !== -1 && connectorEnd + 2 !== toolName.length) {
+      return toolName.slice(0, connectorEnd + 2)
+    }
+  }
+
+  return toolName.slice(0, serverEnd + 2)
+}
 
 /**
  * Format deferred tools for model-facing availability messages. Large MCP
@@ -131,18 +151,12 @@ export function formatDeferredToolLines(tools: Tool[]): string[] {
   const mcpNamespaces = new Map<string, Tool[]>()
 
   for (const tool of tools) {
-    if (!tool.name.startsWith('mcp__')) {
+    const namespace = getMcpNamespace(tool.name)
+    if (namespace === null) {
       lines.push(formatDeferredToolLine(tool))
       continue
     }
 
-    const namespaceEnd = tool.name.indexOf('__', 'mcp__'.length)
-    if (namespaceEnd === -1 || namespaceEnd + 2 === tool.name.length) {
-      lines.push(formatDeferredToolLine(tool))
-      continue
-    }
-
-    const namespace = tool.name.slice(0, namespaceEnd + 2)
     const namespaceTools = mcpNamespaces.get(namespace) ?? []
     namespaceTools.push(tool)
     mcpNamespaces.set(namespace, namespaceTools)
