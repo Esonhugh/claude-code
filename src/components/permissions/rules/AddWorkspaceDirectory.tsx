@@ -27,6 +27,11 @@ type Props = {
   onCancel: () => void
   permissionContext: ToolPermissionContext
   directoryPath?: string // When directoryPath is provided, show selection options instead of input
+  validateLocally?: boolean
+  getDirectorySuggestions?: (
+    query: string,
+    signal: AbortSignal,
+  ) => Promise<Array<{ path: string; kind: 'file' | 'directory' }>>
 }
 
 type RememberDirectoryOption = 'yes-session' | 'yes-remember' | 'no'
@@ -115,6 +120,8 @@ export function AddWorkspaceDirectory({
   onCancel,
   permissionContext,
   directoryPath,
+  validateLocally = true,
+  getDirectorySuggestions,
 }: Props): React.ReactNode {
   const [directoryInput, setDirectoryInput] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -123,16 +130,27 @@ export function AddWorkspaceDirectory({
   const options = useMemo(() => REMEMBER_DIRECTORY_OPTIONS, [])
 
   // Fetch directory completions
-  const fetchSuggestions = useCallback(async (path: string) => {
-    if (!path) {
-      setSuggestions([])
+  const fetchSuggestions = useCallback(
+    async (path: string) => {
+      if (!path) {
+        setSuggestions([])
+        setSelectedSuggestion(0)
+        return
+      }
+      const controller = new AbortController()
+      const completions = getDirectorySuggestions
+        ? (await getDirectorySuggestions(path, controller.signal)).map(item => ({
+            id: item.path,
+            displayText: `${item.path.split('/').at(-1) ?? item.path}/`,
+            description: 'directory',
+            metadata: { type: 'directory' as const },
+          }))
+        : await getDirectoryCompletions(path)
+      setSuggestions(completions)
       setSelectedSuggestion(0)
-      return
-    }
-    const completions = await getDirectoryCompletions(path)
-    setSuggestions(completions)
-    setSelectedSuggestion(0)
-  }, [])
+    },
+    [getDirectorySuggestions],
+  )
 
   const debouncedFetchSuggestions = useDebounceCallback(fetchSuggestions, 100)
 
@@ -150,6 +168,10 @@ export function AddWorkspaceDirectory({
   // Handle directory submission from input
   const handleSubmit = useCallback(
     async (newPath: string) => {
+      if (!validateLocally) {
+        onAddDirectory(newPath, false)
+        return
+      }
       const result = await validateDirectoryForWorkspace(
         newPath,
         permissionContext,
@@ -161,7 +183,7 @@ export function AddWorkspaceDirectory({
         setError(addDirHelpMessage(result))
       }
     },
-    [permissionContext, onAddDirectory],
+    [permissionContext, onAddDirectory, validateLocally],
   )
 
   // Handle Esc to cancel (Ctrl+C handled by global keybindings)

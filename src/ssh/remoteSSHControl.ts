@@ -31,6 +31,10 @@ import {
 import {
   applyPermissionUpdate,
 } from '../utils/permissions/PermissionUpdate.js'
+import {
+  addDirHelpMessage,
+  validateDirectoryForWorkspace,
+} from '../commands/add-dir/validation.js'
 
 type QueryFileSuggestions = (
   request: SDKControlSSHFileSuggestionsRequest,
@@ -136,24 +140,70 @@ export class ManagedSSHControlService {
       const getContext = this.options.getToolPermissionContext
       const setAppState = this.options.setAppState
       if (!getContext || !setAppState) throw new Error('Permission state is unavailable')
-      const overlay = applySSHPermissionOverlayUpdate(request.update)
+      if (request.update.type === 'addDirectories') {
+        void Promise.all(
+          request.update.directories.map(directory =>
+            validateDirectoryForWorkspace(directory, getContext()),
+          ),
+        )
+          .then(results => {
+            const directories = results.map(result => {
+              if (result.resultType !== 'success') {
+                throw new Error(addDirHelpMessage(result))
+              }
+              return result.absolutePath
+            })
+            this.applyPermissionUpdate(
+              message.request_id,
+              {
+                type: 'addDirectories',
+                directories,
+              },
+              getContext,
+              setAppState,
+            )
+          })
+          .catch(error => {
+            this.sendError(message.request_id, errorMessage(error))
+          })
+        return
+      }
+      this.applyPermissionUpdate(
+        message.request_id,
+        request.update,
+        getContext,
+        setAppState,
+      )
+    } catch (error) {
+      this.sendError(message.request_id, errorMessage(error))
+    }
+  }
+
+  private applyPermissionUpdate(
+    requestId: string,
+    update: SDKControlSSHPermissionUpdate,
+    getContext: () => ToolPermissionContext,
+    setAppState: (f: (prev: AppState) => AppState) => void,
+  ): void {
+    try {
+      const overlay = applySSHPermissionOverlayUpdate(update)
       let nextContext = getContext()
       setAppState(prev => {
         nextContext = applyPermissionUpdate(
           prev.toolPermissionContext,
-          overlayUpdateToPermissionUpdate(request.update),
+          overlayUpdateToPermissionUpdate(update),
         )
         return {
           ...prev,
           toolPermissionContext: nextContext,
         }
       })
-      this.sendSuccess(message.request_id, {
+      this.sendSuccess(requestId, {
         overlay,
         ...readSSHPermissionRuntimeState(nextContext),
       })
     } catch (error) {
-      this.sendError(message.request_id, errorMessage(error))
+      this.sendError(requestId, errorMessage(error))
     }
   }
 

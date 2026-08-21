@@ -49,6 +49,7 @@ import type {
 import type {
   SDKControlSSHPermissionUpdate,
   SDKControlSSHPermissionsResponse,
+  SSHFileSuggestionItem,
 } from './entrypoints/sdk/controlTypes.js'
 // Import tool progress types from centralized location to break import cycles
 import type {
@@ -169,6 +170,10 @@ export type RemoteShellCommandResult = {
 
 export type ManagedSSHRemotePermissions = {
   getPermissions: () => Promise<SDKControlSSHPermissionsResponse>
+  getDirectorySuggestions: (
+    query: string,
+    signal: AbortSignal,
+  ) => Promise<SSHFileSuggestionItem[]>
   updatePermissions: (
     update: SDKControlSSHPermissionUpdate,
   ) => Promise<SDKControlSSHPermissionsResponse>

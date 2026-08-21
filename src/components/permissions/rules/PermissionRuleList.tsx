@@ -846,6 +846,10 @@ export function PermissionRuleList({
         }}
         onCancel={() => setIsAddingWorkspaceDirectory(false)}
         permissionContext={toolPermissionContext}
+        validateLocally={!isManagedSSHLocalUI}
+        getDirectorySuggestions={
+          managedSSHRemotePermissions?.getDirectorySuggestions
+        }
       />
     )
   }

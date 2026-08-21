@@ -46,8 +46,23 @@ const manager = {
     interrupted: false,
   }),
   sendInterrupt() {},
-  async getFileSuggestions(request: unknown) {
+  async getPermissions() {
+    return { overlay: {}, rules: [], additionalDirectories: [] }
+  },
+  async updatePermissions() {
+    return { overlay: {}, rules: [], additionalDirectories: [] }
+  },
+  async getFileSuggestions(request: { mode?: string }) {
     fileSuggestionRequests.push(request)
+    if (request.mode === 'path') {
+      return {
+        items: [
+          { path: '/srv/project/src', kind: 'directory' as const },
+          { path: '/srv/project/source.txt', kind: 'file' as const },
+        ],
+        incomplete: false,
+      }
+    }
     return {
       items: [{ path: 'src/index.ts', kind: 'file' as const }],
       incomplete: false,
@@ -72,6 +87,7 @@ let snapshot:
       isReady: boolean
       remoteSessionId: string | null
       remoteFileSuggestionProvider: ReturnType<typeof useSSHSession>['remoteFileSuggestionProvider']
+      managedSSHRemotePermissions: ReturnType<typeof useSSHSession>['managedSSHRemotePermissions']
       sendMessage: (
         content: string,
         options: { uuid: string },
@@ -97,6 +113,7 @@ function Harness(): null {
     isReady: ssh.isReady,
     remoteSessionId: ssh.remoteSessionId,
     remoteFileSuggestionProvider: ssh.remoteFileSuggestionProvider,
+    managedSSHRemotePermissions: ssh.managedSSHRemotePermissions,
     sendMessage: ssh.sendMessage,
     disconnect: ssh.disconnect,
   }
@@ -144,6 +161,7 @@ assert.ok(snapshot)
 assert.equal(snapshot.isReady, true)
 assert.equal(snapshot.remoteSessionId, remoteSessionId)
 assert.ok(snapshot.remoteFileSuggestionProvider)
+assert.ok(snapshot.managedSSHRemotePermissions)
 assert.deepEqual(
   snapshot.messages.map(message => message.uuid),
   [replayedAssistant.uuid],
@@ -167,8 +185,16 @@ const suggestions = await snapshot.remoteFileSuggestionProvider(
   new AbortController().signal,
 )
 assert.deepEqual(suggestions.items, [{ path: 'src/index.ts', kind: 'file' }])
+assert.deepEqual(
+  await snapshot.managedSSHRemotePermissions.getDirectorySuggestions(
+    '/srv/project/s',
+    new AbortController().signal,
+  ),
+  [{ path: '/srv/project/src', kind: 'directory' }],
+)
 assert.deepEqual(fileSuggestionRequests, [
   { query: 'src', mode: 'fuzzy', limit: 20 },
+  { query: '/srv/project/s', mode: 'path', limit: 10 },
 ])
 
 snapshot.disconnect()

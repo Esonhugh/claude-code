@@ -402,6 +402,17 @@ export function useSSHSession({
   >(() => {
     if (!session || !isReady) return undefined
     return {
+      async getDirectorySuggestions(query, signal) {
+        const manager = managerRef.current
+        if (!manager) {
+          return Promise.reject(new Error('SSH session is not connected'))
+        }
+        const response = await manager.getFileSuggestions(
+          { query, mode: 'path', limit: 10 },
+          signal,
+        )
+        return response.items.filter(item => item.kind === 'directory')
+      },
       getPermissions() {
         const manager = managerRef.current
         if (!manager) {

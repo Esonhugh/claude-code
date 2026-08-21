@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, mock } from 'bun:test'
 import type { SDKControlRequest, StdoutMessage } from '../entrypoints/sdk/controlTypes.js'
 import type { Message } from '../types/message.js'
@@ -156,6 +159,109 @@ describe('managed SSH print control service', () => {
       response?.type === 'control_response' && response.response.subtype,
       'success',
     )
+  })
+
+  it('rejects missing workspace directories on the managed SSH remote', async () => {
+    const output: StdoutMessage[] = []
+    let context: ToolPermissionContext = {
+      mode: 'default',
+      additionalWorkingDirectories: new Map(),
+      alwaysAllowRules: {},
+      alwaysDenyRules: {},
+      alwaysAskRules: {},
+      isBypassPermissionsModeAvailable: false,
+    }
+    const service = new ManagedSSHControlService({
+      environment,
+      getHistory: () => [],
+      getSessionId: () => sessionId,
+      enqueue: message => output.push(message),
+      getToolPermissionContext: () => context,
+      setAppState: updater => {
+        const next = updater({ toolPermissionContext: context } as never)
+        context = next.toolPermissionContext
+      },
+    })
+
+    service.handleRequest(
+      request('permissions-missing-directory', {
+        subtype: 'ssh_update_permissions',
+        ssh_remote_token: 'session-token',
+        update: {
+          type: 'addDirectories',
+          directories: ['/definitely-missing-managed-ssh-directory'],
+        },
+      }),
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    assert.equal(context.additionalWorkingDirectories.size, 0)
+    assert.equal(output.length, 1)
+    assert.equal(
+      output[0]?.type === 'control_response' && output[0].response.subtype,
+      'error',
+    )
+    assert.match(
+      output[0]?.type === 'control_response' &&
+        output[0].response.subtype === 'error'
+        ? output[0].response.error
+        : '',
+      /was not found/,
+    )
+  })
+
+  it('accepts workspace directories that exist on the managed SSH remote', async () => {
+    const remoteDirectory = await mkdtemp(
+      join(tmpdir(), 'managed-ssh-remote-directory-'),
+    )
+    try {
+      const output: StdoutMessage[] = []
+      let context: ToolPermissionContext = {
+        mode: 'default',
+        additionalWorkingDirectories: new Map(),
+        alwaysAllowRules: {},
+        alwaysDenyRules: {},
+        alwaysAskRules: {},
+        isBypassPermissionsModeAvailable: false,
+      }
+      const service = new ManagedSSHControlService({
+        environment,
+        getHistory: () => [],
+        getSessionId: () => sessionId,
+        enqueue: message => output.push(message),
+        getToolPermissionContext: () => context,
+        setAppState: updater => {
+          const next = updater({ toolPermissionContext: context } as never)
+          context = next.toolPermissionContext
+        },
+      })
+
+      service.handleRequest(
+        request('permissions-remote-directory', {
+          subtype: 'ssh_update_permissions',
+          ssh_remote_token: 'session-token',
+          update: {
+            type: 'addDirectories',
+            directories: [`${remoteDirectory}/`],
+          },
+        }),
+      )
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      assert.equal(output.length, 1)
+      assert.equal(
+        output[0]?.type === 'control_response' && output[0].response.subtype,
+        'success',
+      )
+      assert.equal(
+        (
+          context.additionalWorkingDirectories as unknown as Map<string, unknown>
+        ).has(remoteDirectory),
+        true,
+      )
+    } finally {
+      await rm(remoteDirectory, { recursive: true, force: true })
+    }
   })
 
   it('rejects SSH permission overlay requests without a valid capability', () => {
