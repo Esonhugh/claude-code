@@ -9,9 +9,12 @@ const agent = {
 } as AgentDefinition
 
 describe('AgentTool prompt', () => {
-  test('keeps orchestration rules without tutorial examples', async () => {
+  test('defaults the dynamic agent list to conversation attachments', async () => {
     const previousApiKey = process.env.ANTHROPIC_API_KEY
+    const previousListInMessages =
+      process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
     process.env.ANTHROPIC_API_KEY = 'test-key'
+    delete process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
 
     let prompt: string
     try {
@@ -19,9 +22,16 @@ describe('AgentTool prompt', () => {
     } finally {
       if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
       else process.env.ANTHROPIC_API_KEY = previousApiKey
+      if (previousListInMessages === undefined)
+        delete process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
+      else
+        process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES = previousListInMessages
     }
 
-    expect(prompt).toContain('reviewer: Use for focused code review.')
+    expect(prompt).toContain(
+      'Available agent types are listed in <system-reminder> messages',
+    )
+    expect(prompt).not.toContain('reviewer: Use for focused code review.')
     expect(prompt).toContain('starts fresh')
     expect(prompt).toContain('what you expect it to return')
     expect(prompt).toContain('run_in_background')
@@ -30,5 +40,26 @@ describe('AgentTool prompt', () => {
     expect(prompt).not.toContain('greeting-responder')
     expect(prompt).not.toContain('checks if a number is prime')
     expect(prompt.length).toBeLessThan(5_500)
+  })
+
+  test('supports explicitly restoring the inline agent list', async () => {
+    const previous = process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
+    const previousApiKey = process.env.ANTHROPIC_API_KEY
+    process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES = 'false'
+    process.env.ANTHROPIC_API_KEY = 'test-key'
+
+    try {
+      const prompt = await getPrompt([agent])
+      expect(prompt).toContain('reviewer: Use for focused code review.')
+      expect(prompt).not.toContain(
+        'Available agent types are listed in <system-reminder> messages',
+      )
+    } finally {
+      if (previous === undefined)
+        delete process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES
+      else process.env.CLAUDE_CODE_AGENT_LIST_IN_MESSAGES = previous
+      if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = previousApiKey
+    }
   })
 })
