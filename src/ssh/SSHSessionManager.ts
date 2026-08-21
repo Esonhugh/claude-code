@@ -22,6 +22,7 @@ import type {
 } from '../types/permissions.js'
 
 export const CONTROL_REQUEST_TIMEOUT_MS = 15_000
+export const HISTORY_BOOTSTRAP_TIMEOUT_MS = 2 * 60_000
 export const SSH_FILE_SUGGESTION_TIMEOUT_MS = 2_000
 
 export type SSHFileSuggestionQuery = {
@@ -821,7 +822,7 @@ export class SSHSessionManager {
       this.pendingHistoryReplay = null
       this.callbacks.onError?.(new Error('SSH history bootstrap timed out'))
       this.disconnect()
-    }, CONTROL_REQUEST_TIMEOUT_MS)
+    }, HISTORY_BOOTSTRAP_TIMEOUT_MS)
     timeout.unref()
     this.pendingHistoryReplay = {
       requestId,

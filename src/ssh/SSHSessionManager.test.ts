@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream'
 import { describe, it, jest } from 'bun:test'
 import {
   CONTROL_REQUEST_TIMEOUT_MS,
+  HISTORY_BOOTSTRAP_TIMEOUT_MS,
   SSHSessionManager,
 } from './SSHSessionManager.js'
 
@@ -670,6 +671,40 @@ describe('SSHSessionManager', () => {
       parent_tool_use_id: null,
       session_id: 'remote-session',
     })
+  })
+
+  it('allows slow remote startup while bounding history bootstrap time', () => {
+    jest.useFakeTimers()
+    try {
+      const proc = createFakeProcess()
+      const errors: string[] = []
+      const manager = new SSHSessionManager(
+        proc as never,
+        {
+          onMessage() {},
+          onPermissionRequest() {},
+          onBootstrap() {},
+          onError: error => errors.push(error.message),
+        },
+        'test-ssh-token',
+      )
+
+      manager.connect()
+      jest.advanceTimersByTime(CONTROL_REQUEST_TIMEOUT_MS)
+
+      assert.equal(manager.isConnected(), true)
+      assert.deepEqual(errors, [])
+
+      jest.advanceTimersByTime(
+        HISTORY_BOOTSTRAP_TIMEOUT_MS - CONTROL_REQUEST_TIMEOUT_MS,
+      )
+
+      assert.equal(manager.isConnected(), false)
+      assert.deepEqual(errors, ['SSH history bootstrap timed out'])
+      assert.equal(proc.signalCode, 'SIGTERM')
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it('queries and independently cancels remote file suggestions', async () => {
