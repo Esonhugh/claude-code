@@ -12,6 +12,11 @@ import {
   getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
+import {
+  isManagedSSHRemoteRuntime,
+  loadSSHPermissionOverlay,
+  overlayToPermissionRules,
+} from '../../ssh/managedSSHPermissions.js'
 import type { SettingsJson } from '../settings/types.js'
 import type {
   PermissionBehavior,
@@ -118,9 +123,20 @@ function settingsJsonToRules(
  * @returns Array of all permission rules
  */
 export function loadAllPermissionRulesFromDisk(): PermissionRule[] {
-  // If allowManagedPermissionRulesOnly is set, only use managed permission rules
+  const sshOverlayRules = isManagedSSHRemoteRuntime()
+    ? overlayToPermissionRules(loadSSHPermissionOverlay())
+    : []
+
+  // If allowManagedPermissionRulesOnly is set, only use managed permission rules.
   if (shouldAllowManagedPermissionRulesOnly()) {
-    return getPermissionRulesForSource('policySettings')
+    return [...getPermissionRulesForSource('policySettings'), ...sshOverlayRules]
+  }
+
+  // Managed SSH remotes intentionally run with policy plus the remote-owned
+  // overlay only. User/project/local settings are merged into that overlay at
+  // startup and edits rewrite the overlay instead of local settings.
+  if (isManagedSSHRemoteRuntime()) {
+    return [...getPermissionRulesForSource('policySettings'), ...sshOverlayRules]
   }
 
   // Otherwise, load from all enabled sources (backwards compatible)

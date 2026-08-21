@@ -1,6 +1,7 @@
 import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { useMemo } from 'react'
-import { findToolByName, type Tool, type Tools } from '../../../Tool.js'
+import type { Tool, Tools } from '../../../Tool.js'
+import { findRemoteDisplayTool } from '../../../remote/remoteDisplayTools.js'
 import type { buildMessageLookups } from '../../../utils/messages.js'
 
 export function useGetToolFromMessages(
@@ -13,10 +14,9 @@ export function useGetToolFromMessages(
     if (!toolUse) {
       return null
     }
-    const tool = findToolByName(tools, toolUse.name)
-    if (!tool) {
-      return null
+    return {
+      tool: findRemoteDisplayTool(tools, toolUse.name),
+      toolUse,
     }
-    return { tool, toolUse }
   }, [toolUseID, lookups, tools])
 }

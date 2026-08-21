@@ -39,6 +39,7 @@ import type {
 import {
   applyPermissionUpdate,
   applyPermissionUpdates,
+  persistPermissionUpdate,
   persistPermissionUpdates,
 } from './PermissionUpdate.js'
 import type {
@@ -110,6 +111,7 @@ const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
 
 const PERMISSION_RULE_SOURCES = [
   ...SETTING_SOURCES,
+  'sshOverlay',
   'cliArg',
   'command',
   'session',
@@ -1360,6 +1362,15 @@ export async function deletePermissionRule({
       )
       break
     }
+    case 'sshOverlay': {
+      persistPermissionUpdate({
+        type: 'removeRules',
+        rules: [rule.ruleValue],
+        behavior: rule.ruleBehavior,
+        destination: 'sshOverlay',
+      })
+      break
+    }
     case 'cliArg':
     case 'session': {
       // No action needed for in-memory sources - not persisted to disk
@@ -1426,10 +1437,11 @@ export function syncPermissionRulesFromDisk(
 
   // When allowManagedPermissionRulesOnly is enabled, clear all non-policy sources
   if (shouldAllowManagedPermissionRulesOnly()) {
-    const sourcesToClear: PermissionUpdateDestination[] = [
+    const sourcesToClear: Array<PermissionUpdateDestination | 'sshOverlay'> = [
       'userSettings',
       'projectSettings',
       'localSettings',
+      'sshOverlay',
       'cliArg',
       'session',
     ]
@@ -1452,10 +1464,11 @@ export function syncPermissionRulesFromDisk(
   // would leave the old rule in the context because convertRulesToUpdates
   // only generates replaceRules for source:behavior pairs that have rules —
   // an empty group produces no update, so stale rules persist.
-  const diskSources: PermissionUpdateDestination[] = [
+  const diskSources: Array<PermissionUpdateDestination | 'sshOverlay'> = [
     'userSettings',
     'projectSettings',
     'localSettings',
+    'sshOverlay',
   ]
   for (const diskSource of diskSources) {
     for (const behavior of ['allow', 'deny', 'ask'] as PermissionBehavior[]) {

@@ -54,6 +54,11 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
 import {
+  isManagedSSHRemoteRuntime,
+  loadSSHPermissionOverlay,
+  overlayDirectories,
+} from '../../ssh/managedSSHPermissions.js'
+import {
   getFsImplementation,
   safeResolvePath,
 } from '../../utils/fsOperations.js'
@@ -992,9 +997,14 @@ export async function initializeToolPermissionContext({
     rulesFromDisk,
   )
 
-  // Add directories from settings and --add-dir
+  // Add directories from settings and --add-dir. Managed SSH remotes use only
+  // policy directories plus the remote-owned overlay.
+  const sshOverlayAdditionalDirectories = isManagedSSHRemoteRuntime()
+    ? overlayDirectories(loadSSHPermissionOverlay()).map(directory => directory.path)
+    : []
   const allAdditionalDirectories = [
     ...(settings.permissions?.additionalDirectories || []),
+    ...sshOverlayAdditionalDirectories,
     ...addDirs,
   ]
   // Parallelize fs validation; apply updates serially (cumulative context).
@@ -1012,7 +1022,11 @@ export async function initializeToolPermissionContext({
       toolPermissionContext = applyPermissionUpdate(toolPermissionContext, {
         type: 'addDirectories',
         directories: [result.absolutePath],
-        destination: 'cliArg',
+        destination:
+          isManagedSSHRemoteRuntime() &&
+          sshOverlayAdditionalDirectories.includes(result.absolutePath)
+            ? 'sshOverlay'
+            : 'cliArg',
       })
     } else if (
       result.resultType !== 'alreadyInWorkingDirectory' &&

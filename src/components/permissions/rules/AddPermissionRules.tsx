@@ -22,6 +22,7 @@ import {
   type EditableSettingSource,
   SOURCES,
 } from '../../../utils/settings/constants.js'
+import { isManagedSSHRemoteRuntime } from '../../../ssh/managedSSHPermissions.js'
 import { getRelativeSettingsFilePathForSource } from '../../../utils/settings/settings.js'
 import { plural } from '../../../utils/stringUtils.js'
 import type { OptionWithDescription } from '../../CustomSelect/select.js'
@@ -70,15 +71,26 @@ export function AddPermissionRules({
   initialContext,
   setToolPermissionContext,
 }: Props): React.ReactNode {
-  const allOptions = SOURCES.map(optionForPermissionSaveDestination)
+  const allOptions = isManagedSSHRemoteRuntime()
+    ? [
+        {
+          label: 'Managed SSH session',
+          description: 'Saved to remote SSH permissions for this session',
+          value: 'sshOverlay',
+        },
+      ]
+    : SOURCES.map(optionForPermissionSaveDestination)
 
   const onSelect = useCallback(
     (selectedValue: string) => {
       if (selectedValue === 'cancel') {
         onCancel()
         return
-      } else if ((SOURCES as readonly string[]).includes(selectedValue)) {
-        const destination = selectedValue as EditableSettingSource
+      } else if (
+        (SOURCES as readonly string[]).includes(selectedValue) ||
+        (isManagedSSHRemoteRuntime() && selectedValue === 'sshOverlay')
+      ) {
+        const destination = selectedValue as EditableSettingSource | 'sshOverlay'
 
         const updatedContext = applyPermissionUpdate(initialContext, {
           type: 'addRules',

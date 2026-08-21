@@ -103,6 +103,46 @@ describe('SSH shell control schema', () => {
     }
   })
 
+  it('validates SSH permission overlay requests', () => {
+    const read = SDKControlRequestSchema().safeParse({
+      type: 'control_request',
+      request_id: 'permissions-1',
+      request: {
+        subtype: 'ssh_permissions',
+        ssh_remote_token: 'session-token',
+      },
+    })
+    const update = SDKControlRequestSchema().safeParse({
+      type: 'control_request',
+      request_id: 'permissions-2',
+      request: {
+        subtype: 'ssh_update_permissions',
+        ssh_remote_token: 'session-token',
+        update: {
+          type: 'addRules',
+          behavior: 'allow',
+          rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }],
+        },
+      },
+    })
+    const invalid = SDKControlRequestSchema().safeParse({
+      type: 'control_request',
+      request_id: 'permissions-3',
+      request: {
+        subtype: 'ssh_update_permissions',
+        ssh_remote_token: '',
+        update: {
+          type: 'setMode',
+          mode: 'bypassPermissions',
+        },
+      },
+    })
+
+    assert.equal(read.success, true)
+    assert.equal(update.success, true)
+    assert.equal(invalid.success, false)
+  })
+
   it('validates bounded history chunks', () => {
     const assistantTimestamp = '2026-08-20T00:00:00.000Z'
     const valid = SSHHistoryChunkSchema().safeParse({

@@ -17,6 +17,7 @@ import {
 } from '../tools/FileReadTool/FileReadTool.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
+import { extractPathMentions } from './pathMentionEncoding.js'
 import { countCharInString } from './stringUtils.js'
 import { count, uniq } from './array.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -2936,43 +2937,7 @@ async function getSkillListingAttachments(
 // a feature-gated module so it doesn't leak into external builds.
 
 export function extractAtMentionedFiles(content: string): string[] {
-  // Extract filenames mentioned with @ symbol, including line range syntax: @file.txt#L10-20
-  // Also supports quoted paths for files with spaces: @"my/file with spaces.txt"
-  // Example: "foo bar @baz moo" would extract "baz"
-  // Example: 'check @"my file.txt" please' would extract "my file.txt"
-
-  // Two patterns: quoted paths and regular paths
-  const quotedAtMentionRegex = /(^|\s)@"([^"]+)"/g
-  const regularAtMentionRegex = /(^|\s)@([^\s]+)\b/g
-
-  const quotedMatches: string[] = []
-  const regularMatches: string[] = []
-
-  // Extract quoted mentions first (skip agent mentions like @"code-reviewer (agent)")
-  let match
-  while ((match = quotedAtMentionRegex.exec(content)) !== null) {
-    if (
-      match[2] &&
-      !match[2].endsWith(' (agent)') &&
-      !match[2].startsWith('codex-app:')
-    ) {
-      quotedMatches.push(match[2]) // The content inside quotes
-    }
-  }
-
-  // Extract regular mentions
-  const regularMatchArray = content.match(regularAtMentionRegex) || []
-  regularMatchArray.forEach(match => {
-    // @ts-ignore - recovered code
-    const filename = match.slice(match.indexOf('@') + 1)
-    // Don't include if it starts with a quote (already handled as quoted)
-    if (!filename.startsWith('"') && !filename.startsWith('codex-app:')) {
-      regularMatches.push(filename)
-    }
-  })
-
-  // Combine and deduplicate
-  return uniq([...quotedMatches, ...regularMatches])
+  return uniq(extractPathMentions(content))
 }
 
 export function extractMcpResourceMentions(content: string): string[] {

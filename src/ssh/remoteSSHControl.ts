@@ -3,10 +3,19 @@ import type {
   SDKControlSSHFileSuggestionsRequest,
   StdoutMessage,
 } from '../entrypoints/sdk/controlTypes.js'
+import type { ToolPermissionContext } from '../Tool.js'
+import type { AppState } from '../state/AppState.js'
 import {
   SDKControlReplayHistoryRequestSchema,
   SDKControlSSHFileSuggestionsRequestSchema,
+  SDKControlSSHPermissionsRequestSchema,
+  SDKControlSSHUpdatePermissionsRequestSchema,
 } from '../entrypoints/sdk/controlSchemas.js'
+import type {
+  SDKControlSSHPermissionUpdate,
+  SDKControlSSHPermissionsResponse,
+  SDKControlSSHUpdatePermissionsRequest,
+} from '../entrypoints/sdk/controlTypes.js'
 import type { Message } from '../types/message.js'
 import { errorMessage } from '../utils/errors.js'
 import {
@@ -15,6 +24,13 @@ import {
   type RemoteFileSuggestionDependencies,
 } from './remoteFileSuggestions.js'
 import { buildSSHHistoryReplay } from './remoteHistoryReplay.js'
+import {
+  applySSHPermissionOverlayUpdate,
+  readSSHPermissionRuntimeState,
+} from './managedSSHPermissions.js'
+import {
+  applyPermissionUpdate,
+} from '../utils/permissions/PermissionUpdate.js'
 
 type QueryFileSuggestions = (
   request: SDKControlSSHFileSuggestionsRequest,
@@ -31,6 +47,8 @@ export class ManagedSSHControlService {
       getSessionId: () => string
       enqueue: (message: StdoutMessage) => void
       queryFileSuggestions?: QueryFileSuggestions
+      getToolPermissionContext?: () => ToolPermissionContext
+      setAppState?: (f: (prev: AppState) => AppState) => void
     },
   ) {}
 
@@ -41,6 +59,14 @@ export class ManagedSSHControlService {
     }
     if (message.request.subtype === 'ssh_file_suggestions') {
       this.handleFileSuggestions(message)
+      return true
+    }
+    if (message.request.subtype === 'ssh_permissions') {
+      this.handlePermissions(message)
+      return true
+    }
+    if (message.request.subtype === 'ssh_update_permissions') {
+      this.handleUpdatePermissions(message)
       return true
     }
     return false
@@ -74,6 +100,55 @@ export class ManagedSSHControlService {
       })
       for (const chunk of replay.chunks) this.options.enqueue(chunk)
       this.sendSuccess(message.request_id, replay.response)
+    } catch (error) {
+      this.sendError(message.request_id, errorMessage(error))
+    }
+  }
+
+  private handlePermissions(message: SDKControlRequest): void {
+    try {
+      const request = SDKControlSSHPermissionsRequestSchema().parse(message.request)
+      assertManagedSSHCapability(
+        request.ssh_remote_token,
+        this.options.environment,
+      )
+      const context = this.options.getToolPermissionContext?.()
+      if (!context) throw new Error('Permission state is unavailable')
+      this.sendSuccess(
+        message.request_id,
+        readSSHPermissionRuntimeState(context) as unknown as SDKControlSSHPermissionsResponse,
+      )
+    } catch (error) {
+      this.sendError(message.request_id, errorMessage(error))
+    }
+  }
+
+  private handleUpdatePermissions(message: SDKControlRequest): void {
+    let request: SDKControlSSHUpdatePermissionsRequest
+    try {
+      request = SDKControlSSHUpdatePermissionsRequestSchema().parse(
+        message.request,
+      ) as SDKControlSSHUpdatePermissionsRequest
+      assertManagedSSHCapability(
+        request.ssh_remote_token,
+        this.options.environment,
+      )
+      const getContext = this.options.getToolPermissionContext
+      const setAppState = this.options.setAppState
+      if (!getContext || !setAppState) throw new Error('Permission state is unavailable')
+      const overlay = applySSHPermissionOverlayUpdate(request.update)
+      setAppState(prev => ({
+        ...prev,
+        toolPermissionContext: applyPermissionUpdate(
+          prev.toolPermissionContext,
+          overlayUpdateToPermissionUpdate(request.update),
+        ),
+      }))
+      const nextContext = getContext()
+      this.sendSuccess(message.request_id, {
+        overlay,
+        ...readSSHPermissionRuntimeState(nextContext),
+      })
     } catch (error) {
       this.sendError(message.request_id, errorMessage(error))
     }
@@ -138,5 +213,12 @@ export class ManagedSSHControlService {
       type: 'control_response',
       response: { subtype: 'error', request_id: requestId, error },
     })
+  }
+}
+
+function overlayUpdateToPermissionUpdate(update: SDKControlSSHPermissionUpdate) {
+  return {
+    ...update,
+    destination: 'sshOverlay' as const,
   }
 }

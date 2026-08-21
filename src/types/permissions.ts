@@ -57,6 +57,7 @@ export type PermissionRuleSource =
   | 'localSettings'
   | 'flagSettings'
   | 'policySettings'
+  | 'sshOverlay'
   | 'cliArg'
   | 'command'
   | 'session'

@@ -11,6 +11,7 @@ import type {
 import type {
   AssistantMessage,
   Message,
+  ProgressMessage,
   StreamEvent,
   SystemMessage,
 } from '../types/message.js'
@@ -38,6 +39,23 @@ function convertAssistantMessage(msg: SDKAssistantMessage): AssistantMessage {
     requestId: undefined,
     timestamp: new Date().toISOString(),
     error: msg.error,
+  }
+}
+
+function convertAgentProgressMessage(
+  message: AssistantMessage | ReturnType<typeof createUserMessage>,
+  parentToolUseID: string,
+): ProgressMessage {
+  return {
+    type: 'progress',
+    uuid: message.uuid,
+    timestamp: message.timestamp,
+    toolUseID: `agent_${String(message.uuid)}`,
+    parentToolUseID,
+    data: {
+      type: 'agent_progress',
+      message,
+    },
   }
 }
 
@@ -209,8 +227,15 @@ export function convertSDKMessage(
   opts?: ConvertOptions,
 ): ConvertedMessage {
   switch (msg.type) {
-    case 'assistant':
-      return { type: 'message', message: convertAssistantMessage(msg) }
+    case 'assistant': {
+      const message = convertAssistantMessage(msg)
+      return {
+        type: 'message',
+        message: msg.parent_tool_use_id
+          ? convertAgentProgressMessage(message, msg.parent_tool_use_id)
+          : message,
+      }
+    }
 
     case 'user': {
       // @ts-ignore - recovered code
@@ -223,14 +248,18 @@ export function convertSDKMessage(
       const isToolResult =
         Array.isArray(content) && content.some(b => b.type === 'tool_result')
       if (opts?.convertToolResults && isToolResult) {
+        const message = createUserMessage({
+          content,
+          toolUseResult: msg.tool_use_result,
+          uuid: msg.uuid,
+          timestamp: msg.timestamp,
+          isMeta: msg.isSynthetic ? true : undefined,
+        })
         return {
           type: 'message',
-          message: createUserMessage({
-            content,
-            toolUseResult: msg.tool_use_result,
-            uuid: msg.uuid,
-            timestamp: msg.timestamp,
-          }),
+          message: msg.parent_tool_use_id
+            ? convertAgentProgressMessage(message, msg.parent_tool_use_id)
+            : message,
         }
       }
       // When converting historical events, user-typed messages need to be
@@ -245,6 +274,7 @@ export function convertSDKMessage(
               toolUseResult: msg.tool_use_result,
               uuid: msg.uuid,
               timestamp: msg.timestamp,
+              isMeta: msg.isSynthetic ? true : undefined,
             }),
           }
         }

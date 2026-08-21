@@ -42,6 +42,7 @@ import {
   useTabsWidth,
 } from '../../design-system/Tabs.js'
 import { SearchBox } from '../../SearchBox.js'
+import { isManagedSSHRemoteRuntime } from '../../../ssh/managedSSHPermissions.js'
 import type { Option } from '../../ui/option.js'
 import { AddPermissionRules } from './AddPermissionRules.js'
 import { AddWorkspaceDirectory } from './AddWorkspaceDirectory.js'
@@ -108,7 +109,7 @@ function RuleDetails({
     </Box>
   )
 
-  // Managed settings can't be edited
+  // Managed policy can't be edited. Managed SSH overlay rules are editable via the remote overlay path.
   if (rule.source === 'policySettings') {
     return (
       <>
@@ -653,9 +654,11 @@ export function PermissionRuleList({
       <AddWorkspaceDirectory
         onAddDirectory={(path, remember) => {
           // Apply the permission update to add the directory
-          const destination: PermissionUpdateDestination = remember
-            ? 'localSettings'
-            : 'session'
+          const destination = isManagedSSHRemoteRuntime()
+            ? ('sshOverlay' as const)
+            : remember
+              ? ('localSettings' as const)
+              : ('session' as const)
 
           const permissionUpdate = {
             type: 'addDirectories' as const,
@@ -672,8 +675,9 @@ export function PermissionRuleList({
             toolPermissionContext: updatedContext,
           }))
 
-          // Persist if remember is true
-          if (remember) {
+          // Persist if requested, or always for managed SSH because the remote
+          // overlay is the editable permission authority.
+          if (remember || isManagedSSHRemoteRuntime()) {
             persistPermissionUpdate(permissionUpdate)
           }
 

@@ -16,6 +16,7 @@ describe('remote SSH history replay', () => {
         uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         timestamp: '2026-08-20T00:00:00.000Z',
         message: { role: 'user', content: 'hello' },
+        isMeta: true,
       },
       {
         type: 'system',
@@ -45,6 +46,7 @@ describe('remote SSH history replay', () => {
     assert.equal(projected.length, 2)
     assert.equal(projected[0]?.type, 'user')
     assert.equal((projected[0] as { isReplay?: boolean }).isReplay, true)
+    assert.equal((projected[0] as { isSynthetic?: boolean }).isSynthetic, true)
     assert.equal(projected[0]?.uuid, messages[0]?.uuid)
     assert.equal(projected[0]?.session_id, sessionId)
     assert.equal(

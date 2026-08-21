@@ -16,21 +16,35 @@ export function createRemoteFileSuggestionProvider(
   return (request, signal) => manager.getFileSuggestions(request, signal)
 }
 
+export type RemoteFileSuggestionResult = {
+  items: SuggestionItem[]
+  incomplete: boolean
+}
+
+export function toRemoteFileSuggestionResult(
+  response: SDKControlSSHFileSuggestionsResponse,
+): RemoteFileSuggestionResult {
+  return {
+    incomplete: response.incomplete,
+    items: response.items.map(item => {
+      const displayText =
+        item.kind === 'directory' && !item.path.endsWith('/')
+          ? `${item.path}/`
+          : item.path
+      return {
+        id: `file-${displayText}`,
+        displayText,
+        metadata: {
+          type: item.kind,
+          ...(item.score === undefined ? {} : { score: item.score }),
+        },
+      }
+    }),
+  }
+}
+
 export function toRemoteFileSuggestionItems(
   response: SDKControlSSHFileSuggestionsResponse,
 ): SuggestionItem[] {
-  return response.items.map(item => {
-    const displayText =
-      item.kind === 'directory' && !item.path.endsWith('/')
-        ? `${item.path}/`
-        : item.path
-    return {
-      id: `file-${displayText}`,
-      displayText,
-      metadata: {
-        type: item.kind,
-        ...(item.score === undefined ? {} : { score: item.score }),
-      },
-    }
-  })
+  return toRemoteFileSuggestionResult(response).items
 }

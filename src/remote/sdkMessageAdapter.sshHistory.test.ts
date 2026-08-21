@@ -17,6 +17,7 @@ describe('convertSDKHistory', () => {
         uuid: '22222222-2222-4222-8222-222222222222',
         session_id: sessionId,
         isReplay: true,
+        isSynthetic: true,
       },
       {
         type: 'assistant',
@@ -44,6 +45,7 @@ describe('convertSDKHistory', () => {
         uuid: '44444444-4444-4444-8444-444444444444',
         session_id: sessionId,
         isReplay: true,
+        isSynthetic: true,
       },
       {
         type: 'system',
@@ -68,14 +70,78 @@ describe('convertSDKHistory', () => {
     expect(converted[0]?.type === 'user' && converted[0].message.content).toBe(
       'first prompt',
     )
+    expect(converted[0]?.type === 'user' && converted[0].isMeta).toBe(true)
     expect(
       converted[2]?.type === 'user' &&
         Array.isArray(converted[2].message.content) &&
         converted[2].message.content[0]?.type,
     ).toBe('tool_result')
+    expect(converted[2]?.type === 'user' && converted[2].isMeta).toBe(true)
     expect(
       converted[3]?.type === 'system' && converted[3].subtype,
     ).toBe('compact_boundary')
+  })
+
+  test('restores nested agent messages as progress linked to the parent call', () => {
+    const history = [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'nested-tool',
+              name: 'Bash',
+              input: { command: 'pwd' },
+            },
+          ],
+        },
+        parent_tool_use_id: 'parent-agent',
+        uuid: '99999999-9999-4999-8999-999999999999',
+        session_id: sessionId,
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'nested-tool',
+              content: '/root',
+            },
+          ],
+        },
+        parent_tool_use_id: 'parent-agent',
+        uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        session_id: sessionId,
+        isSynthetic: true,
+      },
+    ] satisfies SDKMessage[]
+
+    const converted = convertSDKHistory(history)
+
+    expect(converted).toHaveLength(2)
+    for (const message of converted) {
+      expect(message.type).toBe('progress')
+      if (message.type === 'progress') {
+        expect(message.parentToolUseID).toBe('parent-agent')
+        expect(message.data.type).toBe('agent_progress')
+      }
+    }
+    const first = converted[0]
+    const second = converted[1]
+    expect(
+      first?.type === 'progress' &&
+        first.data.type === 'agent_progress' &&
+        (first.data as { message: { type: string } }).message.type,
+    ).toBe('assistant')
+    expect(
+      second?.type === 'progress' &&
+        second.data.type === 'agent_progress' &&
+        (second.data as { message: { type: string } }).message.type,
+    ).toBe('user')
   })
 
   test('omits transport noise and duplicate UUIDs', () => {

@@ -13,6 +13,8 @@ import type {
   HookEvent,
   AgentDefinition,
   PermissionUpdate,
+  PermissionBehavior,
+  PermissionRuleValue,
 } from './coreTypes.generated.js'
 
 // Keep alive
@@ -127,6 +129,31 @@ export type SDKControlSSHFileSuggestionsRequest = {
   show_on_empty?: boolean
   limit: number
   ssh_remote_token: string
+}
+
+export type SDKControlSSHPermissionsRequest = {
+  subtype: 'ssh_permissions'
+  ssh_remote_token: string
+}
+
+export type SDKControlSSHPermissionsResponse = {
+  overlay: Record<string, unknown>
+  rules: unknown[]
+  additionalDirectories: unknown[]
+}
+
+export type SDKControlSSHPermissionUpdate =
+  | {
+      type: 'addRules' | 'removeRules' | 'replaceRules'
+      behavior: PermissionBehavior
+      rules: PermissionRuleValue[]
+    }
+  | { type: 'addDirectories' | 'removeDirectories'; directories: string[] }
+
+export type SDKControlSSHUpdatePermissionsRequest = {
+  subtype: 'ssh_update_permissions'
+  ssh_remote_token: string
+  update: SDKControlSSHPermissionUpdate
 }
 
 export type SDKControlSSHFileSuggestionsResponse = {

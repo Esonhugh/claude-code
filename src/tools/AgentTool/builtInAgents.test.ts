@@ -42,6 +42,22 @@ describe('Explore and Plan built-in agents', () => {
       false,
     )
   })
+
+  test('keep compact read-only prompts', () => {
+    const agents = getBuiltInAgents()
+    const explore = agents.find(agent => agent.agentType === 'Explore')
+    const plan = agents.find(agent => agent.agentType === 'Plan')
+    const context = { toolUseContext: { options: {} as never } }
+    const explorePrompt = explore?.getSystemPrompt(context)
+    const planPrompt = plan?.getSystemPrompt(context)
+
+    expect(explorePrompt).toContain('READ-ONLY')
+    expect(explorePrompt).toContain('state-changing command')
+    expect(explorePrompt?.length).toBeLessThan(1_400)
+    expect(planPrompt).toContain('READ-ONLY')
+    expect(planPrompt).toContain('Critical Files for Implementation')
+    expect(planPrompt?.length).toBeLessThan(1_600)
+  })
 })
 
 describe('Coordinator built-in worker agent', () => {

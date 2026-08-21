@@ -23,30 +23,77 @@ type SSHEnvironment = Record<string, string | undefined>
 
 export type RemoteFileSuggestionDependencies = {
   signal?: AbortSignal
-  loadFuzzyIndex?: () => Promise<FuzzyIndex>
+  loadFuzzyIndex?: (signal?: AbortSignal) => Promise<FuzzyIndex>
   getPathSuggestions?: (
     query: string,
     limit: number,
+    signal?: AbortSignal,
   ) => Promise<SSHFileSuggestionItem[]>
   coldCacheWaitMs?: number
   deadlineMs?: number
 }
 
-let fuzzyIndexPromise: Promise<FuzzyIndex> | null = null
+let fuzzyIndex:
+  | { promise: Promise<FuzzyIndex>; controller: AbortController; consumers: number }
+  | { promise: Promise<FuzzyIndex>; value: FuzzyIndex }
+  | null = null
 
-function loadBuiltinFuzzyIndex(): Promise<FuzzyIndex> {
-  fuzzyIndexPromise ??= getPathsForSuggestions().catch(error => {
-    fuzzyIndexPromise = null
-    throw error
+function loadBuiltinFuzzyIndex(signal?: AbortSignal): Promise<FuzzyIndex> {
+  if (fuzzyIndex && 'value' in fuzzyIndex) return fuzzyIndex.promise
+
+  if (!fuzzyIndex) {
+    const controller = new AbortController()
+    const state = {
+      controller,
+      consumers: 0,
+      promise: Promise.resolve(undefined as unknown as FuzzyIndex),
+    }
+    state.promise = getPathsForSuggestions(controller.signal).then(
+      value => {
+        fuzzyIndex = { promise: Promise.resolve(value), value }
+        return value
+      },
+      error => {
+        if (fuzzyIndex === state) fuzzyIndex = null
+        throw error
+      },
+    )
+    fuzzyIndex = state
+  }
+
+  const state = fuzzyIndex
+  if ('value' in state) return state.promise
+  state.consumers += 1
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    state.consumers -= 1
+    if (state.consumers === 0 && fuzzyIndex === state) {
+      fuzzyIndex = null
+      state.controller.abort()
+    }
+  }
+  if (signal?.aborted) {
+    release()
+    return Promise.reject(new Error('SSH file suggestion request cancelled'))
+  }
+  signal?.addEventListener('abort', release, { once: true })
+  return state.promise.finally(() => {
+    signal?.removeEventListener('abort', release)
+    release()
   })
-  return fuzzyIndexPromise
 }
 
 async function getBuiltinPathSuggestions(
   query: string,
   limit: number,
+  signal?: AbortSignal,
 ): Promise<SSHFileSuggestionItem[]> {
-  const suggestions = await getPathCompletions(query, { maxResults: limit })
+  const suggestions = await getPathCompletions(query, {
+    maxResults: limit,
+    signal,
+  })
   return suggestions.map(suggestion => {
     const metadata = suggestion.metadata as { type?: unknown } | undefined
     const kind = metadata?.type === 'directory' ? 'directory' : 'file'
@@ -160,6 +207,7 @@ export async function queryRemoteFileSuggestions(
       (dependencies.getPathSuggestions ?? getBuiltinPathSuggestions)(
         request.query,
         request.limit,
+        signal,
       ),
       deadlineMs,
       signal,
@@ -173,15 +221,25 @@ export async function queryRemoteFileSuggestions(
     }
   }
 
+  const providerController = new AbortController()
+  const cancelProvider = () => providerController.abort()
+  if (signal?.aborted) cancelProvider()
+  else signal?.addEventListener('abort', cancelProvider, { once: true })
+
   const index = await waitFor(
-    (dependencies.loadFuzzyIndex ?? loadBuiltinFuzzyIndex)(),
+    (dependencies.loadFuzzyIndex ?? loadBuiltinFuzzyIndex)(
+      providerController.signal,
+    ),
     Math.min(
       dependencies.coldCacheWaitMs ?? DEFAULT_COLD_CACHE_WAIT_MS,
       deadlineMs,
     ),
     signal,
-  )
+  ).finally(() => {
+    signal?.removeEventListener('abort', cancelProvider)
+  })
   if (index.status === 'timeout') {
+    cancelProvider()
     return { items: [], incomplete: true }
   }
 

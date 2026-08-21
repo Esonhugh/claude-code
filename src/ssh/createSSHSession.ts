@@ -14,7 +14,14 @@ import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { SettingsJson } from '../utils/settings/types.js'
-import { getInitialSettings } from '../utils/settings/settings.js'
+import {
+  getInitialSettings,
+  getSettingsForSource,
+} from '../utils/settings/settings.js'
+import {
+  encodeSSHPermissionBootstrap,
+  extractEditablePermissionOverlay,
+} from './managedSSHPermissions.js'
 import { quote } from '../utils/bash/shellQuote.js'
 import { isInBundledMode } from '../utils/bundledMode.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
@@ -254,6 +261,14 @@ function authEnvironment(
       ? [
           'CLAUDE_CODE_SSH_REMOTE=1',
           `CLAUDE_CODE_SSH_REMOTE_TOKEN=${sshRemoteToken}`,
+          `CLAUDE_CODE_SSH_PERMISSION_BOOTSTRAP=${encodeSSHPermissionBootstrap(
+            extractEditablePermissionOverlay([
+              getSettingsForSource('userSettings'),
+              getSettingsForSource('projectSettings'),
+              getSettingsForSource('localSettings'),
+              getSettingsForSource('flagSettings'),
+            ]),
+          )}`,
         ]
       : []),
     `CLAUDE_CODE_USE_OPENAI=${proxy.provider === 'openai' ? '1' : '0'}`,

@@ -20,6 +20,7 @@ import { getSessionId } from '../bootstrap/state.js'
 import { logForDebugging } from '../utils/debug.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { lazySchema } from '../utils/lazySchema.js'
+import { encodePathMention } from '../utils/pathMentionEncoding.js'
 import { getBridgeAccessToken, getBridgeBaseUrl } from './bridgeConfig.js'
 
 const DOWNLOAD_TIMEOUT_MS = 30_000
@@ -128,9 +129,7 @@ export async function resolveInboundAttachments(
   const paths = await Promise.all(attachments.map(resolveOne))
   const ok = paths.filter((p): p is string => p !== undefined)
   if (ok.length === 0) return ''
-  // Quoted form — extractAtMentionedFiles truncates unquoted @refs at the
-  // first space, which breaks any home dir with spaces (/Users/John Smith/).
-  return ok.map(p => `@"${p}"`).join(' ') + ' '
+  return ok.map(p => encodePathMention(p, true)).join('')
 }
 
 /**

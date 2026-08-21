@@ -29,6 +29,7 @@ import { expandPath } from '../utils/path.js'
 import { ripGrep } from '../utils/ripgrep.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
 import { createSignal } from '../utils/signal.js'
+import { createCombinedAbortSignal } from '../utils/combinedAbortSignal.js'
 
 // Lazily constructed singleton
 let fileIndex: FileIndex | null = null
@@ -520,8 +521,12 @@ async function getProjectFiles(
  * Uses git ls-files for git repos (fast) or ripgrep as fallback
  * Returns a FileIndex populated for fast fuzzy search
  */
-export async function getPathsForSuggestions(): Promise<FileIndex> {
-  const signal = AbortSignal.timeout(10_000)
+export async function getPathsForSuggestions(
+  requestSignal?: AbortSignal,
+): Promise<FileIndex> {
+  const { signal, cleanup } = createCombinedAbortSignal(requestSignal, {
+    timeoutMs: 10_000,
+  })
   const index = getFileIndex()
 
   try {
@@ -536,6 +541,7 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
       getProjectFiles(signal, respectGitignore),
       getClaudeConfigFiles(cwd),
     ])
+    signal.throwIfAborted()
 
     // Cache for mergeUntrackedIntoNormalizedCache
     cachedConfigFiles = configFiles
@@ -553,6 +559,7 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
       // build yields every ~4ms so the UI stays responsive — user can keep
       // typing during the ~120ms wait without input lag.
       await index.loadFromFileListAsync(allPathsList).done
+      signal.throwIfAborted()
       loadedTrackedSignature = sig
       // We just replaced the merged index with tracked-only data. Force
       // the next untracked merge to rebuild even if its own sig matches.
@@ -563,7 +570,10 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
       )
     }
   } catch (error) {
+    if (requestSignal?.aborted) throw error
     logError(error)
+  } finally {
+    cleanup()
   }
 
   return index

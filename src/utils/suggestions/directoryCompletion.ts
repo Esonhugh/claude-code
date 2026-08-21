@@ -26,6 +26,7 @@ export type CompletionOptions = {
 export type PathCompletionOptions = CompletionOptions & {
   includeFiles?: boolean
   includeHidden?: boolean
+  signal?: AbortSignal
 }
 
 type ParsedPath = {
@@ -168,7 +169,9 @@ export function isPathLikeToken(token: string): boolean {
 export async function scanDirectoryForPaths(
   dirPath: string,
   includeHidden = false,
+  signal?: AbortSignal,
 ): Promise<PathEntry[]> {
+  signal?.throwIfAborted()
   const cacheKey = `${dirPath}:${includeHidden}`
   const cached = pathCache.get(cacheKey)
   if (cached) {
@@ -178,6 +181,7 @@ export async function scanDirectoryForPaths(
   try {
     const fs = getFsImplementation()
     const entries = await fs.readdir(dirPath)
+    signal?.throwIfAborted()
 
     const paths = entries
       .filter(entry => includeHidden || !entry.name.startsWith('.'))
@@ -194,9 +198,11 @@ export async function scanDirectoryForPaths(
       })
       .slice(0, 100)
 
+    signal?.throwIfAborted()
     pathCache.set(cacheKey, paths)
     return paths
   } catch (error) {
+    if (signal?.aborted) throw error
     logError(error)
     return []
   }
@@ -214,10 +220,11 @@ export async function getPathCompletions(
     maxResults = 10,
     includeFiles = true,
     includeHidden = false,
+    signal,
   } = options
 
   const { directory, prefix } = parsePartialPath(partialPath, basePath)
-  const entries = await scanDirectoryForPaths(directory, includeHidden)
+  const entries = await scanDirectoryForPaths(directory, includeHidden, signal)
   const prefixLower = prefix.toLowerCase()
 
   const matches = entries

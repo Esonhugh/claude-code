@@ -9,11 +9,14 @@ CLAUDE_PLATFORM_PACKAGE ?= auto
 CLAUDE_BINARY_OUT ?= official-claude
 CLAUDE_KEEP_PACK ?= 0
 
-.PHONY: build test release-check download-claude clean-download-claude
+.PHONY: build linux-baseline test release-check download-claude clean-download-claude
 
 build:
 	CLAUDE_CODE_VERSION=$(VERSION) bun package:binary
 	mv $(FILE) ./built-claude
+
+linux-baseline:
+	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BINARY_TARGET=bun-linux-x64-baseline bun package:binary
 
 test:
 	./built-claude --dangerously-skip-permissions

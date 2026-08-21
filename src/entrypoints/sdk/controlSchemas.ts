@@ -20,6 +20,7 @@ import {
   McpServerStatusSchema,
   ModelInfoSchema,
   PermissionModeSchema,
+  PermissionRuleValueSchema,
   PermissionUpdateSchema,
   SDKMessageSchema,
   SDKPostTurnSummaryMessageSchema,
@@ -168,6 +169,53 @@ export const SDKControlSSHFileSuggestionsRequestSchema = lazySchema(() =>
       ssh_remote_token: z.string().min(1),
     })
     .describe('Queries the remote filesystem in a managed SSH session.'),
+)
+
+export const SDKControlSSHPermissionsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('ssh_permissions'),
+      ssh_remote_token: z.string().min(1),
+    })
+    .describe('Reads policy plus overlay permission state in a managed SSH session.'),
+)
+
+const SSHPermissionUpdateSchema = lazySchema(() =>
+  z.discriminatedUnion('type', [
+    z.object({
+      type: z.literal('addRules'),
+      behavior: z.enum(['allow', 'deny', 'ask']),
+      rules: z.array(PermissionRuleValueSchema()).max(500),
+    }),
+    z.object({
+      type: z.literal('removeRules'),
+      behavior: z.enum(['allow', 'deny', 'ask']),
+      rules: z.array(PermissionRuleValueSchema()).max(500),
+    }),
+    z.object({
+      type: z.literal('replaceRules'),
+      behavior: z.enum(['allow', 'deny', 'ask']),
+      rules: z.array(PermissionRuleValueSchema()).max(500),
+    }),
+    z.object({
+      type: z.literal('addDirectories'),
+      directories: z.array(z.string().min(1).max(4096)).max(500),
+    }),
+    z.object({
+      type: z.literal('removeDirectories'),
+      directories: z.array(z.string().min(1).max(4096)).max(500),
+    }),
+  ]),
+)
+
+export const SDKControlSSHUpdatePermissionsRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('ssh_update_permissions'),
+      ssh_remote_token: z.string().min(1),
+      update: SSHPermissionUpdateSchema(),
+    })
+    .describe('Updates the remote-owned managed SSH permission overlay.'),
 )
 
 export const SDKControlSetModelRequestSchema = lazySchema(() =>
@@ -596,6 +644,8 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlRunShellCommandRequestSchema(),
     SDKControlReplayHistoryRequestSchema(),
     SDKControlSSHFileSuggestionsRequestSchema(),
+    SDKControlSSHPermissionsRequestSchema(),
+    SDKControlSSHUpdatePermissionsRequestSchema(),
     SDKControlSetModelRequestSchema(),
     SDKControlSetMaxThinkingTokensRequestSchema(),
     SDKControlMcpStatusRequestSchema(),

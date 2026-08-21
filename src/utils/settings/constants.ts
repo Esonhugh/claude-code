@@ -70,7 +70,7 @@ export function getSourceDisplayName(
  * @returns Display name for the source in lowercase
  */
 export function getSettingSourceDisplayNameLowercase(
-  source: SettingSource | 'cliArg' | 'command' | 'session',
+  source: SettingSource | 'sshOverlay' | 'cliArg' | 'command' | 'session',
 ): string {
   switch (source) {
     case 'userSettings':
@@ -83,6 +83,8 @@ export function getSettingSourceDisplayNameLowercase(
       return 'command line arguments'
     case 'policySettings':
       return 'enterprise managed settings'
+    case 'sshOverlay':
+      return 'managed SSH permissions'
     case 'cliArg':
       return 'CLI argument'
     case 'command':
@@ -98,7 +100,7 @@ export function getSettingSourceDisplayNameLowercase(
  * @returns Display name for the source with first letter capitalized
  */
 export function getSettingSourceDisplayNameCapitalized(
-  source: SettingSource | 'cliArg' | 'command' | 'session',
+  source: SettingSource | 'sshOverlay' | 'cliArg' | 'command' | 'session',
 ): string {
   switch (source) {
     case 'userSettings':
@@ -111,6 +113,8 @@ export function getSettingSourceDisplayNameCapitalized(
       return 'Command line arguments'
     case 'policySettings':
       return 'Enterprise managed settings'
+    case 'sshOverlay':
+      return 'Managed SSH permissions'
     case 'cliArg':
       return 'CLI argument'
     case 'command':

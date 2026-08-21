@@ -163,6 +163,7 @@ import {
 import { TEAMMATE_MESSAGE_TAG, TICK_TAG } from 'src/constants/xml.js'
 import {
   getSettings_DEPRECATED,
+  getSettingsForSource,
   getSettingsWithSources,
 } from 'src/utils/settings/settings.js'
 import { settingsChangeDetector } from 'src/utils/settings/changeDetector.js'
@@ -315,6 +316,10 @@ import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { processToolResultBlock } from 'src/utils/toolResultStorage.js'
 import { createRemoteShellTranscript } from 'src/ssh/remoteShellTranscript.js'
 import { ManagedSSHControlService } from 'src/ssh/remoteSSHControl.js'
+import {
+  ensureSSHPermissionOverlay,
+  isManagedSSHRemoteRuntime,
+} from 'src/ssh/managedSSHPermissions.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
@@ -1159,10 +1164,20 @@ function runHeadlessStreaming(
   // include Assistant, User, Attachment, and Progress messages.
   // TODO: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
+  if (isManagedSSHRemoteRuntime()) {
+    ensureSSHPermissionOverlay([
+      getSettingsForSource('userSettings') ?? {},
+      getSettingsForSource('projectSettings') ?? {},
+      getSettingsForSource('localSettings') ?? {},
+      getSettingsForSource('flagSettings') ?? {},
+    ])
+  }
   const managedSSHControl = new ManagedSSHControlService({
     getHistory: () => mutableMessages,
     getSessionId,
     enqueue: message => output.enqueue(message),
+    getToolPermissionContext: () => getAppState().toolPermissionContext,
+    setAppState,
   })
 
   // Seed the readFileState cache from the transcript (content the model saw,

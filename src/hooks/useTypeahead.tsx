@@ -43,6 +43,12 @@ import {
   type ShellCompletionType,
 } from '../utils/bash/shellCompletion.js'
 import { formatLogMetadata } from '../utils/format.js'
+import { quote } from '../utils/bash/shellQuote.js'
+import {
+  decodePathMentionToken,
+  encodePathMention,
+  needsQuotedPathMention,
+} from '../utils/pathMentionEncoding.js'
 import {
   getSessionIdFromLog,
   searchSessionsByCustomTitle,
@@ -75,7 +81,8 @@ import { generateUnifiedSuggestions } from './unifiedSuggestions.js'
 import { buildCodexAppPluginProjections } from '../services/apps/pluginProjection.js'
 import {
   type RemoteFileSuggestionProvider,
-  toRemoteFileSuggestionItems,
+  type RemoteFileSuggestionResult,
+  toRemoteFileSuggestionResult,
 } from './remoteFileSuggestions.js'
 
 // Unicode-aware character class for file path tokens:
@@ -191,14 +198,7 @@ export function extractSearchToken(completionToken: {
   token: string
   isQuoted?: boolean
 }): string {
-  if (completionToken.isQuoted) {
-    // Remove @" prefix and optional closing "
-    return completionToken.token.slice(2).replace(/"$/, '')
-  } else if (completionToken.token.startsWith('@')) {
-    return completionToken.token.substring(1)
-  } else {
-    return completionToken.token
-  }
+  return decodePathMentionToken(completionToken.token)
 }
 
 /**
@@ -224,18 +224,15 @@ export function formatReplacementValue(options: {
     options
   const space = isComplete ? ' ' : ''
 
-  if (isQuoted || needsQuotes) {
-    // Use quoted format
-    return mode === 'bash'
-      ? `"${displayText}"${space}`
-      : `@"${displayText}"${space}`
-  } else if (hasAtPrefix) {
-    return mode === 'bash'
-      ? `${displayText}${space}`
-      : `@${displayText}${space}`
-  } else {
-    return displayText
+  if (mode === 'bash') {
+    return `${quote([displayText])}${space}`
   }
+
+  if (hasAtPrefix || isQuoted || needsQuotes) {
+    return encodePathMention(displayText, isComplete)
+  }
+
+  return displayText
 }
 
 /**
@@ -369,20 +366,41 @@ export function extractCompletionToken(
   // Get text up to cursor
   const textBeforeCursor = text.substring(0, cursorPos)
 
-  // Check for quoted @ mention first (e.g., @"my file with spaces")
+  // Check for quoted @ mention first (e.g., @"my file with spaces").
+  // Quotes escaped by the mention encoder remain part of the token.
   if (includeAtSymbol) {
-    const quotedAtRegex = /@"([^"]*)"?$/
-    const quotedMatch = textBeforeCursor.match(quotedAtRegex)
-    if (quotedMatch && quotedMatch.index !== undefined) {
-      // Include any remaining quoted content after cursor until closing quote or end
-      const textAfterCursor = text.substring(cursorPos)
-      const afterQuotedMatch = textAfterCursor.match(/^[^"]*"?/)
-      const quotedSuffix = afterQuotedMatch ? afterQuotedMatch[0] : ''
+    const quotedStart = textBeforeCursor.lastIndexOf('@"')
+    if (
+      quotedStart >= 0 &&
+      (quotedStart === 0 || /\s/.test(textBeforeCursor[quotedStart - 1]!))
+    ) {
+      let escaped = false
+      let closedBeforeCursor = false
+      for (let index = quotedStart + 2; index < cursorPos; index += 1) {
+        const char = text[index]!
+        if (!escaped && char === '"') {
+          closedBeforeCursor = true
+          break
+        }
+        escaped = !escaped && char === '\\'
+        if (char !== '\\') escaped = false
+      }
 
-      return {
-        token: quotedMatch[0] + quotedSuffix,
-        startPos: quotedMatch.index,
-        isQuoted: true,
+      if (!closedBeforeCursor) {
+        let tokenEnd = cursorPos
+        escaped = false
+        while (tokenEnd < text.length) {
+          const char = text[tokenEnd]!
+          tokenEnd += 1
+          if (!escaped && char === '"') break
+          escaped = !escaped && char === '\\'
+          if (char !== '\\') escaped = false
+        }
+        return {
+          token: text.slice(quotedStart, tokenEnd),
+          startPos: quotedStart,
+          isQuoted: true,
+        }
       }
     }
   }
@@ -565,6 +583,9 @@ export function useTypeahead({
   // Track the input value when suggestions were manually dismissed to prevent re-triggering
   const dismissedForInputRef = useRef<string | null>(null)
   const remoteFileSuggestionAbortRef = useRef<AbortController | null>(null)
+  const remoteFileSuggestionRetryRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  )
   const enableFileCompletions =
     enableLocalIOCompletions || remoteFileSuggestionProvider !== undefined
 
@@ -572,6 +593,10 @@ export function useTypeahead({
   const clearSuggestions = useCallback(() => {
     remoteFileSuggestionAbortRef.current?.abort()
     remoteFileSuggestionAbortRef.current = null
+    if (remoteFileSuggestionRetryRef.current) {
+      clearTimeout(remoteFileSuggestionRetryRef.current)
+      remoteFileSuggestionRetryRef.current = null
+    }
     setSuggestionsState(() => ({
       commandArgumentHint: undefined,
       suggestions: [],
@@ -586,16 +611,19 @@ export function useTypeahead({
     async (
       searchToken: string,
       isAtSymbol: boolean,
-    ): Promise<SuggestionItem[]> => {
+    ): Promise<RemoteFileSuggestionResult> => {
       if (!remoteFileSuggestionProvider) {
-        if (!enableLocalIOCompletions) return []
-        return generateUnifiedSuggestions(
-          searchToken,
-          mcpResources,
-          agents,
-          codexApps,
-          isAtSymbol,
-        )
+        if (!enableLocalIOCompletions) return { items: [], incomplete: false }
+        return {
+          items: await generateUnifiedSuggestions(
+            searchToken,
+            mcpResources,
+            agents,
+            codexApps,
+            isAtSymbol,
+          ),
+          incomplete: false,
+        }
       }
 
       remoteFileSuggestionAbortRef.current?.abort()
@@ -611,10 +639,12 @@ export function useTypeahead({
           },
           controller.signal,
         )
-        return toRemoteFileSuggestionItems(response)
+        return toRemoteFileSuggestionResult(response)
       } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') return []
-        return []
+        if (error instanceof Error && error.name === 'AbortError') {
+          return { items: [], incomplete: false }
+        }
+        return { items: [], incomplete: false }
       } finally {
         if (remoteFileSuggestionAbortRef.current === controller) {
           remoteFileSuggestionAbortRef.current = null
@@ -633,24 +663,47 @@ export function useTypeahead({
     () => () => {
       remoteFileSuggestionAbortRef.current?.abort()
       remoteFileSuggestionAbortRef.current = null
+      if (remoteFileSuggestionRetryRef.current) {
+        clearTimeout(remoteFileSuggestionRetryRef.current)
+        remoteFileSuggestionRetryRef.current = null
+      }
     },
     [],
   )
 
   // Expensive async operation to fetch file/resource suggestions
   const fetchFileSuggestions = useCallback(
-    async (searchToken: string, isAtSymbol = false): Promise<void> => {
+    async (
+      searchToken: string,
+      isAtSymbol = false,
+      retryAttempt = 0,
+    ): Promise<void> => {
       if (!enableFileCompletions) {
         clearSuggestions()
         return
       }
       latestSearchTokenRef.current = searchToken
-      const combinedItems = await requestFileSuggestionItems(
-        searchToken,
-        isAtSymbol,
-      )
+      if (retryAttempt === 0 && remoteFileSuggestionRetryRef.current) {
+        clearTimeout(remoteFileSuggestionRetryRef.current)
+        remoteFileSuggestionRetryRef.current = null
+      }
+      const { items: combinedItems, incomplete } =
+        await requestFileSuggestionItems(searchToken, isAtSymbol)
       // Discard stale results if a newer query was initiated while waiting
       if (latestSearchTokenRef.current !== searchToken) {
+        return
+      }
+      if (incomplete && retryAttempt < 4) {
+        remoteFileSuggestionRetryRef.current = setTimeout(() => {
+          remoteFileSuggestionRetryRef.current = null
+          if (latestSearchTokenRef.current === searchToken) {
+            void fetchFileSuggestions(
+              searchToken,
+              isAtSymbol,
+              retryAttempt + 1,
+            )
+          }
+        }, 100 * 2 ** retryAttempt)
         return
       }
       if (combinedItems.length === 0) {
@@ -1465,18 +1518,7 @@ export function useTypeahead({
 
         // Determine if token starts with @ to preserve it during replacement
         const hasAtPrefix = completionToken.token.startsWith('@')
-        // The effective token length excludes the @ and quotes if present
-        let effectiveTokenLength: number
-        if (completionToken.isQuoted) {
-          // Remove @" prefix and optional closing " to get effective length
-          effectiveTokenLength = completionToken.token
-            .slice(2)
-            .replace(/"$/, '').length
-        } else if (hasAtPrefix) {
-          effectiveTokenLength = completionToken.token.length - 1
-        } else {
-          effectiveTokenLength = completionToken.token.length
-        }
+        const effectiveTokenLength = extractSearchToken(completionToken).length
 
         // If there's a common prefix longer than what the user has typed,
         // replace the current input with the common prefix
@@ -1485,7 +1527,7 @@ export function useTypeahead({
             displayText: commonPrefix,
             mode,
             hasAtPrefix,
-            needsQuotes: false, // common prefix doesn't need quotes unless already quoted
+            needsQuotes: needsQuotedPathMention(commonPrefix),
             isQuoted: completionToken.isQuoted,
             isComplete: false, // partial completion
           })
@@ -1501,21 +1543,27 @@ export function useTypeahead({
           // Don't clear suggestions so user can continue typing or select a specific option
           // Instead, update for the new prefix
           void updateSuggestions(
-            input.replace(completionToken.token, replacementValue),
-            cursorOffset,
+            input.slice(0, completionToken.startPos) +
+              replacementValue +
+              input.slice(
+                completionToken.startPos + completionToken.token.length,
+              ),
+            completionToken.startPos + replacementValue.length,
           )
         } else if (index < suggestions.length) {
           // Otherwise, apply the selected suggestion
           const suggestion = suggestions[index]
           if (suggestion) {
-            const needsQuotes = suggestion.displayText.includes(' ')
+            const isDirectory =
+              isPathMetadata(suggestion.metadata) &&
+              suggestion.metadata.type === 'directory'
             const replacementValue = formatReplacementValue({
               displayText: suggestion.displayText,
               mode,
               hasAtPrefix,
-              needsQuotes,
+              needsQuotes: needsQuotedPathMention(suggestion.displayText),
               isQuoted: completionToken.isQuoted,
-              isComplete: true, // complete suggestion
+              isComplete: !isDirectory,
             })
 
             applyFileSuggestion(
@@ -1526,7 +1574,20 @@ export function useTypeahead({
               onInputChange,
               setCursorOffset,
             )
-            clearSuggestions()
+            if (isDirectory) {
+              const newInput =
+                input.slice(0, completionToken.startPos) +
+                replacementValue +
+                input.slice(
+                  completionToken.startPos + completionToken.token.length,
+                )
+              void updateSuggestions(
+                newInput,
+                completionToken.startPos + replacementValue.length,
+              )
+            } else {
+              clearSuggestions()
+            }
           }
         }
       }
@@ -1566,16 +1627,12 @@ export function useTypeahead({
         // If no suggestions, fetch file and MCP resource suggestions
         const completionInfo = extractCompletionToken(input, cursorOffset, true)
         if (completionInfo) {
-          // If token starts with @, search without the @ prefix
           const isAtSymbol = completionInfo.token.startsWith('@')
-          const searchToken = isAtSymbol
-            ? completionInfo.token.substring(1)
-            : completionInfo.token
+          const searchToken = extractSearchToken(completionInfo)
 
-          suggestionItems = await requestFileSuggestionItems(
-            searchToken,
-            isAtSymbol,
-          )
+          suggestionItems = (
+            await requestFileSuggestionItems(searchToken, isAtSymbol)
+          ).items
         } else {
           suggestionItems = []
         }
@@ -1716,14 +1773,16 @@ export function useTypeahead({
       if (completionInfo) {
         if (suggestion) {
           const hasAtPrefix = completionInfo.token.startsWith('@')
-          const needsQuotes = suggestion.displayText.includes(' ')
+          const isDirectory =
+            isPathMetadata(suggestion.metadata) &&
+            suggestion.metadata.type === 'directory'
           const replacementValue = formatReplacementValue({
             displayText: suggestion.displayText,
             mode,
             hasAtPrefix,
-            needsQuotes,
+            needsQuotes: needsQuotedPathMention(suggestion.displayText),
             isQuoted: completionInfo.isQuoted,
-            isComplete: true, // complete suggestion
+            isComplete: !isDirectory,
           })
 
           applyFileSuggestion(
@@ -1735,7 +1794,18 @@ export function useTypeahead({
             setCursorOffset,
           )
           debouncedFetchFileSuggestions.cancel()
-          clearSuggestions()
+          if (isDirectory) {
+            const newInput =
+              input.slice(0, completionInfo.startPos) +
+              replacementValue +
+              input.slice(completionInfo.startPos + completionInfo.token.length)
+            void updateSuggestions(
+              newInput,
+              completionInfo.startPos + replacementValue.length,
+            )
+          } else {
+            clearSuggestions()
+          }
         }
       }
     } else if (

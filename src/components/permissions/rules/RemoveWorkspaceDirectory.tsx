@@ -3,7 +3,11 @@ import { useCallback } from 'react'
 import { Select } from '../../../components/CustomSelect/select.js'
 import { Box, Text } from '../../../ink.js'
 import type { ToolPermissionContext } from '../../../Tool.js'
-import { applyPermissionUpdate } from '../../../utils/permissions/PermissionUpdate.js'
+import {
+  applyPermissionUpdate,
+  persistPermissionUpdate,
+} from '../../../utils/permissions/PermissionUpdate.js'
+import { isManagedSSHRemoteRuntime } from '../../../ssh/managedSSHPermissions.js'
 import { Dialog } from '../../design-system/Dialog.js'
 
 type Props = {
@@ -22,11 +26,15 @@ export function RemoveWorkspaceDirectory({
   setPermissionContext,
 }: Props): React.ReactNode {
   const handleRemove = useCallback(() => {
-    const updatedContext = applyPermissionUpdate(permissionContext, {
-      type: 'removeDirectories',
+    const permissionUpdate = {
+      type: 'removeDirectories' as const,
       directories: [directoryPath],
-      destination: 'session',
-    })
+      destination: isManagedSSHRemoteRuntime() ? 'sshOverlay' as const : 'session' as const,
+    }
+    const updatedContext = applyPermissionUpdate(permissionContext, permissionUpdate)
+    if (isManagedSSHRemoteRuntime()) {
+      persistPermissionUpdate(permissionUpdate)
+    }
 
     setPermissionContext(updatedContext)
     onRemove()

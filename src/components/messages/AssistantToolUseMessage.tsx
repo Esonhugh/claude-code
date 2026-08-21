@@ -8,11 +8,11 @@ import { stringWidth } from '../../ink/stringWidth.js'
 import { Box, Text, useTheme } from '../../ink.js'
 import { useAppStateMaybeOutsideOfProvider } from '../../state/AppState.js'
 import {
-  findToolByName,
   type Tool,
   type ToolProgressData,
   type Tools,
 } from '../../Tool.js'
+import { findRemoteDisplayTool } from '../../remote/remoteDisplayTools.js'
 import type { ProgressMessage } from '../../types/message.js'
 import { useIsClassifierChecking } from '../../utils/classifierApprovalsHook.js'
 import { logError } from '../../utils/log.js'
@@ -84,9 +84,7 @@ export function AssistantToolUseMessage({
   // this, ~50 bash messages × shell-quote-per-render pushed transition
   // render past the shimmer tick → abort → infinite retry (#21605).
   const parsed = useMemo(() => {
-    if (!tools) return null
-    const tool = findToolByName(tools, param.name)
-    if (!tool) return null
+    const tool = findRemoteDisplayTool(tools, param.name)
     const input = tool.inputSchema.safeParse(param.input)
     const data = input.success ? input.data : undefined
     return {
@@ -98,18 +96,6 @@ export function AssistantToolUseMessage({
       isTransparentWrapper: tool.isTransparentWrapper?.() ?? false,
     }
   }, [tools, param])
-
-  if (!parsed) {
-    // Guard against undefined tools (required prop) or unknown tool name
-    logError(
-      new Error(
-        tools
-          ? `Tool ${param.name} not found`
-          : `Tools array is undefined for tool ${param.name}`,
-      ),
-    )
-    return null
-  }
 
   const {
     tool,
