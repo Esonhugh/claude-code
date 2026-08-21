@@ -5,10 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppState, useSetAppState } from 'src/state/AppState.js'
 import {
   applyPermissionUpdate,
+  applyPermissionUpdates,
   persistPermissionUpdate,
 } from 'src/utils/permissions/PermissionUpdate.js'
+import { applyPermissionRulesToPermissionContext } from 'src/utils/permissions/permissions.js'
 import type { PermissionUpdateDestination } from 'src/utils/permissions/PermissionUpdateSchema.js'
 import type { CommandResultDisplay } from '../../../commands.js'
+import type { ToolPermissionContext } from '../../../Tool.js'
+import type { ManagedSSHRemotePermissions } from '../../../Tool.js'
+import { getEmptyToolPermissionContext } from '../../../Tool.js'
+import type { SDKControlSSHPermissionUpdate } from '../../../entrypoints/sdk/controlTypes.js'
 import { Select } from '../../../components/CustomSelect/select.js'
 import { useExitOnCtrlCDWithKeybindings } from '../../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { useSearchInput } from '../../../hooks/useSearchInput.js'
@@ -24,6 +30,7 @@ import type {
   PermissionRule,
   PermissionRuleValue,
 } from '../../../utils/permissions/PermissionRule.js'
+import type { AdditionalWorkingDirectory } from '../../../types/permissions.js'
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js'
 import {
   deletePermissionRule,
@@ -264,19 +271,96 @@ type Props = {
   ) => void
   initialTab?: TabType
   onRetryDenials?: (commands: string[]) => void
+  managedSSHRemotePermissions?: ManagedSSHRemotePermissions
+}
+
+function contextFromSSHRemotePermissions(
+  response: Awaited<ReturnType<ManagedSSHRemotePermissions['getPermissions']>>,
+): ToolPermissionContext {
+  const context = getEmptyToolPermissionContext()
+  const rules = response.rules.filter(
+    (rule): rule is PermissionRule =>
+      typeof rule === 'object' &&
+      rule !== null &&
+      'source' in rule &&
+      'ruleBehavior' in rule &&
+      'ruleValue' in rule,
+  )
+  const additionalDirectories = response.additionalDirectories.filter(
+    (directory): directory is AdditionalWorkingDirectory =>
+      typeof directory === 'object' &&
+      directory !== null &&
+      'path' in directory &&
+      typeof directory.path === 'string' &&
+      'source' in directory,
+  )
+  return applyPermissionUpdates(
+    applyPermissionRulesToPermissionContext(context, rules),
+    additionalDirectories.map(directory => ({
+      type: 'addDirectories',
+      destination: 'sshOverlay' as PermissionUpdateDestination,
+      directories: [directory.path],
+    })),
+  )
 }
 
 export function PermissionRuleList({
   onExit,
   initialTab,
   onRetryDenials,
+  managedSSHRemotePermissions,
 }: Props): React.ReactNode {
   const hasDenials = getAutoModeDenials().length > 0
   const defaultTab: TabType = initialTab ?? (hasDenials ? 'recent' : 'allow')
   const [changes, setChanges] = useState<string[]>([])
-  const toolPermissionContext = useAppState(s => s.toolPermissionContext)
+  const localToolPermissionContext = useAppState(s => s.toolPermissionContext)
   const setAppState = useSetAppState()
   const isTerminalFocused = useTerminalFocus()
+  const isManagedSSHLocalUI = !!managedSSHRemotePermissions
+  const [remoteToolPermissionContext, setRemoteToolPermissionContext] =
+    useState<ToolPermissionContext | null>(null)
+  const [remoteError, setRemoteError] = useState<string | null>(null)
+  const toolPermissionContext =
+    remoteToolPermissionContext ?? localToolPermissionContext
+
+  useEffect(() => {
+    if (!managedSSHRemotePermissions) return
+    let cancelled = false
+    setRemoteError(null)
+    void managedSSHRemotePermissions
+      .getPermissions()
+      .then(response => {
+        if (cancelled) return
+        setRemoteToolPermissionContext(contextFromSSHRemotePermissions(response))
+      })
+      .catch(error => {
+        if (cancelled) return
+        setRemoteError(
+          error instanceof Error ? error.message : String(error),
+        )
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [managedSSHRemotePermissions])
+
+  const updateRemotePermissions = useCallback(
+    async (update: SDKControlSSHPermissionUpdate) => {
+      if (!managedSSHRemotePermissions) return undefined
+      setRemoteError(null)
+      try {
+        const response = await managedSSHRemotePermissions.updatePermissions(update)
+        const updatedContext = contextFromSSHRemotePermissions(response)
+        setRemoteToolPermissionContext(updatedContext)
+        return updatedContext
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setRemoteError(message)
+        throw error
+      }
+    },
+    [managedSSHRemotePermissions],
+  )
 
   // Ref not state: RecentDenialsTab updates don't need to trigger parent
   // re-render (only read on exit), and re-renders trip the modal ScrollBox
@@ -484,27 +568,23 @@ export function PermissionRuleList({
   const handleAddRulesSuccess = useCallback(
     (rules: PermissionRule[], unreachable?: UnreachableRule[]) => {
       setValidatedRule(null)
-      for (const rule of rules) {
-        setChanges(prev => [
-          ...prev,
+      const messages = rules.map(
+        rule =>
           `Added ${rule.ruleBehavior} rule ${chalk.bold(permissionRuleValueToString(rule.ruleValue))}`,
-        ])
+      )
+
+      for (const u of unreachable ?? []) {
+        const severity = u.shadowType === 'deny' ? 'blocked' : 'shadowed'
+        messages.push(
+          chalk.yellow(
+            `${figures.warning} Warning: ${permissionRuleValueToString(u.rule.ruleValue)} is ${severity}`,
+          ),
+          chalk.dim(`  ${u.reason}`),
+          chalk.dim(`  Fix: ${u.fix}`),
+        )
       }
 
-      // Show warnings for any unreachable rules we just added
-      if (unreachable && unreachable.length > 0) {
-        for (const u of unreachable) {
-          const severity = u.shadowType === 'deny' ? 'blocked' : 'shadowed'
-          setChanges(prev => [
-            ...prev,
-            chalk.yellow(
-              `${figures.warning} Warning: ${permissionRuleValueToString(u.rule.ruleValue)} is ${severity}`,
-            ),
-            chalk.dim(`  ${u.reason}`),
-            chalk.dim(`  Fix: ${u.fix}`),
-          ])
-        }
-      }
+      setChanges(prev => [...prev, ...messages])
     },
     [],
   )
@@ -567,6 +647,7 @@ export function PermissionRuleList({
 
   const handleDeleteRule = () => {
     if (!selectedRule) return
+    const ruleToDelete = selectedRule
 
     // Find the adjacent rule to focus on after deletion
     const { options } = getRulesOptions(selectedRule.ruleBehavior as TabType)
@@ -589,6 +670,23 @@ export function PermissionRuleList({
     }
     setLastFocusedRuleKey(nextFocusKey)
 
+    if (isManagedSSHLocalUI) {
+      void updateRemotePermissions({
+        type: 'removeRules',
+        rules: [ruleToDelete.ruleValue],
+        behavior: ruleToDelete.ruleBehavior,
+      })
+        .then(() => {
+          setChanges(prev => [
+            ...prev,
+            `Deleted ${ruleToDelete.ruleBehavior} rule ${chalk.bold(permissionRuleValueToString(ruleToDelete.ruleValue))}`,
+          ])
+          setSelectedRule(undefined)
+        })
+        .catch(() => {})
+      return
+    }
+
     void deletePermissionRule({
       rule: selectedRule,
       initialContext: toolPermissionContext,
@@ -605,6 +703,43 @@ export function PermissionRuleList({
       `Deleted ${selectedRule.ruleBehavior} rule ${chalk.bold(permissionRuleValueToString(selectedRule.ruleValue))}`,
     ])
     setSelectedRule(undefined)
+  }
+
+  if (remoteError) {
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text color="error">Failed to update remote SSH permissions: {remoteError}</Text>
+        <Select
+          onChange={value => {
+            if (value === 'retry' && managedSSHRemotePermissions) {
+              setRemoteError(null)
+              void managedSSHRemotePermissions
+                .getPermissions()
+                .then(response =>
+                  setRemoteToolPermissionContext(
+                    contextFromSSHRemotePermissions(response),
+                  ),
+                )
+                .catch(error =>
+                  setRemoteError(
+                    error instanceof Error ? error.message : String(error),
+                  ),
+                )
+            } else {
+              onExit('Permissions dialog dismissed', { display: 'system' })
+            }
+          }}
+          options={[
+            { label: 'Retry', value: 'retry' },
+            { label: 'Exit', value: 'exit' },
+          ]}
+        />
+      </Box>
+    )
+  }
+
+  if (isManagedSSHLocalUI && !remoteToolPermissionContext) {
+    return <Text dimColor>Loading remote SSH permissions...</Text>
   }
 
   if (selectedRule) {
@@ -640,11 +775,17 @@ export function PermissionRuleList({
         ruleBehavior={validatedRule.ruleBehavior}
         initialContext={toolPermissionContext}
         setToolPermissionContext={toolPermissionContext => {
-          setAppState(prev => ({
-            ...prev,
-            toolPermissionContext,
-          }))
+          if (isManagedSSHLocalUI) {
+            setRemoteToolPermissionContext(toolPermissionContext)
+          } else {
+            setAppState(prev => ({
+              ...prev,
+              toolPermissionContext,
+            }))
+          }
         }}
+        isManagedSSHLocalUI={isManagedSSHLocalUI}
+        updateRemotePermissions={updateRemotePermissions}
       />
     )
   }
@@ -653,6 +794,22 @@ export function PermissionRuleList({
     return (
       <AddWorkspaceDirectory
         onAddDirectory={(path, remember) => {
+          if (isManagedSSHLocalUI) {
+            void updateRemotePermissions({
+              type: 'addDirectories',
+              directories: [path],
+            })
+              .then(() => {
+                setChanges(prev => [
+                  ...prev,
+                  `Added directory ${chalk.bold(path)} to remote SSH workspace`,
+                ])
+                setIsAddingWorkspaceDirectory(false)
+              })
+              .catch(() => {})
+            return
+          }
+
           // Apply the permission update to add the directory
           const destination = isManagedSSHRemoteRuntime()
             ? ('sshOverlay' as const)
@@ -707,11 +864,17 @@ export function PermissionRuleList({
         onCancel={() => setRemovingDirectory(null)}
         permissionContext={toolPermissionContext}
         setPermissionContext={toolPermissionContext => {
-          setAppState(prev => ({
-            ...prev,
-            toolPermissionContext,
-          }))
+          if (isManagedSSHLocalUI) {
+            setRemoteToolPermissionContext(toolPermissionContext)
+          } else {
+            setAppState(prev => ({
+              ...prev,
+              toolPermissionContext,
+            }))
+          }
         }}
+        isManagedSSHLocalUI={isManagedSSHLocalUI}
+        updateRemotePermissions={updateRemotePermissions}
       />
     )
   }

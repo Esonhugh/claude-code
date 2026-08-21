@@ -13,6 +13,7 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
           createPermissionRetryMessage(commands),
         ])
       }}
+      managedSSHRemotePermissions={context.managedSSHRemotePermissions}
     />
   )
 }

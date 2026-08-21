@@ -6,7 +6,7 @@ import { ManagedSSHControlService } from './remoteSSHControl.js'
 import type { ToolPermissionContext } from '../Tool.js'
 
 mock.module('./managedSSHPermissions.js', () => {
-  let overlay = { permissions: {} as Record<string, string[]> }
+  const overlay = { permissions: {} as Record<string, string[]> }
   return {
     applySSHPermissionOverlayUpdate(update: { type: string; behavior?: string; rules?: Array<{ toolName: string; ruleContent?: string }> }) {
       if (update.type === 'addRules' && update.behavior) {

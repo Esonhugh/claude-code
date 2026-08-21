@@ -3444,6 +3444,9 @@ export function REPL({
         runRemoteShellCommand: sshRemote.isRemoteMode
           ? sshRemote.runShellCommand
           : undefined,
+        managedSSHRemotePermissions: sshRemote.isRemoteMode
+          ? sshRemote.managedSSHRemotePermissions
+          : undefined,
         messages,
         setMessages,
         updateFileHistoryState(

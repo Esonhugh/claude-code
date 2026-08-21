@@ -137,14 +137,17 @@ export class ManagedSSHControlService {
       const setAppState = this.options.setAppState
       if (!getContext || !setAppState) throw new Error('Permission state is unavailable')
       const overlay = applySSHPermissionOverlayUpdate(request.update)
-      setAppState(prev => ({
-        ...prev,
-        toolPermissionContext: applyPermissionUpdate(
+      let nextContext = getContext()
+      setAppState(prev => {
+        nextContext = applyPermissionUpdate(
           prev.toolPermissionContext,
           overlayUpdateToPermissionUpdate(request.update),
-        ),
-      }))
-      const nextContext = getContext()
+        )
+        return {
+          ...prev,
+          toolPermissionContext: nextContext,
+        }
+      })
       this.sendSuccess(message.request_id, {
         overlay,
         ...readSSHPermissionRuntimeState(nextContext),

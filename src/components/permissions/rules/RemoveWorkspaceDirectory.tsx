@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { Select } from '../../../components/CustomSelect/select.js'
 import { Box, Text } from '../../../ink.js'
 import type { ToolPermissionContext } from '../../../Tool.js'
+import type { SDKControlSSHPermissionUpdate } from '../../../entrypoints/sdk/controlTypes.js'
 import {
   applyPermissionUpdate,
   persistPermissionUpdate,
@@ -16,6 +17,10 @@ type Props = {
   onCancel: () => void
   permissionContext: ToolPermissionContext
   setPermissionContext: (context: ToolPermissionContext) => void
+  isManagedSSHLocalUI?: boolean
+  updateRemotePermissions?: (
+    update: SDKControlSSHPermissionUpdate,
+  ) => Promise<ToolPermissionContext | undefined>
 }
 
 export function RemoveWorkspaceDirectory({
@@ -24,8 +29,23 @@ export function RemoveWorkspaceDirectory({
   onCancel,
   permissionContext,
   setPermissionContext,
+  isManagedSSHLocalUI = false,
+  updateRemotePermissions,
 }: Props): React.ReactNode {
   const handleRemove = useCallback(() => {
+    if (isManagedSSHLocalUI) {
+      void updateRemotePermissions?.({
+        type: 'removeDirectories',
+        directories: [directoryPath],
+      })
+        .then(remoteContext => {
+          if (remoteContext) setPermissionContext(remoteContext)
+          onRemove()
+        })
+        .catch(() => {})
+      return
+    }
+
     const permissionUpdate = {
       type: 'removeDirectories' as const,
       directories: [directoryPath],
@@ -38,7 +58,14 @@ export function RemoveWorkspaceDirectory({
 
     setPermissionContext(updatedContext)
     onRemove()
-  }, [directoryPath, permissionContext, setPermissionContext, onRemove])
+  }, [
+    directoryPath,
+    permissionContext,
+    setPermissionContext,
+    onRemove,
+    isManagedSSHLocalUI,
+    updateRemotePermissions,
+  ])
 
   const handleSelect = useCallback(
     (value: string) => {

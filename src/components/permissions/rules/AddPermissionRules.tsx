@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { Select } from '../../../components/CustomSelect/select.js'
 import { Box, Text } from '../../../ink.js'
 import type { ToolPermissionContext } from '../../../Tool.js'
+import type { SDKControlSSHPermissionUpdate } from '../../../entrypoints/sdk/controlTypes.js'
 import type {
   PermissionBehavior,
   PermissionRule,
@@ -61,6 +62,10 @@ type Props = {
   ruleBehavior: PermissionBehavior
   initialContext: ToolPermissionContext
   setToolPermissionContext: (newContext: ToolPermissionContext) => void
+  isManagedSSHLocalUI?: boolean
+  updateRemotePermissions?: (
+    update: SDKControlSSHPermissionUpdate,
+  ) => Promise<ToolPermissionContext | undefined>
 }
 
 export function AddPermissionRules({
@@ -70,8 +75,12 @@ export function AddPermissionRules({
   ruleBehavior,
   initialContext,
   setToolPermissionContext,
+  isManagedSSHLocalUI = false,
+  updateRemotePermissions,
 }: Props): React.ReactNode {
-  const allOptions = isManagedSSHRemoteRuntime()
+  const isManagedSSHPermissionsUI =
+    isManagedSSHLocalUI || isManagedSSHRemoteRuntime()
+  const allOptions = isManagedSSHPermissionsUI
     ? [
         {
           label: 'Managed SSH session',
@@ -88,54 +97,67 @@ export function AddPermissionRules({
         return
       } else if (
         (SOURCES as readonly string[]).includes(selectedValue) ||
-        (isManagedSSHRemoteRuntime() && selectedValue === 'sshOverlay')
+        (isManagedSSHPermissionsUI && selectedValue === 'sshOverlay')
       ) {
         const destination = selectedValue as EditableSettingSource | 'sshOverlay'
 
-        const updatedContext = applyPermissionUpdate(initialContext, {
-          type: 'addRules',
+        const permissionUpdate = {
+          type: 'addRules' as const,
           rules: ruleValues,
           behavior: ruleBehavior,
           destination,
-        })
+        }
 
-        // Persist to settings
-        persistPermissionUpdate({
-          type: 'addRules',
-          rules: ruleValues,
-          behavior: ruleBehavior,
-          destination,
-        })
+        const finishAddRules = (contextForWarnings: ToolPermissionContext) => {
+          const rules: PermissionRule[] = ruleValues.map(ruleValue => ({
+            ruleValue,
+            ruleBehavior,
+            source: destination,
+          }))
+
+          // Check for unreachable rules among the ones we just added
+          const sandboxAutoAllowEnabled =
+            SandboxManager.isSandboxingEnabled() &&
+            SandboxManager.isAutoAllowBashIfSandboxedEnabled()
+          const allUnreachable = detectUnreachableRules(contextForWarnings, {
+            sandboxAutoAllowEnabled,
+          })
+
+          // Filter to only rules we just added
+          const newUnreachable = allUnreachable.filter(u =>
+            ruleValues.some(
+              rv =>
+                rv.toolName === u.rule.ruleValue.toolName &&
+                rv.ruleContent === u.rule.ruleValue.ruleContent,
+            ),
+          )
+
+          onAddRules(
+            rules,
+            newUnreachable.length > 0 ? newUnreachable : undefined,
+          )
+        }
+
+        if (isManagedSSHLocalUI) {
+          void updateRemotePermissions?.({
+            type: 'addRules',
+            rules: ruleValues,
+            behavior: ruleBehavior,
+          })
+            .then(remoteContext => {
+              if (!remoteContext) return
+              setToolPermissionContext(remoteContext)
+              finishAddRules(remoteContext)
+            })
+            .catch(() => {})
+          return
+        }
+
+        const updatedContext = applyPermissionUpdate(initialContext, permissionUpdate)
+        persistPermissionUpdate(permissionUpdate)
 
         setToolPermissionContext(updatedContext)
-
-        const rules: PermissionRule[] = ruleValues.map(ruleValue => ({
-          ruleValue,
-          ruleBehavior,
-          source: destination,
-        }))
-
-        // Check for unreachable rules among the ones we just added
-        const sandboxAutoAllowEnabled =
-          SandboxManager.isSandboxingEnabled() &&
-          SandboxManager.isAutoAllowBashIfSandboxedEnabled()
-        const allUnreachable = detectUnreachableRules(updatedContext, {
-          sandboxAutoAllowEnabled,
-        })
-
-        // Filter to only rules we just added
-        const newUnreachable = allUnreachable.filter(u =>
-          ruleValues.some(
-            rv =>
-              rv.toolName === u.rule.ruleValue.toolName &&
-              rv.ruleContent === u.rule.ruleValue.ruleContent,
-          ),
-        )
-
-        onAddRules(
-          rules,
-          newUnreachable.length > 0 ? newUnreachable : undefined,
-        )
+        finishAddRules(updatedContext)
       }
     },
     [
@@ -145,6 +167,9 @@ export function AddPermissionRules({
       ruleBehavior,
       initialContext,
       setToolPermissionContext,
+      isManagedSSHPermissionsUI,
+      isManagedSSHLocalUI,
+      updateRemotePermissions,
     ],
   )
 

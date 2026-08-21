@@ -46,6 +46,10 @@ import type {
   PermissionModeChangeResult,
   PermissionResult,
 } from './types/permissions.js'
+import type {
+  SDKControlSSHPermissionUpdate,
+  SDKControlSSHPermissionsResponse,
+} from './entrypoints/sdk/controlTypes.js'
 // Import tool progress types from centralized location to break import cycles
 import type {
   AgentToolProgress,
@@ -163,6 +167,13 @@ export type RemoteShellCommandResult = {
   interrupted: boolean
 }
 
+export type ManagedSSHRemotePermissions = {
+  getPermissions: () => Promise<SDKControlSSHPermissionsResponse>
+  updatePermissions: (
+    update: SDKControlSSHPermissionUpdate,
+  ) => Promise<SDKControlSSHPermissionsResponse>
+}
+
 export type ToolUseContext = {
   options: {
     commands: Command[]
@@ -206,6 +217,7 @@ export type ToolUseContext = {
     command: string,
     signal: AbortSignal,
   ) => Promise<RemoteShellCommandResult>
+  managedSSHRemotePermissions?: ManagedSSHRemotePermissions
   /**
    * Always-shared setAppState for session-scoped infrastructure (background
    * tasks, session hooks). Unlike setAppState, which is no-op for async agents

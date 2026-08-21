@@ -289,6 +289,100 @@ describe('SSHSessionManager', () => {
     )
   })
 
+  it('requests and updates remote SSH permissions with capability token', async () => {
+    const proc = createFakeProcess()
+    const written: Array<Record<string, unknown>> = []
+    proc.stdin.on('data', chunk => {
+      for (const line of String(chunk).trim().split('\n')) {
+        if (line) written.push(JSON.parse(line))
+      }
+    })
+    const manager = new SSHSessionManager(
+      proc as never,
+      {
+        onMessage() {},
+        onPermissionRequest() {},
+      },
+      'test-ssh-token',
+    )
+
+    manager.connect()
+    const snapshot = manager.getPermissions()
+    await nextTick()
+
+    const snapshotRequest = written[0] as {
+      request_id: string
+      request: { subtype: string; ssh_remote_token: string }
+    }
+    assert.equal(written[0]?.type, 'control_request')
+    assert.equal(snapshotRequest.request.subtype, 'ssh_permissions')
+    assert.equal(snapshotRequest.request.ssh_remote_token, 'test-ssh-token')
+
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: snapshotRequest.request_id,
+          response: {
+            overlay: { permissions: { allow: ['Bash(ls)'] } },
+            rules: [],
+            additionalDirectories: [],
+          },
+        },
+      })}\n`,
+    )
+    assert.deepEqual(await snapshot, {
+      overlay: { permissions: { allow: ['Bash(ls)'] } },
+      rules: [],
+      additionalDirectories: [],
+    })
+
+    const update = manager.updatePermissions({
+      type: 'addRules',
+      behavior: 'allow',
+      rules: [{ toolName: 'Bash', ruleContent: 'pwd' }],
+    })
+    await nextTick()
+
+    const updateRequest = written[1] as {
+      request_id: string
+      request: { subtype: string; ssh_remote_token: string; update: unknown }
+    }
+    assert.equal(updateRequest.request.subtype, 'ssh_update_permissions')
+    assert.equal(updateRequest.request.ssh_remote_token, 'test-ssh-token')
+    assert.deepEqual(updateRequest.request.update, {
+      type: 'addRules',
+      behavior: 'allow',
+      rules: [{ toolName: 'Bash', ruleContent: 'pwd' }],
+    })
+
+    proc.stdout.write(
+      `${JSON.stringify({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: updateRequest.request_id,
+          response: {
+            overlay: { permissions: { allow: ['Bash(pwd)'] } },
+            rules: [
+              {
+                source: 'sshOverlay',
+                ruleBehavior: 'allow',
+                ruleValue: { toolName: 'Bash', ruleContent: 'pwd' },
+              },
+            ],
+            additionalDirectories: [],
+          },
+        },
+      })}\n`,
+    )
+
+    assert.deepEqual((await update).overlay, {
+      permissions: { allow: ['Bash(pwd)'] },
+    })
+  })
+
   it('runs remote shell commands and correlates their responses', async () => {
     const proc = createFakeProcess()
     let written = ''

@@ -5,6 +5,8 @@ import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type {
   SDKControlPermissionRequest,
   SDKControlRunShellCommandResponse,
+  SDKControlSSHPermissionUpdate,
+  SDKControlSSHPermissionsResponse,
   SDKControlSSHFileSuggestionsResponse,
   SSHFileSuggestionItem,
   StdoutMessage,
@@ -151,6 +153,22 @@ function isShellCommandResponse(
   )
 }
 
+function isSSHPermissionsResponse(
+  value: unknown,
+): value is SDKControlSSHPermissionsResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'overlay' in value &&
+    typeof value.overlay === 'object' &&
+    value.overlay !== null &&
+    'rules' in value &&
+    Array.isArray(value.rules) &&
+    'additionalDirectories' in value &&
+    Array.isArray(value.additionalDirectories)
+  )
+}
+
 function isSSHFileSuggestionsResponse(
   value: unknown,
 ): value is SDKControlSSHFileSuggestionsResponse {
@@ -240,6 +258,14 @@ export class SSHSessionManager {
       reject: (error: Error) => void
       timeout: ReturnType<typeof setTimeout>
       removeAbortListener: () => void
+    }
+  >()
+  private pendingPermissionsRequests = new Map<
+    string,
+    {
+      resolve: (response: SDKControlSSHPermissionsResponse) => void
+      reject: (error: Error) => void
+      timeout: ReturnType<typeof setTimeout>
     }
   >()
   private pendingAcknowledgements = new Map<
@@ -449,6 +475,58 @@ export class SSHSessionManager {
     })
   }
 
+  getPermissions(): Promise<SDKControlSSHPermissionsResponse> {
+    return this.sendPermissionsRequest({ subtype: 'ssh_permissions' })
+  }
+
+  updatePermissions(
+    update: SDKControlSSHPermissionUpdate,
+  ): Promise<SDKControlSSHPermissionsResponse> {
+    return this.sendPermissionsRequest({
+      subtype: 'ssh_update_permissions',
+      update,
+    })
+  }
+
+  private sendPermissionsRequest(
+    request:
+      | { subtype: 'ssh_permissions' }
+      | { subtype: 'ssh_update_permissions'; update: SDKControlSSHPermissionUpdate },
+  ): Promise<SDKControlSSHPermissionsResponse> {
+    if (!this.sshRemoteToken) {
+      return Promise.reject(
+        new Error('Remote permission management is unavailable in this SSH session'),
+      )
+    }
+    if (this.callbacks.onBootstrap && !this.initialized) {
+      return Promise.reject(new Error('SSH session is not ready'))
+    }
+
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingPermissionsRequests.delete(requestId)) return
+        reject(new Error('SSH permissions request timed out'))
+      }, CONTROL_REQUEST_TIMEOUT_MS)
+      timeout.unref()
+      this.pendingPermissionsRequests.set(requestId, { resolve, reject, timeout })
+      if (
+        !this.write({
+          type: 'control_request',
+          request_id: requestId,
+          request: {
+            ...request,
+            ssh_remote_token: this.sshRemoteToken,
+          },
+        })
+      ) {
+        this.pendingPermissionsRequests.delete(requestId)
+        clearTimeout(timeout)
+        reject(new Error('SSH session is not connected'))
+      }
+    })
+  }
+
   getFileSuggestions(
     request: SSHFileSuggestionQuery,
     signal: AbortSignal,
@@ -543,6 +621,7 @@ export class SSHSessionManager {
     this.rejectPendingPermissionModeRequests('SSH session disconnected')
     this.rejectPendingShellRequests('SSH session disconnected')
     this.rejectPendingFileSuggestionRequests('SSH session disconnected')
+    this.rejectPendingPermissionsRequests('SSH session disconnected')
     this.clearPendingAcknowledgements()
     this.clearExpectedPermissionResponseEchoes()
     if (this.proc.exitCode === null && this.proc.signalCode === null) {
@@ -657,6 +736,22 @@ export class SSHSessionManager {
         if (response.subtype === 'error') {
           this.callbacks.onError?.(new Error(response.error))
         }
+        return
+      }
+
+      const pendingPermissions = this.pendingPermissionsRequests.get(requestId)
+      if (pendingPermissions) {
+        this.pendingPermissionsRequests.delete(requestId)
+        clearTimeout(pendingPermissions.timeout)
+        if (response.subtype === 'error') {
+          pendingPermissions.reject(new Error(response.error))
+          return
+        }
+        if (!isSSHPermissionsResponse(response.response)) {
+          pendingPermissions.reject(new Error('Invalid SSH permissions response'))
+          return
+        }
+        pendingPermissions.resolve(response.response)
         return
       }
 
@@ -891,6 +986,14 @@ export class SSHSessionManager {
     this.pendingFileSuggestionRequests.clear()
   }
 
+  private rejectPendingPermissionsRequests(error: string): void {
+    for (const pending of this.pendingPermissionsRequests.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(new Error(error))
+    }
+    this.pendingPermissionsRequests.clear()
+  }
+
   private handleDisconnected(): void {
     if (this.disconnected) return
     logForDebugging('[SSHSessionManager] SSH child disconnected')
@@ -903,6 +1006,7 @@ export class SSHSessionManager {
     this.rejectPendingPermissionModeRequests('SSH session disconnected')
     this.rejectPendingShellRequests('SSH session disconnected')
     this.rejectPendingFileSuggestionRequests('SSH session disconnected')
+    this.rejectPendingPermissionsRequests('SSH session disconnected')
     this.clearPendingAcknowledgements()
     this.clearExpectedPermissionResponseEchoes()
     this.stdoutInterface?.close()

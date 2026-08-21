@@ -24,7 +24,11 @@ import {
 } from '../remote/sdkMessageAdapter.js'
 import type { SSHSession } from '../ssh/createSSHSession.js'
 import type { SSHSessionManager } from '../ssh/SSHSessionManager.js'
-import type { RemoteShellCommandResult, Tool } from '../Tool.js'
+import type {
+  ManagedSSHRemotePermissions,
+  RemoteShellCommandResult,
+  Tool,
+} from '../Tool.js'
 import { findToolByName } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'
 import type {
@@ -45,6 +49,7 @@ type UseSSHSessionResult = {
   isReady: boolean
   remoteSessionId: string | null
   remoteFileSuggestionProvider?: RemoteFileSuggestionProvider
+  managedSSHRemotePermissions?: ManagedSSHRemotePermissions
   sendMessage: (
     content: RemoteMessageContent,
     options: { uuid: string },
@@ -392,12 +397,35 @@ export function useSSHSession({
     }
   }, [session, isReady])
 
+  const managedSSHRemotePermissions = useMemo<
+    ManagedSSHRemotePermissions | undefined
+  >(() => {
+    if (!session || !isReady) return undefined
+    return {
+      getPermissions() {
+        const manager = managerRef.current
+        if (!manager) {
+          return Promise.reject(new Error('SSH session is not connected'))
+        }
+        return manager.getPermissions()
+      },
+      updatePermissions(update) {
+        const manager = managerRef.current
+        if (!manager) {
+          return Promise.reject(new Error('SSH session is not connected'))
+        }
+        return manager.updatePermissions(update)
+      },
+    }
+  }, [session, isReady])
+
   return useMemo(
     () => ({
       isRemoteMode,
       isReady,
       remoteSessionId,
       remoteFileSuggestionProvider,
+      managedSSHRemotePermissions,
       sendMessage,
       setPermissionMode,
       runShellCommand,
@@ -413,6 +441,7 @@ export function useSSHSession({
       isReady,
       remoteSessionId,
       remoteFileSuggestionProvider,
+      managedSSHRemotePermissions,
       sendMessage,
       setPermissionMode,
       runShellCommand,
