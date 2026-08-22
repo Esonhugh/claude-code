@@ -12,18 +12,49 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-08-22 - OpenAI 与 Anthropic Gateway 模型自动发现
+## 2026-08-22 - v2.1.213 - SSH 交互完整性、Prompt 精简与 Gateway 模型发现
 
 ### 版本状态
 
-- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.212`。
-- 本条目记录 OpenAI 模式和 Anthropic API billing gateway 的模型发现与统一缓存支持。
+- 准备发布版本：`v2.1.213`。
+- 本次发布覆盖 `v2.1.212..HEAD` 的 16 个提交，包含 SSH local/remote 状态同步与路径交互修复、prompt context 精简，以及 OpenAI/Anthropic gateway 模型发现。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.213`。
 
 ### 关联提交
 
-- 当前提交 — 增加统一模型发现入口、共享 Model Picker 缓存及 OpenAI/Anthropic gateway 回归测试。
+- `782826d` — 将 SSH settings 与认证保留在本地主机，并由 host-managed auth proxy 向远端提供最小接口。
+- `082d331` — 同步 remote-owned history replay、消息 UUID、隐藏消息和 file-suggestion control lifecycle。
+- `5b13424` — 补齐 SSH 远端目录、文件与 fuzzy suggestions 的连续路径补全。
+- `b52f9a2` — 完成 managed SSH shell、history、显示工具和本地/远端运行边界。
+- `2c860b4` — 通过 SSH control request 同步 permission mode、永久规则和取消状态。
+- `a56a673` — 延长 managed SSH bootstrap timeout，允许较慢远端认证完成。
+- `1b50a42` — 在远端验证 managed SSH workspace directory，避免本机路径判断污染远端行为。
+- `6825bd9` — 保留 cold SSH file index build，并在当前 query 有效时有界刷新。
+- `4248001` — 正确解码不完整 quoted path mention，覆盖空格和特殊字符路径。
+- `b137c65` — 记录 prompt context 优化的设计、测量方法和边界。
+- `df67d92` — 默认通过 attachment 暴露 Agent listing，减少基础 prompt 常驻内容。
+- `0cae893` — 压缩 deferred tool namespace 指引，保留按需发现契约。
+- `e742b05` — 精简 Agent orchestration guidance，删除重复说明。
+- `1941b48` — 记录 prompt context 精简结果与剩余风险。
+- `3133565` — 保持 deferred app namespace 相互独立，避免同名工具集合覆盖。
+- `c080f70` — 增加统一模型发现入口、共享 Model Picker 缓存及 OpenAI/Anthropic gateway 回归测试。
 
 ### 变更内容
+
+#### SSH 交互与执行边界
+
+- SSH 本地 TUI 只负责 transport、认证 proxy 和权限交互；tools、skills、plugins、Agent、hooks、MCP、文件索引和 transcript 保持由 managed remote child 执行，避免加载本机项目上下文。
+- permission mode、永久 permission rules、interrupt/cancel acknowledgement 和 replayed response 通过 control protocol 同步；失败或乱序响应不会错误提交本地状态。
+- remote-owned history replay 保留 UUID、hidden/meta 消息和顺序并与 live echo 去重；远程 shell 输出以转义后的 synthetic transcript 提供给后续模型 turn。
+- PromptInput 查询远端目录和 fuzzy index，支持 cold-index refresh、目录连续补全，以及包含空格、引号、反斜杠、美元符号、反引号和 Unicode 的路径。
+- managed SSH bootstrap、workspace directory validation 和 remote display tool lifecycle 使用远端语义，并为慢速认证和取消路径提供明确边界。
+
+#### Prompt context 与 deferred tools
+
+- Agent listing 默认移入按需 attachment，Agent/Workflow/Skill guidance 删除重复常驻说明，降低每轮基础 prompt context。
+- deferred tool namespace 使用更紧凑的索引和按需加载提示；不同 Codex App namespace 保持独立，避免同名集合覆盖或错误路由。
+- 新增 prompt context 优化设计与结果文档，记录测量基线、节省来源和未覆盖风险。
 
 #### 模型发现与缓存
 
@@ -34,16 +65,16 @@
 
 ### 测试覆盖
 
-- OpenAI model options、bootstrap、OpenAI compatibility 和 auth env focused tests 通过；ESLint、binary build 与 `git diff --check` 通过。
-- 使用 `~/.codex/auth.json`、mjclouds Anthropic/OpenAI-compatible profile 和 OpenRouter profile 完成真实发现请求；分别发现 9、13 和 421 个可用模型。
-- 通过 `make build` 生成 `v2.1.212` binary，并逐个打开 5 个 `~/.claude/settings*.json` profile 的 `/model` picker，验证当前项定位、滚动、方向键移动和 Esc 不保存。
+- SSH focused tests 覆盖 settings/auth boundary、history replay、permission control、远端目录验证、cold-index refresh、特殊字符路径与 managed lifecycle；prompt tests 覆盖 Agent attachment、deferred namespace 和精简后的工具指引。
+- OpenAI model options、bootstrap、OpenAI compatibility 和 auth env focused tests 通过，覆盖 discovery disabled、缺少 base URL、无可用 gateway auth、网络失败及失败时保留共享缓存；使用 `~/.codex/auth.json`、mjclouds Anthropic/OpenAI-compatible profile 和 OpenRouter profile 完成真实发现请求，分别发现 9、13 和 421 个可用模型。
+- 使用当前源码构建 binary，并逐个打开 5 个 `~/.claude/settings*.json` profile 的 `/model` picker，验证当前项定位、滚动、方向键移动和 Esc 不保存；`v2.1.213` 完整 release gate 由本条目对应的发布验收流程执行。
 
 ## 2026-08-19 - v2.1.212 - SSH 权限同步与远程执行边界
 
 ### 版本状态
 
 - 准备发布版本：`v2.1.212`。
-- 本次发布覆盖 `v2.1.211` 之后至 2026-08-21 的 SSH 权限模式同步、远程 shell、history replay、远程路径补全、既有 Direct Connect 控制协议加固和本地/远端执行边界修复。
+- 本次发布覆盖 `v2.1.211..v2.1.212` 至 2026-08-19 的 SSH 权限模式同步、远程 shell、既有 Direct Connect 控制协议加固和本地/远端执行边界修复。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.212`。
 
@@ -51,10 +82,8 @@
 
 - `b82848a` — 同步 SSH 本地 TUI 与 managed remote child 的 bypass 权限状态，并在远端确认成功后更新本地模式。
 - `3fa3cb4` — 将 shell、工具和项目上下文执行收敛到 managed remote child，并隔离本地 SSH UI 的项目设施。
-- `782826d` — 将 settings 与认证保留在本地主机，由 host-managed proxy 向远端提供最小必要能力。
-- `082d331` — 增加 remote-owned history replay、UUID 去重和可取消的 SSH file-suggestion control protocol。
-- `5b13424` — 将远端 filesystem path/fuzzy suggestions 接入 PromptInput，支持嵌套路径和包含空格的路径。
-- 当前修复 history meta replay、特殊字符路径编码、目录连续补全、cold-index refresh、provider cancellation 和 remote tool-card display 的工作区变更尚未提交；最终发布前须以新 HEAD 更新本条提交清单。
+- `06a9203` — 加固 Direct Connect control schema、permission cancellation 和 late response cleanup。
+- `8a9381d` — 完成 remote session release candidate 的边界检查、测试与发布元数据。
 
 ### 变更内容
 
@@ -69,14 +98,7 @@
 
 - SSH 会话中的 `!command` 直接在 managed remote child 的远端 cwd 执行，不再发送给模型或误在本地主机运行；shell 与模型 turn 串行互斥，并支持中断、部分输出和明确退出状态。
 - 远程 shell 输入、stdout 和 stderr 经过 XML 转义后写入 synthetic transcript，并立即尝试持久化；持久化失败会记录 debug error，但不改变已经成功的 shell 结果。后续模型 turn 可以引用内存中的真实远端输出，同时避免 transcript markup 注入。
-- SSH resume 从 remote-owned transcript 分块恢复普通与 hidden/meta 消息，保留 UUID、顺序和可见性语义，并与 live echo 去重。
 - direct-shell control request 要求匹配每次会话生成的 capability token；缺失、空值或不匹配时 fail closed。
-
-#### 远程路径补全
-
-- PromptInput 通过 SSH control protocol 查询远端 path 与 fuzzy index；目录选择会继续下一级补全，cold index 的 incomplete 响应会在当前 query 仍有效时有界重试。
-- prompt mention 使用可逆转义恢复包含空格、引号、反斜杠、美元符号、反引号和 Unicode 的原始路径；shell 模式使用 shell-word quoting，避免路径内容触发变量或 command substitution。
-- request cancellation 会穿过控制层传入目录扫描和文件索引 provider；共享 fuzzy build 只在没有有效消费者时取消，并允许后续请求重新构建。
 
 #### 本地与远端执行边界
 
@@ -84,7 +106,6 @@
 - SSH local UI 使用固定安全 slash-command 列表，并跳过本机 `CLAUDE.md`/Memory、Git repository、installed plugins、startup hooks、Logo recent-session preload、background housekeeping 和 spinner plugin predicate 扫描，避免把本机项目上下文泄漏到远端会话。
 - SSH root argv 解析统一处理 `--`、dash-prefixed required values、agent/model precedence、auto-mode aliases 和 attached short options；明确拒绝 remote 不支持的 worktree、tmux 与 SDK URL 组合，并将 remote-owned advisor 参数转发给 managed child。
 - 所有 remote execution session（Remote Session、既有 Direct Connect 和 SSH）当前都禁用本机 IDE integration、local tools 和 local skill watcher，避免本机 IDE/workspace 与远端执行上下文混用。该保守边界是 SSH 隔离所必需的，也意味着即使 Direct Connect server 与本机共享 workspace，remote session 也不会暴露本机 IDE MCP tools。
-- SSH transcript 的 display-only tool resolver 可显示远端 `Bash` 和未知 MCP tool 的调用、进度与结果；该 resolver 不进入本地 execution catalog，fallback tool 明确禁止本地执行。
 
 ### 测试覆盖
 

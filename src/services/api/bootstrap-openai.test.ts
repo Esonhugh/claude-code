@@ -90,6 +90,31 @@ try {
       description: 'From gateway',
     },
   ])
+
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [
+      {
+        value: 'cached-model',
+        label: 'Cached Model',
+        description: 'Keep on discovery failure',
+      },
+    ],
+  }))
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  axios.get = (async () => {
+    throw new Error('network unavailable')
+  }) as typeof axios.get
+
+  await fetchBootstrapData()
+
+  assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
+    {
+      value: 'cached-model',
+      label: 'Cached Model',
+      description: 'Keep on discovery failure',
+    },
+  ])
 } finally {
   restoreGlobalConfig?.()
   axios.get = originalAxiosGet

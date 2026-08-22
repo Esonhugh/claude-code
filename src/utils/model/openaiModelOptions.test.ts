@@ -17,6 +17,7 @@ const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
 const originalAnthropicBaseURL = process.env.ANTHROPIC_BASE_URL
 const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
 const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
+const originalClaudeCodeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const originalGatewayDiscovery =
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
 const originalAxiosGet = axios.get
@@ -172,6 +173,36 @@ try {
   assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
   assert.equal(requests[0]!.headers?.['x-api-key'], 'gateway-key')
   assert.deepEqual(requests[0]!.params, { limit: 1000 })
+
+  requests.length = 0
+  delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+  assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
+  assert.equal(await openAIModelOptions.fetchModelOptions(), null)
+  assert.equal(requests.length, 0)
+
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
+  delete process.env.ANTHROPIC_BASE_URL
+  assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
+  assert.equal(await openAIModelOptions.fetchModelOptions(), null)
+  assert.equal(requests.length, 0)
+
+  process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_AUTH_TOKEN
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'unsupported-gateway-oauth-token'
+  assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), true)
+  assert.equal(await openAIModelOptions.fetchModelOptions(), null)
+  assert.equal(requests.length, 0)
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'api-token',
+    isChatGPT: false,
+  })
+  axios.get = (async () => {
+    throw new Error('network unavailable')
+  }) as typeof axios.get
+  assert.equal(await openAIModelOptions.fetchModelOptions(), null)
 } finally {
   axios.get = originalAxiosGet
   const authModule = await import('../auth.js')
@@ -192,6 +223,11 @@ try {
   else process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey
   if (originalAnthropicAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
   else process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken
+  if (originalClaudeCodeOAuthToken === undefined) {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  } else {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = originalClaudeCodeOAuthToken
+  }
   if (originalGatewayDiscovery === undefined) {
     delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
   } else {
