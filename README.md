@@ -86,10 +86,11 @@ bun ./dist/cli.js --help
 | OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；启用 server-side `WebSearch`，将 Anthropic web-search schema、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为 Anthropic-compatible stream 事件；OpenAI 模式自动从 ChatGPT Codex 或 OpenAI-compatible `/v1/models` 发现模型，Anthropic API billing gateway 可通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 启用同类发现，并统一进入 Model Picker 缓存。 |
 | Effort | 支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并按 Anthropic/OpenAI provider 和模型能力映射。 |
 | Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认注册只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
+| Prompt context | 精简主会话安全、Bash Git/PR、Explore/Plan 与 Agent orchestration 的重复说明；Agent listing 改为增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留完整权限、动态发现和精确增删状态。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
 | Direct Connect | `v2.1.212` 之前已有的 remote transport：`claude connect <server-url>` 通过 HTTP 创建 session，再以 WebSocket 传输 stream-json；server 负责 Claude child、tools 和项目上下文，本地负责 TUI 与 permission UI。 |
-| SSH Remote | 与 Direct Connect 并列的 SSH transport：`claude ssh <host-or-config> [dir]` 在远端 Linux 主机运行 child 与 tools、本地渲染 TUI；remote binary 按版本/架构部署，GitHub Release 下载会校验 checksum，OpenAI/Anthropic 凭据只在本地 Unix socket proxy 注入。 |
+| SSH Remote | 与 Direct Connect 并列的 SSH transport：`claude ssh <host-or-config> [dir]` 在远端 Linux 主机运行 child 与 tools、本地渲染 TUI；支持 remote-owned history/resume、远端 `@` 路径补全、远端 `!command` 和权限状态同步；remote binary 按版本/架构部署，GitHub Release 下载会校验 checksum，OpenAI/Anthropic 凭据只在本地 Unix socket proxy 注入。 |
 | Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；统一的后台 polling 逻辑会按 session 同步终态、drain 尾部输出、持久化最终结果并发送一次完成通知，任务详情保留 command、args 和 cwd。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
 | 状态与用量 UI | 当前模型使用 ChatGPT OAuth 且用量请求成功时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits，同时展示 ChatGPT 用量窗口与 rate-limit reset credits；用量不可用时启动 pane 回退到 OAuth token 中的 plan，`/status` 显示不可用状态。reset 操作经二次确认后消耗一个 credit 并刷新显示；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
@@ -134,6 +135,37 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_API_KEY=<your-api-key> claude
 ```
 
 OAuth 登录结果保存在 `~/.codex/auth.json`，文件权限为 `0600`。不要提交或分享该文件。
+
+### 模型自动发现与 Gateway
+
+OpenAI provider 启动时会刷新 Model Picker 的共享模型缓存：
+
+- ChatGPT OAuth 使用固定的 ChatGPT Codex models endpoint，并携带当前 account identity；
+- API key 或 `OPENAI_AUTH_TOKEN` 在未设置 base URL 时请求 `https://api.openai.com/v1/models`，设置 `OPENAI_BASE_URL` 时请求其规范化后的 `/v1/models`；
+- base URL 末尾无论是否已有 `/v1`，最终都只会请求一次 `/v1/models`；
+- OpenAI 默认 API 只展示受支持的 GPT、o-series 和 Codex 模型，自定义 OpenAI-compatible base URL 会保留 endpoint 返回且标记为 API-supported 的其他模型。
+
+OpenAI-compatible gateway 示例：
+
+```bash
+CLAUDE_CODE_USE_OPENAI=1 \
+OPENAI_BASE_URL=https://gateway.example/api \
+OPENAI_API_KEY=<gateway-api-key> \
+claude
+```
+
+Anthropic API billing 模式下，gateway 模型发现默认关闭。必须同时提供开关、base URL 和可用认证：
+
+```bash
+CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
+ANTHROPIC_BASE_URL=https://gateway.example \
+ANTHROPIC_AUTH_TOKEN=<bearer-token> \
+claude
+```
+
+也可以使用 `ANTHROPIC_API_KEY`，请求会改用 `x-api-key`；当两者同时存在时优先使用 `ANTHROPIC_AUTH_TOKEN`。`CLAUDE_CODE_OAUTH_TOKEN` 不作为自定义 Anthropic gateway 的发现凭据。gateway 请求 `${ANTHROPIC_BASE_URL}/v1/models?limit=1000`，并在 Model Picker 中展示响应里声明 API support 的模型，包括 endpoint 标记为 hidden 的模型；hidden 项会显示 `(Hidden)`。
+
+发现请求超时、失败、没有认证或没有返回可用模型时，不会清空上一份 `additionalModelOptionsCache`；Model Picker 继续使用已有缓存或内置 fallback。OpenRouter 仅可作为普通 OpenAI-compatible endpoint 使用，本项目没有为它增加独立 provider 或专用环境变量。
 
 ### Codex Apps mention
 
@@ -372,9 +404,19 @@ host 可以是 `user@host`、`~/.ssh/config` alias，或 settings 中的 `sshCon
 
 启动时会探测 Linux architecture，按当前版本选择并部署 `linux-x64-baseline` 或 `linux-arm64` binary。开发态会直接使用当前可执行文件相邻 `dist/release` 中的对应 artifact；不存在相邻 artifact 时才回退到 GitHub Release，且下载必须同时提供对应 asset 与 `SHA256SUMS.txt`，checksum 缺失或不匹配时拒绝启动。remote cache 位于 `~/.cache/claude-ssh/<version>/<target>/claude`。
 
-模型 API/OAuth credential 不会复制到远端。远端 child 仅连接 reverse-forwarded Unix socket，由本地 proxy 按当前 provider 和本地 credential precedence 注入认证；OpenAI/Anthropic API key、OAuth token、account ID、cookie 和本地 base URL 不会通过 SSH child environment 继承。`--model` 或本地 settings 解析出的 model 会显式转发给 remote child。
+模型 API/OAuth credential 不会复制到远端。远端 child 仅连接 reverse-forwarded Unix socket，由本地 proxy 按当前 provider 和本地 credential precedence 注入认证；OpenAI/Anthropic API key、OAuth token、account ID、cookie、client certificate/key/passphrase、`ANTHROPIC_CUSTOM_HEADERS` 和本地 base URL 不会通过 SSH child environment 继承。代理会在本地应用自定义 header 与网络代理设置，并在转发前替换认证 header。
 
-SSH Remote 当前只支持 interactive TUI；permission allow/deny/cancel、Esc interrupt、正常退出和断线会经 stream-json control channel 转发并清理本地 proxy 与 remote socket directory。
+`--settings` 与 `--setting-sources` 始终由本地 launcher 读取，用于解析 `sshConfigs`、provider、upstream 和认证；原始路径、inline JSON 与 secret 不会进入远端 argv。`--model` 或本地 settings 解析出的 model 会显式转发给 remote child。tools、skills、plugins、hooks、MCP、文件索引、项目上下文和 transcript 则由远端 child 及其远端 settings 管理。
+
+连接或 resume 时，本地 UI 会先从远端 canonical transcript 完成 history bootstrap，再接受新输入；消息 UUID、hidden/meta 消息、compact boundary 和 live echo 会按远端 identity 合并去重。正常退出时显示包含原始 target、远端 cwd 和远端 session ID 的完整 `claude ssh ... --resume ...` 命令。本地不保存第二份可 resume transcript，当前也不自动重连断开的 SSH session。
+
+SSH PromptInput 的 `@` fuzzy/path 候选来自远端文件索引和目录扫描，不会读取本机 workspace。目录选择可以继续补全下一级；cold index 完成后会对仍有效的 query 有界刷新。包含空格、引号、反斜杠、美元符号、反引号或 Unicode 的路径会使用可逆 quoted mention，例如：
+
+```text
+@"docs/path with spaces/file.md"
+```
+
+SSH Remote 当前只支持 interactive TUI。`!command` 在远端 cwd 直接执行并将转义后的结果写入远端 transcript；远端 Agent progress、Bash 和未知 MCP tool card 可在本地显示，但 display-only fallback 不能在本地执行。permission allow/deny/cancel、`/plan`、`/yolo`、Shift+Tab、永久规则、additional workspace directory、Esc interrupt、正常退出和断线均经 capability-protected control channel 同步；workspace directory 的存在性也由远端验证。
 
 ### Terminal Tool
 
@@ -511,8 +553,10 @@ make build
 - [`docs/architecture/plugin-marketplace.md`](docs/architecture/plugin-marketplace.md) — Plugin 与 Marketplace 模型。
 - [`docs/architecture/agent-sdk-exports.md`](docs/architecture/agent-sdk-exports.md) — Agent SDK 导出面和扩展 API。
 
-### Workflow、研究与历史
+### SSH、Workflow、研究与历史
 
+- [`docs/design/ssh-local-ui-coherence.md`](docs/design/ssh-local-ui-coherence.md) — SSH transcript、远端补全、settings/Auth 边界与交互一致性设计。
+- [`docs/research/prompt-context-optimization.md`](docs/research/prompt-context-optimization.md) — Prompt context 构成、精简结果、测量方法与剩余风险。
 - [`docs/design/workflow-runtime-parity.md`](docs/design/workflow-runtime-parity.md) — Workflow runtime parity 的行为和证据边界。
 - [`docs/workflows/`](docs/workflows/) — Workflow 示例、兼容性材料和测试 fixture。
 - [`docs/research/`](docs/research/) — 二进制分析、CCH、Workflow 和 Codex 对比研究。

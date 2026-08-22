@@ -17,7 +17,7 @@
 ### 版本状态
 
 - 准备发布版本：`v2.1.213`。
-- 本次发布覆盖 `v2.1.212..HEAD` 的 16 个提交，包含 SSH local/remote 状态同步与路径交互修复、prompt context 精简，以及 OpenAI/Anthropic gateway 模型发现。
+- 本次发布的功能范围为 `v2.1.212` 之后、发布准备提交之前的 16 个功能与文档提交（`782826d..c080f70`）；发布元数据提交不计入功能提交数。范围包含 SSH local/remote 状态同步与路径交互修复、prompt context 精简，以及 OpenAI/Anthropic gateway 模型发现。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.213`。
 
@@ -26,7 +26,7 @@
 - `782826d` — 将 SSH settings 与认证保留在本地主机，并由 host-managed auth proxy 向远端提供最小接口。
 - `082d331` — 同步 remote-owned history replay、消息 UUID、隐藏消息和 file-suggestion control lifecycle。
 - `5b13424` — 补齐 SSH 远端目录、文件与 fuzzy suggestions 的连续路径补全。
-- `b52f9a2` — 完成 managed SSH shell、history、显示工具和本地/远端运行边界。
+- `b52f9a2` — 完成 managed SSH shell、history、Agent/工具显示、权限与路径交互，并精简主会话、Bash、Explore 和 Plan prompt。
 - `2c860b4` — 通过 SSH control request 同步 permission mode、永久规则和取消状态。
 - `a56a673` — 延长 managed SSH bootstrap timeout，允许较慢远端认证完成。
 - `1b50a42` — 在远端验证 managed SSH workspace directory，避免本机路径判断污染远端行为。
@@ -45,22 +45,28 @@
 #### SSH 交互与执行边界
 
 - SSH 本地 TUI 只负责 transport、认证 proxy 和权限交互；tools、skills、plugins、Agent、hooks、MCP、文件索引和 transcript 保持由 managed remote child 执行，避免加载本机项目上下文。
+- `--settings`、`--setting-sources`、provider/upstream、Auth helper、custom headers、client certificate/key 和网络代理配置留在本地；原始配置、路径与 secret 不进入远端 argv/environment，远端 settings 也不能覆盖 host-managed provider/Auth/session 标记。
 - permission mode、永久 permission rules、interrupt/cancel acknowledgement 和 replayed response 通过 control protocol 同步；失败或乱序响应不会错误提交本地状态。
-- remote-owned history replay 保留 UUID、hidden/meta 消息和顺序并与 live echo 去重；远程 shell 输出以转义后的 synthetic transcript 提供给后续模型 turn。
+- remote-owned history 在接受新输入前完成 bootstrap，保留 UUID、hidden/meta 消息、compact boundary 和顺序并与 live echo 去重；退出提示使用远端 session identity、target 和 cwd 生成可安全复制的 SSH resume 命令，本地不再双写 transcript。
+- SSH `!command` 在 managed remote cwd 执行，和模型 turn 串行互斥；输入、stdout 与 stderr 以转义后的 synthetic transcript 提供给后续模型 turn，并保留中断、部分输出与退出状态。
 - PromptInput 查询远端目录和 fuzzy index，支持 cold-index refresh、目录连续补全，以及包含空格、引号、反斜杠、美元符号、反引号和 Unicode 的路径。
-- managed SSH bootstrap、workspace directory validation 和 remote display tool lifecycle 使用远端语义，并为慢速认证和取消路径提供明确边界。
+- managed SSH bootstrap 与 workspace directory validation 使用远端语义，并为慢速认证、请求取消与断线 cleanup 提供明确边界。
+- 远端 Agent 的 assistant/tool-result progress、Bash 和未知 MCP tool card 可在本地 TUI 显示；display-only fallback 不进入本地 execution catalog，也不能在本机执行。
 
 #### Prompt context 与 deferred tools
 
-- Agent listing 默认移入按需 attachment，Agent/Workflow/Skill guidance 删除重复常驻说明，降低每轮基础 prompt context。
-- deferred tool namespace 使用更紧凑的索引和按需加载提示；不同 Codex App namespace 保持独立，避免同名集合覆盖或错误路由。
-- 新增 prompt context 优化设计与结果文档，记录测量基线、节省来源和未覆盖风险。
+- 主会话操作安全、Bash Git/PR、Explore 和 Plan 的静态说明在保留授权、安全、只读与输出契约的前提下合计从 13,439 缩至 3,833 字符，四类提示合计估算约减少 2,402 tokens；普通主会话冷缓存请求约减少 1,715 tokens。
+- Agent listing 默认移入增量 attachment，首轮仍包含完整可用类型与权限，后续只发送增删；Agent orchestration guidance 合并重复的 foreground/background、fresh-context、briefing 和 resume 说明。
+- deferred tool namespace 对同一 MCP namespace 的大列表使用汇总索引并保留精确增量状态；26-tool 样本从 935 缩至 64 字符。不同 Codex App namespace 保持独立，避免同名集合覆盖或错误路由。
+- 新增 prompt context 优化设计与结果文档，记录测量基线、cache 稳定性收益、节省来源和未覆盖风险。
 
 #### 模型发现与缓存
 
 - `CLAUDE_CODE_USE_OPENAI=1` 时自动发现模型：ChatGPT OAuth 查询 Codex models endpoint，API key billing 查询 `OPENAI_BASE_URL/v1/models`，未配置 base URL 时使用 OpenAI 默认 API。
-- Anthropic API billing 在设置 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 和 `ANTHROPIC_BASE_URL` 时查询 gateway `/v1/models`，支持 Bearer auth token 与 `x-api-key`，并展示响应中的全部模型。
+- Anthropic API billing 在设置 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 和 `ANTHROPIC_BASE_URL` 时查询 gateway `/v1/models?limit=1000`；`ANTHROPIC_AUTH_TOKEN` 使用 Bearer 且优先于通过 `x-api-key` 发送的 `ANTHROPIC_API_KEY`，普通 `CLAUDE_CODE_OAUTH_TOKEN` 不作为 gateway 发现凭据。
+- base URL 会规范化为唯一的 `/v1/models` 路径；OpenAI 默认 API 过滤到受支持的 GPT/o-series/Codex 系列，自定义 OpenAI-compatible endpoint 与 Anthropic gateway 保留响应中声明 API support 的其他模型，hidden 项在 Model Picker 标记为 `(Hidden)`。
 - OpenAI、Anthropic gateway 与既有 bootstrap model options 统一使用 `additionalModelOptionsCache`；启动模式固定时不再维护 OpenAI 专用缓存。
+- 发现被禁用、缺少 base URL/认证、网络失败、超时、空响应或没有可用模型时保留已有共享缓存，并回退到缓存或内置模型，不用失败结果覆盖可用选项。
 - OpenRouter 仅作为 OpenAI-compatible `/v1/models` 测试目标，未增加 provider、路由、环境变量或专用缓存。
 
 ### 测试覆盖
