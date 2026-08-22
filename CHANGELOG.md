@@ -12,6 +12,32 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-22 - OpenAI 与 Anthropic Gateway 模型自动发现
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.212`。
+- 本条目记录 OpenAI 模式和 Anthropic API billing gateway 的模型发现与统一缓存支持。
+
+### 关联提交
+
+- 当前提交 — 增加统一模型发现入口、共享 Model Picker 缓存及 OpenAI/Anthropic gateway 回归测试。
+
+### 变更内容
+
+#### 模型发现与缓存
+
+- `CLAUDE_CODE_USE_OPENAI=1` 时自动发现模型：ChatGPT OAuth 查询 Codex models endpoint，API key billing 查询 `OPENAI_BASE_URL/v1/models`，未配置 base URL 时使用 OpenAI 默认 API。
+- Anthropic API billing 在设置 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 和 `ANTHROPIC_BASE_URL` 时查询 gateway `/v1/models`，支持 Bearer auth token 与 `x-api-key`，并展示响应中的全部模型。
+- OpenAI、Anthropic gateway 与既有 bootstrap model options 统一使用 `additionalModelOptionsCache`；启动模式固定时不再维护 OpenAI 专用缓存。
+- OpenRouter 仅作为 OpenAI-compatible `/v1/models` 测试目标，未增加 provider、路由、环境变量或专用缓存。
+
+### 测试覆盖
+
+- OpenAI model options、bootstrap、OpenAI compatibility 和 auth env focused tests 通过；ESLint、binary build 与 `git diff --check` 通过。
+- 使用 `~/.codex/auth.json`、mjclouds Anthropic/OpenAI-compatible profile 和 OpenRouter profile 完成真实发现请求；分别发现 9、13 和 421 个可用模型。
+- 通过 `make build` 生成 `v2.1.212` binary，并逐个打开 5 个 `~/.claude/settings*.json` profile 的 `/model` picker，验证当前项定位、滚动、方向键移动和 Esc 不保存。
+
 ## 2026-08-19 - v2.1.212 - SSH 权限同步与远程执行边界
 
 ### 版本状态

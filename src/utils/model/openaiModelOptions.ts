@@ -1,8 +1,10 @@
 import axios from 'axios'
-import { getOpenAIAuthInfo } from '../auth.js'
+import { getAnthropicApiKey, getOpenAIAuthInfo } from '../auth.js'
 import { logForDebugging } from '../debug.js'
+import { isEnvTruthy } from '../envUtils.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
 import type { ModelOption } from './modelOptions.js'
+import { getAPIProvider } from './providers.js'
 
 const FALLBACK_OPENAI_MODEL_OPTIONS: ModelOption[] = [
   {
@@ -40,23 +42,66 @@ type CodexModel = {
   supported_in_api?: unknown
 }
 
+type ModelDiscoveryRequest = {
+  endpoint: string
+  headers: Record<string, string>
+  params?: Record<string, string | number>
+  parseOptions?: ParseModelOptions
+}
+
+type ParseModelOptions = {
+  includeUnknownModels?: boolean
+  defaultDescription?: string
+}
+
 export function getOpenAIModelOptions(): ModelOption[] {
   return FALLBACK_OPENAI_MODEL_OPTIONS
 }
 
-export async function fetchOpenAIModelOptions(): Promise<ModelOption[] | null> {
-  const auth = getOpenAIAuthInfo()
-  if (!auth) {
-    logForDebugging('[OpenAI models] Skipped: no auth')
-    return null
-  }
+export function isModelDiscoveryEnabled(): boolean {
+  return (
+    getAPIProvider() === 'openai' ||
+    (getAPIProvider() === 'firstParty' &&
+      isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY) &&
+      Boolean(process.env.ANTHROPIC_BASE_URL))
+  )
+}
 
-  const endpoint = auth.isChatGPT
-    ? 'https://chatgpt.com/backend-api/codex/models'
-    : 'https://api.openai.com/v1/models'
+export async function fetchModelOptions(): Promise<ModelOption[] | null> {
+  const request = getModelDiscoveryRequest()
+  if (!request) return null
 
   try {
-    const response = await axios.get<OpenAIModelsResponse>(endpoint, {
+    const response = await axios.get<OpenAIModelsResponse>(request.endpoint, {
+      headers: request.headers,
+      params: request.params,
+      timeout: 5000,
+    })
+
+    const options = parseOpenAIModelOptions(response.data, request.parseOptions)
+    logForDebugging(`[Model discovery] Fetched ${options.length} options`)
+    return options.length > 0 ? options : null
+  } catch (error) {
+    logForDebugging(
+      `[Model discovery] Fetch failed: ${axios.isAxiosError(error) ? (error.response?.status ?? error.code) : 'unknown'}`,
+    )
+    return null
+  }
+}
+
+function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
+  if (getAPIProvider() === 'openai') {
+    const auth = getOpenAIAuthInfo()
+    if (!auth) {
+      logForDebugging('[Model discovery] Skipped: no OpenAI auth')
+      return null
+    }
+
+    const customBaseURL = process.env.OPENAI_BASE_URL
+    return {
+      endpoint: auth.isChatGPT
+        ? 'https://chatgpt.com/backend-api/codex/models'
+        : getModelsEndpoint(customBaseURL ?? 'https://api.openai.com/v1'),
       headers: {
         Authorization: `Bearer ${auth.accessToken}`,
         Accept: 'application/json',
@@ -71,28 +116,60 @@ export async function fetchOpenAIModelOptions(): Promise<ModelOption[] | null> {
             }
           : {}),
       },
-      ...(auth.isChatGPT ? { params: { client_version: MACRO.VERSION } } : {}),
-      timeout: 5000,
-    })
+      ...(auth.isChatGPT
+        ? { params: { client_version: MACRO.VERSION } }
+        : {}),
+      parseOptions: {
+        includeUnknownModels: !auth.isChatGPT && Boolean(customBaseURL),
+      },
+    }
+  }
 
-    const data = response.data
-    const options = parseOpenAIModelOptions(data)
-    logForDebugging(`[OpenAI models] Fetched ${options.length} options`)
-    return options.length > 0 ? options : null
-  } catch (error) {
-    logForDebugging(
-      `[OpenAI models] Fetch failed: ${error instanceof Error ? error.constructor.name : 'unknown'}`,
-    )
+  if (!isModelDiscoveryEnabled()) return null
+
+  const authToken = process.env.ANTHROPIC_AUTH_TOKEN
+  const apiKey = authToken ? null : getAnthropicApiKey()
+  if (!authToken && !apiKey) {
+    logForDebugging('[Model discovery] Skipped: no Anthropic gateway auth')
     return null
+  }
+
+  return {
+    endpoint: getModelsEndpoint(process.env.ANTHROPIC_BASE_URL!),
+    headers: {
+      ...(authToken
+        ? { Authorization: `Bearer ${authToken}` }
+        : { 'x-api-key': apiKey! }),
+      Accept: 'application/json',
+      'anthropic-version': '2023-06-01',
+      'User-Agent': getClaudeCodeUserAgent(),
+    },
+    params: { limit: 1000 },
+    parseOptions: {
+      includeUnknownModels: true,
+      defaultDescription: 'From gateway',
+    },
   }
 }
 
-export function parseOpenAIModelOptions(data: OpenAIModelsResponse): ModelOption[] {
+function getModelsEndpoint(baseURL: string): string {
+  const normalized = baseURL.replace(/\/+$/, '')
+  return `${normalized.endsWith('/v1') ? normalized : `${normalized}/v1`}/models`
+}
+
+export function parseOpenAIModelOptions(
+  data: OpenAIModelsResponse,
+  options: ParseModelOptions = {},
+): ModelOption[] {
   if (Array.isArray(data.models)) {
     return data.models
       .filter(model => model.supported_in_api !== false)
       .filter(model => typeof model.slug === 'string' && model.slug.length > 0)
-      .filter(model => isOpenAIListableModel(model.slug as string))
+      .filter(
+        model =>
+          options.includeUnknownModels ||
+          isOpenAIListableModel(model.slug as string),
+      )
       .map(model => {
         const label =
           typeof model.display_name === 'string'
@@ -103,7 +180,7 @@ export function parseOpenAIModelOptions(data: OpenAIModelsResponse): ModelOption
         const hasDescription = typeof model.description === 'string'
         const description = hasDescription
           ? (model.description as string)
-          : 'OpenAI model'
+          : (options.defaultDescription ?? 'OpenAI model')
         const isHidden = model.visibility === 'hide'
         return {
           value: model.slug as string,
@@ -122,7 +199,10 @@ export function parseOpenAIModelOptions(data: OpenAIModelsResponse): ModelOption
   return data.data
     .filter(model => typeof model.id === 'string' && model.id.length > 0)
     .filter(model => model.supported_in_api !== false)
-    .filter(model => isOpenAIListableModel(model.id as string))
+    .filter(
+      model =>
+        options.includeUnknownModels || isOpenAIListableModel(model.id as string),
+    )
     .map(model => {
       const label =
         typeof model.display_name === 'string'
@@ -133,7 +213,7 @@ export function parseOpenAIModelOptions(data: OpenAIModelsResponse): ModelOption
       const hasDescription = typeof model.description === 'string'
       const description = hasDescription
         ? (model.description as string)
-        : 'OpenAI model'
+        : (options.defaultDescription ?? 'OpenAI model')
       const isHidden = model.visibility === 'hide'
       return {
         value: model.id as string,

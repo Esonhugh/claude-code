@@ -563,9 +563,6 @@ export type GlobalConfig = {
   // Additional model options for the model picker (fetched during bootstrap).
   additionalModelOptionsCache?: ModelOption[]
 
-  // OpenAI model options for the model picker (fetched during bootstrap).
-  openAIModelOptionsCache?: ModelOption[]
-
   // Disk cache for /api/claude_code/organizations/metrics_enabled.
   // Org-level settings change rarely; persisting across processes avoids a
   // cold API call on every `claude -p` invocation.

@@ -273,7 +273,7 @@ function getOpusPlanOption(): ModelOption {
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getModelOptionsBase(fastMode = false): ModelOption[] {
   if (getAPIProvider() === 'openai') {
-    const cachedModelOptions = getGlobalConfig().openAIModelOptionsCache ?? []
+    const cachedModelOptions = getGlobalConfig().additionalModelOptionsCache ?? []
     return cachedModelOptions.length > 0
       ? cachedModelOptions
       : getOpenAIModelOptions()

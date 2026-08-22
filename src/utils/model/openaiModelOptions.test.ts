@@ -13,6 +13,12 @@ const originalHome = process.env.HOME
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalAnthropicModel = process.env.ANTHROPIC_MODEL
 const originalNodeEnv = process.env.NODE_ENV
+const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
+const originalAnthropicBaseURL = process.env.ANTHROPIC_BASE_URL
+const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
+const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
+const originalGatewayDiscovery =
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
 const originalAxiosGet = axios.get
 const tempHome = mkdtempSync(join(tmpdir(), 'claude-openai-model-options-'))
 
@@ -78,7 +84,7 @@ try {
 
   saveGlobalConfig(current => ({
     ...current,
-    openAIModelOptionsCache: [
+    additionalModelOptionsCache: [
       { value: 'gpt-online', label: 'GPT Online', description: 'From API' },
     ],
   }))
@@ -99,7 +105,14 @@ try {
     requests.push({ url, headers: options?.headers, params: options?.params })
     return {
       data: {
-        data: [{ id: 'gpt-api', display_name: 'GPT API' }],
+        data: options?.headers?.['anthropic-version']
+          ? [
+              { id: 'anthropic/claude-gateway', name: 'Claude Gateway' },
+              { id: 'openai/gpt-router', name: 'GPT Router' },
+            ]
+          : url.includes('openrouter.ai')
+            ? [{ id: 'openai/gpt-router', name: 'GPT Router' }]
+            : [{ id: 'gpt-api', display_name: 'GPT API' }],
       },
     }
   }) as typeof axios.get
@@ -108,11 +121,24 @@ try {
     accessToken: 'api-token',
     isChatGPT: false,
   })
-  assert.deepEqual(await openAIModelOptions.fetchOpenAIModelOptions(), [
+  assert.deepEqual(await openAIModelOptions.fetchModelOptions(), [
     { value: 'gpt-api', label: 'GPT API', description: 'OpenAI model' },
   ])
   assert.equal(requests[0]!.url, 'https://api.openai.com/v1/models')
   assert.equal(requests[0]!.headers?.Authorization, 'Bearer api-token')
+
+  requests.length = 0
+  process.env.OPENAI_BASE_URL = 'https://openrouter.ai/api'
+  assert.deepEqual(await openAIModelOptions.fetchModelOptions(), [
+    {
+      value: 'openai/gpt-router',
+      label: 'GPT Router',
+      description: 'OpenAI model',
+    },
+  ])
+  assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
+  assert.equal(requests[0]!.headers?.Authorization, 'Bearer api-token')
+  delete process.env.OPENAI_BASE_URL
 
   requests.length = 0
   authModule.getOpenAIAuthInfo.cache.set(undefined, {
@@ -120,10 +146,32 @@ try {
     accountId: 'account-123',
     isChatGPT: true,
   })
-  await openAIModelOptions.fetchOpenAIModelOptions()
+  await openAIModelOptions.fetchModelOptions()
   assert.equal(requests[0]!.url, 'https://chatgpt.com/backend-api/codex/models')
   assert.equal(requests[0]!.headers?.['chatgpt-account-id'], 'account-123')
   assert.deepEqual(requests[0]!.params, { client_version: 'test' })
+
+  requests.length = 0
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
+  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
+  process.env.ANTHROPIC_API_KEY = 'gateway-key'
+  delete process.env.ANTHROPIC_AUTH_TOKEN
+  assert.deepEqual(await openAIModelOptions.fetchModelOptions(), [
+    {
+      value: 'anthropic/claude-gateway',
+      label: 'Claude Gateway',
+      description: 'From gateway',
+    },
+    {
+      value: 'openai/gpt-router',
+      label: 'GPT Router',
+      description: 'From gateway',
+    },
+  ])
+  assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
+  assert.equal(requests[0]!.headers?.['x-api-key'], 'gateway-key')
+  assert.deepEqual(requests[0]!.params, { limit: 1000 })
 } finally {
   axios.get = originalAxiosGet
   const authModule = await import('../auth.js')
@@ -136,6 +184,20 @@ try {
   else process.env.ANTHROPIC_MODEL = originalAnthropicModel
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV
   else process.env.NODE_ENV = originalNodeEnv
+  if (originalOpenAIBaseURL === undefined) delete process.env.OPENAI_BASE_URL
+  else process.env.OPENAI_BASE_URL = originalOpenAIBaseURL
+  if (originalAnthropicBaseURL === undefined) delete process.env.ANTHROPIC_BASE_URL
+  else process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseURL
+  if (originalAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+  else process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey
+  if (originalAnthropicAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+  else process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken
+  if (originalGatewayDiscovery === undefined) {
+    delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+  } else {
+    process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY =
+      originalGatewayDiscovery
+  }
   rmSync(tempHome, { recursive: true, force: true })
 }
 
