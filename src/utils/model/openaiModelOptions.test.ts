@@ -88,6 +88,7 @@ try {
     additionalModelOptionsCache: [
       { value: 'gpt-online', label: 'GPT Online', description: 'From API' },
     ],
+    additionalModelOptionsCacheKey: 'openai:https://api.openai.com/v1',
   }))
   assert.equal(getModelOptions()[0]?.value, 'gpt-online')
 
@@ -172,7 +173,28 @@ try {
   ])
   assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
   assert.equal(requests[0]!.headers?.['x-api-key'], 'gateway-key')
-  assert.deepEqual(requests[0]!.params, { limit: 1000 })
+  assert.equal(requests[0]!.params, undefined)
+
+  const gatewayOptions = [
+    {
+      value: 'anthropic/claude-gateway',
+      label: 'Claude Gateway',
+      description: 'From gateway',
+    },
+    {
+      value: 'openai/gpt-router',
+      label: 'GPT Router',
+      description: 'From gateway',
+    },
+  ]
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: gatewayOptions,
+    additionalModelOptionsCacheKey: 'anthropic:https://openrouter.ai/api',
+  }))
+  assert.deepEqual(getModelOptions().slice(0, 2), gatewayOptions)
+  assert.equal(getModelOptions().length, 3)
+  assert.equal(getModelOptions()[2]?.value, 'gemini-3.7-flash-high')
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
@@ -183,6 +205,14 @@ try {
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
   delete process.env.ANTHROPIC_BASE_URL
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
+  assert.equal(
+    getModelOptions().some(option => option.value === 'anthropic/claude-gateway'),
+    false,
+  )
+  assert.equal(
+    getModelOptions().some(option => option.value === 'openai/gpt-router'),
+    false,
+  )
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)
   assert.equal(requests.length, 0)
 

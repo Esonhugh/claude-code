@@ -33,7 +33,10 @@ import {
 import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
 import { isAnt } from 'src/utils/userType.js'
-import { getOpenAIModelOptions } from './openaiModelOptions.js'
+import {
+  getModelDiscoveryCacheKey,
+  getOpenAIModelOptions,
+} from './openaiModelOptions.js'
 
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
@@ -271,12 +274,24 @@ function getOpusPlanOption(): ModelOption {
 
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
+function getDiscoveredModelOptions(): ModelOption[] {
+  const config = getGlobalConfig()
+  const cacheKey = getModelDiscoveryCacheKey()
+  return cacheKey !== null && config.additionalModelOptionsCacheKey === cacheKey
+    ? (config.additionalModelOptionsCache ?? [])
+    : []
+}
+
 function getModelOptionsBase(fastMode = false): ModelOption[] {
+  const discoveredModelOptions = getDiscoveredModelOptions()
   if (getAPIProvider() === 'openai') {
-    const cachedModelOptions = getGlobalConfig().additionalModelOptionsCache ?? []
-    return cachedModelOptions.length > 0
-      ? cachedModelOptions
+    return discoveredModelOptions.length > 0
+      ? discoveredModelOptions
       : getOpenAIModelOptions()
+  }
+
+  if (discoveredModelOptions.length > 0) {
+    return discoveredModelOptions
   }
 
   if (isAnt()) {
@@ -470,7 +485,7 @@ function getKnownModelOption(model: string): ModelOption | null {
 }
 
 export function getModelOptions(fastMode = false): ModelOption[] {
-  const options = getModelOptionsBase(fastMode)
+  const options = [...getModelOptionsBase(fastMode)]
 
   // Add the custom model from the ANTHROPIC_CUSTOM_MODEL_OPTION env var
   const envCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
@@ -486,13 +501,6 @@ export function getModelOptions(fastMode = false): ModelOption[] {
         process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION ??
         `Custom model (${envCustomModel})`,
     })
-  }
-
-  // Append additional model options fetched during bootstrap
-  for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
-    if (!options.some(existing => existing.value === opt.value)) {
-      options.push(opt)
-    }
   }
 
   // Add custom model from either the current model value or the initial one

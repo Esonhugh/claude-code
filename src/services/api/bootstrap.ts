@@ -14,6 +14,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
   fetchModelOptions,
+  getModelDiscoveryCacheKey,
   isModelDiscoveryEnabled,
 } from '../../utils/model/openaiModelOptions.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
@@ -131,12 +132,14 @@ export async function fetchBootstrapData(): Promise<void> {
 
     const clientData = response.client_data ?? null
     const additionalModelOptions = response.additional_model_options ?? []
+    const additionalModelOptionsCacheKey = getModelDiscoveryCacheKey() ?? undefined
 
     // Only persist if data actually changed — avoids a config write on every startup.
     const config = getGlobalConfig()
     if (
       isEqual(config.clientDataCache, clientData) &&
-      isEqual(config.additionalModelOptionsCache, additionalModelOptions)
+      isEqual(config.additionalModelOptionsCache, additionalModelOptions) &&
+      config.additionalModelOptionsCacheKey === additionalModelOptionsCacheKey
     ) {
       logForDebugging('[Bootstrap] Cache unchanged, skipping write')
       return
@@ -147,6 +150,7 @@ export async function fetchBootstrapData(): Promise<void> {
       ...current,
       clientDataCache: clientData,
       additionalModelOptionsCache: additionalModelOptions,
+      additionalModelOptionsCacheKey,
     }))
   } catch (error) {
     logError(error)

@@ -23,16 +23,20 @@ try {
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
   const { fetchBootstrapData } = await import('./bootstrap.js')
   const originalModelOptionsCache = getGlobalConfig().additionalModelOptionsCache
+  const originalModelOptionsCacheKey =
+    getGlobalConfig().additionalModelOptionsCacheKey
   restoreGlobalConfig = () => {
     saveGlobalConfig(current => ({
       ...current,
       additionalModelOptionsCache: originalModelOptionsCache,
+      additionalModelOptionsCacheKey: originalModelOptionsCacheKey,
     }))
   }
 
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: undefined,
+    additionalModelOptionsCacheKey: undefined,
   }))
   authModule.getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'test-token',
@@ -73,6 +77,10 @@ try {
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
     { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])
+  assert.equal(
+    getGlobalConfig().additionalModelOptionsCacheKey,
+    'openai:chatgpt',
+  )
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -90,6 +98,10 @@ try {
       description: 'From gateway',
     },
   ])
+  assert.equal(
+    getGlobalConfig().additionalModelOptionsCacheKey,
+    'anthropic:https://gateway.example',
+  )
 
   saveGlobalConfig(current => ({
     ...current,

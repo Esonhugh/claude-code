@@ -67,6 +67,18 @@ export function isModelDiscoveryEnabled(): boolean {
   )
 }
 
+export function getModelDiscoveryCacheKey(): string | null {
+  if (getAPIProvider() === 'openai') {
+    const auth = getOpenAIAuthInfo()
+    return auth?.isChatGPT
+      ? 'openai:chatgpt'
+      : `openai:${process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'}`
+  }
+
+  if (!isModelDiscoveryEnabled()) return null
+  return `anthropic:${process.env.ANTHROPIC_BASE_URL}`
+}
+
 export async function fetchModelOptions(): Promise<ModelOption[] | null> {
   const request = getModelDiscoveryRequest()
   if (!request) return null
@@ -144,7 +156,6 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
       'anthropic-version': '2023-06-01',
       'User-Agent': getClaudeCodeUserAgent(),
     },
-    params: { limit: 1000 },
     parseOptions: {
       includeUnknownModels: true,
       defaultDescription: 'From gateway',
