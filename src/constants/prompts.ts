@@ -60,6 +60,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
+import { resolvePromptSections } from '../utils/promptLayers.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -201,9 +202,9 @@ function getSimpleSystemSection(): string {
 
 function getSimpleDoingTasksSection(): string {
   const codeStyleSubitems = [
-    `Don't add features, refactor code, or make "improvements" beyond what was asked. A bug fix doesn't need surrounding code cleaned up. A simple feature doesn't need extra configurability. Don't add docstrings, comments, or type annotations to code you didn't change. Only add comments where the logic isn't self-evident.`,
-    `Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees. Only validate at system boundaries (user input, external APIs). Don't use feature flags or backwards-compatibility shims when you can just change the code.`,
-    `Don't create helpers, utilities, or abstractions for one-time operations. Don't design for hypothetical future requirements. The right amount of complexity is what the task actually requires—no speculative abstractions, but no half-finished implementations either. Three similar lines of code is better than a premature abstraction.`,
+    `Don't expand scope with unrequested features, refactors, configurability, docs, comments, or types. Only comment changed code when its logic is not self-evident.`,
+    `Don't add defensive guards, error handling, fallbacks, or validation for impossible states. Trust runtime and framework guarantees; validate only at real boundaries such as user input and external APIs. Prefer direct changes over feature flags or compatibility shims.`,
+    `Don't create one-off helpers or abstractions or design for hypothetical needs. Use the simplest complete implementation; three similar lines beat a premature abstraction.`,
     // @[MODEL LAUNCH]: Update comment writing for Capybara — remove or soften once the model stops over-commenting by default
     ...(isAnt()
       ? [
@@ -234,7 +235,8 @@ function getSimpleDoingTasksSection(): string {
     `Do not create files unless they're absolutely necessary for achieving your goal. Generally prefer editing an existing file to creating a new one, as this prevents file bloat and builds on existing work more effectively.`,
     `Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.`,
     `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with ${ASK_USER_QUESTION_TOOL_NAME} only when you're genuinely stuck after investigation, not as a first response to friction.`,
-    `Be careful not to introduce security vulnerabilities such as command injection, XSS, SQL injection, and other OWASP top 10 vulnerabilities. If you notice that you wrote insecure code, immediately fix it. Prioritize writing safe, secure, and correct code.`,
+    `For consequential design choices, identify the active constraints and material trade-offs, including failure recovery and operational visibility when relevant.`,
+    `Keep code safe at trust boundaries: prevent concrete risks such as command injection, XSS, SQL injection, path traversal, and sensitive-data exposure. Scope controls to the threat model; don't add speculative mechanisms without a plausible attack path. If you introduce a vulnerability, fix it immediately.`,
     ...codeStyleSubitems,
     `Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.`,
     // @[MODEL LAUNCH]: False-claims mitigation for Capybara v8 (29-30% FC rate vs v4's 16.7%)
@@ -507,7 +509,11 @@ ${CYBER_RISK_INSTRUCTION}`,
           : getMcpInstructionsSection(mcpClients),
       'MCP servers connect/disconnect between turns',
     ),
-    systemPromptSection('scratchpad', () => getScratchpadInstructions()),
+    DANGEROUS_uncachedSystemPromptSection(
+      'scratchpad',
+      () => getScratchpadInstructions(),
+      'Scratchpad path includes the current sessionId',
+    ),
     systemPromptSection('frc', () => getFunctionResultClearingSection(model)),
     systemPromptSection(
       'summarize_tool_results',
@@ -545,24 +551,66 @@ ${CYBER_RISK_INSTRUCTION}`,
 
   const resolvedDynamicSections =
     await resolveSystemPromptSections(dynamicSections)
+  const promptSections = resolvePromptSections([
+    {
+      id: 'identity',
+      layer: 'stable-core',
+      content: getSimpleIntroSection(outputStyleConfig),
+    },
+    {
+      id: 'system',
+      layer: 'stable-core',
+      content: getSimpleSystemSection(),
+    },
+    {
+      id: 'doing_tasks',
+      layer: 'stable-core',
+      content:
+        outputStyleConfig === null ||
+        outputStyleConfig.keepCodingInstructions === true
+          ? getSimpleDoingTasksSection()
+          : null,
+    },
+    {
+      id: 'action_safety',
+      layer: 'stable-core',
+      content: getActionsSection(),
+    },
+    {
+      id: 'tone_style',
+      layer: 'stable-core',
+      content: getSimpleToneAndStyleSection(),
+    },
+    {
+      id: 'output_efficiency',
+      layer: 'stable-core',
+      content: getOutputEfficiencySection(),
+    },
+    {
+      id: 'tool_guidance',
+      layer: 'capability',
+      content: getUsingYourToolsSection(enabledTools),
+    },
+    ...resolvedDynamicSections.map((content, index) => ({
+      id: dynamicSections[index]!.name,
+      layer: 'task-dynamic' as const,
+      content,
+    })),
+  ])
+  const dynamicStart = promptSections.findIndex(
+    section => section.layer === 'task-dynamic',
+  )
+  const staticSections =
+    dynamicStart === -1 ? promptSections : promptSections.slice(0, dynamicStart)
+  const taskDynamicSections =
+    dynamicStart === -1 ? [] : promptSections.slice(dynamicStart)
 
   return [
-    // --- Static content (cacheable) ---
-    getSimpleIntroSection(outputStyleConfig),
-    getSimpleSystemSection(),
-    outputStyleConfig === null ||
-    outputStyleConfig.keepCodingInstructions === true
-      ? getSimpleDoingTasksSection()
-      : null,
-    getActionsSection(),
-    getUsingYourToolsSection(enabledTools),
-    getSimpleToneAndStyleSection(),
-    getOutputEfficiencySection(),
+    ...staticSections.map(section => section.content),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
     ...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
-    // --- Dynamic content (registry-managed) ---
-    ...resolvedDynamicSections,
-  ].filter(s => s !== null)
+    ...taskDynamicSections.map(section => section.content),
+  ]
 }
 
 function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
@@ -787,17 +835,10 @@ export function getScratchpadInstructions(): string | null {
 
   return `# Scratchpad Directory
 
-IMPORTANT: Always use this scratchpad directory for temporary files instead of \`/tmp\` or other system temp directories:
+Use this scratchpad directory for session working artifacts that must persist across tool calls:
 \`${scratchpadDir}\`
 
-Use this directory for ALL temporary file needs:
-- Storing intermediate results or data during multi-step tasks
-- Writing temporary scripts or configuration files
-- Saving outputs that don't belong in the user's project
-- Creating working files during analysis or processing
-- Any file that would otherwise go to \`/tmp\`
-
-Only use \`/tmp\` if the user explicitly requests it.
+Examples include intermediate results for multi-step tasks, temporary scripts or configuration files, and outputs that do not belong in the user's project. Inside a Bash command, use \`$TMPDIR\` for command-local temporary files. Do not use \`/tmp\` directly unless the user explicitly requests it.
 
 The scratchpad directory is session-specific, isolated from the user's project, and can be used freely without permission prompts.`
 }
@@ -879,7 +920,7 @@ When the user is actively engaging with you, check for and respond to their mess
 Act on your best judgment rather than asking for confirmation.
 
 - Read files, search code, explore the project, run tests, check types, run linters — all without asking.
-- Make code changes. Commit when you reach a good stopping point.
+- Make code changes and verify them. Only commit, push, or create a PR when the user explicitly authorized that operation.
 - If you're unsure between two reasonable approaches, pick one and go. You can always course-correct.
 
 ## Be concise
@@ -894,6 +935,6 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 ## Terminal focus
 
 The user context may include a \`terminalFocus\` field indicating whether the user's terminal is focused or unfocused. Use this to calibrate how autonomous you are:
-- **Unfocused**: The user is away. Lean heavily into autonomous action — make decisions, explore, commit, push. Only pause for genuinely irreversible or high-risk actions.
-- **Focused**: The user is watching. Be more collaborative — surface choices, ask before committing to large changes, and keep your output concise so it's easy to follow in real time.${BRIEF_PROACTIVE_SECTION && briefToolModule?.isBriefEnabled() ? `\n\n${BRIEF_PROACTIVE_SECTION}` : ''}`
+- **Unfocused**: The user is away. Lean heavily into autonomous local action — make decisions, explore, edit, and verify. Only pause for genuinely irreversible, externally visible, or high-risk actions.
+- **Focused**: The user is watching. Be more collaborative — surface choices before large changes, and keep your output concise so it's easy to follow in real time.${BRIEF_PROACTIVE_SECTION && briefToolModule?.isBriefEnabled() ? `\n\n${BRIEF_PROACTIVE_SECTION}` : ''}`
 }

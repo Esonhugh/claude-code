@@ -1,13 +1,24 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
+let sandboxEnabled = false
+
 mock.module('../../utils/sandbox/sandbox-adapter.js', () => ({
-  SandboxManager: { isSandboxingEnabled: () => false },
+  SandboxManager: {
+    isSandboxingEnabled: () => sandboxEnabled,
+    getFsReadConfig: () => ({ denyOnly: [] }),
+    getFsWriteConfig: () => ({ allowOnly: [], denyWithinAllow: [] }),
+    getNetworkRestrictionConfig: () => null,
+    getAllowUnixSockets: () => [],
+    getIgnoreViolations: () => null,
+    areUnsandboxedCommandsAllowed: () => false,
+  },
 }))
 
 const { getSimplePrompt } = await import('./prompt.js')
 
 beforeEach(() => {
   process.env.CLAUDE_CODE_SIMPLE = '1'
+  sandboxEnabled = false
 })
 
 describe('BashTool prompt', () => {
@@ -19,5 +30,15 @@ describe('BashTool prompt', () => {
     expect(prompt).toContain('skip hooks/signing')
     expect(prompt).toContain('heredoc')
     expect(prompt.length).toBeLessThan(8_500)
+  })
+
+  test('scopes TMPDIR to command-local sandbox files', () => {
+    sandboxEnabled = true
+
+    const prompt = getSimplePrompt()
+
+    expect(prompt).toContain('command-local temporary files')
+    expect(prompt).toContain('use the `$TMPDIR` environment variable')
+    expect(prompt).not.toContain('For temporary files, always use')
   })
 })

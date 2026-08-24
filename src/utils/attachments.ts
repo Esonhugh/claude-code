@@ -600,6 +600,7 @@ export type Attachment =
   | {
       type: 'auto_mode'
       reminderType: 'full' | 'sparse'
+      scope?: 'execution' | 'plan-permissions'
     }
   | {
       type: 'auto_mode_exit'
@@ -1323,19 +1324,28 @@ async function getPlanModeExitAttachment(
   return [{ type: 'plan_mode_exit', planFilePath, planExists }]
 }
 
-function getAutoModeAttachmentTurnCount(messages: Message[]): {
+function getAutoModeScope(
+  attachment: Extract<Attachment, { type: 'auto_mode' }>,
+): 'execution' | 'plan-permissions' {
+  return attachment.scope ?? 'execution'
+}
+
+function getAutoModeAttachmentTurnCount(
+  messages: Message[],
+  scope: 'execution' | 'plan-permissions',
+): {
   turnCount: number
   foundAutoModeAttachment: boolean
 } {
   let turnsSinceLastAttachment = 0
   let foundAutoModeAttachment = false
 
-  // Iterate backwards to find most recent auto_mode attachment.
-  // Count HUMAN turns (non-meta, non-tool-result user messages), not assistant
-  // messages — the tool loop in query.ts calls getAttachmentMessages on every
-  // tool round, so a single human turn with 100 tool calls would fire ~20
-  // reminders if we counted assistant messages. Auto mode's target use case is
-  // long agentic sessions, where this accumulated 60-105× per session.
+  // Iterate backwards to find the most recent auto_mode attachment for this
+  // scope. Count HUMAN turns (non-meta, non-tool-result user messages), not
+  // assistant messages — the tool loop in query.ts calls getAttachmentMessages
+  // on every tool round, so a single human turn with 100 tool calls would fire
+  // ~20 reminders if we counted assistant messages. Auto mode's target use case
+  // is long agentic sessions, where this accumulated 60-105× per session.
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
 
@@ -1350,7 +1360,8 @@ function getAutoModeAttachmentTurnCount(messages: Message[]): {
       // @ts-ignore - recovered code
       message.attachment.type === 'auto_mode'
     ) {
-      foundAutoModeAttachment = true
+      // @ts-ignore - recovered code
+      foundAutoModeAttachment = getAutoModeScope(message.attachment) === scope
       break
     } else if (
       message?.type === 'attachment' &&
@@ -1366,10 +1377,13 @@ function getAutoModeAttachmentTurnCount(messages: Message[]): {
 }
 
 /**
- * Count auto_mode attachments since the last auto_mode_exit (or from start if no exit).
+ * Count auto_mode attachments for this scope since the last auto_mode_exit (or from start if no exit).
  * This ensures the full/sparse cycle resets when re-entering auto mode.
  */
-function countAutoModeAttachmentsSinceLastExit(messages: Message[]): number {
+function countAutoModeAttachmentsSinceLastExit(
+  messages: Message[],
+  scope: 'execution' | 'plan-permissions',
+): number {
   let count = 0
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
@@ -1379,7 +1393,11 @@ function countAutoModeAttachmentsSinceLastExit(messages: Message[]): number {
         break
       }
       // @ts-ignore - recovered code
-      if (message.attachment.type === 'auto_mode') {
+      if (
+        message.attachment.type === 'auto_mode' &&
+        // @ts-ignore - recovered code
+        getAutoModeScope(message.attachment) === scope
+      ) {
         count++
       }
     }
@@ -1401,10 +1419,12 @@ async function getAutoModeAttachments(
     return []
   }
 
+  const scope = inPlanWithAuto ? 'plan-permissions' : 'execution'
+
   // Check if we should attach based on turn count (except for first turn)
   if (messages && messages.length > 0) {
     const { turnCount, foundAutoModeAttachment } =
-      getAutoModeAttachmentTurnCount(messages)
+      getAutoModeAttachmentTurnCount(messages, scope)
     // Only throttle if we've already sent an auto_mode attachment before
     // On first turn in auto mode, always attach
     if (
@@ -1417,7 +1437,7 @@ async function getAutoModeAttachments(
 
   // Determine if this should be a full or sparse reminder
   const attachmentCount =
-    countAutoModeAttachmentsSinceLastExit(messages ?? []) + 1
+    countAutoModeAttachmentsSinceLastExit(messages ?? [], scope) + 1
   const reminderType: 'full' | 'sparse' =
     attachmentCount %
       AUTO_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS ===
@@ -1425,7 +1445,13 @@ async function getAutoModeAttachments(
       ? 'full'
       : 'sparse'
 
-  return [{ type: 'auto_mode', reminderType }]
+  return [
+    {
+      type: 'auto_mode',
+      reminderType,
+      scope,
+    },
+  ]
 }
 
 /**

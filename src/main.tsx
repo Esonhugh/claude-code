@@ -3089,31 +3089,6 @@ async function run(): Promise<CommanderCommand> {
           setUserMsgOptIn(true)
         }
       }
-      // Coordinator mode has its own system prompt and filters out Sleep, so
-      // the generic proactive prompt would tell it to call a tool it can't
-      // access and conflict with delegation instructions.
-      if (
-        (feature('PROACTIVE') || feature('KAIROS')) &&
-        ((options as { proactive?: boolean }).proactive ||
-          isEnvTruthy(process.env.CLAUDE_CODE_PROACTIVE)) &&
-        !coordinatorModeModule?.isCoordinatorMode()
-      ) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        const briefVisibility =
-          feature('KAIROS') || feature('KAIROS_BRIEF')
-            ? (
-                require('./tools/BriefTool/BriefTool.js') as typeof import('./tools/BriefTool/BriefTool.js')
-              ).isBriefEnabled()
-              ? 'Call SendUserMessage at checkpoints to mark where things stand.'
-              : 'The user will see any text you output.'
-            : 'The user will see any text you output.'
-        /* eslint-enable @typescript-eslint/no-require-imports */
-        const proactivePrompt = `\n# Proactive Mode\n\nYou are in proactive mode. Take initiative — explore, act, and make progress without waiting for instructions.\n\nStart by briefly greeting the user.\n\nYou will receive periodic <tick> prompts. These are check-ins. Do whatever seems most useful, or call Sleep if there's nothing to do. ${briefVisibility}`
-        appendSystemPrompt = appendSystemPrompt
-          ? `${appendSystemPrompt}\n\n${proactivePrompt}`
-          : proactivePrompt
-      }
-
       if (feature('KAIROS') && kairosEnabled && assistantModule) {
         const assistantAddendum =
           assistantModule.getAssistantSystemPromptAddendum()

@@ -3519,7 +3519,7 @@ function getPlanModeV2SubAgentInstructions(attachment: {
     ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool if you need to.`
     : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool if you need to.`
 
-  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
+  const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits except to the plan file described below, run any other non-readonly tools (including changing configs or making commits), or otherwise make changes outside that plan file. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
 
 ## Plan File Info:
 ${planFileInfo}
@@ -3533,11 +3533,30 @@ Answer the user's query comprehensively, using the ${ASK_USER_QUESTION_TOOL_NAME
 
 function getAutoModeInstructions(attachment: {
   reminderType: 'full' | 'sparse'
+  scope?: 'execution' | 'plan-permissions'
 }): UserMessage[] {
+  if (attachment.scope === 'plan-permissions') {
+    return getPlanAutoModeInstructions(attachment.reminderType)
+  }
   if (attachment.reminderType === 'sparse') {
     return getAutoModeSparseInstructions()
   }
   return getAutoModeFullInstructions()
+}
+
+function getPlanAutoModeInstructions(
+  reminderType: 'full' | 'sparse',
+): UserMessage[] {
+  const content =
+    reminderType === 'full'
+      ? `## Auto Permission Classification During Plan Mode
+
+Plan mode remains active, including its read-only boundary and plan-file exception. Auto mode is active only as a permission classifier for operations that Plan mode already allows. It does not authorize implementation, coding, changes outside the plan file, commits, or other execution work. Continue planning with minimal interruption, but ask the user when Plan mode requires a decision.`
+      : `Plan mode remains active. The Auto permission classifier still handles operations that Plan mode allows; it does not authorize implementation or changes outside the plan file.`
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content, isMeta: true }),
+  ])
 }
 
 function getAutoModeFullInstructions(): UserMessage[] {
