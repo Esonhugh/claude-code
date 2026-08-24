@@ -682,7 +682,7 @@ Phase 0 得到真实 baseline 后锁定绝对预算；在此之前使用以下�
 Prompt 修改必须同时通过三类独立证据，不能用字符数下降代替行为正确或流程加速：
 
 1. **行为正确性**：obligation/rule-retention tests 与组合态回归全部通过；关键规则、权限边界和真实状态语义不得退化。
-2. **上下文成本**：对相同配置、相同输入分别保存 baseline/candidate `dump-prompts`，运行 `bun scripts/analyze-prompt-dump.mjs <baseline.jsonl> <candidate.jsonl>`；报告最终 request 的 system/tool description/schema 估算 tokens、API `input_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens` 和 `system_update` 次数。估算值只做本地预算，收益结论以 API usage 为准。
+2. **上下文成本**：对相同配置、相同输入分别保存 baseline/candidate `dump-prompts`，运行 `bun scripts/analyze-prompt-dump.mjs <baseline.jsonl> <candidate.jsonl>`；报告最终 request 的 system/tool description/schema 估算 tokens、API `input_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens`、三者之和 `totalInputTokens` 和 `system_update` 次数。Anthropic usage 中三类 input token 是互斥的上下文分区；估算值只做本地预算，收益结论以 API usage 为准。
 3. **流程效率**：同一场景至少重复运行 5 次，分别报告中位数和 p90：首个有效 tool call 延迟、完成耗时、模型/API 调用数、tool call 数、permission/clarification 中断数、失败重试数。只有这些指标改善且任务成功率不降，才能声称“加速流程”。
 
 对比必须固定 model/provider、enabled tools、MCP/Skill/Agent 集合、cache 状态、仓库 revision、输入和 permission mode。输出原始 run 级数据，不只给平均值；分别报告冷 cache 和暖 cache，避免 cache 命中差异伪装成 Prompt 收益。当前离线分析脚本不写请求热路径，也不记录新的 Prompt 内容；它只读取已有 debug dump。真实行为/耗时基线仍需在可重复场景 harness 中采集，未采集前不得宣称速度提升。
@@ -701,7 +701,7 @@ Prompt 修改必须同时通过三类独立证据，不能用字符数下降代�
 
 | 场景 | 成功率 baseline/candidate | system chars | 估算 system tokens | tool schema chars | request chars | wall median |
 |---|---:|---:|---:|---:|---:|---:|
-| 无工具/default | 5/5 / 5/5 | 9458 → 9336（-1.29%） | 2365 → 2334（-1.31%） | 2 → 2 | 12497 → 12374（-0.98%） | 590.48 → 596.63 ms（+1.04%） |
+| 无工具/default | 5/5 / 5/5 | 9458 → 9336（-1.29%） | 2365 → 2334（-1.31%） | 0 → 0 | 12497 → 12374（-0.98%） | 590.48 → 596.63 ms（+1.04%） |
 | 默认工具/default | 5/5 / 5/5 | 10847 → 10725（-1.12%） | 2712 → 2682（-1.11%） | 34788 → 34788 | 51606 → 51483（-0.24%） | 585.53 → 598.85 ms（+2.27%） |
 | 默认工具/plan | 5/5 / 5/5 | 10847 → 10725（-1.12%） | 2712 → 2682（-1.11%） | 34788 → 34788 | 56495 → 56370（-0.22%） | 593.68 → 602.25 ms（+1.44%） |
 
@@ -710,7 +710,7 @@ CLI 内部 median `duration_ms` 在三场景均相同或改善 1 ms；`duration_
 #### 结论与证据边界
 
 - **等效性**：本地固定响应 smoke 为 30/30，且关键 obligation/组合态的局部回归通过；支持“本批次未破坏已覆盖请求路径与被断言的 Prompt 语义”，不等同于完整状态转换 E2E，也不证明所有自然语言任务完全行为等价。
-- **上下文成本**：最终 system instructions 减少 122 chars，约 30–31 个估算 token；tool schema 不变。证明了小幅静态成本下降，但未达到整项 Prompt 项目的长期 20%+ 目标。
+- **上下文成本**：最终 system instructions 减少 122 chars，约 30–31 个估算 token；tool schema 不变（无工具场景按 analyzer 的逐 tool schema 口径为 0）。证明了小幅静态成本下降，但未达到整项 Prompt 项目的长期 20%+ 目标。
 - **流程速度**：wall median 波动为 +1.04% 至 +2.27%，而 CLI/API 内部差异仅 0–1 ms；本轮不能证明加速，也没有证据表明存在可归因的显著减速。
 - **真实 token/cache**：本地 server 的 usage 是固定测试值，不能作为 provider token 或 cache 证据。本批次没有向真实 provider 发请求，因此不声称真实 `input_tokens`、cache read/creation 或冷暖 cache 收益。后续必须用同配置真实 baseline/candidate dump 重复采集，才能升级该结论。
 

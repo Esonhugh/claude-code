@@ -883,7 +883,7 @@ function getBriefSection(): string | null {
   return BRIEF_PROACTIVE_SECTION
 }
 
-function getProactiveSection(): string | null {
+export function getProactiveSection(): string | null {
   if (!(feature('PROACTIVE') || feature('KAIROS'))) return null
   if (!proactiveModule?.isProactiveActive()) return null
 

@@ -107,7 +107,7 @@ export async function analyzePromptDump(filePath) {
     sumUsage(totalUsage, getResponseUsage(entry.data));
   }
 
-  const actualInputTokens =
+  const totalInputTokens =
     totalUsage.input_tokens +
     totalUsage.cache_creation_input_tokens +
     totalUsage.cache_read_input_tokens;
@@ -121,11 +121,11 @@ export async function analyzePromptDump(filePath) {
     requestSnapshots,
     totalUsage: {
       ...totalUsage,
-      actualInputTokens,
+      totalInputTokens,
       cacheReadRatio:
-        actualInputTokens === 0
+        totalInputTokens === 0
           ? null
-          : totalUsage.cache_read_input_tokens / actualInputTokens,
+          : totalUsage.cache_read_input_tokens / totalInputTokens,
     },
   };
 }
@@ -164,9 +164,9 @@ export function comparePromptDumps(baseline, candidate) {
       baselineRequest.toolSchemaEstimatedTokens,
       candidateRequest.toolSchemaEstimatedTokens,
     ),
-    actualInputTokens: numericDelta(
-      baseline.totalUsage.actualInputTokens,
-      candidate.totalUsage.actualInputTokens,
+    totalInputTokens: numericDelta(
+      baseline.totalUsage.totalInputTokens,
+      candidate.totalUsage.totalInputTokens,
     ),
     cacheReadInputTokens: numericDelta(
       baseline.totalUsage.cache_read_input_tokens,
@@ -203,6 +203,7 @@ async function main() {
         comparison: comparePromptDumps(baseline, candidate),
         limitations: [
           'Instruction token counts are character-based estimates; totalUsage comes from API responses.',
+          'totalInputTokens is the full Anthropic input context: input_tokens + cache_creation_input_tokens + cache_read_input_tokens.',
           'Prompt dumps do not measure wall-clock latency or task correctness; pair this report with behavior tests and repeated scenario timings.',
         ],
       },

@@ -19,6 +19,7 @@ import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
 import stripAnsi from 'strip-ansi'
 import type { Command } from './commands.js'
+import { getProactiveSection } from './constants/prompts.js'
 import { getSlashCommandToolSkills } from './commands.js'
 import {
   LOCAL_COMMAND_STDERR_TAG,
@@ -109,12 +110,14 @@ import {
 
 // Dead code elimination: conditional import for coordinator mode
 /* eslint-disable @typescript-eslint/no-require-imports */
+const coordinatorModeModule = feature('COORDINATOR_MODE')
+  ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
+  : null
 const getCoordinatorUserContext: (
   mcpClients: ReadonlyArray<{ name: string }>,
   scratchpadDir?: string,
-) => { [k: string]: string } = feature('COORDINATOR_MODE')
-  ? require('./coordinator/coordinatorMode.js').getCoordinatorUserContext
-  : () => ({})
+) => { [k: string]: string } =
+  coordinatorModeModule?.getCoordinatorUserContext ?? (() => ({}))
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 // Dead code elimination: conditional import for snip compaction
@@ -319,8 +322,13 @@ export class QueryEngine {
         ? await loadMemoryPrompt()
         : null
 
+    const proactiveInstructions =
+      customPrompt !== undefined && !coordinatorModeModule?.isCoordinatorMode()
+        ? getProactiveSection()
+        : null
     const systemPrompt = asSystemPrompt([
       ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
+      ...(proactiveInstructions ? [proactiveInstructions] : []),
       ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
     ])

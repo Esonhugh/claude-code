@@ -60,9 +60,9 @@ try {
   assert.equal(baseline.systemUpdateCount, 0);
   assert.equal(baseline.latestRequest.systemChars, 8);
   assert.equal(baseline.latestRequest.toolDescriptionChars, 8);
-  assert.equal(baseline.totalUsage.actualInputTokens, 60);
-  assert.equal(candidate.totalUsage.actualInputTokens, 48);
-  assert.equal(comparison.actualInputTokens.delta, -12);
+  assert.equal(baseline.totalUsage.totalInputTokens, 60);
+  assert.equal(candidate.totalUsage.totalInputTokens, 48);
+  assert.equal(comparison.totalInputTokens.delta, -12);
   assert.equal(comparison.systemEstimatedTokens.delta, -1);
   assert.equal(comparison.toolDescriptionEstimatedTokens.delta, -1);
 } finally {

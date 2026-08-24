@@ -3,6 +3,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { getProactiveSection } from '../constants/prompts.js'
 import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
@@ -114,12 +115,17 @@ export function buildEffectiveSystemPrompt({
     ])
   }
 
+  const proactiveInstructions = customSystemPrompt
+    ? getProactiveSection()
+    : null
+
   return asSystemPrompt([
     ...(agentSystemPrompt
       ? [agentSystemPrompt]
       : customSystemPrompt
         ? [customSystemPrompt]
         : defaultSystemPrompt),
+    ...(proactiveInstructions ? [proactiveInstructions] : []),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
   ])
 }

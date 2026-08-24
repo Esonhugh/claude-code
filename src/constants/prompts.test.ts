@@ -8,7 +8,8 @@ import { clearSystemPromptSections } from './systemPromptSections.js'
   ISSUES_EXPLAINER: 'report an issue',
 }
 
-const { getSystemPrompt, getUsingYourToolsSection } = await import('./prompts.js')
+const { getSystemPrompt, getUsingYourToolsSection, getProactiveSection } =
+  await import('./prompts.js')
 
 const ORIGINAL_DISABLE_BETAS = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
 const ORIGINAL_API_KEY = process.env.ANTHROPIC_API_KEY
@@ -88,17 +89,30 @@ describe('getSystemPrompt layering', () => {
 })
 
 describe('proactive prompt ownership', () => {
-  test('keeps proactive instructions in the system prompt builder only', () => {
+  test('reuses proactive instructions at each custom-prompt assembly boundary', () => {
     const mainSource = readFileSync(new URL('../main.tsx', import.meta.url), 'utf8')
     const promptSource = readFileSync(
       new URL('./prompts.ts', import.meta.url),
       'utf8',
     )
+    const interactiveSource = readFileSync(
+      new URL('../utils/systemPrompt.ts', import.meta.url),
+      'utf8',
+    )
+    const headlessSource = readFileSync(
+      new URL('../QueryEngine.ts', import.meta.url),
+      'utf8',
+    )
 
     expect(mainSource).not.toContain('const proactivePrompt =')
-    expect(mainSource).not.toContain('# Proactive Mode')
     expect(mainSource).toContain('maybeActivateProactive(options)')
-    expect(promptSource).toContain('function getProactiveSection()')
+    expect(interactiveSource).toContain(
+      'const proactiveInstructions = customSystemPrompt',
+    )
+    expect(headlessSource).toContain(
+      'customPrompt !== undefined && !coordinatorModeModule?.isCoordinatorMode()',
+    )
+    expect(promptSource).toContain('export function getProactiveSection()')
     expect(promptSource).toContain(
       'Only commit, push, or create a PR when the user explicitly authorized that operation.',
     )
@@ -108,5 +122,9 @@ describe('proactive prompt ownership', () => {
     expect(promptSource).not.toContain(
       'Lean heavily into autonomous action — make decisions, explore, commit, push.',
     )
+  })
+
+  test('returns null when proactive is inactive', () => {
+    expect(getProactiveSection()).toBeNull()
   })
 })
