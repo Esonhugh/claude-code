@@ -75,10 +75,13 @@ export function formatCommandsWithinBudget(
 ): string {
   if (commands.length === 0) return ''
 
+  const sortedCommands = [...commands].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  )
   const budget = getCharBudget(contextWindowTokens)
 
   // Try full descriptions first
-  const fullEntries = commands.map(cmd => ({
+  const fullEntries = sortedCommands.map(cmd => ({
     cmd,
     full: formatCommandDescription(cmd),
   }))
@@ -94,8 +97,8 @@ export function formatCommandsWithinBudget(
   // Partition into bundled (never truncated) and rest
   const bundledIndices = new Set<number>()
   const restCommands: Command[] = []
-  for (let i = 0; i < commands.length; i++) {
-    const cmd = commands[i]!
+  for (let i = 0; i < sortedCommands.length; i++) {
+    const cmd = sortedCommands[i]!
     if (cmd.type === 'prompt' && cmd.source === 'bundled') {
       bundledIndices.add(i)
     } else {
@@ -136,7 +139,7 @@ export function formatCommandsWithinBudget(
         bundled_chars: bundledChars,
       })
     }
-    return commands
+    return sortedCommands
       .map((cmd, i) =>
         bundledIndices.has(i) ? fullEntries[i]!.full : `- ${cmd.name}`,
       )
@@ -162,7 +165,7 @@ export function formatCommandsWithinBudget(
       bundled_chars: bundledChars,
     })
   }
-  return commands
+  return sortedCommands
     .map((cmd, i) => {
       // Bundled skills always get full descriptions
       if (bundledIndices.has(i)) return fullEntries[i]!.full
