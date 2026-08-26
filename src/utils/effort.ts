@@ -9,6 +9,7 @@ import { isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
 
 export type EffortLevel =
+  | 'minimal'
   | 'low'
   | 'medium'
   | 'high'
@@ -19,6 +20,7 @@ export type EffortLevel =
 
 export const EFFORT_LEVELS = [
   'none',
+  'minimal',
   'low',
   'medium',
   'high',
@@ -28,46 +30,10 @@ export const EFFORT_LEVELS = [
   'ultracode',
 ] as const
 
-export type OpenAIEffortLevel = 'none' | 'xhigh' | 'ultra'
+export type OpenAIEffortLevel = 'none' | 'minimal' | 'xhigh' | 'ultra'
 export type UltracodeEffortLevel = 'ultracode'
 export type EffortValue = EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel | number
 export type ConfiguredEffortLevel = Exclude<EffortValue, number | 'ultracode'>
-export type OpenAIAPIEffortLevel =
-  | 'none'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'ultra'
-export type AnthropicAPIEffortLevel =
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
-
-const OPENAI_EFFORT_MAP: Record<ConfiguredEffortLevel, OpenAIAPIEffortLevel> = {
-  none: 'none',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh',
-  max: 'ultra',
-  ultra: 'ultra',
-}
-
-const ANTHROPIC_EFFORT_MAP: Record<
-  ConfiguredEffortLevel,
-  AnthropicAPIEffortLevel
-> = {
-  none: 'low',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh',
-  max: 'max',
-  ultra: 'max',
-}
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -148,12 +114,13 @@ export function modelSupportsXHighEffort(model: string): boolean {
 
 export function getSupportedEffortLevelsForModel(
   model: string,
-): readonly (OpenAIAPIEffortLevel | AnthropicAPIEffortLevel)[] {
+): readonly ConfiguredEffortLevel[] {
   if (getAPIProvider() === 'openai') {
-    return ['none', 'low', 'medium', 'high', 'xhigh', 'ultra']
+    return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra']
   }
 
   return [
+    'minimal',
     'low',
     'medium',
     'high',
@@ -195,6 +162,7 @@ export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
   if (
+    value === 'minimal' ||
     value === 'low' ||
     value === 'medium' ||
     value === 'high' ||
@@ -262,13 +230,7 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
-  if (typeof resolved === 'number') return resolved
-
-  const provider = getAPIProvider()
-  const configured = resolved === 'ultracode' ? 'xhigh' : resolved
-  return provider === 'openai'
-    ? OPENAI_EFFORT_MAP[configured]
-    : ANTHROPIC_EFFORT_MAP[configured]
+  return resolved === 'ultracode' ? 'xhigh' : resolved
 }
 
 /**
@@ -331,6 +293,8 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
  */
 export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel | UltracodeEffortLevel): string {
   switch (level) {
+    case 'minimal':
+      return 'Minimal reasoning effort'
     case 'low':
       return 'Quick, straightforward implementation with minimal overhead'
     case 'medium':
@@ -344,7 +308,7 @@ export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel
     case 'xhigh':
       return 'Extended capability for long-horizon work'
     case 'ultra':
-      return 'Ultra effort, sent as max on Anthropic'
+      return 'Ultra effort'
     case 'ultracode':
       return 'xhigh + dynamic workflow orchestration'
   }

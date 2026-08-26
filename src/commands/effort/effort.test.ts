@@ -15,6 +15,17 @@ assert.equal(
   'xhigh + dynamic workflow orchestration',
 )
 
+const minimalResult = executeEffort('minimal')
+assert.equal(
+  minimalResult.message,
+  'Set effort level to minimal: Minimal reasoning effort',
+)
+assert.deepEqual(minimalResult.effortUpdate, { value: 'minimal' })
+assert.equal(
+  showCurrentEffort('minimal', 'gpt-5.5').message,
+  'Current effort level: minimal (Minimal reasoning effort)',
+)
+
 const xhighResult = executeEffort('xhigh')
 assert.equal(
   xhighResult.message,
@@ -36,14 +47,14 @@ assert.equal(
 
 assert.match(
   executeEffort('invalid').message,
-  /Valid options are: none, low, medium, high, xhigh, max, ultra, ultracode, auto/,
+  /Valid options are: none, minimal, low, medium, high, xhigh, max, ultra, ultracode, auto/,
 )
 
 const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 delete process.env.CLAUDE_CODE_USE_OPENAI
 assert.equal(
   showCurrentEffort('ultra', 'claude-opus-4-6').message,
-  'Current effort level: ultra → max (Ultra effort, sent as max on Anthropic)',
+  'Current effort level: ultra (Ultra effort)',
 )
 assert.equal(
   showCurrentEffort('max', 'claude-opus-4-6').message,

@@ -194,7 +194,7 @@ export type PromptResponse = { prompt_response: string; selected: string }
 // Skill/Command Types
 export type SlashCommand = { name: string; description: string; argumentHint: string }
 export type AgentInfo = { name: string; description: string; model?: string }
-export type ModelInfo = { value: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean }
+export type ModelInfo = { value: string; displayName: string; description: string; supportsEffort?: boolean; supportedEffortLevels?: ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra')[]; supportsAdaptiveThinking?: boolean; supportsFastMode?: boolean; supportsAutoMode?: boolean }
 export type AccountInfo = { email?: string; organization?: string; subscriptionType?: string; tokenSource?: string; apiKeySource?: string; apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai' }
 
 // Agent Definition
@@ -212,7 +212,7 @@ export type AgentDefinition = {
   maxTurns?: number
   background?: boolean
   memory?: 'user' | 'project' | 'local'
-  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'ultracode' | number
+  effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | 'ultracode' | number
   permissionMode?: PermissionMode
 }
 

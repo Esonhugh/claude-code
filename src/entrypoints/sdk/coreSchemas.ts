@@ -1058,7 +1058,16 @@ export const ModelInfoSchema = lazySchema(() =>
         .describe('Whether this model supports effort levels'),
       supportedEffortLevels: z
         .array(
-          z.enum(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+          z.enum([
+            'none',
+            'minimal',
+            'low',
+            'medium',
+            'high',
+            'xhigh',
+            'max',
+            'ultra',
+          ]),
         )
         .optional()
         .describe('Available effort levels for this model'),
@@ -1171,6 +1180,7 @@ export const AgentDefinitionSchema = lazySchema(() =>
         .union([
           z.enum([
             'none',
+            'minimal',
             'low',
             'medium',
             'high',

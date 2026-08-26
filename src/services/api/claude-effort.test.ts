@@ -29,6 +29,13 @@ try {
     toPersistableEffort,
   } = await import('../../utils/effort.js')
 
+  assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'none'), 'none')
+  assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'minimal'), 'minimal')
+  assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'ultra'), 'ultra')
+
+  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'minimal'
+  assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'high'), 'minimal')
+  delete process.env.CLAUDE_CODE_EFFORT_LEVEL
   assert.equal(
     resolveAppliedEffort('claude-sonnet-4-6', 'ultracode'),
     'xhigh',
@@ -60,6 +67,7 @@ try {
   assert.equal(resolveAppliedEffort('claude-opus-4-5', 'xhigh'), 'xhigh')
   assert.equal(resolveAppliedEffort('claude-opus-4-5', 'max'), 'max')
   assert.deepEqual(getSupportedEffortLevelsForModel('claude-opus-4-7'), [
+    'minimal',
     'low',
     'medium',
     'high',
@@ -67,17 +75,31 @@ try {
     'max',
   ])
   assert.deepEqual(getSupportedEffortLevelsForModel('claude-opus-4-6'), [
+    'minimal',
     'low',
     'medium',
     'high',
     'max',
   ])
   assert.deepEqual(getSupportedEffortLevelsForModel('claude-sonnet-4-6'), [
+    'minimal',
     'low',
     'medium',
     'high',
     'max',
   ])
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  assert.deepEqual(getSupportedEffortLevelsForModel('gpt-5.5'), [
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'ultra',
+  ])
+  delete process.env.CLAUDE_CODE_USE_OPENAI
 
   const xhighOutputConfig: BetaOutputConfig = {}
   const xhighBetas: string[] = []
@@ -118,7 +140,22 @@ try {
   assert.equal(explicitOutputConfig.effort, 'medium')
   assert.ok(explicitBetas.length > 0)
 
+  const minimalOutputConfig: BetaOutputConfig = {}
+  const minimalBetas: string[] = []
+  configureEffortParams('minimal', minimalOutputConfig, {}, minimalBetas)
+
+  assert.equal(
+    (minimalOutputConfig as { effort?: string }).effort,
+    'minimal',
+  )
+  assert.ok(minimalBetas.length > 0)
+
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'none'), 'none')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'minimal'), 'minimal')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'max'), 'max')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'ultra'), 'ultra')
+
   const openAIOutputConfig: BetaOutputConfig = {}
   const openAIBetas: string[] = []
   configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas)

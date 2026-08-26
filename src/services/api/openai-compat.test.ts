@@ -207,10 +207,20 @@ try {
     model: 'gpt-5.5',
     max_tokens: 16,
     messages: [{ role: 'user', content: 'hi' }],
+    output_config: { effort: 'minimal' },
+  } as any)
+
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'minimal' })
+
+  requests.length = 0
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
     output_config: { effort: 'max' },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'max' })
 
   requests.length = 0
   await rootURLClient.beta.messages.create({
@@ -235,8 +245,9 @@ try {
   const originalUseOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   assert.equal(resolveAppliedEffort('gpt-5.5', 'none'), 'none')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'minimal'), 'minimal')
   assert.equal(resolveAppliedEffort('gpt-5.5', 'xhigh'), 'xhigh')
-  assert.equal(resolveAppliedEffort('gpt-5.5', 'max'), 'ultra')
+  assert.equal(resolveAppliedEffort('gpt-5.5', 'max'), 'max')
   assert.equal(resolveAppliedEffort('gpt-5.5', 'ultra'), 'ultra')
   assert.equal(resolveAppliedEffort('gpt-5.5', 'ultracode'), 'xhigh')
   const appliedUltra = resolveAppliedEffort('gpt-5.5', 'ultra')

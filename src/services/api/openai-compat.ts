@@ -207,20 +207,27 @@ function anthropicToolChoiceToResponsesToolChoice(
 }
 
 function anthropicEffortToOpenAIReasoning(effort: unknown): {
-  effort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'ultra'
+  effort:
+    | 'none'
+    | 'minimal'
+    | 'low'
+    | 'medium'
+    | 'high'
+    | 'xhigh'
+    | 'max'
+    | 'ultra'
 } | undefined {
   if (
     effort === 'none' ||
+    effort === 'minimal' ||
     effort === 'low' ||
     effort === 'medium' ||
     effort === 'high' ||
     effort === 'xhigh' ||
+    effort === 'max' ||
     effort === 'ultra'
   ) {
     return { effort }
-  }
-  if (effort === 'max') {
-    return { effort: 'ultra' }
   }
   if (effort === 'ultracode' || typeof effort === 'number') {
     return { effort: 'xhigh' }

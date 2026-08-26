@@ -8,6 +8,10 @@ import {
   toPersistableEffort,
 } from './effort.js'
 
+assert.equal(isEffortLevel('minimal'), true)
+assert.equal(parseEffortValue('minimal'), 'minimal')
+assert.equal(toPersistableEffort('minimal'), 'minimal')
+assert.equal(getEffortValueDescription('minimal'), 'Minimal reasoning effort')
 assert.equal(isEffortLevel('xhigh'), true)
 assert.equal(parseEffortValue('xhigh'), 'xhigh')
 assert.equal(isEffortLevel('ultracode'), true)

@@ -344,8 +344,8 @@ function cycleEffortLevel(
   includeMax: boolean,
 ): EffortLevel {
   const levels: EffortLevel[] = includeMax
-    ? ['low', 'medium', 'high', 'max']
-    : ['low', 'medium', 'high']
+    ? ['minimal', 'low', 'medium', 'high', 'max']
+    : ['minimal', 'low', 'medium', 'high']
   // If the current level isn't in the cycle (e.g. 'max' after switching to a
   // non-Opus model), clamp to 'high'.
   const idx = levels.indexOf(current)

@@ -1,7 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import { SettingsSchema } from './types.js'
 
-describe('compact settings schema', () => {
+describe('settings schema', () => {
+  test('accepts minimal effort level', () => {
+    const result = SettingsSchema().safeParse({ effortLevel: 'minimal' })
+
+    expect(result.success).toBe(true)
+    if (!result.success) return
+    expect(result.data.effortLevel).toBe('minimal')
+  })
+
   test('accepts codex compact mode with options', () => {
     const result = SettingsSchema().safeParse({
       compact: {
