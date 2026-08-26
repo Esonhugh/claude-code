@@ -6,9 +6,11 @@ import { findCommand, findUserInvocableCommand, type Command } from '../../comma
 import { processSlashCommand } from '../../utils/processUserInput/processSlashCommand.js'
 import { clearBundledSkills, getBundledSkills } from '../bundledSkills.js'
 import { registerTerminalSkill } from './terminal.js'
+import { registerUpdateConfigSkill } from './updateConfig.js'
 
 clearBundledSkills()
 registerTerminalSkill()
+registerUpdateConfigSkill()
 
 const bundledSkills = getBundledSkills()
 assert.equal(
@@ -137,5 +139,25 @@ for (const oldTerm of [
 assert.doesNotMatch(terminalText, /\bopen\b|\bread\b|\bwrite\b/)
 assert.doesNotMatch(terminalText, /run `?\/terminal/i)
 assert.doesNotMatch(terminalText, /ask the user to run/i)
+
+const updateConfigSkill = bundledSkills.find(
+  skill => skill.name === 'update-config',
+)
+assert.ok(updateConfigSkill, 'update-config bundled skill should be registered')
+assert.equal(updateConfigSkill.type, 'prompt')
+const updateConfigPrompt = await updateConfigSkill.getPromptForCommand(
+  'set model to opus',
+  {} as never,
+)
+const updateConfigText = updateConfigPrompt
+  .map(block => (block.type === 'text' ? block.text : ''))
+  .join('\n')
+const settingsSchemaMatch = updateConfigText.match(
+  /## Full Settings JSON Schema\n\n```json\n([\s\S]+?)\n```/,
+)
+assert.ok(settingsSchemaMatch, 'update-config prompt should include settings schema')
+const settingsSchema = JSON.parse(settingsSchemaMatch[1]!)
+assert.ok(settingsSchema.properties.enabledPlugins)
+assert.match(updateConfigText, /## User Request\n\nset model to opus/)
 
 console.log('modelInternalSkills.test.ts passed')
