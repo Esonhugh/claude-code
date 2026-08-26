@@ -24,6 +24,9 @@ try {
   const requests: Array<{
     url: string
     authorization: string | null
+    sessionId?: string | null
+    threadId?: string | null
+    clientRequestId?: string | null
     body: any
   }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -31,6 +34,9 @@ try {
     requests.push({
       url: String(input),
       authorization: headers.get('authorization'),
+      sessionId: headers.get('session-id'),
+      threadId: headers.get('thread-id'),
+      clientRequestId: headers.get('x-client-request-id'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -61,6 +67,156 @@ try {
   assert.equal(requests[0]!.authorization, 'Bearer sk-test-api-key')
   assert.equal(requests[0]!.body.reasoning, undefined)
 
+  requests.length = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      sessionId: headers.get('session-id'),
+      threadId: headers.get('thread-id'),
+      clientRequestId: headers.get('x-client-request-id'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":15},"output_tokens":7}}}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const cacheClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    promptCacheKey: 'session-test-cache-key',
+  })
+  const cacheResponse = await cacheClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'cached input' }],
+  })
+
+  assert.equal(requests[0]!.body.prompt_cache_key, 'session-test-cache-key')
+  assert.equal(requests[0]!.sessionId, 'session-test-cache-key')
+  assert.equal(requests[0]!.threadId, 'session-test-cache-key')
+  assert.equal(requests[0]!.clientRequestId, 'session-test-cache-key')
+  assert.equal(cacheResponse.usage.input_tokens, 25)
+  assert.equal(cacheResponse.usage.cache_read_input_tokens, 60)
+  assert.equal(cacheResponse.usage.cache_creation_input_tokens, 15)
+  assert.equal(cacheResponse.usage.output_tokens, 7)
+  assert.equal(
+    cacheResponse.usage.input_tokens +
+      cacheResponse.usage.cache_read_input_tokens +
+      cacheResponse.usage.cache_creation_input_tokens,
+    100,
+  )
+
+  const cacheUsageCases = [
+    {
+      usage: {
+        input_tokens: 100,
+        input_tokens_details: { cached_tokens: 60 },
+        output_tokens: 7,
+      },
+      expected: { input: 40, read: 60, creation: 0 },
+    },
+    {
+      usage: {
+        input_tokens: 100,
+        input_tokens_details: null,
+        output_tokens: 7,
+      },
+      expected: { input: 100, read: 0, creation: 0 },
+    },
+    {
+      usage: {
+        input_tokens: 25,
+        input_tokens_details: null,
+        cache_read_input_tokens: 60,
+        cache_creation_input_tokens: 15,
+        output_tokens: 7,
+      },
+      expected: { input: 25, read: 60, creation: 15 },
+    },
+    {
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: {
+          cached_tokens: 60,
+          cache_write_tokens: 15,
+        },
+        output_tokens: 7,
+      },
+      expected: { input: 0, read: 60, creation: 15 },
+    },
+  ]
+  for (const { usage, expected } of cacheUsageCases) {
+    globalThis.fetch = (async () =>
+      new Response(
+        `data: ${JSON.stringify({ type: 'response.completed', response: { usage } })}\n\n`,
+        {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        },
+      )) as unknown as typeof fetch
+    const response = await cacheClient.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'cached input' }],
+    })
+    assert.equal(response.usage.input_tokens, expected.input)
+    assert.equal(response.usage.cache_read_input_tokens, expected.read)
+    assert.equal(response.usage.cache_creation_input_tokens, expected.creation)
+  }
+
+  globalThis.fetch = (async () =>
+    new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":15},"output_tokens":7}}}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )) as unknown as typeof fetch
+  const { data: cacheStream } = await cacheClient.beta.messages
+    .create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'cached input' }],
+      stream: true,
+    })
+    .withResponse()
+  const cacheEvents: any[] = []
+  for await (const event of cacheStream as unknown as AsyncIterable<any>) {
+    cacheEvents.push(event)
+  }
+  const cacheDeltaUsage = cacheEvents.find(
+    event => event.type === 'message_delta',
+  )?.usage
+  assert.equal(cacheDeltaUsage?.input_tokens, 25)
+  assert.equal(cacheDeltaUsage?.cache_read_input_tokens, 60)
+  assert.equal(cacheDeltaUsage?.cache_creation_input_tokens, 15)
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      sessionId: headers.get('session-id'),
+      threadId: headers.get('thread-id'),
+      clientRequestId: headers.get('x-client-request-id'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
   requests.length = 0
   process.env.OPENAI_BASE_URL = 'https://gateway.example.test/'
 
@@ -281,6 +437,9 @@ try {
     requests.push({
       url: String(input),
       authorization: headers.get('authorization'),
+      sessionId: headers.get('session-id'),
+      threadId: headers.get('thread-id'),
+      clientRequestId: headers.get('x-client-request-id'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     if (attempts === 1) {
@@ -321,6 +480,9 @@ try {
     requests.push({
       url: String(input),
       authorization: headers.get('authorization'),
+      sessionId: headers.get('session-id'),
+      threadId: headers.get('thread-id'),
+      clientRequestId: headers.get('x-client-request-id'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
