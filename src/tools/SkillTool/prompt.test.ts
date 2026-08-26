@@ -1,7 +1,26 @@
 import { describe, expect, test } from 'bun:test'
-import { getPrompt } from './prompt.js'
+import type { Command } from 'src/commands.js'
+import { formatCommandsWithinBudget, getPrompt } from './prompt.js'
+
+function command(name: string): Command {
+  return {
+    type: 'prompt',
+    name,
+    description: `${name} description`,
+    source: 'bundled',
+  } as Command
+}
 
 describe('SkillTool prompt', () => {
+  test('formats the same skill set deterministically', () => {
+    const forward = [command('zeta'), command('alpha'), command('middle')]
+    const reverse = [...forward].reverse()
+
+    expect(formatCommandsWithinBudget(forward)).toBe(
+      formatCommandsWithinBudget(reverse),
+    )
+  })
+
   test('keeps invocation boundaries without tutorial examples', async () => {
     const prompt = await getPrompt('/tmp')
 

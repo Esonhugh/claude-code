@@ -183,6 +183,7 @@ export async function getAnthropicClient({
       maxRetries,
       timeout: ARGS.timeout,
       defaultHeaders,
+      promptCacheKey: getSessionId(),
     })
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {

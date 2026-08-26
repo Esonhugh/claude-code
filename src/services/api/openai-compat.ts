@@ -238,11 +238,30 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
 // --- SSE streaming adapter ---
 
 function toAnthropicUsage(usage?: any) {
+  const inputTokensDetails = usage?.input_tokens_details
+  const hasOpenAIInputTokenDetails = inputTokensDetails != null
+  const cacheReadInputTokens = hasOpenAIInputTokenDetails
+    ? (inputTokensDetails.cached_tokens ?? 0)
+    : (usage?.cache_read_input_tokens ?? 0)
+  const cacheCreationInputTokens = hasOpenAIInputTokenDetails
+    ? (inputTokensDetails.cache_write_tokens ?? 0)
+    : (usage?.cache_creation_input_tokens ?? 0)
+  // OpenAI input_tokens includes cached/written tokens, while Anthropic usage
+  // represents these as separate additive buckets.
+  const inputTokens = hasOpenAIInputTokenDetails
+    ? Math.max(
+        0,
+        (usage?.input_tokens ?? 0) -
+          cacheReadInputTokens -
+          cacheCreationInputTokens,
+      )
+    : (usage?.input_tokens ?? 0)
+
   return {
-    input_tokens: usage?.input_tokens ?? 0,
+    input_tokens: inputTokens,
     output_tokens: usage?.output_tokens ?? 0,
-    cache_creation_input_tokens: usage?.cache_creation_input_tokens ?? 0,
-    cache_read_input_tokens: usage?.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens: cacheCreationInputTokens,
+    cache_read_input_tokens: cacheReadInputTokens,
     server_tool_use: {
       web_search_requests: usage?.server_tool_use?.web_search_requests ?? 0,
       web_fetch_requests: usage?.server_tool_use?.web_fetch_requests ?? 0,
@@ -398,6 +417,9 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
     ...(payload.tools && { tools: payload.tools }),
     ...(payload.tool_choice && { tool_choice: payload.tool_choice }),
     ...(payload.reasoning && { reasoning: payload.reasoning }),
+    ...(payload.prompt_cache_key && {
+      prompt_cache_key: payload.prompt_cache_key,
+    }),
   })
 
   try {
@@ -554,6 +576,7 @@ export function createOpenAICompatClient(options: {
   maxRetries: number
   timeout: number
   defaultHeaders?: Record<string, string>
+  promptCacheKey?: string
 }): Anthropic {
   const tunnel = isOpenAITunnelEnabled()
   const auth = loadOpenAIAuthInfo(options.apiKey)
@@ -562,6 +585,11 @@ export function createOpenAICompatClient(options: {
   const headers = tunnel
     ? { 'Content-Type': 'application/json' }
     : buildHeaders(auth)
+  if (options.promptCacheKey) {
+    headers['session-id'] = options.promptCacheKey
+    headers['thread-id'] = options.promptCacheKey
+    headers['x-client-request-id'] = options.promptCacheKey
+  }
 
   logForDebugging(
     `[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT}, tunnel=${tunnel})`,
@@ -603,6 +631,9 @@ export function createOpenAICompatClient(options: {
         ...(tools && { tools }),
         ...(toolChoice && { tool_choice: toolChoice }),
         ...(reasoning && { reasoning }),
+        ...(options.promptCacheKey && {
+          prompt_cache_key: options.promptCacheKey,
+        }),
       }
       logForDebugging(`[OpenAI Compat] Responses request model=${model}`)
 
