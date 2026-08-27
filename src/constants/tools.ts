@@ -28,12 +28,16 @@ import { ENTER_WORKTREE_TOOL_NAME } from '../tools/EnterWorktreeTool/constants.j
 import { EXIT_WORKTREE_TOOL_NAME } from '../tools/ExitWorktreeTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
 import { SET_GOAL_TOOL_NAME } from '../tools/SetGoalTool/constants.js'
+import { CLEAR_GOAL_TOOL_NAME } from '../tools/ClearGoalTool/constants.js'
 import {
   CRON_CREATE_TOOL_NAME,
   CRON_DELETE_TOOL_NAME,
   CRON_LIST_TOOL_NAME,
 } from '../tools/ScheduleCronTool/prompt.js'
-export const MAIN_THREAD_ONLY_TOOLS = new Set([SET_GOAL_TOOL_NAME])
+export const MAIN_THREAD_ONLY_TOOLS = new Set([
+  SET_GOAL_TOOL_NAME,
+  CLEAR_GOAL_TOOL_NAME,
+])
 
 export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   ...MAIN_THREAD_ONLY_TOOLS,

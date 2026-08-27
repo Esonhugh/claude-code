@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { getSessionId } from '../bootstrap/state.js'
 import type { Command } from '../commands.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
-import { goalStopHook, removeGoalStopHook } from './goal/hooks.js'
+import { clearGoal, goalStopHook } from './goal/hooks.js'
 import { getGoalModePrompt } from './goal/prompt.js'
 import {
   createActiveGoalStatus,
@@ -87,22 +87,15 @@ const goal: Command = {
     }
 
     if (isGoalClear(args)) {
-      let clearedPrompt: string | null = null
-      context.setAppState(prev => {
-        if (!prev.goalStatus.active) return prev
-        clearedPrompt = prev.goalStatus.prompt
-        const activeGoal = prev.goalStatus
-        lastGoalCommandAttachment = createGoalStatusAttachment(
-          activeGoal,
-          'cleared',
-        )
-        return { ...prev, goalStatus: { active: false } }
-      })
-      removeGoalStopHook(context.setAppState, getSessionId())
+      const { clearedGoal, attachment } = clearGoal(
+        context.setAppState,
+        getSessionId(),
+      )
+      lastGoalCommandAttachment = attachment ?? null
       return [
         {
           type: 'text',
-          text: clearedPrompt ? `Goal cleared: ${clearedPrompt}` : 'No goal set',
+          text: clearedGoal ? `Goal cleared: ${clearedGoal}` : 'No goal set',
         },
       ]
     }

@@ -70,6 +70,25 @@ export function removeGoalStopHook(
   removeSessionHook(setAppState, sessionId, 'Stop', goalStopHook)
 }
 
+export function clearGoal(
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+  sessionId: string,
+): {
+  clearedGoal?: string
+  attachment?: GoalStatusAttachment
+} {
+  let clearedGoal: string | undefined
+  let attachment: GoalStatusAttachment | undefined
+  setAppState(prev => {
+    if (!prev.goalStatus.active) return prev
+    clearedGoal = prev.goalStatus.prompt
+    attachment = createGoalStatusAttachment(prev.goalStatus, 'cleared')
+    return { ...prev, goalStatus: { active: false } }
+  })
+  removeGoalStopHook(setAppState, sessionId)
+  return { clearedGoal, attachment }
+}
+
 export function registerGoalStopHook(params: GoalHookParams): void {
   removeGoalStopHook(params.setAppState, params.sessionId)
   addSessionHook(
