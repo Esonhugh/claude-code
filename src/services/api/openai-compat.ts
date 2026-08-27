@@ -335,6 +335,10 @@ async function fetchResponsesWithRetry(
 async function connectSSE(url: string, headers: Record<string, string>, payload: any, maxRetries: number): Promise<ResponsesSSEStream> {
   const stream = new ResponsesSSEStream()
   let blockIndex = 0
+  let hasThinking = false
+  let reasoningText = ''
+  let reasoningTextSource: 'summary' | 'raw' | null = null
+  let reasoningTextKey: string | null = null
   let hasText = false
   let currentToolCallId: string | null = null
   let currentToolArguments = ''
@@ -374,16 +378,29 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
     )
   }
 
+  const closeCurrentBlock = () => {
+    if (!hasThinking && !hasText && !currentToolCallId && !currentWebSearchCallId) {
+      return
+    }
+    stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+    blockIndex++
+    hasThinking = false
+    reasoningText = ''
+    reasoningTextSource = null
+    reasoningTextKey = null
+    hasText = false
+    currentToolCallId = null
+    currentWebSearchCallId = null
+    currentToolArguments = ''
+  }
+
   const finishResponse = (rawUsage: any, stopReason: string) => {
     const webSearchError = incompleteWebSearchError()
     if (webSearchError) {
       stream.fail(webSearchError)
       return
     }
-    if (hasText || currentToolCallId || currentWebSearchCallId) {
-      stream.push({ type: 'content_block_stop', index: blockIndex } as any)
-      blockIndex++
-    }
+    closeCurrentBlock()
     for (const toolUseId of webSearchCallIds) {
       stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'web_search_tool_result', tool_use_id: toolUseId, content: webSearchCitations.get(toolUseId) ?? [] } } as any)
       stream.push({ type: 'content_block_stop', index: blockIndex } as any)
@@ -451,23 +468,94 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
             try { event = JSON.parse(data) } catch { continue }
             const type = event.type as string
 
-            if (type === 'response.output_text.delta') {
-              if (currentWebSearchCallId) {
-                stream.push({ type: 'content_block_stop', index: blockIndex } as any)
-                blockIndex++
-                currentWebSearchCallId = null
+            if (
+              type === 'response.reasoning_summary_text.delta' ||
+              type === 'response.reasoning_text.delta'
+            ) {
+              const source = type === 'response.reasoning_text.delta'
+                ? 'raw'
+                : 'summary'
+              const key = `${source}:${event.item_id ?? ''}:${event.summary_index ?? event.content_index ?? ''}`
+              const delta = typeof event.delta === 'string' ? event.delta : ''
+              if (!hasThinking && (hasText || currentToolCallId || currentWebSearchCallId)) {
+                closeCurrentBlock()
+              } else if (reasoningTextKey && reasoningTextKey !== key) {
+                closeCurrentBlock()
+              }
+              if (!hasThinking) {
+                hasThinking = true
+                reasoningTextSource = source
+                reasoningTextKey = key
+                stream.push({
+                  type: 'content_block_start',
+                  index: blockIndex,
+                  content_block: { type: 'thinking', thinking: '', signature: '' },
+                } as any)
+              }
+              reasoningText += delta
+              if (delta) {
+                stream.push({
+                  type: 'content_block_delta',
+                  index: blockIndex,
+                  delta: { type: 'thinking_delta', thinking: delta },
+                } as any)
+              }
+            } else if (
+              type === 'response.reasoning_summary_text.done' ||
+              type === 'response.reasoning_text.done'
+            ) {
+              const source = type === 'response.reasoning_text.done'
+                ? 'raw'
+                : 'summary'
+              const key = `${source}:${event.item_id ?? ''}:${event.summary_index ?? event.content_index ?? ''}`
+              const text = typeof event.text === 'string' ? event.text : ''
+              if (reasoningTextKey && reasoningTextKey !== key) {
+                closeCurrentBlock()
+              }
+              if (!reasoningTextSource && text) {
+                if (hasText || currentToolCallId || currentWebSearchCallId) {
+                  closeCurrentBlock()
+                }
+                hasThinking = true
+                reasoningTextSource = source
+                reasoningTextKey = key
+                stream.push({
+                  type: 'content_block_start',
+                  index: blockIndex,
+                  content_block: {
+                    type: 'thinking',
+                    thinking: '',
+                    signature: '',
+                  },
+                } as any)
+              }
+              if (reasoningTextSource === source && text !== reasoningText) {
+                const remainingText = text.startsWith(reasoningText)
+                  ? text.slice(reasoningText.length)
+                  : text
+                if (remainingText) {
+                  stream.push({
+                    type: 'content_block_delta',
+                    index: blockIndex,
+                    delta: {
+                      type: 'thinking_delta',
+                      thinking: remainingText,
+                    },
+                  } as any)
+                  reasoningText += remainingText
+                }
+              }
+              if (hasThinking) {
+                closeCurrentBlock()
+              }
+            } else if (type === 'response.output_text.delta') {
+              if (hasThinking || currentToolCallId || currentWebSearchCallId) {
+                closeCurrentBlock()
               }
               if (!hasText) { hasText = true; stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } } as any) }
               stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: event.delta } } as any)
             } else if (type === 'response.output_item.added' && event.item?.type === 'web_search_call') {
-              if (hasText || currentToolCallId || currentWebSearchCallId) {
-                stream.push({ type: 'content_block_stop', index: blockIndex } as any)
-                blockIndex++
-                hasText = false
-                currentToolCallId = null
-                currentWebSearchCallId = null
-                currentToolArguments = ''
-              }
+              closeCurrentBlock()
               currentWebSearchCallId = event.item.id
               lastWebSearchCallId = event.item.id
               webSearchCallIds.add(event.item.id)
@@ -478,18 +566,25 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
               stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'server_tool_use', id: event.item.id, name: 'web_search', input: '' } } as any)
               emitWebSearchInput(event.item.id, event.item.action)
             } else if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
-              if (hasText) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++; hasText = false }
-              if (currentToolCallId) { stream.push({ type: 'content_block_stop', index: blockIndex } as any); blockIndex++; currentToolArguments = '' }
+              closeCurrentBlock()
               currentToolCallId = event.item.id
               const toolId = event.item.call_id || event.item.id
               stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: toolId, name: event.item.name || '', input: '' } } as any)
             } else if (type === 'response.function_call_arguments.delta') {
-              if (!currentToolCallId) { currentToolCallId = event.item_id; stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: event.item_id, name: '', input: '' } } as any) }
+              if (!currentToolCallId) {
+                closeCurrentBlock()
+                currentToolCallId = event.item_id
+                stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: event.item_id, name: '', input: '' } } as any)
+              }
               currentToolArguments += event.delta || ''
               stream.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: event.delta } } as any)
             } else if (type === 'response.function_call_arguments.done') {
               const doneArguments = event.arguments || ''
-              if (!currentToolCallId) { currentToolCallId = event.item_id; stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: event.call_id || event.item_id, name: event.name || '', input: '' } } as any) }
+              if (!currentToolCallId) {
+                closeCurrentBlock()
+                currentToolCallId = event.item_id
+                stream.push({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: event.call_id || event.item_id, name: event.name || '', input: '' } } as any)
+              }
               if (doneArguments && doneArguments !== currentToolArguments) {
                 const remainingArguments = doneArguments.startsWith(currentToolArguments)
                   ? doneArguments.slice(currentToolArguments.length)
@@ -509,9 +604,7 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
                 }
                 emitWebSearchInput(toolUseId, event.item?.action)
                 if (currentWebSearchCallId === toolUseId) {
-                  stream.push({ type: 'content_block_stop', index: blockIndex } as any)
-                  blockIndex++
-                  currentWebSearchCallId = null
+                  closeCurrentBlock()
                 }
               }
             } else if (type === 'response.output_text.annotation.added' && event.annotation?.type === 'url_citation') {
@@ -541,8 +634,17 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
                 currentToolCallId ? 'tool_use' : 'end_turn',
               )
               return
-            } else if (type === 'response.failed' || type === 'error') {
-              const msg = event.response?.error?.message || event.error?.message || event.message || 'API error'
+            } else if (
+              type === 'response.incomplete' ||
+              type === 'response.failed' ||
+              type === 'error'
+            ) {
+              const msg =
+                event.response?.incomplete_details?.reason ||
+                event.response?.error?.message ||
+                event.error?.message ||
+                event.message ||
+                'API error'
               stream.fail(new Error(msg))
               return
             }
@@ -662,6 +764,11 @@ export function createOpenAICompatClient(options: {
             const block = blocks.get(e.index)
             if (e.delta?.type === 'text_delta' && block?.type === 'text') {
               block.text += e.delta.text
+            } else if (
+              e.delta?.type === 'thinking_delta' &&
+              block?.type === 'thinking'
+            ) {
+              block.thinking += e.delta.thinking
             } else if (e.delta?.type === 'input_json_delta') {
               inputJson.set(
                 e.index,

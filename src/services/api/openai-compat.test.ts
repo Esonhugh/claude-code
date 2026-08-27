@@ -358,6 +358,18 @@ try {
 
   assert.deepEqual(requests[0]!.body.reasoning, { effort: 'medium' })
 
+  for (const effort of ['low', 'high', 'xhigh'] as const) {
+    requests.length = 0
+    await rootURLClient.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'hi' }],
+      output_config: { effort },
+    } as any)
+
+    assert.deepEqual(requests[0]!.body.reasoning, { effort })
+  }
+
   requests.length = 0
   await rootURLClient.beta.messages.create({
     model: 'gpt-5.5',
@@ -873,6 +885,256 @@ try {
         event.delta.partial_json === '{"command":"pwd"}',
     ),
   )
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      [
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"Inspect the request. "}',
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"Use the Bash tool."}',
+        'data: {"type":"response.reasoning_summary_text.done","text":"Inspect the request. Use the Bash tool."}',
+        'data: {"type":"response.output_text.delta","delta":"Running it now."}',
+        'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_reasoning_1","call_id":"fc_reasoning_1","name":"Bash"}}',
+        'data: {"type":"response.function_call_arguments.done","item_id":"fc_reasoning_1","arguments":"{\\"command\\":\\"pwd\\"}"}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":4}}}',
+        '',
+      ].join('\n\n'),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const { data: reasoningStream } = await rootURLClient.beta.messages
+    .create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'inspect and run pwd' }],
+      stream: true,
+    } as any)
+    .withResponse()
+
+  const reasoningEvents: any[] = []
+  for await (const event of reasoningStream as unknown as AsyncIterable<any>) {
+    reasoningEvents.push(event)
+  }
+
+  assert.deepEqual(
+    reasoningEvents
+      .filter(event => event.type === 'content_block_start')
+      .map(event => event.content_block.type),
+    ['thinking', 'text', 'tool_use'],
+  )
+  assert.deepEqual(
+    reasoningEvents
+      .filter(
+        event =>
+          event.type === 'content_block_delta' &&
+          event.delta?.type === 'thinking_delta',
+      )
+      .map(event => event.delta.thinking),
+    ['Inspect the request. ', 'Use the Bash tool.'],
+  )
+
+  const nonStreamingReasoning = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'inspect and run pwd' }],
+  } as any)
+  assert.deepEqual(nonStreamingReasoning.content, [
+    {
+      type: 'thinking',
+      thinking: 'Inspect the request. Use the Bash tool.',
+      signature: '',
+    },
+    { type: 'text', text: 'Running it now.' },
+    {
+      type: 'tool_use',
+      id: 'fc_reasoning_1',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    },
+  ])
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      [
+        'data: {"type":"response.reasoning_text.delta","delta":"Raw visible reasoning."}',
+        'data: {"type":"response.reasoning_text.done","text":"Raw visible reasoning."}',
+        'data: {"type":"response.output_text.delta","delta":"Done."}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+        '',
+      ].join('\n\n'),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const rawReasoningResponse = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'show reasoning' }],
+  } as any)
+  assert.deepEqual(rawReasoningResponse.content, [
+    {
+      type: 'thinking',
+      thinking: 'Raw visible reasoning.',
+      signature: '',
+    },
+    { type: 'text', text: 'Done.' },
+  ])
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      [
+        'data: {"type":"response.reasoning_summary_text.done","text":"Done-only visible reasoning."}',
+        'data: {"type":"response.output_text.delta","delta":"Done."}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+        '',
+      ].join('\n\n'),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const doneOnlyReasoningResponse = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'show done-only reasoning' }],
+  } as any)
+  assert.deepEqual(doneOnlyReasoningResponse.content, [
+    {
+      type: 'thinking',
+      thinking: 'Done-only visible reasoning.',
+      signature: '',
+    },
+    { type: 'text', text: 'Done.' },
+  ])
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      [
+        'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_multi","summary_index":0,"delta":"First part."}',
+        'data: {"type":"response.reasoning_summary_text.done","item_id":"rs_multi","summary_index":0,"text":"First part."}',
+        'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_multi","summary_index":1,"delta":"Second part."}',
+        'data: {"type":"response.reasoning_summary_text.done","item_id":"rs_multi","summary_index":1,"text":"Second part."}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+        '',
+      ].join('\n\n'),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const multiPartReasoningResponse = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'show multipart reasoning' }],
+  } as any)
+  assert.deepEqual(multiPartReasoningResponse.content, [
+    {
+      type: 'thinking',
+      thinking: 'First part.',
+      signature: '',
+    },
+    {
+      type: 'thinking',
+      thinking: 'Second part.',
+      signature: '',
+    },
+  ])
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      [
+        'data: {"type":"response.output_text.delta","delta":"Before reasoning."}',
+        'data: {"type":"response.reasoning_summary_text.done","text":"Then reason."}',
+        'data: {"type":"response.function_call_arguments.done","item_id":"fc_fallback","call_id":"fc_fallback","name":"Bash","arguments":"{\\"command\\":\\"pwd\\"}"}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":3}}}',
+        '',
+      ].join('\n\n'),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const reorderedReasoningResponse = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'answer, reason, and run pwd' }],
+  } as any)
+  assert.deepEqual(reorderedReasoningResponse.content, [
+    { type: 'text', text: 'Before reasoning.' },
+    {
+      type: 'thinking',
+      thinking: 'Then reason.',
+      signature: '',
+    },
+    {
+      type: 'tool_use',
+      id: 'fc_fallback',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    },
+  ])
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      [
+        'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}',
+        '',
+      ].join('\n\n'),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  await assert.rejects(
+    rootURLClient.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'return a long response' }],
+    } as any),
+    /max_output_tokens/,
+  )
+
+  for (const [event, errorMessage] of [
+    [
+      '{"type":"response.failed","response":{"error":{"message":"model rejected request"}}}',
+      'model rejected request',
+    ],
+    [
+      '{"type":"error","error":{"message":"gateway unavailable"}}',
+      'gateway unavailable',
+    ],
+    ['{"type":"error"}', 'API error'],
+  ] as const) {
+    globalThis.fetch = (async () => {
+      return new Response(`data: ${event}\n\n`, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    }) as unknown as typeof fetch
+
+    await assert.rejects(
+      rootURLClient.beta.messages.create({
+        model: 'gpt-5.5',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'return an error' }],
+      } as any),
+      new RegExp(errorMessage),
+    )
+  }
 } finally {
   globalThis.fetch = originalFetch
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
