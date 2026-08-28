@@ -106,6 +106,8 @@ let snapshot:
       streamingToolUses: StreamingToolUse[]
       inProgressToolUseIDs: Set<string>
       permissionQueueSize: number
+      responseLength: number
+      streamingText: string | null
       remoteBackgroundTaskCount: number
       remoteTaskIds: string[]
       remoteTaskSummary: string | undefined
@@ -128,6 +130,8 @@ function Harness(): null {
   const [permissionQueue, setToolUseConfirmQueue] = useState<
     import('../components/permissions/PermissionRequest.js').ToolUseConfirm[]
   >([])
+  const [responseLength, setResponseLength] = useState(0)
+  const [streamingText, setStreamingText] = useState<string | null>(null)
   const [streamMode, setStreamMode] = useState<SpinnerMode>('responding')
   const [streamingToolUses, setStreamingToolUses] = useState<
     StreamingToolUse[]
@@ -145,6 +149,8 @@ function Harness(): null {
     setStreamMode,
     setStreamingToolUses,
     setInProgressToolUseIDs,
+    setResponseLength,
+    onStreamingText: setStreamingText,
   })
   snapshot = {
     messages,
@@ -156,6 +162,8 @@ function Harness(): null {
     streamingToolUses,
     inProgressToolUseIDs,
     permissionQueueSize: permissionQueue.length,
+    responseLength,
+    streamingText,
     remoteBackgroundTaskCount: appState.remoteBackgroundTaskCount,
     remoteTaskIds: Object.keys(appState.remoteTasks),
     remoteTaskSummary: appState.remoteTasks['task-1']?.summary,
@@ -229,6 +237,37 @@ emit({
   event: {
     type: 'content_block_start',
     index: 0,
+    content_block: { type: 'text', text: '' },
+  },
+  parent_tool_use_id: null,
+  uuid: '34343434-3434-4434-8434-343434343434',
+  session_id: remoteSessionId,
+})
+for (const [text, uuid] of [
+  ['streamed ', '45454545-4545-4545-8545-454545454545'],
+  ['text\n', '46464646-4646-4646-8646-464646464646'],
+] as const) {
+  emit({
+    type: 'stream_event',
+    event: {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text },
+    },
+    parent_tool_use_id: null,
+    uuid,
+    session_id: remoteSessionId,
+  })
+}
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(snapshot.responseLength, 'streamed text\n'.length)
+assert.equal(snapshot.streamingText, 'streamed text\n')
+
+emit({
+  type: 'stream_event',
+  event: {
+    type: 'content_block_start',
+    index: 0,
     content_block: {
       type: 'tool_use',
       id: 'tool-1',
@@ -257,6 +296,7 @@ emit({
 })
 await new Promise(resolve => setImmediate(resolve))
 assert.equal(snapshot.streamingToolUses.length, 0)
+assert.equal(snapshot.streamingText, null)
 assert.equal(snapshot.inProgressToolUseIDs.has('tool-1'), true)
 
 emit({
@@ -297,6 +337,28 @@ for (const [taskId, uuid] of [
     session_id: remoteSessionId,
   })
 }
+await new Promise(resolve => setImmediate(resolve))
+assert.deepEqual(snapshot.remoteTaskIds, ['task-1', 'task-2'])
+assert.equal(snapshot.remoteBackgroundTaskCount, 2)
+
+emit({
+  type: 'system',
+  subtype: 'task_started',
+  task_id: 'task-1',
+  description: 'task-1',
+  uuid: '89898989-8989-4989-8989-898989898989',
+  session_id: remoteSessionId,
+})
+emit({
+  type: 'system',
+  subtype: 'task_notification',
+  task_id: 'unknown-task',
+  status: 'completed',
+  output_file: '/tmp/unknown-task',
+  summary: 'done',
+  uuid: '90909090-9090-4090-8090-909090909090',
+  session_id: remoteSessionId,
+})
 await new Promise(resolve => setImmediate(resolve))
 assert.deepEqual(snapshot.remoteTaskIds, ['task-1', 'task-2'])
 assert.equal(snapshot.remoteBackgroundTaskCount, 2)

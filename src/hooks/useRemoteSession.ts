@@ -53,6 +53,8 @@ type UseRemoteSessionProps = {
   >
   setStreamMode?: React.Dispatch<React.SetStateAction<SpinnerMode>>
   setInProgressToolUseIDs?: (f: (prev: Set<string>) => Set<string>) => void
+  setResponseLength?: (f: (prev: number) => number) => void
+  onStreamingText?: (f: (current: string | null) => string | null) => void
 }
 
 type UseRemoteSessionResult = {
@@ -84,6 +86,8 @@ export function useRemoteSession({
   setStreamingToolUses,
   setStreamMode,
   setInProgressToolUseIDs,
+  setResponseLength,
+  onStreamingText,
 }: UseRemoteSessionProps): UseRemoteSessionResult {
   const isRemoteMode = !!config
 
@@ -114,11 +118,14 @@ export function useRemoteSession({
   const clearToolRuntimeState = useCallback(() => {
     setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
     setInProgressToolUseIDs?.(prev => (prev.size > 0 ? new Set() : prev))
-  }, [setInProgressToolUseIDs, setStreamingToolUses])
+    onStreamingText?.(() => null)
+  }, [onStreamingText, setInProgressToolUseIDs, setStreamingToolUses])
 
   const clearRemoteRuntimeState = useCallback(() => {
-    runningTaskIdsRef.current.clear()
-    writeTaskCount()
+    if (runningTaskIdsRef.current.size > 0) {
+      runningTaskIdsRef.current.clear()
+      writeTaskCount()
+    }
     clearToolRuntimeState()
   }, [clearToolRuntimeState, writeTaskCount])
 
@@ -222,13 +229,15 @@ export function useRemoteSession({
         // Return early — these are status signals, not renderable messages.
         if (sdkMessage.type === 'system') {
           if (sdkMessage.subtype === 'task_started') {
+            const previousSize = runningTaskIdsRef.current.size
             runningTaskIdsRef.current.add(sdkMessage.task_id)
-            writeTaskCount()
+            if (runningTaskIdsRef.current.size !== previousSize) writeTaskCount()
             return
           }
           if (sdkMessage.subtype === 'task_notification') {
-            runningTaskIdsRef.current.delete(sdkMessage.task_id)
-            writeTaskCount()
+            if (runningTaskIdsRef.current.delete(sdkMessage.task_id)) {
+              writeTaskCount()
+            }
             return
           }
           if (sdkMessage.subtype === 'task_progress') {
@@ -301,6 +310,7 @@ export function useRemoteSession({
           // When we receive a complete message, clear streaming tool uses
           // since the complete message replaces the partial streaming state
           setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
+          onStreamingText?.(() => null)
 
           // Mark tool_use blocks as in-progress so the UI shows the correct
           // spinner state instead of "Waiting…" (queued). In local sessions,
@@ -334,11 +344,14 @@ export function useRemoteSession({
             handleMessageFromStream(
               converted.event,
               message => setMessages(prev => [...prev, message]),
-              () => {
-                // No-op for response length - remote sessions don't track this
-              },
+              newContent =>
+                setResponseLength?.(length => length + newContent.length),
               setStreamMode,
               setStreamingToolUses,
+              undefined,
+              undefined,
+              undefined,
+              onStreamingText,
             )
           } else {
             logForDebugging(
@@ -495,6 +508,8 @@ export function useRemoteSession({
     setStreamingToolUses,
     setStreamMode,
     setInProgressToolUseIDs,
+    setResponseLength,
+    onStreamingText,
     setConnStatus,
     clearRemoteRuntimeState,
   ])

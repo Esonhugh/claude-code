@@ -2009,55 +2009,6 @@ export function REPL({
 
   const hasInterruptibleToolInProgressRef = useRef(false)
 
-  // Remote session hook - manages WebSocket connection and message handling for --remote mode
-  const remoteSession = useRemoteSession({
-    config: remoteSessionConfig,
-    setMessages,
-    setIsLoading: setIsExternalLoading,
-    onInit: handleRemoteInit,
-    setToolUseConfirmQueue,
-    tools: combinedInitialTools,
-    setStreamingToolUses,
-    setStreamMode,
-    setInProgressToolUseIDs,
-  })
-
-  // Direct connect hook - manages WebSocket to a claude server for `claude connect` mode
-  const directConnect = useDirectConnect({
-    config: directConnectConfig,
-    setMessages,
-    setIsLoading: setIsExternalLoading,
-    setToolUseConfirmQueue,
-    tools: combinedInitialTools,
-  })
-
-  // SSH session hook - manages ssh child process for `claude ssh` mode.
-  // Same callback shape as useDirectConnect; only the transport under the
-  // hood differs (ChildProcess stdin/stdout vs WebSocket).
-  const sshRemote = useSSHSession({
-    session: sshSession,
-    setMessages,
-    setIsLoading: setIsExternalLoading,
-    setAppState,
-    setToolUseConfirmQueue,
-    tools: [],
-    setStreamingToolUses,
-    setStreamMode,
-    setInProgressToolUseIDs,
-  })
-  useEffect(() => {
-    if (sshRemote.isRemoteMode) {
-      logForDebugging('[REPL] disabling local MCP manager for SSH session')
-    }
-  }, [sshRemote.isRemoteMode])
-
-  // Use whichever remote mode is active
-  const activeRemote = sshRemote.isRemoteMode
-    ? sshRemote
-    : directConnect.isRemoteMode
-      ? directConnect
-      : remoteSession
-
   const [pastedContents, setPastedContents] = useState<
     Record<number, PastedContent>
   >({})
@@ -2105,11 +2056,8 @@ export function REPL({
     useAppState(s => s.settings.prefersReducedMotion) ?? false
   const showStreamingText = !reducedMotion && !hasCursorUpViewportYankBug()
   const onStreamingText = useCallback(
-    (f: (current: string | null) => string | null) => {
-      if (!showStreamingText) return
-      setStreamingText(f)
-    },
-    [showStreamingText],
+    (f: (current: string | null) => string | null) => setStreamingText(f),
+    [],
   )
 
   // Hide the in-progress source line so text streams line-by-line, not
@@ -2120,6 +2068,56 @@ export function REPL({
     streamingText && showStreamingText
       ? streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) || null
       : null
+
+  // Remote session hook - manages WebSocket connection and message handling for --remote mode
+  const remoteSession = useRemoteSession({
+    config: remoteSessionConfig,
+    setMessages,
+    setIsLoading: setIsExternalLoading,
+    onInit: handleRemoteInit,
+    setToolUseConfirmQueue,
+    tools: combinedInitialTools,
+    setStreamingToolUses,
+    setStreamMode,
+    setInProgressToolUseIDs,
+    setResponseLength,
+    onStreamingText,
+  })
+
+  // Direct connect hook - manages WebSocket to a claude server for `claude connect` mode
+  const directConnect = useDirectConnect({
+    config: directConnectConfig,
+    setMessages,
+    setIsLoading: setIsExternalLoading,
+    setToolUseConfirmQueue,
+    tools: combinedInitialTools,
+  })
+
+  // SSH session hook - manages ssh child process for `claude ssh` mode.
+  const sshRemote = useSSHSession({
+    session: sshSession,
+    setMessages,
+    setIsLoading: setIsExternalLoading,
+    setAppState,
+    setToolUseConfirmQueue,
+    tools: [],
+    setStreamingToolUses,
+    setStreamMode,
+    setInProgressToolUseIDs,
+    setResponseLength,
+    onStreamingText,
+  })
+  useEffect(() => {
+    if (sshRemote.isRemoteMode) {
+      logForDebugging('[REPL] disabling local MCP manager for SSH session')
+    }
+  }, [sshRemote.isRemoteMode])
+
+  const activeRemote = sshRemote.isRemoteMode
+    ? sshRemote
+    : directConnect.isRemoteMode
+      ? directConnect
+      : remoteSession
 
   const [lastQueryCompletionTime, setLastQueryCompletionTime] = useState(0)
   const [spinnerMessage, setSpinnerMessage] = useState<string | null>(null)

@@ -177,7 +177,13 @@ test('disables local project UI facilities for every remote execution transport'
     replSource,
     /isRemoteExecutionSession \? \[\] : \(plugins\.commands as Command\[\]\)/,
   )
-  assert.match(replSource, /tools: \[\],\s+\}\)\s+useEffect/)
+  const sshSessionCall = replSource.match(
+    /useSSHSession\(\{[\s\S]*?\n  \}\)/,
+  )?.[0]
+  assert.ok(sshSessionCall)
+  assert.match(sshSessionCall, /tools: \[\],/)
+  assert.match(sshSessionCall, /setResponseLength,/)
+  assert.match(sshSessionCall, /onStreamingText,/)
   assert.match(
     replSource,
     /const computeTools = \(\) => \{\s+if \(isRemoteExecutionSession\) return \[\]/,

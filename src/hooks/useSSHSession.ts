@@ -9,6 +9,7 @@
  * handed in; useDirectConnect creates its WebSocket inside the effect.
  */
 
+import isEqual from 'lodash-es/isEqual.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyGoalStatusAttachment } from '../commands/goal/restore.js'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
@@ -88,6 +89,8 @@ type UseSSHSessionProps = {
   >
   setStreamMode?: React.Dispatch<React.SetStateAction<SpinnerMode>>
   setInProgressToolUseIDs?: (f: (prev: Set<string>) => Set<string>) => void
+  setResponseLength?: (f: (prev: number) => number) => void
+  onStreamingText?: (f: (current: string | null) => string | null) => void
 }
 
 export function useSSHSession({
@@ -100,6 +103,8 @@ export function useSSHSession({
   setStreamingToolUses,
   setStreamMode,
   setInProgressToolUseIDs,
+  setResponseLength,
+  onStreamingText,
 }: UseSSHSessionProps): UseSSHSessionResult {
   const isRemoteMode = !!session
 
@@ -140,7 +145,8 @@ export function useSSHSession({
   const clearToolRuntimeState = useCallback(() => {
     setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
     setInProgressToolUseIDs?.(prev => (prev.size > 0 ? new Set() : prev))
-  }, [setInProgressToolUseIDs, setStreamingToolUses])
+    onStreamingText?.(() => null)
+  }, [onStreamingText, setInProgressToolUseIDs, setStreamingToolUses])
 
   const clearPermissionRequests = useCallback(() => {
     if (permissionToolUseIdsRef.current.size === 0) return
@@ -283,21 +289,21 @@ export function useSSHSession({
             updateRemoteTasks(tasks => {
               const current = tasks[sdkMessage.task_id]
               if (!current) return tasks
-              return {
-                ...tasks,
-                [sdkMessage.task_id]: {
-                  ...current,
-                  description: sdkMessage.description,
-                  usage: {
-                    totalTokens: sdkMessage.usage.total_tokens,
-                    toolUses: sdkMessage.usage.tool_uses,
-                    durationMs: sdkMessage.usage.duration_ms,
-                  },
-                  lastToolName: sdkMessage.last_tool_name,
-                  summary: sdkMessage.summary,
-                  workflowProgress: sdkMessage.workflow_progress,
+              const next = {
+                ...current,
+                description: sdkMessage.description,
+                usage: {
+                  totalTokens: sdkMessage.usage.total_tokens,
+                  toolUses: sdkMessage.usage.tool_uses,
+                  durationMs: sdkMessage.usage.duration_ms,
                 },
+                lastToolName: sdkMessage.last_tool_name,
+                summary: sdkMessage.summary,
+                workflowProgress: sdkMessage.workflow_progress,
               }
+              return isEqual(current, next)
+                ? tasks
+                : { ...tasks, [sdkMessage.task_id]: next }
             })
             return
           }
@@ -355,6 +361,7 @@ export function useSSHSession({
         })
         if (converted.type === 'message') {
           setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
+          onStreamingText?.(() => null)
 
           if (
             setInProgressToolUseIDs &&
@@ -384,9 +391,14 @@ export function useSSHSession({
             handleMessageFromStream(
               converted.event,
               message => setMessages(prev => [...prev, message]),
-              () => {},
+              newContent =>
+                setResponseLength?.(length => length + newContent.length),
               setStreamMode,
               setStreamingToolUses,
+              undefined,
+              undefined,
+              undefined,
+              onStreamingText,
             )
           }
         }
@@ -537,6 +549,8 @@ export function useSSHSession({
     setStreamingToolUses,
     setStreamMode,
     setInProgressToolUseIDs,
+    setResponseLength,
+    onStreamingText,
     clearToolRuntimeState,
     clearPermissionRequests,
     clearRemoteRuntimeState,
