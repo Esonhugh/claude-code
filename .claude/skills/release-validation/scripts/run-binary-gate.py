@@ -2,6 +2,7 @@
 import argparse
 import atexit
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -11,8 +12,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import urlsplit
+
+
+sys.dont_write_bytecode = True
 
 
 AUTH_ENV_VARS = (
@@ -31,7 +36,75 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
     'dist',
     'official-claude',
 )
+MOCK_OPENAI_TARGETS = frozenset({
+    'effort-openai-responses-wire',
+    'openai-responses-usage-error',
+    'model-discovery-picker',
+    'model-discovery-empty-picker',
+    'model-internal-update-config-skill',
+    'prompt-modes-cache-prefix',
+})
+DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
+DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
+CUSTOM_SYSTEM_PROMPT_MARKER = 'RELEASE_CUSTOM_SYSTEM_PROMPT_MARKER'
+TITLE_GENERATION_INSTRUCTION = 'Generate a concise, sentence-case title'
+BUN_BUILD_TEMPORARY_PATTERN = re.compile(
+    r'^\.[0-9a-f]{16}-[0-9a-f]{8}\.bun-build$'
+)
+PYTHON_BYTECODE_PATTERN = re.compile(r'^.+\.py[cod]$')
 TARGET_PATH_RULES = (
+    ('effort-openai-responses-wire', (
+        'src/commands/effort/',
+        'src/components/EffortIndicator',
+        'src/components/ModelPicker',
+        'src/entrypoints/sdk/controlSchemas',
+        'src/entrypoints/sdk/coreSchemas',
+        'src/entrypoints/sdk/coreTypes.generated',
+        'src/entrypoints/sdk/effortSchemas',
+        'src/entrypoints/sdk/runtimeTypes',
+        'src/services/api/claude-effort',
+        'src/services/api/client',
+        'src/services/api/openai-compat',
+        'src/utils/effort',
+        'src/utils/settings/types',
+    )),
+    ('openai-responses-usage-error', (
+        'src/services/api/openai-compat',
+    )),
+    ('model-discovery-picker', (
+        'src/services/api/bootstrap',
+        'src/utils/config',
+        'src/utils/model/modelOptions',
+        'src/utils/model/openaiModelOptions',
+    )),
+    ('first-party-bootstrap-picker', (
+        'src/services/api/bootstrap',
+        'src/utils/config',
+        'src/utils/model/modelOptions',
+        'src/utils/model/openaiModelOptions',
+    )),
+    ('model-discovery-empty-picker', (
+        'src/utils/model/modelOptions',
+    )),
+    ('model-internal-update-config-skill', (
+        'src/skills/bundled/modelInternalSkills',
+        'src/skills/bundled/updateConfig',
+    )),
+    ('prompt-modes-cache-prefix', (
+        'src/QueryEngine',
+        'src/constants/prompts',
+        'src/screens/REPL.customPrompt',
+        'src/tools/BashTool/prompt',
+        'src/tools/SkillTool/prompt',
+        'src/tools/TaskCreateTool/prompt',
+        'src/utils/attachments',
+        'src/utils/claudemd',
+        'src/utils/messages',
+        'src/services/api/openai-compat',
+        'src/utils/promptLayers',
+        'src/utils/queryContext.customPrompt',
+        'src/utils/systemPrompt',
+    )),
     ('team-concurrency', (
         'src/utils/swarm/',
         'src/tools/shared/spawnMultiAgent',
@@ -73,18 +146,42 @@ ASSERTION_RUNTIME_STATES = {'running', 'done', 'failed', 'stopped'}
 def code_review_prompt(release_base):
     diff_range = f'{release_base}..HEAD'
     return (
-        f'/code-review high Read-only validation of {diff_range} in '
-        'src/tools/AgentTool, src/tools/WorkflowTool, src/tasks/LocalWorkflowTask, '
-        'and src/utils/sessionStorage.ts. Use exactly '
-        f'{diff_range} as the diff range. Do not widen the diff range, inspect '
-        'unrelated commits, modify files, commit, push, release, or create worktrees.'
+        f'/code-review high Read-only validation of {diff_range}. Use exactly '
+        f'{diff_range} as the diff range and review only files changed in that range. '
+        'Do not widen the diff range, run repository-wide searches, inspect unrelated '
+        'commits, modify files, commit, push, release, or create worktrees.'
     )
 
 
 def submitted_input_pending(pane):
-    plain = strip_ansi(pane)
-    prompt_lines = [line for line in plain.splitlines() if '❯' in line]
-    return bool(prompt_lines and prompt_lines[-1].split('❯', 1)[1].strip())
+    plain = strip_ansi(pane).replace('\u00a0', ' ')
+    lines = plain.splitlines()
+    prompt_indexes = [
+        index for index, line in enumerate(lines)
+        if '❯' in line
+    ]
+    if not prompt_indexes:
+        return False
+    prompt_index = prompt_indexes[-1]
+    prompt_text = lines[prompt_index].split('❯', 1)[1].strip()
+    if not prompt_text:
+        return False
+
+    def is_terminal_chrome(line):
+        compact = line.replace(' ', '')
+        return (
+            bool(compact) and set(compact) <= {'─'}
+        ) or 'bypass permissions on' in line or 'Debug mode' in line
+
+    trailing_content = [
+        line.strip()
+        for line in lines[prompt_index + 1:]
+        if line.strip()
+    ]
+    return not any(
+        not is_terminal_chrome(line)
+        for line in trailing_content
+    )
 
 
 
@@ -134,26 +231,26 @@ def resolve_release_base(repo, baseline, explicit_base_ref=None):
             'merge_base': resolved,
             'source': '--base-ref merge-base',
         }
-    upstream = baseline.get('upstream')
-    if not upstream:
+    release_base_commit = baseline.get('release_base_commit')
+    if not release_base_commit:
         raise RuntimeError(
-            'baseline did not record an upstream; pass --base-ref <commit-ish> '
-            'to validate committed release-range targets'
+            'baseline did not record immutable release_base_commit; '
+            'pass --base-ref <commit-ish> to validate committed release-range targets'
         )
     merge_base = command(
-        ['git', '-C', str(repo), 'merge-base', 'HEAD', upstream],
+        ['git', '-C', str(repo), 'merge-base', 'HEAD', release_base_commit],
         check=False,
     )
     resolved = merge_base.stdout.strip()
-    if merge_base.returncode != 0 or not resolved:
+    if merge_base.returncode != 0 or resolved != release_base_commit:
         raise RuntimeError(
-            'could not determine committed release base from baseline upstream '
-            f'{upstream!r}; pass --base-ref <commit-ish>'
+            'baseline release_base_commit is not an ancestor of HEAD; '
+            'pass --base-ref <commit-ish>'
         )
     return {
-        'base_ref': upstream,
-        'merge_base': resolved,
-        'source': 'baseline upstream merge-base',
+        'base_ref': baseline.get('release_base_ref', release_base_commit),
+        'merge_base': release_base_commit,
+        'source': 'baseline immutable release base commit',
     }
 
 
@@ -344,9 +441,14 @@ def git_paths_manifest(repo, *args, excluded_roots=()):
     )
     for relative in sorted(path for path in result.stdout.split('\0') if path):
         relative = relative.rstrip('/')
-        if any(
-            relative == root or relative.startswith(f'{root}/')
-            for root in excluded_roots
+        if (
+            BUN_BUILD_TEMPORARY_PATTERN.fullmatch(relative)
+            or '/__pycache__/' in f'/{relative}'
+            or PYTHON_BYTECODE_PATTERN.fullmatch(relative)
+            or any(
+                relative == root or relative.startswith(f'{root}/')
+                for root in excluded_roots
+            )
         ):
             continue
         file_path = repo / relative
@@ -467,6 +569,306 @@ def tool_occurrence_count(evidence):
     return sum(evidence['tool_use_counts'].values())
 
 
+def sse_completed(text, *, output_tokens=1, reasoning=None, usage=None):
+    events = []
+    if reasoning:
+        events.extend([
+            {
+                'type': 'response.reasoning_summary_text.delta',
+                'delta': reasoning,
+            },
+            {
+                'type': 'response.reasoning_summary_text.done',
+                'text': reasoning,
+            },
+        ])
+    if text:
+        events.append({
+            'type': 'response.output_text.delta',
+            'delta': text,
+        })
+    events.append({
+        'type': 'response.completed',
+        'response': {
+            'usage': usage if usage is not None else {
+                'input_tokens': 1,
+                'output_tokens': output_tokens,
+            },
+        },
+    })
+    return ''.join(
+        f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
+        for event in events
+    )
+
+
+def sse_incomplete(reason):
+    event = {
+        'type': 'response.incomplete',
+        'response': {
+            'incomplete_details': {'reason': reason},
+        },
+    }
+    return f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
+
+
+
+def sse_function_call(call_id, name, arguments):
+    events = [
+        {
+            'type': 'response.output_item.added',
+            'item': {
+                'type': 'function_call',
+                'id': call_id,
+                'call_id': call_id,
+                'name': name,
+            },
+        },
+        {
+            'type': 'response.function_call_arguments.done',
+            'item_id': call_id,
+            'call_id': call_id,
+            'name': name,
+            'arguments': json.dumps(arguments, separators=(',', ':')),
+        },
+        {
+            'type': 'response.completed',
+            'response': {
+                'usage': {'input_tokens': 1, 'output_tokens': 1},
+            },
+        },
+    ]
+    return ''.join(
+        f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
+        for event in events
+    )
+
+
+def is_main_response_request(request):
+    if (
+        request.get('method') != 'POST'
+        or urlsplit(request['path']).path != '/v1/responses'
+    ):
+        return False
+    body = request.get('body') if isinstance(request.get('body'), dict) else {}
+    return TITLE_GENERATION_INSTRUCTION not in str(body.get('instructions', ''))
+
+
+class MockOpenAIServer:
+    def __init__(self, run_dir, label):
+        self.run_dir = run_dir
+        self.label = label
+        self.lock = threading.Lock()
+        self.requests = []
+        self.server = None
+        self.thread = None
+
+    def start(self):
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+
+            def log_message(self, _format, *_args):
+                return
+
+            def send_json(self, value):
+                body = json.dumps(value, separators=(',', ':')).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                request = owner.record(self, None)
+                path = urlsplit(self.path).path
+                if path == '/api/claude_cli/bootstrap':
+                    request['response_kind'] = 'bootstrap'
+                    owner.flush()
+                    self.send_json({
+                        'client_data': {
+                            'release_validation': 'first-party-bootstrap',
+                        },
+                        'additional_model_options': [{
+                            'model': 'release-first-party-bootstrap-model',
+                            'name': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
+                            'description': 'Release validation bootstrap model',
+                        }],
+                    })
+                    return
+                if path == '/v1/models':
+                    request['response_kind'] = 'models'
+                    owner.flush()
+                    if owner.label == 'model-discovery-empty-picker':
+                        self.send_json({'data': []})
+                    else:
+                        self.send_json({
+                            'data': [{
+                                'id': 'gpt-release-discovered',
+                                'display_name': 'GPT Release Discovered',
+                                'description': 'Release validation model',
+                            }],
+                        })
+                    return
+                request['response_kind'] = 'not-found'
+                owner.flush()
+                self.send_error(404)
+
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length', '0'))
+                raw = self.rfile.read(length)
+                try:
+                    body = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    body = {'_invalid_json': raw.decode(errors='replace')}
+                request = owner.record(self, body)
+                if urlsplit(self.path).path != '/v1/responses':
+                    self.send_error(404)
+                    return
+                response_kind, response = owner.response_for(body)
+                request['response_kind'] = response_kind
+                owner.flush()
+                encoded = response.encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Content-Length', str(len(encoded)))
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(encoded)
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            name=f'release-mock-openai-{self.label}',
+            daemon=True,
+        )
+        self.thread.start()
+        self.flush()
+        return f'http://127.0.0.1:{self.server.server_address[1]}'
+
+    def record(self, request, body):
+        headers = {
+            name.lower(): value
+            for name, value in request.headers.items()
+            if name.lower() != 'authorization'
+        }
+        authorization = request.headers.get('Authorization')
+        item = {
+            'sequence': 0,
+            'method': request.command,
+            'path': request.path,
+            'headers': headers,
+            'authorization': {
+                'present': authorization is not None,
+                'matches_dummy': authorization == f'Bearer {DUMMY_OPENAI_API_KEY}',
+            },
+            'body': body,
+            'response_kind': None,
+        }
+        with self.lock:
+            item['sequence'] = len(self.requests) + 1
+            self.requests.append(item)
+            self.flush_locked()
+        return item
+
+    def flush_locked(self):
+        (self.run_dir / 'mock-openai-requests.json').write_text(
+            json.dumps(self.requests, indent=2) + '\n'
+        )
+
+    def flush(self):
+        with self.lock:
+            self.flush_locked()
+
+    def snapshot(self):
+        with self.lock:
+            return json.loads(json.dumps(self.requests))
+
+    def response_for(self, body):
+        current_request = {
+            'method': 'POST',
+            'path': '/v1/responses',
+            'body': body,
+        }
+        if not is_main_response_request(current_request):
+            return 'title', sse_completed('{"title":"Release validation"}')
+        main_responses = [
+            request
+            for request in self.snapshot()
+            if is_main_response_request(request)
+        ]
+        if (
+            self.label == 'model-internal-update-config-skill'
+            and is_main_response_request(current_request)
+            and len(main_responses) == 1
+        ):
+            return (
+                'skill-call',
+                sse_function_call(
+                    'fc_release_update_config',
+                    'Skill',
+                    {'skill': 'update-config', 'args': 'set model to opus'},
+                ),
+            )
+        if self.label == 'openai-responses-usage-error':
+            if len(main_responses) == 1:
+                return 'usage-completed', sse_completed(
+                    'RELEASE_OPENAI_USAGE_OK',
+                    usage={
+                        'input_tokens': 100,
+                        'output_tokens': 7,
+                        'input_tokens_details': {
+                            'cached_tokens': 60,
+                            'cache_write_tokens': 15,
+                        },
+                    },
+                )
+            return (
+                'response.incomplete',
+                sse_incomplete('RELEASE_OPENAI_INCOMPLETE_REASON'),
+            )
+        marker = {
+            'effort-openai-responses-wire': 'RELEASE_EFFORT_WIRE_OK',
+            'model-internal-update-config-skill': 'RELEASE_UPDATE_CONFIG_SKILL_OK',
+            'prompt-modes-cache-prefix': 'RELEASE_PROMPT_CACHE_OK',
+        }.get(self.label, 'RELEASE_MOCK_OK')
+        reasoning = (
+            'Release validation reasoning marker.'
+            if self.label == 'effort-openai-responses-wire'
+            else None
+        )
+        return 'completed', sse_completed(marker, reasoning=reasoning)
+
+    def stop(self):
+        if self.server is None:
+            return {'stopped': True, 'thread_alive': False}
+        self.server.shutdown()
+        self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+        alive = bool(self.thread and self.thread.is_alive())
+        self.flush()
+        return {'stopped': not alive, 'thread_alive': alive}
+
+
+def custom_prompt_instructions_stable(bodies):
+    if len(bodies) != 2:
+        return False
+    instructions = [body.get('instructions') for body in bodies]
+    return (
+        all(isinstance(value, str) for value in instructions)
+        and instructions[0] == instructions[1]
+        and all(
+            value.count(CUSTOM_SYSTEM_PROMPT_MARKER) == 1
+            for value in instructions
+        )
+    )
+
+
 def is_external_source_failure(message):
     normalized = message.casefold()
     if any(marker in normalized for marker in (
@@ -527,6 +929,7 @@ class BinaryGate:
         self.session_index = 0
         self.active_runs = {}
         self.auth_homes = set()
+        self.mock_servers = {}
         self.cleanup_started = False
         self.workflow_task_ids = set()
         self.workflow_run_ids = set()
@@ -696,7 +1099,6 @@ class BinaryGate:
             'path': str(self.binary),
             'exists': self.binary.is_file(),
             'size': self.binary.stat().st_size if self.binary.is_file() else None,
-            'mtime_ns': self.binary.stat().st_mtime_ns if self.binary.is_file() else None,
             'sha256': sha256(self.binary) if self.binary.is_file() else None,
         }
         workflow_runs_state = self.workflow_runs_state()
@@ -747,22 +1149,46 @@ class BinaryGate:
         )
         return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
 
-    def make_fixture(self, run_dir):
+    def make_fixture(self, run_dir, label):
         config = run_dir / 'config'
         home = Path(tempfile.mkdtemp(prefix='claude-release-home-'))
         self.auth_homes.add(home)
         config.mkdir(parents=True)
         (home / '.codex').mkdir(parents=True)
-        if not self.auth_source.is_file():
-            raise RuntimeError(f'authenticated Codex source unavailable: {self.auth_source}')
         auth_target = (home / '.codex/auth.json').resolve()
         if is_relative_to(auth_target, self.evidence_root):
             raise RuntimeError('auth target must be outside the evidence root')
         if is_relative_to(auth_target, self.repo):
             raise RuntimeError('auth target must be outside the repository')
-        shutil.copyfile(self.auth_source, auth_target)
+        if label in MOCK_OPENAI_TARGETS:
+            auth_target.write_text(json.dumps({
+                'OPENAI_API_KEY': DUMMY_OPENAI_API_KEY,
+            }) + '\n')
+            auth_strategy = (
+                'write a fixed dummy API key into a private temporary HOME; '
+                'the local mock server accepts no real credential'
+            )
+            auth_source = None
+        elif label == 'first-party-bootstrap-picker':
+            auth_target.write_text('{}\n')
+            auth_strategy = (
+                'write an empty Codex auth file and pass a fixed dummy Anthropic '
+                'key only to the isolated process'
+            )
+            auth_source = None
+        else:
+            if not self.auth_source.is_file():
+                raise RuntimeError(
+                    f'authenticated Codex source unavailable: {self.auth_source}'
+                )
+            shutil.copyfile(self.auth_source, auth_target)
+            auth_strategy = (
+                'copy account auth into a private temporary HOME outside '
+                'evidence; remove it after the gate'
+            )
+            auth_source = str(self.auth_source)
         auth_target.chmod(0o600)
-        (config / '.claude.json').write_text(json.dumps({
+        global_config = {
             'numStartups': 1,
             'installMethod': 'local',
             'hasCompletedOnboarding': True,
@@ -772,17 +1198,61 @@ class BinaryGate:
                     'hasCompletedProjectOnboarding': True,
                 },
             },
-        }, indent=2) + '\n')
-        (config / 'settings.json').write_text(json.dumps({
+        }
+        if label == 'first-party-bootstrap-picker':
+            bootstrap_options = [{
+                'value': 'release-first-party-bootstrap-model',
+                'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
+                'description': 'Release validation bootstrap model',
+            }]
+            global_config.update({
+                'customApiKeyResponses': {
+                    'approved': [DUMMY_ANTHROPIC_API_KEY[-20:]],
+                    'rejected': [],
+                },
+                'additionalModelOptionsCache': bootstrap_options,
+            })
+            (run_dir / 'bootstrap-cache-seed.json').write_text(
+                json.dumps({
+                    'network_fetch_boundary': '/api/claude_cli/bootstrap',
+                    'additionalModelOptionsCache': bootstrap_options,
+                    'additionalModelOptionsCacheKey': None,
+                }, indent=2) + '\n'
+            )
+        (config / '.claude.json').write_text(
+            json.dumps(global_config, indent=2) + '\n'
+        )
+        settings = {
             'enableWorkflows': True,
             'workflowKeywordTriggerEnabled': True,
             'skipWorkflowUsageWarning': True,
             'skipDangerousModePermissionPrompt': True,
-        }, indent=2) + '\n')
+        }
+        if label not in MOCK_OPENAI_TARGETS and label != 'first-party-bootstrap-picker':
+            settings.update({
+                'model': 'gpt-5.6-luna',
+                'effortLevel': 'xhigh',
+            })
+        if label == 'prompt-modes-cache-prefix':
+            settings.update({
+                'skipAutoPermissionPrompt': True,
+                'useAutoModeDuringPlan': True,
+            })
+        if label == 'model-discovery-empty-picker':
+            settings['model'] = 'gpt-empty-discovery-current'
+        if label == 'first-party-bootstrap-picker':
+            settings['model'] = 'release-first-party-bootstrap-model'
+        (config / 'settings.json').write_text(
+            json.dumps(settings, indent=2) + '\n'
+        )
         (run_dir / 'auth-source-metadata.json').write_text(json.dumps({
-            'source': str(self.auth_source),
-            'strategy': 'copy account auth into a private temporary HOME outside evidence; remove it after the gate',
-            'source_exists': self.auth_source.exists(),
+            'source': auth_source,
+            'strategy': auth_strategy,
+            'source_exists': self.auth_source.exists() if auth_source else None,
+            'uses_dummy_credential': (
+                label in MOCK_OPENAI_TARGETS
+                or label == 'first-party-bootstrap-picker'
+            ),
             'target_outside_evidence': not is_relative_to(
                 auth_target, self.evidence_root
             ),
@@ -833,10 +1303,15 @@ class BinaryGate:
         run_key = f'{self.stamp}-{label}-{self.pid}-{self.session_index}'
         run_dir = self.evidence_root / 'runs' / run_key
         run_dir.mkdir(parents=True)
-        config, home = self.make_fixture(run_dir)
+        config, home = self.make_fixture(run_dir, label)
+        mock_base_url = None
         session = f'cc-release-{label}-{self.stamp}-{self.pid}-{self.session_index}'[:90]
         if self.tmux('has-session', '-t', session).returncode == 0:
             raise RuntimeError(f'tmux session collision: {session}')
+        if label in MOCK_OPENAI_TARGETS:
+            mock_server = MockOpenAIServer(run_dir, label)
+            mock_base_url = mock_server.start()
+            self.mock_servers[run_key] = mock_server
         target = f'{session}:0.0'
         args = [
             'new-session', '-d', '-s', session, '-c', str(self.repo),
@@ -861,6 +1336,26 @@ class BinaryGate:
                 '-e',
                 'CC_VALIDATION_WORKFLOW_FAULT_INJECTION=service_unavailable:transient-worker:attempt:0',
             ])
+        if mock_base_url:
+            args.extend([
+                '-e', f'CC_VALIDATION_OPENAI_BASE_URL={mock_base_url}',
+            ])
+        if label == 'openai-responses-usage-error':
+            args.extend([
+                '-e', 'CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK=1',
+                '-e', 'CC_VALIDATION_MAX_RETRIES=0',
+            ])
+        if label == 'first-party-bootstrap-picker':
+            args.extend([
+                '-e', 'CC_VALIDATION_USE_OPENAI=0',
+                '-e', f'CC_VALIDATION_ANTHROPIC_API_KEY={DUMMY_ANTHROPIC_API_KEY}',
+                '-e', 'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC=1',
+            ])
+        if label == 'prompt-modes-cache-prefix':
+            args.extend([
+                '-e',
+                f'CC_VALIDATION_SYSTEM_PROMPT={CUSTOM_SYSTEM_PROMPT_MARKER}',
+            ])
         args.append(str(self.launcher))
         result = self.tmux(*args)
         (run_dir / 'tmux-start-stdout.txt').write_text(result.stdout)
@@ -877,8 +1372,26 @@ class BinaryGate:
             'launcher': str(self.launcher),
             'config': str(config),
             'home': str(home),
+            'mock_openai': {
+                'enabled': mock_base_url is not None,
+                'base_url': mock_base_url,
+                'request_evidence': (
+                    str(run_dir / 'mock-openai-requests.json')
+                    if mock_base_url else None
+                ),
+            },
             'terminal': {'cols': 200, 'rows': 60},
-            'flags': ['--dangerously-skip-permissions', '--debug', '--debug-file', '<evidence>/debug.log'],
+            'flags': [
+                '--dangerously-skip-permissions',
+                '--debug',
+                '--debug-file',
+                '<evidence>/debug.log',
+                *(
+                    ['--system-prompt', CUSTOM_SYSTEM_PROMPT_MARKER]
+                    if label == 'prompt-modes-cache-prefix'
+                    else []
+                ),
+            ],
             'inherited_auth_env': {
                 name: 'set' if os.environ.get(name) else 'unset'
                 for name in AUTH_ENV_VARS
@@ -970,12 +1483,19 @@ class BinaryGate:
             '\n'.join(remaining.values()) + ('\n' if remaining else '')
         )
         self.active_runs.pop(session, None)
+        mock_server = self.mock_servers.pop(run_dir.name, None)
+        mock_cleanup = (
+            mock_server.stop()
+            if mock_server is not None
+            else {'stopped': True, 'thread_alive': False}
+        )
         return {
             'kill_exit': close_result.returncode,
             'pane_pid': pane_pid,
             'process_remaining': bool(remaining),
             'remaining_processes': list(remaining.values()),
             'forced_termination': terminated,
+            'mock_server': mock_cleanup,
         }
 
     def close_active_runs(self):
@@ -986,6 +1506,18 @@ class BinaryGate:
                 'evidence_dir': str(run_dir),
                 **self.close(run_dir, session, target),
             })
+        for run_key, mock_server in list(self.mock_servers.items()):
+            self.mock_servers.pop(run_key, None)
+            cleanup.append({
+                'session': None,
+                'evidence_dir': str(self.evidence_root / 'runs' / run_key),
+                'kill_exit': 0,
+                'pane_pid': '',
+                'process_remaining': False,
+                'remaining_processes': [],
+                'forced_termination': [],
+                'mock_server': mock_server.stop(),
+            })
         return cleanup
 
     def cleanup_passed(self, cleanup):
@@ -993,6 +1525,8 @@ class BinaryGate:
             cleanup['kill_exit'] == 0
             and not cleanup['process_remaining']
             and not cleanup['forced_termination']
+            and cleanup.get('mock_server', {}).get('stopped', True)
+            and not cleanup.get('mock_server', {}).get('thread_alive', False)
         )
 
     def remove_auth_homes(self):
@@ -1125,7 +1659,7 @@ class BinaryGate:
         if result['validation_verdict'] != 'passed':
             raise RuntimeError(f'readiness smoke failed: {run_dir}')
 
-    def send(self, target, run_dir, text, filename):
+    def send(self, target, run_dir, text, filename, *, confirm_pending=True):
         input_path = run_dir / filename
         input_path.write_text(text + '\n')
         buffer_name = f'cc-release-{self.pid}-{self.session_index}'
@@ -1136,7 +1670,7 @@ class BinaryGate:
         submitted_path = run_dir / '02-submitted-pane.txt'
         submitted = self.capture(target, submitted_path)
         plain = strip_ansi(submitted)
-        if '[Pasted text' in plain or submitted_input_pending(submitted):
+        if confirm_pending and ('[Pasted text' in plain or submitted_input_pending(submitted)):
             self.tmux('send-keys', '-t', target, 'Enter', check=True)
             time.sleep(0.5)
             self.capture(target, submitted_path)
@@ -1931,6 +2465,7 @@ class BinaryGate:
             'Release gate read-only validation. Call the Agent tool directly exactly once in foreground. '
             'Use a general-purpose agent with description "release foreground background" and omit run_in_background. '
             'The child must run the harmless command sleep 18, then read Makefile and report only the VERSION line. '
+            'The child must not call Agent or delegate; it must use Bash and Read directly. '
             'Do not modify files and do not use any other parent tools. After continuation returns, print RELEASE_FGBG_PARENT_RESTORED.'
         )
         self.send(target, run_dir, prompt, 'input-agent.txt')
@@ -2365,6 +2900,1001 @@ return { results }
             'validation_verdict': 'passed' if passed else 'failed',
             'reason_if_not_passed': None if passed else reason,
         }
+
+    def mock_response_requests(self, run_dir):
+        server = self.mock_servers.get(run_dir.name)
+        if server is None:
+            return []
+
+        return [
+            request
+            for request in server.snapshot()
+            if is_main_response_request(request)
+        ]
+
+    def effort_openai_responses_wire(self):
+        run_dir, session, target, ready = self.start(
+            'effort-openai-responses-wire'
+        )
+        result = {
+            'label': 'effort-openai-responses-wire',
+            'evidence_dir': str(run_dir),
+        }
+        effort_cases = (
+            ('none', 'none'),
+            ('minimal', 'minimal'),
+            ('low', 'low'),
+            ('medium', 'medium'),
+            ('high', 'high'),
+            ('xhigh', 'xhigh'),
+            ('max', 'max'),
+            ('ultra', 'ultra'),
+            ('ultracode', 'xhigh'),
+        )
+        effort_paths = {
+            effort: run_dir / f'03-effort-{index:02d}-{effort}-pane.txt'
+            for index, (effort, _) in enumerate(effort_cases, 1)
+        }
+        terminal_path = run_dir / '04-terminal-pane.txt'
+        thinking_path = run_dir / '05-thinking-transcript-pane.txt'
+        analysis_path = run_dir / 'openai-wire-analysis.json'
+        effort_visible = {}
+        response_ready = {}
+        prompt_restored = thinking_visible = False
+        if ready:
+            for index, (effort, _) in enumerate(effort_cases, 1):
+                self.send(
+                    target,
+                    run_dir,
+                    f'/effort {effort}',
+                    f'input-effort-{index:02d}-{effort}.txt',
+                )
+                effort_visible[effort] = self.wait_until(
+                    lambda effort=effort: f'Set effort level to {effort}' in strip_ansi(
+                        self.capture(target, effort_paths[effort])
+                    ),
+                    30,
+                    0.25,
+                )
+                self.send(
+                    target,
+                    run_dir,
+                    f'Reply with the release validation marker for {effort}.',
+                    f'input-effort-request-{index:02d}-{effort}.txt',
+                )
+                response_ready[effort] = self.wait_until(
+                    lambda index=index: (
+                        len(self.mock_response_requests(run_dir)) == index
+                        and 'RELEASE_EFFORT_WIRE_OK' in self.assistant_text(run_dir)
+                    ),
+                    90,
+                    0.25,
+                )
+            prompt_restored = self.wait_until(
+                lambda: any(
+                    re.fullmatch(r'\s*❯\s*', line)
+                    for line in strip_ansi(
+                        self.capture(target, terminal_path, history=False)
+                    ).splitlines()
+                ),
+                30,
+                0.25,
+            )
+            self.capture(target, terminal_path)
+            if prompt_restored:
+                self.tmux('send-keys', '-t', target, 'C-o', check=True)
+            thinking_visible = prompt_restored and self.wait_until(
+                lambda: 'Release validation reasoning marker.' in strip_ansi(
+                    self.capture(target, thinking_path)
+                ),
+                30,
+                0.25,
+            )
+        for path in (*effort_paths.values(), terminal_path, thinking_path):
+            if not path.exists():
+                path.write_text('required effort state was not reached\n')
+        responses = self.mock_response_requests(run_dir)
+        wire_efforts = {}
+        request_checks = []
+        cache_keys = []
+        for (configured, expected), request in zip(effort_cases, responses):
+            body = request.get('body') if isinstance(request.get('body'), dict) else {}
+            headers = request.get('headers') if isinstance(request.get('headers'), dict) else {}
+            reasoning = body.get('reasoning')
+            wire_effort = reasoning.get('effort') if isinstance(reasoning, dict) else None
+            wire_efforts[configured] = wire_effort
+            cache_key = body.get('prompt_cache_key')
+            cache_keys.append(cache_key)
+            request_checks.append(
+                wire_effort == expected
+                and bool(cache_key)
+                and all(
+                    headers.get(name) == cache_key
+                    for name in ('session-id', 'thread-id', 'x-client-request-id')
+                )
+                and request.get('authorization') == {
+                    'present': True,
+                    'matches_dummy': True,
+                }
+            )
+        all_wire_ok = (
+            len(responses) == len(effort_cases)
+            and len(request_checks) == len(effort_cases)
+            and all(request_checks)
+            and len(set(cache_keys)) == 1
+        )
+        thinking_transcript_shows_marker = (
+            thinking_visible
+            and 'Release validation reasoning marker.' in strip_ansi(
+                thinking_path.read_text(errors='replace')
+            )
+        )
+        transcript_has_thinking = 'Release validation reasoning marker.' in self.transcript(
+            run_dir
+        )
+        settings_path = run_dir / 'config' / 'settings.json'
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            settings = {}
+        persisted = settings.get('effortLevel') == 'ultracode'
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'wire_efforts': wire_efforts,
+            'cache_key_present': all(bool(key) for key in cache_keys),
+            'cache_routing_headers_match': all(request_checks),
+            'cache_key_stable': len(set(cache_keys)) == 1,
+            'effort_commands_visible': effort_visible,
+            'responses_ready': response_ready,
+            'settings_effort_level': settings.get('effortLevel'),
+            'prompt_restored_before_transcript': prompt_restored,
+            'thinking_transcript_shows_marker': thinking_transcript_shows_marker,
+            'transcript_has_thinking': transcript_has_thinking,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready
+            and all(effort_visible.get(effort, False) for effort, _ in effort_cases)
+            and all(response_ready.get(effort, False) for effort, _ in effort_cases)
+            and all_wire_ok
+            and persisted
+            and prompt_restored
+            and thinking_transcript_shows_marker
+            and transcript_has_thinking
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            *[
+                run_dir / f'input-effort-{index:02d}-{effort}.txt'
+                for index, (effort, _) in enumerate(effort_cases, 1)
+            ],
+            *effort_paths.values(),
+            *[
+                run_dir / f'input-effort-request-{index:02d}-{effort}.txt'
+                for index, (effort, _) in enumerate(effort_cases, 1)
+            ],
+            terminal_path,
+            thinking_path,
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            settings_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'effort matrix UI, persistence, or wire evidence was incomplete',
+            'request_count': len(responses),
+            'wire_efforts': wire_efforts,
+            'settings_effort_level': settings.get('effortLevel'),
+            'thinking_transcript_shows_marker': thinking_transcript_shows_marker,
+            'transcript_has_thinking': transcript_has_thinking,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'effort-all-configured-openai-wire',
+                    'Configured effort OpenAI wire matrix',
+                    'All configured effort values are accepted and sent unchanged with stable cache routing.',
+                    evidence,
+                    passed=passed,
+                    reason='one or more configured effort values were rejected or remapped',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'effort-ultracode-openai-wire',
+                    'Ultracode local orchestration mapping',
+                    'Ultracode persists locally and is the only configured value mapped to xhigh on the API wire.',
+                    evidence,
+                    passed=passed and wire_efforts.get('ultracode') == 'xhigh',
+                    reason='ultracode did not persist or map to xhigh',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def openai_responses_usage_error(self):
+        run_dir, session, target, ready = self.start(
+            'openai-responses-usage-error'
+        )
+        result = {
+            'label': 'openai-responses-usage-error',
+            'evidence_dir': str(run_dir),
+        }
+        usage_path = run_dir / '03-usage-pane.txt'
+        error_path = run_dir / '04-error-pane.txt'
+        terminal_path = run_dir / '05-terminal-pane.txt'
+        analysis_path = run_dir / 'openai-usage-error-analysis.json'
+        usage_complete = error_visible = prompt_restored = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                'Reply with the OpenAI usage validation marker.',
+                'input-openai-usage.txt',
+            )
+            usage_complete = self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) == 1
+                    and 'RELEASE_OPENAI_USAGE_OK' in self.assistant_text(run_dir)
+                ),
+                90,
+                0.25,
+            )
+            self.capture(target, usage_path)
+            if usage_complete:
+                self.send(
+                    target,
+                    run_dir,
+                    'Trigger the controlled incomplete response.',
+                    'input-openai-incomplete.txt',
+                )
+                error_visible = self.wait_until(
+                    lambda: (
+                        len(self.mock_response_requests(run_dir)) == 2
+                        and 'RELEASE_OPENAI_INCOMPLETE_REASON'
+                        in self.assistant_text(run_dir)
+                    ),
+                    90,
+                    0.25,
+                )
+            self.capture(target, error_path)
+            prompt_restored = self.wait_until(
+                lambda: any(
+                    re.fullmatch(r'\s*❯\s*', line)
+                    for line in strip_ansi(
+                        self.capture(target, terminal_path, history=False)
+                    ).splitlines()
+                ),
+                30,
+                0.25,
+            )
+            self.capture(target, terminal_path)
+        for path in (usage_path, error_path, terminal_path):
+            if not path.exists():
+                path.write_text('required OpenAI usage/error state was not reached\n')
+        responses = self.mock_response_requests(run_dir)
+        expected_openai_usage = {
+            'input_tokens': 100,
+            'output_tokens': 7,
+            'cache_read_input_tokens': 60,
+            'cache_creation_input_tokens': 15,
+        }
+        expected_normalized_usage = {
+            'input_tokens': 25,
+            'output_tokens': expected_openai_usage['output_tokens'],
+            'cache_read_input_tokens': expected_openai_usage['cache_read_input_tokens'],
+            'cache_creation_input_tokens': expected_openai_usage[
+                'cache_creation_input_tokens'
+            ],
+        }
+        usage_observed = None
+        error_messages = []
+        for path in self.transcript_paths(run_dir):
+            for entry in self.path_entries(path):
+                if entry.get('type') != 'assistant':
+                    continue
+                message = entry.get('message')
+                if not isinstance(message, dict):
+                    continue
+                content = message.get('content')
+                content_text = tool_result_text(content)
+                if 'RELEASE_OPENAI_USAGE_OK' in content_text:
+                    usage_observed = message.get('usage')
+                if entry.get('isApiErrorMessage'):
+                    error_messages.append({
+                        'content': content_text,
+                        'error': entry.get('error'),
+                        'errorDetails': entry.get('errorDetails'),
+                        'apiError': entry.get('apiError'),
+                    })
+        usage_normalized = (
+            isinstance(usage_observed, dict)
+            and all(
+                usage_observed.get(name) == value
+                for name, value in expected_normalized_usage.items()
+            )
+        )
+        error_propagated = (
+            len(error_messages) == 1
+            and 'RELEASE_OPENAI_INCOMPLETE_REASON'
+            in tool_result_text(error_messages[0])
+        )
+        request_kinds = [request.get('response_kind') for request in responses]
+        no_fallback_or_retry = request_kinds == [
+            'usage-completed',
+            'response.incomplete',
+        ]
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'response_kinds': request_kinds,
+            'expected_openai_usage': expected_openai_usage,
+            'expected_normalized_usage': expected_normalized_usage,
+            'observed_normalized_usage': usage_observed,
+            'usage_normalized': usage_normalized,
+            'error_messages': error_messages,
+            'error_propagated': error_propagated,
+            'prompt_restored': prompt_restored,
+            'no_fallback_or_retry': no_fallback_or_retry,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        usage_passed = (
+            ready and usage_complete and usage_normalized
+            and self.cleanup_passed(cleanup)
+        )
+        error_passed = (
+            ready and error_visible and error_propagated and prompt_restored
+            and no_fallback_or_retry and self.cleanup_passed(cleanup)
+        )
+        passed = usage_passed and error_passed
+        evidence = [
+            run_dir / 'input-openai-usage.txt',
+            usage_path,
+            run_dir / 'input-openai-incomplete.txt',
+            error_path,
+            terminal_path,
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'OpenAI usage normalization or terminal error evidence was incomplete',
+            'request_count': len(responses),
+            'observed_normalized_usage': usage_observed,
+            'error_propagated': error_propagated,
+            'prompt_restored': prompt_restored,
+            'no_fallback_or_retry': no_fallback_or_retry,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'openai-responses-usage-normalization',
+                    'OpenAI Responses usage normalization',
+                    'OpenAI input tokens are normalized to additive Anthropic cache buckets in the persisted assistant message.',
+                    evidence,
+                    passed=usage_passed,
+                    reason='normalized usage did not preserve additive input/cache/output totals',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'openai-responses-error-propagation',
+                    'OpenAI Responses terminal error propagation',
+                    'A controlled response.incomplete becomes one visible API error and restores the prompt without fallback or retry.',
+                    evidence,
+                    passed=error_passed,
+                    reason='terminal incomplete reason, prompt recovery, or request cardinality was wrong',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def model_discovery_picker(self):
+        run_dir, session, target, ready = self.start('model-discovery-picker')
+        result = {
+            'label': 'model-discovery-picker',
+            'evidence_dir': str(run_dir),
+        }
+        picker_path = run_dir / '03-model-picker-pane.txt'
+        selected_path = run_dir / '04-model-selected-pane.txt'
+        current_path = run_dir / '05-model-current-pane.txt'
+        analysis_path = run_dir / 'model-discovery-analysis.json'
+        picker_visible = selected = current = False
+        if ready:
+            (run_dir / 'input-model-picker.txt').write_text(
+                'M-p (default chat:modelPicker keybinding)\n'
+            )
+            self.tmux('send-keys', '-t', target, 'M-p', check=True)
+            picker_visible = self.wait_until(
+                lambda: all(
+                    marker in strip_ansi(self.capture(target, picker_path))
+                    for marker in ('Select model', 'GPT Release Discovered')
+                ),
+                30,
+                0.25,
+            )
+            if picker_visible:
+                self.tmux('send-keys', '-t', target, '1', check=True)
+                selected = self.wait_until(
+                    lambda: (
+                        'Select model' not in strip_ansi(
+                            self.capture(target, selected_path)
+                        )
+                        and 'gpt-release-discovered' in strip_ansi(
+                            self.capture(target, selected_path)
+                        )
+                    ),
+                    30,
+                    0.25,
+                )
+            if selected:
+                self.send(target, run_dir, '/model current', 'input-model-current.txt')
+                current = self.wait_until(
+                    lambda: 'Current model: gpt-release-discovered' in strip_ansi(
+                        self.capture(target, current_path)
+                    ),
+                    30,
+                    0.25,
+                )
+        for path in (picker_path, selected_path, current_path):
+            if not path.exists():
+                path.write_text('required model picker state was not reached\n')
+        server = self.mock_servers.get(run_dir.name)
+        requests = server.snapshot() if server is not None else []
+        model_requests = [
+            request
+            for request in requests
+            if request['method'] == 'GET'
+            and urlsplit(request['path']).path == '/v1/models'
+        ]
+        discovery_ok = (
+            len(model_requests) == 1
+            and model_requests[0].get('authorization') == {
+                'present': True,
+                'matches_dummy': True,
+            }
+            and not self.mock_response_requests(run_dir)
+        )
+        analysis_path.write_text(json.dumps({
+            'model_request_count': len(model_requests),
+            'responses_request_count': len(self.mock_response_requests(run_dir)),
+            'dummy_authorization': (
+                model_requests[0].get('authorization') if model_requests else None
+            ),
+            'picker_visible': picker_visible,
+            'selected': selected,
+            'current_model_confirmed': current,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and discovery_ok and picker_visible and selected and current
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'input-model-picker.txt',
+            picker_path,
+            selected_path,
+            run_dir / 'input-model-current.txt',
+            current_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'model discovery or picker selection evidence was incomplete',
+            'model_request_count': len(model_requests),
+            'responses_request_count': len(self.mock_response_requests(run_dir)),
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'model-discovery-picker-selection',
+                    'Discovered model picker option',
+                    'A model from the configured /v1/models identity is visible, selectable, and current.',
+                    evidence,
+                    passed=passed,
+                    reason='discovered model was not correlated through picker and current model UI',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def model_discovery_empty_picker(self):
+        run_dir, session, target, ready = self.start(
+            'model-discovery-empty-picker'
+        )
+        result = {
+            'label': 'model-discovery-empty-picker',
+            'evidence_dir': str(run_dir),
+        }
+        picker_path = run_dir / '03-empty-model-picker-pane.txt'
+        analysis_path = run_dir / 'empty-model-discovery-analysis.json'
+        current_model_visible = fallback_visible = False
+        if ready:
+            (run_dir / 'input-empty-model-picker.txt').write_text(
+                'M-p (default chat:modelPicker keybinding)\n'
+            )
+            self.tmux('send-keys', '-t', target, 'M-p', check=True)
+            current_model_visible = self.wait_until(
+                lambda: all(
+                    marker in strip_ansi(self.capture(target, picker_path))
+                    for marker in (
+                        'Select model',
+                        'gpt-empty-discovery-current ✔',
+                    )
+                ),
+                30,
+                0.25,
+            )
+            picker_text = strip_ansi(picker_path.read_text(errors='replace'))
+            fallback_visible = any(
+                marker in picker_text
+                for marker in ('GPT-5.5', 'GPT-5.4-Mini')
+            )
+        if not picker_path.exists():
+            picker_path.write_text('required empty model picker state was not reached\n')
+        server = self.mock_servers.get(run_dir.name)
+        requests = server.snapshot() if server is not None else []
+        model_requests = [
+            request
+            for request in requests
+            if request['method'] == 'GET'
+            and urlsplit(request['path']).path == '/v1/models'
+        ]
+        discovery_ok = (
+            len(model_requests) == 1
+            and model_requests[0].get('authorization') == {
+                'present': True,
+                'matches_dummy': True,
+            }
+            and not self.mock_response_requests(run_dir)
+        )
+        empty_discovery_honored = current_model_visible and not fallback_visible
+        analysis_path.write_text(json.dumps({
+            'model_request_count': len(model_requests),
+            'responses_request_count': len(self.mock_response_requests(run_dir)),
+            'dummy_authorization': (
+                model_requests[0].get('authorization') if model_requests else None
+            ),
+            'current_model_visible': current_model_visible,
+            'fallback_visible': fallback_visible,
+            'empty_discovery_honored': empty_discovery_honored,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and discovery_ok and empty_discovery_honored
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'input-empty-model-picker.txt',
+            picker_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'empty model discovery was replaced by fallback picker options',
+            'model_request_count': len(model_requests),
+            'responses_request_count': len(self.mock_response_requests(run_dir)),
+            'empty_discovery_honored': empty_discovery_honored,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'model-discovery-empty-picker',
+                    'Empty discovered model list',
+                    'A successful empty /v1/models response does not restore fallback model options.',
+                    evidence,
+                    passed=passed,
+                    reason='the empty model discovery was not preserved in the picker',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def first_party_bootstrap_picker(self):
+        run_dir, session, target, ready = self.start(
+            'first-party-bootstrap-picker'
+        )
+        result = {
+            'label': 'first-party-bootstrap-picker',
+            'evidence_dir': str(run_dir),
+        }
+        picker_path = run_dir / '03-first-party-model-picker-pane.txt'
+        analysis_path = run_dir / 'first-party-bootstrap-analysis.json'
+        picker_visible = current = False
+        if ready:
+            (run_dir / 'input-first-party-model-picker.txt').write_text(
+                'M-p (default chat:modelPicker keybinding)\n'
+            )
+            self.tmux('send-keys', '-t', target, 'M-p', check=True)
+            picker_visible = self.wait_until(
+                lambda: all(
+                    marker in strip_ansi(self.capture(target, picker_path))
+                    for marker in (
+                        'Select model',
+                        'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
+                    )
+                ),
+                30,
+                0.25,
+            )
+            if picker_visible:
+                current = self.wait_until(
+                    lambda: 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL ✔'
+                    in strip_ansi(self.capture(target, picker_path)),
+                    30,
+                    0.25,
+                )
+        if not picker_path.exists():
+            picker_path.write_text('required first-party bootstrap picker state was not reached\n')
+        config_path = run_dir / 'config' / '.claude.json'
+        try:
+            global_config = json.loads(config_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            global_config = {}
+        options = global_config.get('additionalModelOptionsCache')
+        unkeyed_cache = (
+            isinstance(options, list)
+            and options == [{
+                'value': 'release-first-party-bootstrap-model',
+                'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
+                'description': 'Release validation bootstrap model',
+            }]
+            and 'additionalModelOptionsCacheKey' not in global_config
+        )
+        debug_text = self.debug(run_dir)
+        startup_cache_used_without_fetch = (
+            unkeyed_cache
+            and '[Bootstrap] Skipped: Nonessential traffic disabled' in debug_text
+        )
+        analysis_path.write_text(json.dumps({
+            'bootstrap_endpoint_contract': '/api/claude_cli/bootstrap',
+            'unkeyed_cache': unkeyed_cache,
+            'startup_cache_used_without_fetch': startup_cache_used_without_fetch,
+            'picker_visible': picker_visible,
+            'current_model_confirmed': current,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        cache_passed = (
+            ready and startup_cache_used_without_fetch
+            and self.cleanup_passed(cleanup)
+        )
+        picker_passed = (
+            ready and picker_visible and current and unkeyed_cache
+            and self.cleanup_passed(cleanup)
+        )
+        passed = cache_passed and picker_passed
+        evidence = [
+            run_dir / 'bootstrap-cache-seed.json',
+            config_path,
+            run_dir / 'input-first-party-model-picker.txt',
+            picker_path,
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'first-party bootstrap startup cache or picker evidence was incomplete',
+            'unkeyed_cache': unkeyed_cache,
+            'startup_cache_used_without_fetch': startup_cache_used_without_fetch,
+            'picker_visible': picker_visible,
+            'current_model_confirmed': current,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'first-party-bootstrap-startup-cache',
+                    'First-party bootstrap startup cache',
+                    'Startup consumes the persisted unkeyed /api/claude_cli/bootstrap model cache without keyed-discovery filtering.',
+                    evidence,
+                    passed=cache_passed,
+                    reason='the isolated startup did not preserve and consume the unkeyed bootstrap cache',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'first-party-bootstrap-picker',
+                    'First-party bootstrap model picker',
+                    'The cached first-party bootstrap model remains visible and current through the real model picker entrypoint.',
+                    evidence,
+                    passed=picker_passed,
+                    reason='the cached first-party bootstrap model was missing from picker or current model UI',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def model_internal_update_config_skill(self):
+        run_dir, session, target, ready = self.start(
+            'model-internal-update-config-skill'
+        )
+        result = {
+            'label': 'model-internal-update-config-skill',
+            'evidence_dir': str(run_dir),
+        }
+        running_path = run_dir / '03-skill-running-pane.txt'
+        terminal_path = run_dir / '04-skill-terminal-pane.txt'
+        analysis_path = run_dir / 'update-config-skill-analysis.json'
+        completed = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                'Use the appropriate bundled configuration skill for this read-only validation.',
+                'input-update-config-skill.txt',
+            )
+            self.wait_until(
+                lambda: len(self.mock_response_requests(run_dir)) >= 1,
+                30,
+                0.25,
+            )
+            self.capture(target, running_path)
+            completed = self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) == 2
+                    and 'RELEASE_UPDATE_CONFIG_SKILL_OK'
+                    in self.assistant_text(run_dir)
+                ),
+                120,
+                0.25,
+            )
+            self.capture(target, terminal_path)
+        for path in (running_path, terminal_path):
+            if not path.exists():
+                path.write_text('required Skill state was not reached\n')
+        responses = self.mock_response_requests(run_dir)
+        second_body = (
+            responses[1].get('body')
+            if len(responses) == 2 and isinstance(responses[1].get('body'), dict)
+            else {}
+        )
+        second_text = json.dumps(second_body, sort_keys=True)
+        input_items = second_body.get('input', [])
+        outputs = [
+            item
+            for item in input_items
+            if isinstance(item, dict) and item.get('type') == 'function_call_output'
+        ] if isinstance(input_items, list) else []
+        schema_loaded = all(marker in second_text for marker in (
+            'Launching skill: update-config',
+            '## Full Settings JSON Schema',
+            '## User Request',
+            'set model to opus',
+            'minimal',
+        ))
+        lifecycle_ok = (
+            len(outputs) == 1
+            and outputs[0].get('call_id') == 'fc_release_update_config'
+            and responses[0].get('response_kind') == 'skill-call'
+            and responses[1].get('response_kind') == 'completed'
+            and all(
+                response.get('authorization') == {
+                    'present': True,
+                    'matches_dummy': True,
+                }
+                for response in responses
+            )
+        )
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'response_kinds': [response.get('response_kind') for response in responses],
+            'function_call_output_count': len(outputs),
+            'function_call_output_ids': [output.get('call_id') for output in outputs],
+            'schema_loaded': schema_loaded,
+            'required_markers': {
+                marker: marker in second_text
+                for marker in (
+                    'Launching skill: update-config',
+                    '## Full Settings JSON Schema',
+                    '## User Request',
+                    'set model to opus',
+                    'minimal',
+                )
+            },
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and completed and schema_loaded and lifecycle_ok
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-update-config-skill.txt',
+            running_path,
+            terminal_path,
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'update-config Skill expansion evidence was incomplete',
+            'request_count': len(responses),
+            'schema_loaded': schema_loaded,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'update-config-skill-tool-lifecycle',
+                    'Model-internal update-config Skill invocation',
+                    'The model Skill call resolves once and is returned as one function_call_output.',
+                    evidence,
+                    passed=passed,
+                    reason='Skill function call and tool result lifecycle was incomplete',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'update-config-full-settings-schema',
+                    'Update-config generated settings schema',
+                    'The follow-up request contains the full generated schema and original user args.',
+                    [run_dir / 'mock-openai-requests.json', analysis_path],
+                    passed=schema_loaded,
+                    reason='expanded Skill prompt did not contain required schema markers',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def prompt_modes_cache_prefix(self):
+        run_dir, session, target, ready = self.start('prompt-modes-cache-prefix')
+        result = {
+            'label': 'prompt-modes-cache-prefix',
+            'evidence_dir': str(run_dir),
+        }
+        first_path = run_dir / '03-custom-prompt-pane.txt'
+        plan_path = run_dir / '04-plan-mode-pane.txt'
+        help_path = run_dir / 'binary-help.txt'
+        analysis_path = run_dir / 'prompt-cache-analysis.json'
+        first_complete = plan_complete = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                'Reply with the release validation marker.',
+                'input-custom-system-prompt.txt',
+            )
+            first_complete = self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) == 1
+                    and 'RELEASE_PROMPT_CACHE_OK' in self.assistant_text(run_dir)
+                ),
+                90,
+                0.25,
+            )
+            self.capture(target, first_path)
+            self.send(target, run_dir, '/plan', 'input-plan-mode-command.txt')
+            plan_enabled = self.wait_until(
+                lambda: 'Enabled plan mode' in strip_ansi(
+                    self.capture(target, plan_path)
+                ),
+                30,
+                0.25,
+            )
+            if plan_enabled:
+                self.send(
+                    target,
+                    run_dir,
+                    'Inspect the prompt cache boundary without implementation.',
+                    'input-plan-mode.txt',
+                )
+            plan_complete = plan_enabled and self.wait_until(
+                lambda: len(self.mock_response_requests(run_dir)) == 2,
+                90,
+                0.25,
+            )
+            self.capture(target, plan_path)
+        for path in (first_path, plan_path):
+            if not path.exists():
+                path.write_text('required prompt state was not reached\n')
+        help_result = command([str(self.binary), '--help'], timeout=30)
+        help_path.write_text(help_result.stdout + help_result.stderr)
+        responses = self.mock_response_requests(run_dir)
+        bodies = [
+            response.get('body')
+            for response in responses
+            if isinstance(response.get('body'), dict)
+        ]
+        cache_keys = [body.get('prompt_cache_key') for body in bodies]
+        routing_ok = (
+            len(responses) == 2
+            and len(bodies) == 2
+            and bool(cache_keys[0])
+            and cache_keys[0] == cache_keys[1]
+            and all(
+                response.get('headers', {}).get(name) == cache_keys[0]
+                for response in responses
+                for name in ('session-id', 'thread-id', 'x-client-request-id')
+            )
+        )
+        custom_prompt_ok = custom_prompt_instructions_stable(bodies)
+        second_text = json.dumps(bodies[1], sort_keys=True) if len(bodies) == 2 else ''
+        plan_boundary_ok = (
+            'Plan mode is active.' in second_text
+            and 'MUST NOT make any edits' in second_text
+            and 'Execute immediately' not in second_text
+            and 'Prefer action over planning' not in second_text
+        )
+        help_text = help_result.stdout + help_result.stderr
+        feature_boundary = {
+            'help_exit': help_result.returncode,
+            'proactive_exposed': '--proactive' in help_text,
+            'auto_mode_exposed': '--enable-auto-mode' in help_text,
+        }
+        release_feature_boundary_ok = (
+            help_result.returncode == 0
+            and not feature_boundary['proactive_exposed']
+            and not feature_boundary['auto_mode_exposed']
+            and '## Auto Permission Classification During Plan Mode' not in second_text
+        )
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'cache_keys_equal': len(cache_keys) == 2 and cache_keys[0] == cache_keys[1],
+            'cache_key_present': bool(cache_keys and cache_keys[0]),
+            'routing_headers_match': routing_ok,
+            'custom_prompt_marker_once_and_instructions_stable': custom_prompt_ok,
+            'plan_read_only_boundary': plan_boundary_ok,
+            'release_feature_boundary': feature_boundary,
+            'binary_coverage': {
+                'custom_system_prompt': 'covered',
+                'stable_prompt_cache_routing': 'covered',
+                'plan_read_only_guidance': 'covered',
+                'proactive_custom_prompt': 'not executable in this release artifact',
+                'plan_auto_scope': 'not executable in this release artifact',
+            },
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and first_complete and plan_complete and routing_ok
+            and custom_prompt_ok and plan_boundary_ok and release_feature_boundary_ok
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-custom-system-prompt.txt',
+            first_path,
+            run_dir / 'input-plan-mode-command.txt',
+            run_dir / 'input-plan-mode.txt',
+            plan_path,
+            run_dir / 'mock-openai-requests.json',
+            help_path,
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'custom prompt, plan boundary, or cache evidence was incomplete',
+            'request_count': len(responses),
+            'cache_keys_equal': len(cache_keys) == 2 and cache_keys[0] == cache_keys[1],
+            'release_feature_boundary': feature_boundary,
+            'binary_coverage': {
+                'custom_system_prompt': 'covered',
+                'stable_prompt_cache_routing': 'covered',
+                'plan_read_only_guidance': 'covered',
+                'proactive_custom_prompt': 'not executable in this release artifact',
+                'plan_auto_scope': 'not executable in this release artifact',
+            },
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'custom-prompt-stable-cache-routing',
+                    'Custom system prompt cache identity',
+                    'Two turns preserve the exact custom instructions and session routing key.',
+                    evidence,
+                    passed=passed,
+                    reason='custom prompt or cache routing changed between turns',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'plan-release-artifact-read-only-boundary',
+                    'Plan mode prompt in the release artifact',
+                    'Plan mode remains read-only and unsupported Auto/Proactive flags are absent.',
+                    [plan_path, run_dir / 'mock-openai-requests.json', help_path, analysis_path],
+                    passed=plan_boundary_ok and release_feature_boundary_ok,
+                    reason='release artifact plan or feature boundary was unexpected',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
 
     def workflow_failure_detail(self):
         run_dir, session, target, ready = self.start('workflow-failure-detail')
@@ -3097,6 +4627,13 @@ return await parallel([
             'workflow': self.workflow,
             'deep-research': lambda: self.slash_workflow('deep-research'),
             'code-review': lambda: self.slash_workflow('code-review'),
+            'effort-openai-responses-wire': self.effort_openai_responses_wire,
+            'openai-responses-usage-error': self.openai_responses_usage_error,
+            'model-discovery-picker': self.model_discovery_picker,
+            'model-discovery-empty-picker': self.model_discovery_empty_picker,
+            'first-party-bootstrap-picker': self.first_party_bootstrap_picker,
+            'model-internal-update-config-skill': self.model_internal_update_config_skill,
+            'prompt-modes-cache-prefix': self.prompt_modes_cache_prefix,
             'team-concurrency': self.team_concurrency,
             'workflow-retry-partial-failure': self.workflow_retry_partial_failure,
             'workflow-failure-detail': self.workflow_failure_detail,
@@ -3183,8 +4720,8 @@ def main():
     parser.add_argument(
         '--base-ref',
         help=(
-            'explicit commit-ish used to derive the committed release range when '
-            'baseline upstream is unavailable or unsafe'
+            'explicit commit-ish used to derive the committed release range instead '
+            'of baseline.release_base_ref'
         ),
     )
     parser.add_argument(

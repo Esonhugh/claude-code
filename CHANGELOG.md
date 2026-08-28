@@ -12,6 +12,63 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-27 - v2.1.214 - Prompt 缓存稳定性、Effort 透传与配置生成修复
+
+### 版本状态
+
+- 准备发布版本：`v2.1.214`。
+- 本次发布完整覆盖 `v2.1.213..HEAD` 的 12 个提交（`818ceea..fd4452f`）：11 个非 merge 功能、修复与文档提交，以及 1 个整合 OpenAI/Skill prompt cache 修复的 merge commit；本次发布准备、验证脚本与验证中发现的产品修复尚未提交，不计入该提交范围。下方变更内容描述最终待发布工作树，因此同时包含这些未提交的 release-blocking fixes。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.214`。
+
+### 关联提交
+
+- `818ceea` — 为模型发现缓存加入 provider/endpoint cache key，并在 provider 或 endpoint 切换时清理陈旧 Model Picker 选项；credential/account identity 与 endpoint 规范化由本次未提交的 release-blocking fix 补齐。
+- `b619ea1` — 按稳定核心、能力与任务动态层组织 system prompt，收敛 mode guidance，并加入可重复的 prompt cost 分析工具和测试。
+- `2fd778f` — 在 custom system prompt 路径保留 proactive guidance，并修正对应 prompt 分析证据。
+- `e918003` — 记录 prompt 分层候选与基线的隔离多轮 A/B 结果和证据边界。
+- `3ee190c` — 补充 A/B scorer blind spots，收窄 permission、task 与 TMPDIR 结论。
+- `25b0768` — 为 OpenAI Responses 请求发送稳定 session routing key，并将 cache usage 转换为 Anthropic-compatible additive buckets。
+- `fbe0740` — 在生成 Skill listing prompt 前按 name 排序，避免 discovery order 破坏跨进程 cache prefix。
+- `9bb1cb9` — 删除 provider-specific effort remapping，让 configured effort 原样进入 API，并贯通 `minimal` 配置档位。
+- `cb00522` — 合并 OpenAI prompt cache reuse 与 Skill listing cache prefix 修复，同时保留本地 effort 透传改动。
+- `65e9d88` — 允许 update-config 将不可直接表示的 Zod input 类型生成为 JSON Schema，并增加 bundled skill 回归断言。
+- `b3a43ed` — 保留 OpenAI Responses reasoning summary/raw text，并将其转换为 Claude thinking blocks；补充相关 streaming 与非 streaming 回归覆盖。
+- `fd4452f` — 记录官方 changelog migration candidates，明确本地 release 范围与上游迁移审计边界。
+
+### 变更内容
+
+#### Prompt 分层、模式指引与缓存边界
+
+- system prompt 明确分为 `stable-core`、`capability` 和 `task-dynamic` 三层，稳定内容位于全局 cache boundary 之前，session-specific scratchpad 等动态内容保持在边界之后；重复 section 会去重，冲突 owner 必须显式 override。
+- Plan mode 继续限制只读操作和 plan file 例外；与 Auto mode 同时启用时，Auto 只负责 Plan 已允许操作的 permission classification，不再产生可执行实现的冲突指引。
+- proactive mode 不再暗示未经授权的 commit、push 或 PR；custom system prompt 在非 coordinator 会话中继续获得已启用的 proactive guidance。
+- scratchpad 指引区分跨 tool call 的 session artifact 与 Bash 命令内 `$TMPDIR`，并提供 prompt dump 成本分析脚本、分层回归测试及限定结论的 A/B 评估文档。
+
+#### 模型发现与 Prompt cache
+
+- 模型发现缓存绑定当前 provider、ChatGPT/API 身份、gateway credential 与规范化 endpoint；发现启用时 Model Picker 只读取 identity 匹配的缓存：成功发现的非空结果替代对应 provider 的基础列表，成功但为空的结果会清空该 identity 的旧列表且不恢复 provider 基础列表，显式 current/custom model 仍可显示；切换 provider、账户、credential 或 gateway 后也不会混入上一配置的模型。模型发现关闭时，first-party bootstrap 返回的无 identity 附加模型仍按既有行为显示。
+- OpenAI Responses 请求使用 session ID 填充 `prompt_cache_key`、`session-id`、`thread-id` 和 `x-client-request-id`，使同一会话后续 turn 可以命中稳定 prompt cache routing。
+- OpenAI cached/write token usage 转换为 Anthropic additive usage buckets 时扣除已包含在 `input_tokens` 中的缓存 token，避免输入用量重复计算；兼容 OpenAI 与既有 Anthropic-style usage 字段；Responses reasoning summary/raw text 同时转换为 Claude thinking block，保留 streaming 与非 streaming 的可见推理内容；`response.incomplete`、`response.failed` 和 `error` 事件会保留服务端原因并作为请求错误传播。
+- Skill listing 在格式化前稳定排序，避免不同进程中的 discovery order 改变 prompt prefix 并使 Anthropic cache 失效。
+
+#### Release validation driver
+
+- release baseline 绑定 HEAD、完整 staged/unstaged/untracked/ignored 内容 identity 与本轮 binary metadata；binary driver 根据 committed release range 和工作树路径自动推导 mandatory feature targets，并使用隔离 dummy OpenAI endpoint 验证 effort wire、reasoning-to-thinking、模型发现空/非空状态、update-config skill 和 prompt mode cache prefix；OpenAI error/usage 转换由 API 回归测试覆盖。
+- driver regression 与 scripted tmux gate 明确区分 spec、unit、fault injection 和 binary evidence；受控 workflow transient fault、稳定 Task/Run/Agent ID、terminal marker、通知、进程清理及 Git/workflow artifact 副作用任一缺失时均 fail closed；`/code-review` Scope agent 仅读取 diff stat、changed-file list 和相关 `CLAUDE.md` 等 bounded metadata，不读取完整 patch 或 changed source。
+
+#### Effort 与 update-config
+
+- `/effort`、Model Picker、settings Zod schema、SDK control/core schema、Agent definition 和 API adapter 新增 `minimal`；OpenAI 可选列表同时保留 `none`、`xhigh`、`max` 与 `ultra`，并向 Model Picker 和 SDK 声明 effort capability。
+- configured effort 不再按 Anthropic/OpenAI provider 重写：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 和 `ultra` 均原样传入所选 API；本地编排模式 `ultracode` 仍展开为 API `xhigh`。
+- bundled `update-config` skill 以 input schema 生成完整 Settings JSON Schema，并将 Zod 无法直接表示的 input 类型降为 JSON Schema `any`，避免 schema 生成阶段抛错而使 skill 不可用。
+
+### 测试覆盖
+
+- Prompt 专用测试覆盖 layer ordering、cache boundary、重复/冲突 section、Plan + Auto scope、scratchpad、custom/proactive system prompt、Bash/TaskCreate guidance，以及 prompt dump 分析器的稳定输出。
+- API 与配置回归测试覆盖模型发现 cache identity、OpenAI request body/headers、同步与 streaming cache usage、reasoning-to-thinking 转换、Skill listing 顺序、configured effort 透传、`minimal` 的 CLI/settings/SDK/Agent schema 接受路径，以及 update-config schema JSON 生成；模型发现测试使用隔离 HOME 时不再依赖环境中预设的 custom model。
+- 完整发布门禁要求同一源码状态下通过相关 `bun test`、`make release-check`、本轮 `make build` 后的 scripted tmux binary 交互矩阵和 release/docs audit；最终验收结果由本版本发布验证报告记录。
+
 ## 2026-08-22 - v2.1.213 - SSH 交互完整性、Prompt 精简与 Gateway 模型发现
 
 ### 版本状态
@@ -63,7 +120,7 @@
 #### 模型发现与缓存
 
 - `CLAUDE_CODE_USE_OPENAI=1` 时自动发现模型：ChatGPT OAuth 查询 Codex models endpoint，API key billing 查询 `OPENAI_BASE_URL/v1/models`，未配置 base URL 时使用 OpenAI 默认 API。
-- Anthropic API billing 在设置 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 和 `ANTHROPIC_BASE_URL` 时查询 gateway `/v1/models?limit=1000`；`ANTHROPIC_AUTH_TOKEN` 使用 Bearer 且优先于通过 `x-api-key` 发送的 `ANTHROPIC_API_KEY`，普通 `CLAUDE_CODE_OAUTH_TOKEN` 不作为 gateway 发现凭据。
+- Anthropic API billing 在设置 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 和 `ANTHROPIC_BASE_URL` 时查询 gateway `/v1/models`；`ANTHROPIC_AUTH_TOKEN` 使用 Bearer 且优先于通过 `x-api-key` 发送的 `ANTHROPIC_API_KEY`，普通 `CLAUDE_CODE_OAUTH_TOKEN` 不作为 gateway 发现凭据。
 - base URL 会规范化为唯一的 `/v1/models` 路径；OpenAI 默认 API 过滤到受支持的 GPT/o-series/Codex 系列，自定义 OpenAI-compatible endpoint 与 Anthropic gateway 保留响应中声明 API support 的其他模型，hidden 项在 Model Picker 标记为 `(Hidden)`。
 - OpenAI、Anthropic gateway 与既有 bootstrap model options 统一使用 `additionalModelOptionsCache`；启动模式固定时不再维护 OpenAI 专用缓存。
 - 发现被禁用、缺少 base URL/认证、网络失败、超时、空响应或没有可用模型时保留已有共享缓存，并回退到缓存或内置模型，不用失败结果覆盖可用选项。

@@ -9,7 +9,14 @@ import sys
 from datetime import datetime, timezone
 
 
+sys.dont_write_bytecode = True
+
+
 WORKFLOW_RUNS_ROOT = '.claude/workflow-runs'
+BUN_BUILD_TEMPORARY_PATTERN = re.compile(
+    r'^\.[0-9a-f]{16}-[0-9a-f]{8}\.bun-build$'
+)
+PYTHON_BYTECODE_PATTERN = re.compile(r'^.+\.py[cod]$')
 IGNORED_FILES_EXCLUDED_ROOTS = (
     'node_modules',
     WORKFLOW_RUNS_ROOT,
@@ -72,9 +79,14 @@ def git_paths_manifest(repo, *args, excluded_roots=()):
     paths = command(repo, 'ls-files', *args, '-z').split('\0')
     for relative in sorted(path for path in paths if path):
         relative = relative.rstrip('/')
-        if any(
-            relative == root or relative.startswith(f'{root}/')
-            for root in excluded_roots
+        if (
+            BUN_BUILD_TEMPORARY_PATTERN.fullmatch(relative)
+            or '/__pycache__/' in f'/{relative}'
+            or PYTHON_BYTECODE_PATTERN.fullmatch(relative)
+            or any(
+                relative == root or relative.startswith(f'{root}/')
+                for root in excluded_roots
+            )
         ):
             continue
         file_path = repo / relative
@@ -120,10 +132,26 @@ def read_makefile_version(repo):
     return match.group(1)
 
 
+def default_release_base_ref(repo):
+    release_base_ref = command(
+        repo, 'describe', '--tags', '--abbrev=0', 'HEAD^', check=False
+    ).strip()
+    if not release_base_ref:
+        raise RuntimeError(
+            'could not determine the previous release tag from HEAD^; '
+            'pass --release-base-ref <commit-ish>'
+        )
+    return release_base_ref
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo', type=Path, default=Path.cwd())
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument(
+        '--release-base-ref',
+        help='previous release tag or commit-ish; defaults to the nearest tag from HEAD^',
+    )
     args = parser.parse_args()
     repo = args.repo.resolve()
     output = args.output.resolve()
@@ -148,6 +176,10 @@ def main():
     ignored_files_manifest = ignored_manifest(repo)
     unstaged_diff = command(repo, 'diff', '--binary')
     staged_diff = command(repo, 'diff', '--cached', '--binary')
+    release_base_ref = args.release_base_ref or default_release_base_ref(repo)
+    release_base_commit = command(
+        repo, 'rev-parse', '--verify', f'{release_base_ref}^{{commit}}'
+    ).strip()
     baseline = {
         'captured_at': datetime.now(timezone.utc).isoformat(),
         'repo': str(repo),
@@ -155,6 +187,8 @@ def main():
         'head_short': command(repo, 'rev-parse', '--short', 'HEAD').strip(),
         'branch': command(repo, 'branch', '--show-current').strip(),
         'upstream': upstream or None,
+        'release_base_ref': release_base_ref,
+        'release_base_commit': release_base_commit,
         'status_short_branch': status,
         'status_porcelain': command(repo, 'status', '--short'),
         'diff_stat': command(repo, 'diff', '--stat'),
@@ -175,7 +209,6 @@ def main():
             'path': str(binary),
             'exists': binary.is_file(),
             'size': binary.stat().st_size if binary.is_file() else None,
-            'mtime_ns': binary.stat().st_mtime_ns if binary.is_file() else None,
             'sha256': sha256(binary) if binary.is_file() else None,
         },
     }

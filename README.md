@@ -10,7 +10,7 @@
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
 - 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.213`
+- 当前本地发布线：`2.1.214`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -22,14 +22,14 @@
 2. 提供可构建、可调试、可进行受控二次开发的本地 Claude Code CLI。
 3. 在 `2.1.88` 基线上维护 Agent、Workflow、OpenAI/Codex、交互终端和会话命令等扩展。
 4. 保留恢复工程中的类型声明、stub 与 build shim，便于后续逐步替换或验证。
-5. 通过 tag 驱动的 binary-only 流程发布非官方 launcher，不公开分发本仓库源码。
+5. 通过 binary-only 流程发布非官方 launcher：正式公开发布由 tag 驱动，本地 binary 由 `Makefile VERSION` 注入版本；两者都不公开分发本仓库源码。
 
 ### 当前基线
 
 | 项目 | 当前值 |
 | --- | --- |
 | 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.213` |
+| 本地发布线 | `2.1.214` |
 | 源码版本 | `0.0.0-dev` |
 | 包管理器 | `bun@1.3.14` |
 | Node.js | `>=18` |
@@ -84,9 +84,9 @@ bun ./dist/cli.js --help
 | 领域 | 本地特性与更新 |
 | --- | --- |
 | OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；启用 server-side `WebSearch`，将 Anthropic web-search schema、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为 Anthropic-compatible stream 事件；OpenAI 模式自动从 ChatGPT Codex 或 OpenAI-compatible `/v1/models` 发现模型，Anthropic API billing gateway 可通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 启用同类发现，并统一进入 Model Picker 缓存。 |
-| Effort | 支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并按 Anthropic/OpenAI provider 和模型能力映射。 |
+| Effort | CLI 可配置 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，Model Picker/SDK capability 列表仍按 provider 与模型声明可选档位；configured effort 不按 capability 重写并原样传入所选 API，仅本地编排模式 `ultracode` 展开为 API `xhigh`。 |
 | Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认注册只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
-| Prompt context | 精简主会话安全、Bash Git/PR、Explore/Plan 与 Agent orchestration 的重复说明；Agent listing 改为增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留完整权限、动态发现和精确增删状态。 |
+| Prompt context | 精简主会话安全、Bash Git/PR、Explore/Plan 与 Agent orchestration 的重复说明；system prompt 按稳定核心、能力和任务动态层组织 cache boundary，Plan + Auto mode 保持只读权限边界；Agent listing 使用增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留完整权限、动态发现和精确增删状态。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
 | Direct Connect | `v2.1.212` 之前已有的 remote transport：`claude connect <server-url>` 通过 HTTP 创建 session，再以 WebSocket 传输 stream-json；server 负责 Claude child、tools 和项目上下文，本地负责 TUI 与 permission UI。 |
@@ -126,7 +126,7 @@ OpenAI 模型 API 凭证读取优先级为：
 3. `~/.codex/auth.json` 中的 API key
 4. `~/.codex/auth.json` 中的 ChatGPT OAuth access token
 
-当前模型凭据决定计费与用量状态：使用 API key 或 `OPENAI_AUTH_TOKEN` 时，启动 pane 显示 `API Usage Billing`，`/status` Usage 不展示 ChatGPT subscription；仅当当前模型凭据为 `~/.codex/auth.json` 中的 ChatGPT OAuth 时，才显示 ChatGPT plan 和 Codex limits。Codex Apps 同样要求当前模型使用 ChatGPT OAuth。
+当前模型凭据决定计费与用量状态：使用 API key 或 `OPENAI_AUTH_TOKEN` 时，启动 pane 显示 `API Usage Billing`，`/status` Usage 显示 `Usage data is unavailable for the current OpenAI authentication.`，不展示 ChatGPT subscription；仅当当前模型凭据为 `~/.codex/auth.json` 中的 ChatGPT OAuth 时，才显示 ChatGPT plan 和 Codex limits。Codex Apps 同样要求当前模型使用 ChatGPT OAuth。
 
 API key 示例：
 
@@ -143,7 +143,7 @@ OpenAI provider 启动时会刷新 Model Picker 的共享模型缓存：
 - ChatGPT OAuth 使用固定的 ChatGPT Codex models endpoint，并携带当前 account identity；
 - API key 或 `OPENAI_AUTH_TOKEN` 在未设置 base URL 时请求 `https://api.openai.com/v1/models`，设置 `OPENAI_BASE_URL` 时请求其规范化后的 `/v1/models`；
 - base URL 末尾无论是否已有 `/v1`，最终都只会请求一次 `/v1/models`；
-- OpenAI 默认 API 只展示受支持的 GPT、o-series 和 Codex 模型，自定义 OpenAI-compatible base URL 会保留 endpoint 返回且标记为 API-supported 的其他模型。
+- OpenAI 默认 API 只展示名称前缀为 `gpt-`、`o` 或 `codex`、且未标记为不支持 API 的模型；自定义 OpenAI-compatible base URL 会保留 endpoint 返回的其他未标记为不支持 API 的模型。
 
 OpenAI-compatible gateway 示例：
 
@@ -163,9 +163,9 @@ ANTHROPIC_AUTH_TOKEN=<bearer-token> \
 claude
 ```
 
-也可以使用 `ANTHROPIC_API_KEY`，请求会改用 `x-api-key`；当两者同时存在时优先使用 `ANTHROPIC_AUTH_TOKEN`。`CLAUDE_CODE_OAUTH_TOKEN` 不作为自定义 Anthropic gateway 的发现凭据。gateway 请求 `${ANTHROPIC_BASE_URL}/v1/models?limit=1000`，并在 Model Picker 中展示响应里声明 API support 的模型，包括 endpoint 标记为 hidden 的模型；hidden 项会显示 `(Hidden)`。
+也可以使用 `ANTHROPIC_API_KEY`，请求会改用 `x-api-key`；当两者同时存在时优先使用 `ANTHROPIC_AUTH_TOKEN`。`CLAUDE_CODE_OAUTH_TOKEN` 不作为自定义 Anthropic gateway 的发现凭据。gateway 请求 `${ANTHROPIC_BASE_URL}/v1/models`，并在 Model Picker 中展示未被明确标记为不支持 API 的模型，包括 endpoint 标记为 hidden 的模型；hidden 项会显示 `(Hidden)`。
 
-发现请求超时、失败、没有认证或没有返回可用模型时，不会清空上一份 `additionalModelOptionsCache`；Model Picker 继续使用已有缓存或内置 fallback。OpenRouter 仅可作为普通 OpenAI-compatible endpoint 使用，本项目没有为它增加独立 provider 或专用环境变量。
+发现请求超时、失败或没有认证时，不会清空同一 provider/auth/endpoint identity 的 `additionalModelOptionsCache`；成功响应但没有可用模型时会清空该 identity 的旧模型列表。identity 匹配时 Model Picker 使用已有发现缓存，否则使用当前 provider 的内置 fallback，避免跨 provider、账户、credential 或 gateway 混用陈旧模型；模型发现关闭时，first-party bootstrap 返回的无 identity `additional_model_options` 仍按既有行为显示。OpenRouter 仅可作为普通 OpenAI-compatible endpoint 使用，本项目没有为它增加独立 provider 或专用环境变量。
 
 ### Codex Apps mention
 
@@ -204,12 +204,13 @@ mention 只会解析当前已发现且已过滤的 App 工具，不会恢复禁�
 可持久化值：
 
 ```text
-low | medium | high | xhigh | max | ultra | ultracode
+minimal | low | medium | high | xhigh | max | ultra | ultracode
 ```
 
 当前会话中切换：
 
 ```text
+/effort minimal
 /effort high
 /effort xhigh
 /effort ultracode
@@ -223,7 +224,7 @@ low | medium | high | xhigh | max | ultra | ultracode
 CLAUDE_CODE_EFFORT_LEVEL=xhigh claude
 ```
 
-`auto` 或 `unset` 表示不显式发送 effort。实际 wire value 会根据 provider 与模型能力转换；例如 `ultracode` 作为编排模式时按 `xhigh` 进入 provider 映射。
+`auto` 或 `unset` 表示不显式发送 effort。Model Picker 和 SDK capability 列表仍按当前 provider/模型声明可选档位；通过 CLI、settings 或环境变量给出的 configured effort 不再按该 capability 重写并原样进入 API。只有 `ultracode` 是本地编排模式，会以 `xhigh` 作为 API effort。
 
 ### 自定义 UI / Branding
 
@@ -364,7 +365,7 @@ hosted skill 加载具有以下边界：
 
 - 只接受可信的 `codex_apps` 与 `codex_apps_plugins` 来源；
 - 校验 skill 名称、resource URI、分页和内容大小；
-- 缓存绑定当前 client identity 并设置 TTL，避免跨账户复用；
+- 内存缓存绑定当前连接的 MCP client object identity 并设置 TTL，避免同名连接之间复用发现结果；
 - Codex Apps transport 只向固定的 Apps 与 plugin runtime MCP endpoints 注入 ChatGPT OAuth 和 account 信息；遇到 `401` 时强制刷新 token，并且只重试一次。
 
 ### 远程执行：Direct Connect 与 SSH
