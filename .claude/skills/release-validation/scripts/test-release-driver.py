@@ -1149,6 +1149,39 @@ def assert_driver_behavior(module, baseline_module):
         assert cleanup['signal'] == 'SIGTERM'
         assert cleanup['auth_homes']['errors'] == []
 
+    with tempfile.TemporaryDirectory(prefix='release-driver-lease-') as root_string:
+        root = Path(root_string)
+        repo = root / 'repo'
+        repo.mkdir()
+        alias = root / 'repo-alias'
+        alias.symlink_to(repo, target_is_directory=True)
+        lease_a = object.__new__(module.BinaryGate)
+        lease_a.repo = repo.resolve()
+        lease_a.binary = repo / 'built-claude'
+        lease_a.evidence_root = root / 'evidence-a'
+        lease_a.pid = 101
+        lease_a.manifest = {}
+        lease_a.lease_file = lease_a.lease_path = lease_a.lease_metadata = None
+        module.BinaryGate.acquire_lease(lease_a)
+        assert lease_a.lease_metadata['repo'] == str(repo.resolve())
+        assert lease_a.lease_metadata['binary'] == str(repo / 'built-claude')
+        lease_b = object.__new__(module.BinaryGate)
+        lease_b.repo = alias.resolve()
+        lease_b.binary = repo / 'built-claude'
+        lease_b.evidence_root = root / 'evidence-b'
+        lease_b.pid = 102
+        lease_b.manifest = {}
+        lease_b.lease_file = lease_b.lease_path = lease_b.lease_metadata = None
+        try:
+            module.BinaryGate.acquire_lease(lease_b)
+        except RuntimeError as error:
+            assert str(repo.resolve()) in str(error)
+        else:
+            raise AssertionError('equivalent repo realpaths must conflict')
+        assert module.BinaryGate.release_lease(lease_a)['released'] is True
+        module.BinaryGate.acquire_lease(lease_b)
+        assert module.BinaryGate.release_lease(lease_b)['released'] is True
+
     assert module.required_targets_for_paths([
         'src/services/api/openai-compat.ts',
     ]) == {
@@ -1156,6 +1189,121 @@ def assert_driver_behavior(module, baseline_module):
         'openai-responses-usage-error',
         'prompt-modes-cache-prefix',
     }
+    assert module.required_targets_for_paths([
+        'src/hooks/useSSHSession.ts',
+        'src/hooks/useRemoteSession.ts',
+        'src/ssh/remoteHistoryReplay.ts',
+        'src/screens/REPL.tsx',
+        'src/entrypoints/sdk/controlSchemas.ts',
+    ]) == {
+        'effort-openai-responses-wire',
+        'ssh-remote-session-lifecycle',
+    }
+    assert module.required_targets_for_paths([
+        'src/ssh/createSSHSession.ts',
+    ]) == {'ssh-remote-session-lifecycle'}
+
+    with tempfile.TemporaryDirectory(prefix='release-driver-ssh-fixture-') as root_string:
+        root = Path(root_string)
+        run_dir = root / 'run'
+        run_dir.mkdir()
+        gate = object.__new__(module.BinaryGate)
+        gate.baseline = {'makefile_version': '9.8.7'}
+        fixture = module.BinaryGate.make_ssh_transport_fixture(gate, run_dir)
+        executable = Path(fixture['bin_dir']) / 'ssh'
+        assert executable.is_file()
+        assert executable.stat().st_mode & 0o111
+        assert "print('9.8.7')" in executable.read_text()
+        assert fixture['session_id'] == 'release-ssh-session-0001'
+        assert fixture['task_id'] == 'release-ssh-task-0001'
+        assert fixture['tool_use_id'] == 'release-ssh-tool-0001'
+        assert fixture['permission_request_id'] == 'release-ssh-permission-0001'
+        assert fixture['io_path'] == str(run_dir / 'fake-ssh-io.jsonl')
+
+    assert module.BinaryGate.ssh_lifecycle_evidence({
+        'session_id': 'release-ssh-session-0001',
+        'task_id': 'release-ssh-task-0001',
+        'tool_use_id': 'release-ssh-tool-0001',
+        'permission_request_id': 'release-ssh-permission-0001',
+        'events': [
+            {'event': 'remote-process-start'},
+            {'event': 'history-bootstrap-request'},
+            {'event': 'goal-bootstrap', 'goal_id': 'release-ssh-goal-0001'},
+            {'event': 'history-bootstrap-response'},
+            {'event': 'task-start', 'task_id': 'release-ssh-task-0001'},
+            {'event': 'tool-use', 'tool_use_id': 'release-ssh-tool-0001'},
+            {
+                'event': 'permission-response',
+                'request_id': 'release-ssh-permission-0001',
+                'behavior': 'allow',
+                'tool_use_id': 'release-ssh-tool-0001',
+            },
+            {'event': 'task-stopped', 'task_id': 'release-ssh-task-0001'},
+            {'event': 'task-result', 'task_id': 'release-ssh-task-0001'},
+            {'event': 'remote-process-exit'},
+            {'event': 'cleanup-command'},
+            {'event': 'control-master-stop'},
+        ],
+    })['passed'] is True
+    incomplete_ssh_evidence = module.BinaryGate.ssh_lifecycle_evidence({
+        'session_id': 'release-ssh-session-0001',
+        'task_id': 'release-ssh-task-0001',
+        'tool_use_id': 'release-ssh-tool-0001',
+        'permission_request_id': 'release-ssh-permission-0001',
+        'events': [{'event': 'remote-process-start'}],
+    })
+    assert incomplete_ssh_evidence['passed'] is False
+    assert 'task-start' in incomplete_ssh_evidence['missing_events']
+
+    complete_events = [
+        {'event': 'remote-process-start'},
+        {'event': 'history-bootstrap-request'},
+        {'event': 'goal-bootstrap', 'goal_id': 'release-ssh-goal-0001'},
+        {'event': 'history-bootstrap-response'},
+        {'event': 'task-start', 'task_id': 'release-ssh-task-0001'},
+        {'event': 'tool-use', 'tool_use_id': 'release-ssh-tool-0001'},
+        {
+            'event': 'permission-response',
+            'request_id': 'release-ssh-permission-0001',
+            'behavior': 'allow',
+            'tool_use_id': 'release-ssh-tool-0001',
+        },
+        {'event': 'task-stopped', 'task_id': 'release-ssh-task-0001'},
+        {'event': 'task-result', 'task_id': 'release-ssh-task-0001'},
+        {'event': 'remote-process-exit'},
+        {'event': 'cleanup-command'},
+        {'event': 'control-master-stop'},
+    ]
+    assert module.BinaryGate.ssh_lifecycle_evidence({
+        **module.SSH_LIFECYCLE_IDS,
+        'events': complete_events[:-2],
+    }, require_cleanup=False)['passed'] is True
+    assert module.BinaryGate.ssh_lifecycle_evidence({
+        **module.SSH_LIFECYCLE_IDS,
+        'events': complete_events,
+    }, require_cleanup=False)['passed'] is False
+    for mutation in (
+        lambda events: events.__setitem__(4, {
+            'event': 'task-start', 'task_id': 'wrong-task',
+        }),
+        lambda events: events.__setitem__(5, {
+            'event': 'tool-use', 'tool_use_id': 'wrong-tool',
+        }),
+        lambda events: events.__setitem__(6, {
+            'event': 'permission-response',
+            'request_id': 'wrong-request',
+            'behavior': 'deny',
+            'tool_use_id': 'wrong-tool',
+        }),
+        lambda events: events.insert(5, dict(events[4])),
+        lambda events: events.__setitem__(7, events.pop(8)),
+    ):
+        events = [dict(event) for event in complete_events]
+        mutation(events)
+        assert module.BinaryGate.ssh_lifecycle_evidence({
+            **module.SSH_LIFECYCLE_IDS,
+            'events': events,
+        })['passed'] is False
     required = module.required_targets_for_paths([
         'src/utils/effort.ts',
         'src/services/api/bootstrap.ts',
@@ -1649,6 +1797,8 @@ def assert_driver_behavior(module, baseline_module):
     assert "def agent_completion_proof(" in driver
     assert "self.workflow_completion_proof(" in driver
     assert "self.agent_completion_proof(" in driver
+    assert "parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(\n            run_dir, subagents=True\n        )" in driver
+    assert "'RELEASE_NESTED_PARENT_DONE'\n                    in self.assistant_text(run_dir, subagents=True)" in driver
     assert "The child must not call Agent or delegate" in driver
     assert "workflow did not reach a terminal status before timeout" in driver
     assert "'team-concurrency': self.team_concurrency" in driver
@@ -1868,6 +2018,9 @@ def assert_driver_behavior(module, baseline_module):
                     'session-id': 'cache-key',
                     'thread-id': 'cache-key',
                     'x-client-request-id': 'cache-key',
+                    'x-app': 'cli',
+                    'x-claude-code-session-id': 'cache-key',
+                    'user-agent': 'claude-code/test',
                 },
                 'authorization': {'present': True, 'matches_dummy': True},
             }
@@ -2041,12 +2194,8 @@ def assert_driver_behavior(module, baseline_module):
         (config / '.claude.json').write_text(json.dumps({
             'additionalModelOptionsCache': [option],
         }))
-        (run_dir / 'bootstrap-cache-seed.json').write_text(json.dumps({
-            'additionalModelOptionsCache': [option],
-            'additionalModelOptionsCacheKey': None,
-        }))
         (run_dir / 'debug.log').write_text(
-            '[Bootstrap] Skipped: Nonessential traffic disabled\n'
+            '[Bootstrap] fetched /api/claude_cli/bootstrap\n'
         )
         recorded = []
         first_party_gate = object.__new__(module.BinaryGate)
@@ -2068,10 +2217,11 @@ def assert_driver_behavior(module, baseline_module):
 
         first_party_gate.capture = capture_first_party
         first_party_gate.wait_until = lambda predicate, *_args: predicate()
-        first_party_gate.debug = module.BinaryGate.debug.__get__(
-            first_party_gate,
-            module.BinaryGate,
-        )
+        first_party_gate.mock_servers = {
+            run_dir.name: SimpleNamespace(snapshot=lambda: [{
+                'path': '/api/claude_cli/bootstrap',
+            }]),
+        }
         first_party_gate.close = lambda *_args: {'stopped': True}
         first_party_gate.cleanup_passed = lambda _cleanup: True
         first_party_gate.record = recorded.append
@@ -2086,9 +2236,14 @@ def assert_driver_behavior(module, baseline_module):
 
         assert recorded[0]['validation_verdict'] == 'passed'
         assert recorded[0]['unkeyed_cache'] is True
-        assert recorded[0]['startup_cache_used_without_fetch'] is True
+        assert recorded[0]['bootstrap_endpoint_once'] is True
         assert recorded[0]['picker_visible'] is True
         assert recorded[0]['current_model_confirmed'] is True
+        assert all(
+            'bootstrap-cache-seed.json' not in path
+            for assertion in recorded[0]['assertions']
+            for path in assertion['observed_evidence_paths']
+        )
 
     class OrphanMockServer:
         def __init__(self):
@@ -2139,9 +2294,13 @@ def assert_driver_behavior(module, baseline_module):
     assert 'exec "$@"' in launcher
     assert 'CLAUDE_CODE_USE_OPENAI="${CC_VALIDATION_USE_OPENAI:-1}"' in launcher
     assert 'ANTHROPIC_API_KEY="$CC_VALIDATION_ANTHROPIC_API_KEY"' in launcher
-    assert 'CLAUDE_LOCAL_OAUTH_API_BASE' not in launcher
+    assert 'CC_VALIDATION_LOCAL_OAUTH_API_BASE' in launcher
+    assert 'USE_LOCAL_OAUTH=1' in launcher
+    assert 'CLAUDE_LOCAL_OAUTH_API_BASE="$CC_VALIDATION_LOCAL_OAUTH_API_BASE"' in launcher
     assert 'DISABLE_AUTOUPDATER=1' in launcher
     assert 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="${CC_VALIDATION_AGENT_TEAMS:-}"' in launcher
+    assert 'CC_VALIDATION_SSH_IO="${CC_VALIDATION_SSH_IO:-}"' in launcher
+    assert 'CC_VALIDATION_SSH_BIN="${CC_VALIDATION_SSH_BIN:-}"' in launcher
     assert 'CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK="${CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK:-}"' in launcher
     assert 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC:-}"' in launcher
     assert 'CLAUDE_CODE_MAX_RETRIES="${CC_VALIDATION_MAX_RETRIES:-}"' in launcher
@@ -2325,11 +2484,7 @@ def assert_driver_behavior(module, baseline_module):
             first_party_global_config = json.loads(
                 (first_party_config / '.claude.json').read_text()
             )
-            assert first_party_global_config['additionalModelOptionsCache'] == [{
-                'value': 'release-first-party-bootstrap-model',
-                'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
-                'description': 'Release validation bootstrap model',
-            }]
+            assert 'additionalModelOptionsCache' not in first_party_global_config
             assert 'additionalModelOptionsCacheKey' not in first_party_global_config
             assert first_party_global_config['customApiKeyResponses']['approved'] == [
                 module.DUMMY_ANTHROPIC_API_KEY[-20:]

@@ -13,7 +13,7 @@ set -- env -i \
   XDG_CACHE_HOME="$CC_VALIDATION_HOME/.cache" \
   XDG_CONFIG_HOME="$CC_VALIDATION_HOME/.config" \
   XDG_DATA_HOME="$CC_VALIDATION_HOME/.local/share" \
-  PATH="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+  PATH="${CC_VALIDATION_SSH_BIN:+$CC_VALIDATION_SSH_BIN:}${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
   SHELL="${SHELL:-/bin/sh}" \
   USER="${USER:-}" \
   LANG="${LANG:-en_US.UTF-8}" \
@@ -33,6 +33,8 @@ set -- env -i \
   DISABLE_AUTOUPDATER=1 \
   CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="${CC_VALIDATION_AGENT_TEAMS:-}" \
   CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING="${CC_VALIDATION_WORKFLOW_FAULT_INJECTION:-}" \
+  CC_VALIDATION_SSH_IO="${CC_VALIDATION_SSH_IO:-}" \
+  CC_VALIDATION_SSH_BIN="${CC_VALIDATION_SSH_BIN:-}" \
   CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1
 
 if [ -n "${CC_VALIDATION_OPENAI_BASE_URL:-}" ]; then
@@ -43,14 +45,29 @@ if [ -n "${CC_VALIDATION_ANTHROPIC_API_KEY:-}" ]; then
   set -- "$@" ANTHROPIC_API_KEY="$CC_VALIDATION_ANTHROPIC_API_KEY"
 fi
 
+if [ -n "${CC_VALIDATION_LOCAL_OAUTH_API_BASE:-}" ]; then
+  set -- "$@" \
+    USE_LOCAL_OAUTH=1 \
+    CLAUDE_LOCAL_OAUTH_API_BASE="$CC_VALIDATION_LOCAL_OAUTH_API_BASE"
+fi
+
 set -- "$@" \
-  "$CC_VALIDATION_REPO_ROOT/built-claude" \
-  --dangerously-skip-permissions \
+  "$CC_VALIDATION_REPO_ROOT/built-claude"
+
+if [ "${CC_VALIDATION_SKIP_PERMISSIONS:-0}" != "1" ]; then
+  set -- "$@" --dangerously-skip-permissions
+fi
+
+set -- "$@" \
   --debug \
   --debug-file "$CC_VALIDATION_EVIDENCE_DIR/debug.log"
 
 if [ -n "${CC_VALIDATION_SYSTEM_PROMPT:-}" ]; then
   set -- "$@" --system-prompt "$CC_VALIDATION_SYSTEM_PROMPT"
+fi
+
+if [ -n "${CC_VALIDATION_SSH_TARGET:-}" ]; then
+  set -- "$@" ssh "$CC_VALIDATION_SSH_TARGET"
 fi
 
 exec "$@"

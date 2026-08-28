@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import atexit
+import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -132,7 +133,21 @@ TARGET_PATH_RULES = (
         'src/components/Spinner',
         'src/components/PromptInput/useSwarmBanner',
     )),
+    ('ssh-remote-session-lifecycle', (
+        'src/hooks/useSSHSession',
+        'src/hooks/useRemoteSession',
+        'src/ssh/remoteHistoryReplay',
+        'src/ssh/createSSHSession',
+        'src/screens/REPL',
+        'src/entrypoints/sdk/controlSchemas',
+    )),
 )
+SSH_LIFECYCLE_IDS = {
+    'session_id': 'release-ssh-session-0001',
+    'task_id': 'release-ssh-task-0001',
+    'tool_use_id': 'release-ssh-tool-0001',
+    'permission_request_id': 'release-ssh-permission-0001',
+}
 DEFAULT_TARGETS = (
     'agent-fg-bg',
     'nested-agent',
@@ -911,6 +926,9 @@ class BinaryGate:
     def __init__(self, repo, evidence_root, auth_source, baseline_path, *, base_ref=None):
         self.repo = repo.resolve()
         self.evidence_root = evidence_root.resolve()
+        self.lease_file = None
+        self.lease_path = None
+        self.lease_metadata = None
         self.auth_source = auth_source.expanduser().resolve()
         self.baseline_path = baseline_path.resolve()
         if is_relative_to(self.evidence_root, self.repo):
@@ -980,6 +998,57 @@ class BinaryGate:
         atexit.register(self.remove_auth_homes)
         for signum in (signal.SIGINT, signal.SIGTERM):
             signal.signal(signum, self.handle_signal)
+
+    def acquire_lease(self):
+        self.repo = self.repo.resolve()
+        repo_key = hashlib.sha256(str(self.repo).encode()).hexdigest()
+        self.lease_path = Path(tempfile.gettempdir()) / f'claude-release-gate-{repo_key}.lock'
+        self.lease_file = self.lease_path.open('a+')
+        try:
+            fcntl.flock(self.lease_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.lease_file.seek(0)
+            owner = self.lease_file.read()
+            self.lease_file.close()
+            self.lease_file = None
+            raise RuntimeError(f'release binary gate is already running for {self.repo}: {owner}')
+        try:
+            self.lease_metadata = {
+                'pid': self.pid,
+                'started': time.time(),
+                'repo': str(self.repo),
+                'binary': str(self.binary),
+                'evidence_root': str(self.evidence_root),
+            }
+            self.lease_file.seek(0)
+            self.lease_file.truncate()
+            self.lease_file.write(json.dumps(self.lease_metadata) + '\n')
+            self.lease_file.flush()
+            self.manifest['ownership_lease'] = {
+                'path': str(self.lease_path),
+                'metadata': self.lease_metadata,
+            }
+        except BaseException:
+            self.release_lease()
+            raise
+
+    def release_lease(self):
+        previous = getattr(self, 'lease_release', None)
+        if previous is not None:
+            return previous
+        if getattr(self, 'lease_file', None) is None:
+            lease_path = getattr(self, 'lease_path', None)
+            result = {'released': False, 'path': str(lease_path) if lease_path else None}
+            self.lease_release = result
+            return result
+        try:
+            fcntl.flock(self.lease_file.fileno(), fcntl.LOCK_UN)
+            result = {'released': True, 'path': str(self.lease_path)}
+        finally:
+            self.lease_file.close()
+            self.lease_file = None
+        self.lease_release = result
+        return result
 
     def git(self, *args):
         return command(['git', '-C', str(self.repo), *args], check=True).stdout
@@ -1149,6 +1218,142 @@ class BinaryGate:
         )
         return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
 
+    def make_ssh_transport_fixture(self, run_dir):
+        bin_dir = run_dir / 'fake-ssh-bin'
+        bin_dir.mkdir()
+        io_path = run_dir / 'fake-ssh-io.jsonl'
+        fixture = {**SSH_LIFECYCLE_IDS, 'bin_dir': str(bin_dir), 'io_path': str(io_path)}
+        # The gate owns this executable and prepends only this per-run directory to
+        # PATH. No product setting or user-facing executable override is introduced.
+        executable = bin_dir / 'ssh'
+        remote_version = repr(str(self.baseline['makefile_version']))
+        executable.write_text('''#!/usr/bin/env python3
+import json, os, sys
+io = os.environ["CC_VALIDATION_SSH_IO"]
+def event(name, **extra):
+    with open(io, "a") as stream:
+        stream.write(json.dumps({"event": name, **extra}, sort_keys=True) + "\\n")
+args = sys.argv[1:]
+command = args[-1] if args else ""
+remote_process = False
+event("ssh-invocation", args=args)
+if len(args) == 6 and args[0] == "-S" and args[2:5] == ["-O", "exit", "--"]:
+    if args[5] != "release-ssh-host":
+        event("invalid-invocation", reason="unexpected host")
+        sys.exit(64)
+    event("control-master-stop", host=args[5], control_path=args[1])
+elif "--" not in args:
+    event("invalid-invocation", reason="missing host separator")
+    sys.exit(64)
+else:
+    separator = args.index("--")
+    if separator + 2 != len(args) or args[separator + 1] != "release-ssh-host":
+        event("invalid-invocation", reason="unexpected host or command count")
+        sys.exit(64)
+    host = args[separator + 1]
+    if command.startswith("set -eu;") and "$(uname -s)" in command:
+        print("Linux\\nx86_64\\n/release-home\\n/release-work")
+    elif command.startswith("test -x ") and command.endswith(" --version"):
+        print(__REMOTE_VERSION__)
+    elif command.startswith("mkdir -m 700 -- "):
+        event("socket-directory-prepared", host=host)
+    elif command.startswith("rm -rf -- "):
+        event("cleanup-command", host=host)
+    elif command.startswith("set -eu; trap ") and " --input-format stream-json " in command:
+        remote_process = True
+        event("remote-process-start", host=host, session_id="release-ssh-session-0001")
+    else:
+        event("invalid-invocation", reason="unexpected remote command")
+        sys.exit(64)
+    if not remote_process:
+        sys.exit(0)
+    for line in sys.stdin:
+        try: message = json.loads(line)
+        except json.JSONDecodeError: continue
+        if message.get("type") == "control_request" and message.get("request", {}).get("subtype") == "replay_history":
+            event("history-bootstrap-request")
+            goal_uuid = "11111111-1111-4111-8111-111111111111"
+            goal = {"type":"system","subtype":"goal_state_changed","goal":{"type":"goal_status","id":"release-ssh-goal-0001","condition":"validate SSH lifecycle","status":"active","sentinel":True},"uuid":goal_uuid,"session_id":"release-ssh-session-0001"}
+            print(json.dumps({"type":"ssh_history_chunk","request_id":message["request_id"],"sequence":0,"messages":[goal]}), flush=True)
+            event("goal-bootstrap", goal_id="release-ssh-goal-0001")
+            print(json.dumps({"type":"control_response","response":{"subtype":"success","request_id":message["request_id"],"response":{"session_id":"release-ssh-session-0001","count":1,"last_uuid":goal_uuid}}}), flush=True)
+            event("history-bootstrap-response")
+        elif message.get("type") == "user":
+            event("task-start", task_id="release-ssh-task-0001")
+            print(json.dumps({"type":"system","subtype":"task_started","task_id":"release-ssh-task-0001","description":"SSH lifecycle task","uuid":"22222222-2222-4222-8222-222222222222","session_id":"release-ssh-session-0001"}), flush=True)
+            print(json.dumps({"type":"assistant","parent_tool_use_id":None,"uuid":"33333333-3333-4333-8333-333333333333","session_id":"release-ssh-session-0001","message":{"role":"assistant","content":[{"type":"tool_use","id":"release-ssh-tool-0001","name":"Bash","input":{"command":"pwd"}}]}}), flush=True)
+            event("tool-use", tool_use_id="release-ssh-tool-0001")
+            print(json.dumps({"type":"control_request","request_id":"release-ssh-permission-0001","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"},"tool_use_id":"release-ssh-tool-0001"}}), flush=True)
+        elif message.get("type") == "control_response":
+            response = message.get("response", {})
+            decision = response.get("response", {})
+            updated_input = decision.get("updatedInput", {})
+            tool_use_id = "release-ssh-tool-0001" if updated_input.get("command") == "pwd" else None
+            event("permission-response", request_id=response.get("request_id"), behavior=decision.get("behavior"), tool_use_id=tool_use_id)
+            if response.get("request_id") != "release-ssh-permission-0001" or decision.get("behavior") != "allow" or tool_use_id is None:
+                continue
+            print(json.dumps({"type":"system","subtype":"task_notification","task_id":"release-ssh-task-0001","status":"stopped","output_file":"/tmp/release-ssh-task","summary":"RELEASE_SSH_TASK_COMPLETE","uuid":"44444444-4444-4444-8444-444444444444","session_id":"release-ssh-session-0001"}), flush=True)
+            event("task-stopped", task_id="release-ssh-task-0001")
+            print(json.dumps({"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":False,"num_turns":1,"result":"RELEASE_SSH_TASK_COMPLETE","stop_reason":"end_turn","total_cost_usd":0,"usage":{},"modelUsage":{},"permission_denials":[],"uuid":"55555555-5555-4555-8555-555555555555","session_id":"release-ssh-session-0001"}), flush=True)
+            event("task-result", task_id="release-ssh-task-0001")
+    event("remote-process-exit")
+'''.replace('__REMOTE_VERSION__', remote_version))
+        executable.chmod(0o700)
+        return fixture
+
+    @staticmethod
+    def ssh_lifecycle_evidence(fixture, *, require_cleanup=True):
+        expected = [
+            ('remote-process-start', {}),
+            ('history-bootstrap-request', {}),
+            ('goal-bootstrap', {'goal_id': 'release-ssh-goal-0001'}),
+            ('history-bootstrap-response', {}),
+            ('task-start', {'task_id': SSH_LIFECYCLE_IDS['task_id']}),
+            ('tool-use', {'tool_use_id': SSH_LIFECYCLE_IDS['tool_use_id']}),
+            ('permission-response', {
+                'request_id': SSH_LIFECYCLE_IDS['permission_request_id'],
+                'behavior': 'allow',
+                'tool_use_id': SSH_LIFECYCLE_IDS['tool_use_id'],
+            }),
+            ('task-stopped', {'task_id': SSH_LIFECYCLE_IDS['task_id']}),
+            ('task-result', {'task_id': SSH_LIFECYCLE_IDS['task_id']}),
+            ('remote-process-exit', {}),
+        ]
+        cleanup_names = ['cleanup-command', 'control-master-stop']
+        if require_cleanup:
+            expected.extend((name, {}) for name in cleanup_names)
+        events = fixture.get('events', [])
+        observed_names = [event.get('event') for event in events]
+        required_names = [name for name, _ in expected]
+        missing_events = sorted(set(required_names) - set(observed_names))
+        unique = all(observed_names.count(name) == 1 for name in required_names)
+        ordered_events = [
+            event for event in events if event.get('event') in set(required_names)
+        ]
+        ordered = [event.get('event') for event in ordered_events] == required_names
+        event_fields_match = ordered and all(
+            all(event.get(key) == value for key, value in fields.items())
+            for event, (_, fields) in zip(ordered_events, expected)
+        )
+        ids_match = all(
+            fixture.get(key) == value for key, value in SSH_LIFECYCLE_IDS.items()
+        )
+        cleanup_absent = require_cleanup or not any(
+            name in observed_names for name in cleanup_names
+        )
+        return {
+            'passed': (
+                ids_match and not missing_events and unique and ordered
+                and event_fields_match and cleanup_absent
+            ),
+            'missing_events': missing_events,
+            'ids_match': ids_match,
+            'unique': unique,
+            'ordered': ordered,
+            'event_fields_match': event_fields_match,
+            'cleanup_absent': cleanup_absent,
+        }
+
     def make_fixture(self, run_dir, label):
         config = run_dir / 'config'
         home = Path(tempfile.mkdtemp(prefix='claude-release-home-'))
@@ -1200,25 +1405,10 @@ class BinaryGate:
             },
         }
         if label == 'first-party-bootstrap-picker':
-            bootstrap_options = [{
-                'value': 'release-first-party-bootstrap-model',
-                'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
-                'description': 'Release validation bootstrap model',
-            }]
-            global_config.update({
-                'customApiKeyResponses': {
-                    'approved': [DUMMY_ANTHROPIC_API_KEY[-20:]],
-                    'rejected': [],
-                },
-                'additionalModelOptionsCache': bootstrap_options,
-            })
-            (run_dir / 'bootstrap-cache-seed.json').write_text(
-                json.dumps({
-                    'network_fetch_boundary': '/api/claude_cli/bootstrap',
-                    'additionalModelOptionsCache': bootstrap_options,
-                    'additionalModelOptionsCacheKey': None,
-                }, indent=2) + '\n'
-            )
+            global_config['customApiKeyResponses'] = {
+                'approved': [DUMMY_ANTHROPIC_API_KEY[-20:]],
+                'rejected': [],
+            }
         (config / '.claude.json').write_text(
             json.dumps(global_config, indent=2) + '\n'
         )
@@ -1346,15 +1536,26 @@ class BinaryGate:
                 '-e', 'CC_VALIDATION_MAX_RETRIES=0',
             ])
         if label == 'first-party-bootstrap-picker':
+            mock_server = MockOpenAIServer(run_dir, label)
+            mock_base_url = mock_server.start()
+            self.mock_servers[run_key] = mock_server
             args.extend([
                 '-e', 'CC_VALIDATION_USE_OPENAI=0',
                 '-e', f'CC_VALIDATION_ANTHROPIC_API_KEY={DUMMY_ANTHROPIC_API_KEY}',
-                '-e', 'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC=1',
+                '-e', f'CC_VALIDATION_LOCAL_OAUTH_API_BASE={mock_base_url}',
             ])
         if label == 'prompt-modes-cache-prefix':
             args.extend([
                 '-e',
                 f'CC_VALIDATION_SYSTEM_PROMPT={CUSTOM_SYSTEM_PROMPT_MARKER}',
+            ])
+        if label == 'ssh-remote-session-lifecycle':
+            fixture = self.make_ssh_transport_fixture(run_dir)
+            args.extend([
+                '-e', f'CC_VALIDATION_SSH_IO={fixture["io_path"]}',
+                '-e', f'CC_VALIDATION_SSH_BIN={fixture["bin_dir"]}',
+                '-e', 'CC_VALIDATION_SKIP_PERMISSIONS=1',
+                '-e', 'CC_VALIDATION_SSH_TARGET=release-ssh-host',
             ])
         args.append(str(self.launcher))
         result = self.tmux(*args)
@@ -1382,7 +1583,11 @@ class BinaryGate:
             },
             'terminal': {'cols': 200, 'rows': 60},
             'flags': [
-                '--dangerously-skip-permissions',
+                *(
+                    []
+                    if label == 'ssh-remote-session-lifecycle'
+                    else ['--dangerously-skip-permissions']
+                ),
                 '--debug',
                 '--debug-file',
                 '<evidence>/debug.log',
@@ -1548,11 +1753,17 @@ class BinaryGate:
         if self.cleanup_started:
             raise SystemExit(128 + signum)
         self.cleanup_started = True
+        if hasattr(self, 'manifest'):
+            self.manifest['completion_state'] = 'interrupted'
+            self.manifest['normal_exit'] = False
+            self.manifest['completion_reason'] = signal.Signals(signum).name
         signal.signal(signum, signal.SIG_IGN)
+        lease_release = self.release_lease()
         cleanup = {
             'signal': signal.Signals(signum).name,
             'active_runs': self.close_active_runs(),
             'auth_homes': self.remove_auth_homes(),
+            'ownership_lease_release': lease_release,
         }
         if self.evidence_root.is_dir():
             (self.evidence_root / 'signal-cleanup.json').write_text(
@@ -2559,7 +2770,8 @@ class BinaryGate:
             self.send(target, run_dir, prompt, 'input-nested.txt')
             terminal = self.wait_until(
                 lambda: (
-                    'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(run_dir)
+                    'RELEASE_NESTED_PARENT_DONE'
+                    in self.assistant_text(run_dir, subagents=True)
                     and 'RELEASE_NESTED_CHILD_DONE'
                     in self.assistant_text(run_dir, subagents=True)
                 ),
@@ -2583,7 +2795,9 @@ class BinaryGate:
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
-        parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(run_dir)
+        parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(
+            run_dir, subagents=True
+        )
         child_result = 'RELEASE_NESTED_CHILD_DONE' in self.assistant_text(
             run_dir, subagents=True
         )
@@ -3012,6 +3226,9 @@ return { results }
                     headers.get(name) == cache_key
                     for name in ('session-id', 'thread-id', 'x-client-request-id')
                 )
+                and headers.get('x-app') == 'cli'
+                and headers.get('x-claude-code-session-id') == cache_key
+                and bool(headers.get('user-agent'))
                 and request.get('authorization') == {
                     'present': True,
                     'matches_dummy': True,
@@ -3042,7 +3259,7 @@ return { results }
             'request_count': len(responses),
             'wire_efforts': wire_efforts,
             'cache_key_present': all(bool(key) for key in cache_keys),
-            'cache_routing_headers_match': all(request_checks),
+            'cache_routing_and_metadata_headers_match': all(request_checks),
             'cache_key_stable': len(set(cache_keys)) == 1,
             'effort_commands_visible': effort_visible,
             'responses_ready': response_ready,
@@ -3544,21 +3761,22 @@ return { results }
             }]
             and 'additionalModelOptionsCacheKey' not in global_config
         )
-        debug_text = self.debug(run_dir)
-        startup_cache_used_without_fetch = (
-            unkeyed_cache
-            and '[Bootstrap] Skipped: Nonessential traffic disabled' in debug_text
-        )
+        mock_server = getattr(self, 'mock_servers', {}).get(run_dir.name)
+        bootstrap_requests = [
+            request for request in (mock_server.snapshot() if mock_server else [])
+            if urlsplit(request['path']).path == '/api/claude_cli/bootstrap'
+        ]
+        endpoint_once = len(bootstrap_requests) == 1
         analysis_path.write_text(json.dumps({
             'bootstrap_endpoint_contract': '/api/claude_cli/bootstrap',
+            'bootstrap_endpoint_request_count': len(bootstrap_requests),
             'unkeyed_cache': unkeyed_cache,
-            'startup_cache_used_without_fetch': startup_cache_used_without_fetch,
             'picker_visible': picker_visible,
             'current_model_confirmed': current,
         }, indent=2) + '\n')
         cleanup = self.close(run_dir, session, target)
         cache_passed = (
-            ready and startup_cache_used_without_fetch
+            ready and endpoint_once and unkeyed_cache
             and self.cleanup_passed(cleanup)
         )
         picker_passed = (
@@ -3567,7 +3785,6 @@ return { results }
         )
         passed = cache_passed and picker_passed
         evidence = [
-            run_dir / 'bootstrap-cache-seed.json',
             config_path,
             run_dir / 'input-first-party-model-picker.txt',
             picker_path,
@@ -3578,7 +3795,7 @@ return { results }
             'validation_verdict': 'passed' if passed else 'failed',
             'reason': None if passed else 'first-party bootstrap startup cache or picker evidence was incomplete',
             'unkeyed_cache': unkeyed_cache,
-            'startup_cache_used_without_fetch': startup_cache_used_without_fetch,
+            'bootstrap_endpoint_once': endpoint_once,
             'picker_visible': picker_visible,
             'current_model_confirmed': current,
             'assertions': [
@@ -3804,6 +4021,14 @@ return { results }
                 response.get('headers', {}).get(name) == cache_keys[0]
                 for response in responses
                 for name in ('session-id', 'thread-id', 'x-client-request-id')
+            )
+            and all(
+                response.get('headers', {}).get('x-app') == 'cli'
+                and response.get('headers', {}).get(
+                    'x-claude-code-session-id'
+                ) == cache_keys[0]
+                and bool(response.get('headers', {}).get('user-agent'))
+                for response in responses
             )
         )
         custom_prompt_ok = custom_prompt_instructions_stable(bodies)
@@ -4604,6 +4829,75 @@ return await parallel([
         })
         self.record(result)
 
+    def ssh_remote_session_lifecycle(self):
+        run_dir, session, target, ready = self.start('ssh-remote-session-lifecycle')
+        result = {'label': 'ssh-remote-session-lifecycle', 'evidence_dir': str(run_dir)}
+        task_path = run_dir / '02-ssh-task-pane.txt'
+        permission_path = run_dir / '03-ssh-permission-pane.txt'
+        terminal_path = run_dir / '04-ssh-terminal-pane.txt'
+        fixture = {**SSH_LIFECYCLE_IDS, 'events': []}
+        task_visible = permission_visible = terminal_visible = False
+        if ready:
+            self.send(target, run_dir, 'RELEASE_SSH_TASK_START', 'input-ssh-task.txt')
+            task_visible = self.wait_until(
+                lambda: 'release-ssh-tool-0001' in self.debug(run_dir)
+                or 'Bash' in strip_ansi(self.capture(target, task_path)), 30, 0.25,
+            )
+            permission = self.capture(target, permission_path)
+            permission_visible = 'Bash' in strip_ansi(permission)
+            if permission_visible:
+                self.tmux('send-keys', '-t', target, 'Enter', check=True)
+            terminal_visible = self.wait_until(
+                lambda: 'RELEASE_SSH_TASK_COMPLETE' in strip_ansi(
+                    self.capture(target, terminal_path)
+                ), 30, 0.25,
+            )
+        io_path = run_dir / 'fake-ssh-io.jsonl'
+        if io_path.exists():
+            for line in io_path.read_text(errors='replace').splitlines():
+                try:
+                    fixture['events'].append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        pre_cleanup = self.ssh_lifecycle_evidence(
+            fixture, require_cleanup=False
+        )
+        cleanup = self.close(run_dir, session, target)
+        if io_path.exists():
+            fixture['events'] = []
+            for line in io_path.read_text(errors='replace').splitlines():
+                try:
+                    fixture['events'].append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        lifecycle = self.ssh_lifecycle_evidence(fixture)
+        (run_dir / 'ssh-lifecycle-evidence.json').write_text(json.dumps({
+            'ids': SSH_LIFECYCLE_IDS, 'events': fixture['events'],
+            'before_cleanup': pre_cleanup, 'after_cleanup': lifecycle,
+        }, indent=2) + '\n')
+        passed = (
+            ready and task_visible and permission_visible and terminal_visible
+            and pre_cleanup['passed'] and lifecycle['passed']
+            and self.cleanup_passed(cleanup)
+        )
+        assertions = [self.required_assertion(
+            run_dir, 'ssh-remote-session-lifecycle',
+            'Built CLI remote SSH stream lifecycle',
+            'Built Claude starts the isolated fake ssh transport; history bootstrap, task, tool, permission, completion, session end, and cleanup share stable IDs.',
+            [run_dir / 'pane-target.txt', task_path, permission_path, terminal_path,
+             io_path, run_dir / 'debug.log', run_dir / 'ssh-lifecycle-evidence.json'],
+            passed=passed,
+            reason='SSH lifecycle pane, transport I/O, IDs, or cleanup evidence was incomplete',
+        )]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'SSH lifecycle assertions were incomplete',
+            **SSH_LIFECYCLE_IDS, 'task_visible': task_visible,
+            'permission_visible': permission_visible, 'terminal_visible': terminal_visible,
+            'transport_evidence': lifecycle, 'assertions': assertions, 'cleanup': cleanup,
+        })
+        self.record(result)
+
     def unsupported_required_target(self, label):
         result = {
             'label': label,
@@ -4617,7 +4911,21 @@ return await parallel([
         self.record(result)
 
     def run(self, targets):
-        self.evidence_root.mkdir(parents=True, exist_ok=False)
+        self.acquire_lease()
+        try:
+            self.evidence_root.mkdir(parents=True, exist_ok=False)
+        except Exception:
+            self.release_lease()
+            raise
+        self.manifest.update({
+            'completion_state': 'running',
+            'normal_exit': False,
+            'expected_run_count': len(targets) + 1,
+            'recorded_run_count': 0,
+            'planned_targets': ['readiness-smoke', *targets],
+            'matrix_complete': False,
+            'completion_reason': None,
+        })
         (self.evidence_root / 'driver-start-manifest.json').write_text(
             json.dumps(self.manifest, indent=2) + '\n'
         )
@@ -4639,6 +4947,7 @@ return await parallel([
             'workflow-failure-detail': self.workflow_failure_detail,
             'coordinator-selector': self.coordinator_selector,
             'transcript-retention': self.transcript_retention,
+            'ssh-remote-session-lifecycle': self.ssh_remote_session_lifecycle,
         }
         try:
             self.run_target('readiness-smoke', self.readiness_smoke)
@@ -4647,7 +4956,21 @@ return await parallel([
                 self.run_target(result_label, actions[target])
         except Exception as error:
             self.manifest['driver_error'] = repr(error)
+            self.manifest['completion_reason'] = repr(error)
+        else:
+            self.manifest['normal_exit'] = True
+            self.manifest['completion_state'] = 'completed'
+            self.manifest['completion_reason'] = 'completed matrix'
         finally:
+            self.manifest['recorded_run_count'] = len(self.manifest['runs'])
+            self.manifest['matrix_complete'] = (
+                self.manifest['recorded_run_count']
+                == self.manifest['expected_run_count']
+            )
+            if not self.manifest['normal_exit']:
+                self.manifest['completion_state'] = (
+                    'interrupted' if self.cleanup_started else 'failed'
+                )
             self.manifest['emergency_cleanup'] = self.close_active_runs()
             self.manifest['auth_cleanup'] = self.remove_auth_homes()
             self.manifest['workflow_runs_cleanup'] = (
@@ -4682,7 +5005,9 @@ return await parallel([
             self.manifest['overall_verdict'] = (
                 'passed'
                 if (
-                    'driver_error' not in self.manifest
+                    self.manifest['normal_exit']
+                    and self.manifest['matrix_complete']
+                    and 'driver_error' not in self.manifest
                     and len(self.manifest['runs']) == expected_runs
                     and required_coverage['passed']
                     and all(
@@ -4699,6 +5024,7 @@ return await parallel([
                 )
                 else 'failed'
             )
+            self.manifest['ownership_lease_release'] = self.release_lease()
             (self.evidence_root / 'driver-final-manifest.json').write_text(
                 json.dumps(self.manifest, indent=2) + '\n'
             )
