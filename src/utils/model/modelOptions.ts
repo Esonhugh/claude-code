@@ -36,6 +36,7 @@ import { isAnt } from 'src/utils/userType.js'
 import {
   getModelDiscoveryCacheKey,
   getOpenAIModelOptions,
+  isModelDiscoveryEnabled,
 } from './openaiModelOptions.js'
 
 
@@ -274,23 +275,26 @@ function getOpusPlanOption(): ModelOption {
 
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
-function getDiscoveredModelOptions(): ModelOption[] {
+function getCachedModelOptions(): ModelOption[] | undefined {
   const config = getGlobalConfig()
+  if (!isModelDiscoveryEnabled()) {
+    return config.additionalModelOptionsCacheKey === undefined
+      ? config.additionalModelOptionsCache
+      : undefined
+  }
   const cacheKey = getModelDiscoveryCacheKey()
   return cacheKey !== null && config.additionalModelOptionsCacheKey === cacheKey
     ? (config.additionalModelOptionsCache ?? [])
-    : []
+    : undefined
 }
 
 function getModelOptionsBase(fastMode = false): ModelOption[] {
-  const discoveredModelOptions = getDiscoveredModelOptions()
+  const discoveredModelOptions = getCachedModelOptions()
   if (getAPIProvider() === 'openai') {
-    return discoveredModelOptions.length > 0
-      ? discoveredModelOptions
-      : getOpenAIModelOptions()
+    return discoveredModelOptions ?? getOpenAIModelOptions()
   }
 
-  if (discoveredModelOptions.length > 0) {
+  if (discoveredModelOptions !== undefined) {
     return discoveredModelOptions
   }
 

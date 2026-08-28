@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import axios from 'axios'
 import { getAnthropicApiKey, getOpenAIAuthInfo } from '../auth.js'
 import { logForDebugging } from '../debug.js'
@@ -43,10 +44,16 @@ type CodexModel = {
 }
 
 type ModelDiscoveryRequest = {
+  cacheKey: string
   endpoint: string
   headers: Record<string, string>
   params?: Record<string, string | number>
   parseOptions?: ParseModelOptions
+}
+
+export type ModelDiscoveryResult = {
+  cacheKey: string
+  options: ModelOption[]
 }
 
 type ParseModelOptions = {
@@ -70,16 +77,27 @@ export function isModelDiscoveryEnabled(): boolean {
 export function getModelDiscoveryCacheKey(): string | null {
   if (getAPIProvider() === 'openai') {
     const auth = getOpenAIAuthInfo()
-    return auth?.isChatGPT
-      ? 'openai:chatgpt'
-      : `openai:${process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'}`
+    if (!auth) return null
+    if (auth.isChatGPT) {
+      return `openai:chatgpt:${auth.accountId?.trim() || credentialIdentity(auth.accessToken)}`
+    }
+    return `openai:${getModelsBaseURL(process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1')}:api:${credentialIdentity(auth.accessToken)}`
   }
 
   if (!isModelDiscoveryEnabled()) return null
-  return `anthropic:${process.env.ANTHROPIC_BASE_URL}`
+  const authToken = process.env.ANTHROPIC_AUTH_TOKEN
+  const apiKey = authToken ? null : getAnthropicApiKey()
+  if (!authToken && !apiKey) return null
+  const credentialType = authToken ? 'auth-token' : 'api-key'
+  return `anthropic:${getModelsBaseURL(process.env.ANTHROPIC_BASE_URL!)}:${credentialType}:${credentialIdentity(authToken ?? apiKey!)}`
 }
 
 export async function fetchModelOptions(): Promise<ModelOption[] | null> {
+  const result = await fetchModelDiscoveryResult()
+  return result?.options ?? null
+}
+
+export async function fetchModelDiscoveryResult(): Promise<ModelDiscoveryResult | null> {
   const request = getModelDiscoveryRequest()
   if (!request) return null
 
@@ -90,9 +108,16 @@ export async function fetchModelOptions(): Promise<ModelOption[] | null> {
       timeout: 5000,
     })
 
+    if (
+      !Array.isArray(response.data.data) &&
+      !Array.isArray(response.data.models)
+    ) {
+      logForDebugging('[Model discovery] Fetch failed: invalid response')
+      return null
+    }
     const options = parseOpenAIModelOptions(response.data, request.parseOptions)
     logForDebugging(`[Model discovery] Fetched ${options.length} options`)
-    return options.length > 0 ? options : null
+    return { cacheKey: request.cacheKey, options }
   } catch (error) {
     logForDebugging(
       `[Model discovery] Fetch failed: ${axios.isAxiosError(error) ? (error.response?.status ?? error.code) : 'unknown'}`,
@@ -111,6 +136,9 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
 
     const customBaseURL = process.env.OPENAI_BASE_URL
     return {
+      cacheKey: auth.isChatGPT
+        ? `openai:chatgpt:${auth.accountId?.trim() || credentialIdentity(auth.accessToken)}`
+        : `openai:${getModelsBaseURL(customBaseURL ?? 'https://api.openai.com/v1')}:api:${credentialIdentity(auth.accessToken)}`,
       endpoint: auth.isChatGPT
         ? 'https://chatgpt.com/backend-api/codex/models'
         : getModelsEndpoint(customBaseURL ?? 'https://api.openai.com/v1'),
@@ -147,6 +175,7 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
   }
 
   return {
+    cacheKey: `anthropic:${getModelsBaseURL(process.env.ANTHROPIC_BASE_URL!)}:${authToken ? 'auth-token' : 'api-key'}:${credentialIdentity(authToken ?? apiKey!)}`,
     endpoint: getModelsEndpoint(process.env.ANTHROPIC_BASE_URL!),
     headers: {
       ...(authToken
@@ -163,9 +192,17 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
   }
 }
 
-function getModelsEndpoint(baseURL: string): string {
+function credentialIdentity(credential: string): string {
+  return createHash('sha256').update(credential).digest('hex').slice(0, 16)
+}
+
+function getModelsBaseURL(baseURL: string): string {
   const normalized = baseURL.replace(/\/+$/, '')
-  return `${normalized.endsWith('/v1') ? normalized : `${normalized}/v1`}/models`
+  return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`
+}
+
+function getModelsEndpoint(baseURL: string): string {
+  return `${getModelsBaseURL(baseURL)}/models`
 }
 
 export function parseOpenAIModelOptions(

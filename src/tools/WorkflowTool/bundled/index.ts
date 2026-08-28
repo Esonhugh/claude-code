@@ -139,11 +139,11 @@ const scope = await agent(
     (TARGET
       ? "Review target / instructions (passed by the user, verbatim): \"" + TARGET + "\". If it names a PR number, branch, ref range, or file path, build the matching git diff command for it; if it is free-form, honor the scope restriction and start from the current branch diff for whatever it does not narrow.\n"
       : "No explicit target — review the current branch. Prefer 'git diff @{upstream}...HEAD' and fall back to 'git diff main...HEAD' or 'git diff HEAD~1'. If there are uncommitted changes also include 'git diff HEAD'.\n") +
-    "\n1. Determine exact diff command(s) and run them to confirm they produce a non-empty diff.\n" +
-    "2. List changed files.\n" +
-    "3. Summarize what changed in one paragraph.\n" +
-    "4. Read CLAUDE.md files relevant to changed files and note conventions reviewers should know.\n\n" +
-    "Return diffCommand exactly as a reviewer should run it. Structured output only.",
+    "\n1. Determine exact diff command(s) and confirm they produce a non-empty diff.\n" +
+    "2. Use only the diff stat and changed-file list during this phase; derive both with --stat and --name-only variants of the exact diff command.\n" +
+    "3. Summarize the scope in one paragraph from that bounded metadata. Do not read the full patch or changed source files; finder agents do that review work.\n" +
+    "4. Read only CLAUDE.md files relevant to changed files and note conventions reviewers should know.\n\n" +
+    "Return diffCommand exactly as a reviewer should run it. Call StructuredOutput immediately after these bounded checks. Structured output only.",
   { label: "scope", phase: "Scope", schema: SCOPE_SCHEMA },
 )
 if (!scope) {

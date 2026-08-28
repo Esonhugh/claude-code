@@ -416,13 +416,15 @@ export const FileReadTool = buildTool({
   },
   renderToolUseErrorMessage,
   async validateInput({ file_path, pages }, toolUseContext: ToolUseContext) {
-    // Validate pages parameter (pure string parsing, no I/O)
-    if (pages !== undefined) {
-      const parsed = parsePDFPageRange(pages)
+    // OpenAI Responses can serialize omitted optional strings as empty strings.
+    // Treat that transport artifact as an omitted PDF range.
+    const pageRange = pages?.trim() || undefined
+    if (pageRange !== undefined) {
+      const parsed = parsePDFPageRange(pageRange)
       if (!parsed) {
         return {
           result: false,
-          message: `Invalid pages parameter: "${pages}". Use formats like "1-5", "3", or "10-20". Pages are 1-indexed.`,
+          message: `Invalid pages parameter: "${pageRange}". Use formats like "1-5", "3", or "10-20". Pages are 1-indexed.`,
           errorCode: 7,
         }
       }
@@ -494,12 +496,13 @@ export const FileReadTool = buildTool({
     return { result: true }
   },
   async call(
-    { file_path, offset = 1, limit = undefined, pages },
+    { file_path, offset = 1, limit = undefined, pages: inputPages },
     context,
     _canUseTool?,
     parentMessage?,
   ) {
     const { readFileState, fileReadingLimits } = context
+    const pages = inputPages?.trim() || undefined
 
     const defaults = getDefaultFileReadingLimits()
     const maxSizeBytes =

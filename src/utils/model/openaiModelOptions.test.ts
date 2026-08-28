@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,10 +11,13 @@ import axios from 'axios'
 }
 
 const originalHome = process.env.HOME
+const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalAnthropicModel = process.env.ANTHROPIC_MODEL
 const originalNodeEnv = process.env.NODE_ENV
 const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
+const originalOpenAIAuthToken = process.env.OPENAI_AUTH_TOKEN
+const originalOpenAIApiKey = process.env.OPENAI_API_KEY
 const originalAnthropicBaseURL = process.env.ANTHROPIC_BASE_URL
 const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
 const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
@@ -25,14 +29,28 @@ const tempHome = mkdtempSync(join(tmpdir(), 'claude-openai-model-options-'))
 
 try {
   process.env.HOME = tempHome
+  process.env.CLAUDE_CONFIG_DIR = tempHome
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.NODE_ENV = 'test'
   delete process.env.ANTHROPIC_MODEL
+  delete process.env.OPENAI_BASE_URL
+  delete process.env.OPENAI_AUTH_TOKEN
+  delete process.env.OPENAI_API_KEY
 
   const authModule = await import('../auth.js')
+  const { setInitialMainLoopModel, setMainLoopModelOverride } = await import(
+    '../../bootstrap/state.js'
+  )
   const { saveGlobalConfig } = await import('../config.js')
+  const { resetSettingsCache } = await import('../settings/settingsCache.js')
   const openAIModelOptions = await import('./openaiModelOptions.js')
   const { getModelOptions } = await import('./modelOptions.js')
+
+  authModule.getOpenAIAuthInfo.cache.clear?.()
+  authModule.getChatGPTOAuthInfo.cache.clear?.()
+  setInitialMainLoopModel(null)
+  setMainLoopModelOverride(undefined)
+  resetSettingsCache()
 
   assert.deepEqual(
     openAIModelOptions.parseOpenAIModelOptions({
@@ -83,12 +101,33 @@ try {
   assert.equal(getModelOptions().some(option => option.value === 'sonnet'), false)
   assert.equal(getModelOptions().some(option => option.value === 'opus'), false)
 
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'cached-api-token',
+    isChatGPT: false,
+  })
+  const cachedDiscoveryKey =
+    openAIModelOptions.getModelDiscoveryCacheKey() ?? undefined
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [],
+    additionalModelOptionsCacheKey: cachedDiscoveryKey,
+  }))
+  assert.deepEqual(getModelOptions(), [])
+  setMainLoopModelOverride('gpt-current-custom')
+  assert.deepEqual(getModelOptions(), [
+    {
+      value: 'gpt-current-custom',
+      label: 'gpt-current-custom',
+      description: 'Custom model',
+    },
+  ])
+  setMainLoopModelOverride(undefined)
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: [
       { value: 'gpt-online', label: 'GPT Online', description: 'From API' },
     ],
-    additionalModelOptionsCacheKey: 'openai:https://api.openai.com/v1',
+    additionalModelOptionsCacheKey: cachedDiscoveryKey,
   }))
   assert.equal(getModelOptions()[0]?.value, 'gpt-online')
 
@@ -123,6 +162,26 @@ try {
     accessToken: 'api-token',
     isChatGPT: false,
   })
+  const apiCacheKey = openAIModelOptions.getModelDiscoveryCacheKey()
+  assert.match(apiCacheKey ?? '', /^openai:https:\/\/api\.openai\.com\/v1:api:/)
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'different-api-token',
+    isChatGPT: false,
+  })
+  assert.notEqual(openAIModelOptions.getModelDiscoveryCacheKey(), apiCacheKey)
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'api-token',
+    isChatGPT: false,
+  })
+  process.env.OPENAI_BASE_URL = 'https://openrouter.ai/api///'
+  const openRouterCacheKey = openAIModelOptions.getModelDiscoveryCacheKey()
+  assert.match(
+    openRouterCacheKey ?? '',
+    /^openai:https:\/\/openrouter\.ai\/api\/v1:api:/,
+  )
+  process.env.OPENAI_BASE_URL = 'https://openrouter.ai/api/v1/'
+  assert.equal(openAIModelOptions.getModelDiscoveryCacheKey(), openRouterCacheKey)
+  delete process.env.OPENAI_BASE_URL
   assert.deepEqual(await openAIModelOptions.fetchModelOptions(), [
     { value: 'gpt-api', label: 'GPT API', description: 'OpenAI model' },
   ])
@@ -148,6 +207,34 @@ try {
     accountId: 'account-123',
     isChatGPT: true,
   })
+  const chatGPTCacheKey = openAIModelOptions.getModelDiscoveryCacheKey()
+  assert.equal(chatGPTCacheKey, 'openai:chatgpt:account-123')
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'chatgpt-token',
+    accountId: 'account-456',
+    isChatGPT: true,
+  })
+  assert.equal(
+    openAIModelOptions.getModelDiscoveryCacheKey(),
+    'openai:chatgpt:account-456',
+  )
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'chatgpt-token-without-account',
+    isChatGPT: true,
+  })
+  assert.equal(
+    openAIModelOptions.getModelDiscoveryCacheKey(),
+    'openai:chatgpt:' +
+      createHash('sha256')
+        .update('chatgpt-token-without-account')
+        .digest('hex')
+        .slice(0, 16),
+  )
+  authModule.getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'chatgpt-token',
+    accountId: 'account-123',
+    isChatGPT: true,
+  })
   await openAIModelOptions.fetchModelOptions()
   assert.equal(requests[0]!.url, 'https://chatgpt.com/backend-api/codex/models')
   assert.equal(requests[0]!.headers?.['chatgpt-account-id'], 'account-123')
@@ -159,6 +246,25 @@ try {
   process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
   process.env.ANTHROPIC_API_KEY = 'gateway-key'
   delete process.env.ANTHROPIC_AUTH_TOKEN
+  const gatewayCacheKey =
+    'anthropic:https://openrouter.ai/api/v1:api-key:' +
+    createHash('sha256').update('gateway-key').digest('hex').slice(0, 16)
+  assert.equal(
+    openAIModelOptions.getModelDiscoveryCacheKey(),
+    gatewayCacheKey,
+  )
+  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1/'
+  assert.equal(
+    openAIModelOptions.getModelDiscoveryCacheKey(),
+    gatewayCacheKey,
+  )
+  process.env.ANTHROPIC_API_KEY = 'different-gateway-key'
+  assert.notEqual(
+    openAIModelOptions.getModelDiscoveryCacheKey(),
+    gatewayCacheKey,
+  )
+  process.env.ANTHROPIC_API_KEY = 'gateway-key'
+  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
   assert.deepEqual(await openAIModelOptions.fetchModelOptions(), [
     {
       value: 'anthropic/claude-gateway',
@@ -190,17 +296,32 @@ try {
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: gatewayOptions,
-    additionalModelOptionsCacheKey: 'anthropic:https://openrouter.ai/api',
+    additionalModelOptionsCacheKey: gatewayCacheKey,
   }))
-  assert.deepEqual(getModelOptions().slice(0, 2), gatewayOptions)
-  assert.equal(getModelOptions().length, 3)
-  assert.equal(getModelOptions()[2]?.value, 'gemini-3.7-flash-high')
+  assert.deepEqual(getModelOptions(), gatewayOptions)
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)
   assert.equal(requests.length, 0)
+
+  const firstPartyBootstrapOption = {
+    value: 'claude-bootstrap-extra',
+    label: 'Claude Bootstrap Extra',
+    description: 'From first-party bootstrap',
+  }
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: [firstPartyBootstrapOption],
+    additionalModelOptionsCacheKey: undefined,
+  }))
+  assert.equal(
+    getModelOptions().some(
+      option => option.value === firstPartyBootstrapOption.value,
+    ),
+    true,
+  )
 
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
   delete process.env.ANTHROPIC_BASE_URL
@@ -237,8 +358,18 @@ try {
   axios.get = originalAxiosGet
   const authModule = await import('../auth.js')
   authModule.getOpenAIAuthInfo.cache.clear?.()
+  authModule.getChatGPTOAuthInfo.cache.clear?.()
+  const { setInitialMainLoopModel, setMainLoopModelOverride } = await import(
+    '../../bootstrap/state.js'
+  )
+  const { resetSettingsCache } = await import('../settings/settingsCache.js')
+  setInitialMainLoopModel(null)
+  setMainLoopModelOverride(undefined)
+  resetSettingsCache()
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
+  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
   if (originalAnthropicModel === undefined) delete process.env.ANTHROPIC_MODEL
@@ -247,6 +378,10 @@ try {
   else process.env.NODE_ENV = originalNodeEnv
   if (originalOpenAIBaseURL === undefined) delete process.env.OPENAI_BASE_URL
   else process.env.OPENAI_BASE_URL = originalOpenAIBaseURL
+  if (originalOpenAIAuthToken === undefined) delete process.env.OPENAI_AUTH_TOKEN
+  else process.env.OPENAI_AUTH_TOKEN = originalOpenAIAuthToken
+  if (originalOpenAIApiKey === undefined) delete process.env.OPENAI_API_KEY
+  else process.env.OPENAI_API_KEY = originalOpenAIApiKey
   if (originalAnthropicBaseURL === undefined) delete process.env.ANTHROPIC_BASE_URL
   else process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseURL
   if (originalAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY

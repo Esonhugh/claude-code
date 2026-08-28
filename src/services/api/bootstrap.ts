@@ -13,7 +13,7 @@ import { withOAuth401Retry } from '../../utils/http.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
-  fetchModelOptions,
+  fetchModelDiscoveryResult,
   getModelDiscoveryCacheKey,
   isModelDiscoveryEnabled,
 } from '../../utils/model/openaiModelOptions.js'
@@ -121,10 +121,11 @@ export async function fetchBootstrapData(): Promise<void> {
   try {
     let response: BootstrapResponse | null
     if (isModelDiscoveryEnabled()) {
-      const additionalModelOptions = await fetchModelOptions()
-      response = additionalModelOptions
-        ? { additional_model_options: additionalModelOptions }
-        : null
+      const discovery = await fetchModelDiscoveryResult()
+      if (!discovery || discovery.cacheKey !== getModelDiscoveryCacheKey()) {
+        return
+      }
+      response = { additional_model_options: discovery.options }
     } else {
       response = await fetchBootstrapAPI()
     }

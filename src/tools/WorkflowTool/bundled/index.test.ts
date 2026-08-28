@@ -24,6 +24,14 @@ assert.match(codeReview.runScriptSnapshot ?? '', /MAX_VERIFY = 25/)
 assert.match(codeReview.runScriptSnapshot ?? '', /phase\("Synthesize"\)/)
 assert.match(
   codeReview.runScriptSnapshot ?? '',
+  /Use only the diff stat and changed-file list during this phase/,
+)
+assert.match(
+  codeReview.runScriptSnapshot ?? '',
+  /Do not read the full patch or changed source files/,
+)
+assert.match(
+  codeReview.runScriptSnapshot ?? '',
   /Array\.isArray\(report\?\.findings\)/,
 )
 assert.equal(codeReview.defaults?.permissionMode, 'plan')

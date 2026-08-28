@@ -45,6 +45,9 @@ export function modelSupportsEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
+  if (getAPIProvider() === 'openai') {
+    return true
+  }
   // Supported by current Claude effort-capable model families.
   if (
     m.includes('fable-5') ||
@@ -81,6 +84,9 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
+  if (getAPIProvider() === 'openai') {
+    return true
+  }
   const m = model.toLowerCase()
   if (
     m.includes('fable-5') ||
@@ -116,7 +122,17 @@ export function getSupportedEffortLevelsForModel(
   model: string,
 ): readonly ConfiguredEffortLevel[] {
   if (getAPIProvider() === 'openai') {
-    return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra']
+    if (!modelSupportsEffort(model)) return []
+    return [
+      'none',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      ...(modelSupportsMaxEffort(model) ? (['max'] as const) : []),
+      'ultra',
+    ]
   }
 
   return [

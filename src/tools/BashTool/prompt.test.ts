@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+const originalSimple = process.env.CLAUDE_CODE_SIMPLE
 let sandboxEnabled = false
 
 mock.module('../../utils/sandbox/sandbox-adapter.js', () => ({
@@ -19,6 +20,11 @@ const { getSimplePrompt } = await import('./prompt.js')
 beforeEach(() => {
   process.env.CLAUDE_CODE_SIMPLE = '1'
   sandboxEnabled = false
+})
+
+afterEach(() => {
+  if (originalSimple === undefined) delete process.env.CLAUDE_CODE_SIMPLE
+  else process.env.CLAUDE_CODE_SIMPLE = originalSimple
 })
 
 describe('BashTool prompt', () => {

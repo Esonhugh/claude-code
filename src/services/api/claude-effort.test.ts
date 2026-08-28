@@ -11,6 +11,9 @@ const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK
 const originalVertex = process.env.CLAUDE_CODE_USE_VERTEX
 const originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY
 const originalEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL
+const originalDefaultOpusModel = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+const originalDefaultOpusCapabilities =
+  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES
 
 function resetEnv(): void {
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -18,6 +21,8 @@ function resetEnv(): void {
   delete process.env.CLAUDE_CODE_USE_VERTEX
   delete process.env.CLAUDE_CODE_USE_FOUNDRY
   delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES
 }
 
 try {
@@ -25,6 +30,8 @@ try {
   const { configureEffortParams } = await import('./claude.js')
   const {
     getSupportedEffortLevelsForModel,
+    modelSupportsEffort,
+    modelSupportsMaxEffort,
     resolveAppliedEffort,
     toPersistableEffort,
   } = await import('../../utils/effort.js')
@@ -90,6 +97,8 @@ try {
   ])
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  assert.equal(modelSupportsEffort('gpt-5.5'), true)
+  assert.equal(modelSupportsMaxEffort('gpt-5.5'), true)
   assert.deepEqual(getSupportedEffortLevelsForModel('gpt-5.5'), [
     'none',
     'minimal',
@@ -97,8 +106,14 @@ try {
     'medium',
     'high',
     'xhigh',
+    'max',
     'ultra',
   ])
+  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'gpt-release-no-effort'
+  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES = 'thinking'
+  assert.equal(modelSupportsEffort('gpt-release-no-effort'), false)
+  assert.equal(modelSupportsMaxEffort('gpt-release-no-effort'), false)
+  assert.deepEqual(getSupportedEffortLevelsForModel('gpt-release-no-effort'), [])
   delete process.env.CLAUDE_CODE_USE_OPENAI
 
   const xhighOutputConfig: BetaOutputConfig = {}
@@ -196,6 +211,17 @@ try {
   else process.env.CLAUDE_CODE_USE_FOUNDRY = originalFoundry
   if (originalEffort === undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL
   else process.env.CLAUDE_CODE_EFFORT_LEVEL = originalEffort
+  if (originalDefaultOpusModel === undefined) {
+    delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  } else {
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = originalDefaultOpusModel
+  }
+  if (originalDefaultOpusCapabilities === undefined) {
+    delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES
+  } else {
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES =
+      originalDefaultOpusCapabilities
+  }
 }
 
 console.log('claude-effort.test.ts passed')
