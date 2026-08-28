@@ -22,7 +22,11 @@ import {
   goalStopHook,
   registerGoalStopHook,
 } from './goal/hooks.js'
-import { findGoalToRestore, restoreGoalFromTranscript } from './goal/restore.js'
+import {
+  applyGoalStatusAttachment,
+  findGoalToRestore,
+  restoreGoalFromTranscript,
+} from './goal/restore.js'
 import type { GoalStatus, GoalStatusAttachment } from './goal/types.js'
 
 const goalCommand = goal as PromptCommand
@@ -345,6 +349,42 @@ assert.deepEqual(restoreContext.getState().goalStatus, {
   prompt: 'restore me',
   iterations: 0,
   setAt: 0,
+})
+
+const projectedGoalContext = createContext({
+  active: true,
+  id: 'projected-1',
+  prompt: 'project state',
+  iterations: 1,
+  setAt: 100,
+})
+applyGoalStatusAttachment(
+  {
+    type: 'goal_status',
+    id: 'projected-1',
+    condition: 'project state',
+    status: 'failed',
+    sentinel: true,
+    iterations: 4,
+    durationMs: 250,
+    tokens: 90,
+    reason: 'verification failed',
+  },
+  projectedGoalContext.context.setAppState,
+  () => 500,
+)
+assert.deepEqual(projectedGoalContext.getState().goalStatus, {
+  active: false,
+  lastCompleted: {
+    id: 'projected-1',
+    prompt: 'project state',
+    status: 'failed',
+    completedAt: 500,
+    iterations: 4,
+    durationMs: 250,
+    tokens: 90,
+    reason: 'verification failed',
+  },
 })
 
 assert.equal(goalCommand.shouldRegisterHooksForCommand?.('finish the feature'), true)

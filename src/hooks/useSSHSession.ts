@@ -10,7 +10,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { applyGoalStatusAttachment } from '../commands/goal/restore.js'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
+import type { SpinnerMode } from '../components/Spinner/types.js'
 import type { RemoteFileSuggestionProvider } from './remoteFileSuggestions.js'
 import {
   createSyntheticAssistantMessage,
@@ -24,6 +26,7 @@ import {
 } from '../remote/sdkMessageAdapter.js'
 import type { SSHSession } from '../ssh/createSSHSession.js'
 import type { SSHSessionManager } from '../ssh/SSHSessionManager.js'
+import type { AppState } from '../state/AppStateStore.js'
 import type {
   ManagedSSHRemotePermissions,
   RemoteShellCommandResult,
@@ -42,6 +45,10 @@ import {
   isShuttingDown,
   registerSSHResumeHintContext,
 } from '../utils/gracefulShutdown.js'
+import {
+  handleMessageFromStream,
+  type StreamingToolUse,
+} from '../utils/messages.js'
 import type { RemoteMessageContent } from '../utils/teleport/api.js'
 
 type UseSSHSessionResult = {
@@ -73,20 +80,32 @@ type UseSSHSessionProps = {
   session: SSHSession | undefined
   setMessages: React.Dispatch<React.SetStateAction<MessageType[]>>
   setIsLoading: (loading: boolean) => void
+  setAppState?: React.Dispatch<React.SetStateAction<AppState>>
   setToolUseConfirmQueue: React.Dispatch<React.SetStateAction<ToolUseConfirm[]>>
   tools: Tool[]
+  setStreamingToolUses?: React.Dispatch<
+    React.SetStateAction<StreamingToolUse[]>
+  >
+  setStreamMode?: React.Dispatch<React.SetStateAction<SpinnerMode>>
+  setInProgressToolUseIDs?: (f: (prev: Set<string>) => Set<string>) => void
 }
 
 export function useSSHSession({
   session,
   setMessages,
   setIsLoading,
+  setAppState,
   setToolUseConfirmQueue,
   tools,
+  setStreamingToolUses,
+  setStreamMode,
+  setInProgressToolUseIDs,
 }: UseSSHSessionProps): UseSSHSessionResult {
   const isRemoteMode = !!session
 
   const managerRef = useRef<SSHSessionManager | null>(null)
+  const permissionToolUseIdsRef = useRef(new Set<string>())
+  const remoteTasksRef = useRef<AppState['remoteTasks']>({})
   const hasReceivedInitRef = useRef(false)
   const isConnectedRef = useRef(false)
   const isReadyRef = useRef(false)
@@ -103,6 +122,41 @@ export function useSSHSession({
   useEffect(() => {
     toolsRef.current = tools
   }, [tools])
+
+  const updateRemoteTasks = useCallback(
+    (update: (tasks: AppState['remoteTasks']) => AppState['remoteTasks']) => {
+      const remoteTasks = update(remoteTasksRef.current)
+      if (remoteTasks === remoteTasksRef.current) return
+      remoteTasksRef.current = remoteTasks
+      setAppState?.(prev => ({
+        ...prev,
+        remoteTasks,
+        remoteBackgroundTaskCount: Object.keys(remoteTasks).length,
+      }))
+    },
+    [setAppState],
+  )
+
+  const clearToolRuntimeState = useCallback(() => {
+    setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
+    setInProgressToolUseIDs?.(prev => (prev.size > 0 ? new Set() : prev))
+  }, [setInProgressToolUseIDs, setStreamingToolUses])
+
+  const clearPermissionRequests = useCallback(() => {
+    if (permissionToolUseIdsRef.current.size === 0) return
+    const ids = permissionToolUseIdsRef.current
+    permissionToolUseIdsRef.current = new Set()
+    setToolUseConfirmQueue(queue =>
+      queue.filter(item => !ids.has(item.toolUseID)),
+    )
+  }, [setToolUseConfirmQueue])
+
+  const clearRemoteRuntimeState = useCallback(() => {
+    updateRemoteTasks(tasks =>
+      Object.keys(tasks).length === 0 ? tasks : {},
+    )
+    clearToolRuntimeState()
+  }, [clearToolRuntimeState, updateRemoteTasks])
 
   useEffect(() => {
     if (!session) {
@@ -125,8 +179,26 @@ export function useSSHSession({
     setPermissionModeRevision(0)
     logForDebugging('[useSSHSession] wiring SSH session manager')
 
+    let active = true
     const manager = session.createManager({
       onBootstrap: bootstrap => {
+        if (!active) return
+        if (setAppState) {
+          const lastGoalMessage = bootstrap.history.findLast(
+            historyMessage =>
+              historyMessage.type === 'system' &&
+              historyMessage.subtype === 'goal_state_changed',
+          )
+          if (lastGoalMessage) {
+            applyGoalStatusAttachment(lastGoalMessage.goal, setAppState)
+          } else {
+            setAppState(prev =>
+              prev.goalStatus.active
+                ? { ...prev, goalStatus: { active: false } }
+                : prev,
+            )
+          }
+        }
         const convertedHistory = convertSDKHistory(bootstrap.history)
         for (const message of convertedHistory) {
           messageUuidCacheRef.current.remember(message.uuid)
@@ -164,8 +236,101 @@ export function useSSHSession({
         setIsReady(true)
       },
       onMessage: sdkMessage => {
+        if (!active) return
         if (isSessionEndMessage(sdkMessage)) {
           setIsLoading(false)
+          clearToolRuntimeState()
+        }
+
+        if (sdkMessage.type === 'system') {
+          if (sdkMessage.subtype === 'task_started') {
+            updateRemoteTasks(tasks => {
+              const current = tasks[sdkMessage.task_id]
+              if (
+                current &&
+                current.toolUseId === sdkMessage.tool_use_id &&
+                current.taskType === sdkMessage.task_type &&
+                current.description === sdkMessage.description &&
+                current.workflowName === sdkMessage.workflow_name &&
+                current.prompt === sdkMessage.prompt
+              ) {
+                return tasks
+              }
+              return {
+                ...tasks,
+                [sdkMessage.task_id]: {
+                  taskId: sdkMessage.task_id,
+                  toolUseId: sdkMessage.tool_use_id,
+                  taskType: sdkMessage.task_type,
+                  description: sdkMessage.description,
+                  workflowName: sdkMessage.workflow_name,
+                  prompt: sdkMessage.prompt,
+                },
+              }
+            })
+            return
+          }
+          if (sdkMessage.subtype === 'task_notification') {
+            updateRemoteTasks(tasks => {
+              if (!tasks[sdkMessage.task_id]) return tasks
+              const next = { ...tasks }
+              delete next[sdkMessage.task_id]
+              return next
+            })
+            return
+          }
+          if (sdkMessage.subtype === 'task_progress') {
+            updateRemoteTasks(tasks => {
+              const current = tasks[sdkMessage.task_id]
+              if (!current) return tasks
+              return {
+                ...tasks,
+                [sdkMessage.task_id]: {
+                  ...current,
+                  description: sdkMessage.description,
+                  usage: {
+                    totalTokens: sdkMessage.usage.total_tokens,
+                    toolUses: sdkMessage.usage.tool_uses,
+                    durationMs: sdkMessage.usage.duration_ms,
+                  },
+                  lastToolName: sdkMessage.last_tool_name,
+                  summary: sdkMessage.summary,
+                  workflowProgress: sdkMessage.workflow_progress,
+                },
+              }
+            })
+            return
+          }
+          if (sdkMessage.subtype === 'goal_state_changed') {
+            if (setAppState) {
+              applyGoalStatusAttachment(sdkMessage.goal, setAppState)
+            }
+            return
+          }
+        }
+
+        if (setInProgressToolUseIDs && sdkMessage.type === 'user') {
+          const content = (sdkMessage.message as { content?: unknown })?.content
+          if (Array.isArray(content)) {
+            const resultIds = content
+              .filter(
+                (block): block is { type: 'tool_result'; tool_use_id: string } =>
+                  typeof block === 'object' &&
+                  block !== null &&
+                  'type' in block &&
+                  block.type === 'tool_result' &&
+                  'tool_use_id' in block &&
+                  typeof block.tool_use_id === 'string',
+              )
+              .map(block => block.tool_use_id)
+            if (resultIds.length > 0) {
+              setInProgressToolUseIDs(prev => {
+                const next = new Set(prev)
+                for (const id of resultIds) next.delete(id)
+                return next.size === prev.size ? prev : next
+              })
+            }
+          }
         }
 
         if (
@@ -189,6 +354,24 @@ export function useSSHSession({
           convertToolResults: true,
         })
         if (converted.type === 'message') {
+          setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
+
+          if (
+            setInProgressToolUseIDs &&
+            converted.message.type === 'assistant'
+          ) {
+            const toolUseIds = converted.message.message.content
+              .filter(block => block.type === 'tool_use')
+              .map(block => block.id)
+            if (toolUseIds.length > 0) {
+              setInProgressToolUseIDs(prev => {
+                const next = new Set(prev)
+                for (const id of toolUseIds) next.add(id)
+                return next.size === prev.size ? prev : next
+              })
+            }
+          }
+
           if (messageUuidCacheRef.current.remember(converted.message.uuid)) {
             setMessages(prev =>
               prev.some(message => message.uuid === converted.message.uuid)
@@ -196,9 +379,20 @@ export function useSSHSession({
                 : [...prev, converted.message],
             )
           }
+        } else if (converted.type === 'stream_event') {
+          if (setStreamingToolUses && setStreamMode) {
+            handleMessageFromStream(
+              converted.event,
+              message => setMessages(prev => [...prev, message]),
+              () => {},
+              setStreamMode,
+              setStreamingToolUses,
+            )
+          }
         }
       },
       onPermissionRequest: (request, requestId) => {
+        if (!active) return
         logForDebugging(
           `[useSSHSession] permission request: ${request.tool_name}`,
         )
@@ -236,6 +430,7 @@ export function useSSHSession({
               behavior: 'deny',
               message: 'User aborted',
             })
+            permissionToolUseIdsRef.current.delete(request.tool_use_id)
             setToolUseConfirmQueue(q =>
               q.filter(i => i.toolUseID !== request.tool_use_id),
             )
@@ -248,6 +443,7 @@ export function useSSHSession({
                 ? { updatedPermissions: permissionUpdates }
                 : {}),
             })
+            permissionToolUseIdsRef.current.delete(request.tool_use_id)
             setToolUseConfirmQueue(q =>
               q.filter(i => i.toolUseID !== request.tool_use_id),
             )
@@ -258,6 +454,7 @@ export function useSSHSession({
               behavior: 'deny',
               message: feedback ?? 'User denied permission',
             })
+            permissionToolUseIdsRef.current.delete(request.tool_use_id)
             setToolUseConfirmQueue(q =>
               q.filter(i => i.toolUseID !== request.tool_use_id),
             )
@@ -265,14 +462,17 @@ export function useSSHSession({
           async recheckPermission() {},
         }
 
+        permissionToolUseIdsRef.current.add(request.tool_use_id)
         setToolUseConfirmQueue(q => [...q, toolUseConfirm])
         setIsLoading(false)
       },
       onPermissionCancelled: (requestId, toolUseId) => {
+        if (!active) return
         logForDebugging(
           `[useSSHSession] permission request cancelled: ${requestId}`,
         )
         if (toolUseId) {
+          permissionToolUseIdsRef.current.delete(toolUseId)
           setToolUseConfirmQueue(queue =>
             queue.filter(item => item.toolUseID !== toolUseId),
           )
@@ -280,10 +480,12 @@ export function useSSHSession({
         setIsLoading(true)
       },
       onConnected: () => {
+        if (!active) return
         logForDebugging('[useSSHSession] connected')
         isConnectedRef.current = true
       },
       onDisconnected: () => {
+        if (!active) return
         logForDebugging('[useSSHSession] ssh process exited (giving up)')
         const stderr = session.getStderrTail().trim()
         const connected = isConnectedRef.current
@@ -292,6 +494,7 @@ export function useSSHSession({
         isReadyRef.current = false
         setIsReady(false)
         setIsLoading(false)
+        clearRemoteRuntimeState()
 
         let msg = connected
           ? 'Remote session ended.'
@@ -304,6 +507,7 @@ export function useSSHSession({
         void gracefulShutdown(1, 'other', { finalMessage: msg })
       },
       onError: error => {
+        if (!active) return
         logForDebugging(`[useSSHSession] error: ${error.message}`)
       },
     })
@@ -313,8 +517,11 @@ export function useSSHSession({
 
     return () => {
       logForDebugging('[useSSHSession] cleanup')
+      active = false
       manager.disconnect()
       session.proxy.stop()
+      clearPermissionRequests()
+      clearRemoteRuntimeState()
       managerRef.current = null
       isReadyRef.current = false
       if (!isShuttingDown()) {
@@ -322,7 +529,19 @@ export function useSSHSession({
         clearResumeHintRef.current = null
       }
     }
-  }, [session, setMessages, setIsLoading, setToolUseConfirmQueue])
+  }, [
+    session,
+    setMessages,
+    setIsLoading,
+    setToolUseConfirmQueue,
+    setStreamingToolUses,
+    setStreamMode,
+    setInProgressToolUseIDs,
+    clearToolRuntimeState,
+    clearPermissionRequests,
+    clearRemoteRuntimeState,
+    updateRemoteTasks,
+  ])
 
   const sendMessage = useCallback(
     async (
@@ -367,15 +586,19 @@ export function useSSHSession({
   const cancelRequest = useCallback(() => {
     managerRef.current?.sendInterrupt()
     setIsLoading(false)
-  }, [setIsLoading])
+    clearToolRuntimeState()
+  }, [clearToolRuntimeState, setIsLoading])
 
   const disconnect = useCallback(() => {
     managerRef.current?.disconnect()
+    session?.proxy.stop()
     managerRef.current = null
     isConnectedRef.current = false
     isReadyRef.current = false
     setIsReady(false)
-  }, [])
+    clearPermissionRequests()
+    clearRemoteRuntimeState()
+  }, [clearPermissionRequests, clearRemoteRuntimeState, session])
 
   const getPermissionMode = useCallback(() => permissionModeRef.current, [])
 

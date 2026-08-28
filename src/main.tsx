@@ -4003,6 +4003,7 @@ async function run(): Promise<CommanderCommand> {
         remoteSessionUrl: undefined,
         remoteConnectionStatus: 'connecting',
         remoteBackgroundTaskCount: 0,
+        remoteTasks: {},
         replBridgeEnabled: fullRemoteControl || ccrMirrorEnabled,
         replBridgeExplicit: remoteControl,
         replBridgeOutboundOnly: ccrMirrorEnabled,
@@ -5176,12 +5177,14 @@ async function run(): Promise<CommanderCommand> {
         .argParser(String)
         .hideHelp(),
     )
-    program.option(
-      '--agent-teams',
-      '[ANT-ONLY] Force Claude to use multi-agent mode for solving problems',
-      () => true,
-    )
   }
+
+  const agentTeamsOption = new Option(
+    '--agent-teams',
+    'Force Claude to use multi-agent mode for solving problems',
+  )
+  if (!isAnt()) agentTeamsOption.hideHelp()
+  program.addOption(agentTeamsOption)
 
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     program.addOption(

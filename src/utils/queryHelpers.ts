@@ -16,6 +16,7 @@ import {
   FILE_UNCHANGED_STUB,
 } from '../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
+import { isGoalStatusAttachment } from '../commands/goal/types.js'
 import type { Message } from '../types/message.js'
 import type { OrphanedPermission } from '../types/textInputTypes.js'
 import { logForDebugging } from './debug.js'
@@ -215,6 +216,17 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         }
       }
       break
+    case 'attachment':
+      if (isGoalStatusAttachment(message.attachment)) {
+        yield {
+          type: 'system',
+          subtype: 'goal_state_changed',
+          goal: message.attachment,
+          session_id: getSessionId(),
+          uuid: message.uuid,
+        }
+      }
+      return
     case 'user':
       for (const _ of normalizeMessages([message])) {
         yield {

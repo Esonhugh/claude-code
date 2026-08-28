@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { applyGoalStatusAttachment } from '../commands/goal/restore.js'
 import { BoundedUUIDSet } from '../bridge/bridgeMessaging.js'
 import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
 import type { SpinnerMode } from '../components/Spinner/types.js'
@@ -110,6 +111,17 @@ export function useRemoteSession({
     )
   }, [setAppState])
 
+  const clearToolRuntimeState = useCallback(() => {
+    setStreamingToolUses?.(prev => (prev.length > 0 ? [] : prev))
+    setInProgressToolUseIDs?.(prev => (prev.size > 0 ? new Set() : prev))
+  }, [setInProgressToolUseIDs, setStreamingToolUses])
+
+  const clearRemoteRuntimeState = useCallback(() => {
+    runningTaskIdsRef.current.clear()
+    writeTaskCount()
+    clearToolRuntimeState()
+  }, [clearToolRuntimeState, writeTaskCount])
+
   // Timer for detecting stuck sessions
   const responseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -153,8 +165,10 @@ export function useRemoteSession({
       `[useRemoteSession] Initializing for session ${config.sessionId}`,
     )
 
+    let active = true
     const manager = new RemoteSessionManager(config, {
       onMessage: sdkMessage => {
+        if (!active) return
         const parts = [`type=${sdkMessage.type}`]
         if ('subtype' in sdkMessage) parts.push(`subtype=${sdkMessage.subtype}`)
         if (sdkMessage.type === 'user') {
@@ -218,6 +232,10 @@ export function useRemoteSession({
             return
           }
           if (sdkMessage.subtype === 'task_progress') {
+            return
+          }
+          if (sdkMessage.subtype === 'goal_state_changed') {
+            applyGoalStatusAttachment(sdkMessage.goal, setAppState)
             return
           }
           // Track compaction state. The CLI emits status='compacting' at
@@ -302,7 +320,7 @@ export function useRemoteSession({
                   // @ts-ignore - recovered code
                   next.add(id)
                 }
-                return next
+                return next.size === prev.size ? prev : next
               })
             }
           }
@@ -331,6 +349,7 @@ export function useRemoteSession({
         // 'ignored' messages are silently dropped
       },
       onPermissionRequest: (request, requestId) => {
+        if (!active) return
         logForDebugging(
           `[useRemoteSession] Permission request for tool: ${request.tool_name}`,
         )
@@ -416,6 +435,7 @@ export function useRemoteSession({
         setIsLoading(false)
       },
       onPermissionCancelled: (requestId, toolUseId) => {
+        if (!active) return
         logForDebugging(
           `[useRemoteSession] Permission request cancelled: ${requestId}`,
         )
@@ -426,29 +446,27 @@ export function useRemoteSession({
         setIsLoading(true)
       },
       onConnected: () => {
+        if (!active) return
         logForDebugging('[useRemoteSession] Connected')
         setConnStatus('connected')
       },
       onReconnecting: () => {
+        if (!active) return
         logForDebugging('[useRemoteSession] Reconnecting')
         setConnStatus('reconnecting')
         // WS gap = we may miss task_notification events. Clear rather than
         // drift high forever. Undercounts tasks that span the gap; accepted.
-        runningTaskIdsRef.current.clear()
-        writeTaskCount()
-        // Same for tool_use IDs: missed tool_result during the gap would
-        // leave stale spinner state forever.
-        setInProgressToolUseIDs?.(prev => (prev.size > 0 ? new Set() : prev))
+        clearRemoteRuntimeState()
       },
       onDisconnected: () => {
+        if (!active) return
         logForDebugging('[useRemoteSession] Disconnected')
         setConnStatus('disconnected')
         setIsLoading(false)
-        runningTaskIdsRef.current.clear()
-        writeTaskCount()
-        setInProgressToolUseIDs?.(prev => (prev.size > 0 ? new Set() : prev))
+        clearRemoteRuntimeState()
       },
       onError: error => {
+        if (!active) return
         logForDebugging(`[useRemoteSession] Error: ${error.message}`)
       },
     })
@@ -458,12 +476,14 @@ export function useRemoteSession({
 
     return () => {
       logForDebugging('[useRemoteSession] Cleanup - disconnecting')
+      active = false
       // Clear any pending timeout
       if (responseTimeoutRef.current) {
         clearTimeout(responseTimeoutRef.current)
         responseTimeoutRef.current = null
       }
       manager.disconnect()
+      clearRemoteRuntimeState()
       managerRef.current = null
     }
   }, [
@@ -476,7 +496,7 @@ export function useRemoteSession({
     setStreamMode,
     setInProgressToolUseIDs,
     setConnStatus,
-    writeTaskCount,
+    clearRemoteRuntimeState,
   ])
 
   // Send a user message to the remote session
@@ -591,7 +611,8 @@ export function useRemoteSession({
     }
 
     setIsLoading(false)
-  }, [config, setIsLoading])
+    clearToolRuntimeState()
+  }, [clearToolRuntimeState, config, setIsLoading])
 
   // Disconnect from the session
   const disconnect = useCallback(() => {
@@ -602,7 +623,8 @@ export function useRemoteSession({
     }
     managerRef.current?.disconnect()
     managerRef.current = null
-  }, [])
+    clearRemoteRuntimeState()
+  }, [clearRemoteRuntimeState])
 
   // All four fields are already stable (boolean derived from a prop that
   // doesn't change mid-session, three useCallbacks with stable deps). The

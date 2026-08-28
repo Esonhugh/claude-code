@@ -103,6 +103,7 @@ addOptions(
 )
 addOptions(
   [
+    '--agent-teams',
     '--bare',
     '--fork-session',
     '--no-session-persistence',

@@ -1771,6 +1771,28 @@ export const SDKSessionStateChangedMessageSchema = lazySchema(() =>
 )
 
 
+export const SDKGoalStateChangedMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('goal_state_changed'),
+    goal: z.object({
+      type: z.literal('goal_status'),
+      id: z.string(),
+      condition: z.string(),
+      status: z.enum(['active', 'met', 'cleared', 'failed']),
+      sentinel: z.literal(true),
+      met: z.boolean().optional(),
+      failed: z.boolean().optional(),
+      iterations: z.number().optional(),
+      durationMs: z.number().optional(),
+      tokens: z.number().optional(),
+      reason: z.string().optional(),
+    }),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
 export const SDKTaskProgressMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -1785,6 +1807,18 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     }),
     last_tool_name: z.string().optional(),
     summary: z.string().optional(),
+    workflow_progress: z
+      .array(
+        z.object({
+          type: z.string(),
+          index: z.number().optional(),
+          phaseIndex: z.number().optional(),
+          label: z.string().optional(),
+          status: z.string().optional(),
+          message: z.string().optional(),
+        }),
+      )
+      .optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1896,6 +1930,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKTaskStartedMessageSchema(),
     SDKTaskProgressMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
+    SDKGoalStateChangedMessageSchema(),
     SDKFilesPersistedEventSchema(),
     SDKToolUseSummaryMessageSchema(),
     SDKRateLimitEventSchema(),

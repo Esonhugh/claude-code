@@ -456,6 +456,14 @@ export type SDKTaskProgressMessage = {
   usage: { total_tokens: number; tool_uses: number; duration_ms: number }
   last_tool_name?: string
   summary?: string
+  workflow_progress?: Array<{
+    type: string
+    index?: number
+    phaseIndex?: number
+    label?: string
+    status?: string
+    message?: string
+  }>
   uuid: string
   session_id: string
 }
@@ -463,6 +471,25 @@ export type SDKSessionStateChangedMessage = {
   type: 'system'
   subtype: 'session_state_changed'
   state: 'idle' | 'running' | 'requires_action'
+  uuid: string
+  session_id: string
+}
+export type SDKGoalStateChangedMessage = {
+  type: 'system'
+  subtype: 'goal_state_changed'
+  goal: {
+    type: 'goal_status'
+    id: string
+    condition: string
+    status: 'active' | 'met' | 'cleared' | 'failed'
+    sentinel: true
+    met?: boolean
+    failed?: boolean
+    iterations?: number
+    durationMs?: number
+    tokens?: number
+    reason?: string
+  }
   uuid: string
   session_id: string
 }
@@ -535,6 +562,7 @@ export type SDKMessage =
   | SDKTaskStartedMessage
   | SDKTaskProgressMessage
   | SDKSessionStateChangedMessage
+  | SDKGoalStateChangedMessage
   | SDKFilesPersistedEvent
   | SDKToolUseSummaryMessage
   | SDKRateLimitEvent

@@ -1,4 +1,5 @@
 import type { Notification } from 'src/context/notifications.js'
+import type { SdkWorkflowProgress } from 'src/types/tools.js'
 import type { TodoList } from 'src/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../commands.js'
@@ -87,6 +88,23 @@ export type FooterItem =
   | 'bridge'
   | 'companion'
 
+export type RemoteTaskProjection = {
+  taskId: string
+  toolUseId?: string
+  taskType?: string
+  description: string
+  workflowName?: string
+  prompt?: string
+  usage?: {
+    totalTokens: number
+    toolUses: number
+    durationMs: number
+  }
+  lastToolName?: string
+  summary?: string
+  workflowProgress?: SdkWorkflowProgress[]
+}
+
 export type AppState = DeepImmutable<{
   settings: SettingsJson
   verbose: boolean
@@ -136,6 +154,7 @@ export type AppState = DeepImmutable<{
   // AppState.tasks is always empty in viewer mode — the tasks live in a
   // different process.
   remoteBackgroundTaskCount: number
+  remoteTasks: Record<string, RemoteTaskProjection>
   // Always-on bridge: desired state (controlled by /config or footer toggle)
   replBridgeEnabled: boolean
   // Always-on bridge: true when activated via /remote-control command, false when config-driven
@@ -494,6 +513,7 @@ export function getDefaultAppState(): AppState {
     remoteSessionUrl: undefined,
     remoteConnectionStatus: 'connecting',
     remoteBackgroundTaskCount: 0,
+    remoteTasks: {},
     replBridgeEnabled: false,
     replBridgeExplicit: false,
     replBridgeOutboundOnly: false,

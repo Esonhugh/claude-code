@@ -26,6 +26,69 @@ export function findGoalToRestore(
   return null
 }
 
+export function applyGoalStatusAttachment(
+  attachment: GoalStatusAttachment,
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+  now: () => number = Date.now,
+): void {
+  setAppState(prev => {
+    if (attachment.status === 'active') {
+      const iterations = attachment.iterations ?? 0
+      const lastReason = attachment.reason
+      if (
+        prev.goalStatus.active &&
+        prev.goalStatus.id === attachment.id &&
+        prev.goalStatus.prompt === attachment.condition &&
+        prev.goalStatus.iterations === iterations &&
+        prev.goalStatus.lastReason === lastReason
+      ) {
+        return prev
+      }
+      return {
+        ...prev,
+        goalStatus: {
+          ...createActiveGoalStatus(
+            attachment.id,
+            attachment.condition,
+            prev.goalStatus.active && prev.goalStatus.id === attachment.id
+              ? prev.goalStatus.setAt
+              : now(),
+          ),
+          iterations,
+          ...(lastReason ? { lastReason } : {}),
+        },
+      }
+    }
+
+    if (!prev.goalStatus.active || prev.goalStatus.id !== attachment.id) {
+      return prev
+    }
+
+    return {
+      ...prev,
+      goalStatus: {
+        active: false,
+        lastCompleted: {
+          id: attachment.id,
+          prompt: attachment.condition,
+          status: attachment.status,
+          completedAt: now(),
+          ...(attachment.iterations === undefined
+            ? {}
+            : { iterations: attachment.iterations }),
+          ...(attachment.durationMs === undefined
+            ? {}
+            : { durationMs: attachment.durationMs }),
+          ...(attachment.tokens === undefined
+            ? {}
+            : { tokens: attachment.tokens }),
+          ...(attachment.reason ? { reason: attachment.reason } : {}),
+        },
+      },
+    }
+  })
+}
+
 export function restoreGoalFromTranscript(
   messages: Message[],
   setAppState: (updater: (prev: AppState) => AppState) => void,

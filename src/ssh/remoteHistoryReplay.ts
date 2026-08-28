@@ -4,7 +4,13 @@ import type {
   SSHHistoryChunk,
   SSHHistoryMessage,
 } from '../entrypoints/sdk/controlTypes.js'
-import type { Message } from '../types/message.js'
+import { isGoalStatusAttachment } from '../commands/goal/types.js'
+import type {
+  AssistantMessage,
+  Message,
+  UserMessage,
+} from '../types/message.js'
+import { normalizeMessages } from '../utils/messages.js'
 import { toSDKCompactMetadata } from '../utils/messages/mappers.js'
 
 const DEFAULT_MAX_MESSAGES_PER_CHUNK = 100
@@ -15,6 +21,77 @@ export function projectSSHHistoryMessages(
   sessionId: string,
 ): SSHHistoryMessage[] {
   return messages.flatMap((message): SSHHistoryMessage[] => {
+    if (
+      message.type === 'progress' &&
+      (message.data.type === 'agent_progress' ||
+        message.data.type === 'skill_progress')
+    ) {
+      const nestedMessage = message.data.message as Message | undefined
+      if (
+        !nestedMessage ||
+        (nestedMessage.type !== 'assistant' && nestedMessage.type !== 'user')
+      ) {
+        return []
+      }
+
+      const normalized = normalizeMessages([
+        nestedMessage as AssistantMessage | UserMessage,
+      ])
+      return normalized.map(normalizedMessage => {
+        if (normalizedMessage.type === 'assistant') {
+          return {
+            type: 'assistant',
+            message: normalizedMessage.message,
+            parent_tool_use_id: message.parentToolUseID,
+            uuid: normalizedMessage.uuid,
+            session_id: sessionId,
+            timestamp: normalizedMessage.timestamp,
+            ...(normalizedMessage.error
+              ? { error: normalizedMessage.error }
+              : {}),
+          } as SSHHistoryMessage
+        }
+
+        return {
+          type: 'user',
+          message: normalizedMessage.message,
+          parent_tool_use_id: message.parentToolUseID,
+          uuid: normalizedMessage.uuid,
+          session_id: sessionId,
+          timestamp: normalizedMessage.timestamp,
+          isSynthetic:
+            normalizedMessage.isMeta ||
+            normalizedMessage.isVisibleInTranscriptOnly,
+          ...(normalizedMessage.toolUseResult !== undefined
+            ? {
+                tool_use_result: normalizedMessage.mcpMeta
+                  ? {
+                      content: normalizedMessage.toolUseResult,
+                      ...normalizedMessage.mcpMeta,
+                    }
+                  : normalizedMessage.toolUseResult,
+              }
+            : {}),
+        } as SSHHistoryMessage
+      })
+    }
+
+    if (
+      message.type === 'attachment' &&
+      isGoalStatusAttachment(message.attachment)
+    ) {
+      return [
+        {
+          type: 'system',
+          subtype: 'goal_state_changed',
+          goal: message.attachment,
+          uuid: message.uuid,
+          session_id: sessionId,
+          timestamp: message.timestamp,
+        } as SSHHistoryMessage,
+      ]
+    }
+
     if (message.type === 'user') {
       if (message.isVisibleInTranscriptOnly || message.isVirtual) return []
       return [

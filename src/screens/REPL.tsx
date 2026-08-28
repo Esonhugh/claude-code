@@ -2038,8 +2038,12 @@ export function REPL({
     session: sshSession,
     setMessages,
     setIsLoading: setIsExternalLoading,
+    setAppState,
     setToolUseConfirmQueue,
     tools: [],
+    setStreamingToolUses,
+    setStreamMode,
+    setInProgressToolUseIDs,
   })
   useEffect(() => {
     if (sshRemote.isRemoteMode) {

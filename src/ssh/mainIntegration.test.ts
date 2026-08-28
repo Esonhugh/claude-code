@@ -458,6 +458,25 @@ test('rejects local worktree and tmux execution for SSH sessions', () => {
   }
 })
 
+test('forwards agent teams to the remote child', () => {
+  assert.deepEqual(
+    parseRootSSHArgv(['ssh', 'host.example', '--agent-teams']),
+    {
+      type: 'ssh',
+      pending: {
+        host: 'host.example',
+        cwd: undefined,
+        permissionMode: undefined,
+        dangerouslySkipPermissions: false,
+        allowDangerouslySkipPermissions: false,
+        local: false,
+        extraCliArgs: ['--agent-teams'],
+      },
+      remainingArgs: [],
+    },
+  )
+})
+
 test('forwards short resume and rejects equals-form headless mode', () => {
   for (const resumeArgs of [
     ['-r', 'session-id'],

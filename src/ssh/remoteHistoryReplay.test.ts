@@ -55,6 +55,60 @@ describe('remote SSH history replay', () => {
     )
   })
 
+  it('preserves nested agent messages and goal state', () => {
+    const nestedAssistant = {
+      type: 'assistant',
+      uuid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      timestamp: '2026-08-20T00:00:03.000Z',
+      message: {
+        id: 'nested-message',
+        role: 'assistant',
+        model: 'claude-test',
+        content: [
+          { type: 'text', text: 'nested-1' },
+          { type: 'text', text: 'nested-2' },
+        ],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    } as Message
+    const messages = [
+      {
+        type: 'progress',
+        uuid: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        timestamp: '2026-08-20T00:00:04.000Z',
+        toolUseID: 'progress-1',
+        parentToolUseID: 'agent-tool-1',
+        data: { type: 'agent_progress', message: nestedAssistant },
+      },
+      {
+        type: 'attachment',
+        uuid: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        timestamp: '2026-08-20T00:00:05.000Z',
+        attachment: {
+          type: 'goal_status',
+          id: 'goal-1',
+          condition: 'finish',
+          status: 'active',
+          sentinel: true,
+        },
+      },
+    ] as Message[]
+
+    const projected = projectSSHHistoryMessages(messages, sessionId)
+
+    assert.equal(projected.length, 3)
+    assert.equal(projected[0]?.type, 'assistant')
+    assert.equal(projected[0]?.parent_tool_use_id, 'agent-tool-1')
+    assert.notEqual(projected[0]?.uuid, nestedAssistant.uuid)
+    assert.equal(projected[1]?.type, 'assistant')
+    assert.equal(projected[1]?.parent_tool_use_id, 'agent-tool-1')
+    assert.notEqual(projected[1]?.uuid, projected[0]?.uuid)
+    assert.equal(projected[2]?.type, 'system')
+    assert.equal(projected[2]?.subtype, 'goal_state_changed')
+  })
+
   it('chunks replay output and reports a bounded completion summary', () => {
     const messages = Array.from({ length: 3 }, (_, index) => ({
       type: 'user' as const,
