@@ -280,12 +280,26 @@ class ResponsesSSEStream implements AsyncIterable<BetaRawMessageStreamEvent> {
   private done = false
   private error: Error | null = null
 
+  constructor(
+    readonly controller: AbortController,
+    private readonly onDone: () => void,
+  ) {}
+
   push(event: BetaRawMessageStreamEvent) {
     this.events.push(event)
     if (this.resolve) { this.resolve(); this.resolve = null }
   }
-  finish() { this.done = true; if (this.resolve) { this.resolve(); this.resolve = null } }
-  fail(err: Error) { this.error = err; this.done = true; if (this.resolve) { this.resolve(); this.resolve = null } }
+  finish() {
+    this.done = true
+    this.onDone()
+    if (this.resolve) { this.resolve(); this.resolve = null }
+  }
+  fail(err: Error) {
+    this.error = err
+    this.done = true
+    this.onDone()
+    if (this.resolve) { this.resolve(); this.resolve = null }
+  }
 
   async *[Symbol.asyncIterator](): AsyncIterator<BetaRawMessageStreamEvent> {
     while (true) {
@@ -294,7 +308,6 @@ class ResponsesSSEStream implements AsyncIterable<BetaRawMessageStreamEvent> {
       await new Promise<void>(r => { this.resolve = r })
     }
   }
-  get controller(): AbortController { return new AbortController() }
 }
 
 function isRetryableOpenAIResponse(status: number): boolean {
@@ -306,6 +319,7 @@ async function fetchResponsesWithRetry(
   headers: Record<string, string>,
   body: string,
   maxRetries: number,
+  signal: AbortSignal,
 ): Promise<Response> {
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -315,6 +329,7 @@ async function fetchResponsesWithRetry(
         method: 'POST',
         headers,
         body,
+        signal,
       })
       if (resp.ok) return resp
 
@@ -332,8 +347,15 @@ async function fetchResponsesWithRetry(
   throw lastError ?? new Error('OpenAI API request failed')
 }
 
-async function connectSSE(url: string, headers: Record<string, string>, payload: any, maxRetries: number): Promise<ResponsesSSEStream> {
-  const stream = new ResponsesSSEStream()
+async function connectSSE(
+  url: string,
+  headers: Record<string, string>,
+  payload: any,
+  maxRetries: number,
+  controller: AbortController,
+  onDone?: () => void,
+): Promise<ResponsesSSEStream> {
+  const stream = new ResponsesSSEStream(controller, onDone ?? (() => {}))
   let blockIndex = 0
   let hasThinking = false
   let reasoningText = ''
@@ -440,7 +462,13 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
   })
 
   try {
-    const resp = await fetchResponsesWithRetry(url, headers, body, maxRetries)
+    const resp = await fetchResponsesWithRetry(
+      url,
+      headers,
+      body,
+      maxRetries,
+      controller.signal,
+    )
 
     // Process SSE stream
     const reader = resp.body?.getReader()
@@ -453,8 +481,12 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
       try {
         while (true) {
           const { done: readerDone, value } = await reader.read()
-          if (readerDone) break
-          buffer += decoder.decode(value, { stream: true })
+          if (readerDone) {
+            buffer += decoder.decode()
+            if (buffer) buffer += '\n'
+          } else {
+            buffer += decoder.decode(value, { stream: true })
+          }
 
           const lines = buffer.split('\n')
           buffer = lines.pop() || ''
@@ -649,6 +681,7 @@ async function connectSSE(url: string, headers: Record<string, string>, payload:
               return
             }
           }
+          if (readerDone) break
         }
         // Stream ended without response.completed
         if (!stream['done']) {
@@ -684,9 +717,17 @@ export function createOpenAICompatClient(options: {
   const auth = loadOpenAIAuthInfo(options.apiKey)
   const baseURL = tunnel ? 'http://localhost' : getBaseURL(auth)
   const responsesURL = `${baseURL}/responses`
-  const headers = tunnel
-    ? { 'Content-Type': 'application/json' }
-    : buildHeaders(auth)
+  const headers: Record<string, string> = {}
+  new Headers(options.defaultHeaders).forEach((value, name) => {
+    headers[name] = value
+  })
+  for (const [name, value] of Object.entries(
+    tunnel
+      ? { 'Content-Type': 'application/json' }
+      : buildHeaders(auth),
+  )) {
+    headers[name.toLowerCase()] = value
+  }
   if (options.promptCacheKey) {
     headers['session-id'] = options.promptCacheKey
     headers['thread-id'] = options.promptCacheKey
@@ -711,7 +752,7 @@ export function createOpenAICompatClient(options: {
       })
       return { input_tokens: Math.max(1, Math.ceil(serialized.length / 4)) }
     },
-    create(params: any): any {
+    create(params: any, requestOptions?: { signal?: AbortSignal }): any {
       const model = mapModel(params.model || DEFAULT_OPENAI_MODEL)
       const input = anthropicMessagesToResponsesInput(params.messages, params.system)
       const tools = anthropicToolsToResponsesTools(params.tools)
@@ -739,8 +780,31 @@ export function createOpenAICompatClient(options: {
       }
       logForDebugging(`[OpenAI Compat] Responses request model=${model}`)
 
+      const controller = new AbortController()
+      const timeout = setTimeout(
+        () => controller.abort(new Error(`Request timed out after ${options.timeout}ms`)),
+        options.timeout,
+      )
+      timeout.unref()
+      if (requestOptions?.signal?.aborted) {
+        controller.abort(requestOptions.signal.reason)
+      } else {
+        requestOptions?.signal?.addEventListener(
+          'abort',
+          () => controller.abort(requestOptions.signal?.reason),
+          { once: true },
+        )
+      }
+
       if (params.stream) {
-        const promise = connectSSE(responsesURL, headers, payload, options.maxRetries)
+        const promise = connectSSE(
+          responsesURL,
+          headers,
+          payload,
+          options.maxRetries,
+          controller,
+          () => clearTimeout(timeout),
+        )
         return {
           then: (resolve: any, reject: any) => promise.then(resolve, reject),
           catch: (reject: any) => promise.catch(reject),
@@ -750,7 +814,13 @@ export function createOpenAICompatClient(options: {
 
       // Non-streaming: collect all events
       const promise = (async () => {
-        const adapter = await connectSSE(responsesURL, headers, payload, options.maxRetries)
+        const adapter = await connectSSE(
+          responsesURL,
+          headers,
+          payload,
+          options.maxRetries,
+          controller,
+        )
         const blocks = new Map<number, any>()
         const inputJson = new Map<number, string>()
         let stopReason: string = 'end_turn'
@@ -799,7 +869,7 @@ export function createOpenAICompatClient(options: {
           stop_reason: stopReason, stop_sequence: null,
           usage,
         }
-      })()
+      })().finally(() => clearTimeout(timeout))
       return {
         then: (resolve: any, reject: any) => promise.then(resolve, reject),
         catch: (reject: any) => promise.catch(reject),

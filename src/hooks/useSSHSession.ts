@@ -245,6 +245,7 @@ export function useSSHSession({
         if (!active) return
         if (isSessionEndMessage(sdkMessage)) {
           setIsLoading(false)
+          clearPermissionRequests()
           clearToolRuntimeState()
         }
 
@@ -506,6 +507,8 @@ export function useSSHSession({
         isReadyRef.current = false
         setIsReady(false)
         setIsLoading(false)
+        setRemoteSessionId(null)
+        clearPermissionRequests()
         clearRemoteRuntimeState()
 
         let msg = connected
@@ -610,9 +613,16 @@ export function useSSHSession({
     isConnectedRef.current = false
     isReadyRef.current = false
     setIsReady(false)
+    setIsLoading(false)
+    setRemoteSessionId(null)
     clearPermissionRequests()
     clearRemoteRuntimeState()
-  }, [clearPermissionRequests, clearRemoteRuntimeState, session])
+  }, [
+    clearPermissionRequests,
+    clearRemoteRuntimeState,
+    session,
+    setIsLoading,
+  ])
 
   const getPermissionMode = useCallback(() => permissionModeRef.current, [])
 

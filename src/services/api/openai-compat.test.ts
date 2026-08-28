@@ -27,6 +27,10 @@ try {
     sessionId?: string | null
     threadId?: string | null
     clientRequestId?: string | null
+    callerHeader?: string | null
+    appHeader?: string | null
+    claudeSessionId?: string | null
+    contentType?: string | null
     body: any
   }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -37,6 +41,10 @@ try {
       sessionId: headers.get('session-id'),
       threadId: headers.get('thread-id'),
       clientRequestId: headers.get('x-client-request-id'),
+      callerHeader: headers.get('x-caller-header'),
+      appHeader: headers.get('x-app'),
+      claudeSessionId: headers.get('x-claude-code-session-id'),
+      contentType: headers.get('content-type'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -68,6 +76,33 @@ try {
   assert.equal(requests[0]!.body.reasoning, undefined)
 
   requests.length = 0
+  const headerClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    defaultHeaders: {
+      'x-caller-header': 'preserved',
+      'x-app': 'cli',
+      'x-claude-code-session-id': 'metadata-session',
+      authorization: 'Bearer caller-override',
+      'content-type': 'text/plain',
+      'session-id': 'caller-session',
+    },
+    promptCacheKey: 'system-session',
+  })
+  await headerClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'headers' }],
+  })
+  assert.equal(requests[0]!.callerHeader, 'preserved')
+  assert.equal(requests[0]!.appHeader, 'cli')
+  assert.equal(requests[0]!.claudeSessionId, 'metadata-session')
+  assert.equal(requests[0]!.authorization, 'Bearer sk-test-api-key')
+  assert.equal(requests[0]!.contentType, 'application/json')
+  assert.equal(requests[0]!.sessionId, 'system-session')
+
+  requests.length = 0
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers)
     requests.push({
@@ -76,6 +111,10 @@ try {
       sessionId: headers.get('session-id'),
       threadId: headers.get('thread-id'),
       clientRequestId: headers.get('x-client-request-id'),
+      callerHeader: headers.get('x-caller-header'),
+      appHeader: headers.get('x-app'),
+      claudeSessionId: headers.get('x-claude-code-session-id'),
+      contentType: headers.get('content-type'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -207,6 +246,10 @@ try {
       sessionId: headers.get('session-id'),
       threadId: headers.get('thread-id'),
       clientRequestId: headers.get('x-client-request-id'),
+      callerHeader: headers.get('x-caller-header'),
+      appHeader: headers.get('x-app'),
+      claudeSessionId: headers.get('x-claude-code-session-id'),
+      contentType: headers.get('content-type'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -463,6 +506,10 @@ try {
       sessionId: headers.get('session-id'),
       threadId: headers.get('thread-id'),
       clientRequestId: headers.get('x-client-request-id'),
+      callerHeader: headers.get('x-caller-header'),
+      appHeader: headers.get('x-app'),
+      claudeSessionId: headers.get('x-claude-code-session-id'),
+      contentType: headers.get('content-type'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     if (attempts === 1) {
@@ -506,6 +553,10 @@ try {
       sessionId: headers.get('session-id'),
       threadId: headers.get('thread-id'),
       clientRequestId: headers.get('x-client-request-id'),
+      callerHeader: headers.get('x-caller-header'),
+      appHeader: headers.get('x-app'),
+      claudeSessionId: headers.get('x-claude-code-session-id'),
+      contentType: headers.get('content-type'),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -1106,6 +1157,104 @@ try {
       messages: [{ role: 'user', content: 'return a long response' }],
     } as any),
     /max_output_tokens/,
+  )
+
+  const eofCompletionEvent = JSON.stringify({
+    type: 'response.completed',
+    response: { usage: { input_tokens: 9, output_tokens: 4 } },
+  })
+  const eofCompletionBytes = new TextEncoder().encode(`data: ${eofCompletionEvent}`)
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(eofCompletionBytes.slice(0, eofCompletionBytes.length - 7))
+          controller.enqueue(eofCompletionBytes.slice(eofCompletionBytes.length - 7))
+          controller.close()
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )) as unknown as typeof fetch
+  const eofCompletionResponse = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'unterminated completion' }],
+  } as any)
+  assert.equal(eofCompletionResponse.usage.input_tokens, 9)
+  assert.equal(eofCompletionResponse.usage.output_tokens, 4)
+
+  globalThis.fetch = (async () =>
+    new Response(
+      'data: {"type":"error","error":{"message":"unterminated gateway error"}}',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )) as unknown as typeof fetch
+  await assert.rejects(
+    rootURLClient.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'unterminated error' }],
+    } as any),
+    /unterminated gateway error/,
+  )
+
+  const abortController = new AbortController()
+  let observedSignal: AbortSignal | undefined
+  globalThis.fetch = (async (_input, init) => {
+    observedSignal = init?.signal ?? undefined
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        'abort',
+        () => reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
+        { once: true },
+      )
+    })
+  }) as unknown as typeof fetch
+  const abortedRequest = rootURLClient.beta.messages.create(
+    {
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'cancel request' }],
+    } as any,
+    { signal: abortController.signal },
+  )
+  abortController.abort(new Error('caller cancelled'))
+  await assert.rejects(abortedRequest, /caller cancelled/)
+  assert.equal(observedSignal?.aborted, true)
+  assert.match(String(observedSignal?.reason), /caller cancelled/)
+
+  const stalledClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 20,
+  })
+  globalThis.fetch = (async (_input, init) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        init?.signal?.addEventListener('abort', () => {
+          controller.error(init.signal?.reason ?? new Error('aborted'))
+        }, { once: true })
+      },
+    })
+    return new Response(body, { status: 200 })
+  }) as unknown as typeof fetch
+  const stalledStream = await stalledClient.beta.messages.create({
+    model: 'gpt-5.5',
+    stream: true,
+    messages: [{ role: 'user', content: 'stall stream' }],
+  } as any) as any
+  await assert.rejects(
+    (async () => {
+      for await (const _event of stalledStream as AsyncIterable<unknown>) {
+        // consume until the request timeout aborts the reader
+      }
+    })(),
+    /Request timed out after 20ms/,
   )
 
   for (const [event, errorMessage] of [

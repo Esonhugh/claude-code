@@ -435,7 +435,7 @@ export const FileReadTool = buildTool({
       if (rangeSize > PDF_MAX_PAGES_PER_READ) {
         return {
           result: false,
-          message: `Page range "${pages}" exceeds maximum of ${PDF_MAX_PAGES_PER_READ} pages per request. Please use a smaller range.`,
+          message: `Page range "${pageRange}" exceeds maximum of ${PDF_MAX_PAGES_PER_READ} pages per request. Please use a smaller range.`,
           errorCode: 8,
         }
       }

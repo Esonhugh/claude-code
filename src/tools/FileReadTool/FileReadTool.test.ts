@@ -52,6 +52,17 @@ test('treats an empty optional PDF page range as omitted', async () => {
   }
 })
 
+test('normalizes an over-limit PDF page range in the error', async () => {
+  const result = await FileReadTool.validateInput(
+    { file_path: '/tmp/read-too-many-pages.pdf', pages: ' 1-21 ' },
+    toolUseContext as never,
+  )
+
+  assert.equal(result.result, false)
+  assert.equal(result.errorCode, 8)
+  assert.match(result.message ?? '', /Page range "1-21" exceeds maximum/)
+})
+
 test('rejects a non-empty invalid PDF page range', async () => {
   const result = await FileReadTool.validateInput(
     { file_path: '/tmp/read-invalid-pages.txt', pages: '0' },

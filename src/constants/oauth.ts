@@ -6,13 +6,11 @@ import { isAnt } from 'src/utils/userType.js'
 type OauthConfigType = 'prod' | 'staging' | 'local'
 
 function getOauthConfigType(): OauthConfigType {
-  if (isAnt()) {
-    if (isEnvTruthy(process.env.USE_LOCAL_OAUTH)) {
-      return 'local'
-    }
-    if (isEnvTruthy(process.env.USE_STAGING_OAUTH)) {
-      return 'staging'
-    }
+  if (isEnvTruthy(process.env.USE_LOCAL_OAUTH)) {
+    return 'local'
+  }
+  if (isAnt() && isEnvTruthy(process.env.USE_STAGING_OAUTH)) {
+    return 'staging'
   }
   return 'prod'
 }

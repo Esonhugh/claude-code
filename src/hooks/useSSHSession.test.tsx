@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
 import { Writable } from 'node:stream'
 import React, { useState } from 'react'
 import type {
@@ -19,6 +20,13 @@ import type { Message } from '../types/message.js'
 process.env.NODE_ENV = 'test'
 
 const { render } = await import('../ink.js')
+
+mock.module('../utils/gracefulShutdown.js', () => ({
+  gracefulShutdown: async () => {},
+  isShuttingDown: () => false,
+  registerSSHResumeHintContext: () => () => {},
+}))
+
 const { useSSHSession } = await import('./useSSHSession.js')
 
 const remoteSessionId = '11111111-1111-4111-8111-111111111111'
@@ -209,13 +217,30 @@ assert.equal(sentMessages.length, 0)
 
 callbacks?.onBootstrap?.({
   sessionId: remoteSessionId,
-  history: [replayedAssistant],
+  history: [
+    {
+      type: 'system',
+      subtype: 'goal_state_changed',
+      goal: {
+        type: 'goal_status',
+        id: 'bootstrap-goal',
+        condition: 'resume it',
+        status: 'active',
+        sentinel: true,
+      },
+      uuid: '32323232-3232-4232-8232-323232323232',
+      session_id: remoteSessionId,
+    },
+    replayedAssistant,
+  ],
 })
 await new Promise(resolve => setImmediate(resolve))
 
 assert.ok(snapshot)
 assert.equal(snapshot.isReady, true)
 assert.equal(snapshot.remoteSessionId, remoteSessionId)
+assert.equal(snapshot.goalActive, true)
+assert.equal(snapshot.goalId, 'bootstrap-goal')
 assert.ok(snapshot.remoteFileSuggestionProvider)
 assert.ok(snapshot.managedSSHRemotePermissions)
 assert.deepEqual(
@@ -324,6 +349,29 @@ callbacks?.onPermissionRequest?.(
 await new Promise(resolve => setImmediate(resolve))
 assert.equal(snapshot.permissionQueueSize, 1)
 
+emit({
+  type: 'result',
+  subtype: 'success',
+  duration_ms: 1,
+  duration_api_ms: 1,
+  is_error: false,
+  num_turns: 1,
+  result: 'done',
+  stop_reason: 'end_turn',
+  total_cost_usd: 0,
+  usage: {},
+  modelUsage: {},
+  permission_denials: [],
+  uuid: '78787878-7878-4878-8878-787878787878',
+  session_id: remoteSessionId,
+})
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(
+  snapshot.permissionQueueSize,
+  0,
+  'a terminal result must clear SSH-owned permission prompts',
+)
+
 for (const [taskId, uuid] of [
   ['task-1', '88888888-8888-4888-8888-888888888888'],
   ['task-2', '99999999-9999-4999-8999-999999999999'],
@@ -381,6 +429,20 @@ assert.equal(snapshot.remoteTaskLastToolName, 'Read')
 emit({
   type: 'system',
   subtype: 'task_notification',
+  task_id: 'task-2',
+  status: 'stopped',
+  output_file: '/tmp/task-2',
+  summary: 'cancelled',
+  uuid: 'a9a9a9a9-a9a9-49a9-89a9-a9a9a9a9a9a9',
+  session_id: remoteSessionId,
+})
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(snapshot.remoteTaskIds.includes('task-2'), false)
+assert.equal(snapshot.remoteBackgroundTaskCount, 1)
+
+emit({
+  type: 'system',
+  subtype: 'task_notification',
   task_id: 'task-1',
   status: 'completed',
   output_file: '/tmp/task-1',
@@ -389,7 +451,7 @@ emit({
   session_id: remoteSessionId,
 })
 await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.remoteBackgroundTaskCount, 1)
+assert.equal(snapshot.remoteBackgroundTaskCount, 0)
 assert.equal(snapshot.remoteTaskIds.includes('task-1'), false)
 
 emit({
@@ -464,12 +526,33 @@ assert.deepEqual(fileSuggestionRequests, [
   { query: '/srv/project/s', mode: 'path', limit: 10 },
 ])
 
+callbacks?.onPermissionRequest?.(
+  {
+    subtype: 'can_use_tool',
+    tool_name: 'Read',
+    input: { file_path: '/tmp/disconnect' },
+    tool_use_id: 'disconnect-permission-tool',
+  },
+  'disconnect-permission-request',
+)
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(snapshot.permissionQueueSize, 1)
+callbacks?.onDisconnected?.()
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(snapshot.permissionQueueSize, 0)
+assert.equal(snapshot.remoteSessionId, null)
+assert.equal(snapshot.isReady, false)
+assert.equal(snapshot.remoteBackgroundTaskCount, 0)
+assert.deepEqual(snapshot.remoteTaskIds, [])
+assert.equal(snapshot.inProgressToolUseIDs.size, 0)
+
 snapshot.disconnect()
 await new Promise(resolve => setImmediate(resolve))
 assert.equal(disconnectCount, 1)
 assert.equal(proxyStopCount, 1)
 assert.equal(snapshot.permissionQueueSize, 0)
 assert.equal(snapshot.isReady, false)
+assert.equal(snapshot.remoteSessionId, null)
 assert.equal(snapshot.remoteFileSuggestionProvider, undefined)
 assert.equal(snapshot.remoteBackgroundTaskCount, 0)
 assert.deepEqual(snapshot.remoteTaskIds, [])

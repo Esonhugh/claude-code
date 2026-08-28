@@ -178,7 +178,7 @@ test('disables local project UI facilities for every remote execution transport'
     /isRemoteExecutionSession \? \[\] : \(plugins\.commands as Command\[\]\)/,
   )
   const sshSessionCall = replSource.match(
-    /useSSHSession\(\{[\s\S]*?\n  \}\)/,
+    /useSSHSession\(\{[\s\S]*?\n {2}\}\)/,
   )?.[0]
   assert.ok(sshSessionCall)
   assert.match(sshSessionCall, /tools: \[\],/)
