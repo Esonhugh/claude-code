@@ -17,7 +17,7 @@
 ### 版本状态
 
 - 准备发布版本：`v2.1.214`。
-- 本次发布完整覆盖 `v2.1.213..HEAD` 的 19 个提交（`818ceea^..e96f037`）：18 个非 merge 功能、修复、测试与文档提交，以及 1 个整合 OpenAI/Skill prompt cache 修复的 merge commit；当前未提交的 first-party bootstrap 修复、对应测试与 release driver 调整不计入该提交范围。下方变更内容描述最终待发布工作树，因此同时包含这些未提交修复与 release validation 调整；未跟踪的 `test-gate-bugs.md` 仅为内部 handoff，不属于发布内容。
+- 本次发布完整覆盖 `v2.1.213..HEAD` 的 21 个提交：20 个非 merge 功能、修复、测试与文档提交，以及 1 个整合 OpenAI/Skill prompt cache 修复的 merge commit；其中包括 first-party bootstrap 修复、对应测试与 release driver 调整。未跟踪的 `test-gate-bugs.md` 仅为内部 handoff，不属于发布内容。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.214`。
 
