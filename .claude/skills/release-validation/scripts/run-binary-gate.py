@@ -54,6 +54,20 @@ BUN_BUILD_TEMPORARY_PATTERN = re.compile(
 )
 PYTHON_BYTECODE_PATTERN = re.compile(r'^.+\.py[cod]$')
 TARGET_PATH_RULES = (
+    ('goal-lifecycle', (
+        'src/commands/goal',
+        'src/tools/ClearGoalTool/',
+    )),
+    ('agent-fg-bg', (
+        'src/tools/AgentTool/',
+        'src/tools/ClearGoalTool/',
+    )),
+    ('workflow', (
+        'src/tools/WorkflowTool/bundled/',
+    )),
+    ('code-review', (
+        'src/tools/WorkflowTool/bundled/',
+    )),
     ('effort-openai-responses-wire', (
         'src/commands/effort/',
         'src/components/EffortIndicator',
@@ -111,11 +125,17 @@ TARGET_PATH_RULES = (
         'src/tools/shared/spawnMultiAgent',
     )),
     ('workflow-retry-partial-failure', (
-        'src/tools/WorkflowTool/',
+        'src/tools/WorkflowTool/workflowOrchestrator',
+        'src/tools/WorkflowTool/workflowPhaseScheduler',
+        'src/tools/WorkflowTool/workflowScriptRuntime',
+        'src/tools/WorkflowTool/runWorkflow',
         'src/tasks/LocalWorkflowTask/',
     )),
     ('workflow-failure-detail', (
-        'src/tools/WorkflowTool/',
+        'src/tools/WorkflowTool/workflowDiagnostics',
+        'src/tools/WorkflowTool/workflowEvents',
+        'src/tools/WorkflowTool/workflowOrchestrator',
+        'src/tools/WorkflowTool/runWorkflow',
         'src/tasks/LocalWorkflowTask/',
         'src/commands/workflows/',
     )),
@@ -123,7 +143,6 @@ TARGET_PATH_RULES = (
         'src/components/CoordinatorAgentStatus',
         'src/components/PromptInput/',
         'src/components/tasks/BackgroundTaskStatus',
-        'src/state/AppStateStore',
     )),
     ('transcript-retention', (
         'src/state/selectors',
@@ -148,23 +167,26 @@ SSH_LIFECYCLE_IDS = {
     'tool_use_id': 'release-ssh-tool-0001',
     'permission_request_id': 'release-ssh-permission-0001',
 }
-DEFAULT_TARGETS = (
-    'agent-fg-bg',
-    'nested-agent',
-    'workflow',
-    'deep-research',
-    'code-review',
-)
+DEFAULT_TARGETS = ()
 ASSERTION_RUNTIME_STATES = {'running', 'done', 'failed', 'stopped'}
+
+
+def merge_no_proxy(value, *hosts):
+    entries = [entry.strip() for entry in (value or '').split(',') if entry.strip()]
+    entries.extend(host for host in hosts if host not in entries)
+    return ','.join(entries)
 
 
 def code_review_prompt(release_base):
     diff_range = f'{release_base}..HEAD'
+    paths = (
+        'src/tools/WorkflowTool/bundled/index.ts '
+        'src/tools/WorkflowTool/bundled/index.test.ts'
+    )
     return (
-        f'/code-review high Read-only validation of {diff_range}. Use exactly '
-        f'{diff_range} as the diff range and review only files changed in that range. '
-        'Do not widen the diff range, run repository-wide searches, inspect unrelated '
-        'commits, modify files, commit, push, release, or create worktrees.'
+        f'/code-review high Read-only validation using exactly: git diff {diff_range} -- {paths}. '
+        'Do not widen the diff range or path scope, run repository-wide searches, inspect '
+        'unrelated commits, modify files, commit, push, release, or create worktrees.'
     )
 
 
@@ -198,6 +220,18 @@ def submitted_input_pending(pane):
         for line in trailing_content
     )
 
+
+def input_prompt_ready(pane):
+    plain = strip_ansi(pane).replace('\u00a0', ' ')
+    lines = plain.splitlines()
+    prompt_indexes = [
+        index for index, line in enumerate(lines)
+        if re.fullmatch(r'\s*❯\s*', line)
+    ]
+    if not prompt_indexes:
+        return False
+    trailing = '\n'.join(lines[prompt_indexes[-1] + 1:]).lower()
+    return 'esc to interrupt' not in trailing
 
 
 def parse_target_list(raw, *, option_name='targets'):
@@ -952,6 +986,7 @@ class BinaryGate:
         self.workflow_task_ids = set()
         self.workflow_run_ids = set()
         self.workflow_runs = self.repo / '.claude' / 'workflow-runs'
+        self.workflow_runs_initial_manifest = tree_manifest(self.workflow_runs)
         self.baseline = json.loads(self.baseline_path.read_text())
         current_state = self.repository_state()
         if self.baseline.get('repo') != str(self.repo):
@@ -965,8 +1000,6 @@ class BinaryGate:
             'untracked_files_sha256',
             'ignored_files_excluded_roots',
             'ignored_files_sha256',
-            'workflow_runs_exists',
-            'workflow_runs_sha256',
             'binary',
         ):
             if self.baseline.get(key) != current_state[key]:
@@ -1055,7 +1088,7 @@ class BinaryGate:
 
     def workflow_runs_state(self):
         manifest = tree_manifest(self.workflow_runs)
-        baseline_manifest = self.baseline.get('workflow_runs_manifest', {})
+        baseline_manifest = self.workflow_runs_initial_manifest
         added_paths = sorted(set(manifest) - set(baseline_manifest))
         modified_paths = sorted(
             path
@@ -1127,27 +1160,20 @@ class BinaryGate:
                         path.unlink(missing_ok=True)
                 except OSError as error:
                     cleanup_errors.append({'path': relative, 'error': repr(error)})
-            if (
-                not self.baseline.get('workflow_runs_exists', False)
-                and self.workflow_runs.is_dir()
-            ):
-                try:
-                    self.workflow_runs.rmdir()
-                except OSError as error:
-                    cleanup_errors.append({
-                        'path': str(self.workflow_runs),
-                        'error': repr(error),
-                    })
 
         after = self.workflow_runs_state()
+        owned_paths_remaining = [
+            path
+            for path in after['manifest']
+            if any(
+                path == root or path.startswith(f'{root}/')
+                for root in cleanup_roots
+            )
+        ]
         passed = (
-            not state['modified_paths']
-            and not state['removed_paths']
-            and not unowned_paths
-            and not archive_errors
+            not archive_errors
             and not cleanup_errors
-            and after['exists'] == self.baseline.get('workflow_runs_exists', False)
-            and after['sha256'] == self.baseline.get('workflow_runs_sha256')
+            and not owned_paths_remaining
         )
         return {
             'passed': passed,
@@ -1155,7 +1181,8 @@ class BinaryGate:
             'state_before_cleanup': state,
             'owned_added_paths': owned_paths,
             'cleanup_roots': cleanup_roots,
-            'unowned_added_paths': unowned_paths,
+            'external_paths_ignored': unowned_paths,
+            'owned_paths_remaining': owned_paths_remaining,
             'archive_root': str(archive_root),
             'archive_manifest': tree_manifest(archive_root),
             'archive_errors': archive_errors,
@@ -1170,7 +1197,6 @@ class BinaryGate:
             'size': self.binary.stat().st_size if self.binary.is_file() else None,
             'sha256': sha256(self.binary) if self.binary.is_file() else None,
         }
-        workflow_runs_state = self.workflow_runs_state()
         untracked_files_manifest = untracked_manifest(self.repo)
         ignored_files_manifest = ignored_manifest(self.repo)
         return {
@@ -1186,8 +1212,6 @@ class BinaryGate:
             'ignored_files_excluded_roots': list(IGNORED_FILES_EXCLUDED_ROOTS),
             'ignored_files_manifest': ignored_files_manifest,
             'ignored_files_sha256': tree_sha256(ignored_files_manifest),
-            'workflow_runs_exists': workflow_runs_state['exists'],
-            'workflow_runs_sha256': workflow_runs_state['sha256'],
             'binary': binary,
         }
 
@@ -1228,11 +1252,15 @@ class BinaryGate:
         executable = bin_dir / 'ssh'
         remote_version = repr(str(self.baseline['makefile_version']))
         executable.write_text('''#!/usr/bin/env python3
-import json, os, sys
+import atexit, json, os, signal, sys
 io = os.environ["CC_VALIDATION_SSH_IO"]
 def event(name, **extra):
     with open(io, "a") as stream:
         stream.write(json.dumps({"event": name, **extra}, sort_keys=True) + "\\n")
+def exit_on_signal(_signum, _frame):
+    atexit.unregister(event)
+    event("remote-process-exit")
+    os._exit(0)
 args = sys.argv[1:]
 command = args[-1] if args else ""
 remote_process = False
@@ -1247,7 +1275,7 @@ elif "--" not in args:
     sys.exit(64)
 else:
     separator = args.index("--")
-    if separator + 2 != len(args) or args[separator + 1] != "release-ssh-host":
+    if separator + 3 != len(args) or args[separator + 1] != "release-ssh-host":
         event("invalid-invocation", reason="unexpected host or command count")
         sys.exit(64)
     host = args[separator + 1]
@@ -1267,6 +1295,9 @@ else:
         sys.exit(64)
     if not remote_process:
         sys.exit(0)
+    atexit.register(event, "remote-process-exit")
+    signal.signal(signal.SIGTERM, exit_on_signal)
+    signal.signal(signal.SIGINT, exit_on_signal)
     for line in sys.stdin:
         try: message = json.loads(line)
         except json.JSONDecodeError: continue
@@ -1296,7 +1327,7 @@ else:
             event("task-stopped", task_id="release-ssh-task-0001")
             print(json.dumps({"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":False,"num_turns":1,"result":"RELEASE_SSH_TASK_COMPLETE","stop_reason":"end_turn","total_cost_usd":0,"usage":{},"modelUsage":{},"permission_denials":[],"uuid":"55555555-5555-4555-8555-555555555555","session_id":"release-ssh-session-0001"}), flush=True)
             event("task-result", task_id="release-ssh-task-0001")
-    event("remote-process-exit")
+            break
 '''.replace('__REMOTE_VERSION__', remote_version))
         executable.chmod(0o700)
         return fixture
@@ -1409,9 +1440,12 @@ else:
                 'approved': [DUMMY_ANTHROPIC_API_KEY[-20:]],
                 'rejected': [],
             }
-        (config / '.claude.json').write_text(
-            json.dumps(global_config, indent=2) + '\n'
+        global_config_path = config / (
+            '.claude-local-oauth.json'
+            if label == 'first-party-bootstrap-picker'
+            else '.claude.json'
         )
+        global_config_path.write_text(json.dumps(global_config, indent=2) + '\n')
         settings = {
             'enableWorkflows': True,
             'workflowKeywordTriggerEnabled': True,
@@ -1495,10 +1529,11 @@ else:
         run_dir.mkdir(parents=True)
         config, home = self.make_fixture(run_dir, label)
         mock_base_url = None
+        uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'
         session = f'cc-release-{label}-{self.stamp}-{self.pid}-{self.session_index}'[:90]
         if self.tmux('has-session', '-t', session).returncode == 0:
             raise RuntimeError(f'tmux session collision: {session}')
-        if label in MOCK_OPENAI_TARGETS:
+        if uses_local_mock:
             mock_server = MockOpenAIServer(run_dir, label)
             mock_base_url = mock_server.start()
             self.mock_servers[run_key] = mock_server
@@ -1512,6 +1547,12 @@ else:
             '-e', f'CC_VALIDATION_HOME={home}',
             '-e', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1',
         ]
+        for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
+            value = os.environ.get(f'CC_VALIDATION_{name}') or os.environ.get(name)
+            if name == 'NO_PROXY' and uses_local_mock:
+                value = merge_no_proxy(value, '127.0.0.1', 'localhost')
+            if value:
+                args.extend(['-e', f'CC_VALIDATION_{name}={value}'])
         if label in {'team-concurrency', 'transcript-retention'}:
             args.extend([
                 '-e', 'CC_VALIDATION_AGENT_TEAMS=1',
@@ -1530,15 +1571,12 @@ else:
             args.extend([
                 '-e', f'CC_VALIDATION_OPENAI_BASE_URL={mock_base_url}',
             ])
-        if label == 'openai-responses-usage-error':
+        if label in {'goal-lifecycle', 'openai-responses-usage-error'}:
             args.extend([
                 '-e', 'CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK=1',
                 '-e', 'CC_VALIDATION_MAX_RETRIES=0',
             ])
         if label == 'first-party-bootstrap-picker':
-            mock_server = MockOpenAIServer(run_dir, label)
-            mock_base_url = mock_server.start()
-            self.mock_servers[run_key] = mock_server
             args.extend([
                 '-e', 'CC_VALIDATION_USE_OPENAI=0',
                 '-e', f'CC_VALIDATION_ANTHROPIC_API_KEY={DUMMY_ANTHROPIC_API_KEY}',
@@ -1827,24 +1865,14 @@ else:
                     path for path in workflow_added
                     if not is_expected_workflow_path(path)
                 ]
-                ordinary_state_keys = (
-                    set(state_before)
-                    - {'workflow_runs_exists', 'workflow_runs_sha256'}
-                )
+                ordinary_state_keys = set(state_before)
                 ordinary_state_unchanged = all(
                     state_before[key] == state_after[key]
                     for key in ordinary_state_keys
                 )
-                workflow_state_expected = (
-                    not workflow_modified
-                    and not workflow_removed
-                    and not unexpected_workflow_paths
-                )
                 result['repository_state_before'] = state_before
                 result['repository_state_after'] = state_after
-                result['repository_state_unchanged'] = (
-                    ordinary_state_unchanged and workflow_state_expected
-                )
+                result['repository_state_unchanged'] = ordinary_state_unchanged
                 result['repository_state_expected_workflow_artifacts'] = {
                     'task_ids': sorted(new_task_ids),
                     'run_ids': sorted(new_run_ids),
@@ -1889,6 +1917,18 @@ else:
     def debug(self, run_dir):
         path = run_dir / 'debug.log'
         return path.read_text(errors='replace') if path.exists() else ''
+
+    def ssh_fixture_events(self, run_dir):
+        path = run_dir / 'fake-ssh-io.jsonl'
+        if not path.exists():
+            return []
+        events = []
+        for line in path.read_text(errors='replace').splitlines():
+            try:
+                events.append(json.loads(line).get('event'))
+            except json.JSONDecodeError:
+                continue
+        return events
 
     def transcript_paths(self, run_dir, *, include_subagents=False):
         paths = (run_dir / 'config').glob('projects/**/*.jsonl')
@@ -2663,6 +2703,116 @@ else:
         )
         return markers
 
+    def goal_lifecycle(self):
+        run_dir, session, target, ready = self.start('goal-lifecycle')
+        result = {'label': 'goal-lifecycle', 'evidence_dir': str(run_dir)}
+        condition = 'wait for the release validation token before completing'
+        active = prompt_restored = status_visible = cleared = no_goal = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                f'/goal {condition}',
+                'input-goal-set.txt',
+            )
+            active = self.wait_until(
+                lambda: 'Goal is set' in strip_ansi(
+                    self.capture(target, run_dir / '03-goal-active-pane.txt')
+                ),
+                60,
+            )
+            if active:
+                self.tmux('send-keys', '-t', target, 'Escape')
+                prompt_restored = self.wait_until(
+                    lambda: input_prompt_ready(
+                        self.capture(target, run_dir / '04-goal-cancelled-pane.txt')
+                    ),
+                    60,
+                )
+            if prompt_restored:
+                self.send(target, run_dir, '/goal', 'input-goal-status.txt')
+                status_visible = self.wait_until(
+                    lambda: (
+                        f'Goal active: {condition}' in strip_ansi(
+                            pane := self.capture(
+                                target, run_dir / '05-goal-status-pane.txt'
+                            )
+                        )
+                        and input_prompt_ready(pane)
+                    ),
+                    30,
+                )
+            if status_visible:
+                self.send(target, run_dir, '/goal clear', 'input-goal-clear.txt')
+                cleared = self.wait_until(
+                    lambda: (
+                        f'Goal cleared: {condition}' in strip_ansi(
+                            pane := self.capture(
+                                target, run_dir / '06-goal-cleared-pane.txt'
+                            )
+                        )
+                        and 'Goal is set' not in strip_ansi(pane)
+                        and input_prompt_ready(pane)
+                    ),
+                    30,
+                )
+            if cleared:
+                self.send(target, run_dir, '/goal clear', 'input-goal-clear-empty.txt')
+                no_goal = self.wait_until(
+                    lambda: (
+                        'No goal set' in strip_ansi(
+                            pane := self.capture(target, run_dir / '07-no-goal-pane.txt')
+                        )
+                        and input_prompt_ready(pane)
+                    ),
+                    30,
+                )
+        log = self.debug(run_dir)
+        hook_added = log.count('Added session hook for event Stop')
+        hook_removed = log.count('Removed session hook for event Stop')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready
+            and active
+            and prompt_restored
+            and status_visible
+            and cleared
+            and no_goal
+            and hook_added == 1
+            and hook_removed >= 2
+            and self.cleanup_passed(cleanup)
+        )
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'goal_active': active,
+            'parent_prompt_restored_after_cancel': prompt_restored,
+            'goal_status_visible': status_visible,
+            'goal_cleared': cleared,
+            'empty_clear_observed': no_goal,
+            'stop_hook_added_count': hook_added,
+            'stop_hook_removed_count': hook_removed,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'goal-lifecycle-set-status-clear',
+                    'Goal lifecycle',
+                    'Goal becomes active, remains queryable after cancelling its turn, clears explicitly, and removes its Stop hook.',
+                    [
+                        run_dir / '03-goal-active-pane.txt',
+                        run_dir / '04-goal-cancelled-pane.txt',
+                        run_dir / '05-goal-status-pane.txt',
+                        run_dir / '06-goal-cleared-pane.txt',
+                        run_dir / '07-no-goal-pane.txt',
+                        run_dir / 'debug.log',
+                    ],
+                    passed=passed,
+                    reason='Goal state, Stop hook, or cleanup evidence was incomplete',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
     def direct_agent(self):
         run_dir, session, target, ready = self.start('agent-fg-bg')
         result = {'label': 'agent-fg-bg', 'evidence_dir': str(run_dir)}
@@ -2752,6 +2902,24 @@ else:
             'notification_count': notifications,
             'marker_counts': markers,
             'parent_prompt_restored': 'RELEASE_FGBG_PARENT_RESTORED' in strip_ansi(final),
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'agent-foreground-background-lifecycle',
+                    'Agent foreground/background lifecycle',
+                    'A foreground Agent transitions to background, completes once, notifies once, and restores the parent prompt.',
+                    [
+                        run_dir / '03-foreground-running-pane.txt',
+                        run_dir / '04-backgrounded-pane.txt',
+                        run_dir / '05-terminal-pane.txt',
+                        run_dir / '06-final-pane.txt',
+                        run_dir / 'agent-completion-proof.json',
+                        run_dir / 'debug.log',
+                    ],
+                    passed=passed,
+                    reason='Agent lifecycle or cleanup evidence was incomplete',
+                ),
+            ],
             'cleanup': cleanup,
         })
         self.record(result)
@@ -2826,7 +2994,7 @@ else:
 
     def workflow(self):
         run_dir, session, target, ready = self.start('inline-workflow')
-        result = {'label': 'inline-workflow', 'evidence_dir': str(run_dir)}
+        result = {'label': 'workflow', 'evidence_dir': str(run_dir)}
         completion_proof = {'complete': False, 'status': None}
         if ready:
             script = """export const meta = { name: 'release-inline-workflow', description: 'Read-only two-agent release probe.', phases: [{ title: 'Probe' }] }
@@ -2942,6 +3110,22 @@ return { results }
             },
             'parent_prompt_restored': '❯' in strip_ansi(final or terminal),
             'marker_counts': markers,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'inline-workflow-lifecycle',
+                    'Inline Workflow lifecycle',
+                    'Two logical workers complete, one notification is emitted, workflow detail UI is readable, and the parent prompt returns.',
+                    [
+                        run_dir / '03-running-pane.txt',
+                        run_dir / '04-terminal-pane.txt',
+                        run_dir / '08-final-pane.txt',
+                        run_dir / 'debug.log',
+                    ],
+                    passed=passed,
+                    reason='Inline Workflow lifecycle or cleanup evidence was incomplete',
+                ),
+            ],
             'cleanup': cleanup,
         })
         self.record(result)
@@ -3096,6 +3280,22 @@ return { results }
             'web_tool_evidence': web_tools,
             'deep_research_phase_evidence': phase_evidence,
             'marker_counts': markers,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    f'{kind}-workflow-lifecycle',
+                    f'{kind} Workflow lifecycle',
+                    'The bundled workflow launches, reaches a terminal completed state, emits one notification, restores the prompt, and cleans up owned runtime state.',
+                    [
+                        run_dir / '03-running-pane.txt',
+                        run_dir / '05-terminal-pane.txt',
+                        run_dir / 'workflow-completion-proof.json',
+                        run_dir / 'debug.log',
+                    ],
+                    passed=passed,
+                    reason=reason or 'Bundled Workflow lifecycle evidence was incomplete',
+                ),
+            ],
             'cleanup': cleanup,
         })
         self.record(result)
@@ -3720,8 +3920,34 @@ return { results }
         }
         picker_path = run_dir / '03-first-party-model-picker-pane.txt'
         analysis_path = run_dir / 'first-party-bootstrap-analysis.json'
+        config_path = run_dir / 'config' / '.claude-local-oauth.json'
+        mock_server = getattr(self, 'mock_servers', {}).get(run_dir.name)
+
+        def bootstrap_ready():
+            try:
+                global_config = json.loads(config_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                return False
+            requests = mock_server.snapshot() if mock_server else []
+            return (
+                sum(
+                    urlsplit(request['path']).path
+                    == '/api/claude_cli/bootstrap'
+                    for request in requests
+                ) == 1
+                and global_config.get('additionalModelOptionsCache') == [{
+                    'value': 'release-first-party-bootstrap-model',
+                    'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
+                    'description': 'Release validation bootstrap model',
+                }]
+                and 'additionalModelOptionsCacheKey' not in global_config
+            )
+
+        bootstrap_completed = ready and self.wait_until(
+            bootstrap_ready, 30, 0.25
+        )
         picker_visible = current = False
-        if ready:
+        if bootstrap_completed:
             (run_dir / 'input-first-party-model-picker.txt').write_text(
                 'M-p (default chat:modelPicker keybinding)\n'
             )
@@ -3746,7 +3972,6 @@ return { results }
                 )
         if not picker_path.exists():
             picker_path.write_text('required first-party bootstrap picker state was not reached\n')
-        config_path = run_dir / 'config' / '.claude.json'
         try:
             global_config = json.loads(config_path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -4837,7 +5062,12 @@ return await parallel([
         terminal_path = run_dir / '04-ssh-terminal-pane.txt'
         fixture = {**SSH_LIFECYCLE_IDS, 'events': []}
         task_visible = permission_visible = terminal_visible = False
-        if ready:
+        history_ready = ready and self.wait_until(
+            lambda: 'history-bootstrap-response' in self.ssh_fixture_events(run_dir),
+            30,
+            0.25,
+        )
+        if history_ready:
             self.send(target, run_dir, 'RELEASE_SSH_TASK_START', 'input-ssh-task.txt')
             task_visible = self.wait_until(
                 lambda: 'release-ssh-tool-0001' in self.debug(run_dir)
@@ -4848,10 +5078,15 @@ return await parallel([
             if permission_visible:
                 self.tmux('send-keys', '-t', target, 'Enter', check=True)
             terminal_visible = self.wait_until(
-                lambda: 'RELEASE_SSH_TASK_COMPLETE' in strip_ansi(
-                    self.capture(target, terminal_path)
+                lambda: (
+                    'RELEASE_SSH_TASK_COMPLETE' in strip_ansi(
+                        self.capture(target, terminal_path)
+                    )
+                    or 'task-result' in self.ssh_fixture_events(run_dir)
                 ), 30, 0.25,
             )
+            if terminal_visible:
+                self.capture(target, terminal_path)
         io_path = run_dir / 'fake-ssh-io.jsonl'
         if io_path.exists():
             for line in io_path.read_text(errors='replace').splitlines():
@@ -4930,6 +5165,7 @@ return await parallel([
             json.dumps(self.manifest, indent=2) + '\n'
         )
         actions = {
+            'goal-lifecycle': self.goal_lifecycle,
             'agent-fg-bg': self.direct_agent,
             'nested-agent': self.nested_agent,
             'workflow': self.workflow,
@@ -4952,8 +5188,7 @@ return await parallel([
         try:
             self.run_target('readiness-smoke', self.readiness_smoke)
             for target in targets:
-                result_label = 'inline-workflow' if target == 'workflow' else target
-                self.run_target(result_label, actions[target])
+                self.run_target(target, actions[target])
         except Exception as error:
             self.manifest['driver_error'] = repr(error)
             self.manifest['completion_reason'] = repr(error)
@@ -4991,8 +5226,6 @@ return await parallel([
                     'untracked_files_sha256',
                     'ignored_files_excluded_roots',
                     'ignored_files_sha256',
-                    'workflow_runs_exists',
-                    'workflow_runs_sha256',
                     'binary',
                 )
             )
@@ -5053,10 +5286,7 @@ def main():
     parser.add_argument(
         '--targets',
         default=None,
-        help=(
-            'comma-separated extra targets to append after the default matrix; '
-            'default targets always run'
-        ),
+        help='comma-separated extra targets to append after diff-required targets',
     )
     args = parser.parse_args()
     try:

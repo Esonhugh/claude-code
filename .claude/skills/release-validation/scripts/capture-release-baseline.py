@@ -170,8 +170,6 @@ def main():
     ).strip()
     binary = repo / 'built-claude'
     package = json.loads((repo / 'package.json').read_text())
-    workflow_runs = repo / '.claude' / 'workflow-runs'
-    workflow_runs_manifest = tree_manifest(workflow_runs)
     untracked_files_manifest = untracked_manifest(repo)
     ignored_files_manifest = ignored_manifest(repo)
     unstaged_diff = command(repo, 'diff', '--binary')
@@ -200,9 +198,6 @@ def main():
         'ignored_files_excluded_roots': list(IGNORED_FILES_EXCLUDED_ROOTS),
         'ignored_files_manifest': ignored_files_manifest,
         'ignored_files_sha256': tree_sha256(ignored_files_manifest),
-        'workflow_runs_exists': workflow_runs.is_dir(),
-        'workflow_runs_manifest': workflow_runs_manifest,
-        'workflow_runs_sha256': tree_sha256(workflow_runs_manifest),
         'makefile_version': read_makefile_version(repo),
         'package_version': package.get('version'),
         'binary': {

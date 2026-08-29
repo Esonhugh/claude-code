@@ -17,13 +17,13 @@
 ### 版本状态
 
 - 准备发布版本：`v2.1.214`。
-- 本次发布完整覆盖 `v2.1.213..HEAD` 的 17 个提交（`818ceea^..96ad024`）：16 个非 merge 功能、修复、测试与文档提交，以及 1 个整合 OpenAI/Skill prompt cache 修复的 merge commit；本次发布准备、验证脚本与验证中发现的产品修复尚未提交，不计入该提交范围。下方变更内容描述最终待发布工作树，因此同时包含这些未提交的 release-blocking fixes。
+- 本次发布完整覆盖 `v2.1.213..HEAD` 的 19 个提交（`818ceea^..e96f037`）：18 个非 merge 功能、修复、测试与文档提交，以及 1 个整合 OpenAI/Skill prompt cache 修复的 merge commit；当前未提交的 first-party bootstrap 修复、对应测试与 release driver 调整不计入该提交范围。下方变更内容描述最终待发布工作树，因此同时包含这些未提交修复与 release validation 调整；未跟踪的 `test-gate-bugs.md` 仅为内部 handoff，不属于发布内容。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.214`。
 
 ### 关联提交
 
-- `818ceea` — 为模型发现缓存加入 provider/endpoint cache key，并在 provider 或 endpoint 切换时清理陈旧 Model Picker 选项；credential/account identity 与 endpoint 规范化由本次未提交的 release-blocking fix 补齐。
+- `818ceea` — 为模型发现缓存加入 provider/endpoint cache key，并在 provider 或 endpoint 切换时清理陈旧 Model Picker 选项；后续提交补齐 credential/account identity、endpoint 规范化与有效空列表语义。
 - `b619ea1` — 按稳定核心、能力与任务动态层组织 system prompt，收敛 mode guidance，并加入可重复的 prompt cost 分析工具和测试。
 - `2fd778f` — 在 custom system prompt 路径保留 proactive guidance，并修正对应 prompt 分析证据。
 - `e918003` — 记录 prompt 分层候选与基线的隔离多轮 A/B 结果和证据边界。
@@ -40,6 +40,8 @@
 - `4f6e02b` — 保留模型发现返回的 capability 状态，并修正 identity-aware cache 在有效空列表与失败响应下的更新语义。
 - `1c739ef` — 加固 release binary driver 的 target coverage、evidence ownership、manifest 与 cleanup 验证。
 - `96ad024` — 持续转发 SSH remote response text，并补齐 stream completion 与状态清理回归覆盖。
+- `a79960d` — 保留 OpenAI caller metadata headers、处理无 trailing newline 的 SSE 终态，并在 SSH session 结束或断开时清理 permission state。
+- `e96f037` — 加固 release validation 的 bootstrap、lease、manifest、SSH lifecycle 与 launcher 回归契约。
 
 ### 变更内容
 

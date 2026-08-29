@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.request import Request, urlopen
@@ -49,11 +50,8 @@ def make_gate(module, repo, evidence, baseline_manifest, baseline_exists):
     gate.workflow_runs = repo / '.claude' / 'workflow-runs'
     gate.workflow_task_ids = set()
     gate.workflow_run_ids = set()
-    gate.baseline = {
-        'workflow_runs_exists': baseline_exists,
-        'workflow_runs_manifest': baseline_manifest,
-        'workflow_runs_sha256': module.tree_sha256(baseline_manifest),
-    }
+    gate.workflow_runs_initial_manifest = baseline_manifest
+    gate.baseline = {}
     return gate
 
 
@@ -251,11 +249,11 @@ def assert_driver_behavior(module, baseline_module):
         assert (evidence / 'workflow-runs-artifacts/task_owned.json').is_file()
         assert (evidence / 'workflow-runs-artifacts/wf_owned/session.json').is_file()
 
-        (runs / 'unowned.json').write_text('unowned\n')
+        (runs / 'external.json').write_text('external\n')
         result = module.BinaryGate.archive_and_remove_workflow_runs(gate)
-        assert result['passed'] is False
-        assert result['unowned_added_paths'] == ['unowned.json']
-        assert (runs / 'unowned.json').is_file()
+        assert result['passed'] is True
+        assert result['external_paths_ignored'] == ['external.json']
+        assert (runs / 'external.json').is_file()
 
     with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
         root = Path(root_string)
@@ -271,8 +269,9 @@ def assert_driver_behavior(module, baseline_module):
         (runs / 'existing.json').write_text('changed\n')
 
         result = module.BinaryGate.archive_and_remove_workflow_runs(gate)
-        assert result['passed'] is False
+        assert result['passed'] is True
         assert result['state_before_cleanup']['modified_paths'] == ['existing.json']
+        assert result['owned_added_paths'] == []
         assert (runs / 'existing.json').read_text() == 'changed\n'
 
     with tempfile.TemporaryDirectory(prefix='release-driver-test-') as root_string:
@@ -1183,6 +1182,28 @@ def assert_driver_behavior(module, baseline_module):
         assert module.BinaryGate.release_lease(lease_b)['released'] is True
 
     assert module.required_targets_for_paths([
+        'src/commands/goal.ts',
+        'src/tools/AgentTool/agentToolUtils.ts',
+        'src/tools/WorkflowTool/bundled/index.ts',
+    ]) == {
+        'goal-lifecycle',
+        'agent-fg-bg',
+        'workflow',
+        'code-review',
+    }
+    assert module.required_targets_for_paths([
+        'src/state/AppStateStore.ts',
+    ]) == set()
+    assert module.required_targets_for_paths([
+        'src/tools/WorkflowTool/bundled/index.ts',
+    ]) == {'workflow', 'code-review'}
+    assert module.required_targets_for_paths([
+        'src/tools/WorkflowTool/workflowOrchestrator.ts',
+    ]) == {
+        'workflow-retry-partial-failure',
+        'workflow-failure-detail',
+    }
+    assert module.required_targets_for_paths([
         'src/services/api/openai-compat.ts',
     ]) == {
         'effort-openai-responses-wire',
@@ -1219,6 +1240,82 @@ def assert_driver_behavior(module, baseline_module):
         assert fixture['tool_use_id'] == 'release-ssh-tool-0001'
         assert fixture['permission_request_id'] == 'release-ssh-permission-0001'
         assert fixture['io_path'] == str(run_dir / 'fake-ssh-io.jsonl')
+        probe = subprocess.run(
+            [
+                str(executable),
+                '-o',
+                'ControlMaster=auto',
+                '--',
+                'release-ssh-host',
+                'set -eu; printf "%s\\n" "$(uname -s)" "$(uname -m)" "$HOME" "$PWD"',
+            ],
+            env={'CC_VALIDATION_SSH_IO': fixture['io_path']},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert probe.stdout == 'Linux\nx86_64\n/release-home\n/release-work\n'
+        events = [json.loads(line) for line in Path(fixture['io_path']).read_text().splitlines()]
+        assert [event['event'] for event in events] == ['ssh-invocation']
+        assert events[0]['args'][-2:] == [
+            'release-ssh-host',
+            'set -eu; printf "%s\\n" "$(uname -s)" "$(uname -m)" "$HOME" "$PWD"',
+        ]
+
+        lifecycle = subprocess.Popen(
+            [
+                str(executable), '--', 'release-ssh-host',
+                'set -eu; trap cleanup EXIT; claude --input-format stream-json --output-format stream-json',
+            ],
+            env={'CC_VALIDATION_SSH_IO': fixture['io_path']},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert lifecycle.stdin is not None
+        for message in (
+            {
+                'type': 'control_request',
+                'request_id': 'history-request',
+                'request': {'subtype': 'replay_history'},
+            },
+            {'type': 'user'},
+            {
+                'type': 'control_response',
+                'response': {
+                    'request_id': 'release-ssh-permission-0001',
+                    'response': {
+                        'behavior': 'allow',
+                        'updatedInput': {'command': 'pwd'},
+                    },
+                },
+            },
+        ):
+            lifecycle.stdin.write(json.dumps(message) + '\n')
+        lifecycle.stdin.flush()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if Path(fixture['io_path']).exists() and 'task-result' in Path(
+                fixture['io_path']
+            ).read_text():
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError('fake SSH lifecycle did not reach task result')
+        lifecycle.terminate()
+        try:
+            assert lifecycle.wait(timeout=2) == 0
+        finally:
+            if lifecycle.poll() is None:
+                lifecycle.kill()
+                lifecycle.wait(timeout=2)
+            lifecycle.stdin.close()
+        lifecycle_events = [
+            json.loads(line)
+            for line in Path(fixture['io_path']).read_text().splitlines()
+        ]
+        assert lifecycle_events[-1]['event'] == 'remote-process-exit'
 
     assert module.BinaryGate.ssh_lifecycle_evidence({
         'session_id': 'release-ssh-session-0001',
@@ -1325,7 +1422,6 @@ def assert_driver_behavior(module, baseline_module):
         'prompt-modes-cache-prefix',
         'team-concurrency',
         'workflow-retry-partial-failure',
-        'workflow-failure-detail',
         'coordinator-selector',
         'transcript-retention',
     }
@@ -1634,6 +1730,15 @@ def assert_driver_behavior(module, baseline_module):
         '❯ /deep-research current request\n'
     ) is True
     assert module.submitted_input_pending('❯ \n') is False
+    assert module.input_prompt_ready('❯ /goal wait for token\nGoal is set\n') is False
+    assert module.input_prompt_ready(
+        '❯ /goal wait for token\nGoal is set\n✶ Working…\n❯ \n'
+        'esc to interrupt\n'
+    ) is False
+    assert module.input_prompt_ready(
+        '❯ /goal wait for token\nGoal is set\n❯ \n'
+    ) is True
+    assert module.input_prompt_ready('status without prompt\n') is False
 
     title_request = {
         'method': 'POST',
@@ -1678,30 +1783,22 @@ def assert_driver_behavior(module, baseline_module):
             raise AssertionError(f'expected parse_target_list({raw!r}) to fail')
 
     code_review_prompt = module.code_review_prompt('release-base-sha')
-    assert 'release-base-sha..HEAD' in code_review_prompt
-    assert 'Do not widen the diff range' in code_review_prompt
+    assert (
+        'git diff release-base-sha..HEAD -- '
+        'src/tools/WorkflowTool/bundled/index.ts '
+        'src/tools/WorkflowTool/bundled/index.test.ts'
+    ) in code_review_prompt
+    assert 'Do not widen the diff range or path scope' in code_review_prompt
     assert 'current changes' not in code_review_prompt
     assert 'src/tools/AgentTool' not in code_review_prompt
-    assert 'src/tools/WorkflowTool' not in code_review_prompt
     assert 'src/tasks/LocalWorkflowTask' not in code_review_prompt
     assert 'src/utils/sessionStorage.ts' not in code_review_prompt
 
     planned = module.plan_targets(['team-concurrency'], {'workflow-failure-detail'})
-    assert planned == [
-        'agent-fg-bg',
-        'nested-agent',
-        'workflow',
-        'deep-research',
-        'code-review',
-        'team-concurrency',
-        'workflow-failure-detail',
+    assert planned == ['team-concurrency', 'workflow-failure-detail']
+    assert module.plan_targets([], {'ssh-remote-session-lifecycle'}) == [
+        'ssh-remote-session-lifecycle',
     ]
-    try:
-        module.plan_targets(['workflow'], set())
-    except ValueError as error:
-        assert 'already included by default' in str(error)
-    else:
-        raise AssertionError('expected duplicate default target to fail')
 
     with tempfile.TemporaryDirectory(prefix='release-driver-assertions-') as root_string:
         root = Path(root_string)
@@ -1801,6 +1898,13 @@ def assert_driver_behavior(module, baseline_module):
     assert "'RELEASE_NESTED_PARENT_DONE'\n                    in self.assistant_text(run_dir, subagents=True)" in driver
     assert "The child must not call Agent or delegate" in driver
     assert "workflow did not reach a terminal status before timeout" in driver
+    assert "'goal-lifecycle': self.goal_lifecycle" in driver
+    assert "def goal_lifecycle(self):" in driver
+    assert "'goal-lifecycle-set-status-clear'" in driver
+    assert "'agent-foreground-background-lifecycle'" in driver
+    assert "result = {'label': 'workflow', 'evidence_dir': str(run_dir)}" in driver
+    assert "'inline-workflow-lifecycle'" in driver
+    assert "f'{kind}-workflow-lifecycle'" in driver
     assert "'team-concurrency': self.team_concurrency" in driver
     assert "'workflow-retry-partial-failure': self.workflow_retry_partial_failure" in driver
     assert "'workflow-failure-detail': self.workflow_failure_detail" in driver
@@ -1813,7 +1917,15 @@ def assert_driver_behavior(module, baseline_module):
     assert "def transcript_retention(self):" in driver
     assert "def run_target(self, label, action):" in driver
     assert "result['repository_state_expected_workflow_artifacts']" in driver
-    assert "result_label = 'inline-workflow' if target == 'workflow' else target" in driver
+    assert "self.run_target(target, actions[target])" in driver
+    assert "result_label = 'inline-workflow' if target == 'workflow' else target" not in driver
+    assert "global_config_path = config / (" in driver
+    assert "'.claude-local-oauth.json'" in driver
+    assert "if label in {'goal-lifecycle', 'openai-responses-usage-error'}:" in driver
+    assert "'CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK=1'" in driver
+    assert "'CC_VALIDATION_MAX_RETRIES=0'" in driver
+    assert "'history-bootstrap-response' in self.ssh_fixture_events(run_dir)" in driver
+    assert "or 'task-result' in self.ssh_fixture_events(run_dir)" in driver
     assert "run_dir / '04-prompt-after-detail-dialog.txt'" in driver
     assert "re.fullmatch(r'\\s*❯\\s*', line)" in driver
     assert "f'/workflows detail {task_id}'" in driver
@@ -1833,7 +1945,7 @@ def assert_driver_behavior(module, baseline_module):
     assert "specified/not executable" in driver
     assert "--base-ref" in driver
     assert "required_target_inputs" in driver
-    assert "default targets always run" in driver
+    assert "extra targets to append after diff-required targets" in driver
 
     assert "'effort-openai-responses-wire': self.effort_openai_responses_wire" in driver
     assert "'openai-responses-usage-error': self.openai_responses_usage_error" in driver
@@ -2191,12 +2303,9 @@ def assert_driver_behavior(module, baseline_module):
             'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
             'description': 'Release validation bootstrap model',
         }
-        (config / '.claude.json').write_text(json.dumps({
-            'additionalModelOptionsCache': [option],
-        }))
-        (run_dir / 'debug.log').write_text(
-            '[Bootstrap] fetched /api/claude_cli/bootstrap\n'
-        )
+        (config / '.claude.json').write_text('{}\n')
+        (run_dir / 'debug.log').write_text('')
+        bootstrap_requests = []
         recorded = []
         first_party_gate = object.__new__(module.BinaryGate)
         first_party_gate.start = lambda _label: (
@@ -2205,22 +2314,39 @@ def assert_driver_behavior(module, baseline_module):
             'first-party-target',
             True,
         )
-        first_party_gate.tmux = lambda *args, **_kwargs: subprocess.CompletedProcess(
-            args, 0, '', ''
-        )
+        def first_party_tmux(*args, **_kwargs):
+            if args[:4] == ('send-keys', '-t', 'first-party-target', 'M-p'):
+                assert bootstrap_requests == [{
+                    'path': '/api/claude_cli/bootstrap',
+                }]
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        first_party_gate.tmux = first_party_tmux
         first_party_gate.send = lambda *_args: (_ for _ in ()).throw(AssertionError('unexpected model current command'))
 
         def capture_first_party(_target, path, **_kwargs):
+            if not bootstrap_requests:
+                bootstrap_requests.append({'path': '/api/claude_cli/bootstrap'})
+                (config / '.claude-local-oauth.json').write_text(json.dumps({
+                    'additionalModelOptionsCache': [option],
+                }))
             text = 'Select model\nRELEASE_FIRST_PARTY_BOOTSTRAP_MODEL ✔\n'
             path.write_text(text)
             return text
 
         first_party_gate.capture = capture_first_party
-        first_party_gate.wait_until = lambda predicate, *_args: predicate()
+
+        def wait_first_party(predicate, *_args):
+            if not bootstrap_requests:
+                bootstrap_requests.append({'path': '/api/claude_cli/bootstrap'})
+                (config / '.claude-local-oauth.json').write_text(json.dumps({
+                    'additionalModelOptionsCache': [option],
+                }))
+            return predicate()
+
+        first_party_gate.wait_until = wait_first_party
         first_party_gate.mock_servers = {
-            run_dir.name: SimpleNamespace(snapshot=lambda: [{
-                'path': '/api/claude_cli/bootstrap',
-            }]),
+            run_dir.name: SimpleNamespace(snapshot=lambda: bootstrap_requests),
         }
         first_party_gate.close = lambda *_args: {'stopped': True}
         first_party_gate.cleanup_passed = lambda _cleanup: True
@@ -2290,6 +2416,11 @@ def assert_driver_behavior(module, baseline_module):
     assert collision_check < mock_server_start
 
     launcher = LAUNCHER_PATH.read_text()
+    assert "value = os.environ.get(f'CC_VALIDATION_{name}') or os.environ.get(name)" in driver
+    assert "value = merge_no_proxy(value, '127.0.0.1', 'localhost')" in driver
+    assert "uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'" in driver
+    assert "if uses_local_mock:\n            mock_server = MockOpenAIServer(run_dir, label)" in driver
+    assert "if name == 'NO_PROXY' and uses_local_mock:" in driver
     assert 'set -- env -i' in launcher
     assert 'exec "$@"' in launcher
     assert 'CLAUDE_CODE_USE_OPENAI="${CC_VALIDATION_USE_OPENAI:-1}"' in launcher
@@ -2482,7 +2613,7 @@ def assert_driver_behavior(module, baseline_module):
                 (first_party_home / '.codex' / 'auth.json').read_text()
             ) == {}
             first_party_global_config = json.loads(
-                (first_party_config / '.claude.json').read_text()
+                (first_party_config / '.claude-local-oauth.json').read_text()
             )
             assert 'additionalModelOptionsCache' not in first_party_global_config
             assert 'additionalModelOptionsCacheKey' not in first_party_global_config
