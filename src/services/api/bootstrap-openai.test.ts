@@ -215,6 +215,7 @@ try {
     requests.push({ url, headers: options?.headers, params: undefined })
     return {
       data: {
+        client_data: { release_validation: 'first-party-bootstrap' },
         additional_model_options: [{
           model: 'claude-first-party-bootstrap',
           name: 'Claude First-Party Bootstrap',
@@ -232,7 +233,9 @@ try {
   )
   assert.equal(requests[0]!.headers?.['x-api-key'], 'first-party-test-key')
   assert.equal(requests[0]!.headers?.Authorization, undefined)
-  assert.equal(getGlobalConfig().clientDataCache, null)
+  assert.deepEqual(getGlobalConfig().clientDataCache, {
+    release_validation: 'first-party-bootstrap',
+  })
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [{
     value: 'claude-first-party-bootstrap',
     label: 'Claude First-Party Bootstrap',
