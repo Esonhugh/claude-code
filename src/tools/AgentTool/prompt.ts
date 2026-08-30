@@ -124,6 +124,8 @@ ${effectiveAgents.map(agent => formatAgentLine(agent)).join('\n')}`
 
 The ${AGENT_TOOL_NAME} tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
 
+Before creating an agent, self-check: is delegation necessary, or can you finish directly with a few tool calls? Do not create an agent that duplicates work already underway or repeats context another agent already has. Prefer resuming an existing agent over starting a new one, and keep the prompt scoped so context is passed once rather than repeated across follow-ups.
+
 ${agentListSection}
 
 ${

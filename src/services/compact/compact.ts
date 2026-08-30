@@ -327,6 +327,11 @@ export type RecompactionInfo = {
   querySource?: QuerySource
 }
 
+export type RemoteCompactionResult = {
+  item: NonNullable<SystemCompactBoundaryMessage['openAICompaction']>
+  usage: NonNullable<ReturnType<typeof getTokenUsage>>
+}
+
 /**
  * Build the base post-compact messages array from a CompactionResult.
  * This ensures consistent ordering across all compaction paths.
@@ -398,6 +403,9 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  remoteCompact?: (
+    customInstructions?: string,
+  ) => Promise<RemoteCompactionResult | undefined>,
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -443,81 +451,91 @@ export async function compactConversation(
       true,
     )
 
-    const compactPrompt = getCompactPrompt(customInstructions)
-    const summaryRequest = createUserMessage({
-      content: compactPrompt,
-    })
-
     let messagesToSummarize = messages
-    let retryCacheSafeParams = cacheSafeParams
-    let summaryResponse: AssistantMessage
-    let summary: string | null
-    let ptlAttempts = 0
-    for (;;) {
-      summaryResponse = await streamCompactSummary({
-        messages: messagesToSummarize,
-        summaryRequest,
-        appState,
-        context,
-        preCompactTokenCount,
-        cacheSafeParams: retryCacheSafeParams,
-      })
-      summary = getAssistantMessageText(summaryResponse)
-      if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
+    let summaryResponse: AssistantMessage | undefined
+    let remoteResult: RemoteCompactionResult | undefined
+    let summary: string
 
-      // CC-1180: compact request itself hit prompt-too-long. Truncate the
-      // oldest API-round groups and retry rather than leaving the user stuck.
-      ptlAttempts++
-      const truncated =
-        ptlAttempts <= MAX_PTL_RETRIES
-          ? truncateHeadForPTLRetry(messagesToSummarize, summaryResponse)
-          : null
-      if (!truncated) {
+    if (remoteCompact) {
+      remoteResult = await remoteCompact(customInstructions)
+    }
+    if (remoteResult) {
+      summary = '[OpenAI remote compaction]'
+    } else {
+      const compactPrompt = getCompactPrompt(customInstructions)
+      const summaryRequest = createUserMessage({
+        content: compactPrompt,
+      })
+      let retryCacheSafeParams = cacheSafeParams
+      let generatedSummary: string | null
+      let ptlAttempts = 0
+      for (;;) {
+        summaryResponse = await streamCompactSummary({
+          messages: messagesToSummarize,
+          summaryRequest,
+          appState,
+          context,
+          preCompactTokenCount,
+          cacheSafeParams: retryCacheSafeParams,
+        })
+        generatedSummary = getAssistantMessageText(summaryResponse)
+        if (!generatedSummary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
+
+        // CC-1180: compact request itself hit prompt-too-long. Truncate the
+        // oldest API-round groups and retry rather than leaving the user stuck.
+        ptlAttempts++
+        const truncated =
+          ptlAttempts <= MAX_PTL_RETRIES
+            ? truncateHeadForPTLRetry(messagesToSummarize, summaryResponse)
+            : null
+        if (!truncated) {
+          logEvent('tengu_compact_failed', {
+            reason:
+              'prompt_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+            ptlAttempts,
+          })
+          throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG)
+        }
+        logEvent('tengu_compact_ptl_retry', {
+          attempt: ptlAttempts,
+          droppedMessages: messagesToSummarize.length - truncated.length,
+          remainingMessages: truncated.length,
+        })
+        messagesToSummarize = truncated
+        // The forked-agent path reads from cacheSafeParams.forkContextMessages,
+        // not the messages param — thread the truncated set through both paths.
+        retryCacheSafeParams = {
+          ...retryCacheSafeParams,
+          forkContextMessages: truncated,
+        }
+      }
+
+      if (!generatedSummary) {
+        logForDebugging(
+          `Compact failed: no summary text in response. Response: ${jsonStringify(summaryResponse)}`,
+          { level: 'error' },
+        )
         logEvent('tengu_compact_failed', {
           reason:
-            'prompt_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            'no_summary' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           preCompactTokenCount,
           promptCacheSharingEnabled,
-          ptlAttempts,
         })
-        throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG)
+        throw new Error(
+          `Failed to generate conversation summary - response did not contain valid text content`,
+        )
+      } else if (startsWithApiErrorPrefix(generatedSummary)) {
+        logEvent('tengu_compact_failed', {
+          reason:
+            'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          preCompactTokenCount,
+          promptCacheSharingEnabled,
+        })
+        throw new Error(generatedSummary)
       }
-      logEvent('tengu_compact_ptl_retry', {
-        attempt: ptlAttempts,
-        droppedMessages: messagesToSummarize.length - truncated.length,
-        remainingMessages: truncated.length,
-      })
-      messagesToSummarize = truncated
-      // The forked-agent path reads from cacheSafeParams.forkContextMessages,
-      // not the messages param — thread the truncated set through both paths.
-      retryCacheSafeParams = {
-        ...retryCacheSafeParams,
-        forkContextMessages: truncated,
-      }
-    }
-
-    if (!summary) {
-      logForDebugging(
-        `Compact failed: no summary text in response. Response: ${jsonStringify(summaryResponse)}`,
-        { level: 'error' },
-      )
-      logEvent('tengu_compact_failed', {
-        reason:
-          'no_summary' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        preCompactTokenCount,
-        promptCacheSharingEnabled,
-      })
-      throw new Error(
-        `Failed to generate conversation summary - response did not contain valid text content`,
-      )
-    } else if (startsWithApiErrorPrefix(summary)) {
-      logEvent('tengu_compact_failed', {
-        reason:
-          'api_error' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        preCompactTokenCount,
-        promptCacheSharingEnabled,
-      })
-      throw new Error(summary)
+      summary = generatedSummary
     }
 
     // Store the current file state before clearing
@@ -630,25 +648,39 @@ export async function compactConversation(
       ].sort()
     }
 
+    if (remoteResult) {
+      boundaryMarker.openAICompaction = remoteResult.item
+      boundaryMarker.compactMetadata = {
+        ...boundaryMarker.compactMetadata,
+        remoteV2: true,
+      }
+    }
+
     const transcriptPath = getTranscriptPath()
-    const summaryMessages: UserMessage[] = [
-      createUserMessage({
-        content: getCompactUserSummaryMessage(
-          summary,
-          suppressFollowUpQuestions,
-          transcriptPath,
-        ),
-        isCompactSummary: true,
-        isVisibleInTranscriptOnly: true,
-      }),
-    ]
+    const summaryMessages: UserMessage[] = remoteResult
+      ? []
+      : [
+          createUserMessage({
+            content: getCompactUserSummaryMessage(
+              summary,
+              suppressFollowUpQuestions,
+              transcriptPath,
+            ),
+            isCompactSummary: true,
+            isVisibleInTranscriptOnly: true,
+          }),
+        ]
 
     // Previously "postCompactTokenCount" — renamed because this is the
     // compact API call's total usage (input_tokens ≈ preCompactTokenCount),
     // NOT the size of the resulting context. Kept for event-field continuity.
-    const compactionCallTotalTokens = tokenCountFromLastAPIResponse([
-      summaryResponse,
-    ])
+    const compactionUsage = remoteResult?.usage ?? getTokenUsage(summaryResponse!)
+    const compactionCallTotalTokens = compactionUsage
+      ? compactionUsage.input_tokens +
+        (compactionUsage.cache_creation_input_tokens ?? 0) +
+        (compactionUsage.cache_read_input_tokens ?? 0) +
+        compactionUsage.output_tokens
+      : 0
 
     // Message-payload estimate of the resulting context. The next iteration's
     // shouldAutoCompact will see this PLUS ~20-40K for system prompt + tools +
@@ -663,9 +695,6 @@ export async function compactConversation(
       // @ts-ignore - recovered code
       ...hookMessages,
     ])
-
-    // Extract compaction API usage metrics
-    const compactionUsage = getTokenUsage(summaryResponse)
 
     const querySourceForEvent =
       recompactionInfo?.querySource ?? context.options.querySource ?? 'unknown'

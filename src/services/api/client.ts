@@ -1,4 +1,5 @@
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
+import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import type { GoogleAuth } from 'google-auth-library'
 import {
@@ -100,12 +101,14 @@ export async function getAnthropicClient({
   model,
   fetchOverride,
   source,
+  openAITurnScope,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  openAITurnScope?: OpenAITurnScope
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -183,7 +186,9 @@ export async function getAnthropicClient({
       maxRetries,
       timeout: ARGS.timeout,
       defaultHeaders,
-      promptCacheKey: getSessionId(),
+      promptCacheKey: openAITurnScope?.identity.promptCacheKey ?? getSessionId(),
+      turnScope: openAITurnScope,
+      enableWebSocket: true,
     })
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {

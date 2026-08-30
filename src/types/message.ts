@@ -202,6 +202,12 @@ export interface SystemBridgeStatusMessage extends SystemBase {
 
 export interface SystemCompactBoundaryMessage extends SystemBase {
   subtype: 'compact_boundary'
+  /** Opaque OpenAI Responses compaction item, replayed only by the OpenAI adapter. */
+  openAICompaction?: {
+    type: 'compaction'
+    encrypted_content: string
+    id?: string
+  }
   [key: string]: any
 }
 

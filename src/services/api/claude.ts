@@ -47,6 +47,7 @@ import type {
   Message,
   StreamEvent,
   SystemAPIErrorMessage,
+  SystemCompactBoundaryMessage,
   UserMessage,
 } from '../../types/message.js'
 import {
@@ -710,6 +711,7 @@ export type Options = {
   hasPendingMcpServers?: boolean
   queryTracking?: QueryChainTracking
   agentId?: AgentId // Only set for subagents
+  openAITurnScope?: import('./openai-turn-scope.js').OpenAITurnScope
   outputFormat?: BetaJSONOutputFormat
   fastMode?: boolean
   advisorModel?: string
@@ -836,6 +838,7 @@ export async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
+    openAITurnScope?: Options['openAITurnScope']
   },
   retryOptions: {
     model: string
@@ -863,6 +866,7 @@ export async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
+        openAITurnScope: clientOptions.openAITurnScope,
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -1288,8 +1292,23 @@ async function* queryModel(
     preNormalizedMessageCount: messages.length,
   })
 
+  const openAICompaction =
+    getAPIProvider() === 'openai'
+      ? messages.findLast(
+          (message): message is SystemCompactBoundaryMessage =>
+            message.type === 'system' &&
+            message.subtype === 'compact_boundary' &&
+            Boolean(message.openAICompaction),
+        )?.openAICompaction
+      : undefined
+
   queryCheckpoint('query_message_normalization_start')
   let messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
+  if (openAICompaction) {
+    messagesForAPI = messagesForAPI.filter(
+      message => message.type !== 'user' || !message.isCompactSummary,
+    )
+  }
   queryCheckpoint('query_message_normalization_end')
 
   // Model-specific post-processing: strip tool-search-specific fields if the
@@ -1730,6 +1749,7 @@ async function* queryModel(
         consumedPinnedEdits,
         options.skipCacheWrite,
       ),
+      ...(openAICompaction && { openai_compaction: openAICompaction }),
       system,
       tools: allTools,
       tool_choice: options.toolChoice,
@@ -1805,6 +1825,7 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
+          openAITurnScope: options.openAITurnScope,
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt
@@ -2578,7 +2599,11 @@ async function* queryModel(
           : 'other') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource },
+        {
+          model: options.model,
+          source: options.querySource,
+          openAITurnScope: options.openAITurnScope,
+        },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -2678,7 +2703,11 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource },
+          {
+            model: options.model,
+            source: options.querySource,
+            openAITurnScope: options.openAITurnScope,
+          },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,

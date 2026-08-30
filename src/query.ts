@@ -5,6 +5,9 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
+import { OpenAITurnScope } from './services/api/openai-turn-scope.js'
+import { getSessionId } from './bootstrap/state.js'
+import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
   isAutoCompactEnabled,
@@ -273,13 +276,30 @@ async function* queryLoop(
     skipCacheWrite,
   } = params
   const deps = params.deps ?? productionDeps()
+  const openAITurnScope =
+    getAPIProvider() === 'openai'
+      ? (() => {
+          const sessionId = getSessionId()
+          return new OpenAITurnScope(
+            {
+              sessionId,
+              threadId: params.toolUseContext.agentId ?? sessionId,
+              promptCacheKey: sessionId,
+            },
+            deps.uuid(),
+          )
+        })()
+      : undefined
 
   // Mutable cross-iteration state. The loop body destructures this at the top
   // of each iteration so reads stay bare-name (`messages`, `toolUseContext`).
   // Continue sites write `state = { ... }` instead of 9 separate assignments.
   let state: State = {
     messages: params.messages,
-    toolUseContext: params.toolUseContext,
+    toolUseContext: {
+      ...params.toolUseContext,
+      openAITurnScope,
+    },
     maxOutputTokensOverride: params.maxOutputTokensOverride,
     autoCompactTracking: undefined,
     stopHookActive: undefined,
@@ -725,6 +745,7 @@ async function* queryLoop(
               advisorModel: appState.advisorModel,
               skipCacheWrite,
               agentId: toolUseContext.agentId,
+              openAITurnScope: toolUseContext.openAITurnScope,
               addNotification: toolUseContext.addNotification,
               ...(params.taskBudget && {
                 taskBudget: {

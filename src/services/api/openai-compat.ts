@@ -9,6 +9,8 @@
  *      or OPENAI_BASE_URL/responses when OPENAI_BASE_URL is set.
  */
 import type Anthropic from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
+import WebSocket from 'ws'
 import type {
   BetaRawMessageStreamEvent,
   BetaToolUnion,
@@ -16,7 +18,12 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { logForDebugging } from '../../utils/debug.js'
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
-import { getProxyFetchOptions } from '../../utils/proxy.js'
+import {
+  getProxyFetchOptions,
+  getWebSocketProxyAgent,
+} from '../../utils/proxy.js'
+import { getWebSocketTLSOptions } from '../../utils/mtls.js'
+import type { OpenAITurnScope } from './openai-turn-scope.js'
 
 // --- Auth config ---
 
@@ -314,23 +321,187 @@ function isRetryableOpenAIResponse(status: number): boolean {
   return status >= 500
 }
 
+type OpenAIWebSocketFactory = (
+  url: string,
+  options: WebSocket.ClientOptions,
+) => WebSocket
+
+async function connectResponsesWebSocket(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  signal: AbortSignal,
+  turnScope: OpenAITurnScope,
+  webSocketFactory: OpenAIWebSocketFactory,
+): Promise<Response> {
+  const wsURL = new URL(url)
+  wsURL.protocol = wsURL.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsHeaders = {
+    ...headers,
+    'OpenAI-Beta': 'responses_websockets=2026-02-06',
+  }
+  const tlsOptions = getWebSocketTLSOptions()
+  const socket = webSocketFactory(wsURL.toString(), {
+    headers: wsHeaders,
+    agent: getWebSocketProxyAgent(wsURL.toString()),
+    ...tlsOptions,
+  })
+
+  return await new Promise<Response>((resolve, reject) => {
+    let responseStarted = false
+    let terminal = false
+    let failed = false
+    let streamController: ReadableStreamDefaultController<Uint8Array>
+    const encoder = new TextEncoder()
+    const fail = (error: Error) => {
+      if (terminal || failed) return
+      failed = true
+      signal.removeEventListener('abort', onAbort)
+      if (!responseStarted) {
+        socket.close()
+        reject(error)
+        return
+      }
+      streamController.error(error)
+    }
+    const onAbort = () =>
+      fail(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error('Request aborted'),
+      )
+    signal.addEventListener('abort', onAbort, { once: true })
+
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller
+      },
+      cancel() {
+        socket.close()
+      },
+    })
+
+    socket.once('unexpected-response', (_request, response) => {
+      fail(new Error(`OpenAI Responses WebSocket ${response.statusCode}`))
+    })
+    socket.once('upgrade', response => {
+      const value = response.headers['x-codex-turn-state']
+      turnScope.setTurnStateIfAbsent(Array.isArray(value) ? value[0] : value)
+    })
+    socket.on('error', error => fail(error))
+    socket.once('close', () => {
+      if (!terminal) {
+        fail(new Error('WebSocket closed before response.completed'))
+      }
+    })
+    socket.once('open', () => {
+      const parsedBody = JSON.parse(body) as Record<string, unknown>
+      socket.send(
+        JSON.stringify({
+          type: 'response.create',
+          ...parsedBody,
+          client_metadata: {
+            session_id: turnScope.identity.sessionId,
+            thread_id: turnScope.identity.threadId,
+            turn_id: turnScope.turnId,
+            ...(turnScope.getTurnState() && {
+              'x-codex-turn-state': turnScope.getTurnState(),
+            }),
+          },
+        }),
+      )
+    })
+    socket.on('message', data => {
+      const text = data.toString()
+      let event: { type?: string } | undefined
+      try {
+        event = JSON.parse(text)
+      } catch {
+        return
+      }
+      if (!responseStarted) {
+        responseStarted = true
+        resolve(
+          new Response(responseBody, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          }),
+        )
+      }
+      streamController.enqueue(encoder.encode(`data: ${text}\n\n`))
+      terminal =
+        event?.type === 'response.completed' ||
+        event?.type === 'response.incomplete' ||
+        event?.type === 'response.failed' ||
+        event?.type === 'error'
+      if (terminal) {
+        signal.removeEventListener('abort', onAbort)
+        streamController.close()
+        socket.close()
+      }
+    })
+  })
+}
+
 async function fetchResponsesWithRetry(
   url: string,
   headers: Record<string, string>,
   body: string,
   maxRetries: number,
   signal: AbortSignal,
+  turnScope?: OpenAITurnScope,
+  webSocketFactory?: OpenAIWebSocketFactory,
 ): Promise<Response> {
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const resp = await fetch(url, {
-        ...getProxyFetchOptions({ forOpenAIAPI: true }),
-        method: 'POST',
-        headers,
-        body,
-        signal,
+      const createRequestHeaders = () => ({
+        ...headers,
+        'x-client-request-id': randomUUID(),
+        ...(turnScope?.getTurnState() && {
+          'x-codex-turn-state': turnScope.getTurnState()!,
+        }),
       })
+      const requestHeaders = createRequestHeaders()
+      let resp: Response
+      if (
+        webSocketFactory &&
+        turnScope?.canUseWebSocket() &&
+        attempt === 0
+      ) {
+        try {
+          resp = await connectResponsesWebSocket(
+            url,
+            requestHeaders,
+            body,
+            signal,
+            turnScope,
+            webSocketFactory,
+          )
+        } catch (error) {
+          if (signal.aborted) throw error
+          turnScope.disableWebSocket()
+          logForDebugging(
+            `[OpenAI Compat] WebSocket unavailable, falling back to SSE: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          resp = await fetch(url, {
+            ...getProxyFetchOptions({ forOpenAIAPI: true }),
+            method: 'POST',
+            headers: createRequestHeaders(),
+            body,
+            signal,
+          })
+        }
+      } else {
+        resp = await fetch(url, {
+          ...getProxyFetchOptions({ forOpenAIAPI: true }),
+          method: 'POST',
+          headers: requestHeaders,
+          body,
+          signal,
+        })
+      }
+      turnScope?.setTurnStateIfAbsent(resp.headers.get('x-codex-turn-state'))
       if (resp.ok) return resp
 
       const errText = await resp.text()
@@ -354,6 +525,8 @@ async function connectSSE(
   maxRetries: number,
   controller: AbortController,
   onDone?: () => void,
+  turnScope?: OpenAITurnScope,
+  webSocketFactory?: OpenAIWebSocketFactory,
 ): Promise<ResponsesSSEStream> {
   const stream = new ResponsesSSEStream(controller, onDone ?? (() => {}))
   let blockIndex = 0
@@ -468,6 +641,8 @@ async function connectSSE(
       body,
       maxRetries,
       controller.signal,
+      turnScope,
+      webSocketFactory,
     )
 
     // Process SSE stream
@@ -499,6 +674,17 @@ async function connectSSE(
             let event: any
             try { event = JSON.parse(data) } catch { continue }
             const type = event.type as string
+            if (type === 'response.metadata') {
+              const metadataHeaders = event.headers
+              if (metadataHeaders && typeof metadataHeaders === 'object') {
+                const turnStateEntry = Object.entries(metadataHeaders).find(
+                  ([name]) => name.toLowerCase() === 'x-codex-turn-state',
+                )
+                if (typeof turnStateEntry?.[1] === 'string') {
+                  turnScope?.setTurnStateIfAbsent(turnStateEntry[1])
+                }
+              }
+            }
 
             if (
               type === 'response.reasoning_summary_text.delta' ||
@@ -712,9 +898,20 @@ export function createOpenAICompatClient(options: {
   timeout: number
   defaultHeaders?: Record<string, string>
   promptCacheKey?: string
+  turnScope?: OpenAITurnScope
+  webSocketFactory?: OpenAIWebSocketFactory
+  enableWebSocket?: boolean
 }): Anthropic {
   const tunnel = isOpenAITunnelEnabled()
   const auth = loadOpenAIAuthInfo(options.apiKey)
+  const webSocketFactory =
+    options.webSocketFactory ??
+    (options.enableWebSocket &&
+    auth.isChatGPT &&
+    !tunnel &&
+    typeof Bun === 'undefined'
+      ? ((url, wsOptions) => new WebSocket(url, wsOptions))
+      : undefined)
   const baseURL = tunnel ? 'http://localhost' : getBaseURL(auth)
   const responsesURL = `${baseURL}/responses`
   const headers: Record<string, string> = {}
@@ -728,10 +925,13 @@ export function createOpenAICompatClient(options: {
   )) {
     headers[name.toLowerCase()] = value
   }
-  if (options.promptCacheKey) {
+  const identity = options.turnScope?.identity
+  if (identity) {
+    headers['session-id'] = identity.sessionId
+    headers['thread-id'] = identity.threadId
+  } else if (options.promptCacheKey) {
     headers['session-id'] = options.promptCacheKey
     headers['thread-id'] = options.promptCacheKey
-    headers['x-client-request-id'] = options.promptCacheKey
   }
 
   logForDebugging(
@@ -739,6 +939,111 @@ export function createOpenAICompatClient(options: {
   )
 
   const messagesProxy = {
+    async compact(params: any, requestOptions?: { signal?: AbortSignal }): Promise<{
+      item: { type: 'compaction'; encrypted_content: string; id?: string }
+      usage: ReturnType<typeof toAnthropicUsage>
+    }> {
+      const input = anthropicMessagesToResponsesInput(
+        params.messages ?? [],
+        params.system,
+      )
+      input.push({ type: 'compaction_trigger' })
+      const body = JSON.stringify({
+        model: mapModel(params.model || DEFAULT_OPENAI_MODEL),
+        instructions: params.instructions || 'You are a helpful coding assistant.',
+        input,
+        store: false,
+        stream: true,
+        ...(options.promptCacheKey && {
+          prompt_cache_key: options.promptCacheKey,
+        }),
+      })
+      const controller = new AbortController()
+      if (requestOptions?.signal?.aborted) {
+        controller.abort(requestOptions.signal.reason)
+      } else {
+        requestOptions?.signal?.addEventListener(
+          'abort',
+          () => controller.abort(requestOptions.signal?.reason),
+          { once: true },
+        )
+      }
+      const response = await fetchResponsesWithRetry(
+        responsesURL,
+        headers,
+        body,
+        options.maxRetries,
+        controller.signal,
+        options.turnScope,
+        webSocketFactory,
+      )
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('Remote compaction returned no response body')
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let completed = false
+      let usage = toAnthropicUsage()
+      const items: Array<{
+        type: 'compaction'
+        encrypted_content: string
+        id?: string
+      }> = []
+      while (true) {
+        const { done, value } = await reader.read()
+        buffer += decoder.decode(value, { stream: !done })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (!data || data === '[DONE]') continue
+          let event: any
+          try { event = JSON.parse(data) } catch { continue }
+          if (event.type === 'response.metadata') {
+            const metadataHeaders = event.headers
+            if (metadataHeaders && typeof metadataHeaders === 'object') {
+              const turnState = Object.entries(metadataHeaders).find(
+                ([name]) => name.toLowerCase() === 'x-codex-turn-state',
+              )?.[1]
+              if (typeof turnState === 'string') {
+                options.turnScope?.setTurnStateIfAbsent(turnState)
+              }
+            }
+          }
+          if (
+            event.type === 'response.output_item.done' &&
+            event.item?.type === 'compaction' &&
+            typeof event.item.encrypted_content === 'string'
+          ) {
+            items.push(event.item)
+          } else if (event.type === 'response.completed') {
+            completed = true
+            usage = toAnthropicUsage(event.response?.usage)
+          } else if (
+            event.type === 'response.failed' ||
+            event.type === 'response.incomplete' ||
+            event.type === 'error'
+          ) {
+            throw new Error(
+              event.response?.error?.message ||
+                event.error?.message ||
+                event.message ||
+                'Remote compaction failed',
+            )
+          }
+        }
+        if (done) break
+      }
+      if (!completed) {
+        throw new Error('Remote compaction ended before response.completed')
+      }
+      if (items.length !== 1) {
+        throw new Error(
+          `Remote compaction returned ${items.length} compaction items; expected exactly one`,
+        )
+      }
+      return { item: items[0]!, usage }
+    },
     async countTokens(params: any): Promise<{ input_tokens: number }> {
       const input = anthropicMessagesToResponsesInput(
         params.messages ?? [],
@@ -755,6 +1060,12 @@ export function createOpenAICompatClient(options: {
     create(params: any, requestOptions?: { signal?: AbortSignal }): any {
       const model = mapModel(params.model || DEFAULT_OPENAI_MODEL)
       const input = anthropicMessagesToResponsesInput(params.messages, params.system)
+      if (
+        params.openai_compaction?.type === 'compaction' &&
+        typeof params.openai_compaction.encrypted_content === 'string'
+      ) {
+        input.unshift(params.openai_compaction)
+      }
       const tools = anthropicToolsToResponsesTools(params.tools)
       const toolChoice = anthropicToolChoiceToResponsesToolChoice(
         params.tool_choice,
@@ -804,6 +1115,8 @@ export function createOpenAICompatClient(options: {
           options.maxRetries,
           controller,
           () => clearTimeout(timeout),
+          options.turnScope,
+          webSocketFactory,
         )
         return {
           then: (resolve: any, reject: any) => promise.then(resolve, reject),
@@ -820,6 +1133,9 @@ export function createOpenAICompatClient(options: {
           payload,
           options.maxRetries,
           controller,
+          undefined,
+          options.turnScope,
+          webSocketFactory,
         )
         const blocks = new Map<number, any>()
         const inputJson = new Map<number, string>()

@@ -180,6 +180,8 @@ export type ManagedSSHRemotePermissions = {
 }
 
 export type ToolUseContext = {
+  /** OpenAI Responses state shared only within one outer query turn. */
+  openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {
     commands: Command[]
     debug: boolean

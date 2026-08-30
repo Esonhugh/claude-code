@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -13,6 +14,7 @@ const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
   const { createOpenAICompatClient } = await import('./openai-compat.js')
+  const { OpenAITurnScope } = await import('./openai-turn-scope.js')
 
   getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'sk-test-api-key',
@@ -141,7 +143,7 @@ try {
   assert.equal(requests[0]!.body.prompt_cache_key, 'session-test-cache-key')
   assert.equal(requests[0]!.sessionId, 'session-test-cache-key')
   assert.equal(requests[0]!.threadId, 'session-test-cache-key')
-  assert.equal(requests[0]!.clientRequestId, 'session-test-cache-key')
+  assert.match(requests[0]!.clientRequestId!, /^[0-9a-f-]{36}$/)
   assert.equal(cacheResponse.usage.input_tokens, 25)
   assert.equal(cacheResponse.usage.cache_read_input_tokens, 60)
   assert.equal(cacheResponse.usage.cache_creation_input_tokens, 15)
@@ -151,6 +153,345 @@ try {
       cacheResponse.usage.cache_read_input_tokens +
       cacheResponse.usage.cache_creation_input_tokens,
     100,
+  )
+
+  requests.length = 0
+  let turnStateResponse = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const requestHeaders = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: requestHeaders.get('authorization'),
+      sessionId: requestHeaders.get('session-id'),
+      threadId: requestHeaders.get('thread-id'),
+      clientRequestId: requestHeaders.get('x-client-request-id'),
+      turnState: requestHeaders.get('x-codex-turn-state'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    } as never)
+    turnStateResponse++
+    const metadata = turnStateResponse === 1
+      ? 'data: {"type":"response.metadata","headers":{"X-Codex-Turn-State":"metadata-state"}}\n\n'
+      : 'data: {"type":"response.metadata","headers":{"x-codex-turn-state":"conflicting-state"}}\n\n'
+    return new Response(
+      `${metadata}data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n`,
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          ...(turnStateResponse === 1 && {
+            'x-codex-turn-state': 'header-state',
+          }),
+        },
+      },
+    )
+  }) as unknown as typeof fetch
+
+  const turnScope = new OpenAITurnScope(
+    {
+      sessionId: 'root-session',
+      threadId: 'agent-thread',
+      promptCacheKey: 'root-cache-key',
+    },
+    'turn-id',
+  )
+  const scopedClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    promptCacheKey: 'root-cache-key',
+    turnScope,
+  })
+  await scopedClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'first request' }],
+  })
+  await scopedClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'second request' }],
+  })
+  assert.equal(requests[0]!.sessionId, 'root-session')
+  assert.equal(requests[0]!.threadId, 'agent-thread')
+  assert.equal(requests[0]!.body.prompt_cache_key, 'root-cache-key')
+  assert.equal(requests[1]!.body.prompt_cache_key, 'root-cache-key')
+  assert.notEqual(requests[0]!.clientRequestId, requests[1]!.clientRequestId)
+  assert.equal((requests[0] as never as { turnState: string | null }).turnState, null)
+  assert.equal(
+    (requests[1] as never as { turnState: string | null }).turnState,
+    'header-state',
+  )
+  assert.equal(turnScope.getTurnState(), 'header-state')
+
+  requests.length = 0
+  const websocketPayloads: any[] = []
+  class MockResponsesWebSocket extends EventEmitter {
+    constructor() {
+      super()
+      queueMicrotask(() => {
+        this.emit('upgrade', {
+          headers: { 'x-codex-turn-state': 'websocket-state' },
+        })
+        this.emit('open')
+      })
+    }
+    send(data: string) {
+      websocketPayloads.push(JSON.parse(data))
+      queueMicrotask(() => {
+        this.emit(
+          'message',
+          Buffer.from(
+            'data' in this
+              ? ''
+              : JSON.stringify({
+                  type: 'response.completed',
+                  response: {
+                    id: 'resp_websocket',
+                    usage: { input_tokens: 1, output_tokens: 1 },
+                  },
+                }),
+          ),
+        )
+      })
+    }
+    close() {
+      queueMicrotask(() => this.emit('close', 1000, Buffer.alloc(0)))
+    }
+  }
+  const websocketScope = new OpenAITurnScope(
+    {
+      sessionId: 'websocket-session',
+      threadId: 'websocket-thread',
+      promptCacheKey: 'websocket-cache',
+    },
+    'websocket-turn',
+  )
+  const websocketClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    promptCacheKey: 'websocket-cache',
+    turnScope: websocketScope,
+    webSocketFactory: (() => new MockResponsesWebSocket()) as never,
+  })
+  await websocketClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'websocket request' }],
+  })
+  assert.equal(requests.length, 0)
+  assert.equal(websocketPayloads[0]?.type, 'response.create')
+  assert.equal(
+    websocketPayloads[0]?.client_metadata?.session_id,
+    'websocket-session',
+  )
+  assert.equal(
+    websocketPayloads[0]?.client_metadata?.thread_id,
+    'websocket-thread',
+  )
+  assert.equal(websocketPayloads[0]?.client_metadata?.turn_id, 'websocket-turn')
+  assert.equal(websocketScope.getTurnState(), 'websocket-state')
+
+  let fallbackFetchCount = 0
+  let fallbackRequestHeaders: Headers | undefined
+  globalThis.fetch = (async (_input, init) => {
+    fallbackFetchCount++
+    fallbackRequestHeaders = new Headers(init?.headers)
+    return new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }) as unknown as typeof fetch
+  let websocketRequestId: string | undefined
+  class EmptyCloseWebSocket extends EventEmitter {
+    constructor(_url: string, options: { headers: Record<string, string> }) {
+      super()
+      websocketRequestId = options.headers['x-client-request-id']
+      queueMicrotask(() => {
+        this.emit('upgrade', {
+          headers: { 'x-codex-turn-state': 'fallback-turn-state' },
+        })
+        this.emit('open')
+      })
+    }
+    send() {
+      queueMicrotask(() => this.emit('close', 1006, Buffer.alloc(0)))
+    }
+    close() {}
+  }
+  const fallbackScope = new OpenAITurnScope(
+    {
+      sessionId: 'fallback-session',
+      threadId: 'fallback-thread',
+      promptCacheKey: 'fallback-cache',
+    },
+    'fallback-turn',
+  )
+  const fallbackClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    turnScope: fallbackScope,
+    webSocketFactory: ((url: string, options: { headers: Record<string, string> }) =>
+      new EmptyCloseWebSocket(url, options)) as never,
+  })
+  await fallbackClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'fallback request' }],
+  })
+  assert.equal(fallbackFetchCount, 1)
+  assert.equal(fallbackScope.canUseWebSocket(), false)
+  assert.equal(
+    fallbackRequestHeaders?.get('x-codex-turn-state'),
+    'fallback-turn-state',
+  )
+  assert.notEqual(
+    fallbackRequestHeaders?.get('x-client-request-id'),
+    websocketRequestId,
+  )
+
+  fallbackFetchCount = 0
+  class PartialCloseWebSocket extends EventEmitter {
+    constructor() {
+      super()
+      queueMicrotask(() => this.emit('open'))
+    }
+    send() {
+      queueMicrotask(() => {
+        this.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'response.output_text.delta',
+              delta: 'partial output',
+            }),
+          ),
+        )
+        this.emit('close', 1006, Buffer.alloc(0))
+      })
+    }
+    close() {}
+  }
+  const partialClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    turnScope: new OpenAITurnScope(
+      {
+        sessionId: 'partial-session',
+        threadId: 'partial-thread',
+        promptCacheKey: 'partial-cache',
+      },
+      'partial-turn',
+    ),
+    webSocketFactory: (() => new PartialCloseWebSocket()) as never,
+  })
+  await assert.rejects(
+    partialClient.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'partial request' }],
+    }),
+    /WebSocket closed before response\.completed/,
+  )
+  assert.equal(fallbackFetchCount, 0)
+
+  let abortedFallbackCount = 0
+  globalThis.fetch = (async () => {
+    abortedFallbackCount++
+    throw new Error('abort must not use SSE fallback')
+  }) as unknown as typeof fetch
+  class PendingWebSocket extends EventEmitter {
+    constructor() {
+      super()
+      queueMicrotask(() => this.emit('open'))
+    }
+    send() {}
+    close() {
+      queueMicrotask(() => this.emit('close', 1000, Buffer.alloc(0)))
+    }
+  }
+  const websocketAbortController = new AbortController()
+  const abortClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    turnScope: new OpenAITurnScope(
+      {
+        sessionId: 'abort-session',
+        threadId: 'abort-thread',
+        promptCacheKey: 'abort-cache',
+      },
+      'abort-turn',
+    ),
+    webSocketFactory: (() => new PendingWebSocket()) as never,
+  })
+  const abortedWebSocketRequest = abortClient.beta.messages.create(
+    {
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'abort request' }],
+    },
+    { signal: websocketAbortController.signal },
+  )
+  queueMicrotask(() =>
+    websocketAbortController.abort(new Error('websocket cancelled')),
+  )
+  await assert.rejects(abortedWebSocketRequest, /websocket cancelled/)
+  assert.equal(abortedFallbackCount, 0)
+
+  const compactRequests: any[] = []
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    compactRequests.push(init?.body ? JSON.parse(String(init.body)) : null)
+    return new Response(
+      [
+        'data: {"type":"response.output_item.done","item":{"type":"compaction","id":"cmp_1","encrypted_content":"opaque-summary"}}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":11,"output_tokens":2}}}',
+        '',
+      ].join('\n\n'),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }) as unknown as typeof fetch
+  const compactClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+  })
+  const compactResult = await (compactClient.beta.messages as any).compact({
+    model: 'gpt-5.5',
+    system: 'compact instructions',
+    messages: [{ role: 'user', content: 'history' }],
+  })
+  assert.deepEqual(compactRequests[0]!.input.at(-1), {
+    type: 'compaction_trigger',
+  })
+  assert.deepEqual(compactResult.item, {
+    type: 'compaction',
+    id: 'cmp_1',
+    encrypted_content: 'opaque-summary',
+  })
+
+  compactRequests.length = 0
+  await compactClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'continue after compaction' }],
+    openai_compaction: compactResult.item,
+  } as never)
+  assert.deepEqual(compactRequests[0]!.input[0], compactResult.item)
+
+  globalThis.fetch = (async () =>
+    new Response(
+      'data: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"missing-completed"}}\n\n',
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )) as unknown as typeof fetch
+  await assert.rejects(
+    (compactClient.beta.messages as any).compact({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'history' }],
+    }),
+    /before response\.completed/,
   )
 
   const cacheUsageCases = [

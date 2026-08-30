@@ -8,9 +8,14 @@ import type {
 import type { ToolUseContext } from '../../Tool.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { createCompactBoundaryMessage } from '../../utils/messages.js'
-import type { CompactionResult } from './compact.js'
+import type {
+  CompactionResult,
+  RemoteCompactionResult,
+} from './compact.js'
 import { compactConversation } from './compact.js'
 import type { CodexCompactOptions } from './compactMode.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
+import { getAnthropicClient } from '../api/client.js'
 
 export const CODEX_COMPACT_TOOL_RESULT_TRUNCATION_THRESHOLD_CHARS = 32_000
 export const CODEX_COMPACT_TRUNCATED_TOOL_OUTPUT =
@@ -282,6 +287,63 @@ export async function compactConversationCodexStyle(
   isAutoCompact: boolean,
   options: CodexCompactOptions,
 ): Promise<CompactionResult> {
+  const remoteCompact =
+    getAPIProvider() === 'openai' && context.openAITurnScope
+      ? async (
+          hookInstructions?: string,
+        ): Promise<RemoteCompactionResult | undefined> => {
+          const client = await getAnthropicClient({
+            maxRetries: 0,
+            model: context.options.mainLoopModel,
+            source: 'compact',
+            openAITurnScope: context.openAITurnScope,
+          })
+          const compact = (client.beta.messages as unknown as {
+            compact?: (
+              params: Record<string, unknown>,
+              requestOptions?: { signal?: AbortSignal },
+            ) => Promise<{
+              item: {
+                type: 'compaction'
+                encrypted_content: string
+                id?: string
+              }
+              usage: RemoteCompactionResult['usage']
+            }>
+          }).compact
+          if (!compact) return undefined
+          try {
+            return await compact(
+              {
+                model: context.options.mainLoopModel,
+                messages: messages
+                  .filter(
+                    (message): message is Extract<
+                      Message,
+                      { type: 'user' | 'assistant' }
+                    > => message.type === 'user' || message.type === 'assistant',
+                  )
+                  .map(message => message.message),
+                system: cacheSafeParams.systemPrompt.join('\n\n'),
+                instructions: [
+                  cacheSafeParams.systemPrompt.join('\n\n'),
+                  hookInstructions,
+                ]
+                  .filter(Boolean)
+                  .join('\n\n'),
+              },
+              { signal: context.abortController.signal },
+            )
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (/WebSocket \d+|OpenAI API (404|405|426)|not supported/i.test(message)) {
+              return undefined
+            }
+            throw error
+          }
+        }
+      : undefined
+
   const claudeResult = await compactConversation(
     messages,
     context,
@@ -289,7 +351,20 @@ export async function compactConversationCodexStyle(
     suppressFollowUpQuestions,
     customInstructions,
     isAutoCompact,
+    undefined,
+    remoteCompact,
   )
+
+  if (
+    claudeResult.boundaryMarker.subtype === 'compact_boundary' &&
+    claudeResult.boundaryMarker.openAICompaction
+  ) {
+    claudeResult.boundaryMarker.compactMetadata = {
+      ...claudeResult.boundaryMarker.compactMetadata,
+      mode: 'codex',
+    }
+    return claudeResult
+  }
 
   const boundaryMarker = createCompactBoundaryMessage(
     isAutoCompact ? 'auto' : 'manual',

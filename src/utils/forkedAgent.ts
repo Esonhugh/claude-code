@@ -441,6 +441,9 @@ export function createSubagentContext(
     setSDKStatus: undefined,
     openMessageSelector: undefined,
 
+    // A fork is a distinct logical OpenAI thread and gets its own query turn scope.
+    openAITurnScope: undefined,
+
     // Fields that can be overridden or copied from parent
     options: overrides?.options ?? {
       ...parentContext.options,
