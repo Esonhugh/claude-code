@@ -194,11 +194,26 @@ jobs:
           CLAUDE_CODE_BINARY_TARGET: bun-linux-x64-baseline
         run: bun run package:binary
 
+      - name: Package musl native installer binary
+        if: runner.os == 'Linux'
+        env:
+          CLAUDE_CODE_BINARY_TARGET: bun-linux-${{ runner.arch == 'X64' && 'x64' || 'arm64' }}-musl
+        run: bun run package:binary
+
       - name: Verify baseline SSH binary
         if: runner.os == 'Linux' && runner.arch == 'X64'
         shell: bash
         run: |
           ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-linux-x64-baseline"
+          "$ARTIFACT" --version
+          "$ARTIFACT" --help
+
+      - name: Verify musl native installer binary
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ARCH="$(bun -e 'console.log(process.arch)')"
+          ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-linux-${ARCH}-musl"
           "$ARTIFACT" --version
           "$ARTIFACT" --help
 
@@ -274,8 +289,10 @@ jobs:
           expected=(
             "claude-code-v${VERSION}-darwin-arm64"
             "claude-code-v${VERSION}-linux-arm64"
+            "claude-code-v${VERSION}-linux-arm64-musl"
             "claude-code-v${VERSION}-linux-x64"
             "claude-code-v${VERSION}-linux-x64-baseline"
+            "claude-code-v${VERSION}-linux-x64-musl"
             "claude-code-v${VERSION}-win32-x64.exe"
           )
           for artifact in "${expected[@]}"; do

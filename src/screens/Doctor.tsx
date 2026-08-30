@@ -25,11 +25,8 @@ import { Box, Text } from '../ink.js'
 import { useKeybindings } from '../keybindings/useKeybinding.js'
 import { useAppState } from '../state/AppState.js'
 import { getPluginErrorMessage } from '../types/plugin.js'
-import {
-  getGcsDistTags,
-  getNpmDistTags,
-  type NpmDistTags,
-} from '../utils/autoUpdater.js'
+import { getNpmDistTags, type NpmDistTags } from '../utils/autoUpdater.js'
+import { getReleaseDistTags } from '../utils/nativeInstaller/download.js'
 import {
   type ContextWarnings,
   checkContextWarnings,
@@ -124,7 +121,9 @@ export function Doctor({ onDone }: Props): React.ReactNode {
     () =>
       getDoctorDiagnostic().then(diag => {
         const fetchDistTags =
-          diag.installationType === 'native' ? getGcsDistTags : getNpmDistTags
+          diag.installationType === 'native'
+            ? getReleaseDistTags
+            : getNpmDistTags
         return fetchDistTags().catch(() => ({ latest: null, stable: null }))
       }),
     [],
@@ -419,8 +418,9 @@ export function Doctor({ onDone }: Props): React.ReactNode {
           {pluginsErrors.map((error, i) => (
             <Text key={i} dimColor>
               {'  '}└ {error.source || 'unknown'}
-              {'plugin' in error && error.plugin ? ` [${error.plugin}]` : ''}:{' '}
-              {getPluginErrorMessage(error)}
+              {'plugin' in error && error.plugin
+                ? ` [${error.plugin}]`
+                : ''}: {getPluginErrorMessage(error)}
             </Text>
           ))}
         </Box>

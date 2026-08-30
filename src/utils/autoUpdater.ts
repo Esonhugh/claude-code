@@ -1,4 +1,3 @@
-import axios from 'axios'
 import { constants as fsConstants } from 'fs'
 import { access, writeFile } from 'fs/promises'
 import { homedir } from 'os'
@@ -27,10 +26,6 @@ import {
 } from './shellConfig.js'
 import { jsonParse } from './slowOperations.js'
 import { isAnt } from 'src/utils/userType.js'
-
-
-const GCS_BUCKET_URL =
-  'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
 
 class AutoUpdaterError extends ClaudeError {}
 
@@ -377,38 +372,6 @@ export async function getNpmDistTags(): Promise<NpmDistTags> {
     logForDebugging(`Failed to parse dist-tags: ${error}`)
     return { latest: null, stable: null }
   }
-}
-
-/**
- * Get the latest version from GCS bucket for a given release channel.
- * This is used by installations that don't have npm (e.g. package manager installs).
- */
-export async function getLatestVersionFromGcs(
-  channel: ReleaseChannel,
-): Promise<string | null> {
-  try {
-    const response = await axios.get(`${GCS_BUCKET_URL}/${channel}`, {
-      timeout: 5000,
-      responseType: 'text',
-    })
-    return response.data.trim()
-  } catch (error) {
-    logForDebugging(`Failed to fetch ${channel} from GCS: ${error}`)
-    return null
-  }
-}
-
-/**
- * Get available versions from GCS bucket (for native installations).
- * Fetches both latest and stable channel pointers.
- */
-export async function getGcsDistTags(): Promise<NpmDistTags> {
-  const [latest, stable] = await Promise.all([
-    getLatestVersionFromGcs('latest'),
-    getLatestVersionFromGcs('stable'),
-  ])
-
-  return { latest, stable }
 }
 
 /**

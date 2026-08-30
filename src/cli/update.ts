@@ -18,13 +18,15 @@ import {
   installOrUpdateClaudePackage,
   localInstallationExists,
 } from 'src/utils/localInstaller.js'
-import { removeInstalledSymlink } from 'src/utils/nativeInstaller/index.js'
+import {
+  installLatest as installNativeLatest,
+  removeInstalledSymlink,
+} from 'src/utils/nativeInstaller/index.js'
 import { getPackageManager } from 'src/utils/nativeInstaller/packageManagers.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
 import { getInitialSettings } from 'src/utils/settings/settings.js'
 import { isAnt } from 'src/utils/userType.js'
-
 
 export async function update() {
   logEvent('tengu_update_check', {})
@@ -209,13 +211,42 @@ export async function update() {
     }
   }
 
-  // Native updates are not supported by this distribution.
   if (diagnostic.installationType === 'native') {
-    process.stderr.write('Error: Cannot update native installation\n')
-    process.stderr.write('Please install and update with npm or bun instead:\n')
-    process.stderr.write(`  npm install -g ${MACRO.PACKAGE_URL}\n`)
-    process.stderr.write(`  bun install -g ${MACRO.PACKAGE_URL}\n`)
-    await gracefulShutdown(1)
+    let result: Awaited<ReturnType<typeof installNativeLatest>>
+    try {
+      result = await installNativeLatest(channel)
+    } catch (error) {
+      process.stderr.write(
+        chalk.red(
+          `Failed to update native installation: ${error instanceof Error ? error.message : String(error)}`,
+        ) + '\n',
+      )
+      await gracefulShutdown(1)
+      return
+    }
+
+    if (result.lockFailed) {
+      process.stderr.write(
+        'Error: Another instance is currently performing an update\n',
+      )
+      await gracefulShutdown(1)
+      return
+    }
+
+    if (result.wasUpdated) {
+      writeToStdout(
+        chalk.green(
+          `Successfully updated from ${MACRO.VERSION} to version ${result.latestVersion}`,
+        ) + '\n',
+      )
+      await regenerateCompletionCache()
+    } else {
+      writeToStdout(
+        chalk.green(`Claude Code is up to date (${MACRO.VERSION})`) + '\n',
+      )
+    }
+    await gracefulShutdown(0)
+    return
   }
 
   // Fallback to existing JS/npm-based update logic
@@ -255,9 +286,7 @@ export async function update() {
     process.stderr.write('  • Run with --debug flag for more details\n')
     const packageName =
       MACRO.PACKAGE_URL ||
-      (isAnt()
-        ? '@anthropic-ai/claude-cli'
-        : '@anthropic-ai/claude-code')
+      (isAnt() ? '@anthropic-ai/claude-cli' : '@anthropic-ai/claude-code')
     process.stderr.write(
       `  • Manually check: npm view ${packageName} version\n`,
     )

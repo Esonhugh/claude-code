@@ -39,8 +39,6 @@ import { registerCleanup } from '../cleanupRegistry.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
 import { getCurrentInstallationType } from '../doctorDiagnostic.js'
-import { env } from '../env.js'
-import { envDynamic } from '../envDynamic.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
@@ -62,6 +60,7 @@ import {
   getXDGStateHome,
 } from '../xdg.js'
 import { downloadVersion, getLatestVersion } from './download.js'
+import { getBinaryName, getPlatform } from './platform.js'
 import {
   acquireProcessLifetimeLock,
   cleanupStaleLocks,
@@ -82,34 +81,6 @@ export type SetupMessage = {
   message: string
   userActionRequired: boolean
   type: 'path' | 'alias' | 'info' | 'error'
-}
-
-export function getPlatform(): string {
-  // Use env.platform which already handles platform detection and defaults to 'linux'
-  const os = env.platform
-
-  const arch =
-    process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : null
-
-  if (!arch) {
-    const error = new Error(`Unsupported architecture: ${process.arch}`)
-    logForDebugging(
-      `Native installer does not support architecture: ${process.arch}`,
-      { level: 'error' },
-    )
-    throw error
-  }
-
-  // Check for musl on Linux and adjust platform accordingly
-  if (os === 'linux' && envDynamic.isMuslEnvironment()) {
-    return `linux-${arch}-musl`
-  }
-
-  return `${os}-${arch}`
-}
-
-export function getBinaryName(platform: string): string {
-  return platform.startsWith('win32') ? 'claude.exe' : 'claude'
 }
 
 function getBaseDirectories() {
@@ -325,69 +296,12 @@ async function atomicMoveToInstallPath(
   }
 }
 
-async function installVersionFromPackage(
-  stagingPath: string,
-  installPath: string,
-) {
-  try {
-    // Extract binary from npm package structure in staging
-    const nodeModulesDir = join(stagingPath, 'node_modules', '@anthropic-ai')
-    const entries = await readdir(nodeModulesDir)
-    const nativePackage = entries.find((entry: string) =>
-      entry.startsWith('claude-cli-native-'),
-    )
-
-    if (!nativePackage) {
-      logEvent('tengu_native_install_package_failure', {
-        stage_find_package: true,
-        error_package_not_found: true,
-      })
-      const error = new Error('Could not find platform-specific native package')
-      throw error
-    }
-
-    const stagedBinaryPath = join(nodeModulesDir, nativePackage, 'cli')
-
-    try {
-      await stat(stagedBinaryPath)
-    } catch {
-      logEvent('tengu_native_install_package_failure', {
-        stage_binary_exists: true,
-        error_binary_not_found: true,
-      })
-      const error = new Error('Native binary not found in staged package')
-      throw error
-    }
-
-    await atomicMoveToInstallPath(stagedBinaryPath, installPath)
-
-    // Clean up staging directory
-    await rm(stagingPath, { recursive: true, force: true })
-
-    logEvent('tengu_native_install_package_success', {})
-  } catch (error) {
-    // Log if not already logged above
-    const msg = errorMessage(error)
-    if (
-      !msg.includes('Could not find platform-specific') &&
-      !msg.includes('Native binary not found')
-    ) {
-      logEvent('tengu_native_install_package_failure', {
-        stage_atomic_move: true,
-        error_move_failed: true,
-      })
-    }
-    logError(toError(error))
-    throw error
-  }
-}
-
 async function installVersionFromBinary(
   stagingPath: string,
   installPath: string,
 ) {
   try {
-    // For direct binary downloads (GCS, generic bucket), the binary is directly in staging
+    // GitHub Release downloads place the binary directly in staging.
     const platform = getPlatform()
     const binaryName = getBinaryName(platform)
     const stagedBinaryPath = join(stagingPath, binaryName)
@@ -421,17 +335,8 @@ async function installVersionFromBinary(
   }
 }
 
-async function installVersion(
-  stagingPath: string,
-  installPath: string,
-  downloadType: 'npm' | 'binary',
-) {
-  // Use the explicit download type instead of guessing
-  if (downloadType === 'npm') {
-    await installVersionFromPackage(stagingPath, installPath)
-  } else {
-    await installVersionFromBinary(stagingPath, installPath)
-  }
+async function installVersion(stagingPath: string, installPath: string) {
+  await installVersionFromBinary(stagingPath, installPath)
 }
 
 /**
@@ -459,8 +364,8 @@ async function performVersionUpdate(
         ? `Force reinstalling native installer version ${version}`
         : `Downloading native installer version ${version}`,
     )
-    const downloadType = await downloadVersion(version, stagingPath)
-    await installVersion(stagingPath, installPath, downloadType)
+    await downloadVersion(version, stagingPath)
+    await installVersion(stagingPath, installPath)
   } else {
     logForDebugging(`Version ${version} already installed, updating symlink`)
   }
@@ -498,6 +403,7 @@ async function updateLatest(
 ): Promise<{
   success: boolean
   latestVersion: string
+  wasUpdated: boolean
   lockFailed?: boolean
   lockHolderPid?: number
 }> {
@@ -526,7 +432,7 @@ async function updateLatest(
           available_version:
             version as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
-        return { success: true, latestVersion: version }
+        return { success: true, latestVersion: version, wasUpdated: false }
       }
       version = maxVersion
     }
@@ -548,7 +454,7 @@ async function updateLatest(
       was_force_reinstall: false,
       was_already_running: true,
     })
-    return { success: true, latestVersion: version }
+    return { success: true, latestVersion: version, wasUpdated: false }
   }
 
   // Check if this version should be skipped due to minimumVersion setting
@@ -558,7 +464,7 @@ async function updateLatest(
       target_version:
         version as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    return { success: true, latestVersion: version }
+    return { success: true, latestVersion: version, wasUpdated: false }
   }
 
   // Track if we're actually installing or just symlinking
@@ -604,6 +510,7 @@ async function updateLatest(
       return {
         success: false,
         latestVersion: version,
+        wasUpdated: false,
         lockFailed: true,
         lockHolderPid,
       }
@@ -616,7 +523,7 @@ async function updateLatest(
     was_force_reinstall: forceReinstall,
   })
   logForDebugging(`Successfully updated to version ${version}`)
-  return { success: true, latestVersion: version }
+  return { success: true, latestVersion: version, wasUpdated: wasNewInstall }
 }
 
 // Exported for testing
@@ -982,7 +889,7 @@ async function installLatestImpl(
   if (!updateResult.success) {
     return {
       latestVersion: null,
-      wasUpdated: false,
+      wasUpdated: updateResult.wasUpdated,
       lockFailed: updateResult.lockFailed,
       lockHolderPid: updateResult.lockHolderPid,
     }
@@ -1010,7 +917,7 @@ async function installLatestImpl(
 
   return {
     latestVersion: updateResult.latestVersion,
-    wasUpdated: updateResult.success,
+    wasUpdated: updateResult.wasUpdated,
     lockFailed: false,
   }
 }

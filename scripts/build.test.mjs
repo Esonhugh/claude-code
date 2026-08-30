@@ -20,12 +20,21 @@ assert.equal(getEnabledFeatures('').has('SSH_REMOTE'), true);
 assert.equal(getEnabledFeatures(undefined).has('AGENT_TRIGGERS'), true);
 assert.equal(getEnabledFeatures(undefined).has('MCP_SKILLS'), true);
 assert.equal(getEnabledFeatures(undefined).has('SSH_REMOTE'), true);
-assert.equal(getEnabledFeatures('WORKFLOW_SCRIPTS').has('AGENT_TRIGGERS'), true);
-assert.equal(getEnabledFeatures('WORKFLOW_SCRIPTS').has('WORKFLOW_SCRIPTS'), true);
+assert.equal(
+  getEnabledFeatures('WORKFLOW_SCRIPTS').has('AGENT_TRIGGERS'),
+  true,
+);
+assert.equal(
+  getEnabledFeatures('WORKFLOW_SCRIPTS').has('WORKFLOW_SCRIPTS'),
+  true,
+);
 assert.equal(feature('AGENT_TRIGGERS'), true);
 assert.equal(feature('MCP_SKILLS'), true);
 assert.equal(feature('SSH_REMOTE'), true);
-assert.equal(macroValues['MACRO.PACKAGE_URL'], JSON.stringify('@esonhugh/claude-code'));
+assert.equal(
+  macroValues['MACRO.PACKAGE_URL'],
+  JSON.stringify('@esonhugh/claude-code'),
+);
 
 const packageBinarySource = readFileSync(
   new URL('./package-binary.mjs', import.meta.url),
@@ -33,8 +42,10 @@ const packageBinarySource = readFileSync(
 );
 assert.match(packageBinarySource, /CLAUDE_CODE_BINARY_TARGET/);
 assert.match(packageBinarySource, /bun-linux-x64-baseline/);
+assert.match(packageBinarySource, /bun-linux-x64-musl/);
+assert.match(packageBinarySource, /bun-linux-arm64-musl/);
 assert.match(packageBinarySource, /ripgrep-\$\{platform\}-\$\{arch\}/);
-assert.match(packageBinarySource, /'--target'/);
+assert.match(packageBinarySource, /["']--target["']/);
 
 const releaseWorkflowSource = readFileSync(
   new URL('../.github/workflows/release.yml', import.meta.url),
@@ -56,6 +67,14 @@ assert.match(
 assert.match(
   releaseWorkflowSource,
   /claude-code-v\$\{VERSION\}-linux-x64-baseline/,
+);
+assert.match(
+  releaseWorkflowSource,
+  /claude-code-v\$\{VERSION\}-linux-x64-musl/,
+);
+assert.match(
+  releaseWorkflowSource,
+  /claude-code-v\$\{VERSION\}-linux-arm64-musl/,
 );
 assert.doesNotMatch(releaseWorkflowSource, /sha256sum \* > SHA256SUMS\.txt/);
 assert.match(releaseWorkflowSource, /group: release-/);
@@ -83,11 +102,7 @@ for (const artifact of [
 try {
   execFileSync(
     process.execPath,
-    [
-      './scripts/prepare-npm-package.mjs',
-      sourceDir,
-      outDir,
-    ],
+    ['./scripts/prepare-npm-package.mjs', sourceDir, outDir],
     {
       cwd: projectDir,
       env: { ...process.env, CLAUDE_CODE_VERSION: '2.1.209' },

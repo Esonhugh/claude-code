@@ -21,25 +21,29 @@ const packageJson = JSON.parse(
 );
 
 const defaultVersion = '0.0.0-dev';
-const version = String(
-  process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
-).trim() || defaultVersion;
+const version =
+  String(
+    process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
+  ).trim() || defaultVersion;
 const binaryTarget = process.env.CLAUDE_CODE_BINARY_TARGET?.trim();
-const supportedBaselineTargets = new Set(['bun-linux-x64-baseline']);
-const targetParts = binaryTarget?.match(/^bun-(darwin|linux|windows)-(arm64|x64)(-baseline)?$/);
-if (
-  binaryTarget &&
-  (!targetParts ||
-    (targetParts[3] && !supportedBaselineTargets.has(binaryTarget)))
-) {
+const supportedTargets = new Set([
+  'bun-linux-x64-baseline',
+  'bun-linux-x64-musl',
+  'bun-linux-arm64-musl',
+]);
+const targetParts = binaryTarget?.match(
+  /^bun-(darwin|linux|windows)-(arm64|x64)(-(?:baseline|musl))?$/,
+);
+if (binaryTarget && (!targetParts || !supportedTargets.has(binaryTarget))) {
   throw new Error(`Unsupported CLAUDE_CODE_BINARY_TARGET: ${binaryTarget}`);
 }
-const platform = targetParts?.[1] === 'windows'
-  ? 'win32'
-  : targetParts?.[1] ?? process.platform;
+const platform =
+  targetParts?.[1] === 'windows'
+    ? 'win32'
+    : (targetParts?.[1] ?? process.platform);
 const arch = targetParts?.[2] ?? process.arch;
-const baseline = targetParts?.[3] ?? '';
-const artifactPlatform = `${platform}-${arch}${baseline}`;
+const targetSuffix = targetParts?.[3] ?? '';
+const artifactPlatform = `${platform}-${arch}${targetSuffix}`;
 const extension = platform === 'win32' ? '.exe' : '';
 const artifactName = `claude-code-v${version}-${artifactPlatform}${extension}`;
 const outfile = path.join(releaseDir, artifactName);
@@ -57,14 +61,18 @@ function run(command, args, options = {}) {
   }
 
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(' ')} exited with ${result.status}`);
+    throw new Error(
+      `${command} ${args.join(' ')} exited with ${result.status}`,
+    );
   }
 }
 
 run('bun', ['./scripts/build.mjs']);
 
 if (!fs.existsSync(cliEntrypoint)) {
-  throw new Error('dist/cli.js does not exist after build. Check bun run build output before packaging.');
+  throw new Error(
+    'dist/cli.js does not exist after build. Check bun run build output before packaging.',
+  );
 }
 
 const ripgrepPackageJson = JSON.parse(
@@ -108,7 +116,9 @@ const bunCheck = spawnSync('bun', ['--version'], {
 });
 
 if (bunCheck.error || bunCheck.status !== 0) {
-  throw new Error('Bun is required for binary packaging. Install bun and rerun bun run package:binary.');
+  throw new Error(
+    'Bun is required for binary packaging. Install bun and rerun bun run package:binary.',
+  );
 }
 
 await fs.promises.mkdir(releaseDir, { recursive: true });

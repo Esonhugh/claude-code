@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: '2.1.666',
   PACKAGE_URL: '@esonhugh/claude-code',
@@ -9,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 let stdout = ''
 let stderr = ''
 let nativeInstallCalled = false
+let nativeInstallResult = { latestVersion: '2.1.667', wasUpdated: true }
 let shutdownCode: number | undefined
 const shutdownSentinel = new Error('shutdown')
 
@@ -51,7 +51,7 @@ mock.module('src/utils/nativeInstaller/index.js', () => ({
   getPackageManager: async () => 'unknown',
   installLatest: async () => {
     nativeInstallCalled = true
-    return { latestVersion: '2.1.667', wasUpdated: true }
+    return nativeInstallResult
   },
   removeInstalledSymlink: async () => {},
 }))
@@ -89,6 +89,7 @@ beforeEach(() => {
   stdout = ''
   stderr = ''
   nativeInstallCalled = false
+  nativeInstallResult = { latestVersion: '2.1.667', wasUpdated: true }
   shutdownCode = undefined
   process.stderr.write = ((data: string | Uint8Array) => {
     stderr += String(data)
@@ -101,15 +102,26 @@ afterEach(() => {
 })
 
 describe('update', () => {
-  test('rejects native updates and tells users to use npm or bun', async () => {
+  test('updates native installations from the native release channel', async () => {
     const { update } = await import('./update.js')
 
     await expect(update()).rejects.toBe(shutdownSentinel)
 
-    expect(nativeInstallCalled).toBe(false)
-    expect(stdout + stderr).toContain('native installation')
-    expect(stdout + stderr).toContain('npm install -g @esonhugh/claude-code')
-    expect(stdout + stderr).toContain('bun install -g @esonhugh/claude-code')
-    expect(shutdownCode).toBe(1)
+    expect(nativeInstallCalled).toBe(true)
+    expect(stdout + stderr).toContain(
+      'Successfully updated from 2.1.666 to version 2.1.667',
+    )
+    expect(shutdownCode).toBe(0)
+  })
+
+  test('reports native installations that are already current', async () => {
+    nativeInstallResult = { latestVersion: '2.1.666', wasUpdated: false }
+    const { update } = await import('./update.js')
+
+    await expect(update()).rejects.toBe(shutdownSentinel)
+
+    expect(nativeInstallCalled).toBe(true)
+    expect(stdout + stderr).toContain('Claude Code is up to date (2.1.666)')
+    expect(shutdownCode).toBe(0)
   })
 })

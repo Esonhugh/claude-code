@@ -4,10 +4,10 @@ import { useInterval } from 'usehooks-ts'
 import { Text } from '../ink.js'
 import {
   type AutoUpdaterResult,
-  getLatestVersionFromGcs,
   getMaxVersion,
   shouldSkipVersion,
 } from '../utils/autoUpdater.js'
+import { getReleaseVersion } from '../utils/nativeInstaller/download.js'
 import { isAutoUpdaterDisabled } from '../utils/config.js'
 import { logForDebugging } from '../utils/debug.js'
 import {
@@ -33,8 +33,8 @@ export function PackageManagerAutoUpdater({ verbose }: Props): React.ReactNode {
 
   const checkForUpdates = React.useCallback(async () => {
     if (
-      ("production" as string) === 'test' ||
-      ("production" as string) === 'development'
+      ('production' as string) === 'test' ||
+      ('production' as string) === 'development'
     ) {
       return
     }
@@ -49,7 +49,7 @@ export function PackageManagerAutoUpdater({ verbose }: Props): React.ReactNode {
     ])
     setPackageManager(pm)
 
-    let latest = await getLatestVersionFromGcs(channel)
+    let latest = await getReleaseVersion(channel)
 
     // Check if max version is set (server-side kill switch for auto-updates)
     const maxVersion = await getMaxVersion()
