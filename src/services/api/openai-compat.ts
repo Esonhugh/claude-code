@@ -947,6 +947,12 @@ export function createOpenAICompatClient(options: {
         params.messages ?? [],
         params.system,
       )
+      if (
+        params.openai_compaction?.type === 'compaction' &&
+        typeof params.openai_compaction.encrypted_content === 'string'
+      ) {
+        input.unshift(params.openai_compaction)
+      }
       input.push({ type: 'compaction_trigger' })
       const body = JSON.stringify({
         model: mapModel(params.model || DEFAULT_OPENAI_MODEL),

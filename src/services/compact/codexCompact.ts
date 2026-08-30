@@ -2,6 +2,7 @@ import type {
   AttachmentMessage,
   HookResultMessage,
   Message,
+  SystemCompactBoundaryMessage,
   SystemMessage,
   UserMessage,
 } from '../../types/message.js'
@@ -287,6 +288,12 @@ export async function compactConversationCodexStyle(
   isAutoCompact: boolean,
   options: CodexCompactOptions,
 ): Promise<CompactionResult> {
+  const previousOpenAICompaction = messages.findLast(
+    (message): message is SystemCompactBoundaryMessage =>
+      message.type === 'system' &&
+      message.subtype === 'compact_boundary' &&
+      Boolean(message.openAICompaction),
+  )?.openAICompaction
   const remoteCompact =
     getAPIProvider() === 'openai' && context.openAITurnScope
       ? async (
@@ -331,6 +338,9 @@ export async function compactConversationCodexStyle(
                 ]
                   .filter(Boolean)
                   .join('\n\n'),
+                ...(previousOpenAICompaction && {
+                  openai_compaction: previousOpenAICompaction,
+                }),
               },
               { signal: context.abortController.signal },
             )

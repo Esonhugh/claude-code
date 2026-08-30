@@ -473,6 +473,17 @@ try {
   })
 
   compactRequests.length = 0
+  await (compactClient.beta.messages as any).compact({
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'new history' }],
+    openai_compaction: compactResult.item,
+  })
+  assert.deepEqual(compactRequests[0]!.input[0], compactResult.item)
+  assert.deepEqual(compactRequests[0]!.input.at(-1), {
+    type: 'compaction_trigger',
+  })
+
+  compactRequests.length = 0
   await compactClient.beta.messages.create({
     model: 'gpt-5.5',
     max_tokens: 16,
