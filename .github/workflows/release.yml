@@ -213,9 +213,13 @@ jobs:
         shell: bash
         run: |
           ARCH="$(bun -e 'console.log(process.arch)')"
-          ARTIFACT="dist/release/claude-code-v${CLAUDE_CODE_VERSION}-linux-${ARCH}-musl"
-          "$ARTIFACT" --version
-          "$ARTIFACT" --help
+          ARTIFACT="$(pwd)/dist/release/claude-code-v${CLAUDE_CODE_VERSION}-linux-${ARCH}-musl"
+          docker run --rm --platform "linux/${ARCH/x64/amd64}" \
+            -v "$ARTIFACT:/usr/local/bin/claude:ro" \
+            alpine:3.22 /usr/local/bin/claude --version
+          docker run --rm --platform "linux/${ARCH/x64/amd64}" \
+            -v "$ARTIFACT:/usr/local/bin/claude:ro" \
+            alpine:3.22 /usr/local/bin/claude --help
 
       - name: Verify packaged binary
         shell: bash

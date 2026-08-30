@@ -76,6 +76,11 @@ assert.match(
   releaseWorkflowSource,
   /claude-code-v\$\{VERSION\}-linux-arm64-musl/,
 );
+assert.match(releaseWorkflowSource, /alpine:3\.22/);
+assert.match(
+  releaseWorkflowSource,
+  /--platform "linux\/\$\{ARCH\/x64\/amd64\}"/,
+);
 assert.doesNotMatch(releaseWorkflowSource, /sha256sum \* > SHA256SUMS\.txt/);
 assert.match(releaseWorkflowSource, /group: release-/);
 

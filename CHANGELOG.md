@@ -12,14 +12,14 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-08-30 - v2.1.215 - OpenAI 会话路由与 GitHub Native 更新
+## 2026-08-30 - v2.1.216 - OpenAI 会话路由与 GitHub Native 更新
 
 ### 版本状态
 
-- 准备发布版本：`v2.1.215`。
+- 准备发布版本：`v2.1.216`。
 - 本次发布覆盖 `v2.1.214..HEAD` 的 OpenAI Responses 会话路由、WebSocket/SSE 回退、Remote Compaction V2、Agent 委派提示及 GitHub Release native installer/update 改动。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
-- `Makefile` 默认构建版本更新为 `2.1.215`。
+- `Makefile` 默认构建版本更新为 `2.1.216`。
 
 ### 关联提交
 
@@ -38,7 +38,7 @@
 #### Native 安装与更新
 
 - Native installer 和 `claude update` 从 GitHub Releases 查询版本、下载平台二进制，并使用同一 release 的 `SHA256SUMS.txt` 验证内容后再原子安装。
-- Release workflow 新增 `linux-x64-musl` 与 `linux-arm64-musl` 构建、执行验证和完整产物门禁。
+- Release workflow 新增 `linux-x64-musl` 与 `linux-arm64-musl` 构建，并在 Alpine 容器中执行验证，避免在缺少 musl loader 的 glibc runner 上产生伪失败。
 - Native 自动更新与 Doctor 使用 GitHub latest release；实际版本二进制保存在 XDG data 目录，用户入口 symlink 指向当前版本。
 
 ### 测试覆盖
