@@ -12,6 +12,41 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-08-30 - v2.1.215 - OpenAI 会话路由与 GitHub Native 更新
+
+### 版本状态
+
+- 准备发布版本：`v2.1.215`。
+- 本次发布覆盖 `v2.1.214..HEAD` 的 OpenAI Responses 会话路由、WebSocket/SSE 回退、Remote Compaction V2、Agent 委派提示及 GitHub Release native installer/update 改动。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.215`。
+
+### 关联提交
+
+- `fa385be` — 对齐 OpenAI Responses 的 session/thread/turn identity、prompt cache usage、WebSocket fallback 与 remote compaction，并减少重复 Agent 委派。
+- `45c80d4` — 将 native install/update 迁移到经过 SHA-256 校验的 GitHub Release assets，并增加 Linux musl 构建。
+
+### 变更内容
+
+#### OpenAI Responses 会话与压缩
+
+- OpenAI 请求按根 session 保持稳定 `prompt_cache_key`，区分 session、thread、turn 与每次 transport dispatch 的 request ID，并以 first-wins 方式保存 `x-codex-turn-state`。
+- ChatGPT Responses transport 支持 WebSocket 优先及输出前 SSE 回退；输出开始后不重放请求，caller abort 不触发回退。
+- OpenAI Remote Compaction V2 使用 opaque compaction item 持久化 compact boundary，并复用既有 hook、attachment、usage 和本地 fallback 生命周期。
+- Agent 创建提示要求先检查是否确有必要委派，避免重复 Agent、重复上下文传递和无效迭代。
+
+#### Native 安装与更新
+
+- Native installer 和 `claude update` 从 GitHub Releases 查询版本、下载平台二进制，并使用同一 release 的 `SHA256SUMS.txt` 验证内容后再原子安装。
+- Release workflow 新增 `linux-x64-musl` 与 `linux-arm64-musl` 构建、执行验证和完整产物门禁。
+- Native 自动更新与 Doctor 使用 GitHub latest release；实际版本二进制保存在 XDG data 目录，用户入口 symlink 指向当前版本。
+
+### 测试覆盖
+
+- OpenAI adapter 覆盖 request identity、cache usage、turn state、WebSocket fallback/abort、Remote Compaction 协议和 opaque replay。
+- Native installer 覆盖 GitHub latest tag、release URL、checksum 精确匹配、二进制内容以及 native update 的 updated/already-current 状态。
+- 发布前通过相关 Bun 测试、build packaging test、ripgrep tests、TypeScript、ESLint、missing-import audit 与 `git diff --check`。
+
 ## 2026-08-27 - v2.1.214 - Prompt 缓存稳定性、Effort 透传与 SSH 状态恢复
 
 ### 版本状态
