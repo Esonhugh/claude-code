@@ -12,14 +12,14 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-08-30 - v2.1.216 - OpenAI 会话路由与 GitHub Native 更新
+## 2026-08-30 - v2.1.217 - OpenAI 会话路由与 GitHub Native 更新
 
 ### 版本状态
 
-- 准备发布版本：`v2.1.216`。
+- 准备发布版本：`v2.1.217`。
 - 本次发布覆盖 `v2.1.214..HEAD` 的 OpenAI Responses 会话路由、WebSocket/SSE 回退、Remote Compaction V2、Agent 委派提示及 GitHub Release native installer/update 改动。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
-- `Makefile` 默认构建版本更新为 `2.1.216`。
+- `Makefile` 默认构建版本更新为 `2.1.217`。
 
 ### 关联提交
 

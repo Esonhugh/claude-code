@@ -77,6 +77,7 @@ assert.match(
   /claude-code-v\$\{VERSION\}-linux-arm64-musl/,
 );
 assert.match(releaseWorkflowSource, /alpine:3\.22/);
+assert.match(releaseWorkflowSource, /apk add --no-cache libstdc\+\+ libgcc/);
 assert.match(
   releaseWorkflowSource,
   /--platform "linux\/\$\{ARCH\/x64\/amd64\}"/,

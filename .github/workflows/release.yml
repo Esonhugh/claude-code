@@ -216,10 +216,12 @@ jobs:
           ARTIFACT="$(pwd)/dist/release/claude-code-v${CLAUDE_CODE_VERSION}-linux-${ARCH}-musl"
           docker run --rm --platform "linux/${ARCH/x64/amd64}" \
             -v "$ARTIFACT:/usr/local/bin/claude:ro" \
-            alpine:3.22 /usr/local/bin/claude --version
+            alpine:3.22 sh -c \
+            'apk add --no-cache libstdc++ libgcc >/dev/null && /usr/local/bin/claude --version'
           docker run --rm --platform "linux/${ARCH/x64/amd64}" \
             -v "$ARTIFACT:/usr/local/bin/claude:ro" \
-            alpine:3.22 /usr/local/bin/claude --help
+            alpine:3.22 sh -c \
+            'apk add --no-cache libstdc++ libgcc >/dev/null && /usr/local/bin/claude --help'
 
       - name: Verify packaged binary
         shell: bash
