@@ -13,8 +13,17 @@ const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 
 try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
+  const { getSessionId } = await import('../../bootstrap/state.js')
   const { createOpenAICompatClient } = await import('./openai-compat.js')
-  const { OpenAITurnScope } = await import('./openai-turn-scope.js')
+  const { createOpenAITurnScope, OpenAITurnScope } = await import(
+    './openai-turn-scope.js'
+  )
+
+  const standaloneScope = createOpenAITurnScope(undefined, 'manual-compact-turn')
+  assert.equal(standaloneScope.identity.sessionId, getSessionId())
+  assert.equal(standaloneScope.identity.threadId, getSessionId())
+  assert.equal(standaloneScope.identity.promptCacheKey, getSessionId())
+  assert.equal(standaloneScope.turnId, 'manual-compact-turn')
 
   getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'sk-test-api-key',
@@ -473,15 +482,22 @@ try {
   })
 
   compactRequests.length = 0
-  await (compactClient.beta.messages as any).compact({
+  const secondCompactResult = await (compactClient.beta.messages as any).compact({
     model: 'gpt-5.5',
     messages: [{ role: 'user', content: 'new history' }],
     openai_compaction: compactResult.item,
   })
+  assert.equal(compactRequests.length, 1)
   assert.deepEqual(compactRequests[0]!.input[0], compactResult.item)
+  assert.deepEqual(compactRequests[0]!.input[1], {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'new history' }],
+  })
   assert.deepEqual(compactRequests[0]!.input.at(-1), {
     type: 'compaction_trigger',
   })
+  assert.deepEqual(secondCompactResult.item, compactResult.item)
 
   compactRequests.length = 0
   await compactClient.beta.messages.create({

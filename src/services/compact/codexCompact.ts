@@ -17,6 +17,7 @@ import { compactConversation } from './compact.js'
 import type { CodexCompactOptions } from './compactMode.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { getAnthropicClient } from '../api/client.js'
+import { createOpenAITurnScope } from '../api/openai-turn-scope.js'
 
 export const CODEX_COMPACT_TOOL_RESULT_TRUNCATION_THRESHOLD_CHARS = 32_000
 export const CODEX_COMPACT_TRUNCATED_TOOL_OUTPUT =
@@ -294,64 +295,67 @@ export async function compactConversationCodexStyle(
       message.subtype === 'compact_boundary' &&
       Boolean(message.openAICompaction),
   )?.openAICompaction
-  const remoteCompact =
-    getAPIProvider() === 'openai' && context.openAITurnScope
-      ? async (
-          hookInstructions?: string,
-        ): Promise<RemoteCompactionResult | undefined> => {
-          const client = await getAnthropicClient({
-            maxRetries: 0,
-            model: context.options.mainLoopModel,
-            source: 'compact',
-            openAITurnScope: context.openAITurnScope,
-          })
-          const compact = (client.beta.messages as unknown as {
-            compact?: (
-              params: Record<string, unknown>,
-              requestOptions?: { signal?: AbortSignal },
-            ) => Promise<{
-              item: {
-                type: 'compaction'
-                encrypted_content: string
-                id?: string
-              }
-              usage: RemoteCompactionResult['usage']
-            }>
-          }).compact
-          if (!compact) return undefined
-          try {
-            return await compact(
-              {
-                model: context.options.mainLoopModel,
-                messages: messages
-                  .filter(
-                    (message): message is Extract<
-                      Message,
-                      { type: 'user' | 'assistant' }
-                    > => message.type === 'user' || message.type === 'assistant',
-                  )
-                  .map(message => message.message),
-                system: cacheSafeParams.systemPrompt.join('\n\n'),
-                instructions: [
-                  cacheSafeParams.systemPrompt.join('\n\n'),
-                  hookInstructions,
-                ]
-                  .filter(Boolean)
-                  .join('\n\n'),
-                ...(previousOpenAICompaction && {
-                  openai_compaction: previousOpenAICompaction,
-                }),
-              },
-              { signal: context.abortController.signal },
-            )
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (/WebSocket \d+|OpenAI API (404|405|426)|not supported/i.test(message)) {
-              return undefined
+  const openAITurnScope =
+    getAPIProvider() === 'openai'
+      ? (context.openAITurnScope ?? createOpenAITurnScope(context.agentId))
+      : undefined
+  const remoteCompact = openAITurnScope
+    ? async (
+        hookInstructions?: string,
+      ): Promise<RemoteCompactionResult | undefined> => {
+        const client = await getAnthropicClient({
+          maxRetries: 0,
+          model: context.options.mainLoopModel,
+          source: 'compact',
+          openAITurnScope,
+        })
+        const compact = (client.beta.messages as unknown as {
+          compact?: (
+            params: Record<string, unknown>,
+            requestOptions?: { signal?: AbortSignal },
+          ) => Promise<{
+            item: {
+              type: 'compaction'
+              encrypted_content: string
+              id?: string
             }
-            throw error
+            usage: RemoteCompactionResult['usage']
+          }>
+        }).compact
+        if (!compact) return undefined
+        try {
+          return await compact(
+            {
+              model: context.options.mainLoopModel,
+              messages: messages
+                .filter(
+                  (message): message is Extract<
+                    Message,
+                    { type: 'user' | 'assistant' }
+                  > => message.type === 'user' || message.type === 'assistant',
+                )
+                .map(message => message.message),
+              system: cacheSafeParams.systemPrompt.join('\n\n'),
+              instructions: [
+                cacheSafeParams.systemPrompt.join('\n\n'),
+                hookInstructions,
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
+              ...(previousOpenAICompaction && {
+                openai_compaction: previousOpenAICompaction,
+              }),
+            },
+            { signal: context.abortController.signal },
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (/WebSocket \d+|OpenAI API (404|405|426)|not supported/i.test(message)) {
+            return undefined
           }
+          throw error
         }
+      }
       : undefined
 
   const claudeResult = await compactConversation(

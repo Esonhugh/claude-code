@@ -5,8 +5,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
-import { OpenAITurnScope } from './services/api/openai-turn-scope.js'
-import { getSessionId } from './bootstrap/state.js'
+import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
@@ -278,17 +277,7 @@ async function* queryLoop(
   const deps = params.deps ?? productionDeps()
   const openAITurnScope =
     getAPIProvider() === 'openai'
-      ? (() => {
-          const sessionId = getSessionId()
-          return new OpenAITurnScope(
-            {
-              sessionId,
-              threadId: params.toolUseContext.agentId ?? sessionId,
-              promptCacheKey: sessionId,
-            },
-            deps.uuid(),
-          )
-        })()
+      ? createOpenAITurnScope(params.toolUseContext.agentId, deps.uuid())
       : undefined
 
   // Mutable cross-iteration state. The loop body destructures this at the top
