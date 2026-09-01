@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
+import type { StopHookInput } from './entrypoints/agentSdkTypes.js'
 import type { QuerySource } from './constants/querySource.js'
 import type { ToolUseContext } from './Tool.js'
 import type { AssistantMessage, Message } from './types/message.js'
@@ -6,7 +7,12 @@ import { query, type QueryParams } from './query.js'
 import { autoCompactIfNeeded } from './services/compact/autoCompact.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
+import { createAssistantMessage } from './utils/messages.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
+import {
+  registerHookCallbacks,
+  resetStateForTests,
+} from './bootstrap/state.js'
 
 function userMessage(content: string): Message {
   return {
@@ -75,6 +81,224 @@ function assistantText(message: AssistantMessage): string {
     .map(block => (block.type === 'text' ? block.text : ''))
     .join('\n')
 }
+
+type StopHookTestOptions = {
+  maxTurns?: number
+  stopHookActive?: boolean
+  hookResults?: boolean[]
+  includeToolRound?: boolean
+}
+
+async function runStopHookQuery({
+  maxTurns,
+  stopHookActive,
+  hookResults = [],
+  includeToolRound = false,
+}: StopHookTestOptions = {}) {
+  const observedInputs: StopHookInput[] = []
+  let hookCall = 0
+  let modelCall = 0
+
+  registerHookCallbacks({
+    Stop: [
+      {
+        hooks: [
+          {
+            type: 'callback',
+            callback: async input => {
+              observedInputs.push(input as StopHookInput)
+              const shouldPass = hookResults[hookCall++] ?? false
+              return shouldPass
+                ? { continue: true }
+                : { decision: 'block', reason: 'work remains' }
+            },
+          },
+        ],
+      },
+    ],
+  })
+
+  const toolUseContext = createToolUseContext()
+  return {
+    observedInputs,
+    modelCalls: () => modelCall,
+    result: await drainQuery({
+      messages: [userMessage('finish the task')],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext,
+      querySource: 'repl_main_thread' as QuerySource,
+      maxTurns,
+      stopHookActive,
+      deps: {
+        uuid: () => `00000000-0000-4000-8000-${String(modelCall).padStart(12, '0')}`,
+        microcompact: async messages => ({ messages }),
+        autocompact: async messages => ({ messages, wasCompacted: false }),
+        callModel: async function* () {
+          modelCall++
+          if (includeToolRound && modelCall === 2) {
+            yield createAssistantMessage({
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_reset_block_count',
+                  name: 'missing_test_tool',
+                  input: {},
+                },
+              ],
+            })
+            return
+          }
+          yield createAssistantMessage({ content: `model round ${modelCall}` })
+        },
+      },
+    }),
+  }
+}
+
+beforeEach(() => {
+  resetStateForTests()
+})
+
+describe('query Stop hook continuation state', () => {
+  test('passes initial and retry stop_hook_active values to hooks', async () => {
+    const run = await runStopHookQuery({ hookResults: [false, true] })
+
+    expect(run.result.terminal).toEqual({ reason: 'completed' })
+    expect(run.modelCalls()).toBe(2)
+    expect(run.observedInputs.map(input => input.stop_hook_active)).toEqual([
+      false,
+      true,
+    ])
+  })
+
+  test('honors initial stopHookActive from QueryParams', async () => {
+    const run = await runStopHookQuery({
+      stopHookActive: true,
+      hookResults: [true],
+    })
+
+    expect(run.result.terminal).toEqual({ reason: 'completed' })
+    expect(run.observedInputs[0]?.stop_hook_active).toBe(true)
+  })
+
+  test('maxTurns takes precedence over the consecutive block cap', async () => {
+    const previousCap = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = '1'
+    try {
+      const run = await runStopHookQuery({ maxTurns: 1 })
+
+      expect(run.modelCalls()).toBe(1)
+      expect(run.result.terminal).toEqual({ reason: 'max_turns', turnCount: 2 })
+      expect(
+        run.result.events.some(
+          event =>
+            event.type === 'attachment' &&
+            'attachment' in event &&
+            event.attachment.type === 'max_turns_reached',
+        ),
+      ).toBe(true)
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+      } else {
+        process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previousCap
+      }
+    }
+  })
+
+  test('default cap overrides the ninth consecutive block', async () => {
+    const previousCap = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    try {
+      const run = await runStopHookQuery()
+
+      expect(run.modelCalls()).toBe(9)
+      expect(run.observedInputs).toHaveLength(9)
+      expect(run.result.terminal).toEqual({ reason: 'completed' })
+      expect(
+        run.result.events.some(
+          event =>
+            event.type === 'system' &&
+            'content' in event &&
+            event.content.includes(
+              'blocked the turn from ending 9 consecutive times',
+            ),
+        ),
+      ).toBe(true)
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+      } else {
+        process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previousCap
+      }
+    }
+  })
+
+  test('environment cap override limits consecutive blocks', async () => {
+    const previousCap = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = '2'
+    try {
+      const run = await runStopHookQuery()
+
+      expect(run.modelCalls()).toBe(3)
+      expect(run.result.terminal).toEqual({ reason: 'completed' })
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+      } else {
+        process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previousCap
+      }
+    }
+  })
+
+  test.each(['0', '-1'])('cap %s disables the consecutive block override', async cap => {
+    const previousCap = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = cap
+    try {
+      const run = await runStopHookQuery({
+        maxTurns: 3,
+        hookResults: [false, false, false],
+      })
+
+      expect(run.modelCalls()).toBe(3)
+      expect(run.result.terminal).toEqual({ reason: 'max_turns', turnCount: 4 })
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+      } else {
+        process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previousCap
+      }
+    }
+  })
+
+  test('a normal tool round resets the consecutive block count', async () => {
+    const previousCap = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = '1'
+    try {
+      const run = await runStopHookQuery({
+        hookResults: [false, false, true],
+        includeToolRound: true,
+      })
+
+      expect(run.modelCalls()).toBe(4)
+      expect(run.result.terminal).toEqual({ reason: 'completed' })
+      expect(run.observedInputs.map(input => input.stop_hook_active)).toEqual([
+        false,
+        true,
+        true,
+      ])
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+      } else {
+        process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previousCap
+      }
+    }
+  })
+})
 
 describe('query autocompact failures', () => {
   test('keeps OpenAI usage_limit_reached visible when autocompact fails before blocking-limit preempt', async () => {

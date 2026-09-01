@@ -115,7 +115,6 @@ import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
 import { isAnt } from 'src/utils/userType.js'
 
-
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
   ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
@@ -133,7 +132,7 @@ function* yieldMissingToolResultBlocks(
     // Extract all tool use blocks from this assistant message
     // @ts-ignore - recovered code
     const toolUseBlocks = assistantMessage.message.content.filter(
-      content => content.type === 'tool_use',
+      (content) => content.type === 'tool_use',
     ) as ToolUseBlock[]
 
     // Emit an interruption message for each tool use
@@ -203,6 +202,7 @@ export type QueryParams = {
   querySource: QuerySource
   maxOutputTokensOverride?: number
   maxTurns?: number
+  stopHookActive?: boolean
   skipCacheWrite?: boolean
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
   // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
@@ -223,7 +223,8 @@ type State = {
   hasAttemptedReactiveCompact: boolean
   maxOutputTokensOverride: number | undefined
   pendingToolUseSummary: Promise<ToolUseSummaryMessage | null> | undefined
-  stopHookActive: boolean | undefined
+  stopHookActive: boolean
+  stopHookBlockingCount: number
   turnCount: number
   // Why the previous iteration continued. Undefined on first iteration.
   // Lets tests assert recovery paths fired without inspecting message contents.
@@ -291,7 +292,8 @@ async function* queryLoop(
     },
     maxOutputTokensOverride: params.maxOutputTokensOverride,
     autoCompactTracking: undefined,
-    stopHookActive: undefined,
+    stopHookActive: params.stopHookActive ?? false,
+    stopHookBlockingCount: 0,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
     turnCount: 1,
@@ -338,6 +340,7 @@ async function* queryLoop(
       maxOutputTokensOverride,
       pendingToolUseSummary,
       stopHookActive,
+      stopHookBlockingCount,
       turnCount,
     } = state
 
@@ -401,7 +404,7 @@ async function* queryLoop(
       messagesForQuery,
       toolUseContext.contentReplacementState,
       persistReplacements
-        ? records =>
+        ? (records) =>
             void recordContentReplacement(
               records,
               toolUseContext.agentId,
@@ -409,8 +412,8 @@ async function* queryLoop(
         : undefined,
       new Set(
         toolUseContext.options.tools
-          .filter(t => !Number.isFinite(t.maxResultSizeChars))
-          .map(t => t.name),
+          .filter((t) => !Number.isFinite(t.maxResultSizeChars))
+          .map((t) => t.name),
       ),
     )
 
@@ -727,7 +730,7 @@ async function* queryLoop(
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
               hasPendingMcpServers: appState.mcp.clients.some(
-                c => c.type === 'pending',
+                (c) => c.type === 'pending',
               ),
               queryTracking,
               effortValue: appState.effortValue,
@@ -813,7 +816,7 @@ async function* queryLoop(
                     // while adding nothing the SDK stream needs — hooks get
                     // the expanded path via toolExecution.ts separately.
                     const addedFields = Object.keys(inputCopy).some(
-                      k => !(k in originalInput),
+                      (k) => !(k in originalInput),
                     )
                     if (addedFields) {
                       // @ts-ignore - recovered code
@@ -876,7 +879,7 @@ async function* queryLoop(
 
               // @ts-ignore - recovered code
               const msgToolUseBlocks = message.message.content.filter(
-                content => content.type === 'tool_use',
+                (content) => content.type === 'tool_use',
               ) as ToolUseBlock[]
               if (msgToolUseBlocks.length > 0) {
                 toolUseBlocks.push(...msgToolUseBlocks)
@@ -905,7 +908,7 @@ async function* queryLoop(
                     ...normalizeMessagesForAPI(
                       [result.message],
                       toolUseContext.options.tools,
-                    ).filter(_ => _.type === 'user'),
+                    ).filter((_) => _.type === 'user'),
                   )
                 }
               }
@@ -1008,8 +1011,8 @@ async function* queryLoop(
         error instanceof Error ? error.message : String(error)
       logEvent('tengu_query_error', {
         assistantMessages: assistantMessages.length,
-        toolUses: assistantMessages.flatMap(_ =>
-          _.message.content.filter(content => content.type === 'tool_use'),
+        toolUses: assistantMessages.flatMap((_) =>
+          _.message.content.filter((content) => content.type === 'tool_use'),
         ).length,
 
         queryChainId: queryChainIdForAnalytics,
@@ -1082,9 +1085,8 @@ async function* queryLoop(
       // see stopHooks.ts for the subagent-releasing-main's-lock rationale.
       if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
         try {
-          const { cleanupComputerUseAfterTurn } = await import(
-            './utils/computerUse/cleanup.js'
-          )
+          const { cleanupComputerUseAfterTurn } =
+            await import('./utils/computerUse/cleanup.js')
           await cleanupComputerUseAfterTurn(toolUseContext)
         } catch {
           // Failures are silent — this is dogfooding cleanup, not critical path
@@ -1154,7 +1156,8 @@ async function* queryLoop(
               hasAttemptedReactiveCompact,
               maxOutputTokensOverride: undefined,
               pendingToolUseSummary: undefined,
-              stopHookActive: undefined,
+              stopHookActive,
+              stopHookBlockingCount: 0,
               turnCount,
               transition: {
                 reason: 'collapse_drain_retry',
@@ -1207,7 +1210,8 @@ async function* queryLoop(
             hasAttemptedReactiveCompact: true,
             maxOutputTokensOverride: undefined,
             pendingToolUseSummary: undefined,
-            stopHookActive: undefined,
+            stopHookActive,
+            stopHookBlockingCount: 0,
             turnCount,
             transition: { reason: 'reactive_compact_retry' },
           }
@@ -1262,7 +1266,8 @@ async function* queryLoop(
             hasAttemptedReactiveCompact,
             maxOutputTokensOverride: ESCALATED_MAX_TOKENS,
             pendingToolUseSummary: undefined,
-            stopHookActive: undefined,
+            stopHookActive,
+            stopHookBlockingCount: 0,
             turnCount,
             transition: { reason: 'max_output_tokens_escalate' },
           }
@@ -1290,7 +1295,8 @@ async function* queryLoop(
             hasAttemptedReactiveCompact,
             maxOutputTokensOverride: undefined,
             pendingToolUseSummary: undefined,
-            stopHookActive: undefined,
+            stopHookActive,
+            stopHookBlockingCount: 0,
             turnCount,
             transition: {
               reason: 'max_output_tokens_recovery',
@@ -1329,7 +1335,55 @@ async function* queryLoop(
         return { reason: 'stop_hook_prevented' }
       }
 
+      if (
+        stopHookBlockingCount > 0 &&
+        stopHookResult.blockingErrors.length === 0
+      ) {
+        logEvent('tengu_stop_hook_block_count', {
+          count: stopHookBlockingCount,
+          is_subagent: Boolean(toolUseContext.agentId),
+          hit_max_turns: false,
+          hit_cap: false,
+        })
+      }
+
       if (stopHookResult.blockingErrors.length > 0) {
+        const nextTurnCount = turnCount + 1
+        const nextBlockingCount = stopHookBlockingCount + 1
+        if (maxTurns && nextTurnCount > maxTurns) {
+          logEvent('tengu_stop_hook_block_count', {
+            count: nextBlockingCount,
+            is_subagent: Boolean(toolUseContext.agentId),
+            hit_max_turns: true,
+            hit_cap: false,
+          })
+          yield createAttachmentMessage({
+            type: 'max_turns_reached',
+            maxTurns,
+            turnCount: nextTurnCount,
+          })
+          return { reason: 'max_turns', turnCount: nextTurnCount }
+        }
+
+        const configuredCap = parseInt(
+          process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP ?? '',
+          10,
+        )
+        const blockCap = Number.isNaN(configuredCap) ? 8 : configuredCap
+        if (blockCap > 0 && nextBlockingCount > blockCap) {
+          logEvent('tengu_stop_hook_block_count', {
+            count: nextBlockingCount,
+            is_subagent: Boolean(toolUseContext.agentId),
+            hit_max_turns: false,
+            hit_cap: true,
+          })
+          yield createSystemMessage(
+            `A hook blocked the turn from ending ${nextBlockingCount} consecutive times — overriding and ending turn. For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true. Set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP to raise this limit.`,
+            'warning',
+          )
+          return { reason: 'completed' }
+        }
+
         const next: State = {
           messages: [
             ...messagesForQuery,
@@ -1348,7 +1402,8 @@ async function* queryLoop(
           maxOutputTokensOverride: undefined,
           pendingToolUseSummary: undefined,
           stopHookActive: true,
-          turnCount,
+          stopHookBlockingCount: nextBlockingCount,
+          turnCount: nextTurnCount,
           transition: { reason: 'stop_hook_blocking' },
         }
         state = next
@@ -1383,7 +1438,8 @@ async function* queryLoop(
             hasAttemptedReactiveCompact: false,
             maxOutputTokensOverride: undefined,
             pendingToolUseSummary: undefined,
-            stopHookActive: undefined,
+            stopHookActive,
+            stopHookBlockingCount: 0,
             turnCount,
             transition: { reason: 'token_budget_continuation' },
           }
@@ -1411,7 +1467,6 @@ async function* queryLoop(
     let updatedToolUseContext = toolUseContext
 
     queryCheckpoint('query_tool_execution_start')
-
 
     if (streamingToolExecutor) {
       logEvent('tengu_streaming_tool_execution_used', {
@@ -1447,7 +1502,7 @@ async function* queryLoop(
           ...normalizeMessagesForAPI(
             [update.message],
             toolUseContext.options.tools,
-          ).filter(_ => _.type === 'user'),
+          ).filter((_) => _.type === 'user'),
         )
       }
       if (update.newContext) {
@@ -1474,7 +1529,7 @@ async function* queryLoop(
       let lastAssistantText: string | undefined
       if (lastAssistantMessage) {
         const textBlocks = lastAssistantMessage.message.content.filter(
-          block => block.type === 'text',
+          (block) => block.type === 'text',
         )
         if (textBlocks.length > 0) {
           const lastTextBlock = textBlocks.at(-1)
@@ -1486,15 +1541,15 @@ async function* queryLoop(
       }
 
       // Collect tool info for summary generation
-      const toolUseIds = toolUseBlocks.map(block => block.id)
-      const toolInfoForSummary = toolUseBlocks.map(block => {
+      const toolUseIds = toolUseBlocks.map((block) => block.id)
+      const toolInfoForSummary = toolUseBlocks.map((block) => {
         // Find the corresponding tool result
         const toolResult = toolResults.find(
-          result =>
+          (result) =>
             result.type === 'user' &&
             Array.isArray(result.message.content) &&
             result.message.content.some(
-              content =>
+              (content) =>
                 content.type === 'tool_result' &&
                 content.tool_use_id === block.id,
             ),
@@ -1525,7 +1580,7 @@ async function* queryLoop(
         isNonInteractiveSession: toolUseContext.options.isNonInteractiveSession,
         lastAssistantText,
       })
-        .then(summary => {
+        .then((summary) => {
           if (summary) {
             return createToolUseSummaryMessage(summary, toolUseIds)
           }
@@ -1541,9 +1596,8 @@ async function* queryLoop(
       // Main thread only — see stopHooks.ts for the subagent rationale.
       if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
         try {
-          const { cleanupComputerUseAfterTurn } = await import(
-            './utils/computerUse/cleanup.js'
-          )
+          const { cleanupComputerUseAfterTurn } =
+            await import('./utils/computerUse/cleanup.js')
           await cleanupComputerUseAfterTurn(toolUseContext)
         } catch {
           // Failures are silent — this is dogfooding cleanup, not critical path
@@ -1616,13 +1670,13 @@ async function* queryLoop(
     // drain their own agentId. User prompts (mode:'prompt') still go to main
     // only; subagents never see the prompt stream.
     // eslint-disable-next-line custom-rules/require-tool-match-name -- ToolUseBlock.name has no aliases
-    const sleepRan = toolUseBlocks.some(b => b.name === SLEEP_TOOL_NAME)
+    const sleepRan = toolUseBlocks.some((b) => b.name === SLEEP_TOOL_NAME)
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
     const queuedCommandsSnapshot = getCommandsByMaxPriority(
       sleepRan ? 'later' : 'next',
-    ).filter(cmd => {
+    ).filter((cmd) => {
       if (isSlashCommand(cmd)) return false
       if (isMainThread) return cmd.agentId === undefined
       // Subagents only drain task-notifications addressed to them — never
@@ -1666,7 +1720,6 @@ async function* queryLoop(
       pendingMemoryPrefetch.consumedOnIteration = turnCount - 1
     }
 
-
     // Inject prefetched skill discovery. collectSkillDiscoveryPrefetch emits
     // hidden_by_main_turn — true when the prefetch resolved before this point
     // (should be >98% at AKI@250ms / Haiku@573ms vs turn durations of 2-30s).
@@ -1684,7 +1737,7 @@ async function* queryLoop(
     // Remove only commands that were actually consumed as attachments.
     // Prompt and task-notification commands are converted to attachments above.
     const consumedCommands = queuedCommandsSnapshot.filter(
-      cmd => cmd.mode === 'prompt' || cmd.mode === 'task-notification',
+      (cmd) => cmd.mode === 'prompt' || cmd.mode === 'task-notification',
     )
     if (consumedCommands.length > 0) {
       for (const cmd of consumedCommands) {
@@ -1699,7 +1752,7 @@ async function* queryLoop(
     // Instrumentation: Track file change attachments after they're added
     const fileChangeAttachmentCount = count(
       toolResults,
-      tr =>
+      (tr) =>
         // @ts-ignore - recovered code
         tr.type === 'attachment' && tr.attachment.type === 'edited_text_file',
     )
@@ -1777,6 +1830,7 @@ async function* queryLoop(
       pendingToolUseSummary: nextPendingToolUseSummary,
       maxOutputTokensOverride: undefined,
       stopHookActive,
+      stopHookBlockingCount: 0,
       transition: { reason: 'next_turn' },
     }
     state = next
