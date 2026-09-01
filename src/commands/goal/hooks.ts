@@ -1,31 +1,52 @@
+import {
+  getIsNonInteractiveSession,
+  getSessionId,
+  getTotalOutputTokens,
+} from '../../bootstrap/state.js'
 import type { AppState } from '../../state/AppState.js'
+import { checkHasTrustDialogAccepted } from '../../utils/config.js'
+import {
+  shouldAllowManagedHooksOnly,
+  shouldDisableAllHooksIncludingManaged,
+} from '../../utils/hooks/hooksConfigSnapshot.js'
 import type { HookCommand } from '../../utils/settings/types.js'
 import {
   addSessionHook,
-  removeSessionHook,
+  removeSessionHooksBySource,
 } from '../../utils/hooks/sessionHooks.js'
-import { createGoalStatusAttachment, finishGoalStatus } from './state.js'
+import {
+  createGoalStatusAttachment,
+  finishGoalStatus,
+  incrementGoalCheck,
+} from './state.js'
 import { GOAL_HOOK_ID, type GoalStatusAttachment } from './types.js'
 
-export const goalStopHookPrompt = `
-You are the /goal StopHook verifier. Inspect the current conversation and transcript to decide whether the active /goal objective is fully completed.
+export const GOAL_HOOKS_RESTRICTED_MESSAGE =
+  "/goal can't run while hooks are restricted (disableAllHooks or allowManagedHooksOnly is set in settings or by policy)."
+export const GOAL_WORKSPACE_UNTRUSTED_MESSAGE =
+  '/goal is only available in trusted workspaces. Restart, accept the trust dialog, and try again.'
 
-Hook input JSON:
-$ARGUMENTS
+export function getGoalUnavailableMessage(): string | null {
+  if (
+    shouldDisableAllHooksIncludingManaged() ||
+    shouldAllowManagedHooksOnly()
+  ) {
+    return GOAL_HOOKS_RESTRICTED_MESSAGE
+  }
+  if (
+    !getIsNonInteractiveSession() &&
+    !checkHasTrustDialogAccepted()
+  ) {
+    return GOAL_WORKSPACE_UNTRUSTED_MESSAGE
+  }
+  return null
+}
 
-Decision rules:
-- Return ok: true only if the latest /goal objective has a verified final result and no unresolved required work remains.
-- Return ok: true if there is no active /goal objective in the transcript.
-- Return ok: true if the latest /goal command is clear, because that explicitly clears any active objective.
-- Return ok: true if stop_hook_active is true and the last assistant message is still genuinely blocked by permissions, missing credentials, or a user-only decision.
-- Return ok: false when the objective is partially complete, unverified, has failing checks, still has in-progress tasks, or can be continued autonomously with available tools.
-- When returning ok: false, the reason must be a concrete continuation instruction for the main assistant. Include what remains, what to do next, and any checks to run. The main assistant will receive this reason as hidden Stop hook feedback and continue without human intervention.
-`
-
-export const goalStopHook: HookCommand = {
-  type: 'prompt',
-  prompt: goalStopHookPrompt,
-  statusMessage: 'verifying goal completion',
+export function createGoalStopHook(condition: string): HookCommand {
+  return {
+    type: 'prompt',
+    prompt: condition,
+  }
 }
 
 type GoalHookParams = {
@@ -35,31 +56,91 @@ type GoalHookParams = {
   condition: string
   appendGoalStatusAttachment: (attachment: GoalStatusAttachment) => void
   now?: () => number
+  currentTokens?: () => number
 }
 
-export function clearGoalOnHookSuccess({
-  setAppState,
-  sessionId,
-  goalId,
-  condition,
-  appendGoalStatusAttachment,
-  now = Date.now,
-}: GoalHookParams): void {
-  let shouldRemoveHook = false
-  setAppState(prev => {
+type GoalHookResult = {
+  stopReason?: string
+  impossible?: boolean
+}
+
+export function recordGoalHookBlock(
+  {
+    setAppState,
+    goalId,
+    condition,
+    appendGoalStatusAttachment,
+  }: GoalHookParams,
+  reason: string,
+): void {
+  let attachment: GoalStatusAttachment | undefined
+  setAppState((prev) => {
     const current = prev.goalStatus
-    if (!current.active || current.id !== goalId || current.prompt !== condition) {
+    if (
+      !current.active ||
+      current.id !== goalId ||
+      current.prompt !== condition
+    ) {
       return prev
     }
-    appendGoalStatusAttachment(createGoalStatusAttachment(current, 'met'))
-    shouldRemoveHook = true
+    const checkedGoal = incrementGoalCheck(current, reason)
+    attachment = createGoalStatusAttachment(checkedGoal, 'active', reason)
+    return { ...prev, goalStatus: checkedGoal }
+  })
+  if (attachment) appendGoalStatusAttachment(attachment)
+}
+
+export function clearGoalOnHookSuccess(
+  {
+    setAppState,
+    sessionId,
+    goalId,
+    condition,
+    appendGoalStatusAttachment,
+    now = Date.now,
+    currentTokens = getTotalOutputTokens,
+  }: GoalHookParams,
+  result: GoalHookResult = {},
+): void {
+  const completedAt = now()
+  const completedTokens = currentTokens()
+  let attachment: GoalStatusAttachment | undefined
+  setAppState((prev) => {
+    const current = prev.goalStatus
+    if (
+      !current.active ||
+      current.id !== goalId ||
+      current.prompt !== condition
+    ) {
+      return prev
+    }
+    const status = result.impossible ? 'failed' : 'met'
+    const checkedGoal = {
+      ...current,
+      iterations: current.iterations + 1,
+      lastReason: result.stopReason,
+    }
+    attachment = createGoalStatusAttachment(
+      checkedGoal,
+      status,
+      result.stopReason,
+      completedAt,
+      completedTokens,
+    )
     return {
       ...prev,
-      goalStatus: finishGoalStatus(current, 'met', now()),
+      goalStatus: finishGoalStatus(
+        checkedGoal,
+        status,
+        completedAt,
+        completedTokens,
+        result.stopReason,
+      ),
     }
   })
-  if (shouldRemoveHook) {
-    removeSessionHook(setAppState, sessionId, 'Stop', goalStopHook)
+  if (attachment) {
+    appendGoalStatusAttachment(attachment)
+    removeSessionHooksBySource(setAppState, sessionId, 'Stop', GOAL_HOOK_ID)
   }
 }
 
@@ -67,7 +148,7 @@ export function removeGoalStopHook(
   setAppState: (updater: (prev: AppState) => AppState) => void,
   sessionId: string,
 ): void {
-  removeSessionHook(setAppState, sessionId, 'Stop', goalStopHook)
+  removeSessionHooksBySource(setAppState, sessionId, 'Stop', GOAL_HOOK_ID)
 }
 
 export function clearGoal(
@@ -79,7 +160,7 @@ export function clearGoal(
 } {
   let clearedGoal: string | undefined
   let attachment: GoalStatusAttachment | undefined
-  setAppState(prev => {
+  setAppState((prev) => {
     if (!prev.goalStatus.active) return prev
     clearedGoal = prev.goalStatus.prompt
     attachment = createGoalStatusAttachment(prev.goalStatus, 'cleared')
@@ -96,8 +177,38 @@ export function registerGoalStopHook(params: GoalHookParams): void {
     params.sessionId,
     'Stop',
     '',
-    goalStopHook,
-    () => clearGoalOnHookSuccess(params),
+    createGoalStopHook(params.condition),
+    (_hook, result) => clearGoalOnHookSuccess(params, result),
     GOAL_HOOK_ID,
   )
+}
+
+export function restoreGoalStopHook(
+  setAppState: GoalHookParams['setAppState'],
+  appendGoalStatusAttachment: GoalHookParams['appendGoalStatusAttachment'],
+  sessionId: string = getSessionId(),
+): void {
+  let activeGoal: Extract<AppState['goalStatus'], { active: true }> | undefined
+  setAppState((prev) => {
+    if (prev.goalStatus.active) activeGoal = prev.goalStatus
+    return prev
+  })
+  removeGoalStopHook(setAppState, sessionId)
+  if (!activeGoal) return
+  if (getGoalUnavailableMessage()) {
+    setAppState((prev) =>
+      prev.goalStatus.active
+        ? { ...prev, goalStatus: { active: false } }
+        : prev,
+    )
+    return
+  }
+
+  registerGoalStopHook({
+    setAppState,
+    sessionId,
+    goalId: activeGoal.id,
+    condition: activeGoal.prompt,
+    appendGoalStatusAttachment,
+  })
 }

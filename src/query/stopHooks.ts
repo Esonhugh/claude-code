@@ -1,6 +1,17 @@
 import { feature } from 'bun:bundle'
+import { getSessionId } from '../bootstrap/state.js'
+import {
+  clearGoalOnHookSuccess,
+  recordGoalHookBlock,
+  removeGoalStopHook,
+} from '../commands/goal/hooks.js'
+import {
+  GOAL_HOOK_ID,
+  type GoalStatusAttachment,
+} from '../commands/goal/types.js'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
 import { isExtractModeActive } from '../memdir/paths.js'
+import type { AppState } from '../state/AppState.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -35,7 +46,14 @@ import {
   createUserMessage,
 } from '../utils/messages.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
+import { isBackgroundTask } from '../tasks/types.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
+import {
+  addSessionHook,
+  getSessionHookBySource,
+  getSessionHookCallback,
+} from '../utils/hooks/sessionHooks.js'
 import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -60,6 +78,16 @@ import {
 type StopHookResult = {
   blockingErrors: Message[]
   preventContinuation: boolean
+}
+
+function hasGoalBlockingBackgroundWork(appState: AppState): boolean {
+  return Object.values(appState.tasks).some((task) => {
+    if (!isBackgroundTask(task) || isTerminalTaskStatus(task.status))
+      return false
+    if (task.type === 'remote_agent') return !task.isLongRunning
+    if (task.type === 'in_process_teammate') return !task.isIdle
+    return true
+  })
 }
 
 export async function* handleStopHooks(
@@ -119,7 +147,7 @@ export async function* handleStopHooks(
     )
     const p = jobClassifierModule!
       .classifyAndWriteState(process.env.CLAUDE_JOB_DIR, turnAssistantMessages)
-      .catch(err => {
+      .catch((err) => {
         logForDebugging(`[job] classifier error: ${errorMessage(err)}`, {
           level: 'error',
         })
@@ -127,7 +155,7 @@ export async function* handleStopHooks(
     await Promise.race([
       p,
       // eslint-disable-next-line no-restricted-syntax -- sleep() has no .unref(); timer must not block exit
-      new Promise<void>(r => setTimeout(r, 60_000).unref()),
+      new Promise<void>((r) => setTimeout(r, 60_000).unref()),
     ])
   }
   // --bare / SIMPLE: skip background bookkeeping (prompt suggestion,
@@ -163,13 +191,37 @@ export async function* handleStopHooks(
   // mid-turn. Subagents don't start CU sessions so this is a pure skip.
   if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
     try {
-      const { cleanupComputerUseAfterTurn } = await import(
-        '../utils/computerUse/cleanup.js'
-      )
+      const { cleanupComputerUseAfterTurn } =
+        await import('../utils/computerUse/cleanup.js')
       await cleanupComputerUseAfterTurn(toolUseContext)
     } catch {
       // Failures are silent — this is dogfooding cleanup, not critical path
     }
+  }
+
+  const sessionId = getSessionId()
+  const appStateBeforeHooks = toolUseContext.getAppState()
+  const activeGoalBeforeHooks = appStateBeforeHooks.goalStatus
+  const deferredGoalHook =
+    !toolUseContext.agentId &&
+    activeGoalBeforeHooks.active &&
+    hasGoalBlockingBackgroundWork(appStateBeforeHooks)
+      ? getSessionHookBySource(
+          appStateBeforeHooks,
+          sessionId,
+          'Stop',
+          '',
+          GOAL_HOOK_ID,
+        )
+      : undefined
+  if (
+    deferredGoalHook?.skillRoot === GOAL_HOOK_ID &&
+    deferredGoalHook.onHookSuccess
+  ) {
+    removeGoalStopHook(toolUseContext.setAppState, sessionId)
+    logForDebugging(
+      '[goal] evaluation deferred — background work still running',
+    )
   }
 
   try {
@@ -234,12 +286,12 @@ export async function* handleStopHooks(
               )
               // Non-blocking errors always have output
               hasOutput = true
-            // @ts-ignore - recovered code
+              // @ts-ignore - recovered code
             } else if (attachment.type === 'hook_error_during_execution') {
               // @ts-ignore - recovered code
               hookErrors.push(attachment.content)
               hasOutput = true
-            // @ts-ignore - recovered code
+              // @ts-ignore - recovered code
             } else if (attachment.type === 'hook_success') {
               // Check if successful hook produced any stdout/stderr
               if (
@@ -250,12 +302,52 @@ export async function* handleStopHooks(
               ) {
                 hasOutput = true
               }
+
+              const currentState = toolUseContext.getAppState()
+              const goalHookEntry =
+                attachment.hookEvent === 'Stop' &&
+                result.hook?.type === 'prompt'
+                  ? getSessionHookCallback(
+                      currentState,
+                      sessionId,
+                      'Stop',
+                      '',
+                      result.hook,
+                      GOAL_HOOK_ID,
+                    )
+                  : undefined
+              const activeGoal = currentState.goalStatus
+              if (
+                goalHookEntry?.skillRoot === GOAL_HOOK_ID &&
+                activeGoal.active &&
+                goalHookEntry.onHookSuccess
+              ) {
+                let goalAttachment: GoalStatusAttachment | undefined
+                clearGoalOnHookSuccess(
+                  {
+                    setAppState: toolUseContext.setAppState,
+                    sessionId,
+                    goalId: activeGoal.id,
+                    condition: activeGoal.prompt,
+                    appendGoalStatusAttachment: (completedAttachment) => {
+                      goalAttachment = completedAttachment
+                    },
+                  },
+                  {
+                    stopReason: result.stopReason,
+                    impossible: result.impossible,
+                  },
+                )
+                if (goalAttachment) {
+                  yield createAttachmentMessage(goalAttachment)
+                }
+              }
             }
             // Extract per-hook duration for timing visibility.
             // Hooks run in parallel; match by command + first unassigned entry.
             if ('durationMs' in attachment && 'command' in attachment) {
               const info = hookInfos.find(
-                i =>
+                (i) =>
                   // @ts-ignore - recovered code
                   i.command === attachment.command &&
                   // @ts-ignore - recovered code
@@ -272,13 +364,49 @@ export async function* handleStopHooks(
       if (result.blockingError) {
         const userMessage = createUserMessage({
           content: getStopHookMessage(result.blockingError),
-          isMeta: true, // Hide from UI (shown in summary message instead)
+          isMeta: true,
         })
         blockingErrors.push(userMessage)
         yield userMessage
         hasOutput = true
-        // Add to hookErrors so it appears in the summary
-        hookErrors.push(result.blockingError.blockingError)
+
+        const currentState = toolUseContext.getAppState()
+        const goalHookEntry =
+          result.hook?.type === 'prompt'
+            ? getSessionHookCallback(
+                currentState,
+                sessionId,
+                'Stop',
+                '',
+                result.hook,
+                GOAL_HOOK_ID,
+              )
+            : undefined
+        const activeGoal = currentState.goalStatus
+        if (
+          goalHookEntry?.skillRoot === GOAL_HOOK_ID &&
+          activeGoal.active &&
+          goalHookEntry.onHookSuccess
+        ) {
+          let goalAttachment
+          recordGoalHookBlock(
+            {
+              setAppState: toolUseContext.setAppState,
+              sessionId,
+              goalId: activeGoal.id,
+              condition: activeGoal.prompt,
+              appendGoalStatusAttachment: (attachment) => {
+                goalAttachment = attachment
+              },
+            },
+            result.stopReason ?? 'Goal condition is not yet met',
+          )
+          if (goalAttachment) {
+            yield createAttachmentMessage(goalAttachment)
+          }
+        } else {
+          hookErrors.push(result.blockingError.blockingError)
+        }
       }
       // Check if hook wants to prevent continuation
       if (result.preventContinuation) {
@@ -362,7 +490,7 @@ export async function* handleStopHooks(
       const taskListId = getTaskListId()
       const tasks = await listTasks(taskListId)
       const inProgressTasks = tasks.filter(
-        t => t.status === 'in_progress' && t.owner === teammateName,
+        (t) => t.status === 'in_progress' && t.owner === teammateName,
       )
 
       for (const task of inProgressTasks) {
@@ -489,5 +617,34 @@ export async function* handleStopHooks(
       'warning',
     )
     return { blockingErrors: [], preventContinuation: false }
+  } finally {
+    const currentState = toolUseContext.getAppState()
+    const currentGoal = currentState.goalStatus
+    const currentGoalHook = getSessionHookBySource(
+      currentState,
+      sessionId,
+      'Stop',
+      '',
+      GOAL_HOOK_ID,
+    )
+    if (
+      deferredGoalHook?.skillRoot === GOAL_HOOK_ID &&
+      deferredGoalHook.onHookSuccess &&
+      activeGoalBeforeHooks.active &&
+      currentGoal.active &&
+      currentGoal.id === activeGoalBeforeHooks.id &&
+      currentGoal.prompt === activeGoalBeforeHooks.prompt &&
+      !currentGoalHook
+    ) {
+      addSessionHook(
+        toolUseContext.setAppState,
+        sessionId,
+        'Stop',
+        '',
+        deferredGoalHook.hook,
+        deferredGoalHook.onHookSuccess,
+        GOAL_HOOK_ID,
+      )
+    }
   }
 }

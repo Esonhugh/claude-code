@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 
 import { getSessionId } from '../../bootstrap/state.js'
-import { goalStopHook } from '../../commands/goal/hooks.js'
-import type { GoalStatus } from '../../commands/goal/types.js'
+import { createGoalStopHook } from '../../commands/goal/hooks.js'
+import { GOAL_HOOK_ID, type GoalStatus } from '../../commands/goal/types.js'
 import type { AppState } from '../../state/AppState.js'
 import type { AttachmentMessage } from '../../types/message.js'
 import type { ToolUseContext } from '../../Tool.js'
-import { addSessionHook, getSessionHooks } from '../../utils/hooks/sessionHooks.js'
+import {
+  addSessionHook,
+  getSessionHooks,
+} from '../../utils/hooks/sessionHooks.js'
 import { ClearGoalTool } from './ClearGoalTool.js'
 import { CLEAR_GOAL_TOOL_NAME } from './constants.js'
 
@@ -46,7 +49,9 @@ addSessionHook(
   getSessionId(),
   'Stop',
   '',
-  goalStopHook,
+  createGoalStopHook('finish the feature'),
+  undefined,
+  GOAL_HOOK_ID,
 )
 
 const clearResult = await ClearGoalTool.call({}, clearContext.context)
@@ -61,16 +66,19 @@ assert.deepEqual(clearResult.data, {
   goal: 'finish the feature',
 })
 assert.equal(clearResult.newMessages?.length, 1)
-assert.deepEqual((clearResult.newMessages?.[0] as AttachmentMessage).attachment, {
-  type: 'goal_status',
-  id: 'goal-clear',
-  condition: 'finish the feature',
-  status: 'cleared',
-  sentinel: true,
-  met: true,
-  failed: false,
-  iterations: 2,
-})
+assert.deepEqual(
+  (clearResult.newMessages?.[0] as AttachmentMessage).attachment,
+  {
+    type: 'goal_status',
+    id: 'goal-clear',
+    condition: 'finish the feature',
+    status: 'cleared',
+    sentinel: true,
+    met: true,
+    failed: false,
+    iterations: 2,
+  },
+)
 assert.deepEqual(
   ClearGoalTool.mapToolResultToToolResultBlockParam(
     clearResult.data,
@@ -89,12 +97,16 @@ addSessionHook(
   getSessionId(),
   'Stop',
   '',
-  goalStopHook,
+  createGoalStopHook('stale goal'),
+  undefined,
+  GOAL_HOOK_ID,
 )
 const noGoalResult = await ClearGoalTool.call({}, noGoalContext.context)
 assert.deepEqual(noGoalContext.getState().goalStatus, { active: false })
 assert.equal(
-  getSessionHooks(noGoalContext.getState() as never, getSessionId()).get('Stop'),
+  getSessionHooks(noGoalContext.getState() as never, getSessionId()).get(
+    'Stop',
+  ),
   undefined,
   'ClearGoal must remove a stale goal Stop hook even when no goal is active',
 )
@@ -109,13 +121,16 @@ assert.equal(
   'No goal set',
 )
 
-const agentContext = createContext({
-  active: true,
-  id: 'agent-goal',
-  prompt: 'agent goal',
-  iterations: 0,
-  setAt: 100,
-}, 'agent-1')
+const agentContext = createContext(
+  {
+    active: true,
+    id: 'agent-goal',
+    prompt: 'agent goal',
+    iterations: 0,
+    setAt: 100,
+  },
+  'agent-1',
+)
 assert.deepEqual(
   await ClearGoalTool.validateInput?.({}, agentContext.context),
   {

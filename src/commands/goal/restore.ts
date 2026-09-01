@@ -52,7 +52,10 @@ export function applyGoalStatusAttachment(
             attachment.condition,
             prev.goalStatus.active && prev.goalStatus.id === attachment.id
               ? prev.goalStatus.setAt
-              : now(),
+              : (attachment.setAt ?? now()),
+            prev.goalStatus.active && prev.goalStatus.id === attachment.id
+              ? prev.goalStatus.tokensAtStart
+              : attachment.tokensAtStart,
           ),
           iterations,
           ...(lastReason ? { lastReason } : {}),
@@ -105,7 +108,12 @@ export function restoreGoalFromTranscript(
   setAppState(prev => ({
     ...prev,
     goalStatus: {
-      ...createActiveGoalStatus(attachment.id, attachment.condition, now()),
+      ...createActiveGoalStatus(
+        attachment.id,
+        attachment.condition,
+        attachment.setAt ?? now(),
+        attachment.tokensAtStart,
+      ),
       iterations: attachment.iterations ?? 0,
       ...(attachment.reason ? { lastReason: attachment.reason } : {}),
     },

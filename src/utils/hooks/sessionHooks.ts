@@ -123,7 +123,7 @@ export function removeFunctionHook(
   event: HookEvent,
   hookId: string,
 ): void {
-  setAppState(prev => {
+  setAppState((prev) => {
     const store = prev.sessionHooks.get(sessionId)
     if (!store) {
       return prev
@@ -133,8 +133,8 @@ export function removeFunctionHook(
 
     // Remove the hook with matching ID from all matchers
     const updatedMatchers = eventMatchers
-      .map(matcher => {
-        const updatedHooks = matcher.hooks.filter(h => {
+      .map((matcher) => {
+        const updatedHooks = matcher.hooks.filter((h) => {
           if (h.hook.type !== 'function') return true
           return h.hook.id !== hookId
         })
@@ -173,13 +173,13 @@ function addHookToSession(
   onHookSuccess?: OnHookSuccess,
   skillRoot?: string,
 ): void {
-  setAppState(prev => {
+  setAppState((prev) => {
     const store = prev.sessionHooks.get(sessionId) ?? { hooks: {} }
     const eventMatchers = store.hooks[event] || []
 
     // Find existing matcher or create new one
     const existingMatcherIndex = eventMatchers.findIndex(
-      m => m.matcher === matcher && m.skillRoot === skillRoot,
+      (m) => m.matcher === matcher && m.skillRoot === skillRoot,
     )
 
     let updatedMatchers: SessionHookMatcher[]
@@ -215,6 +215,32 @@ function addHookToSession(
   )
 }
 
+export function removeSessionHooksBySource(
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+  sessionId: string,
+  event: HookEvent,
+  skillRoot: string,
+): void {
+  setAppState((prev) => {
+    const store = prev.sessionHooks.get(sessionId)
+    if (!store) return prev
+
+    const updatedMatchers = (store.hooks[event] ?? []).filter(
+      (matcher) => matcher.skillRoot !== skillRoot,
+    )
+    const newHooks = { ...store.hooks }
+    if (updatedMatchers.length > 0) newHooks[event] = updatedMatchers
+    else delete newHooks[event]
+
+    prev.sessionHooks.set(sessionId, { ...store, hooks: newHooks })
+    return prev
+  })
+
+  logForDebugging(
+    `Removed session hooks for event ${event} and source ${skillRoot} in session ${sessionId}`,
+  )
+}
+
 /**
  * Remove a specific hook from the session
  * @param setAppState The function to update the app state
@@ -227,8 +253,10 @@ export function removeSessionHook(
   sessionId: string,
   event: HookEvent,
   hook: HookCommand,
+  skillRoot?: string,
+  matcherFilter?: string,
 ): void {
-  setAppState(prev => {
+  setAppState((prev) => {
     const store = prev.sessionHooks.get(sessionId)
     if (!store) {
       return prev
@@ -236,11 +264,16 @@ export function removeSessionHook(
 
     const eventMatchers = store.hooks[event] || []
 
-    // Remove the hook from all matchers
     const updatedMatchers = eventMatchers
-      .map(matcher => {
+      .map((matcher) => {
+        if (
+          (skillRoot !== undefined && matcher.skillRoot !== skillRoot) ||
+          (matcherFilter !== undefined && matcher.matcher !== matcherFilter)
+        ) {
+          return matcher
+        }
         const updatedHooks = matcher.hooks.filter(
-          h => !isHookEqual(h.hook, hook),
+          (h) => h.hook !== hook && !isHookEqual(h.hook, hook),
         )
 
         return updatedHooks.length > 0
@@ -282,13 +315,13 @@ export type SessionDerivedHookMatcher = {
 function convertToHookMatchers(
   sessionMatchers: SessionHookMatcher[],
 ): SessionDerivedHookMatcher[] {
-  return sessionMatchers.map(sm => ({
+  return sessionMatchers.map((sm) => ({
     matcher: sm.matcher,
     skillRoot: sm.skillRoot,
     // Filter out function hooks - they can't be persisted to HookMatcher format
-    hooks: sm.hooks
-      .map(h => h.hook)
-      .filter((h): h is HookCommand => h.type !== 'function'),
+    hooks: sm.hooks.flatMap(({ hook }) =>
+      hook.type === 'function' ? [] : [{ ...hook }],
+    ),
   }))
 }
 
@@ -358,13 +391,13 @@ export function getSessionFunctionHooks(
     sessionMatchers: SessionHookMatcher[],
   ): FunctionHookMatcher[] => {
     return sessionMatchers
-      .map(sm => ({
+      .map((sm) => ({
         matcher: sm.matcher,
         hooks: sm.hooks
-          .map(h => h.hook)
+          .map((h) => h.hook)
           .filter((h): h is FunctionHook => h.type === 'function'),
       }))
-      .filter(m => m.hooks.length > 0)
+      .filter((m) => m.hooks.length > 0)
   }
 
   if (event) {
@@ -394,16 +427,42 @@ export function getSessionFunctionHooks(
 /**
  * Get the full hook entry (including callbacks) for a specific session hook
  */
+export function getSessionHookBySource(
+  appState: AppState,
+  sessionId: string,
+  event: HookEvent,
+  matcher: string,
+  skillRoot: string,
+):
+  | {
+      hook: HookCommand
+      onHookSuccess?: OnHookSuccess
+      skillRoot: string
+    }
+  | undefined {
+  const eventMatchers = appState.sessionHooks.get(sessionId)?.hooks[event]
+  const matcherEntry = eventMatchers?.find(
+    (entry) => entry.matcher === matcher && entry.skillRoot === skillRoot,
+  )
+  const hookEntry = matcherEntry?.hooks.find(
+    (entry): entry is { hook: HookCommand; onHookSuccess?: OnHookSuccess } =>
+      entry.hook.type !== 'function',
+  )
+  return hookEntry ? { ...hookEntry, skillRoot } : undefined
+}
+
 export function getSessionHookCallback(
   appState: AppState,
   sessionId: string,
   event: HookEvent,
   matcher: string,
   hook: HookCommand | FunctionHook,
+  skillRoot?: string,
 ):
   | {
       hook: HookCommand | FunctionHook
       onHookSuccess?: OnHookSuccess
+      skillRoot?: string
     }
   | undefined {
   const store = appState.sessionHooks.get(sessionId)
@@ -416,12 +475,22 @@ export function getSessionHookCallback(
     return undefined
   }
 
-  // Find the hook in the matchers
-  for (const matcherEntry of eventMatchers) {
-    if (matcherEntry.matcher === matcher || matcher === '') {
-      const hookEntry = matcherEntry.hooks.find(h => isHookEqual(h.hook, hook))
+  // Prefer exact object identity, then fall back to structural equality for
+  // callers that reconstruct a hook value. skillRoot identifies the source
+  // when two skills register structurally identical hooks.
+  for (const requireIdentity of [true, false]) {
+    for (const matcherEntry of eventMatchers) {
+      if (
+        (matcherEntry.matcher !== matcher && matcher !== '') ||
+        (skillRoot !== undefined && matcherEntry.skillRoot !== skillRoot)
+      ) {
+        continue
+      }
+      const hookEntry = matcherEntry.hooks.find((entry) =>
+        requireIdentity ? entry.hook === hook : isHookEqual(entry.hook, hook),
+      )
       if (hookEntry) {
-        return hookEntry
+        return { ...hookEntry, skillRoot: matcherEntry.skillRoot }
       }
     }
   }
@@ -438,7 +507,7 @@ export function clearSessionHooks(
   setAppState: (updater: (prev: AppState) => AppState) => void,
   sessionId: string,
 ): void {
-  setAppState(prev => {
+  setAppState((prev) => {
     prev.sessionHooks.delete(sessionId)
     return prev
   })

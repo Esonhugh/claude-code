@@ -84,6 +84,12 @@ function buildHookSchemas() {
       .describe(
         'Model to use for this prompt hook (e.g., "claude-sonnet-4-6"). If not specified, uses the default small fast model.',
       ),
+    continueOnBlock: z
+      .boolean()
+      .optional()
+      .describe(
+        'Sets the continue value for the decision:"block" produced when ok is false. Default false (turn ends). Whether continue:true lets the turn proceed depends on the event\'s decision:"block" semantics. On PostToolUse, the reason is fed back to Claude and the turn continues.',
+      ),
     statusMessage: z
       .string()
       .optional()

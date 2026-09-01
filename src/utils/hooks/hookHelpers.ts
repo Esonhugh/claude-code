@@ -20,6 +20,12 @@ export const hookResponseSchema = lazySchema(() =>
       .string()
       .describe('Reason, if the condition was not met')
       .optional(),
+    impossible: z
+      .boolean()
+      .describe(
+        'Whether the condition can never be satisfied (only meaningful when ok is false)',
+      )
+      .optional(),
   }),
 )
 
@@ -76,7 +82,7 @@ export function registerStructuredOutputEnforcement(
     sessionId,
     'Stop',
     '', // No matcher - applies to all stops
-    messages => hasSuccessfulToolCall(messages, SYNTHETIC_OUTPUT_TOOL_NAME),
+    (messages) => hasSuccessfulToolCall(messages, SYNTHETIC_OUTPUT_TOOL_NAME),
     `You MUST call the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool to complete this request. Call this tool now.`,
     { timeout: 5000 },
   )

@@ -342,6 +342,7 @@ export interface HookResult {
   outcome: 'success' | 'blocking' | 'non_blocking_error' | 'cancelled'
   preventContinuation?: boolean
   stopReason?: string
+  impossible?: boolean
   permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
   hookPermissionDecisionReason?: string
   additionalContext?: string
@@ -358,9 +359,11 @@ export interface HookResult {
 
 export type AggregatedHookResult = {
   message?: HookResultMessage
+  hook?: HookCommand
   blockingError?: HookBlockingError
   preventContinuation?: boolean
   stopReason?: string
+  impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
   permissionBehavior?: PermissionResult['behavior']
@@ -2768,6 +2771,7 @@ async function* executeHooks({
   let permissionBehavior: PermissionResult['behavior'] | undefined
 
   // Run all hooks in parallel and wait for all to complete
+  const unmatchedHooks = [...matchingHooks]
   for await (const result of all(hookPromises)) {
     outcomes[result.outcome]++
 
@@ -2783,14 +2787,31 @@ async function* executeHooks({
     }
 
     // Handle different result types
+    const matchedHookIndex = unmatchedHooks.findIndex(
+      entry => entry.hook === result.hook,
+    )
+    const matchedHook =
+      matchedHookIndex < 0
+        ? undefined
+        : unmatchedHooks.splice(matchedHookIndex, 1)[0]
+    const promptHookResult =
+      result.hook.type === 'prompt'
+        ? {
+            hook: result.hook,
+            stopReason: result.stopReason,
+            impossible: result.impossible,
+          }
+        : {}
+
     if (result.blockingError) {
       yield {
         blockingError: result.blockingError,
+        ...promptHookResult,
       }
     }
 
     if (result.message) {
-      yield { message: result.message }
+      yield { message: result.message, ...promptHookResult }
     }
 
     // Yield system message separately if present
@@ -2890,7 +2911,7 @@ async function* executeHooks({
       yield {
         permissionBehavior,
         hookPermissionDecisionReason: result.hookPermissionDecisionReason,
-        hookSource: matchingHooks.find(m => m.hook === result.hook)?.hookSource,
+        hookSource: matchedHook?.hookSource,
         updatedInput,
       }
     }
@@ -2933,7 +2954,6 @@ async function* executeHooks({
 
     // Invoke session hook callback if this is a command/prompt/function hook (not a callback hook)
     if (appState && result.hook.type !== 'callback') {
-      const sessionId = getSessionId()
       // Use empty string as matcher when matchQuery is undefined (e.g., for Stop hooks)
       const matcher = matchQuery ?? ''
       const hookEntry = getSessionHookCallback(
@@ -2942,6 +2962,7 @@ async function* executeHooks({
         hookEvent,
         matcher,
         result.hook,
+        matchedHook?.skillRoot,
       )
       // Invoke onHookSuccess only on success outcome
       if (hookEntry?.onHookSuccess && result.outcome === 'success') {

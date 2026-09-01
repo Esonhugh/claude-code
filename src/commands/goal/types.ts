@@ -47,6 +47,8 @@ export type GoalStatusAttachment = {
   met?: boolean
   failed?: boolean
   iterations?: number
+  setAt?: number
+  tokensAtStart?: number
   durationMs?: number
   tokens?: number
   reason?: string

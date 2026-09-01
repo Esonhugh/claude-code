@@ -36,6 +36,7 @@ import { createSystemMessage } from '../utils/messages.js'
 import {
   computeStandaloneAgentContext,
   restoreAgentFromSession,
+  restoreGoalSessionFromLog,
   restoreWorktreeForResume,
 } from '../utils/sessionRestore.js'
 import {
@@ -325,6 +326,8 @@ export function ResumeConversation({
         )
         /* eslint-enable @typescript-eslint/no-require-imports */
       }
+
+      restoreGoalSessionFromLog(result.messages, setAppState)
 
       logEvent('tengu_session_resumed', {
         entrypoint:

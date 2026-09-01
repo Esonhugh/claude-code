@@ -38,7 +38,14 @@ export function registerSkillHooks(
               logForDebugging(
                 `Removing one-shot hook for event ${eventName} in skill '${skillName}'`,
               )
-              removeSessionHook(setAppState, sessionId, eventName, hook)
+              removeSessionHook(
+                setAppState,
+                sessionId,
+                eventName,
+                hook,
+                skillRoot,
+                matcher.matcher || '',
+              )
             }
           : undefined
 

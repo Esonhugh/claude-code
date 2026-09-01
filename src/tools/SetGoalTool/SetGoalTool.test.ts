@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
 
-import { getSessionId } from '../../bootstrap/state.js'
+import { getSessionId, setIsInteractive } from '../../bootstrap/state.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import type { AppState } from '../../state/AppState.js'
 import type { AttachmentMessage } from '../../types/message.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { getSessionHooks } from '../../utils/hooks/sessionHooks.js'
+import { setCachedSettingsForSource } from '../../utils/settings/settingsCache.js'
+import { GOAL_HOOKS_RESTRICTED_MESSAGE } from '../../commands/goal/hooks.js'
 import type { GoalStatus } from '../../commands/goal/types.js'
 import { SET_GOAL_TOOL_NAME } from './constants.js'
 import { SetGoalTool } from './SetGoalTool.js'
+
+setIsInteractive(false)
 
 type GoalState = {
   goalStatus: GoalStatus
@@ -97,6 +101,29 @@ assert.deepEqual(
   },
 )
 
+setCachedSettingsForSource('policySettings', { allowManagedHooksOnly: true })
+const restrictedContext = createContext({ active: false })
+assert.deepEqual(
+  await SetGoalTool.validateInput?.(
+    { goal: 'restricted goal' },
+    restrictedContext.context,
+  ),
+  {
+    result: false,
+    message: GOAL_HOOKS_RESTRICTED_MESSAGE,
+    errorCode: 4,
+  },
+)
+await assert.rejects(
+  SetGoalTool.call({ goal: 'restricted goal' }, restrictedContext.context),
+  error => {
+    assert.equal((error as Error).message, GOAL_HOOKS_RESTRICTED_MESSAGE)
+    return true
+  },
+)
+assert.deepEqual(restrictedContext.getState().goalStatus, { active: false })
+setCachedSettingsForSource('policySettings', null)
+
 const setContext = createContext({ active: false })
 const setResult = await SetGoalTool.call(
   { goal: '  finish the feature  ' },
@@ -118,6 +145,8 @@ assert.deepEqual((setResult.newMessages?.[0] as AttachmentMessage).attachment, {
   met: false,
   failed: false,
   iterations: 0,
+  setAt: active.active ? active.setAt : 0,
+  tokensAtStart: active.active ? active.tokensAtStart : undefined,
 })
 assert.ok(
   getSessionHooks(setContext.getState() as never, getSessionId()).get('Stop'),

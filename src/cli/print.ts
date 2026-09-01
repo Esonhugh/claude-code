@@ -308,6 +308,7 @@ import {
 } from 'src/utils/fileHistory.js'
 import {
   restoreAgentFromSession,
+  restoreGoalSessionFromLog,
   restoreSessionStateFromLog,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
@@ -5241,6 +5242,7 @@ async function loadInitialMessages(
           }
         }
         restoreSessionStateFromLog(result, setAppState)
+        restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
         restoreSessionMetadata(
@@ -5441,6 +5443,7 @@ async function loadInitialMessages(
         }
       }
       restoreSessionStateFromLog(result, setAppState)
+      restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
       restoreSessionMetadata(

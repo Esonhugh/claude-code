@@ -9,6 +9,7 @@ import {
   setOriginalCwd,
   switchSession,
 } from '../bootstrap/state.js'
+import { restoreGoalStopHook } from '../commands/goal/hooks.js'
 import { restoreGoalFromTranscript } from '../commands/goal/restore.js'
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
@@ -41,6 +42,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
+import { createAttachmentMessage } from './attachments.js'
 import { createSystemMessage } from './messages.js'
 import { parseUserSpecifiedModel } from './model/model.js'
 import { getPlansDirectory } from './plans.js'
@@ -48,6 +50,7 @@ import { setCwd } from './Shell.js'
 import {
   adoptResumedSessionFile,
   recordContentReplacement,
+  recordTranscript,
   resetSessionFilePointer,
   restoreSessionMetadata,
   saveMode,
@@ -148,6 +151,16 @@ export function restoreSessionStateFromLog(
       }))
     }
   }
+}
+
+export function restoreGoalSessionFromLog(
+  messages: Message[],
+  setAppState: (f: (prev: AppState) => AppState) => void,
+): void {
+  restoreGoalFromTranscript(messages, setAppState, Date.now)
+  restoreGoalStopHook(setAppState, attachment => {
+    void recordTranscript([createAttachmentMessage(attachment)])
+  })
 }
 
 /**
@@ -539,9 +552,9 @@ export async function processResumedConversation(
     ...(standaloneAgentContext && { standaloneAgentContext }),
     agentDefinitions: refreshedAgentDefs,
   }
-  restoreGoalFromTranscript(result.messages, updater => {
+  restoreGoalSessionFromLog(result.messages, updater => {
     initialState = updater(initialState)
-  }, Date.now)
+  })
 
   return {
     messages: result.messages,

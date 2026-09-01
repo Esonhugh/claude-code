@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v4'
 
-import { getSessionId } from '../../bootstrap/state.js'
-import { registerGoalStopHook } from '../../commands/goal/hooks.js'
+import { getSessionId, getTotalOutputTokens } from '../../bootstrap/state.js'
+import {
+  getGoalUnavailableMessage,
+  registerGoalStopHook,
+} from '../../commands/goal/hooks.js'
 import { getGoalModePrompt } from '../../commands/goal/prompt.js'
 import {
   createActiveGoalStatus,
@@ -93,6 +96,10 @@ The goal activates the same behavior as /goal: work autonomously, verify the res
         errorCode: 2,
       }
     }
+    const unavailableMessage = getGoalUnavailableMessage()
+    if (unavailableMessage) {
+      return { result: false, message: unavailableMessage, errorCode: 4 }
+    }
     return { result: true }
   },
   async checkPermissions(input) {
@@ -102,12 +109,21 @@ The goal activates the same behavior as /goal: work autonomously, verify the res
     if (context.agentId) {
       throw new Error(AGENT_CONTEXT_ERROR)
     }
+    const unavailableMessage = getGoalUnavailableMessage()
+    if (unavailableMessage) {
+      throw new Error(unavailableMessage)
+    }
 
     const prompt = getGoalPromptForState(goal)
-    const activeGoal = createActiveGoalStatus(randomUUID(), prompt, Date.now())
+    const activeGoal = createActiveGoalStatus(
+      randomUUID(),
+      prompt,
+      Date.now(),
+      getTotalOutputTokens(),
+    )
     const attachment = createGoalStatusAttachment(activeGoal, 'active')
 
-    context.setAppState(prev => ({
+    context.setAppState((prev) => ({
       ...prev,
       goalStatus: activeGoal,
     }))
@@ -116,7 +132,7 @@ The goal activates the same behavior as /goal: work autonomously, verify the res
       sessionId: getSessionId(),
       goalId: activeGoal.id,
       condition: prompt,
-      appendGoalStatusAttachment: completedAttachment => {
+      appendGoalStatusAttachment: (completedAttachment) => {
         void recordTranscript([createAttachmentMessage(completedAttachment)])
       },
     })

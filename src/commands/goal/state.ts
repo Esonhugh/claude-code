@@ -53,7 +53,7 @@ export function finishGoalStatus(
 export function incrementGoalCheck(
   activeGoal: Extract<GoalStatus, { active: true }>,
   reason: string,
-): GoalStatus {
+): Extract<GoalStatus, { active: true }> {
   return {
     ...activeGoal,
     iterations: activeGoal.iterations + 1,
@@ -62,7 +62,7 @@ export function incrementGoalCheck(
 }
 
 export function formatGoalStatusText(goalStatus: GoalStatus): string {
-  if (!goalStatus.active) return 'No goal set. Usage: /goal <condition>'
+  if (!goalStatus.active) return 'No goal set. Usage: `/goal <condition>`'
   const checkText =
     goalStatus.iterations === 0
       ? 'not yet evaluated'
@@ -77,6 +77,8 @@ export function createGoalStatusAttachment(
   activeGoal: Extract<GoalStatus, { active: true }>,
   status: GoalAttachmentStatus,
   reason?: string,
+  completedAt?: number,
+  currentTokens?: number,
 ): GoalStatusAttachment {
   return {
     type: 'goal_status',
@@ -87,6 +89,16 @@ export function createGoalStatusAttachment(
     met: status === 'met' || status === 'cleared',
     failed: status === 'failed',
     iterations: activeGoal.iterations,
+    ...(status === 'active' ? { setAt: activeGoal.setAt } : {}),
+    ...(status === 'active' && activeGoal.tokensAtStart !== undefined
+      ? { tokensAtStart: activeGoal.tokensAtStart }
+      : {}),
+    ...(completedAt === undefined
+      ? {}
+      : { durationMs: completedAt - activeGoal.setAt }),
+    ...(activeGoal.tokensAtStart !== undefined && currentTokens !== undefined
+      ? { tokens: Math.max(0, currentTokens - activeGoal.tokensAtStart) }
+      : {}),
     ...(reason ? { reason } : {}),
   }
 }

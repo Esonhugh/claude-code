@@ -1784,6 +1784,8 @@ export const SDKGoalStateChangedMessageSchema = lazySchema(() =>
       met: z.boolean().optional(),
       failed: z.boolean().optional(),
       iterations: z.number().optional(),
+      setAt: z.number().optional(),
+      tokensAtStart: z.number().optional(),
       durationMs: z.number().optional(),
       tokens: z.number().optional(),
       reason: z.string().optional(),
