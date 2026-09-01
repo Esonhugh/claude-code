@@ -30,11 +30,7 @@ import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
-import type {
-  Tool,
-  Tools,
-  ToolUseContext,
-} from '../../Tool.js'
+import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
@@ -64,7 +60,10 @@ import {
 } from '../../utils/forkedAgent.js'
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
-import { executeSubagentStartHooks } from '../../utils/hooks.js'
+import {
+  executeStopHooks,
+  executeSubagentStartHooks,
+} from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
@@ -95,7 +94,6 @@ import {
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import { isAnt } from 'src/utils/userType.js'
-
 
 /**
  * Initialize agent-specific MCP servers
@@ -135,7 +133,7 @@ async function initializeAgentMcpServers(
   // legitimately need MCP, contradicting "plugin-provided always loads."
   const agentIsAdminTrusted = isSourceAdminTrusted(agentDefinition.source)
   if (isRestrictedToPluginOnly('mcp') && !agentIsAdminTrusted) {
-    const blockedServerNames = agentDefinition.mcpServers.map(spec =>
+    const blockedServerNames = agentDefinition.mcpServers.map((spec) =>
       typeof spec === 'string' ? spec : Object.keys(spec)[0]!,
     )
     logForDebugging(
@@ -743,9 +741,8 @@ export async function* runAgent({
     }
 
     // Load all skill contents concurrently and add to initial messages
-    const { formatSkillLoadingMetadata } = await import(
-      '../../utils/processUserInput/processSlashCommand.js'
-    )
+    const { formatSkillLoadingMetadata } =
+      await import('../../utils/processUserInput/processSlashCommand.js')
     const loaded = await Promise.all(
       validSkills.map(async ({ skillName, skill }) => ({
         skillName,
@@ -818,7 +815,8 @@ export async function* runAgent({
     mcpResources: toolUseContext.options.mcpResources,
     agentDefinitions: toolUseContext.options.agentDefinitions,
     subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
-    spawnDepth: spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
+    spawnDepth:
+      spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
     // Fork children (useExactTools path) need querySource on context.options
     // for the recursive-fork guard at AgentTool.tsx call() — it checks
     // options.querySource === 'agent:builtin:fork'. This survives autocompact
@@ -866,7 +864,7 @@ export async function* runAgent({
   // Record initial messages before the query loop starts, plus the agentType
   // so resume can route correctly when subagent_type is omitted. Both writes
   // are fire-and-forget — persistence failure shouldn't block the agent.
-  void recordSidechainTranscript(initialMessages, agentId).catch(_err =>
+  void recordSidechainTranscript(initialMessages, agentId).catch((_err) =>
     logForDebugging(`Failed to record sidechain transcript: ${_err}`),
   )
   void writeAgentMetadata(
@@ -881,12 +879,15 @@ export async function* runAgent({
       toolUseId,
       permissionMode,
       parentAgentId,
-      spawnDepth: spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
+      spawnDepth:
+        spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
     }),
-  ).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
+  ).catch((_err) => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
+  let subagentStopStarted = false
+  let queryCompleted = false
 
   try {
     for await (const message of query({
@@ -900,6 +901,16 @@ export async function* runAgent({
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })) {
       onQueryProgress?.()
+      if (
+        (message.type === 'attachment' &&
+          'hookEvent' in message.attachment &&
+          message.attachment.hookEvent === 'SubagentStop') ||
+        (message.type === 'progress' &&
+          message.data?.type === 'hook_progress' &&
+          message.data.hookEvent === 'SubagentStop')
+      ) {
+        subagentStopStarted = true
+      }
       // Forward subagent API request starts to parent's metrics display
       // so TTFT/OTPS update during subagent execution.
       if (
@@ -942,7 +953,7 @@ export async function* runAgent({
           [message],
           agentId,
           lastRecordedUuid,
-        ).catch(err =>
+        ).catch((err) =>
           logForDebugging(`Failed to record sidechain transcript: ${err}`),
         )
         if (message.type !== 'progress') {
@@ -951,6 +962,7 @@ export async function* runAgent({
         yield message
       }
     }
+    queryCompleted = true
 
     if (agentAbortController.signal.aborted) {
       throw new AbortError()
@@ -961,6 +973,38 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
+    if (!queryCompleted && !subagentStopStarted) {
+      try {
+        for await (const result of executeStopHooks(
+          undefined,
+          undefined,
+          5000,
+          false,
+          agentId,
+          agentToolUseContext,
+          undefined,
+          agentDefinition.agentType,
+        )) {
+          if (result.message) {
+            const fallbackMessage = result.message as unknown as Message
+            await recordSidechainTranscript(
+              [fallbackMessage],
+              agentId,
+              lastRecordedUuid,
+            ).catch((err) =>
+              logForDebugging(`Failed to record sidechain transcript: ${err}`),
+            )
+            if (fallbackMessage.type !== 'progress') {
+              lastRecordedUuid = fallbackMessage.uuid
+            }
+          }
+        }
+      } catch (error) {
+        logForDebugging(
+          `[runAgent] SubagentStop on interrupted query failed: ${error}`,
+        )
+      }
+    }
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks
@@ -983,7 +1027,7 @@ export async function* runAgent({
     // called TodoWrite leaves a key in AppState.todos forever (even after all
     // items complete, the value is [] but the key stays). Whale sessions
     // spawn hundreds of agents; each orphaned key is a small leak that adds up.
-    rootSetAppState(prev => {
+    rootSetAppState((prev) => {
       if (!(agentId in prev.todos)) return prev
       const { [agentId]: _removed, ...todos } = prev.todos
       return { ...prev, todos }
@@ -1031,14 +1075,14 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
   }
 
   // Filter out assistant messages that contain tool calls without results
-  return messages.filter(message => {
+  return messages.filter((message) => {
     if (message?.type === 'assistant') {
       const assistantMessage = message as AssistantMessage
       const content = assistantMessage.message.content
       if (Array.isArray(content)) {
         // Check if this assistant message has any tool uses without results
         const hasIncompleteToolCall = content.some(
-          block =>
+          (block) =>
             block.type === 'tool_use' &&
             block.id &&
             // @ts-ignore - recovered code
@@ -1060,7 +1104,7 @@ async function getAgentSystemPrompt(
   additionalWorkingDirectories: string[],
   resolvedTools: readonly Tool[],
 ): Promise<string[]> {
-  const enabledToolNames = new Set(resolvedTools.map(t => t.name))
+  const enabledToolNames = new Set(resolvedTools.map((t) => t.name))
   try {
     const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
     const prompts = [agentPrompt]
@@ -1114,7 +1158,7 @@ function resolveSkillName(
 
   // 3. Suffix match — find a skill whose name ends with ":skillName"
   const suffix = `:${skillName}`
-  const match = allSkills.find(cmd => cmd.name.endsWith(suffix))
+  const match = allSkills.find((cmd) => cmd.name.endsWith(suffix))
   if (match) {
     return match.name
   }
