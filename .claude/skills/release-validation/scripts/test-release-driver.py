@@ -1192,6 +1192,12 @@ def assert_driver_behavior(module, baseline_module):
         'code-review',
     }
     assert module.required_targets_for_paths([
+        'src/tools/AgentTool/runAgent.ts',
+    ]) == {
+        'agent-fg-bg',
+        'subagent-stop-failure-lifecycle',
+    }
+    assert module.required_targets_for_paths([
         'src/state/AppStateStore.ts',
     ]) == set()
     assert module.required_targets_for_paths([
@@ -1207,9 +1213,19 @@ def assert_driver_behavior(module, baseline_module):
         'src/services/api/openai-compat.ts',
     ]) == {
         'effort-openai-responses-wire',
+        'fast-openai-responses-wire',
+        'openai-remote-compaction',
         'openai-responses-usage-error',
         'prompt-modes-cache-prefix',
     }
+    assert module.required_targets_for_paths([
+        'src/commands/fast/fast.tsx',
+        'src/utils/fastMode.ts',
+    ]) == {'fast-openai-responses-wire'}
+    assert module.required_targets_for_paths([
+        'src/commands/compact/compact.ts',
+        'src/services/compact/codexCompact.ts',
+    ]) == {'openai-remote-compaction'}
     assert module.required_targets_for_paths([
         'src/hooks/useSSHSession.ts',
         'src/hooks/useRemoteSession.ts',
@@ -1577,6 +1593,124 @@ def assert_driver_behavior(module, baseline_module):
             assert module.DUMMY_OPENAI_API_KEY not in (
                 run_dir / 'mock-openai-requests.json'
             ).read_text()
+
+            compaction_run_dir = run_dir / 'compaction'
+            compaction_run_dir.mkdir()
+            compaction_server = module.MockOpenAIServer(
+                compaction_run_dir,
+                'openai-remote-compaction',
+            )
+            compaction_base_url = compaction_server.start()
+            try:
+                def post_compaction(input_items):
+                    body = json.dumps({
+                        'model': 'gpt-release-discovered',
+                        'instructions': 'normal system prompt',
+                        'input': input_items,
+                    }).encode()
+                    request = Request(
+                        f'{compaction_base_url}/v1/responses',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'Authorization': f'Bearer {module.DUMMY_OPENAI_API_KEY}',
+                            'Content-Type': 'application/json',
+                        },
+                    )
+                    with urlopen(request, timeout=5) as response:
+                        return response.read().decode()
+
+                seed_sse = post_compaction([{
+                    'type': 'message',
+                    'role': 'user',
+                    'content': [{'type': 'input_text', 'text': 'seed'}],
+                }])
+                assert 'RELEASE_COMPACTION_SEED_OK' in seed_sse
+                first_compact_sse = post_compaction([
+                    {'type': 'message', 'role': 'user', 'content': []},
+                    {'type': 'compaction_trigger'},
+                ])
+                assert '"type":"compaction"' in first_compact_sse
+                assert 'release-opaque-state-0' in first_compact_sse
+                continuation = {
+                    'type': 'compaction',
+                    'id': 'cmp_release_0',
+                    'encrypted_content': 'release-opaque-state-0',
+                }
+                continuation_sse = post_compaction([
+                    continuation,
+                    {'type': 'message', 'role': 'user', 'content': []},
+                ])
+                assert 'RELEASE_COMPACTION_CONTINUATION_OK' in continuation_sse
+                second_compact_sse = post_compaction([
+                    continuation,
+                    {'type': 'message', 'role': 'user', 'content': []},
+                    {'type': 'compaction_trigger'},
+                ])
+                assert 'release-opaque-state-1' in second_compact_sse
+                assert [
+                    request['response_kind']
+                    for request in compaction_server.snapshot()
+                ] == [
+                    'completed',
+                    'compaction',
+                    'completed',
+                    'compaction',
+                ]
+            finally:
+                assert compaction_server.stop() == {
+                    'stopped': True,
+                    'thread_alive': False,
+                }
+
+            subagent_run_dir = run_dir / 'subagent-stop'
+            subagent_run_dir.mkdir()
+            subagent_server = module.MockOpenAIServer(
+                subagent_run_dir,
+                'subagent-stop-failure-lifecycle',
+            )
+            subagent_base_url = subagent_server.start()
+            try:
+                def post_subagent(input_items):
+                    body = json.dumps({
+                        'model': 'gpt-release-discovered',
+                        'instructions': 'normal system prompt',
+                        'input': input_items,
+                    }).encode()
+                    request = Request(
+                        f'{subagent_base_url}/v1/responses',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'Authorization': f'Bearer {module.DUMMY_OPENAI_API_KEY}',
+                            'Content-Type': 'application/json',
+                        },
+                    )
+                    with urlopen(request, timeout=5) as response:
+                        return response.read().decode()
+
+                first_subagent_sse = post_subagent([{
+                    'type': 'message',
+                    'role': 'user',
+                    'content': [{'type': 'input_text', 'text': 'start'}],
+                }])
+                assert 'fc_release_subagent_stop' in first_subagent_sse
+                assert '"name":"Agent"' in first_subagent_sse
+                second_subagent_sse = post_subagent([{
+                    'type': 'function_call_output',
+                    'call_id': 'fc_release_subagent_stop',
+                    'output': 'Error: RELEASE_SUBAGENT_QUERY_FAILURE',
+                }])
+                assert 'RELEASE_SUBAGENT_STOP_PARENT_OK' in second_subagent_sse
+                assert [
+                    request['response_kind']
+                    for request in subagent_server.snapshot()
+                ] == ['agent-call', 'parent-completed']
+            finally:
+                assert subagent_server.stop() == {
+                    'stopped': True,
+                    'thread_alive': False,
+                }
         finally:
             cleanup = server.stop()
         assert cleanup == {'stopped': True, 'thread_alive': False}
@@ -1890,6 +2024,47 @@ def assert_driver_behavior(module, baseline_module):
         assert coverage['invalid_targets'] == ['workflow-failure-detail']
 
     driver = DRIVER_PATH.read_text()
+    assert module.openai_request_metadata_matches(
+        {
+            'session-id': 'cache-key',
+            'thread-id': 'cache-key',
+            'x-client-request-id': 'request-1',
+            'x-app': 'cli',
+            'x-claude-code-session-id': 'cache-key',
+            'user-agent': 'claude-code/test',
+        },
+        'cache-key',
+    ) is True
+    assert module.openai_request_metadata_matches(
+        {
+            'session-id': 'cache-key',
+            'thread-id': 'cache-key',
+            'x-client-request-id': '',
+            'x-app': 'cli',
+            'x-claude-code-session-id': 'cache-key',
+            'user-agent': 'claude-code/test',
+        },
+        'cache-key',
+    ) is False
+    cleanup_gate = object.__new__(module.BinaryGate)
+    cleanup_base = {
+        'process_remaining': False,
+        'forced_termination': [],
+        'mock_server': {'stopped': True, 'thread_alive': False},
+    }
+    assert cleanup_gate.cleanup_passed({
+        **cleanup_base,
+        'kill_exit': 1,
+        'session_exists_after': False,
+    }) is True
+    assert cleanup_gate.cleanup_passed({
+        **cleanup_base,
+        'kill_exit': 1,
+        'session_exists_after': True,
+    }) is False
+    assert "f'Goal: {condition}'" in driver
+    assert 'status_dismissed' in driver
+    assert "log.count('Removed session hooks for event Stop and source ')" in driver
     assert "def workflow_completion_proof(" in driver
     assert "def agent_completion_proof(" in driver
     assert "self.workflow_completion_proof(" in driver
@@ -1900,6 +2075,10 @@ def assert_driver_behavior(module, baseline_module):
     assert "workflow did not reach a terminal status before timeout" in driver
     assert "'goal-lifecycle': self.goal_lifecycle" in driver
     assert "def goal_lifecycle(self):" in driver
+    assert "'subagent-stop-failure-lifecycle': self.subagent_stop_failure_lifecycle" in driver
+    assert "def subagent_stop_failure_lifecycle(self):" in driver
+    assert "'subagent-stop-query-failure-propagation'" in driver
+    assert "'subagent-stop-fallback-exactly-once'" in driver
     assert "'goal-lifecycle-set-status-clear'" in driver
     assert "'agent-foreground-background-lifecycle'" in driver
     assert "result = {'label': 'workflow', 'evidence_dir': str(run_dir)}" in driver
@@ -1948,6 +2127,8 @@ def assert_driver_behavior(module, baseline_module):
     assert "extra targets to append after diff-required targets" in driver
 
     assert "'effort-openai-responses-wire': self.effort_openai_responses_wire" in driver
+    assert "'fast-openai-responses-wire': self.fast_openai_responses_wire" in driver
+    assert "'openai-remote-compaction': self.openai_remote_compaction" in driver
     assert "'openai-responses-usage-error': self.openai_responses_usage_error" in driver
     assert "'model-discovery-picker': self.model_discovery_picker" in driver
     assert "'model-discovery-empty-picker': self.model_discovery_empty_picker" in driver
@@ -1955,6 +2136,8 @@ def assert_driver_behavior(module, baseline_module):
     assert "'model-internal-update-config-skill': self.model_internal_update_config_skill" in driver
     assert "'prompt-modes-cache-prefix': self.prompt_modes_cache_prefix" in driver
     assert 'def effort_openai_responses_wire(self):' in driver
+    assert 'def fast_openai_responses_wire(self):' in driver
+    assert 'def openai_remote_compaction(self):' in driver
     assert 'def openai_responses_usage_error(self):' in driver
     assert 'def model_discovery_picker(self):' in driver
     assert 'def model_discovery_empty_picker(self):' in driver
@@ -2084,6 +2267,10 @@ def assert_driver_behavior(module, baseline_module):
     for assertion_id in (
         'effort-all-configured-openai-wire',
         'effort-ultracode-openai-wire',
+        'fast-openai-priority-wire',
+        'fast-openai-disable-wire',
+        'openai-remote-compaction-trigger',
+        'openai-remote-compaction-continuation',
         'openai-responses-usage-normalization',
         'openai-responses-error-propagation',
         'model-discovery-picker-selection',
@@ -2129,14 +2316,14 @@ def assert_driver_behavior(module, baseline_module):
                 'headers': {
                     'session-id': 'cache-key',
                     'thread-id': 'cache-key',
-                    'x-client-request-id': 'cache-key',
+                    'x-client-request-id': f'request-{index}',
                     'x-app': 'cli',
                     'x-claude-code-session-id': 'cache-key',
                     'user-agent': 'claude-code/test',
                 },
                 'authorization': {'present': True, 'matches_dummy': True},
             }
-            for _, expected in effort_cases
+            for index, (_, expected) in enumerate(effort_cases, 1)
         ]
 
         def capture_effort(target, path, *, history=True):
@@ -2207,6 +2394,193 @@ def assert_driver_behavior(module, baseline_module):
         assert 'Release validation reasoning marker.' in (
             run_dir / '05-thinking-transcript-pane.txt'
         ).read_text()
+
+    with tempfile.TemporaryDirectory(prefix='release-driver-fast-wire-') as root_string:
+        run_dir = Path(root_string) / 'fast-openai-responses-wire'
+        (run_dir / 'config').mkdir(parents=True)
+        (run_dir / 'config' / 'settings.json').write_text('{}\n')
+        recorded = []
+        visible_requests = 0
+        fast_enabled = False
+        fast_gate = object.__new__(module.BinaryGate)
+        requests = [{
+            'body': {'service_tier': 'priority'},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }, {
+            'body': {},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }]
+        fast_gate.start = lambda _label: (
+            run_dir,
+            'fast-session',
+            'fast-target',
+            True,
+        )
+
+        def send_fast(_target, _run_dir, text, _filename):
+            nonlocal visible_requests, fast_enabled
+            if text == '/fast on':
+                fast_enabled = True
+            elif text == '/fast off':
+                fast_enabled = False
+                (run_dir / 'config' / 'settings.json').write_text('{}\n')
+            elif text.startswith('Reply with'):
+                visible_requests += 1
+
+        def capture_fast(_target, path, **_kwargs):
+            if path.name == '03-fast-enabled-pane.txt':
+                text = 'Fast mode ON\n'
+            elif path.name == '05-fast-disabled-pane.txt':
+                text = 'Fast mode OFF\n'
+            else:
+                text = 'RELEASE_FAST_WIRE_OK\n❯\n'
+            path.write_text(text)
+            return text
+
+        fast_gate.send = send_fast
+        fast_gate.wait_until = lambda predicate, *_args: predicate()
+        fast_gate.capture = capture_fast
+        fast_gate.mock_response_requests = lambda _run_dir: requests[:visible_requests]
+        fast_gate.assistant_text = lambda _run_dir: 'RELEASE_FAST_WIRE_OK'
+        fast_gate.close = lambda *_args: {'stopped': True}
+        fast_gate.cleanup_passed = lambda _cleanup: True
+        fast_gate.record = recorded.append
+        fast_gate.required_assertion = (
+            module.BinaryGate.required_assertion.__get__(
+                fast_gate,
+                module.BinaryGate,
+            )
+        )
+
+        module.BinaryGate.fast_openai_responses_wire(fast_gate)
+
+        assert recorded[0]['validation_verdict'] == 'passed'
+        assert recorded[0]['service_tiers'] == ['priority', None]
+        assert recorded[0]['preference_disabled_at_end'] is True
+        assert fast_enabled is False
+
+    with tempfile.TemporaryDirectory(prefix='release-driver-remote-compact-') as root_string:
+        run_dir = Path(root_string) / 'openai-remote-compaction'
+        transcript_path = run_dir / 'config' / 'projects' / 'release.jsonl'
+        entries = []
+        write_transcript(transcript_path, entries)
+        recorded = []
+        visible_requests = 0
+        compact_gate = object.__new__(module.BinaryGate)
+        first_item = {
+            'type': 'compaction',
+            'id': 'cmp_release_0',
+            'encrypted_content': 'release-opaque-state-0',
+        }
+        second_item = {
+            'type': 'compaction',
+            'id': 'cmp_release_1',
+            'encrypted_content': 'release-opaque-state-1',
+        }
+        requests = [{
+            'response_kind': 'completed',
+            'body': {'input': [{'type': 'message'}]},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }, {
+            'response_kind': 'compaction',
+            'body': {'input': [{'type': 'message'}, {'type': 'compaction_trigger'}]},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }, {
+            'response_kind': 'completed',
+            'body': {'input': [first_item, {'type': 'message'}]},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }, {
+            'response_kind': 'compaction',
+            'body': {'input': [first_item, {'type': 'message'}, {'type': 'compaction_trigger'}]},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }]
+        compact_gate.start = lambda _label: (
+            run_dir,
+            'compact-session',
+            'compact-target',
+            True,
+        )
+
+        def send_compact(_target, _run_dir, text, _filename):
+            nonlocal visible_requests
+            visible_requests += 1
+            if text.startswith('Reply with the remote compaction seed'):
+                entries.append({
+                    'type': 'assistant',
+                    'message': {
+                        'role': 'assistant',
+                        'content': [{'type': 'text', 'text': 'RELEASE_COMPACTION_SEED_OK'}],
+                    },
+                })
+            elif text == '/compact' and visible_requests == 2:
+                entries.append({
+                    'type': 'system',
+                    'subtype': 'compact_boundary',
+                    'content': 'Conversation compacted',
+                    'openAICompaction': first_item,
+                    'compactMetadata': {'mode': 'codex'},
+                })
+            elif text.startswith('Reply with the remote compaction continuation'):
+                entries.append({
+                    'type': 'assistant',
+                    'message': {
+                        'role': 'assistant',
+                        'content': [{'type': 'text', 'text': 'RELEASE_COMPACTION_CONTINUATION_OK'}],
+                    },
+                })
+            elif text == '/compact' and visible_requests == 4:
+                entries.append({
+                    'type': 'system',
+                    'subtype': 'compact_boundary',
+                    'content': 'Conversation compacted',
+                    'openAICompaction': second_item,
+                    'compactMetadata': {'mode': 'codex'},
+                })
+            write_transcript(transcript_path, entries)
+
+        def capture_compact(_target, path, **_kwargs):
+            text = 'Conversation compacted\nRELEASE_COMPACTION_CONTINUATION_OK\n❯\n'
+            path.write_text(text)
+            return text
+
+        compact_gate.send = send_compact
+        compact_gate.wait_until = lambda predicate, *_args: predicate()
+        compact_gate.capture = capture_compact
+        compact_gate.mock_response_requests = (
+            lambda _run_dir: requests[:visible_requests]
+        )
+        compact_gate.transcript_paths = (
+            lambda _run_dir, **_kwargs: [transcript_path]
+        )
+        compact_gate.transcript = (
+            module.BinaryGate.transcript.__get__(compact_gate, module.BinaryGate)
+        )
+        compact_gate.path_entries = (
+            module.BinaryGate.path_entries.__get__(compact_gate, module.BinaryGate)
+        )
+        compact_gate.assistant_text = (
+            module.BinaryGate.assistant_text.__get__(compact_gate, module.BinaryGate)
+        )
+        compact_gate.close = lambda *_args: {'stopped': True}
+        compact_gate.cleanup_passed = lambda _cleanup: True
+        compact_gate.record = recorded.append
+        compact_gate.required_assertion = (
+            module.BinaryGate.required_assertion.__get__(
+                compact_gate,
+                module.BinaryGate,
+            )
+        )
+
+        module.BinaryGate.openai_remote_compaction(compact_gate)
+
+        assert recorded[0]['validation_verdict'] == 'passed'
+        assert recorded[0]['response_kinds'] == [
+            'completed',
+            'compaction',
+            'completed',
+            'compaction',
+        ]
+        assert recorded[0]['persisted_compaction_count'] == 2
 
     with tempfile.TemporaryDirectory(prefix='release-driver-usage-error-') as root_string:
         run_dir = Path(root_string) / 'openai-responses-usage-error'
@@ -2430,6 +2804,8 @@ def assert_driver_behavior(module, baseline_module):
     assert 'CLAUDE_LOCAL_OAUTH_API_BASE="$CC_VALIDATION_LOCAL_OAUTH_API_BASE"' in launcher
     assert 'DISABLE_AUTOUPDATER=1' in launcher
     assert 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="${CC_VALIDATION_AGENT_TEAMS:-}"' in launcher
+    assert 'CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING="${CC_VALIDATION_RUN_AGENT_FAULT_INJECTION:-}"' in launcher
+    assert 'CC_VALIDATION_RUN_AGENT_FAULT_INJECTION=after_query_start' in driver
     assert 'CC_VALIDATION_SSH_IO="${CC_VALIDATION_SSH_IO:-}"' in launcher
     assert 'CC_VALIDATION_SSH_BIN="${CC_VALIDATION_SSH_BIN:-}"' in launcher
     assert 'CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK="${CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK:-}"' in launcher

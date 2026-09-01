@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import React from 'react'
-import { PassThrough } from 'stream'
+import { PassThrough, Readable } from 'stream'
 import stripAnsi from 'strip-ansi'
 
 import {
@@ -144,12 +144,33 @@ assert.equal(
 )
 setCachedSettingsForSource('policySettings', null)
 
+class TestStdin extends Readable {
+  isTTY = true
+  isRaw = false
+
+  _read() {}
+
+  setRawMode(value: boolean) {
+    this.isRaw = value
+    return this
+  }
+
+  ref() {
+    return this
+  }
+
+  unref() {
+    return this
+  }
+}
+
 async function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
   const state = {
     ...getDefaultAppState(),
     goalStatus,
   } as AppState
   const stdout = new PassThrough() as PassThrough & { columns: number }
+  const stdin = new TestStdin()
   stdout.columns = 100
   let output = ''
   stdout.on('data', chunk => {
@@ -161,8 +182,10 @@ async function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
       <GoalStatusDialog onDone={() => {}} />
     </AppStoreContext.Provider>,
     {
+      stdin: stdin as unknown as NodeJS.ReadStream,
       stdout: stdout as unknown as NodeJS.WriteStream,
       patchConsole: false,
+      exitOnCtrlC: false,
     },
   )
   try {
@@ -171,6 +194,7 @@ async function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
   } finally {
     instance.unmount()
     instance.cleanup()
+    stdin.destroy()
     stdout.destroy()
   }
 }

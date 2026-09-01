@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -39,6 +40,9 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
 )
 MOCK_OPENAI_TARGETS = frozenset({
     'effort-openai-responses-wire',
+    'fast-openai-responses-wire',
+    'openai-remote-compaction',
+    'subagent-stop-failure-lifecycle',
     'openai-responses-usage-error',
     'model-discovery-picker',
     'model-discovery-empty-picker',
@@ -62,6 +66,9 @@ TARGET_PATH_RULES = (
         'src/tools/AgentTool/',
         'src/tools/ClearGoalTool/',
     )),
+    ('subagent-stop-failure-lifecycle', (
+        'src/tools/AgentTool/runAgent',
+    )),
     ('workflow', (
         'src/tools/WorkflowTool/bundled/',
     )),
@@ -82,6 +89,19 @@ TARGET_PATH_RULES = (
         'src/services/api/openai-compat',
         'src/utils/effort',
         'src/utils/settings/types',
+    )),
+    ('fast-openai-responses-wire', (
+        'src/commands/fast/',
+        'src/services/api/claude',
+        'src/services/api/openai-compat',
+        'src/services/api/withRetry',
+        'src/utils/fastMode',
+    )),
+    ('openai-remote-compaction', (
+        'src/commands/compact/',
+        'src/services/api/claude',
+        'src/services/api/openai-compat',
+        'src/services/compact/',
     )),
     ('openai-responses-usage-error', (
         'src/services/api/openai-compat',
@@ -661,6 +681,28 @@ def sse_incomplete(reason):
     return f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
 
 
+def sse_compaction(item_id, encrypted_content):
+    events = [
+        {
+            'type': 'response.output_item.done',
+            'item': {
+                'type': 'compaction',
+                'id': item_id,
+                'encrypted_content': encrypted_content,
+            },
+        },
+        {
+            'type': 'response.completed',
+            'response': {
+                'usage': {'input_tokens': 100, 'output_tokens': 5},
+            },
+        },
+    ]
+    return ''.join(
+        f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
+        for event in events
+    )
+
 
 def sse_function_call(call_id, name, arguments):
     events = [
@@ -880,8 +922,53 @@ class MockOpenAIServer:
                 'response.incomplete',
                 sse_incomplete('RELEASE_OPENAI_INCOMPLETE_REASON'),
             )
+        if self.label == 'subagent-stop-failure-lifecycle':
+            if len(main_responses) == 1:
+                return (
+                    'agent-call',
+                    sse_function_call(
+                        'fc_release_subagent_stop',
+                        'Agent',
+                        {
+                            'description': 'Trigger stop fallback',
+                            'prompt': (
+                                'This release validation request is expected to fail. '
+                                'Do not call tools.'
+                            ),
+                            'subagent_type': 'general-purpose',
+                        },
+                    ),
+                )
+            return 'parent-completed', sse_completed(
+                'RELEASE_SUBAGENT_STOP_PARENT_OK'
+            )
+        if self.label == 'openai-remote-compaction':
+            input_items = body.get('input')
+            if (
+                isinstance(input_items, list)
+                and input_items
+                and isinstance(input_items[-1], dict)
+                and input_items[-1].get('type') == 'compaction_trigger'
+            ):
+                compact_count = sum(
+                    request.get('response_kind') == 'compaction'
+                    for request in main_responses
+                )
+                return (
+                    'compaction',
+                    sse_compaction(
+                        f'cmp_release_{compact_count}',
+                        f'release-opaque-state-{compact_count}',
+                    ),
+                )
+            return 'completed', sse_completed(
+                'RELEASE_COMPACTION_SEED_OK'
+                if len(main_responses) == 1
+                else 'RELEASE_COMPACTION_CONTINUATION_OK'
+            )
         marker = {
             'effort-openai-responses-wire': 'RELEASE_EFFORT_WIRE_OK',
+            'fast-openai-responses-wire': 'RELEASE_FAST_WIRE_OK',
             'model-internal-update-config-skill': 'RELEASE_UPDATE_CONFIG_SKILL_OK',
             'prompt-modes-cache-prefix': 'RELEASE_PROMPT_CACHE_OK',
         }.get(self.label, 'RELEASE_MOCK_OK')
@@ -915,6 +1002,18 @@ def custom_prompt_instructions_stable(bodies):
             value.count(CUSTOM_SYSTEM_PROMPT_MARKER) == 1
             for value in instructions
         )
+    )
+
+
+def openai_request_metadata_matches(headers, cache_key):
+    return (
+        bool(cache_key)
+        and headers.get('session-id') == cache_key
+        and headers.get('thread-id') == cache_key
+        and bool(headers.get('x-client-request-id'))
+        and headers.get('x-app') == 'cli'
+        and headers.get('x-claude-code-session-id') == cache_key
+        and bool(headers.get('user-agent'))
     )
 
 
@@ -1462,6 +1561,28 @@ else:
                 'skipAutoPermissionPrompt': True,
                 'useAutoModeDuringPlan': True,
             })
+        if label == 'openai-remote-compaction':
+            settings['compact'] = {'mode': 'codex'}
+        if label == 'subagent-stop-failure-lifecycle':
+            hook_output = run_dir / 'subagent-stop-hooks.jsonl'
+            hook_script = run_dir / 'record-subagent-stop.py'
+            hook_script.write_text(
+                '#!/usr/bin/env python3\n'
+                'import sys\n'
+                f'with open({str(hook_output)!r}, "a") as stream:\n'
+                '    stream.write(sys.stdin.read().strip() + "\\n")\n'
+            )
+            hook_script.chmod(0o700)
+            settings['hooks'] = {
+                'SubagentStop': [{
+                    'matcher': '',
+                    'hooks': [{
+                        'type': 'command',
+                        'command': shlex.quote(str(hook_script)),
+                        'timeout': 5,
+                    }],
+                }],
+            }
         if label == 'model-discovery-empty-picker':
             settings['model'] = 'gpt-empty-discovery-current'
         if label == 'first-party-bootstrap-picker':
@@ -1566,6 +1687,11 @@ else:
             args.extend([
                 '-e',
                 'CC_VALIDATION_WORKFLOW_FAULT_INJECTION=service_unavailable:transient-worker:attempt:0',
+            ])
+        if label == 'subagent-stop-failure-lifecycle':
+            args.extend([
+                '-e',
+                'CC_VALIDATION_RUN_AGENT_FAULT_INJECTION=after_query_start',
             ])
         if mock_base_url:
             args.extend([
@@ -1718,6 +1844,7 @@ else:
             '\n'.join(before.values()) + ('\n' if before else '')
         )
         close_result = self.tmux('kill-session', '-t', session)
+        session_exists_after = self.tmux('has-session', '-t', session).returncode == 0
         self.wait_until(lambda: not self.run_processes(run_dir, before), 5, 0.25)
         remaining = self.run_processes(run_dir, before)
         terminated = self.terminate_processes(remaining) if remaining else []
@@ -1734,6 +1861,7 @@ else:
         )
         return {
             'kill_exit': close_result.returncode,
+            'session_exists_after': session_exists_after,
             'pane_pid': pane_pid,
             'process_remaining': bool(remaining),
             'remaining_processes': list(remaining.values()),
@@ -1765,7 +1893,7 @@ else:
 
     def cleanup_passed(self, cleanup):
         return (
-            cleanup['kill_exit'] == 0
+            not cleanup.get('session_exists_after', False)
             and not cleanup['process_remaining']
             and not cleanup['forced_termination']
             and cleanup.get('mock_server', {}).get('stopped', True)
@@ -2707,7 +2835,7 @@ else:
         run_dir, session, target, ready = self.start('goal-lifecycle')
         result = {'label': 'goal-lifecycle', 'evidence_dir': str(run_dir)}
         condition = 'wait for the release validation token before completing'
-        active = prompt_restored = status_visible = cleared = no_goal = False
+        active = prompt_restored = status_visible = status_dismissed = cleared = no_goal = False
         if ready:
             self.send(
                 target,
@@ -2733,16 +2861,26 @@ else:
                 self.send(target, run_dir, '/goal', 'input-goal-status.txt')
                 status_visible = self.wait_until(
                     lambda: (
-                        f'Goal active: {condition}' in strip_ansi(
+                        'Goal active' in strip_ansi(
                             pane := self.capture(
                                 target, run_dir / '05-goal-status-pane.txt'
                             )
                         )
-                        and input_prompt_ready(pane)
+                        and f'Goal: {condition}' in strip_ansi(pane)
                     ),
                     30,
                 )
             if status_visible:
+                self.tmux('send-keys', '-t', target, 'Escape')
+                status_dismissed = self.wait_until(
+                    lambda: input_prompt_ready(
+                        self.capture(
+                            target, run_dir / '05b-goal-status-dismissed-pane.txt'
+                        )
+                    ),
+                    30,
+                )
+            if status_dismissed:
                 self.send(target, run_dir, '/goal clear', 'input-goal-clear.txt')
                 cleared = self.wait_until(
                     lambda: (
@@ -2769,13 +2907,14 @@ else:
                 )
         log = self.debug(run_dir)
         hook_added = log.count('Added session hook for event Stop')
-        hook_removed = log.count('Removed session hook for event Stop')
+        hook_removed = log.count('Removed session hooks for event Stop and source ')
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready
             and active
             and prompt_restored
             and status_visible
+            and status_dismissed
             and cleared
             and no_goal
             and hook_added == 1
@@ -2787,6 +2926,7 @@ else:
             'goal_active': active,
             'parent_prompt_restored_after_cancel': prompt_restored,
             'goal_status_visible': status_visible,
+            'goal_status_dismissed': status_dismissed,
             'goal_cleared': cleared,
             'empty_clear_observed': no_goal,
             'stop_hook_added_count': hook_added,
@@ -2801,6 +2941,7 @@ else:
                         run_dir / '03-goal-active-pane.txt',
                         run_dir / '04-goal-cancelled-pane.txt',
                         run_dir / '05-goal-status-pane.txt',
+                        run_dir / '05b-goal-status-dismissed-pane.txt',
                         run_dir / '06-goal-cleared-pane.txt',
                         run_dir / '07-no-goal-pane.txt',
                         run_dir / 'debug.log',
@@ -3421,24 +3562,22 @@ return { results }
             cache_keys.append(cache_key)
             request_checks.append(
                 wire_effort == expected
-                and bool(cache_key)
-                and all(
-                    headers.get(name) == cache_key
-                    for name in ('session-id', 'thread-id', 'x-client-request-id')
-                )
-                and headers.get('x-app') == 'cli'
-                and headers.get('x-claude-code-session-id') == cache_key
-                and bool(headers.get('user-agent'))
+                and openai_request_metadata_matches(headers, cache_key)
                 and request.get('authorization') == {
                     'present': True,
                     'matches_dummy': True,
                 }
             )
+        request_ids = [
+            response.get('headers', {}).get('x-client-request-id')
+            for response in responses
+        ]
         all_wire_ok = (
             len(responses) == len(effort_cases)
             and len(request_checks) == len(effort_cases)
             and all(request_checks)
             and len(set(cache_keys)) == 1
+            and len(set(request_ids)) == len(responses)
         )
         thinking_transcript_shows_marker = (
             thinking_visible
@@ -3461,6 +3600,7 @@ return { results }
             'cache_key_present': all(bool(key) for key in cache_keys),
             'cache_routing_and_metadata_headers_match': all(request_checks),
             'cache_key_stable': len(set(cache_keys)) == 1,
+            'request_ids_unique': len(set(request_ids)) == len(responses),
             'effort_commands_visible': effort_visible,
             'responses_ready': response_ready,
             'settings_effort_level': settings.get('effortLevel'),
@@ -3523,6 +3663,556 @@ return { results }
                     evidence,
                     passed=passed and wire_efforts.get('ultracode') == 'xhigh',
                     reason='ultracode did not persist or map to xhigh',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def fast_openai_responses_wire(self):
+        run_dir, session, target, ready = self.start(
+            'fast-openai-responses-wire'
+        )
+        result = {
+            'label': 'fast-openai-responses-wire',
+            'evidence_dir': str(run_dir),
+        }
+        enabled_path = run_dir / '03-fast-enabled-pane.txt'
+        priority_path = run_dir / '04-fast-priority-response-pane.txt'
+        disabled_path = run_dir / '05-fast-disabled-pane.txt'
+        standard_path = run_dir / '06-fast-standard-response-pane.txt'
+        analysis_path = run_dir / 'fast-openai-wire-analysis.json'
+        enabled = priority_response = disabled = standard_response = False
+        if ready:
+            self.send(target, run_dir, '/fast on', 'input-fast-on.txt')
+            enabled = self.wait_until(
+                lambda: 'Fast mode ON' in strip_ansi(
+                    self.capture(target, enabled_path)
+                ),
+                30,
+                0.25,
+            )
+            if enabled:
+                self.send(
+                    target,
+                    run_dir,
+                    'Reply with the fast-mode release marker.',
+                    'input-fast-priority-request.txt',
+                )
+                priority_response = self.wait_until(
+                    lambda: (
+                        len(self.mock_response_requests(run_dir)) == 1
+                        and 'RELEASE_FAST_WIRE_OK' in self.assistant_text(run_dir)
+                    ),
+                    90,
+                    0.25,
+                )
+            self.capture(target, priority_path)
+            if priority_response:
+                self.send(target, run_dir, '/fast off', 'input-fast-off.txt')
+                disabled = self.wait_until(
+                    lambda: 'Fast mode OFF' in strip_ansi(
+                        self.capture(target, disabled_path)
+                    ),
+                    30,
+                    0.25,
+                )
+            if disabled:
+                self.send(
+                    target,
+                    run_dir,
+                    'Reply with the standard-mode release marker.',
+                    'input-fast-standard-request.txt',
+                )
+                standard_response = self.wait_until(
+                    lambda: len(self.mock_response_requests(run_dir)) == 2,
+                    90,
+                    0.25,
+                )
+            self.capture(target, standard_path)
+        for path in (
+            enabled_path,
+            priority_path,
+            disabled_path,
+            standard_path,
+        ):
+            if not path.exists():
+                path.write_text('required fast mode state was not reached\n')
+        responses = self.mock_response_requests(run_dir)
+        bodies = [
+            request.get('body')
+            if isinstance(request.get('body'), dict)
+            else {}
+            for request in responses
+        ]
+        priority_wire = (
+            len(bodies) == 2
+            and bodies[0].get('service_tier') == 'priority'
+            and 'service_tier' not in bodies[1]
+        )
+        dummy_auth = (
+            len(responses) == 2
+            and all(
+                request.get('authorization') == {
+                    'present': True,
+                    'matches_dummy': True,
+                }
+                for request in responses
+            )
+        )
+        settings_path = run_dir / 'config' / 'settings.json'
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            settings = {}
+        preference_disabled = settings.get('fastMode') is not True
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'service_tiers': [body.get('service_tier') for body in bodies],
+            'enabled_visible': enabled,
+            'priority_response_visible': priority_response,
+            'disabled_visible': disabled,
+            'standard_response_visible': standard_response,
+            'dummy_authorization': dummy_auth,
+            'preference_disabled_at_end': preference_disabled,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and enabled and priority_response and disabled
+            and standard_response and priority_wire and dummy_auth
+            and preference_disabled and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-fast-on.txt',
+            enabled_path,
+            run_dir / 'input-fast-priority-request.txt',
+            priority_path,
+            run_dir / 'input-fast-off.txt',
+            disabled_path,
+            run_dir / 'input-fast-standard-request.txt',
+            standard_path,
+            run_dir / 'mock-openai-requests.json',
+            settings_path,
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'fast mode UI, persistence, or OpenAI wire evidence was incomplete',
+            'request_count': len(responses),
+            'service_tiers': [body.get('service_tier') for body in bodies],
+            'preference_disabled_at_end': preference_disabled,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'fast-openai-priority-wire',
+                    'OpenAI fast mode priority wire',
+                    'The built CLI enables Fast mode and sends service_tier=priority on the next OpenAI Responses request.',
+                    evidence,
+                    passed=passed and priority_wire,
+                    reason='Fast mode did not produce a priority OpenAI request',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'fast-openai-disable-wire',
+                    'OpenAI fast mode disable lifecycle',
+                    'Disabling Fast mode persists the preference and removes service_tier from the next OpenAI Responses request.',
+                    evidence,
+                    passed=passed and preference_disabled,
+                    reason='Fast mode disable did not restore standard OpenAI requests',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def openai_remote_compaction(self):
+        run_dir, session, target, ready = self.start(
+            'openai-remote-compaction'
+        )
+        result = {
+            'label': 'openai-remote-compaction',
+            'evidence_dir': str(run_dir),
+        }
+        seed_path = run_dir / '03-compaction-seed-pane.txt'
+        first_path = run_dir / '04-first-compaction-pane.txt'
+        continuation_path = run_dir / '05-compaction-continuation-pane.txt'
+        second_path = run_dir / '06-second-compaction-pane.txt'
+        analysis_path = run_dir / 'openai-remote-compaction-analysis.json'
+        seed_ready = first_compact = continuation_ready = second_compact = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                'Reply with the remote compaction seed marker.',
+                'input-compaction-seed.txt',
+            )
+            seed_ready = self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) == 1
+                    and 'RELEASE_COMPACTION_SEED_OK'
+                    in self.assistant_text(run_dir)
+                ),
+                90,
+                0.25,
+            )
+            self.capture(target, seed_path)
+            if seed_ready:
+                self.send(target, run_dir, '/compact', 'input-first-compact.txt')
+                first_compact = self.wait_until(
+                    lambda: (
+                        len(self.mock_response_requests(run_dir)) == 2
+                        and self.mock_response_requests(run_dir)[-1].get(
+                            'response_kind'
+                        ) == 'compaction'
+                        and 'Conversation compacted' in self.transcript(run_dir)
+                    ),
+                    90,
+                    0.25,
+                )
+            self.capture(target, first_path)
+            if first_compact:
+                self.send(
+                    target,
+                    run_dir,
+                    'Reply with the remote compaction continuation marker.',
+                    'input-compaction-continuation.txt',
+                )
+                continuation_ready = self.wait_until(
+                    lambda: (
+                        len(self.mock_response_requests(run_dir)) == 3
+                        and 'RELEASE_COMPACTION_CONTINUATION_OK'
+                        in self.assistant_text(run_dir)
+                    ),
+                    90,
+                    0.25,
+                )
+            self.capture(target, continuation_path)
+            if continuation_ready:
+                self.send(target, run_dir, '/compact', 'input-second-compact.txt')
+                second_compact = self.wait_until(
+                    lambda: (
+                        len(self.mock_response_requests(run_dir)) == 4
+                        and sum(
+                            request.get('response_kind') == 'compaction'
+                            for request in self.mock_response_requests(run_dir)
+                        ) == 2
+                    ),
+                    90,
+                    0.25,
+                )
+            self.capture(target, second_path)
+        for path in (seed_path, first_path, continuation_path, second_path):
+            if not path.exists():
+                path.write_text('required remote compaction state was not reached\n')
+        responses = self.mock_response_requests(run_dir)
+        kinds = [request.get('response_kind') for request in responses]
+        bodies = [
+            request.get('body')
+            if isinstance(request.get('body'), dict)
+            else {}
+            for request in responses
+        ]
+        first_item = {
+            'type': 'compaction',
+            'id': 'cmp_release_0',
+            'encrypted_content': 'release-opaque-state-0',
+        }
+        second_item = {
+            'type': 'compaction',
+            'id': 'cmp_release_1',
+            'encrypted_content': 'release-opaque-state-1',
+        }
+        first_input = bodies[1].get('input') if len(bodies) > 1 else None
+        continuation_input = bodies[2].get('input') if len(bodies) > 2 else None
+        second_input = bodies[3].get('input') if len(bodies) > 3 else None
+        trigger_wire = (
+            isinstance(first_input, list)
+            and first_input
+            and first_input[-1] == {'type': 'compaction_trigger'}
+            and isinstance(second_input, list)
+            and second_input
+            and second_input[-1] == {'type': 'compaction_trigger'}
+        )
+        continuation_wire = (
+            isinstance(continuation_input, list)
+            and continuation_input
+            and continuation_input[0] == first_item
+            and isinstance(second_input, list)
+            and second_input
+            and second_input[0] == first_item
+        )
+        boundaries = []
+        for path in self.transcript_paths(run_dir):
+            for entry in self.path_entries(path):
+                if (
+                    entry.get('type') == 'system'
+                    and entry.get('subtype') == 'compact_boundary'
+                ):
+                    boundaries.append({
+                        'openAICompaction': entry.get('openAICompaction'),
+                        'compactMetadata': entry.get('compactMetadata'),
+                    })
+        persisted_chain = (
+            len(boundaries) == 2
+            and boundaries[0].get('openAICompaction') == first_item
+            and boundaries[1].get('openAICompaction') == second_item
+            and all(
+                boundary.get('compactMetadata', {}).get('mode') == 'codex'
+                for boundary in boundaries
+            )
+        )
+        exact_requests = kinds == [
+            'completed',
+            'compaction',
+            'completed',
+            'compaction',
+        ]
+        dummy_auth = (
+            len(responses) == 4
+            and all(
+                request.get('authorization') == {
+                    'present': True,
+                    'matches_dummy': True,
+                }
+                for request in responses
+            )
+        )
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'response_kinds': kinds,
+            'trigger_wire': trigger_wire,
+            'continuation_wire': continuation_wire,
+            'compact_boundaries': boundaries,
+            'persisted_chain': persisted_chain,
+            'dummy_authorization': dummy_auth,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and seed_ready and first_compact and continuation_ready
+            and second_compact and exact_requests and trigger_wire
+            and continuation_wire and persisted_chain and dummy_auth
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-compaction-seed.txt',
+            seed_path,
+            run_dir / 'input-first-compact.txt',
+            first_path,
+            run_dir / 'input-compaction-continuation.txt',
+            continuation_path,
+            run_dir / 'input-second-compact.txt',
+            second_path,
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'OpenAI remote compaction wire or persisted opaque-state chain was incomplete',
+            'request_count': len(responses),
+            'response_kinds': kinds,
+            'persisted_compaction_count': len(boundaries),
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'openai-remote-compaction-trigger',
+                    'OpenAI remote compaction trigger',
+                    'The built CLI /compact command sends a compaction_trigger and persists exactly one opaque compaction item.',
+                    evidence,
+                    passed=passed and trigger_wire,
+                    reason='remote compaction trigger or first opaque item was missing',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'openai-remote-compaction-continuation',
+                    'OpenAI remote compaction continuation',
+                    'The next model request and repeated /compact both prepend the previous opaque compaction item, then persist the replacement item.',
+                    evidence,
+                    passed=passed and continuation_wire and persisted_chain,
+                    reason='previous opaque state was not continued or replaced deterministically',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
+    def subagent_stop_failure_lifecycle(self):
+        label = 'subagent-stop-failure-lifecycle'
+        run_dir, session, target, ready = self.start(label)
+        result = {'label': label, 'evidence_dir': str(run_dir)}
+        terminal_path = run_dir / '03-terminal-pane.txt'
+        final_path = run_dir / '04-final-pane.txt'
+        hook_output = run_dir / 'subagent-stop-hooks.jsonl'
+        analysis_path = run_dir / 'subagent-stop-failure-analysis.json'
+        terminal = prompt_restored = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                'Run the controlled SubagentStop failure lifecycle validation.',
+                'input-subagent-stop-failure.txt',
+            )
+            terminal = self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) == 2
+                    and 'RELEASE_SUBAGENT_STOP_PARENT_OK'
+                    in self.assistant_text(run_dir)
+                ),
+                90,
+                0.25,
+            )
+            self.capture(target, terminal_path)
+            prompt_restored = self.wait_until(
+                lambda: any(
+                    re.fullmatch(r'\s*❯\s*', line)
+                    for line in strip_ansi(
+                        self.capture(target, final_path, history=False)
+                    ).splitlines()
+                ),
+                30,
+                0.25,
+            )
+            self.capture(target, final_path)
+        for path in (terminal_path, final_path):
+            if not path.exists():
+                path.write_text(
+                    'required SubagentStop failure state was not reached\n'
+                )
+        if not hook_output.exists():
+            hook_output.write_text('')
+
+        responses = self.mock_response_requests(run_dir)
+        response_kinds = [request.get('response_kind') for request in responses]
+        request_wire = False
+        if len(responses) == 2:
+            followup_body = json.dumps(responses[1].get('body', {}))
+            request_wire = all(marker in followup_body for marker in (
+                'function_call_output',
+                'fc_release_subagent_stop',
+                'RELEASE_SUBAGENT_QUERY_FAILURE',
+            ))
+        mock_sequence = response_kinds == ['agent-call', 'parent-completed']
+
+        hook_records = []
+        for line in hook_output.read_text(errors='replace').splitlines():
+            try:
+                hook_records.append(json.loads(line))
+            except json.JSONDecodeError:
+                hook_records.append({'invalid_json': line})
+        hook_record = hook_records[0] if len(hook_records) == 1 else {}
+        agent_transcript = hook_record.get('agent_transcript_path')
+        agent_transcript_path = (
+            Path(agent_transcript)
+            if isinstance(agent_transcript, str)
+            else None
+        )
+        hook_once = len(hook_records) == 1
+        hook_fields_valid = (
+            hook_once
+            and hook_record.get('hook_event_name') == 'SubagentStop'
+            and hook_record.get('stop_hook_active') is False
+            and hook_record.get('agent_type') == 'general-purpose'
+            and isinstance(hook_record.get('agent_id'), str)
+            and bool(hook_record.get('agent_id'))
+            and hook_record.get('cwd') == str(self.repo)
+            and not hook_record.get('last_assistant_message')
+            and agent_transcript_path is not None
+            and agent_transcript_path.is_absolute()
+            and agent_transcript_path.is_file()
+            and 'subagents' in agent_transcript_path.parts
+        )
+
+        agent_tools = self.tool_evidence(
+            run_dir,
+            {'Agent'},
+            paths=self.transcript_paths(run_dir),
+        )
+        agent_evidence = agent_tools['Agent']
+        failed_tool_result = (
+            tool_occurrence_count(agent_evidence) == 1
+            and len(agent_evidence['failed_result_ids']) == 1
+            and not agent_evidence['successful_result_ids']
+            and not agent_evidence['invalid_result_ids']
+            and 'RELEASE_SUBAGENT_QUERY_FAILURE'
+            in tool_result_text(agent_evidence['failed_result_messages'])
+        )
+        log = self.debug(run_dir)
+        debug_failure = (
+            'Sync agent error: RELEASE_SUBAGENT_QUERY_FAILURE' in log
+            and 'Agent tool error' in log
+            and '[runAgent] SubagentStop on interrupted query failed' not in log
+        )
+        parent_recovered = (
+            terminal
+            and 'RELEASE_SUBAGENT_STOP_PARENT_OK'
+            in self.assistant_text(run_dir)
+            and prompt_restored
+        )
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'response_kinds': response_kinds,
+            'mock_sequence': mock_sequence,
+            'failed_tool_result': failed_tool_result,
+            'request_wire': request_wire,
+            'hook_count': len(hook_records),
+            'hook_fields_valid': hook_fields_valid,
+            'hook_records': hook_records,
+            'agent_tool_evidence': agent_tools,
+            'debug_failure': debug_failure,
+            'parent_recovered': parent_recovered,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        failure_passed = (
+            ready and mock_sequence and failed_tool_result and request_wire
+            and debug_failure and parent_recovered
+            and self.cleanup_passed(cleanup)
+        )
+        hook_passed = (
+            failure_passed and hook_once and hook_fields_valid
+        )
+        passed = failure_passed and hook_passed
+        evidence = [
+            run_dir / 'input-subagent-stop-failure.txt',
+            terminal_path,
+            final_path,
+            run_dir / 'config' / 'settings.json',
+            run_dir / 'record-subagent-stop.py',
+            hook_output,
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else (
+                'Subagent query fault, fallback hook, parent recovery, or cleanup '
+                'evidence was incomplete'
+            ),
+            'request_count': len(responses),
+            'response_kinds': response_kinds,
+            'hook_count': len(hook_records),
+            'hook_fields_valid': hook_fields_valid,
+            'failed_tool_result': failed_tool_result,
+            'parent_recovered': parent_recovered,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'subagent-stop-query-failure-propagation',
+                    'Subagent query failure propagation',
+                    'A controlled post-start query fault becomes one failed Agent tool result and the parent resumes exactly once.',
+                    evidence,
+                    passed=failure_passed,
+                    reason='query failure, failed tool result, parent recovery, or cleanup was incomplete',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'subagent-stop-fallback-exactly-once',
+                    'SubagentStop interrupted-query fallback',
+                    'The interrupted child executes one SubagentStop hook with stable agent identity before cleanup.',
+                    evidence,
+                    passed=hook_passed,
+                    reason='SubagentStop fallback hook cardinality or input fields were invalid',
                 ),
             ],
             'cleanup': cleanup,
@@ -4243,18 +4933,15 @@ return { results }
             and bool(cache_keys[0])
             and cache_keys[0] == cache_keys[1]
             and all(
-                response.get('headers', {}).get(name) == cache_keys[0]
-                for response in responses
-                for name in ('session-id', 'thread-id', 'x-client-request-id')
-            )
-            and all(
-                response.get('headers', {}).get('x-app') == 'cli'
-                and response.get('headers', {}).get(
-                    'x-claude-code-session-id'
-                ) == cache_keys[0]
-                and bool(response.get('headers', {}).get('user-agent'))
+                openai_request_metadata_matches(
+                    response.get('headers', {}), cache_keys[0]
+                )
                 for response in responses
             )
+            and len({
+                response.get('headers', {}).get('x-client-request-id')
+                for response in responses
+            }) == len(responses)
         )
         custom_prompt_ok = custom_prompt_instructions_stable(bodies)
         second_text = json.dumps(bodies[1], sort_keys=True) if len(bodies) == 2 else ''
@@ -5167,11 +5854,14 @@ return await parallel([
         actions = {
             'goal-lifecycle': self.goal_lifecycle,
             'agent-fg-bg': self.direct_agent,
+            'subagent-stop-failure-lifecycle': self.subagent_stop_failure_lifecycle,
             'nested-agent': self.nested_agent,
             'workflow': self.workflow,
             'deep-research': lambda: self.slash_workflow('deep-research'),
             'code-review': lambda: self.slash_workflow('code-review'),
             'effort-openai-responses-wire': self.effort_openai_responses_wire,
+            'fast-openai-responses-wire': self.fast_openai_responses_wire,
+            'openai-remote-compaction': self.openai_remote_compaction,
             'openai-responses-usage-error': self.openai_responses_usage_error,
             'model-discovery-picker': self.model_discovery_picker,
             'model-discovery-empty-picker': self.model_discovery_empty_picker,

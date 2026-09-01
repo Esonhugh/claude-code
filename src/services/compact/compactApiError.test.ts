@@ -2,7 +2,12 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
-import type { AssistantMessage, Message } from '../../types/message.js'
+import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import type {
+  AssistantMessage,
+  Message,
+  SystemCompactBoundaryMessage,
+} from '../../types/message.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
 
@@ -10,6 +15,36 @@ const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 const USAGE_LIMIT_MESSAGE = "You've hit your usage limit"
 let streamAssistantMessages: AssistantMessage[] = []
 let streamCallCount = 0
+let compactClientOptions: Record<string, unknown> | undefined
+let compactRequest: Record<string, unknown> | undefined
+
+mock.module('../api/client.js', () => ({
+  getAnthropicClient: async (options: Record<string, unknown>) => {
+    compactClientOptions = options
+    return {
+      beta: {
+        messages: {
+          compact: async (request: Record<string, unknown>) => {
+            compactRequest = request
+            return {
+              item: {
+                type: 'compaction',
+                id: 'cmp_new',
+                encrypted_content: 'new-opaque-state',
+              },
+              usage: {
+                input_tokens: 100,
+                output_tokens: 5,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 20,
+              },
+            }
+          },
+        },
+      },
+    }
+  },
+}))
 
 mock.module('../api/claude.js', () => ({
   getMaxOutputTokensForModel: () => 4096,
@@ -79,10 +114,13 @@ mock.module('../../utils/plans.js', () => ({
 }))
 
 const { compactConversation } = await import('./compact.js')
+const { compactConversationCodexStyle } = await import('./codexCompact.js')
 
 beforeEach(() => {
   streamAssistantMessages = []
   streamCallCount = 0
+  compactClientOptions = undefined
+  compactRequest = undefined
 })
 
 function userTextMessage(uuid: string, text: string): Message {
@@ -260,6 +298,82 @@ describe('compactConversation remote compaction lifecycle', () => {
     expect(JSON.stringify(result.summaryMessages)).toContain(
       'local fallback summary',
     )
+  })
+})
+
+describe('compactConversationCodexStyle OpenAI integration', () => {
+  test('creates a turn scope and continues the previous OpenAI compaction', async () => {
+    const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    try {
+      const previousCompaction = {
+        type: 'compaction' as const,
+        id: 'cmp_previous',
+        encrypted_content: 'previous-opaque-state',
+      }
+      const previousBoundary = {
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        isMeta: false,
+        timestamp: '2026-06-23T00:00:00.000Z',
+        uuid: '00000000-0000-4000-8000-000000000020',
+        level: 'info',
+        compactMetadata: {
+          trigger: 'manual',
+          preTokens: 100,
+        },
+        openAICompaction: previousCompaction,
+      } as SystemCompactBoundaryMessage
+      const messages: Message[] = [
+        previousBoundary,
+        userTextMessage(
+          '00000000-0000-4000-8000-000000000021',
+          'continue after compaction',
+        ),
+      ]
+      const context = createCompactTestContext()
+      const cacheSafeParams = createCacheSafeParams(context, messages)
+      cacheSafeParams.systemPrompt = asSystemPrompt(['compact system prompt'])
+
+      const result = await compactConversationCodexStyle(
+        messages,
+        context,
+        cacheSafeParams,
+        false,
+        undefined,
+        false,
+        {
+          retainedUserMessageTokens: 20_000,
+          keepPostCompactAttachments: false,
+        },
+      )
+
+      expect(compactClientOptions?.source).toBe('compact')
+      expect(compactClientOptions?.openAITurnScope).toBeDefined()
+      expect(compactRequest?.openai_compaction).toEqual(previousCompaction)
+      expect(compactRequest?.system).toBe('compact system prompt')
+      expect(compactRequest?.messages).toEqual([
+        {
+          role: 'user',
+          content: 'continue after compaction',
+        },
+      ])
+      expect(result.boundaryMarker.subtype).toBe('compact_boundary')
+      if (result.boundaryMarker.subtype !== 'compact_boundary') return
+      expect(result.boundaryMarker.openAICompaction).toEqual({
+        type: 'compaction',
+        id: 'cmp_new',
+        encrypted_content: 'new-opaque-state',
+      })
+      expect(result.boundaryMarker.compactMetadata.mode).toBe('codex')
+    } finally {
+      if (originalOpenAI === undefined) {
+        delete process.env.CLAUDE_CODE_USE_OPENAI
+      } else {
+        process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+      }
+    }
   })
 })
 

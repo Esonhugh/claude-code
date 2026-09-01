@@ -900,6 +900,13 @@ export async function* runAgent({
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })) {
+      if (
+        process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING ===
+          'after_query_start' &&
+        message.type === 'stream_request_start'
+      ) {
+        throw new Error('RELEASE_SUBAGENT_QUERY_FAILURE')
+      }
       onQueryProgress?.()
       if (
         (message.type === 'attachment' &&

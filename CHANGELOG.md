@@ -12,22 +12,32 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-09-01 - OpenAI Fast、Goal 生命周期与 Hook 可靠性
+## 2026-09-01 - v2.1.218 - OpenAI 压缩、Fast mode、Goal 与 Hook 可靠性
 
 ### 版本状态
 
-- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.217`。
-- 本条目覆盖 2026-09-01 的 5 个提交，范围为 `beffbf0..850e6ce`。
+- 准备发布版本：`v2.1.218`。
+- 本次发布覆盖 `v2.1.217..HEAD` 的 OpenAI 压缩、Fast mode、Goal 生命周期与 Stop/SubagentStop hook 可靠性改动。
+- `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
+- `Makefile` 默认构建版本更新为 `2.1.218`。
 
 ### 关联提交
 
+- `82999e8` — 在重复 OpenAI remote compaction 时保留上一轮 opaque compaction item。
+- `7745df6` — 为手动 OpenAI compaction 创建独立 turn scope。
 - `beffbf0` — 为连续阻止结束的 Stop hook 增加有界续跑与状态重置。
 - `8a1f775` — 增加可持久化、可恢复的 Goal 状态与专用 Stop hook 生命周期。
 - `3837ccb` — 增加交互式 `/goal` 状态查看、设置和清除流程。
 - `ad16ce7` — 在 subagent query 提前失败时补跑 SubagentStop hooks。
 - `850e6ce` — 为 OpenAI provider 增加 Fast mode priority 请求路径。
+- `984d98b` — 更新 OpenAI Fast、Goal 生命周期与 Hook 可靠性的发布文档。
 
 ### 变更内容
+
+#### OpenAI compaction
+
+- OpenAI provider 下手动 `/compact` 即使不在 query turn 内也会创建稳定的 session、thread、turn 与 prompt cache scope，并继续使用 remote compaction 路径。
+- 连续执行 remote compaction 时，后续请求会保留上一轮 opaque compaction item；压缩后继续对话也会携带该 item，避免早期会话上下文在重复压缩后丢失。
 
 #### OpenAI Fast mode
 
@@ -48,6 +58,7 @@
 
 ### 测试覆盖
 
+- OpenAI compaction 测试覆盖 standalone turn scope、手动压缩、连续压缩输入顺序，以及压缩后继续对话时 opaque item 的保留。
 - Goal 与 hook 测试覆盖交互式状态视图、attachment 持久化、resume 恢复、success/block/impossible、后台任务延迟、hook source identity、策略限制、长 transcript 重试和 Stop hook 连续阻止上限。
 - Agent 测试覆盖 query 提前失败后的 SubagentStop fallback、输入字段、sidechain 记录及 progress/result 去重边界。
 - OpenAI 测试覆盖 `/fast` availability、任意 OpenAI model eligibility、跳过 Anthropic 状态预取、`service_tier: "priority"` wire mapping 及不支持 priority 时不自动重试。

@@ -38,12 +38,17 @@ async function runIsolatedTests(): Promise<void> {
     | 'attachment_then_throw'
     | 'progress_then_throw'
     | 'summary_then_throw'
+    | 'stream_start'
     | 'complete'
   let queryMode: QueryMode = 'throw'
 
   mock.module('../../query.js', () => ({
     query: async function* () {
       if (queryMode === 'complete') return
+      if (queryMode === 'stream_start') {
+        yield { type: 'stream_request_start' }
+        return
+      }
       if (queryMode === 'attachment_then_throw') {
         yield {
           type: 'attachment',
@@ -172,6 +177,40 @@ async function runIsolatedTests(): Promise<void> {
   beforeEach(() => {
     resetStateForTests()
     queryMode = 'throw'
+    delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  test('runs SubagentStop once for the controlled post-start fault', async () => {
+    const observedInputs: SubagentStopHookInput[] = []
+    queryMode = 'stream_start'
+    process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING =
+      'after_query_start'
+    registerHookCallbacks({
+      SubagentStop: [
+        {
+          hooks: [
+            {
+              type: 'callback',
+              callback: async (input) => {
+                observedInputs.push(input as SubagentStopHookInput)
+                return { continue: true }
+              },
+            },
+          ],
+        },
+      ],
+    })
+
+    await expect(drainAgent()).rejects.toThrow(
+      'RELEASE_SUBAGENT_QUERY_FAILURE',
+    )
+    expect(observedInputs).toHaveLength(1)
+    expect(observedInputs[0]).toMatchObject({
+      hook_event_name: 'SubagentStop',
+      stop_hook_active: false,
+      agent_id: testAgentId,
+      agent_type: 'general-purpose',
+    })
   })
 
   test('runs SubagentStop once when query throws before the hook boundary', async () => {
