@@ -12,6 +12,69 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-01 - OpenAI Fast、Goal 生命周期与 Hook 可靠性
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.217`。
+- 本条目覆盖 2026-09-01 的 5 个提交，范围为 `beffbf0..850e6ce`。
+
+### 关联提交
+
+- `beffbf0` — 为连续阻止结束的 Stop hook 增加有界续跑与状态重置。
+- `8a1f775` — 增加可持久化、可恢复的 Goal 状态与专用 Stop hook 生命周期。
+- `3837ccb` — 增加交互式 `/goal` 状态查看、设置和清除流程。
+- `ad16ce7` — 在 subagent query 提前失败时补跑 SubagentStop hooks。
+- `850e6ce` — 为 OpenAI provider 增加 Fast mode priority 请求路径。
+
+### 变更内容
+
+#### OpenAI Fast mode
+
+- OpenAI API key 与 ChatGPT OAuth 用户现在可以使用 `/fast`；OpenAI model 不再受 Anthropic Opus 4.6 eligibility 限制，设置页、Model Picker 和 Fast mode 对话框使用 provider 对应的说明。
+- OpenAI Responses 请求将 Fast mode 映射为 `service_tier: "priority"`，不发送内部 `speed` 字段；priority tier 不受支持时直接保留服务端错误，不启用 Anthropic 专属的 beta header、状态预取或自动降级路径。
+
+#### Goal 状态与恢复
+
+- 交互式 `/goal` 无参数时打开状态视图，展示未设置、进行中、已完成或失败状态，以及耗时、turn、token 和最后检查原因；`/goal <condition>` 与 `/goal clear` 分别设置和清除 Goal，非交互式调用继续使用原有 prompt command。
+- Goal 状态通过 `goal_status` attachment 持久化到 transcript；resume/continue 会恢复 active Goal 及其 source-scoped Stop hook，并记录迭代次数、开始时间、token 用量、完成耗时和失败原因。
+- Goal 判定为未完成时继续当前工作，判定 impossible 时记录 failed 终态并停止重试；仍有后台任务运行时延后 Goal 判定，但继续执行普通 Stop hooks。
+- Hooks 被策略限制或交互式 workspace 未信任时拒绝启动 Goal；prompt hook evaluator 禁用工具，并在 transcript 过长时缩小窗口重试，避免创建无法执行或无法完成判定的 Goal。
+
+#### Stop hook 与 SubagentStop
+
+- Stop hook 默认在第 9 次连续阻止结束后终止续跑并显示 warning；`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 可调整上限，`0` 或负数可禁用该上限，`maxTurns` 仍具有更高优先级，正常 tool round 会重置连续计数。
+- Subagent query 在到达正常 hook 边界前失败时补跑一次 SubagentStop hooks，并将结果写入 sidechain transcript；已经产生 SubagentStop progress/result 或正常完成时不会重复执行。
+
+### 测试覆盖
+
+- Goal 与 hook 测试覆盖交互式状态视图、attachment 持久化、resume 恢复、success/block/impossible、后台任务延迟、hook source identity、策略限制、长 transcript 重试和 Stop hook 连续阻止上限。
+- Agent 测试覆盖 query 提前失败后的 SubagentStop fallback、输入字段、sidechain 记录及 progress/result 去重边界。
+- OpenAI 测试覆盖 `/fast` availability、任意 OpenAI model eligibility、跳过 Anthropic 状态预取、`service_tier: "priority"` wire mapping 及不支持 priority 时不自动重试。
+
+## 2026-08-31 - OpenAI 手动与重复压缩修复
+
+### 版本状态
+
+- 非发布变更，未新增版本号；`Makefile` 仍保持 `2.1.217`。
+- 本条目覆盖 CHANGELOG 上次更新提交 `bdb25bd` 之后、2026-08-31 的 2 个提交。
+
+### 关联提交
+
+- `82999e8` — 在重复 OpenAI remote compaction 时保留上一轮 opaque compaction item。
+- `7745df6` — 为手动 OpenAI compaction 创建独立 turn scope。
+
+### 变更内容
+
+#### OpenAI compaction
+
+- OpenAI provider 下手动 `/compact` 即使不在 query turn 内也会创建稳定的 session、thread、turn 与 prompt cache scope，并继续使用 remote compaction 路径。
+- 连续执行 remote compaction 时，后续请求会把上一轮 opaque compaction item 放在新输入之前；压缩后继续对话也会携带该 item，避免早期会话上下文在重复压缩后丢失。
+
+### 测试覆盖
+
+- OpenAI compatibility 测试覆盖 standalone turn scope、手动 compaction、连续两次 compaction 的输入顺序，以及压缩后继续对话时 opaque item 的保留。
+
 ## 2026-08-30 - v2.1.217 - OpenAI 会话路由与 GitHub Native 更新
 
 ### 版本状态
