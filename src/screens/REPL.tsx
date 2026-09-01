@@ -115,11 +115,11 @@ import { useLogMessages } from '../hooks/useLogMessages.js'
 import { useReplBridge } from '../hooks/useReplBridge.js'
 import {
   type Command,
-  type CommandResultDisplay,
   type ResumeEntrypoint,
   getCommandName,
   isCommandEnabled,
 } from '../commands.js'
+import type { LocalJSXCommandOnDone } from '../types/command.js'
 import type {
   PromptInputMode,
   QueuedCommand,
@@ -438,6 +438,7 @@ import { recordAttributionSnapshot } from '../utils/sessionStorage.js'
 import {
   computeStandaloneAgentContext,
   restoreAgentFromSession,
+  restoreGoalSessionFromLog,
   restoreSessionStateFromLog,
   restoreWorktreeForResume,
   exitRestoredWorktree,
@@ -2601,6 +2602,7 @@ export function REPL({
         )
         await renameRecordingForSession()
         await resetSessionFilePointer()
+        restoreGoalSessionFromLog(messages, setAppState)
 
         // Clear then restore session metadata so it's re-appended on exit via
         // reAppendSessionMetadata. clearSessionMetadata must be called first:
@@ -4598,13 +4600,7 @@ export function REPL({
           // Execute the command directly
           const executeImmediateCommand = async (): Promise<void> => {
             let doneWasCalled = false
-            const onDone = (
-              result?: string,
-              doneOptions?: {
-                display?: CommandResultDisplay
-                metaMessages?: string[]
-              },
-            ): void => {
+            const onDone: LocalJSXCommandOnDone = (result, doneOptions) => {
               doneWasCalled = true
               setToolJSX({
                 jsx: null,
@@ -4646,6 +4642,9 @@ export function REPL({
                     createUserMessage({ content, isMeta: true }),
                   ),
                 )
+              }
+              if (doneOptions?.additionalMessages?.length) {
+                newMessages.push(...doneOptions.additionalMessages)
               }
               if (newMessages.length) {
                 setMessages(prev => [...prev, ...newMessages])

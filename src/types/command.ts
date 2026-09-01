@@ -10,7 +10,7 @@ import type { SettingSource } from '../utils/settings/constants.js'
 import type { HooksSettings } from '../utils/settings/types.js'
 import type { ThemeName } from '../utils/theme.js'
 import type { LogOption } from './logs.js'
-import type { Message } from './message.js'
+import type { AttachmentMessage, Message } from './message.js'
 import type { PluginManifest } from './plugin.js'
 
 export type LocalCommandResult =
@@ -115,6 +115,7 @@ export type CommandResultDisplay = 'skip' | 'system' | 'user'
  * @param options.display - How to display the result: 'skip' | 'system' | 'user' (default)
  * @param options.shouldQuery - If true, send messages to the model after command completes
  * @param options.metaMessages - Additional messages to insert as isMeta (model-visible but hidden)
+ * @param options.additionalMessages - Structured messages to append with the command result
  */
 export type LocalJSXCommandOnDone = (
   result?: string,
@@ -122,6 +123,7 @@ export type LocalJSXCommandOnDone = (
     display?: CommandResultDisplay
     shouldQuery?: boolean
     metaMessages?: string[]
+    additionalMessages?: AttachmentMessage[]
     nextInput?: string
     submitNextInput?: boolean
   },

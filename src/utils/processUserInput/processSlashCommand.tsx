@@ -102,7 +102,6 @@ import type {
 } from './processUserInput.js'
 import { isAnt } from 'src/utils/userType.js'
 
-
 type SlashCommandResult = ProcessUserInputBaseResult & {
   command: Command
 }
@@ -214,7 +213,7 @@ async function executeForkedSlashCommand(
       const deadline = Date.now() + MCP_SETTLE_TIMEOUT_MS
       while (Date.now() < deadline) {
         const s = context.getAppState()
-        if (!s.mcp.clients.some(c => c.type === 'pending')) break
+        if (!s.mcp.clients.some((c) => c.type === 'pending')) break
         await sleep(MCP_SETTLE_POLL_MS)
       }
       const freshTools =
@@ -245,7 +244,7 @@ async function executeForkedSlashCommand(
       enqueueResult(
         `<scheduled-task-result command="/${commandName}">\n${resultText}\n</scheduled-task-result>`,
       )
-    })().catch(err => {
+    })().catch((err) => {
       logError(err)
       enqueueResult(
         `<scheduled-task-result command="/${commandName}" status="failed">\n${err instanceof Error ? err.message : String(err)}\n</scheduled-task-result>`,
@@ -324,7 +323,7 @@ async function executeForkedSlashCommand(
         // Increment token count in spinner for assistant messages
         const contentLength = getAssistantMessageContentLength(message)
         if (contentLength > 0) {
-          context.setResponseLength(len => len + contentLength)
+          context.setResponseLength((len) => len + contentLength)
         }
 
         const normalizedMsg = normalizedNew[0]
@@ -749,7 +748,7 @@ async function getMessagesForSlashCommand(
   try {
     switch (command.type) {
       case 'local-jsx': {
-        return new Promise<SlashCommandResult>(resolve => {
+        return new Promise<SlashCommandResult>((resolve) => {
           let doneWasCalled = false
           const onDone = (
             result?: string,
@@ -757,6 +756,7 @@ async function getMessagesForSlashCommand(
               display?: CommandResultDisplay
               shouldQuery?: boolean
               metaMessages?: string[]
+              additionalMessages?: AttachmentMessage[]
               nextInput?: string
               submitNextInput?: boolean
             },
@@ -778,6 +778,7 @@ async function getMessagesForSlashCommand(
             const metaMessages = (options?.metaMessages ?? []).map(
               (content: string) => createUserMessage({ content, isMeta: true }),
             )
+            const additionalMessages = options?.additionalMessages ?? []
 
             // In fullscreen the command just showed as a centered modal
             // pane — the transient notification is enough feedback. The
@@ -798,7 +799,7 @@ async function getMessagesForSlashCommand(
               messages:
                 options?.display === 'system'
                   ? skipTranscript
-                    ? metaMessages
+                    ? [...metaMessages, ...additionalMessages]
                     : [
                         createCommandInputMessage(
                           formatCommandInput(command, args),
@@ -807,6 +808,7 @@ async function getMessagesForSlashCommand(
                           `<local-command-stdout>${result}</local-command-stdout>`,
                         ),
                         ...metaMessages,
+                        ...additionalMessages,
                       ]
                   : [
                       createUserMessage({
@@ -823,6 +825,7 @@ async function getMessagesForSlashCommand(
                             content: `<local-command-stdout>${NO_CONTENT_MESSAGE}</local-command-stdout>`,
                           }),
                       ...metaMessages,
+                      ...additionalMessages,
                     ],
               shouldQuery: options?.shouldQuery ?? false,
               command,
@@ -833,8 +836,8 @@ async function getMessagesForSlashCommand(
 
           void command
             .load()
-            .then(mod => mod.call(onDone, { ...context, canUseTool }, args))
-            .then(jsx => {
+            .then((mod) => mod.call(onDone, { ...context, canUseTool }, args))
+            .then((jsx) => {
               if (jsx == null) return
               if (context.options.isNonInteractiveSession) {
                 void resolve({
@@ -860,7 +863,7 @@ async function getMessagesForSlashCommand(
                 isImmediate: command.immediate === true,
               })
             })
-            .catch(e => {
+            .catch((e) => {
               // If load()/call() throws and onDone never fired, the outer
               // Promise hangs forever, leaving queryGuard stuck in
               // 'dispatching' and deadlocking the queue processor.
@@ -1197,7 +1200,6 @@ async function getMessagesForPromptSlashCommand(
     !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
   const isBuiltinGoal = command.name === 'goal' && command.source === 'builtin'
   if (
-    command.hooks &&
     hooksAllowedForThisSkill &&
     (command.shouldRegisterHooksForCommand?.(args) ?? true)
   ) {
@@ -1210,12 +1212,12 @@ async function getMessagesForPromptSlashCommand(
           sessionId,
           goalId: registration.id,
           condition: registration.condition,
-          appendGoalStatusAttachment: attachment => {
+          appendGoalStatusAttachment: (attachment) => {
             void recordTranscript([createAttachmentMessage(attachment)])
           },
         })
       }
-    } else {
+    } else if (command.hooks) {
       registerSkillHooks(
         context.setAppState,
         sessionId,
@@ -1236,7 +1238,7 @@ async function getMessagesForPromptSlashCommand(
     : command.name
   const skillContent = result
     .filter((b): b is TextBlockParam => b.type === 'text')
-    .map(b => b.text)
+    .map((b) => b.text)
     .join('\n\n')
   if (!isBuiltinGoal) {
     addInvokedSkill(
@@ -1268,7 +1270,7 @@ async function getMessagesForPromptSlashCommand(
     getAttachmentMessages(
       result
         .filter((block): block is TextBlockParam => block.type === 'text')
-        .map(block => block.text)
+        .map((block) => block.text)
         .join(' '),
       context,
       null,

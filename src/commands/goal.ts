@@ -1,9 +1,13 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import { randomUUID } from 'crypto'
-import { getSessionId } from '../bootstrap/state.js'
+import {
+  getIsNonInteractiveSession,
+  getSessionId,
+  getTotalOutputTokens,
+} from '../bootstrap/state.js'
 import type { Command } from '../commands.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
-import { clearGoal, goalStopHook } from './goal/hooks.js'
+import { clearGoal, getGoalUnavailableMessage } from './goal/hooks.js'
 import { getGoalModePrompt } from './goal/prompt.js'
 import {
   createActiveGoalStatus,
@@ -44,7 +48,7 @@ export function consumeLastGoalHookRegistration(): {
   return registration
 }
 
-const goal: Command = {
+export const goalNonInteractive: Command = {
   type: 'prompt',
   name: 'goal',
   description: 'Work autonomously toward a goal',
@@ -53,19 +57,25 @@ const goal: Command = {
   contentLength: 0,
   source: 'builtin',
   allowedTools: [AGENT_TOOL_NAME],
-  hooks: {
-    Stop: [
-      {
-        matcher: '',
-        hooks: [goalStopHook],
-      },
-    ],
+  isEnabled: getIsNonInteractiveSession,
+  get isHidden() {
+    return !getIsNonInteractiveSession()
   },
   shouldRegisterHooksForCommand(args): boolean {
-    return args.trim().length > 0 && !isGoalClear(args) && !isGoalTooLong(args)
+    return (
+      args.trim().length > 0 &&
+      !isGoalClear(args) &&
+      !isGoalTooLong(args) &&
+      getGoalUnavailableMessage() === null
+    )
   },
   shouldQueryForCommand(args): boolean {
-    return args.trim().length > 0 && !isGoalClear(args) && !isGoalTooLong(args)
+    return (
+      args.trim().length > 0 &&
+      !isGoalClear(args) &&
+      !isGoalTooLong(args) &&
+      getGoalUnavailableMessage() === null
+    )
   },
   async getPromptForCommand(args, context): Promise<ContentBlockParam[]> {
     lastGoalCommandAttachment = null
@@ -82,7 +92,10 @@ const goal: Command = {
 
     if (args.trim().length === 0) {
       return [
-        { type: 'text', text: formatGoalStatusText(context.getAppState().goalStatus) },
+        {
+          type: 'text',
+          text: formatGoalStatusText(context.getAppState().goalStatus),
+        },
       ]
     }
 
@@ -100,10 +113,20 @@ const goal: Command = {
       ]
     }
 
+    const unavailableMessage = getGoalUnavailableMessage()
+    if (unavailableMessage) {
+      return [{ type: 'text', text: unavailableMessage }]
+    }
+
     const prompt = getGoalPromptForState(args)
     const goalId = randomUUID()
-    const activeGoal = createActiveGoalStatus(goalId, prompt, Date.now())
-    context.setAppState(prev => ({
+    const activeGoal = createActiveGoalStatus(
+      goalId,
+      prompt,
+      Date.now(),
+      getTotalOutputTokens(),
+    )
+    context.setAppState((prev) => ({
       ...prev,
       goalStatus: activeGoal,
     }))
@@ -111,6 +134,16 @@ const goal: Command = {
     lastGoalHookRegistration = { id: goalId, condition: prompt }
     return [{ type: 'text', text: getGoalModePrompt(prompt) }]
   },
+}
+
+const goal: Command = {
+  type: 'local-jsx',
+  name: 'goal',
+  description: 'Set a goal Claude checks before stopping',
+  argumentHint: '[<condition> | clear]',
+  immediate: true,
+  isEnabled: () => !getIsNonInteractiveSession(),
+  load: () => import('./goal/goal.js'),
 }
 
 export default goal

@@ -12,6 +12,7 @@ import type { AppState } from '../state/AppState.js'
 import type { SetToolJSXFn } from '../Tool.js'
 import type { LocalJSXCommandOnDone } from '../types/command.js'
 import type { Message } from '../types/message.js'
+import { createUserMessage } from './messages.js'
 import {
   isValidImagePaste,
   type PromptInputMode,
@@ -285,6 +286,15 @@ export async function handlePromptSubmit(
             text: result,
             priority: 'immediate',
           })
+        }
+        const additionalMessages = [
+          ...(options?.metaMessages ?? []).map(content =>
+            createUserMessage({ content, isMeta: true }),
+          ),
+          ...(options?.additionalMessages ?? []),
+        ]
+        if (additionalMessages.length && params.setMessages) {
+          params.setMessages(prev => [...prev, ...additionalMessages])
         }
         if (options?.nextInput) {
           if (options.submitNextInput) {
