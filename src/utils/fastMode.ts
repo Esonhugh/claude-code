@@ -36,7 +36,6 @@ import {
 import { createSignal } from './signal.js'
 import { isAnt as getIsAnt } from 'src/utils/userType.js'
 
-
 export function isFastModeEnabled(): boolean {
   return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FAST_MODE)
 }
@@ -76,6 +75,11 @@ export function getFastModeUnavailableReason(): string | null {
     return 'Fast mode is not available'
   }
 
+  const provider = getAPIProvider()
+  if (provider === 'openai') {
+    return null
+  }
+
   const statigReason = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_penguins_off',
     null,
@@ -112,7 +116,7 @@ export function getFastModeUnavailableReason(): string | null {
   }
 
   // Only available for 1P (not Bedrock/Vertex/Foundry)
-  if (getAPIProvider() !== 'firstParty') {
+  if (provider !== 'firstParty') {
     const reason = 'Fast mode is not available on Bedrock, Vertex, or Foundry'
     logForDebugging(`Fast mode unavailable: ${reason}`)
     return reason
@@ -172,9 +176,11 @@ export function isFastModeSupportedByModel(
   if (!isFastModeEnabled()) {
     return false
   }
+  if (getAPIProvider() === 'openai') {
+    return true
+  }
   const model = modelSetting ?? getDefaultMainLoopModelSetting()
-  const parsedModel = parseUserSpecifiedModel(model)
-  return parsedModel.toLowerCase().includes('opus-4-6')
+  return parseUserSpecifiedModel(model).toLowerCase().includes('opus-4-6')
 }
 
 // --- Fast mode runtime state ---
@@ -412,7 +418,7 @@ export async function prefetchFastModeStatus(): Promise<void> {
     return
   }
 
-  if (!isFastModeEnabled()) {
+  if (!isFastModeEnabled() || getAPIProvider() === 'openai') {
     return
   }
 

@@ -30,6 +30,7 @@ import {
 } from '../../utils/fastMode.js'
 import { formatDuration } from '../../utils/format.js'
 import { formatModelPricing, getOpus46CostTier } from '../../utils/modelCost.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 function applyFastMode(
@@ -74,7 +75,10 @@ export function FastModePicker({
   const runtimeState = getFastModeRuntimeState()
   const isCooldown = runtimeState.status === 'cooldown'
   const isUnavailable = unavailableReason !== null
-  const pricing = formatModelPricing(getOpus46CostTier(true))
+  const isOpenAI = getAPIProvider() === 'openai'
+  const pricing = isOpenAI
+    ? 'Priority processing; increased usage applies'
+    : formatModelPricing(getOpus46CostTier(true))
 
   function handleConfirm(): void {
     if (isUnavailable) return
@@ -137,7 +141,11 @@ export function FastModePicker({
   return (
     <Dialog
       title={title}
-      subtitle={`High-speed mode for ${FAST_MODE_MODEL_DISPLAY}. Billed as extra usage at a premium rate. Separate rate limits apply.`}
+      subtitle={
+        isOpenAI
+          ? 'Requests priority processing from OpenAI. Unsupported configurations fail without automatic fallback.'
+          : `High-speed mode for ${FAST_MODE_MODEL_DISPLAY}. Billed as extra usage at a premium rate. Separate rate limits apply.`
+      }
       onCancel={handleCancel}
       color="fastMode"
       inputGuide={exitState =>
@@ -184,12 +192,14 @@ export function FastModePicker({
           )}
         </>
       )}
-      <Text dimColor>
-        Learn more:{' '}
-        <Link url="https://code.claude.com/docs/en/fast-mode">
-          https://code.claude.com/docs/en/fast-mode
-        </Link>
-      </Text>
+      {!isOpenAI && (
+        <Text dimColor>
+          Learn more:{' '}
+          <Link url="https://code.claude.com/docs/en/fast-mode">
+            https://code.claude.com/docs/en/fast-mode
+          </Link>
+        </Text>
+      )}
     </Dialog>
   )
 }
@@ -217,7 +227,10 @@ async function handleFastModeShortcut(
     const modelUpdated = !isFastModeSupportedByModel(mainLoopModel)
       ? ` · model set to ${FAST_MODE_MODEL_DISPLAY}`
       : ''
-    const pricing = formatModelPricing(getOpus46CostTier(true))
+    const pricing =
+      getAPIProvider() === 'openai'
+        ? 'Priority processing; increased usage applies'
+        : formatModelPricing(getOpus46CostTier(true))
     return `${fastIcon} Fast mode ON${modelUpdated} · ${pricing}`
   } else {
     return `Fast mode OFF`

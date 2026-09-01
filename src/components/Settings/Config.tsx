@@ -117,6 +117,7 @@ import {
   isFastModeSupportedByModel,
 } from '../../utils/fastMode.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -431,7 +432,10 @@ export function Config({
       ? [
           {
             id: 'fastMode',
-            label: `Fast mode (${FAST_MODE_MODEL_DISPLAY} only)`,
+            label:
+              getAPIProvider() === 'openai'
+                ? 'Fast mode'
+                : `Fast mode (${FAST_MODE_MODEL_DISPLAY} only)`,
             value: !!isFastMode,
             type: 'boolean' as const,
             onChange(enabled: boolean) {
@@ -440,15 +444,26 @@ export function Config({
                 fastMode: enabled ? true : undefined,
               })
               if (enabled) {
-                setAppState(prev => ({
-                  ...prev,
-                  mainLoopModel: getFastModeModel(),
-                  mainLoopModelForSession: null,
-                  fastMode: true,
-                }))
+                setAppState(prev => {
+                  const needsModelSwitch = !isFastModeSupportedByModel(
+                    prev.mainLoopModel,
+                  )
+                  return {
+                    ...prev,
+                    ...(needsModelSwitch
+                      ? {
+                          mainLoopModel: getFastModeModel(),
+                          mainLoopModelForSession: null,
+                        }
+                      : {}),
+                    fastMode: true,
+                  }
+                })
                 setChanges(prev => ({
                   ...prev,
-                  model: getFastModeModel(),
+                  ...(!isFastModeSupportedByModel(mainLoopModel)
+                    ? { model: getFastModeModel() }
+                    : {}),
                   'Fast mode': 'ON',
                 }))
               } else {

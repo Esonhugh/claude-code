@@ -11,7 +11,10 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  getAPIProviderForStatsig,
+} from 'src/utils/model/providers.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
@@ -267,6 +270,7 @@ export async function* withRetry<T>(
       // and the for-loop terminates. Persistent sessions want the chunked
       // keep-alive path instead of fast-mode cache-preservation anyway.
       if (
+        getAPIProvider() === 'firstParty' &&
         wasFastModeActive &&
         !isPersistentRetryEnabled() &&
         error instanceof APIError &&
@@ -309,7 +313,11 @@ export async function* withRetry<T>(
       // Fast mode fallback: if the API rejects the fast mode parameter
       // (e.g., org doesn't have fast mode enabled), permanently disable fast
       // mode and retry at standard speed.
-      if (wasFastModeActive && isFastModeNotEnabledError(error)) {
+      if (
+        getAPIProvider() === 'firstParty' &&
+        wasFastModeActive &&
+        isFastModeNotEnabledError(error)
+      ) {
         handleFastModeRejectedByAPI()
         retryContext.fastMode = false
         continue

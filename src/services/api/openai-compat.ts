@@ -629,6 +629,7 @@ async function connectSSE(
     ...(payload.tools && { tools: payload.tools }),
     ...(payload.tool_choice && { tool_choice: payload.tool_choice }),
     ...(payload.reasoning && { reasoning: payload.reasoning }),
+    ...(payload.service_tier && { service_tier: payload.service_tier }),
     ...(payload.prompt_cache_key && {
       prompt_cache_key: payload.prompt_cache_key,
     }),
@@ -1091,11 +1092,14 @@ export function createOpenAICompatClient(options: {
         ...(tools && { tools }),
         ...(toolChoice && { tool_choice: toolChoice }),
         ...(reasoning && { reasoning }),
+        ...(params.speed === 'fast' && { service_tier: 'priority' }),
         ...(options.promptCacheKey && {
           prompt_cache_key: options.promptCacheKey,
         }),
       }
-      logForDebugging(`[OpenAI Compat] Responses request model=${model}`)
+      logForDebugging(
+        `[OpenAI Compat] Responses request model=${model} service_tier=${payload.service_tier ?? 'standard'}`,
+      )
 
       const controller = new AbortController()
       const timeout = setTimeout(

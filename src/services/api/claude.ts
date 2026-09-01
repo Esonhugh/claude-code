@@ -1444,6 +1444,8 @@ async function* queryModel(
     !isFastModeCooldown() &&
     isFastModeSupportedByModel(options.model) &&
     !!options.fastMode
+  const isAnthropicFastMode =
+    getAPIProvider() === 'firstParty' && isFastMode
 
   // Sticky-on latches for dynamic beta headers. Each header, once first
   // sent, keeps being sent for the rest of the session so mid-session
@@ -1466,7 +1468,7 @@ async function* queryModel(
   }
 
   let fastModeHeaderLatched = getFastModeHeaderLatched() === true
-  if (!fastModeHeaderLatched && isFastMode) {
+  if (!fastModeHeaderLatched && isAnthropicFastMode) {
     fastModeHeaderLatched = true
     setFastModeHeaderLatched(true)
   }
@@ -1694,7 +1696,11 @@ async function* queryModel(
     if (isFastModeForRetry) {
       speed = 'fast'
     }
-    if (fastModeHeaderLatched && !betasParams.includes(FAST_MODE_BETA_HEADER)) {
+    if (
+      getAPIProvider() === 'firstParty' &&
+      fastModeHeaderLatched &&
+      !betasParams.includes(FAST_MODE_BETA_HEADER)
+    ) {
       betasParams.push(FAST_MODE_BETA_HEADER)
     }
 

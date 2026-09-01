@@ -446,9 +446,14 @@ export function meetsAvailabilityRequirement(cmd: Command): boolean {
           return true
         break
       case 'console':
-        // Console API key user = direct 1P API customer (not 3P, not claude.ai).
-        // Excludes 3P (Bedrock/Vertex/Foundry) who don't set ANTHROPIC_BASE_URL
-        // and gateway users who proxy through a custom base URL.
+        if (
+          getAPIProvider() === 'openai' &&
+          getOpenAIAuthInfo()?.isChatGPT === false
+        ) {
+          return true
+        }
+        // Anthropic Console API key user = direct 1P API customer (not 3P,
+        // claude.ai, or a gateway that proxies through a custom base URL).
         if (
           !isClaudeAISubscriber() &&
           !isUsing3PServices() &&

@@ -167,15 +167,14 @@ type LocalJSXCommand = {
  * of the listed auth types. See meetsAvailabilityRequirement() in commands.ts.
  *
  * Example: `availability: ['claude-ai', 'console']` shows the command to
- * claude.ai subscribers and direct Console API key users (api.anthropic.com),
- * but hides it from Bedrock/Vertex/Foundry users and custom base URL users.
+ * claude.ai subscribers and API key users, but hides it from other auth types.
  */
 export type CommandAvailability =
   // claude.ai OAuth subscriber (Pro/Max/Team/Enterprise via claude.ai)
   | 'claude-ai'
   // ChatGPT OAuth auth (not OpenAI API key auth)
   | 'chatgpt'
-  // Console API key user (direct api.anthropic.com, not via claude.ai OAuth)
+  // Console API key auth (Anthropic or OpenAI, not OAuth)
   | 'console'
 
 export type CommandBase = {

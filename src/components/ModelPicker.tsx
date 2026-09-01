@@ -7,7 +7,6 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import {
-  FAST_MODE_MODEL_DISPLAY,
   isFastModeAvailable,
   isFastModeCooldown,
   isFastModeEnabled,
@@ -31,6 +30,7 @@ import {
   parseUserSpecifiedModel,
 } from '../utils/model/model.js'
 import { getModelOptions } from '../utils/model/modelOptions.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -276,16 +276,23 @@ export function ModelPicker({
           showFastModeNotice ? (
             <Box marginBottom={1}>
               <Text dimColor>
-                Fast mode is <Text bold>ON</Text> and available with{' '}
-                {FAST_MODE_MODEL_DISPLAY} only (/fast). Switching to other
-                models turn off fast mode.
+                {getAPIProvider() === 'openai' ? (
+                  <>
+                    Fast mode is <Text bold>ON</Text> (/fast).
+                  </>
+                ) : (
+                  <>
+                    Fast mode is <Text bold>ON</Text> and available with Opus 4.6
+                    only (/fast). Switching to other models turns it off.
+                  </>
+                )}
               </Text>
             </Box>
           ) : isFastModeAvailable() && !isFastModeCooldown() ? (
             <Box marginBottom={1}>
               <Text dimColor>
-                Use <Text bold>/fast</Text> to turn on Fast mode (
-                {FAST_MODE_MODEL_DISPLAY} only).
+                Use <Text bold>/fast</Text> to turn on Fast mode
+                {getAPIProvider() === 'openai' ? '.' : ' (Opus 4.6 only).'}
               </Text>
             </Box>
           ) : null

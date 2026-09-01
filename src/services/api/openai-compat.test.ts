@@ -85,8 +85,66 @@ try {
   )
   assert.equal(requests[0]!.authorization, 'Bearer sk-test-api-key')
   assert.equal(requests[0]!.body.reasoning, undefined)
+  assert.equal(requests[0]!.body.service_tier, undefined)
 
   requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'fast' }],
+    speed: 'fast',
+  } as any)
+  assert.equal(requests[0]!.body.service_tier, 'priority')
+  assert.equal(requests[0]!.body.speed, undefined)
+
+  requests.length = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(
+      JSON.stringify({ error: { message: 'priority tier unsupported' } }),
+      { status: 400 },
+    )
+  }) as unknown as typeof fetch
+  await assert.rejects(
+    client.beta.messages.create({
+      model: 'gpt-unknown',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'fast unsupported' }],
+      speed: 'fast',
+    } as any),
+    /OpenAI API 400: .*priority tier unsupported/,
+  )
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]!.body.service_tier, 'priority')
+
+  requests.length = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    requests.push({
+      url: String(input),
+      authorization: headers.get('authorization'),
+      sessionId: headers.get('session-id'),
+      threadId: headers.get('thread-id'),
+      clientRequestId: headers.get('x-client-request-id'),
+      callerHeader: headers.get('x-caller-header'),
+      appHeader: headers.get('x-app'),
+      claudeSessionId: headers.get('x-claude-code-session-id'),
+      contentType: headers.get('content-type'),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    })
+    return new Response(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      },
+    )
+  }) as unknown as typeof fetch
   const headerClient = createOpenAICompatClient({
     apiKey: 'sk-test-api-key',
     maxRetries: 0,

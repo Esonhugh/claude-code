@@ -4,14 +4,17 @@ import {
   isFastModeEnabled,
 } from '../../utils/fastMode.js'
 import { shouldInferenceConfigCommandBeImmediate } from '../../utils/immediateCommand.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 
 const fast = {
   type: 'local-jsx',
   name: 'fast',
   get description() {
-    return `Toggle fast mode (${FAST_MODE_MODEL_DISPLAY} only)`
+    return getAPIProvider() === 'openai'
+      ? 'Toggle fast mode'
+      : `Toggle fast mode (${FAST_MODE_MODEL_DISPLAY} only)`
   },
-  availability: ['claude-ai', 'console'],
+  availability: ['claude-ai', 'console', 'chatgpt'],
   isEnabled: () => isFastModeEnabled(),
   get isHidden() {
     return !isFastModeEnabled()
