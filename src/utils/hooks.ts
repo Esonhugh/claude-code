@@ -151,11 +151,10 @@ import { execAgentHook } from './hooks/execAgentHook.js'
 import { execHttpHook } from './hooks/execHttpHook.js'
 import type { ShellCommand } from './ShellCommand.js'
 import {
-  getSessionHooks,
+  getSessionExecutionHooks,
   getSessionFunctionHooks,
-  getSessionHookCallback,
   clearSessionHooks,
-  type SessionDerivedHookMatcher,
+  type SessionExecutionHookMatcher,
   type FunctionHook,
 } from './hooks/sessionHooks.js'
 import type { AppState } from '../state/AppState.js'
@@ -1441,6 +1440,11 @@ type MatchedHook = {
   pluginId?: string
   skillRoot?: string
   hookSource?: string
+  sessionHook?: boolean
+  onHookSuccess?: (
+    hook: HookCommand | FunctionHook,
+    result: AggregatedHookResult,
+  ) => void
 }
 
 function isInternalHook(matched: MatchedHook): boolean {
@@ -1505,7 +1509,7 @@ function getHooksConfig(
   | FunctionHookMatcher
   | PluginHookMatcher
   | SkillHookMatcher
-  | SessionDerivedHookMatcher
+  | SessionExecutionHookMatcher
 > {
   // HookMatcher is a zod-stripped {matcher, hooks} so snapshot matchers can be
   // pushed directly without re-wrapping.
@@ -1515,7 +1519,7 @@ function getHooksConfig(
     | FunctionHookMatcher
     | PluginHookMatcher
     | SkillHookMatcher
-    | SessionDerivedHookMatcher
+    | SessionExecutionHookMatcher
   > = [...(getHooksConfigFromSnapshot()?.[hookEvent] ?? [])]
 
   // Check if only managed hooks should run (used for both registered and session hooks)
@@ -1545,9 +1549,11 @@ function getHooksConfig(
   // plugin-provided agents' frontmatter hooks, which is too broad.
   // Also skip if appState not provided (for backwards compatibility)
   if (!managedOnly && appState !== undefined) {
-    const sessionHooks = getSessionHooks(appState, sessionId, hookEvent).get(
+    const sessionHooks = getSessionExecutionHooks(
+      appState,
+      sessionId,
       hookEvent,
-    )
+    ).get(hookEvent)
     if (sessionHooks) {
       // SessionDerivedHookMatcher already includes optional skillRoot
       for (const matcher of sessionHooks) {
@@ -1706,12 +1712,17 @@ export async function getMatchingHooks(
             ? `skill:${matcher.skillName}`
             : 'skill'
           : 'settings'
-      return matcher.hooks.map(hook => ({
+      return matcher.hooks.map((hook, index) => ({
         hook,
         pluginRoot,
         pluginId,
         skillRoot,
         hookSource,
+        sessionHook: 'sessionHook' in matcher && matcher.sessionHook === true,
+        onHookSuccess:
+          'onHookSuccesses' in matcher
+            ? matcher.onHookSuccesses[index]
+            : undefined,
       }))
     })
 
@@ -2521,6 +2532,29 @@ async function* executeHooks({
         return
       }
 
+      // Exit code 2 always blocks, regardless of whether stdout contains JSON.
+      if (result.status === 2) {
+        emitHookResponse({
+          hookId,
+          hookName,
+          hookEvent,
+          output: result.output,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.status,
+          outcome: 'error',
+        })
+        yield {
+          blockingError: {
+            blockingError: `[${hook.command}]: ${result.stderr || 'No stderr output'}`,
+            command: hook.command,
+          },
+          outcome: 'blocking' as const,
+          hook,
+        }
+        return
+      }
+
       // Try JSON parsing first
       const { json, plainText, validationError } = parseHookOutput(
         result.stdout,
@@ -2672,29 +2706,6 @@ async function* executeHooks({
         return
       }
 
-      // Hooks with exit code 2 provide blocking feedback
-      if (result.status === 2) {
-        emitHookResponse({
-          hookId,
-          hookName,
-          hookEvent,
-          output: result.output,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.status,
-          outcome: 'error',
-        })
-        yield {
-          blockingError: {
-            blockingError: `[${hook.command}]: ${result.stderr || 'No stderr output'}`,
-            command: hook.command,
-          },
-          outcome: 'blocking' as const,
-          hook,
-        }
-        return
-      }
-
       // Any other non-zero exit code is a non-critical error that should just
       // be shown to the user.
       emitHookResponse({
@@ -2770,9 +2781,18 @@ async function* executeHooks({
 
   let permissionBehavior: PermissionResult['behavior'] | undefined
 
-  // Run all hooks in parallel and wait for all to complete
-  const unmatchedHooks = [...matchingHooks]
-  for await (const result of all(hookPromises)) {
+  // Run all hooks in parallel and preserve each result's original matcher.
+  // Hook objects may be shared across session hook sources, so object identity
+  // alone cannot safely attribute out-of-order completions to their callbacks.
+  const unmatchedHookIndices = new Set(matchingHooks.keys())
+  const hookResults = hookPromises.map((hookPromise, hookIndex) =>
+    (async function* () {
+      for await (const result of hookPromise) {
+        yield { result, hookIndex }
+      }
+    })(),
+  )
+  for await (const { result, hookIndex } of all(hookResults)) {
     outcomes[result.outcome]++
 
     // Check for preventContinuation early
@@ -2787,13 +2807,9 @@ async function* executeHooks({
     }
 
     // Handle different result types
-    const matchedHookIndex = unmatchedHooks.findIndex(
-      entry => entry.hook === result.hook,
-    )
-    const matchedHook =
-      matchedHookIndex < 0
-        ? undefined
-        : unmatchedHooks.splice(matchedHookIndex, 1)[0]
+    const matchedHook = unmatchedHookIndices.delete(hookIndex)
+      ? matchingHooks[hookIndex]
+      : undefined
     const promptHookResult =
       result.hook.type === 'prompt'
         ? {
@@ -2952,27 +2968,16 @@ async function* executeHooks({
       }
     }
 
-    // Invoke session hook callback if this is a command/prompt/function hook (not a callback hook)
-    if (appState && result.hook.type !== 'callback') {
-      // Use empty string as matcher when matchQuery is undefined (e.g., for Stop hooks)
-      const matcher = matchQuery ?? ''
-      const hookEntry = getSessionHookCallback(
-        appState,
-        sessionId,
-        hookEvent,
-        matcher,
-        result.hook,
-        matchedHook?.skillRoot,
-      )
-      // Invoke onHookSuccess only on success outcome
-      if (hookEntry?.onHookSuccess && result.outcome === 'success') {
-        try {
-          hookEntry.onHookSuccess(result.hook, result as AggregatedHookResult)
-        } catch (error) {
-          logError(
-            Error('Session hook success callback failed', { cause: error }),
-          )
-        }
+    if (
+      result.hook.type !== 'callback' &&
+      matchedHook?.sessionHook &&
+      matchedHook.onHookSuccess &&
+      result.outcome === 'success'
+    ) {
+      try {
+        matchedHook.onHookSuccess(result.hook, result as AggregatedHookResult)
+      } catch (error) {
+        logError(Error('Session hook success callback failed', { cause: error }))
       }
     }
   }

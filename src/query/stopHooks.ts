@@ -52,7 +52,6 @@ import { getTaskListId, listTasks } from '../utils/tasks.js'
 import {
   addSessionHook,
   getSessionHookBySource,
-  getSessionHookCallback,
 } from '../utils/hooks/sessionHooks.js'
 import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 
@@ -227,6 +226,15 @@ export async function* handleStopHooks(
   try {
     const blockingErrors = []
     const appState = toolUseContext.getAppState()
+    const goalHookAtStart = activeGoalBeforeHooks.active
+      ? getSessionHookBySource(
+          appState,
+          sessionId,
+          'Stop',
+          '',
+          GOAL_HOOK_ID,
+        )
+      : undefined
     const permissionMode = appState.toolPermissionContext.mode
 
     const generator = executeStopHooks(
@@ -303,32 +311,18 @@ export async function* handleStopHooks(
                 hasOutput = true
               }
 
-              const currentState = toolUseContext.getAppState()
-              const goalHookEntry =
+              const isOriginatingGoalHook =
                 attachment.hookEvent === 'Stop' &&
-                result.hook?.type === 'prompt'
-                  ? getSessionHookCallback(
-                      currentState,
-                      sessionId,
-                      'Stop',
-                      '',
-                      result.hook,
-                      GOAL_HOOK_ID,
-                    )
-                  : undefined
-              const activeGoal = currentState.goalStatus
-              if (
-                goalHookEntry?.skillRoot === GOAL_HOOK_ID &&
-                activeGoal.active &&
-                goalHookEntry.onHookSuccess
-              ) {
+                result.hook?.type === 'prompt' &&
+                goalHookAtStart?.hook === result.hook
+              if (isOriginatingGoalHook && activeGoalBeforeHooks.active) {
                 let goalAttachment: GoalStatusAttachment | undefined
                 clearGoalOnHookSuccess(
                   {
                     setAppState: toolUseContext.setAppState,
                     sessionId,
-                    goalId: activeGoal.id,
-                    condition: activeGoal.prompt,
+                    goalId: activeGoalBeforeHooks.id,
+                    condition: activeGoalBeforeHooks.prompt,
                     appendGoalStatusAttachment: (completedAttachment) => {
                       goalAttachment = completedAttachment
                     },
@@ -370,31 +364,17 @@ export async function* handleStopHooks(
         yield userMessage
         hasOutput = true
 
-        const currentState = toolUseContext.getAppState()
-        const goalHookEntry =
-          result.hook?.type === 'prompt'
-            ? getSessionHookCallback(
-                currentState,
-                sessionId,
-                'Stop',
-                '',
-                result.hook,
-                GOAL_HOOK_ID,
-              )
-            : undefined
-        const activeGoal = currentState.goalStatus
-        if (
-          goalHookEntry?.skillRoot === GOAL_HOOK_ID &&
-          activeGoal.active &&
-          goalHookEntry.onHookSuccess
-        ) {
+        const isOriginatingGoalHook =
+          result.hook?.type === 'prompt' &&
+          goalHookAtStart?.hook === result.hook
+        if (isOriginatingGoalHook && activeGoalBeforeHooks.active) {
           let goalAttachment
           recordGoalHookBlock(
             {
               setAppState: toolUseContext.setAppState,
               sessionId,
-              goalId: activeGoal.id,
-              condition: activeGoal.prompt,
+              goalId: activeGoalBeforeHooks.id,
+              condition: activeGoalBeforeHooks.prompt,
               appendGoalStatusAttachment: (attachment) => {
                 goalAttachment = attachment
               },

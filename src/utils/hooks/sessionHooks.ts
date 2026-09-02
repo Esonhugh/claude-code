@@ -307,6 +307,11 @@ export type SessionDerivedHookMatcher = {
   skillRoot?: string
 }
 
+export type SessionExecutionHookMatcher = SessionDerivedHookMatcher & {
+  sessionHook: true
+  onHookSuccesses: Array<OnHookSuccess | undefined>
+}
+
 /**
  * Convert session hook matchers to regular hook matchers
  * @param sessionMatchers The session hook matchers to convert
@@ -318,11 +323,25 @@ function convertToHookMatchers(
   return sessionMatchers.map((sm) => ({
     matcher: sm.matcher,
     skillRoot: sm.skillRoot,
-    // Filter out function hooks - they can't be persisted to HookMatcher format
-    hooks: sm.hooks.flatMap(({ hook }) =>
-      hook.type === 'function' ? [] : [{ ...hook }],
-    ),
+    hooks: sm.hooks
+      .map(({ hook }) => hook)
+      .filter((hook): hook is HookCommand => hook.type !== 'function'),
   }))
+}
+
+function convertToExecutionHookMatchers(
+  sessionMatchers: SessionHookMatcher[],
+): SessionExecutionHookMatcher[] {
+  return sessionMatchers.map((sm) => {
+    const commandHooks = sm.hooks.filter(({ hook }) => hook.type !== 'function')
+    return {
+      matcher: sm.matcher,
+      skillRoot: sm.skillRoot,
+      sessionHook: true,
+      hooks: commandHooks.map(({ hook }) => hook) as HookCommand[],
+      onHookSuccesses: commandHooks.map(({ onHookSuccess }) => onHookSuccess),
+    }
+  })
 }
 
 /**
@@ -337,17 +356,44 @@ export function getSessionHooks(
   sessionId: string,
   event?: HookEvent,
 ): Map<HookEvent, SessionDerivedHookMatcher[]> {
+  return getSessionHooksWithConverter(
+    appState,
+    sessionId,
+    convertToHookMatchers,
+    event,
+  )
+}
+
+export function getSessionExecutionHooks(
+  appState: AppState,
+  sessionId: string,
+  event?: HookEvent,
+): Map<HookEvent, SessionExecutionHookMatcher[]> {
+  return getSessionHooksWithConverter(
+    appState,
+    sessionId,
+    convertToExecutionHookMatchers,
+    event,
+  )
+}
+
+function getSessionHooksWithConverter<T>(
+  appState: AppState,
+  sessionId: string,
+  convert: (matchers: SessionHookMatcher[]) => T[],
+  event?: HookEvent,
+): Map<HookEvent, T[]> {
   const store = appState.sessionHooks.get(sessionId)
   if (!store) {
     return new Map()
   }
 
-  const result = new Map<HookEvent, SessionDerivedHookMatcher[]>()
+  const result = new Map<HookEvent, T[]>()
 
   if (event) {
     const sessionMatchers = store.hooks[event]
     if (sessionMatchers) {
-      result.set(event, convertToHookMatchers(sessionMatchers))
+      result.set(event, convert(sessionMatchers))
     }
     return result
   }
@@ -355,7 +401,7 @@ export function getSessionHooks(
   for (const evt of HOOK_EVENTS) {
     const sessionMatchers = store.hooks[evt]
     if (sessionMatchers) {
-      result.set(evt, convertToHookMatchers(sessionMatchers))
+      result.set(evt, convert(sessionMatchers))
     }
   }
 
@@ -451,52 +497,6 @@ export function getSessionHookBySource(
   return hookEntry ? { ...hookEntry, skillRoot } : undefined
 }
 
-export function getSessionHookCallback(
-  appState: AppState,
-  sessionId: string,
-  event: HookEvent,
-  matcher: string,
-  hook: HookCommand | FunctionHook,
-  skillRoot?: string,
-):
-  | {
-      hook: HookCommand | FunctionHook
-      onHookSuccess?: OnHookSuccess
-      skillRoot?: string
-    }
-  | undefined {
-  const store = appState.sessionHooks.get(sessionId)
-  if (!store) {
-    return undefined
-  }
-
-  const eventMatchers = store.hooks[event]
-  if (!eventMatchers) {
-    return undefined
-  }
-
-  // Prefer exact object identity, then fall back to structural equality for
-  // callers that reconstruct a hook value. skillRoot identifies the source
-  // when two skills register structurally identical hooks.
-  for (const requireIdentity of [true, false]) {
-    for (const matcherEntry of eventMatchers) {
-      if (
-        (matcherEntry.matcher !== matcher && matcher !== '') ||
-        (skillRoot !== undefined && matcherEntry.skillRoot !== skillRoot)
-      ) {
-        continue
-      }
-      const hookEntry = matcherEntry.hooks.find((entry) =>
-        requireIdentity ? entry.hook === hook : isHookEqual(entry.hook, hook),
-      )
-      if (hookEntry) {
-        return { ...hookEntry, skillRoot: matcherEntry.skillRoot }
-      }
-    }
-  }
-
-  return undefined
-}
 
 /**
  * Clear all session hooks for a specific session

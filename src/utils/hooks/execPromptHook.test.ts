@@ -21,7 +21,9 @@ let hookResponse: {
 const claudeApi = await import('../../services/api/claude.js')
 type HookQuery = Parameters<typeof claudeApi.queryModelWithoutStreaming>[0]
 const hookQueries: HookQuery[] = []
-const queuedResponses: AssistantMessage[] = []
+const queuedResponses: Array<
+  AssistantMessage | (() => Promise<AssistantMessage>)
+> = []
 
 function assistantResponse(
   content: string,
@@ -54,9 +56,10 @@ mock.module('../../services/api/claude.js', () => ({
   ...claudeApi,
   queryModelWithoutStreaming: async (params: HookQuery) => {
     hookQueries.push(params)
-    return (
-      queuedResponses.shift() ?? assistantResponse(JSON.stringify(hookResponse))
-    )
+    const response = queuedResponses.shift()
+    return typeof response === 'function'
+      ? response()
+      : (response ?? assistantResponse(JSON.stringify(hookResponse)))
   },
 }))
 
@@ -256,6 +259,70 @@ describe('handleStopHooks Goal lifecycle', () => {
     ).toBeUndefined()
   })
 
+  test.each([
+    ['success', { ok: true, reason: 'complete' }],
+    ['block', { ok: false, reason: 'work remains' }],
+    [
+      'impossible',
+      { ok: false, impossible: true, reason: 'cannot be completed' },
+    ],
+  ] as const)(
+    'stale Goal %s result does not mutate a same-condition replacement',
+    async (_outcome, response) => {
+      const testContext = createStopHookContext()
+      registerGoalStopHook({
+        setAppState: testContext.toolUseContext.setAppState,
+        sessionId: getSessionId(),
+        goalId: 'goal-stop-hooks',
+        condition: 'finish tests',
+        appendGoalStatusAttachment: () => {},
+      })
+      let releaseResponse: (() => void) | undefined
+      queuedResponses.push(
+        () =>
+          new Promise(resolve => {
+            releaseResponse = () =>
+              resolve(assistantResponse(JSON.stringify(response)))
+          }),
+      )
+
+      const pending = drainStopHooks(testContext.toolUseContext)
+      while (!releaseResponse) await Promise.resolve()
+
+      const replacement = createActiveGoalStatus(
+        'replacement-goal',
+        'finish tests',
+        2000,
+        20,
+      )
+      testContext.toolUseContext.setAppState(prev => ({
+        ...prev,
+        goalStatus: replacement,
+      }))
+      registerGoalStopHook({
+        setAppState: testContext.toolUseContext.setAppState,
+        sessionId: getSessionId(),
+        goalId: replacement.id,
+        condition: replacement.prompt,
+        appendGoalStatusAttachment: () => {},
+      })
+      releaseResponse()
+
+      const result = await pending
+      expect(testContext.getState().goalStatus).toEqual(replacement)
+      expect(goalAttachments(result.events)).toEqual([])
+      expect(
+        getSessionHooks(testContext.getState(), getSessionId()).get('Stop'),
+      ).toEqual([
+        {
+          matcher: '',
+          skillRoot: GOAL_HOOK_ID,
+          hooks: [{ type: 'prompt', prompt: 'finish tests' }],
+        },
+      ])
+    },
+  )
+
   test('Goal impossible verdict yields failed terminal state once', async () => {
     const testContext = createStopHookContext()
     registerGoalStopHook({
@@ -434,6 +501,33 @@ describe('session prompt hook identity', () => {
     expect(callbacks).toEqual(['agent'])
   })
 
+  test('wildcard session hooks invoke their originating callback', async () => {
+    const testContext = createStopHookContext()
+    const callbacks: string[] = []
+    addSessionHook(
+      testContext.toolUseContext.setAppState,
+      getSessionId(),
+      'PostToolUse',
+      '*',
+      { type: 'prompt', prompt: 'wildcard check' },
+      () => callbacks.push('wildcard'),
+      '/wildcard-skill',
+    )
+    hookResponse = { ok: true, reason: 'verified' }
+
+    for await (const _result of executePostToolHooks(
+      'Bash',
+      'tool-wildcard',
+      { command: 'true' },
+      { ok: true },
+      testContext.toolUseContext,
+    )) {
+      // consume the complete hook batch
+    }
+
+    expect(callbacks).toEqual(['wildcard'])
+  })
+
   test('identical hooks invoke their originating skill callbacks', async () => {
     const testContext = createStopHookContext()
     const callbacks: string[] = []
@@ -470,6 +564,49 @@ describe('session prompt hook identity', () => {
     }
 
     expect(callbacks).toEqual(['skill-a', 'skill-b'])
+  })
+
+  test('identical hooks retain their source callback when completions reorder', async () => {
+    const testContext = createStopHookContext()
+    const callbacks: string[] = []
+    const sharedHook: PromptHook = { type: 'prompt', prompt: 'shared check' }
+    queuedResponses.push(
+      async () => {
+        await new Promise<void>(resolve => setTimeout(resolve, 50))
+        return assistantResponse(JSON.stringify({ ok: true, reason: 'a' }))
+      },
+      assistantResponse(JSON.stringify({ ok: true, reason: 'b' })),
+    )
+    addSessionHook(
+      testContext.toolUseContext.setAppState,
+      getSessionId(),
+      'PostToolUse',
+      'Bash',
+      sharedHook,
+      () => callbacks.push('skill-a'),
+      '/skill-a',
+    )
+    addSessionHook(
+      testContext.toolUseContext.setAppState,
+      getSessionId(),
+      'PostToolUse',
+      'Bash',
+      sharedHook,
+      () => callbacks.push('skill-b'),
+      '/skill-b',
+    )
+
+    for await (const _result of executePostToolHooks(
+      'Bash',
+      'tool-reordered-skills',
+      { command: 'true' },
+      { ok: true },
+      testContext.toolUseContext,
+    )) {
+      // consume the complete hook batch
+    }
+
+    expect(callbacks).toEqual(['skill-b', 'skill-a'])
   })
 
   test('source-scoped removal preserves an identical hook from another skill', () => {
@@ -517,6 +654,42 @@ describe('session prompt hook identity', () => {
         hooks: [sharedHookB],
       },
     ])
+  })
+})
+
+describe('command hook blocking semantics', () => {
+  test('exit code 2 blocks even when stdout is valid hook JSON', async () => {
+    const testContext = createStopHookContext()
+    addSessionHook(
+      testContext.toolUseContext.setAppState,
+      getSessionId(),
+      'PostToolUse',
+      'Bash',
+      {
+        type: 'command',
+        command:
+          `printf '{"continue":true}\\n'; printf 'blocked by command hook\\n' >&2; exit 2`,
+      },
+    )
+
+    const results = []
+    for await (const result of executePostToolHooks(
+      'Bash',
+      'tool-command-block',
+      { command: 'true' },
+      { ok: true },
+      testContext.toolUseContext,
+    )) {
+      results.push(result)
+    }
+
+    expect(results).toContainEqual(
+      expect.objectContaining({
+        blockingError: expect.objectContaining({
+          blockingError: expect.stringContaining('blocked by command hook'),
+        }),
+      }),
+    )
   })
 })
 
