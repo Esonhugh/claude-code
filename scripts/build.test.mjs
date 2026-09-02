@@ -13,6 +13,10 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, URL } from 'node:url';
 import { getEnabledFeatures, macroValues } from './build.mjs';
 import { feature } from './shims/bun-bundle.js';
+import imageProcessor, {
+  getNativeModule,
+  sharp,
+} from './shims/image-processor-napi.js';
 
 assert.equal(getEnabledFeatures('').has('AGENT_TRIGGERS'), true);
 assert.equal(getEnabledFeatures('').has('MCP_SKILLS'), true);
@@ -31,6 +35,12 @@ assert.equal(
 assert.equal(feature('AGENT_TRIGGERS'), true);
 assert.equal(feature('MCP_SKILLS'), true);
 assert.equal(feature('SSH_REMOTE'), true);
+assert.equal(getNativeModule(), null);
+assert.equal(sharp, imageProcessor);
+assert.throws(
+  () => imageProcessor(),
+  /Native image processor module not available/,
+);
 assert.equal(
   macroValues['MACRO.PACKAGE_URL'],
   JSON.stringify('@esonhugh/claude-code'),

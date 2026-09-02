@@ -25,6 +25,10 @@ const colorDiffFallbackPath = path.join(
   projectDir,
   'src/native-ts/color-diff/index.ts',
 );
+const imageProcessorFallbackPath = path.join(
+  projectDir,
+  'scripts/shims/image-processor-napi.js',
+);
 const defaultVersion = '0.0.0-dev';
 const buildVersion = String(
   process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
@@ -39,7 +43,6 @@ const unavailablePackagePrefixes = [
   '@ant/',
   'audio-capture-napi',
   'audio-capture.node',
-  'image-processor-napi',
   'modifiers-napi',
   'url-handler-napi',
 ];
@@ -172,6 +175,10 @@ const recoveryResolver = {
 
     pluginBuild.onResolve({ filter: /^color-diff-napi$/ }, () => ({
       path: colorDiffFallbackPath,
+    }));
+
+    pluginBuild.onResolve({ filter: /^image-processor-napi$/ }, () => ({
+      path: imageProcessorFallbackPath,
     }));
 
     pluginBuild.onResolve({ filter: /^[^./@#]|^\@/ }, args => {
