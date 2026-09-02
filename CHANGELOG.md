@@ -42,6 +42,7 @@
 - `b1a6437` — 将 SSH 部署块增大到 16 MiB，减少分块传输开销。
 - `561022a` — 对齐 Goal resume 的 fresh metrics epoch 和内联生命周期提示。
 - `7b1ecb8` — 为 ClearGoal tool 显示调用与结果消息。
+- `42134af` — 修复 ClearGoal 结果消息未使用 Ink `Text` 渲染导致的交互式崩溃。
 
 ### 变更内容
 
