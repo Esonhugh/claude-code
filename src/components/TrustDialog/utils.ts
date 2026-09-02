@@ -1,9 +1,131 @@
+import { isAbsolute } from 'path'
+import stripAnsi from 'strip-ansi'
 import type { PermissionRule } from 'src/utils/permissions/PermissionRule.js'
-import { getSettingsForSource } from 'src/utils/settings/settings.js'
+import {
+  getRelativeSettingsFilePathForSource,
+  getSettingsForSource,
+} from 'src/utils/settings/settings.js'
+import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
 import type { SettingsJson } from 'src/utils/settings/types.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { SAFE_ENV_VARS } from '../../utils/managedEnvConstants.js'
-import { getPermissionRulesForSource } from '../../utils/permissions/permissionsLoader.js'
+import {
+  getPermissionRulesForSource,
+  shouldAllowManagedPermissionRulesOnly,
+} from '../../utils/permissions/permissionsLoader.js'
+import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js'
+import { partiallySanitizeUnicode } from '../../utils/sanitization.js'
+
+const PROJECT_SETTING_SOURCES = [
+  'projectSettings',
+  'localSettings',
+] as const
+const DISPLAY_VALUE_MAX_LENGTH = 60
+const HIGH_IMPACT_TOOLS = new Set([
+  BASH_TOOL_NAME,
+  'PowerShell',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'WebFetch',
+  'WebSearch',
+])
+
+export type TrustSettingSummary = {
+  values: string[]
+  sources: string[]
+  rawCount: number
+}
+
+function normalizeDisplayValue(value: string): string {
+  return [...partiallySanitizeUnicode(stripAnsi(value))]
+    .filter(character => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint > 0x1f && !(codePoint >= 0x7f && codePoint <= 0x9f)
+    })
+    .join('')
+    .trim()
+}
+
+function truncateDisplayValue(value: string): string {
+  const characters = [...value]
+  return characters.length > DISPLAY_VALUE_MAX_LENGTH
+    ? `${characters.slice(0, DISPLAY_VALUE_MAX_LENGTH).join('')}…`
+    : value
+}
+
+function summarizeDisplayValues(values: string[]): string[] {
+  const uniqueValues = [
+    ...new Set(values.map(normalizeDisplayValue).filter(Boolean)),
+  ]
+  return uniqueValues.map(truncateDisplayValue)
+}
+
+function permissionRiskOrder(rule: PermissionRule): number {
+  const { toolName, ruleContent } = rule.ruleValue
+  const highImpact =
+    HIGH_IMPACT_TOOLS.has(toolName) || toolName.startsWith('mcp__')
+  if (highImpact) return ruleContent === undefined ? 0 : 1
+  return ruleContent === undefined ? 2 : 3
+}
+
+export function getProjectPermissionSummary(): TrustSettingSummary {
+  if (shouldAllowManagedPermissionRulesOnly()) {
+    return { values: [], sources: [], rawCount: 0 }
+  }
+
+  const sources: string[] = []
+  const rules: PermissionRule[] = []
+
+  for (const source of PROJECT_SETTING_SOURCES) {
+    if (!isSettingSourceEnabled(source)) continue
+    const allowRules = getPermissionRulesForSource(source).filter(
+      rule => rule.ruleBehavior === 'allow',
+    )
+    if (allowRules.length) {
+      sources.push(getRelativeSettingsFilePathForSource(source))
+      rules.push(...allowRules)
+    }
+  }
+
+  const rawCount = rules.length
+  rules.sort(
+    (left, right) => permissionRiskOrder(left) - permissionRiskOrder(right),
+  )
+  const values = summarizeDisplayValues(
+    rules.map(rule => permissionRuleValueToString(rule.ruleValue)),
+  )
+  return { values, sources, rawCount }
+}
+
+export function getProjectDirectorySummary(): TrustSettingSummary {
+  const sources: string[] = []
+  const directories: string[] = []
+
+  for (const source of PROJECT_SETTING_SOURCES) {
+    if (!isSettingSourceEnabled(source)) continue
+    const configuredDirectories =
+      getSettingsForSource(source)?.permissions?.additionalDirectories ?? []
+    if (configuredDirectories.length) {
+      sources.push(getRelativeSettingsFilePathForSource(source))
+      directories.push(...configuredDirectories)
+    }
+  }
+
+  const rawCount = directories.length
+  const values = summarizeDisplayValues(directories)
+  values.sort((left, right) => {
+    const rank = (value: string) =>
+      isAbsolute(value) || value.startsWith('~')
+        ? 0
+        : value.includes('..')
+          ? 1
+          : 2
+    return rank(left) - rank(right)
+  })
+  return { values, sources, rawCount }
+}
 
 function hasHooks(settings: SettingsJson | null): boolean {
   if (settings === null || settings.disableAllHooks) {

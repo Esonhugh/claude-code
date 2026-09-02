@@ -8,6 +8,8 @@ import { Box, Link, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import { getMcpConfigsByScope } from '../../services/mcp/config.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { plural } from '../../utils/stringUtils.js'
+import { StatusIcon } from '../design-system/StatusIcon.js'
 import {
   checkHasTrustDialogAccepted,
   saveCurrentProjectConfig,
@@ -22,9 +24,12 @@ import {
   getAwsCommandsSources,
   getBashPermissionSources,
   getDangerousEnvVarsSources,
+  formatListWithAnd,
   getGcpCommandsSources,
   getHooksSources,
   getOtelHeadersHelperSources,
+  getProjectDirectorySummary,
+  getProjectPermissionSummary,
 } from './utils.js'
 
 type Props = {
@@ -91,6 +96,8 @@ export function TrustDialog({ onDone, commands }: Props): React.ReactNode {
 
   const hasAnyBashExecution =
     bashSettingSources.length > 0 || hasSlashCommandBash || hasSkillsBash
+  const permissionSummary = getProjectPermissionSummary()
+  const directorySummary = getProjectDirectorySummary()
 
   const hasTrustDialogAccepted = checkHasTrustDialogAccepted()
 
@@ -201,6 +208,52 @@ export function TrustDialog({ onDone, commands }: Props): React.ReactNode {
         <Text>
           Claude Code{"'"}ll be able to read, edit, and execute files here.
         </Text>
+
+        {(permissionSummary.rawCount > 0 || directorySummary.rawCount > 0) && (
+          <Box flexDirection="column">
+            {permissionSummary.rawCount > 0 && (
+              <>
+                <Text bold color="warning">
+                  <StatusIcon status="warning" withSpace />
+                  This folder pre-approves {permissionSummary.rawCount}{' '}
+                  {plural(permissionSummary.rawCount, 'tool permission')} in{' '}
+                  {formatListWithAnd(permissionSummary.sources)}:
+                </Text>
+                <Text>
+                  {'  '}
+                  {permissionSummary.values.length
+                    ? formatListWithAnd(permissionSummary.values, 8)
+                    : '(rule names contain unprintable characters)'}
+                </Text>
+              </>
+            )}
+            {directorySummary.rawCount > 0 && (
+              <>
+                <Text bold color="warning">
+                  <StatusIcon status="warning" withSpace />
+                  This folder adds {directorySummary.rawCount}{' '}
+                  {plural(
+                    directorySummary.rawCount,
+                    'directory',
+                    'directories',
+                  )}{' '}
+                  to the workspace in{' '}
+                  {formatListWithAnd(directorySummary.sources)}:
+                </Text>
+                <Text>
+                  {'  '}
+                  {directorySummary.values.length
+                    ? formatListWithAnd(directorySummary.values, 6)
+                    : '(directory names contain unprintable characters)'}
+                </Text>
+              </>
+            )}
+            <Text dimColor>
+              These will apply without asking. Only proceed if you trust this
+              configuration.
+            </Text>
+          </Box>
+        )}
 
         <Text dimColor>
           <Link url="https://code.claude.com/docs/en/security">
