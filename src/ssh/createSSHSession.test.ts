@@ -647,7 +647,10 @@ describe('fork remote binary', () => {
     assert.match(source, /ControlMaster=auto/)
     assert.match(source, /ControlPersist=10m/)
     assert.match(source, /const SSH_DEPLOY_CHUNK_SIZE = 2 \* 1024 \* 1024/)
-    assert.match(source, /baseSSHArgs\(connection, \{ multiplex: false \}\)/)
+    assert.match(
+      source,
+      /\[\.\.\.baseSSHArgs\(connection\), '--', connection\.host, command\]/,
+    )
     assert.match(source, /const chunkChecksum = createHash\('sha256'\)/)
     assert.match(source, /proc\.stdin!\.end\(buffer\)/)
     assert.match(source, /sha256sum "\$chunk"/)

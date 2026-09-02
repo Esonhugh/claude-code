@@ -451,11 +451,7 @@ export async function createLocalSSHSession(
   }
 }
 
-function baseSSHArgs(
-  connection: SSHConnection,
-  options: { multiplex?: boolean } = {},
-): string[] {
-  const multiplex = options.multiplex ?? true
+function baseSSHArgs(connection: SSHConnection): string[] {
   return [
     '-o',
     'BatchMode=yes',
@@ -467,7 +463,7 @@ function baseSSHArgs(
     'ServerAliveInterval=15',
     '-o',
     'ServerAliveCountMax=3',
-    ...(multiplex && connection.controlPath
+    ...(connection.controlPath
       ? [
           '-o',
           'ControlMaster=auto',
@@ -721,12 +717,7 @@ async function uploadBinary(
         const command = `set -eu; chunk=${quote([`${temporary}.chunk`])}; expected=${quote([chunkChecksum])}; trap 'rm -f -- "$chunk"' EXIT HUP INT TERM; cat > "$chunk"; actual=$(sha256sum "$chunk"); actual=${'${actual%% *}'}; test "$actual" = "$expected"; cat "$chunk" >> ${quote([temporary])}; rm -f -- "$chunk"; trap - EXIT HUP INT TERM`
         const proc = spawn(
           'ssh',
-          [
-            ...baseSSHArgs(connection, { multiplex: false }),
-            '--',
-            connection.host,
-            command,
-          ],
+          [...baseSSHArgs(connection), '--', connection.host, command],
           { stdio: ['pipe', 'pipe', 'pipe'] },
         )
         let stderr = ''
