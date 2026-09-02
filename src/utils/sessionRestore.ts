@@ -4,6 +4,7 @@ import { dirname } from 'path'
 import {
   getMainLoopModelOverride,
   getSessionId,
+  getTotalOutputTokens,
   setMainLoopModelOverride,
   setMainThreadAgentType,
   setOriginalCwd,
@@ -156,8 +157,14 @@ export function restoreSessionStateFromLog(
 export function restoreGoalSessionFromLog(
   messages: Message[],
   setAppState: (f: (prev: AppState) => AppState) => void,
+  resetTokenBaseline = false,
 ): void {
-  restoreGoalFromTranscript(messages, setAppState, Date.now)
+  restoreGoalFromTranscript(
+    messages,
+    setAppState,
+    Date.now,
+    resetTokenBaseline ? getTotalOutputTokens() : undefined,
+  )
   restoreGoalStopHook(setAppState, attachment => {
     void recordTranscript([createAttachmentMessage(attachment)])
   })
@@ -447,6 +454,7 @@ export async function processResumedConversation(
   }
 
   // Reuse the resumed session's ID unless --fork-session is specified
+  let resetGoalTokenBaseline = true
   if (!opts.forkSession) {
     const sid = opts.sessionIdOverride ?? result.sessionId
     if (sid) {
@@ -461,7 +469,7 @@ export async function processResumedConversation(
       // getSessionRecordingPaths() can discover it during /share
       await renameRecordingForSession()
       await resetSessionFilePointer()
-      restoreCostStateForSession(sid)
+      resetGoalTokenBaseline = !restoreCostStateForSession(sid)
     }
   } else if (result.contentReplacements?.length) {
     // --fork-session keeps the fresh startup session ID. useLogMessages will
@@ -552,9 +560,13 @@ export async function processResumedConversation(
     ...(standaloneAgentContext && { standaloneAgentContext }),
     agentDefinitions: refreshedAgentDefs,
   }
-  restoreGoalSessionFromLog(result.messages, updater => {
-    initialState = updater(initialState)
-  })
+  restoreGoalSessionFromLog(
+    result.messages,
+    updater => {
+      initialState = updater(initialState)
+    },
+    resetGoalTokenBaseline,
+  )
 
   return {
     messages: result.messages,

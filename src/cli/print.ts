@@ -9,6 +9,7 @@ import {
 import { waitForRemoteManagedSettingsToLoad } from 'src/services/remoteManagedSettings/index.js'
 import { StructuredIO } from 'src/cli/structuredIO.js'
 import { RemoteIO } from 'src/cli/remoteIO.js'
+import { restoreCostStateForSession } from 'src/cost-tracker.js'
 import {
   type Command,
   formatDescriptionWithSource,
@@ -5230,6 +5231,7 @@ async function loadInitialMessages(
         }
 
         // Reuse the resumed session's ID
+        let resetGoalTokenBaseline = true
         if (!options.forkSession) {
           if (result.sessionId) {
             switchSession(
@@ -5239,10 +5241,17 @@ async function loadInitialMessages(
             if (persistSession) {
               await resetSessionFilePointer()
             }
+            resetGoalTokenBaseline = !restoreCostStateForSession(
+              result.sessionId,
+            )
           }
         }
         restoreSessionStateFromLog(result, setAppState)
-        restoreGoalSessionFromLog(result.messages, setAppState)
+        restoreGoalSessionFromLog(
+          result.messages,
+          setAppState,
+          resetGoalTokenBaseline,
+        )
 
         // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
         restoreSessionMetadata(
@@ -5433,6 +5442,7 @@ async function loadInitialMessages(
       }
 
       // Reuse the resumed session's ID
+      let resetGoalTokenBaseline = true
       if (!options.forkSession && result.sessionId) {
         switchSession(
           asSessionId(result.sessionId),
@@ -5441,9 +5451,14 @@ async function loadInitialMessages(
         if (persistSession) {
           await resetSessionFilePointer()
         }
+        resetGoalTokenBaseline = !restoreCostStateForSession(result.sessionId)
       }
       restoreSessionStateFromLog(result, setAppState)
-      restoreGoalSessionFromLog(result.messages, setAppState)
+      restoreGoalSessionFromLog(
+        result.messages,
+        setAppState,
+        resetGoalTokenBaseline,
+      )
 
       // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
       restoreSessionMetadata(

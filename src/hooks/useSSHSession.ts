@@ -196,7 +196,9 @@ export function useSSHSession({
               historyMessage.subtype === 'goal_state_changed',
           )
           if (lastGoalMessage) {
-            applyGoalStatusAttachment(lastGoalMessage.goal, setAppState)
+            applyGoalStatusAttachment(lastGoalMessage.goal, setAppState, Date.now, {
+              hydrateTerminal: true,
+            })
           } else {
             setAppState(prev =>
               prev.goalStatus.active

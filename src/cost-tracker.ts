@@ -126,7 +126,7 @@ export function getStoredSessionCosts(
 /**
  * Restores cost state from project config when resuming a session.
  * Only restores if the session ID matches the last saved session.
- * @returns true if cost state was restored, false otherwise
+ * @returns true if output-token usage was restored, false otherwise
  */
 export function restoreCostStateForSession(sessionId: string): boolean {
   const data = getStoredSessionCosts(sessionId)
@@ -134,7 +134,7 @@ export function restoreCostStateForSession(sessionId: string): boolean {
     return false
   }
   setCostStateForRestore(data)
-  return true
+  return data.modelUsage !== undefined
 }
 
 /**

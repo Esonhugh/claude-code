@@ -16,12 +16,11 @@ export function findGoalToRestore(
     if (!isGoalStatusAttachment(attachment)) continue
     if (
       attachment.status === 'active' &&
-      attachment.met !== true &&
-      attachment.failed !== true
+      (attachment.met === true || attachment.failed === true)
     ) {
-      return attachment
+      return null
     }
-    return null
+    return attachment
   }
   return null
 }
@@ -30,9 +29,11 @@ export function applyGoalStatusAttachment(
   attachment: GoalStatusAttachment,
   setAppState: (updater: (prev: AppState) => AppState) => void,
   now: () => number = Date.now,
+  { hydrateTerminal = false }: { hydrateTerminal?: boolean } = {},
 ): void {
   setAppState(prev => {
     if (attachment.status === 'active') {
+      if (attachment.met === true || attachment.failed === true) return prev
       const iterations = attachment.iterations ?? 0
       const lastReason = attachment.reason
       if (
@@ -63,7 +64,10 @@ export function applyGoalStatusAttachment(
       }
     }
 
-    if (!prev.goalStatus.active || prev.goalStatus.id !== attachment.id) {
+    if (
+      !hydrateTerminal &&
+      (!prev.goalStatus.active || prev.goalStatus.id !== attachment.id)
+    ) {
       return prev
     }
 
@@ -96,12 +100,20 @@ export function restoreGoalFromTranscript(
   messages: Message[],
   setAppState: (updater: (prev: AppState) => AppState) => void,
   now: () => number = () => 0,
+  tokensAtStartOverride?: number,
 ): void {
   const attachment = findGoalToRestore(messages)
   if (!attachment) {
     setAppState(prev =>
       prev.goalStatus.active ? { ...prev, goalStatus: { active: false } } : prev,
     )
+    return
+  }
+
+  if (attachment.status !== 'active') {
+    applyGoalStatusAttachment(attachment, setAppState, now, {
+      hydrateTerminal: true,
+    })
     return
   }
 
@@ -112,7 +124,7 @@ export function restoreGoalFromTranscript(
         attachment.id,
         attachment.condition,
         attachment.setAt ?? now(),
-        attachment.tokensAtStart,
+        tokensAtStartOverride ?? attachment.tokensAtStart,
       ),
       iterations: attachment.iterations ?? 0,
       ...(attachment.reason ? { lastReason: attachment.reason } : {}),

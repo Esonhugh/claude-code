@@ -906,10 +906,8 @@ export function setCostStateForRestore({
   STATE.totalLinesAdded = totalLinesAdded
   STATE.totalLinesRemoved = totalLinesRemoved
 
-  // Restore per-model usage breakdown
-  if (modelUsage) {
-    STATE.modelUsage = modelUsage
-  }
+  // Restore per-model usage breakdown, clearing stale usage for legacy records.
+  STATE.modelUsage = modelUsage ?? {}
 
   // Adjust startTime to make wall duration accumulate
   if (lastDuration) {

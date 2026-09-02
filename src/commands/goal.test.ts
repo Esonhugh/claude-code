@@ -3,9 +3,13 @@ import { randomUUID } from 'node:crypto'
 
 import {
   getSessionId,
+  getTotalOutputTokens,
+  resetCostState,
+  setCostStateForRestore,
   setIsInteractive,
   switchSession,
 } from '../bootstrap/state.js'
+import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
 import type { AttachmentMessage } from '../types/message.js'
 import type { PromptCommand } from '../types/command.js'
@@ -17,6 +21,7 @@ import {
   getSessionHooks,
 } from '../utils/hooks/sessionHooks.js'
 import { restoreGoalSessionFromLog } from '../utils/sessionRestore.js'
+import { saveCurrentProjectConfig } from '../utils/config.js'
 import { isLoggableMessage } from '../utils/sessionStorage.js'
 import { setCachedSettingsForSource } from '../utils/settings/settingsCache.js'
 import {
@@ -512,13 +517,82 @@ const metGoalAttachment: GoalStatusAttachment = {
   status: 'met',
   met: true,
 }
-assert.equal(
+assert.deepEqual(
   findGoalToRestore([
     goalAttachmentMessage(activeGoalAttachment),
     goalAttachmentMessage(metGoalAttachment),
   ]),
-  null,
+  metGoalAttachment,
 )
+
+const contradictoryActiveAttachment: GoalStatusAttachment = {
+  ...activeGoalAttachment,
+  id: 'contradictory-active',
+  met: true,
+}
+assert.equal(
+  findGoalToRestore([
+    goalAttachmentMessage(activeGoalAttachment),
+    goalAttachmentMessage(contradictoryActiveAttachment),
+  ]),
+  null,
+  'a terminal-marked active attachment must not reactivate an older goal',
+)
+const contradictoryRestoreContext = createContext({ active: false })
+restoreGoalFromTranscript(
+  [goalAttachmentMessage(contradictoryActiveAttachment)],
+  contradictoryRestoreContext.context.setAppState,
+)
+assert.deepEqual(contradictoryRestoreContext.getState().goalStatus, {
+  active: false,
+})
+
+const completedRestoreContext = createContext({ active: false })
+restoreGoalFromTranscript(
+  [
+    goalAttachmentMessage(activeGoalAttachment),
+    goalAttachmentMessage({
+      ...metGoalAttachment,
+      iterations: 2,
+      durationMs: 250,
+      tokens: 90,
+      reason: 'done',
+    }),
+  ],
+  completedRestoreContext.context.setAppState,
+  () => 500,
+)
+assert.deepEqual(completedRestoreContext.getState().goalStatus, {
+  active: false,
+  lastCompleted: {
+    id: 'restore-1',
+    prompt: 'restore me',
+    status: 'met',
+    completedAt: 500,
+    iterations: 2,
+    durationMs: 250,
+    tokens: 90,
+    reason: 'done',
+  },
+})
+
+const terminalOverrideContext = createContext(
+  createActiveGoalStatus('previous-session-goal', 'stale goal', 50, 10),
+)
+restoreGoalFromTranscript(
+  [goalAttachmentMessage(metGoalAttachment)],
+  terminalOverrideContext.context.setAppState,
+  () => 600,
+)
+assert.deepEqual(terminalOverrideContext.getState().goalStatus, {
+  active: false,
+  lastCompleted: {
+    id: 'restore-1',
+    prompt: 'restore me',
+    status: 'met',
+    completedAt: 600,
+  },
+})
 
 const restoreContext = createContext({ active: false })
 restoreGoalFromTranscript(
@@ -534,6 +608,36 @@ assert.deepEqual(restoreContext.getState().goalStatus, {
   setAt: 100,
   tokensAtStart: 25,
 })
+
+const forkRestoreContext = createContext({ active: false })
+restoreGoalFromTranscript(
+  [goalAttachmentMessage(activeGoalAttachment)],
+  forkRestoreContext.context.setAppState,
+  () => 0,
+  0,
+)
+assert.deepEqual(forkRestoreContext.getState().goalStatus, {
+  active: true,
+  id: 'restore-1',
+  prompt: 'restore me',
+  iterations: 0,
+  setAt: 100,
+  tokensAtStart: 0,
+})
+assert.equal(
+  createGoalStatusAttachment(
+    forkRestoreContext.getState().goalStatus as Extract<
+      GoalStatus,
+      { active: true }
+    >,
+    'met',
+    undefined,
+    200,
+    12,
+  ).tokens,
+  12,
+  'a forked resume must measure tokens from the fork token domain',
+)
 const restoredSessionId = 'restored-session'
 restoreGoalStopHook(
   restoreContext.context.setAppState,
@@ -664,6 +768,62 @@ assert.deepEqual(projectedGoalContext.getState().goalStatus, {
     reason: 'verification failed',
   },
 })
+
+setCostStateForRestore({
+  totalCostUSD: 0,
+  totalAPIDuration: 0,
+  totalAPIDurationWithoutRetries: 0,
+  totalToolDuration: 0,
+  totalLinesAdded: 0,
+  totalLinesRemoved: 0,
+  lastDuration: undefined,
+  modelUsage: {
+    stale: {
+      inputTokens: 1,
+      outputTokens: 41,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0,
+      contextWindow: 0,
+      maxOutputTokens: 0,
+      input_tokens: 1,
+      output_tokens: 41,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    },
+  },
+})
+saveCurrentProjectConfig(current => ({
+  ...current,
+  lastSessionId: 'legacy-cost-session',
+  lastCost: 1,
+  lastModelUsage: undefined,
+}))
+assert.equal(restoreCostStateForSession('legacy-cost-session'), false)
+assert.equal(
+  getTotalOutputTokens(),
+  0,
+  'a legacy cost record without model usage must reset a resumed Goal token baseline',
+)
+
+saveCurrentProjectConfig(current => ({
+  ...current,
+  lastSessionId: 'usage-cost-session',
+  lastModelUsage: {
+    restored: {
+      inputTokens: 2,
+      outputTokens: 17,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0,
+    },
+  },
+}))
+assert.equal(restoreCostStateForSession('usage-cost-session'), true)
+assert.equal(getTotalOutputTokens(), 17)
+resetCostState()
 
 assert.equal(
   goalCommand.shouldRegisterHooksForCommand?.('finish the feature'),

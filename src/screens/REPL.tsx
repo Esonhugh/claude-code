@@ -2602,7 +2602,11 @@ export function REPL({
         )
         await renameRecordingForSession()
         await resetSessionFilePointer()
-        restoreGoalSessionFromLog(messages, setAppState)
+        restoreGoalSessionFromLog(
+          messages,
+          setAppState,
+          entrypoint === 'fork' || !targetSessionCosts?.modelUsage,
+        )
 
         // Clear then restore session metadata so it's re-appended on exit via
         // reAppendSessionMetadata. clearSessionMetadata must be called first:
