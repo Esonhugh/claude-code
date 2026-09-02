@@ -36,6 +36,13 @@ function createContext(initial: GoalStatus, agentId?: string) {
 
 assert.equal(ClearGoalTool.name, CLEAR_GOAL_TOOL_NAME)
 assert.equal(ClearGoalTool.userFacingName(), CLEAR_GOAL_TOOL_NAME)
+assert.equal(
+  ClearGoalTool.renderToolUseMessage(
+    {},
+    { theme: 'dark', verbose: false },
+  ),
+  'Clear active goal',
+)
 
 const clearContext = createContext({
   active: true,
@@ -90,6 +97,14 @@ assert.deepEqual(
     content: 'Goal cleared: finish the feature',
   },
 )
+assert.equal(
+  ClearGoalTool.renderToolResultMessage?.(
+    clearResult.data,
+    [],
+    { theme: 'dark', tools: [], verbose: false },
+  ),
+  'Goal cleared: finish the feature',
+)
 
 const noGoalContext = createContext({ active: false })
 addSessionHook(
@@ -118,6 +133,14 @@ assert.equal(
     noGoalResult.data,
     'tool-use-no-goal',
   ).content,
+  'No goal set',
+)
+assert.equal(
+  ClearGoalTool.renderToolResultMessage?.(
+    noGoalResult.data,
+    [],
+    { theme: 'dark', tools: [], verbose: false },
+  ),
   'No goal set',
 )
 

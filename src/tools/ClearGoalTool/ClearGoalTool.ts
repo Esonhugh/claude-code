@@ -45,10 +45,10 @@ This clears the same state as /goal clear and removes the Goal StopHook. It is a
     return CLEAR_GOAL_TOOL_NAME
   },
   renderToolUseMessage() {
-    return null
+    return 'Clear active goal'
   },
-  renderToolResultMessage() {
-    return null
+  renderToolResultMessage({ cleared, goal }) {
+    return cleared ? `Goal cleared: ${goal}` : 'No goal set'
   },
   isEnabled() {
     return true
