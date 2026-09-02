@@ -12,6 +12,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import WebSocket from 'ws'
 import type {
+  BetaImageBlockParam,
   BetaRawMessageStreamEvent,
   BetaToolUnion,
   BetaMessageParam,
@@ -96,6 +97,53 @@ export function restoreOriginalId(fcId: string): string {
 
 // --- Format Conversion: Anthropic messages → OpenAI Responses API input ---
 
+type OpenAIResponsesInputContent =
+  | { type: 'input_text'; text: string }
+  | { type: 'input_image'; image_url: string; detail: 'high' }
+
+function anthropicImageToResponsesInput(
+  block: BetaImageBlockParam,
+): OpenAIResponsesInputContent {
+  if (block.source.type === 'base64') {
+    return {
+      type: 'input_image',
+      image_url: `data:${block.source.media_type};base64,${block.source.data}`,
+      detail: 'high',
+    }
+  }
+  if (block.source.type === 'url') {
+    return {
+      type: 'input_image',
+      image_url: block.source.url,
+      detail: 'high',
+    }
+  }
+  throw new Error(
+    `OpenAI Responses does not support image source type "${block.source.type}"`,
+  )
+}
+
+function anthropicToolResultToResponsesOutput(
+  content: unknown,
+): string | OpenAIResponsesInputContent[] {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  if (!content.some(item => item?.type === 'image')) {
+    return content.map(item => item?.text || '').join('')
+  }
+
+  return content.flatMap<OpenAIResponsesInputContent>(item => {
+    if (!item || typeof item !== 'object' || !('type' in item)) return []
+    if (item.type === 'text' && 'text' in item && typeof item.text === 'string') {
+      return [{ type: 'input_text', text: item.text }]
+    }
+    if (item.type === 'image' && 'source' in item) {
+      return [anthropicImageToResponsesInput(item as BetaImageBlockParam)]
+    }
+    return []
+  })
+}
+
 function anthropicMessagesToResponsesInput(
   messages: BetaMessageParam[],
   _system?: string | Array<{ type: string; text?: string }>,
@@ -112,13 +160,11 @@ function anthropicMessagesToResponsesInput(
         for (const block of msg.content) {
           if (block.type === 'text') {
             parts.push({ type: 'input_text', text: block.text })
+          } else if (block.type === 'image') {
+            parts.push(anthropicImageToResponsesInput(block))
           } else if (block.type === 'tool_result') {
             const b = block as any
-            const output = typeof b.content === 'string'
-              ? b.content
-              : Array.isArray(b.content)
-                ? b.content.map((c: any) => c.text || '').join('')
-                : ''
+            const output = anthropicToolResultToResponsesOutput(b.content)
             input.push({ type: 'function_call_output', call_id: ensureFcId(b.tool_use_id || 'unknown'), output })
           }
         }

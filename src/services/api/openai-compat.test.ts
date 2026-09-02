@@ -91,6 +91,156 @@ try {
   await client.beta.messages.create({
     model: 'gpt-5.5',
     max_tokens: 16,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'before' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'aW1hZ2U=',
+            },
+          },
+          { type: 'text', text: 'after' },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(requests[0]!.body.input, [
+    {
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'before' },
+        {
+          type: 'input_image',
+          image_url: 'data:image/png;base64,aW1hZ2U=',
+          detail: 'high',
+        },
+        { type: 'input_text', text: 'after' },
+      ],
+    },
+  ])
+
+  getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'oauth-access-token',
+    accountId: 'account-test',
+    isChatGPT: true,
+  })
+  const oauthClient = createOpenAICompatClient({
+    apiKey: 'oauth-access-token',
+    maxRetries: 0,
+    timeout: 1000,
+  })
+  requests.length = 0
+  await oauthClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'Y2xpcGJvYXJkLWltYWdl',
+            },
+          },
+        ],
+      },
+    ],
+  })
+  assert.equal(
+    requests[0]!.url,
+    'https://chatgpt.com/backend-api/codex/responses',
+  )
+  assert.deepEqual(requests[0]!.body.input, [
+    {
+      type: 'message',
+      role: 'user',
+      content: [
+        {
+          type: 'input_image',
+          image_url: 'data:image/png;base64,Y2xpcGJvYXJkLWltYWdl',
+          detail: 'high',
+        },
+      ],
+    },
+  ])
+  getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'sk-test-api-key',
+    isChatGPT: false,
+  })
+
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_read_image',
+            name: 'Read',
+            input: { file_path: '/tmp/image.png' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_read_image',
+            content: [
+              { type: 'text', text: 'Image dimensions: 1x1.' },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'aW1hZ2U=',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(requests[0]!.body.input, [
+    {
+      type: 'function_call',
+      id: 'fc_read_image',
+      call_id: 'fc_read_image',
+      name: 'Read',
+      arguments: '{"file_path":"/tmp/image.png"}',
+    },
+    {
+      type: 'function_call_output',
+      call_id: 'fc_read_image',
+      output: [
+        { type: 'input_text', text: 'Image dimensions: 1x1.' },
+        {
+          type: 'input_image',
+          image_url: 'data:image/png;base64,aW1hZ2U=',
+          detail: 'high',
+        },
+      ],
+    },
+  ])
+
+  requests.length = 0
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
     messages: [{ role: 'user', content: 'fast' }],
     speed: 'fast',
   } as any)
