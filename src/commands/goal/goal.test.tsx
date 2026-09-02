@@ -213,7 +213,7 @@ const activeOutput = await renderGoalStatus({
   setAt: Date.now() - 5000,
   lastReason: 'tests remain',
 })
-assert.match(activeOutput, /Goal active/)
+assert.match(activeOutput, /◎ Goal active/)
 assert.match(activeOutput, /running 5s/)
 assert.match(activeOutput, /2 turns/)
 assert.match(activeOutput, /finish implementation/)

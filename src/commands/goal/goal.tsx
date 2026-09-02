@@ -84,7 +84,7 @@ export function GoalStatusDialog({
 
     return (
       <Dialog
-        title="Goal active"
+        title="◎ Goal active"
         subtitle={subtitle}
         onCancel={onDone}
         inputGuide={() => (
