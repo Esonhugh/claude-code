@@ -84,7 +84,14 @@ export function recordGoalHookBlock(
       return prev
     }
     const checkedGoal = incrementGoalCheck(current, reason)
-    attachment = createGoalStatusAttachment(checkedGoal, 'active', reason)
+    attachment = createGoalStatusAttachment(
+      checkedGoal,
+      'active',
+      reason,
+      undefined,
+      undefined,
+      { sentinel: false },
+    )
     return { ...prev, goalStatus: checkedGoal }
   })
   if (attachment) appendGoalStatusAttachment(attachment)
@@ -126,6 +133,7 @@ export function clearGoalOnHookSuccess(
       result.stopReason,
       completedAt,
       completedTokens,
+      { sentinel: false },
     )
     return {
       ...prev,

@@ -1780,7 +1780,7 @@ export const SDKGoalStateChangedMessageSchema = lazySchema(() =>
       id: z.string(),
       condition: z.string(),
       status: z.enum(['active', 'met', 'cleared', 'failed']),
-      sentinel: z.literal(true),
+      sentinel: z.literal(true).optional(),
       met: z.boolean().optional(),
       failed: z.boolean().optional(),
       iterations: z.number().optional(),

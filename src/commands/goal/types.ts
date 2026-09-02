@@ -43,7 +43,7 @@ export type GoalStatusAttachment = {
   id: string
   condition: string
   status: GoalAttachmentStatus
-  sentinel: true
+  sentinel?: true
   met?: boolean
   failed?: boolean
   iterations?: number
@@ -69,7 +69,6 @@ export function isGoalStatusAttachment(
   const candidate = value as Partial<GoalStatusAttachment>
   return (
     candidate.type === 'goal_status' &&
-    candidate.sentinel === true &&
     typeof candidate.id === 'string' &&
     typeof candidate.condition === 'string' &&
     (candidate.status === 'active' ||

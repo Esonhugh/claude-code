@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { PassThrough, Readable } from 'stream'
 import stripAnsi from 'strip-ansi'
+import type { Message } from '../../types/message.js'
 
 import {
   getSessionId,
@@ -23,8 +24,14 @@ import {
   GOAL_WORKSPACE_UNTRUSTED_MESSAGE,
 } from './hooks.js'
 import { render } from '../../ink.js'
+import { AttachmentMessage } from '../../components/messages/AttachmentMessage.js'
+import { isNullRenderingAttachment } from '../../components/messages/nullRenderingAttachments.js'
 import { GoalStatusDialog, call } from './goal.js'
-import { GOAL_HOOK_ID, type GoalStatus } from './types.js'
+import {
+  GOAL_HOOK_ID,
+  type GoalStatus,
+  type GoalStatusAttachment,
+} from './types.js'
 
 process.env.NODE_ENV = 'test'
 process.env.ANTHROPIC_API_KEY = 'test-key'
@@ -164,7 +171,10 @@ class TestStdin extends Readable {
   }
 }
 
-async function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
+async function renderWithState(
+  node: React.ReactNode,
+  goalStatus: GoalStatus = { active: false },
+): Promise<string> {
   const state = {
     ...getDefaultAppState(),
     goalStatus,
@@ -179,7 +189,7 @@ async function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
 
   const instance = await render(
     <AppStoreContext.Provider value={createStore(state)}>
-      <GoalStatusDialog onDone={() => {}} />
+      {node}
     </AppStoreContext.Provider>,
     {
       stdin: stdin as unknown as NodeJS.ReadStream,
@@ -197,6 +207,27 @@ async function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
     stdin.destroy()
     stdout.destroy()
   }
+}
+
+function renderGoalStatus(goalStatus: GoalStatus): Promise<string> {
+  return renderWithState(<GoalStatusDialog onDone={() => {}} />, goalStatus)
+}
+
+function renderGoalAttachment(
+  attachment: GoalStatusAttachment,
+  {
+    isTranscriptMode = false,
+    verbose = false,
+  }: { isTranscriptMode?: boolean; verbose?: boolean } = {},
+): Promise<string> {
+  return renderWithState(
+    <AttachmentMessage
+      addMargin={false}
+      attachment={attachment}
+      verbose={verbose}
+      isTranscriptMode={isTranscriptMode}
+    />,
+  )
 }
 
 const inactiveOutput = await renderGoalStatus({ active: false })
@@ -254,5 +285,108 @@ const failedOutput = await renderGoalStatus({
 assert.match(failedOutput, /Goal could not be achieved/)
 assert.match(failedOutput, /impossible goal/)
 assert.match(failedOutput, /Last check: condition is impossible/)
+
+const sentinelAttachment: GoalStatusAttachment = {
+  type: 'goal_status',
+  id: 'sentinel-goal',
+  condition: 'remain hidden',
+  status: 'active',
+  sentinel: true,
+}
+const sentinelOutput = await renderGoalAttachment(sentinelAttachment)
+assert.equal(sentinelOutput, '')
+const sentinelMessage = {
+  type: 'attachment',
+  uuid: '00000000-0000-4000-8000-000000000000',
+  timestamp: new Date().toISOString(),
+  attachment: sentinelAttachment,
+} as Message
+assert.equal(isNullRenderingAttachment(sentinelMessage), true)
+
+const pendingAttachment: GoalStatusAttachment = {
+  type: 'goal_status',
+  id: 'pending-goal',
+  condition: 'finish implementation',
+  status: 'active',
+  reason: 'tests remain',
+}
+const pendingOutput = await renderGoalAttachment(pendingAttachment)
+assert.match(pendingOutput, /Goal not yet met… continuing/)
+assert.match(pendingOutput, /to expand/)
+assert.doesNotMatch(pendingOutput, /Goal: finish implementation/)
+assert.doesNotMatch(pendingOutput, /Reason: tests remain/)
+
+const verbosePendingOutput = await renderGoalAttachment(pendingAttachment, {
+  verbose: true,
+})
+assert.match(verbosePendingOutput, /Goal: finish implementation/)
+assert.match(verbosePendingOutput, /Reason: tests remain/)
+assert.doesNotMatch(verbosePendingOutput, /to expand/)
+
+const completedAttachmentOutput = await renderGoalAttachment({
+  type: 'goal_status',
+  id: 'completed-goal',
+  condition: 'finish implementation',
+  status: 'met',
+  iterations: 3,
+  durationMs: 60_000,
+  tokens: 1200,
+})
+assert.match(completedAttachmentOutput, /Goal achieved/)
+assert.match(completedAttachmentOutput, /1m · 3 turns · 1\.2k tokens/)
+
+const failedAttachmentOutput = await renderGoalAttachment({
+  type: 'goal_status',
+  id: 'failed-goal',
+  condition: 'impossible goal',
+  status: 'failed',
+  iterations: 1,
+  durationMs: 1000,
+  tokens: 25,
+  reason: 'condition is impossible',
+})
+assert.match(failedAttachmentOutput, /Goal could not be achieved/)
+assert.match(failedAttachmentOutput, /1s · 1 turn · 25 tokens/)
+
+const clearedAttachmentOutput = await renderGoalAttachment({
+  type: 'goal_status',
+  id: 'cleared-goal',
+  condition: 'stop early',
+  status: 'cleared',
+})
+assert.match(clearedAttachmentOutput, /Goal cleared/)
+assert.doesNotMatch(clearedAttachmentOutput, /Goal achieved/)
+
+const transcriptOutput = await renderGoalAttachment(pendingAttachment, {
+  isTranscriptMode: true,
+})
+assert.match(transcriptOutput, /Goal: finish implementation/)
+assert.match(transcriptOutput, /Reason: tests remain/)
+assert.doesNotMatch(transcriptOutput, /to expand/)
+
+const transcriptFailedOutput = await renderGoalAttachment(
+  {
+    type: 'goal_status',
+    id: 'failed-transcript-goal',
+    condition: 'impossible goal',
+    status: 'failed',
+    reason: 'condition is impossible',
+  },
+  { isTranscriptMode: true },
+)
+assert.match(transcriptFailedOutput, /Goal: impossible goal/)
+assert.match(transcriptFailedOutput, /condition is impossible/)
+assert.doesNotMatch(transcriptFailedOutput, /Reason:/)
+
+const conflictingLegacyOutput = await renderGoalAttachment({
+  type: 'goal_status',
+  id: 'conflicting-goal',
+  condition: 'status is authoritative',
+  status: 'failed',
+  met: true,
+  failed: false,
+})
+assert.match(conflictingLegacyOutput, /Goal could not be achieved/)
+assert.doesNotMatch(conflictingLegacyOutput, /Goal achieved/)
 
 console.log('goal/goal.test.tsx passed')

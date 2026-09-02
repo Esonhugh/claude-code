@@ -47,6 +47,7 @@ import {
   findGoalToRestore,
   restoreGoalFromTranscript,
 } from './goal/restore.js'
+import { formatGoalMetrics } from './goal/state.js'
 import {
   GOAL_HOOK_ID,
   type GoalStatus,
@@ -113,6 +114,14 @@ assert.deepEqual(finishGoalStatus(active, 'met', 2000, 70), {
     tokens: 45,
   },
 })
+assert.equal(
+  formatGoalMetrics({ durationMs: 60_000, iterations: 3, tokens: 1200 }),
+  '1m · 3 turns · 1.2k tokens',
+)
+assert.equal(
+  formatGoalMetrics({ durationMs: undefined, iterations: 1, tokens: 0 }),
+  '1 turn · 0 tokens',
+)
 assert.deepEqual(createGoalStatusAttachment(active, 'active'), {
   type: 'goal_status',
   id: 'goal-1',
@@ -349,7 +358,6 @@ assert.deepEqual(appendedGoalAttachment, {
   id: 'goal-auto-clear',
   condition: 'finish docs',
   status: 'met',
-  sentinel: true,
   met: true,
   failed: false,
   iterations: 2,
@@ -391,7 +399,6 @@ assert.deepEqual(blockedAttachment, {
   id: 'goal-blocked',
   condition: 'finish tests',
   status: 'active',
-  sentinel: true,
   met: false,
   failed: false,
   iterations: 3,
@@ -437,7 +444,6 @@ assert.deepEqual(impossibleAttachment, {
   id: 'goal-impossible',
   condition: 'unreachable condition',
   status: 'failed',
-  sentinel: true,
   met: false,
   failed: true,
   iterations: 3,
@@ -594,26 +600,32 @@ assert.deepEqual(terminalOverrideContext.getState().goalStatus, {
   },
 })
 
+const historicalActiveGoalAttachment: GoalStatusAttachment = {
+  ...activeGoalAttachment,
+  iterations: 3,
+  reason: 'historical check',
+}
 const restoreContext = createContext({ active: false })
 restoreGoalFromTranscript(
-  [goalAttachmentMessage(activeGoalAttachment)],
+  [goalAttachmentMessage(historicalActiveGoalAttachment)],
   restoreContext.context.setAppState,
-  () => 0,
+  () => 200,
+  40,
 )
 assert.deepEqual(restoreContext.getState().goalStatus, {
   active: true,
   id: 'restore-1',
   prompt: 'restore me',
   iterations: 0,
-  setAt: 100,
-  tokensAtStart: 25,
+  setAt: 200,
+  tokensAtStart: 40,
 })
 
 const forkRestoreContext = createContext({ active: false })
 restoreGoalFromTranscript(
-  [goalAttachmentMessage(activeGoalAttachment)],
+  [goalAttachmentMessage(historicalActiveGoalAttachment)],
   forkRestoreContext.context.setAppState,
-  () => 0,
+  () => 300,
   0,
 )
 assert.deepEqual(forkRestoreContext.getState().goalStatus, {
@@ -621,7 +633,7 @@ assert.deepEqual(forkRestoreContext.getState().goalStatus, {
   id: 'restore-1',
   prompt: 'restore me',
   iterations: 0,
-  setAt: 100,
+  setAt: 300,
   tokensAtStart: 0,
 })
 assert.equal(
@@ -668,18 +680,22 @@ assert.equal(
 const resumedSessionId = 'resumed-session'
 switchSession(resumedSessionId as never)
 const resumedContext = createContext({ active: false })
+const resumedAt = Date.now()
+const resumedTokenBaseline = getTotalOutputTokens()
 restoreGoalSessionFromLog(
   [goalAttachmentMessage(activeGoalAttachment)],
   resumedContext.context.setAppState,
 )
-assert.deepEqual(resumedContext.getState().goalStatus, {
-  active: true,
-  id: 'restore-1',
-  prompt: 'restore me',
-  iterations: 0,
-  setAt: 100,
-  tokensAtStart: 25,
-})
+const resumedGoal = resumedContext.getState().goalStatus
+assert.equal(resumedGoal.active, true)
+assert.equal(resumedGoal.active ? resumedGoal.id : undefined, 'restore-1')
+assert.equal(resumedGoal.active ? resumedGoal.prompt : undefined, 'restore me')
+assert.equal(resumedGoal.active ? resumedGoal.iterations : undefined, 0)
+assert.ok(resumedGoal.active && resumedGoal.setAt >= resumedAt)
+assert.equal(
+  resumedGoal.active ? resumedGoal.tokensAtStart : undefined,
+  resumedTokenBaseline,
+)
 assert.deepEqual(
   getSessionHookBySource(
     resumedContext.getState() as never,

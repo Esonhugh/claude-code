@@ -1,3 +1,4 @@
+import { formatDuration, formatTokens } from '../../utils/format.js'
 import type {
   GoalAttachmentStatus,
   GoalCompletedSummary,
@@ -73,19 +74,41 @@ export function formatGoalStatusText(goalStatus: GoalStatus): string {
   return `Goal active: ${goalStatus.prompt} (${checkText})${reasonText}`
 }
 
+export function formatGoalMetrics({
+  durationMs,
+  iterations,
+  tokens,
+}: Pick<
+  GoalCompletedSummary,
+  'durationMs' | 'iterations' | 'tokens'
+>): string {
+  return [
+    durationMs === undefined
+      ? null
+      : formatDuration(durationMs, { mostSignificantOnly: true }),
+    iterations === undefined
+      ? null
+      : `${iterations} ${iterations === 1 ? 'turn' : 'turns'}`,
+    tokens === undefined ? null : `${formatTokens(tokens)} tokens`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 export function createGoalStatusAttachment(
   activeGoal: Extract<GoalStatus, { active: true }>,
   status: GoalAttachmentStatus,
   reason?: string,
   completedAt?: number,
   currentTokens?: number,
+  { sentinel = true }: { sentinel?: boolean } = {},
 ): GoalStatusAttachment {
   return {
     type: 'goal_status',
     id: activeGoal.id,
     condition: activeGoal.prompt,
     status,
-    sentinel: true,
+    ...(sentinel ? { sentinel: true as const } : {}),
     met: status === 'met' || status === 'cleared',
     failed: status === 'failed',
     iterations: activeGoal.iterations,

@@ -6,6 +6,7 @@ import type { NullRenderingAttachmentType } from './nullRenderingAttachments.js'
 import { useAppState } from '../../state/AppState.js'
 import { getDisplayPath } from 'src/utils/file.js'
 import { formatFileSize } from 'src/utils/format.js'
+import { formatGoalMetrics } from '../../commands/goal/state.js'
 import { MessageResponse } from '../MessageResponse.js'
 import { basename, sep } from 'path'
 import { UserTextMessage } from './UserTextMessage.js'
@@ -30,7 +31,7 @@ import { FilePathLink } from '../FilePathLink.js'
 import { feature } from 'bun:bundle'
 import { useSelectedMessageBg } from '../messageActions.js'
 import { isAnt } from 'src/utils/userType.js'
-
+import { StatusIcon } from '../design-system/StatusIcon.js'
 
 type Props = {
   addMargin: boolean
@@ -335,6 +336,62 @@ export function AttachmentMessage({
       }
       const skillNames = attachment.skills.map(s => s.name).join(', ')
       return <Line>Skills restored ({skillNames})</Line>
+    }
+    case 'goal_status': {
+      if (attachment.sentinel) return null
+      const failed = attachment.status === 'failed'
+      const achieved = attachment.status === 'met'
+      const cleared = attachment.status === 'cleared'
+      const completed = failed || achieved || cleared
+      const metrics = completed ? formatGoalMetrics(attachment) : ''
+      const message = failed
+        ? 'Goal could not be achieved'
+        : achieved
+          ? 'Goal achieved'
+          : cleared
+            ? 'Goal cleared'
+            : 'Goal not yet met… continuing'
+      const showDetails = verbose || isTranscriptMode
+      return (
+        <Box
+          flexDirection="column"
+          marginTop={addMargin ? 1 : 0}
+          backgroundColor={bg}
+        >
+          <Text>
+            <StatusIcon
+              status={failed ? 'error' : achieved ? 'success' : 'pending'}
+              withSpace
+            />
+            <Text color={failed ? 'error' : undefined} dimColor={!completed}>
+              {message}
+            </Text>
+            {metrics && <Text dimColor> ({metrics})</Text>}
+            {!showDetails && (
+              <Text>
+                {' '}
+                <CtrlOToExpand />
+              </Text>
+            )}
+          </Text>
+          {showDetails && (
+            <>
+              <Box paddingLeft={2}>
+                <Text dimColor wrap="wrap">
+                  Goal: {attachment.condition}
+                </Text>
+              </Box>
+              {attachment.reason && (
+                <Box paddingLeft={2}>
+                  <Text dimColor wrap="wrap">
+                    {failed ? attachment.reason : `Reason: ${attachment.reason}`}
+                  </Text>
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
+      )
     }
     case 'goal_restored':
       return <Line>Goal restored</Line>

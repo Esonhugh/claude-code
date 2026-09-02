@@ -482,7 +482,7 @@ export type SDKGoalStateChangedMessage = {
     id: string
     condition: string
     status: 'active' | 'met' | 'cleared' | 'failed'
-    sentinel: true
+    sentinel?: true
     met?: boolean
     failed?: boolean
     iterations?: number

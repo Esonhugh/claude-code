@@ -123,11 +123,9 @@ export function restoreGoalFromTranscript(
       ...createActiveGoalStatus(
         attachment.id,
         attachment.condition,
-        attachment.setAt ?? now(),
-        tokensAtStartOverride ?? attachment.tokensAtStart,
+        now(),
+        tokensAtStartOverride,
       ),
-      iterations: attachment.iterations ?? 0,
-      ...(attachment.reason ? { lastReason: attachment.reason } : {}),
     },
   }))
 }

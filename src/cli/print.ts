@@ -5231,7 +5231,6 @@ async function loadInitialMessages(
         }
 
         // Reuse the resumed session's ID
-        let resetGoalTokenBaseline = true
         if (!options.forkSession) {
           if (result.sessionId) {
             switchSession(
@@ -5241,17 +5240,11 @@ async function loadInitialMessages(
             if (persistSession) {
               await resetSessionFilePointer()
             }
-            resetGoalTokenBaseline = !restoreCostStateForSession(
-              result.sessionId,
-            )
+            restoreCostStateForSession(result.sessionId)
           }
         }
         restoreSessionStateFromLog(result, setAppState)
-        restoreGoalSessionFromLog(
-          result.messages,
-          setAppState,
-          resetGoalTokenBaseline,
-        )
+        restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
         restoreSessionMetadata(
@@ -5442,7 +5435,6 @@ async function loadInitialMessages(
       }
 
       // Reuse the resumed session's ID
-      let resetGoalTokenBaseline = true
       if (!options.forkSession && result.sessionId) {
         switchSession(
           asSessionId(result.sessionId),
@@ -5451,14 +5443,10 @@ async function loadInitialMessages(
         if (persistSession) {
           await resetSessionFilePointer()
         }
-        resetGoalTokenBaseline = !restoreCostStateForSession(result.sessionId)
+        restoreCostStateForSession(result.sessionId)
       }
       restoreSessionStateFromLog(result, setAppState)
-      restoreGoalSessionFromLog(
-        result.messages,
-        setAppState,
-        resetGoalTokenBaseline,
-      )
+      restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
       restoreSessionMetadata(

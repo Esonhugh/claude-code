@@ -19,7 +19,11 @@ import {
   registerGoalStopHook,
 } from './hooks.js'
 import { getGoalModePrompt } from './prompt.js'
-import { createActiveGoalStatus, createGoalStatusAttachment } from './state.js'
+import {
+  createActiveGoalStatus,
+  createGoalStatusAttachment,
+  formatGoalMetrics,
+} from './state.js'
 import { GOAL_MAX_LENGTH, isGoalClear, isGoalTooLong } from './types.js'
 
 function GoalRow({
@@ -108,21 +112,7 @@ export function GoalStatusDialog({
   const completed =
     'lastCompleted' in goalStatus ? goalStatus.lastCompleted : undefined
   if (completed?.status === 'met') {
-    const subtitle = [
-      completed.durationMs === undefined
-        ? null
-        : formatDuration(completed.durationMs, {
-            mostSignificantOnly: true,
-          }),
-      completed.iterations === undefined
-        ? null
-        : `${completed.iterations} ${completed.iterations === 1 ? 'turn' : 'turns'}`,
-      completed.tokens === undefined
-        ? null
-        : `${formatTokens(completed.tokens)} tokens`,
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const subtitle = formatGoalMetrics(completed)
 
     return (
       <Dialog
@@ -149,21 +139,7 @@ export function GoalStatusDialog({
   }
 
   if (completed?.status === 'failed') {
-    const subtitle = [
-      completed.durationMs === undefined
-        ? null
-        : formatDuration(completed.durationMs, {
-            mostSignificantOnly: true,
-          }),
-      completed.iterations === undefined
-        ? null
-        : `${completed.iterations} ${completed.iterations === 1 ? 'turn' : 'turns'}`,
-      completed.tokens === undefined
-        ? null
-        : `${formatTokens(completed.tokens)} tokens`,
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const subtitle = formatGoalMetrics(completed)
 
     return (
       <Dialog

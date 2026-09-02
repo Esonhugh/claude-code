@@ -268,7 +268,6 @@ export function ResumeConversation({
         }
       }
 
-      let resetGoalTokenBaseline = true
       if (result.sessionId && !forkSession) {
         switchSession(
           asSessionId(result.sessionId),
@@ -276,7 +275,7 @@ export function ResumeConversation({
         )
         await renameRecordingForSession()
         await resetSessionFilePointer()
-        resetGoalTokenBaseline = !restoreCostStateForSession(result.sessionId)
+        restoreCostStateForSession(result.sessionId)
       } else if (forkSession && result.contentReplacements?.length) {
         await recordContentReplacement(result.contentReplacements)
       }
@@ -328,11 +327,7 @@ export function ResumeConversation({
         /* eslint-enable @typescript-eslint/no-require-imports */
       }
 
-      restoreGoalSessionFromLog(
-        result.messages,
-        setAppState,
-        resetGoalTokenBaseline,
-      )
+      restoreGoalSessionFromLog(result.messages, setAppState)
 
       logEvent('tengu_session_resumed', {
         entrypoint:

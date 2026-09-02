@@ -63,16 +63,17 @@ const NULL_RENDERING_ATTACHMENT_TYPES: ReadonlySet<Attachment['type']> =
 /**
  * True when this message is an attachment that AttachmentMessage renders as
  * null with no visible output. Messages.tsx filters these out before counting
- * and before applying the 200-message render cap, so invisible hook
- * attachments (hook_success, hook_additional_context, hook_cancelled) don't
- * inflate the "N messages" count or eat into the render budget (CC-724).
+ * and before applying the 200-message render cap, so invisible hook and Goal
+ * sentinel attachments don't inflate the "N messages" count or eat into the
+ * render budget (CC-724).
  */
 export function isNullRenderingAttachment(
   msg: Message | NormalizedMessage,
 ): boolean {
-  return (
-    msg.type === 'attachment' &&
-    // @ts-ignore - recovered code
-    NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type)
-  )
+  if (msg.type !== 'attachment') return false
+  if (msg.attachment.type === 'goal_status') {
+    return msg.attachment.sentinel === true
+  }
+  // @ts-ignore - recovered code
+  return NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type)
 }
