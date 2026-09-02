@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { isValidElement } from 'react'
 
 import { getSessionId } from '../../bootstrap/state.js'
 import { createGoalStopHook } from '../../commands/goal/hooks.js'
+import { Text } from '../../ink.js'
 import { GOAL_HOOK_ID, type GoalStatus } from '../../commands/goal/types.js'
 import type { AppState } from '../../state/AppState.js'
 import type { AttachmentMessage } from '../../types/message.js'
@@ -36,13 +38,7 @@ function createContext(initial: GoalStatus, agentId?: string) {
 
 assert.equal(ClearGoalTool.name, CLEAR_GOAL_TOOL_NAME)
 assert.equal(ClearGoalTool.userFacingName(), CLEAR_GOAL_TOOL_NAME)
-assert.equal(
-  ClearGoalTool.renderToolUseMessage(
-    {},
-    { theme: 'dark', verbose: false },
-  ),
-  'Clear active goal',
-)
+assert.equal(ClearGoalTool.renderToolUseMessage(), 'Clear active goal')
 
 const clearContext = createContext({
   active: true,
@@ -97,14 +93,10 @@ assert.deepEqual(
     content: 'Goal cleared: finish the feature',
   },
 )
-assert.equal(
-  ClearGoalTool.renderToolResultMessage?.(
-    clearResult.data,
-    [],
-    { theme: 'dark', tools: [], verbose: false },
-  ),
-  'Goal cleared: finish the feature',
-)
+const clearedMessage = ClearGoalTool.renderToolResultMessage?.(clearResult.data)
+assert.ok(isValidElement<{ children: string }>(clearedMessage))
+assert.equal(clearedMessage.type, Text)
+assert.equal(clearedMessage.props.children, 'Goal cleared: finish the feature')
 
 const noGoalContext = createContext({ active: false })
 addSessionHook(
@@ -135,14 +127,10 @@ assert.equal(
   ).content,
   'No goal set',
 )
-assert.equal(
-  ClearGoalTool.renderToolResultMessage?.(
-    noGoalResult.data,
-    [],
-    { theme: 'dark', tools: [], verbose: false },
-  ),
-  'No goal set',
-)
+const noGoalMessage = ClearGoalTool.renderToolResultMessage?.(noGoalResult.data)
+assert.ok(isValidElement<{ children: string }>(noGoalMessage))
+assert.equal(noGoalMessage.type, Text)
+assert.equal(noGoalMessage.props.children, 'No goal set')
 
 const agentContext = createContext(
   {

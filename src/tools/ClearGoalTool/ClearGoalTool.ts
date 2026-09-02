@@ -1,7 +1,9 @@
+import { createElement } from 'react'
 import { z } from 'zod/v4'
 
 import { getSessionId } from '../../bootstrap/state.js'
 import { clearGoal } from '../../commands/goal/hooks.js'
+import { Text } from '../../ink.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -48,7 +50,7 @@ This clears the same state as /goal clear and removes the Goal StopHook. It is a
     return 'Clear active goal'
   },
   renderToolResultMessage({ cleared, goal }) {
-    return cleared ? `Goal cleared: ${goal}` : 'No goal set'
+    return createElement(Text, null, cleared ? `Goal cleared: ${goal}` : 'No goal set')
   },
   isEnabled() {
     return true
