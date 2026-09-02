@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import type { Command } from 'src/commands.js'
+import { getIsInteractive, setIsInteractive } from 'src/bootstrap/state.js'
+import { getDefaultAppState } from 'src/state/AppStateStore.js'
+import type { ToolUseContext } from 'src/Tool.js'
+import { SkillTool } from './SkillTool.js'
 import { formatCommandsWithinBudget, getPrompt } from './prompt.js'
 
 function command(name: string): Command {
@@ -35,5 +39,30 @@ describe('SkillTool prompt', () => {
     expect(prompt).toContain('<command-name>')
     expect(prompt).not.toContain('- Examples:')
     expect(prompt.length).toBeLessThan(1_100)
+  })
+
+  test('rejects model invocation of the non-interactive goal command', async () => {
+    const wasInteractive = getIsInteractive()
+    const originalApiKey = process.env.ANTHROPIC_API_KEY
+    setIsInteractive(false)
+    process.env.ANTHROPIC_API_KEY = 'test'
+    try {
+      const appState = getDefaultAppState()
+      const context = {
+        getAppState: () => appState,
+      } as ToolUseContext
+
+      const result = await SkillTool.validateInput({ skill: 'goal' }, context)
+      expect(result).toEqual({
+        result: false,
+        message:
+          'Skill goal cannot be used with Skill tool due to disable-model-invocation',
+        errorCode: 4,
+      })
+    } finally {
+      setIsInteractive(wasInteractive)
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = originalApiKey
+    }
   })
 })

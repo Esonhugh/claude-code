@@ -57,6 +57,7 @@ export const goalNonInteractive: Command = {
   contentLength: 0,
   source: 'builtin',
   allowedTools: [AGENT_TOOL_NAME],
+  disableModelInvocation: true,
   isEnabled: getIsNonInteractiveSession,
   get isHidden() {
     return !getIsNonInteractiveSession()
