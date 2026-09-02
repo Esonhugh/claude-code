@@ -12,12 +12,12 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-09-01 - v2.1.218 - OpenAI 压缩、Fast mode、Goal 与 Hook 可靠性
+## 2026-09-02 - v2.1.218 - OpenAI 压缩、Goal/Hook、Trust 与 SSH 可靠性
 
 ### 版本状态
 
 - 准备发布版本：`v2.1.218`。
-- 本次发布覆盖 `v2.1.217..HEAD` 的 OpenAI 压缩、Fast mode、Goal 生命周期与 Stop/SubagentStop hook 可靠性改动。
+- 本次发布覆盖 `v2.1.217..HEAD`，包括 OpenAI 压缩与 Fast mode、Goal 与 Hook 生命周期、TrustDialog 风险提示、SSH 部署和 release gate 改动。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.218`。
 
@@ -31,6 +31,17 @@
 - `ad16ce7` — 在 subagent query 提前失败时补跑 SubagentStop hooks。
 - `850e6ce` — 为 OpenAI provider 增加 Fast mode priority 请求路径。
 - `984d98b` — 更新 OpenAI Fast、Goal 生命周期与 Hook 可靠性的发布文档。
+- `07d92b4` — 准备 `v2.1.218` 并扩充按变更路径选择 binary target 的 release gate。
+- `e78a2bd` — 安全恢复 Goal 状态、会话 cost state 与 token baseline。
+- `b143a06` — 保留 session hook 的 source、matcher、callback 与原始 hook identity。
+- `3ea518f` — 完整处理 subagent 异常退出时的 SubagentStop fallback。
+- `ab04807` — 在 workspace trust 对话框展示项目预授权权限和附加目录。
+- `8a2e2df` — 为 SSH binary 上传复用 ControlMaster 连接。
+- `06d5552` — 禁止模型通过 Skill tool 调用非交互式 Goal command。
+- `555e7a3` — 在 Goal 状态视图中区分 active 状态。
+- `b1a6437` — 将 SSH 部署块增大到 16 MiB，减少分块传输开销。
+- `561022a` — 对齐 Goal resume 的 fresh metrics epoch 和内联生命周期提示。
+- `7b1ecb8` — 为 ClearGoal tool 显示调用与结果消息。
 
 ### 变更内容
 
@@ -47,21 +58,31 @@
 #### Goal 状态与恢复
 
 - 交互式 `/goal` 无参数时打开状态视图，展示未设置、进行中、已完成或失败状态，以及耗时、turn、token 和最后检查原因；`/goal <condition>` 与 `/goal clear` 分别设置和清除 Goal，非交互式调用继续使用原有 prompt command。
-- Goal 状态通过 `goal_status` attachment 持久化到 transcript；resume/continue 会恢复 active Goal 及其 source-scoped Stop hook，并记录迭代次数、开始时间、token 用量、完成耗时和失败原因。
-- Goal 判定为未完成时继续当前工作，判定 impossible 时记录 failed 终态并停止重试；仍有后台任务运行时延后 Goal 判定，但继续执行普通 Stop hooks。
-- Hooks 被策略限制或交互式 workspace 未信任时拒绝启动 Goal；prompt hook evaluator 禁用工具，并在 transcript 过长时缩小窗口重试，避免创建无法执行或无法完成判定的 Goal。
+- Goal 状态通过 `goal_status` attachment 持久化到 transcript；resume/continue 会恢复 active Goal 及其 source-scoped Stop hook，本地 transcript resume 会从当前时间、0 turn 和当前累计输出 token 创建新的 metrics epoch，避免把上一段会话的耗时、迭代和 token 计入 resumed Goal。
+- Goal 判定为未完成时显示 `Goal not yet met… continuing` 并继续工作；完成、impossible 或 clear 时显示对应终态及 metrics。持久化 sentinel 不重复渲染，也不占用可见消息预算。
+- Goal 状态视图使用独立 active 标识；ClearGoal tool 显示 `Clear active goal` 调用消息及 `Goal cleared`/`No goal set` 结果。
+- 仍有后台任务运行时只延后 Goal 判定，不跳过普通 Stop hooks；Hooks 被策略限制或交互式 workspace 未信任时拒绝启动 Goal，Agent subagent 也不能通过 Skill、SetGoal 或 ClearGoal 修改主会话 Goal。
 
-#### Stop hook 与 SubagentStop
+#### Prompt、Stop 与 SubagentStop hooks
 
+- 普通 prompt hook 返回 `ok:false` 时默认阻止当前 turn，`continueOnBlock:true` 可继续；Stop/SubagentStop evaluator 返回 `ok:false` 时将 reason 注入 transcript 并继续 query，只有 Stop-class hook 的 `impossible:true` 会产生 terminal failure。
+- Prompt evaluator 禁用 tools；API error 保持非阻塞。Command hook 的 exit code 2 优先于 stdout JSON，session hook 结果按 source、matcher 和原始 hook index 关联，避免 wildcard、并发完成顺序或 stale callback 串线。
 - Stop hook 默认在第 9 次连续阻止结束后终止续跑并显示 warning；`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 可调整上限，`0` 或负数可禁用该上限，`maxTurns` 仍具有更高优先级，正常 tool round 会重置连续计数。
-- Subagent query 在到达正常 hook 边界前失败时补跑一次 SubagentStop hooks，并将结果写入 sidechain transcript；已经产生 SubagentStop progress/result 或正常完成时不会重复执行。
+- Subagent query 在到达正常 hook 边界前异常退出时补跑一次 SubagentStop hooks，并保留完整 conversation、有效 permission mode、默认 timeout 和 blocking feedback；已经产生 SubagentStop progress/result 或正常完成时不会重复执行。
+
+#### Workspace trust 与 SSH 部署
+
+- TrustDialog 在接受 workspace 前展示项目配置预授权的 tool permissions 与 additional directories；按影响排序并清理 ANSI、控制字符和 bidi 字符，disabled 或 managed-policy 排除的来源不会进入提示。
+- SSH binary 部署复用带 `ControlPersist` 的 ControlMaster，使用 16 MiB 分块降低重复握手和传输开销，同时保留逐块 checksum、重试、整文件 SHA-256 校验和原子安装。
 
 ### 测试覆盖
 
-- OpenAI compaction 测试覆盖 standalone turn scope、手动压缩、连续压缩输入顺序，以及压缩后继续对话时 opaque item 的保留。
-- Goal 与 hook 测试覆盖交互式状态视图、attachment 持久化、resume 恢复、success/block/impossible、后台任务延迟、hook source identity、策略限制、长 transcript 重试和 Stop hook 连续阻止上限。
-- Agent 测试覆盖 query 提前失败后的 SubagentStop fallback、输入字段、sidechain 记录及 progress/result 去重边界。
-- OpenAI 测试覆盖 `/fast` availability、任意 OpenAI model eligibility、跳过 Anthropic 状态预取、`service_tier: "priority"` wire mapping 及不支持 priority 时不自动重试。
+- OpenAI 测试覆盖 standalone turn scope、手动与连续 compaction、opaque item replay、`/fast` availability、provider eligibility、Anthropic 状态预取隔离、priority wire mapping 和不支持 priority 时的错误传播。
+- Goal 与 hook 测试覆盖交互式状态视图、attachment/sentinel、fresh resume metrics epoch、内联生命周期提示、success/block/impossible、后台任务延迟、command exit 2、callback identity、策略限制、长 transcript 重试和连续 block cap。
+- Agent 测试覆盖 query 异常退出后的 SubagentStop fallback、完整 conversation、permission mode、blocking feedback、sidechain 记录及 exactly-once 边界。
+- TrustDialog、SSH 与 ClearGoal 测试覆盖 permission/directory 风险摘要与清理、managed source 过滤、ControlMaster、16 MiB chunk、Goal 清理状态和 tool 消息。
+- Scripted tmux 对照覆盖本地与官方 Goal 生命周期提示、完成 transcript replay 去重、active Goal resume fresh epoch、启动、dispatch 和 prompt recovery。
+- 发布门禁运行 changelog schema/tests、TypeScript、ESLint、missing-import audit、`git diff --check`、聚焦 Bun tests 和当前源码 binary build。
 
 ## 2026-08-31 - OpenAI 手动与重复压缩修复
 
