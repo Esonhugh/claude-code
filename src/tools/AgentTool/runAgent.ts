@@ -63,6 +63,7 @@ import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import {
   executeStopHooks,
   executeSubagentStartHooks,
+  getStopHookMessage,
 } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
@@ -887,10 +888,13 @@ export async function* runAgent({
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
   let subagentStopStarted = false
-  let queryCompleted = false
+  let queryTerminalReason: string | undefined
+  let queryIterator: ReturnType<typeof query> | undefined
+  let queryIteratorDone = false
+  const subagentMessages = [...initialMessages]
 
   try {
-    for await (const message of query({
+    queryIterator = query({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
@@ -899,7 +903,15 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
-    })) {
+    })
+    while (true) {
+      const next = await queryIterator.next()
+      if (next.done) {
+        queryIteratorDone = true
+        queryTerminalReason = next.value?.reason
+        break
+      }
+      const message = next.value
       if (
         process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING ===
           'after_query_start' &&
@@ -936,6 +948,7 @@ export async function* runAgent({
         // Handle max turns reached signal from query.ts
         // @ts-ignore - recovered code
         if (message.attachment.type === 'max_turns_reached') {
+          queryTerminalReason = 'max_turns'
           logForDebugging(
             `[Agent
 : $
@@ -965,11 +978,11 @@ export async function* runAgent({
         )
         if (message.type !== 'progress') {
           lastRecordedUuid = message.uuid
+          subagentMessages.push(message)
         }
         yield message
       }
     }
-    queryCompleted = true
 
     if (agentAbortController.signal.aborted) {
       throw new AbortError()
@@ -980,20 +993,34 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
-    if (!queryCompleted && !subagentStopStarted) {
+    if (!queryIteratorDone && queryIterator) {
+      await queryIterator.return(undefined)
+    }
+    if (
+      !subagentStopStarted &&
+      queryTerminalReason !== 'completed' &&
+      queryTerminalReason !== 'max_turns'
+    ) {
       try {
         for await (const result of executeStopHooks(
+          permissionMode,
           undefined,
           undefined,
-          5000,
           false,
           agentId,
           agentToolUseContext,
-          undefined,
+          subagentMessages,
           agentDefinition.agentType,
         )) {
-          if (result.message) {
-            const fallbackMessage = result.message as unknown as Message
+          const fallbackMessage = result.message
+            ? (result.message as unknown as Message)
+            : result.blockingError
+              ? createUserMessage({
+                  content: getStopHookMessage(result.blockingError),
+                  isMeta: true,
+                })
+              : undefined
+          if (fallbackMessage) {
             await recordSidechainTranscript(
               [fallbackMessage],
               agentId,
@@ -1003,6 +1030,7 @@ export async function* runAgent({
             )
             if (fallbackMessage.type !== 'progress') {
               lastRecordedUuid = fallbackMessage.uuid
+              subagentMessages.push(fallbackMessage)
             }
           }
         }

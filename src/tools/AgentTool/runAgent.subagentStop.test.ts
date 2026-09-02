@@ -35,16 +35,47 @@ if (process.env[childProcessEnv] === '1') {
 async function runIsolatedTests(): Promise<void> {
   type QueryMode =
     | 'throw'
+    | 'assistant_then_throw'
+    | 'model_error'
     | 'attachment_then_throw'
     | 'progress_then_throw'
     | 'summary_then_throw'
     | 'stream_start'
+    | 'api_error'
+    | 'max_turns'
     | 'complete'
   let queryMode: QueryMode = 'throw'
+  const recordedMessages: unknown[] = []
 
   mock.module('../../query.js', () => ({
     query: async function* () {
-      if (queryMode === 'complete') return
+      if (queryMode === 'assistant_then_throw' || queryMode === 'model_error') {
+        yield {
+          type: 'assistant',
+          uuid: '00000000-0000-4000-8000-000000000199',
+          timestamp: '2026-09-01T00:00:00.000Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'work completed before failure' }],
+          },
+        }
+        if (queryMode === 'model_error') return { reason: 'model_error' }
+      }
+      if (queryMode === 'complete') return { reason: 'completed' }
+      if (queryMode === 'api_error') return { reason: 'completed' }
+      if (queryMode === 'max_turns') {
+        yield {
+          type: 'attachment',
+          uuid: '00000000-0000-4000-8000-000000000198',
+          timestamp: '2026-09-01T00:00:00.000Z',
+          attachment: {
+            type: 'max_turns_reached',
+            maxTurns: 1,
+            turnCount: 2,
+          },
+        }
+        return { reason: 'max_turns' }
+      }
       if (queryMode === 'stream_start') {
         yield { type: 'stream_request_start' }
         return
@@ -99,7 +130,9 @@ async function runIsolatedTests(): Promise<void> {
   const sessionStorage = await import('../../utils/sessionStorage.js')
   mock.module('../../utils/sessionStorage.js', () => ({
     ...sessionStorage,
-    recordSidechainTranscript: async () => {},
+    recordSidechainTranscript: async (messages: unknown[]) => {
+      recordedMessages.push(...messages)
+    },
     writeAgentMetadata: async () => {},
     setAgentTranscriptSubdir: () => {},
     clearAgentTranscriptSubdir: () => {},
@@ -107,6 +140,7 @@ async function runIsolatedTests(): Promise<void> {
 
   const { registerHookCallbacks, resetStateForTests } =
     await import('../../bootstrap/state.js')
+  const { addFunctionHook } = await import('../../utils/hooks/sessionHooks.js')
   const { getDefaultAppState } = await import('../../state/AppStateStore.js')
   const { createFileStateCacheWithSizeLimit } =
     await import('../../utils/fileStateCache.js')
@@ -118,8 +152,15 @@ async function runIsolatedTests(): Promise<void> {
   const { runAgent } = await import('./runAgent.js')
   const testAgentId = createAgentId('agent-subagent-stop-test')
 
-  function createContext() {
+  function createContext(permissionMode = 'default' as const) {
     let appState = getDefaultAppState()
+    appState = {
+      ...appState,
+      toolPermissionContext: {
+        ...appState.toolPermissionContext,
+        mode: permissionMode,
+      },
+    }
     return {
       options: {
         commands: [],
@@ -177,6 +218,7 @@ async function runIsolatedTests(): Promise<void> {
   beforeEach(() => {
     resetStateForTests()
     queryMode = 'throw'
+    recordedMessages.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
   })
 
@@ -240,7 +282,31 @@ async function runIsolatedTests(): Promise<void> {
       stop_hook_active: false,
       agent_id: testAgentId,
       agent_type: 'general-purpose',
+      permission_mode: 'default',
     })
+  })
+
+  test('runs SubagentStop when query returns a model error before the hook boundary', async () => {
+    let hookCalls = 0
+    queryMode = 'model_error'
+    registerHookCallbacks({
+      SubagentStop: [
+        {
+          hooks: [
+            {
+              type: 'callback',
+              callback: async () => {
+                hookCalls++
+                return { continue: true }
+              },
+            },
+          ],
+        },
+      ],
+    })
+
+    await drainAgent()
+    expect(hookCalls).toBe(1)
   })
 
   test('does not duplicate SubagentStop after its result attachment boundary', async () => {
@@ -318,26 +384,135 @@ async function runIsolatedTests(): Promise<void> {
     expect(hookCalls).toBe(1)
   })
 
-  test('does not run the fallback after query completes normally', async () => {
-    let hookCalls = 0
-    queryMode = 'complete'
-    registerHookCallbacks({
-      SubagentStop: [
-        {
-          hooks: [
-            {
-              type: 'callback',
-              callback: async () => {
-                hookCalls++
-                return { continue: true }
-              },
-            },
-          ],
-        },
-      ],
+  test('provides the full subagent conversation to fallback function hooks', async () => {
+    const observedMessages: string[] = []
+    const toolUseContext = createContext()
+    queryMode = 'assistant_then_throw'
+    addFunctionHook(
+      toolUseContext.setAppState,
+      testAgentId,
+      'SubagentStop',
+      '',
+      messages => {
+        observedMessages.push(
+          messages
+            .filter(
+              message =>
+                message.type === 'user' || message.type === 'assistant',
+            )
+            .map(message =>
+              typeof message.message.content === 'string'
+                ? message.message.content
+                : message.message.content
+                    .filter(block => block.type === 'text')
+                    .map(block => block.text)
+                    .join(''),
+            )
+            .join('\n'),
+        )
+        return true
+      },
+      'fallback failed',
+    )
+
+    const iterator = runAgent({
+      agentDefinition: GENERAL_PURPOSE_AGENT,
+      promptMessages: [createUserMessage({ content: 'finish the task' })],
+      toolUseContext,
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      isAsync: false,
+      querySource: 'agent:test',
+      availableTools: [],
+      override: {
+        agentId: testAgentId,
+        userContext: {},
+        systemContext: {},
+        systemPrompt: asSystemPrompt([]),
+      },
     })
 
-    await drainAgent()
-    expect(hookCalls).toBe(0)
+    let thrown: unknown
+    try {
+      let next = await iterator.next()
+      while (!next.done) next = await iterator.next()
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toBe(
+      'query failed before SubagentStop',
+    )
+    expect(observedMessages).toEqual([
+      'finish the task\nwork completed before failure',
+    ])
   })
+
+  test('records fallback blocking feedback', async () => {
+    const toolUseContext = createContext()
+    addFunctionHook(
+      toolUseContext.setAppState,
+      testAgentId,
+      'SubagentStop',
+      '',
+      () => false,
+      'fallback failed',
+    )
+
+    await expect(
+      runAgent({
+        agentDefinition: GENERAL_PURPOSE_AGENT,
+        promptMessages: [createUserMessage({ content: 'finish the task' })],
+        toolUseContext,
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        isAsync: false,
+        querySource: 'agent:test',
+        availableTools: [],
+        override: {
+          agentId: testAgentId,
+          userContext: {},
+          systemContext: {},
+          systemPrompt: asSystemPrompt([]),
+        },
+      }).next(),
+    ).rejects.toThrow('query failed before SubagentStop')
+    expect(
+      recordedMessages.some(
+        (message) =>
+          typeof message === 'object' &&
+          message !== null &&
+          'type' in message &&
+          message.type === 'user' &&
+          'message' in message &&
+          JSON.stringify(message.message).includes(
+            'Stop hook feedback:\\nfallback failed',
+          ),
+      ),
+    ).toBe(true)
+  })
+
+  test.each(['complete', 'api_error', 'max_turns'] as const)(
+    'does not run the fallback after %s terminal completion',
+    async terminalMode => {
+      let hookCalls = 0
+      queryMode = terminalMode
+      registerHookCallbacks({
+        SubagentStop: [
+          {
+            hooks: [
+              {
+                type: 'callback',
+                callback: async () => {
+                  hookCalls++
+                  return { continue: true }
+                },
+              },
+            ],
+          },
+        ],
+      })
+
+      await drainAgent()
+      expect(hookCalls).toBe(0)
+    },
+  )
 }
