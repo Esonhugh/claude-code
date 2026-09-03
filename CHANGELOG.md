@@ -43,8 +43,14 @@
 - `561022a` — 对齐 Goal resume 的 fresh metrics epoch 和内联生命周期提示。
 - `7b1ecb8` — 为 ClearGoal tool 显示调用与结果消息。
 - `42134af` — 修复 ClearGoal 结果消息未使用 Ink `Text` 渲染导致的交互式崩溃。
+- `ca93894` — 补充 `v2.1.218` 的 release notes 与验证范围。
+- `76ef725` — 补全 `v2.1.218` 的关联提交列表。
 - `0571998` — 为 OpenAI Responses 转换用户与 Read tool 的图像输入。
 - `8ae57b4` — 在构建中显式提供 bundled image processor fallback。
+- `6da88a0` — 将 OpenAI 图像输入和 bundled fallback 纳入 `v2.1.218` 发布说明。
+- `da1eb01` — 更新 embedded image runtime 与 scripted tmux 验证说明。
+- `ee3bb5d` — 为 standalone binary 嵌入目标平台的 sharp/libvips runtime。
+- `83b3d6a` — 为发布产物增加 bundled image runtime 门禁。
 
 ### 变更内容
 
