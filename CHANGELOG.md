@@ -57,7 +57,7 @@
 
 - OpenAI API key 与 ChatGPT OAuth 用户现在可以使用 `/fast`；OpenAI model 不再受 Anthropic Opus 4.6 eligibility 限制，设置页、Model Picker 和 Fast mode 对话框使用 provider 对应的说明。
 - OpenAI Responses 请求将 Fast mode 映射为 `service_tier: "priority"`，不发送内部 `speed` 字段；priority tier 不受支持时直接保留服务端错误，不启用 Anthropic 专属的 beta header、状态预取或自动降级路径。
-- OpenAI API key 与 ChatGPT OAuth 会话现在会将用户图像和 Read tool 图像结果转换为 Responses `input_image`；构建产物显式使用 bundled fallback，在原生 image processor 不可用时保留既有回退行为。
+- OpenAI API key 与 ChatGPT OAuth 会话现在会将用户图像和 Read tool 图像结果转换为 Responses `input_image`；独立 CLI 产物按目标平台嵌入并按需加载 sharp/libvips runtime，在原生 image processor 不可用时仍可缩放超限图像。
 
 #### Goal 状态与恢复
 
@@ -82,7 +82,8 @@
 ### 测试覆盖
 
 - OpenAI 测试覆盖 standalone turn scope、手动与连续 compaction、opaque item replay、`/fast` availability、provider eligibility、Anthropic 状态预取隔离、priority wire mapping、不支持 priority 时的错误传播，以及用户/Read tool 图像到 `input_image` 的 API key 与 ChatGPT OAuth wire 转换。
-- 构建测试覆盖 image processor fallback 的模块解析、空 native module 状态与显式失败行为；FileReadTool 测试覆盖 PNG、JPEG、GIF 和 WebP 图像读取。
+- 构建测试覆盖 image processor fallback、按目标选择和延迟加载 embedded sharp runtime、普通源码 build 隔离及 glibc/musl 依赖安装；FileReadTool 测试覆盖 PNG、JPEG、GIF 和 WebP 图像读取。
+- Scripted tmux 图像门禁在当前 `built-claude` 中执行 2100×1 PNG 的 Read 流程，断言实际缩放为 2000×1，并验证单次稳定 call ID 的 OpenAI Responses `function_call_output`/`input_image` wire、prompt recovery 与进程清理。
 - Goal 与 hook 测试覆盖交互式状态视图、attachment/sentinel、fresh resume metrics epoch、内联生命周期提示、success/block/impossible、后台任务延迟、command exit 2、callback identity、策略限制、长 transcript 重试和连续 block cap。
 - Agent 测试覆盖 query 异常退出后的 SubagentStop fallback、完整 conversation、permission mode、blocking feedback、sidechain 记录及 exactly-once 边界。
 - TrustDialog、SSH 与 ClearGoal 测试覆盖 permission/directory 风险摘要与清理、managed source 过滤、ControlMaster、16 MiB chunk、Goal 清理状态和 tool 消息。
