@@ -9,3 +9,7 @@ type MacroGlobals = {
 };
 
 declare let MACRO: MacroGlobals;
+
+declare global {
+  var __CLAUDE_CODE_LOAD_SHARP_NATIVE__: (() => Promise<void>) | undefined;
+}

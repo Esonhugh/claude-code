@@ -16,6 +16,12 @@ const embeddedEntrypoint = path.join(
   'shims',
   'embedded-ripgrep.js',
 );
+const embeddedSharpPath = path.join(
+  projectDir,
+  'scripts',
+  'shims',
+  'embedded-sharp.js',
+);
 const packageJson = JSON.parse(
   await fs.promises.readFile(path.join(projectDir, 'package.json'), 'utf8'),
 );
@@ -48,6 +54,51 @@ const extension = platform === 'win32' ? '.exe' : '';
 const artifactName = `claude-code-v${version}-${artifactPlatform}${extension}`;
 const outfile = path.join(releaseDir, artifactName);
 
+function sharpPlatformArch() {
+  if (platform === 'linux' && targetSuffix === '-musl') {
+    return `linuxmusl-${arch}`;
+  }
+  return `${platform}-${arch}`;
+}
+
+function sharpAssetPaths() {
+  const platformArch = sharpPlatformArch();
+  const packageRoot = path.join(
+    nodeModulesDir,
+    '@img',
+    `sharp-${platformArch}`,
+  );
+  const addonPath = path.join(
+    packageRoot,
+    'lib',
+    `sharp-${platformArch}.node`,
+  );
+  const libraryRoot = platformArch.startsWith('win32-')
+    ? packageRoot
+    : path.join(nodeModulesDir, '@img', `sharp-libvips-${platformArch}`);
+  const libraryDirectory = path.join(libraryRoot, 'lib');
+  const libraryNames = fs.existsSync(libraryDirectory)
+    ? fs.readdirSync(libraryDirectory).filter(name =>
+        platformArch.startsWith('win32-')
+          ? name.toLowerCase().endsWith('.dll')
+          : name.startsWith('libvips-cpp.'),
+      )
+    : [];
+  const expectedLibraryCount = platformArch.startsWith('win32-') ? 2 : 1;
+  if (libraryNames.length !== expectedLibraryCount) {
+    throw new Error(
+      `Expected ${expectedLibraryCount} sharp runtime libraries in ${libraryDirectory}, found ${libraryNames.length}.`,
+    );
+  }
+  return {
+    platformArch,
+    addonPath,
+    libraryPaths: libraryNames.sort().map(name =>
+      path.join(libraryDirectory, name),
+    ),
+  };
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: projectDir,
@@ -67,7 +118,9 @@ function run(command, args, options = {}) {
   }
 }
 
-run('bun', ['./scripts/build.mjs']);
+run('bun', ['./scripts/build.mjs'], {
+  env: { ...process.env, CLAUDE_CODE_EMBEDDED_SHARP: '1' },
+});
 
 if (!fs.existsSync(cliEntrypoint)) {
   throw new Error(
@@ -96,6 +149,20 @@ if (!fs.existsSync(ripgrepBinaryPath)) {
   );
 }
 
+const {
+  platformArch: sharpPlatform,
+  addonPath: sharpAddonPath,
+  libraryPaths: sharpLibraryPaths,
+} = sharpAssetPaths();
+for (const assetPath of [sharpAddonPath, ...sharpLibraryPaths]) {
+  if (!fs.existsSync(assetPath)) {
+    throw new Error(
+      `Could not find ${assetPath}. Ensure sharp optionalDependencies are installed for ${sharpPlatformArch()}.`,
+    );
+  }
+}
+
+const generatedSharpPath = path.join(projectDir, 'embedded-sharp.js');
 const embeddedEntrypointContents = await fs.promises.readFile(
   embeddedEntrypoint,
   'utf8',
@@ -104,11 +171,50 @@ const generatedEntrypoint = path.join(projectDir, 'embedded-cli.js');
 const generatedEntrypointContents = embeddedEntrypointContents
   .replace('__CLAUDE_CODE_RIPGREP_BINARY__', JSON.stringify(ripgrepBinaryPath))
   .replace('__CLAUDE_CODE_RIPGREP_VERSION__', ripgrepPackageJson.version)
+  .replace(
+    '__CLAUDE_CODE_EMBEDDED_SHARP__',
+    JSON.stringify(generatedSharpPath),
+  )
   .replace("'./cli.js'", "'./dist/cli.js'");
 if (generatedEntrypointContents.includes('__CLAUDE_CODE_')) {
   throw new Error('Failed to generate embedded ripgrep entrypoint.');
 }
 await fs.promises.writeFile(generatedEntrypoint, generatedEntrypointContents);
+
+const embeddedSharpContents = await fs.promises.readFile(
+  embeddedSharpPath,
+  'utf8',
+);
+const generatedSharpContents = embeddedSharpContents
+  .replaceAll('__CLAUDE_CODE_SHARP_ADDON__', JSON.stringify(sharpAddonPath))
+  .replaceAll(
+    '__CLAUDE_CODE_SHARP_LIBRARY__',
+    JSON.stringify(sharpLibraryPaths[0]),
+  )
+  .replaceAll(
+    '__CLAUDE_CODE_SHARP_SECONDARY_LIBRARY__',
+    JSON.stringify(sharpLibraryPaths[1] ?? sharpLibraryPaths[0]),
+  )
+  .replaceAll(
+    '__CLAUDE_CODE_SHARP_PLATFORM_ARCH__',
+    JSON.stringify(sharpPlatform),
+  )
+  .replaceAll(
+    '__CLAUDE_CODE_SHARP_ADDON_NAME__',
+    JSON.stringify(path.basename(sharpAddonPath)),
+  )
+  .replaceAll(
+    '__CLAUDE_CODE_SHARP_LIBRARY_NAME__',
+    JSON.stringify(path.basename(sharpLibraryPaths[0])),
+  )
+  .replaceAll(
+    '__CLAUDE_CODE_SHARP_SECONDARY_LIBRARY_NAME__',
+    JSON.stringify(path.basename(sharpLibraryPaths[1] ?? sharpLibraryPaths[0])),
+  );
+if (/__CLAUDE_CODE_SHARP_(?!NATIVE__)/.test(generatedSharpContents)) {
+  throw new Error('Failed to generate embedded sharp module.');
+}
+await fs.promises.writeFile(generatedSharpPath, generatedSharpContents);
 
 const bunCheck = spawnSync('bun', ['--version'], {
   cwd: projectDir,

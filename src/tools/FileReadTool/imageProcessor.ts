@@ -34,6 +34,14 @@ type SharpCreator = (options: SharpCreatorOptions) => SharpInstance
 let imageProcessorModule: { default: SharpFunction } | null = null
 let imageCreatorModule: { default: SharpCreator } | null = null
 
+async function loadSharp<T extends (...args: never[]) => unknown>(): Promise<T> {
+  if (isInBundledMode()) {
+    await globalThis.__CLAUDE_CODE_LOAD_SHARP_NATIVE__?.()
+  }
+  const imported = (await import('sharp')) as unknown as MaybeDefault<T>
+  return unwrapDefault(imported)
+}
+
 export async function getImageProcessor(): Promise<SharpFunction> {
   if (imageProcessorModule) {
     return imageProcessorModule.default
@@ -44,6 +52,9 @@ export async function getImageProcessor(): Promise<SharpFunction> {
     try {
       // Use the native image processor module
       const imageProcessor = await import('image-processor-napi')
+      if (!imageProcessor.getNativeModule()) {
+        throw new Error('Native image processor module not available')
+      }
       // @ts-ignore - recovered code
       const sharp = imageProcessor.sharp || imageProcessor.default
       imageProcessorModule = { default: sharp }
@@ -57,12 +68,7 @@ export async function getImageProcessor(): Promise<SharpFunction> {
     }
   }
 
-  // Use sharp for non-bundled builds or as fallback.
-  // Single structural cast: our SharpFunction is a subset of sharp's actual type surface.
-  const imported = (await import(
-    'sharp'
-  )) as unknown as MaybeDefault<SharpFunction>
-  const sharp = unwrapDefault(imported)
+  const sharp = await loadSharp<SharpFunction>()
   imageProcessorModule = { default: sharp }
   return sharp
 }
@@ -77,10 +83,7 @@ export async function getImageCreator(): Promise<SharpCreator> {
     return imageCreatorModule.default
   }
 
-  const imported = (await import(
-    'sharp'
-  )) as unknown as MaybeDefault<SharpCreator>
-  const sharp = unwrapDefault(imported)
+  const sharp = await loadSharp<SharpCreator>()
   imageCreatorModule = { default: sharp }
   return sharp
 }

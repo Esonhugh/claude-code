@@ -29,6 +29,10 @@ const imageProcessorFallbackPath = path.join(
   projectDir,
   'scripts/shims/image-processor-napi.js',
 );
+const sharpNativePath = path.join(
+  projectDir,
+  'scripts/shims/sharp-native.cjs',
+);
 const defaultVersion = '0.0.0-dev';
 const buildVersion = String(
   process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
@@ -73,6 +77,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
 }
 
 const enabledFeatures = getEnabledFeatures();
+const embedSharpNative = process.env.CLAUDE_CODE_EMBEDDED_SHARP === '1';
 
 function firstExisting(baseDir, candidates) {
   for (const candidate of candidates) {
@@ -156,6 +161,13 @@ const recoveryResolver = {
     }));
 
     pluginBuild.onResolve({ filter: /^\.\.?\// }, args => {
+      if (
+        embedSharpNative &&
+        args.path === './sharp' &&
+        args.resolveDir.endsWith(path.join('sharp', 'lib'))
+      ) {
+        return { path: sharpNativePath };
+      }
       const resolved = resolveSourceFile(path.resolve(args.resolveDir, args.path));
       if (resolved) return { path: resolved };
       return {

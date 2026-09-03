@@ -4,6 +4,7 @@ dist/
 __pycache__/
 *.py[cod]
 /embedded-cli.js
+/embedded-sharp.js
 
 official-claude
 built-claude
