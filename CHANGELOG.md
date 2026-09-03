@@ -17,7 +17,7 @@
 ### 版本状态
 
 - 准备发布版本：`v2.1.218`。
-- 本次发布覆盖 `v2.1.217..HEAD`，包括 OpenAI 压缩与 Fast mode、Goal 与 Hook 生命周期、TrustDialog 风险提示、SSH 部署和 release gate 改动。
+- 本次发布覆盖 `v2.1.217..HEAD`，包括 OpenAI 压缩、Fast mode 与图像输入、Goal 与 Hook 生命周期、TrustDialog 风险提示、SSH 部署和 release gate 改动。
 - `package.json` 继续保持 `0.0.0-dev`；发布产物版本由构建流程注入。
 - `Makefile` 默认构建版本更新为 `2.1.218`。
 
@@ -43,6 +43,8 @@
 - `561022a` — 对齐 Goal resume 的 fresh metrics epoch 和内联生命周期提示。
 - `7b1ecb8` — 为 ClearGoal tool 显示调用与结果消息。
 - `42134af` — 修复 ClearGoal 结果消息未使用 Ink `Text` 渲染导致的交互式崩溃。
+- `0571998` — 为 OpenAI Responses 转换用户与 Read tool 的图像输入。
+- `8ae57b4` — 在构建中显式提供 bundled image processor fallback。
 
 ### 变更内容
 
@@ -51,10 +53,11 @@
 - OpenAI provider 下手动 `/compact` 即使不在 query turn 内也会创建稳定的 session、thread、turn 与 prompt cache scope，并继续使用 remote compaction 路径。
 - 连续执行 remote compaction 时，后续请求会保留上一轮 opaque compaction item；压缩后继续对话也会携带该 item，避免早期会话上下文在重复压缩后丢失。
 
-#### OpenAI Fast mode
+#### OpenAI Fast mode 与图像输入
 
 - OpenAI API key 与 ChatGPT OAuth 用户现在可以使用 `/fast`；OpenAI model 不再受 Anthropic Opus 4.6 eligibility 限制，设置页、Model Picker 和 Fast mode 对话框使用 provider 对应的说明。
 - OpenAI Responses 请求将 Fast mode 映射为 `service_tier: "priority"`，不发送内部 `speed` 字段；priority tier 不受支持时直接保留服务端错误，不启用 Anthropic 专属的 beta header、状态预取或自动降级路径。
+- OpenAI API key 与 ChatGPT OAuth 会话现在会将用户图像和 Read tool 图像结果转换为 Responses `input_image`；构建产物显式使用 bundled fallback，在原生 image processor 不可用时保留既有回退行为。
 
 #### Goal 状态与恢复
 
@@ -78,7 +81,8 @@
 
 ### 测试覆盖
 
-- OpenAI 测试覆盖 standalone turn scope、手动与连续 compaction、opaque item replay、`/fast` availability、provider eligibility、Anthropic 状态预取隔离、priority wire mapping 和不支持 priority 时的错误传播。
+- OpenAI 测试覆盖 standalone turn scope、手动与连续 compaction、opaque item replay、`/fast` availability、provider eligibility、Anthropic 状态预取隔离、priority wire mapping、不支持 priority 时的错误传播，以及用户/Read tool 图像到 `input_image` 的 API key 与 ChatGPT OAuth wire 转换。
+- 构建测试覆盖 image processor fallback 的模块解析、空 native module 状态与显式失败行为；FileReadTool 测试覆盖 PNG、JPEG、GIF 和 WebP 图像读取。
 - Goal 与 hook 测试覆盖交互式状态视图、attachment/sentinel、fresh resume metrics epoch、内联生命周期提示、success/block/impossible、后台任务延迟、command exit 2、callback identity、策略限制、长 transcript 重试和连续 block cap。
 - Agent 测试覆盖 query 异常退出后的 SubagentStop fallback、完整 conversation、permission mode、blocking feedback、sidechain 记录及 exactly-once 边界。
 - TrustDialog、SSH 与 ClearGoal 测试覆盖 permission/directory 风险摘要与清理、managed source 过滤、ControlMaster、16 MiB chunk、Goal 清理状态和 tool 消息。
