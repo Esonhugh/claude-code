@@ -56,12 +56,38 @@ assert.match(packageBinarySource, /bun-linux-x64-musl/);
 assert.match(packageBinarySource, /bun-linux-arm64-musl/);
 assert.match(packageBinarySource, /ripgrep-\$\{platform\}-\$\{arch\}/);
 assert.match(packageBinarySource, /["']--target["']/);
+assert.match(packageBinarySource, /CLAUDE_CODE_EMBEDDED_SHARP: '1'/);
+assert.match(packageBinarySource, /readdirSync\(libraryDirectory\)/);
+assert.doesNotMatch(packageBinarySource, /libvips-cpp\.8\.17\.3/);
+
+const buildSource = readFileSync(
+  new URL('./build.mjs', import.meta.url),
+  'utf8',
+);
+assert.match(
+  buildSource,
+  /const embedSharpNative = process\.env\.CLAUDE_CODE_EMBEDDED_SHARP === '1'/,
+);
+assert.match(buildSource, /embedSharpNative &&\s+args\.path === '\.\/sharp'/);
+
+const embeddedSharpSource = readFileSync(
+  new URL('./shims/embedded-sharp.js', import.meta.url),
+  'utf8',
+);
+assert.match(embeddedSharpSource, /__CLAUDE_CODE_SHARP_PLATFORM_ARCH__/);
+assert.match(embeddedSharpSource, /__CLAUDE_CODE_SHARP_ADDON_NAME__/);
+assert.match(embeddedSharpSource, /process\.once\('exit', cleanup\)/);
+assert.doesNotMatch(embeddedSharpSource, /\/Users\//);
 
 const releaseWorkflowSource = readFileSync(
   new URL('../.github/workflows/release.yml', import.meta.url),
   'utf8',
 );
 assert.match(releaseWorkflowSource, /- ubuntu-24\.04-arm/);
+assert.match(
+  releaseWorkflowSource,
+  /bun install --frozen-lockfile --os=linux --cpu="\$\(bun -e 'process\.stdout\.write\(process\.arch\)'\)"/,
+);
 assert.match(
   releaseWorkflowSource,
   /CLAUDE_CODE_BINARY_TARGET: bun-linux-x64-baseline/,
@@ -87,10 +113,18 @@ assert.match(
   /claude-code-v\$\{VERSION\}-linux-arm64-musl/,
 );
 assert.match(releaseWorkflowSource, /alpine:3\.22/);
-assert.match(releaseWorkflowSource, /apk add --no-cache libstdc\+\+ libgcc/);
+assert.match(releaseWorkflowSource, /apk add --no-cache libstdc\+\+ libgcc nodejs/);
 assert.match(
   releaseWorkflowSource,
   /--platform "linux\/\$\{ARCH\/x64\/amd64\}"/,
+);
+assert.match(
+  releaseWorkflowSource,
+  /node \.\/scripts\/verify-bundled-image-runtime\.mjs "\$ARTIFACT"/,
+);
+assert.match(
+  releaseWorkflowSource,
+  /node \/verify-bundled-image-runtime\.mjs \/usr\/local\/bin\/claude/,
 );
 assert.doesNotMatch(releaseWorkflowSource, /sha256sum \* > SHA256SUMS\.txt/);
 assert.match(releaseWorkflowSource, /group: release-/);

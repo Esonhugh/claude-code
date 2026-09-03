@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import atexit
+import base64
 import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,7 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
 MOCK_OPENAI_TARGETS = frozenset({
     'effort-openai-responses-wire',
     'fast-openai-responses-wire',
+    'openai-image-input-wire',
     'openai-remote-compaction',
     'subagent-stop-failure-lifecycle',
     'openai-responses-usage-error',
@@ -96,6 +98,20 @@ TARGET_PATH_RULES = (
         'src/services/api/openai-compat',
         'src/services/api/withRetry',
         'src/utils/fastMode',
+    )),
+    ('openai-image-input-wire', (
+        '.github/workflows/release.yml',
+        'scripts/build.mjs',
+        'scripts/package-binary.mjs',
+        'scripts/verify-bundled-image-runtime.mjs',
+        'scripts/shims/embedded-ripgrep.js',
+        'scripts/shims/embedded-sharp.js',
+        'scripts/shims/image-processor-napi.js',
+        'scripts/shims/sharp-native.cjs',
+        'src/services/api/openai-compat',
+        'src/tools/FileReadTool/FileReadTool',
+        'src/tools/FileReadTool/imageProcessor',
+        'src/utils/imageResizer',
     )),
     ('openai-remote-compaction', (
         'src/commands/compact/',
@@ -474,6 +490,15 @@ def sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def png_dimensions(data):
+    if len(data) < 24 or data[:8] != b'\x89PNG\r\n\x1a\n':
+        return None
+    return (
+        int.from_bytes(data[16:20], 'big'),
+        int.from_bytes(data[20:24], 'big'),
+    )
 
 
 def text_sha256(text):
@@ -966,6 +991,17 @@ class MockOpenAIServer:
                 if len(main_responses) == 1
                 else 'RELEASE_COMPACTION_CONTINUATION_OK'
             )
+        if self.label == 'openai-image-input-wire':
+            if len(main_responses) == 1:
+                return (
+                    'read-call',
+                    sse_function_call(
+                        'fc_release_read_image',
+                        'Read',
+                        {'file_path': str(self.run_dir / 'fixture.png')},
+                    ),
+                )
+            return 'completed', sse_completed('RELEASE_OPENAI_IMAGE_WIRE_OK')
         marker = {
             'effort-openai-responses-wire': 'RELEASE_EFFORT_WIRE_OK',
             'fast-openai-responses-wire': 'RELEASE_FAST_WIRE_OK',
@@ -3826,6 +3862,200 @@ return { results }
         })
         self.record(result)
 
+    def openai_image_input_wire(self):
+        label = 'openai-image-input-wire'
+        run_dir, session, target, ready = self.start(label)
+        result = {'label': label, 'evidence_dir': str(run_dir)}
+        fixture_path = run_dir / 'fixture.png'
+        fixture_bytes = base64.b64decode(
+            'iVBORw0KGgoAAAANSUhEUgAACDQAAAABCAIAAACkbvvnAAAAHUlEQVR4nO3BMQEA'
+            'AADCoPVPbQsvoAAAAAAAAI4GGJ0AATXO+8IAAAAASUVORK5CYII='
+        )
+        fixture_path.write_bytes(fixture_bytes)
+        fixture_sha256 = sha256(fixture_path)
+        fixture_metadata_path = run_dir / 'image-fixture-metadata.json'
+        fixture_metadata_path.write_text(json.dumps({
+            'path': str(fixture_path),
+            'media_type': 'image/png',
+            'dimensions': png_dimensions(fixture_bytes),
+            'byte_length': len(fixture_bytes),
+            'sha256': fixture_sha256,
+        }, indent=2) + '\n')
+        running_path = run_dir / '03-read-image-running-pane.txt'
+        terminal_path = run_dir / '04-terminal-pane.txt'
+        analysis_path = run_dir / 'openai-image-wire-analysis.json'
+        read_started = response_ready = prompt_restored = False
+        if ready:
+            self.send(
+                target,
+                run_dir,
+                'Read the release validation image and report the completion marker.',
+                'input-openai-image.txt',
+            )
+            read_started = self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) >= 1
+                    and self.mock_response_requests(run_dir)[0].get(
+                        'response_kind'
+                    ) == 'read-call'
+                ),
+                90,
+                0.25,
+            )
+            self.capture(target, running_path)
+            response_ready = read_started and self.wait_until(
+                lambda: (
+                    len(self.mock_response_requests(run_dir)) == 2
+                    and 'RELEASE_OPENAI_IMAGE_WIRE_OK'
+                    in self.assistant_text(run_dir)
+                ),
+                90,
+                0.25,
+            )
+            prompt_restored = response_ready and self.wait_until(
+                lambda: input_prompt_ready(
+                    self.capture(target, terminal_path, history=False)
+                ),
+                30,
+                0.25,
+            )
+            self.capture(target, terminal_path)
+        for path in (running_path, terminal_path):
+            if not path.exists():
+                path.write_text('required OpenAI image state was not reached\n')
+
+        responses = self.mock_response_requests(run_dir)
+        response_kinds = [request.get('response_kind') for request in responses]
+        second_body = (
+            responses[1].get('body')
+            if len(responses) == 2 and isinstance(responses[1].get('body'), dict)
+            else {}
+        )
+        second_input = second_body.get('input')
+        function_calls = []
+        function_outputs = []
+        if isinstance(second_input, list):
+            function_calls = [
+                item for item in second_input
+                if isinstance(item, dict) and item.get('type') == 'function_call'
+            ]
+            function_outputs = [
+                item for item in second_input
+                if isinstance(item, dict)
+                and item.get('type') == 'function_call_output'
+            ]
+        image_output = None
+        if len(function_outputs) == 1:
+            output = function_outputs[0].get('output')
+            if isinstance(output, list) and len(output) == 1:
+                candidate = output[0]
+                if isinstance(candidate, dict):
+                    image_output = candidate
+        processed_bytes = None
+        image_url = image_output.get('image_url') if image_output else None
+        if isinstance(image_url, str) and image_url.startswith(
+            'data:image/png;base64,'
+        ):
+            try:
+                processed_bytes = base64.b64decode(
+                    image_url.removeprefix('data:image/png;base64,'),
+                    validate=True,
+                )
+            except ValueError:
+                processed_bytes = None
+        processed_dimensions = (
+            png_dimensions(processed_bytes) if processed_bytes else None
+        )
+        try:
+            call_arguments = json.loads(function_calls[0].get('arguments', '{}'))
+        except (IndexError, TypeError, json.JSONDecodeError):
+            call_arguments = None
+        call_wire = (
+            len(function_calls) == 1
+            and function_calls[0].get('id') == 'fc_release_read_image'
+            and function_calls[0].get('call_id') == 'fc_release_read_image'
+            and function_calls[0].get('name') == 'Read'
+            and call_arguments == {'file_path': str(fixture_path)}
+        )
+        output_wire = (
+            len(function_outputs) == 1
+            and function_outputs[0].get('call_id') == 'fc_release_read_image'
+            and image_output is not None
+            and image_output.get('type') == 'input_image'
+            and image_output.get('detail') == 'high'
+            and processed_dimensions == (2000, 1)
+            and processed_bytes != fixture_bytes
+        )
+        exact_requests = response_kinds == ['read-call', 'completed']
+        dummy_auth = (
+            len(responses) == 2
+            and all(
+                request.get('authorization') == {
+                    'present': True,
+                    'matches_dummy': True,
+                }
+                for request in responses
+            )
+        )
+        analysis_path.write_text(json.dumps({
+            'request_count': len(responses),
+            'response_kinds': response_kinds,
+            'read_function_call_wire': call_wire,
+            'function_call_output_image_wire': output_wire,
+            'fixture_sha256': fixture_sha256,
+            'fixture_dimensions': png_dimensions(fixture_bytes),
+            'processed_dimensions': processed_dimensions,
+            'processed_differs_from_fixture': processed_bytes != fixture_bytes,
+            'read_started': read_started,
+            'response_ready': response_ready,
+            'prompt_restored': prompt_restored,
+            'dummy_authorization': dummy_auth,
+        }, indent=2) + '\n')
+        cleanup = self.close(run_dir, session, target)
+        passed = (
+            ready and read_started and response_ready and prompt_restored
+            and exact_requests and call_wire and output_wire and dummy_auth
+            and self.cleanup_passed(cleanup)
+        )
+        evidence = [
+            run_dir / 'input-openai-image.txt',
+            running_path,
+            terminal_path,
+            fixture_path,
+            fixture_metadata_path,
+            run_dir / 'mock-openai-requests.json',
+            analysis_path,
+            run_dir / 'debug.log',
+        ]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'reason': None if passed else 'bundled image Read or OpenAI image wire evidence was incomplete',
+            'request_count': len(responses),
+            'response_kinds': response_kinds,
+            'assertions': [
+                self.required_assertion(
+                    run_dir,
+                    'bundled-file-read-image',
+                    'Bundled FileRead image processing',
+                    'The built CLI executes Read on a PNG through the bundled image processor fallback and returns to the prompt.',
+                    evidence,
+                    passed=passed and call_wire,
+                    reason='the built CLI did not complete the controlled image Read',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'openai-image-function-output-wire',
+                    'OpenAI Responses image tool-result wire',
+                    'The Read result is sent once as the exact PNG data URL in a function_call_output input_image item with the stable call ID.',
+                    evidence,
+                    passed=passed and output_wire,
+                    reason='the image tool result was missing or changed on the OpenAI Responses wire',
+                ),
+            ],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
     def openai_remote_compaction(self):
         run_dir, session, target, ready = self.start(
             'openai-remote-compaction'
@@ -5861,6 +6091,7 @@ return await parallel([
             'code-review': lambda: self.slash_workflow('code-review'),
             'effort-openai-responses-wire': self.effort_openai_responses_wire,
             'fast-openai-responses-wire': self.fast_openai_responses_wire,
+            'openai-image-input-wire': self.openai_image_input_wire,
             'openai-remote-compaction': self.openai_remote_compaction,
             'openai-responses-usage-error': self.openai_responses_usage_error,
             'model-discovery-picker': self.model_discovery_picker,

@@ -1214,6 +1214,7 @@ def assert_driver_behavior(module, baseline_module):
     ]) == {
         'effort-openai-responses-wire',
         'fast-openai-responses-wire',
+        'openai-image-input-wire',
         'openai-remote-compaction',
         'openai-responses-usage-error',
         'prompt-modes-cache-prefix',
@@ -1226,6 +1227,18 @@ def assert_driver_behavior(module, baseline_module):
         'src/commands/compact/compact.ts',
         'src/services/compact/codexCompact.ts',
     ]) == {'openai-remote-compaction'}
+    assert module.required_targets_for_paths([
+        '.github/workflows/release.yml',
+        'scripts/build.mjs',
+        'scripts/package-binary.mjs',
+        'scripts/verify-bundled-image-runtime.mjs',
+        'scripts/shims/embedded-ripgrep.js',
+        'scripts/shims/embedded-sharp.js',
+        'scripts/shims/image-processor-napi.js',
+        'scripts/shims/sharp-native.cjs',
+        'src/tools/FileReadTool/imageProcessor.ts',
+        'src/utils/imageResizer.ts',
+    ]) == {'openai-image-input-wire'}
     assert module.required_targets_for_paths([
         'src/hooks/useSSHSession.ts',
         'src/hooks/useRemoteSession.ts',
@@ -1536,14 +1549,16 @@ def assert_driver_behavior(module, baseline_module):
                     'thread_alive': False,
                 }
 
-            def post_response(instructions):
-                body = json.dumps({
+            def post_response(server_url, *, instructions, input_items=None):
+                payload = {
                     'model': 'gpt-release-discovered',
                     'instructions': instructions,
-                }).encode()
+                }
+                if input_items is not None:
+                    payload['input'] = input_items
                 response_request = Request(
-                    f'{base_url}/v1/responses',
-                    data=body,
+                    f'{server_url}/v1/responses',
+                    data=json.dumps(payload).encode(),
                     method='POST',
                     headers={
                         'Authorization': f'Bearer {module.DUMMY_OPENAI_API_KEY}',
@@ -1553,7 +1568,10 @@ def assert_driver_behavior(module, baseline_module):
                 with urlopen(response_request, timeout=5) as response:
                     return response.read().decode()
 
-            title_sse = post_response(module.TITLE_GENERATION_INSTRUCTION)
+            title_sse = post_response(
+                base_url,
+                instructions=module.TITLE_GENERATION_INSTRUCTION,
+            )
             title_events = [
                 json.loads(line[6:])
                 for line in title_sse.splitlines()
@@ -1566,11 +1584,17 @@ def assert_driver_behavior(module, baseline_module):
             assert title_events[-1]['type'] == 'response.completed'
             assert 'response.function_call_arguments.done' not in title_sse
 
-            first_sse = post_response('normal system prompt')
+            first_sse = post_response(
+                base_url,
+                instructions='normal system prompt',
+            )
             assert 'response.function_call_arguments.done' in first_sse
             assert 'update-config' in first_sse
 
-            second_sse = post_response('normal system prompt')
+            second_sse = post_response(
+                base_url,
+                instructions='normal system prompt',
+            )
             assert 'RELEASE_UPDATE_CONFIG_SKILL_OK' in second_sse
             assert 'response.reasoning_summary_text.delta' in module.sse_completed(
                 'done',
@@ -1594,6 +1618,48 @@ def assert_driver_behavior(module, baseline_module):
                 run_dir / 'mock-openai-requests.json'
             ).read_text()
 
+            image_run_dir = run_dir / 'image'
+            image_run_dir.mkdir()
+            image_server = module.MockOpenAIServer(
+                image_run_dir,
+                'openai-image-input-wire',
+            )
+            image_base_url = image_server.start()
+            try:
+                read_sse = post_response(
+                    image_base_url,
+                    instructions='normal system prompt',
+                    input_items=[{
+                        'type': 'message',
+                        'role': 'user',
+                        'content': [{
+                            'type': 'input_text',
+                            'text': 'read image',
+                        }],
+                    }],
+                )
+                assert 'response.function_call_arguments.done' in read_sse
+                assert str(image_run_dir / 'fixture.png') in read_sse
+                completed_sse = post_response(
+                    image_base_url,
+                    instructions='normal system prompt',
+                    input_items=[{
+                        'type': 'function_call_output',
+                        'call_id': 'fc_release_read_image',
+                        'output': [],
+                    }],
+                )
+                assert 'RELEASE_OPENAI_IMAGE_WIRE_OK' in completed_sse
+                assert [
+                    request['response_kind']
+                    for request in image_server.snapshot()
+                ] == ['read-call', 'completed']
+            finally:
+                assert image_server.stop() == {
+                    'stopped': True,
+                    'thread_alive': False,
+                }
+
             compaction_run_dir = run_dir / 'compaction'
             compaction_run_dir.mkdir()
             compaction_server = module.MockOpenAIServer(
@@ -1603,22 +1669,11 @@ def assert_driver_behavior(module, baseline_module):
             compaction_base_url = compaction_server.start()
             try:
                 def post_compaction(input_items):
-                    body = json.dumps({
-                        'model': 'gpt-release-discovered',
-                        'instructions': 'normal system prompt',
-                        'input': input_items,
-                    }).encode()
-                    request = Request(
-                        f'{compaction_base_url}/v1/responses',
-                        data=body,
-                        method='POST',
-                        headers={
-                            'Authorization': f'Bearer {module.DUMMY_OPENAI_API_KEY}',
-                            'Content-Type': 'application/json',
-                        },
+                    return post_response(
+                        compaction_base_url,
+                        instructions='normal system prompt',
+                        input_items=input_items,
                     )
-                    with urlopen(request, timeout=5) as response:
-                        return response.read().decode()
 
                 seed_sse = post_compaction([{
                     'type': 'message',
@@ -1672,22 +1727,11 @@ def assert_driver_behavior(module, baseline_module):
             subagent_base_url = subagent_server.start()
             try:
                 def post_subagent(input_items):
-                    body = json.dumps({
-                        'model': 'gpt-release-discovered',
-                        'instructions': 'normal system prompt',
-                        'input': input_items,
-                    }).encode()
-                    request = Request(
-                        f'{subagent_base_url}/v1/responses',
-                        data=body,
-                        method='POST',
-                        headers={
-                            'Authorization': f'Bearer {module.DUMMY_OPENAI_API_KEY}',
-                            'Content-Type': 'application/json',
-                        },
+                    return post_response(
+                        subagent_base_url,
+                        instructions='normal system prompt',
+                        input_items=input_items,
                     )
-                    with urlopen(request, timeout=5) as response:
-                        return response.read().decode()
 
                 first_subagent_sse = post_subagent([{
                     'type': 'message',
@@ -2128,6 +2172,7 @@ def assert_driver_behavior(module, baseline_module):
 
     assert "'effort-openai-responses-wire': self.effort_openai_responses_wire" in driver
     assert "'fast-openai-responses-wire': self.fast_openai_responses_wire" in driver
+    assert "'openai-image-input-wire': self.openai_image_input_wire" in driver
     assert "'openai-remote-compaction': self.openai_remote_compaction" in driver
     assert "'openai-responses-usage-error': self.openai_responses_usage_error" in driver
     assert "'model-discovery-picker': self.model_discovery_picker" in driver
@@ -2137,6 +2182,7 @@ def assert_driver_behavior(module, baseline_module):
     assert "'prompt-modes-cache-prefix': self.prompt_modes_cache_prefix" in driver
     assert 'def effort_openai_responses_wire(self):' in driver
     assert 'def fast_openai_responses_wire(self):' in driver
+    assert 'def openai_image_input_wire(self):' in driver
     assert 'def openai_remote_compaction(self):' in driver
     assert 'def openai_responses_usage_error(self):' in driver
     assert 'def model_discovery_picker(self):' in driver
@@ -2458,6 +2504,89 @@ def assert_driver_behavior(module, baseline_module):
         assert recorded[0]['service_tiers'] == ['priority', None]
         assert recorded[0]['preference_disabled_at_end'] is True
         assert fast_enabled is False
+
+    with tempfile.TemporaryDirectory(prefix='release-driver-image-wire-') as root_string:
+        run_dir = Path(root_string) / 'openai-image-input-wire'
+        run_dir.mkdir()
+        recorded = []
+        visible_requests = 0
+        image_gate = object.__new__(module.BinaryGate)
+        processed_base64 = (
+            'iVBORw0KGgoAAAANSUhEUgAAB9AAAAABCAIAAAAJn6IqAAAAHUlEQVR4nO3BMQEA'
+            'AADCoPVPbQhfoAAAAAAAgNsAF3EAAW1SnXoAAAAASUVORK5CYII='
+        )
+        requests = [{
+            'response_kind': 'read-call',
+            'body': {'input': [{'type': 'message'}]},
+            'authorization': {'present': True, 'matches_dummy': True},
+        }, {
+            'response_kind': 'completed',
+            'body': {
+                'input': [{
+                    'type': 'function_call',
+                    'id': 'fc_release_read_image',
+                    'call_id': 'fc_release_read_image',
+                    'name': 'Read',
+                    'arguments': json.dumps({
+                        'file_path': str(run_dir / 'fixture.png'),
+                    }, separators=(',', ':')),
+                }, {
+                    'type': 'function_call_output',
+                    'call_id': 'fc_release_read_image',
+                    'output': [{
+                        'type': 'input_image',
+                        'image_url': f'data:image/png;base64,{processed_base64}',
+                        'detail': 'high',
+                    }],
+                }],
+            },
+            'authorization': {'present': True, 'matches_dummy': True},
+        }]
+        image_gate.start = lambda _label: (
+            run_dir,
+            'image-session',
+            'image-target',
+            True,
+        )
+
+        def send_image(*_args):
+            nonlocal visible_requests
+            visible_requests = 2
+
+        def capture_image(_target, path, **_kwargs):
+            text = 'Read fixture.png\nRELEASE_OPENAI_IMAGE_WIRE_OK\n❯\n'
+            path.write_text(text)
+            return text
+
+        image_gate.send = send_image
+        image_gate.wait_until = lambda predicate, *_args: predicate()
+        image_gate.capture = capture_image
+        image_gate.mock_response_requests = (
+            lambda _run_dir: requests[:visible_requests]
+        )
+        image_gate.assistant_text = (
+            lambda _run_dir: 'RELEASE_OPENAI_IMAGE_WIRE_OK'
+        )
+        image_gate.close = lambda *_args: {'stopped': True}
+        image_gate.cleanup_passed = lambda _cleanup: True
+        image_gate.record = recorded.append
+        image_gate.required_assertion = (
+            module.BinaryGate.required_assertion.__get__(
+                image_gate,
+                module.BinaryGate,
+            )
+        )
+
+        module.BinaryGate.openai_image_input_wire(image_gate)
+
+        assert recorded[0]['validation_verdict'] == 'passed'
+        assert recorded[0]['request_count'] == 2
+        assert recorded[0]['response_kinds'] == ['read-call', 'completed']
+        analysis = json.loads(
+            (run_dir / 'openai-image-wire-analysis.json').read_text()
+        )
+        assert analysis['read_function_call_wire'] is True
+        assert analysis['function_call_output_image_wire'] is True
 
     with tempfile.TemporaryDirectory(prefix='release-driver-remote-compact-') as root_string:
         run_dir = Path(root_string) / 'openai-remote-compaction'
