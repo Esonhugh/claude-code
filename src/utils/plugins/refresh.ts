@@ -28,12 +28,13 @@ import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
 import { clearAllCaches } from './cacheUtils.js'
-import { getPluginCommands } from './loadPluginCommands.js'
+import { clearInstalledPluginsCache } from './installedPluginsManager.js'
+import { getPluginCommands, getPluginSkills } from './loadPluginCommands.js'
 import { loadPluginHooks } from './loadPluginHooks.js'
 import { loadPluginLspServers } from './lspPluginIntegration.js'
 import { loadPluginMcpServers } from './mcpPluginIntegration.js'
 import { clearPluginCacheExclusions } from './orphanedPluginFilter.js'
-import { loadAllPlugins } from './pluginLoader.js'
+import { loadAllPluginsCacheOnly } from './pluginLoader.js'
 
 type SetAppState = (updater: (prev: AppState) => AppState) => void
 
@@ -41,6 +42,7 @@ export type RefreshActivePluginsResult = {
   enabled_count: number
   disabled_count: number
   command_count: number
+  skill_count: number
   agent_count: number
   hook_count: number
   mcp_count: number
@@ -73,21 +75,18 @@ export async function refreshActivePlugins(
   setAppState: SetAppState,
 ): Promise<RefreshActivePluginsResult> {
   logForDebugging('refreshActivePlugins: clearing all plugin caches')
+  clearInstalledPluginsCache()
   clearAllCaches()
   // Orphan exclusions are session-frozen by default, but /reload-plugins is
   // an explicit "disk changed, re-read it" signal — recompute them too.
   clearPluginCacheExclusions()
 
-  // Sequence the full load before cache-only consumers. Before #23693 all
-  // three shared loadAllPlugins()'s memoize promise so Promise.all was a
-  // no-op race. After #23693 getPluginCommands/getAgentDefinitions call
-  // loadAllPluginsCacheOnly (separate memoize) — racing them means they
-  // read installed_plugins.json before loadAllPlugins() has cloned+cached
-  // the plugin, returning plugin-cache-miss. loadAllPlugins warms the
-  // cache-only memoize on completion, so the awaits below are ~free.
-  const pluginResult = await loadAllPlugins()
-  const [pluginCommands, agentDefinitions] = await Promise.all([
+  // Reload installed components only; marketplace materialization belongs to
+  // the install/reconcile layer, not a session refresh.
+  const pluginResult = await loadAllPluginsCacheOnly()
+  const [pluginCommands, pluginSkills, agentDefinitions] = await Promise.all([
     getPluginCommands(),
+    getPluginSkills(),
     getAgentDefinitionsWithOverrides(getOriginalCwd()),
   ])
 
@@ -126,7 +125,7 @@ export async function refreshActivePlugins(
       ...prev.plugins,
       enabled,
       disabled,
-      commands: pluginCommands,
+      commands: [...pluginCommands, ...pluginSkills],
       errors: mergePluginErrors(prev.plugins.errors, errors),
       needsRefresh: false,
     },
@@ -181,13 +180,14 @@ export async function refreshActivePlugins(
     enabled_count: enabled.length,
     disabled_count: disabled.length,
     command_count: pluginCommands.length,
+    skill_count: pluginSkills.length,
     agent_count: agentDefinitions.allAgents.length,
     hook_count,
     mcp_count,
     lsp_count,
     error_count: errors.length + (hook_load_failed ? 1 : 0),
     agentDefinitions,
-    pluginCommands,
+    pluginCommands: [...pluginCommands, ...pluginSkills],
   }
 }
 

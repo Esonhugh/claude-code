@@ -1284,9 +1284,19 @@ export function REPL({
     }
   }, [mainThreadAgentDefinition, mergedTools])
 
+  // After reload, AppState owns the complete plugin set, including removals.
+  const localCommandsWithoutReloadedPlugins = useMemo(
+    () =>
+      !isRemoteExecutionSession && mcp.pluginReconnectKey > 0
+        ? localCommands.filter(
+            command => command.type !== 'prompt' || command.source !== 'plugin',
+          )
+        : localCommands,
+    [localCommands, isRemoteExecutionSession, mcp.pluginReconnectKey],
+  )
   // Merge commands from local state, plugins, and MCP
   const commandsWithPlugins = useMergedCommands(
-    localCommands,
+    localCommandsWithoutReloadedPlugins,
     isRemoteExecutionSession ? [] : (plugins.commands as Command[]),
   )
   const mergedCommands = useMergedCommands(

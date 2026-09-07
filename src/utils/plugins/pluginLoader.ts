@@ -2105,9 +2105,9 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
 ): Promise<LoadedPlugin | null> {
   let pluginPath: string
 
-  if (typeof entry.source === 'string') {
-    // Local relative path — read from the marketplace source dir directly.
-    // Skip copyPluginToVersionedCache; startup doesn't need a fresh copy.
+  if (typeof entry.source === 'string' && !installPath) {
+    // Unmaterialized local plugins can load directly from the marketplace.
+    // Installed plugins must use their recorded version, like remote sources.
     let marketplaceDir: string
     try {
       marketplaceDir = (await stat(marketplaceInstallLocation)).isDirectory()

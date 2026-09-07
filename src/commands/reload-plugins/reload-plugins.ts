@@ -38,7 +38,8 @@ export const call: LocalCommandCall = async (_args, context) => {
 
   const parts = [
     n(r.enabled_count, 'plugin'),
-    n(r.command_count, 'skill'),
+    n(r.command_count, 'command'),
+    n(r.skill_count, 'skill'),
     n(r.agent_count, 'agent'),
     n(r.hook_count, 'hook'),
     // "plugin MCP/LSP" disambiguates from user-config/built-in servers,

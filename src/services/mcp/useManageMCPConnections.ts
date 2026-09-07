@@ -88,7 +88,6 @@ import { getMcpPrefix } from './mcpStringUtils.js'
 import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
 import { isAnt } from 'src/utils/userType.js'
 
-
 // Constants for reconnection with exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 5
 const INITIAL_BACKOFF_MS = 1000
@@ -775,7 +774,12 @@ export function useManageMCPConnections(
   // Skip claude.ai dedup here to avoid blocking on the network fetch; the connect
   // useEffect below runs immediately after and dedups before connecting.
   const sessionId = getSessionId()
+  const appliedPluginReconnectKey = useRef(_pluginReconnectKey)
+  const pendingServerInitialization = useRef<Promise<void>>(Promise.resolve())
   useEffect(() => {
+    const reloadPlugins =
+      appliedPluginReconnectKey.current !== _pluginReconnectKey
+    appliedPluginReconnectKey.current = _pluginReconnectKey
     async function initializeServersAsPending() {
       const { servers: existingConfigs, errors: mcpErrors } = isStrictMcpConfig
         ? { servers: {}, errors: [] }
@@ -785,6 +789,7 @@ export function useManageMCPConnections(
       // Add MCP errors to plugin errors for UI visibility (deduplicated)
       addErrorsToAppState(setAppState, mcpErrors)
 
+      const cleanups: Promise<void>[] = []
       setAppState(prevState => {
         // Disconnect MCP servers that are stale: plugin servers removed from
         // config, or any server whose config hash changed (edited .mcp.json).
@@ -793,28 +798,25 @@ export function useManageMCPConnections(
         const { stale, ...mcpWithoutStale } = excludeStalePluginClients(
           prevState.mcp,
           configs,
+          reloadPlugins,
         )
-        // Clean up stale connections. Fire-and-forget — state updaters must
-        // be synchronous. Three hazards to defuse before calling cleanup:
+        // Keep the state update synchronous, then await cleanup before discovery.
+        // Cancel old timers and detach onclose so cleanup cannot reconnect the
+        // previous config. clearServerCache only inspects existing cache entries.
+        // Two hazards to defuse before calling cleanup:
         //   1. Pending reconnect timer would fire with the OLD config.
         //   2. onclose (set at L254) starts reconnectWithBackoff with the
         //      OLD config from its closure — it checks isMcpServerDisabled
         //      but config-changed servers aren't disabled, so it'd race the
         //      fresh connection and last updateServer wins.
-        //   3. clearServerCache internally calls connectToServer (memoized).
-        //      For never-connected servers (disabled/pending/failed) the
-        //      cache is empty → real connect attempt → spawn/OAuth just to
-        //      immediately kill it. Only connected servers need cleanup.
         for (const s of stale) {
           const timer = reconnectTimersRef.current.get(s.name)
           if (timer) {
             clearTimeout(timer)
             reconnectTimersRef.current.delete(s.name)
           }
-          if (s.type === 'connected') {
-            s.client.onclose = undefined
-            void clearServerCache(s.name, s.config).catch(() => {})
-          }
+          if (s.type === 'connected') s.client.onclose = undefined
+          cleanups.push(clearServerCache(s.name, s.config))
         }
 
         const existingServerNames = new Set(
@@ -843,14 +845,17 @@ export function useManageMCPConnections(
           },
         }
       })
+      await Promise.all(cleanups)
     }
 
-    void initializeServersAsPending().catch(error => {
-      logMCPError(
-        'useManageMCPConnections',
-        `Failed to initialize servers as pending: ${errorMessage(error)}`,
-      )
-    })
+    pendingServerInitialization.current = initializeServersAsPending().catch(
+      error => {
+        logMCPError(
+          'useManageMCPConnections',
+          `Failed to initialize servers as pending: ${errorMessage(error)}`,
+        )
+      },
+    )
   }, [
     isStrictMcpConfig,
     dynamicMcpConfig,
@@ -865,6 +870,8 @@ export function useManageMCPConnections(
     let cancelled = false
 
     async function loadAndConnectMcpConfigs() {
+      await pendingServerInitialization.current
+      if (cancelled) return
       // Clear claude.ai MCP cache so we fetch fresh configs with current auth
       // state. This is important when authVersion changes (e.g., after login/
       // logout). Kick off the fetch now so it overlaps with loadAllPlugins()

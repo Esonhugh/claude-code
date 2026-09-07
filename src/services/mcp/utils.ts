@@ -195,6 +195,7 @@ export function excludeStalePluginClients(
     resources: Record<string, ServerResource[]>
   },
   configs: Record<string, ScopedMcpServerConfig>,
+  reloadPlugins = false,
 ): {
   clients: MCPServerConnection[]
   tools: Tool[]
@@ -203,6 +204,9 @@ export function excludeStalePluginClients(
   stale: MCPServerConnection[]
 } {
   const stale = mcp.clients.filter(c => {
+    if (reloadPlugins) {
+      return c.config.scope === 'dynamic' && c.name.startsWith('plugin:')
+    }
     const fresh = configs[c.name]
     if (!fresh) return c.config.scope === 'dynamic'
     return hashMcpConfig(c.config) !== hashMcpConfig(fresh)

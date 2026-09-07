@@ -1695,9 +1695,9 @@ export async function clearServerCache(
   const key = getServerCacheKey(name, serverRef)
 
   try {
-    const wrappedClient = await connectToServer(name, serverRef)
+    const wrappedClient = await connectToServer.cache.get(key)
 
-    if (wrappedClient.type === 'connected') {
+    if (wrappedClient?.type === 'connected') {
       await wrappedClient.cleanup()
     }
   } catch {
