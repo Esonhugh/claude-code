@@ -23,6 +23,51 @@
 
 ---
 
+## 当前实现补充：交互式更新与会话重载（v2.1.218）
+
+本节描述当前实现；下文其余部分保留 v2.1.88 分析背景。
+
+### 更新与重载的职责
+
+用户在当前会话通过 `/plugin manage` 打开插件详情并选择 **Update now**。更新负责物化新版本缓存、更新安装记录；成功后提示运行 `/reload-plugins`。重载负责将已安装状态应用到当前会话，不承担 marketplace 升级或重新下载。
+
+```text
+/plugin manage → Update now
+  → updatePluginOp → 版本缓存与安装记录
+/reload-plugins
+  → 清除安装文件缓存、会话安装快照和组件加载缓存
+  → loadAllPluginsCacheOnly 读取当前已安装版本
+  → 重建 commands + standalone skills、agent definitions
+  → 替换 AppState 插件集合，递增 pluginReconnectKey
+  → 刷新 hooks，触发 LSP 重初始化与插件 MCP 清理/重新发现
+```
+
+关键实现：`src/utils/plugins/refresh.ts`、`src/utils/plugins/pluginLoader.ts`、`src/services/plugins/pluginOperations.ts`。
+
+### 状态与连接规则
+
+- 已安装的本地 marketplace 插件也使用安装记录中的缓存路径，不能绕过 update 直接读取已修改的 source；没有安装路径的本地插件才允许直接加载 source。
+- reload 后，REPL 排除初始命令列表中的插件项，由 AppState 提供完整 commands/skills 集合。空集合也必须替换旧集合，避免同名旧对象遮蔽更新或删除项残留。
+- 显式 reload 使插件 MCP 连接失效，即使配置未改变；清理旧连接后再重新发现。非插件 MCP 不因插件 reload 被强制重启。
+- MCP 清缓存只查询已有连接，不能为了清理而启动服务器。
+- 成功摘要分别统计 commands 和独立 skills。MCP/LSP 数量表示配置数量，不表示服务已就绪；reload 不等待全部异步服务初始化完成。
+
+关键消费者：`src/screens/REPL.tsx`、`src/services/mcp/useManageMCPConnections.ts`、`src/services/mcp/utils.ts`、`src/services/mcp/client.ts`。
+
+### 回归验证与边界
+
+`src/utils/plugins/refresh.test.ts` 覆盖安装快照失效、commands/skills 集合替换与清空、数量统计、插件 MCP 能力移除及非插件保留，并通过真实 install/update 操作验证安装缓存版本选择。相关验证入口：
+
+```bash
+bun test src/utils/plugins/refresh.test.ts src/commands/reload-skills/reload-skills.test.ts src/hooks/useMergedCommands.test.tsx src/services/plugins/pluginOperations.test.ts
+bunx tsc --noEmit --pretty false
+make build
+```
+
+交互验收使用隔离 HOME/config/cwd 和本地 marketplace，在 scripted tmux 中保持同一 `built-claude` 进程：先调用 v1 组件，发布 fixture v2，通过 `/plugin manage` 的 **Update now** 更新，再输入 `/reload-plugins`。已验证同名 command/standalone skill 内容切换、新增/删除 command、插件 MCP 新工具实际调用及非插件 MCP 连接保留。被测更新动作不使用外部 CLI，也不手写安装记录。
+
+模型端使用受控 localhost fixture，因此证明真实 UI、分发与 MCP 调用链路，不代表真实模型服务验收。远端 marketplace 下载、standalone skill 新增/删除、hooks/LSP 完整生命周期、快速连续 reload 以及恰好一次 MCP 重连不在该交互验收结论内。更新成功与 reload 之间的组件内容未单独探测。
+
 ## 1. 系统总览与文件地图
 
 ### 1.1 核心文件
