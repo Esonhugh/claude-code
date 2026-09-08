@@ -12,7 +12,7 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-09-08 - 工具按需加载、OpenAI 搜索结果与 Bash 提示词精简
+## 2026-09-08 - 插件重载、工具按需加载与提示词精简
 
 ### 版本状态
 
@@ -21,6 +21,8 @@
 
 ### 关联提交
 
+- `2ed520d` — 插件更新后的会话重载完整应用安装状态、commands/skills 与插件 MCP 连接。
+- `d5f1b98` — 补充交互式插件更新与重载的设计、验证范围和限制。
 - `cca3bfb` — Workflow 工具改为显式启用并延迟加载 schema。
 - `12a473d` — Terminal 工具 schema 延迟到发现后加载。
 - `fdd93e6` — 上下文统计包含完整工具定义，并区分已发现与未加载工具。
@@ -30,6 +32,10 @@
 
 ### 变更内容
 
+- `/plugin manage` 的 Update now 更新安装缓存和记录后，通过 `/reload-plugins` 将已安装版本应用到当前会话；重载不承担 marketplace 升级或重新下载。
+- 插件重载清除安装快照并完整替换 commands 与独立 skills，包括删除项与空集合；已安装的本地 marketplace 插件使用安装缓存版本，不绕过 update 读取已修改的 source。
+- 显式插件重载在配置未变化时也清理插件 MCP 旧连接，再重新发现；不强制重启无关 MCP，清缓存也不会为了清理而启动未连接服务器。
+- 重载摘要分别统计 commands 和 skills；MCP/LSP 数量表示配置数量，不表示异步服务已就绪。设计与验证边界见 [插件 marketplace 架构说明](docs/architecture/plugin-marketplace.md)。
 - Terminal 和已启用的 Workflow 工具在 ToolSearch 生效时按需提供 schema；ToolSearch 未启用时仍可直接提供完整定义，不将 deferred 标记视为无条件隐藏。
 - Workflow 使用 `enableWorkflows: true` 显式启用；功能未启用时不能通过 ToolSearch 将其加载。
 - 上下文分析按工具名称、描述和输入 schema 估算工具开销，并将已发现的 deferred 工具计入加载部分；compact boundary 保留的发现记录继续参与统计。
@@ -40,6 +46,8 @@
 
 ### 测试覆盖
 
+- 插件重载回归测试覆盖安装快照失效、commands/skills 替换与清空、数量统计、插件 MCP 能力移除和非插件保留，以及真实 install/update 的安装缓存版本选择。
+- 已有 scripted tmux 验证在同一 CLI 进程中通过 Update now 和 `/reload-plugins` 检查同名 command/skill 更新、command 新增/删除、插件 MCP 新工具调用及非插件连接保留；模型使用受控 localhost fixture，不代表真实模型服务验收。远端 marketplace 下载、skill 新增/删除、hooks/LSP 完整生命周期、连续 reload 和恰好一次重连未包含在该交互结论中。
 - Bash/主提示专项测试覆盖策略归属、Git 指令开关、description schema、条件化目录检查及 cd/多行指引，连续三轮均为 10 tests、64 assertions 通过。
 - OpenAI adapter 回归测试先复现工具引用丢失，再验证普通和混合图片结果；工具发现、上下文分析与 adapter 相关测试通过。
 - Anthropic-compatible 与 OpenAI 路径完成 ToolSearch → CronList → 再次调用的非交互和 scripted tmux 闭环；不据此声称 auto 阈值或自然语言发现率已验证。

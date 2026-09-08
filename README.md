@@ -42,6 +42,7 @@
 
 以下变更尚未发布，当前发布线仍为 `2.1.218`；安装公开 launcher 不代表已获得 master 上的这些更新。完整范围见 [`CHANGELOG.md`](CHANGELOG.md)。
 
+- **插件更新与会话重载**：`/plugin manage` 中 Update now 更新安装版本后，用 `/reload-plugins` 应用到当前会话；完整替换 commands/独立 skills，并清理、重新发现插件 MCP，不强制重启无关 MCP。已安装的本地插件使用安装缓存版本，重载本身不重新下载；MCP/LSP 摘要数量不代表服务就绪。详见 [插件架构与验证边界](docs/architecture/plugin-marketplace.md)。
 - **工具按需加载**：ToolSearch 生效时，Terminal 和已启用的 Workflow 工具延迟提供 schema；上下文统计区分已发现与未加载的工具，并包含完整工具定义的估算开销。
 - **Workflow opt-in**：通过 settings 中的 `enableWorkflows: true` 显式启用；未启用的功能不能靠 ToolSearch 自动打开。
 - **OpenAI 工具发现**：搜索结果保留已发现工具名称，不再因 `tool_reference` 转换丢失而成为空结果；工具 schema 仍由 tools 数组提供。
