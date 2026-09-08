@@ -297,12 +297,11 @@ Settings Status 还会显示 OpenAI Account；Usage/Stats 面板区分 Claude �
 }
 ```
 
-可用的相关设置：
+Workflow 默认关闭，仅设置 `enableWorkflows: true` 时启用。可用的相关设置：
 
 ```json
 {
   "enableWorkflows": true,
-  "disableWorkflows": false,
   "workflowKeywordTriggerEnabled": true,
   "ultracodeKeywordTrigger": true,
   "skipWorkflowUsageWarning": false

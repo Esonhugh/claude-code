@@ -1,6 +1,5 @@
 type WorkflowSettings = {
   enableWorkflows?: boolean
-  disableWorkflows?: boolean
   workflowKeywordTriggerEnabled?: boolean
   ultracodeKeywordTrigger?: boolean
   skipWorkflowUsageWarning?: boolean
@@ -14,7 +13,6 @@ export function isWorkflowScriptsFeatureEnabled(): boolean {
 }
 
 export function shouldEnableWorkflows(settings: WorkflowSettings | undefined): boolean {
-  if (settings?.disableWorkflows) return false
   return settings?.enableWorkflows === true
 }
 

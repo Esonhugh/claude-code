@@ -27,11 +27,8 @@ assert.equal(shouldEnableWorkflows(undefined), false)
 assert.equal(shouldEnableWorkflows({}), false)
 assert.equal(shouldEnableWorkflows({ enableWorkflows: true }), true)
 assert.equal(shouldEnableWorkflows({ enableWorkflows: false }), false)
-assert.equal(shouldEnableWorkflows({ disableWorkflows: true }), false)
-assert.equal(
-  shouldEnableWorkflows({ enableWorkflows: true, disableWorkflows: true }),
-  false,
-)
+const settingsWithRemovedField = { enableWorkflows: true, disableWorkflows: true }
+assert.equal(shouldEnableWorkflows(settingsWithRemovedField), true)
 assert.equal(isWorkflowKeywordTriggerEnabled({ workflowKeywordTriggerEnabled: false }), false)
 assert.equal(isWorkflowKeywordTriggerEnabled({ workflowKeywordTriggerEnabled: true }), true)
 assert.equal(isWorkflowKeywordTriggerEnabled({ ultracodeKeywordTrigger: false }), false)
