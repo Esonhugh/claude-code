@@ -1,9 +1,7 @@
 import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
-import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -15,13 +13,6 @@ import {
   getUndercoverInstructions,
   isUndercover,
 } from '../../utils/undercover.js'
-import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
-import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
-import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
-import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
-import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
-import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
-import { TodoWriteTool } from '../TodoWriteTool/TodoWriteTool.js'
 import { BASH_TOOL_NAME } from './toolName.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -52,54 +43,7 @@ function getCommitAndPRInstructions(): string {
       ? getUndercoverInstructions() + '\n'
       : ''
 
-  if (!shouldIncludeGitInstructions()) return undercoverSection
-
-  // For ant users, use the short version pointing to skills
-  if (isAnt()) {
-    const skillsSection = !isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)
-      ? `For git commits and pull requests, use the \`/commit\` and \`/commit-push-pr\` skills:
-- \`/commit\` - Create a git commit with staged changes
-- \`/commit-push-pr\` - Commit, push, and create a pull request
-
-These skills handle git safety protocols, proper commit message formatting, and PR creation.
-
-Before creating a pull request, run \`/simplify\` to review your changes, then test end-to-end (e.g. via \`/tmux\` for interactive features).
-
-`
-      : ''
-    return `${undercoverSection}# Git operations
-
-${skillsSection}IMPORTANT: NEVER skip hooks (--no-verify, --no-gpg-sign, etc) unless the user explicitly requests it.
-
-Use the gh command via the Bash tool for other GitHub-related tasks including working with issues, checks, and releases. If given a Github URL use the gh command to get the information needed.
-
-# Other common operations
-- View comments on a Github PR: gh api repos/foo/bar/pulls/123/comments`
-  }
-
-  // External builds keep the safety contract inline, but avoid repeating a
-  // command-by-command tutorial in every Bash tool schema.
-  const { commit: commitAttribution, pr: prAttribution } = getAttributionTexts()
-  return `# Git commits and pull requests
-
-Only commit, push, or create a PR when explicitly requested. Use only git/gh commands for the operation; do not use ${TodoWriteTool.name} or ${AGENT_TOOL_NAME}.
-
-Safety:
-- Never change git config, expose secrets, use interactive git flags, skip hooks/signing, or run destructive commands unless explicitly requested.
-- Never force-push main/master. Prefer new commits; amend only when explicitly requested. If a hook fails, fix it and create a new commit.
-- Stage specific files, not \`git add .\` or \`git add -A\`. Do not create empty commits or push unless requested.
-
-For a commit:
-1. Inspect \`git status\` (without \`-uall\`), staged/unstaged diffs, and recent log in parallel.
-2. Check staged content for secrets and write a concise message describing why the change exists.
-3. Stage relevant files, commit with a heredoc message${commitAttribution ? ` ending with:\n${commitAttribution}` : ''}, then verify with \`git status\`.
-
-For a pull request:
-1. Inspect status, diffs, tracking state, all branch commits, and \`git diff [base]...HEAD\`.
-2. Create a title under 70 characters and a heredoc body with Summary and Test plan sections${prAttribution ? ` ending with:\n${prAttribution}` : ''}.
-3. Create/push a branch if needed, run \`gh pr create\`, and return the PR URL.
-
-Use \`gh\` for GitHub issues, PRs, checks, releases, and provided GitHub URLs.`
+  return undercoverSection
 }
 
 // SandboxManager merges config from multiple sources (settings layers, defaults,
@@ -215,38 +159,11 @@ function getSimpleSandboxSection(): string {
 }
 
 export function getSimplePrompt(): string {
-  // Ant-native builds alias find/grep to embedded bfs/ugrep in Claude's shell,
-  // so we don't steer away from them (and Glob/Grep tools are removed).
+  // Ant-native builds alias find/grep to embedded bfs/ugrep in Claude's shell.
   const embedded = hasEmbeddedSearchTools()
 
-  const toolPreferenceItems = [
-    ...(embedded
-      ? []
-      : [
-          `File search: Use ${GLOB_TOOL_NAME} (NOT find or ls)`,
-          `Content search: Use ${GREP_TOOL_NAME} (NOT grep or rg)`,
-        ]),
-    `Read files: Use ${FILE_READ_TOOL_NAME} (NOT cat/head/tail)`,
-    `Edit files: Use ${FILE_EDIT_TOOL_NAME} (NOT sed/awk)`,
-    `Write files: Use ${FILE_WRITE_TOOL_NAME} (NOT echo >/cat <<EOF)`,
-    'Communication: Output text directly (NOT echo/printf)',
-  ]
-
-  const avoidCommands = embedded
-    ? '`cat`, `head`, `tail`, `sed`, `awk`, or `echo`'
-    : '`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`'
-
   const multipleCommandsSubitems = [
-    `If the commands are independent and can run in parallel, make multiple ${BASH_TOOL_NAME} tool calls in a single message. Example: if you need to run "git status" and "git diff", send a single message with two ${BASH_TOOL_NAME} tool calls in parallel.`,
-    `If the commands depend on each other and must run sequentially, use a single ${BASH_TOOL_NAME} call with '&&' to chain them together.`,
-    "Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.",
-    'DO NOT use newlines to separate commands (newlines are ok in quoted strings).',
-  ]
-
-  const gitSubitems = [
-    'Prefer to create a new commit rather than amending an existing commit.',
-    'Before running destructive operations (e.g., git reset --hard, git push --force, git checkout --), consider whether there is a safer alternative that achieves the same goal. Only use destructive operations when they are truly the best approach.',
-    'Never skip hooks (--no-verify) or bypass signing (--no-gpg-sign, -c commit.gpgsign=false) unless the user has explicitly asked for it. If a hook fails, investigate and fix the underlying issue.',
+    `If the commands depend on each other and must run sequentially, use a single ${BASH_TOOL_NAME} call with shell operators such as '&&' or ';' as appropriate. Multiline scripts are allowed when they are clearer than a long one-liner.`,
   ]
 
   const sleepSubitems = [
@@ -271,15 +188,13 @@ export function getSimplePrompt(): string {
   const backgroundNote = getBackgroundUsageNote()
 
   const instructionItems: Array<string | string[]> = [
-    'If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.',
-    'Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt")',
-    'Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.',
+    'If your command will create new directories or files in a directory you have not inspected, first use this tool to run `ls` to verify the parent directory exists and is the correct location.',
+    'Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt").',
+    'Prefer absolute paths when they are clearer, but `cd` is allowed when it improves command readability or matches the user request.',
     `You may specify an optional timeout in milliseconds (up to ${getMaxTimeoutMs()}ms / ${getMaxTimeoutMs() / 60000} minutes). By default, your command will timeout after ${getDefaultTimeoutMs()}ms (${getDefaultTimeoutMs() / 60000} minutes).`,
     ...(backgroundNote !== null ? [backgroundNote] : []),
     'When issuing multiple commands:',
     multipleCommandsSubitems,
-    'For git commands:',
-    gitSubitems,
     'Avoid unnecessary `sleep` commands:',
     sleepSubitems,
     ...(embedded
@@ -297,11 +212,6 @@ export function getSimplePrompt(): string {
     'Executes a given bash command and returns its output.',
     '',
     "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
-    '',
-    `IMPORTANT: Avoid using this tool to run ${avoidCommands} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:`,
-    '',
-    ...prependBullets(toolPreferenceItems),
-    `While the ${BASH_TOOL_NAME} tool can do similar things, it’s better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.`,
     '',
     '# Instructions',
     ...prependBullets(instructionItems),

@@ -61,6 +61,7 @@ import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import { resolvePromptSections } from '../utils/promptLayers.js'
+import { shouldIncludeGitInstructions } from '../utils/gitSettings.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -258,11 +259,17 @@ function getSimpleDoingTasksSection(): string {
 }
 
 function getActionsSection(): string {
+  const gitSafety = shouldIncludeGitInstructions()
+    ? `
+
+For git operations, only commit, push, create a pull request, rewrite history, or change git configuration when the user explicitly authorizes that action. Do not skip hooks or signing checks unless the user explicitly requests it.`
+    : ''
+
   return `# Executing actions with care
 
 Proceed freely with local, reversible work such as reading, editing, and testing. Before an action that is destructive, hard to reverse, visible to others, or affects shared systems, explain it and obtain confirmation unless the user explicitly authorized that scope in this request or durable instructions. Approval for one action does not authorize later actions.
 
-Confirmation is normally required for deleting or overwriting work, force-pushing or rewriting published history, removing dependencies, changing CI/infrastructure/permissions, pushing code, creating or modifying issues/PRs, sending messages, and uploading content to third parties.
+Confirmation is normally required for deleting or overwriting work, force-pushing or rewriting published history, removing dependencies, changing CI/infrastructure/permissions, pushing code, creating or modifying issues/PRs, sending messages, and uploading content to third parties.${gitSafety}
 
 Do not bypass safety checks or use destructive commands to escape an obstacle. Investigate unexpected files, conflicts, locks, and failures; preserve user work and prefer the least destructive solution.`
 }
