@@ -15,6 +15,7 @@ import {
   getCommandQueue,
   resetCommandQueue,
 } from '../../utils/messageQueueManager.js'
+import { isDeferredTool, formatDeferredToolLines } from '../ToolSearchTool/prompt.js'
 import { capturePaneActionSchema } from './actionSchemas.js'
 import {
   getTerminalManager,
@@ -23,6 +24,12 @@ import {
   resetTerminalManagerForTesting,
   terminalTaskRegistry,
 } from './TerminalTool.js'
+
+test('Terminal is discoverable without loading its schema eagerly', () => {
+  assert.equal(isDeferredTool(TerminalTool), true)
+  assert.deepEqual(formatDeferredToolLines([TerminalTool]), ['Terminal'])
+  assert.match(TerminalTool.searchHint ?? '', /terminal/i)
+})
 
 type TestAppState = Pick<AppState, 'toolPermissionContext' | 'tasks'>
 type TerminalTask = Extract<

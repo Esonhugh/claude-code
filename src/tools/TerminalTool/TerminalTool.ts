@@ -272,6 +272,8 @@ function formatError(error: unknown): ErrorOutput {
 
 export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   name: TERMINAL_TOOL_NAME,
+  searchHint: 'persistent terminal PTY sessions, interactive shell, REPL and TUI',
+  shouldDefer: true,
   maxResultSizeChars: 100_000,
   async description() {
     return DESCRIPTION
