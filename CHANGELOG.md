@@ -12,6 +12,40 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-08 - 工具按需加载、OpenAI 搜索结果与 Bash 提示词精简
+
+### 版本状态
+
+- 未发布；本条目记录 master 的源码更新，不修改版本号、不创建 tag，也不代表公开包已包含这些变更。
+- 当前本地发布线和 `Makefile VERSION` 保持 `2.1.218`，`package.json` 保持 `0.0.0-dev`。
+
+### 关联提交
+
+- `cca3bfb` — Workflow 工具改为显式启用并延迟加载 schema。
+- `12a473d` — Terminal 工具 schema 延迟到发现后加载。
+- `fdd93e6` — 上下文统计包含完整工具定义，并区分已发现与未加载工具。
+- `f796b86` — 在 OpenAI 搜索结果转换中保留已发现工具名称。
+- `389a4e3` — 集中通用工具策略并精简 Bash 指引，补充专项测试。
+- `591087e` — 统一使用 `enableWorkflows` 作为 Workflow opt-in 设置。
+
+### 变更内容
+
+- Terminal 和已启用的 Workflow 工具在 ToolSearch 生效时按需提供 schema；ToolSearch 未启用时仍可直接提供完整定义，不将 deferred 标记视为无条件隐藏。
+- Workflow 使用 `enableWorkflows: true` 显式启用；功能未启用时不能通过 ToolSearch 将其加载。
+- 上下文分析按工具名称、描述和输入 schema 估算工具开销，并将已发现的 deferred 工具计入加载部分；compact boundary 保留的发现记录继续参与统计。
+- OpenAI Responses adapter 将 `tool_reference` 转为 `Tool available: <name>` 文本，避免搜索结果变为空字符串；完整 schema 仍由请求的 tools 数组提供，混合图片结果保持图片转换行为。
+- Bash 工具说明移除 Git/PR 教程；默认主提示保留简短的 Git 操作授权及 hooks/signing 要求，专用工具优先与独立调用并行策略统一由主提示提供。
+- Bash 保留 description 参数，删除长示例和用词禁令；创建文件前的 ls 检查仅要求用于尚未检查的目录，允许合理使用 cd 和多行脚本。
+- 自定义 system prompt 替换默认主提示的调用方，需要自行提供从 Bash schema 移出的通用策略；本次不改变 Bash 执行器或权限检查。
+
+### 测试覆盖
+
+- Bash/主提示专项测试覆盖策略归属、Git 指令开关、description schema、条件化目录检查及 cd/多行指引，连续三轮均为 10 tests、64 assertions 通过。
+- OpenAI adapter 回归测试先复现工具引用丢失，再验证普通和混合图片结果；工具发现、上下文分析与 adapter 相关测试通过。
+- Anthropic-compatible 与 OpenAI 路径完成 ToolSearch → CronList → 再次调用的非交互和 scripted tmux 闭环；不据此声称 auto 阈值或自然语言发现率已验证。
+- 合并基础配置与 provider 配置后，Bash 专项 Anthropic-compatible 重跑完成三次交互和两次非交互样本，另一次非交互超时停止；场景包含显式行为指令，不作为自然触发率或完整通过率的证明。
+- 请求级 token A/B 仅包含 Bash 工具和固定输入，两个 provider 各三对请求均净减少 774 input tokens，已计入新增 Git 主提示开销；这是受控最小请求的 API usage 差值，不是完整 CLI 上下文下降比例，也不是原生 Claude tokenizer 的测量。
+
 ## 2026-09-02 - v2.1.218 - OpenAI 压缩、Goal/Hook、Trust 与 SSH 可靠性
 
 ### 版本状态

@@ -38,6 +38,17 @@
 
 源码中的 `package.json` 始终保留 `0.0.0-dev`。正式构建版本由 Git tag 或 `CLAUDE_CODE_VERSION` 注入，`Makefile` 中的 `VERSION` 用于本地 binary 构建。
 
+### master 未发布更新
+
+以下变更尚未发布，当前发布线仍为 `2.1.218`；安装公开 launcher 不代表已获得 master 上的这些更新。完整范围见 [`CHANGELOG.md`](CHANGELOG.md)。
+
+- **工具按需加载**：ToolSearch 生效时，Terminal 和已启用的 Workflow 工具延迟提供 schema；上下文统计区分已发现与未加载的工具，并包含完整工具定义的估算开销。
+- **Workflow opt-in**：通过 settings 中的 `enableWorkflows: true` 显式启用；未启用的功能不能靠 ToolSearch 自动打开。
+- **OpenAI 工具发现**：搜索结果保留已发现工具名称，不再因 `tool_reference` 转换丢失而成为空结果；工具 schema 仍由 tools 数组提供。
+- **Bash 提示词精简**：移除 Git/PR 教程，默认主提示集中提供操作授权、hooks/signing、专用工具优先与并行策略；保留简短 description 指引，仅对未检查目录要求创建前 ls，并允许合理使用 cd 和多行脚本。自定义 system prompt 的调用方需自行提供被替换的通用策略。
+
+受控 API A/B 使用固定输入、仅 Bash 工具集，两个 provider 各三对请求均净减少 **774 input tokens**，包含新增 Git 主提示的开销。该结果不代表完整 CLI 上下文减少比例、缓存计费降幅或模型行为成功率；详细验证边界见变更日志。
+
 ## 安装与运行
 
 ### 方式一：安装公开 launcher
