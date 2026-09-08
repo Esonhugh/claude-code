@@ -128,11 +128,17 @@ function anthropicToolResultToResponsesOutput(
 ): string | OpenAIResponsesInputContent[] {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
-  if (!content.some(item => item?.type === 'image')) {
-    return content.map(item => item?.text || '').join('')
+  // Discovered schemas are supplied in tools; Responses has no tool_reference block.
+  const blocks = content.map(item =>
+    item?.type === 'tool_reference' && typeof item.tool_name === 'string'
+      ? { type: 'text', text: `Tool available: ${item.tool_name}\n` }
+      : item,
+  )
+  if (!blocks.some(item => item?.type === 'image')) {
+    return blocks.map(item => item?.text || '').join('')
   }
 
-  return content.flatMap<OpenAIResponsesInputContent>(item => {
+  return blocks.flatMap<OpenAIResponsesInputContent>(item => {
     if (!item || typeof item !== 'object' || !('type' in item)) return []
     if (item.type === 'text' && 'text' in item && typeof item.text === 'string') {
       return [{ type: 'input_text', text: item.text }]

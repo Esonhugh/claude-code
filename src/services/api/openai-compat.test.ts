@@ -125,6 +125,42 @@ try {
     },
   ])
 
+  for (const withImage of [false, true]) {
+    requests.length = 0
+    await client.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      tools: [{
+        name: 'Terminal',
+        description: 'Persistent terminal',
+        input_schema: { type: 'object', properties: { action: { type: 'string' } } },
+      }],
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_search',
+          content: [
+            { type: 'text', text: 'Search results:\n' },
+            { type: 'tool_reference', tool_name: 'Terminal' },
+            { type: 'tool_reference', tool_name: 'TaskList' },
+            ...(withImage ? [{ type: 'image', source: {
+              type: 'url', url: 'https://example.test/image.png',
+            } }] : []),
+          ],
+        }],
+      }] as any,
+    })
+    const output = requests[0]!.body.input[0].output
+    const text = withImage
+      ? output.filter((part: any) => part.type === 'input_text').map((part: any) => part.text).join('')
+      : output
+    assert.equal(text, 'Search results:\nTool available: Terminal\nTool available: TaskList\n')
+    assert.equal(requests[0]!.body.tools[0].name, 'Terminal')
+    assert.deepEqual(requests[0]!.body.tools[0].parameters.properties.action, { type: 'string' })
+    if (withImage) assert.equal(output.at(-1).type, 'input_image')
+  }
+
   getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'oauth-access-token',
     accountId: 'account-test',
