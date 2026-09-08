@@ -2,6 +2,7 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
@@ -17,6 +18,7 @@ import {
 } from './workflowScriptPersistence.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
+import { shouldEnableWorkflows } from './workflowFeatureFlags.js'
 
 export type WorkflowFacadeInput =
   | string
@@ -175,6 +177,7 @@ export const WorkflowFacadeTool = buildTool({
   name: 'Workflow',
   searchHint: 'run workflow scripts',
   maxResultSizeChars: 100_000,
+  shouldDefer: true,
   async description() {
     return 'Run an official-compatible workflow script or saved workflow'
   },
@@ -210,7 +213,7 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
     return outputSchema()
   },
   isEnabled() {
-    return true
+    return shouldEnableWorkflows(getInitialSettings())
   },
   isConcurrencySafe() {
     return true

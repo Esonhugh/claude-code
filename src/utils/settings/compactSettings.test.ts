@@ -2,6 +2,14 @@ import { describe, expect, test } from 'bun:test'
 import { SettingsSchema } from './types.js'
 
 describe('settings schema', () => {
+  test('accepts explicit workflow enablement', () => {
+    const result = SettingsSchema().safeParse({ enableWorkflows: true })
+
+    expect(result.success).toBe(true)
+    if (!result.success) return
+    expect(result.data.enableWorkflows).toBe(true)
+  })
+
   test('accepts minimal effort level', () => {
     const result = SettingsSchema().safeParse({ effortLevel: 'minimal' })
 

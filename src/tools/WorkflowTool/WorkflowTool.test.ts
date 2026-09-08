@@ -7,6 +7,10 @@ import type { AppState } from '../../state/AppState.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
+import {
+  resetSettingsCache,
+  setSessionSettingsCache,
+} from '../../utils/settings/settingsCache.js'
 import { WorkflowTool } from './WorkflowTool.js'
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-tool-test-'))
@@ -174,7 +178,12 @@ await writeFile(
 
 const context = { getCwd: () => tempRoot } as never
 
+setSessionSettingsCache({ settings: {}, errors: [] })
+assert.equal(WorkflowTool.isEnabled(), false)
+setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 assert.equal(WorkflowTool.isEnabled(), true)
+resetSettingsCache()
+assert.equal(WorkflowTool.shouldDefer, true)
 const workflowPrompt = await WorkflowTool.prompt()
 assert.match(workflowPrompt, /Explicit opt-in requirement/)
 assert.match(workflowPrompt, /Ultracode/)
@@ -258,6 +267,7 @@ assert.match(String(block.content), /Workflow: Research Workflow/)
 let runState = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
+  settings: { enableWorkflows: true },
 } as unknown as AppState
 const setRunState = (updater: (prev: AppState) => AppState): void => {
   runState = updater(runState)

@@ -8,6 +8,10 @@ import type { AppState } from '../../state/AppState.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
+import {
+  resetSettingsCache,
+  setSessionSettingsCache,
+} from '../../utils/settings/settingsCache.js'
 import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
 
 const workflowFacadeSource = readFileSync(
@@ -122,6 +126,12 @@ assert.deepEqual(
 )
 
 assert.equal(WorkflowFacadeTool.name, 'Workflow')
+setSessionSettingsCache({ settings: {}, errors: [] })
+assert.equal(WorkflowFacadeTool.isEnabled(), false)
+setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
+assert.equal(WorkflowFacadeTool.isEnabled(), true)
+resetSettingsCache()
+assert.equal(WorkflowFacadeTool.shouldDefer, true)
 assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
   name: 'research',
   description: 'ignored compatibility field',

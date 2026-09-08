@@ -23,7 +23,10 @@ try {
   else process.env.CLAUDE_CODE_RECOVER_FEATURES = previous
 }
 
+assert.equal(shouldEnableWorkflows(undefined), false)
+assert.equal(shouldEnableWorkflows({}), false)
 assert.equal(shouldEnableWorkflows({ enableWorkflows: true }), true)
+assert.equal(shouldEnableWorkflows({ enableWorkflows: false }), false)
 assert.equal(shouldEnableWorkflows({ disableWorkflows: true }), false)
 assert.equal(
   shouldEnableWorkflows({ enableWorkflows: true, disableWorkflows: true }),

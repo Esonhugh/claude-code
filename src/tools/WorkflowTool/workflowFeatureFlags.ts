@@ -15,8 +15,7 @@ export function isWorkflowScriptsFeatureEnabled(): boolean {
 
 export function shouldEnableWorkflows(settings: WorkflowSettings | undefined): boolean {
   if (settings?.disableWorkflows) return false
-  if (settings?.enableWorkflows === false) return false
-  return true
+  return settings?.enableWorkflows === true
 }
 
 export function isWorkflowKeywordTriggerEnabled(settings: WorkflowSettings | undefined): boolean {

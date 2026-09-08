@@ -2,6 +2,7 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
 import {
   formatWorkflowResumeInstruction,
@@ -268,6 +269,7 @@ export const WorkflowTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
   searchHint: 'inspect workflow specs',
   maxResultSizeChars: 100_000,
+  shouldDefer: true,
   async description() {
     return WORKFLOW_TOOL_PROMPT
   },
@@ -281,7 +283,7 @@ export const WorkflowTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return true
+    return shouldEnableWorkflows(getInitialSettings())
   },
   isConcurrencySafe() {
     return true

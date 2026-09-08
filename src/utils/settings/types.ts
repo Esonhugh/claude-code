@@ -765,6 +765,10 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Enable the "ultracode" keyword trigger. Default: true.'),
+      enableWorkflows: z
+        .boolean()
+        .optional()
+        .describe('Enable dynamic Workflow tools. Default: false.'),
       advisorModel: z
         .string()
         .optional()
