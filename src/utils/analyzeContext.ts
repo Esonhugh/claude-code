@@ -61,6 +61,7 @@ import { jsonStringify } from './slowOperations.js'
 import { buildEffectiveSystemPrompt } from './systemPrompt.js'
 import type { Theme } from './theme.js'
 import { getCurrentUsage } from './tokens.js'
+import { extractDiscoveredToolNames } from './toolSearch.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -231,6 +232,47 @@ export interface ContextData {
     cache_creation_input_tokens: number
     cache_read_input_tokens: number
   } | null
+}
+
+export function getLoadedDeferredToolNames(
+  tools: Tools,
+  messages?: Message[],
+): Set<string> {
+  if (!messages) return new Set()
+  const toolNames = new Set(tools.map(tool => tool.name))
+  return new Set(
+    [...extractDiscoveredToolNames(messages)].filter(name =>
+      toolNames.has(name),
+    ),
+  )
+}
+
+export function estimateToolSchemaTokenAllocation(
+  schemas: readonly Anthropic.Beta.Messages.BetaToolUnion[],
+  distributableTokens: number,
+  excludedNames: ReadonlySet<string> = new Set(),
+): SystemToolDetail[] {
+  const estimates = schemas.map(schema =>
+    roughTokenCountEstimation(jsonStringify(schema)),
+  )
+  const estimateTotal =
+    estimates.reduce((sum, estimate) => sum + estimate, 0) || 1
+
+  return schemas
+    .flatMap((schema, index) =>
+      'name' in schema
+        ? [
+            {
+              name: schema.name,
+              tokens: Math.round(
+                (estimates[index]! / estimateTotal) * distributableTokens,
+              ),
+            },
+          ]
+        : [],
+    )
+    .filter(detail => !excludedNames.has(detail.name))
+    .sort((a, b) => b.tokens - a.tokens)
 }
 
 export async function countToolDefinitionTokens(
@@ -412,30 +454,30 @@ async function countBuiltInToolTokens(
         )
       : 0
 
-  // Build per-tool breakdown for always-loaded tools (ant-only, proportional
-  // split of the bulk count based on rough schema size estimation). Excludes
-  // SkillTool since its tokens are shown in the separate Skills category.
+  // Build per-tool breakdown for always-loaded tools (ant-only), weighted by
+  // the exact production schema shape. Skill remains part of the denominator
+  // so excluding it here does not reallocate its tokens to other tools.
   let systemToolDetails: SystemToolDetail[] = []
-  if (isAnt()) {
-    const toolsForBreakdown = alwaysLoadedTools.filter(
-      t => !toolMatchesName(t, SKILL_TOOL_NAME),
+  if (isAnt() && alwaysLoadedTools.length > 0) {
+    const schemas = await Promise.all(
+      alwaysLoadedTools.map(tool =>
+        toolToAPISchema(tool, {
+          getToolPermissionContext,
+          tools,
+          agents: agentInfo?.activeAgents ?? [],
+          model,
+        }),
+      ),
     )
-    if (toolsForBreakdown.length > 0) {
-      const estimates = toolsForBreakdown.map(t =>
-        roughTokenCountEstimation(jsonStringify(t.inputSchema ?? {})),
-      )
-      const estimateTotal = estimates.reduce((s, e) => s + e, 0) || 1
-      const distributable = Math.max(
-        0,
-        alwaysLoadedTokens - TOOL_TOKEN_COUNT_OVERHEAD,
-      )
-      systemToolDetails = toolsForBreakdown
-        .map((t, i) => ({
-          name: t.name,
-          tokens: Math.round((estimates[i]! / estimateTotal) * distributable),
-        }))
-        .sort((a, b) => b.tokens - a.tokens)
-    }
+    systemToolDetails = estimateToolSchemaTokenAllocation(
+      schemas,
+      Math.max(0, alwaysLoadedTokens - TOOL_TOKEN_COUNT_OVERHEAD),
+      new Set(
+        alwaysLoadedTools
+          .filter(tool => toolMatchesName(tool, SKILL_TOOL_NAME))
+          .map(tool => tool.name),
+      ),
+    )
   }
 
   // Count deferred builtin tools individually for details
@@ -444,26 +486,10 @@ async function countBuiltInToolTokens(
   let totalDeferredTokens = 0
 
   if (deferredBuiltinTools.length > 0 && isDeferred) {
-    // Find which deferred tools have been used in messages
-    const loadedToolNames = new Set<string>()
-    if (messages) {
-      const deferredToolNameSet = new Set(deferredBuiltinTools.map(t => t.name))
-      for (const msg of messages) {
-        if (msg.type === 'assistant') {
-          for (const block of msg.message.content) {
-            if (
-              'type' in block &&
-              block.type === 'tool_use' &&
-              'name' in block &&
-              typeof block.name === 'string' &&
-              deferredToolNameSet.has(block.name)
-            ) {
-              loadedToolNames.add(block.name)
-            }
-          }
-        }
-      }
-    }
+    const loadedToolNames = getLoadedDeferredToolNames(
+      deferredBuiltinTools,
+      messages,
+    )
 
     // Count each deferred tool
     const tokensByTool = await Promise.all(
@@ -681,26 +707,9 @@ export async function countMcpToolTokens(
     'analyzeMcp',
   )
 
-  // Find MCP tools that have been used in messages (loaded via ToolSearchTool)
-  const loadedMcpToolNames = new Set<string>()
-  if (isDeferred && messages) {
-    const mcpToolNameSet = new Set(mcpTools.map(t => t.name))
-    for (const msg of messages) {
-      if (msg.type === 'assistant') {
-        for (const block of msg.message.content) {
-          if (
-            'type' in block &&
-            block.type === 'tool_use' &&
-            'name' in block &&
-            typeof block.name === 'string' &&
-            mcpToolNameSet.has(block.name)
-          ) {
-            loadedMcpToolNames.add(block.name)
-          }
-        }
-      }
-    }
-  }
+  const loadedMcpToolNames = isDeferred
+    ? getLoadedDeferredToolNames(mcpTools, messages)
+    : new Set<string>()
 
   // Build tool details with isLoaded flag
   for (const [i, tool] of mcpTools.entries()) {
