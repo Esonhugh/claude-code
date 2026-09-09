@@ -3,6 +3,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   consumeChatGPTRateLimitResetCredit,
   fetchChatGPTUtilization,
+  fetchChatGPTActivity,
 } from './usage-chatgpt.js'
 import { fetchClaudeCodeUtilization } from './usage-claude.js'
 import type {
@@ -20,6 +21,15 @@ export type {
   UsageLimit,
   Utilization,
 } from './usage-types.js'
+
+export function isOpenAIActivityAvailable(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) &&
+    getOpenAIAuthInfo()?.isChatGPT === true
+}
+
+export async function fetchOpenAIActivity() {
+  return isOpenAIActivityAvailable() ? fetchChatGPTActivity() : null
+}
 
 export function prefetchChatGPTUtilization(): Promise<unknown> | null {
   if (

@@ -1,3 +1,12 @@
+export type OpenAIActivityStats = {
+  lifetime_tokens?: number | null
+  peak_daily_tokens?: number | null
+  longest_running_turn_sec?: number | null
+  current_streak_days?: number | null
+  longest_streak_days?: number | null
+  daily_usage_buckets?: Array<{ start_date: string; tokens: number }> | null
+}
+
 export type RateLimit = {
   utilization: number | null // a percentage from 0 to 100
   resets_at: string | null // ISO 8601 timestamp

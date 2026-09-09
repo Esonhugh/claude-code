@@ -7,6 +7,7 @@ import {
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../openai-oauth/refresh.js'
 import type {
+  OpenAIActivityStats,
   ChatGPTMonthlyCreditLimit,
   ChatGPTUsageCredits,
   RateLimit,
@@ -92,6 +93,17 @@ async function requestWithChatGPTOAuth<T>(
     if (!axios.isAxiosError(error) || error.response?.status !== 401) throw error
     return execute(true)
   }
+}
+
+export async function fetchChatGPTActivity(): Promise<OpenAIActivityStats | null> {
+  const data = await requestWithChatGPTOAuth(async headers => {
+    const response = await axios.get<{ stats?: OpenAIActivityStats | null }>(
+      'https://chatgpt.com/backend-api/wham/profiles/me',
+      { headers, timeout: 5000 },
+    )
+    return response.data
+  })
+  return data?.stats ?? null
 }
 
 export async function fetchChatGPTUtilization(): Promise<Utilization | null> {

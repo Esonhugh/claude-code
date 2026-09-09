@@ -19,8 +19,79 @@ const axios = (await import('axios')).default
 const {
   consumeRateLimitResetCredit,
   fetchUtilization,
+  fetchOpenAIActivity,
+  isOpenAIActivityAvailable,
   prefetchChatGPTUtilization,
 } = await import('./usage.js')
+
+test('OpenAI activity is gated by actual provider and OAuth auth mode', async () => {
+  const originalGet = axios.get
+  axios.get = (async () => { throw new Error('Unexpected request') }) as typeof axios.get
+  try {
+    process.env.CLAUDE_CODE_USE_OPENAI = '0'
+    assert.equal(isOpenAIActivityAvailable(), false)
+    assert.equal(await fetchOpenAIActivity(), null)
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    authModule.getOpenAIAuthInfo.cache.set(undefined, { accessToken: 'fixture', isChatGPT: false })
+    assert.equal(isOpenAIActivityAvailable(), false)
+    assert.equal(await fetchOpenAIActivity(), null)
+    authModule.getOpenAIAuthInfo.cache.set(undefined, { accessToken: 'fixture', isChatGPT: true })
+    assert.equal(isOpenAIActivityAvailable(), true)
+  } finally {
+    axios.get = originalGet
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+    else process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+  }
+})
+
+test('OpenAI activity fetches the profile and retries OAuth on 401', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'usage-activity-'))
+  const originalGet = axios.get
+  const originalPost = axios.post
+  process.env.HOME = homeDir
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_AUTH_TOKEN
+  const requests: string[] = []
+  try {
+    await saveOpenAIAuth({ auth_mode: 'chatgpt', tokens: {
+      access_token: 'fixture', refresh_token: 'fixture-refresh', account_id: 'fixture-account',
+    }, last_refresh: '2099-01-01T00:00:00.000Z' }, { homeDir })
+    axios.post = (async () => ({ status: 200, data: { access_token: 'refreshed-fixture' } })) as typeof axios.post
+    axios.get = (async (url: string, options: { headers: Record<string, string>; timeout: number }) => {
+      assert.equal(url, 'https://chatgpt.com/backend-api/wham/profiles/me')
+      assert.equal(options.timeout, 5000)
+      assert.equal(options.headers['chatgpt-account-id'], 'fixture-account')
+      requests.push(options.headers.Authorization!)
+      if (requests.length === 1) throw Object.assign(new Error('Unauthorized'), { isAxiosError: true, response: { status: 401 } })
+      return { data: { stats: { lifetime_tokens: 42, daily_usage_buckets: [] } } }
+    }) as typeof axios.get
+    assert.deepEqual(await fetchOpenAIActivity(), { lifetime_tokens: 42, daily_usage_buckets: [] })
+    assert.deepEqual(requests, ['Bearer fixture', 'Bearer refreshed-fixture'])
+    process.env.OPENAI_API_KEY = 'fixture-api-key-override'
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    assert.equal(isOpenAIActivityAvailable(), false)
+    assert.equal(await fetchOpenAIActivity(), null)
+    assert.equal(requests.length, 2)
+    delete process.env.OPENAI_API_KEY
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    axios.get = (async () => ({ data: {} })) as typeof axios.get
+    assert.equal(await fetchOpenAIActivity(), null)
+    axios.get = (async () => { throw new Error('offline') }) as typeof axios.get
+    await assert.rejects(fetchOpenAIActivity(), /offline/)
+  } finally {
+    axios.get = originalGet
+    axios.post = originalPost
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    for (const [key, value] of Object.entries({ HOME: originalHome, CLAUDE_CODE_USE_OPENAI: originalOpenAI, OPENAI_API_KEY: originalOpenAIApiKey, OPENAI_AUTH_TOKEN: originalOpenAIAuthToken })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    await rm(homeDir, { recursive: true, force: true })
+  }
+})
 
 test('consumeRateLimitResetCredit refreshes auth before posting the reset request', async () => {
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reset-'))

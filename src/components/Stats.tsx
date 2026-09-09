@@ -3,8 +3,6 @@ import { plot as asciichart } from 'asciichart'
 import chalk from 'chalk'
 import figures from 'figures'
 import React, {
-  Suspense,
-  use,
   useCallback,
   useEffect,
   useMemo,
@@ -35,6 +33,9 @@ import { getTheme, themeColorToAnsi } from '../utils/theme.js'
 import { Pane } from './design-system/Pane.js'
 import { Tab, Tabs, useTabHeaderFocus } from './design-system/Tabs.js'
 import { Spinner } from './Spinner.js'
+import { OpenAIStatsTab } from './OpenAIStats.js'
+import { isOpenAIActivityAvailable, fetchOpenAIActivity } from '../services/api/usage.js'
+import type { OpenAIActivityStats } from '../services/api/usage-types.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -94,18 +95,7 @@ export function Stats({ onClose }: Props): React.ReactNode {
   // Always load all-time stats first (for heatmap)
   const allTimePromise = useMemo(() => createAllTimeStatsPromise(), [])
 
-  return (
-    <Suspense
-      fallback={
-        <Box marginTop={1}>
-          <Spinner />
-          <Text> Loading your Claude Code stats…</Text>
-        </Box>
-      }
-    >
-      <StatsContent allTimePromise={allTimePromise} onClose={onClose} />
-    </Suspense>
-  )
+  return <StatsContent allTimePromise={allTimePromise} onClose={onClose} />
 }
 
 type StatsContentProps = {
@@ -113,22 +103,52 @@ type StatsContentProps = {
   onClose: Props['onClose']
 }
 
-/**
- * Inner component that uses React 19's use() to read the stats promise.
- * Suspends while loading all-time stats, then handles date range changes without suspending.
- */
+// Keep the tab shell available while local stats are loading or unavailable.
 function StatsContent({
   allTimePromise,
   onClose,
 }: StatsContentProps): React.ReactNode {
-  const allTimeResult = use(allTimePromise)
+  const [allTimeResult, setAllTimeResult] = useState<StatsResult | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void allTimePromise.then(result => { if (!cancelled) setAllTimeResult(result) })
+    return () => { cancelled = true }
+  }, [allTimePromise])
+  const openAIAvailable = isOpenAIActivityAvailable()
+  const [activity, setActivity] = useState<OpenAIActivityStats | null>(null)
+  const [activityLoaded, setActivityLoaded] = useState(false)
+  const [activityLoading, setActivityLoading] = useState(false)
+  const [activityError, setActivityError] = useState(false)
+  const [activityRevision, setActivityRevision] = useState(0)
   const [dateRange, setDateRange] = useState<StatsDateRange>('all')
   const [statsCache, setStatsCache] = useState<
     Partial<Record<StatsDateRange, ClaudeCodeStats>>
   >({})
   const [isLoadingFiltered, setIsLoadingFiltered] = useState(false)
-  const [activeTab, setActiveTab] = useState<'Overview' | 'Models'>('Overview')
+  const [activeTab, setActiveTab] = useState<string>('Overview')
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
+
+  const [activityRequested, setActivityRequested] = useState(false)
+  useEffect(() => {
+    if (activeTab === 'OpenAI') setActivityRequested(true)
+  }, [activeTab])
+  useEffect(() => {
+    if (!activityRequested || !openAIAvailable || activityLoaded) return
+    let cancelled = false
+    setActivityLoading(true)
+    setActivityError(false)
+    void fetchOpenAIActivity().then(data => {
+      if (!cancelled) setActivity(data)
+    }).catch(() => {
+      if (!cancelled) setActivityError(true)
+    }).finally(() => {
+      if (!cancelled) {
+        setActivityLoading(false)
+        setActivityLoaded(true)
+      }
+    })
+    return () => { cancelled = true }
+  }, [activityRequested, openAIAvailable, activityLoaded, activityRevision])
 
   // Load filtered stats when date range changes (with caching)
   useEffect(() => {
@@ -165,15 +185,15 @@ function StatsContent({
   // Use cached stats for current range
   const displayStats =
     dateRange === 'all'
-      ? allTimeResult.type === 'success'
+      ? allTimeResult?.type === 'success'
         ? allTimeResult.data
         : null
       : (statsCache[dateRange] ??
-        (allTimeResult.type === 'success' ? allTimeResult.data : null))
+        (allTimeResult?.type === 'success' ? allTimeResult.data : null))
 
   // All-time stats for the heatmap (always use all-time)
   const allTimeStats =
-    allTimeResult.type === 'success' ? allTimeResult.data : null
+    allTimeResult?.type === 'success' ? allTimeResult.data : null
 
   const handleClose = useCallback(() => {
     onClose('Stats dialog dismissed', { display: 'system' })
@@ -186,72 +206,58 @@ function StatsContent({
     if (key.ctrl && (input === 'c' || input === 'd')) {
       onClose('Stats dialog dismissed', { display: 'system' })
     }
-    // Track tab changes
-    if (key.tab) {
-      setActiveTab(prev => (prev === 'Overview' ? 'Models' : 'Overview'))
-    }
     // r to cycle date range
     if (input === 'r' && !key.ctrl && !key.meta) {
-      setDateRange(getNextDateRange(dateRange))
+      if (activeTab === 'OpenAI') {
+        if (!activityLoading) {
+          setActivityLoaded(false)
+          setActivityRevision(value => value + 1)
+        }
+      } else setDateRange(getNextDateRange(dateRange))
     }
     // Ctrl+S to copy screenshot to clipboard
-    if (key.ctrl && input === 's' && displayStats) {
+    if (key.ctrl && input === 's' && displayStats && (activeTab === 'Overview' || activeTab === 'Models')) {
       void handleScreenshot(displayStats, activeTab, setCopyStatus)
     }
   })
 
-  if (allTimeResult.type === 'error') {
-    return (
-      <Box marginTop={1}>
-        <Text color="error">Failed to load stats: {allTimeResult.message}</Text>
-      </Box>
-    )
-  }
-
-  if (allTimeResult.type === 'empty') {
-    return (
-      <Box marginTop={1}>
-        <Text color="warning">
-          No stats available yet. Start using Claude Code!
-        </Text>
-      </Box>
-    )
-  }
-
-  if (!displayStats || !allTimeStats) {
-    return (
-      <Box marginTop={1}>
-        <Spinner />
-        <Text> Loading stats…</Text>
-      </Box>
-    )
-  }
+  const localFallback = allTimeResult?.type === 'error'
+    ? <Text color="error">Failed to load stats: {allTimeResult.message}</Text>
+    : allTimeResult?.type === 'empty'
+      ? <Text color="warning">No stats available yet. Start using Claude Code!</Text>
+      : <Text>Loading stats…</Text>
 
   return (
     <Pane color="claude">
       <Box flexDirection="row" gap={1} marginBottom={1}>
-        <Tabs title="" color="claude" defaultTab="Overview">
-          <Tab title="Overview">
-            <OverviewTab
+        <Tabs title="" color="claude" selectedTab={activeTab} onTabChange={setActiveTab}>
+          {[
+          <Tab title="Overview" key="Overview">
+            {displayStats && allTimeStats ? <OverviewTab
               stats={displayStats}
               allTimeStats={allTimeStats}
               dateRange={dateRange}
               isLoading={isLoadingFiltered}
-            />
-          </Tab>
-          <Tab title="Models">
-            <ModelsTab
+            /> : localFallback}
+          </Tab>,
+          <Tab title="Models" key="Models">
+            {displayStats ? <ModelsTab
               stats={displayStats}
               dateRange={dateRange}
               isLoading={isLoadingFiltered}
-            />
-          </Tab>
+            /> : localFallback}
+          </Tab>,
+          ...(openAIAvailable ? [
+            <Tab title="OpenAI" key="OpenAI">
+              <OpenAIStatsTab stats={activity} loading={activityLoading || !activityLoaded} error={activityError} />
+            </Tab>,
+          ] : [])]}
         </Tabs>
       </Box>
       <Box paddingLeft={2}>
         <Text dimColor>
-          Esc to cancel · r to cycle dates · ctrl+s to copy
-          {copyStatus ? ` · ${copyStatus}` : ''}
+          {activeTab === 'OpenAI' ? 'Esc to cancel · r to refresh' : 'Esc to cancel · r to cycle dates · ctrl+s to copy'}
+          {activeTab !== 'OpenAI' && copyStatus ? ` · ${copyStatus}` : ''}
         </Text>
       </Box>
     </Pane>
