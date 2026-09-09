@@ -13,6 +13,26 @@ import type { AppState } from './AppStateStore.js'
 
 export type ViewedAgentTask = InProcessTeammateTaskState | LocalAgentTaskState
 
+/** Tool activity belongs to the displayed transcript, not the coordinator. */
+export function getAgentInProgressToolUseIDs(task: ViewedAgentTask): Set<string> {
+  if (task.status !== 'running') return new Set()
+  if (isInProcessTeammateTask(task)) return task.inProgressToolUseIDs ?? new Set()
+
+  const pending = new Set<string>()
+  const finished = new Set<string>()
+  for (const message of task.messages ?? []) {
+    if (message.type !== 'assistant' && message.type !== 'user') continue
+    const content = message.message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (block.type === 'tool_use') pending.add(block.id)
+      if (block.type === 'tool_result') finished.add(block.tool_use_id)
+    }
+  }
+  for (const id of finished) pending.delete(id)
+  return pending
+}
+
 /**
  * Get the currently viewed agent task, if any.
  * Both in-process teammates and local agents have an independent transcript.

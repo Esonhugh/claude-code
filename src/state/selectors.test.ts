@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 
 import type { AppState } from './AppStateStore.js'
-import { getViewedAgentTask, getViewedTeammateTask } from './selectors.js'
+import { getViewedAgentTask, getViewedTeammateTask, getAgentInProgressToolUseIDs } from './selectors.js'
+import type { Message } from '../types/message.js'
 import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 
@@ -50,6 +51,33 @@ function appState(
 ): Pick<AppState, 'viewingAgentTaskId' | 'tasks'> {
   return { viewingAgentTaskId, tasks }
 }
+
+describe('viewed agent tool activity', () => {
+  const messages = [
+    { type: 'assistant', message: { content: [
+      { type: 'tool_use', id: 'finished', name: 'Read', input: {} },
+      { type: 'tool_use', id: 'running', name: 'Bash', input: {} },
+    ] } },
+    { type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'finished', content: 'done' },
+    ] } },
+  ] as unknown as Message[]
+
+  test('derives only unresolved tools from the viewed local transcript', () => {
+    expect(getAgentInProgressToolUseIDs({ ...localAgentTask, messages })).toEqual(new Set(['running']))
+    expect(getAgentInProgressToolUseIDs({ ...localAgentTask, id: 'other', messages: [] })).toEqual(new Set())
+  })
+
+  test.each(['completed', 'failed', 'killed'] as const)('stops unresolved tools on %s', status => {
+    expect(getAgentInProgressToolUseIDs({ ...localAgentTask, messages, status })).toEqual(new Set())
+  })
+
+  test('keeps in-process teammate tool state authoritative', () => {
+    const ids = new Set(['teammate-tool'])
+    expect(getAgentInProgressToolUseIDs({ ...teammateTask, inProgressToolUseIDs: ids })).toBe(ids)
+    expect(getAgentInProgressToolUseIDs({ ...teammateTask, status: 'completed', inProgressToolUseIDs: ids })).toEqual(new Set())
+  })
+})
 
 describe('viewed agent selectors', () => {
   test('returns no task when no agent is selected', () => {

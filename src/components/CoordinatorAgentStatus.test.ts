@@ -1,4 +1,11 @@
 import assert from 'node:assert/strict'
+import { DEFAULT_BINDINGS } from '../keybindings/defaultBindings.js'
+
+assert.equal(
+  DEFAULT_BINDINGS.find(block => block.context === 'Footer')?.bindings.x,
+  'footer:close',
+  'The coordinator stop/dismiss action must be reachable from the keyboard',
+)
 
 import type { AppState } from '../state/AppState.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -235,7 +242,7 @@ assert.equal(rows[1]?.icon, '◯')
 assert.equal(rows[1]?.primaryText, 'general-purpose (+3)')
 assert.equal(rows[1]?.secondaryText, 'Research user reports')
 assert.equal(rows[1]?.meta, '1.5k tok · 2 tools')
-assert.equal(rows[1]?.statusText, 'running · Read(src/index.ts)')
+assert.equal(rows[1]?.statusText, 'running · 4s · Read(src/index.ts)')
 assert.equal(rows[2]?.id, 'top-level-depth-one-agent')
 assert.equal(rows[2]?.kind, 'agent')
 assert.equal(rows[2]?.icon, '◯')
@@ -566,6 +573,17 @@ const terminalTopTasks = {
   },
 } as unknown as AppState['tasks']
 assert.equal(getVisibleAgentTasks(terminalTopTasks)[0]?.id, 'agent-1')
+for (const status of ['completed', 'failed', 'killed'] as const) {
+  const row = getCoordinatorSessionRows({
+    tasks: { 'agent-1': { ...agentTask, status, endTime: 4_000 } },
+    now: 20_000,
+  })[1]!
+  assert.equal(row.statusText, `${status} · 3s`)
+}
+assert.equal(
+  getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.statusText,
+  'running · 4s · Read(src/index.ts)',
+)
 
 const cycleA = {
   ...nestedChildAgentTask,

@@ -151,6 +151,7 @@ import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js
 import { useMoreRight } from '../moreright/useMoreRight.js'
 import {
   SpinnerWithVerb,
+  LocalAgentSpinner,
   BriefIdleStatus,
   type SpinnerMode,
 } from '../components/Spinner.js'
@@ -384,7 +385,7 @@ import {
   useSetAppState,
   useAppStateStore,
 } from '../state/AppState.js'
-import { getViewedAgentTask } from '../state/selectors.js'
+import { getViewedAgentTask, getAgentInProgressToolUseIDs } from '../state/selectors.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
 import type { PastedContent } from '../utils/config.js'
@@ -1982,6 +1983,10 @@ export function REPL({
   } | null>(null)
 
   const viewedAgentTask = getViewedAgentTask({ viewingAgentTaskId, tasks })
+  const viewedAgentToolUseIDs = useMemo(
+    () => viewedAgentTask ? getAgentInProgressToolUseIDs(viewedAgentTask) : inProgressToolUseIDs,
+    [viewedAgentTask, inProgressToolUseIDs],
+  )
   const viewedTeammateTask =
     viewedAgentTask && isInProcessTeammateTask(viewedAgentTask)
       ? viewedAgentTask
@@ -2009,9 +2014,7 @@ export function REPL({
       ? []
       : streamingToolUses
   const transcriptInProgressToolUseIDs = transcriptTask
-    ? isInProcessTeammateTask(transcriptTask)
-      ? (transcriptTask.inProgressToolUseIDs ?? new Set())
-      : new Set<string>()
+    ? getAgentInProgressToolUseIDs(transcriptTask)
     : inProgressToolUseIDs
   const transcriptIsLoading = transcriptTask
     ? transcriptTask.status === 'running'
@@ -6467,19 +6470,15 @@ export function REPL({
                 verbose={verbose}
                 toolJSX={toolJSX}
                 toolUseConfirmQueue={toolUseConfirmQueue}
-                inProgressToolUseIDs={
-                  viewedTeammateTask
-                    ? (viewedTeammateTask.inProgressToolUseIDs ?? new Set())
-                    : inProgressToolUseIDs
-                }
+                inProgressToolUseIDs={viewedAgentToolUseIDs}
                 isMessageSelectorVisible={isMessageSelectorVisible}
                 conversationId={conversationId}
                 screen={screen}
-                streamingToolUses={streamingToolUses}
+                streamingToolUses={viewedAgentTask ? [] : streamingToolUses}
                 showAllInTranscript={showAllInTranscript}
                 agentDefinitions={agentDefinitions}
                 onOpenRateLimitOptions={handleOpenRateLimitOptions}
-                isLoading={isLoading}
+                isLoading={viewedAgentTask ? viewedAgentTask.status === 'running' : isLoading}
                 streamingText={
                   isLoading && !viewedAgentTask ? visibleStreamingText : null
                 }
@@ -6518,7 +6517,13 @@ export function REPL({
                   )
                 : null}
               <Box flexGrow={1} />
-              {showSpinner && (
+              {viewedAgentTask && isLocalAgentTask(viewedAgentTask) ? (
+                <LocalAgentSpinner
+                  task={viewedAgentTask}
+                  hasActiveTools={viewedAgentToolUseIDs.size > 0}
+                  verbose={verbose}
+                />
+              ) : showSpinner && (
                 <SpinnerWithVerb
                   mode={streamMode}
                   spinnerTip={spinnerTip}

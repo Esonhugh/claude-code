@@ -339,8 +339,9 @@ function activityText(activity: unknown): string | undefined {
 
 function agentStatusText(task: LocalAgentTaskState, now: number): string {
   const prefix = task.status === 'running' ? 'running' : task.status
-  const activity = activityText(task.progress?.lastActivity)
-  return activity ? `${prefix} · ${activity}` : `${prefix} · ${taskElapsed(task, now)}`
+  const activity = task.status === 'running' ? activityText(task.progress?.lastActivity) : undefined
+  const status = `${prefix} · ${taskElapsed(task, now)}`
+  return activity ? `${status} · ${activity}` : status
 }
 
 function agentPrimaryText(

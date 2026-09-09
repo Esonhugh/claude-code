@@ -596,6 +596,44 @@ export function BriefIdleStatus(): React.ReactNode {
   )
 }
 
+export function LocalAgentSpinner({ task, hasActiveTools, verbose }: {
+  task: import('../tasks/LocalAgentTask/LocalAgentTask.js').LocalAgentTaskState
+  hasActiveTools: boolean
+  verbose: boolean
+}): React.ReactNode {
+  const settings = useSettings()
+  const { columns } = useTerminalSize()
+  const loadingStartTimeRef = useRef(task.startTime)
+  const responseLengthRef = useRef(0)
+  const totalPausedMsRef = useRef(0)
+  const pauseStartTimeRef = useRef<number | null>(null)
+  loadingStartTimeRef.current = task.startTime
+  responseLengthRef.current = (task.progress?.tokenCount ?? 0) * 4
+  totalPausedMsRef.current = task.totalPausedMs ?? 0
+  if (task.status !== 'running') return null
+
+  return <SpinnerAnimationRow
+    key={task.id}
+    mode="responding"
+    reducedMotion={settings.prefersReducedMotion ?? false}
+    hasActiveTools={hasActiveTools}
+    responseLengthRef={responseLengthRef}
+    message="Running…"
+    messageColor="claude"
+    shimmerColor="claudeShimmer"
+    loadingStartTimeRef={loadingStartTimeRef}
+    totalPausedMsRef={totalPausedMsRef}
+    pauseStartTimeRef={pauseStartTimeRef}
+    verbose={verbose}
+    columns={columns}
+    hasRunningTeammates={false}
+    teammateTokens={0}
+    foregroundedTeammate={undefined}
+    thinkingStatus={null}
+    effortSuffix=""
+  />
+}
+
 export function Spinner(): React.ReactNode {
   const settings = useSettings()
   const reducedMotion = settings.prefersReducedMotion ?? false
