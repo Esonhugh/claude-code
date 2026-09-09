@@ -9,7 +9,7 @@
  *      or OPENAI_BASE_URL/responses when OPENAI_BASE_URL is set.
  */
 import type Anthropic from '@anthropic-ai/sdk'
-import { randomUUID } from 'crypto'
+import { createHmac, randomBytes, randomUUID } from 'crypto'
 import WebSocket from 'ws'
 import type {
   BetaImageBlockParam,
@@ -17,7 +17,8 @@ import type {
   BetaToolUnion,
   BetaMessageParam,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import { logForDebugging } from '../../utils/debug.js'
+import { isDebugMode, logForDebugging } from '../../utils/debug.js'
+import { isAnt } from '../../utils/userType.js'
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
 import {
   getProxyFetchOptions,
@@ -958,6 +959,77 @@ export function serializeOpenAIInstructions(
   return blocks.filter(Boolean).join('\n\n') || 'You are a helpful coding assistant.'
 }
 
+type OpenAIWireRequestSnapshot = {
+  instructionsHash: string
+  instructionsBytes: number
+  toolsHash: string
+  toolsBytes: number
+  toolsCount: number
+  inputHash: string
+  inputBytes: number
+  inputItemHashes: string[]
+  inputItemCount: number
+  inputCommonPrefixItems: number
+  inputAppendOnly: boolean
+}
+
+const openAIWireHashKey = randomBytes(32)
+
+function hashOpenAIWireValue(value: string): string {
+  return createHmac('sha256', openAIWireHashKey)
+    .update(value)
+    .digest('hex')
+    .slice(0, 16)
+}
+
+export function analyzeOpenAIWireRequest(
+  request: { instructions: string; tools?: unknown[]; input: unknown[] },
+  previous?: OpenAIWireRequestSnapshot,
+): OpenAIWireRequestSnapshot {
+  const tools = request.tools ?? []
+  const inputItemHashes = request.input.map(item =>
+    hashOpenAIWireValue(JSON.stringify(item)),
+  )
+  let inputCommonPrefixItems = 0
+  while (
+    inputCommonPrefixItems < inputItemHashes.length &&
+    inputCommonPrefixItems < (previous?.inputItemHashes.length ?? 0) &&
+    inputItemHashes[inputCommonPrefixItems] ===
+      previous?.inputItemHashes[inputCommonPrefixItems]
+  ) {
+    inputCommonPrefixItems++
+  }
+  const instructionsBytes = Buffer.byteLength(request.instructions)
+  const serializedTools = JSON.stringify(tools)
+  const serializedInput = JSON.stringify(request.input)
+  return {
+    instructionsHash: hashOpenAIWireValue(request.instructions),
+    instructionsBytes,
+    toolsHash: hashOpenAIWireValue(serializedTools),
+    toolsBytes: Buffer.byteLength(serializedTools),
+    toolsCount: tools.length,
+    inputHash: hashOpenAIWireValue(serializedInput),
+    inputBytes: Buffer.byteLength(serializedInput),
+    inputItemHashes,
+    inputItemCount: request.input.length,
+    inputCommonPrefixItems,
+    inputAppendOnly:
+      previous !== undefined &&
+      inputCommonPrefixItems === previous.inputItemCount &&
+      request.input.length >= previous.inputItemCount,
+  }
+}
+
+function formatOpenAIWireRequestSnapshot(snapshot: OpenAIWireRequestSnapshot): string {
+  return [
+    `instructions=${snapshot.instructionsHash}/${snapshot.instructionsBytes}B`,
+    `tools=${snapshot.toolsHash}/${snapshot.toolsBytes}B/${snapshot.toolsCount}`,
+    `input=${snapshot.inputHash}/${snapshot.inputBytes}B/${snapshot.inputItemCount}`,
+    `commonPrefixItems=${snapshot.inputCommonPrefixItems}`,
+    `appendOnly=${snapshot.inputAppendOnly}`,
+  ].join(' ')
+}
+
 export function createOpenAICompatClient(options: {
   apiKey: string
   maxRetries: number
@@ -1004,6 +1076,34 @@ export function createOpenAICompatClient(options: {
     `[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT}, tunnel=${tunnel})`,
   )
 
+  let previousCreateWireRequest: OpenAIWireRequestSnapshot | undefined
+  let previousCompactWireRequest: OpenAIWireRequestSnapshot | undefined
+  const logWireRequest = (
+    kind: 'create' | 'compact',
+    request: { instructions: string; tools?: unknown[]; input: unknown[] },
+  ): void => {
+    if (!isDebugMode() && !isAnt()) return
+    try {
+      const previous =
+        kind === 'create'
+          ? previousCreateWireRequest
+          : previousCompactWireRequest
+      const snapshot = analyzeOpenAIWireRequest(request, previous)
+      if (kind === 'create') {
+        previousCreateWireRequest = snapshot
+      } else {
+        previousCompactWireRequest = snapshot
+      }
+      logForDebugging(
+        `[OpenAI Compat] Wire prefix kind=${kind} ${formatOpenAIWireRequestSnapshot(snapshot)}`,
+      )
+    } catch (error) {
+      logForDebugging(
+        `[OpenAI Compat] Wire prefix analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
   const messagesProxy = {
     async compact(params: any, requestOptions?: { signal?: AbortSignal }): Promise<{
       item: { type: 'compaction'; encrypted_content: string; id?: string }
@@ -1020,7 +1120,7 @@ export function createOpenAICompatClient(options: {
         input.unshift(params.openai_compaction)
       }
       input.push({ type: 'compaction_trigger' })
-      const body = JSON.stringify({
+      const compactPayload = {
         model: mapModel(params.model || DEFAULT_OPENAI_MODEL),
         instructions:
           params.instructions ?? serializeOpenAIInstructions(params.system),
@@ -1030,7 +1130,9 @@ export function createOpenAICompatClient(options: {
         ...(options.promptCacheKey && {
           prompt_cache_key: options.promptCacheKey,
         }),
-      })
+      }
+      logWireRequest('compact', compactPayload)
+      const body = JSON.stringify(compactPayload)
       const controller = new AbortController()
       if (requestOptions?.signal?.aborted) {
         controller.abort(requestOptions.signal.reason)
@@ -1159,6 +1261,7 @@ export function createOpenAICompatClient(options: {
           prompt_cache_key: options.promptCacheKey,
         }),
       }
+      logWireRequest('create', payload)
       logForDebugging(
         `[OpenAI Compat] Responses request model=${model} service_tier=${payload.service_tier ?? 'standard'}`,
       )

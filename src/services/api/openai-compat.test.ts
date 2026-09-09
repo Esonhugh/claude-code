@@ -15,6 +15,7 @@ try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
   const { getSessionId } = await import('../../bootstrap/state.js')
   const {
+    analyzeOpenAIWireRequest,
     createOpenAICompatClient,
     serializeOpenAIInstructions,
   } = await import('./openai-compat.js')
@@ -31,6 +32,42 @@ try {
     serializeOpenAIInstructions('stable core', 'compact hook'),
     'stable core\n\ncompact hook',
   )
+
+  const firstWireRequest = analyzeOpenAIWireRequest({
+    instructions: 'stable core',
+    tools: [{ type: 'function', name: 'Read', parameters: {} }],
+    input: [{ type: 'message', role: 'user', content: 'first' }],
+  })
+  const appendedWireRequest = analyzeOpenAIWireRequest(
+    {
+      instructions: 'stable core',
+      tools: [{ type: 'function', name: 'Read', parameters: {} }],
+      input: [
+        { type: 'message', role: 'user', content: 'first' },
+        { type: 'message', role: 'assistant', content: 'second' },
+      ],
+    },
+    firstWireRequest,
+  )
+  assert.equal(appendedWireRequest.instructionsHash, firstWireRequest.instructionsHash)
+  assert.equal(appendedWireRequest.toolsHash, firstWireRequest.toolsHash)
+  assert.equal(appendedWireRequest.inputCommonPrefixItems, 1)
+  assert.equal(appendedWireRequest.inputAppendOnly, true)
+  assert.equal('instructions' in appendedWireRequest, false)
+  assert.equal('tools' in appendedWireRequest, false)
+  assert.equal('input' in appendedWireRequest, false)
+
+  const rewrittenWireRequest = analyzeOpenAIWireRequest(
+    {
+      instructions: 'stable core',
+      tools: [{ type: 'function', name: 'Read', parameters: {} }],
+      input: [{ type: 'message', role: 'user', content: 'rewritten' }],
+    },
+    firstWireRequest,
+  )
+  assert.equal(rewrittenWireRequest.inputCommonPrefixItems, 0)
+  assert.equal(rewrittenWireRequest.inputAppendOnly, false)
+
   const { createOpenAITurnScope, OpenAITurnScope } = await import(
     './openai-turn-scope.js'
   )
