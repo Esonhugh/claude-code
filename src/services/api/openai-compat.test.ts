@@ -14,7 +14,23 @@ const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
   const { getSessionId } = await import('../../bootstrap/state.js')
-  const { createOpenAICompatClient } = await import('./openai-compat.js')
+  const {
+    createOpenAICompatClient,
+    serializeOpenAIInstructions,
+  } = await import('./openai-compat.js')
+
+  assert.equal(
+    serializeOpenAIInstructions([
+      { type: 'text', text: 'stable core' },
+      { type: 'text', text: '' },
+      { type: 'text', text: 'dynamic context' },
+    ]),
+    'stable core\n\ndynamic context',
+  )
+  assert.equal(
+    serializeOpenAIInstructions('stable core', 'compact hook'),
+    'stable core\n\ncompact hook',
+  )
   const { createOpenAITurnScope, OpenAITurnScope } = await import(
     './openai-turn-scope.js'
   )

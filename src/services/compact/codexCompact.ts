@@ -18,6 +18,7 @@ import type { CodexCompactOptions } from './compactMode.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { getAnthropicClient } from '../api/client.js'
 import { createOpenAITurnScope } from '../api/openai-turn-scope.js'
+import { serializeOpenAIInstructions } from '../api/openai-compat.js'
 
 export const CODEX_COMPACT_TOOL_RESULT_TRUNCATION_THRESHOLD_CHARS = 32_000
 export const CODEX_COMPACT_TRUNCATED_TOOL_OUTPUT =
@@ -328,6 +329,9 @@ export async function compactConversationCodexStyle(
         }).compact
         if (!compact) return undefined
         try {
+          const systemInstructions = serializeOpenAIInstructions(
+            cacheSafeParams.systemPrompt,
+          )
           return await compact(
             {
               model: context.options.mainLoopModel,
@@ -339,13 +343,11 @@ export async function compactConversationCodexStyle(
                   > => message.type === 'user' || message.type === 'assistant',
                 )
                 .map(message => message.message),
-              system: cacheSafeParams.systemPrompt.join('\n\n'),
-              instructions: [
-                cacheSafeParams.systemPrompt.join('\n\n'),
+              system: systemInstructions,
+              instructions: serializeOpenAIInstructions(
+                systemInstructions,
                 hookInstructions,
-              ]
-                .filter(Boolean)
-                .join('\n\n'),
+              ),
               ...(previousOpenAICompaction && {
                 openai_compaction: previousOpenAICompaction,
               }),

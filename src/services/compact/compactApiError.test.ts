@@ -334,7 +334,10 @@ describe('compactConversationCodexStyle OpenAI integration', () => {
       ]
       const context = createCompactTestContext()
       const cacheSafeParams = createCacheSafeParams(context, messages)
-      cacheSafeParams.systemPrompt = asSystemPrompt(['compact system prompt'])
+      cacheSafeParams.systemPrompt = asSystemPrompt([
+        'stable compact system prompt',
+        'dynamic compact context',
+      ])
 
       const result = await compactConversationCodexStyle(
         messages,
@@ -352,7 +355,12 @@ describe('compactConversationCodexStyle OpenAI integration', () => {
       expect(compactClientOptions?.source).toBe('compact')
       expect(compactClientOptions?.openAITurnScope).toBeDefined()
       expect(compactRequest?.openai_compaction).toEqual(previousCompaction)
-      expect(compactRequest?.system).toBe('compact system prompt')
+      expect(compactRequest?.system).toBe(
+        'stable compact system prompt\n\ndynamic compact context',
+      )
+      expect(compactRequest?.instructions).toBe(
+        'stable compact system prompt\n\ndynamic compact context',
+      )
       expect(compactRequest?.messages).toEqual([
         {
           role: 'user',

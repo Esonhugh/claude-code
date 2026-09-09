@@ -945,6 +945,19 @@ async function connectSSE(
 
 // --- Main: Create duck-typed Anthropic client ---
 
+export function serializeOpenAIInstructions(
+  system: string | ReadonlyArray<string | { text?: string }> | undefined,
+  appendedInstructions?: string,
+): string {
+  const blocks = typeof system === 'string'
+    ? [system]
+    : Array.isArray(system)
+      ? system.map(block => typeof block === 'string' ? block : block.text ?? '')
+      : []
+  if (appendedInstructions) blocks.push(appendedInstructions)
+  return blocks.filter(Boolean).join('\n\n') || 'You are a helpful coding assistant.'
+}
+
 export function createOpenAICompatClient(options: {
   apiKey: string
   maxRetries: number
@@ -1009,7 +1022,8 @@ export function createOpenAICompatClient(options: {
       input.push({ type: 'compaction_trigger' })
       const body = JSON.stringify({
         model: mapModel(params.model || DEFAULT_OPENAI_MODEL),
-        instructions: params.instructions || 'You are a helpful coding assistant.',
+        instructions:
+          params.instructions ?? serializeOpenAIInstructions(params.system),
         input,
         store: false,
         stream: true,
@@ -1131,11 +1145,7 @@ export function createOpenAICompatClient(options: {
         tools,
       )
       // Extract system as instructions (required by chatgpt codex backend)
-      const instructions = typeof params.system === 'string'
-        ? params.system
-        : Array.isArray(params.system)
-          ? params.system.map((b: any) => b.text || '').join('\n')
-          : 'You are a helpful coding assistant.'
+      const instructions = serializeOpenAIInstructions(params.system)
       const reasoning = anthropicEffortToOpenAIReasoning(params.output_config?.effort)
       const payload: any = {
         model,
