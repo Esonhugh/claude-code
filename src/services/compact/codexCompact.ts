@@ -226,6 +226,10 @@ export function buildCodexStyleCompactionResult(input: {
         ...((input.boundaryMarker as { compactMetadata?: Record<string, unknown> })
           .compactMetadata ?? {}),
         ...input.metadata,
+        provider: 'openai',
+        preCompactTokens: input.preCompactTokenCount ?? 0,
+        postCompactTokens: input.truePostCompactTokenCount ?? 0,
+        compactionCallTokens: input.postCompactTokenCount ?? 0,
       },
     } as SystemMessage,
     summaryMessages: input.summaryMessages,
@@ -376,6 +380,14 @@ export async function compactConversationCodexStyle(
     claudeResult.boundaryMarker.compactMetadata = {
       ...claudeResult.boundaryMarker.compactMetadata,
       mode: 'codex',
+      provider: 'openai',
+      preCompactTokens: claudeResult.preCompactTokenCount ?? 0,
+      postCompactTokens: claudeResult.truePostCompactTokenCount ?? 0,
+      compactionCallTokens: claudeResult.postCompactTokenCount ?? 0,
+      ...(claudeResult.boundaryMarker.openAICompaction.id && {
+        compactionResponseId:
+          claudeResult.boundaryMarker.openAICompaction.id,
+      }),
     }
     return claudeResult
   }

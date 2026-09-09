@@ -246,9 +246,21 @@ describe('buildCodexStyleCompactionResult', () => {
     ])
     expect(
       (result.boundaryMarker as unknown as {
-        compactMetadata: { mode: string }
-      }).compactMetadata.mode,
-    ).toBe('codex')
+        compactMetadata: {
+          mode: string
+          provider: string
+          preCompactTokens: number
+          postCompactTokens: number
+          compactionCallTokens: number
+        }
+      }).compactMetadata,
+    ).toMatchObject({
+      mode: 'codex',
+      provider: 'openai',
+      preCompactTokens: 1000,
+      postCompactTokens: 100,
+      compactionCallTokens: 100,
+    })
   })
 })
 

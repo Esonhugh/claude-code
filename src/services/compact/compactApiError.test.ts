@@ -366,7 +366,14 @@ describe('compactConversationCodexStyle OpenAI integration', () => {
         id: 'cmp_new',
         encrypted_content: 'new-opaque-state',
       })
-      expect(result.boundaryMarker.compactMetadata.mode).toBe('codex')
+      expect(result.boundaryMarker.compactMetadata).toMatchObject({
+        mode: 'codex',
+        provider: 'openai',
+        preCompactTokens: expect.any(Number),
+        postCompactTokens: expect.any(Number),
+        compactionCallTokens: expect.any(Number),
+        compactionResponseId: 'cmp_new',
+      })
     } finally {
       if (originalOpenAI === undefined) {
         delete process.env.CLAUDE_CODE_USE_OPENAI
