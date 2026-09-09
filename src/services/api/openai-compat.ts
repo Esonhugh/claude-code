@@ -1030,6 +1030,22 @@ function formatOpenAIWireRequestSnapshot(snapshot: OpenAIWireRequestSnapshot): s
   ].join(' ')
 }
 
+const wireRequestSnapshots = new Map<string, OpenAIWireRequestSnapshot>()
+const MAX_WIRE_REQUEST_SNAPSHOTS = 100
+
+function updateOpenAIWireRequestSnapshot(
+  key: string,
+  request: { instructions: string; tools?: unknown[]; input: unknown[] },
+): OpenAIWireRequestSnapshot {
+  const snapshot = analyzeOpenAIWireRequest(request, wireRequestSnapshots.get(key))
+  wireRequestSnapshots.delete(key)
+  wireRequestSnapshots.set(key, snapshot)
+  if (wireRequestSnapshots.size > MAX_WIRE_REQUEST_SNAPSHOTS) {
+    wireRequestSnapshots.delete(wireRequestSnapshots.keys().next().value!)
+  }
+  return snapshot
+}
+
 export function createOpenAICompatClient(options: {
   apiKey: string
   maxRetries: number
@@ -1076,24 +1092,18 @@ export function createOpenAICompatClient(options: {
     `[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT}, tunnel=${tunnel})`,
   )
 
-  let previousCreateWireRequest: OpenAIWireRequestSnapshot | undefined
-  let previousCompactWireRequest: OpenAIWireRequestSnapshot | undefined
+  const wireRequestKey =
+    options.turnScope?.identity.threadId ?? options.promptCacheKey ?? responsesURL
   const logWireRequest = (
     kind: 'create' | 'compact',
     request: { instructions: string; tools?: unknown[]; input: unknown[] },
   ): void => {
     if (!isDebugMode() && !isAnt()) return
     try {
-      const previous =
-        kind === 'create'
-          ? previousCreateWireRequest
-          : previousCompactWireRequest
-      const snapshot = analyzeOpenAIWireRequest(request, previous)
-      if (kind === 'create') {
-        previousCreateWireRequest = snapshot
-      } else {
-        previousCompactWireRequest = snapshot
-      }
+      const snapshot = updateOpenAIWireRequestSnapshot(
+        `${wireRequestKey}:${kind}`,
+        request,
+      )
       logForDebugging(
         `[OpenAI Compat] Wire prefix kind=${kind} ${formatOpenAIWireRequestSnapshot(snapshot)}`,
       )
