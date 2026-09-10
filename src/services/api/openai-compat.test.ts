@@ -1118,7 +1118,7 @@ try {
     messages: [{ role: 'user', content: 'hi' }],
   })
 
-  assert.equal(requests[0]!.body.model, 'gpt-5.5')
+  assert.equal(requests[0]!.body.model, 'gpt-5.6-luna')
 
   const tokenCount = await rootURLClient.beta.messages.countTokens({
     model: 'gpt-5.5',

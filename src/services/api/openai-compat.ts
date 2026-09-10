@@ -71,7 +71,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
 
 // --- Model mapping: Anthropic model names → OpenAI model slugs ---
 
-const DEFAULT_OPENAI_MODEL = 'gpt-5.5'
+const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna'
 
 function mapModel(model: string): string {
   return model.startsWith('claude-') ? DEFAULT_OPENAI_MODEL : model
