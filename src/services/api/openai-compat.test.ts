@@ -19,6 +19,10 @@ try {
     createOpenAICompatClient,
     serializeOpenAIInstructions,
   } = await import('./openai-compat.js')
+  const { isDebugMode, isDebugToStdErr } = await import('../../utils/debug.js')
+  const { createOpenAITurnScope, OpenAITurnScope } = await import(
+    './openai-turn-scope.js'
+  )
 
   assert.equal(
     serializeOpenAIInstructions([
@@ -68,9 +72,174 @@ try {
   assert.equal(rewrittenWireRequest.inputCommonPrefixItems, 0)
   assert.equal(rewrittenWireRequest.inputAppendOnly, false)
 
-  const { createOpenAITurnScope, OpenAITurnScope } = await import(
-    './openai-turn-scope.js'
-  )
+  const wireResponse = () =>
+    new Response(
+      [
+        'data: {"type":"response.output_item.done","item":{"type":"compaction","id":"cmp_wire","encrypted_content":"opaque-wire-summary"}}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}',
+        '',
+      ].join('\n\n'),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
+
+  const debugArg = '--debug-to-stderr'
+  const originalArgv = process.argv
+  const originalStderrWrite = process.stderr.write
+  const debugOutput: string[] = []
+  const runWithWireDebug = async (run: () => Promise<void>) => {
+    process.argv = [...originalArgv, debugArg]
+    isDebugMode.cache.clear?.()
+    isDebugToStdErr.cache.clear?.()
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      debugOutput.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
+    try {
+      await run()
+    } finally {
+      process.stderr.write = originalStderrWrite
+      process.argv = originalArgv
+      isDebugMode.cache.clear?.()
+      isDebugToStdErr.cache.clear?.()
+    }
+  }
+  const wireLogs = () =>
+    debugOutput.filter(line => line.includes('[OpenAI Compat] Wire prefix'))
+  const createWireRequest = (
+    client: ReturnType<typeof createOpenAICompatClient>,
+    messages: any[],
+  ) =>
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      max_tokens: 16,
+      messages,
+    }) as unknown as Promise<unknown>
+
+  const debugDisabledClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key',
+    maxRetries: 0,
+    timeout: 1000,
+    promptCacheKey: 'wire-debug-disabled',
+  })
+  await createWireRequest(debugDisabledClient, [
+    { role: 'user', content: 'not logged' },
+  ])
+  await runWithWireDebug(async () => {
+    await createWireRequest(debugDisabledClient, [
+      { role: 'user', content: 'not logged' },
+      { role: 'assistant', content: 'debug enabled now' },
+    ])
+  })
+  // Disabled diagnostics must not populate a baseline either.
+  assert.match(wireLogs()[0]!, /commonPrefixItems=0 appendOnly=false/)
+  debugOutput.length = 0
+
+  await runWithWireDebug(async () => {
+    const firstClient = createOpenAICompatClient({
+      apiKey: 'sk-test-api-key',
+      maxRetries: 0,
+      timeout: 1000,
+      promptCacheKey: 'wire-cross-client',
+    })
+    await createWireRequest(firstClient, [
+      { role: 'user', content: 'wire secret first' },
+    ])
+    const secondClient = createOpenAICompatClient({
+      apiKey: 'sk-test-api-key',
+      maxRetries: 0,
+      timeout: 1000,
+      promptCacheKey: 'wire-cross-client',
+    })
+    await createWireRequest(secondClient, [
+      { role: 'user', content: 'wire secret first' },
+      { role: 'assistant', content: 'wire secret second' },
+    ])
+  })
+  assert.match(wireLogs()[0]!, /kind=create .*commonPrefixItems=0 appendOnly=false/)
+  assert.match(wireLogs()[1]!, /kind=create .*commonPrefixItems=1 appendOnly=true/)
+  assert.ok(wireLogs().every(line => !line.includes('wire secret')))
+  assert.ok(wireLogs().every(line => /instructions=[0-9a-f]{16}\/\d+B/.test(line)))
+
+  debugOutput.length = 0
+  await runWithWireDebug(async () => {
+    const kindClient = createOpenAICompatClient({
+      apiKey: 'sk-test-api-key',
+      maxRetries: 0,
+      timeout: 1000,
+      promptCacheKey: 'wire-kind-isolation',
+    })
+    const message = [{ role: 'user', content: 'same create compact body' }]
+    await createWireRequest(kindClient, message)
+    await (kindClient.beta.messages as any).compact({
+      model: 'gpt-5.5',
+      messages: message,
+    })
+  })
+  assert.match(wireLogs()[0]!, /kind=create .*commonPrefixItems=0 appendOnly=false/)
+  assert.match(wireLogs()[1]!, /kind=compact .*commonPrefixItems=0 appendOnly=false/)
+
+  debugOutput.length = 0
+  await runWithWireDebug(async () => {
+    for (const threadId of ['wire-thread-a', 'wire-thread-b']) {
+      const threadClient = createOpenAICompatClient({
+        apiKey: 'sk-test-api-key',
+        maxRetries: 0,
+        timeout: 1000,
+        promptCacheKey: 'shared-root-cache-key',
+        turnScope: new OpenAITurnScope(
+          {
+            sessionId: 'wire-session',
+            threadId,
+            promptCacheKey: 'shared-root-cache-key',
+          },
+          `turn-${threadId}`,
+        ),
+      })
+      await createWireRequest(threadClient, [
+        { role: 'user', content: 'shared body' },
+      ])
+    }
+  })
+  assert.equal(wireLogs().length, 2)
+  assert.ok(wireLogs().every(line => /commonPrefixItems=0 appendOnly=false/.test(line)))
+
+  debugOutput.length = 0
+  await runWithWireDebug(async () => {
+    for (let index = 0; index <= 100; index++) {
+      const capacityClient = createOpenAICompatClient({
+        apiKey: 'sk-test-api-key',
+        maxRetries: 0,
+        timeout: 1000,
+        promptCacheKey: `wire-capacity-${index}`,
+      })
+      await createWireRequest(capacityClient, [
+        { role: 'user', content: `capacity ${index}` },
+      ])
+    }
+    const retainedClient = createOpenAICompatClient({
+      apiKey: 'sk-test-api-key',
+      maxRetries: 0,
+      timeout: 1000,
+      promptCacheKey: 'wire-capacity-1',
+    })
+    await createWireRequest(retainedClient, [
+      { role: 'user', content: 'capacity 1' },
+      { role: 'assistant', content: 'still retained' },
+    ])
+    assert.match(wireLogs().at(-1)!, /commonPrefixItems=1 appendOnly=true/)
+    const evictedClient = createOpenAICompatClient({
+      apiKey: 'sk-test-api-key',
+      maxRetries: 0,
+      timeout: 1000,
+      promptCacheKey: 'wire-capacity-0',
+    })
+    await createWireRequest(evictedClient, [
+      { role: 'user', content: 'capacity 0' },
+      { role: 'assistant', content: 'would append if retained' },
+    ])
+  })
+  assert.match(wireLogs().at(-1)!, /commonPrefixItems=0 appendOnly=false/)
 
   const standaloneScope = createOpenAITurnScope(undefined, 'manual-compact-turn')
   assert.equal(standaloneScope.identity.sessionId, getSessionId())
