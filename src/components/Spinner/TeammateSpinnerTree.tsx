@@ -2,7 +2,7 @@ import figures from 'figures'
 import * as React from 'react'
 import { Box, Text, type TextProps } from '../../ink.js'
 import { useAppState } from '../../state/AppState.js'
-import { getRunningTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { getViewableTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import { formatNumber } from '../../utils/format.js'
 import { TeammateSpinnerLine } from './TeammateSpinnerLine.js'
 import { TEAMMATE_SELECT_HINT } from './teammateSelectHint.js'
@@ -33,9 +33,9 @@ export function TeammateSpinnerTree({
     s => s.showTeammateMessagePreview,
   )
 
-  const teammateTasks = getRunningTeammatesSorted(tasks)
+  const teammateTasks = getViewableTeammatesSorted(tasks)
 
-  // Don't render if no running teammates
+  // Don't render if no viewable teammates
   if (teammateTasks.length === 0) {
     return null
   }

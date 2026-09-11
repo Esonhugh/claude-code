@@ -72,4 +72,34 @@ assert.equal(
   'merging additional command sources must preserve the built-in /terminal command',
 )
 
+const { useReplCommands } = await import('./useMergedCommands.js')
+const local = { ...additionalCommand, name: 'local-command' } as Command
+const oldPlugin = { ...additionalCommand, type: 'prompt', source: 'plugin', name: 'plugin-command' } as unknown as Command
+const removedPlugin = { ...oldPlugin, name: 'removed-plugin' } as Command
+const refreshedPlugin = { ...oldPlugin, description: 'refreshed version' } as Command
+const startup = [local, oldPlugin, removedPlugin]
+let current: Command[] = []
+function CaptureReload({ reloadKey, plugins }: { reloadKey: number; plugins: Command[] }): null {
+  current = useReplCommands(startup, plugins, [], reloadKey, false, false)
+  return null
+}
+const reloadInstance = await render(React.createElement(CaptureReload, { reloadKey: 0, plugins: [] }), {
+  stdout: new TestStdout() as unknown as NodeJS.WriteStream,
+  patchConsole: false,
+})
+try {
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(current.find(command => command.name === oldPlugin.name), oldPlugin)
+  for (const reloadKey of [1, 2]) {
+    reloadInstance.rerender(React.createElement(CaptureReload, { reloadKey, plugins: [refreshedPlugin, refreshedPlugin] }))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(current, [local, refreshedPlugin])
+    assert.equal(current.filter(command => command.name === refreshedPlugin.name).length, 1)
+    assert.equal(current[1], refreshedPlugin)
+  }
+} finally {
+  reloadInstance.unmount()
+  reloadInstance.cleanup()
+}
+
 console.log('useMergedCommands.test.tsx passed')

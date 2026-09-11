@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react'
+import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import { useElapsedTime } from '../../hooks/useElapsedTime.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
@@ -57,7 +58,7 @@ export function InProcessTeammateDetailDialog({
     } else if (e.key === 'x' && teammate.status === 'running' && onKill) {
       e.preventDefault()
       onKill()
-    } else if (e.key === 'f' && teammate.status === 'running' && onForeground) {
+    } else if (e.key === 'f' && isViewableTeammate(teammate) && onForeground) {
       e.preventDefault()
       onForeground()
     }
@@ -138,7 +139,7 @@ export function InProcessTeammateDetailDialog({
               {teammate.status === 'running' && onKill && (
                 <KeyboardShortcutHint shortcut="x" action="stop" />
               )}
-              {teammate.status === 'running' && onForeground && (
+              {isViewableTeammate(teammate) && onForeground && (
                 <KeyboardShortcutHint shortcut="f" action="foreground" />
               )}
             </Byline>

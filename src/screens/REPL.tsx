@@ -155,6 +155,7 @@ import {
   BriefIdleStatus,
   type SpinnerMode,
 } from '../components/Spinner.js'
+import { TeammateSpinnerTree } from '../components/Spinner/TeammateSpinnerTree.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js'
 import { getSystemContext, getUserContext } from '../context.js'
@@ -358,7 +359,7 @@ import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js'
 import { getQuerySourceForREPL } from '../utils/promptCategory.js'
 import { useMergedTools } from '../hooks/useMergedTools.js'
 import { mergeAndFilterTools } from '../utils/toolPool.js'
-import { useMergedCommands } from '../hooks/useMergedCommands.js'
+import { useReplCommands } from '../hooks/useMergedCommands.js'
 import { useSkillsChange } from '../hooks/useSkillsChange.js'
 import { useManagePlugins } from '../hooks/useManagePlugins.js'
 import { Messages } from '../components/Messages.js'
@@ -1040,6 +1041,9 @@ export function REPL({
   // These fields contain excluded strings that must not appear in external builds.
   const spinnerTip = useAppState(s => s.spinnerTip)
   const showExpandedTodos = useAppState(s => s.expandedView) === 'tasks'
+  const showTeammateTree = useAppState(s => s.expandedView) === 'teammates'
+  const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
+  const viewSelectionMode = useAppState(s => s.viewSelectionMode)
   const pendingWorkerRequest = useAppState(s => s.pendingWorkerRequest)
   const pendingSandboxRequest = useAppState(s => s.pendingSandboxRequest)
   const teamContext = useAppState(s => s.teamContext)
@@ -1285,29 +1289,13 @@ export function REPL({
     }
   }, [mainThreadAgentDefinition, mergedTools])
 
-  // After reload, AppState owns the complete plugin set, including removals.
-  const localCommandsWithoutReloadedPlugins = useMemo(
-    () =>
-      !isRemoteExecutionSession && mcp.pluginReconnectKey > 0
-        ? localCommands.filter(
-            command => command.type !== 'prompt' || command.source !== 'plugin',
-          )
-        : localCommands,
-    [localCommands, isRemoteExecutionSession, mcp.pluginReconnectKey],
-  )
-  // Merge commands from local state, plugins, and MCP
-  const commandsWithPlugins = useMergedCommands(
-    localCommandsWithoutReloadedPlugins,
-    isRemoteExecutionSession ? [] : (plugins.commands as Command[]),
-  )
-  const mergedCommands = useMergedCommands(
-    commandsWithPlugins,
-    isRemoteExecutionSession ? [] : (mcp.commands as Command[]),
-  )
-  // Filter out all commands if disableSlashCommands is true
-  const commands = useMemo(
-    () => (disableSlashCommands ? [] : mergedCommands),
-    [disableSlashCommands, mergedCommands],
+  const commands = useReplCommands(
+    localCommands,
+    plugins.commands as Command[],
+    mcp.commands as Command[],
+    mcp.pluginReconnectKey,
+    isRemoteExecutionSession,
+    disableSlashCommands,
   )
 
   useIdeLogging(isRemoteExecutionSession ? EMPTY_MCP_CLIENTS : mcp.clients)
@@ -6541,6 +6529,21 @@ export function REPL({
                   leaderIsIdle={!isLoading}
                 />
               )}
+              {!showSpinner &&
+                !(viewedAgentTask && isLocalAgentTask(viewedAgentTask)) &&
+                showTeammateTree &&
+                (!toolJSX || toolJSX.showSpinner === true) &&
+                toolUseConfirmQueue.length === 0 &&
+                promptQueue.length === 0 &&
+                !pendingWorkerRequest &&
+                !onlySleepToolActive &&
+                (!visibleStreamingText || isBriefOnly) && (
+                  <TeammateSpinnerTree
+                    selectedIndex={selectedIPAgentIndex}
+                    isInSelectionMode={viewSelectionMode === 'selecting-agent'}
+                    leaderIdleText="Idle"
+                  />
+                )}
               {!showSpinner &&
                 !isLoading &&
                 !userInputOnProcessing &&

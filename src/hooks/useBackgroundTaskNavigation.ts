@@ -12,7 +12,7 @@ import {
   exitTeammateView,
 } from '../state/teammateViewHelpers.js'
 import {
-  getRunningTeammatesSorted,
+  getViewableTeammatesSorted,
   InProcessTeammateTask,
 } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import {
@@ -28,7 +28,7 @@ function stepTeammateSelection(
   setAppState: (updater: (prev: AppState) => AppState) => void,
 ): void {
   setAppState(prev => {
-    const currentCount = getRunningTeammatesSorted(prev.tasks).length
+    const currentCount = getViewableTeammatesSorted(prev.tasks).length
     if (currentCount === 0) return prev
 
     if (prev.expandedView !== 'teammates') {
@@ -73,8 +73,8 @@ export function useBackgroundTaskNavigation(options?: {
   const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
   const setAppState = useSetAppState()
 
-  // Filter to running teammates and sort alphabetically to match TeammateSpinnerTree display
-  const teammateTasks = getRunningTeammatesSorted(tasks)
+  // Match the viewable teammate set and ordering in TeammateSpinnerTree.
+  const teammateTasks = getViewableTeammatesSorted(tasks)
   const teammateCount = teammateTasks.length
 
   // Check for non-teammate background tasks (local_agent, local_bash, etc.)
@@ -92,7 +92,7 @@ export function useBackgroundTaskNavigation(options?: {
     prevTeammateCountRef.current = teammateCount
 
     setAppState(prev => {
-      const currentTeammates = getRunningTeammatesSorted(prev.tasks)
+      const currentTeammates = getViewableTeammatesSorted(prev.tasks)
       const currentCount = currentTeammates.length
 
       // When teammates are removed (count goes from >0 to 0), reset selection

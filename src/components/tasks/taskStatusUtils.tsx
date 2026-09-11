@@ -3,6 +3,7 @@
  */
 
 import figures from 'figures'
+import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { TaskStatus } from 'src/Task.js'
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js'
 import { isPanelAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
@@ -109,7 +110,7 @@ export function shouldHideTasksFooter(
   let hasVisibleTask = false
   for (const t of Object.values(tasks) as TaskState[]) {
     if (
-      !isBackgroundTask(t) ||
+      (!isBackgroundTask(t) && !isViewableTeammate(t)) ||
       t.type === 'local_workflow' ||
       (isAnt() && isPanelAgentTask(t))
     ) {

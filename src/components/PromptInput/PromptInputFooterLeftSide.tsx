@@ -28,6 +28,7 @@ import {
 } from '../../utils/permissions/PermissionMode.js'
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js'
 import { isBackgroundTask } from '../../tasks/types.js'
+import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { getCoordinatorTaskCount } from '../CoordinatorAgentStatus.js'
 import { count } from '../../utils/array.js'
@@ -342,7 +343,9 @@ function ModeIndicator({
     viewedTask?.type === 'in_process_teammate'
   const isViewingCompletedTeammate =
     isViewingTeammate && viewedTask != null && viewedTask.status !== 'running'
-  const hasBackgroundTasks = runningTaskCount > 0 || viewedTask !== undefined
+  const hasViewableTeammates = Object.values(tasks).some(isViewableTeammate)
+  const hasBackgroundTasks =
+    runningTaskCount > 0 || viewedTask !== undefined || hasViewableTeammates
 
   // Count primary items (permission mode or coordinator mode, background tasks, and teams)
   const primaryItemCount =
@@ -368,9 +371,7 @@ function ModeIndicator({
   // Check if we have in-process teammates (showing pills)
   // In spinner-tree mode, pills are disabled - teammates appear in the spinner tree instead
   const hasInProcessTeammates =
-    !showSpinnerTree &&
-    hasBackgroundTasks &&
-    Object.values(tasks).some(t => t.type === 'in_process_teammate')
+    !showSpinnerTree && hasViewableTeammates
   const hasTeammatePills =
     hasInProcessTeammates || (!showSpinnerTree && isViewingTeammate)
 

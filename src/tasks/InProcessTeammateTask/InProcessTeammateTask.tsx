@@ -141,16 +141,22 @@ export function getAllInProcessTeammateTasks(
   return Object.values(tasks).filter(isInProcessTeammateTask)
 }
 
-/**
- * Get running in-process teammates sorted alphabetically by agentName.
- * Shared between TeammateSpinnerTree display, PromptInput footer selector,
- * and useBackgroundTaskNavigation — selectedIPAgentIndex maps into this
- * array, so all three must agree on sort order.
- */
-export function getRunningTeammatesSorted(
+/** Terminal transcripts remain viewable until retention GC removes them. */
+export function isViewableTeammate(
+  task: TaskStateBase | undefined,
+): task is InProcessTeammateTaskState {
+  return isInProcessTeammateTask(task) && (
+    task.status === 'running' ||
+    (isTerminalTaskStatus(task.status) &&
+      (task.retain === true || task.evictAfter !== undefined))
+  )
+}
+
+/** Shared ordering for the footer, spinner tree, and keyboard navigation. */
+export function getViewableTeammatesSorted(
   tasks: Record<string, TaskStateBase>,
 ): InProcessTeammateTaskState[] {
   return getAllInProcessTeammateTasks(tasks)
-    .filter(t => t.status === 'running')
+    .filter(isViewableTeammate)
     .sort((a, b) => a.identity.agentName.localeCompare(b.identity.agentName))
 }

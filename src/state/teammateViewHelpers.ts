@@ -49,11 +49,21 @@ function release(task: LocalAgentTaskState): LocalAgentTaskState {
   }
 }
 
+// Unlike local agents, teammates reopen from their capped in-memory transcript.
+function releaseTeammate(task: InProcessTeammateTaskState): InProcessTeammateTaskState {
+  const terminal = isTerminalTaskStatus(task.status)
+  return {
+    ...task,
+    retain: terminal ? false : undefined,
+    evictAfter: terminal ? Date.now() + PANEL_GRACE_MS : undefined,
+  }
+}
+
 /**
  * Transitions the UI to view a teammate's transcript.
  * Sets viewingAgentTaskId and, for local_agent, retain: true (blocks eviction,
  * enables stream-append, triggers disk bootstrap) and clears evictAfter.
- * If switching from another agent, releases the previous one back to stub.
+ * Switching releases local agents to stubs; teammates keep their UI transcript.
  */
 export function enterTeammateView(
   taskId: string,
@@ -86,17 +96,12 @@ export function enterTeammateView(
     if (switching || needsRetain) {
       tasks = { ...prev.tasks }
       if (switchingLocal) tasks[prevId] = release(prevTask)
-      if (switchingTeammate) {
-        const { [prevId]: _, ...remainingTasks } = tasks
-        tasks = isTerminalTaskStatus(prevTask.status)
-          ? remainingTasks
-          : { ...tasks, [prevId]: { ...prevTask, retain: undefined } }
-      }
+      if (switchingTeammate) tasks[prevId] = releaseTeammate(prevTask)
       if (needsRetain) {
         if (isLocalAgent(task)) {
           tasks[taskId] = { ...task, retain: true, evictAfter: undefined }
         } else if (isInProcessTeammate(task)) {
-          tasks[taskId] = { ...task, retain: true }
+          tasks[taskId] = { ...task, retain: true, evictAfter: undefined }
         }
       }
     }
@@ -116,8 +121,8 @@ export function enterTeammateView(
 
 /**
  * Exit teammate transcript view and return to leader's view.
- * Drops retain and clears messages back to stub form; if terminal,
- * schedules eviction via evictAfter so the row lingers briefly.
+ * Releases the view hold, clearing only local-agent messages back to stub form.
+ * Terminal transcripts use the panel grace period before ordinary eviction.
  */
 export function exitTeammateView(
   setAppState: (updater: (prev: AppState) => AppState) => void,
@@ -146,15 +151,11 @@ export function exitTeammateView(
       }
     }
     if (isInProcessTeammate(task) && task.retain) {
-      if (isTerminalTaskStatus(task.status)) {
-        const { [id]: _, ...remainingTasks } = prev.tasks
-        return { ...cleared, tasks: remainingTasks }
-      }
       return {
         ...cleared,
         tasks: {
           ...prev.tasks,
-          [id]: { ...task, retain: undefined },
+          [id]: releaseTeammate(task),
         },
       }
     }

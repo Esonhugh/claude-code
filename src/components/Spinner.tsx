@@ -33,7 +33,7 @@ import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js'
 import { useSettings } from '../hooks/useSettings.js'
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { isBackgroundTask } from '../tasks/types.js'
-import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { getAllInProcessTeammateTasks, getViewableTeammatesSorted } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import { getEffortSuffix } from '../utils/effort.js'
 import { getMainLoopModel } from '../utils/model/model.js'
 import { getViewedAgentTask, getViewedTeammateTask } from '../state/selectors.js'
@@ -253,6 +253,7 @@ function SpinnerWithVerbInner({
   const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(
     t => t.status === 'running',
   )
+  const hasViewableTeammates = getViewableTeammatesSorted(tasks).length > 0
   const hasRunningTeammates = runningTeammates.length > 0
   const allIdle = hasRunningTeammates && runningTeammates.every(t => t.isIdle)
 
@@ -338,7 +339,7 @@ function SpinnerWithVerbInner({
         <Box flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
           <Text dimColor>{idleText}</Text>
         </Box>
-        {showSpinnerTree && hasRunningTeammates && (
+        {showSpinnerTree && hasViewableTeammates && (
           <TeammateSpinnerTree
             selectedIndex={selectedIPAgentIndex}
             isInSelectionMode={viewSelectionMode === 'selecting-agent'}
@@ -417,7 +418,7 @@ function SpinnerWithVerbInner({
         thinkingStatus={thinkingStatus}
         effortSuffix={effortSuffix}
       />
-      {showSpinnerTree && hasRunningTeammates ? (
+      {showSpinnerTree && hasViewableTeammates ? (
         <TeammateSpinnerTree
           selectedIndex={selectedIPAgentIndex}
           isInSelectionMode={viewSelectionMode === 'selecting-agent'}

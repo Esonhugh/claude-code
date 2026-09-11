@@ -1,4 +1,5 @@
 import figures from 'figures'
+import { isViewableTeammate, getViewableTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import * as React from 'react'
 import { useMemo, useState } from 'react'
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js'
@@ -11,7 +12,6 @@ import {
 import { isPanelAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
 import { getPillLabel, pillNeedsCta } from 'src/tasks/pillLabel.js'
 import {
-  type BackgroundTaskState,
   isBackgroundTask,
   type TaskState,
 } from 'src/tasks/types.js'
@@ -52,7 +52,7 @@ export function BackgroundTaskStatus({
     () =>
       (Object.values(tasks ?? {}) as TaskState[]).filter(
         t =>
-          isBackgroundTask(t) &&
+          (isBackgroundTask(t) || isViewableTeammate(t)) &&
           t.type !== 'local_workflow' &&
           !(isAnt() && isPanelAgentTask(t)),
       ),
@@ -70,16 +70,8 @@ export function BackgroundTaskStatus({
 
   // Memoize teammate-related computations at the top level (rules of hooks)
   const teammateEntries = useMemo(
-    () =>
-      runningTasks
-        .filter(
-          (t): t is BackgroundTaskState & { type: 'in_process_teammate' } =>
-            t.type === 'in_process_teammate',
-        )
-        .sort((a, b) =>
-          a.identity.agentName.localeCompare(b.identity.agentName),
-        ),
-    [runningTasks],
+    () => getViewableTeammatesSorted(tasks),
+    [tasks],
   )
 
   // Build array of all pills with their activity state
@@ -133,7 +125,7 @@ export function BackgroundTaskStatus({
     const selectedIdx = tasksSelected ? teammateFooterIndex : -1
     // Which agent is currently foregrounded (bold)
     const viewedIdx = viewingAgentTaskId
-      ? teammateEntries.findIndex(t => t.id === viewingAgentTaskId) + 1
+      ? allPills.findIndex(pill => pill.taskId === viewingAgentTaskId)
       : 0 // 0 = main/leader
 
     // Calculate available width for pills

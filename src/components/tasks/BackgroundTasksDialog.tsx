@@ -24,7 +24,7 @@ import {
   TerminalTask,
   type TerminalTaskState,
 } from 'src/tasks/TerminalTask.js'
-import { InProcessTeammateTask } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { InProcessTeammateTask, isViewableTeammate } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js'
 import type { LocalAgentTaskState } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
@@ -440,8 +440,7 @@ export function BackgroundTasksDialog({
 
     if (e.key === 'f') {
       if (
-        currentSelection.type === 'in_process_teammate' &&
-        currentSelection.status === 'running'
+        currentSelection?.type === 'in_process_teammate' && isViewableTeammate(currentSelection.task)
       ) {
         e.preventDefault()
         enterTeammateView(currentSelection.id, setAppState)
@@ -489,7 +488,7 @@ export function BackgroundTasksDialog({
       // completion so the user sees the final state before eviction.
       if (
         !task ||
-        (task.type !== 'local_workflow' && !isBackgroundTask(task))
+        (task.type !== 'local_workflow' && !isBackgroundTask(task) && !isViewableTeammate(task))
       ) {
         // Task was removed or is no longer a background task (e.g. killed).
         // If we skipped the list on mount, close the dialog entirely.
@@ -585,7 +584,7 @@ export function BackgroundTasksDialog({
             }
             onBack={goBackToList}
             onForeground={
-              task.status === 'running'
+              isViewableTeammate(task)
                 ? () => {
                     enterTeammateView(task.id, setAppState)
                     onDone('Viewing teammate', { display: 'system' })
@@ -711,8 +710,7 @@ export function BackgroundTasksDialog({
   const actions = [
     <KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />,
     <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />,
-    ...(currentSelection?.type === 'in_process_teammate' &&
-    currentSelection.status === 'running'
+    ...(currentSelection?.type === 'in_process_teammate' && isViewableTeammate(currentSelection.task)
       ? [
           <KeyboardShortcutHint
             key="foreground"

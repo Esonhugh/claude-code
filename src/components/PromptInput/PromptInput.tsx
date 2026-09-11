@@ -91,7 +91,7 @@ import {
   stopOrDismissAgent,
 } from '../../state/teammateViewHelpers.js'
 import type { ToolPermissionContext } from '../../Tool.js'
-import { getRunningTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import { getViewableTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import {
   isPanelAgentTask,
@@ -508,7 +508,7 @@ function PromptInput({
         : undefined
   // In-process teammates sorted alphabetically for footer team selector
   const inProcessTeammates = useMemo(
-    () => getRunningTeammatesSorted(tasks),
+    () => getViewableTeammatesSorted(tasks),
     [tasks],
   )
 
@@ -742,7 +742,7 @@ function PromptInput({
   // pill must stay navigable whenever the panel has rows — not just when
   // something is running.
   const tasksFooterVisible =
-    (runningTaskCount > 0 || coordinatorTaskCount > 0) &&
+    (runningTaskCount > 0 || coordinatorTaskCount > 0 || inProcessTeammates.length > 0) &&
     !shouldHideTasksFooter(tasks, showSpinnerTree)
   const teamsFooterVisible = cachedTeams.length > 0
 
@@ -2476,9 +2476,13 @@ function PromptInput({
               // Enter switches to the selected agent's view
               if (teammateFooterIndex === 0) {
                 exitTeammateView(setAppState)
+                selectFooterItem(null)
               } else {
                 const teammate = inProcessTeammates[teammateFooterIndex - 1]
-                if (teammate) enterTeammateView(teammate.id, setAppState)
+                if (teammate) {
+                  enterTeammateView(teammate.id, setAppState)
+                  selectFooterItem(null)
+                }
               }
             } else if (
               coordinatorTaskIndex === 0 &&
@@ -2625,6 +2629,7 @@ function PromptInput({
     // onChange clears footerSelection, so no explicit deselect.
     if (
       footerItemSelected &&
+      viewSelectionMode !== 'selecting-agent' &&
       char &&
       !key.ctrl &&
       !key.meta &&
@@ -2658,6 +2663,15 @@ function PromptInput({
 
     // Handle ESC key press
     if (key.escape) {
+      // Teammate navigation owns this Escape, including the one returning to main.
+      // Use the render snapshot: navigation may already have updated the store.
+      if (
+        viewSelectionMode === 'viewing-agent' ||
+        viewSelectionMode === 'selecting-agent'
+      ) {
+        return
+      }
+
       // Abort active speculation
       if (speculation.status === 'active') {
         abortSpeculation(setAppState)
@@ -3077,12 +3091,16 @@ function PromptInput({
     maxVisibleLines,
     disableCursorMovementForUpDownKeys:
       suggestions.length > 0 || !!footerItemSelected,
-    disableEscapeDoublePress: suggestions.length > 0,
+    disableEscapeDoublePress:
+      suggestions.length > 0 || viewSelectionMode === 'viewing-agent' ||
+      viewSelectionMode === 'selecting-agent',
     cursorOffset,
     onChangeCursorOffset: setCursorOffset,
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
-    focus: !isSearchingHistory && !isModalOverlayActive && !footerItemSelected,
+    focus:
+      !isSearchingHistory && !isModalOverlayActive && !footerItemSelected &&
+      viewSelectionMode !== 'selecting-agent',
     showCursor:
       !footerItemSelected && !isSearchingHistory && !cursorAtImageChip,
     argumentHint: commandArgumentHint,

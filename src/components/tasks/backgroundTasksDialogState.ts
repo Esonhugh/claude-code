@@ -3,6 +3,8 @@ import {
   isBackgroundTask,
 } from '../../tasks/types.js'
 
+import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+
 export type BackgroundTasksDialogScope = 'all' | 'terminal'
 
 export type BackgroundTasksDialogViewState =
@@ -16,7 +18,7 @@ export function getScopedBackgroundTasks(
 ): TaskState[] {
   const backgroundTasks = Object.values(tasks ?? {}).filter(
     task =>
-      isBackgroundTask(task) &&
+      (isBackgroundTask(task) || isViewableTeammate(task)) &&
       task.type !== 'local_workflow' &&
       !(task.type === 'local_agent' && task.id === foregroundedTaskId),
   )
@@ -53,7 +55,7 @@ export function getBackgroundTasksDialogInitialState({
 
   const scopedTasks = getScopedBackgroundTasks(tasks, foregroundedTaskId, scope)
 
-  if (scopedTasks.length === 1) {
+  if (scopedTasks.length === 1 && scopedTasks[0]!.type !== 'in_process_teammate') {
     return {
       viewState: { mode: 'detail', itemId: scopedTasks[0]!.id },
       skippedListOnMount: true,

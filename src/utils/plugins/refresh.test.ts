@@ -302,11 +302,12 @@ async function runInstallUpdateTests(): Promise<void> {
 }
 
 describe("plugin reload session wiring", () => {
-  // REPL owns this inline useMemo; exercising the component requires a full session.
-  test("REPL filters startup plugin commands after reload (source guard only)", () => {
+  test("REPL uses the behavior-tested command composition hook (source guard only)", () => {
     const repl = source("../../screens/REPL.tsx");
-    expect(repl).toContain("mcp.pluginReconnectKey > 0");
-    expect(repl).toContain(
+    expect(repl).toContain("const commands = useReplCommands(");
+    const hook = source("../../hooks/useMergedCommands.ts");
+    expect(hook).toContain("pluginReconnectKey > 0");
+    expect(hook).toContain(
       "command.type !== 'prompt' || command.source !== 'plugin'",
     );
   });
