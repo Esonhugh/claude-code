@@ -17,6 +17,7 @@ let streamAssistantMessages: AssistantMessage[] = []
 let streamCallCount = 0
 let compactClientOptions: Record<string, unknown> | undefined
 let compactRequest: Record<string, unknown> | undefined
+let hookInstructions: string | undefined
 
 mock.module('../api/client.js', () => ({
   getAnthropicClient: async (options: Record<string, unknown>) => {
@@ -72,7 +73,7 @@ mock.module('../analytics/growthbook.js', () => ({
 
 mock.module('../../utils/hooks.js', () => ({
   executePreCompactHooks: async () => ({
-    newCustomInstructions: undefined,
+    newCustomInstructions: hookInstructions,
     userDisplayMessage: undefined,
   }),
   executePostCompactHooks: async () => ({ userDisplayMessage: undefined }),
@@ -89,10 +90,6 @@ mock.module('../../utils/sessionStorage.js', () => ({
 
 mock.module('../../utils/log.js', () => ({
   logError: () => {},
-}))
-
-mock.module('../../utils/debug.js', () => ({
-  logForDebugging: () => {},
 }))
 
 mock.module('../analytics/index.js', () => ({
@@ -121,6 +118,7 @@ beforeEach(() => {
   streamCallCount = 0
   compactClientOptions = undefined
   compactRequest = undefined
+  hookInstructions = undefined
 })
 
 function userTextMessage(uuid: string, text: string): Message {
@@ -302,6 +300,29 @@ describe('compactConversation remote compaction lifecycle', () => {
 })
 
 describe('compactConversationCodexStyle OpenAI integration', () => {
+  test('appends caller and PreCompact hook instructions once after system blocks', async () => {
+    const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    try {
+      hookInstructions = 'hook compact marker'
+      const messages = [userTextMessage('00000000-0000-4000-8000-000000000022', 'compact me')]
+      const context = createCompactTestContext()
+      const params = createCacheSafeParams(context, messages)
+      params.systemPrompt = asSystemPrompt(['system block one', 'system block two'])
+      await compactConversationCodexStyle(
+        messages, context, params, false, 'caller compact marker', false,
+        { retainedUserMessageTokens: 20_000, keepPostCompactAttachments: false },
+      )
+      expect(compactRequest?.system).toBe('system block one\n\nsystem block two')
+      expect(compactRequest?.instructions).toBe(
+        'system block one\n\nsystem block two\n\ncaller compact marker\n\nhook compact marker',
+      )
+    } finally {
+      if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+      else process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+    }
+  })
+
   test('creates a turn scope and continues the previous OpenAI compaction', async () => {
     const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
     process.env.CLAUDE_CODE_USE_OPENAI = '1'

@@ -947,7 +947,7 @@ async function connectSSE(
 // --- Main: Create duck-typed Anthropic client ---
 
 export function serializeOpenAIInstructions(
-  system: string | ReadonlyArray<string | { text?: string }> | undefined,
+  system: string | ReadonlyArray<string | { type?: 'text'; text?: string }> | undefined,
   appendedInstructions?: string,
 ): string {
   const blocks = typeof system === 'string'
