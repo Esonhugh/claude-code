@@ -12,6 +12,9 @@ import re
 import shlex
 import shutil
 import signal
+import ssl
+import socket
+import select
 import subprocess
 import sys
 import tempfile
@@ -40,6 +43,13 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
     'official-claude',
 )
 MOCK_OPENAI_TARGETS = frozenset({
+    'plugins-reload',
+    'deferred-tool-discovery',
+    'deferred-tool-discovery-off',
+    'transcript-retention',
+    'workflow-failure-detail',
+    'workflow-retry-partial-failure',
+    'coordinator-selector',
     'effort-openai-responses-wire',
     'fast-openai-responses-wire',
     'openai-image-input-wire',
@@ -51,6 +61,21 @@ MOCK_OPENAI_TARGETS = frozenset({
     'model-internal-update-config-skill',
     'prompt-modes-cache-prefix',
 })
+WORKFLOW_FAULT_SCRIPTS = {
+    'workflow-failure-detail': """export const meta = { name: 'release-failure-detail', description: 'Deterministic workflow failure diagnostics.', phases: [{ title: 'Failure probe' }] }
+phase('Failure probe')
+const result = await agent('Return any short answer.', { label: 'invalid-schema-worker', schema: { type: 'definitely-invalid-json-schema-type' } })
+if (result === null) throw new Error('release deterministic workflow failure')
+return result
+""",
+    'workflow-retry-partial-failure': """export const meta = { name: 'release-partial-retry', description: 'Controlled partial transient retry.', phases: [{ title: 'Retry probe' }] }
+phase('Retry probe')
+return await parallel([
+  () => agent('Return exactly stable-worker-ok.', { label: 'stable-worker' }),
+  () => agent('Return exactly transient-worker-ok.', { label: 'transient-worker' }),
+])
+""",
+}
 DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
 DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
 CUSTOM_SYSTEM_PROMPT_MARKER = 'RELEASE_CUSTOM_SYSTEM_PROMPT_MARKER'
@@ -60,6 +85,30 @@ BUN_BUILD_TEMPORARY_PATTERN = re.compile(
 )
 PYTHON_BYTECODE_PATTERN = re.compile(r'^.+\.py[cod]$')
 TARGET_PATH_RULES = (
+    ('openai-stats', (
+        'src/commands/stats', 'src/components/Stats', 'src/components/OpenAIStats',
+        'src/components/OpenAIActivity', 'src/services/api/usage',
+        'src/utils/auth', 'src/services/openai-oauth/',
+    )),
+    ('plugins-reload', (
+        'src/utils/plugins/', 'src/services/plugins/',
+        'src/commands/plugin/', 'src/commands/reload-plugins/',
+        'src/cli/handlers/plugins', 'src/hooks/useManagePlugins',
+        'src/services/mcp/useManageMCPConnections', 'src/services/mcp/utils',
+    )),
+    ('deferred-tool-discovery', (
+        'src/tools/ToolSearchTool/',
+        'src/tools/TerminalTool/',
+        'src/utils/pty/',
+        'src/tasks/TerminalTask',
+        'src/tools/WorkflowTool/WorkflowFacadeTool',
+        'src/tools/WorkflowTool/WorkflowTool',
+        'src/tools/WorkflowTool/workflowFeatureFlags',
+        'src/constants/tools',
+        'src/utils/toolSearch',
+        'src/utils/settings/',
+        'src/services/api/openai-compat',
+    )),
     ('goal-lifecycle', (
         'src/commands/goal',
         'src/tools/ClearGoalTool/',
@@ -123,6 +172,7 @@ TARGET_PATH_RULES = (
         'src/services/api/openai-compat',
     )),
     ('model-discovery-picker', (
+        'src/services/api/openai-compat',
         'src/services/api/bootstrap',
         'src/utils/config',
         'src/utils/model/modelOptions',
@@ -186,7 +236,12 @@ TARGET_PATH_RULES = (
         'src/utils/swarm/inProcessRunner',
         'src/components/TeammateViewHeader',
         'src/components/Spinner',
-        'src/components/PromptInput/useSwarmBanner',
+        'src/components/PromptInput/',
+        'src/tasks/InProcessTeammateTask/',
+        'src/hooks/useBackgroundTaskNavigation',
+        'src/components/tasks/BackgroundTasksDialog',
+        'src/components/tasks/InProcessTeammateDetailDialog',
+        'src/components/tasks/backgroundTasksDialogState',
     )),
     ('ssh-remote-session-lifecycle', (
         'src/hooks/useSSHSession',
@@ -395,11 +450,7 @@ def plan_targets(extra_targets, required_targets):
         )
     planned = list(DEFAULT_TARGETS)
     seen = set(planned)
-    for target in extra_targets:
-        if target not in seen:
-            planned.append(target)
-            seen.add(target)
-    for target in sorted(required_targets):
+    for target in [*sorted(required_targets), *extra_targets]:
         if target not in seen:
             planned.append(target)
             seen.add(target)
@@ -407,15 +458,32 @@ def plan_targets(extra_targets, required_targets):
 
 
 
-def assertion_source_runs(runs):
+def assertion_source_runs(runs, registered_runs):
     source_runs = {}
+    driver_runs = {run.get('driver_run') for run in runs}
+    if len(driver_runs) != 1 or not all(driver_runs):
+        return source_runs
     for run in runs:
-        evidence_dir = run.get('evidence_dir')
-        if not isinstance(evidence_dir, str) or not evidence_dir:
-            continue
-        source_run = Path(evidence_dir).name
-        if source_run and source_run not in source_runs:
-            source_runs[source_run] = Path(evidence_dir).resolve(strict=False)
+        for source in [run, *run.get('cases', []), *run.get('scenarios', [])]:
+            evidence_dir = source.get('evidence_dir')
+            if not isinstance(evidence_dir, str) or not evidence_dir:
+                continue
+            root = Path(evidence_dir).resolve(strict=False)
+            try:
+                metadata_text = (root / 'run-metadata.json').read_text()
+                if registered_runs.get(str(root)) != metadata_text:
+                    continue
+                metadata = json.loads(metadata_text)
+            except (OSError, ValueError):
+                continue
+            if (not isinstance(metadata, dict)
+                    or metadata.get('driver_run') != run['driver_run']
+                    or metadata.get('source_run') != root.name
+                    or metadata.get('evidence_dir') != str(root)
+                    or metadata.get('label') != source.get('label')
+                    or root.parent != Path(run['evidence_dir']).resolve().parent):
+                continue
+            source_runs[root.name] = root
     return source_runs
 
 
@@ -452,19 +520,21 @@ def assertion_is_valid(assertion, source_runs):
 
 
 
-def validate_required_target_results(required_targets, runs):
+def validate_required_target_results(required_targets, runs, registered_runs=None):
     runs_by_label = {run.get('label'): run for run in runs}
     missing = sorted(required_targets - set(runs_by_label))
     invalid = []
-    source_runs = assertion_source_runs(runs)
+    source_runs = assertion_source_runs(runs, registered_runs or {})
     for target in sorted(required_targets & set(runs_by_label)):
         run = runs_by_label[target]
         assertions = run.get('assertions')
+        own_sources = {name: root for name, root in assertion_source_runs([run], registered_runs or {}).items()
+                       if source_runs.get(name) == root}
         valid = (
             run.get('validation_verdict') == 'passed'
             and isinstance(assertions, list)
             and bool(assertions)
-            and all(assertion_is_valid(assertion, source_runs) for assertion in assertions)
+            and all(assertion_is_valid(assertion, own_sources) for assertion in assertions)
         )
         if not valid:
             invalid.append(target)
@@ -778,6 +848,16 @@ class MockOpenAIServer:
         self.requests = []
         self.server = None
         self.thread = None
+        if label == 'transcript-retention':
+            self.retention_release = threading.Event()
+            self.retention_parent_waiting = threading.Event()
+            self.retention_child_waiting = threading.Event()
+            self.retention_child_release = threading.Event()
+            self.retention_stopped = threading.Event()
+        if label == 'coordinator-selector':
+            self.coordinator_release = threading.Event()
+            self.coordinator_tools_done = threading.Event()
+            self.coordinator_stopped = threading.Event()
 
     def start(self):
         owner = self
@@ -846,6 +926,9 @@ class MockOpenAIServer:
                 response_kind, response = owner.response_for(body)
                 request['response_kind'] = response_kind
                 owner.flush()
+                if response_kind == 'retention-child-cancelled':
+                    self.close_connection = True
+                    return
                 encoded = response.encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
@@ -912,6 +995,219 @@ class MockOpenAIServer:
         }
         if not is_main_response_request(current_request):
             return 'title', sse_completed('{"title":"Release validation"}')
+        if self.label in WORKFLOW_FAULT_SCRIPTS:
+            items = body.get('input', [])
+            outputs = {item.get('call_id'): item.get('output')
+                       for item in items if isinstance(item, dict)
+                       and item.get('type') == 'function_call_output'}
+            users = []
+            for item in items:
+                if not isinstance(item, dict) or item.get('role') != 'user':
+                    continue
+                content = item.get('content', '')
+                if isinstance(content, str):
+                    users.append(content)
+                else:
+                    users.extend(block.get('text', '') for block in content if isinstance(block, dict))
+            if 'fc_workflow_launch' in outputs:
+                return 'workflow-parent-completed', sse_completed('RELEASE_WORKFLOW_PARENT_DONE')
+            if any('Use Workflow with this exact inline script.' in text for text in users):
+                if 'fc_workflow_search' not in outputs:
+                    return 'workflow-search', sse_function_call(
+                        'fc_workflow_search', 'ToolSearch', {'query': 'select:Workflow'})
+                return 'workflow-launch', sse_function_call(
+                    'fc_workflow_launch', 'Workflow', {'script': WORKFLOW_FAULT_SCRIPTS[self.label]})
+            if self.label == 'workflow-retry-partial-failure':
+                for worker in ('stable', 'transient'):
+                    if any(text.strip() == f'Return exactly {worker}-worker-ok.' for text in users):
+                        return f'workflow-{worker}-completed', sse_completed(f'{worker}-worker-ok')
+            return 'workflow-unrecognized', sse_incomplete('Unrecognized workflow fixture request')
+        if self.label == 'plugins-reload':
+            phase = (self.run_dir / 'plugin-phase.txt').read_text().strip()
+            outputs = {item.get('call_id'): item.get('output')
+                       for item in body.get('input', []) if isinstance(item, dict)
+                       and item.get('type') == 'function_call_output'}
+            if phase == 'update':
+                steps = [('update', 'Bash', {'command': shlex.join([
+                    str(self.run_dir / 'plugin-update.sh')])})]
+            else:
+                version = 'v1' if phase == 'v1' else 'v2'
+                names = [f'mcp__plugin_fixture_server__probe_{version}', 'mcp__retained__probe_other']
+                steps = [('search', 'ToolSearch', {'query': 'select:' + ','.join(names)}),
+                         ('plugin', names[0], {'phase': phase}),
+                         ('other', names[1], {'phase': phase})]
+                for name in ('version', 'standalone', 'removed-command', 'removed-skill'):
+                    steps.append((name, 'Skill', {'skill': f'fixture:{name}'}))
+            for step, name, arguments in steps:
+                call_id = f'fc_plugins-{phase}-{step}'
+                if call_id not in outputs:
+                    return call_id.removeprefix('fc_'), sse_function_call(call_id, name, arguments)
+            return f'plugins-{phase}-completed', sse_completed(f'Plugin probe {phase} complete.')
+        if self.label in {'deferred-tool-discovery', 'deferred-tool-discovery-off'}:
+            outputs = {item.get('call_id'): item.get('output')
+                       for item in body.get('input', []) if isinstance(item, dict)
+                       and item.get('type') == 'function_call_output'}
+            if 'fc_deferred-search' not in outputs:
+                return 'deferred-search', sse_function_call(
+                    'fc_deferred-search', 'ToolSearch', {'query': 'select:Terminal,Workflow'})
+            if self.label.endswith('-off'):
+                if 'fc_deferred-workflow-off' not in outputs:
+                    return 'deferred-workflow-off', sse_function_call(
+                        'fc_deferred-workflow-off', 'ToolSearch', {'query': 'select:Workflow'})
+                return 'deferred-completed', sse_completed('RELEASE_DEFERRED_DONE')
+            if 'fc_deferred-open' not in outputs:
+                return 'deferred-open', sse_function_call('fc_deferred-open', 'Terminal', {
+                    'action': 'new-session', 'command': '/bin/sh',
+                    'args': ['-c', 'stty -echo; exec cat'],
+                    'cwd': str(self.run_dir), 'cols': 80, 'rows': 24,
+                })
+            try:
+                opened = json.loads(outputs['fc_deferred-open'])
+                target = opened['target']
+                if not isinstance(target, str) or not target:
+                    raise ValueError('missing terminal target')
+            except (TypeError, ValueError, KeyError):
+                return 'deferred-invalid-open', sse_incomplete('Terminal did not return a target')
+            steps = [
+                ('write', {'action': 'send-keys', 'text': 'RELEASE_TERMINAL_ROUNDTRIP', 'enter': True}),
+                ('resize', {'action': 'resize-pane', 'cols': 91, 'rows': 31}),
+                ('read', {'action': 'capture-pane', 'mode': 'full'}),
+                ('status', {'action': 'display-message'}),
+                ('signal', {'action': 'send-signal', 'signal': 'SIGINT'}),
+                ('close', {'action': 'kill-pane', 'force': True}),
+                ('closed-status', {'action': 'display-message'}),
+            ]
+            for step, arguments in steps:
+                call_id = f'fc_deferred-{step}'
+                if call_id not in outputs:
+                    return call_id.removeprefix('fc_'), sse_function_call(
+                        call_id, 'Terminal', {**arguments, 'target': target})
+            if BinaryGate.deferred_terminal_notifications(body):
+                return 'deferred-notification-ack', sse_completed('RELEASE_DEFERRED_NOTIFICATION_ACK')
+            return 'deferred-completed', sse_completed('RELEASE_DEFERRED_DONE')
+        if self.label == 'model-discovery-picker':
+            users = [item for item in body.get('input', [])
+                     if isinstance(item, dict) and item.get('role') == 'user']
+            latest = json.dumps(users[-1].get('content')) if users else ''
+            for case in ('EXPLICIT', 'DEFAULT'):
+                if f'RELEASE_{case}_MODEL_REQUEST' in latest:
+                    return 'model-mapping-completed', sse_completed(
+                        f'RELEASE_{case}_MODEL_OK'
+                    )
+        if self.label == 'coordinator-selector':
+            items = body.get('input', [])
+            outputs = {
+                item.get('call_id'): item.get('output')
+                for item in items if isinstance(item, dict)
+                and item.get('type') == 'function_call_output'
+            }
+            # Only user message content identifies the child, never the parent's
+            # Agent arguments (which contain the same marker).
+            child = any(
+                isinstance(item, dict) and item.get('role') == 'user'
+                and 'RELEASE_COORDINATOR_CHILD_REQUEST' in json.dumps(item.get('content'))
+                for item in items
+            )
+            if 'fc_release_coordinator_agent' in outputs:
+                return 'coordinator-parent-completed', sse_completed('RELEASE_COORDINATOR_PARENT_OK')
+            if child:
+                if 'fc_release_coordinator_read' in outputs:
+                    self.coordinator_tools_done.set()
+                    released = self.coordinator_release.wait(timeout=180)
+                    if not released or self.coordinator_stopped.is_set():
+                        return 'coordinator-cancelled', sse_incomplete('coordinator fixture released by cleanup or timed out')
+                    return 'coordinator-child-completed', sse_completed('RELEASE_COORDINATOR_CHILD_OK')
+                if 'fc_release_coordinator_bash' in outputs:
+                    return 'coordinator-read-call', sse_function_call(
+                        'fc_release_coordinator_read', 'Read',
+                        {'file_path': str(Path(__file__).resolve().parents[4] / 'Makefile')},
+                    )
+                return 'coordinator-bash-call', sse_function_call(
+                    'fc_release_coordinator_bash', 'Bash',
+                    {'command': 'printf RELEASE_COORDINATOR_BASH_OK', 'description': 'Print coordinator validation marker'},
+                )
+            return 'coordinator-agent-call', sse_function_call(
+                'fc_release_coordinator_agent', 'Agent',
+                {
+                    'description': 'release coordinator selector',
+                    'prompt': 'RELEASE_COORDINATOR_CHILD_REQUEST: Run Bash then Read Makefile and report its VERSION line.',
+                    'subagent_type': 'general-purpose',
+                    'run_in_background': False,
+                },
+            )
+        if self.label == 'transcript-retention':
+            items = body.get('input', [])
+            outputs = {
+                item.get('call_id'): item.get('output') for item in items
+                if isinstance(item, dict) and item.get('type') == 'function_call_output'
+            }
+            user_texts = []
+            for item in items:
+                if not isinstance(item, dict) or item.get('role') != 'user':
+                    continue
+                content = item.get('content', '')
+                if isinstance(content, str):
+                    user_texts.append(content)
+                elif isinstance(content, list):
+                    user_texts.extend(part.get('text', '') for part in content if isinstance(part, dict))
+            child = any('RELEASE_RETENTION_CHILD_REQUEST' in text for text in user_texts)
+            if child:
+                if 'fc_retention_approve' in outputs:
+                    return 'retention-child-completed', sse_completed('RELEASE_RETENTION_SHUTDOWN_OK')
+                # Mailbox JSON uses requestId; SendMessage's public schema uses request_id.
+                for text in reversed(user_texts):
+                    for match in re.finditer(r'\{', text):
+                        try:
+                            message, _ = json.JSONDecoder().raw_decode(text[match.start():])
+                        except ValueError:
+                            continue
+                        if (isinstance(message, dict) and message.get('type') == 'shutdown_request'
+                                and isinstance(message.get('requestId'), str) and message['requestId']
+                                and message.get('from') == 'team-lead'):
+                            return 'retention-approve-call', sse_function_call(
+                                'fc_retention_approve', 'SendMessage',
+                                {'to': 'team-lead', 'message': {'type': 'shutdown_response',
+                                 'request_id': message['requestId'], 'approve': True}},
+                            )
+                if not any(text.strip() == 'RELEASE_RETENTION_RESUME' for text in user_texts):
+                    self.retention_child_waiting.set()
+                    self.retention_child_release.wait(timeout=180)
+                    return 'retention-child-cancelled', sse_incomplete('retention initial turn released')
+                return 'retention-worker-marker', sse_completed('RELEASE_RETENTION_WORKER_DONE')
+            latest_user = next((text.strip() for text in reversed(user_texts)
+                                if text.strip() and not re.fullmatch(
+                                    r'<system-reminder>.*</system-reminder>', text.strip(), re.DOTALL)), '')
+            probe = re.fullmatch(r'RELEASE_RETENTION_PROBE ([A-Za-z0-9_-]+) (before|after)', latest_user)
+            if probe:
+                task, phase = probe.groups()
+                call_id = f'fc_retention_probe_{phase}'
+                if call_id in outputs:
+                    return f'retention-probe-{phase}-completed', sse_completed(
+                        f'RELEASE_RETENTION_PROBE_{phase.upper()}_DONE')
+                return f'retention-probe-{phase}-call', sse_function_call(
+                    call_id, 'TaskOutput', {'task_id': task, 'block': False})
+            if latest_user == 'RELEASE_RETENTION_GC_TICK':
+                return 'retention-gc-tick', sse_completed('RELEASE_RETENTION_GC_TICK_DONE')
+            if 'fc_retention_shutdown' in outputs:
+                return 'retention-parent-completed', sse_completed('RELEASE_RETENTION_PARENT_OK')
+            if 'fc_retention_agent' in outputs:
+                self.retention_parent_waiting.set()
+                if not self.retention_release.wait(timeout=180) or self.retention_stopped.is_set():
+                    return 'retention-cancelled', sse_incomplete('retention fixture released by cleanup or timed out')
+                return 'retention-shutdown-call', sse_function_call(
+                    'fc_retention_shutdown', 'SendMessage',
+                    {'to': 'retention-worker', 'message': {'type': 'shutdown_request'}},
+                )
+            if 'fc_retention_team' in outputs:
+                return 'retention-agent-call', sse_function_call(
+                    'fc_retention_agent', 'Agent',
+                    {'description': 'release transcript retention worker', 'name': 'retention-worker',
+                     'subagent_type': 'general-purpose', 'run_in_background': True,
+                     'prompt': 'RELEASE_RETENTION_CHILD_REQUEST: Reply RELEASE_RETENTION_WORKER_DONE. Approve a subsequent shutdown request using its actual request ID.'},
+                )
+            return 'retention-team-call', sse_function_call(
+                'fc_retention_team', 'TeamCreate', {'team_name': 'release-transcript-retention'},
+            )
         main_responses = [
             request
             for request in self.snapshot()
@@ -1016,6 +1312,13 @@ class MockOpenAIServer:
         return 'completed', sse_completed(marker, reasoning=reasoning)
 
     def stop(self):
+        if self.label == 'transcript-retention':
+            self.retention_stopped.set()
+            self.retention_release.set()
+            self.retention_child_release.set()
+        if self.label == 'coordinator-selector':
+            self.coordinator_stopped.set()
+            self.coordinator_release.set()
         if self.server is None:
             return {'stopped': True, 'thread_alive': False}
         self.server.shutdown()
@@ -1039,6 +1342,91 @@ def custom_prompt_instructions_stable(bodies):
             for value in instructions
         )
     )
+
+
+def analyze_openai_wire_debug(debug_text, requests):
+    # Compare product diagnostics with captured HTTP bodies; never synthesize logs.
+    marker = '[OpenAI Compat] Wire prefix '
+    pattern = re.compile(
+        r'kind=(create|compact) instructions=([0-9a-f]{16})/(\d+)B '
+        r'tools=([0-9a-f]{16})/(\d+)B/(\d+) '
+        r'input=([0-9a-f]{16})/(\d+)B/(\d+) '
+        r'commonPrefixItems=(\d+) appendOnly=(true|false)'
+    )
+    requests = [request for request in requests
+                if isinstance(request.get('body'), dict)
+                and isinstance(request['body'].get('input'), list)]
+    lines = debug_text.splitlines()
+    diagnostics = [(index, line.split(marker, 1)[1])
+                   for index, line in enumerate(lines) if marker in line]
+    checks = []
+    previous = {}
+    hashes = {}
+    crossed_client = False
+    kinds = []
+    cache_keys = []
+    pairing_shapes = set()
+    ambiguous_pairing = False
+    for (line_index, text), request in zip(diagnostics, requests):
+        match = pattern.fullmatch(text)
+        body = request.get('body', {})
+        kind = 'compact' if request.get('response_kind') == 'compaction' else 'create'
+        main_request = body.get('instructions') != TITLE_GENERATION_INSTRUCTION
+        if main_request:
+            kinds.append(kind)
+        cache_keys.append(body.get('prompt_cache_key'))
+        if not match or not isinstance(body.get('input'), list):
+            checks.append(False)
+            continue
+        logged_kind, ih, ib, th, tb, tc, nh, nb, nc, prefix, append = match.groups()
+        items = body['input']
+        # Serial fixtures permit ordered pairing only when the logged shape is
+        # unique. Digests cannot identify a body independently here.
+        shape = (logged_kind, ib, tb, tc, nb, nc)
+        ambiguous_pairing |= shape in pairing_shapes
+        pairing_shapes.add(shape)
+        scope = (request.get('headers', {}).get('thread-id')
+                 or body.get('prompt_cache_key') or request.get('path'))
+        prior = previous.get((scope, kind))
+        common = 0
+        if prior:
+            for left, right in zip(prior[0], items):
+                if left != right:
+                    break
+                common += 1
+        expected_append = prior is not None and common == len(prior[0])
+        checks.append(logged_kind == kind and int(prefix) == common
+                      and (append == 'true') == expected_append
+                      and int(nc) == len(items)
+                      and int(tc) == len(body.get('tools', [])))
+        values = (body.get('instructions', ''), body.get('tools', []), items)
+        for field, value, digest, size in zip(
+            ('instructions', 'tools', 'input'), values, (ih, th, nh), (ib, tb, nb)
+        ):
+            serialized = value if field == 'instructions' else json.dumps(
+                value, ensure_ascii=False, separators=(',', ':')
+            )
+            checks.append(int(size) == len(serialized.encode('utf-8')))
+            key = (field, serialized)
+            checks.append(key not in hashes or hashes[key] == digest)
+            hashes[key] = digest
+        if main_request and prior and prior[2] and kind == 'create' and common > 0 and expected_append:
+            crossed_client |= any(
+                '[OpenAI Compat] SSE client → ' in line
+                for line in lines[prior[1] + 1:line_index]
+            )
+        previous[(scope, kind)] = (items, line_index, main_request)
+    return {
+        'pairing_error': 'ambiguous wire shapes; ordered pairing refused' if ambiguous_pairing else None,
+        'matched': not ambiguous_pairing and bool(requests) and len(diagnostics) == len(requests)
+        and len(checks) > 0 and all(checks)
+        and all(cache_keys)
+        and 'Wire prefix analysis failed:' not in debug_text,
+        'cross_client_append_only': not ambiguous_pairing and crossed_client,
+        'create_compact_isolated': not ambiguous_pairing and kinds.count('create') >= 2
+        and kinds.count('compact') >= 2 and bool(checks) and all(checks),
+        'diagnostic_count': len(diagnostics),
+    }
 
 
 def openai_request_metadata_matches(headers, cache_key):
@@ -1091,6 +1479,149 @@ def is_external_source_failure(message):
     ))
 
 
+class OpenAIStatsServer:
+    """Local TLS terminating fixture; never forwards or resolves upstream hosts."""
+    activity_path = '/backend-api/wham/profiles/me'
+    token = 'release-validation-dummy-oauth'
+
+    def __init__(self, run_dir, home):
+        self.run_dir = run_dir
+        self.tls_dir = home / 'stats-tls'
+        self.tls_dir.mkdir(mode=0o700)
+        self.requests = []
+        (run_dir / 'openai-stats-http.json').write_text('[]\n')
+        self.lock = threading.Lock()
+        self.fail = False
+        self.server = None
+        self.thread = None
+        self.ca = self.tls_dir / 'ca.pem'
+
+    def start(self):
+        config = self.tls_dir / 'openssl.cnf'
+        config.write_text('[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n'
+                          '[dn]\nCN=release-validation-local\n[ext]\n'
+                          'basicConstraints=critical,CA:TRUE\n'
+                          'subjectAltName=DNS:localhost,DNS:chatgpt.com,IP:127.0.0.1\n')
+        key = self.tls_dir / 'key.pem'
+        try:
+            command(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                     '-days', '1', '-config', str(config), '-keyout', str(key),
+                     '-out', str(self.ca)], check=True)
+            key.chmod(0o600)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(self.ca, key)
+            fixture = self
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *_args):
+                    pass
+
+                def do_CONNECT(self):
+                    if self.path != 'chatgpt.com:443':
+                        self.respond(403, {}, False, 'rejected-connect')
+                        return
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.flush()
+                    self.close_connection = True
+                    # SSLSocket cannot wrap another SSLSocket (it would bypass
+                    # outer TLS). Relay only to an in-process socketpair, never upstream.
+                    relay, endpoint = socket.socketpair()
+                    def serve_inner():
+                        try:
+                            with context.wrap_socket(endpoint, server_side=True) as inner:
+                                Handler(inner, self.client_address, self.server)
+                        except (ssl.SSLError, OSError):
+                            endpoint.close()
+                    worker = threading.Thread(target=serve_inner, daemon=True)
+                    worker.start()
+                    try:
+                        while True:
+                            readable, _, _ = select.select([self.connection, relay], [], [], 5)
+                            if not readable:
+                                break
+                            for source in readable:
+                                data = source.recv(65536)
+                                if not data:
+                                    return
+                                (relay if source is self.connection else self.connection).sendall(data)
+                    except (ssl.SSLError, OSError):
+                        pass
+                    finally:
+                        relay.close()
+                        worker.join(timeout=5)
+
+                def respond(self, status, body, auth, route):
+                    with fixture.lock:
+                        fixture.requests.append({'method': self.command, 'route': route,
+                                                 'status': status, 'matches_dummy': auth})
+                        (fixture.run_dir / 'openai-stats-http.json').write_text(
+                            json.dumps(fixture.requests, indent=2) + '\n')
+                    payload = json.dumps(body).encode()
+                    self.send_response(status)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+                def do_GET(self):
+                    url = urlsplit(self.path)
+                    valid_host = not url.fragment and ((url.scheme == 'https' and url.netloc == 'chatgpt.com') or (
+                        not url.scheme and not url.netloc and self.headers.get('Host') in
+                        ('chatgpt.com', 'chatgpt.com:443')))
+                    auth = self.headers.get('Authorization') == f'Bearer {fixture.token}'
+                    if not valid_host or not auth:
+                        self.respond(403, {}, auth, 'rejected')
+                    elif url.path == fixture.activity_path and not url.query:
+                        self.respond(503 if fixture.fail else 200,
+                                     {} if fixture.fail else {'stats': {
+                                         'lifetime_tokens': 42, 'daily_usage_buckets': []}},
+                                     auth, 'activity')
+                    elif url.path == '/backend-api/wham/usage' and not url.query:
+                        self.respond(200, {'plan_type': 'plus'}, auth, 'usage')
+                    elif url.path == '/backend-api/codex/models':
+                        self.respond(200, {'models': []}, auth, 'models')
+                    else:
+                        self.respond(403, {}, auth, 'rejected')
+
+                def do_POST(self):
+                    self.respond(403, {}, False, 'rejected')
+
+            class Server(ThreadingHTTPServer):
+                def get_request(self):
+                    connection, address = super().get_request()
+                    connection.settimeout(5)
+                    try:
+                        connection = context.wrap_socket(connection, server_side=True)
+                    except ssl.SSLError:
+                        connection.close()
+                        raise
+                    return connection, address
+
+            self.server = Server(('127.0.0.1', 0), Handler)
+            self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.thread.start()
+            return f'https://127.0.0.1:{self.server.server_port}'
+        except BaseException:
+            self.stop()
+            raise
+
+    def snapshot(self):
+        with self.lock:
+            return list(self.requests)
+
+    def stop(self):
+        if self.server is not None:
+            if self.thread is not None and self.thread.is_alive():
+                self.server.shutdown()
+                self.thread.join(timeout=5)
+            self.server.server_close()
+            self.server = None
+        if self.tls_dir.exists():
+            shutil.rmtree(self.tls_dir)
+        return {'stopped': True, 'tls_removed': not self.tls_dir.exists()}
+
+
 class BinaryGate:
     def __init__(self, repo, evidence_root, auth_source, baseline_path, *, base_ref=None):
         self.repo = repo.resolve()
@@ -1115,6 +1646,7 @@ class BinaryGate:
         self.pid = os.getpid()
         self.session_index = 0
         self.active_runs = {}
+        self.registered_runs = {}
         self.auth_homes = set()
         self.mock_servers = {}
         self.cleanup_started = False
@@ -1520,6 +2052,82 @@ else:
             'cleanup_absent': cleanup_absent,
         }
 
+    @staticmethod
+    def write_plugin_version(run_dir, version):
+        plugin = run_dir / 'marketplace/fixture'
+        for directory in ('.claude-plugin', 'commands', 'skills/standalone'):
+            (plugin / directory).mkdir(parents=True, exist_ok=True)
+        (plugin / '.claude-plugin/plugin.json').write_text(json.dumps({
+            'name': 'fixture', 'version': '1.0.0' if version == 'v1' else '2.0.0'}))
+        for name, path in [('version', 'commands/version.md'),
+                           ('standalone', 'skills/standalone/SKILL.md')]:
+            (plugin / path).write_text(
+                f'---\nname: {name}\ndescription: fixture {name} {version}\n---\n'
+                f'PLUGIN_CONTENT_{name}_{version}\n')
+        for name, path in [('removed-command', 'commands/removed-command.md'),
+                           ('removed-skill', 'skills/removed-skill/SKILL.md')]:
+            destination = plugin / path
+            if version == 'v1':
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(f'---\nname: {name}\ndescription: removable fixture\n---\nPLUGIN_CONTENT_{name}_v1\n')
+            elif destination.exists():
+                destination.unlink()
+        (plugin / '.mcp.json').write_text(json.dumps({'mcpServers': {'server': {
+            'command': sys.executable,
+            'args': [str(run_dir / 'plugin-mcp.py'), version],
+        }}}))
+
+    def make_plugin_fixture(self, run_dir, config, home):
+        marketplace = run_dir / 'marketplace'
+        (marketplace / '.claude-plugin').mkdir(parents=True)
+        (marketplace / '.claude-plugin/marketplace.json').write_text(json.dumps({
+            'name': 'refresh-local', 'owner': {'name': 'fixture'},
+            'plugins': [{'name': 'fixture', 'source': './fixture'}],
+        }))
+        # Real stdio MCP; the log records received requests, not driver claims.
+        script = run_dir / 'plugin-mcp.py'
+        script.write_text('import json, os, sys\n'
+            'version = sys.argv[1]\n'
+            f'log = {str(run_dir / "plugin-mcp.jsonl")!r}\n'
+            'for line in sys.stdin:\n'
+            '    request = json.loads(line)\n'
+            '    with open(log, "a") as stream:\n'
+            '        stream.write(json.dumps({"pid": os.getpid(), "version": version, "request": request}) + "\\n")\n'
+            '    if "id" not in request: continue\n'
+            '    method = request.get("method")\n'
+            '    if method == "initialize":\n'
+            '        result = {"protocolVersion": request["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "release-plugin", "version": version}}\n'
+            '    elif method == "tools/list":\n'
+            '        result = {"tools": [{"name": "probe_" + version, "description": "Local plugin reload probe", "inputSchema": {"type": "object", "properties": {"phase": {"type": "string"}}, "required": ["phase"]}}]}\n'
+            '    elif method == "tools/call":\n'
+            '        result = {"content": [{"type": "text", "text": json.dumps({"version": version, "pid": os.getpid(), "phase": request["params"]["arguments"]["phase"]})}]}\n'
+            '    else: result = {}\n'
+            '    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)\n')
+        self.write_plugin_version(run_dir, 'v1')
+        global_path = config / '.claude.json'
+        global_config = json.loads(global_path.read_text())
+        global_config['mcpServers'] = {'retained': {
+            'command': sys.executable, 'args': [str(script), 'other']}}
+        global_path.write_text(json.dumps(global_config))
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(home),
+               'CLAUDE_CONFIG_DIR': str(config), 'DISABLE_AUTOUPDATER': '1',
+               'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
+               'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL': '1'}
+        for index, arguments in enumerate([
+            ['plugin', 'marketplace', 'add', str(marketplace)],
+            ['plugin', 'install', 'fixture@refresh-local', '--scope', 'user'],
+        ]):
+            completed = subprocess.run([str(self.binary), *arguments], env=env,
+                cwd=home, capture_output=True, text=True, timeout=60)
+            (run_dir / f'plugin-setup-{index}.txt').write_text(completed.stdout + completed.stderr)
+            if completed.returncode:
+                raise RuntimeError('local plugin fixture installation failed')
+        update = run_dir / 'plugin-update.sh'
+        update.write_text('#!/bin/sh\nset -eu\nexec ' + shlex.join([
+            str(self.binary), 'plugin', 'update', 'fixture@refresh-local', '--scope', 'user']) + '\n')
+        update.chmod(0o700)
+        (run_dir / 'plugin-phase.txt').write_text('v1')
+
     def make_fixture(self, run_dir, label):
         config = run_dir / 'config'
         home = Path(tempfile.mkdtemp(prefix='claude-release-home-'))
@@ -1531,7 +2139,14 @@ else:
             raise RuntimeError('auth target must be outside the evidence root')
         if is_relative_to(auth_target, self.repo):
             raise RuntimeError('auth target must be outside the repository')
-        if label in MOCK_OPENAI_TARGETS:
+        if label in {'openai-stats', 'openai-stats-api-key'}:
+            auth_target.write_text(json.dumps({
+                'auth_mode': 'chatgpt',
+                'tokens': {'access_token': OpenAIStatsServer.token},
+            }) + '\n')
+            auth_strategy = 'isolated dummy OAuth without refresh credentials'
+            auth_source = None
+        elif label in MOCK_OPENAI_TARGETS:
             auth_target.write_text(json.dumps({
                 'OPENAI_API_KEY': DUMMY_OPENAI_API_KEY,
             }) + '\n')
@@ -1592,6 +2207,8 @@ else:
                 'model': 'gpt-5.6-luna',
                 'effortLevel': 'xhigh',
             })
+        if label == 'deferred-tool-discovery-off':
+            settings['enableWorkflows'] = False
         if label == 'prompt-modes-cache-prefix':
             settings.update({
                 'skipAutoPermissionPrompt': True,
@@ -1599,6 +2216,16 @@ else:
             })
         if label == 'openai-remote-compaction':
             settings['compact'] = {'mode': 'codex'}
+            settings['hooks'] = {
+                'PreCompact': [{
+                    'matcher': 'manual',
+                    'hooks': [{
+                        'type': 'command',
+                        'command': "printf '%s\\n' RELEASE_PRECOMPACT_HOOK",
+                        'timeout': 5,
+                    }],
+                }],
+            }
         if label == 'subagent-stop-failure-lifecycle':
             hook_output = run_dir / 'subagent-stop-hooks.jsonl'
             hook_script = run_dir / 'record-subagent-stop.py'
@@ -1632,7 +2259,7 @@ else:
             'source_exists': self.auth_source.exists() if auth_source else None,
             'uses_dummy_credential': (
                 label in MOCK_OPENAI_TARGETS
-                or label == 'first-party-bootstrap-picker'
+                or label in {'first-party-bootstrap-picker', 'openai-stats', 'openai-stats-api-key'}
             ),
             'target_outside_evidence': not is_relative_to(
                 auth_target, self.evidence_root
@@ -1640,6 +2267,8 @@ else:
             'target_outside_repository': not is_relative_to(auth_target, self.repo),
             'target_mode': oct(auth_target.stat().st_mode & 0o777),
         }, indent=2) + '\n')
+        if label == 'plugins-reload':
+            self.make_plugin_fixture(run_dir, config, home)
         return config, home
 
     def wait_ready(self, target, run_dir, timeout=60):
@@ -1757,12 +2386,40 @@ else:
                 '-e', 'CC_VALIDATION_SKIP_PERMISSIONS=1',
                 '-e', 'CC_VALIDATION_SSH_TARGET=release-ssh-host',
             ])
-        args.append(str(self.launcher))
+        if label in {'openai-stats', 'openai-stats-api-key'}:
+            stats_server = OpenAIStatsServer(run_dir, home)
+            self.mock_servers[run_key] = stats_server
+            proxy = stats_server.start()
+            env = {
+                'HOME': str(home), 'CLAUDE_CONFIG_DIR': str(config),
+                'XDG_CONFIG_HOME': str(home / '.config'),
+                'XDG_CACHE_HOME': str(home / '.cache'),
+                'XDG_DATA_HOME': str(home / '.local/share'),
+                'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+                'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
+                'CLAUDE_CODE_USE_OPENAI': '1', 'DISABLE_AUTOUPDATER': '1',
+                'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
+                'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL': '1',
+                'NODE_EXTRA_CA_CERTS': str(stats_server.ca),
+                **{name: proxy for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+                                            'http_proxy', 'https_proxy', 'all_proxy')},
+                'NO_PROXY': '127.0.0.1,localhost', 'no_proxy': '127.0.0.1,localhost',
+            }
+            if label == 'openai-stats-api-key':
+                env['OPENAI_API_KEY'] = DUMMY_OPENAI_API_KEY
+            args.append(shlex.join(['env', '-i', *[f'{k}={v}' for k, v in env.items()],
+                                    str(self.binary), '--dangerously-skip-permissions',
+                                    '--debug', '--debug-file', str(run_dir / 'debug.log')]))
+        else:
+            args.append(str(self.launcher))
         result = self.tmux(*args)
         (run_dir / 'tmux-start-stdout.txt').write_text(result.stdout)
         (run_dir / 'tmux-start-stderr.txt').write_text(result.stderr)
         (run_dir / 'pane-target.txt').write_text(target + '\n')
         (run_dir / 'run-metadata.json').write_text(json.dumps({
+            'driver_run': f'{self.stamp}-{self.pid}',
+            'source_run': run_dir.name,
+            'evidence_dir': str(run_dir.resolve()),
             'label': label,
             'session': session,
             'target': target,
@@ -1770,7 +2427,10 @@ else:
             'head': self.manifest['head'],
             'binary': str(self.binary),
             'binary_sha256': self.manifest['binary_sha256'],
-            'launcher': str(self.launcher),
+            'launcher': (
+                'driver env -i with local TLS fixture'
+                if label in {'openai-stats', 'openai-stats-api-key'} else str(self.launcher)
+            ),
             'config': str(config),
             'home': str(home),
             'mock_openai': {
@@ -1806,6 +2466,8 @@ else:
                 'variables plus CLAUDE_CODE_USE_OPENAI=1'
             ),
         }, indent=2) + '\n')
+        self.registered_runs[str(run_dir.resolve())] = (
+            run_dir / 'run-metadata.json').read_text()
         if result.returncode == 0:
             self.active_runs[session] = (run_dir, target)
         ready = result.returncode == 0 and self.wait_ready(target, run_dir)
@@ -1974,6 +2636,7 @@ else:
         raise SystemExit(128 + signum)
 
     def record(self, result):
+        result['driver_run'] = f'{self.stamp}-{self.pid}'
         self.manifest['runs'].append(result)
         (self.evidence_root / 'driver-progress.json').write_text(
             json.dumps(self.manifest, indent=2) + '\n'
@@ -2064,7 +2727,8 @@ else:
 
     def send(self, target, run_dir, text, filename, *, confirm_pending=True):
         input_path = run_dir / filename
-        input_path.write_text(text + '\n')
+        single_line_command = text.startswith('/') and '\n' not in text and '\r' not in text
+        input_path.write_text(text if single_line_command else text + '\n')
         buffer_name = f'cc-release-{self.pid}-{self.session_index}'
         self.tmux('load-buffer', '-b', buffer_name, str(input_path), check=True)
         self.tmux('paste-buffer', '-b', buffer_name, '-t', target, check=True)
@@ -3583,7 +4247,7 @@ return { results }
             )
         for path in (*effort_paths.values(), terminal_path, thinking_path):
             if not path.exists():
-                path.write_text('required effort state was not reached\n')
+                self.capture(target, path)
         responses = self.mock_response_requests(run_dir)
         wire_efforts = {}
         request_checks = []
@@ -3630,7 +4294,13 @@ return { results }
         except (OSError, json.JSONDecodeError):
             settings = {}
         persisted = settings.get('effortLevel') == 'ultracode'
+        debug_path = run_dir / 'debug.log'
+        wire_debug = analyze_openai_wire_debug(
+            debug_path.read_text(errors='replace') if debug_path.exists() else '',
+            self.mock_servers[run_dir.name].snapshot(),
+        )
         analysis_path.write_text(json.dumps({
+            'wire_debug': wire_debug,
             'request_count': len(responses),
             'wire_efforts': wire_efforts,
             'cache_key_present': all(bool(key) for key in cache_keys),
@@ -3650,6 +4320,7 @@ return { results }
             and all(effort_visible.get(effort, False) for effort, _ in effort_cases)
             and all(response_ready.get(effort, False) for effort, _ in effort_cases)
             and all_wire_ok
+            and wire_debug['matched'] and wire_debug['cross_client_append_only']
             and persisted
             and prompt_restored
             and thinking_transcript_shows_marker
@@ -3684,11 +4355,21 @@ return { results }
             'assertions': [
                 self.required_assertion(
                     run_dir,
+                    'openai-wire-cross-client-prefix',
+                    'Cross-client wire prefix diagnostics',
+                    'Successive CLI turns retain the create baseline across SSE client construction; hashes, byte counts and prefixes match captured requests without diagnostic body text.',
+                    evidence,
+                    passed=wire_debug['matched'] and wire_debug['cross_client_append_only'],
+                    reason='product wire diagnostics are missing, inconsistent or reset across clients',
+                ),
+                self.required_assertion(
+                    run_dir,
                     'effort-all-configured-openai-wire',
                     'Configured effort OpenAI wire matrix',
                     'All configured effort values are accepted and sent unchanged with stable cache routing.',
                     evidence,
-                    passed=passed,
+                    passed=all_wire_ok and all(effort_visible.values())
+                    and len(effort_visible) == len(effort_cases),
                     reason='one or more configured effort values were rejected or remapped',
                 ),
                 self.required_assertion(
@@ -3697,13 +4378,278 @@ return { results }
                     'Ultracode local orchestration mapping',
                     'Ultracode persists locally and is the only configured value mapped to xhigh on the API wire.',
                     evidence,
-                    passed=passed and wire_efforts.get('ultracode') == 'xhigh',
+                    passed=persisted and wire_efforts.get('ultracode') == 'xhigh',
                     reason='ultracode did not persist or map to xhigh',
                 ),
             ],
             'cleanup': cleanup,
         })
         self.record(result)
+
+    @staticmethod
+    def deferred_terminal_notifications(body):
+        notifications = []
+        for item in body.get('input', []):
+            if not isinstance(item, dict) or item.get('role') != 'user':
+                continue
+            content = item.get('content', [])
+            texts = [content] if isinstance(content, str) else [
+                block.get('text', '') for block in content if isinstance(block, dict)
+                and block.get('type') == 'input_text']
+            for text in texts:
+                notifications.extend(re.findall(
+                    r'<task-notification>(.*?)</task-notification>', text, re.S))
+        return notifications
+
+    @staticmethod
+    def deferred_discovery_evidence(requests, enabled):
+        bodies = [request.get('body', {}) for request in requests]
+        checks = {}
+        outputs = {}
+        for body in bodies:
+            for item in body.get('input', []):
+                if isinstance(item, dict) and item.get('type') == 'function_call_output':
+                    outputs[item.get('call_id')] = item.get('output')
+        tools = [{tool.get('name'): tool for tool in body.get('tools', [])}
+                 for body in bodies]
+        checks['initially_deferred'] = bool(tools) and (
+            'ToolSearch' in tools[0] and 'Terminal' not in tools[0]
+            and 'Workflow' not in tools[0])
+        next_tools = tools[1] if len(tools) > 1 else {}
+        terminal = next_tools.get('Terminal', {}).get('parameters', {})
+        properties = terminal.get('properties', {})
+        checks['terminal_schema'] = (
+            terminal.get('type') == 'object' and 'action' in terminal.get('required', [])
+            and set(properties.get('action', {}).get('enum', [])) == {
+                'new-session', 'list-panes', 'send-keys', 'capture-pane',
+                'resize-pane', 'send-signal', 'display-message', 'kill-pane'}
+            and all(properties.get(name, {}).get('type') == kind for name, kind in
+                    [('target', 'string'), ('text', 'string'), ('cols', 'integer'),
+                     ('rows', 'integer'), ('enter', 'boolean')]))
+        search = str(outputs.get('fc_deferred-search', ''))
+        checks['search_result'] = 'Terminal' in search
+        workflow = next_tools.get('Workflow', {}).get('parameters', {})
+        if enabled:
+            checks['workflow_opt_in'] = ('Workflow' in search
+                and workflow.get('type') == 'object'
+                and all(workflow.get('properties', {}).get(name, {}).get('type') == 'string'
+                        for name in ('name', 'script', 'scriptPath')))
+            parsed = {}
+            for step in ('open', 'write', 'resize', 'read', 'status', 'signal', 'close', 'closed-status'):
+                try:
+                    value = json.loads(outputs.get(f'fc_deferred-{step}', ''))
+                    parsed[step] = value if isinstance(value, dict) else {}
+                except (TypeError, ValueError):
+                    parsed[step] = {}
+            session_id = parsed['open'].get('target')
+            checks['lifecycle_results'] = all(value and 'error' not in value for value in parsed.values())
+            checks['session_identity'] = isinstance(session_id, str) and bool(session_id) and all(
+                value.get('target') == session_id for value in parsed.values())
+            checks['accepted'] = all(parsed[step].get('accepted') is True for step in ('write', 'signal'))
+            checks['open_write_running'] = all(
+                parsed[step].get('isRunning') is True for step in ('open', 'write'))
+            checks['roundtrip'] = (isinstance(parsed['read'].get('text'), str)
+                and 'RELEASE_TERMINAL_ROUNDTRIP' in parsed['read']['text'])
+            checks['resize_running'] = all(parsed[step].get('isRunning') is True
+                and parsed[step].get('cols') == 91 and parsed[step].get('rows') == 31
+                for step in ('resize', 'status'))
+            checks['terminal_cleanup'] = (parsed['close'].get('closed') is True
+                and parsed['closed-status'].get('isRunning') is False)
+        else:
+            session_id = None
+            checks['workflow_opt_out'] = (
+                all('Workflow' not in names for names in tools)
+                and 'Workflow' not in search
+                and outputs.get('fc_deferred-workflow-off') == 'No matching deferred tools found')
+        checks['dummy_auth'] = bool(requests) and all(request.get('authorization') == {
+            'present': True, 'matches_dummy': True} for request in requests)
+        expected = (['search', 'open', 'write', 'resize', 'read', 'status', 'signal', 'close', 'closed-status']
+                    if enabled else ['search', 'workflow-off'])
+        ending = ['deferred-completed'] + (['deferred-notification-ack'] if enabled else [])
+        checks['ordered_roundtrips'] = (
+            [request.get('response_kind') for request in requests]
+            == [f'deferred-{step}' for step in expected] + ending)
+        # Inputs are cumulative: each round must contain exactly the prior calls
+        # and results, not merely some historical result with a matching ID.
+        checks['call_result_sequence'] = True
+        for index, body in enumerate(bodies):
+            prior = [f'fc_deferred-{step}' for step in expected[:index]]
+            items = [item for item in body.get('input', []) if isinstance(item, dict)]
+            for kind in ('function_call', 'function_call_output'):
+                checks['call_result_sequence'] &= [item.get('call_id') for item in items
+                    if item.get('type') == kind] == prior
+            checks['call_result_sequence'] &= [item.get('type') for item in items
+                if item.get('type') in ('function_call', 'function_call_output')] == [
+                    kind for _ in prior for kind in ('function_call', 'function_call_output')]
+            checks['call_result_sequence'] &= all(item.get('output') == outputs.get(item.get('call_id'))
+                for item in items if item.get('type') == 'function_call_output')
+            checks['call_result_sequence'] &= all(item.get('name') == (
+                'ToolSearch' if item.get('call_id') in ('fc_deferred-search', 'fc_deferred-workflow-off')
+                else 'Terminal') for item in items if item.get('type') == 'function_call')
+        notifications = [BinaryGate.deferred_terminal_notifications(body) for body in bodies]
+        task_id = None
+        checks['notification_phase'] = not any(notifications)
+        if enabled:
+            final = notifications[-1] if notifications else []
+            fields = {}
+            if len(final) == 1:
+                for tag in ('task-id', 'tool-use-id', 'task-type', 'output-file', 'status', 'summary'):
+                    values = re.findall(fr'<{tag}>(.*?)</{tag}>', final[0], re.S)
+                    fields[tag] = values[0] if len(values) == 1 else None
+            task_id = fields.get('task-id')
+            checks['notification_phase'] = bool(
+                task_id and re.fullmatch(r'[\w-]+', task_id)
+                and not any(notifications[:-1]) and len(final) == 1
+                and fields.get('tool-use-id') == 'fc_deferred-open'
+                and fields.get('task-type') == 'interactive_terminal'
+                and fields.get('status') == 'killed'
+                and fields.get('summary') == f'Terminal {session_id} was stopped'
+                and str(fields.get('output-file', '')).endswith(f'/tasks/{task_id}.output'))
+        checks['completed'] = bool(requests) and requests[-1].get('response_kind') == ending[-1]
+        return {'passed': all(checks.values()), 'checks': checks,
+                'session_id': session_id, 'task_id': task_id,
+                'call_ids': sorted(outputs), 'request_count': len(requests)}
+
+    @staticmethod
+    def plugins_reload_evidence(requests, events):
+        checks = {}
+        pids = {}
+        for phase in ('v1', 'v2', 'repeat'):
+            rows = [row for row in requests if str(row.get('response_kind', '')).startswith(f'plugins-{phase}-')]
+            outputs = {item.get('call_id'): item.get('output') for row in rows
+                       for item in row.get('body', {}).get('input', [])
+                       if isinstance(item, dict) and item.get('type') == 'function_call_output'}
+            version = 'v1' if phase == 'v1' else 'v2'
+            checks[f'{phase}-completed'] = bool(rows) and rows[-1].get('response_kind') == f'plugins-{phase}-completed'
+            for step, server_version in [('plugin', version), ('other', 'other')]:
+                matching = [event for event in events
+                            if event.get('version') == server_version
+                            and event.get('request', {}).get('method') == 'tools/call'
+                            and event['request'].get('params', {}).get('name') == f'probe_{server_version}'
+                            and event['request']['params'].get('arguments') == {'phase': phase}]
+                output = str(outputs.get(f'fc_plugins-{phase}-{step}', ''))
+                checks[f'{phase}-{step}-call'] = len(matching) == 1 and all(
+                    str(matching[0].get(key)) in output for key in ('pid', 'version')) and phase in output
+                pids[f'{phase}-{step}'] = matching[0].get('pid') if len(matching) == 1 else None
+            for name in ('version', 'standalone', 'removed-command', 'removed-skill'):
+                call_id = f'fc_plugins-{phase}-{name}'
+                output = str(outputs.get(call_id, ''))
+                # Skill content is an additional user message, not the Skill tool's acknowledgement.
+                injected = []
+                for row in rows:
+                    items = row.get('body', {}).get('input', [])
+                    for index, item in enumerate(items):
+                        if isinstance(item, dict) and item.get('call_id') == call_id and item.get('type') == 'function_call_output':
+                            injected.extend(following.get('content') for following in items[index + 1:]
+                                            if isinstance(following, dict) and following.get('role') == 'user')
+                if phase != 'v1' and name.startswith('removed-'):
+                    checks[f'{phase}-{name}'] = f'Unknown skill: fixture:{name}' in output
+                else:
+                    checks[f'{phase}-{name}'] = call_id in outputs and f'PLUGIN_CONTENT_{name}_{version}' in json.dumps(injected)
+            schemas = [tool for row in rows for tool in row.get('body', {}).get('tools', [])]
+            checks[f'{phase}-schema'] = any(
+                tool.get('name') == f'mcp__plugin_fixture_server__probe_{version}'
+                and tool.get('parameters', {}).get('properties', {}).get('phase', {}).get('type') == 'string'
+                for tool in schemas)
+            if phase != 'v1':
+                checks[f'{phase}-old-schema-removed'] = not any(
+                    tool.get('name') == 'mcp__plugin_fixture_server__probe_v1' for tool in schemas)
+        checks['plugin-reconnected'] = all(pids.values()) and len({pids.get(f'{phase}-plugin') for phase in ('v1', 'v2', 'repeat')}) == 3
+        checks['non-plugin-preserved'] = all(pids.values()) and len({pids.get(f'{phase}-other') for phase in ('v1', 'v2', 'repeat')}) == 1
+        checks['update-result'] = any(
+            item.get('call_id') == 'fc_plugins-update-update' and item.get('type') == 'function_call_output'
+            and 'updated from 1.0.0 to 2.0.0' in str(item.get('output'))
+            for row in requests for item in row.get('body', {}).get('input', []) if isinstance(item, dict))
+        checks['dummy-auth'] = bool(requests) and all(row.get('authorization') == {
+            'present': True, 'matches_dummy': True} for row in requests)
+        return {'passed': all(checks.values()), 'checks': checks, 'pids': pids}
+
+    def plugins_reload(self):
+        run_dir, session, target, ready = self.start('plugins-reload')
+        panes = []
+        completed = ready
+        try:
+            for phase in ('v1', 'update', 'v2', 'repeat'):
+                if not completed:
+                    break
+                if phase == 'update':
+                    self.write_plugin_version(run_dir, 'v2')
+                if phase in ('v2', 'repeat'):
+                    pane = run_dir / f'plugins-{phase}-reload-pane.txt'
+                    panes.append(pane)
+                    before = strip_ansi(self.capture(target, pane)).count('Reloaded:')
+                    self.send(target, run_dir, '/reload-plugins', f'input-{phase}-reload.txt')
+                    completed = self.wait_until(lambda: strip_ansi(self.capture(target, pane)).count('Reloaded:') > before, 60, 0.25)
+                    if not completed:
+                        break
+                (run_dir / 'plugin-phase.txt').write_text(phase)
+                self.send(target, run_dir, f'Run the local plugin probe {phase}.', f'input-plugins-{phase}.txt')
+                pane = run_dir / f'plugins-{phase}-pane.txt'
+                panes.append(pane)
+                completed = self.wait_until(lambda: (
+                    any(row.get('response_kind') == f'plugins-{phase}-completed'
+                        for row in self.mock_response_requests(run_dir))
+                    and f'Plugin probe {phase} complete.' in strip_ansi(self.capture(target, pane))), 120, 0.25)
+            log = run_dir / 'plugin-mcp.jsonl'
+            events = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            analysis = self.plugins_reload_evidence(self.mock_response_requests(run_dir), events)
+            analysis_path = run_dir / 'plugins-reload-analysis.json'
+            analysis_path.write_text(json.dumps(analysis, indent=2) + '\n')
+        finally:
+            if not panes:
+                panes.append(run_dir / 'plugins-failed-pane.txt')
+            for pane in panes:
+                if not pane.exists():
+                    self.capture(target, pane)
+            cleanup = self.close(run_dir, session, target)
+        passed = completed and analysis['passed'] and self.cleanup_passed(cleanup)
+        assertion = self.required_assertion(run_dir, 'plugins-reload-lifecycle', 'fixture@refresh-local',
+            'Local install/update replaces and removes commands/skills; plugin MCP reconnects and non-plugin MCP survives.',
+            [*panes, analysis_path, log, run_dir / 'mock-openai-requests.json'],
+            passed=passed, reason='plugin reload lifecycle evidence incomplete')
+        self.record({'label': 'plugins-reload', 'evidence_dir': str(run_dir),
+                     'validation_verdict': 'passed' if passed else 'failed',
+                     'reason': None if passed else 'plugin reload lifecycle incomplete',
+                     'assertions': [assertion], 'cleanup': cleanup})
+
+    def deferred_tool_discovery(self):
+        cases = []
+        assertions = []
+        for enabled in (False, True):
+            label = 'deferred-tool-discovery' if enabled else 'deferred-tool-discovery-off'
+            run_dir, session, target, ready = self.start(label)
+            pane = run_dir / '03-deferred-terminal-pane.txt'
+            visible = False
+            try:
+                if ready:
+                    self.send(target, run_dir, 'Run the deferred tool discovery validation.', 'input-deferred.txt')
+                    marker = 'RELEASE_DEFERRED_NOTIFICATION_ACK' if enabled else 'RELEASE_DEFERRED_DONE'
+                    visible = self.wait_until(lambda: (
+                        marker in strip_ansi(self.capture(target, pane))
+                        and self.deferred_discovery_evidence(
+                            self.mock_response_requests(run_dir), enabled)['passed']), 120, 0.25)
+                analysis = self.deferred_discovery_evidence(self.mock_response_requests(run_dir), enabled)
+                analysis_path = run_dir / 'deferred-discovery-analysis.json'
+                analysis_path.write_text(json.dumps(analysis, indent=2) + '\n')
+            finally:
+                if not pane.exists():
+                    self.capture(target, pane)
+                cleanup = self.close(run_dir, session, target)
+            passed = ready and visible and analysis['passed'] and self.cleanup_passed(cleanup)
+            cases.append({**analysis, 'label': label, 'enabled': enabled, 'passed': passed, 'cleanup': cleanup,
+                          'evidence_dir': str(run_dir)})
+            assertions.append(self.required_assertion(
+                run_dir, f'deferred-discovery-{enabled}', label,
+                ('ToolSearch expands Terminal/Workflow schemas; Terminal completes its lifecycle and its own notification is acknowledged.'
+                 if enabled else 'ToolSearch expands the Terminal schema and rejects Workflow discovery while opted out; no Terminal lifecycle runs.'),
+                [pane, analysis_path, run_dir / 'mock-openai-requests.json',
+                 run_dir / 'config/settings.json', run_dir / 'debug.log'],
+                passed=passed, reason='deferred discovery wire, lifecycle, or cleanup evidence incomplete'))
+        passed = all(assertion['validation_verdict'] == 'passed' for assertion in assertions)
+        self.record({'label': 'deferred-tool-discovery', 'evidence_dir': str(run_dir),
+                     'validation_verdict': 'passed' if passed else 'failed',
+                     'reason': None if passed else 'deferred tool discovery incomplete',
+                     'assertions': assertions, 'cases': cases, 'cleanup': cleanup})
 
     def fast_openai_responses_wire(self):
         run_dir, session, target, ready = self.start(
@@ -4088,7 +5034,7 @@ return { results }
             )
             self.capture(target, seed_path)
             if seed_ready:
-                self.send(target, run_dir, '/compact', 'input-first-compact.txt')
+                self.send(target, run_dir, '/compact RELEASE_COMPACT_CALLER', 'input-first-compact.txt')
                 first_compact = self.wait_until(
                     lambda: (
                         len(self.mock_response_requests(run_dir)) == 2
@@ -4134,7 +5080,7 @@ return { results }
             self.capture(target, second_path)
         for path in (seed_path, first_path, continuation_path, second_path):
             if not path.exists():
-                path.write_text('required remote compaction state was not reached\n')
+                self.capture(target, path)
         responses = self.mock_response_requests(run_dir)
         kinds = [request.get('response_kind') for request in responses]
         bodies = [
@@ -4172,6 +5118,16 @@ return { results }
             and second_input
             and second_input[0] == first_item
         )
+        compact_instructions = [bodies[index].get('instructions') for index in (1, 3) if len(bodies) > index]
+        instruction_wire = (
+            len(compact_instructions) == 2
+            and all(isinstance(value, str) and value.count('RELEASE_PRECOMPACT_HOOK') == 1
+                    for value in compact_instructions)
+            and compact_instructions[0].count('RELEASE_COMPACT_CALLER') == 1
+            and compact_instructions[0].endswith('RELEASE_COMPACT_CALLER\n\nRELEASE_PRECOMPACT_HOOK')
+            and compact_instructions[1].endswith('RELEASE_PRECOMPACT_HOOK')
+            and 'RELEASE_COMPACT_CALLER' not in compact_instructions[1]
+        )
         boundaries = []
         for path in self.transcript_paths(run_dir):
             for entry in self.path_entries(path):
@@ -4189,6 +5145,16 @@ return { results }
             and boundaries[1].get('openAICompaction') == second_item
             and all(
                 boundary.get('compactMetadata', {}).get('mode') == 'codex'
+                and boundary.get('compactMetadata', {}).get('provider') == 'openai'
+                and boundary.get('compactMetadata', {}).get('compactionResponseId')
+                == boundary.get('openAICompaction', {}).get('id')
+                and all(
+                    type(boundary.get('compactMetadata', {}).get(field)) in (int, float)
+                    and boundary['compactMetadata'][field] >= 0
+                    for field in (
+                        'preCompactTokens', 'postCompactTokens', 'compactionCallTokens'
+                    )
+                )
                 for boundary in boundaries
             )
         )
@@ -4208,9 +5174,16 @@ return { results }
                 for request in responses
             )
         )
+        debug_path = run_dir / 'debug.log'
+        wire_debug = analyze_openai_wire_debug(
+            debug_path.read_text(errors='replace') if debug_path.exists() else '',
+            self.mock_servers[run_dir.name].snapshot(),
+        )
         analysis_path.write_text(json.dumps({
+            'wire_debug': wire_debug,
             'request_count': len(responses),
             'response_kinds': kinds,
+            'instruction_wire': instruction_wire,
             'trigger_wire': trigger_wire,
             'continuation_wire': continuation_wire,
             'compact_boundaries': boundaries,
@@ -4220,8 +5193,9 @@ return { results }
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready and seed_ready and first_compact and continuation_ready
-            and second_compact and exact_requests and trigger_wire
+            and second_compact and exact_requests and trigger_wire and instruction_wire
             and continuation_wire and persisted_chain and dummy_auth
+            and wire_debug['matched'] and wire_debug['create_compact_isolated']
             and self.cleanup_passed(cleanup)
         )
         evidence = [
@@ -4246,11 +5220,29 @@ return { results }
             'assertions': [
                 self.required_assertion(
                     run_dir,
+                    'openai-wire-create-compact-isolation',
+                    'Create/compact wire baseline isolation',
+                    'Interleaved CLI turns and /compact compare only same-kind inputs; product diagnostics contain only hashes and counts.',
+                    evidence,
+                    passed=wire_debug['matched'] and wire_debug['create_compact_isolated'],
+                    reason='create/compact product diagnostics are missing or share a baseline',
+                ),
+                self.required_assertion(
+                    run_dir,
+                    'openai-remote-compaction-instructions',
+                    'PreCompact hook instruction wire',
+                    'Manual caller instructions precede hook stdout exactly once; the next compact receives fresh hook instructions without stale caller instructions.',
+                    evidence,
+                    passed=instruction_wire,
+                    reason='caller or hook instructions are missing, duplicated, reordered, or stale',
+                ),
+                self.required_assertion(
+                    run_dir,
                     'openai-remote-compaction-trigger',
                     'OpenAI remote compaction trigger',
                     'The built CLI /compact command sends a compaction_trigger and persists exactly one opaque compaction item.',
                     evidence,
-                    passed=passed and trigger_wire,
+                    passed=first_compact and trigger_wire and dummy_auth,
                     reason='remote compaction trigger or first opaque item was missing',
                 ),
                 self.required_assertion(
@@ -4259,7 +5251,8 @@ return { results }
                     'OpenAI remote compaction continuation',
                     'The next model request and repeated /compact both prepend the previous opaque compaction item, then persist the replacement item.',
                     evidence,
-                    passed=passed and continuation_wire and persisted_chain,
+                    passed=continuation_ready and second_compact and continuation_wire
+                    and persisted_chain and exact_requests and dummy_auth,
                     reason='previous opaque state was not continued or replaced deterministically',
                 ),
             ],
@@ -4672,7 +5665,53 @@ return { results }
                     30,
                     0.25,
                 )
-        for path in (picker_path, selected_path, current_path):
+        mapping_cases = []
+        alias_path = run_dir / '07-alias-selected-pane.txt'
+        alias_selected = False
+        for case, expected, pane_name in (
+            ('EXPLICIT', 'gpt-release-discovered', '06-explicit-model-pane.txt'),
+            ('DEFAULT', 'gpt-5.6-luna', '08-default-model-pane.txt'),
+        ):
+            pane_path = run_dir / pane_name
+            input_path = run_dir / f'input-{case.lower()}-model.txt'
+            before = len(self.mock_response_requests(run_dir))
+            visible = False
+            if current:
+                if case == 'DEFAULT':
+                    self.send(target, run_dir, '/model sonnet', 'input-model-alias.txt')
+                    alias_selected = self.wait_until(
+                        lambda: 'Set model to Sonnet' in strip_ansi(
+                            self.capture(target, alias_path)
+                        ), 30, 0.25,
+                    )
+                if case == 'EXPLICIT' or alias_selected:
+                    self.send(target, run_dir,
+                              f'RELEASE_{case}_MODEL_REQUEST: Reply with the validation marker.',
+                              input_path.name)
+                    visible = self.wait_until(
+                        lambda: f'RELEASE_{case}_MODEL_OK' in strip_ansi(
+                            self.capture(target, pane_path)
+                        ), 30, 0.25,
+                    )
+            case_requests = self.mock_response_requests(run_dir)[before:]
+            wire_ok = len(case_requests) == 1 and all(
+                request.get('body', {}).get('model') == expected
+                and request.get('authorization') == {'present': True, 'matches_dummy': True}
+                and request.get('response_kind') == 'model-mapping-completed'
+                and f'RELEASE_{case}_MODEL_REQUEST' in json.dumps(
+                    request.get('body', {}).get('input', [])
+                )
+                for request in case_requests
+            )
+            mapping_cases.append({
+                'case': case, 'expected_model': expected,
+                'request_sequences': [request.get('sequence') for request in case_requests],
+                'observed_models': [request.get('body', {}).get('model') for request in case_requests],
+                'pane_visible': visible, 'passed': visible and wire_ok,
+                'input_path': str(input_path), 'pane_path': str(pane_path),
+            })
+        for path in (picker_path, selected_path, current_path, alias_path,
+                     *(Path(case['pane_path']) for case in mapping_cases)):
             if not path.exists():
                 path.write_text('required model picker state was not reached\n')
         server = self.mock_servers.get(run_dir.name)
@@ -4689,9 +5728,11 @@ return { results }
                 'present': True,
                 'matches_dummy': True,
             }
-            and not self.mock_response_requests(run_dir)
+            and len(self.mock_response_requests(run_dir)) == 2
         )
         analysis_path.write_text(json.dumps({
+            'mapping_cases': mapping_cases,
+            'alias_selected': alias_selected,
             'model_request_count': len(model_requests),
             'responses_request_count': len(self.mock_response_requests(run_dir)),
             'dummy_authorization': (
@@ -4704,6 +5745,7 @@ return { results }
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready and discovery_ok and picker_visible and selected and current
+            and alias_selected and all(case['passed'] for case in mapping_cases)
             and self.cleanup_passed(cleanup)
         )
         evidence = [
@@ -4731,6 +5773,19 @@ return { results }
                     passed=passed,
                     reason='discovered model was not correlated through picker and current model UI',
                 ),
+                *[
+                    self.required_assertion(
+                        run_dir,
+                        ('openai-explicit-model-preserved' if case['case'] == 'EXPLICIT'
+                         else 'openai-default-model-alias'),
+                        case['expected_model'],
+                        'Interactive model selection reaches the expected Responses API model and completes in the pane.',
+                        [*evidence, Path(case['input_path']), Path(case['pane_path']),
+                         run_dir / 'input-model-alias.txt', alias_path],
+                        passed=passed and case['passed'],
+                        reason='model mapping wire or interactive evidence was incomplete',
+                    ) for case in mapping_cases
+                ],
             ],
             'cleanup': cleanup,
         })
@@ -5263,6 +6318,34 @@ return { results }
         })
         self.record(result)
 
+    def workflow_mock_wire(self, run_dir, label):
+        server = self.mock_servers.get(run_dir.name)
+        requests = server.snapshot() if server else []
+        responses = [request for request in requests if is_main_response_request(request)]
+        kinds = [request.get('response_kind') for request in responses]
+        expected_workers = 1 if label == 'workflow-retry-partial-failure' else 0
+        checks = {
+            'discovery-once': kinds.count('workflow-search') == 1,
+            'launch-once': kinds.count('workflow-launch') == 1,
+            'parent-completed': 'workflow-parent-completed' in kinds,
+            'stable-worker': kinds.count('workflow-stable-completed') == expected_workers,
+            'transient-worker': kinds.count('workflow-transient-completed') == expected_workers,
+            'recognized': all(kind in {
+                'workflow-search', 'workflow-launch', 'workflow-parent-completed',
+                'workflow-stable-completed', 'workflow-transient-completed',
+            } for kind in kinds),
+            'dummy-auth': bool(responses) and all(
+                request.get('authorization', {}).get('matches_dummy') for request in responses),
+        }
+        path = run_dir / 'workflow-mock-wire.json'
+        path.write_text(json.dumps({'checks': checks, 'response_kinds': kinds}, indent=2) + '\n')
+        return self.required_assertion(
+            run_dir, label + '-mock-wire', label,
+            'Local mock observes one discovery/launch and exact successful worker requests.',
+            [path, run_dir / 'mock-openai-requests.json'], passed=all(checks.values()),
+            reason='workflow mock protocol or dummy authentication mismatch',
+        )
+
     def workflow_failure_detail(self):
         run_dir, session, target, ready = self.start('workflow-failure-detail')
         result = {
@@ -5276,12 +6359,7 @@ return { results }
         task_id = run_id = status = None
         launched = detail_ok = marker_ok = no_retry = False
         if ready:
-            script = """export const meta = { name: 'release-failure-detail', description: 'Deterministic workflow failure diagnostics.', phases: [{ title: 'Failure probe' }] }
-phase('Failure probe')
-const result = await agent('Return any short answer.', { label: 'invalid-schema-worker', schema: { type: 'definitely-invalid-json-schema-type' } })
-if (result === null) throw new Error('release deterministic workflow failure')
-return result
-"""
+            script = WORKFLOW_FAULT_SCRIPTS['workflow-failure-detail']
             prompt = (
                 'Use Workflow with this exact inline script. Do not modify files.\n'
                 '```js\n' + script + '```'
@@ -5373,11 +6451,13 @@ return result
             and marker_counts['workflow_worker_terminal'] == 1
         )
         no_retry = marker_counts['workflow_worker_retry_scheduled'] == 0
+        wire_assertion = self.workflow_mock_wire(run_dir, 'workflow-failure-detail')
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready and launched and completion_proof['complete']
             and status == 'failed' and detail_ok
             and marker_ok and no_retry and self.cleanup_passed(cleanup)
+            and wire_assertion['validation_verdict'] == 'passed'
         )
         evidence = [
             run_dir / 'input-workflow-failure-detail.txt',
@@ -5389,6 +6469,7 @@ return result
             run_dir / 'debug.log',
         ]
         assertions = [
+            wire_assertion,
             self.required_assertion(
                 run_dir,
                 'workflow-deterministic-failure-detail',
@@ -5548,10 +6629,12 @@ return result
         marker_path = run_dir / 'debug-marker-search.txt'
         task_id = None
         selected_background = selected_main = selected_agent = viewed_agent = False
+        mock_server = self.mock_servers.get(run_dir.name)
+        tools_returned = False
         if ready:
             prompt = (
                 'Coordinator selector binary validation. Call the Agent tool exactly once in foreground with description '
-                '"release coordinator selector". The general-purpose child must run the harmless command sleep 30, then '
+                '"release coordinator selector". The general-purpose child must run a harmless Bash marker command, then '
                 'read Makefile and report only the VERSION line. Do not modify files or use other parent tools.'
             )
             self.send(target, run_dir, prompt, 'input-coordinator-selector.txt')
@@ -5607,6 +6690,22 @@ return result
                     0.25,
                 )
                 self.capture(target, viewed_path)
+            if mock_server is not None:
+                tools_returned = mock_server.coordinator_tools_done.wait(timeout=30)
+                mock_server.coordinator_release.set()
+        requests = mock_server.snapshot() if mock_server else []
+        outputs = {
+            item.get('call_id'): item.get('output')
+            for request in requests
+            for item in (request.get('body') or {}).get('input', [])
+            if isinstance(item, dict) and item.get('type') == 'function_call_output'
+        }
+        tools_returned = (
+            tools_returned
+            and 'RELEASE_COORDINATOR_BASH_OK' in json.dumps(outputs.get('fc_release_coordinator_bash'))
+            and 'VERSION' in json.dumps(outputs.get('fc_release_coordinator_read'))
+            and 'fc_release_coordinator_agent' in outputs
+        )
         for path in (background_path, main_path, agent_path, viewed_path):
             if not path.exists():
                 path.write_text('required UI state was not reached\n')
@@ -5620,10 +6719,12 @@ return result
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready and bool(task_id) and selected_background and selected_main
-            and selected_agent and viewed_agent and self.cleanup_passed(cleanup)
+            and selected_agent and viewed_agent and tools_returned
+            and self.cleanup_passed(cleanup)
         )
         evidence = [
             run_dir / 'input-coordinator-selector.txt',
+            run_dir / 'mock-openai-requests.json',
             background_path,
             main_path,
             agent_path,
@@ -5683,13 +6784,7 @@ return result
         launched = False
         completion_proof = {'complete': False}
         if ready:
-            script = """export const meta = { name: 'release-partial-retry', description: 'Controlled partial transient retry.', phases: [{ title: 'Retry probe' }] }
-phase('Retry probe')
-return await parallel([
-  () => agent('Return exactly stable-worker-ok.', { label: 'stable-worker' }),
-  () => agent('Return exactly transient-worker-ok.', { label: 'transient-worker' }),
-])
-"""
+            script = WORKFLOW_FAULT_SCRIPTS['workflow-retry-partial-failure']
             prompt = (
                 'Use Workflow with this exact inline script. Do not modify files.\n'
                 '```js\n' + script + '```'
@@ -5798,10 +6893,12 @@ return await parallel([
             and transient_retries == 1
             and transient_terminals == 1
         )
+        wire_assertion = self.workflow_mock_wire(run_dir, 'workflow-retry-partial-failure')
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready and launched and status == 'completed'
             and completion_proof['complete']
+            and wire_assertion['validation_verdict'] == 'passed'
             and retry_ok
             and self.cleanup_passed(cleanup)
         )
@@ -5813,6 +6910,7 @@ return await parallel([
             run_dir / 'debug.log',
         ]
         assertions = [
+            wire_assertion,
             self.required_assertion(
                 run_dir,
                 'workflow-partial-transient-retry',
@@ -5842,6 +6940,160 @@ return await parallel([
         })
         self.record(result)
 
+    def retention_probe_result(self, server, task_id, phase):
+        call_id = f'fc_retention_probe_{phase}'
+        for request in server.snapshot():
+            body = request.get('body')
+            if not isinstance(body, dict):
+                continue
+            items = body.get('input', [])
+            calls = [item for item in items if isinstance(item, dict)
+                     and item.get('type') == 'function_call' and item.get('call_id') == call_id
+                     and item.get('name') == 'TaskOutput']
+            if not calls:
+                continue
+            try:
+                arguments = json.loads(calls[-1].get('arguments', '{}'))
+            except (ValueError, TypeError):
+                continue
+            if arguments.get('task_id') != task_id or arguments.get('block') is not False:
+                continue
+            for item in items:
+                if not isinstance(item, dict) or item.get('type') != 'function_call_output' or item.get('call_id') != call_id:
+                    continue
+                output = item.get('output', '')
+                if not isinstance(output, str):
+                    continue
+                if phase == 'after':
+                    if re.fullmatch(
+                        re.escape(f'<tool_use_error>No task found with ID: {task_id}</tool_use_error>')
+                        + r'(?:\s*<system-reminder>(?:(?!</?system-reminder>).)*</system-reminder>)*',
+                        output.strip(), re.DOTALL,
+                    ):
+                        return True
+                elif (f'<task_id>{task_id}</task_id>' in output
+                      and '<task_type>in_process_teammate</task_type>' in output
+                      and '<status>completed</status>' in output):
+                    return True
+        return False
+
+    def retention_active_abort(self, run_dir, target, server, task_id):
+        spawn = re.search(
+            r'\[spawnInProcessTeammate\] Spawning (retention-worker@\S+) '
+            + re.escape(f'(taskId: {task_id})'), self.debug(run_dir))
+        evidence = {'task_id': task_id, 'agent_id': spawn.group(1) if spawn else None}
+        evidence['request_pending'] = bool(server and self.wait_until(
+            server.retention_child_waiting.is_set, 30, 0.05))
+        offset = len(self.debug(run_dir))
+        if spawn and evidence['request_pending']:
+            self.capture(target, run_dir / 'active-before-escape.txt', history=False)
+            self.tmux('send-keys', '-t', target, 'Escape', check=True)
+            agent_id = spawn.group(1)
+            evidence['interrupted'] = self.wait_until(lambda: all(
+                f'[inProcessRunner] {agent_id} {suffix}' in self.debug(run_dir)[offset:]
+                for suffix in ('current work aborted (Escape pressed)',
+                               'work interrupted, returning to idle')), 20, 0.05)
+            if evidence['interrupted']:
+                server.retention_child_release.set()
+                def idle_view():
+                    pane = strip_ansi(self.capture(target, run_dir / 'active-idle-pane.txt', history=False))
+                    return (
+                        'Viewing @retention-worker' in pane
+                        and 'Interrupted · What should Claude do instead?' in pane
+                        and f'viewed_agent_changed] before={task_id} after=main' not in self.debug(run_dir)[offset:]
+                        and f'transcript_retention_decision] task={task_id}' not in self.debug(run_dir)[offset:])
+                evidence['view_preserved'] = self.wait_until(idle_view, 5, 0.05)
+                if evidence['view_preserved']:
+                    self.send(target, run_dir, 'RELEASE_RETENTION_RESUME', 'input-retention-resume.txt')
+                    evidence['resumed'] = self.wait_until(lambda:
+                        'RELEASE_RETENTION_WORKER_DONE' in self.assistant_text(run_dir, subagents=True)
+                        and 'RELEASE_RETENTION_WORKER_DONE' in strip_ansi(self.capture(
+                            target, run_dir / 'active-resumed-pane.txt', history=False))
+                        and any(request.get('response_kind') == 'retention-worker-marker'
+                                for request in server.snapshot()), 30, 0.1)
+        (run_dir / 'active-abort-markers.txt').write_text(self.debug(run_dir)[offset:])
+        evidence['passed'] = bool(evidence.get('interrupted') and evidence.get('view_preserved')
+                                  and evidence.get('resumed'))
+        (run_dir / 'active-abort-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return evidence['passed']
+
+    def retention_escape_window(self, run_dir, target, task_id, exit_sent):
+        evidence = {'task_id': task_id, 'exit_sent': exit_sent, 'samples': []}
+        def rewind(path):
+            return re.search(r'(?im)^\s*Rewind\s*$', strip_ansi(
+                self.capture(target, path, history=False))) is not None
+        evidence['main_escape_sent'] = time.monotonic()
+        evidence['within_window'] = 0 <= evidence['main_escape_sent'] - exit_sent < 0.8
+        if evidence['within_window']:
+            self.tmux('send-keys', '-t', target, 'Escape', check=True)
+            def observe():
+                path = run_dir / f'escape-window-{len(evidence["samples"]):03d}.txt'
+                polluted = rewind(path)
+                evidence['samples'].append({'time': time.monotonic(), 'path': str(path),
+                                            'rewind': polluted})
+                return time.monotonic() > evidence['main_escape_sent'] + 0.8
+            observed = self.wait_until(observe, 2, 0.05)
+            evidence['isolated'] = observed and not any(sample['rewind'] for sample in evidence['samples'])
+            if evidence['isolated']:
+                evidence['double_first_sent'] = time.monotonic()
+                self.tmux('send-keys', '-t', target, 'Escape', check=True)
+                evidence['double_second_sent'] = time.monotonic()
+                self.tmux('send-keys', '-t', target, 'Escape', check=True)
+                evidence['normal_rewind'] = (
+                    evidence['double_second_sent'] - evidence['double_first_sent'] < 0.8
+                    and self.wait_until(lambda: rewind(run_dir / 'main-rewind-pane.txt'), 5, 0.05))
+                if evidence['normal_rewind']:
+                    self.tmux('send-keys', '-t', target, 'Escape', check=True)
+                    stable_since = None
+                    def composer_ready():
+                        nonlocal stable_since
+                        pane = strip_ansi(self.capture(
+                            target, run_dir / 'main-rewind-closed-pane.txt', history=False))
+                        ready = (not re.search(r'(?im)^\s*Rewind\s*$', pane)
+                                 and re.search(r'(?m)^\s*❯\s*$', pane) is not None)
+                        if not ready:
+                            stable_since = None
+                            return False
+                        if stable_since is None:
+                            stable_since = time.monotonic()
+                        return time.monotonic() - stable_since >= 0.8
+                    evidence['rewind_closed'] = self.wait_until(composer_ready, 5, 0.05)
+        evidence['passed'] = bool(evidence.get('isolated') and evidence.get('normal_rewind')
+                                  and evidence.get('rewind_closed'))
+        (run_dir / 'escape-window-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return evidence['passed']
+
+    def retention_gc(self, run_dir, target, server, task_id, grace_deadline, grace_upper_deadline):
+        evidence = {'task_id': task_id, 'grace_deadline': grace_deadline,
+                    'grace_upper_deadline': grace_upper_deadline}
+        def probe(phase):
+            self.send(target, run_dir, f'RELEASE_RETENTION_PROBE {task_id} {phase}',
+                      f'input-retention-probe-{phase}.txt')
+            return self.wait_until(
+                lambda: self.retention_probe_result(server, task_id, phase)
+                and f'RELEASE_RETENTION_PROBE_{phase.upper()}_DONE' in strip_ansi(
+                    self.capture(target, run_dir / f'gc-{phase}-pane.txt', history=False)),
+                20, 0.1)
+        evidence['before_passed'] = probe('before')
+        evidence['before_observed'] = time.monotonic()
+        evidence['before_within_grace'] = evidence['before_observed'] < grace_deadline
+        if evidence['before_passed'] and evidence['before_within_grace']:
+            # Exercise the actual grace interval, then trigger attachment GC with a new turn.
+            evidence['grace_elapsed'] = self.wait_until(
+                lambda: time.monotonic() >= grace_upper_deadline + 2, 35, 0.25)
+            if evidence['grace_elapsed']:
+                evidence['tick_sent'] = time.monotonic()
+                self.send(target, run_dir, 'RELEASE_RETENTION_GC_TICK', 'input-retention-gc-tick.txt')
+                evidence['tick_passed'] = self.wait_until(
+                    lambda: 'RELEASE_RETENTION_GC_TICK_DONE' in strip_ansi(
+                        self.capture(target, run_dir / 'gc-tick-pane.txt', history=False)), 20, 0.1)
+                evidence['after_passed'] = evidence['tick_passed'] and probe('after')
+        passed = bool(evidence['before_passed'] and evidence['before_within_grace']
+                      and evidence.get('after_passed'))
+        evidence['passed'] = passed
+        (run_dir / 'gc-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return passed
+
     def transcript_retention(self):
         run_dir, session, target, ready = self.start('transcript-retention')
         result = {'label': 'transcript-retention', 'evidence_dir': str(run_dir)}
@@ -5850,8 +7102,86 @@ return await parallel([
         terminal_path = run_dir / '05-terminal-viewed-pane.txt'
         main_path = run_dir / '06-main-pane.txt'
         marker_path = run_dir / 'debug-marker-search.txt'
-        viewed = retained = exited = terminal_visible = False
+        reopened_path = run_dir / '07-reopened-pane.txt'
+        viewed = retained = exited = terminal_visible = reopened = gc_passed = escape_window_passed = False
+        active_abort_passed = False
+        mock_server = self.mock_servers.get(run_dir.name)
         task_id = None
+        routes = {name: False for name in ('footer', 'shift', 'spinner', 'tasks')}
+        route_evidence = {name: [] for name in routes}
+        exit_checks = []
+        grace_deadline = None
+        grace_upper_deadline = None
+
+        def pane_ready(path, predicate):
+            return self.wait_until(
+                lambda: predicate(self.capture(target, path, history=False)), 5, 0.05,
+            )
+
+        def key_state(key, path, predicate):
+            before = self.capture(target, path, history=False)
+            self.tmux('send-keys', '-t', target, key, check=True)
+            if key in ('Down', 'Right') and 'footer' in path.name:
+                # Only the pill row may establish footer progress; unrelated
+                # spinner/token updates must not satisfy the keyboard barrier.
+                def pill_row(text):
+                    return [line for line in text.splitlines()
+                            if '@main' in line and '@retention-worker' in line]
+                return pane_ready(path, lambda text:
+                    bool(pill_row(text)) and pill_row(text) != pill_row(before)
+                    and predicate(strip_ansi(text)))
+            return pane_ready(path, lambda text: text != before and predicate(strip_ansi(text)))
+
+        def footer_open(path):
+            # Selection is rendered as a pill highlight, so retain raw pane bytes
+            # for the transition check without interpreting ANSI styles.
+            return (
+                pane_ready(path, lambda text: '@retention-worker' in strip_ansi(text))
+                and key_state('Down', path, lambda text: '@main' in text)
+                and key_state('Right', path, lambda text: '@retention-worker' in text)
+            )
+
+        def exit_view(path):
+            nonlocal grace_deadline, grace_upper_deadline
+            offset = len(self.debug(run_dir))
+            grace_deadline = time.monotonic() + 30
+            self.tmux('send-keys', '-t', target, 'Escape', check=True)
+            ok = self.wait_until(
+                lambda: f'viewed_agent_changed] before={task_id} after=main'
+                in self.debug(run_dir)[offset:], 5, 0.05,
+            )
+
+            def main_view(text):
+                text = strip_ansi(text)
+                return (
+                    re.search(r'(?im)^\s*Viewing\b', text) is None
+                    and 'message @retention-worker' not in text.lower()
+                    and 'esc to return' not in text.lower()
+                    and re.search(r'(?im)^\s*Rewind\s*$', text) is None
+                    and re.search(r'(?m)^\s*─+\s*\n[^\S\n]*❯[^\S\n]*\n[^\S\n]*─+', text) is not None
+                )
+
+            grace_upper_deadline = time.monotonic() + 30 if ok else None
+            ok = ok and pane_ready(path, main_view)
+            exit_checks.append(ok)
+            return ok
+
+        def confirm_view(name, key, path):
+            offset = len(self.debug(run_dir))
+            self.tmux('send-keys', '-t', target, key, check=True)
+            ok = self.wait_until(
+                lambda: f'viewed_agent_changed] before=main after={task_id} type=in_process_teammate'
+                in self.debug(run_dir)[offset:], 5, 0.05,
+            )
+            ok = ok and pane_ready(path, lambda text:
+                'RELEASE_RETENTION_WORKER_DONE' in strip_ansi(text))
+            ok = bool(ok and grace_deadline and time.monotonic() < grace_deadline)
+            fresh = run_dir / f'{name}-entry-markers.txt'
+            fresh.write_text(self.debug(run_dir)[offset:])
+            route_evidence[name].extend([path, fresh])
+            routes[name] = ok
+            return ok
+
         if ready:
             prompt = (
                 'Transcript retention binary validation. Use TeamCreate once with team_name '
@@ -5864,19 +7194,21 @@ return await parallel([
             )
             self.send(target, run_dir, prompt, 'input-transcript-retention.txt')
             registered = self.wait_until(
-                lambda: 'team_mutation_commit' in self.debug(run_dir),
+                lambda: re.search(
+                    r'\[spawnInProcessTeammate\] Registered retention-worker@[^\s]+ in AppState',
+                    self.debug(run_dir),
+                ) is not None,
                 120,
                 0.5,
             )
             self.capture(target, running_path)
-            if registered:
-                self.tmux('send-keys', '-t', target, 'Down', check=True)
-                self.tmux('send-keys', '-t', target, 'Right', check=True)
+            if registered and footer_open(run_dir / 'initial-footer-selection.txt'):
+                initial_offset = len(self.debug(run_dir))
                 self.tmux('send-keys', '-t', target, 'Enter', check=True)
                 viewed = self.wait_until(
                     lambda: re.search(
                         r'viewed_agent_changed[^\n]*after=([^ ]+)[^\n]*type=in_process_teammate',
-                        self.debug(run_dir),
+                        self.debug(run_dir)[initial_offset:],
                     ) is not None,
                     30,
                     0.25,
@@ -5887,7 +7219,22 @@ return await parallel([
                     self.debug(run_dir),
                 )
                 task_id = view_match.group(1) if view_match else None
-                retained = bool(task_id) and self.wait_until(
+                spawned = re.search(
+                    r'\[spawnInProcessTeammate\] Spawning retention-worker@[^\s]+ \(taskId: ([^)]+)\)',
+                    self.debug(run_dir),
+                )
+                viewed = bool(viewed and spawned and task_id == spawned.group(1))
+                if viewed:
+                    active_abort_passed = self.retention_active_abort(run_dir, target, mock_server, task_id)
+                viewed = viewed and active_abort_passed and self.wait_until(
+                    lambda: 'RELEASE_RETENTION_WORKER_DONE' in strip_ansi(
+                        self.capture(target, viewed_path))
+                    and 'RELEASE_RETENTION_WORKER_DONE' in self.assistant_text(run_dir, subagents=True),
+                    30, 0.25,
+                )
+                if viewed and mock_server is not None:
+                    mock_server.retention_release.set()
+                retained = viewed and bool(task_id) and self.wait_until(
                     lambda: (
                         f'transcript_retention_decision] task={task_id} status=completed retain=keep'
                         in self.debug(run_dir)
@@ -5909,36 +7256,74 @@ return await parallel([
                     worker_assistant_text + ('\n' if worker_assistant_text else '')
                 )
                 if retained:
-                    self.tmux('send-keys', '-t', target, 'Escape', check=True)
-                    exited = self.wait_until(
-                        lambda: (
-                            f'viewed_agent_changed] before={task_id} after=main'
-                            in self.debug(run_dir)
-                        ),
-                        30,
-                        0.25,
-                    )
-                self.capture(target, main_path)
-        for path in (running_path, viewed_path, terminal_path, main_path):
-            if not path.exists():
-                path.write_text('required transcript state was not reached\n')
+                    exited = exit_view(main_path)
+                if exited and footer_open(run_dir / 'footer-selection.txt'):
+                    reopened = confirm_view('footer', 'Enter', reopened_path)
+                if reopened and exit_view(run_dir / 'shift-main.txt'):
+                    selection = run_dir / 'shift-selection.txt'
+                    route_evidence['shift'].append(selection)
+                    if (key_state('S-Down', selection, lambda text: 'team-lead' in text and 'hide' in text)
+                            and key_state('S-Down', selection, lambda text:
+                                'retention-worker' in text and 'enter to view' in text)):
+                        confirm_view('shift', 'Enter', run_dir / 'shift-viewed.txt')
+                if routes['shift'] and exit_view(run_dir / 'spinner-main.txt'):
+                    selection = run_dir / 'spinner-selection.txt'
+                    route_evidence['spinner'].append(selection)
+                    # Selection remains on worker after viewing. Visit hide, then
+                    # step back to the worker and use the spinner's f shortcut.
+                    if (key_state('S-Down', selection, lambda text: 'enter to collapse' in text)
+                            and key_state('S-Up', selection, lambda text:
+                                'retention-worker' in text and 'enter to view' in text)):
+                        confirm_view('spinner', 'f', run_dir / 'spinner-viewed.txt')
+                if routes['spinner'] and exit_view(run_dir / 'tasks-main.txt'):
+                    selection = run_dir / 'tasks-collapse.txt'
+                    tasks_path = run_dir / 'tasks-list.txt'
+                    detail_path = run_dir / 'tasks-detail.txt'
+                    route_evidence['tasks'].extend([selection, tasks_path, detail_path])
+                    # BackgroundTasksDialog excludes teammates while the spinner
+                    # tree is expanded. Collapse via its actual hide row first.
+                    if (key_state('S-Down', selection, lambda text: 'enter to collapse' in text)
+                            and key_state('Enter', selection, lambda text: 'enter to collapse' not in text)):
+                        self.send(target, run_dir, '/tasks', 'input-retention-tasks.txt')
+                        if (pane_ready(tasks_path, lambda text:
+                                'Background tasks' in strip_ansi(text) and '@retention-worker' in strip_ansi(text))
+                                and key_state('Down', tasks_path, lambda text:
+                                    re.search(r'[›❯].*@retention-worker', text) is not None)
+                                and key_state('Enter', detail_path, lambda text:
+                                    '@retention-worker' in text and 'Completed' in text
+                                    and 'Prompt' in text and 'foreground' in text)):
+                            confirm_view('tasks', 'f', run_dir / 'tasks-viewed.txt')
+                if routes['tasks'] and exit_view(run_dir / 'final-main.txt'):
+                    escape_window_passed = self.retention_escape_window(
+                        run_dir, target, task_id, grace_deadline - 30)
+                    gc_passed = self.retention_gc(
+                        run_dir, target, mock_server, task_id, grace_deadline, grace_upper_deadline)
         log = self.debug(run_dir)
         marker_lines = [
             line
             for line in log.splitlines()
             if 'viewed_agent_changed' in line
             or 'transcript_retention_decision' in line
+            or 'spawnInProcessTeammate' in line
         ]
         marker_path.write_text(
             '\n'.join(marker_lines) + ('\n' if marker_lines else '')
         )
         cleanup = self.close(run_dir, session, target)
+        spawn_ids = re.findall(
+            r'\[spawnInProcessTeammate\] Spawning [^\n]+ \(taskId: ([^)]+)\)', log,
+        )
+        same_task = spawn_ids == [task_id]
         passed = (
             ready and bool(task_id) and viewed and retained and terminal_visible
-            and exited and self.cleanup_passed(cleanup)
+            and exited and reopened and all(routes.values()) and same_task
+            and len(exit_checks) == 5 and all(exit_checks) and gc_passed and escape_window_passed
+            and self.cleanup_passed(cleanup)
         )
         evidence = [
             run_dir / 'input-transcript-retention.txt',
+            run_dir / 'mock-openai-requests.json',
+            reopened_path,
             running_path,
             viewed_path,
             terminal_path,
@@ -5953,10 +7338,55 @@ return await parallel([
                 'Viewed in-process teammate transcript',
                 'A viewed teammate reaches terminal while retaining its complete visible transcript.',
                 evidence,
-                passed=passed,
+                passed=bool(ready and task_id and viewed and retained and terminal_visible
+                            and exited and reopened and same_task),
                 reason='view, retention, terminal transcript, or exit evidence was incomplete',
             ),
         ]
+        for name, covered in routes.items():
+            assertions.append(self.required_assertion(
+                run_dir, f'transcript-retention-{name}-reentry',
+                f'Transcript reentry via {name}',
+                'Same terminal task reopened within grace with a fresh view marker and visible transcript.',
+                [*route_evidence[name], marker_path, run_dir / 'debug.log'],
+                passed=covered and same_task,
+                reason=f'{name} entry, fresh task marker, transcript, or single-spawn evidence missing',
+            ))
+        assertions.append(self.required_assertion(
+            run_dir, 'transcript-retention-single-escape', 'Single Escape exits',
+            'Each of five views exits to main using exactly one Escape.',
+            [main_path, run_dir / 'final-main.txt', marker_path],
+            passed=len(exit_checks) == 5 and all(exit_checks),
+            reason='single Escape did not exit every view',
+        ))
+        assertions.append(self.required_assertion(
+            run_dir, 'transcript-retention-active-abort', 'Active teammate turn cancellation and resume',
+            'Escape interrupts only the active turn, preserves the view, and the same task processes new input.',
+            [run_dir / 'active-abort-evidence.json', run_dir / 'active-abort-markers.txt',
+             run_dir / 'active-before-escape.txt', run_dir / 'active-idle-pane.txt',
+             run_dir / 'active-resumed-pane.txt', run_dir / 'input-retention-resume.txt',
+             run_dir / 'mock-openai-requests.json', marker_path],
+            passed=active_abort_passed and same_task,
+            reason='active request, same-agent abort markers, preserved view, or resume evidence missing',
+        ))
+        assertions.append(self.required_assertion(
+            run_dir, 'transcript-retention-escape-window', 'Escape isolation and normal Rewind',
+            'A main Escape within 800ms of teammate exit does not open Rewind; a fresh main double Escape does.',
+            [run_dir / 'escape-window-evidence.json', run_dir / 'main-rewind-pane.txt',
+             run_dir / 'main-rewind-closed-pane.txt', *sorted(run_dir.glob('escape-window-*.txt')),
+             marker_path],
+            passed=escape_window_passed and same_task,
+            reason='timed Escape isolation, normal Rewind, or dialog dismissal evidence missing',
+        ))
+        assertions.append(self.required_assertion(
+            run_dir, 'transcript-retention-gc', 'Real attachment GC after grace',
+            'TaskOutput finds the same completed task before grace and reports it missing after a new GC turn.',
+            [run_dir / 'gc-evidence.json', run_dir / 'gc-before-pane.txt',
+             run_dir / 'gc-tick-pane.txt', run_dir / 'gc-after-pane.txt',
+             run_dir / 'mock-openai-requests.json'],
+            passed=gc_passed and same_task,
+            reason='before-grace presence, query GC tick, or after-grace missing tool result absent',
+        ))
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'reason': None if passed else 'transcript retention assertions were incomplete',
@@ -5966,6 +7396,11 @@ return await parallel([
             'retained': retained,
             'terminal_visible': terminal_visible,
             'exited': exited,
+            'reopened': reopened,
+            'entry_paths': routes,
+            'same_task_no_duplicate_spawn': same_task,
+            'single_escape_exits': exit_checks,
+            'gc_passed': gc_passed,
             'assertions': assertions,
             'cleanup': cleanup,
         })
@@ -6050,6 +7485,99 @@ return await parallel([
         })
         self.record(result)
 
+    def openai_stats(self):
+        scenarios = []
+        assertions = []
+        for label in ('openai-stats', 'openai-stats-api-key'):
+            run_dir, session, target, ready = self.start(label)
+            server = self.mock_servers[run_dir.name]
+            checks = {'ready': ready}
+            panes = []
+
+            def observe(name, text, count, active):
+                path = run_dir / f'stats-{name}.txt'
+                panes.append(path)
+
+                def matches():
+                    raw = self.capture(target, path, history=False)
+                    bar = next((line for line in raw.splitlines() if re.fullmatch(
+                        r'\s*Overview\s+Models(?:\s+OpenAI)?\s*', strip_ansi(line))), '')
+                    # Ink's selected tab is the sole bold label in this row.
+                    selected = re.findall(
+                        r'\x1b\[1m(?:\x1b\[[0-9;]*m)*\s*(Overview|Models|OpenAI)\s*\x1b\[0m', bar)
+                    checks[f'{name}-active-{active.lower()}'] = selected == [active]
+                    return text in strip_ansi(raw) and selected == [active]
+
+                matched = self.wait_until(matches, 15, 0.2)
+                # Allow queued tab/refresh effects to settle before negative counts.
+                time.sleep(0.4)
+                current = strip_ansi(self.capture(target, path, history=False))
+                rows = [row for row in server.snapshot() if row['route'] == 'activity']
+                checks[name] = matched and text in current and len(rows) == count
+                tab_bar = next((line.strip() for line in current.splitlines()
+                                if re.fullmatch(r'\s*Overview\s+Models(?:\s+OpenAI)?\s*', line)), '')
+                checks[f'{name}-tab-bar'] = bool(tab_bar)
+                checks[name] = checks[name] and matches()
+                if not checks[name]:
+                    raise RuntimeError(f'Stats {name}: expected active {active} and matching pane/HTTP state')
+                return tab_bar
+
+            try:
+                if ready:
+                    self.send(target, run_dir, '/stats', 'stats-command.txt')
+                    pane = observe('empty', 'No stats available yet', 0, 'Overview')
+                    if label == 'openai-stats':
+                        checks['oauth-tab'] = 'OpenAI' in pane
+                        self.tmux('send-keys', '-t', target, 'Tab')
+                        observe('local', 'No stats available yet', 0, 'Models')
+                        self.tmux('send-keys', '-t', target, 'Tab')
+                        observe('loaded', 'Lifetime tokens: 42', 1, 'OpenAI')
+                        self.tmux('send-keys', '-t', target, 'Tab')
+                        observe('away', 'No stats available yet', 1, 'Overview')
+                        self.tmux('send-keys', '-t', target, 'Tab')
+                        observe('return-local', 'No stats available yet', 1, 'Models')
+                        self.tmux('send-keys', '-t', target, 'Tab')
+                        observe('cached', 'Lifetime tokens: 42', 1, 'OpenAI')
+                        server.fail = True
+                        if checks.get('cached-active-openai'):
+                            self.tmux('send-keys', '-t', target, 'r')
+                        observe('error', 'Failed to load OpenAI activity', 2, 'OpenAI')
+                        server.fail = False
+                        if checks.get('error-active-openai'):
+                            self.tmux('send-keys', '-t', target, 'r')
+                        observe('recovered', 'Lifetime tokens: 42', 3, 'OpenAI')
+                        rows = [row for row in server.snapshot() if row['route'] == 'activity']
+                        checks['http-sequence'] = [row['status'] for row in rows] == [200, 503, 200]
+                        checks['http-auth'] = all(row['matches_dummy'] for row in rows)
+                    else:
+                        checks['no-oauth-tab'] = 'OpenAI' not in pane
+                        for index in range(3):
+                            self.tmux('send-keys', '-t', target, 'Tab')
+                            pane = observe(f'override-{index}', 'No stats available yet', 0,
+                                           'Models' if index % 2 == 0 else 'Overview')
+                            checks[f'no-tab-{index}'] = 'OpenAI' not in pane
+            except RuntimeError as error:
+                checks['navigation'] = False
+                (run_dir / 'stats-navigation-error.txt').write_text(str(error) + '\n')
+            finally:
+                cleanup = self.close(run_dir, session, target)
+            checks['cleanup'] = self.cleanup_passed(cleanup)
+            passed = all(checks.values())
+            (run_dir / 'stats-checks.json').write_text(json.dumps(checks, indent=2) + '\n')
+            assertions.append(self.required_assertion(
+                run_dir, label, label,
+                'Real pane observations paired with local TLS HTTP request counts and statuses.',
+                [run_dir / 'pane-target.txt', run_dir / 'openai-stats-http.json',
+                 run_dir / 'stats-checks.json', *panes], passed=passed,
+                reason='OpenAI stats pane/HTTP/cleanup assertions incomplete'))
+            scenarios.append({'label': label, 'checks': checks, 'cleanup': cleanup,
+                              'evidence_dir': str(run_dir)})
+        passed = all(all(item['checks'].values()) for item in scenarios)
+        self.record({'label': 'openai-stats', 'scenarios': scenarios,
+                     'evidence_dir': scenarios[0]['evidence_dir'],
+                     'validation_verdict': 'passed' if passed else 'failed',
+                     'assertions': assertions})
+
     def unsupported_required_target(self, label):
         result = {
             'label': label,
@@ -6082,6 +7610,7 @@ return await parallel([
             json.dumps(self.manifest, indent=2) + '\n'
         )
         actions = {
+            'openai-stats': self.openai_stats,
             'goal-lifecycle': self.goal_lifecycle,
             'agent-fg-bg': self.direct_agent,
             'subagent-stop-failure-lifecycle': self.subagent_stop_failure_lifecycle,
@@ -6090,6 +7619,8 @@ return await parallel([
             'deep-research': lambda: self.slash_workflow('deep-research'),
             'code-review': lambda: self.slash_workflow('code-review'),
             'effort-openai-responses-wire': self.effort_openai_responses_wire,
+            'plugins-reload': self.plugins_reload,
+            'deferred-tool-discovery': self.deferred_tool_discovery,
             'fast-openai-responses-wire': self.fast_openai_responses_wire,
             'openai-image-input-wire': self.openai_image_input_wire,
             'openai-remote-compaction': self.openai_remote_compaction,
@@ -6154,6 +7685,7 @@ return await parallel([
             required_coverage = validate_required_target_results(
                 set(self.manifest['required_targets']),
                 self.manifest['runs'],
+                self.registered_runs,
             )
             self.manifest['required_target_coverage'] = required_coverage
             self.manifest['overall_verdict'] = (
