@@ -10,7 +10,7 @@
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
 - 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.218`
+- 当前本地发布线：`2.1.219`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -29,7 +29,7 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.218` |
+| 本地发布线 | `2.1.219` |
 | 源码版本 | `0.0.0-dev` |
 | 包管理器 | `bun@1.3.14` |
 | Node.js | `>=18` |
@@ -38,9 +38,14 @@
 
 源码中的 `package.json` 始终保留 `0.0.0-dev`。正式构建版本由 Git tag 或 `CLAUDE_CODE_VERSION` 注入，`Makefile` 中的 `VERSION` 用于本地 binary 构建。
 
-### master 未发布更新
+### v2.1.219 发布准备
 
-以下变更尚未发布，当前发布线仍为 `2.1.218`；安装公开 launcher 不代表已获得 master 上的这些更新。完整范围见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前准备发布 `2.1.219`，候选范围包括 `v2.1.218..HEAD` 及本轮发布基线中尚未提交的 runtime 修复、回归测试和发布门禁改动，不含既有 cross-session messaging 设计草稿。发布门禁尚待完成，安装公开 launcher 不代表已获得这些更新。完整范围与验证边界见 [`CHANGELOG.md`](CHANGELOG.md)。
+
+- **OpenAI 默认模型**：Anthropic 模型名称在 OpenAI adapter 中默认映射为 `gpt-5.6-luna`；显式指定的 OpenAI 模型名称保持不变。
+- **OpenAI 活动统计**：`/stats` 增加按需加载的 OpenAI 活动页，支持刷新；本地统计为空或不可用时仍可切换页签。
+- **压缩与请求诊断**：记录 OpenAI 压缩 checkpoint 元数据，统一普通请求与压缩请求的 instructions 序列化；debug 诊断记录请求摘要、大小和公共前缀，不记录请求正文，也不将前缀稳定等同于服务端缓存命中。
+- **Agent 活动显示**：查看 Agent 时，工具运行状态和本地 Agent spinner 跟随该 Agent，而不是 coordinator。
 
 - **插件更新与会话重载**：`/plugin manage` 中 Update now 更新安装版本后，用 `/reload-plugins` 应用到当前会话；完整替换 commands/独立 skills，并清理、重新发现插件 MCP，不强制重启无关 MCP。已安装的本地插件使用安装缓存版本，重载本身不重新下载；MCP/LSP 摘要数量不代表服务就绪。详见 [插件架构与验证边界](docs/architecture/plugin-marketplace.md)。
 - **工具按需加载**：ToolSearch 生效时，Terminal 和已启用的 Workflow 工具延迟提供 schema；上下文统计区分已发现与未加载的工具，并包含完整工具定义的估算开销。

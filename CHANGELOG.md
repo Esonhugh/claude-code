@@ -12,6 +12,46 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-10 - v2.1.219 - 插件重载、按需工具与 OpenAI 可观测性
+
+### 版本状态
+
+- 准备发布版本：`v2.1.219`；本轮发布门禁尚待完成，尚未发布。
+- 本次候选范围包括 `v2.1.218..HEAD` 的已提交变更，以及本轮发布基线中尚未提交的 teammate transcript 保留与交互修复、OpenAI 类型修复、回归测试和发布门禁改动；下文统一描述该候选工作区，而不只描述 commit range。两份既有 `docs/design/cross-session-messaging*.md` 设计草稿不属于本次发布内容。
+- `Makefile VERSION` 与 README 本地发布线更新为 `2.1.219`；`package.json` 保持 `0.0.0-dev`。
+
+### 关联提交
+
+- `2ed520d`、`d5f1b98` — 插件更新后完整重载当前会话及设计说明。
+- `cca3bfb`、`12a473d`、`fdd93e6`、`f796b86` — Workflow/Terminal 按需工具定义、上下文统计与 OpenAI 工具发现。
+- `389a4e3`、`591087e`、`0f1febc`、`3d0525f` — 通用工具策略、单一 Workflow opt-in 设置与文档。
+- `1192b1b` — `/stats` 增加 OpenAI 活动页。
+- `30f754a` — 被查看 Agent 的活动显示独立于 coordinator。
+- `cfe837c` — 记录 OpenAI 压缩 checkpoint 元数据。
+- `59cda8d` — 统一 OpenAI instructions 序列化。
+- `3dc228b`、`3c765fe`、`203131f` — 请求 wire prefix 诊断、跨 client 保留有界基线与回归测试。
+- `99b9e4d` — OpenAI adapter 默认映射模型更新为 `gpt-5.6-luna`。
+
+### 变更内容
+
+- 插件 Update now 后的 `/reload-plugins` 完整应用安装版本、commands/skills 删除与替换，以及插件 MCP 重新发现；保留无关 MCP，重载不负责下载升级。
+- ToolSearch 生效时按需提供 Terminal 和已启用的 Workflow schema；Workflow 使用 `enableWorkflows: true` 显式启用，上下文统计包含完整工具定义和已发现工具。
+- OpenAI 工具搜索结果保留发现的工具名称；默认主提示集中提供通用工具与 Git 授权策略，精简 Bash schema 提示。具体行为及既有验证边界见下方 2026-09-08 条目。
+- `/stats` 新增按需请求的 OpenAI 活动统计页，支持 `r` 刷新；本地统计加载、为空或失败时不阻塞页签切换。
+- 被查看 Agent 的工具运行标识、loading 状态与本地 Agent spinner 使用自身状态，避免混入 coordinator 活动。
+- 已查看的终态 teammate 在退出或切换后沿用 30 秒 panel 宽限期，期间允许重新打开已有 transcript；重新打开暂停回收，退出后重新计时，由既有 task GC 回收。Idle teammate 仍为 running，不按终态清理；未查看即结束或已回收的任务不在此重新打开保证内。
+- OpenAI compact boundary 记录 provider、压缩前后 token、压缩调用 token 与可用的 compaction response ID。
+- 普通与压缩请求统一 instructions 序列化，避免相同 system blocks 因拼接差异改变请求前缀。
+- debug wire 诊断使用进程内摘要记录 instructions/tools/input 大小及公共前缀，按 thread/cache scope 与 create/compact 隔离，跨 client 保留最多 100 份基线；诊断不记录请求正文，也不证明服务端缓存命中。
+- Anthropic 模型名称在 OpenAI adapter 中默认映射为 `gpt-5.6-luna`；显式 OpenAI 模型名称不变，实际可用性取决于服务端。
+
+### 测试覆盖
+
+- 本轮计划执行相关 feature tests、完整 `make release-check`、`make build` 后的 scripted tmux binary gate，以及 release/docs 审计；结果尚待生成，不将既有测试记录视为本轮通过证据。
+- 新增 wire 回归断言覆盖 diagnostics disabled、跨 client 基线、create/compact 与 thread 隔离、有界淘汰及日志不含请求正文。
+- 发布 driver 增补 coordinator/transcript 生命周期、插件重载、工具按需发现、OpenAI Stats、默认模型映射、wire diagnostics 与 checkpoint 元数据的交互场景及正反自测；这些场景仍须通过同一轮真实 binary 门禁，自测成功不代表交互通过。
+- 新场景使用隔离 dummy 认证、localhost Responses/MCP 和本地 marketplace；Stats 使用仅对子进程生效的测试 CA 与隔离 HTTPS fixture。验证范围不包含真实 OpenAI 服务可用性、模型自然调度成功率或远端 marketplace 下载。
+
 ## 2026-09-08 - 插件重载、工具按需加载与提示词精简
 
 ### 版本状态
