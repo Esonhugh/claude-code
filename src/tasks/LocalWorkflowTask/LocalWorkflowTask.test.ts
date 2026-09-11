@@ -73,6 +73,7 @@ const workflowPlan = {
 }
 
 let state = {
+  settings: { enableWorkflows: true },
   tasks: {},
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
@@ -1190,6 +1191,7 @@ const context = {
   )
 
 let retryState = {
+  settings: { enableWorkflows: true },
   tasks: {},
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
@@ -1262,6 +1264,7 @@ assert.equal(retryTask.results.length, 1)
 assert.equal(retryTask.phases[0]!.failedAgentIds.length, 0)
 
 let manualRetryState = {
+  settings: { enableWorkflows: true },
   tasks: {},
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
@@ -1369,6 +1372,7 @@ assert.deepEqual(manualRetryTask.agentAttempts?.map(attempt => ({
 ])
 
 let teamState = {
+  settings: { enableWorkflows: true },
   tasks: {},
   toolPermissionContext: { mode: 'default' },
   teamContext: { teamName: 'workflow-team' },
