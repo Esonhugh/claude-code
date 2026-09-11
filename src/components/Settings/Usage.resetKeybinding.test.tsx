@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { Readable, Writable } from 'node:stream'
-import { mock } from 'bun:test'
+import { spyOn } from 'bun:test'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
@@ -9,6 +9,7 @@ import stripAnsi from 'strip-ansi'
   VERSION: 'test',
 }
 process.env.NODE_ENV = 'test'
+const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 process.env.CLAUDE_CODE_USE_OPENAI = '1'
 process.env.ANTHROPIC_API_KEY = 'test-key'
 
@@ -21,48 +22,41 @@ const keybindingCalls: Array<{
   isActive?: boolean
 }> = []
 
-mock.module('../../keybindings/useKeybinding.js', () => ({
-  useKeybinding: (
+const keybindingModule = await import('../../keybindings/useKeybinding.js')
+const usageModule = await import('../../services/api/usage.js')
+const extraUsageModule = await import('../../commands/extra-usage/index.js')
+const overageModule = await import('../LogoV2/OverageCreditUpsell.js')
+const mocks = [
+  spyOn(keybindingModule, 'useKeybinding').mockImplementation((
     action: string,
     handler: () => void | false,
     options: { context?: string; isActive?: boolean } = {},
   ) => {
     keybindingCalls.push({ action, handler, ...options })
-  },
-  useKeybindings: () => {},
-}))
+  }),
+  spyOn(keybindingModule, 'useKeybindings').mockImplementation(() => {}),
+  spyOn(extraUsageModule.extraUsage, 'isEnabled').mockReturnValue(false),
+  spyOn(overageModule, 'isEligibleForOverageCreditGrant').mockReturnValue(false),
+  spyOn(overageModule, 'OverageCreditUpsell').mockImplementation(() => null),
+  spyOn(usageModule, 'fetchUtilization').mockImplementation(async () => {
+    fetchCount += 1
+    return {
+      source: 'chatgpt',
+      chatgpt_limits: [],
+      rate_limit_reset_credits: { available_count: fetchCount === 1 ? 1 : 0 },
+    }
+  }),
+  spyOn(usageModule, 'consumeRateLimitResetCredit').mockImplementation(async () => {
+    consumeCount += 1
+    return { code: 'reset', windows_reset: 2 }
+  }),
+]
 
 function getActiveKeybinding(action: string) {
   return keybindingCalls.findLast(
     call => call.action === action && call.isActive !== false,
   )
 }
-
-mock.module('../../commands/extra-usage/index.js', () => ({
-  extraUsage: { isEnabled: () => false },
-}))
-
-mock.module('../LogoV2/OverageCreditUpsell.js', () => ({
-  isEligibleForOverageCreditGrant: () => false,
-  OverageCreditUpsell: () => null,
-}))
-
-mock.module('../../services/api/usage.js', () => ({
-  fetchUtilization: () => {
-    fetchCount += 1
-    return Promise.resolve({
-      source: 'chatgpt',
-      chatgpt_limits: [],
-      rate_limit_reset_credits: {
-        available_count: fetchCount === 1 ? 1 : 0,
-      },
-    })
-  },
-  consumeRateLimitResetCredit: () => {
-    consumeCount += 1
-    return Promise.resolve({ code: 'reset', windows_reset: 2 })
-  },
-}))
 
 const { render } = await import('../../ink.js')
 const instances = (await import('../../ink/instances.js')).default
@@ -183,6 +177,9 @@ try {
 } finally {
   instance.unmount()
   instance.cleanup()
+  for (const mocked of mocks) mocked.mockRestore()
+  if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+  else process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
 }
 
 console.log('Usage.resetKeybinding.test.tsx passed')
