@@ -97,6 +97,8 @@ test('consumeRateLimitResetCredit refreshes auth before posting the reset reques
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reset-'))
   process.env.HOME = homeDir
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_AUTH_TOKEN
   await saveOpenAIAuth(
     {
       auth_mode: 'chatgpt',
@@ -142,6 +144,10 @@ test('consumeRateLimitResetCredit refreshes auth before posting the reset reques
     )
     assert.equal(requests[0]?.headers.Authorization, 'Bearer refreshed-token')
   } finally {
+    for (const [key, value] of Object.entries({ OPENAI_API_KEY: originalOpenAIApiKey, OPENAI_AUTH_TOKEN: originalOpenAIAuthToken })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     axios.post = originalAxiosPost
     authModule.getOpenAIAuthInfo.cache.clear?.()
     authModule.getChatGPTOAuthInfo.cache.clear?.()
@@ -163,6 +169,8 @@ test('consumeRateLimitResetCredit retries a 401 with the same redeem request id'
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reset-retry-'))
   process.env.HOME = homeDir
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_AUTH_TOKEN
   await saveOpenAIAuth(
     {
       auth_mode: 'chatgpt',
@@ -219,6 +227,10 @@ test('consumeRateLimitResetCredit retries a 401 with the same redeem request id'
     assert.equal(requests[0]?.headers.Authorization, 'Bearer test-token')
     assert.equal(requests[1]?.headers.Authorization, 'Bearer refreshed-token')
   } finally {
+    for (const [key, value] of Object.entries({ OPENAI_API_KEY: originalOpenAIApiKey, OPENAI_AUTH_TOKEN: originalOpenAIAuthToken })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     axios.post = originalAxiosPost
     authModule.getOpenAIAuthInfo.cache.clear?.()
     authModule.getChatGPTOAuthInfo.cache.clear?.()
@@ -240,6 +252,8 @@ test('fetchUtilization retries a 401 after forcing an auth refresh', async () =>
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-fetch-retry-'))
   process.env.HOME = homeDir
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_AUTH_TOKEN
   await saveOpenAIAuth(
     {
       auth_mode: 'chatgpt',
@@ -287,6 +301,10 @@ test('fetchUtilization retries a 401 after forcing an auth refresh', async () =>
     assert.equal(requests[0]?.Authorization, 'Bearer test-token')
     assert.equal(requests[1]?.Authorization, 'Bearer refreshed-token')
   } finally {
+    for (const [key, value] of Object.entries({ OPENAI_API_KEY: originalOpenAIApiKey, OPENAI_AUTH_TOKEN: originalOpenAIAuthToken })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     axios.get = originalAxiosGet
     axios.post = originalAxiosPost
     authModule.getOpenAIAuthInfo.cache.clear?.()
