@@ -16,8 +16,8 @@
 
 ### 版本状态
 
-- 准备发布版本：`v2.1.219`；本轮发布门禁尚待完成，尚未发布。
-- 本次候选范围包括 `v2.1.218..HEAD` 的已提交变更，以及本轮发布基线中尚未提交的 teammate transcript 保留与交互修复、OpenAI 类型修复、回归测试和发布门禁改动；下文统一描述该候选工作区，而不只描述 commit range。两份既有 `docs/design/cross-session-messaging*.md` 设计草稿不属于本次发布内容。
+- 待发布版本：`v2.1.219`；2026-09-11 第 17 轮候选工作区的四路发布门禁全部通过，相关内容随后分批提交并推送至 `master`（`b88e81a`）。尚未打 tag 或正式发布。
+- 已推送候选范围为 `v2.1.218..b88e81a`，包含 teammate transcript 保留与交互修复、OpenAI 类型修复、回归测试和发布门禁改动。两份既有 `docs/design/cross-session-messaging*.md` 设计草稿未提交，不属于本次发布内容。
 - `Makefile VERSION` 与 README 本地发布线更新为 `2.1.219`；`package.json` 保持 `0.0.0-dev`。
 
 ### 关联提交
@@ -31,6 +31,11 @@
 - `59cda8d` — 统一 OpenAI instructions 序列化。
 - `3dc228b`、`3c765fe`、`203131f` — 请求 wire prefix 诊断、跨 client 保留有界基线与回归测试。
 - `99b9e4d` — OpenAI adapter 默认映射模型更新为 `gpt-5.6-luna`。
+- `0833ba6` — OpenAI instructions 类型修复与 compact 调用契约测试。
+- `2fca12e` — teammate transcript 宽限期、查看入口与导航按键隔离，以及会话插件重载回归测试。
+- `c71f197`、`20115c2` — Usage 测试 mock 隔离与 Workflow fixture 显式启用配置。
+- `d539543` — 确定性 binary 交互发布门禁与驱动回归测试。
+- `b88e81a` — `v2.1.219` 版本配置与发布说明。
 
 ### 变更内容
 
@@ -47,9 +52,10 @@
 
 ### 测试覆盖
 
-- 本轮计划执行相关 feature tests、完整 `make release-check`、`make build` 后的 scripted tmux binary gate，以及 release/docs 审计；结果尚待生成，不将既有测试记录视为本轮通过证据。
+- 第 17 轮候选工作区验证通过：相关 feature tests 为 146 passed / 0 failed，发布 driver 自测通过；`make release-check` 的版本、TypeScript、ESLint、imports/assets 与 diff 检查通过；`make build` 后的 scripted tmux binary gate 为 16/16 passed；release/docs 审计通过。
+- 上述结果对应提交前的 `99b9e4d` 加第 17 轮基线记录的工作区改动，而非裸 `99b9e4d`；这些内容随后提交至 `b88e81a`。本次验收状态文案修订发生在该轮之后，不将该轮结果宣称为修订后 HEAD 的新一轮完整门禁。
 - 新增 wire 回归断言覆盖 diagnostics disabled、跨 client 基线、create/compact 与 thread 隔离、有界淘汰及日志不含请求正文。
-- 发布 driver 增补 coordinator/transcript 生命周期、插件重载、工具按需发现、OpenAI Stats、默认模型映射、wire diagnostics 与 checkpoint 元数据的交互场景及正反自测；这些场景仍须通过同一轮真实 binary 门禁，自测成功不代表交互通过。
+- 发布 driver 增补 coordinator/transcript 生命周期、插件重载、工具按需发现、OpenAI Stats、默认模型映射、wire diagnostics 与 checkpoint 元数据的交互场景及正反自测；这些场景已在第 17 轮真实 binary 门禁中通过。Workflow failure 与 partial retry 同时验证受控故障注入；自测和 binary 交互分别取证，不互相替代。
 - 新场景使用隔离 dummy 认证、localhost Responses/MCP 和本地 marketplace；Stats 使用仅对子进程生效的测试 CA 与隔离 HTTPS fixture。验证范围不包含真实 OpenAI 服务可用性、模型自然调度成功率或远端 marketplace 下载。
 
 ## 2026-09-08 - 插件重载、工具按需加载与提示词精简
