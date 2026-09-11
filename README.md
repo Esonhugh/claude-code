@@ -40,7 +40,7 @@
 
 ### v2.1.219 发布准备
 
-当前准备发布 `2.1.219`，候选范围包括 `v2.1.218..HEAD` 及本轮发布基线中尚未提交的 runtime 修复、回归测试和发布门禁改动，不含既有 cross-session messaging 设计草稿。发布门禁尚待完成，安装公开 launcher 不代表已获得这些更新。完整范围与验证边界见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前准备发布 `2.1.219`，候选范围为 `v2.1.218..HEAD` 的已提交变更，不含既有 cross-session messaging 设计草稿。第 17 轮候选工作区已通过四路发布门禁，相关内容已提交并推送；该历史结果不替代后续修订的完整发布验收。尚未正式发布，安装公开 launcher 不代表已获得这些更新。完整范围与验证边界见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 - **OpenAI 默认模型**：Anthropic 模型名称在 OpenAI adapter 中默认映射为 `gpt-5.6-luna`；显式指定的 OpenAI 模型名称保持不变。
 - **OpenAI 活动统计**：`/stats` 增加按需加载的 OpenAI 活动页，支持刷新；本地统计为空或不可用时仍可切换页签。
