@@ -5,6 +5,7 @@
 import { type ExecaError, execa } from 'execa'
 import { getCwd } from '../utils/cwd.js'
 import { logError } from './log.js'
+import { errorMessage } from './errors.js'
 
 export { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
 
@@ -106,8 +107,8 @@ export function execFileNoThrowWithCwd(
   },
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
   return new Promise(resolve => {
-    // Use execa for cross-platform .bat/.cmd compatibility on Windows
-    execa(file, args, {
+    // Execa can throw synchronously when the runtime rejects a spawn.
+    Promise.resolve().then(() => execa(file, args, {
       maxBuffer,
       cancelSignal: abortSignal,
       timeout: finalTimeout,
@@ -117,7 +118,7 @@ export function execFileNoThrowWithCwd(
       stdin: finalStdin,
       input: finalInput,
       reject: false, // Don't throw on non-zero exit codes
-    })
+    }))
       .then(result => {
         if (result.failed) {
           if (finalPreserveOutput) {
@@ -144,7 +145,7 @@ export function execFileNoThrowWithCwd(
       })
       .catch((error: ExecaError) => {
         logError(error)
-        void resolve({ stdout: '', stderr: '', code: 1 })
+        void resolve({ stdout: '', stderr: '', code: 1, error: errorMessage(error) })
       })
   })
 }
