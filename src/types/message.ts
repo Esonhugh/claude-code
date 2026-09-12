@@ -7,7 +7,16 @@ import type { Attachment } from '../utils/attachments.js'
 
 export type PartialCompactDirection = 'back' | 'forward' | 'from' | 'up_to'
 
-export type MessageOrigin = string
+export type MessageOrigin =
+  | { kind: 'human' | 'task-notification' | 'coordinator' }
+  | { kind: 'channel'; server: string }
+  | {
+      kind: 'peer'
+      from: string
+      msg_id?: string
+      name?: string
+      fromMode?: 'bypass' | 'prompting'
+    }
 
 export type SystemMessageLevel = 'info' | 'warning' | 'error' | 'suggestion'
 

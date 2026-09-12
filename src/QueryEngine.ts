@@ -40,7 +40,7 @@ import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { Message } from './types/message.js'
+import type { Message, MessageOrigin } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
 import type { AttributionState } from './utils/commitAttribution.js'
@@ -211,7 +211,13 @@ export class QueryEngine {
 
   async *submitMessage(
     prompt: string | ContentBlockParam[],
-    options?: { uuid?: string; isMeta?: boolean },
+    options?: {
+      uuid?: string
+      isMeta?: boolean
+      origin?: MessageOrigin
+      skipSlashCommands?: boolean
+      skipAttachments?: boolean
+    },
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const {
       cwd,
@@ -434,8 +440,17 @@ export class QueryEngine {
       messages: this.mutableMessages,
       uuid: options?.uuid,
       isMeta: options?.isMeta,
+      skipSlashCommands: options?.skipSlashCommands,
+      skipAttachments: options?.skipAttachments,
+      skipHooks: options?.origin?.kind === 'peer',
       querySource: 'sdk',
     })
+
+    if (options?.origin) {
+      for (const message of messagesFromUserInput) {
+        if (message.type === 'user') message.origin = options.origin
+      }
+    }
 
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
@@ -1228,6 +1243,9 @@ export async function* ask({
   prompt,
   promptUuid,
   isMeta,
+  origin,
+  skipSlashCommands,
+  skipAttachments,
   cwd,
   tools,
   mcpClients,
@@ -1259,6 +1277,9 @@ export async function* ask({
   prompt: string | Array<ContentBlockParam>
   promptUuid?: string
   isMeta?: boolean
+  origin?: MessageOrigin
+  skipSlashCommands?: boolean
+  skipAttachments?: boolean
   cwd: string
   tools: Tools
   verbose?: boolean
@@ -1329,6 +1350,9 @@ export async function* ask({
     yield* engine.submitMessage(prompt, {
       uuid: promptUuid,
       isMeta,
+      origin,
+      skipSlashCommands,
+      skipAttachments,
     })
   } finally {
     setReadFileCache(engine.getReadFileState())

@@ -38,6 +38,7 @@ import {
   createShutdownRequestMessage,
   writeToMailbox,
 } from '../../utils/teammateMailbox.js'
+import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
 import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
@@ -70,22 +71,24 @@ const inputSchema = lazySchema(() =>
       .string()
       .describe(
         feature('UDS_INBOX')
-          ? 'Recipient: teammate name, "*" for broadcast, "uds:<socket-path>" for a local peer, or "bridge:<session-id>" for a Remote Control peer (use ListPeers to discover)'
+          ? 'Recipient: agent or teammate name, "*" for team broadcast, or a local session name, "name [ref]", session UUID, or "uds:<socket-path>" (use ListAgents to discover)'
           : 'Recipient: teammate name, or "*" for broadcast to all teammates',
       ),
     summary: z
       .string()
       .optional()
-      .describe(
-        'A 5-10 word summary shown as a preview in the UI (required when message is a string)',
-      ),
+      .describe('Optional 5-10 word summary shown as a preview in the UI'),
     message: z.union([
       z.string().describe('Plain text message content'),
       StructuredMessage(),
     ]),
   }),
 )
-type InputSchema = ReturnType<typeof inputSchema>
+const peerInputSchema = lazySchema(() => inputSchema().extend({
+  to: z.string().describe('Agent name or local session name, "name [ref]", session UUID, or "uds:<socket-path>"'),
+  message: z.string().describe('Plain text message content'),
+}))
+type InputSchema = ReturnType<typeof inputSchema> | ReturnType<typeof peerInputSchema>
 
 export type Input = z.infer<InputSchema>
 
@@ -520,7 +523,7 @@ async function handlePlanRejection(
 export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
   buildTool({
     name: SEND_MESSAGE_TOOL_NAME,
-    searchHint: 'send messages to agent teammates (swarm protocol)',
+    searchHint: 'send messages to agents, teammates, or local Claude sessions',
     maxResultSizeChars: 100_000,
 
     userFacingName() {
@@ -528,11 +531,14 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     get inputSchema(): InputSchema {
-      return inputSchema()
+      return isAgentSwarmsEnabled() ? inputSchema() : peerInputSchema()
     },
     shouldDefer: true,
 
     isEnabled() {
+      if (feature('UDS_INBOX') && getUdsMessagingSocketPath() !== null) {
+        return true
+      }
       return isAgentSwarmsEnabled()
     },
 
@@ -620,7 +626,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           errorCode: 9,
         }
       }
-      if (input.to.includes('@')) {
+      if (!feature('UDS_INBOX') && input.to.includes('@')) {
         return {
           result: false,
           message:
@@ -654,24 +660,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
         return { result: true }
       }
-      if (
-        feature('UDS_INBOX') &&
-        parseAddress(input.to).scheme === 'uds' &&
-        typeof input.message === 'string'
-      ) {
-        // UDS cross-session send: summary isn't rendered (UI.tsx returns null
-        // for string messages), so don't require it. Structured messages fall
-        // through to the rejection below.
-        return { result: true }
-      }
       if (typeof input.message === 'string') {
-        if (!input.summary || input.summary.trim().length === 0) {
-          return {
-            result: false,
-            message: 'summary is required when message is a string',
-            errorCode: 9,
-          }
-        }
         return { result: true }
       }
 
@@ -773,17 +762,33 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           }
         }
         if (addr.scheme === 'uds') {
+          if (!getUdsMessagingSocketPath()) {
+            return {
+              data: {
+                success: false,
+                message:
+                  'Local session messaging is unavailable: no active IPC endpoint.',
+              },
+            }
+          }
           /* eslint-disable @typescript-eslint/no-require-imports */
           const { sendToUdsSocket } =
             require('../../utils/udsClient.js') as typeof import('../../utils/udsClient.js')
           /* eslint-enable @typescript-eslint/no-require-imports */
           try {
-            await sendToUdsSocket(addr.target, input.message)
+            const permissions = context.getAppState().toolPermissionContext
+            await sendToUdsSocket(addr.target, input.message, {
+              fromMode:
+                permissions.mode === 'bypassPermissions' ||
+                (permissions.mode === 'plan' && permissions.isBypassPermissionsModeAvailable)
+                  ? 'bypass'
+                  : 'prompting',
+            })
             const preview = input.summary || truncate(input.message, 50)
             return {
               data: {
                 success: true,
-                message: `“${preview}” → ${input.to}`,
+                message: `“${preview}” → ${input.to} (sent; acceptance and processing are not confirmed)`,
               },
             }
           } catch (e) {
@@ -873,15 +878,74 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         }
       }
 
-      if (typeof input.message === 'string') {
-        if (input.to === '*') {
-          return handleBroadcast(input.message, input.summary, context)
+      if (input.to === '*') {
+        if (typeof input.message !== 'string') {
+          throw new Error('structured messages cannot be broadcast')
         }
-        return handleMessage(input.to, input.message, input.summary, context)
+        return handleBroadcast(input.message, input.summary, context)
       }
 
-      if (input.to === '*') {
-        throw new Error('structured messages cannot be broadcast')
+      const appState = context.getAppState()
+      const teamName = getTeamName(appState.teamContext)
+      const isTeamRecipient =
+        teamName &&
+        (Object.values(appState.teamContext?.teammates ?? {}).some(
+          teammate => teammate.name === input.to,
+        ) ||
+          (await readTeamFileAsync(teamName))?.members.some(
+            member => member.name === input.to,
+          ))
+      if (!isTeamRecipient) {
+        if (feature('UDS_INBOX') && getUdsMessagingSocketPath()) {
+          const { resolvePeerSession, sendToUdsSocket } =
+            await import('../../utils/udsClient.js')
+          try {
+            const peer = await resolvePeerSession(input.to)
+            if (peer) {
+              if (typeof input.message !== 'string') {
+                return {
+                  data: {
+                    success: false,
+                    message:
+                      'structured messages cannot be sent cross-session — only plain text',
+                  },
+                }
+              }
+              await sendToUdsSocket(peer.messagingSocketPath, input.message, {
+                fromMode:
+                  appState.toolPermissionContext.mode === 'bypassPermissions' ||
+                  (appState.toolPermissionContext.mode === 'plan' &&
+                    appState.toolPermissionContext.isBypassPermissionsModeAvailable)
+                    ? 'bypass'
+                    : 'prompting',
+              })
+              const preview = input.summary || truncate(input.message, 50)
+              return {
+                data: {
+                  success: true,
+                  message: `“${preview}” → ${peer.name} [${peer.ref}] (sent; acceptance and processing are not confirmed)`,
+                },
+              }
+            }
+          } catch (e) {
+            return {
+              data: {
+                success: false,
+                message: `Failed to send to ${input.to}: ${errorMessage(e)}`,
+              },
+            }
+          }
+        }
+        return {
+          data: {
+            success: false,
+            message: `Unknown recipient "${input.to}". Use ListAgents to discover local sessions, or use a known agent or teammate name.`,
+          },
+        }
+      }
+
+      if (typeof input.message === 'string') {
+        return handleMessage(input.to, input.message, input.summary, context)
       }
 
       switch (input.message.type) {
@@ -915,3 +979,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     renderToolUseMessage,
     renderToolResultMessage,
   } satisfies ToolDef<InputSchema, SendMessageToolOutput>)
+
+// buildTool spreads the definition; keep the schema aligned with Teams opt-in.
+Object.defineProperty(SendMessageTool, 'inputSchema', {
+  get: () => isAgentSwarmsEnabled() ? inputSchema() : peerInputSchema(),
+})

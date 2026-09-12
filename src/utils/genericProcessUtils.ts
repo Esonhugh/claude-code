@@ -8,14 +8,18 @@ import {
 // - Win32, as `ps` within cygwin and WSL may not behave as expected, particularly when attempting to access processes on the host.
 // - Unix vs BSD-style `ps` have different options.
 
+export async function getProcessStart(pid: number): Promise<string | undefined> {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || process.platform === 'win32') return
+  const result = await execFileNoThrowWithCwd('ps', ['-o', 'lstart=', '-p', String(pid)], {
+    timeout: 1000,
+    env: { LC_ALL: 'C', TZ: 'UTC' },
+  })
+  return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : undefined
+}
+
 /**
- * Check if a process with the given PID is running (signal 0 probe).
- *
- * PID ≤ 1 returns false (0 is current process group, 1 is init).
- *
- * Note: `process.kill(pid, 0)` throws EPERM when the process exists but is
- * owned by another user. This reports such processes as NOT running, which
- * is conservative for lock recovery (we won't steal a live lock).
+ * Check process liveness using signal 0. EPERM is treated as unavailable:
+ * peer discovery only needs processes accessible to the current user.
  */
 export function isProcessRunning(pid: number): boolean {
   if (pid <= 1) return false

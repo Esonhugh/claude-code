@@ -388,6 +388,9 @@ const cronGate = feature('AGENT_TRIGGERS')
 const extractMemoriesModule = feature('EXTRACT_MEMORIES')
   ? (require('../services/extractMemories/extractMemories.js') as typeof import('../services/extractMemories/extractMemories.js'))
   : null
+const udsMessagingModule = feature('UDS_INBOX')
+  ? (require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js'))
+  : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const SHUTDOWN_TEAM_PROMPT = `<system-reminder>
@@ -450,9 +453,8 @@ export function joinPromptValues(values: PromptValue[]): PromptValue {
 /**
  * Whether `next` can be batched into the same ask() call as `head`. Only
  * prompt-mode commands batch, and only when the workload tag matches (so the
- * combined turn is attributed correctly) and the isMeta flag matches (so a
- * proactive tick can't merge into a user prompt and lose its hidden-in-
- * transcript marking when the head is spread over the merged command).
+ * combined turn is attributed correctly) and the input-processing flags match.
+ * Attributed messages stay separate so each message retains its provenance.
  */
 export function canBatchWith(
   head: QueuedCommand,
@@ -461,8 +463,12 @@ export function canBatchWith(
   return (
     next !== undefined &&
     next.mode === 'prompt' &&
+    head.origin === undefined &&
+    next.origin === undefined &&
     next.workload === head.workload &&
-    next.isMeta === head.isMeta
+    next.isMeta === head.isMeta &&
+    next.skipSlashCommands === head.skipSlashCommands &&
+    next.skipAttachments === head.skipAttachments
   )
 }
 
@@ -528,11 +534,33 @@ export async function runHeadless(
     void downloadUserSettings()
   }
 
+  let peerPermissionContextActive = Boolean(udsMessagingModule)
+  if (udsMessagingModule) {
+    const updateAppState = setAppState
+    setAppState = updater => {
+      const previous = getAppState().toolPermissionContext
+      updateAppState(updater)
+      const current = getAppState().toolPermissionContext
+      if (
+        peerPermissionContextActive &&
+        (current.mode !== previous.mode ||
+          current.isBypassPermissionsModeAvailable !==
+            previous.isBypassPermissionsModeAvailable)
+      ) {
+        udsMessagingModule.refreshPeerInboundPolicy()
+      }
+    }
+    udsMessagingModule.setPeerPermissionContext(
+      () => getAppState().toolPermissionContext,
+    )
+  }
+
   // In headless mode there is no React tree, so the useSettingsChange hook
   // never runs. Subscribe directly so that settings changes (including
   // managed-settings / policy updates) are fully applied.
-  settingsChangeDetector.subscribe(source => {
+  const unsubscribeSettingsChanges = settingsChangeDetector.subscribe(source => {
     applySettingsChange(source, setAppState)
+    udsMessagingModule?.refreshPeerInboundPolicy()
 
     // In headless mode, also sync the denormalized fastMode field from
     // settings. The TUI manages fastMode via the UI so it skips this.
@@ -543,6 +571,11 @@ export async function runHeadless(
         return { ...prev, fastMode }
       })
     }
+  })
+  const unregisterSettingsCleanup = registerCleanup(async () => {
+    unsubscribeSettingsChanges()
+    peerPermissionContextActive = false
+    udsMessagingModule?.setPeerPermissionContext(undefined)
   })
 
   // Proactive activation is now handled in main.tsx before getTools() so
@@ -933,6 +966,11 @@ export async function runHeadless(
       lastMessage = message
     }
   }
+
+  unsubscribeSettingsChanges()
+  unregisterSettingsCleanup()
+  peerPermissionContextActive = false
+  udsMessagingModule?.setPeerPermissionContext(undefined)
 
   switch (options.outputFormat) {
     case 'json':
@@ -2194,6 +2232,9 @@ function runHeadlessStreaming(
               prompt: input,
               promptUuid: cmd.uuid,
               isMeta: cmd.isMeta,
+              origin: cmd.origin,
+              skipSlashCommands: cmd.skipSlashCommands,
+              skipAttachments: cmd.skipAttachments,
               cwd: cwd(),
               tools: allTools,
               verbose: options.verbose,
@@ -2725,14 +2766,19 @@ function runHeadlessStreaming(
 
   // Set up UDS inbox callback so the query loop is kicked off
   // when a message arrives via the UDS socket in headless mode.
-  if (feature('UDS_INBOX')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { setOnEnqueue } = require('../utils/udsMessaging.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    setOnEnqueue(() => {
+  let unregisterPeerWakeCleanup: (() => void) | undefined
+  const clearPeerWake = () => {
+    udsMessagingModule?.setOnEnqueue(null)
+    unregisterPeerWakeCleanup?.()
+  }
+  if (udsMessagingModule) {
+    udsMessagingModule.setOnEnqueue(() => {
       if (!inputClosed) {
         void run()
       }
+    })
+    unregisterPeerWakeCleanup = registerCleanup(async () => {
+      clearPeerWake()
     })
   }
 
@@ -4399,6 +4445,7 @@ function runHeadlessStreaming(
       void run()
     }
     inputClosed = true
+    clearPeerWake()
     managedSSHControl.shutdown()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
@@ -4417,6 +4464,16 @@ function runHeadlessStreaming(
       output.done()
     }
   })()
+
+  // The live permission getter may admit held messages before the wake
+  // callback is installed. Drain them once all streaming state is initialized.
+  if (
+    udsMessagingModule &&
+    !inputClosed &&
+    peek(cmd => cmd.agentId === undefined)
+  ) {
+    void run()
+  }
 
   return output
 }

@@ -318,6 +318,7 @@ export type QueuedCommand = {
    * trigger local slash commands or skills.
    */
   skipSlashCommands?: boolean
+  skipAttachments?: boolean
   /**
    * When true, slash commands are dispatched but filtered through
    * isBridgeSafeCommand() — 'local-jsx' and terminal-only commands return

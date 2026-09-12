@@ -54,6 +54,17 @@ export function UserTextMessage({
     return <UserPlanMessage addMargin={addMargin} planContent={planContent} />
   }
 
+  // Route peer text before inspecting tags inside its untrusted body.
+  if (feature('UDS_INBOX')) {
+    if (param.text.includes('<cross-session-message')) {
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { UserCrossSessionMessage } =
+        require('./UserCrossSessionMessage.js') as typeof import('./UserCrossSessionMessage.js')
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      return <UserCrossSessionMessage addMargin={addMargin} param={param} />
+    }
+  }
+
   if (extractTag(param.text, TICK_TAG)) {
     return null
   }
@@ -158,19 +169,6 @@ export function UserTextMessage({
         require('./UserForkBoilerplateMessage.js') as typeof import('./UserForkBoilerplateMessage.js')
       /* eslint-enable @typescript-eslint/no-require-imports */
       return <UserForkBoilerplateMessage addMargin={addMargin} param={param} />
-    }
-  }
-
-  // Cross-session UDS message (from another Claude session's SendMessage).
-  // CROSS_SESSION_MESSAGE_TAG is inlined so the import doesn't ship in
-  // external builds where feature('UDS_INBOX') is false.
-  if (feature('UDS_INBOX')) {
-    if (param.text.includes('<cross-session-message')) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      const { UserCrossSessionMessage } =
-        require('./UserCrossSessionMessage.js') as typeof import('./UserCrossSessionMessage.js')
-      /* eslint-enable @typescript-eslint/no-require-imports */
-      return <UserCrossSessionMessage addMargin={addMargin} param={param} />
     }
   }
 

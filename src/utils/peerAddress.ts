@@ -9,13 +9,19 @@ export function parseAddress(to: string): {
   scheme: 'uds' | 'bridge' | 'other'
   target: string
 } {
-  if (to.startsWith('uds:')) return { scheme: 'uds', target: to.slice(4) }
-  if (to.startsWith('bridge:')) return { scheme: 'bridge', target: to.slice(7) }
-  // Legacy: old-code UDS senders emit bare socket paths in from=; route them
-  // through the UDS branch so replies aren't silently dropped into teammate
-  // routing. (No bare-session-ID fallback — bridge messaging is new enough
-  // that no old senders exist, and the prefix would hijack teammate names
-  // like session_manager.)
-  if (to.startsWith('/')) return { scheme: 'uds', target: to }
+  if (to.startsWith('uds:') || to.startsWith('bridge:')) {
+    const scheme = to.startsWith('uds:') ? 'uds' : 'bridge'
+    const encoded = to.slice(scheme.length + 1)
+    let target = encoded
+    try {
+      target = decodeURIComponent(encoded)
+    } catch {
+      // Official senders preserve malformed percent escapes literally.
+    }
+    return { scheme, target }
+  }
+  if (/^\/\S*\.sock$/.test(to) || /^[\\/]{2}[.?][\\/]pipe[\\/]/i.test(to)) {
+    return { scheme: 'uds', target: to }
+  }
   return { scheme: 'other', target: to }
 }

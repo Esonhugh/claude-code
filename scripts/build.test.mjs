@@ -35,6 +35,9 @@ assert.equal(
 assert.equal(feature('AGENT_TRIGGERS'), true);
 assert.equal(feature('MCP_SKILLS'), true);
 assert.equal(feature('SSH_REMOTE'), true);
+assert.equal(getEnabledFeatures('').has('UDS_INBOX'), true);
+assert.equal(getEnabledFeatures(undefined).has('UDS_INBOX'), true);
+assert.equal(feature('UDS_INBOX'), true);
 assert.equal(getNativeModule(), null);
 assert.equal(sharp, imageProcessor);
 assert.throws(

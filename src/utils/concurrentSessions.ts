@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
-import { chmod, mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
-import { join } from 'path'
+import { randomBytes } from 'crypto'
+import { chmod, mkdir, readdir, readFile, rename, unlink, writeFile } from 'fs/promises'
+import { basename, join } from 'path'
 import {
   getOriginalCwd,
   getSessionId,
@@ -10,13 +11,23 @@ import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
-import { isProcessRunning } from './genericProcessUtils.js'
+import { getProcessStart, isProcessRunning } from './genericProcessUtils.js'
+import { cleanPeerName } from './peerProtocol.js'
 import { getPlatform } from './platform.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import { getAgentId } from './teammate.js'
+import { getUdsMessagingSocketPath } from './udsMessaging.js'
 
 export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker'
 export type SessionStatus = 'busy' | 'idle' | 'waiting'
+
+let registeredName: string | undefined
+let pidFileWriteChain: Promise<void> = Promise.resolve()
+let unregistering = false
+
+export function getRegisteredSessionName(): string | undefined {
+  return registeredName
+}
 
 function getSessionsDir(): string {
   return join(getClaudeConfigHomeDir(), 'sessions')
@@ -62,77 +73,91 @@ export async function registerSession(): Promise<boolean> {
   const kind: SessionKind = envSessionKind() ?? 'interactive'
   const dir = getSessionsDir()
   const pidFile = join(dir, `${process.pid}.json`)
+  unregistering = false
+  registeredName = cleanPeerName(process.env.CLAUDE_CODE_SESSION_NAME || basename(getOriginalCwd())) || `claude-${process.pid}`
 
-  registerCleanup(async () => {
-    try {
-      await unlink(pidFile)
-    } catch {
-      // ENOENT is fine (already deleted or never written)
-    }
+  let unsubscribeSession: (() => void) | undefined
+  const unregisterCleanup = registerCleanup(async () => {
+    unregistering = true
+    unsubscribeSession?.()
+    await pidFileWriteChain
+    await unlink(pidFile).catch(() => {})
+    registeredName = undefined
+    unregisterCleanup()
   })
 
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 })
     await chmod(dir, 0o700)
-    await writeFile(
-      pidFile,
-      jsonStringify({
+    const messagingSocketPath = getUdsMessagingSocketPath()
+    const temp = `${pidFile}.${randomBytes(8).toString('hex')}.tmp`
+    try {
+      await writeFile(temp, jsonStringify({
         pid: process.pid,
         sessionId: getSessionId(),
         cwd: getOriginalCwd(),
         startedAt: Date.now(),
+        procStart: await getProcessStart(process.pid),
+        pidDomain: process.platform,
+        version: MACRO.VERSION,
         kind,
+        name: registeredName,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT,
-        ...(feature('UDS_INBOX')
-          ? { messagingSocketPath: process.env.CLAUDE_CODE_MESSAGING_SOCKET }
-          : {}),
+        ...(messagingSocketPath ? { messagingSocketPath, peerProtocol: 1, peerFeatures: [] } : {}),
         ...(feature('BG_SESSIONS')
           ? {
-              name: process.env.CLAUDE_CODE_SESSION_NAME,
               logPath: process.env.CLAUDE_CODE_SESSION_LOG,
               agent: process.env.CLAUDE_CODE_AGENT,
             }
           : {}),
-      }),
-    )
+      }), { mode: 0o600, flag: 'wx' })
+      await rename(temp, pidFile)
+    } finally {
+      await unlink(temp).catch(() => {})
+    }
     // --resume / /resume mutates getSessionId() via switchSession. Without
     // this, the PID file's sessionId goes stale and `claude ps` sparkline
     // reads the wrong transcript.
-    onSessionSwitch(id => {
+    unsubscribeSession = onSessionSwitch(id => {
       void updatePidFile({ sessionId: id })
     })
     return true
   } catch (e) {
+    unregisterCleanup()
+    registeredName = undefined
     logForDebugging(`[concurrentSessions] register failed: ${errorMessage(e)}`)
     return false
   }
 }
 
-/**
- * Update this session's name in its PID registry file so ListPeers
- * can surface it. Best-effort: silently no-op if name is falsy, the
- * file doesn't exist (session not registered), or read/write fails.
- */
+// Serialize read/modify/rename so concurrent name, activity and resume updates
+// cannot lose fields or expose partially written JSON to another process.
 async function updatePidFile(patch: Record<string, unknown>): Promise<void> {
+  if (unregistering) return
   const pidFile = join(getSessionsDir(), `${process.pid}.json`)
-  try {
-    const data = jsonParse(await readFile(pidFile, 'utf8')) as Record<
-      string,
-      unknown
-    >
-    await writeFile(pidFile, jsonStringify({ ...data, ...patch }))
-  } catch (e) {
-    logForDebugging(
-      `[concurrentSessions] updatePidFile failed: ${errorMessage(e)}`,
-    )
-  }
+  pidFileWriteChain = pidFileWriteChain.then(async () => {
+    const temp = `${pidFile}.${randomBytes(8).toString('hex')}.tmp`
+    try {
+      const data = jsonParse(await readFile(pidFile, 'utf8')) as Record<string, unknown>
+      await writeFile(temp, jsonStringify({ ...data, ...patch }), { mode: 0o600, flag: 'wx' })
+      await rename(temp, pidFile)
+    } catch (e) {
+      logForDebugging(`[concurrentSessions] updatePidFile failed: ${errorMessage(e)}`)
+    } finally {
+      await unlink(temp).catch(() => {})
+    }
+  })
+  await pidFileWriteChain
 }
 
 export async function updateSessionName(
   name: string | undefined,
 ): Promise<void> {
   if (!name) return
-  await updatePidFile({ name })
+  const cleaned = cleanPeerName(name)
+  if (!cleaned) return
+  registeredName = cleaned
+  await updatePidFile({ name: cleaned })
 }
 
 /**
@@ -156,7 +181,6 @@ export async function updateSessionActivity(patch: {
   status?: SessionStatus
   waitingFor?: string
 }): Promise<void> {
-  if (!feature('BG_SESSIONS')) return
   await updatePidFile({ ...patch, updatedAt: Date.now() })
 }
 

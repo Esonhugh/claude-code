@@ -138,17 +138,23 @@ export async function setup(
     !isSSHLocalUI() &&
     (!isBareMode() || messagingSocketPath !== undefined)
   ) {
-    // Start UDS messaging server (Mac/Linux only).
-    // Enabled by default for ants — creates a socket in tmpdir if no
-    // --messaging-socket-path is passed. Awaited so the server is bound
-    // and $CLAUDE_CODE_MESSAGING_SOCKET is exported before any hook
-    // (SessionStart in particular) can spawn and snapshot process.env.
+    // Bind before hooks can spawn children and snapshot the messaging env.
+    // An unavailable optional inbox must not prevent the CLI from starting.
     if (feature('UDS_INBOX')) {
       const m = await import('./utils/udsMessaging.js')
-      await m.startUdsMessaging(
-        messagingSocketPath ?? m.getDefaultUdsSocketPath(),
-        { isExplicit: messagingSocketPath !== undefined },
-      )
+      try {
+        await m.startUdsMessaging(
+          messagingSocketPath ?? m.getDefaultUdsSocketPath(),
+          {
+            isExplicit: messagingSocketPath !== undefined,
+            permissionMode,
+            isBypassPermissionsModeAvailable: allowDangerouslySkipPermissions,
+          },
+        )
+      } catch (error) {
+        if (messagingSocketPath !== undefined) throw error
+        logForDebugging(`[uds-messaging] inbox unavailable: ${errorMessage(error)}`)
+      }
     }
   }
 

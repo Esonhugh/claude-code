@@ -106,7 +106,7 @@ const ultraplan = feature('ULTRAPLAN')
   ? require('./commands/ultraplan.js').default
   : null
 const torch = feature('TORCH') ? require('./commands/torch.js').default : null
-const peersCmd = feature('UDS_INBOX')
+const listAgentsCmd = feature('UDS_INBOX')
   ? (
       require('./commands/peers/index.js') as typeof import('./commands/peers/index.js')
     ).default
@@ -357,7 +357,7 @@ const COMMANDS = memoize((): Command[] => [
     ? [logout, login()]
     : []),
   passes,
-  ...(peersCmd ? [peersCmd] : []),
+  ...(listAgentsCmd ? [listAgentsCmd] : []),
   tasks,
   ...(workflowsCmd ? [workflowsCmd] : []),
   ...(torch ? [torch] : []),

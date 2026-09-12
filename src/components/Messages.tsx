@@ -127,6 +127,7 @@ export function filterForBriefTool<
     type: string
     subtype?: string
     isMeta?: boolean
+    origin?: { kind: string }
     isApiErrorMessage?: boolean
     message?: {
       content?: Array<{
@@ -175,8 +176,8 @@ export function filterForBriefTool<
           briefToolUseIDs.has(block.tool_use_id)
         )
       }
-      // Real user input only — drop meta/tick messages.
-      return !msg.isMeta
+      // Keep visible peer arrivals without promoting them to human input.
+      return !msg.isMeta || msg.origin?.kind === 'peer'
     }
     if (msg.type === 'attachment') {
       // Human input drained mid-turn arrives as a queued_command attachment
@@ -188,9 +189,8 @@ export function filterForBriefTool<
       const att = msg.attachment
       return (
         att?.type === 'queued_command' &&
-        att.commandMode === 'prompt' &&
-        !att.isMeta &&
-        att.origin === undefined
+        ((typeof att.origin === 'object' && att.origin !== null && 'kind' in att.origin && att.origin.kind === 'peer') ||
+          (att.commandMode === 'prompt' && !att.isMeta && att.origin === undefined))
       )
     }
     return false

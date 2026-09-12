@@ -260,6 +260,10 @@ export const SettingsSchema = lazySchema(() =>
         .literal(CLAUDE_CODE_SETTINGS_SCHEMA_URL)
         .optional()
         .describe('JSON Schema reference for Claude Code settings'),
+      crossSessionInbound: z
+        .enum(['accept', 'hold', 'refuse'])
+        .optional()
+        .describe('Admission policy for local peer messages. By default, matching permission classes are accepted; mismatches are held.'),
       apiKeyHelper: z
         .string()
         .optional()

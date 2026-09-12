@@ -2,6 +2,7 @@ const defaultRecoverFeatures = [
   'AGENT_TRIGGERS',
   'MCP_SKILLS',
   'SSH_REMOTE',
+  'UDS_INBOX',
 ];
 
 const enabled = new Set([

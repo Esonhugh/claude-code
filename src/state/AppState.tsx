@@ -103,6 +103,28 @@ export function AppStateProvider({
     // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only effect
   }, [])
 
+  useEffect(() => {
+    if (!feature('UDS_INBOX')) return
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { setPeerPermissionContext, refreshPeerInboundPolicy } =
+      require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+    let permissionContext = store.getState().toolPermissionContext
+    setPeerPermissionContext(() => store.getState().toolPermissionContext)
+    const unsubscribe = store.subscribe(() => {
+      const next = store.getState().toolPermissionContext
+      const changed =
+        next.mode !== permissionContext.mode ||
+        next.isBypassPermissionsModeAvailable !==
+          permissionContext.isBypassPermissionsModeAvailable
+      permissionContext = next
+      if (changed) refreshPeerInboundPolicy()
+    })
+    return () => {
+      unsubscribe()
+      setPeerPermissionContext(undefined)
+    }
+  }, [store])
+
   // Listen for external settings changes and sync to AppState.
   // This ensures file watcher changes propagate through the app --
   // shared with the headless/SDK path via applySettingsChange.
