@@ -1,3 +1,4 @@
+import { readFile, readlink } from 'fs/promises'
 import {
   execFileNoThrowWithCwd,
   execSyncWithDefaults_DEPRECATED,
@@ -10,11 +11,30 @@ import {
 
 export async function getProcessStart(pid: number): Promise<string | undefined> {
   if (!Number.isSafeInteger(pid) || pid <= 1 || process.platform === 'win32') return
+  if (process.platform === 'linux') {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+      // comm may contain spaces and closing parentheses; starttime is field 22.
+      const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
+      return start && /^\d+$/.test(start) ? start : undefined
+    } catch {
+      return
+    }
+  }
   const result = await execFileNoThrowWithCwd('ps', ['-o', 'lstart=', '-p', String(pid)], {
     timeout: 1000,
     env: { LC_ALL: 'C', TZ: 'UTC' },
   })
   return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : undefined
+}
+
+export async function getProcessPidDomain(): Promise<string> {
+  if (process.platform !== 'linux') return process.platform
+  const [machineId, pidNamespace] = await Promise.all([
+    readFile('/etc/machine-id', 'utf8').then(value => value.trim(), () => ''),
+    readlink('/proc/self/ns/pid').catch(() => ''),
+  ])
+  return `linux:${machineId}:${pidNamespace}`
 }
 
 /**

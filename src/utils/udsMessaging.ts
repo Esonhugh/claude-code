@@ -10,7 +10,7 @@ import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage } from './errors.js'
-import { getProcessStart } from './genericProcessUtils.js'
+import { getProcessPidDomain, getProcessStart } from './genericProcessUtils.js'
 import { dequeueAllMatching, enqueue, getCommandQueue } from './messageQueueManager.js'
 import { parseAddress } from './peerAddress.js'
 import {
@@ -260,7 +260,7 @@ export async function startUdsMessaging(
     const dirStat = await stat(dir)
     if (!dirStat.isDirectory() || (process.getuid && (dirStat.uid !== process.getuid() || (dirStat.mode & 0o077) !== 0))) throw new Error('Messaging key directory must be private to this user')
     const newKeyPath = join(dir, peerKeyFilename(process.pid, endpoint))
-    await writeFile(newKeyPath, JSON.stringify({ peerToken, procStart: await getProcessStart(process.pid), pidDomain: process.platform }), { mode: 0o600, flag: 'wx' })
+    await writeFile(newKeyPath, JSON.stringify({ peerToken, procStart: await getProcessStart(process.pid), pidDomain: await getProcessPidDomain() }), { mode: 0o600, flag: 'wx' })
     keyPath = newKeyPath
     process.env.CLAUDE_CODE_MESSAGING_SOCKET = endpoint
     process.env.CLAUDE_CODE_MESSAGING_TOKEN = childToken

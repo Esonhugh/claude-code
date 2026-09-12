@@ -11,7 +11,7 @@ import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage, isFsInaccessible } from './errors.js'
-import { getProcessStart, isProcessRunning } from './genericProcessUtils.js'
+import { getProcessPidDomain, getProcessStart, isProcessRunning } from './genericProcessUtils.js'
 import { cleanPeerName } from './peerProtocol.js'
 import { getPlatform } from './platform.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
@@ -98,7 +98,7 @@ export async function registerSession(): Promise<boolean> {
         cwd: getOriginalCwd(),
         startedAt: Date.now(),
         procStart: await getProcessStart(process.pid),
-        pidDomain: process.platform,
+        pidDomain: await getProcessPidDomain(),
         version: MACRO.VERSION,
         kind,
         name: registeredName,

@@ -6,7 +6,7 @@ import { getSessionId } from '../bootstrap/state.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage } from './errors.js'
-import { isProcessRunning, getProcessStart } from './genericProcessUtils.js'
+import { isProcessRunning, getProcessPidDomain, getProcessStart } from './genericProcessUtils.js'
 import {
   canonicalPeerEndpoint,
   cleanPeerName,
@@ -72,7 +72,7 @@ export async function listAllLiveSessions(): Promise<LiveSessionInfo[]> {
       if (!raw) continue
       const record = JSON.parse(raw)
       if (!record || record.pid !== pid || typeof record.sessionId !== 'string' || typeof record.messagingSocketPath !== 'string' || typeof record.startedAt !== 'number' || record.peerProtocol !== 1 || record.spare || record.parkedJobId) continue
-      if (record.pidDomain && record.pidDomain !== process.platform) continue
+      if (record.pidDomain && record.pidDomain !== await getProcessPidDomain()) continue
       if (typeof record.procStart === 'string') {
         const actual = await getProcessStart(pid)
         if (actual && record.procStart !== actual) continue
@@ -132,7 +132,7 @@ async function readPeerToken(endpoint: string): Promise<string | undefined> {
     const raw = await readPeerFile(join(dir, file), 4096)
     if (!raw) continue
     const record = JSON.parse(raw)
-    if (record.pidDomain && record.pidDomain !== process.platform) continue
+    if (record.pidDomain && record.pidDomain !== await getProcessPidDomain()) continue
     if (typeof record.procStart === 'string') {
       const actual = await getProcessStart(pid)
       if (actual && actual !== record.procStart) continue

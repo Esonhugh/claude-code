@@ -7,6 +7,7 @@ import { getSessionId, switchSession } from '../bootstrap/state.js'
 import { asSessionId } from '../types/ids.js'
 import { getRegisteredSessionName, registerSession, updateSessionBridgeId, updateSessionName } from './concurrentSessions.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
+import { getProcessPidDomain, getProcessStart } from './genericProcessUtils.js'
 import { dequeueAll, getCommandQueue } from './messageQueueManager.js'
 import { formatPeerAddress, formatPeerMessage, peerKeyFilename } from './peerProtocol.js'
 import { resetSettingsCache } from './settings/settingsCache.js'
@@ -94,6 +95,8 @@ describe('peer IPC runtime', () => {
     expect(key.peerToken).toMatch(/^[0-9a-f]{32}$/)
     expect(key.peerToken).not.toBe(process.env.CLAUDE_CODE_MESSAGING_TOKEN)
     expect(key.childToken).toBeUndefined()
+    expect(key.pidDomain).toBe(await getProcessPidDomain())
+    expect(key.procStart).toBe(await getProcessStart(process.pid))
     expect((await lstat(keyPath)).mode & 0o777).toBe(0o600)
     await stopUdsMessaging()
     expect(getUdsMessagingSocketPath()).toBeNull()
@@ -165,7 +168,7 @@ describe('peer IPC runtime', () => {
       const pidFile = join(root, 'config/sessions', `${process.pid}.json`)
       expect(JSON.parse(await readFile(pidFile, 'utf8'))).toMatchObject({
         pid: process.pid, sessionId: getSessionId(), peerProtocol: 1,
-        peerFeatures: [], pidDomain: process.platform, messagingSocketPath: socketPath,
+        peerFeatures: [], pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(process.pid), messagingSocketPath: socketPath,
         version: '2.1.219-test', name: getRegisteredSessionName(),
       })
       await Promise.all([updateSessionName('worker'), updateSessionBridgeId('bridge-test')])
@@ -198,7 +201,12 @@ describe('peer IPC runtime', () => {
       expect(peers[0]).toMatchObject({ name: 'Other Worker', messagingSocketPath: peer })
       expect((await resolvePeerSession(`Other Worker [${peers[0]!.ref}]`))?.pid).toBe(child.pid)
       expect((await resolvePeerSession('other-worker'))?.pid).toBe(child.pid)
-      await writeFile(registry, JSON.stringify({ ...record, procStart: 'recycled PID' }))
+      const identity = { pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(child.pid) }
+      await writeFile(registry, JSON.stringify({ ...record, ...identity }))
+      expect(await listAllLiveSessions()).toHaveLength(1)
+      await writeFile(registry, JSON.stringify({ ...record, ...identity, pidDomain: identity.pidDomain + ':other-namespace' }))
+      expect(await listAllLiveSessions()).toEqual([])
+      await writeFile(registry, JSON.stringify({ ...record, ...identity, procStart: 'recycled PID' }))
       expect(await listAllLiveSessions()).toEqual([])
       await writeFile(registry, JSON.stringify({ ...record, peerProtocol: 2 }))
       expect(await listAllLiveSessions()).toEqual([])
@@ -325,7 +333,14 @@ describe('peer IPC runtime', () => {
     await new Promise<void>(resolve => server!.listen(peer, resolve))
     await chmod(peer, 0o600)
     const token = createHash('sha256').update(randomUUID()).digest('hex').slice(0, 32)
-    await writeFile(join(root, 'config/sessions', peerKeyFilename(process.pid, peer)), JSON.stringify({ peerToken: token }), { mode: 0o600 })
+    const keyPath = join(root, 'config/sessions', peerKeyFilename(process.pid, peer))
+    const key = { peerToken: token, pidDomain: await getProcessPidDomain(), procStart: await getProcessStart(process.pid) }
+    await writeFile(keyPath, JSON.stringify({ ...key, pidDomain: key.pidDomain + ':other-namespace' }), { mode: 0o600 })
+    await expect(sendToUdsSocket(peer, 'wrong domain')).rejects.toThrow('No usable authentication key')
+    await writeFile(keyPath, JSON.stringify({ ...key, procStart: 'recycled PID' }))
+    await expect(sendToUdsSocket(peer, 'stale process')).rejects.toThrow('No usable authentication key')
+    expect(frames).toEqual([])
+    await writeFile(keyPath, JSON.stringify(key))
     const result = await sendToUdsSocket(peer, 'hello official', { fromMode: 'bypass', fromName: 'built' })
     await received.promise
     expect(frames[0]).toEqual({ type: 'auth', token })
