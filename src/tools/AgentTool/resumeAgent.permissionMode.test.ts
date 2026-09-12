@@ -15,6 +15,11 @@ import {
 } from '../../utils/sessionStorage.js'
 import { FileReadTool } from '../FileReadTool/FileReadTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
+import {
+  getSessionSettingsCache,
+  resetSettingsCache,
+  setSessionSettingsCache,
+} from '../../utils/settings/settingsCache.js'
 
 let controlledPermissionMode: string | undefined
 let controlledAllowedTools: string[] | undefined
@@ -52,11 +57,14 @@ mock.module('./runAgent.js', () => ({
   },
 }))
 
+const originalSettings = getSessionSettingsCache()
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalTestPersistence = process.env.TEST_ENABLE_SESSION_PERSISTENCE
+const originalApiKey = process.env.ANTHROPIC_API_KEY
 const configDir = mkdtempSync(join(tmpdir(), 'resume-agent-permission-test-'))
 process.env.CLAUDE_CONFIG_DIR = configDir
 process.env.TEST_ENABLE_SESSION_PERSISTENCE = '1'
+process.env.ANTHROPIC_API_KEY = 'test-resume-agent-permission-key'
 
 const { resumeAgentBackground } = await import('./resumeAgent.js')
 
@@ -68,9 +76,9 @@ async function runCase({
   definitionTools,
 }: {
   agentId: string
-  parentMode: 'default' | 'bypassPermissions'
-  metadataMode?: 'default' | 'acceptEdits'
-  definitionMode?: 'acceptEdits'
+  parentMode: 'default' | 'bypassPermissions' | 'plan'
+  metadataMode?: 'default' | 'acceptEdits' | 'plan'
+  definitionMode?: 'acceptEdits' | 'plan'
   definitionTools?: string[]
 }) {
   const typedAgentId = asAgentId(agentId)
@@ -160,6 +168,30 @@ async function runCase({
 }
 
 try {
+  setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
+  assert.equal(
+    (await runCase({
+      agentId: 'resume-existing-plan',
+      parentMode: 'default',
+      metadataMode: 'plan',
+    })).permissionMode,
+    'plan',
+  )
+  assert.equal(
+    (await runCase({
+      agentId: 'resume-inherited-plan',
+      parentMode: 'plan',
+    })).permissionMode,
+    'plan',
+  )
+  await assert.rejects(
+    runCase({
+      agentId: 'resume-new-plan-definition',
+      parentMode: 'default',
+      definitionMode: 'plan',
+    }),
+    /Plan mode is disabled.*"planModeAvailable": true/,
+  )
   assert.equal(
     (
       await runCase({
@@ -212,6 +244,8 @@ try {
     ['Read(example.txt)'],
   )
 } finally {
+  if (originalSettings) setSessionSettingsCache(originalSettings)
+  else resetSettingsCache()
   resetGitFileWatcher()
   if (originalConfigDir === undefined) {
     delete process.env.CLAUDE_CONFIG_DIR
@@ -222,6 +256,11 @@ try {
     delete process.env.TEST_ENABLE_SESSION_PERSISTENCE
   } else {
     process.env.TEST_ENABLE_SESSION_PERSISTENCE = originalTestPersistence
+  }
+  if (originalApiKey === undefined) {
+    delete process.env.ANTHROPIC_API_KEY
+  } else {
+    process.env.ANTHROPIC_API_KEY = originalApiKey
   }
   rmSync(configDir, { recursive: true, force: true })
 }

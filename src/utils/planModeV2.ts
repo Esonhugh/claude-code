@@ -2,7 +2,14 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { getRateLimitTier, getSubscriptionType } from './auth.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
+import { getInitialSettings } from './settings/settings.js'
 
+export const PLAN_MODE_DISABLED_MESSAGE =
+  'Plan mode is disabled. Set "planModeAvailable": true in settings.json to enable it.'
+
+export function isPlanModeAvailable(): boolean {
+  return getInitialSettings().planModeAvailable === true
+}
 
 export function getPlanModeV2AgentCount(): number {
   // Environment variable override takes precedence

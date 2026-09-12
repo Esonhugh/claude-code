@@ -2,6 +2,13 @@ import { describe, expect, test } from 'bun:test'
 import { SettingsSchema } from './types.js'
 
 describe('settings schema', () => {
+  test('accepts only boolean Plan mode opt-in settings', () => {
+    expect(SettingsSchema().safeParse({ planModeAvailable: 'true' }).success).toBe(false)
+    expect(SettingsSchema().parse({ planModeAvailable: true }).planModeAvailable).toBe(true)
+    expect(SettingsSchema().parse({ planModeAvailable: false }).planModeAvailable).toBe(false)
+    expect(SettingsSchema().parse({}).planModeAvailable).toBeUndefined()
+  })
+
   test('accepts explicit workflow enablement', () => {
     const result = SettingsSchema().safeParse({ enableWorkflows: true })
 

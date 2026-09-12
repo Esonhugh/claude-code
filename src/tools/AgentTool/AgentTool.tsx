@@ -64,6 +64,10 @@ import {
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js'
+import {
+  isPlanModeAvailable,
+  PLAN_MODE_DISABLED_MESSAGE,
+} from '../../utils/planModeV2.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
@@ -262,7 +266,7 @@ const fullInputSchema = lazySchema(() => {
 // (field type collapses to `unknown`). The ternary return produces a union
 // type, but call() destructures via the explicit AgentToolInput type below
 // which always includes all optional fields.
-export const inputSchema = lazySchema(() => {
+const planEnabledInputSchema = lazySchema(() => {
   const schema = feature('KAIROS')
     ? fullInputSchema()
     : fullInputSchema().omit({ cwd: true })
@@ -278,6 +282,22 @@ export const inputSchema = lazySchema(() => {
     ? schema.omit({ run_in_background: true })
     : schema
 })
+const planDisabledInputSchema = lazySchema(() =>
+  planEnabledInputSchema().extend({
+    mode: permissionModeSchema()
+      .exclude(['plan'])
+      .optional()
+      .describe(
+        'Permission mode for spawned teammate. Omit to inherit the caller mode. A bypassPermissions caller always remains bypassPermissions.',
+      ),
+  }),
+)
+
+export function inputSchema() {
+  return isPlanModeAvailable()
+    ? planEnabledInputSchema()
+    : planDisabledInputSchema()
+}
 type InputSchema = ReturnType<typeof inputSchema>
 
 // Explicit type widens the schema inference to always include all optional
@@ -477,7 +497,7 @@ export const AgentTool = buildTool({
     return 'Launch a new agent'
   },
   get inputSchema(): InputSchema {
-    return inputSchema()
+    return planEnabledInputSchema()
   },
   get outputSchema(): OutputSchema {
     return outputSchema()
@@ -506,9 +526,10 @@ export const AgentTool = buildTool({
 
     // Get app state for permission mode and agent filtering.
     const appState = toolUseContext.getAppState()
-    const requestedPermissionContext = spawnMode
-      ? applyRequestedAgentPermissionMode(appState.toolPermissionContext, spawnMode)
-      : appState.toolPermissionContext
+    const requestedPermissionContext =
+      spawnMode && appState.toolPermissionContext.mode !== 'bypassPermissions'
+        ? applyRequestedAgentPermissionMode(appState.toolPermissionContext, spawnMode)
+        : appState.toolPermissionContext
     // In-process teammates get a no-op setAppState; setAppStateForTasks
     // reaches the root store so task registration/progress/kill stay visible.
     const rootSetAppState =
@@ -612,6 +633,13 @@ export const AgentTool = buildTool({
         : (explicitPermissionMode ??
           selectedAgent.permissionMode ??
           appState.toolPermissionContext.mode)
+    if (
+      permissionMode === 'plan' &&
+      appState.toolPermissionContext.mode !== 'plan' &&
+      !isPlanModeAvailable()
+    ) {
+      throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+    }
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode
@@ -2226,6 +2254,9 @@ duration_ms: ${data.totalDurationMs}</usage>`,
   renderToolUseErrorMessage,
   renderGroupedToolUse: renderGroupedAgentToolUse,
 } satisfies ToolDef<InputSchema, Output, Progress>)
+
+// buildTool spreads the definition; preserve a live schema getter for settings changes.
+Object.defineProperty(AgentTool, 'inputSchema', { get: inputSchema })
 
 function resolveTeamName(
   input: { team_name?: string },

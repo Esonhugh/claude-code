@@ -12,10 +12,12 @@ import { Box, Text } from '../../ink.js'
 import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
   ASK_USER_QUESTION_TOOL_CHIP_WIDTH,
   ASK_USER_QUESTION_TOOL_NAME,
   ASK_USER_QUESTION_TOOL_PROMPT,
+  ASK_USER_QUESTION_PLAN_MODE_PROMPT,
   DESCRIPTION,
   PREVIEW_FEATURE_PROMPT,
 } from './prompt.js'
@@ -204,14 +206,19 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
   async description() {
     return DESCRIPTION
   },
-  async prompt() {
+  async prompt({ getToolPermissionContext }) {
+    const showPlanInstructions =
+      isPlanModeAvailable() || (await getToolPermissionContext()).mode === 'plan'
+    const prompt =
+      ASK_USER_QUESTION_TOOL_PROMPT +
+      (showPlanInstructions ? ASK_USER_QUESTION_PLAN_MODE_PROMPT : '')
     const format = getQuestionPreviewFormat()
     if (format === undefined) {
       // SDK consumer that hasn't opted into a preview format — omit preview
       // guidance (they may not render the field at all).
-      return ASK_USER_QUESTION_TOOL_PROMPT
+      return prompt
     }
-    return ASK_USER_QUESTION_TOOL_PROMPT + PREVIEW_FEATURE_PROMPT[format]
+    return prompt + PREVIEW_FEATURE_PROMPT[format]
   },
   get inputSchema(): InputSchema {
     return inputSchema()

@@ -4,6 +4,9 @@ import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import { isTeammate } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
+import { isPlanModeAvailable } from '../../utils/planModeV2.js'
+import { ENTER_PLAN_MODE_TOOL_NAME } from '../EnterPlanModeTool/constants.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
@@ -14,7 +17,18 @@ import { isAnt } from 'src/utils/userType.js'
 
 
 function getToolsDescription(agent: AgentDefinition): string {
-  const { tools, disallowedTools } = agent
+  const planModeAvailable = isPlanModeAvailable()
+  const tools = planModeAvailable
+    ? agent.tools
+    : agent.tools?.filter(
+        t => t !== ENTER_PLAN_MODE_TOOL_NAME && t !== EXIT_PLAN_MODE_V2_TOOL_NAME,
+      )
+  const disallowedTools = planModeAvailable
+    ? agent.disallowedTools
+    : agent.disallowedTools?.filter(
+        t => t !== ENTER_PLAN_MODE_TOOL_NAME && t !== EXIT_PLAN_MODE_V2_TOOL_NAME,
+      )
+  if (agent.tools?.length && tools?.length === 0) return 'None'
   const hasAllowlist = tools && tools.length > 0
   const hasDenylist = disallowedTools && disallowedTools.length > 0
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { afterAll } from 'bun:test'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,10 +9,17 @@ import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/Local
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
 import {
+  getSessionSettingsCache,
   resetSettingsCache,
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowTool } from './WorkflowTool.js'
+
+const originalSettings = getSessionSettingsCache()
+afterAll(() => {
+  if (originalSettings) setSessionSettingsCache(originalSettings)
+  else resetSettingsCache()
+})
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-tool-test-'))
 await mkdir(join(tempRoot, 'docs', 'workflows'), { recursive: true })
@@ -182,7 +190,7 @@ setSessionSettingsCache({ settings: {}, errors: [] })
 assert.equal(WorkflowTool.isEnabled(), false)
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 assert.equal(WorkflowTool.isEnabled(), true)
-resetSettingsCache()
+setSessionSettingsCache({ settings: { enableWorkflows: true, planModeAvailable: true }, errors: [] })
 assert.equal(WorkflowTool.shouldDefer, true)
 const workflowPrompt = await WorkflowTool.prompt()
 assert.match(workflowPrompt, /Explicit opt-in requirement/)

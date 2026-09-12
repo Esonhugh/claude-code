@@ -6,6 +6,7 @@ import { getExternalEditor } from '../../utils/editor.js'
 import { toIDEDisplayName } from '../../utils/ide.js'
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlan, getPlanFilePath } from '../../utils/plans.js'
+import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../../utils/planModeV2.js'
 import { editFileInEditor } from '../../utils/promptEditor.js'
 import { renderToString } from '../../utils/staticRender.js'
 
@@ -49,6 +50,10 @@ export async function call(
 
   // If not in plan mode, enable it
   if (currentMode !== 'plan') {
+    if (!isPlanModeAvailable()) {
+      onDone(PLAN_MODE_DISABLED_MESSAGE)
+      return null
+    }
     if (context.requestPermissionModeChange) {
       const result = await context.requestPermissionModeChange('plan')
       if (result.success === false) {

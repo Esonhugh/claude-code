@@ -56,6 +56,7 @@ import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'
 import { ExitPlanModeV2Tool } from './tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
+import { isPlanModeAvailable } from './utils/planModeV2.js'
 import { TestingPermissionTool } from './tools/testing/TestingPermissionTool.js'
 import { GrepTool } from './tools/GrepTool/GrepTool.js'
 import { TungstenTool } from './tools/TungstenTool/TungstenTool.js'
@@ -199,7 +200,9 @@ export function getToolsForDefaultPreset(): string[] {
 /**
  * NOTE: This MUST stay in sync with https://console.statsig.com/4aF3Ewatb6xPVpCwxb5nA3/dynamic_configs/claude_code_global_system_caching, in order to cache the system prompt across users.
  */
-export function getAllBaseTools(): Tools {
+export function getAllBaseTools(
+  permissionContext?: Pick<ToolPermissionContext, 'mode'>,
+): Tools {
   return [
     AgentTool,
     TaskOutputTool,
@@ -209,7 +212,9 @@ export function getAllBaseTools(): Tools {
     // trick as ripgrep). When available, find/grep in Claude's shell are aliased
     // to these fast tools, so the dedicated Glob/Grep tools are unnecessary.
     ...(hasEmbeddedSearchTools() ? [] : [GlobTool, GrepTool]),
-    ExitPlanModeV2Tool,
+    ...(isPlanModeAvailable() || permissionContext?.mode === 'plan'
+      ? [ExitPlanModeV2Tool]
+      : []),
     FileReadTool,
     FileEditTool,
     FileWriteTool,
@@ -289,6 +294,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     // below which also hides REPL_ONLY_TOOLS when REPL is enabled.
     if (isReplModeEnabled() && REPLTool) {
       const replSimple: Tool[] = [REPLTool]
+      if (permissionContext.mode === 'plan') replSimple.push(ExitPlanModeV2Tool)
       if (
         feature('COORDINATOR_MODE') &&
         coordinatorModeModule?.isCoordinatorMode()
@@ -298,6 +304,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
       return filterToolsByDenyRules(replSimple, permissionContext)
     }
     const simpleTools: Tool[] = [BashTool, FileReadTool, FileEditTool]
+    if (permissionContext.mode === 'plan') simpleTools.push(ExitPlanModeV2Tool)
     if (isWorkflowScriptsFeatureEnabled()) {
       simpleTools.push(...getWorkflowTools())
     }
@@ -321,7 +328,9 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     SYNTHETIC_OUTPUT_TOOL_NAME,
   ])
 
-  const tools = getAllBaseTools().filter(tool => !specialTools.has(tool.name))
+  const tools = getAllBaseTools(permissionContext).filter(
+    tool => !specialTools.has(tool.name),
+  )
 
   // Filter out tools that are denied by the deny rules
   let allowedTools = filterToolsByDenyRules(tools, permissionContext)

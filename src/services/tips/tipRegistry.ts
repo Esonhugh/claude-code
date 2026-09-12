@@ -36,6 +36,7 @@ import {
   getUserSpecifiedModelSetting,
 } from '../../utils/model/model.js'
 import { getPlatform } from '../../utils/platform.js'
+import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import { isPluginInstalled } from '../../utils/plugins/installedPluginsManager.js'
 import { loadKnownMarketplacesConfigSafe } from '../../utils/plugins/marketplaceManager.js'
 import { OFFICIAL_MARKETPLACE_NAME } from '../../utils/plugins/officialMarketplace.js'
@@ -116,7 +117,7 @@ const externalTips: Tip[] = [
       `Use Plan Mode to prepare for a complex request before making changes. Press ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} twice to enable.`,
     cooldownSessions: 5,
     isRelevant: async () => {
-      if (isAnt()) return false
+      if (isAnt() || !isPlanModeAvailable()) return false
       const config = getGlobalConfig()
       // Show to users who haven't used plan mode recently (7+ days)
       const daysSinceLastUse = config.lastPlanModeUse
@@ -132,6 +133,7 @@ const externalTips: Tip[] = [
       `Use /config to change your default permission mode (including Plan Mode)`,
     cooldownSessions: 10,
     isRelevant: async () => {
+      if (!isPlanModeAvailable()) return false
       try {
         const config = getGlobalConfig()
         const settings = getSettings_DEPRECATED()
@@ -437,7 +439,7 @@ const externalTips: Tip[] = [
     content: async () =>
       isAnt()
         ? `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between default mode and auto mode`
-        : `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between default mode, auto-accept edit mode, and plan mode`,
+        : `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between ${isPlanModeAvailable() ? 'default mode, auto-accept edit mode, and plan mode' : 'default mode and auto-accept edit mode'}`,
     cooldownSessions: 10,
     isRelevant: async () => true,
   },
@@ -518,7 +520,7 @@ const externalTips: Tip[] = [
       `Your default model setting is Opus Plan Mode. Press ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} twice to activate Plan Mode and plan with Claude Opus.`,
     cooldownSessions: 2,
     async isRelevant() {
-      if (isAnt()) return false
+      if (isAnt() || !isPlanModeAvailable()) return false
       const config = getGlobalConfig()
       const modelSetting = getUserSpecifiedModelSetting()
       const hasOpusPlanMode = modelSetting === 'opusplan'

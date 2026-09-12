@@ -1,4 +1,5 @@
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
+import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 
 export const DESCRIPTION = 'Create a new task in the task list'
 
@@ -21,8 +22,7 @@ It also helps the user understand the progress of the task and overall progress 
 Use this tool proactively in these scenarios:
 
 - Complex multi-step tasks - When a task requires 3 or more distinct steps or actions
-- Non-trivial and complex tasks - Tasks that require careful planning or multiple operations${teammateContext}
-- Plan mode - When using plan mode, create a task list to track the work
+- Non-trivial and complex tasks - Tasks that require careful planning or multiple operations${teammateContext}${isPlanModeAvailable() ? '\n- Plan mode - When using plan mode, create a task list to track the work' : ''}
 - User explicitly requests todo list - When the user directly asks you to use the todo list
 - User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)
 - When you start working on a tracked task - Mark it as in_progress BEFORE beginning work

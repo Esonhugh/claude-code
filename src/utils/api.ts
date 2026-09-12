@@ -32,10 +32,13 @@ import { roughTokenCountEstimation } from '../services/tokenEstimation.js'
 import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
+import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
+import { isPlanModeAvailable } from './planModeV2.js'
 import {
   modelSupportsStructuredOutputs,
   shouldUseGlobalCacheScope,
@@ -143,11 +146,25 @@ export async function toolToAPISchema(
   // share the name 'StructuredOutput' but carry different schemas per workflow
   // call — name-only keying returned a stale schema (5.4% → 51% err rate, see
   // PR#25424). MCP tools also set inputJSONSchema but each has a stable schema,
-  // so including it preserves their GB-flip cache stability.
+  // so including it preserves their GB-flip cache stability. Plan-sensitive
+  // built-ins have stable variants because the setting may change at runtime;
+  // AskUserQuestion also retains Plan guidance while a session is already in Plan.
+  const planModeAvailable = isPlanModeAvailable()
+  const planModeSensitive =
+    tool.name === AGENT_TOOL_NAME ||
+    tool.name === ASK_USER_QUESTION_TOOL_NAME ||
+    tool.name === TASK_CREATE_TOOL_NAME
+  const permissionMode =
+    tool.name === ASK_USER_QUESTION_TOOL_NAME
+      ? (await options.getToolPermissionContext()).mode
+      : undefined
+  const planModeVariant = planModeSensitive
+    ? `:planMode=${planModeAvailable || permissionMode === 'plan'}`
+    : ''
   const cacheKey =
     'inputJSONSchema' in tool && tool.inputJSONSchema
-      ? `${tool.name}:${jsonStringify(tool.inputJSONSchema)}`
-      : tool.name
+      ? `${tool.name}:${jsonStringify(tool.inputJSONSchema)}${planModeVariant}`
+      : `${tool.name}${planModeVariant}`
   const cache = getToolSchemaCache()
   let base = cache.get(cacheKey)
   if (!base) {

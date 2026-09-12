@@ -533,19 +533,23 @@ export function useReplBridge(
               }
               // Guards passed — apply via the centralized transition so
               // prePlanMode stashing and auto-mode state sync all fire.
-              setAppState(prev => {
-                const current = prev.toolPermissionContext.mode
-                if (current === mode) return prev
-                const next = transitionPermissionMode(
-                  current,
-                  mode,
-                  prev.toolPermissionContext,
-                )
-                return {
-                  ...prev,
-                  toolPermissionContext: { ...next, mode },
-                }
-              })
+              try {
+                setAppState(prev => {
+                  const current = prev.toolPermissionContext.mode
+                  if (current === mode) return prev
+                  const next = transitionPermissionMode(
+                    current,
+                    mode,
+                    prev.toolPermissionContext,
+                  )
+                  return {
+                    ...prev,
+                    toolPermissionContext: { ...next, mode },
+                  }
+                })
+              } catch (error) {
+                return { ok: false, error: errorMessage(error) }
+              }
               // Recheck queued permission prompts now that mode changed.
               setImmediate(() => {
                 getLeaderToolUseConfirmQueue()?.(currentQueue => {

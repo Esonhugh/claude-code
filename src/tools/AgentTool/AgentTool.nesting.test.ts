@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mock } from 'bun:test'
+import { afterAll, mock } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +28,17 @@ import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import type { SpawnTeammateConfig } from '../shared/spawnMultiAgent.js'
 import { writeTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
+import {
+  getSessionSettingsCache,
+  resetSettingsCache,
+  setSessionSettingsCache,
+} from '../../utils/settings/settingsCache.js'
+
+const originalSettings = getSessionSettingsCache()
+afterAll(() => {
+  if (originalSettings) setSessionSettingsCache(originalSettings)
+  else resetSettingsCache()
+})
 
 const originalAgentTeamsFlag =
   process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
@@ -263,6 +274,35 @@ await AgentTool.call(
 assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
 assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
 
+setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
+const disabledPlanContext = createContext(0)
+await assert.rejects(
+  AgentTool.call(
+    { description: 'disabled plan', prompt: 'inspect', subagent_type: 'general-purpose', mode: 'plan' },
+    disabledPlanContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_disabled_plan' } } as never,
+  ),
+  /"planModeAvailable": true/,
+)
+const definedPlanContext = createContext(0) as never as TestContext & {
+  options: { agentDefinitions: { activeAgents: Array<typeof GENERAL_PURPOSE_AGENT> } }
+}
+definedPlanContext.options.agentDefinitions.activeAgents = [{
+  ...GENERAL_PURPOSE_AGENT,
+  permissionMode: 'plan',
+}]
+await assert.rejects(
+  AgentTool.call(
+    { description: 'disabled defined plan', prompt: 'inspect', subagent_type: 'general-purpose' },
+    definedPlanContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_disabled_defined_plan' } } as never,
+  ),
+  /"planModeAvailable": true/,
+)
+
+setSessionSettingsCache({ settings: { planModeAvailable: true }, errors: [] })
 controlledPermissionMode = undefined
 controlledMainLoopModel = undefined
 const planModeContext = createContext(0) as never as TestContext & {
@@ -289,6 +329,7 @@ assert.equal(controlledPermissionMode, 'plan')
 assert.ok(controlledResolvedToolNames.includes('ExitPlanMode'))
 assert.doesNotMatch(controlledMainLoopModel ?? '', /\[1m\]/)
 
+setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
 controlledPermissionMode = undefined
 const inheritedPlanModeContext = createContext(0) as never as TestContext
 inheritedPlanModeContext.setAppState((prev: ReturnType<TestContext['getAppState']>) => ({

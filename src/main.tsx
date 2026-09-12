@@ -2121,11 +2121,23 @@ async function run(): Promise<CommanderCommand> {
           : addendum
       }
 
-      const { mode: permissionMode, notification: permissionModeNotification } =
-        initialPermissionModeFromCLI({
+      let initialPermission: ReturnType<typeof initialPermissionModeFromCLI>
+      try {
+        initialPermission = initialPermissionModeFromCLI({
           permissionModeCli,
           dangerouslySkipPermissions,
+          planModeRequired:
+            storedTeammateOpts?.planModeRequired ||
+            (isAgentSwarmsEnabled() && getTeammateUtils().isPlanModeRequired()),
         })
+      } catch (error) {
+        process.stderr.write(
+          chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}\n`),
+        )
+        process.exit(1)
+      }
+      const { mode: permissionMode, notification: permissionModeNotification } =
+        initialPermission
 
       // Store session bypass permissions mode for trust dialog check
       setSessionBypassPermissionsMode(permissionMode === 'bypassPermissions')

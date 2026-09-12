@@ -19,6 +19,10 @@ import {
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
+  isPlanModeAvailable,
+  PLAN_MODE_DISABLED_MESSAGE,
+} from '../../utils/planModeV2.js'
+import {
   getAgentTranscript,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -157,6 +161,15 @@ export async function resumeAgentBackground({
     : (meta?.permissionMode ??
       selectedAgent.permissionMode ??
       appState.toolPermissionContext.mode)
+  // Preserve recorded/inherited Plan restrictions, but gate a new definition entry.
+  if (
+    permissionMode === 'plan' &&
+    meta?.permissionMode !== 'plan' &&
+    appState.toolPermissionContext.mode !== 'plan' &&
+    !isPlanModeAvailable()
+  ) {
+    throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+  }
   const workerPermissionContext =
     permissionMode === appState.toolPermissionContext.mode
       ? appState.toolPermissionContext

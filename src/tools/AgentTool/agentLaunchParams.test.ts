@@ -1,4 +1,10 @@
 import assert from 'node:assert/strict'
+import { afterAll } from 'bun:test'
+import {
+  getSessionSettingsCache,
+  resetSettingsCache,
+  setSessionSettingsCache,
+} from '../../utils/settings/settingsCache.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import {
@@ -11,6 +17,13 @@ import {
   applyRequestedAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
+
+const originalSettings = getSessionSettingsCache()
+setSessionSettingsCache({ settings: { planModeAvailable: true }, errors: [] })
+afterAll(() => {
+  if (originalSettings) setSessionSettingsCache(originalSettings)
+  else resetSettingsCache()
+})
 
 assert.equal(
   normalizeAgentDescription('  Launch\n\tparams   should   normalize  '),

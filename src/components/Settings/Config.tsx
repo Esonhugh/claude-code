@@ -45,6 +45,7 @@ import {
   transitionPlanAutoMode,
 } from '../../utils/permissions/permissionSetup.js'
 import { logError } from '../../utils/log.js'
+import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
   logEvent,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -625,7 +626,7 @@ export function Config({
           ...allModes.filter(
             m => !priorityOrder.includes(m) && !excluded.includes(m),
           ),
-        ]
+        ].filter(mode => mode !== 'plan' || isPlanModeAvailable())
       })(),
       type: 'enum' as const,
       onChange(mode: string) {

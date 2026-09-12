@@ -14,8 +14,11 @@ import {
 } from '../../Tool.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
+import { ENTER_PLAN_MODE_TOOL_NAME } from '../EnterPlanModeTool/constants.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
 
 export const inputSchema = lazySchema(() =>
@@ -325,15 +328,21 @@ export const ToolSearchTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  async call(input, { options: { tools }, getAppState }) {
+  async call(input, { options: { tools: staleTools }, getAppState }) {
     const { query, max_results = 5 } = input
-
+    const appState = getAppState()
+    const tools = staleTools.filter(
+      tool =>
+        isPlanModeAvailable() ||
+        (tool.name !== ENTER_PLAN_MODE_TOOL_NAME &&
+          (tool.name !== EXIT_PLAN_MODE_V2_TOOL_NAME ||
+            appState.toolPermissionContext.mode === 'plan')),
+    )
     const deferredTools = tools.filter(isDeferredTool)
     maybeInvalidateCache(deferredTools)
 
     // Check for MCP servers still connecting
     function getPendingServerNames(): string[] | undefined {
-      const appState = getAppState()
       const pending = appState.mcp.clients.filter(c => c.type === 'pending')
       return pending.length > 0 ? pending.map(s => s.name) : undefined
     }

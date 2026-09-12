@@ -4962,7 +4962,25 @@ function handleSetPermissionMode(
     return toolPermissionContext
   }
 
-  // Allow the mode switch
+  let next: ToolPermissionContext
+  try {
+    next = transitionPermissionMode(
+      toolPermissionContext.mode,
+      request.mode,
+      toolPermissionContext,
+    )
+  } catch (error) {
+    output.enqueue({
+      type: 'control_response',
+      response: {
+        subtype: 'error',
+        request_id: requestId,
+        error: errorMessage(error),
+      },
+    })
+    return toolPermissionContext
+  }
+
   output.enqueue({
     type: 'control_response',
     response: {
@@ -4974,14 +4992,7 @@ function handleSetPermissionMode(
     },
   })
 
-  return {
-    ...transitionPermissionMode(
-      toolPermissionContext.mode,
-      request.mode,
-      toolPermissionContext,
-    ),
-    mode: request.mode,
-  }
+  return { ...next, mode: request.mode }
 }
 
 /**

@@ -4,6 +4,9 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { COORDINATOR_MODE_ALLOWED_TOOLS } from '../constants/tools.js'
 import { isMcpTool } from '../services/mcp/utils.js'
 import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
+import { ENTER_PLAN_MODE_TOOL_NAME } from '../tools/EnterPlanModeTool/constants.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
+import { isPlanModeAvailable } from './planModeV2.js'
 
 // MCP tool name suffixes for PR activity subscription. These are lightweight
 // orchestration actions the coordinator calls directly rather than delegating
@@ -63,7 +66,12 @@ export function mergeAndFilterTools(
   // Partition-sort for prompt-cache stability (same as assembleToolPool):
   // built-ins must stay a contiguous prefix for the server's cache policy.
   const [mcp, builtIn] = partition(
-    uniqBy([...initialTools, ...assembled], 'name'),
+    uniqBy([...initialTools, ...assembled], 'name').filter(
+      tool =>
+        isPlanModeAvailable() ||
+        (tool.name !== ENTER_PLAN_MODE_TOOL_NAME &&
+          (tool.name !== EXIT_PLAN_MODE_V2_TOOL_NAME || mode === 'plan')),
+    ),
     isMcpTool,
   )
   const byName = (a: Tool, b: Tool) => a.name.localeCompare(b.name)

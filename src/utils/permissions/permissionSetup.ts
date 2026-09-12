@@ -13,6 +13,7 @@ import type {
 } from '../../Tool.js'
 import { getCwd } from '../cwd.js'
 import { isEnvTruthy } from '../envUtils.js'
+import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import type { SettingSource } from '../settings/constants.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
 import {
@@ -608,6 +609,9 @@ export function transitionPermissionMode(
 ): ToolPermissionContext {
   // plan→plan (SDK set_permission_mode) would wrongly hit the leave branch below
   if (fromMode === toMode) return context
+  if (toMode === 'plan' && !isPlanModeAvailable()) {
+    throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+  }
 
   handlePlanModeTransition(fromMode, toMode)
   handleAutoModeTransition(fromMode, toMode)
@@ -696,11 +700,16 @@ function isSymlinkTo({
 export function initialPermissionModeFromCLI({
   permissionModeCli,
   dangerouslySkipPermissions,
+  planModeRequired = false,
 }: {
   permissionModeCli: string | undefined
   dangerouslySkipPermissions: boolean | undefined
+  planModeRequired?: boolean
 }): { mode: PermissionMode; notification?: string } {
   const settings = getSettings_DEPRECATED() || {}
+  if ((permissionModeCli === 'plan' || planModeRequired) && !isPlanModeAvailable()) {
+    throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+  }
 
   // Check GrowthBook gate first - highest precedence
   const growthBookDisableBypassPermissionsMode =
@@ -782,6 +791,9 @@ export function initialPermissionModeFromCLI({
   let result: { mode: PermissionMode; notification?: string } | undefined
 
   for (const mode of orderedModes) {
+    if (mode === 'plan' && !isPlanModeAvailable()) {
+      throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+    }
     if (mode === 'bypassPermissions' && disableBypassPermissionsMode) {
       if (growthBookDisableBypassPermissionsMode) {
         logForDebugging('bypassPermissions mode is disabled by Statsig gate', {
@@ -1480,6 +1492,7 @@ export function prepareContextForPlanMode(
 ): ToolPermissionContext {
   const currentMode = context.mode
   if (currentMode === 'plan') return context
+  if (!isPlanModeAvailable()) throw new Error(PLAN_MODE_DISABLED_MESSAGE)
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     const planAutoMode = shouldPlanUseAutoMode()
     if (currentMode === 'auto') {

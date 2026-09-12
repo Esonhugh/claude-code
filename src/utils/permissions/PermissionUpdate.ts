@@ -6,6 +6,7 @@ import type {
   WorkingDirectorySource,
 } from '../../types/permissions.js'
 import { logForDebugging } from '../debug.js'
+import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import {
   applySSHPermissionOverlayUpdate,
   isManagedSSHRemoteRuntime,
@@ -78,6 +79,13 @@ export function applyPermissionUpdate(
 ): ToolPermissionContext {
   switch (update.type) {
     case 'setMode':
+      if (
+        update.mode === 'plan' &&
+        context.mode !== 'plan' &&
+        !isPlanModeAvailable()
+      ) {
+        throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+      }
       logForDebugging(
         `Applying permission update: Setting mode to '${update.mode}'`,
       )

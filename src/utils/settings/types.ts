@@ -885,6 +885,10 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Minimum version to stay on - prevents downgrades when switching to stable channel',
         ),
+      planModeAvailable: z
+        .boolean()
+        .optional()
+        .describe('Enable Plan mode tools, commands, and instructions (default: false)'),
       plansDirectory: z
         .string()
         .optional()

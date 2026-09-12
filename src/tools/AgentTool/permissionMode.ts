@@ -1,5 +1,6 @@
 import type { ToolPermissionContext } from '../../Tool.js'
 import type { PermissionMode } from '../../types/permissions.js'
+import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../../utils/planModeV2.js'
 
 const AGENT_PERMISSION_MODE_RANK: Record<PermissionMode, number> = {
   plan: 0,
@@ -34,5 +35,8 @@ export function applyRequestedAgentPermissionMode(
         ? requestedMode
         : context.mode
 
+  if (mode === 'plan' && context.mode !== 'plan' && !isPlanModeAvailable()) {
+    throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+  }
   return mode === context.mode ? context : { ...context, mode }
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { afterAll } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,10 +10,17 @@ import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/Local
 import type { ToolUseContext } from '../../Tool.js'
 import type { AgentId } from '../../types/ids.js'
 import {
+  getSessionSettingsCache,
   resetSettingsCache,
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
+
+const originalSettings = getSessionSettingsCache()
+afterAll(() => {
+  if (originalSettings) setSessionSettingsCache(originalSettings)
+  else resetSettingsCache()
+})
 
 const workflowFacadeSource = readFileSync(
   'src/tools/WorkflowTool/WorkflowFacadeTool.ts',
@@ -130,7 +138,7 @@ setSessionSettingsCache({ settings: {}, errors: [] })
 assert.equal(WorkflowFacadeTool.isEnabled(), false)
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.isEnabled(), true)
-resetSettingsCache()
+setSessionSettingsCache({ settings: { enableWorkflows: true, planModeAvailable: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.shouldDefer, true)
 assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
   name: 'research',
