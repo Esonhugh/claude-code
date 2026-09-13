@@ -57,6 +57,8 @@ assert.match(packageBinarySource, /CLAUDE_CODE_BINARY_TARGET/);
 assert.match(packageBinarySource, /bun-linux-x64-baseline/);
 assert.match(packageBinarySource, /bun-linux-x64-musl/);
 assert.match(packageBinarySource, /bun-linux-arm64-musl/);
+assert.match(packageBinarySource, /'bun-windows-x64',/);
+assert.match(packageBinarySource, /'bun-windows-x64-baseline',/);
 assert.match(packageBinarySource, /ripgrep-\$\{platform\}-\$\{arch\}/);
 assert.match(packageBinarySource, /["']--target["']/);
 assert.match(packageBinarySource, /CLAUDE_CODE_EMBEDDED_SHARP: '1'/);

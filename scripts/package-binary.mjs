@@ -36,6 +36,8 @@ const supportedTargets = new Set([
   'bun-linux-x64-baseline',
   'bun-linux-x64-musl',
   'bun-linux-arm64-musl',
+  'bun-windows-x64',
+  'bun-windows-x64-baseline',
 ]);
 const targetParts = binaryTarget?.match(
   /^bun-(darwin|linux|windows)-(arm64|x64)(-(?:baseline|musl))?$/,

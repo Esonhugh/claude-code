@@ -1,4 +1,7 @@
 import { readFile, readlink } from 'fs/promises'
+import { createRequire } from 'module'
+import { hostname } from 'os'
+import { logForDebugging } from './debug.js'
 import {
   execFileNoThrowWithCwd,
   execSyncWithDefaults_DEPRECATED,
@@ -9,8 +12,52 @@ import {
 // - Win32, as `ps` within cygwin and WSL may not behave as expected, particularly when attempting to access processes on the host.
 // - Unix vs BSD-style `ps` have different options.
 
+const windowsProcessFunctions = {
+  OpenProcess: { args: ['u32', 'i32', 'u32'], returns: 'ptr' },
+  GetProcessTimes: { args: ['ptr', 'ptr', 'ptr', 'ptr', 'ptr'], returns: 'i32' },
+  CloseHandle: { args: ['ptr'], returns: 'i32' },
+} as const
+let windowsProcessLibrary: import('bun:ffi').Library<typeof windowsProcessFunctions> | null | undefined
+
+function getWindowsProcessLibrary() {
+  if (windowsProcessLibrary !== undefined) return windowsProcessLibrary
+  try {
+    // Resolve at runtime: Node uses PowerShell, while compiled Bun keeps its native FFI.
+    const load = createRequire(import.meta.url)
+    const ffi = load('bun:ffi') as typeof import('bun:ffi')
+    windowsProcessLibrary = ffi.dlopen('kernel32.dll', windowsProcessFunctions)
+    logForDebugging('[win32-proc-times] bun:ffi loaded, using procStartFt')
+  } catch {
+    windowsProcessLibrary = null
+    logForDebugging('[win32-proc-times] bun:ffi unavailable, falling back to PowerShell')
+  }
+  return windowsProcessLibrary
+}
+
 export async function getProcessStart(pid: number): Promise<string | undefined> {
-  if (!Number.isSafeInteger(pid) || pid <= 1 || process.platform === 'win32') return
+  if (!Number.isSafeInteger(pid) || pid <= 1) return
+  if (process.platform === 'win32') {
+    if (pid > 0xffffffff) return
+    const library = getWindowsProcessLibrary()
+    if (library) {
+      const handle = library.symbols.OpenProcess(4096, 0, pid)
+      if (!handle) return
+      try {
+        const creation = new Uint8Array(8)
+        if (!library.symbols.GetProcessTimes(handle, creation, new Uint8Array(8), new Uint8Array(8), new Uint8Array(8))) return
+        return new DataView(creation.buffer).getBigUint64(0, true).toString()
+      } catch {
+        return
+      } finally {
+        library.symbols.CloseHandle(handle)
+      }
+    }
+    const result = await execFileNoThrowWithCwd('powershell.exe', [
+      '-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate.Ticks`,
+    ], { timeout: 1000 })
+    const start = result.stdout.trim()
+    return result.code === 0 && /^\d+$/.test(start) ? start : undefined
+  }
   if (process.platform === 'linux') {
     try {
       const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
@@ -28,7 +75,25 @@ export async function getProcessStart(pid: number): Promise<string | undefined> 
   return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : undefined
 }
 
+export async function getProcessStartMetadata(pid: number): Promise<{ procStart?: string; procStartFt?: string }> {
+  const start = await getProcessStart(pid)
+  return process.platform === 'win32' && getWindowsProcessLibrary()
+    ? { procStartFt: start }
+    : { procStart: start }
+}
+
+export async function isProcessStartMatching(pid: number, metadata: { procStart?: unknown; procStartFt?: unknown }): Promise<boolean> {
+  // FILETIME and PowerShell DateTime ticks have different epochs and cannot be compared directly.
+  const expected = process.platform === 'win32' && getWindowsProcessLibrary()
+    ? metadata.procStart === undefined ? metadata.procStartFt : undefined
+    : metadata.procStart
+  if (typeof expected !== 'string') return true
+  const actual = await getProcessStart(pid)
+  return actual === undefined || actual === expected
+}
+
 export async function getProcessPidDomain(): Promise<string> {
+  if (process.platform === 'win32') return `win32:${hostname().toLowerCase()}`
   if (process.platform !== 'linux') return process.platform
   const [machineId, pidNamespace] = await Promise.all([
     readFile('/etc/machine-id', 'utf8').then(value => value.trim(), () => ''),

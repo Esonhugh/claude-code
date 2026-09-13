@@ -6,7 +6,7 @@ import { getSessionId } from '../bootstrap/state.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage } from './errors.js'
-import { isProcessRunning, getProcessPidDomain, getProcessStart } from './genericProcessUtils.js'
+import { isProcessRunning, getProcessPidDomain, getProcessStart, isProcessStartMatching } from './genericProcessUtils.js'
 import {
   canonicalPeerEndpoint,
   cleanPeerName,
@@ -133,10 +133,7 @@ async function readPeerToken(endpoint: string): Promise<string | undefined> {
     if (!raw) continue
     const record = JSON.parse(raw)
     if (record.pidDomain && record.pidDomain !== await getProcessPidDomain()) continue
-    if (typeof record.procStart === 'string') {
-      const actual = await getProcessStart(pid)
-      if (actual && actual !== record.procStart) continue
-    }
+    if (!await isProcessStartMatching(pid, record)) continue
     if (typeof record.peerToken === 'string' && /^[0-9a-f]{32}$/.test(record.peerToken)) return record.peerToken
   }
   if (matches.length || process.platform === 'win32') throw new Error('No usable authentication key for the live peer endpoint')
