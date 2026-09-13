@@ -2791,7 +2791,11 @@ async function run(): Promise<CommanderCommand> {
         messagingSocketPath,
       )
       const commandsPromise =
-        worktreeEnabled || isSSHRemoteSession ? null : getCommands(preSetupCwd)
+        worktreeEnabled || isSSHRemoteSession
+          ? null
+          : feature('UDS_INBOX')
+            ? setupPromise.then(() => getCommands(preSetupCwd))
+            : getCommands(preSetupCwd)
       const agentDefsPromise =
         worktreeEnabled || isSSHRemoteSession
           ? null

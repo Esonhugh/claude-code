@@ -84,6 +84,12 @@ afterEach(async () => {
 })
 
 describe('peer IPC runtime', () => {
+  test('uses the official macOS socket namespace without XDG_RUNTIME_DIR', () => {
+    if (process.platform !== 'darwin') return
+    delete process.env.XDG_RUNTIME_DIR
+    expect(getDefaultUdsSocketPath()).toBe(join('/tmp', 'cc-socks', `${process.pid}.sock`))
+  })
+
   test('binds a PID-specific socket, publishes canonical auth key and cleans up', async () => {
     expect(getDefaultUdsSocketPath()).toBe(socketPath)
     await startUdsMessaging(socketPath, { isExplicit: true })

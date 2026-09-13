@@ -42,7 +42,8 @@ let stopping = false
 
 export function getDefaultUdsSocketPath(): string {
   if (process.platform === 'win32') return `\\\\.\\pipe\\cc-msg-${randomBytes(16).toString('hex')}`
-  const path = join(process.env.XDG_RUNTIME_DIR || tmpdir(), 'cc-socks', `${process.pid}.sock`)
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || (process.platform === 'darwin' ? '/tmp' : tmpdir())
+  const path = join(runtimeDir, 'cc-socks', `${process.pid}.sock`)
   return Buffer.byteLength(path) <= 103 ? path : join('/tmp', `cc-socks-${process.getuid?.() ?? 0}`, `${process.pid}.sock`)
 }
 
