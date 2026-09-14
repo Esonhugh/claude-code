@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, URL } from 'node:url';
+import { runInNewContext } from 'node:vm';
+import { transformSync } from 'esbuild';
 import { getEnabledFeatures, macroValues } from './build.mjs';
 import { feature } from './shims/bun-bundle.js';
 import imageProcessor, {
@@ -48,6 +50,44 @@ assert.equal(
   macroValues['MACRO.PACKAGE_URL'],
   JSON.stringify('@esonhugh/claude-code'),
 );
+
+const expectedVersion =
+  (process.env.CLAUDE_CODE_VERSION ?? '0.0.0-dev').trim() || '0.0.0-dev';
+assert.equal(JSON.parse(macroValues['MACRO.VERSION']), expectedVersion);
+for (const [key, value] of Object.entries(JSON.parse(macroValues.MACRO))) {
+  assert.equal(macroValues[`MACRO.${key}`], JSON.stringify(value));
+  const { code } = transformSync(`JSON.stringify(MACRO.${key})`, {
+    define: macroValues,
+  });
+  assert.equal(runInNewContext(code), JSON.stringify(value), key);
+  assert.doesNotMatch(code, /MACRO/);
+}
+for (const sourcePath of [
+  '../src/utils/sessionStorage.ts',
+  '../src/components/StatusLine.tsx',
+  '../src/utils/doctorDiagnostic.ts',
+  '../src/commands/insights.ts',
+]) {
+  const source = readFileSync(new URL(sourcePath, import.meta.url), 'utf8');
+  const declaration = source.match(
+    /\bconst (VERSION|version) =\s*(typeof MACRO[^\n]+)/,
+  );
+  assert.ok(declaration, `Missing version declaration in ${sourcePath}`);
+  const { code } = transformSync(
+    `${declaration[0]}; JSON.stringify({ version: ${declaration[1]} });`,
+    { define: macroValues },
+  );
+  assert.equal(
+    runInNewContext(code),
+    JSON.stringify({ version: expectedVersion }),
+    `${sourcePath} must serialize the injected version without a global MACRO`,
+  );
+  const { code: asyncCode } = transformSync(
+    `(async () => { await Promise.resolve(); ${declaration[0]}; return ${declaration[1]}; })()`,
+    { define: macroValues },
+  );
+  assert.equal(await runInNewContext(asyncCode), expectedVersion, sourcePath);
+}
 
 const packageBinarySource = readFileSync(
   new URL('./package-binary.mjs', import.meta.url),

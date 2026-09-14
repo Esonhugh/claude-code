@@ -50,19 +50,24 @@ const unavailablePackagePrefixes = [
   'modifiers-napi',
   'url-handler-napi',
 ];
-export const macroValues = {
-  'MACRO.BUILD_TIME': JSON.stringify('2026-03-30T21:59:52Z'),
-  'MACRO.FEEDBACK_CHANNEL': JSON.stringify(
-    'https://github.com/anthropics/claude-code/issues',
-  ),
-  'MACRO.ISSUES_EXPLAINER': JSON.stringify(
+const macros = {
+  BUILD_TIME: '2026-03-30T21:59:52Z',
+  FEEDBACK_CHANNEL: 'https://github.com/anthropics/claude-code/issues',
+  ISSUES_EXPLAINER:
     'report the issue at https://github.com/anthropics/claude-code/issues',
-  ),
-  'MACRO.NATIVE_PACKAGE_URL': 'null',
-  'MACRO.PACKAGE_URL': JSON.stringify(packageJson.name),
-  'MACRO.VERSION': JSON.stringify(buildVersion),
-  'MACRO.VERSION_CHANGELOG': 'null',
+  NATIVE_PACKAGE_URL: null,
+  PACKAGE_URL: packageJson.name,
+  VERSION: buildVersion,
+  VERSION_CHANGELOG: null,
 };
+// Define the object for typeof guards while keeping property accesses inlined.
+export const macroValues = Object.fromEntries([
+  ['MACRO', JSON.stringify(macros)],
+  ...Object.entries(macros).map(([key, value]) => [
+    `MACRO.${key}`,
+    JSON.stringify(value),
+  ]),
+]);
 
 export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATURES) {
   return new Set([
