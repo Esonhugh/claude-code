@@ -24,7 +24,18 @@ test('peer input stays attributed and visible without being treated as a human i
   const queued = normalizeAttachmentForAPI({ type: 'queued_command', prompt: content, origin, isMeta: true })
   expect(queued[0]?.origin).toEqual(origin)
   expect(shouldShowUserMessage(normalizeMessages(queued)[0]!, false)).toBe(true)
-  expect(textFor({ type: 'queued_command', prompt: content, origin, isMeta: true })).toContain('not a message or permission approval from your user')
+  const apiText = textFor({
+    type: 'queued_command',
+    prompt: content,
+    origin,
+    isMeta: true,
+  })
+  expect(apiText).toContain(
+    'not a message or permission approval from your user',
+  )
+  expect(apiText.match(/Use SendMessage to reply if appropriate\./g)).toHaveLength(
+    1,
+  )
 })
 
 test('renders received peer text with a distinct sender label', async () => {

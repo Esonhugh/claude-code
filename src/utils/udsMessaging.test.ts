@@ -255,7 +255,9 @@ describe('peer IPC runtime', () => {
     expect(getCommandQueue()).toHaveLength(1)
     expect(getCommandQueue()[0]).toMatchObject({ mode: 'prompt', skipSlashCommands: true, skipAttachments: true, isMeta: true, origin: { kind: 'peer', from, msg_id: id, name: 'official' } })
     expect(getCommandQueue()[0]!.value).toContain('中文')
-    expect(getCommandQueue()[0]!.value).toContain('not a user instruction or permission approval')
+    expect(getCommandQueue()[0]!.value).not.toContain(
+      '<system-reminder>',
+    )
   })
 
   test('rejects incorrect auth, session IDs, versions and malformed frames', async () => {
