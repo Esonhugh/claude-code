@@ -1,6 +1,6 @@
 # Unofficial Claude Code
 
-基于 Claude Code `2.1.88` 分发产物恢复的非官方 TypeScript/TSX 源码工作区，并持续维护本地 CLI、Agent、Workflow、OpenAI/Codex 兼容和调试能力。
+基于 Claude Code 分发产物恢复的非官方 TypeScript/TSX 源码工作区，并持续维护本地 CLI、Agent、Workflow、OpenAI/Codex 兼容和调试能力。
 
 > 本项目不是 Anthropic 官方产品、官方源码分发或官方 Claude Code release，也未获得 Anthropic 背书。公开包只分发 launcher 与对应平台二进制，不包含本仓库源码。
 
@@ -9,8 +9,6 @@
 - 项目维护者：**Esonhugh**
 - 原始产品与上游实现：**Anthropic Claude Code**
 - 公开包：`@esonhugh/claude-code`
-- 恢复基线：Claude Code `2.1.88`
-- 当前本地发布线：`2.1.219`
 
 本仓库包含从公开 bundle/source map 恢复的上游代码和本地维护改动。上游归属与本地维护者身份应分别理解；完整本地变更以 [`CHANGELOG.md`](CHANGELOG.md) 为准。
 
@@ -20,40 +18,18 @@
 
 1. 保存从 Claude Code 分发产物恢复的可读 TypeScript/TSX 源码树。
 2. 提供可构建、可调试、可进行受控二次开发的本地 Claude Code CLI。
-3. 在 `2.1.88` 基线上维护 Agent、Workflow、OpenAI/Codex、交互终端和会话命令等扩展。
+3. 维护 Agent、Workflow、OpenAI/Codex、交互终端和会话命令等扩展。
 4. 保留恢复工程中的类型声明、stub 与 build shim，便于后续逐步替换或验证。
-5. 通过 binary-only 流程发布非官方 launcher：正式公开发布由 tag 驱动，本地 binary 由 `Makefile VERSION` 注入版本；两者都不公开分发本仓库源码。
+5. 通过 binary-only 流程发布非官方 launcher，不公开分发本仓库源码。
 
-### 当前基线
+### 开发环境与产物
 
-| 项目 | 当前值 |
-| --- | --- |
-| 恢复基线 | `2.1.88` |
-| 本地发布线 | `2.1.219` |
-| 源码版本 | `0.0.0-dev` |
-| 包管理器 | `bun@1.3.14` |
-| Node.js | `>=18` |
-| JS 构建产物 | `dist/cli.js` |
-| 本地 binary | `built-claude` |
+- 包管理器：Bun
+- Node.js：`>=18`
+- JavaScript 构建产物：`dist/cli.js`
+- 本地 binary：`built-claude`
 
-源码中的 `package.json` 始终保留 `0.0.0-dev`。正式构建版本由 Git tag 或 `CLAUDE_CODE_VERSION` 注入，`Makefile` 中的 `VERSION` 用于本地 binary 构建。
-
-### v2.1.219 发布准备
-
-当前准备发布 `2.1.219`，候选范围为 `v2.1.218..HEAD` 的已提交变更，不含既有 cross-session messaging 设计草稿。第 17 轮候选工作区已通过四路发布门禁，相关内容已提交并推送；该历史结果不替代后续修订的完整发布验收。尚未正式发布，安装公开 launcher 不代表已获得这些更新。完整范围与验证边界见 [`CHANGELOG.md`](CHANGELOG.md)。
-
-- **OpenAI 默认模型**：Anthropic 模型名称在 OpenAI adapter 中默认映射为 `gpt-5.6-luna`；显式指定的 OpenAI 模型名称保持不变。
-- **OpenAI 活动统计**：`/stats` 增加按需加载的 OpenAI 活动页，支持刷新；本地统计为空或不可用时仍可切换页签。
-- **压缩与请求诊断**：记录 OpenAI 压缩 checkpoint 元数据，统一普通请求与压缩请求的 instructions 序列化；debug 诊断记录请求摘要、大小和公共前缀，不记录请求正文，也不将前缀稳定等同于服务端缓存命中。
-- **Agent 活动显示**：查看 Agent 时，工具运行状态和本地 Agent spinner 跟随该 Agent，而不是 coordinator。
-
-- **插件更新与会话重载**：`/plugin manage` 中 Update now 更新安装版本后，用 `/reload-plugins` 应用到当前会话；完整替换 commands/独立 skills，并清理、重新发现插件 MCP，不强制重启无关 MCP。已安装的本地插件使用安装缓存版本，重载本身不重新下载；MCP/LSP 摘要数量不代表服务就绪。详见 [插件架构与验证边界](docs/architecture/plugin-marketplace.md)。
-- **工具按需加载**：ToolSearch 生效时，Terminal 和已启用的 Workflow 工具延迟提供 schema；上下文统计区分已发现与未加载的工具，并包含完整工具定义的估算开销。
-- **Workflow opt-in**：通过 settings 中的 `enableWorkflows: true` 显式启用；未启用的功能不能靠 ToolSearch 自动打开。
-- **OpenAI 工具发现**：搜索结果保留已发现工具名称，不再因 `tool_reference` 转换丢失而成为空结果；工具 schema 仍由 tools 数组提供。
-- **Bash 提示词精简**：移除 Git/PR 教程，默认主提示集中提供操作授权、hooks/signing、专用工具优先与并行策略；保留简短 description 指引，仅对未检查目录要求创建前 ls，并允许合理使用 cd 和多行脚本。自定义 system prompt 的调用方需自行提供被替换的通用策略。
-
-受控 API A/B 使用固定输入、仅 Bash 工具集，两个 provider 各三对请求均净减少 **774 input tokens**，包含新增 Git 主提示的开销。该结果不代表完整 CLI 上下文减少比例、缓存计费降幅或模型行为成功率；详细验证边界见变更日志。
+发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 安装与运行
 
@@ -66,7 +42,7 @@ bun add --global @esonhugh/claude-code
 claude --version
 ```
 
-公开包仅包含 launcher 和平台二进制，不包含恢复源码。若当前平台没有对应 binary package，launcher 会返回缺少平台包的错误。
+公开包仅包含 launcher 和平台二进制，不包含恢复源码。当前 release workflow 的普通平台包覆盖 Linux x64、Linux arm64、macOS arm64 和 Windows x64；不应假设其他 OS/architecture 组合（例如 macOS x64）已有产物。Linux 还会构建 baseline x64 和 musl 验证产物，但 baseline 不作为普通 npm 平台包。若当前平台没有对应 binary package，launcher 会返回缺少平台包的错误。
 
 ### 方式二：从源码构建
 
@@ -78,7 +54,7 @@ make build
 ./built-claude --version
 ```
 
-`make build` 使用 `Makefile` 当前 `VERSION` 构建平台 binary，并生成根目录下的 `built-claude`。
+`make build` 构建平台 binary，并生成根目录下的 `built-claude`。
 
 只构建 JavaScript CLI：
 
@@ -88,32 +64,27 @@ bun ./dist/cli.js --version
 bun ./dist/cli.js --help
 ```
 
-本地开发版本的预期输出为：
+## 主要功能
 
-```text
-0.0.0-dev (Claude Code)
-```
+以下内容概括当前源码提供的重要本地能力；变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-## 与恢复基线的主要差异
-
-以下内容概括 `2.1.88` 基线之后的重要本地特性；详细提交、测试和版本边界见 [`CHANGELOG.md`](CHANGELOG.md)。
-
-| 领域 | 本地特性与更新 |
+| 领域 | 当前能力 |
 | --- | --- |
 | OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；启用 server-side `WebSearch`，将 Anthropic web-search schema、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为 Anthropic-compatible stream 事件；OpenAI 模式自动从 ChatGPT Codex 或 OpenAI-compatible `/v1/models` 发现模型，Anthropic API billing gateway 可通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 启用同类发现，并统一进入 Model Picker 缓存；`/fast` 映射到 OpenAI priority service tier，手动和重复 remote compaction 会保持稳定 turn scope 与 opaque compaction history。 |
 | Effort | CLI 可配置 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，Model Picker/SDK capability 列表仍按 provider 与模型声明可选档位；configured effort 不按 capability 重写并原样传入所选 API，仅本地编排模式 `ultracode` 展开为 API `xhigh`。 |
-| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；subagent query 提前失败时仍补跑一次 SubagentStop hooks，并避免和已开始的 hook 重复执行；默认注册只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
-| Prompt context | 精简主会话安全、Bash Git/PR、Explore/Plan 与 Agent orchestration 的重复说明；system prompt 按稳定核心、能力和任务动态层组织 cache boundary，Plan + Auto mode 保持只读权限边界；Agent listing 使用增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留完整权限、动态发现和精确增删状态。 |
+| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认提供只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
+| 独立会话通信 | 同机独立 CLI session 可通过 official-compatible `msgV: 1` JSON-lines 协议发现和发送纯文本；提供 deferred `ListAgents` / `SendMessage` tools 以及 `/list-agents`（别名 `/peers`），支持 name、`name [ref]`、session UUID 和来信中的精确 `uds:` 地址。该能力使用 macOS/Linux UDS 或 Windows named pipe，不是 Remote Control 或跨机器 transport。 |
+| Prompt context | System prompt 按稳定核心、能力和任务动态层组织 cache boundary；Plan + Auto mode 保持只读权限边界；Agent listing 使用增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留权限与动态工具发现。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
-| Direct Connect | `v2.1.212` 之前已有的 remote transport：`claude connect <server-url>` 通过 HTTP 创建 session，再以 WebSocket 传输 stream-json；server 负责 Claude child、tools 和项目上下文，本地负责 TUI 与 permission UI。 |
+| Direct Connect | `claude connect <server-url>` 通过 HTTP 创建 session，再以 WebSocket 传输 stream-json；server 负责 Claude child、tools 和项目上下文，本地负责 TUI 与 permission UI。 |
 | SSH Remote | 与 Direct Connect 并列的 SSH transport：`claude ssh <host-or-config> [dir]` 在远端 Linux 主机运行 child 与 tools、本地渲染 TUI；支持 remote-owned history/resume、远端 `@` 路径补全、远端 `!command` 和权限状态同步；remote binary 按版本/架构部署，GitHub Release 下载会校验 checksum，OpenAI/Anthropic 凭据只在本地 Unix socket proxy 注入。 |
-| Terminal Tool | 将旧 `InteractiveTerminal` 统一为 `Terminal`，提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；统一的后台 polling 逻辑会按 session 同步终态、drain 尾部输出、持久化最终结果并发送一次完成通知，任务详情保留 command、args 和 cwd。 |
+| Terminal Tool | 提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；后台 polling 按 session 同步终态并保留最终输出、command、args 和 cwd。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
 | 状态与用量 UI | 当前模型使用 ChatGPT OAuth 且用量请求成功时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits，同时展示 ChatGPT 用量窗口与 rate-limit reset credits；用量不可用时启动 pane 回退到 OAuth token 中的 plan，`/status` 显示不可用状态。reset 操作经二次确认后消耗一个 credit 并刷新显示；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
 | 自主 Goal | `/goal` 或 `SetGoal` 注册 StopHook 并驱动自主执行；Goal 状态通过 transcript attachment 持久化，resume/continue 可恢复 active Goal 与 hook；交互式 `/goal` 展示进行中、完成或失败状态及耗时、turn、token 和最后检查原因，支持 clear、impossible 终态、后台任务延后检查与自动清理。 |
 | Hook 可靠性 | Stop hook 连续阻止结束时默认在第 9 次终止续跑，可用 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 调整或禁用上限；正常 tool round 会重置计数，`maxTurns` 保持更高优先级。 |
-| 会话命令 | 新增 `/goal`、`/fast`、`/cd`、`/reload-skills`、`/workflows`，并为 `/cd` 增加仅目录路径补全。 |
+| 会话命令 | 提供 `/goal`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
@@ -145,6 +116,10 @@ OpenAI 模型 API 凭证读取优先级为：
 4. `~/.codex/auth.json` 中的 ChatGPT OAuth access token
 
 当前模型凭据决定计费与用量状态：使用 API key 或 `OPENAI_AUTH_TOKEN` 时，启动 pane 显示 `API Usage Billing`，`/status` Usage 显示 `Usage data is unavailable for the current OpenAI authentication.`，不展示 ChatGPT subscription；仅当当前模型凭据为 `~/.codex/auth.json` 中的 ChatGPT OAuth 时，才显示 ChatGPT plan 和 Codex limits。Codex Apps 同样要求当前模型使用 ChatGPT OAuth。
+
+未显式指定 OpenAI 模型时，Anthropic 模型名称默认映射为 `gpt-5.6-luna`；显式指定的 OpenAI 模型名称保持不变。
+
+ChatGPT OAuth 模式下，`/stats` 提供独立 OpenAI activity 标签页，显示 profile、lifetime/peak/streak 指标及 Daily、Weekly、Cumulative 图表。图表内按 `v` 切换视图；Daily 使用 `↑/↓` 移动一天、`←/→` 移动七天，Weekly/Cumulative 使用方向键选择周。Token 摘要使用 K/M/B 两位有效数字，选中项保留精确数值。
 
 API key 示例：
 
@@ -300,30 +275,77 @@ Status line 沿用 Claude Code 的 `statusLine` command 配置。本地传给 co
 
 Settings Status 还会显示 OpenAI Account；Usage/Stats 面板区分 Claude 与 ChatGPT/OpenAI 用量；Model Picker 可直接显示、切换并持久化 effort。
 
+### 独立会话通信
+
+普通交互式 CLI 启动时会注册同机 inbox；`--bare` 和 SSH local UI 默认不注册。会话发现使用同一个 `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions` registry，因此不同 `CLAUDE_CONFIG_DIR` 的 session 不会通过名称或 UUID 相互发现。可用 `--name` 设置易识别的 session 名称：
+
+```bash
+claude --name reviewer
+```
+
+默认 endpoint 无需配置。高级集成可使用 `--messaging-socket-path <endpoint>` 覆盖：Unix 使用绝对 `.sock` 路径，Windows 使用 local named pipe；显式指定后也可让 `--bare` 启动 inbox，但 SSH local UI 仍不启动。显式 endpoint 绑定失败会终止启动；自动 endpoint 不可用时只记录 debug log，CLI 继续运行。
+
+查看当前可发现的其他 session（仅在 messaging inbox 成功启动时显示，结果不包含当前进程）：
+
+```text
+/list-agents
+/peers
+```
+
+模型侧的 `ListAgents` 和 `SendMessage` 默认 deferred，由 `ToolSearch` 按需加载。`SendMessage.to` 可使用列表中的 name、名称冲突时的 `name [ref]`、session UUID，或回复来信时复制其精确 `from="uds:..."` 地址。跨独立 session 只发送纯文本，不传递 Team 的 shutdown/plan approval 等结构化控制消息。普通 assistant 文本不会自动发送给 peer；发送成功只确认 transport write，不代表接收方已经接受或处理消息。Peer 输入保留独立 provenance，不作为用户指令或权限批准，也不会解析 slash commands 或 attachments。
+
+入站策略可在用户级或项目级 settings 中配置：
+
+```json
+{
+  "crossSessionInbound": "accept"
+}
+```
+
+可选值：
+
+- `accept`：消息进入接收方队列；
+- `hold`：暂存，等待 permission class 或 settings 变化后重新判断；
+- `refuse`：拒绝消息。
+
+未配置时不是固定值：接收方尚无 permission context 时为 `hold`；已知发送方 permission class 时，同 class 为 `accept`、不同 class 为 `hold`；来信未声明 class 时，普通 prompting session 为 `accept`，bypass session 为 `hold`。project/local policy 只能比 user/managed policy 更严格，不能在仓库配置中放宽上层限制。
+
+该协议仅用于同机 session：macOS/Linux 使用 Unix domain socket，Windows 使用 local named pipe；Remote Control、Direct Connect 和 SSH Remote 是独立 transport。
+
+### Plan mode 配置
+
+Plan mode 默认不可新进入，需要显式启用：
+
+```json
+{
+  "planModeAvailable": true
+}
+```
+
+该设置控制 `/plan`、`EnterPlanMode`、mode cycle，以及 Plan-sensitive tools、Agent schema 和提示。关闭后会阻止新进入 Plan mode；如果 session 已处于 Plan restrictions，退出路径仍保留，避免被锁在该模式中。
+
 ### Workflow 配置与使用
 
 本地 Workflow 以**与官方模式兼容（official-compatible）**为目标，兼容 official-style facade、script parser/runtime 和运行生命周期，但不宣称是 Anthropic 官方实现或与任意未来官方版本完全相同。
 
-启用 Workflow 和关键词触发：
+Workflow 默认关闭，启用只需要一个正式 setting：
+
+```json
+{
+  "enableWorkflows": true
+}
+```
+
+关键词触发默认开启；正式 schema-backed setting `ultracodeKeywordTrigger` 可控制兼容关键词：
 
 ```json
 {
   "enableWorkflows": true,
-  "workflowKeywordTriggerEnabled": true,
-  "ultracodeKeywordTrigger": true
+  "ultracodeKeywordTrigger": false
 }
 ```
 
-Workflow 默认关闭，仅设置 `enableWorkflows: true` 时启用。可用的相关设置：
-
-```json
-{
-  "enableWorkflows": true,
-  "workflowKeywordTriggerEnabled": true,
-  "ultracodeKeywordTrigger": true,
-  "skipWorkflowUsageWarning": false
-}
-```
+运行时还兼容 `workflowKeywordTriggerEnabled` 和 `skipWorkflowUsageWarning`，但它们目前未进入 `SettingsSchema`，属于兼容/实验字段，不作为稳定配置契约。
 
 Workflow spec 可放在：
 
@@ -400,7 +422,7 @@ hosted skill 加载具有以下边界：
 
 ### 远程执行：Direct Connect 与 SSH
 
-Direct Connect 在 `v2.1.211` 中已经存在。`claude connect <server-url>` 先通过 HTTP 创建远端 session，再使用 WebSocket 双向传输 stream-json；远端 server 持有 Claude child、tools 和项目上下文，本地仅渲染 TUI 并处理 permission UI。v2.1.212 加固的是 malformed control frame、permission cancellation 和 late response 生命周期，并非新增 Direct Connect。
+`claude connect <server-url>` 先通过 HTTP 创建远端 session，再使用 WebSocket 双向传输 stream-json；远端 server 持有 Claude child、tools 和项目上下文，本地仅渲染 TUI 并处理 permission UI。malformed control frame、permission cancellation 和 late response 由 transport 生命周期处理。
 
 SSH Remote 使用相同的本地 UI / 远端执行边界，但通过 SSH 部署 managed child，并在 child stdio 上传输 stream-json。两者是并列 transport，不会相互转发。
 
@@ -447,7 +469,7 @@ SSH PromptInput 的 `@` fuzzy/path 候选来自远端文件索引和目录扫描
 @"docs/path with spaces/file.md"
 ```
 
-SSH Remote 当前只支持 interactive TUI。`!command` 在远端 cwd 直接执行并将转义后的结果写入远端 transcript；远端 Agent progress、Bash 和未知 MCP tool card 可在本地显示，但 display-only fallback 不能在本地执行。permission allow/deny/cancel、`/plan`、`/yolo`、Shift+Tab、永久规则、additional workspace directory、Esc interrupt、正常退出和断线均经 capability-protected control channel 同步；workspace directory 的存在性也由远端验证。
+SSH Remote 当前只支持 interactive TUI。`!command` 在远端 cwd 直接执行并将转义后的结果写入远端 transcript；远端 Agent progress、Bash 和未知 MCP tool card 可在本地显示，但 display-only fallback 不能在本地执行。permission allow/deny/cancel、`/yolo`、Shift+Tab、永久规则、additional workspace directory、Esc interrupt、正常退出和断线均经 capability-protected control channel 同步；启用 `planModeAvailable: true` 时也同步 `/plan`。workspace directory 的存在性由远端验证。
 
 ### Terminal Tool
 
@@ -473,6 +495,18 @@ Terminal task 详情会以 JSON 数组保留启动时的 `args`，并与 `comman
 - exited、closed 和 failed session 会在 TTL 到期后主动 dispose。
 
 `send-signal` 表达操作系统 signal；需要向前台程序发送键盘 `Ctrl+C` 时，应使用 `send-keys` 的 `CTRL_C`。
+
+### 调试日志
+
+使用 `--debug` 启用调试输出，可选 category filter；使用 `--debug-file` 将日志写入指定文件并隐式启用 debug mode：
+
+```bash
+claude --debug
+claude --debug api,hooks
+claude --debug-file /tmp/claude-debug.log
+```
+
+OpenAI 请求诊断记录请求摘要、大小、压缩 checkpoint 和公共前缀，不记录请求正文；公共前缀稳定不等同于服务端 cache hit。
 
 ### Agent 与后台任务
 
@@ -516,7 +550,9 @@ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 
 /cd ../another-project
 /reload-skills
+/reload-plugins
 /workflows
+/list-agents
 ```
 
 - `/goal <condition>`：保存当前自主目标，并在停止前检查目标是否完成；主线程也可通过 `SetGoal` 设置同一目标。Goal 状态和 hook 会写入 transcript 并可在 resume/continue 后恢复。
@@ -526,7 +562,9 @@ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 - `/compact`：压缩当前会话；OpenAI provider 下支持手动 remote compaction，并在重复压缩时保留 opaque compaction history。
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
 - `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
+- `/reload-plugins`：应用 `/plugin manage` 中的安装、更新和启停变更，重新加载 plugin commands、skills、hooks、MCP 和 LSP；已安装插件使用本地安装缓存，不会因 reload 自动下载。
 - `/workflows`：查看 Dynamic Workflow runs，不直接启动 workflow。
+- `/list-agents`（别名 `/peers`）：列出当前 messaging registry 中其他可发现的本地 Claude session。
 
 ### Cron 与 durable task
 
@@ -576,7 +614,7 @@ make build
 - [`docs/README.md`](docs/README.md) — 文档中心、分类和推荐阅读顺序。
 - [`docs/guides/build.md`](docs/guides/build.md) — 环境要求、构建、运行、验证和故障排查。
 - [`docs/guides/secondary-development.md`](docs/guides/secondary-development.md) — 恢复源码的二次开发流程与约束。
-- [`docs/guides/recovery-workspace.md`](docs/guides/recovery-workspace.md) — `2.1.88` 恢复背景、目录和恢复方法。
+- [`docs/guides/recovery-workspace.md`](docs/guides/recovery-workspace.md) — 源码恢复背景、目录和恢复方法。
 - [`docs/guides/agent-development.md`](docs/guides/agent-development.md) — Agent、Tool、Hook 和 Plugin 入门。
 
 ### 架构
@@ -596,9 +634,9 @@ make build
 - [`docs/workflows/`](docs/workflows/) — Workflow 示例、兼容性材料和测试 fixture。
 - [`docs/research/`](docs/research/) — 二进制分析、CCH、Workflow 和 Codex 对比研究。
 - [`docs/archive/`](docs/archive/) — 已完成计划、测试计划和历史实施记录。
-- [`CHANGELOG.md`](CHANGELOG.md) — 从 `2.1.88` 基线开始的权威本地变更记录。
+- [`CHANGELOG.md`](CHANGELOG.md) — 权威的本地变更与发布记录。
 
-研究和归档文档描述的是特定时间点，不应直接视为当前行为保证；实际使用前应同时检查当前源码、测试和 CHANGELOG 的版本边界。
+研究和归档文档描述的是特定时间点，不应直接视为当前行为保证；当前使用方法以 README 和源码为准，历史与验收记录以 CHANGELOG 为准。
 
 ## 安全与适用范围
 

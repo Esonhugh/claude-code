@@ -12,6 +12,55 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-15 - 独立会话通信、Plan 模式开关与运行时兼容性
+
+### 版本状态
+
+- 未发布；本条目覆盖 `v2.1.219..d7a939c`，不修改版本号、不创建 tag，也不代表公开产物已经包含这些变更。
+- 当前本地发布线和 `Makefile VERSION` 保持 `2.1.219`，`package.json` 保持 `0.0.0-dev`。
+- 同机 peer messaging 已在 macOS 当前构建中完成真实双向交互验证；Linux 和 Windows 的实现与静态/构建证据不等同于三平台完整原生运行验收。
+
+### 关联提交
+
+- `4444348` — 捕获同步 subprocess spawn 失败并按既有无抛出契约返回结果。
+- `239893b` — 增加兼容官方协议的本地独立会话发现、收发、策略、回执、UI 和生命周期实现。
+- `fb79ed0` — 通过 `planModeAvailable` 设置显式控制新进入 Plan mode 的能力。
+- `f156fd4` — 对齐 Linux peer registry 的 PID domain 与进程启动身份。
+- `0541ae4` — 修复跨会话启动竞态、macOS socket namespace 和运行时兼容细节。
+- `b999302` — 增加 Windows process-start identity，并扩展 Windows x64 binary 构建目标。
+- `dadf5b8` — 为受 guard 保护的版本读取统一注入 binary build macros。
+- `d7a939c` — 去除 peer ingress 中重复的安全与回复提示。
+
+### 变更内容
+
+#### 独立 Claude 会话通信
+
+- 新增 `ListAgents`、`SendMessage` peer 路由、`/list-agents` 和 `/peers`，允许同一 config 范围内的独立本地 CLI 发现并按名称、`name [ref]`、session UUID 或精确 `uds:` 地址通信；本进程 Agent 和 Teams 的既有路由优先级保持不变。
+- 本地消息使用 official-compatible `msgV: 1` JSON-lines wire；macOS/Linux 使用 Unix domain socket，Windows 使用 named pipe，并通过独立 key 文件中的随机 token 完成首帧认证。
+- Registry 记录协议、endpoint、session、名称、cwd、PID domain 和操作系统进程启动身份；发现时过滤当前实例、过期进程、PID reuse、namespace 不匹配和不兼容协议。
+- 入站策略支持 `accept`、`hold` 和 `refuse`；空闲接收可唤醒队列，忙碌时保持队列顺序，hold 消息可在策略放行后处理，会话切换和退出会结算未处理消息。
+- Peer 输入在 transcript 中使用独立 sender 标签和 provenance，禁用 slash command 与 attachment 解释，并明确声明其不是用户指令或权限批准；模型可按需通过 deferred `SendMessage` 回复。
+- 发送成功只确认 transport write，不宣称对方已经接受或处理；`held`、`delivered`、`refused`、`dropped` 和 `expired` 通过关联 control receipt 独立更新。
+- macOS 默认 socket namespace 对齐官方 `/tmp/cc-socks`；`/list-agents` 等命令等待 messaging setup 完成后再构建，避免启动时永久缓存缺失命令。
+- Linux 使用 boot ID 与 PID namespace inode 组成 PID domain，并读取 `/proc/<pid>/stat` start time；Windows 使用 `OpenProcess` / `GetProcessTimes` 获取 FILETIME identity，并在 key/registry 中与其他平台字段分开保存。
+- Peer 安全与回复提示只在 queued command 转换为 API attachment 时注入一次，避免 ingress 和 normalization 两次追加相同上下文。
+
+#### Plan 模式和运行时可靠性
+
+- `planModeAvailable` 显式控制 `/plan`、EnterPlanMode、Plan-sensitive tool schema、mode cycle、提示和 Agent 启动参数；关闭后禁止新进入 Plan mode，但保留已存在限制的退出路径。
+- 同步 subprocess spawn 失败现在转换为稳定的 `execFileNoThrow` 结果，不再绕过调用方的错误处理契约。
+- Binary 构建为 feature/version guard 注入一致的 macros，避免源码构建与 standalone 产物对受保护版本读取产生不同结果。
+- Binary packaging 增加 Windows x64 与 Windows x64 baseline 目标；baseline 用于不具备 AVX2 的兼容环境，不代表 Wine 或 Windows 原生交互已经完整验收。
+
+### 测试覆盖
+
+- Cross-session 专项 Bun tests 隔离运行 40 passed / 0 failed，覆盖 UDS listener、分帧与认证、registry/discovery、PID reuse、接收策略、队列上限、session switch、receipt、`ListAgents`、`SendMessage`、print mode、prompt normalization 和进程身份。
+- 当前 `built-claude` 双终端交互通过：模型经 ToolSearch 发现 deferred `ListAgents` / `SendMessage`，按 `name [ref]` 投递，接收端使用来信 `from` 地址自主回复精确 nonce，发送端真实 enqueue/dequeue 并显示回信；两端 `/cost` 可用，退出后 socket 已清理。
+- 补充受控实验确认，仅依靠 peer prompt 中的回复提示即可触发 ToolSearch → deferred `SendMessage` → 真实回程；该实验不证明模型会对所有普通 peer 消息主动回复。
+- 20 个隔离 OAuth fixture 的五角色 A/B 实验完成 20/20 transcript、`/cost`、statusline 与 debug/API usage 取证；B 组 10/10 形成 transport write → enqueue → dequeue → 后续模型响应。每个五会话 cluster 的平均 input-total 增量为 1,639 tokens，未观察到可稳定归因于 peer messaging 的 cache-hit 下降；该实验未覆盖模型自主选择 `SendMessage`，自主回复由上述补充实验单独验证。
+- macOS 当前 binary 的同机双向发现、投递、自主回复和清理已运行验证；Linux 完成受限的本地身份/registry 验证，Windows 完成官方制品静态分析、process identity tests 和 x64/baseline 构建，Windows 原生完整 CLI↔CLI 与 Linux onboarding 后完整链路仍标记为 not covered。
+- `make build`、peer 相关 ESLint 和 `git diff --check` 通过。`bun test src` 当前为 676 passed / 36 failed / 14 errors；失败集中在全量单进程的跨文件 mock/global/env 污染。裸 `bun test` 还会扫描需要 Jest 或外部 MCP conformance harness 的 `dist/codex` tests，因此不能作为本条目的通过门禁。
+
 ## 2026-09-10 - v2.1.219 - 插件重载、按需工具与 OpenAI 可观测性
 
 ### 版本状态
