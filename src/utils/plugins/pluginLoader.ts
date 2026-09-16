@@ -1915,9 +1915,9 @@ async function loadPluginsFromMarketplaces({
       // Check if it's in plugin@marketplace format (includes both enabled and disabled)
       const isValidFormat = PluginIdSchema().safeParse(key).success
       if (!isValidFormat || value === undefined) return false
-      // Skip built-in plugins — handled separately by getBuiltinPlugins()
+      // Builtin and --plugin-dir entries are loaded by their own sources.
       const { marketplace } = parsePluginIdentifier(key)
-      return marketplace !== BUILTIN_MARKETPLACE_NAME
+      return marketplace !== BUILTIN_MARKETPLACE_NAME && marketplace !== 'inline'
     },
   )
 
@@ -2927,7 +2927,7 @@ async function finishLoadingPluginFromPath(
  * Load session-only plugins from --plugin-dir CLI flag.
  *
  * These plugins are loaded directly without going through the marketplace system.
- * They appear with source='plugin-name@inline' and are always enabled for the current session.
+ * They appear with source='plugin-name@inline' and default to enabled unless settings disable them.
  *
  * @param sessionPluginPaths - Array of plugin directory paths from CLI
  * @returns LoadedPlugin objects and any errors encountered
@@ -2964,13 +2964,14 @@ async function loadSessionOnlyPlugins(
       const { plugin, errors: pluginErrors } = await createPluginFromPath(
         resolvedPath,
         `${dirName}@inline`, // temporary, will be updated after we know the real name
-        true, // always enabled
+        true, // Resolve settings after reading the manifest's plugin name.
         dirName,
       )
 
       // Update source to use the actual plugin name from manifest
       plugin.source = `${plugin.name}@inline`
       plugin.repository = `${plugin.name}@inline`
+      plugin.enabled = getSettings_DEPRECATED().enabledPlugins?.[plugin.source] !== false
 
       plugins.push(plugin)
       errors.push(...pluginErrors)

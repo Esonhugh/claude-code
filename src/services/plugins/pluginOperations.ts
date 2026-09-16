@@ -12,7 +12,7 @@
  * - Can throw errors for unexpected failures
  */
 import { dirname, join } from 'path'
-import { getOriginalCwd } from '../../bootstrap/state.js'
+import { getInlinePlugins, getOriginalCwd } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
 import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
 import { isENOENT, toError } from '../../utils/errors.js'
@@ -52,6 +52,7 @@ import {
   getVersionedCachePath,
   getVersionedZipCachePath,
   loadAllPlugins,
+  loadAllPluginsCacheOnly,
   loadPluginManifest,
 } from '../../utils/plugins/pluginLoader.js'
 import { deletePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
@@ -626,7 +627,15 @@ export async function setPluginEnabledOp(
   let pluginId: string
   let resolvedScope: InstallableScope
 
-  const found = findPluginInSettings(plugin)
+  let inlinePlugin: LoadedPlugin | undefined
+  if (getInlinePlugins().length > 0) {
+    const loaded = await loadAllPluginsCacheOnly()
+    inlinePlugin = [...loaded.enabled, ...loaded.disabled].find(
+      candidate => candidate.source.endsWith('@inline') &&
+        (candidate.source === plugin || candidate.name === plugin),
+    )
+  }
+  const found = findPluginInSettings(inlinePlugin?.source ?? plugin)
 
   if (scope) {
     // Explicit scope: use it. Resolve pluginId from settings if possible,
@@ -634,6 +643,8 @@ export async function setPluginEnabledOp(
     resolvedScope = scope
     if (found) {
       pluginId = found.pluginId
+    } else if (inlinePlugin) {
+      pluginId = inlinePlugin.source
     } else if (plugin.includes('@')) {
       pluginId = plugin
     } else {
@@ -647,6 +658,9 @@ export async function setPluginEnabledOp(
     // mentioned in settings.
     pluginId = found.pluginId
     resolvedScope = found.scope
+  } else if (inlinePlugin) {
+    pluginId = inlinePlugin.source
+    resolvedScope = 'user'
   } else if (plugin.includes('@')) {
     // Not in any settings scope, but full pluginId given — default to user
     // scope (matches install default). This allows enabling a plugin that
@@ -710,8 +724,10 @@ export async function setPluginEnabledOp(
   // `false` that masks the lower scope's `true`.
   const isCurrentlyEnabled =
     scope && !isOverride
-      ? scopeSettingsValue === true
-      : getPluginEditableScopes().has(pluginId)
+      ? (scopeSettingsValue === undefined && inlinePlugin
+          ? inlinePlugin.enabled
+          : scopeSettingsValue === true)
+      : (inlinePlugin?.enabled ?? getPluginEditableScopes().has(pluginId))
   if (enabled === isCurrentlyEnabled) {
     return {
       success: false,
