@@ -6,6 +6,7 @@ import { feature } from 'bun:bundle'
 import { randomUUID, type UUID } from 'crypto'
 import {
   getLastMainRequestId,
+  getIsNonInteractiveSession,
   getOriginalCwd,
   getSessionId,
   regenerateSessionId,
@@ -15,6 +16,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import type { AppState } from '../../state/AppState.js'
+import type { ModsRuntime } from '../../services/mods/runtime.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 import {
   isLocalAgentTask,
@@ -56,7 +58,9 @@ export async function clearConversation({
   getAppState,
   setAppState,
   setConversationId,
+  mods,
 }: {
+  mods?: ModsRuntime
   setMessages: (updater: (prev: Message[]) => Message[]) => void
   readFileState: FileStateCache
   discoveredSkillNames?: Set<string>
@@ -210,6 +214,12 @@ export async function clearConversation({
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking
   regenerateSessionId({ setCurrentAsParent: true })
+  if (mods) await mods.bind({
+    cwd: getOriginalCwd(),
+    sessionId: getSessionId(),
+    surface: getIsNonInteractiveSession() ? null : 'terminal',
+    isInteractive: !getIsNonInteractiveSession(),
+  })
   // Update the environment variable so subprocesses use the new session ID
   if (isAnt() && process.env.CLAUDE_CODE_SESSION_ID) {
     process.env.CLAUDE_CODE_SESSION_ID = getSessionId()

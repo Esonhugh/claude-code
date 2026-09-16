@@ -48,6 +48,7 @@ import {
 import { addToHistory } from './history.js'
 import type { Root } from './ink.js'
 import { launchRepl } from './replLauncher.js'
+import { createModsSession } from './services/mods/session.js'
 import {
   hasGrowthBookEnvOverride,
   initializeGrowthBook,
@@ -3570,6 +3571,28 @@ async function run(): Promise<CommanderCommand> {
         return
       }
 
+      // This host is created only after trust; its Worker remains lazy until
+      // a local conversation binds with actual module declarations.
+      const modsSession = createModsSession({
+        isTrusted: isNonInteractiveSession || checkHasTrustDialogAccepted(),
+        getDisabledReason: () => {
+          if (isBareMode()) return 'Mods are unsupported in bare mode'
+          if (typeof Bun === 'undefined') return 'Mods require the Bun CLI runtime; Node execution is unsupported'
+          if (
+            isSSHRemoteSession ||
+            _pendingConnect?.url ||
+            _pendingAssistantChat ||
+            remote !== null ||
+            sdkUrl ||
+            isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
+          ) {
+            return 'Mods are unsupported in remote/SSH sessions'
+          }
+          if (getInitialSettings().disableAllHooks) return 'Mods are disabled by disableAllHooks'
+          return undefined
+        },
+      })
+
       // --print mode
       if (isNonInteractiveSession) {
         if (outputFormat === 'stream-json' || outputFormat === 'json') {
@@ -3887,6 +3910,7 @@ async function run(): Promise<CommanderCommand> {
             workload: options.workload,
             setupTrigger: setupTrigger ?? undefined,
             sessionStartHooksPromise,
+            modsSession,
           },
         )
         return
@@ -4136,6 +4160,7 @@ async function run(): Promise<CommanderCommand> {
         : null
 
       const sessionConfig = {
+        modsSession,
         debug: debug || debugToStderr,
         commands: [...commands, ...mcpCommands],
         initialTools,

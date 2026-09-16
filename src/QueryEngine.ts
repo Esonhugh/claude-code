@@ -38,6 +38,7 @@ import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
+import type { ModsSession } from './services/mods/session.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { Message, MessageOrigin } from './types/message.js'
@@ -131,6 +132,7 @@ const snipProjection = feature('HISTORY_SNIP')
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 export type QueryEngineConfig = {
+  modsSession?: ModsSession
   cwd: string
   tools: Tools
   commands: Command[]
@@ -246,6 +248,9 @@ export class QueryEngine {
 
     this.discoveredSkillNames.clear()
     setCwd(cwd)
+    if (this.config.modsSession) await this.config.modsSession.bind({
+      cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
+    }, setAppState)
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
 
@@ -361,6 +366,7 @@ export class QueryEngine {
       },
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
+      mods: this.config.modsSession?.runtime,
       options: {
         commands,
         debug: false, // we use stdout, so don't want to clobber it
@@ -519,6 +525,7 @@ export class QueryEngine {
       setMessages: () => {},
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
+      mods: this.config.modsSession?.runtime,
       options: {
         commands,
         debug: false,
@@ -1272,7 +1279,9 @@ export async function* ask({
   agents = [],
   setSDKStatus,
   orphanedPermission,
+  modsSession,
 }: {
+  modsSession?: ModsSession
   commands: Command[]
   prompt: string | Array<ContentBlockParam>
   promptUuid?: string
@@ -1309,6 +1318,7 @@ export async function* ask({
 }): AsyncGenerator<SDKMessage, void, unknown> {
   // @ts-ignore - recovered code
   const engine = new QueryEngine({
+    modsSession,
     cwd,
     tools,
     commands,

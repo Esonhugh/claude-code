@@ -19,6 +19,26 @@ import { clearPluginOutputStyleCache } from './loadPluginOutputStyles.js'
 import { clearPluginCache, getPluginCachePath } from './pluginLoader.js'
 import { clearPluginOptionsCache } from './pluginOptionsStorage.js'
 import { isPluginZipCacheEnabled } from './zipCache.js'
+import type { LoadedPlugin } from '../../types/plugin.js'
+
+// Hosts own these subscriptions; cache invalidation schedules work, while an
+// explicit refresh supplies the already-loaded plugins and awaits activation.
+const pluginRefreshListeners = new Set<
+  (plugins?: readonly LoadedPlugin[]) => void | Promise<void>
+>()
+
+export function subscribePluginRefresh(
+  listener: (plugins?: readonly LoadedPlugin[]) => void | Promise<void>,
+): () => void {
+  pluginRefreshListeners.add(listener)
+  return () => { pluginRefreshListeners.delete(listener) }
+}
+
+export async function refreshPluginRuntimes(
+  plugins: readonly LoadedPlugin[],
+): Promise<void> {
+  await Promise.all([...pluginRefreshListeners].map(listener => listener(plugins)))
+}
 
 const ORPHANED_AT_FILENAME = '.orphaned_at'
 const CLEANUP_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -39,6 +59,9 @@ export function clearAllPluginCaches(): void {
   clearPluginOptionsCache()
   clearPluginOutputStyleCache()
   clearAllOutputStylesCache()
+  for (const listener of pluginRefreshListeners) {
+    Promise.resolve(listener()).catch(error => logError(error))
+  }
 }
 
 export function clearAllCaches(): void {

@@ -130,6 +130,10 @@ import {
   runPreToolUseHooks,
 } from './toolHooks.js'
 import { isAnt } from 'src/utils/userType.js'
+import {
+  runModToolCall,
+  type ModToolExecutionRecord,
+} from '../mods/toolAdapter.js'
 
 
 /** Minimum total hook duration (ms) to show inline timing summary */
@@ -494,7 +498,7 @@ export async function* runToolUse(
 function streamedCheckPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
-  input: { [key: string]: boolean | string | number },
+  input: Record<string, unknown>,
   toolUseContext: ToolUseContext,
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
@@ -509,54 +513,72 @@ function streamedCheckPermissionsAndCallTool(
   // Ideally the progress reporting and tool call reporting would
   // be via separate mechanisms.
   const stream = new Stream<MessageUpdateLazy>()
-  checkPermissionsAndCallTool(
-    tool,
-    toolUseID,
-    input,
-    toolUseContext,
-    canUseTool,
-    assistantMessage,
-    messageId,
-    requestId,
-    mcpServerType,
-    mcpServerBaseUrl,
-    progress => {
-      logEvent('tengu_tool_use_progress', {
-        messageID:
-          messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        toolName: sanitizeToolNameForAnalytics(tool.name),
-        isMcp: tool.isMcp ?? false,
+  const ownedSnapshot = toolUseContext.modsSnapshot
+    ? undefined
+    : toolUseContext.mods?.capture()
+  const snapshot = toolUseContext.modsSnapshot ?? ownedSnapshot
+  const core = (args: Record<string, unknown>, record?: ModToolExecutionRecord) =>
+    checkPermissionsAndCallTool(
+      tool,
+      toolUseID,
+      args,
+      toolUseContext,
+      canUseTool,
+      assistantMessage,
+      messageId,
+      requestId,
+      mcpServerType,
+      mcpServerBaseUrl,
+      progress => {
+        logEvent('tengu_tool_use_progress', {
+          messageID:
+            messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          toolName: sanitizeToolNameForAnalytics(tool.name),
+          isMcp: tool.isMcp ?? false,
 
-        queryChainId: toolUseContext.queryTracking
-          ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        queryDepth: toolUseContext.queryTracking?.depth,
-        ...(mcpServerType && {
-          mcpServerType:
-            mcpServerType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        }),
-        ...(mcpServerBaseUrl && {
-          mcpServerBaseUrl:
-            mcpServerBaseUrl as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        }),
-        ...(requestId && {
-          requestId:
-            requestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        }),
-        ...mcpToolDetailsForAnalytics(
-          tool.name,
-          mcpServerType,
-          mcpServerBaseUrl,
-        ),
+          queryChainId: toolUseContext.queryTracking
+            ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          queryDepth: toolUseContext.queryTracking?.depth,
+          ...(mcpServerType && {
+            mcpServerType:
+              mcpServerType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          }),
+          ...(mcpServerBaseUrl && {
+            mcpServerBaseUrl:
+              mcpServerBaseUrl as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          }),
+          ...(requestId && {
+            requestId:
+              requestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          }),
+          ...mcpToolDetailsForAnalytics(
+            tool.name,
+            mcpServerType,
+            mcpServerBaseUrl,
+          ),
+        })
+        stream.enqueue({
+          message: createProgressMessage({
+            toolUseID: progress.toolUseID,
+            parentToolUseID: toolUseID,
+            data: progress.data,
+          }),
+        })
+      },
+      record,
+    )
+  const execution = snapshot?.hasHooks('tool.call')
+    ? runModToolCall({
+        snapshot,
+        tool,
+        toolUseID,
+        input,
+        toolUseContext,
+        assistantMessage,
+        core,
       })
-      stream.enqueue({
-        message: createProgressMessage({
-          toolUseID: progress.toolUseID,
-          parentToolUseID: toolUseID,
-          data: progress.data,
-        }),
-      })
-    },
-  )
+    : core(input)
+  execution
     .then(results => {
       for (const result of results) {
         stream.enqueue(result)
@@ -566,9 +588,17 @@ function streamedCheckPermissionsAndCallTool(
       stream.error(error)
     })
     .finally(() => {
+      ownedSnapshot?.release()
       stream.done()
     })
-  return stream
+  if (!snapshot) return stream
+  return (async function* () {
+    try {
+      yield* stream
+    } finally {
+      await execution
+    }
+  })()
 }
 
 /**
@@ -601,7 +631,7 @@ export function buildSchemaNotSentHint(
 async function checkPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
-  input: { [key: string]: boolean | string | number },
+  input: Record<string, unknown>,
   toolUseContext: ToolUseContext,
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
@@ -612,6 +642,7 @@ async function checkPermissionsAndCallTool(
   onToolProgress: (
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
+  executionRecord?: ModToolExecutionRecord,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
   const parsedInput = tool.inputSchema.safeParse(input)
@@ -1209,10 +1240,14 @@ async function checkPermissionsAndCallTool(
     callInput = processedInput
   }
   try {
+    if (executionRecord) executionRecord.input = callInput
     const result = await tool.call(
       callInput,
       {
         ...toolUseContext,
+        // Admission belongs to this invocation, not to a background task or
+        // nested Agent/Workflow that retains the tool context after it returns.
+        ...(toolUseContext.modsSnapshot ? { modsSnapshot: undefined } : {}),
         toolUseId: toolUseID,
         userModified: permissionDecision.userModified ?? false,
       },
@@ -1225,6 +1260,10 @@ async function checkPermissionsAndCallTool(
         })
       },
     )
+    if (executionRecord) {
+      executionRecord.hasResult = true
+      executionRecord.result = result.data
+    }
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
 
@@ -1411,13 +1450,18 @@ async function checkPermissionsAndCallTool(
     ) {
       // Use the pre-mapped block when available (non-MCP tools where hooks
       // don't modify the output), otherwise map from scratch.
-      const toolResultBlock = preMappedBlock
-        ? await processPreMappedToolResultBlock(
-            preMappedBlock,
-            tool.name,
-            tool.maxResultSizeChars,
-          )
-        : await processToolResultBlock(tool, toolUseResult, toolUseID)
+      // Mods choose the final result after this pipeline returns. Persisting a
+      // discarded branch here would occupy the tool-use ID's write-once file.
+      const toolResultBlock = executionRecord
+        ? preMappedBlock ??
+          tool.mapToolResultToToolResultBlockParam(toolUseResult, toolUseID)
+        : preMappedBlock
+          ? await processPreMappedToolResultBlock(
+              preMappedBlock,
+              tool.name,
+              tool.maxResultSizeChars,
+            )
+          : await processToolResultBlock(tool, toolUseResult, toolUseID)
 
       // Build content blocks - tool result first, then optional feedback
       const contentBlocks: ContentBlockParam[] = [toolResultBlock]

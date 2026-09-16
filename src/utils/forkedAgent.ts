@@ -443,6 +443,7 @@ export function createSubagentContext(
 
     // A fork is a distinct logical OpenAI thread and gets its own query turn scope.
     openAITurnScope: undefined,
+    mods: parentContext.mods,
 
     // Fields that can be overridden or copied from parent
     options: overrides?.options ?? {

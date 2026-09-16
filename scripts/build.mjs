@@ -240,6 +240,17 @@ const require = __createRequire(import.meta.url);`,
     target: 'node20',
   });
 
+  await build({
+    absWorkingDir: projectDir,
+    entryPoints: ['src/services/mods/worker.ts'],
+    outfile: 'dist/worker.js',
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    legalComments: 'none',
+  });
+
   await copyRuntimeAssets({ projectDir, nodeModulesDir });
 }
 

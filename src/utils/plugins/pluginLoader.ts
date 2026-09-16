@@ -1224,7 +1224,7 @@ export async function loadPluginManifest(
 async function loadPluginHooks(
   hooksConfigPath: string,
   pluginName: string,
-): Promise<HooksSettings> {
+): Promise<{ hooks?: HooksSettings; modules?: string[] }> {
   if (!(await pathExists(hooksConfigPath))) {
     throw new Error(
       `Hooks file not found at ${hooksConfigPath} for plugin ${pluginName}. If the manifest declares hooks, the file must exist.`,
@@ -1234,11 +1234,11 @@ async function loadPluginHooks(
   const content = await readFile(hooksConfigPath, { encoding: 'utf-8' })
   const rawHooksConfig = jsonParse(content)
 
-  // The hooks.json file has a wrapper structure with description and hooks
-  // Use PluginHooksSchema to validate and extract the hooks property
   const validatedPluginHooks = PluginHooksSchema().parse(rawHooksConfig)
-
-  return validatedPluginHooks.hooks as HooksSettings
+  return {
+    hooks: validatedPluginHooks.hooks as HooksSettings | undefined,
+    modules: validatedPluginHooks.modules,
+  }
 }
 
 /**
@@ -1618,7 +1618,11 @@ export async function createPluginFromPath(
   const standardHooksPath = join(pluginPath, 'hooks', 'hooks.json')
   if (await pathExists(standardHooksPath)) {
     try {
-      mergedHooks = await loadPluginHooks(standardHooksPath, manifest.name)
+      const config = await loadPluginHooks(standardHooksPath, manifest.name)
+      mergedHooks = config.hooks
+      if (config.modules) {
+        plugin.hookModules = [{ configPath: standardHooksPath, paths: config.modules }]
+      }
       // Track the normalized path to prevent duplicate loading
       try {
         loadedHookPaths.add(await realpath(standardHooksPath))
@@ -1712,7 +1716,10 @@ export async function createPluginFromPath(
             manifest.name,
           )
           try {
-            mergedHooks = mergeHooksSettings(mergedHooks, additionalHooks)
+            mergedHooks = mergeHooksSettings(mergedHooks, additionalHooks.hooks)
+            if (additionalHooks.modules) {
+              ;(plugin.hookModules ??= []).push({ configPath: hookFilePath, paths: additionalHooks.modules })
+            }
             loadedHookPaths.add(normalizedPath)
             logForDebugging(
               `Loaded and merged hooks from manifest for plugin ${manifest.name}: ${hookSpec}`,

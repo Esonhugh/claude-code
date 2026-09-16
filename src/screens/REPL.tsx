@@ -389,6 +389,8 @@ import {
 import { getViewedAgentTask, getAgentInProgressToolUseIDs } from '../state/selectors.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
+import type { ModsSession } from '../services/mods/session.js'
+import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
 import {
   copyPlanForFork,
@@ -912,6 +914,7 @@ function AnimatedTerminalTitle({
 }
 
 export type Props = {
+  modsSession?: ModsSession
   commands: Command[]
   debug: boolean
   initialTools: Tool[]
@@ -963,6 +966,7 @@ export type Props = {
 export type Screen = 'prompt' | 'transcript'
 
 export function REPL({
+  modsSession: configuredModsSession,
   commands: initialCommands,
   debug,
   initialTools,
@@ -992,6 +996,7 @@ export function REPL({
   const isRemoteExecutionSession = Boolean(
     remoteSessionConfig || directConnectConfig || sshSession,
   )
+  const modsSession = isRemoteExecutionSession ? undefined : configuredModsSession
 
   // Env-var gates hoisted to mount-time — isEnvTruthy does toLowerCase+trim+
   // includes, and these were on the render path (hot during PageUp spam).
@@ -1861,6 +1866,15 @@ export function REPL({
     pendingHookMessages,
     setMessages,
   )
+  const awaitMods = useCallback(() => modsSession?.bind({
+    cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
+  }, setAppState), [modsSession, setAppState])
+
+  useEffect(() => {
+    if (!modsSession) return
+    void awaitMods()?.catch(logError)
+    // The CLI host, not this conversation/render binding, owns disposal.
+  }, [modsSession, awaitMods])
 
   // Deferred messages for the Messages component — renders at transition
   // priority so the reconciler yields every 5ms, keeping input responsive
@@ -2644,6 +2658,8 @@ export function REPL({
           if (ws) saveWorktreeState(ws)
         }
 
+        if (modsSession) await awaitMods()
+
         // Persist the current mode so future resumes know what mode this session was in
         if (feature('COORDINATOR_MODE')) {
           /* eslint-disable @typescript-eslint/no-require-imports */
@@ -2704,7 +2720,7 @@ export function REPL({
         throw error
       }
     },
-    [resetLoadingState, setAppState],
+    [resetLoadingState, setAppState, modsSession, awaitMods],
   )
 
   // Lazy init: useRef(createX()) would call createX on every render and
@@ -3418,6 +3434,7 @@ export function REPL({
 
       return {
         abortController,
+        mods: modsSession?.runtime,
         options: {
           commands,
           tools: computeTools(),
@@ -3546,6 +3563,7 @@ export function REPL({
     [
       commands,
       combinedInitialTools,
+      modsSession,
       isRemoteExecutionSession,
       mainThreadAgentDefinition,
       debug,
@@ -3808,6 +3826,7 @@ export function REPL({
       mainLoopModelParam: string,
       effort?: EffortValue,
     ) => {
+      if (modsSession) await awaitMods()
       // Prepare IDE integration for new prompt. Read mcpClients fresh from
       // store — useManageMCPConnections may have populated it since the
       // render that captured this closure (same pattern as computeTools).
@@ -4096,6 +4115,8 @@ export function REPL({
       canUseTool,
       mainThreadAgentDefinition,
       onQueryEvent,
+      modsSession,
+      awaitMods,
       sessionTitle,
       titleDisabled,
     ],
@@ -4362,6 +4383,7 @@ export function REPL({
           '../commands/clear/conversation.js'
         )
         await clearConversation({
+          mods: modsSession?.runtime,
           setMessages,
           readFileState: readFileState.current,
           discoveredSkillNames: discoveredSkillNamesRef.current,
@@ -4490,6 +4512,7 @@ export function REPL({
     tools,
     isRemoteExecutionSession,
     awaitPendingHooks,
+    modsSession,
     store,
   ])
 
@@ -4522,6 +4545,8 @@ export function REPL({
       if (feature('PROACTIVE') || feature('KAIROS')) {
         proactiveModule?.resumeProactive()
       }
+
+      if (modsSession) await awaitMods()
 
       // Handle immediate commands - these bypass the queue and execute right away
       // even while Claude is processing. Commands opt-in via `immediate: true`.
@@ -5033,6 +5058,8 @@ export function REPL({
       setMessages,
       isRemoteExecutionSession,
       awaitPendingHooks,
+      modsSession,
+      awaitMods,
       repinScroll,
     ],
   )
@@ -5044,6 +5071,7 @@ export function REPL({
       task: InProcessTeammateTaskState | LocalAgentTaskState,
       helpers: PromptInputHelpers,
     ) => {
+      if (modsSession) await awaitMods()
       if (isLocalAgentTask(task)) {
         appendMessageToLocalAgent(
           task.id,
@@ -5092,6 +5120,8 @@ export function REPL({
       canUseTool,
       mainLoopModel,
       addNotification,
+      modsSession,
+      awaitMods,
     ],
   )
 
@@ -6849,6 +6879,7 @@ export function REPL({
                           '../commands/clear/conversation.js'
                         )
                         await clearConversation({
+                          mods: modsSession?.runtime,
                           setMessages,
                           readFileState: readFileState.current,
                           discoveredSkillNames: discoveredSkillNamesRef.current,

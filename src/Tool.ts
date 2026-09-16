@@ -180,6 +180,8 @@ export type ManagedSSHRemotePermissions = {
 }
 
 export type ToolUseContext = {
+  mods?: import('./services/mods/runtime.js').ModsRuntime
+  modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {

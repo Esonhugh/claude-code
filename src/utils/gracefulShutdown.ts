@@ -425,6 +425,23 @@ let failsafeTimer: ReturnType<typeof setTimeout> | undefined
 let orphanCheckInterval: ReturnType<typeof setInterval> | undefined
 let pendingShutdown: Promise<void> | undefined
 
+// Mods must stop before parallel cleanup tears down the services they use.
+const modsHostDisposers = new Set<() => Promise<void>>()
+
+export function registerModsHostDisposer(dispose: () => Promise<void>): () => void {
+  modsHostDisposers.add(dispose)
+  return () => { modsHostDisposers.delete(dispose) }
+}
+
+export async function disposeModsHosts(): Promise<void> {
+  const results = await Promise.allSettled([...modsHostDisposers].map(dispose => dispose()))
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      logForDebugging('[Mods] Host disposal failed', { level: 'error' })
+    }
+  }
+}
+
 /** Check if graceful shutdown is in progress */
 export function isShuttingDown(): boolean {
   return shutdownInProgress
@@ -473,6 +490,7 @@ export async function gracefulShutdown(
     './hooks.js'
   )
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
+  const modsShutdownBudgetMs = modsHostDisposers.size > 0 ? 2000 : 0
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
@@ -483,7 +501,7 @@ export async function gracefulShutdown(
       printResumeHint()
       forceExit(code)
     },
-    Math.max(5000, sessionEndTimeoutMs + 3500),
+    Math.max(5000, sessionEndTimeoutMs + 3500) + modsShutdownBudgetMs,
     exitCode,
   )
   failsafeTimer.unref()
@@ -498,6 +516,11 @@ export async function gracefulShutdown(
   // flush — which can take several seconds.
   cleanupTerminalModes()
   printResumeHint()
+
+  // Stop owned watchers synchronously, then finish Mods disposal before any
+  // general cleanup can release dependencies. The process failsafe bounds this
+  // phase; do not race ahead into dependency cleanup while disposal is pending.
+  if (modsShutdownBudgetMs > 0) await disposeModsHosts()
 
   // Flush session data first — this is the most critical cleanup. If the
   // terminal is dead (SIGHUP, SSH disconnect), hooks and analytics may hang

@@ -27,7 +27,7 @@ import type { PluginError } from '../../types/plugin.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
-import { clearAllCaches } from './cacheUtils.js'
+import { clearAllCaches, refreshPluginRuntimes } from './cacheUtils.js'
 import { clearInstalledPluginsCache } from './installedPluginsManager.js'
 import { getPluginCommands, getPluginSkills } from './loadPluginCommands.js'
 import { loadPluginHooks } from './loadPluginHooks.js'
@@ -91,6 +91,7 @@ export async function refreshActivePlugins(
   ])
 
   const { enabled, disabled, errors } = pluginResult
+  await refreshPluginRuntimes(enabled)
 
   // Populate mcpServers/lspServers on each enabled plugin. These are lazy
   // cache slots NOT filled by loadAllPlugins() — they're written later by

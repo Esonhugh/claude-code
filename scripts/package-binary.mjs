@@ -236,7 +236,10 @@ run('bun', [
   '--compile',
   '--production',
   ...(binaryTarget ? ['--target', binaryTarget] : []),
+  '--entry-naming',
+  '[name].js',
   generatedEntrypoint,
+  path.join(distDir, 'worker.js'),
   '--outfile',
   outfile,
 ]);

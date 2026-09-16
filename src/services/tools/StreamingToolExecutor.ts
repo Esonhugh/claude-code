@@ -10,6 +10,7 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
+import type { ModSnapshot } from '../mods/runtime.js'
 
 type MessageUpdate = {
   message?: Message
@@ -47,6 +48,8 @@ export class StreamingToolExecutor {
   // Aborting this does NOT abort the parent — query.ts won't end the turn.
   private siblingAbortController: AbortController
   private discarded = false
+  private modsSnapshot?: ModSnapshot
+  private admissionClosed = false
   // Signal to wake up getRemainingResults when progress is available
   private progressAvailableResolve?: () => void
 
@@ -68,12 +71,42 @@ export class StreamingToolExecutor {
    */
   discard(): void {
     this.discarded = true
+    if (this.modsSnapshot) {
+      this.admissionClosed = true
+      this.releaseModsSnapshot()
+    }
+  }
+
+  private releaseModsSnapshot(): void {
+    if (
+      !this.admissionClosed ||
+      this.hasExecutingTools() ||
+      (!this.discarded && this.tools.some(tool => tool.status === 'queued'))
+    )
+      return
+    const snapshot = this.modsSnapshot
+    this.modsSnapshot = undefined
+    if (snapshot) {
+      this.toolUseContext = { ...this.toolUseContext, modsSnapshot: undefined }
+      snapshot.release()
+    }
   }
 
   /**
    * Add a tool to the execution queue. Will start executing immediately if conditions allow.
    */
   addTool(block: ToolUseBlock, assistantMessage: AssistantMessage): void {
+    if (this.toolUseContext.mods) {
+      if (this.admissionClosed || this.discarded)
+        throw new Error('Tool executor admission is closed')
+      if (!this.modsSnapshot) {
+        this.modsSnapshot = this.toolUseContext.mods.capture()
+        this.toolUseContext = {
+          ...this.toolUseContext,
+          modsSnapshot: this.modsSnapshot,
+        }
+      }
+    }
     const toolDefinition = findToolByName(this.toolDefinitions, block.name)
     if (!toolDefinition) {
       this.tools.push({
@@ -101,7 +134,10 @@ export class StreamingToolExecutor {
       return
     }
 
-    const parsedInput = toolDefinition.inputSchema.safeParse(block.input)
+    const serialized = this.modsSnapshot?.hasHooks('tool.call')
+    const parsedInput = serialized
+      ? undefined
+      : toolDefinition.inputSchema.safeParse(block.input)
     const isConcurrencySafe = parsedInput?.success
       ? (() => {
           try {
@@ -138,6 +174,7 @@ export class StreamingToolExecutor {
    * Process the queue, starting tools when concurrency conditions allow
    */
   private async processQueue(): Promise<void> {
+    if (this.discarded && this.toolUseContext.mods) return
     for (const tool of this.tools) {
       if (tool.status !== 'queued') continue
 
@@ -391,6 +428,11 @@ export class StreamingToolExecutor {
       if (!tool.isConcurrencySafe && contextModifiers.length > 0) {
         for (const modifier of contextModifiers) {
           this.toolUseContext = modifier(this.toolUseContext)
+          if (this.modsSnapshot)
+            this.toolUseContext = {
+              ...this.toolUseContext,
+              modsSnapshot: this.modsSnapshot,
+            }
         }
       }
     }
@@ -400,6 +442,7 @@ export class StreamingToolExecutor {
 
     // Process more queue when done
     void promise.finally(() => {
+      this.releaseModsSnapshot()
       void this.processQueue()
     })
   }
@@ -418,7 +461,10 @@ export class StreamingToolExecutor {
       // Always yield pending progress messages immediately, regardless of tool status
       while (tool.pendingProgress.length > 0) {
         const progressMessage = tool.pendingProgress.shift()!
-        yield { message: progressMessage, newContext: this.toolUseContext }
+        yield {
+          message: progressMessage,
+          newContext: this.getUpdatedContext(),
+        }
       }
 
       if (tool.status === 'yielded') {
@@ -429,7 +475,7 @@ export class StreamingToolExecutor {
         tool.status = 'yielded'
 
         for (const message of tool.results) {
-          yield { message, newContext: this.toolUseContext }
+          yield { message, newContext: this.getUpdatedContext() }
         }
 
         markToolUseAsComplete(this.toolUseContext, tool.id)
@@ -451,41 +497,56 @@ export class StreamingToolExecutor {
    * Also yields progress messages as they become available
    */
   async *getRemainingResults(): AsyncGenerator<MessageUpdate, void> {
-    if (this.discarded) {
-      return
-    }
+    this.admissionClosed = true
+    try {
+      if (this.discarded) {
+        if (this.modsSnapshot)
+          await Promise.allSettled(
+            this.tools.flatMap(tool => (tool.promise ? [tool.promise] : [])),
+          )
+        return
+      }
 
-    while (this.hasUnfinishedTools()) {
-      await this.processQueue()
+      while (this.hasUnfinishedTools()) {
+        await this.processQueue()
+
+        for (const result of this.getCompletedResults()) {
+          yield result
+        }
+
+        // If we still have executing tools but nothing completed, wait for any to complete
+        // OR for progress to become available
+        if (
+          this.hasExecutingTools() &&
+          !this.hasCompletedResults() &&
+          !this.hasPendingProgress()
+        ) {
+          const executingPromises = this.tools
+            .filter(t => t.status === 'executing' && t.promise)
+            .map(t => t.promise!)
+
+          // Also wait for progress to become available
+          const progressPromise = new Promise<void>(resolve => {
+            this.progressAvailableResolve = resolve
+          })
+
+          if (executingPromises.length > 0) {
+            await Promise.race([...executingPromises, progressPromise])
+          }
+        }
+      }
 
       for (const result of this.getCompletedResults()) {
         yield result
       }
-
-      // If we still have executing tools but nothing completed, wait for any to complete
-      // OR for progress to become available
-      if (
-        this.hasExecutingTools() &&
-        !this.hasCompletedResults() &&
-        !this.hasPendingProgress()
-      ) {
-        const executingPromises = this.tools
-          .filter(t => t.status === 'executing' && t.promise)
-          .map(t => t.promise!)
-
-        // Also wait for progress to become available
-        const progressPromise = new Promise<void>(resolve => {
-          this.progressAvailableResolve = resolve
-        })
-
-        if (executingPromises.length > 0) {
-          await Promise.race([...executingPromises, progressPromise])
-        }
+    } finally {
+      if (this.modsSnapshot) {
+        this.discarded = true
+        await Promise.allSettled(
+          this.tools.flatMap(tool => (tool.promise ? [tool.promise] : [])),
+        )
+        this.releaseModsSnapshot()
       }
-    }
-
-    for (const result of this.getCompletedResults()) {
-      yield result
     }
   }
 
@@ -514,7 +575,9 @@ export class StreamingToolExecutor {
    * Get the current tool use context (may have been modified by context modifiers)
    */
   getUpdatedContext(): ToolUseContext {
-    return this.toolUseContext
+    return this.modsSnapshot
+      ? { ...this.toolUseContext, modsSnapshot: undefined }
+      : this.toolUseContext
   }
 }
 

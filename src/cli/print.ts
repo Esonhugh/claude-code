@@ -90,6 +90,7 @@ import { parsePluginIdentifier } from 'src/utils/plugins/pluginIdentifier.js'
 import { validateUuid } from 'src/utils/uuid.js'
 import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
+import type { ModsSession } from '../services/mods/session.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -481,6 +482,7 @@ export async function runHeadless(
   sdkMcpConfigs: Record<string, McpSdkServerConfig>,
   agents: AgentDefinition[],
   options: {
+    modsSession?: ModsSession
     continue: boolean | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
@@ -1043,6 +1045,7 @@ function runHeadlessStreaming(
   setAppState: (f: (prev: AppState) => AppState) => void,
   agents: AgentDefinition[],
   options: {
+    modsSession?: ModsSession
     verbose: boolean | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
@@ -2225,6 +2228,7 @@ function runHeadlessStreaming(
           const cmd = command
           await runWithWorkload(cmd.workload ?? options.workload, async () => {
             for await (const message of ask({
+              modsSession: options.modsSession,
               commands: uniqBy(
                 [...currentCommands, ...appState.mcp.commands],
                 'name',

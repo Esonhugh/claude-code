@@ -22,62 +22,79 @@ export async function* runTools(
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdate, void> {
-  let currentContext = toolUseContext
-  for (const { isConcurrencySafe, blocks } of partitionToolCalls(
-    toolUseMessages,
-    currentContext,
-  )) {
-    if (isConcurrencySafe) {
-      const queuedContextModifiers: Record<
-        string,
-        ((context: ToolUseContext) => ToolUseContext)[]
-      > = {}
-      // Run read-only batch concurrently
-      for await (const update of runToolsConcurrently(
-        blocks,
-        assistantMessages,
-        canUseTool,
-        currentContext,
-      )) {
-        if (update.contextModifier) {
-          const { toolUseID, modifyContext } = update.contextModifier
-          if (!queuedContextModifiers[toolUseID]) {
-            queuedContextModifiers[toolUseID] = []
+  const snapshot = toolUseContext.mods?.capture()
+  let currentContext = snapshot
+    ? { ...toolUseContext, modsSnapshot: snapshot }
+    : toolUseContext
+  try {
+    for (const { isConcurrencySafe, blocks } of partitionToolCalls(
+      toolUseMessages,
+      currentContext,
+    )) {
+      if (isConcurrencySafe) {
+        const queuedContextModifiers: Record<
+          string,
+          ((context: ToolUseContext) => ToolUseContext)[]
+        > = {}
+        // Run read-only batch concurrently
+        for await (const update of runToolsConcurrently(
+          blocks,
+          assistantMessages,
+          canUseTool,
+          currentContext,
+        )) {
+          if (update.contextModifier) {
+            const { toolUseID, modifyContext } = update.contextModifier
+            if (!queuedContextModifiers[toolUseID]) {
+              queuedContextModifiers[toolUseID] = []
+            }
+            queuedContextModifiers[toolUseID].push(modifyContext)
           }
-          queuedContextModifiers[toolUseID].push(modifyContext)
+          yield {
+            message: update.message,
+            newContext: snapshot
+              ? { ...currentContext, modsSnapshot: toolUseContext.modsSnapshot }
+              : currentContext,
+          }
+        }
+        for (const block of blocks) {
+          const modifiers = queuedContextModifiers[block.id]
+          if (!modifiers) {
+            continue
+          }
+          for (const modifier of modifiers) {
+            currentContext = modifier(currentContext)
+            if (snapshot)
+              currentContext = { ...currentContext, modsSnapshot: snapshot }
+          }
         }
         yield {
-          message: update.message,
-          newContext: currentContext,
+          newContext: snapshot
+            ? { ...currentContext, modsSnapshot: toolUseContext.modsSnapshot }
+            : currentContext,
         }
-      }
-      for (const block of blocks) {
-        const modifiers = queuedContextModifiers[block.id]
-        if (!modifiers) {
-          continue
-        }
-        for (const modifier of modifiers) {
-          currentContext = modifier(currentContext)
-        }
-      }
-      yield { newContext: currentContext }
-    } else {
-      // Run non-read-only batch serially
-      for await (const update of runToolsSerially(
-        blocks,
-        assistantMessages,
-        canUseTool,
-        currentContext,
-      )) {
-        if (update.newContext) {
-          currentContext = update.newContext
-        }
-        yield {
-          message: update.message,
-          newContext: currentContext,
+      } else {
+        // Run non-read-only batch serially
+        for await (const update of runToolsSerially(
+          blocks,
+          assistantMessages,
+          canUseTool,
+          currentContext,
+        )) {
+          if (update.newContext) {
+            currentContext = update.newContext
+          }
+          yield {
+            message: update.message,
+            newContext: snapshot
+              ? { ...currentContext, modsSnapshot: toolUseContext.modsSnapshot }
+              : currentContext,
+          }
         }
       }
     }
+  } finally {
+    snapshot?.release()
   }
 }
 
@@ -92,6 +109,12 @@ function partitionToolCalls(
   toolUseMessages: ToolUseBlock[],
   toolUseContext: ToolUseContext,
 ): Batch[] {
+  if (toolUseContext.modsSnapshot?.hasHooks('tool.call')) {
+    return toolUseMessages.map(block => ({
+      isConcurrencySafe: false,
+      blocks: [block],
+    }))
+  }
   return toolUseMessages.reduce((acc: Batch[], toolUse) => {
     const tool = findToolByName(toolUseContext.options.tools, toolUse.name)
     const parsedInput = tool?.inputSchema.safeParse(toolUse.input)
@@ -139,6 +162,11 @@ async function* runToolsSerially(
     )) {
       if (update.contextModifier) {
         currentContext = update.contextModifier.modifyContext(currentContext)
+        if (toolUseContext.modsSnapshot)
+          currentContext = {
+            ...currentContext,
+            modsSnapshot: toolUseContext.modsSnapshot,
+          }
       }
       yield {
         message: update.message,
@@ -155,25 +183,37 @@ async function* runToolsConcurrently(
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdateLazy, void> {
-  yield* all(
-    toolUseMessages.map(async function* (toolUse) {
-      toolUseContext.setInProgressToolUseIDs(prev =>
-        new Set(prev).add(toolUse.id),
-      )
-      yield* runToolUse(
-        toolUse,
-        assistantMessages.find(_ =>
-          _.message.content.some(
-            _ => _.type === 'tool_use' && _.id === toolUse.id,
-          ),
-        )!,
-        canUseTool,
-        toolUseContext,
-      )
+  const running = new Set<AsyncGenerator<MessageUpdateLazy, void>>()
+  const generators = toolUseMessages.map(async function* (toolUse) {
+    toolUseContext.setInProgressToolUseIDs(prev =>
+      new Set(prev).add(toolUse.id),
+    )
+    const generator = runToolUse(
+      toolUse,
+      assistantMessages.find(_ =>
+        _.message.content.some(
+          _ => _.type === 'tool_use' && _.id === toolUse.id,
+        ),
+      )!,
+      canUseTool,
+      toolUseContext,
+    )
+    running.add(generator)
+    try {
+      yield* generator
+    } finally {
+      running.delete(generator)
       markToolUseAsComplete(toolUseContext, toolUse.id)
-    }),
-    getMaxToolUseConcurrency(),
-  )
+    }
+  })
+  try {
+    yield* all(generators, getMaxToolUseConcurrency())
+  } finally {
+    if (toolUseContext.modsSnapshot)
+      await Promise.allSettled(
+        [...running].map(generator => generator.return()),
+      )
+  }
 }
 
 function markToolUseAsComplete(
