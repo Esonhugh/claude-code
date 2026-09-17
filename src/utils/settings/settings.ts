@@ -343,11 +343,15 @@ function loadPolicySettings(): SettingsJson | null {
   const mdmSettings = getMdmSettings().settings
   const fileSettings = loadManagedFileSettings().settings
   const hkcuSettings = getHkcuSettings().settings
-  const tiers = [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
-    .filter(hasSettings)
+  const sources = [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
+  const behavior = sources.find(
+    settings => settings !== null &&
+      (settings.managedSourcesBehavior !== undefined || hasSettings(settings)),
+  )?.managedSourcesBehavior
+  const tiers = sources.filter(hasSettings)
   const highest = tiers[0]
   if (!highest) return null
-  if (highest.managedSourcesBehavior !== 'merge') return highest
+  if (behavior !== 'merge') return highest
   const merged: SettingsJson = {}
   for (const settings of [...tiers].reverse())
     mergeWith(merged, settings, settingsMergeCustomizer)

@@ -23,6 +23,7 @@ import { createModHostOperations } from './hostOperations.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
 import { acceptSettingsFile, releaseSettingsFile, resetSettingsCache, retainSettingsFile, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { clearMdmSettingsCache, setMdmSettingsCache } from '../../utils/settings/mdm/settings.js'
+import { getManagedFilePath, getManagedSettingsDropInDir } from '../../utils/settings/managedPath.js'
 import { resetSyncCache, setEligibility, setSessionCache } from '../remoteManagedSettings/syncCacheState.js'
 
 const LIMIT = 4 * 1024 * 1024
@@ -50,6 +51,8 @@ beforeEach(async () => {
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
   process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = join(root, 'config', 'plugins')
   process.env.CLAUDE_CODE_MANAGED_SETTINGS_PATH = join(root, 'managed')
+  getManagedFilePath.cache.set(undefined, join(root, 'managed'))
+  getManagedSettingsDropInDir.cache.clear()
   delete process.env.CLAUDE_CODE_USE_COWORK_PLUGINS
   resetSettingsCache()
   clearMdmSettingsCache()
@@ -67,6 +70,8 @@ afterEach(async () => {
   resetSettingsCache()
   clearMdmSettingsCache()
   resetSyncCache()
+  getManagedFilePath.cache.clear()
+  getManagedSettingsDropInDir.cache.clear()
   envKeys.forEach((key, index) => {
     if (savedEnv[index] === undefined) delete process.env[key]
     else process.env[key] = savedEnv[index]
@@ -184,6 +189,72 @@ describe('settings.read', () => {
       permissions: { allow: ['Mdm', 'Remote'] },
     })
   })
+
+  test('merges MDM and managed file settings when the remote source only sets merge mode', async () => {
+    const managed = join(root, 'managed')
+    await mkdir(managed)
+    await writeFile(
+      join(managed, 'managed-settings.json'),
+      JSON.stringify({ env: { FILE_FIXTURE: '1' } }),
+    )
+    setEligibility(true)
+    setSessionCache({ managedSourcesBehavior: 'merge' })
+    setMdmSettingsCache(
+      { settings: { env: { MDM_FIXTURE: '1' } }, errors: [] },
+      { settings: {}, errors: [] },
+    )
+    resetSettingsCache()
+
+    expect(await host.settings.read({ source: 'policy' })).toEqual({
+      env: { MDM_FIXTURE: '1', FILE_FIXTURE: '1' },
+    })
+  })
+
+  for (const { label, remote, expectedEnv } of [
+    {
+      label: 'mode-only first-wins',
+      remote: { managedSourcesBehavior: 'first-wins' },
+      expectedEnv: { MDM_FIXTURE: '1' },
+    },
+    {
+      label: 'explicit first-wins with settings',
+      remote: {
+        managedSourcesBehavior: 'first-wins',
+        env: { REMOTE_FIXTURE: '1' },
+      },
+      expectedEnv: { REMOTE_FIXTURE: '1' },
+    },
+    {
+      label: 'default first-wins with settings',
+      remote: { env: { REMOTE_FIXTURE: '1' } },
+      expectedEnv: { REMOTE_FIXTURE: '1' },
+    },
+  ] as const) {
+    test(`does not let lower merge override higher ${label}`, async () => {
+      const managed = join(root, 'managed')
+      await mkdir(managed)
+      await writeFile(
+        join(managed, 'managed-settings.json'),
+        JSON.stringify({ env: { FILE_FIXTURE: '1' } }),
+      )
+      setEligibility(true)
+      setSessionCache(remote)
+      setMdmSettingsCache(
+        {
+          settings: {
+            managedSourcesBehavior: 'merge',
+            env: { MDM_FIXTURE: '1' },
+          },
+          errors: [],
+        },
+        { settings: {}, errors: [] },
+      )
+      resetSettingsCache()
+
+      const policy = await host.settings.read({ source: 'policy' })
+      expect(policy.env).toEqual(expectedEnv)
+    })
+  }
 
   test('keeps lower managed tiers shadowed when merge is not enabled', async () => {
     setEligibility(true)
