@@ -264,6 +264,10 @@ export const SettingsSchema = lazySchema(() =>
         .enum(['accept', 'hold', 'refuse'])
         .optional()
         .describe('Admission policy for local peer messages. By default, matching permission classes are accepted; mismatches are held.'),
+      managedSourcesBehavior: z
+        .enum(['first-wins', 'merge'])
+        .optional()
+        .describe('Controls whether lower-priority managed settings sources are merged.'),
       apiKeyHelper: z
         .string()
         .optional()

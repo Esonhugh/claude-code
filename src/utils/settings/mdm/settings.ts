@@ -8,9 +8,9 @@
  *   and `HKCU\SOFTWARE\Policies\ClaudeCode` (user-writable, lowest priority)
  * - Linux: No MDM equivalent (uses /etc/claude-code/managed-settings.json instead)
  *
- * Policy settings use "first source wins" — the highest-priority source that exists
- * provides all policy settings. Priority (highest to lowest):
- *   remote → HKLM/plist → managed-settings.json → HKCU
+ * Managed tiers are retained independently. The settings pipeline applies
+ * first-wins by default and composes lower tiers only when the highest source
+ * opts into managedSourcesBehavior "merge".
  *
  * Architecture:
  *   constants.ts — shared constants and plist path builder (zero heavy imports)
@@ -18,17 +18,10 @@
  *   settings.ts  — parsing, caching, first-source-wins logic (this file)
  */
 
-import { join } from 'path'
 import { logForDebugging } from '../../debug.js'
 import { logForDiagnosticsNoPII } from '../../diagLogs.js'
-import { readFileSync } from '../../fileRead.js'
-import { getFsImplementation } from '../../fsOperations.js'
 import { safeParseJSON } from '../../json.js'
 import { profileCheckpoint } from '../../startupProfiler.js'
-import {
-  getManagedFilePath,
-  getManagedSettingsDropInDir,
-} from '../managedPath.js'
 import { type SettingsJson, SettingsSchema } from '../types.js'
 import {
   filterInvalidPermissionRules,
@@ -229,16 +222,17 @@ function consumeRawReadResult(raw: RawReadResult): {
   mdm: MdmResult
   hkcu: MdmResult
 } {
+  let mdm = EMPTY_RESULT
+  let hkcu = EMPTY_RESULT
   // macOS: plist result (first source wins — already filtered in mdmRawRead)
   if (raw.plistStdouts && raw.plistStdouts.length > 0) {
     const { stdout, label } = raw.plistStdouts[0]!
     const result = parseCommandOutputAsSettings(stdout, label)
-    if (Object.keys(result.settings).length > 0) {
-      return { mdm: result, hkcu: EMPTY_RESULT }
-    }
+    if (Object.keys(result.settings).length > 0) mdm = result
   }
 
-  // Windows: HKLM result
+  // Windows: HKLM and HKCU are retained separately. Composition with file and
+  // remote tiers is decided later by managedSourcesBehavior.
   if (raw.hklmStdout) {
     const jsonString = parseRegQueryStdout(raw.hklmStdout)
     if (jsonString) {
@@ -246,71 +240,18 @@ function consumeRawReadResult(raw: RawReadResult): {
         jsonString,
         `Registry: ${WINDOWS_REGISTRY_KEY_PATH_HKLM}\\${WINDOWS_REGISTRY_VALUE_NAME}`,
       )
-      if (Object.keys(result.settings).length > 0) {
-        return { mdm: result, hkcu: EMPTY_RESULT }
-      }
+      if (Object.keys(result.settings).length > 0) mdm = result
     }
   }
-
-  // No admin MDM — check managed-settings.json before using HKCU
-  if (hasManagedSettingsFile()) {
-    return { mdm: EMPTY_RESULT, hkcu: EMPTY_RESULT }
-  }
-
-  // Fall through to HKCU (already read in parallel)
   if (raw.hkcuStdout) {
     const jsonString = parseRegQueryStdout(raw.hkcuStdout)
     if (jsonString) {
-      const result = parseCommandOutputAsSettings(
+      hkcu = parseCommandOutputAsSettings(
         jsonString,
         `Registry: ${WINDOWS_REGISTRY_KEY_PATH_HKCU}\\${WINDOWS_REGISTRY_VALUE_NAME}`,
       )
-      return { mdm: EMPTY_RESULT, hkcu: result }
     }
   }
 
-  return { mdm: EMPTY_RESULT, hkcu: EMPTY_RESULT }
-}
-
-/**
- * Check if file-based managed settings (managed-settings.json or any
- * managed-settings.d/*.json) exist and have content. Cheap sync check
- * used to skip HKCU when a higher-priority file-based source exists.
- */
-function hasManagedSettingsFile(): boolean {
-  try {
-    const filePath = join(getManagedFilePath(), 'managed-settings.json')
-    const content = readFileSync(filePath)
-    const data = safeParseJSON(content, false)
-    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-      return true
-    }
-  } catch {
-    // fall through to drop-in check
-  }
-  try {
-    const dropInDir = getManagedSettingsDropInDir()
-    const entries = getFsImplementation().readdirSync(dropInDir)
-    for (const d of entries) {
-      if (
-        !(d.isFile() || d.isSymbolicLink()) ||
-        !d.name.endsWith('.json') ||
-        d.name.startsWith('.')
-      ) {
-        continue
-      }
-      try {
-        const content = readFileSync(join(dropInDir, d.name))
-        const data = safeParseJSON(content, false)
-        if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-          return true
-        }
-      } catch {
-        // skip unreadable/malformed file
-      }
-    }
-  } catch {
-    // drop-in dir doesn't exist
-  }
-  return false
+  return { mdm, hkcu }
 }
