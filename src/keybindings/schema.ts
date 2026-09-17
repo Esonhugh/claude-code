@@ -85,6 +85,7 @@ export const KEYBINDING_ACTIONS = [
   'chat:fastMode',
   'chat:thinkingToggle',
   'chat:submit',
+  'chat:queueSubmit',
   'chat:newline',
   'chat:undo',
   'chat:externalEditor',

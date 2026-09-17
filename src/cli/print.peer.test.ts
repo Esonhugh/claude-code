@@ -69,6 +69,7 @@ if (process.env[childFlag] !== '1') {
   const attachments = await import('../utils/attachments.js')
   const storage = await import('../utils/sessionStorage.js')
   const fileHistory = await import('../utils/fileHistory.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
 
   const origin: MessageOrigin = {
     kind: 'peer',
@@ -106,6 +107,13 @@ if (process.env[childFlag] !== '1') {
     )
     expect(canBatchWith(plain, undefined)).toBe(false)
     expect(canBatchWith(plain, plain)).toBe(true)
+    const stamped = {
+      ...plain,
+      promptSubmitMetadata: { origin: { kind: 'composer' as const }, wait: true, turnId: 'active-turn' },
+    }
+    expect(canBatchWith(stamped, plain)).toBe(false)
+    expect(canBatchWith(plain, stamped)).toBe(false)
+    expect(canBatchWith(stamped, stamped)).toBe(false)
     expect(joinPromptValues(['first', 'second'])).toBe('first\nsecond')
   })
 
@@ -222,6 +230,7 @@ if (process.env[childFlag] !== '1') {
         skipAttachments: true,
         isMeta: true,
         uuid: '33333333-3333-4333-8333-333333333333',
+        promptSubmitMetadata: { origin: { kind: 'peer' }, wait: false, turnId: 'receiving-turn' },
       }
       let state = getDefaultAppState()
       if (arrival === 'held-at-start') {
@@ -303,6 +312,7 @@ if (process.env[childFlag] !== '1') {
         expect(received[0]).toMatchObject({
           prompt: command.value,
           promptUuid: command.uuid,
+          promptSubmitMetadata: command.promptSubmitMetadata,
           origin,
           isMeta: true,
           skipSlashCommands: true,
@@ -447,8 +457,14 @@ if (process.env[childFlag] !== '1') {
     '%s treats peer slash text as data, skips attachments/hooks, and persists provenance before querying',
     async entry => {
       const transcripts: Message[][] = []
-      const queryInputs: Message[][] = []
+      const queryInputs: Array<{ messages: Message[]; publicTurn?: { text: string } }> = []
+      const processInput = inputModule.processUserInput
+      const ingress: Parameters<typeof processInput>[0][] = []
       const mocks = [
+        spyOn(inputModule, 'processUserInput').mockImplementation(args => {
+          ingress.push(args)
+          return processInput(args)
+        }),
         spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
           defaultSystemPrompt: [],
           userContext: {},
@@ -469,7 +485,7 @@ if (process.env[childFlag] !== '1') {
         ),
         spyOn(queryModule, 'query').mockImplementation(
           async function* (params) {
-            queryInputs.push(structuredClone(params.messages))
+            queryInputs.push(structuredClone({ messages: params.messages, publicTurn: params.publicTurn }))
             yield createAssistantMessage({ content: 'peer received' })
             return { reason: 'completed' }
           },
@@ -509,6 +525,7 @@ if (process.env[childFlag] !== '1') {
       const uuid = '22222222-2222-4222-8222-222222222222'
       const inputOptions = {
         origin,
+        promptSubmitMetadata: { origin: { kind: 'peer' as const }, wait: false, turnId: 'submitted-during-turn' },
         skipSlashCommands: true,
         skipAttachments: true,
         isMeta: true,
@@ -530,14 +547,16 @@ if (process.env[childFlag] !== '1') {
         for await (const message of stream) output.push(message)
 
         expect(queryInputs).toHaveLength(1)
-        expect(queryInputs[0]?.[0]).toMatchObject({
+        expect(ingress[0]?.promptSubmitMetadata).toEqual(inputOptions.promptSubmitMetadata)
+        expect(queryInputs[0]?.messages[0]).toMatchObject({
           type: 'user',
           uuid,
           origin,
           isMeta: true,
           message: { role: 'user', content: prompt },
         })
-        expect(transcripts[0]).toEqual(queryInputs[0])
+        expect(queryInputs[0]?.publicTurn).toEqual({ text: '' })
+        expect(transcripts[0]).toEqual(queryInputs[0]?.messages)
         expect(engine.getMessages()[0]).toMatchObject({ origin, isMeta: true })
         expect(hook).not.toHaveBeenCalled()
         expect(attachment).not.toHaveBeenCalled()
@@ -558,6 +577,7 @@ if (process.env[childFlag] !== '1') {
                 setReadFileCache: () => {},
               })
         for await (const message of humanStream) output.push(message)
+        expect(queryInputs[1]?.publicTurn).toEqual({ text: 'human follow-up' })
         expect(hook).toHaveBeenCalledTimes(1)
         expect(attachment).toHaveBeenCalledTimes(1)
         const human = engine

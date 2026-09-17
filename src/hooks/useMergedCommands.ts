@@ -1,6 +1,11 @@
 import uniqBy from 'lodash-es/uniqBy.js'
-import { useMemo } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import type { Command } from '../commands.js'
+import type { ModCommands } from '../services/mods/commands.js'
+
+const emptyModCommands: Command[] = []
+const getEmptyModCommands = () => emptyModCommands
+const subscribeEmptyMods = () => () => {}
 
 export function useReplCommands(
   localCommands: Command[],
@@ -9,7 +14,13 @@ export function useReplCommands(
   pluginReconnectKey: number,
   isRemoteExecutionSession: boolean,
   disableSlashCommands: boolean,
+  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection'>,
 ): Command[] {
+  const modCommands = useSyncExternalStore(
+    mods?.subscribe ?? subscribeEmptyMods,
+    mods?.getSnapshot ?? getEmptyModCommands,
+    getEmptyModCommands,
+  )
   const localCommandsWithoutReloadedPlugins = useMemo(
     () =>
       !isRemoteExecutionSession && pluginReconnectKey > 0
@@ -28,8 +39,8 @@ export function useReplCommands(
     isRemoteExecutionSession ? [] : mcpCommands,
   )
   return useMemo(
-    () => (disableSlashCommands ? [] : mergedCommands),
-    [disableSlashCommands, mergedCommands],
+    () => disableSlashCommands ? [] : !isRemoteExecutionSession && mods ? mods.projection(mergedCommands) : mergedCommands,
+    [disableSlashCommands, isRemoteExecutionSession, mergedCommands, mods, modCommands],
   )
 }
 

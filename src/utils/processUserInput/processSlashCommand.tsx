@@ -38,6 +38,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
+import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
 import { buildPostCompactMessages } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js'
@@ -101,8 +102,13 @@ import type {
   ProcessUserInputContext,
 } from './processUserInput.js'
 import { isAnt } from 'src/utils/userType.js'
+import {
+  runModCommand,
+  type ModCommandInvocation,
+} from '../../services/mods/commandAdapter.js'
+import { isModCommand } from '../../services/mods/commands.js'
 
-type SlashCommandResult = ProcessUserInputBaseResult & {
+export type SlashCommandResult = ProcessUserInputBaseResult & {
   command: Command
 }
 
@@ -402,6 +408,7 @@ export async function processSlashCommand(
   uuid?: string,
   isAlreadyProcessing?: boolean,
   canUseTool?: CanUseToolFn,
+  modInvocation?: ModCommandInvocation,
 ): Promise<ProcessUserInputBaseResult> {
   const parsed = parseSlashCommand(inputString)
   if (!parsed) {
@@ -503,6 +510,53 @@ export async function processSlashCommand(
     }
   }
 
+  const command = userInvocableCommand ?? commandExists!
+  const core = (args: string) =>
+    getMessagesForSlashCommand(
+      commandName,
+      args,
+      setToolJSX,
+      context,
+      precedingInputBlocks,
+      imageContentBlocks,
+      isAlreadyProcessing,
+      canUseTool,
+      uuid,
+    )
+  // Registered Mod commands dispatch in their local-jsx projection, including
+  // the immediate path that bypasses processSlashCommand entirely.
+  const wrapsCommand = !isModCommand(command) && command.userInvocable !== false
+  const ownedSnapshot = wrapsCommand && !modInvocation
+    ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
+    : undefined
+  const invocation = modInvocation ?? (ownedSnapshot ? {
+    snapshot: ownedSnapshot,
+    origin: context.modCommand?.origin ?? { kind: 'unclassified' as const },
+    presentation: context.modCommand?.presentation ?? {
+      columns: process.stdout.columns ?? 80,
+      isFullscreen: isFullscreenEnvEnabled(),
+    },
+  } : undefined)
+  let slashResult: SlashCommandResult
+  try {
+    slashResult = invocation && wrapsCommand
+      ? await runModCommand({
+          snapshot: invocation.snapshot,
+          input: {
+            command: command.name,
+            args: parsedArgs,
+            origin: invocation.origin,
+            presentation: invocation.presentation,
+          },
+          command,
+          core,
+          signal: context.abortController.signal,
+        })
+      : await core(parsedArgs)
+  } finally {
+    ownedSnapshot?.release()
+  }
+
   // Track slash command usage for feature discovery
 
   const {
@@ -515,17 +569,7 @@ export async function processSlashCommand(
     resultText,
     nextInput,
     submitNextInput,
-  } = await getMessagesForSlashCommand(
-    commandName,
-    parsedArgs,
-    setToolJSX,
-    context,
-    precedingInputBlocks,
-    imageContentBlocks,
-    isAlreadyProcessing,
-    canUseTool,
-    uuid,
-  )
+  } = slashResult
 
   // Local slash commands that skip messages
   if (newMessages.length === 0) {
@@ -829,6 +873,7 @@ async function getMessagesForSlashCommand(
                     ],
               shouldQuery: options?.shouldQuery ?? false,
               command,
+              resultText: skipTranscript ? undefined : result,
               nextInput: options?.nextInput,
               submitNextInput: options?.submitNextInput,
             })
@@ -940,6 +985,7 @@ async function getMessagesForSlashCommand(
               ),
               shouldQuery: false,
               command,
+              resultText: result.displayText,
             }
           }
 
@@ -1326,5 +1372,6 @@ async function getMessagesForPromptSlashCommand(
     model: command.model,
     effort: command.effort,
     command,
+    resultText: shouldQuery ? undefined : skillContent,
   }
 }

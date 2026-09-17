@@ -11,6 +11,7 @@ import type { IDESelection } from '../hooks/useIdeSelection.js'
 import type { AppState } from '../state/AppState.js'
 import type { SetToolJSXFn } from '../Tool.js'
 import type { LocalJSXCommandOnDone } from '../types/command.js'
+import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import type { Message } from '../types/message.js'
 import { createUserMessage } from './messages.js'
 import {
@@ -111,6 +112,7 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
   streamMode?: SpinnerMode
   hasInterruptibleToolInProgress?: boolean
   uuid?: UUID
+  promptSubmitMetadata?: QueuedCommand['promptSubmitMetadata']
   /**
    * When true, input starting with `/` is treated as plain text.
    * Used for remotely-received messages (bridge/CCR) that should not
@@ -305,8 +307,7 @@ export async function handlePromptSubmit(
         }
       }
 
-      const impl = await immediateCommand.load()
-      const jsx = await impl.call(onDone, context, commandArgs)
+      const jsx = await runImmediateModCommand(immediateCommand, onDone, context, commandArgs)
 
       // Skip if onDone already fired — prevents stuck isLocalJSXCommand
       // (see processSlashCommand.tsx local-jsx case for full mechanism).
@@ -341,6 +342,7 @@ export async function handlePromptSubmit(
           params.streamMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       params.abortController?.abort('interrupt')
+      promptSubmitMetadata: params.promptSubmitMetadata,
     }
 
     // Enqueue with string value + raw pastedContents. Images will be resized
@@ -359,6 +361,7 @@ export async function handlePromptSubmit(
     setPastedContents({})
     resetHistory()
     clearBuffer()
+    promptSubmitMetadata: params.promptSubmitMetadata,
     return
   }
 
@@ -491,6 +494,15 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           input: cmd.value,
           preExpansionInput: cmd.preExpansionValue,
           mode: cmd.mode,
+          promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
+            origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
+              cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
+              cmd.origin?.kind === 'human' ? { kind: 'composer' } :
+              cmd.origin ? { kind: cmd.origin.kind } :
+              cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
+              { kind: 'unclassified' },
+            wait: false,
+          },
           setToolJSX,
           context: makeContext(),
           pastedContents:

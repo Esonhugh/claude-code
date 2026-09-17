@@ -80,6 +80,7 @@ import {
 import { asSessionId, asAgentId } from '../types/ids.js'
 import { logForDebugging } from '../utils/debug.js'
 import { QueryGuard } from '../utils/QueryGuard.js'
+import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { formatTokens, truncateToWidth } from '../utils/format.js'
 import { consumeEarlyInput } from '../utils/earlyInput.js'
@@ -390,6 +391,10 @@ import { getViewedAgentTask, getAgentInProgressToolUseIDs } from '../state/selec
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
 import type { ModsSession } from '../services/mods/session.js'
+import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { ModsPane } from '../components/ModsPane.js'
+import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
 import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
 import {
@@ -1294,7 +1299,7 @@ export function REPL({
     }
   }, [mainThreadAgentDefinition, mergedTools])
 
-  const commands = useReplCommands(
+  const baseCommands = useReplCommands(
     localCommands,
     plugins.commands as Command[],
     mcp.commands as Command[],
@@ -1302,6 +1307,16 @@ export function REPL({
     isRemoteExecutionSession,
     disableSlashCommands,
   )
+  const commands = useReplCommands(baseCommands, [], [], 0, isRemoteExecutionSession, disableSlashCommands, modsSession?.commands)
+  const baseCommandsRef = useRef(baseCommands)
+  baseCommandsRef.current = baseCommands
+  const getCurrentCommands = useCallback(() =>
+    disableSlashCommands ? [] : isRemoteExecutionSession ? baseCommandsRef.current :
+      modsSession?.commands.projection(baseCommandsRef.current) ?? baseCommandsRef.current,
+    [disableSlashCommands, isRemoteExecutionSession, modsSession],
+  )
+  const modBuiltinCommandsRef = useRef(localCommands)
+  modBuiltinCommandsRef.current = localCommands
 
   useIdeLogging(isRemoteExecutionSession ? EMPTY_MCP_CLIENTS : mcp.clients)
   useIdeSelection(
@@ -1866,9 +1881,35 @@ export function REPL({
     pendingHookMessages,
     setMessages,
   )
+  const modUiPresentationRef = useRef<ModUiPresentation>({
+    columns: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24,
+    isFullscreen: isFullscreenEnvEnabled(), composerEmpty: false, hasDialog: false, keyboardOwned: false,
+  })
+  const modToolContextRef = useRef<(() => ToolUseContext) | null>(null)
+  const [modStatuses, setModStatuses] = useState<Record<string, string>>({})
+  const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
+  const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
+  const getModUiSnapshot = useCallback(() => modsSession?.ui.getSnapshot() ?? emptyModPanes, [modsSession, emptyModPanes])
+  const modPanes = React.useSyncExternalStore(subscribeModUi, getModUiSnapshot)
   const awaitMods = useCallback(() => modsSession?.bind({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
-  }, setAppState), [modsSession, setAppState])
+  }, setAppState, {
+    messages: () => projectModSessionMessages(messagesRef.current),
+    commands: () => modBuiltinCommandsRef.current,
+    toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
+    presentation: () => modUiPresentationRef.current,
+    uiPresentation: () => modUiPresentationRef.current,
+    uiLog: (plugin, text) => {
+      logForDebugging(`[Mods:${plugin}] ${text}`)
+      setMessages(previous => [...previous, createSystemMessage(`[${plugin}] ${text}`, 'info')])
+    },
+    uiStatus: (plugin, text) => setModStatuses(previous => {
+      const next = { ...previous }
+      if (text === undefined) delete next[plugin]
+      else next[plugin] = text
+      return next
+    }),
+  }), [modsSession, setAppState, setMessages])
 
   useEffect(() => {
     if (!modsSession) return
@@ -2684,6 +2725,8 @@ export function REPL({
         // directions).
         //
         // Skipped for in-session /branch: the existing ref is already correct
+        // Bind the resumed identity only after the live transcript points at it.
+        setMessages(() => messages)
         // (branch preserves tool_use_ids), so there's no need to reconstruct.
         // createFork() does write content-replacement entries to the forked
         // JSONL with the fork's sessionId, so `claude -r {forkId}` also works.
@@ -2694,10 +2737,6 @@ export function REPL({
               log.contentReplacements ?? [],
             )
         }
-
-        // Reset messages to the provided initial messages
-        // Use a callback to ensure we're not dependent on stale state
-        setMessages(() => messages)
 
         // Clear any active tool JSX
         setToolJSX(null)
@@ -2929,6 +2968,43 @@ export function REPL({
     if (isPaused && pauseStartTimeRef.current === null) {
       // Just entered pause state - record the exact moment
       pauseStartTimeRef.current = now
+  const modTerminalSize = useTerminalSize()
+  const modUiPresentation = useMemo<ModUiPresentation>(() => ({
+    columns: modTerminalSize.columns,
+    rows: modTerminalSize.rows,
+    isFullscreen: isFullscreenEnvEnabled(),
+    composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
+    hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow),
+    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode !== 'none',
+  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode])
+  modUiPresentationRef.current = modUiPresentation
+  useEffect(() => {
+    void modsSession?.ui.render(modUiPresentation).catch(logError)
+  }, [modsSession, modUiPresentation])
+  const modPaneFocused = modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
+    !modUiPresentation.keyboardOwned && modPanes.some(pane => pane.visible && pane.focused)
+  const renderModPane = (pane: ModUiPane) => (
+    <ModsPane
+      key={`${pane.plugin}:${pane.id}`}
+      pane={pane.focused && !modPaneFocused ? { ...pane, focused: false } : pane}
+      onInteract={(pane, drawing, callback, kind, element, value) => {
+        const ui = modsSession?.runtime?.ui
+        if (!ui) return Promise.reject(new Error('Mod UI host is unavailable'))
+        return ui.interact(pane.id, drawing, callback, kind, element, value)
+      }}
+      onClose={pane => modsSession?.runtime?.ui.close(pane.owner, pane.id, { kind: 'person' }) ?? Promise.resolve()}
+      onFocus={(pane, element) => modsSession?.runtime?.ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }) ?? Promise.resolve()}
+      onScroll={(pane, by) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, origin: { kind: 'person' } }) ?? Promise.resolve()}
+      onReportMetrics={(pane, metrics) => {
+        if (metrics.keyRows === undefined && metrics.bodyRows === pane.bodyRows &&
+            metrics.contentRows === pane.contentRows) return
+        modsSession?.runtime?.ui.reportMetrics(pane.id, metrics)
+      }}
+      onError={logError}
+    />
+  )
+  const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
+  const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
     } else if (!isPaused && pauseStartTimeRef.current !== null) {
       // Just exited pause state - accumulate paused time immediately
       totalPausedMsRef.current += now - pauseStartTimeRef.current
@@ -3436,7 +3512,7 @@ export function REPL({
         abortController,
         mods: modsSession?.runtime,
         options: {
-          commands,
+          commands: getCurrentCommands(),
           tools: computeTools(),
           debug,
           verbose: s.verbose,
@@ -3461,6 +3537,10 @@ export function REPL({
           refreshTools: computeTools,
         },
         getAppState: () => store.getState(),
+        modCommand: {
+          origin: { kind: 'composer' },
+          presentation: { columns: process.stdout.columns ?? 80, isFullscreen: isFullscreenEnvEnabled() },
+        },
         setAppState,
         requestPermissionModeChange,
         runRemoteShellCommand: sshRemote.isRemoteMode
@@ -3561,7 +3641,7 @@ export function REPL({
       }
     },
     [
-      commands,
+      getCurrentCommands,
       combinedInitialTools,
       modsSession,
       isRemoteExecutionSession,
@@ -3616,6 +3696,10 @@ export function REPL({
             mainLoopModel,
             Array.from(
               (
+  modToolContextRef.current = () => getToolUseContext(
+    messagesRef.current, [], new AbortController(), mainLoopModel,
+  )
+
                 toolPermissionContext.additionalWorkingDirectories as unknown as Map<
                   string,
                   unknown
@@ -4061,6 +4145,16 @@ export function REPL({
         // Compute per-request OTPS using only active streaming time and
         // streaming-only content. endResponseLength tracks content added by
         // streaming deltas only, excluding subagent/compaction inflation.
+        publicTurn: {
+          text: newMessages
+            .filter(
+              (message): message is UserMessage =>
+                message.type === 'user' && !message.isMeta,
+            )
+            .map(message => getUserContentText(message.message.content))
+            .filter((text): text is string => text !== null && text !== '')
+            .join('\n'),
+        },
         const otpsValues = entries.map(e => {
           const delta = Math.round(
             (e.endResponseLength - e.responseLengthBaseline) / 4,
@@ -4525,7 +4619,7 @@ export function REPL({
         speculationSessionTimeSavedMs: number
         setAppState: SetAppState
       },
-      options?: { fromKeybinding?: boolean },
+      options?: { fromKeybinding?: boolean; wait?: boolean },
     ) => {
       // A full `!command` can arrive in one paste/key event before PromptInput
       // has stripped the mode prefix. Normalize it against the synchronous mode
@@ -4567,7 +4661,7 @@ export function REPL({
         // Find matching command - treat as immediate if:
         // 1. Command has `immediate: true`, OR
         // 2. Command was triggered via keybinding (fromKeybinding option)
-        const matchingCommand = commands.find(
+        const matchingCommand = getCurrentCommands().find(
           cmd =>
             isCommandEnabled(cmd) &&
             (cmd.name === commandName ||
@@ -4697,8 +4791,12 @@ export function REPL({
               mainLoopModel,
             )
 
-            const mod = await matchingCommand.load()
-            const jsx = await mod.call(onDone, context, commandArgs)
+            const jsx = await runImmediateModCommand(
+              matchingCommand,
+              onDone,
+              context,
+              commandArgs,
+            )
 
             // Skip if onDone already fired — prevents stuck isLocalJSXCommand
             // (see processSlashCommand.tsx local-jsx case for full mechanism).
@@ -4979,7 +5077,8 @@ export function REPL({
         queryGuard,
         isExternalLoading,
         mode: submittedInputMode,
-        commands,
+        commands: getCurrentCommands(),
+        promptSubmitMetadata: { origin: { kind: 'composer' }, wait: options?.wait === true },
         onInputChange: setInputValue,
         setPastedContents,
         setToolJSX,
@@ -5027,7 +5126,7 @@ export function REPL({
       isLoading,
       isExternalLoading,
       inputMode,
-      commands,
+      getCurrentCommands,
       setInputValue,
       setInputMode,
       setPastedContents,
@@ -6515,6 +6614,8 @@ export function REPL({
                   (the modal IS the /config UI). Outside modals it stays so
                   the user sees their input echoed while Claude processes. */}
               {!disabled && placeholderText && !centeredModal && (
+          dockPane={modDock.map(renderModPane)}
+          inlinePane={modInline.map(renderModPane)}
                 <UserTextMessage
                   param={{ text: placeholderText, type: 'text' }}
                   addMargin={true}
@@ -7157,7 +7258,7 @@ export function REPL({
                         debug={debug}
                         ideSelection={ideSelection}
                         hasSuppressedDialogs={!!hasSuppressedDialogs}
-                        isLocalJSXCommandActive={isShowingLocalJSXCommand}
+                        isLocalJSXCommandActive={isShowingLocalJSXCommand || modPaneFocused}
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}
                         setToolPermissionContext={setToolPermissionContext}
@@ -7402,3 +7503,6 @@ export function REPL({
   }
   return mainReturn
 }
+                {Object.entries(modStatuses).map(([plugin, text]) => (
+                  <Text key={plugin} dimColor>{`[${plugin}] ${text}`}</Text>
+                ))}

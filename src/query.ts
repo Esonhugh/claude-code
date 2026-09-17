@@ -6,6 +6,9 @@ import type {
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
+import { randomUUID } from 'crypto'
+import { createModTurnCompletion } from './services/mods/turnAdapter.js'
+import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
@@ -204,6 +207,8 @@ export type QueryParams = {
   maxTurns?: number
   stopHookActive?: boolean
   skipCacheWrite?: boolean
+  /** Explicit main/public prompt admitted for this model turn. */
+  publicTurn?: { text: string }
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
   // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
   // budget for the whole agentic turn; `remaining` is computed per iteration
@@ -242,20 +247,100 @@ export async function* query(
   Terminal
 > {
   const consumedCommandUuids: string[] = []
-  const terminal = yield* queryLoop(params, consumedCommandUuids)
-  // Only reached if queryLoop returned normally. Skipped on throw (error
-  // propagates through yield*) and on .return() (Return completion closes
-  // both generators). This gives the same asymmetric started-without-completed
-  // signal as print.ts's drainCommandQueue when the turn fails.
-  for (const uuid of consumedCommandUuids) {
-    notifyCommandLifecycle(uuid, 'completed')
+  let catalogContext = params.toolUseContext
+  const snapshot = catalogContext.mods?.capture({
+    toolCatalog: () => createToolCatalogForContext(catalogContext),
+  })
+  const handlesStart = params.publicTurn !== undefined && snapshot?.hasHooks('turn.start') === true
+  const handlesComplete = snapshot?.hasHooks('turn.complete') === true
+  const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
+  if (!handlesStart && !handlesComplete && !handlesCatalog) {
+    snapshot?.release()
+    const terminal = yield* queryLoop(params, consumedCommandUuids)
+    // Only normal return completes commands; throw and iterator.return() do not.
+    for (const uuid of consumedCommandUuids) {
+      notifyCommandLifecycle(uuid, 'completed')
+    }
+    return terminal
   }
+
+  const startedAt = performance.now()
+  const turnId = randomUUID()
+  const completion = handlesComplete
+    ? createModTurnCompletion(turnId, params.toolUseContext.agentId)
+    : undefined
+  const toolUseContext = {
+    ...params.toolUseContext,
+    modsSnapshot: snapshot,
+  }
+  params = { ...params, toolUseContext }
+  if (handlesStart) {
+    try {
+      await snapshot!.dispatch(
+        'turn.start',
+        { turnId, text: params.publicTurn!.text },
+        async () => ({ turnId }),
+        {
+          signal: params.toolUseContext.abortController.signal,
+          validateResult(value) {
+            const result = value as Record<string, unknown> | null
+            if (!result || Array.isArray(result) || result.turnId !== turnId)
+              throw new Error('turn.start must return the current turnId')
+          },
+        },
+      )
+    } catch (error) {
+      snapshot!.release()
+      throw error
+    }
+  }
+  let terminal: Terminal
+  let returned = false
+  let failed = false
+  let additionalText: string | undefined
+  try {
+    terminal = yield* queryLoop(params, consumedCommandUuids, completion?.observe,
+      context => { catalogContext = context })
+    returned = true
+    for (const uuid of consumedCommandUuids) {
+      notifyCommandLifecycle(uuid, 'completed')
+    }
+  } catch (error) {
+    failed = true
+    throw error
+  } finally {
+    try {
+      try {
+        if (completion) {
+          const { input, result } = await completion.complete(snapshot!, {
+            durationMs: performance.now() - startedAt,
+            aborted: params.toolUseContext.abortController.signal.aborted || (!returned && !failed),
+            failed,
+            terminal,
+          })
+          if (returned && !params.toolUseContext.agentId &&
+            result.text.trim() && result.text !== input.answer) additionalText = result.text
+        }
+      } finally {
+        snapshot!.release()
+      }
+    } catch (error) {
+      // Cleanup must never mask a query exception or its return completion.
+      logForDebugging(`Mods turn.complete failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
+      logError(new Error('Mods turn.complete failed', { cause: error }))
+    }
+  }
+  // Never yield from finally: doing so would keep iterator.return() suspended.
+  // System informational messages are displayed but stripped from API history.
+  if (additionalText) yield createSystemMessage(additionalText, 'info')
   return terminal
 }
 
 async function* queryLoop(
   params: QueryParams,
   consumedCommandUuids: string[],
+  observeResponse?: (message: Message | StreamEvent) => void,
+  updateCatalogContext?: (context: ToolUseContext) => void,
 ): AsyncGenerator<
   | StreamEvent
   | RequestStartEvent
@@ -267,7 +352,6 @@ async function* queryLoop(
   // Immutable params — never reassigned during the query loop.
   const {
     systemPrompt,
-    userContext,
     systemContext,
     canUseTool,
     fallbackModel,
@@ -275,6 +359,60 @@ async function* queryLoop(
     maxTurns,
     skipCacheWrite,
   } = params
+  let userContext = params.userContext
+  let contextBlocks: readonly { name: string; text: string }[] | undefined
+  if (params.toolUseContext.mods?.hasHooks('prompt.context')) {
+    const snapshot = params.toolUseContext.mods.capture({
+      toolCatalog: () => createToolCatalogForContext(params.toolUseContext),
+    })
+    const validate = (value: unknown) => {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        !('blocks' in value) ||
+        !Array.isArray(value.blocks)
+      )
+        throw new Error('prompt.context requires ordered blocks')
+      const names = new Set<string>()
+      for (const block of value.blocks) {
+        if (
+          !block ||
+          typeof block !== 'object' ||
+          typeof block.name !== 'string' ||
+          typeof block.text !== 'string' ||
+          names.has(block.name)
+        )
+          throw new Error('prompt.context requires unique named text blocks')
+        names.add(block.name)
+      }
+    }
+    try {
+      const answer = await snapshot.dispatch(
+        'prompt.context',
+        {
+          blocks: Object.entries(params.userContext).map(([name, text]) => ({
+            name,
+            text,
+          })),
+        },
+        async input => input,
+        {
+          signal: params.toolUseContext.abortController.signal,
+          validateInput: validate,
+          validateResult: validate,
+        },
+      )
+      validate(answer)
+      contextBlocks = structuredClone(
+        (answer as { blocks: { name: string; text: string }[] }).blocks,
+      )
+      userContext = Object.fromEntries(
+        contextBlocks.map(({ name, text }) => [name, text]),
+      )
+    } finally {
+      snapshot.release()
+    }
+  }
   const deps = params.deps ?? productionDeps()
   const openAITurnScope =
     getAPIProvider() === 'openai'
@@ -573,6 +711,7 @@ async function* queryLoop(
       ...toolUseContext,
       messages: messagesForQuery,
     }
+    updateCatalogContext?.(toolUseContext)
 
     const assistantMessages: AssistantMessage[] = []
     const toolResults: (UserMessage | AttachmentMessage)[] = []
@@ -699,7 +838,7 @@ async function* queryLoop(
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
           for await (const message of deps.callModel({
-            messages: prependUserContext(messagesForQuery, userContext),
+            messages: prependUserContext(messagesForQuery, contextBlocks ?? userContext),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: toolUseContext.options.tools,
@@ -729,6 +868,7 @@ async function* queryLoop(
               maxOutputTokensOverride,
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
+              modsSnapshot: toolUseContext.modsSnapshot,
               hasPendingMcpServers: appState.mcp.clients.some(
                 (c) => c.type === 'pending',
               ),
@@ -749,6 +889,7 @@ async function* queryLoop(
               }),
             },
           })) {
+            observeResponse?.(message)
             // We won't use the tool_calls from the first attempt
             // We could.. but then we'd have to merge assistant messages
             // with different ids and double up on full the tool_results

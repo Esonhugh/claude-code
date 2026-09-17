@@ -466,6 +466,8 @@ export function canBatchWith(
     next.mode === 'prompt' &&
     head.origin === undefined &&
     next.origin === undefined &&
+    head.promptSubmitMetadata === undefined &&
+    next.promptSubmitMetadata === undefined &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta &&
     next.skipSlashCommands === head.skipSlashCommands &&
@@ -2237,6 +2239,13 @@ function runHeadlessStreaming(
               promptUuid: cmd.uuid,
               isMeta: cmd.isMeta,
               origin: cmd.origin,
+              promptSubmitMetadata: cmd.promptSubmitMetadata ?? (
+                cmd.origin ? undefined : {
+                  origin: { kind: cmd.mode === 'task-notification' ? 'task-notification' :
+                    structuredIO instanceof RemoteIO ? 'bridge' : 'sdk' },
+                  wait: false,
+                }
+              ),
               skipSlashCommands: cmd.skipSlashCommands,
               skipAttachments: cmd.skipAttachments,
               cwd: cwd(),

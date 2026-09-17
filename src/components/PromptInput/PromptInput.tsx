@@ -300,7 +300,7 @@ type Props = {
       speculationSessionTimeSavedMs: number
       setAppState: (f: (prev: AppState) => AppState) => void
     },
-    options?: { fromKeybinding?: boolean },
+    options?: { fromKeybinding?: boolean; wait?: boolean },
   ) => Promise<void>
   onAgentSubmit?: (
     input: string,
@@ -2274,23 +2274,39 @@ function PromptInput({
     })
   }, [addNotification, onImagePaste])
 
-  // Register chat:submit handler directly in the handler registry (not via
-  // useKeybindings) so that only the ChordInterceptor can invoke it for chord
-  // completions (e.g., "ctrl+e s"). The default Enter binding for submit is
-  // handled by TextInput directly (via onSubmit prop) and useTypeahead (for
-  // autocomplete acceptance). Using useKeybindings would cause
-  // stopImmediatePropagation on Enter, blocking autocomplete from seeing the key.
+  // Register submit handlers directly in the handler registry (not via
+  // useKeybindings) so that only the ChordInterceptor can invoke them for chord
+  // completions. The default Enter binding for submit is handled by TextInput
+  // directly (via onSubmit prop) and useTypeahead (for autocomplete acceptance).
+  // Using useKeybindings would cause stopImmediatePropagation on Enter, blocking
+  // autocomplete from seeing the key.
   const keybindingContext = useOptionalKeybindingContext()
   useEffect(() => {
     if (!keybindingContext || isModalOverlayActive) return
-    return keybindingContext.registerHandler({
+    const unregisterSubmit = keybindingContext.registerHandler({
       action: 'chat:submit',
       context: 'Chat',
       handler: () => {
         void onSubmit(input)
       },
     })
-  }, [keybindingContext, isModalOverlayActive, onSubmit, input])
+    const unregisterQueueSubmit = keybindingContext.registerHandler({
+      action: 'chat:queueSubmit',
+      context: 'Chat',
+      handler: () => {
+        void onSubmitProp(
+          input,
+          { setCursorOffset, clearBuffer, resetHistory },
+          undefined,
+          { wait: true },
+        )
+      },
+    })
+    return () => {
+      unregisterSubmit()
+      unregisterQueueSubmit()
+    }
+  }, [keybindingContext, isModalOverlayActive, onSubmit, onSubmitProp, input, setCursorOffset, clearBuffer, resetHistory])
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as

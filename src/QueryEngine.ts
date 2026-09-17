@@ -39,9 +39,13 @@ import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { ModsSession } from './services/mods/session.js'
+import type { PromptSubmitMetadata } from './services/mods/promptAdapter.js'
+import { projectModSessionMessages } from './services/mods/sessionMessages.js'
+import { createToolCatalog } from './services/mods/toolCatalog.js'
+import { toolToAPISchema } from './utils/api.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { Message, MessageOrigin } from './types/message.js'
+import type { Message, MessageOrigin, UserMessage } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
 import type { AttributionState } from './utils/commitAttribution.js'
@@ -217,6 +221,7 @@ export class QueryEngine {
       uuid?: string
       isMeta?: boolean
       origin?: MessageOrigin
+      promptSubmitMetadata?: PromptSubmitMetadata
       skipSlashCommands?: boolean
       skipAttachments?: boolean
     },
@@ -250,7 +255,20 @@ export class QueryEngine {
     setCwd(cwd)
     if (this.config.modsSession) await this.config.modsSession.bind({
       cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
-    }, setAppState)
+    }, setAppState, {
+      messages: () => projectModSessionMessages(this.mutableMessages),
+      commands: () => this.config.commands,
+      toolCatalog: () => createToolCatalog(this.config.tools, async tool => {
+        const schema = await toolToAPISchema(tool, {
+          tools: this.config.tools,
+          agents: this.config.agents ?? [],
+          getToolPermissionContext: async () => this.config.getAppState().toolPermissionContext,
+          model: this.config.userSpecifiedModel ? parseUserSpecifiedModel(this.config.userSpecifiedModel) : getMainLoopModel(),
+        })
+        return 'description' in schema ? schema.description ?? '' : ''
+      }),
+      presentation: () => ({columns:80, isFullscreen:false}),
+    })
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
 
@@ -368,7 +386,7 @@ export class QueryEngine {
       handleElicitation: this.config.handleElicitation,
       mods: this.config.modsSession?.runtime,
       options: {
-        commands,
+        commands: this.config.modsSession?.commands.projection(commands) ?? commands,
         debug: false, // we use stdout, so don't want to clobber it
         tools,
         verbose,
@@ -449,6 +467,11 @@ export class QueryEngine {
       skipSlashCommands: options?.skipSlashCommands,
       skipAttachments: options?.skipAttachments,
       skipHooks: options?.origin?.kind === 'peer',
+      promptSubmitMetadata: options?.promptSubmitMetadata ?? {
+        origin: options?.origin?.kind === 'channel' ? { kind: 'channel', server: options.origin.server } :
+          options?.origin && options.origin.kind !== 'human' ? { kind: options.origin.kind } : { kind: 'sdk' },
+        wait: false,
+      },
       querySource: 'sdk',
     })
 
@@ -527,7 +550,7 @@ export class QueryEngine {
       handleElicitation: this.config.handleElicitation,
       mods: this.config.modsSession?.runtime,
       options: {
-        commands,
+        commands: this.config.modsSession?.commands.projection(commands) ?? commands,
         debug: false,
         tools,
         verbose,
@@ -723,6 +746,23 @@ export class QueryEngine {
       querySource: 'sdk',
       maxTurns,
       taskBudget,
+      publicTurn: {
+        text: messagesFromUserInput
+          .filter(
+            (message): message is UserMessage =>
+              message.type === 'user' && !message.isMeta,
+          )
+          .map(message => {
+            const content = message.message.content
+            if (typeof content === 'string') return content
+            return content
+              .filter(block => block.type === 'text' && typeof block.text === 'string')
+              .map(block => block.text)
+              .join('')
+          })
+          .filter(text => text !== '')
+          .join('\n'),
+      },
     })) {
       // Record assistant, user, and compact boundary messages
       if (
@@ -1251,6 +1291,7 @@ export async function* ask({
   promptUuid,
   isMeta,
   origin,
+  promptSubmitMetadata,
   skipSlashCommands,
   skipAttachments,
   cwd,
@@ -1287,6 +1328,7 @@ export async function* ask({
   promptUuid?: string
   isMeta?: boolean
   origin?: MessageOrigin
+  promptSubmitMetadata?: PromptSubmitMetadata
   skipSlashCommands?: boolean
   skipAttachments?: boolean
   cwd: string
@@ -1361,6 +1403,7 @@ export async function* ask({
       uuid: promptUuid,
       isMeta,
       origin,
+      promptSubmitMetadata,
       skipSlashCommands,
       skipAttachments,
     })

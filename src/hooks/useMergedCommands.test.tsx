@@ -102,4 +102,36 @@ try {
   reloadInstance.cleanup()
 }
 
+const { createModCommands } = await import('../services/mods/commands.js')
+const modCommands = createModCommands({getBuiltinCommands: () => [], run: async () => ({})})
+function CaptureMods({ disabled = false, remote = false }: {disabled?: boolean; remote?: boolean}): null {
+  current = useReplCommands([local], [], [], 0, remote, disabled, modCommands)
+  return null
+}
+const modInstance = await render(React.createElement(CaptureMods), {
+  stdout: new TestStdout() as unknown as NodeJS.WriteStream,
+  patchConsole: false,
+})
+try {
+  await new Promise(resolve => setImmediate(resolve))
+  const owner = {}
+  modCommands.register(owner, {name:'mod-panel', description:'Panel'})
+  modCommands.commit(owner)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(current.map(command => command.name), ['local-command', 'mod-panel'])
+  for (const props of [{disabled:true}, {remote:true}]) {
+    modInstance.rerender(React.createElement(CaptureMods, props))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(current.map(command => command.name), props.disabled ? [] : ['local-command'])
+  }
+  modInstance.rerender(React.createElement(CaptureMods))
+  await new Promise(resolve => setImmediate(resolve))
+  modCommands.release(owner)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(current, [local])
+} finally {
+  modInstance.unmount()
+  modInstance.cleanup()
+}
+
 console.log('useMergedCommands.test.tsx passed')

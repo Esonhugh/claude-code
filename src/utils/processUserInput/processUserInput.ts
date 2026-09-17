@@ -7,7 +7,13 @@ import type {
 import { randomUUID } from 'crypto'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
+import {
+  runModPromptSubmit,
+  type PromptAttachment,
+  type PromptSubmitMetadata,
+} from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
+import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
 import {
   findCommand,
   getCommandName,
@@ -92,6 +98,7 @@ export async function processUserInput({
   isMeta,
   skipAttachments,
   skipHooks,
+  promptSubmitMetadata,
 }: {
   input: string | Array<ContentBlockParam>
   /**
@@ -130,6 +137,8 @@ export async function processUserInput({
   isMeta?: boolean
   skipAttachments?: boolean
   skipHooks?: boolean
+  /** Stamped at ingress and retained while queued; unstamped is unclassified. */
+  promptSubmitMetadata?: PromptSubmitMetadata
 }): Promise<ProcessUserInputBaseResult> {
   const inputString = typeof input === 'string' ? input : null
   // Immediately show the user input prompt while we are still processing the input.
@@ -141,10 +150,20 @@ export async function processUserInput({
 
   queryCheckpoint('query_process_user_input_base_start')
 
+  if (promptSubmitMetadata) context = {
+    ...context,
+    modCommand: {
+      origin: promptSubmitMetadata.origin,
+      presentation: context.modCommand?.presentation ?? {
+        columns: process.stdout.columns ?? 80,
+        isFullscreen: false,
+      },
+    },
+  }
   const appState = context.getAppState()
   const isRemoteShellInput = Boolean(context.runRemoteShellCommand)
 
-  const result = await processUserInputBase(
+  const { isRegularPrompt, ...result } = await processUserInputBase(
     input,
     mode,
     setToolJSX,
@@ -169,105 +188,237 @@ export async function processUserInput({
     return result
   }
 
-  // Execute UserPromptSubmit hooks and handle blocking
-  queryCheckpoint('query_hooks_start')
-  const inputMessage = getContentText(input) || ''
-
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    inputMessage,
-    appState.toolPermissionContext.mode,
-    context,
-    context.requestPrompt,
-  )) {
-    // We only care about the result
-    // @ts-ignore - recovered code
-    if (hookResult.message?.type === 'progress') {
-      continue
-    }
-
-    // Return only a system-level error message, erasing the original user input
-    if (hookResult.blockingError) {
-      const blockingMessage = getUserPromptSubmitHookBlockingMessage(
-        hookResult.blockingError,
-      )
-      return {
-        messages: [
-          // TODO: Make this an attachment message
-          createSystemMessage(
-            `${blockingMessage}\n\nOriginal prompt: ${input}`,
-            'warning',
-          ),
-        ],
-        shouldQuery: false,
-        allowedTools: result.allowedTools,
+  const promptMessage = result.messages.find(message => message.type === 'user')
+  // Only the regular prompt branch is rewriteable. Commands have already
+  // executed in base, including bridge-safe slash and keyword routing.
+  const snapshot =
+    isRegularPrompt && promptMessage?.type === 'user'
+      ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
+      : undefined
+  if (!snapshot) return runClassicHooks(result, getContentText(input) || '')
+  try {
+    if (!snapshot.hasHooks('prompt.submit'))
+      return await runClassicHooks(result, getContentText(input) || '')
+    const content = promptMessage!.message.content
+    const text =
+      typeof content === 'string'
+        ? content
+        : content
+            .filter(block => block.type === 'text')
+            .map(block => block.text)
+            .join('\n')
+    const attachments: PromptAttachment[] = []
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (
+          block.type !== 'image' &&
+          block.type !== 'audio' &&
+          block.type !== 'document'
+        )
+          continue
+        const source = block.source
+        attachments.push({
+          type: block.type,
+          ...(source &&
+          typeof source === 'object' &&
+          'media_type' in source &&
+          typeof source.media_type === 'string'
+            ? { mediaType: source.media_type }
+            : {}),
+        })
       }
     }
-
-    // If preventContinuation is set, stop processing but keep the original
-    // prompt in context.
-    if (hookResult.preventContinuation) {
-      const message = hookResult.stopReason
-        ? `Operation stopped by hook: ${hookResult.stopReason}`
-        : 'Operation stopped by hook'
-      result.messages.push(
-        createUserMessage({
-          content: message,
-        }),
-      )
-      result.shouldQuery = false
-      return result
+    // Paste names are not present in API content blocks; add only their public
+    // descriptors, never the image data or filesystem path.
+    const pastedImages = Object.values(pastedContents ?? {}).filter(
+      isValidImagePaste,
+    )
+    for (let index = 0; index < pastedImages.length; index++) {
+      const descriptor =
+        attachments[attachments.length - pastedImages.length + index]
+      if (descriptor && pastedImages[index]?.filename)
+        descriptor.filename = pastedImages[index]!.filename
     }
-
-    // Collect additional contexts
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      result.messages.push(
-        createAttachmentMessage({
-          type: 'hook_additional_context',
-          content: hookResult.additionalContexts.map(applyTruncation),
-          hookName: 'UserPromptSubmit',
-          toolUseID: `hook-${randomUUID()}`,
-          hookEvent: 'UserPromptSubmit',
+    let entries = 0
+    const { outcome, submissions } = await runModPromptSubmit({
+      snapshot,
+      signal: context.abortController.signal,
+      input: {
+        text,
+        ...(attachments.length ? { attachments } : {}),
+        ...(promptSubmitMetadata ?? {
+          origin: { kind: 'unclassified' },
+          wait: false,
         }),
-      )
-    }
-
-    // TODO: Clean this up
-    if (hookResult.message) {
-      // @ts-ignore - recovered code
-      switch (hookResult.message.attachment.type) {
-        case 'hook_success':
-          // @ts-ignore - recovered code
-          if (!hookResult.message.attachment.content) {
-            // Skip if there is no content
-            break
+      },
+      core: async entered => {
+        const submitted = {
+          ...result,
+          messages:
+            entries++ === 0
+              ? [...result.messages]
+              : result.messages.map(message => ({
+                  ...message,
+                  uuid: randomUUID(),
+                })),
+        }
+        const promptIndex = result.messages.indexOf(promptMessage!)
+        let rewrittenContent = content
+        if (entered.text !== text) {
+          if (typeof content === 'string') rewrittenContent = entered.text
+          else {
+            // Rewrite text once, retaining every non-text block and its order.
+            let written = false
+            rewrittenContent = content.flatMap(block => {
+              if (block.type !== 'text') return [block]
+              if (written) return []
+              written = true
+              return [{ ...block, text: entered.text }]
+            })
+            if (!written)
+              rewrittenContent = [
+                { type: 'text', text: entered.text },
+                ...rewrittenContent,
+              ]
           }
-          // @ts-ignore - recovered code
-          result.messages.push({
-            ...hookResult.message,
-            attachment: {
-              // @ts-ignore - recovered code
-              ...hookResult.message.attachment,
-              // @ts-ignore - recovered code
-              content: applyTruncation(hookResult.message.attachment.content),
-            },
-          })
-          break
-        default:
-          // @ts-ignore - recovered code
-          result.messages.push(hookResult.message)
-          break
+        }
+        submitted.messages[promptIndex] = {
+          ...promptMessage!,
+          uuid: submitted.messages[promptIndex]!.uuid,
+          message: { ...promptMessage!.message, content: rewrittenContent },
+        }
+        if (entered.context?.length) {
+          submitted.messages.splice(
+            promptIndex + 1,
+            0,
+            createAttachmentMessage({
+              type: 'hook_additional_context',
+              content: [...entered.context],
+              hookName: 'prompt.submit',
+              toolUseID: `hook-${randomUUID()}`,
+              hookEvent: 'UserPromptSubmit',
+            }),
+          )
+        }
+        return runClassicHooks(submitted, entered.text)
+      },
+    })
+    const last = submissions.at(-1)
+    const messages = submissions.flatMap(submitted => submitted.messages)
+    if (outcome.drop !== undefined)
+      messages.push(createSystemMessage(outcome.drop, 'warning'))
+    return {
+      ...(last ?? result),
+      messages,
+      shouldQuery: outcome.drop === undefined && !!last?.shouldQuery,
+    }
+  } finally {
+    snapshot.release()
+  }
+
+  async function runClassicHooks(
+    result: ProcessUserInputBaseResult,
+    inputMessage: string,
+  ): Promise<ProcessUserInputBaseResult> {
+    // Execute UserPromptSubmit hooks and handle blocking
+    queryCheckpoint('query_hooks_start')
+
+    for await (const hookResult of executeUserPromptSubmitHooks(
+      inputMessage,
+      appState.toolPermissionContext.mode,
+      context,
+      context.requestPrompt,
+    )) {
+      // We only care about the result
+      // @ts-ignore - recovered code
+      if (hookResult.message?.type === 'progress') {
+        continue
+      }
+
+      // Return only a system-level error message, erasing the original user input
+      if (hookResult.blockingError) {
+        const blockingMessage = getUserPromptSubmitHookBlockingMessage(
+          hookResult.blockingError,
+        )
+        return {
+          messages: [
+            // TODO: Make this an attachment message
+            createSystemMessage(
+              `${blockingMessage}\n\nOriginal prompt: ${input}`,
+              'warning',
+            ),
+          ],
+          shouldQuery: false,
+          allowedTools: result.allowedTools,
+        }
+      }
+
+      // If preventContinuation is set, stop processing but keep the original
+      // prompt in context.
+      if (hookResult.preventContinuation) {
+        const message = hookResult.stopReason
+          ? `Operation stopped by hook: ${hookResult.stopReason}`
+          : 'Operation stopped by hook'
+        result.messages.push(
+          createUserMessage({
+            content: message,
+          }),
+        )
+        result.shouldQuery = false
+        return result
+      }
+
+      // Collect additional contexts
+      if (
+        hookResult.additionalContexts &&
+        hookResult.additionalContexts.length > 0
+      ) {
+        result.messages.push(
+          createAttachmentMessage({
+            type: 'hook_additional_context',
+            content: hookResult.additionalContexts.map(applyTruncation),
+            hookName: 'UserPromptSubmit',
+            toolUseID: `hook-${randomUUID()}`,
+            hookEvent: 'UserPromptSubmit',
+          }),
+        )
+      }
+
+      // TODO: Clean this up
+      if (hookResult.message) {
+        // @ts-ignore - recovered code
+        switch (hookResult.message.attachment.type) {
+          case 'hook_success':
+            // @ts-ignore - recovered code
+            if (!hookResult.message.attachment.content) {
+              // Skip if there is no content
+              break
+            }
+            // @ts-ignore - recovered code
+            result.messages.push({
+              ...hookResult.message,
+              attachment: {
+                // @ts-ignore - recovered code
+                ...hookResult.message.attachment,
+                // @ts-ignore - recovered code
+                content: applyTruncation(hookResult.message.attachment.content),
+              },
+            })
+            break
+          default:
+            // @ts-ignore - recovered code
+            result.messages.push(hookResult.message)
+            break
+        }
       }
     }
-  }
-  queryCheckpoint('query_hooks_end')
+    queryCheckpoint('query_hooks_end')
 
-  // Happy path: onQuery will clear userInputOnProcessing via startTransition
-  // so it resolves in the same frame as deferredMessages (no flicker gap).
-  // Error paths are handled by handlePromptSubmit's finally block.
-  return result
+    // Happy path: onQuery will clear userInputOnProcessing via startTransition
+    // so it resolves in the same frame as deferredMessages (no flicker gap).
+    // Error paths are handled by handlePromptSubmit's finally block.
+    return result
+  }
 }
 
 const MAX_HOOK_OUTPUT_LENGTH = 10000
@@ -297,7 +448,7 @@ async function processUserInputBase(
   isMeta?: boolean,
   skipAttachments?: boolean,
   preExpansionInput?: string,
-): Promise<ProcessUserInputBaseResult> {
+): Promise<ProcessUserInputBaseResult & { isRegularPrompt?: boolean }> {
   let inputString: string | null = null
   let precedingInputBlocks: ContentBlockParam[] = []
 
@@ -603,7 +754,10 @@ async function processUserInputBase(
     logEvent('tengu_ultracode_keyword', {})
     promptResult.effort = 'ultracode'
   }
-  return addImageMetadataMessage(promptResult, imageMetadataTexts)
+  return {
+    ...addImageMetadataMessage(promptResult, imageMetadataTexts),
+    isRegularPrompt: true,
+  }
 }
 
 // Adds image metadata texts as isMeta message to result

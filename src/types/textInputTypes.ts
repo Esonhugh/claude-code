@@ -8,6 +8,7 @@ import type { ImageDimensions } from '../utils/imageResizer.js'
 import type { TextHighlight } from '../utils/textHighlighting.js'
 import type { AgentId } from './ids.js'
 import type { AssistantMessage, MessageOrigin } from './message.js'
+import type { PromptSubmitMetadata } from '../services/mods/promptAdapter.js'
 
 /**
  * Inline ghost text for mid-input command autocomplete
@@ -340,6 +341,7 @@ export type QueuedCommand = {
    * undefined = human (keyboard).
    */
   origin?: MessageOrigin
+  promptSubmitMetadata?: PromptSubmitMetadata
   /**
    * Workload tag threaded through to cc_workload= in the billing-header
    * attribution block. The queue is the async boundary between the cron
