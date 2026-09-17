@@ -4,11 +4,16 @@ import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
 import { getPluginStorageId } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { ModDiagnostic, ModPluginInput } from './runtime.js'
+import type { ModOrigin } from './types.js'
+import { SEC_DEFAULT_ID, shouldSeatSecDefault } from './native.js'
 
 export type PrepareModPluginsSettings = {
   userSettings: SettingsJson | null
   flagSettings: SettingsJson | null
   policySettings: SettingsJson | null
+  /** Admin settings remain authoritative even when their contents failed validation. */
+  hasManagedSettings?: boolean
+  subscriptionType?: 'team' | 'enterprise' | 'pro' | 'max' | null
   hookPolicy: {
     /** Result of shouldAllowManagedHooksOnly(). */
     managedOnly: boolean
@@ -22,10 +27,6 @@ export type PrepareModPluginsSettings = {
 }
 
 type PluginOptions = Record<string, string | number | boolean | string[]>
-type UnmodeledOrderingSettings = SettingsJson & {
-  prependPlugins?: unknown
-  appendPlugins?: unknown
-}
 
 function diagnostic(
   plugin: string,
@@ -92,17 +93,24 @@ function prepareOptions(
   return { options }
 }
 
-function hasOrderingSettings(settings: PrepareModPluginsSettings): boolean {
-  return [
-    settings.userSettings,
-    settings.flagSettings,
-    settings.policySettings,
-  ].some((source) => {
-    const value = source as UnmodeledOrderingSettings | null
-    return (
-      value?.prependPlugins !== undefined || value?.appendPlugins !== undefined
-    )
-  })
+export function getModPluginOrigin(
+  plugin: LoadedPlugin,
+  settings: PrepareModPluginsSettings,
+): ModOrigin {
+  const storageId = getPluginStorageId(plugin)
+  if (plugin.isBuiltin === true && storageId.endsWith('@builtin'))
+    return { plugin: storageId, tier: 'builtin' }
+  const managed = settings.policySettings?.enabledPlugins?.[storageId] === true
+  const hasPolicy = settings.hasManagedSettings === true ||
+    (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0)
+  const ordering = hasPolicy ? settings.policySettings :
+    settings.enabledOptionSources?.user === false ? null : settings.userSettings
+  let tier: ModOrigin['tier'] = managed ? 'prepend' : 'user'
+  if (hasPolicy ? managed : !managed) {
+    if (ordering?.prependPlugins?.includes(storageId)) tier = 'prepend'
+    else if (ordering?.appendPlugins?.includes(storageId)) tier = 'append'
+  }
+  return { plugin: storageId, tier }
 }
 
 /**
@@ -125,14 +133,19 @@ export function prepareModPlugins(
     settings.userSettings?.disableAllHooks === true ||
     settings.flagSettings?.disableAllHooks === true
 
-  if (hasOrderingSettings(settings)) {
-    errors.push(
-      diagnostic(
-        'mods',
-        'ordering',
-        'prependPlugins/appendPlugins are not available in the local settings schema; configured Mods ordering was not applied',
-      ),
-    )
+  const hasPolicy = settings.hasManagedSettings === true ||
+    (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0)
+  const user = settings.enabledOptionSources?.user === false ? null : settings.userSettings
+  const ordering = hasPolicy ? settings.policySettings : user
+  const prepend = [...new Set(ordering?.prependPlugins ?? [])]
+  const append = [...new Set(ordering?.appendPlugins ?? [])]
+  if (hasPolicy) {
+    for (const key of ['prependPlugins', 'appendPlugins'] as const) {
+      if (user?.[key] !== undefined) errors.push(diagnostic('mods', 'ordering', `${key} in user settings ignored: this machine has managed settings`))
+    }
+  }
+  for (const id of append) {
+    if (prepend.includes(id)) errors.push(diagnostic('mods', 'ordering', `${id} is in both tier lists; it is prepended`))
   }
 
   for (const plugin of plugins) {
@@ -147,6 +160,10 @@ export function prepareModPlugins(
     if (entrypoints.length === 0) continue
 
     const storageId = getPluginStorageId(plugin)
+    if (shouldSeatSecDefault(settings) && (plugin.name === 'sec-default' || storageId === SEC_DEFAULT_ID)) {
+      errors.push(diagnostic(plugin.name, 'native', 'sec-default is host-owned on this session; the external name collision is not loaded'))
+      continue
+    }
     const managed = policyEnabled?.[storageId] === true
     if (allDisabled) {
       errors.push(
@@ -175,16 +192,33 @@ export function prepareModPlugins(
       continue
     }
 
-    const builtin = plugin.isBuiltin === true && storageId.endsWith('@builtin')
     inputs.push({
       name: plugin.name,
+      ...(plugin.manifest.version === undefined ? {} : { version: plugin.manifest.version }),
       storageId,
       pluginRoot: plugin.path,
       entrypoints,
       options: prepared.options,
-      tier: builtin ? 'builtin' : managed ? 'prepend' : 'user',
+      tier: getModPluginOrigin(plugin, settings).tier,
     })
   }
 
+  const eligible = (input: ModPluginInput) => input.tier !== 'builtin' &&
+    (hasPolicy ? policyEnabled?.[input.storageId] === true : policyEnabled?.[input.storageId] !== true)
+  for (const [key, ids] of [['prependPlugins', prepend], ['appendPlugins', append]] as const) {
+    for (const id of ids) {
+      if (key === 'prependPlugins' && id === SEC_DEFAULT_ID && shouldSeatSecDefault(settings)) continue
+      if (!inputs.some(input => input.storageId === id && eligible(input))) {
+        errors.push(diagnostic('mods', 'ordering', `${key} names ${id}, which is not an enabled ${hasPolicy ? 'managed ' : ''}plugin with a hooks module; skipped`))
+      }
+    }
+  }
+  const tiers = ['prepend', 'user', 'append', 'builtin']
+  const rank = (input: ModPluginInput) => {
+    const ids = input.tier === 'prepend' ? prepend : input.tier === 'append' ? append : []
+    const index = ids.indexOf(input.storageId)
+    return index === -1 ? ids.length : index
+  }
+  inputs.sort((a, b) => tiers.indexOf(a.tier!) - tiers.indexOf(b.tier!) || rank(a) - rank(b))
   return { inputs, errors }
 }

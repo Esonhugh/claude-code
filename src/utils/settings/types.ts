@@ -608,6 +608,20 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enabled plugins using plugin-id@marketplace-id format. Example: { "formatter@anthropic-tools": true }. Also supports extended format with version constraints.',
         ),
+      prependPlugins: z
+        .array(z.string())
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Mods whose hooks run outermost, in listed order. Only managed settings may order managed plugins; without managed settings, user settings may order their own plugins. Project, local, and flag sources are ignored.',
+        ),
+      appendPlugins: z
+        .array(z.string())
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Mods whose hooks run after user plugins and before builtins, in listed order. Uses the same source rules as prependPlugins; an ID in both lists is prepended.',
+        ),
       favoritePlugins: z
         .array(z.string())
         .optional()

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { LoadedPlugin } from '../../types/plugin.js'
-import type { SettingsJson } from '../../utils/settings/types.js'
-import { prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import { SettingsSchema, type SettingsJson } from '../../utils/settings/types.js'
+import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
 
 function loadedPlugin(overrides: Partial<LoadedPlugin> = {}): LoadedPlugin {
   const name = overrides.name ?? 'example'
@@ -37,6 +37,37 @@ function source(value: Partial<SettingsJson>): SettingsJson {
 }
 
 describe('prepareModPlugins', () => {
+  test('provider provenance uses the same effective tier even without an admitted hook module', () => {
+    const plugin = loadedPlugin()
+    const cases: Array<[Partial<PrepareModPluginsSettings>, string]> = [
+      [{}, 'user'],
+      [{userSettings:source({appendPlugins:['example@marketplace']})}, 'append'],
+      [{userSettings:source({prependPlugins:['example@marketplace'],appendPlugins:['example@marketplace']})}, 'prepend'],
+      [{userSettings:source({prependPlugins:['example@marketplace']}),enabledOptionSources:{user:false,flag:true}}, 'user'],
+      [{flagSettings:source({prependPlugins:['example@marketplace']})}, 'user'],
+      [{hasManagedSettings:true,userSettings:source({appendPlugins:['example@marketplace']})}, 'user'],
+      [{policySettings:source({enabledPlugins:{'example@marketplace':true}})}, 'prepend'],
+      [{policySettings:source({enabledPlugins:{'example@marketplace':true},appendPlugins:['example@marketplace']})}, 'append'],
+      [{policySettings:source({appendPlugins:['example@marketplace']})}, 'user'],
+    ]
+    for (const [config,tier] of cases) {
+      const value = settings(config)
+      expect(getModPluginOrigin({...plugin,hookModules:undefined},value)).toEqual({plugin:'example@marketplace',tier})
+      expect(prepareModPlugins([plugin],value).inputs[0]?.tier).toBe(tier)
+    }
+    expect(getModPluginOrigin(loadedPlugin({isBuiltin:true,source:'example@builtin',repository:'example@builtin',hookModules:undefined}),settings())).toEqual({plugin:'example@builtin',tier:'builtin'})
+    expect(getModPluginOrigin(loadedPlugin({source:'example@builtin',repository:'example@builtin',hookModules:undefined}),settings())).toEqual({plugin:'example@builtin',tier:'user'})
+  })
+
+  test('passes manifest version without treating builtin tier or manifest metadata as native identity', () => {
+    const plugin = loadedPlugin({ isBuiltin: true, source: 'example@builtin', repository: 'example@builtin', manifest: { name: 'example', version: '1.2.3', isNative: true } as LoadedPlugin['manifest'] })
+    const result = prepareModPlugins([plugin], settings())
+    expect(result.errors).toEqual([])
+    expect(result.inputs[0]?.version).toBe('1.2.3')
+    expect(result.inputs[0]?.tier).toBe('builtin')
+    expect(result.inputs[0]?.isNative).not.toBe(true)
+  })
+
   test('resolves every module next to its declaring hooks config', () => {
     const plugin = loadedPlugin({
       hookModules: [
@@ -412,23 +443,111 @@ describe('prepareModPlugins', () => {
     ])
   })
 
-  test('reports configured official ordering as a local schema gap', () => {
-    const policySettings = source({
-      enabledPlugins: { 'example@marketplace': true },
-    }) as SettingsJson & { prependPlugins: string[] }
-    policySettings.prependPlugins = ['example@marketplace']
-
-    const result = prepareModPlugins(
-      [loadedPlugin()],
-      settings({ policySettings }),
-    )
-
-    expect(result.inputs.map((input) => input.tier)).toEqual(['prepend'])
-    expect(result.errors).toContainEqual({
-      plugin: 'mods',
-      stage: 'ordering',
-      message:
-        'prependPlugins/appendPlugins are not available in the local settings schema; configured Mods ordering was not applied',
+  test('parses tier lists without discarding unrelated settings on an invalid list', () => {
+    expect(SettingsSchema().parse({
+      prependPlugins: ['outer@marketplace'],
+      appendPlugins: [],
+    })).toMatchObject({ prependPlugins: ['outer@marketplace'], appendPlugins: [] })
+    const parsed = SettingsSchema().parse({
+      prependPlugins: 'not-a-list', appendPlugins: [1], disableAllHooks: true,
     })
+    expect(parsed.disableAllHooks).toBe(true)
+    expect(parsed.prependPlugins).toBeUndefined()
+    expect(parsed.appendPlugins).toBeUndefined()
+  })
+
+  test('orders managed prepend, unlisted managed, user, append, and builtin seats', () => {
+    const plugins = ['inner', 'user', 'unlisted', 'outer', 'first', 'builtin'].map(name =>
+      loadedPlugin({ name, ...(name === 'builtin' ? {
+        isBuiltin: true, source: 'builtin@builtin', repository: 'builtin@builtin',
+      } : {}) }),
+    )
+    const result = prepareModPlugins(plugins, settings({
+      policySettings: source({
+        enabledPlugins: Object.fromEntries(['inner', 'unlisted', 'outer', 'first'].map(name => [`${name}@marketplace`, true])),
+        prependPlugins: ['first@marketplace', 'outer@marketplace'],
+        appendPlugins: ['inner@marketplace'],
+      }),
+    }))
+    expect(result.errors).toEqual([])
+    expect(result.inputs.map(input => [input.name, input.tier])).toEqual([
+      ['first', 'prepend'], ['outer', 'prepend'], ['unlisted', 'prepend'],
+      ['user', 'user'], ['inner', 'append'], ['builtin', 'builtin'],
+    ])
+    expect(result.inputs.every(input => input.isNative !== true)).toBe(true)
+  })
+
+  test('user tier lists apply only with no managed settings, and flag lists never seat plugins', () => {
+    const plugins = ['one', 'two', 'three'].map(name => loadedPlugin({ name }))
+    const userSettings = source({ prependPlugins: ['three@marketplace'], appendPlugins: ['one@marketplace'] })
+    const flagSettings = source({ prependPlugins: ['two@marketplace'] })
+    for (const policySettings of [null, source({})]) {
+      const result = prepareModPlugins(plugins, settings({ userSettings, flagSettings, policySettings }))
+      expect(result.errors).toEqual([])
+      expect(result.inputs.map(input => [input.name, input.tier])).toEqual([
+        ['three', 'prepend'], ['two', 'user'], ['one', 'append'],
+      ])
+    }
+    for (const policySettings of [source({ disableAllHooks: false }), source({ prependPlugins: [] })]) {
+      const result = prepareModPlugins(plugins, settings({ userSettings, flagSettings, policySettings }))
+      expect(result.inputs.map(input => [input.name, input.tier])).toEqual([
+        ['one', 'user'], ['two', 'user'], ['three', 'user'],
+      ])
+      expect(result.errors.some(error => /user.*ignored.*managed/i.test(error.message))).toBe(true)
+    }
+    const disabledSource = prepareModPlugins(plugins, settings({
+      userSettings, flagSettings, enabledOptionSources: { user: false, flag: true },
+    }))
+    expect(disabledSource.inputs.every(input => input.tier === 'user')).toBe(true)
+  })
+
+  test('invalid policy seats are skipped, duplicates prefer prepend, and unlisted managed order stays stable', () => {
+    const plugins = ['ordinary', 'a', 'b', 'both', 'last', 'builtin'].map(name =>
+      loadedPlugin({ name, ...(name === 'builtin' ? {
+        isBuiltin: true, source: 'builtin@builtin', repository: 'builtin@builtin',
+      } : {}) }),
+    )
+    const result = prepareModPlugins(plugins, settings({
+      policySettings: source({
+        enabledPlugins: { 'a@marketplace': true, 'b@marketplace': true, 'both@marketplace': true, 'last@marketplace': true },
+        prependPlugins: ['missing@marketplace', 'ordinary@marketplace', 'both@marketplace', 'both@marketplace', 'builtin@builtin'],
+        appendPlugins: ['last@marketplace', 'both@marketplace'],
+      }),
+    }))
+    expect(result.inputs.map(input => [input.name, input.tier])).toEqual([
+      ['both', 'prepend'], ['a', 'prepend'], ['b', 'prepend'], ['ordinary', 'user'],
+      ['last', 'append'], ['builtin', 'builtin'],
+    ])
+    expect(result.errors.filter(error => /skipped/.test(error.message))).toHaveLength(3)
+    expect(result.errors.some(error => /both.*prepended/.test(error.message))).toBe(true)
+  })
+
+  test('an unreadable admin policy still owns the ordering keys', () => {
+    const result = prepareModPlugins([loadedPlugin()], settings({
+      hasManagedSettings: true,
+      userSettings: source({ prependPlugins: ['example@marketplace'] }),
+    }))
+    expect(result.inputs.map(input => input.tier)).toEqual(['user'])
+    expect(result.errors.some(error => /user.*ignored.*managed/i.test(error.message))).toBe(true)
+  })
+
+  test('managed native ordering resolves the builtin identity and rejects an inline name collision', () => {
+    const result = prepareModPlugins([
+      loadedPlugin(),
+      loadedPlugin({name:'sec-default', source:'sec-default@inline', manifest:{name:'sec-default', isNative:true} as LoadedPlugin['manifest']}),
+    ], settings({policySettings:source({prependPlugins:['sec-default@builtin']})}))
+    expect(result.inputs.map(input => input.name)).toEqual(['example'])
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]).toMatchObject({plugin:'sec-default', stage:'native'})
+    expect(result.errors[0]?.message).toContain('host-owned')
+  })
+
+  test('user ordering does not grant policy eligibility when managed-only is active', () => {
+    const result = prepareModPlugins([loadedPlugin()], settings({
+      userSettings: source({ prependPlugins: ['example@marketplace'] }),
+      hookPolicy: { managedOnly: true, allDisabled: false },
+    }))
+    expect(result.inputs).toEqual([])
+    expect(result.errors.some(error => error.stage === 'policy')).toBe(true)
   })
 })

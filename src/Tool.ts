@@ -501,6 +501,9 @@ export type Tool<
    */
   mcpInfo?: {
     serverName: string
+    /** Host-owned configuration provenance; never taken from MCP response metadata. */
+    scope?: import('./services/mcp/types.js').ConfigScope
+    pluginSource?: string
     /** Exact name sent back to the MCP server. */
     toolName: string
     /** Model-visible tail used by permission rules when it differs from wire name. */

@@ -54,7 +54,7 @@ import {
   type CacheScope,
   logAPIPrefix,
   splitSysPromptPrefix,
-  toolToAPISchema,
+  toolsToAPISchemas,
 } from '../../utils/api.js'
 import { getOauthAccountInfo } from '../../utils/auth.js'
 import {
@@ -708,6 +708,7 @@ export type Options = {
   temperatureOverride?: number
   effortValue?: EffortValue
   mcpTools: Tools
+  modsSnapshot?: import('../mods/runtime.js').ModSnapshot
   hasPendingMcpServers?: boolean
   queryTracking?: QueryChainTracking
   agentId?: AgentId // Only set for subagents
@@ -1237,6 +1238,21 @@ async function* queryModel(
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
     useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
+  // Pass the full tool set as prompt context, but admit only the tools surviving
+  // core/tool-search gating to Mods. A list hook cannot restore a gated tool.
+  const catalog = await toolsToAPISchemas(filteredTools, {
+    getToolPermissionContext: options.getToolPermissionContext,
+    tools,
+    agents: options.agents,
+    allowedAgentTypes: options.allowedAgentTypes,
+    model: options.model,
+    modsSnapshot: options.modsSnapshot,
+    signal,
+    deferLoadingForTool: willDefer,
+  })
+  filteredTools = catalog.tools
+  const toolSchemas = catalog.schemas
+
   // MCP tools are per-user → dynamic tool section → can't globally cache.
   // Only gate when an MCP tool will actually render (not defer_loading).
   const needsToolBasedCacheMarker =
@@ -1257,23 +1273,6 @@ async function* queryModel(
       ? 'none'
       : 'system_prompt'
     : 'none'
-
-  // Build tool schemas, adding defer_loading for MCP tools when tool search is enabled
-  // Note: We pass the full `tools` list (not filteredTools) to toolToAPISchema so that
-  // ToolSearchTool's prompt can list ALL available MCP tools. The filtering only affects
-  // which tools are actually sent to the API, not what the model sees in tool descriptions.
-  const toolSchemas = await Promise.all(
-    filteredTools.map(tool =>
-      toolToAPISchema(tool, {
-        getToolPermissionContext: options.getToolPermissionContext,
-        tools,
-        agents: options.agents,
-        allowedAgentTypes: options.allowedAgentTypes,
-        model: options.model,
-        deferLoading: willDefer(tool),
-      }),
-    ),
-  )
 
   if (useToolSearch) {
     const includedDeferredTools = count(filteredTools, t =>

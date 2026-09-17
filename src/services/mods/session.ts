@@ -1,8 +1,11 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { sep } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
+import type { Command } from '../../types/command.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
+import { getSubscriptionType } from '../../utils/auth.js'
+import { seatNativeModPlugins } from './native.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
 import {
@@ -16,12 +19,16 @@ import {
 } from '../../utils/plugins/pluginLoader.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import { getEnabledSettingSources } from '../../utils/settings/constants.js'
-import { getSettingsForSource } from '../../utils/settings/settings.js'
-import { prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import { getMdmSettings } from '../../utils/settings/mdm/settings.js'
+import { getSettingsForSource, loadManagedFileSettings } from '../../utils/settings/settings.js'
+import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import { getPluginStorageId } from '../../utils/plugins/pluginOptionsStorage.js'
+import type { ModUiPane, ModUiPresentation } from './ui.js'
 import {
   createModsRuntime,
   type ModBinding,
   type ModDiagnostic,
+  type ModHostServices,
   type ModsRuntime,
 } from './runtime.js'
 
@@ -59,6 +66,29 @@ export function createModsSession(options: ModsSessionOptions) {
   let settingsKey: string | undefined
   let diagnostics: PluginError[] = []
   const reported = new Set<string>()
+  const services: ModHostServices = {}
+  const uiListeners = new Set<() => void>()
+  const emptyPanes: readonly ModUiPane[] = Object.freeze([])
+  let unsubscribeUi: (() => void) | undefined
+  const ui = {
+    getSnapshot: () => runtime?.ui.getSnapshot() ?? emptyPanes,
+    subscribe(listener: () => void) {
+      uiListeners.add(listener)
+      return () => { uiListeners.delete(listener) }
+    },
+    render: (presentation: ModUiPresentation) => runtime?.ui.render(presentation) ?? Promise.resolve(),
+  }
+  const commandListeners = new Set<() => void>()
+  const emptyCommands: Command[] = []
+  let unsubscribeCommands: (() => void) | undefined
+  const commands = {
+    getSnapshot: () => runtime?.commands.getSnapshot() ?? emptyCommands,
+    subscribe(listener: () => void) {
+      commandListeners.add(listener)
+      return () => { commandListeners.delete(listener) }
+    },
+    projection: (existing: Command[]) => runtime?.commands.projection(existing) ?? existing,
+  }
 
   const readSettings =
     options.getSettings ??
@@ -66,6 +96,8 @@ export function createModsSession(options: ModsSessionOptions) {
       userSettings: getSettingsForSource('userSettings'),
       flagSettings: getSettingsForSource('flagSettings'),
       policySettings: getSettingsForSource('policySettings'),
+      subscriptionType: getSubscriptionType(),
+      hasManagedSettings: getMdmSettings().errors.length > 0 || loadManagedFileSettings().errors.length > 0,
       enabledOptionSources: {
         user: getEnabledSettingSources().includes('userSettings'),
         flag: getEnabledSettingSources().includes('flagSettings'),
@@ -133,13 +165,17 @@ export function createModsSession(options: ModsSessionOptions) {
         settings.policySettings,
       ].map(source => ({
         enabledPlugins: source?.enabledPlugins,
+        prependPlugins: source?.prependPlugins,
+        appendPlugins: source?.appendPlugins,
         pluginConfigs: source?.pluginConfigs,
         disableAllHooks: source?.disableAllHooks,
         allowManagedHooksOnly: source?.allowManagedHooksOnly,
       })),
+      settings.hasManagedSettings === true || (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0),
       settings.policySettings?.hooks,
       settings.policySettings?.strictPluginOnlyCustomization,
       settings.hookPolicy,
+      settings.subscriptionType,
       settings.enabledOptionSources,
       options.getDisabledReason?.(),
     ])
@@ -209,15 +245,20 @@ export function createModsSession(options: ModsSessionOptions) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const policy = settings.policySettings
-    const managedToolHooks = !settings.hookPolicy.allDisabled && policy?.disableAllHooks !== true
-      && [...(policy?.hooks?.PreToolUse ?? []), ...(policy?.hooks?.PostToolUse ?? [])].some(group => group.hooks.length > 0)
+    // Pre now uses the protected tool boundary. Post remains gated until
+    // the classic executor supports general updatedToolOutput (not only MCP).
+    const managedPostHooks = !settings.hookPolicy.allDisabled && policy?.disableAllHooks !== true
+      && (policy?.hooks?.PostToolUse ?? []).some(group => group.hooks.length > 0)
     const disabled = options.getDisabledReason?.()
-      ?? (managedToolHooks ? 'Mods with managed tool hooks are unsupported; external Mods are not activated' : undefined)
+      ?? (managedPostHooks ? 'Mods with managed tool hooks using PostToolUse remain unsupported (updatedToolOutput); external Mods are not activated' : undefined)
       ?? (policy?.allowManagedHooksOnly || policy?.strictPluginOnlyCustomization
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
     const loaded = plugins ?? (await loadPlugins())
     if (stopped || isShuttingDown()) return
     const prepared = prepareModPlugins(loaded, settings)
+    const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
+      .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
+    services.pluginOrigin = storageId => origins.get(storageId)
     diagnostics = []
     reported.clear()
     for (const error of prepared.errors) diagnostic(error)
@@ -229,10 +270,17 @@ export function createModsSession(options: ModsSessionOptions) {
     ) {
       diagnostic({ plugin: 'host', stage: 'unsupported', message: disabled })
     }
-    const inputs = disabled ? [] : prepared.inputs
+    const inputs = disabled ? [] : seatNativeModPlugins(prepared.inputs, settings)
     if (!runtime && inputs.length > 0) {
       runtime = (options.createRuntime ?? createModsRuntime)({
         onDiagnostic: diagnostic,
+        services,
+      })
+      unsubscribeUi = runtime.ui.subscribe(() => {
+        for (const listener of uiListeners) listener()
+      })
+      unsubscribeCommands = runtime.commands.subscribe(() => {
+        for (const listener of commandListeners) listener()
       })
       unregisterShutdown = registerModsHostDisposer(dispose)
     }
@@ -311,6 +359,10 @@ export function createModsSession(options: ModsSessionOptions) {
           await runtime?.dispose()
         } finally {
           await queue
+          unsubscribeUi?.()
+          uiListeners.clear()
+          unsubscribeCommands?.()
+          commandListeners.clear()
           unregisterShutdown?.()
           unregisterCleanup?.()
         }
@@ -320,12 +372,15 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   return {
+    commands,
+    ui,
     get runtime() {
       return stopped ? undefined : runtime
     },
     /** Await before processing a prompt, including slash commands that fork. */
-    async bind(next: ModBinding, updateState?: SetAppState): Promise<void> {
+    async bind(next: ModBinding, updateState?: SetAppState, hostServices?: ModHostServices): Promise<void> {
       if (stopped || !options.isTrusted) return
+      if (hostServices) Object.assign(services, hostServices)
       if (updateState) setAppState = updateState
       const changed =
         !binding ||

@@ -1858,6 +1858,10 @@ export const fetchToolsForClient = memoizeWithLRU(
             name: skipPrefix ? tool.name : fullyQualifiedName,
             mcpInfo: {
               serverName: client.name,
+              scope: client.config.scope,
+              ...(client.config.pluginSource && {
+                pluginSource: client.config.pluginSource,
+              }),
               toolName: tool.name,
               ...(appsNames && {
                 permissionToolName: appsNames.permissionToolName,

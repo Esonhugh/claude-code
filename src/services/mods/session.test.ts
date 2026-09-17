@@ -10,6 +10,14 @@ import { refreshPluginRuntimes } from '../../utils/plugins/cacheUtils.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import type { PrepareModPluginsSettings } from './plugins.js'
 import { createModsRuntime, type ModsRuntime } from './runtime.js'
+import { describeModTool } from './toolCatalog.js'
+import { runToolUse } from '../tools/toolExecution.js'
+import { createAssistantMessage } from '../../utils/messages.js'
+import { getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
+import { z } from 'zod/v4'
+import { getIsInteractive, setIsInteractive } from '../../bootstrap/state.js'
+import { resetHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
+import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import {
   createModsSession,
   type ModsSession,
@@ -123,6 +131,60 @@ describe('Mods CLI session host', () => {
     expect(events).toEqual(['unsupported'])
   })
 
+  test('bind supplies live host services before start and publishes command changes without a render race', async () => {
+    const declaration = await plugin(`let first; export function register(on) {
+      on('session.start', async ($, e, next) => { first = await $.session.messages(); await $.command.register({name:'panel', description:'Panel'}); return next(e); });
+      on('tool.call', async ($) => ({result:{first, current:await $.session.messages()}}));
+    }`)
+    const host = session({loadPlugins: async () => [declaration]})
+    let messages = [{role:'user', text:'initial', toolUses:[]}]
+    const published: string[][] = []
+    const unsubscribe = host.commands.subscribe(() => published.push(host.commands.getSnapshot().map(command => command.name)))
+    cleanups.push(unsubscribe)
+    expect(host.commands.getSnapshot()).toBe(host.commands.getSnapshot())
+    await host.bind(binding, undefined, {messages: () => messages, commands: () => []})
+    expect(host.commands.getSnapshot().map(command => command.name)).toEqual(['panel'])
+    expect(published.at(-1)).toEqual(['panel'])
+    messages = [{role:'user', text:'resumed', toolUses:[]}]
+    await host.bind({...binding, sessionId:'resumed'})
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:{
+      first:[{role:'user', text:'initial', toolUses:[]}], current:messages,
+    }})
+    await host.refresh([])
+    expect(host.commands.getSnapshot()).toEqual([])
+    expect(published.at(-1)).toEqual([])
+  })
+
+  test('MCP plugins without hook modules retain settings provenance across captured generations', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('tool.describe', ($, e) => ({description:e.description+':'+e.provider.plugin+':'+e.provider.tier}));
+    }`)
+    const provider = {...declaration, name:'mcp-only', manifest:{name:'mcp-only'}, source:'mcp-only@marketplace', repository:'mcp-only@marketplace', hookModules:undefined}
+    let current: PrepareModPluginsSettings = {...settings(), userSettings:{appendPlugins:['mcp-only@marketplace']}}
+    const host = session({loadPlugins:async () => [declaration,provider],getSettings:() => current})
+    await host.bind(binding)
+    const tool = {name:'mcp__server__read',isMcp:true,mcpInfo:{serverName:'server',toolName:'read',pluginSource:'mcp-only@marketplace'}} as Tool
+    const before = host.runtime!.capture()
+    try {
+      expect(await describeModTool(before, tool, 'base')).toBe('base:mcp-only@marketplace:append')
+      current = settings()
+      await host.refresh()
+      const after = host.runtime!.capture()
+      try {
+        expect(await describeModTool(after, tool, 'base')).toBe('base:mcp-only@marketplace:user')
+        expect(await describeModTool(before, tool, 'uncached')).toBe('uncached:mcp-only@marketplace:append')
+      } finally { after.release() }
+      current = {...settings(), policySettings:{enabledPlugins:{'mcp-only@marketplace':true}}}
+      await host.refresh()
+      const managed = host.runtime!.capture()
+      try {
+        expect(managed.pluginOrigin?.('mcp-only@marketplace')).toEqual({plugin:'mcp-only@marketplace',tier:'prepend'})
+        // Native sec-default protects the managed provider from the user hook.
+        expect(await describeModTool(managed, tool, 'base')).toBe('base')
+      } finally { managed.release() }
+    } finally { before.release() }
+  })
+
   test('the first prompt barrier awaits actual Worker session.start; clear/rebind does not restart', async () => {
     const declaration = await plugin()
     let loads = 0
@@ -153,6 +215,117 @@ describe('Mods CLI session host', () => {
       result: 1,
     })
     expect(loads).toBe(1)
+  })
+
+  test('enable keeps a concurrent prompt behind a pending real Worker session.start', async () => {
+    const declaration = await plugin(`let started = false; export function register(on) {
+      on('session.start', async ($, e, next) => { await $.clock.sleep(200); started = true; return next(e) });
+      on('tool.call', () => ({ result: started }));
+    }`)
+    const entered = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const original = globalThis.setTimeout
+    const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((callback, ms, ...args) => {
+      if (ms !== 200) return original(callback, ms, ...args)
+      entered.resolve()
+      return original(() => { void finish.promise.then(() => callback(...args)) }, 0)
+    }) as typeof setTimeout)
+    cleanups.push(() => timer.mockRestore())
+    cleanups.push(() => finish.resolve())
+    const host = session()
+    await host.bind(binding)
+    let enabled = false
+    const enabling = host.refresh([declaration]).then(() => { enabled = true })
+    await entered.promise
+    let promptStarted = false
+    const prompt = host.bind(binding).then(async () => {
+      promptStarted = true
+      return host.runtime!.dispatch('tool.call', input, core)
+    })
+    await Bun.sleep(5)
+    expect(enabled).toBe(false)
+    expect(promptStarted).toBe(false)
+    finish.resolve()
+    await enabling
+    expect(await prompt).toEqual({ result: true })
+  })
+
+  test('a failed declaration load reports refresh and permits an explicit retry', async () => {
+    const declaration = await plugin()
+    let fail = true
+    const events: string[] = []
+    const host = session({
+      loadPlugins: async () => {
+        if (fail) throw new Error('fixture declaration load failed')
+        return [declaration]
+      },
+      onDiagnostic: event => events.push(event.stage),
+    })
+    await expect(host.bind(binding)).rejects.toThrow('fixture declaration load failed')
+    expect(host.runtime).toBeUndefined()
+    expect(events).toEqual(['refresh'])
+    fail = false
+    await host.refresh()
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
+  })
+
+  test.each(['strictPluginOnlyCustomization', 'allowManagedHooksOnly'] as const)('managed %s still blocks external evaluation before Worker creation', async restriction => {
+    const declaration = await plugin('throw Error("must not evaluate"); export function register(on) {}')
+    const events: string[] = []
+    const host = session({
+      loadPlugins: async () => [declaration],
+      getSettings: () => ({ ...settings(), policySettings: { [restriction]: true } }),
+      createRuntime: () => { throw Error('must not create Worker') },
+      onDiagnostic: event => events.push(event.message),
+    })
+    await host.bind(binding)
+    expect(host.runtime).toBeUndefined()
+    expect(events.some(message => message.includes('Managed Mods protection'))).toBe(true)
+  })
+
+  test('managed sessions seat a host-owned sec-default before user settings interceptors', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('settings.read', () => ({value:{rewritten:true}}));
+      on('classic.PreToolUse', () => ({allow:true}));
+      on('tool.call', ($, e, next) => next(e));
+    }`)
+    const events: string[] = []
+    const host = session({
+      getSettings: () => ({...settings(), policySettings:{enabledPlugins:{}}}),
+      loadPlugins: async () => [declaration],
+      onDiagnostic: event => events.push(event.message),
+    })
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('settings.read', {source:'policy'}, async () => ({value:{managed:true}}))).toEqual({value:{managed:true}})
+    expect(await host.runtime!.dispatch('classic.PreToolUse', input, async () => ({deny:'managed decision'}))).toEqual({deny:'managed decision'})
+    expect(events).toEqual([])
+  })
+
+  test('native seat follows managed-list and organization changes without restarting user activations', async () => {
+    const declaration = await plugin(`let starts=0; export function register(on) {
+      on('session.start', ($, e, next) => {starts++;return next(e)});
+      on('classic.PreToolUse', () => ({allow:true}));
+      on('tool.call', () => ({result:starts}));
+    }`)
+    let current: PrepareModPluginsSettings = {...settings(), subscriptionType:'team'}
+    const host = session({getSettings: () => current, loadPlugins: async () => [declaration]})
+    const decision = () => host.runtime!.dispatch('classic.PreToolUse',input,async () => ({deny:'core'}))
+    await host.bind(binding)
+    expect(await decision()).toEqual({deny:'core'})
+    current = {...current, policySettings:{prependPlugins:[]}}
+    settingsChangeDetector.notifyChange('policySettings')
+    await host.bind(binding)
+    expect(await decision()).toEqual({allow:true})
+    current = {...current, policySettings:{prependPlugins:['sec-default@builtin']}}
+    settingsChangeDetector.notifyChange('policySettings')
+    await host.bind(binding)
+    expect(await decision()).toEqual({deny:'core'})
+    current = {...settings(), subscriptionType:'pro'}
+    settingsChangeDetector.notifyChange('policySettings')
+    await host.bind(binding)
+    expect(await decision()).toEqual({allow:true})
+    expect(await host.runtime!.dispatch('tool.call',input,core)).toEqual({result:1})
   })
 
   test('independent hosts have independent activations even with identical bindings', async () => {
@@ -260,7 +433,77 @@ describe('Mods CLI session host', () => {
     expect(host.runtime!.hasHooks('tool.call')).toBe(false)
   })
 
-  test('managed tool policy changes withdraw Mods without executing or altering classic hooks', async () => {
+  test('tier-only settings changes reseat live modules and policy presence suppresses user ordering', async () => {
+    const make = async (name: string) => ({
+      ...await plugin(`export function register(on) { on('tool.call', async ($, e, next) => { const result=await next(e); return {result:['${name}', ...result.result]}; }); }`),
+      name, manifest: {name}, source: `${name}@inline`, repository: `${name}@inline`,
+    })
+    const first = await make('first')
+    const second = await make('second')
+    let current: PrepareModPluginsSettings = settings()
+    const host = session({getSettings: () => current, loadPlugins: async () => [first, second]})
+    await host.bind(binding)
+    const dispatch = () => host.runtime!.dispatch('tool.call', input, async () => ({result:[]}))
+    expect(await dispatch()).toEqual({result:['first', 'second']})
+    current = {...current, userSettings: {prependPlugins:['second@inline']}}
+    settingsChangeDetector.notifyChange('userSettings')
+    await host.bind(binding)
+    expect(await dispatch()).toEqual({result:['second', 'first']})
+    current = {...current, policySettings: {env: {MODS_SYNTHETIC_POLICY:'present'}}}
+    settingsChangeDetector.notifyChange('policySettings')
+    await host.bind(binding)
+    expect(await dispatch()).toEqual({result:['first', 'second']})
+    current = {...current, policySettings: {
+      enabledPlugins: {'first@inline':true, 'second@inline':true},
+      appendPlugins:['first@inline'],
+    }}
+    settingsChangeDetector.notifyChange('policySettings')
+    await host.bind(binding)
+    expect(await dispatch()).toEqual({result:['second', 'first']})
+    current = {...current, policySettings: {
+      enabledPlugins: {'first@inline':true, 'second@inline':true},
+      appendPlugins:['second@inline'],
+    }}
+    settingsChangeDetector.notifyChange('policySettings')
+    await host.bind(binding)
+    expect(await dispatch()).toEqual({result:['first', 'second']})
+  })
+
+  test('managed PreToolUse permits session activation and protects the natural tool entry', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('tool.call', () => ({result:{value:'must not escape policy'}}));
+      on('classic.PreToolUse', () => ({allow:true}));
+    }`)
+    const policy = { hooks: { PreToolUse: [{ hooks: [{type:'command' as const,
+      command:`printf '%s' '${JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'session managed refusal'}})}'`,
+    }] }] } }
+    const wasInteractive = getIsInteractive()
+    setIsInteractive(false)
+    resetSettingsCache()
+    resetHooksConfigSnapshot()
+    setSessionSettingsCache({settings:{},errors:[]})
+    for (const source of ['policySettings','userSettings','projectSettings','localSettings','flagSettings'] as const)
+      setCachedSettingsForSource(source,source === 'policySettings' ? policy : {})
+    cleanups.push(() => {resetSettingsCache();resetHooksConfigSnapshot();setIsInteractive(wasInteractive)})
+    const host = session({loadPlugins:async () => [declaration],getSettings:() => ({...settings(),policySettings:policy})})
+    await host.bind(binding)
+    expect(host.runtime?.hasHooks('tool.call')).toBe(true)
+    let calls=0
+    const tool = {name:'SessionPolicyFixture',inputSchema:z.object({value:z.string()}),outputSchema:z.object({value:z.string()}),maxResultSizeChars:Infinity,
+      call:async (input:unknown) => {calls++;return {data:input}},
+      mapToolResultToToolResultBlockParam:(data:{value:string},id:string) => ({type:'tool_result',tool_use_id:id,content:data.value}),
+    } as unknown as Tool
+    const context = {mods:host.runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},abortController:new AbortController(),messages:[],
+      getAppState:() => ({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),setAppState:() => {},setInProgressToolUseIDs:() => {},
+    } as unknown as ToolUseContext
+    const block={type:'tool_use' as const,caller:{type:'direct' as const},id:'session-policy',name:tool.name,input:{value:'original'}}
+    const updates=await Array.fromAsync(runToolUse(block,createAssistantMessage({content:[block]}),async () => ({behavior:'allow'}),context))
+    expect(JSON.stringify(updates)).toContain('session managed refusal')
+    expect(JSON.stringify(updates)).not.toContain('must not escape policy')
+    expect(calls).toBe(0)
+  })
+
+  test('managed tool policy changes retain Mods without executing or altering classic hooks', async () => {
     const declaration = await plugin()
     let current: PrepareModPluginsSettings = settings()
     const host = session({ getSettings: () => current, loadPlugins: async () => [declaration] })
@@ -270,7 +513,7 @@ describe('Mods CLI session host', () => {
     current = { ...current, policySettings: { hooks } }
     settingsChangeDetector.notifyChange('policySettings')
     await host.bind(binding)
-    expect(host.runtime!.hasHooks('tool.call')).toBe(false)
+    expect(host.runtime!.hasHooks('tool.call')).toBe(true)
     expect(current.policySettings!.hooks).toBe(hooks)
     current = { ...current, policySettings: null }
     settingsChangeDetector.notifyChange('policySettings')
@@ -434,6 +677,8 @@ describe('Mods CLI session host', () => {
       reconcile: async () => {},
       bind: async () => {},
       dispose: async () => {},
+      commands: { subscribe: () => () => {} },
+      ui: { subscribe: () => () => {} },
     } as unknown as ModsRuntime
     const host = session({
       loadPlugins: async () => [first],
