@@ -2,7 +2,8 @@ import { parse } from 'acorn'
 import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
-import type { ModDeclaration, ModInput, ModTier } from './types'
+import { isModEventPattern, normalizeModMatcher } from './matcher'
+import type { ModDeclaration, ModInput, ModRegistration, ModTier } from './types'
 
 // Deliberately a small authoring language, not the official parser or a security sandbox.
 // The host must also validate registrations and actual capability requests.
@@ -17,8 +18,23 @@ const coreNouns = new Set([
 const supportedEvents = new Set([
   'engine.create', 'plugin.register', 'session.start', 'tool.call',
   'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
+  'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'process.run',
+  'store.get', 'store.set', 'store.delete', 'store.keys',
+  'session.cwd', 'session.id', 'session.surface', 'session.messages',
+  'command.register', 'command.list', 'command.run', 'prompt.submit', 'turn.start', 'turn.complete',
+  'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
+  'ui.press', 'ui.input', 'ui.select',
 ])
-const clockMethods = new Set(['now', 'sleep', 'after', 'every'])
+const scanOnlyEvents = new Set([
+  'prompt.section', 'prompt.context', 'skill.prompt', 'attribution.text',
+  'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
+  'agent.spawn', 'tool.register', 'tool.list',
+])
+const supportedCalls = new Set([...supportedEvents].filter(event => ![
+  'engine.create', 'plugin.register', 'session.start', 'tool.call', 'command.run', 'prompt.submit', 'turn.start', 'turn.complete', 'ui.render',
+  'ui.press', 'ui.input', 'ui.select',
+].includes(event)))
+const scanOnlyCalls = new Set(['settings.read', 'tool.list'])
 const reserved = new Set(['__proto__', 'prototype', 'constructor'])
 
 function fail(path: string, message: string): never {
@@ -47,11 +63,26 @@ function roleOf(node: Node, scope: Scope): Role {
   return null
 }
 
-function scan(program: Node, path: string, entrypoint: boolean) {
+function scan(program: Node, path: string, entrypoint: boolean): {
+  events: Set<string>
+  calls: Set<string>
+  nextTiers: Set<ModTier>
+  helperCalls: Set<string>
+  helperTiers: Set<ModTier>
+  helpersAcceptingNext: Map<string, Set<number>>
+  capabilityHelperCalls: { name: string; indexes: number[] }[]
+  topLevelAwait: boolean
+} {
   const events = new Set<string>()
   const calls = new Set<string>()
   const nextTiers = new Set<ModTier>()
   const functions = new Map<string, Node>()
+  const importedBindings = new Set<string>()
+  const matcherConstants = new Map<string, Node>()
+  const helpersAcceptingNext = new Map<string, Set<number>>()
+  const capabilityHelperCalls: { name: string; indexes: number[] }[] = []
+  const helperCalls = new Set<string>()
+  const helperTiers = new Set<ModTier>()
   const engineNextBindings = new Set<Node>()
   const engineReturns = new Set<Node>()
   let returningEngine = false
@@ -64,10 +95,24 @@ function scan(program: Node, path: string, entrypoint: boolean) {
 
   for (const statement of program.body) {
     const declaration = statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement
-    if (declaration?.type === 'FunctionDeclaration') functions.set(declaration.id.name, declaration)
+    if (declaration?.type === 'ImportDeclaration') {
+      for (const item of declaration.specifiers) importedBindings.add(item.local.name)
+    }
+    if (declaration?.type === 'FunctionDeclaration') {
+      functions.set(declaration.id.name, declaration)
+      if (!entrypoint) {
+        const indexes = new Set<number>()
+        declaration.params.forEach((parameter: Node, index: number) => {
+          if (parameter.type === 'Identifier' && parameter.name === 'next') indexes.add(index)
+        })
+        if (indexes.size) helpersAcceptingNext.set(declaration.id.name, indexes)
+      }
+    }
     if (declaration?.type === 'VariableDeclaration') {
       for (const item of declaration.declarations) {
-        if (item.id.type === 'Identifier' && item.init && isFunction(item.init)) functions.set(item.id.name, item.init)
+        if (item.id.type !== 'Identifier' || !item.init) continue
+        if (isFunction(item.init)) functions.set(item.id.name, item.init)
+        if (declaration.kind === 'const') matcherConstants.set(item.id.name, item.init)
       }
     }
   }
@@ -88,6 +133,44 @@ function scan(program: Node, path: string, entrypoint: boolean) {
     }
     if (!register) fail(path, 'entrypoint must export a named register function')
   }
+
+  function scanHelperCalls(node: Node | null | undefined, aliases = new Set<string>()) {
+    if (!node) return
+    if (isFunction(node)) {
+      const inner = new Set(aliases)
+      for (const parameter of node.params) {
+        if (parameter.type === 'Identifier' && ['$', 'engine', 'host', 'next'].includes(parameter.name)) inner.add(parameter.name)
+      }
+      if (node.body.type === 'BlockStatement') {
+        for (const statement of node.body.body) scanHelperCalls(statement, inner)
+      } else scanHelperCalls(node.body, inner)
+      return
+    }
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init?.type === 'Identifier' && aliases.has(node.init.name)) {
+      aliases.add(node.id.name)
+    }
+    if (node.type === 'CallExpression') {
+      const parts: string[] = []
+      let cursor = node.callee
+      while (cursor.type === 'MemberExpression' && !cursor.computed && !cursor.optional && cursor.property.type === 'Identifier') {
+        parts.unshift(cursor.property.name)
+        cursor = cursor.object
+      }
+      if (cursor.type === 'Identifier' && aliases.has(cursor.name)) {
+        const call = parts.join('.')
+        if (parts.length === 2 && !reserved.has(parts[0]!) && !reserved.has(parts[1]!)) helperCalls.add(call)
+        else if (parts.length === 0) {
+          const tier = node.arguments[1]
+          if (tier?.type === 'Literal' && tiers.includes(tier.value)) helperTiers.add(tier.value)
+        } else if (parts.length === 1 && parts[0] === 'to') {
+          const tier = node.arguments[1]
+          if (tier?.type === 'Literal' && tiers.includes(tier.value)) helperTiers.add(tier.value)
+        }
+      }
+    }
+    for (const child of children(node)) scanHelperCalls(child, aliases)
+  }
+  if (!entrypoint) scanHelperCalls(program)
 
   function bind(pattern: Node, bindings: Map<string, Role>) {
     if (pattern.type === 'Identifier') bindings.set(pattern.name, null)
@@ -134,32 +217,65 @@ function scan(program: Node, path: string, entrypoint: boolean) {
     return inner
   }
 
-  function scalar(node: Node): boolean {
-    return (node.type === 'Literal' && !node.regex && node.bigint === undefined &&
-      (node.value === null || ['string', 'boolean', 'number'].includes(typeof node.value))) ||
-      (node.type === 'UnaryExpression' && node.operator === '-' && node.argument.type === 'Literal' && typeof node.argument.value === 'number')
-  }
-
-  function matcher(node: Node) {
-    if (node.type !== 'ObjectExpression') fail(path, 'matcher must be a literal field-equality object')
+  function matcher(node: Node, nested = false, resolving = new Set<string>()) {
+    if (node.type === 'Literal') {
+      if (node.bigint !== undefined || (node.regex === undefined && node.value !== null && !['string', 'boolean', 'number'].includes(typeof node.value))) {
+        fail(path, 'matcher contains an unsupported literal')
+      }
+      return
+    }
+    if (node.type === 'UnaryExpression' && node.operator === '-' && node.argument.type === 'Literal' && typeof node.argument.value === 'number') return
+    if (node.type === 'Identifier') {
+      if (importedBindings.has(node.name)) return
+      const initializer = matcherConstants.get(node.name)
+      if (!initializer || resolving.has(node.name)) fail(path, 'matcher identifiers must reference imported or declared static constants')
+      const next = new Set(resolving)
+      next.add(node.name)
+      matcher(initializer, true, next)
+      return
+    }
+    if (node.type === 'MemberExpression') {
+      if (node.computed || node.optional || node.object.type !== 'Identifier' || !importedBindings.has(node.object.name) ||
+        node.property.type !== 'Identifier' || reserved.has(node.property.name)) {
+        fail(path, 'matcher members must reference static imported constants')
+      }
+      return
+    }
+    if (node.type === 'ArrayExpression') {
+      for (const item of node.elements) {
+        if (!item) fail(path, 'matcher arrays cannot contain holes')
+        matcher(item.type === 'SpreadElement' ? item.argument : item, true, resolving)
+      }
+      return
+    }
+    if (node.type !== 'ObjectExpression') fail(path, 'matcher must be static data')
     const keys = new Set<string>()
     for (const property of node.properties) {
+      if (property.type === 'SpreadElement') {
+        matcher(property.argument, true, resolving)
+        continue
+      }
       const key = property.key?.name ?? property.key?.value
       if (property.type !== 'Property' || property.computed || property.method || property.kind !== 'init' || property.shorthand ||
-        typeof key !== 'string' || reserved.has(key) || keys.has(key) || !scalar(property.value)) {
-        fail(path, 'matcher supports only unique literal fields with primitive equality values')
+        typeof key !== 'string' || reserved.has(key) || keys.has(key)) {
+        fail(path, 'matcher supports only unique static fields')
       }
       keys.add(key)
+      matcher(property.value, true, resolving)
     }
+    if (!nested && !node.properties.length) return
   }
 
   function eventName(node: Node): string {
-    if (node.type !== 'Literal' || typeof node.value !== 'string') fail(path, 'event must be a literal noun.method string')
+    if (node.type !== 'Literal' || typeof node.value !== 'string') fail(path, 'event must be a literal pattern string')
     const event = node.value as string
-    if (!/^[A-Za-z_][\w]*\.[A-Za-z_][\w]*$/.test(event)) fail(path, 'event globs and patterns are unsupported; use a literal noun.method')
-    const [noun, method] = event.split('.') as [string, string]
-    if (reserved.has(noun) || reserved.has(method) || (coreNouns.has(noun) && !supportedEvents.has(event))) {
-      fail(path, `unsupported core event ${event}`)
+    if (!isModEventPattern(event)) fail(path, 'event must be *, noun.*, !pattern, or a literal noun.method')
+    const selected = event.startsWith('!') ? event.slice(1) : event
+    if (selected !== '*' && !selected.endsWith('.*')) {
+      const [noun, method] = selected.split('.') as [string, string]
+      if (reserved.has(noun) || reserved.has(method) || (coreNouns.has(noun) && !supportedEvents.has(selected) && !scanOnlyEvents.has(selected))) {
+        fail(path, `unsupported core event ${selected}`)
+      }
     }
     return event
   }
@@ -224,7 +340,7 @@ function scan(program: Node, path: string, entrypoint: boolean) {
     if (role !== 'engine' && role !== 'beneath') return
     if (unsupported || parts.length !== 2) fail(path, 'capabilities require static $.noun.method calls; computed/optional access and aliases are unsupported')
     const [noun, method] = parts as [string, string]
-    if (reserved.has(noun) || reserved.has(method) || (coreNouns.has(noun) && !(noun === 'clock' && clockMethods.has(method)))) {
+    if (reserved.has(noun) || reserved.has(method) || (coreNouns.has(noun) && !supportedCalls.has(`${noun}.${method}`) && !scanOnlyCalls.has(`${noun}.${method}`))) {
       fail(path, `unsupported core capability ${noun}.${method}`)
     }
     return `${noun}.${method}`
@@ -326,10 +442,20 @@ function scan(program: Node, path: string, entrypoint: boolean) {
           if (node.arguments.length !== 2 || tier?.type !== 'Literal' || !tiers.includes(tier.value)) fail(path, 'next.to tier must be a literal valid tier')
           nextTiers.add(tier.value)
         } else visit(callee, scope, event)
-        for (const argument of node.arguments) visit(argument, scope, event)
+        const importedHelper = callee.type === 'Identifier' && importedBindings.has(callee.name)
+        const capabilityIndexes: number[] = []
+        node.arguments.forEach((argument: Node, index: number) => {
+          if (importedHelper && roleOf(argument, scope) === 'next') {
+            capabilityIndexes.push(index)
+            return
+          }
+          visit(argument, scope, event)
+        })
+        if (importedHelper && capabilityIndexes.length) capabilityHelperCalls.push({ name: callee.name, indexes: capabilityIndexes })
         return
       }
       case 'MemberExpression':
+        if (returningEngine && roleOf(node.object, scope) === 'beneath' && !node.computed && !node.optional && !reserved.has(node.property.name)) return
         if (roleOf(node.object, scope) === 'next' && !node.computed && !node.optional &&
           ['signal', 'event', 'origin', 'trace', 'error', 'called'].includes(node.property.name)) return
         visit(node.object, scope, event)
@@ -357,7 +483,7 @@ function scan(program: Node, path: string, entrypoint: boolean) {
     for (const child of children(node)) visit(child, scope, event)
   }
   visit(program, [])
-  return { events, calls, nextTiers, topLevelAwait }
+  return { events, calls, nextTiers, helperCalls, helperTiers, helpersAcceptingNext, capabilityHelperCalls, topLevelAwait }
 }
 
 function within(root: string, path: string): boolean {
@@ -365,9 +491,34 @@ function within(root: string, path: string): boolean {
   return part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part)
 }
 
+export function validateModRegistrations(
+  declaration: Pick<ModDeclaration, 'events'>,
+  registrations: readonly ModRegistration[],
+): ModRegistration[] {
+  return registrations.map(registration => {
+    if (!declaration.events.includes(registration.event)) {
+      throw new Error('Actual module registration is absent from scan')
+    }
+    if (!Number.isSafeInteger(registration.id) || registration.id <= 0 ||
+      typeof registration.hasCatch !== 'boolean' || !isModEventPattern(registration.event)) {
+      throw new Error('Invalid actual module registration')
+    }
+    return {
+      id: registration.id,
+      event: registration.event,
+      ...(registration.matcher === undefined ? {} : {
+        matcher: normalizeModMatcher(registration.matcher) as ModRegistration['matcher'],
+      }),
+      hasCatch: registration.hasCatch,
+    }
+  })
+}
+
 export async function loadModDeclaration(input: {
   name: string
   storageId: string
+  version?: string
+  isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
   options?: ModInput
@@ -386,6 +537,10 @@ export async function loadModDeclaration(input: {
   const calls = new Set<string>()
   const nextTiers = new Set<ModTier>()
   const seen = new Set<string>()
+  const capabilityImports: { name: string; path: string; indexes: number[] }[] = []
+  const importedCapabilities = new Map<string, Set<number>>()
+  const importedHelperCalls = new Set<string>()
+  const importedHelperTiers = new Set<ModTier>()
   const awaits = new Set<string>()
   const tier = input.tier ?? 'user'
   if (!tiers.includes(tier)) fail(root, `unsupported tier ${tier}`)
@@ -405,18 +560,27 @@ export async function loadModDeclaration(input: {
   }
   const options = snapshotOptions(input.options ?? {}) as ModInput
   if (Array.isArray(options) || options === null || typeof options !== 'object') fail(root, 'options must be a JSON object')
-  const transpiler = new Bun.Transpiler({
-    loader: 'ts', target: 'browser', trimUnusedImports: false,
-    deadCodeElimination: false, inline: false,
-    tsconfig: JSON.stringify({ compilerOptions: { verbatimModuleSyntax: true } }),
-  })
+  const transpilers = {
+    ts: new Bun.Transpiler({
+      loader: 'ts', target: 'browser', trimUnusedImports: false,
+      deadCodeElimination: false, inline: false,
+      tsconfig: JSON.stringify({ compilerOptions: { verbatimModuleSyntax: true } }),
+    }),
+    tsx: new Bun.Transpiler({
+      loader: 'tsx', target: 'browser', trimUnusedImports: false,
+      deadCodeElimination: false, inline: false,
+      tsconfig: JSON.stringify({ compilerOptions: {
+        verbatimModuleSyntax: true, jsx: 'react', jsxFactory: 'h', jsxFragmentFactory: 'Fragment',
+      } }),
+    }),
+  }
   let bytes = 0
   async function load(path: string) {
     if (seen.has(path)) return
     if (!within(root, path)) fail(path, 'path is outside plugin root')
     const actual = await realpath(path)
     if (!within(rootReal, actual)) fail(path, 'realpath is outside plugin root')
-    if (!['.ts', '.js', '.mjs', '.mts'].includes(extname(path))) fail(path, 'only TS/JS ESM files are supported')
+    if (!['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts'].includes(extname(path))) fail(path, 'only TS/JS ESM files are supported')
     if (!(await stat(actual)).isFile()) fail(path, 'module must be a regular file')
     if (seen.size >= 512) fail(root, 'module graph exceeds 512 files')
     seen.add(path)
@@ -441,7 +605,9 @@ export async function loadModDeclaration(input: {
     let compiled: string
     let program: Node
     try {
-      compiled = transpiler.transformSync(source, extname(path).includes('ts') ? 'ts' : 'js')
+      const extension = extname(path)
+      const syntax = extension === '.tsx' || extension === '.jsx' ? 'tsx' : 'ts'
+      compiled = transpilers[syntax].transformSync(source, syntax)
       program = parse(compiled, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as Node
     } catch (error) { fail(path, `cannot parse/transpile module: ${error instanceof Error ? error.message : String(error)}`) }
     modules.push({ path, source: compiled })
@@ -450,6 +616,14 @@ export async function loadModDeclaration(input: {
     for (const value of scanned.events) events.add(value)
     for (const value of scanned.calls) calls.add(value)
     for (const value of scanned.nextTiers) nextTiers.add(value)
+    for (const value of scanned.helperCalls) importedHelperCalls.add(value)
+    for (const value of scanned.helperTiers) importedHelperTiers.add(value)
+    for (const [name, indexes] of scanned.helpersAcceptingNext) {
+      const existing = importedCapabilities.get(name)
+      if (existing) for (const index of indexes) existing.add(index)
+      else importedCapabilities.set(name, new Set(indexes))
+    }
+    for (const value of scanned.capabilityHelperCalls) capabilityImports.push({ ...value, path })
     for (const statement of program.body) {
       if (!['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(statement.type) || !statement.source) continue
       const specifier = statement.source.value as string
@@ -460,18 +634,23 @@ export async function loadModDeclaration(input: {
         links.push({ from: path, specifier, to: 'claude-code' })
         continue
       }
-      if (!specifier.startsWith('./') && !specifier.startsWith('../')) fail(path, `bare/absolute imports are unsupported: ${specifier}`)
+      if (specifier !== '.' && specifier !== '..' && !specifier.startsWith('./') && !specifier.startsWith('../')) fail(path, `bare/absolute imports are unsupported: ${specifier}`)
       const requested = resolve(path, '..', specifier)
       if (!within(root, requested)) fail(path, `import is outside plugin root: ${specifier}`)
-      const candidates = extname(requested) ? [requested] : [requested, ...['.ts', '.js', '.mts', '.mjs'].map(extension => requested + extension)]
+      const extension = extname(requested)
+      const emittedExtension = extension === '.js' ? ['.ts', '.tsx'] : extension === '.jsx' ? ['.tsx'] : []
+      const direct = extension ? [requested, ...emittedExtension.map(value => requested.slice(0, -extension.length) + value)] :
+        [requested, ...['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'].map(value => requested + value)]
+      const candidates = [...direct, ...direct.flatMap(candidate =>
+        ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'].map(value => resolve(candidate, `index${value}`)),
+      )]
       let to: string | undefined
       for (const candidate of candidates) {
         try {
-          await stat(candidate)
-          to = candidate
-          break
+          const metadata = await stat(candidate)
+          if (metadata.isFile()) { to = candidate; break }
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && (error as NodeJS.ErrnoException).code !== 'ENOTDIR') throw error
         }
       }
       if (!to) fail(path, `cannot resolve relative import ${specifier}`)
@@ -483,6 +662,16 @@ export async function loadModDeclaration(input: {
   for (const link of links) {
     if (awaits.has(link.to)) fail(link.to, 'top-level await in imported files is unsupported')
   }
+  for (const call of importedHelperCalls) {
+    if (supportedCalls.has(call) || scanOnlyCalls.has(call) || !coreNouns.has(call.split('.')[0]!)) calls.add(call)
+  }
+  for (const value of importedHelperTiers) nextTiers.add(value)
+  for (const helper of capabilityImports) {
+    const indexes = importedCapabilities.get(helper.name)
+    if (!indexes || helper.indexes.some(index => !indexes.has(index))) {
+      fail(helper.path, `passing capabilities to imported helper ${helper.name} is unsupported; helpers must declare a conventional engine/next parameter in that argument position`)
+    }
+  }
   const relativePath = (path: string) => relative(root, path).split(sep).join('/')
   // Absolute installation locations are plumbing, not declaration identity.
   const fingerprint = createHash('sha256').update(JSON.stringify({
@@ -492,7 +681,9 @@ export async function loadModDeclaration(input: {
   })).digest('hex')
   return {
     name: input.name, storageId: input.storageId, pluginRoot: root,
-    entrypoints, modules, links, events: [...events].sort(), calls: [...calls].sort(),
+    ...(input.version === undefined ? {} : { version: input.version }),
+    ...(input.isNative === true ? { isNative: true } : {}),
+    entrypoints, modules, links, events: [...events], calls: [...calls].sort(),
     nextTiers: tiers.filter(value => nextTiers.has(value)), options, tier, fingerprint,
   }
 }

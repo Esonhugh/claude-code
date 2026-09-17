@@ -1,15 +1,31 @@
 import * as vm from 'node:vm'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { isPromise, isProxy } from 'node:util/types'
 import type { ModWorkerReply, ModWorkerRequest } from './protocol.js'
+import { createModUiRealm } from './uiRealm.js'
+import { isModEventPattern, normalizeModMatcher } from './matcher.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
-const bootstrap = `((bridge, isProxy, isPromise) => {
+const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
+  const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
+  const isModEventPattern = (${isModEventPattern.toString()});
+  const normalizeModMatcher = (${normalizeModMatcher.toString()});
+  const matcherWire = value => {
+    if (value instanceof RegExp) return {type:'regexp', source:value.source, flags:value.flags};
+    if (Array.isArray(value)) return {type:'array', values:value.map(matcherWire)};
+    if (value && typeof value === 'object') return {type:'object', entries:Object.entries(value).map(([key,item]) => [key,matcherWire(item)])};
+    return {type:'value', value};
+  };
+  Object.defineProperties(globalThis, { h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment} });
+  const drawings = new Map();
+  let uiAllowed = true;
   const functions = new Map();
   const wires = new WeakMap();
   const hostFunctions = new Map();
   const frames = new Map();
   const pending = new Map();
+  const hostErrors = new WeakMap();
   const signals = new Map();
   const registrations = [];
   const timers = new Map();
@@ -63,6 +79,24 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       if (!functions.has(wire.id)) throw Error('Unknown module function');
       return functions.get(wire.id);
     }
+    if (wire.type === 'ui') {
+      const methods = Object.fromEntries(wire.methods.map(([key,value]) => [key, decode(value, invocation)]));
+      const scroll = methods.scroll;
+      const focus = methods.focus;
+      if (scroll) methods.scroll = input => scroll({
+        to: input?.to,
+        ...(input?.in !== undefined && {in:input.in}),
+        ...(input?.block !== undefined && {block:input.block}),
+      });
+      if (focus) methods.focus = input => focus({requestId:input?.requestId, key:input?.key});
+      const ui = Object.freeze({...methods, resolve: Object.freeze(input => {
+        if (disposed) throw Error('Module environment unloaded');
+        if (!uiAllowed) throw Error('Module capability ui.resolve was withdrawn');
+        return uiRealm.resolve(input);
+      })});
+      wires.set(ui, wire);
+      return ui;
+    }
     if (wire.type === 'clock') {
       const now = decode({ type: 'host-function', id: wire.now }, invocation);
       const wait = decode({ type: 'host-function', id: wire.wait }, invocation);
@@ -109,7 +143,7 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
             if (!active || disposed) return;
             callbackStarted = true;
             if (kind === 'after') { active = false; timers.delete(id); }
-            await runCallback(callback);
+            await runCallback(callback, kind);
             if (kind === 'every' && active && !disposed) run();
           }).catch(error => {
             if ((!active && !callbackStarted) || disposed) return;
@@ -119,7 +153,9 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
         timers.set(id, stop); run();
         return Object.freeze({ cancel: stop });
       };
-      return Object.freeze({ now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) });
+      const clock = Object.freeze({ now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) });
+      wires.set(clock, wire);
+      return clock;
     }
     if (wire.type === 'host-function') {
       const cached = hostFunctions.get(wire.id);
@@ -129,8 +165,17 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
         const call = ++nextCall;
         return new Promise((resolve, reject) => {
           pending.set(call, { resolve, reject, invocation });
-          try { bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)) })); }
-          catch (error) { pending.delete(call); reject(error); }
+          try {
+            if (wire.storeMethod === 'set') {
+              const text = JSON.stringify(args[1]);
+              if (text === undefined) throw TypeError('value must be JSON data');
+              if (text.length > 4194304) throw RangeError('Store value exceeds 4194304 characters');
+              args[1] = JSON.parse(text);
+            }
+            if (wire.storeMethod && (typeof args[0] !== 'string' || args[0] === ''))
+              throw TypeError('key must be a nonempty string');
+            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)) }));
+          } catch (error) { pending.delete(call); reject(error); }
         });
       };
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
@@ -150,22 +195,34 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
     if (typeof matcher === 'function') { handler = matcher; matcher = undefined; }
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
     const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'settings', 'env']);
-    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'tool.call', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every']);
-    if (typeof event !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*[.][A-Za-z_][A-Za-z0-9_]*$/.test(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
-    const [noun, method] = event.split('.');
-    if (reserved.has(noun) || reserved.has(method) || core.has(noun) && !supported.has(event)) throw Error('Unsupported hook event');
+    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'tool.call', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
+      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys',
+      'session.cwd', 'session.id', 'session.surface', 'session.messages', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'turn.start', 'turn.complete',
+      'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
+      'ui.press', 'ui.input', 'ui.select',
+      'prompt.section', 'prompt.context', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
+      'agent.spawn', 'tool.register', 'tool.list']);
+    if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
+    const selected = event.startsWith('!') ? event.slice(1) : event;
+    if (selected !== '*' && !selected.endsWith('.*')) {
+      const [noun, method] = selected.split('.');
+      if (reserved.has(noun) || reserved.has(method) || core.has(noun) && !supported.has(selected)) throw Error('Unsupported hook event');
+    }
     let checkedMatcher;
     if (matcher !== undefined) {
-      if (!matcher || typeof matcher !== 'object' || isProxy(matcher) || Object.getPrototypeOf(matcher) !== Object.prototype) throw Error('Invalid registration matcher');
-      const entries = [];
-      for (const key of Reflect.ownKeys(matcher)) {
-        const descriptor = Object.getOwnPropertyDescriptor(matcher, key);
-        if (typeof key !== 'string' || reserved.has(key) || !descriptor || !('value' in descriptor)) throw Error('Invalid registration matcher');
-        const value = descriptor.value;
-        if (value !== null && !['string', 'boolean', 'number'].includes(typeof value) || typeof value === 'number' && !Number.isFinite(value)) throw Error('Registration matcher requires primitive equality values');
-        entries.push([key, value]);
-      }
-      checkedMatcher = Object.fromEntries(entries);
+      if (!matcher || typeof matcher !== 'object' || isProxy(matcher) || Array.isArray(matcher) || Object.getPrototypeOf(matcher) !== Object.prototype) throw Error('Invalid registration matcher');
+      const check = (value, seen = new Set()) => {
+        if (!value || typeof value !== 'object') return;
+        if (isProxy(value) || seen.has(value) || seen.size >= 100) throw Error('Invalid registration matcher');
+        seen.add(value);
+        for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+          if (!('value' in descriptor)) throw Error('Invalid registration matcher');
+          check(descriptor.value, seen);
+        }
+        seen.delete(value);
+      };
+      check(matcher);
+      checkedMatcher = matcherWire(normalizeModMatcher(matcher));
     }
     const id = encode(handler).id;
     const registration = { id, event, matcher: checkedMatcher, hasCatch: false };
@@ -207,6 +264,7 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
   }
   return {
     on,
+    errorReference(error) { return hostErrors.get(error); },
     async register(fn, options) {
       try { await fn(on, freeze(JSON.parse(options))); }
       finally { registering = false; }
@@ -214,7 +272,9 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
     },
     async invoke(text) {
       const request = JSON.parse(text);
+      if (request.callbackDrawing !== undefined && !drawings.get(request.callbackDrawing)?.has(request.handle)) throw Error('Unknown drawing callback');
       if (disposed || !functions.has(request.handle)) throw Error('Unknown or unloaded module function');
+      const allocated = [];
       const args = request.args.map(v => decode(v, request.id));
       if (request.next) {
         const meta = request.next;
@@ -235,7 +295,22 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       }
       try {
         const value = Reflect.apply(functions.get(request.handle), undefined, args);
-        return JSON.stringify(encode(isPromise(value) && !isProxy(value) ? await value : value));
+        let result = isPromise(value) && !isProxy(value) ? await value : value;
+        if (request.drawing !== undefined) {
+          if (!Number.isSafeInteger(request.drawing) || request.drawing <= 0) throw Error('Invalid module drawing');
+          let handles = drawings.get(request.drawing);
+          if (!handles) { handles = new Set(); drawings.set(request.drawing, handles); }
+          result = uiRealm.materialize(result, callback => {
+            const id = ++nextHandle; functions.set(id, callback); handles.add(id); allocated.push(id); return id;
+          });
+        }
+        return JSON.stringify(encode(result));
+      } catch (error) {
+        for (const handle of allocated) {
+          functions.delete(handle);
+          drawings.get(request.drawing)?.delete(handle);
+        }
+        throw error;
       }
       finally {
         signals.delete(request.id);
@@ -252,11 +327,19 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       try {
         const frame = frames.get(result.invocation);
         if (frame && result.trace) frame.trace = decode(result.trace, result.invocation);
-        if (result.error !== undefined) item.reject(Error(result.error));
-        else item.resolve(decode(result.value, item.invocation));
+        if (result.error !== undefined) {
+          const error = Error(result.error);
+          if (result.errorRef !== undefined) hostErrors.set(error, result.errorRef);
+          item.reject(error);
+        } else item.resolve(decode(result.value, item.invocation));
       } catch (error) { item.reject(error); }
     },
     abort(invocation) { signals.get(invocation)?.(); },
+    setUiAccess(allowed) { uiAllowed = allowed; },
+    releaseDrawing(drawing) {
+      for (const handle of drawings.get(drawing) ?? []) functions.delete(handle);
+      drawings.delete(drawing);
+    },
     dispose() {
       if (disposed) return;
       for (const stop of timers.values()) stop();
@@ -264,26 +347,43 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       for (const abort of signals.values()) abort();
       for (const item of pending.values()) item.reject(Error('Module environment unloaded'));
       for (const frame of frames.values()) frame.active = false;
-      signals.clear(); frames.clear(); pending.clear(); functions.clear(); hostFunctions.clear(); registrations.length = 0;
+      signals.clear(); frames.clear(); pending.clear(); functions.clear(); hostFunctions.clear(); drawings.clear(); registrations.length = 0;
     },
   };
 })`
 
 type Environment = {
   context: vm.Context
+  lifetime: { id: number; disposed: boolean }
   api: {
+    errorReference(error: unknown): number | undefined
     register(fn: unknown, options: string): Promise<string>
     invoke(text: string): Promise<string>
     result(text: string): void
     abort(invocation: number): void
+    setUiAccess(allowed: boolean): void
+    releaseDrawing(drawing: number): void
     dispose(): void
   }
 }
 
 const environments = new Map<number, Environment>()
+const invocations = new AsyncLocalStorage<number>()
+const promiseRealms = new WeakMap<object, Environment['lifetime']>()
 const reply = (message: ModWorkerReply) => postMessage(message)
 
-function createEnvironment(id: number): Environment {
+// Detached promises still belong to their VM, not to every plugin in this Worker.
+process.on('unhandledRejection', (error, promise) => {
+  const owner = promiseRealms.get(Object.getPrototypeOf(promise))
+  if (!owner) throw new Error('Unattributed Mods Worker rejection', { cause: error })
+  if (owner.disposed) return
+  const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
+    ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined
+  reply({ type: 'async-error', environment: owner.id, error: typeof message === 'string' ? message : 'Module asynchronous callback failed' })
+})
+
+
+function createEnvironment(id: number, plugin: string): Environment {
   const context = vm.createContext(Object.create(null), {
     codeGeneration: { strings: false, wasm: false },
   })
@@ -296,9 +396,11 @@ function createEnvironment(id: number): Environment {
   `, context)
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
-    reply({ type: 'host-call', ...data, environment: id })
-  }, isProxy, isPromise) as Environment['api']
-  return { context, api }
+    reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id })
+  }, isProxy, isPromise, plugin) as Environment['api']
+  const lifetime = { id, disposed: false }
+  promiseRealms.set(vm.runInContext('Promise.prototype', context), lifetime)
+  return { context, api, lifetime }
 }
 
 self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
@@ -313,8 +415,20 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     return
   }
   try {
+    if (request.type === 'release-drawing' || request.type === 'ui-access') {
+      const environment = environments.get(request.environment)
+      if (!environment) throw new Error('Module environment unloaded')
+      if (request.type === 'release-drawing') environment.api.releaseDrawing(request.drawing)
+      else environment.api.setUiAccess(request.allowed)
+      reply({ type: 'result', id: request.id })
+      return
+    }
     if (request.type === 'unload') {
-      environments.get(request.environment)?.api.dispose()
+      const environment = environments.get(request.environment)
+      if (environment) {
+        environment.lifetime.disposed = true
+        environment.api.dispose()
+      }
       environments.delete(request.environment)
       reply({ type: 'result', id: request.id })
       return
@@ -322,12 +436,12 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     if (request.type === 'invoke') {
       const environment = environments.get(request.environment)
       if (!environment) throw new Error('Module environment unloaded')
-      const value = JSON.parse(await environment.api.invoke(JSON.stringify(request)))
+      const value = JSON.parse(await invocations.run(request.id, () => environment.api.invoke(JSON.stringify(request))))
       reply({ type: 'result', id: request.id, value })
       return
     }
     if (environments.has(request.environment)) throw new Error('Duplicate module environment')
-    const environment = createEnvironment(request.environment)
+    const environment = createEnvironment(request.environment, request.declaration.name)
     environments.set(request.environment, environment)
     const declaration = request.declaration
     const modules = new Map<string, vm.SourceTextModule>()
@@ -368,12 +482,17 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     reply({ type: 'result', id: request.id, registrations })
   } catch (error) {
     if (request.type === 'load') {
-      environments.get(request.environment)?.api.dispose()
+      const environment = environments.get(request.environment)
+      if (environment) {
+        environment.lifetime.disposed = true
+        environment.api.dispose()
+      }
       environments.delete(request.environment)
     }
     const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value
       : undefined
-    reply({ type: 'result', id: request.id, error: typeof message === 'string' ? message : 'Module invocation failed' })
+    const errorRef = request.type === 'invoke' ? environments.get(request.environment)?.api.errorReference(error) : undefined
+    reply({ type: 'result', id: request.id, error: typeof message === 'string' ? message : 'Module invocation failed', errorRef })
   }
 }

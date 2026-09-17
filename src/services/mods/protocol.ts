@@ -4,10 +4,12 @@ export type ModWireValue =
   | { type: 'undefined' }
   | { type: 'value'; value: null | boolean | number | string }
   | { type: 'array'; values: ModWireValue[] }
+  | { type: 'regexp'; source: string; flags: string }
   | { type: 'object'; entries: [string, ModWireValue][] }
   | { type: 'function'; id: number }
-  | { type: 'host-function'; id: number }
+  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete' }
   | { type: 'clock'; now: number; wait: number; cancel: number; run: number }
+  | { type: 'ui'; methods: [string, ModWireValue][] }
 
 export type ModWorkerRequest =
   | { type: 'ping' }
@@ -18,6 +20,8 @@ export type ModWorkerRequest =
       environment: number
       handle: number
       args: ModWireValue[]
+      drawing?: number
+      callbackDrawing?: number
       next?: {
         call: number
         to: number
@@ -29,6 +33,8 @@ export type ModWorkerRequest =
       }
     }
   | { id: number; type: 'unload'; environment: number }
+  | { id: number; type: 'release-drawing'; environment: number; drawing: number }
+  | { id: number; type: 'ui-access'; environment: number; allowed: boolean }
   | { type: 'abort'; environment: number; invocation: number }
   | {
       type: 'host-result'
@@ -38,6 +44,7 @@ export type ModWorkerRequest =
       trace?: ModWireValue
       value?: ModWireValue
       error?: string
+      errorRef?: number
     }
 
 export type ModWorkerReply =
@@ -47,8 +54,9 @@ export type ModWorkerReply =
       type: 'result'
       id: number
       value?: ModWireValue
-      registrations?: (ModRegistration & { catchId?: number })[]
+      registrations?: (Omit<ModRegistration, 'matcher'> & { matcher?: ModWireValue; catchId?: number })[]
       error?: string
+      errorRef?: number
     }
   | {
       type: 'host-call'

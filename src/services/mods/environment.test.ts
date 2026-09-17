@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createModClockBridge, createModEnvironmentHost } from './environment.js'
 import type { ModDeclaration, ModNext } from './types.js'
+import { dispatchModEvent } from './dispatch.js'
 
 const hosts: ReturnType<typeof createModEnvironmentHost>[] = []
 afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.dispose())) })
@@ -22,6 +23,40 @@ function next(call: (input: Record<string, unknown>) => Promise<unknown>): ModNe
 }
 
 describe('Mods Worker environment', () => {
+  test('wildcard registrations preserve nested regexp and any-of matchers across the real Worker', async () => {
+    const source = `export function register(on) {
+      on('tool.*', {tool:['Read', /^ba/ig], details:{tags:/safe/g}}, async ($, e, next) => {
+        const below = await next(e);
+        return {result: 'matched:' + below.result, exact:next.is('tool.call',e)};
+      });
+      on('!tool.describe', {tool:'Read'}, ($, e, next) => next(e));
+    }`
+    const environment = await host().load({...declaration(source), events:['tool.*', '!tool.describe']})
+    const registration = environment.registrations[0]!
+    expect((registration.matcher as any).tool[1]).toBeInstanceOf(RegExp)
+    const hooks = environment.registrations.map(registration => ({
+      plugin:'fixture', tier:'user' as const, registration,
+      invoke: (input: Record<string, unknown>, continuation: ModNext) => environment.invoke(registration.id, [{}, input], continuation),
+    }))
+    for (const tool of ['Bash', 'Bash', 'Read', 'Write']) {
+      const result = await dispatchModEvent({event:'tool.call', input:{tool, details:{tags:['other','safe']}}, hooks, core:async () => ({result:'core'})})
+      expect(result).toEqual(tool === 'Write' ? {result:'core'} : {result:'matched:core', exact:true})
+    }
+    expect(await dispatchModEvent({event:'tool.describe', input:{tool:'Read'}, hooks, core:async () => ({result:'description'})})).toEqual({result:'description'})
+  })
+  test('continuation rejection identity survives the Worker, but matching error text does not impersonate it', async () => {
+    for (const body of ['return next(e)', 'try { await next(e) } catch (error) { throw error }', 'try { await next(e) } catch (error) { throw Error(error.message) }']) {
+      const environment = await host().load(declaration(`export function register(on) {
+        on('tool.call', async ($, e, next) => { ${body} });
+      }`))
+      const original = new Error('downstream failure')
+      const failure = await environment.invoke(environment.registrations[0]!.id, [{}, {}], next(async () => { throw original })).then(() => null, error => error)
+      if (body.includes('throw Error')) {
+        expect(failure).not.toBe(original)
+        expect(failure.message).toBe(original.message)
+      } else expect(failure).toBe(original)
+    }
+  })
   test('awaits real-time clock sleep before a handler returns', async () => {
     const started = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()
@@ -164,6 +199,40 @@ describe('Mods Worker environment', () => {
     await secondTick.promise
     await environment.dispose()
     expect(waits).toHaveLength(2)
+  })
+
+  test.each([false, true])('detached rejection is isolated to its environment (unloaded=%s)', async unloaded => {
+    // bun test intercepts Worker unhandled rejections before process listeners;
+    // exercise the production routing in a normal Bun child process.
+    const source = `
+      import {createModEnvironmentHost} from ${JSON.stringify(new URL('./environment.ts', import.meta.url).pathname)};
+      const errors=[], deaths=[];
+      const reported=Promise.withResolvers(), entered=Promise.withResolvers(), release=Promise.withResolvers();
+      const worker=createModEnvironmentHost({onError:(error,environment)=>{errors.push({message:error.message,environment});reported.resolve()},onDied:error=>{deaths.push(error.message);reported.resolve()}});
+      try {
+        const environment=await worker.load(${JSON.stringify(declaration(`export function register(on) {
+          on('tool.call', ($) => { void (async () => { await $.hold(); throw Error('detached failed'); })(); return 'started'; });
+        }`))});
+        const sibling=await worker.load(${JSON.stringify(declaration(`export function register(on) {on('tool.call',() => 'sibling alive');}`))});
+        const result=await environment.invoke(environment.registrations[0].id,[{hold:async()=>{entered.resolve();await release.promise}}]);
+        await entered.promise;
+        if (${unloaded}) await environment.dispose();
+        release.resolve();
+        if (${unloaded}) await new Promise(resolve=>setTimeout(resolve,30));
+        else await reported.promise;
+        const siblingResult=await sibling.invoke(sibling.registrations[0].id,[]);
+        console.log(JSON.stringify({result,errors,deaths,siblingResult,environment:environment.id}));
+      } finally {await worker.dispose()}
+    `
+    const child = Bun.spawn([process.execPath, '-e', source], { stdout:'pipe', stderr:'pipe' })
+    const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    expect(stderr).toBe('')
+    expect(exit).toBe(0)
+    const result = JSON.parse(stdout)
+    expect(result.deaths).toEqual([])
+    expect(result.errors).toEqual(unloaded ? [] : [{message:'detached failed',environment:result.environment}])
+    expect(result.result).toBe('started')
+    expect(result.siblingResult).toBe('sibling alive')
   })
 
   test('worker exit rejects pending calls and disposal remains idempotent', async () => {
@@ -331,7 +400,7 @@ describe('Mods Worker environment', () => {
       on('tool.call', { tool: 'Bash', enabled: true, count: -1, optional: null }, () => ({}));
     }`))
     expect(environment.registrations[0]!.matcher).toEqual({ tool: 'Bash', enabled: true, count: -1, optional: null })
-    for (const event of ['tool.*', 'ui.render', 'constructor.call']) {
+    for (const event of ['ui.unknown', 'constructor.call']) {
       const spec = declaration(`export function register(on) { on('${event}', () => ({})); }`)
       spec.events.push(event)
       const error = await host().load(spec).then(() => null, error => error)
@@ -340,13 +409,15 @@ describe('Mods Worker environment', () => {
     }
   })
 
-  test('rejects actual non-scalar matchers and undeclared next tiers at the boundary', async () => {
-    for (const matcher of ['{ tool: /Bash/ }', '{ tool: { equal: "Bash" } }', '{ get tool() { throw Error("getter ran"); } }']) {
-      const error = await host().load(declaration(`export function register(on) { on('tool.call', ${matcher}, () => ({})); }`)).then(() => null, error => error)
-      expect(error).toBeInstanceOf(Error)
-      expect(error.message).toContain('matcher')
-      expect(error.message).not.toContain('getter ran')
+  test('accepts official matchers, rejects matcher accessors, and checks next tiers at the boundary', async () => {
+    for (const matcher of ['{ tool: /Bash/ }', '{ tool: { equal: "Bash" } }']) {
+      const environment = await host().load(declaration(`export function register(on) { on('tool.call', ${matcher}, () => ({})); }`))
+      expect(environment.registrations[0]!.matcher).toBeDefined()
     }
+    const matcherError = await host().load(declaration(`export function register(on) { on('tool.call', { get tool() { throw Error("getter ran"); } }, () => ({})); }`)).then(() => null, error => error)
+    expect(matcherError).toBeInstanceOf(Error)
+    expect(matcherError.message).toContain('matcher')
+    expect(matcherError.message).not.toContain('getter ran')
     const environment = await host().load(declaration(`export function register(on) { on('tool.call', ($, e, next) => next.to(e, 'core')); }`))
     let called = false
     const error = await environment.invoke(environment.registrations[0]!.id, [{}, {}], next(async () => { called = true })).then(() => null, error => error)

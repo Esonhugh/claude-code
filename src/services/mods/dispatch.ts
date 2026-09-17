@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
 import { createAbortController } from '../../utils/abortController.js'
 import type {
   ModDispatchHook,
@@ -37,7 +39,9 @@ export async function dispatchModEvent(options: {
   skip?: { plugin: string; registrationId?: number }
   budgetMs?: number
   catchGraceMs?: number
-  validateResult?: (value: unknown) => void
+  validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
+  validateInput?: (input: ModInput, received: ModInput) => void
+  restoreInput?: (input: ModInput, received: ModInput) => ModInput
   onFailure?: (plugin: string, error: unknown) => void
 }): Promise<unknown> {
   const budgetMs = options.budgetMs ?? 10_000
@@ -55,12 +59,20 @@ export async function dispatchModEvent(options: {
   const hooks = [...options.hooks].sort(
     (a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier),
   )
-  const pinned =
+  const pinned = (
     options.event === 'tool.call'
-      ? ['tool', 'tool_use_id', 'agentId'].map(
-          (key) => [key, options.input[key]] as const,
-        )
-      : []
+      ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'plugin.register'
+        ? ['name', 'tier', 'root', 'provenance', 'version', 'uses']
+        : options.event === 'command.run'
+          ? ['command', 'origin', 'presentation']
+          : []
+  ).map(
+    (key) => [
+      key,
+      ['uses', 'origin', 'presentation'].includes(key) ? structuredClone(options.input[key]) : options.input[key],
+    ] as const,
+  )
 
   async function run(
     index: number,
@@ -77,10 +89,8 @@ export async function dispatchModEvent(options: {
         (skip.registrationId === undefined ||
           skip.registrationId === registration.id)
       const matches =
-        registration.event === options.event &&
-        Object.entries(registration.matcher ?? {}).every(
-          ([key, value]) => input[key] === value,
-        )
+        matchesModEventPattern(registration.event, options.event) &&
+        matchesModMatcher(registration.matcher ?? {}, input)
       if (matches && !skipRegistration) {
         if (!skipped.has(tier)) break
         trace.push({
@@ -135,6 +145,8 @@ export async function dispatchModEvent(options: {
     let controller = createAbortController()
     let phase: 'active' | 'recovering' | 'catch' | 'done' = 'active'
     let inFlight: Promise<unknown> | undefined
+    const nextResults: unknown[] = []
+    const nextErrors = new Set<unknown>()
     let lastResult: unknown
     let lastResolved = false
     let pending = 0
@@ -187,12 +199,31 @@ export async function dispatchModEvent(options: {
           new Error(`Mod ${hook.plugin} next requires an input object`),
         )
       }
+      if (
+        options.event === 'plugin.register' &&
+        !Object.hasOwn(rewritten, 'version') &&
+        Object.hasOwn(options.input, 'version')
+      ) {
+        rewritten = { ...rewritten, version: options.input.version }
+      }
+      if (options.event === 'command.run' && !Object.hasOwn(rewritten, 'presentation')) {
+        rewritten = { ...rewritten, presentation: options.input.presentation }
+      }
+      rewritten = options.restoreInput?.(rewritten, input) ?? rewritten
       for (const [key, value] of pinned) {
-        if (rewritten[key] !== value)
+        const unchanged =
+          ['uses', 'origin', 'presentation'].includes(key)
+            ? isDeepStrictEqual(rewritten[key], value)
+            : rewritten[key] === value
+        if (!unchanged)
           return Promise.reject(
-            new Error(`Mod ${hook.plugin} cannot rewrite ${key} for tool.call`),
+            new Error(
+              `Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`,
+            ),
           )
       }
+      try { options.validateInput?.(rewritten, input) }
+      catch (error) { return Promise.reject(error) }
       const descent = new Set(skipped)
       if (target !== undefined) {
         if (
@@ -226,13 +257,19 @@ export async function dispatchModEvent(options: {
         node.below,
       )
       inFlight = branch
-      void branch.then((result) => {
-        if (inFlight === branch) {
-          lastResolved = true
-          lastResult = result
-        }
-        settled()
-      }, settled)
+      void branch.then(
+        (result) => {
+          if (inFlight === branch) {
+            lastResolved = true
+            lastResult = result
+          }
+          settled()
+        },
+        (error) => {
+          nextErrors.add(error)
+          settled()
+        },
+      )
       return branch
     }
     function settled() {
@@ -260,7 +297,14 @@ export async function dispatchModEvent(options: {
               new Error(`Mod ${hook.plugin} next is no longer active`),
           )
         }
-        return catching ? replay(rewritten, target) : below(rewritten, target)
+        const result = catching
+          ? replay(rewritten, target)
+          : below(rewritten, target)
+        void result.then(
+          (value) => { nextResults.push(value) },
+          () => {},
+        )
+        return result
       }
       const next = ((rewritten: ModInput) =>
         continueBelow(rewritten)) as ModNext
@@ -324,7 +368,7 @@ export async function dispatchModEvent(options: {
           throw new Error(
             `Mod ${hook.plugin} returned undefined for ${options.event}`,
           )
-        options.validateResult?.(result)
+        options.validateResult?.(result, nextResults)
         record(
           lastResolved && result === lastResult ? 'passed' : 'returned',
           result,
@@ -332,7 +376,9 @@ export async function dispatchModEvent(options: {
         return result
       } catch (error) {
         parent?.throwIfAborted()
-        options.onFailure?.(hook.plugin, error)
+        if (options.event !== 'engine.create' || !nextErrors.has(error)) {
+          options.onFailure?.(hook.plugin, error)
+        }
         if (options.event === 'engine.create') throw error
         let rejected = false
         let belowError: unknown
@@ -366,7 +412,7 @@ export async function dispatchModEvent(options: {
           try {
             const result = await invoke(true, failure)
             if (result !== undefined || permitsVoid) {
-              options.validateResult?.(result)
+              options.validateResult?.(result, nextResults)
               record('caught', result)
               return result
             }

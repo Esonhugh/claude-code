@@ -1,13 +1,22 @@
 import { isPromise, isProxy } from 'node:util/types'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ModWireValue, ModWorkerReply, ModWorkerRequest } from './protocol.js'
-import type { ModDeclaration, ModInput, ModNext } from './types.js'
+import type { ModDeclaration, ModInput, ModNext, ModRegistration } from './types.js'
+import { matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 
 type ClockCallbacks = {
   now(): Promise<number>
   wait(kind: 'sleep' | 'after' | 'every', ms: number, id: number): Promise<void>
   cancel(id: number): void
-  run?(callback: () => Promise<unknown>): Promise<unknown>
+  run?(callback: () => Promise<unknown>, kind: 'after' | 'every'): Promise<unknown>
 }
+const uiBridges = new WeakMap<object, Record<string, (...args: unknown[]) => unknown>>()
+export function createModUiBridge(methods: Record<string, (...args: unknown[]) => unknown>): object {
+  const ui = Object.freeze(Object.create(null)) as object
+  uiBridges.set(ui, methods)
+  return ui
+}
+
 const clocks = new WeakMap<object, ClockCallbacks>()
 const remoteFunctions = new WeakMap<object, { owner: object; id: number }>()
 
@@ -17,8 +26,13 @@ export function createModClockBridge(callbacks: ClockCallbacks): object {
   return clock
 }
 
-type RemoteRegistration = Extract<ModWorkerReply, { type: 'result' }>['registrations']
+type RemoteRegistration = (ModRegistration & { catchId?: number })[]
 type HostFunction = (...args: unknown[]) => unknown
+const storeMethods = new WeakMap<HostFunction, 'get' | 'set' | 'delete'>()
+export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: HostFunction): HostFunction {
+  storeMethods.set(call, method)
+  return call
+}
 type HostHandle = { environment: number; call: HostFunction; invocation?: number }
 type Result = Extract<ModWorkerReply, { type: 'result' }>
 type WithRequestId = Extract<ModWorkerRequest, { id: number }>
@@ -29,13 +43,17 @@ type EnvironmentState = {
   handles: WeakMap<object, number>
   remote: Map<number, HostFunction>
   clocks: WeakMap<object, ModWireValue>
+  clockValues: Map<number, object>
   cleanups: Set<() => void>
 }
 
 export type ModEnvironment = {
   id: number
   registrations: NonNullable<RemoteRegistration>
-  invoke(handle: number, args: unknown[], next?: ModNext): Promise<unknown>
+  invoke(handle: number, args: unknown[], next?: ModNext, drawing?: number): Promise<unknown>
+  invokeDrawing(drawing: number, handle: number, args: unknown[]): Promise<unknown>
+  releaseDrawing(drawing: number): Promise<void>
+  setUiAccess(allowed: boolean): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -59,6 +77,10 @@ export function createModEnvironmentHost({
   const functions = new Map<number, HostHandle>()
   const environments = new Map<number, EnvironmentState>()
   const frames = new Map<number, { environment: number; next: ModNext }>()
+  // Host leases must follow a provider's current call, not the invocation in
+  // which its captured capability proxy was first encoded.
+  const contexts = new Map<number, ReturnType<typeof AsyncLocalStorage.snapshot>>()
+  const invocationErrors = new Map<number, Map<number, unknown>>()
   const unloading = new Map<number, Promise<void>>()
   let nextRequest = 0, nextFunction = 0, nextEnvironment = 0
   let dead: Error | undefined
@@ -139,9 +161,12 @@ export function createModEnvironmentHost({
         if (remote.owner !== state) throw new Error('Function belongs to another module environment')
         return { type: 'function', id: remote.id }
       }
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction) }
+      const storeMethod = storeMethods.get(value as HostFunction)
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
+    const ui = uiBridges.get(value)
+    if (ui) return { type: 'ui', methods: Object.entries(ui).map(([key, fn]) => [key, encode(environment, fn, seen)]) }
     const clock = clocks.get(value)
     if (clock) {
       const cached = state.clocks.get(value)
@@ -168,13 +193,15 @@ export function createModEnvironmentHost({
           finally { active.delete(id) }
         }),
         cancel: hostHandle(environment, id => cancel(id as number)),
-        run: hostHandle(environment, callback => {
+        run: hostHandle(environment, (callback, kind) => {
           if (typeof callback !== 'function') throw new Error('Clock callback must be callable')
+          if (kind !== 'after' && kind !== 'every') throw new Error('Invalid clock callback kind')
           const run = callback as () => Promise<unknown>
-          return clock.run ? clock.run(run) : run()
+          return clock.run ? clock.run(run, kind) : run()
         }),
       }
       state.clocks.set(value, wire)
+      state.clockValues.set(wire.now, value)
       return wire
     }
     seen.add(value)
@@ -196,6 +223,7 @@ export function createModEnvironmentHost({
     switch (value.type) {
       case 'undefined': return undefined
       case 'value': return value.value
+      case 'regexp': return new RegExp(value.source, value.flags)
       case 'array': return value.values.map(item => decode(environment, item))
       case 'object': return Object.fromEntries(value.entries.map(([key, item]) => [key, decode(environment, item)]))
       case 'function': {
@@ -212,7 +240,12 @@ export function createModEnvironmentHost({
         if (fn?.environment !== environment) throw new Error('Unknown module host function')
         return fn.call
       }
-      case 'clock': throw new Error('Clock bridge cannot be returned as data')
+      case 'ui': throw new Error('UI capability cannot cross back as data')
+      case 'clock': {
+        const clock = state.clockValues.get(value.now)
+        if (!clock || JSON.stringify(state.clocks.get(clock)) !== JSON.stringify(value)) throw new Error('Unknown module clock bridge')
+        return clock
+      }
     }
   }
 
@@ -236,7 +269,11 @@ export function createModEnvironmentHost({
       const pending = requests.get(message.id)
       if (!pending) return
       requests.delete(message.id)
-      if (message.error !== undefined) pending.reject(new Error(message.error))
+      if (message.error !== undefined) {
+        const errors = invocationErrors.get(message.id)
+        if (message.errorRef !== undefined && errors?.has(message.errorRef)) pending.reject(errors.get(message.errorRef) as Error)
+        else pending.reject(new Error(message.error))
+      }
       else pending.resolve(message)
       return
     }
@@ -246,9 +283,18 @@ export function createModEnvironmentHost({
       stateFor(message.environment)
       if (fn?.environment !== message.environment) throw new Error('Unknown or unloaded module capability')
       if (fn.invocation !== undefined && (fn.invocation !== message.invocation || frames.get(fn.invocation)?.environment !== message.environment)) throw new Error('Module invocation already settled')
-      const value = fn.call(...message.args.map(value => decode(message.environment, value)))
+      const args = message.args.map(value => decode(message.environment, value))
+      const context = contexts.get(message.invocation)
+      const value = context ? context(fn.call, ...args) : fn.call(...args)
       response.value = encode(message.environment, isPromise(value) && !isProxy(value) ? await value : value)
-    } catch (error) { response.error = errorMessage(error, 'Module capability failed') }
+    } catch (error) {
+      response.error = errorMessage(error, 'Module capability failed')
+      const errors = invocationErrors.get(message.invocation)
+      if (errors && fn?.environment === message.environment) {
+        response.errorRef = message.call
+        errors.set(message.call, error)
+      }
+    }
     try {
       if (fn?.invocation !== undefined) {
         const frame = frames.get(fn.invocation)
@@ -264,9 +310,11 @@ export function createModEnvironmentHost({
   // Bun's Web Worker exit event is named close (node:worker_threads calls it exit).
   worker.addEventListener('close', () => fail(new Error('Mods Worker exited')))
 
-  async function invoke(environment: number, handle: number, args: unknown[], next?: ModNext) {
+  async function invoke(environment: number, handle: number, args: unknown[], next?: ModNext, drawing?: number, callbackDrawing?: number) {
     const state = stateFor(environment)
     const id = ++nextRequest
+    contexts.set(id, AsyncLocalStorage.snapshot())
+    invocationErrors.set(id, new Map())
     let call: number | undefined, to: number | undefined
     let overrun: ReturnType<typeof setTimeout> | undefined
     const cancel = () => {
@@ -278,7 +326,7 @@ export function createModEnvironmentHost({
     try {
       const argsWire = args.map(value => encode(environment, value))
       if (next) {
-        if (!state.declaration.events.includes(next.event)) throw new Error('Invocation event is absent from scan')
+        if (!state.declaration.events.some(pattern => matchesModEventPattern(pattern, next.event))) throw new Error('Invocation event is absent from scan')
         frames.set(id, { environment, next })
         const live = () => { if (!frames.has(id)) throw new Error('Module invocation already settled') }
         call = hostHandle(environment, (input: unknown) => { live(); return next(input as ModInput) }, id)
@@ -289,7 +337,7 @@ export function createModEnvironmentHost({
         }, id)
       }
       const message: WithoutId<Extract<ModWorkerRequest, { type: 'invoke' }>> = {
-        type: 'invoke', environment, handle, args: argsWire,
+        type: 'invoke', environment, handle, args: argsWire, drawing, callbackDrawing,
         ...(next && call !== undefined && to !== undefined ? {
           next: { call, to, event: next.event, origin: encode(environment, next.origin), trace: encode(environment, next.trace), ...(next.error ? { error: encode(environment, next.error), called: next.called } : {}) },
         } : {}),
@@ -301,6 +349,8 @@ export function createModEnvironmentHost({
       return result.value ? decode(environment, result.value) : undefined
     } finally {
       frames.delete(id)
+      contexts.delete(id)
+      invocationErrors.delete(id)
       next?.signal.removeEventListener('abort', cancel)
       if (overrun) clearTimeout(overrun)
       if (call !== undefined) functions.delete(call)
@@ -327,16 +377,26 @@ export function createModEnvironmentHost({
     async load(declaration: ModDeclaration): Promise<ModEnvironment> {
       if (dead || disposal) throw dead ?? new Error('Mods Worker disposed')
       const id = ++nextEnvironment
-      environments.set(id, { declaration, handles: new WeakMap(), remote: new Map(), clocks: new WeakMap(), cleanups: new Set() })
+      environments.set(id, { declaration, handles: new WeakMap(), remote: new Map(), clocks: new WeakMap(), clockValues: new Map(), cleanups: new Set() })
       const timeout = setTimeout(() => fail(new Error('Mods Worker module registration timed out')), 10000)
       timeout.unref?.()
       try {
         const result = await request({ type: 'load', environment: id, declaration })
-        const registrations = result.registrations ?? []
+        const registrations = (result.registrations ?? []).map(registration => ({
+          ...registration,
+          matcher: registration.matcher === undefined ? undefined : normalizeModMatcher(decode(id, registration.matcher)) as ModRegistration['matcher'],
+        }))
         for (const registration of registrations) {
           if (!declaration.events.includes(registration.event)) throw new Error('Actual module registration is absent from scan')
         }
-        return { id, registrations, invoke: (handle, args, next) => invoke(id, handle, args, next), dispose: () => unload(id) }
+        return {
+          id, registrations,
+          invoke: (handle, args, next, drawing) => invoke(id, handle, args, next, drawing),
+          invokeDrawing: (drawing, handle, args) => invoke(id, handle, args, undefined, undefined, drawing),
+          releaseDrawing: async drawing => { if (environments.has(id)) await request({ type: 'release-drawing', environment: id, drawing }) },
+          setUiAccess: async allowed => { await request({ type: 'ui-access', environment: id, allowed }) },
+          dispose: () => unload(id),
+        }
       } catch (error) {
         try { await unload(id) } catch (failure) { report(failure, id) }
         throw error

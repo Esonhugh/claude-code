@@ -2,8 +2,9 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { loadModDeclaration } from './loader'
+import { loadModDeclaration, validateModRegistrations } from './loader'
 
+const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
 const roots: string[] = []
 
 afterEach(async () => {
@@ -84,7 +85,7 @@ test('tracks renamed capabilities, closures, provider function parameters, and c
     }`,
   })
   const result = await loadModDeclaration(input)
-  expect(result.events).toEqual(['arithmetic.add', 'engine.create', 'session.start'])
+  expect(result.events).toEqual(['engine.create', 'session.start', 'arithmetic.add'])
   expect(result.calls).toEqual(['arithmetic.add', 'clock.now', 'clock.sleep'])
 })
 
@@ -110,18 +111,12 @@ test.each([
 })
 
 test.each([
-  [`on('tool.*', () => {})`, /event globs/],
   [`on(['tool.call'], () => {})`, /literal/],
   [`const event = 'tool.call'; on(event, () => {})`, /literal/],
   [`on('tool.call', (e) => true, () => {})`, /matcher/],
-  [`on('tool.call', { tool: /Bash/ }, () => {})`, /matcher/],
-  [`on('tool.call', { input: { command: 'pwd' } }, () => {})`, /matcher/],
-  [`on('tool.call', { ['tool']: 'Bash' }, () => {})`, /matcher/],
-  [`on('tool.call', { ...{} }, () => {})`, /matcher/],
   [`on('tool.call', handler)`, /inline/],
   [`on?.('tool.call', () => {})`, /optional/],
   [`on('turn.step', () => {})`, /unsupported core event/],
-  [`on('tool.register', () => {})`, /unsupported core event/],
   [`const alias = on; alias('tool.call', () => {})`, /alias/],
   [`on('session.start', ($, e, next) => $.tool.call(e))`, /unsupported core capability/],
   [`on('session.start', ($, e, next) => $.tool.register(e))`, /unsupported core capability/],
@@ -164,14 +159,149 @@ test.each([
   await expect(loadModDeclaration(input)).rejects.toThrow(diagnostic)
 })
 
+test.each([
+  `export function register(on) { const matcher = getMatcher(); on('tool.call', { tool: matcher }, () => ({})) }`,
+  `export function register(on) { let matcher = 'Bash'; on('tool.call', { tool: matcher }, () => ({})) }`,
+  `export function register(on) { const matchers = getMatchers(); on('tool.call', { tool: [...matchers] }, () => ({})) }`,
+])('rejects dynamic identifiers and spreads in matcher data: %s', async source => {
+  const input = await plugin({ 'main.ts': source })
+  await expect(loadModDeclaration(input)).rejects.toThrow(/matcher.*constant|static matcher/i)
+})
+
+test('scans official matcher forms and pattern registrations without evaluating constants', async () => {
+  const input = await plugin({
+    'main.ts': `import { COMMAND, TOOLS } from './constants.js'
+      export function register(on) {
+        on('*', { tool: /Bash|Edit/, input: { command: /^git\\s/ } }, ($, e, next) => next(e))
+        on('command.*', { command: COMMAND }, ($, e, next) => next(e))
+        on('!tool.call', { command: ['clear', 'resume'] }, ($, e, next) => next(e))
+        on('tool.call', { tool: [...TOOLS] }, ($, e, next) => next(e))
+      }`,
+    'constants.ts': `export const COMMAND = 'diff'; export const TOOLS = ['Edit', 'Write'] as const`,
+  })
+
+  const result = await loadModDeclaration(input)
+  expect(result.events).toEqual(['*', 'command.*', '!tool.call', 'tool.call'])
+  expect(result.modules.map(module => module.path)).toContain(join(input.pluginRoot, 'constants.ts'))
+})
+
+test('resolves directories, remaps emitted extensions, and transpiles TSX through h and Fragment', async () => {
+  const input = await plugin({
+    'main.ts': `import { view } from './view/index.js'; import './helper.jsx'; export function register(on) { on('ui.render', ($, e, next) => next(e)); void view }`,
+    'view/index.ts': `export { view } from './view.js'`,
+    'view/view.tsx': `export const view = (Box: any) => <><Box>ok</Box></>`,
+    'helper.tsx': `export const helper = <Text>ok</Text>`,
+  })
+
+  const result = await loadModDeclaration(input)
+  expect(result.modules.map(module => module.path).sort()).toEqual([
+    input.entrypoints[0], join(input.pluginRoot, 'view/index.ts'),
+    join(input.pluginRoot, 'view/view.tsx'), join(input.pluginRoot, 'helper.tsx'),
+  ].sort())
+  expect(result.links).toContainEqual({ from: input.entrypoints[0], specifier: './view/index.js', to: join(input.pluginRoot, 'view/index.ts') })
+  expect(result.links).toContainEqual({ from: join(input.pluginRoot, 'view/index.ts'), specifier: './view.js', to: join(input.pluginRoot, 'view/view.tsx') })
+  expect(result.modules.find(module => module.path.endsWith('view.tsx'))?.source).toContain('h(Fragment')
+  expect(result.modules.find(module => module.path.endsWith('helper.tsx'))?.source).toContain('h(Text')
+})
+
+test.skipIf(!officialModsRoot)(
+  'loads the complete official diff and sec-default graphs with exact declarations',
+  async () => {
+    const diffRoot = join(officialModsRoot!, 'diff/hooks')
+    const securityRoot = join(officialModsRoot!, 'sec-default/hooks')
+    const diff = await loadModDeclaration({
+      name: 'diff', storageId: 'diff@official', pluginRoot: diffRoot,
+      entrypoints: [join(diffRoot, 'register.ts')],
+    })
+    const security = await loadModDeclaration({
+      name: 'sec-default', storageId: 'sec-default@official', pluginRoot: securityRoot,
+      entrypoints: [join(securityRoot, 'register.ts')],
+    })
+
+    expect(diff.modules).toHaveLength(504)
+    expect(diff.events).toEqual([
+      'session.start', 'ui.render', 'command.run', 'ui.close', 'ui.focus',
+      'ui.scroll', 'tool.call', 'turn.complete', 'prompt.submit',
+    ])
+    expect(diff.calls).toEqual([
+      'clock.after', 'clock.every', 'clock.now', 'command.register', 'fs.list',
+      'fs.read', 'fs.stat', 'process.run', 'session.id', 'session.messages',
+      'store.get', 'store.set', 'telemetry.log', 'telemetry.mark', 'ui.close',
+      'ui.invalidate', 'ui.log', 'ui.open', 'ui.resolve', 'ui.status',
+    ])
+    expect(diff.nextTiers).toEqual([])
+    expect(security.modules).toHaveLength(21)
+    expect(security.events).toEqual([
+      'classic.*', 'prompt.section', 'prompt.context', 'skill.prompt',
+      'attribution.text', 'settings.read', 'tool.describe', 'command.describe',
+      'agent.offer', 'agent.spawn', 'tool.register', 'tool.list',
+    ])
+    expect(security.calls).toEqual(['settings.read'])
+    expect(security.nextTiers).toEqual(['append'])
+  },
+)
+
+test('normalizes actual VM registrations and keeps scan consistency for every pattern', async () => {
+  const input = await plugin({
+    'main.ts': `export function register(on) {
+      on('tool.*', { tool: /Bash/, input: { command: ['pwd', /^git/] } }, () => ({}))
+    }`,
+  })
+  const declaration = await loadModDeclaration(input)
+  const registrations = validateModRegistrations(declaration, [{
+    id: 1,
+    event: 'tool.*',
+    matcher: { tool: /Bash/, input: { command: ['pwd', /^git/] } },
+    hasCatch: false,
+  }])
+
+  expect(registrations[0]?.matcher).not.toBeUndefined()
+  expect(() => validateModRegistrations(declaration, [{
+    id: 1, event: 'session.*', hasCatch: false,
+  }])).toThrow('absent from scan')
+})
+
 test('rejects passing the whole engine to an imported ordinary helper', async () => {
   const input = await plugin({
     'main.ts': `import { helper } from './helper.js'; export function register(on) {
       on('session.start', (host, e, next) => helper(host))
     }`,
-    'helper.js': `export function helper(api) { return api.tool.register({}) }`,
+    'helper.js': `export function helper(value) { return value.tool.register({}) }`,
   })
   await expect(loadModDeclaration(input)).rejects.toThrow('helpers')
+})
+
+test('does not approve an imported capability helper through an unrelated same-name function', async () => {
+  const input = await plugin({
+    'main.ts': `import { helper } from './unsafe.js'; import './safe.js'; export function register(on) {
+      on('tool.describe', ($, e, next) => helper(e, next))
+    }`,
+    'unsafe.js': `export function helper(e, value) { return value(e) }`,
+    'safe.js': `export function helper(next, e) { return next(e) }`,
+  })
+  await expect(loadModDeclaration(input)).rejects.toThrow('helpers')
+})
+
+test('rejects passing the whole engine to an imported capability helper', async () => {
+  const input = await plugin({
+    'main.ts': `import { helper } from './helper.js'; export function register(on) {
+      on('session.start', ($, e, next) => helper($))
+    }`,
+    'helper.js': `export function helper(host) { return host.clock.now() }`,
+  })
+  await expect(loadModDeclaration(input)).rejects.toThrow('helpers')
+})
+
+test('scans capabilities and tiers in imported helpers that receive next', async () => {
+  const input = await plugin({
+    'main.ts': `import { continuePastUsers } from './helper.js'; export function register(on) {
+      on('tool.describe', ($, e, next) => continuePastUsers(e, next))
+    }`,
+    'helper.js': `export function continuePastUsers(e, next) { return e.pass ? next(e) : next.to(e, 'append') }`,
+  })
+  const result = await loadModDeclaration(input)
+  expect(result.events).toEqual(['tool.describe'])
+  expect(result.nextTiers).toEqual(['append'])
 })
 
 test('enforces lexical and realpath containment for entrypoints and relative imports', async () => {
@@ -260,7 +390,7 @@ test('supports all slice events, clock methods, multiple entrypoints and async o
     'other.mts': `export const register = on => { on('tool.call', { enabled: true, count: -1, absent: null }, ($, e, next) => next(e)) }`,
   })
   const result = await loadModDeclaration({ ...input, entrypoints: [...input.entrypoints, join(input.pluginRoot, 'other.mts')] })
-  expect(result.events).toEqual(['clock.after', 'clock.every', 'clock.now', 'clock.sleep', 'engine.create', 'plugin.register', 'session.start', 'tool.call'])
+  expect(result.events).toEqual(['engine.create', 'plugin.register', 'session.start', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every', 'tool.call'])
   expect(result.calls).toEqual(['clock.after', 'clock.every', 'clock.now', 'clock.sleep'])
   expect(result.modules).toHaveLength(3)
 })

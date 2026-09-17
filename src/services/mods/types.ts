@@ -1,10 +1,12 @@
+import type { ModMatcher } from './matcher.js'
+
 export type ModTier = 'prepend' | 'user' | 'append' | 'builtin' | 'core'
 export type ModInput = Record<string, unknown>
 
 export type ModRegistration = {
   id: number
   event: string
-  matcher?: ModInput
+  matcher?: { readonly [key: string]: ModMatcher }
   hasCatch: boolean
 }
 
@@ -16,6 +18,9 @@ export type ModModule = {
 export type ModDeclaration = {
   name: string
   storageId: string
+  version?: string
+  /** Host-owned admission identity; never inferred from manifest metadata or tier. */
+  isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
   modules: ModModule[]
