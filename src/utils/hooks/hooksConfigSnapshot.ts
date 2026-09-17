@@ -3,9 +3,21 @@ import { isRestrictedToPluginOnly } from '../settings/pluginOnlyPolicy.js'
 // Import as module object so spyOn works in tests (direct imports bypass spies)
 import * as settingsModule from '../settings/settings.js'
 import { resetSettingsCache } from '../settings/settingsCache.js'
-import type { HooksSettings } from '../settings/types.js'
+import {
+  getEnabledSettingSources,
+  type SettingSource,
+} from '../settings/constants.js'
+import type { HookMatcher, HooksSettings } from '../settings/types.js'
 
-let initialHooksConfig: HooksSettings | null = null
+export type HookSourceScope = 'all' | 'managed' | 'non-managed'
+
+type HooksConfigSnapshot = {
+  [event in keyof HooksSettings]?: (HookMatcher & {
+    hookSource: SettingSource
+  })[]
+}
+
+let initialHooksConfig: HooksConfigSnapshot | null = null
 
 /**
  * Get hooks from allowed sources.
@@ -13,43 +25,44 @@ let initialHooksConfig: HooksSettings | null = null
  * If disableAllHooks is set in policySettings, no hooks are returned.
  * If disableAllHooks is set in non-managed settings, only managed hooks are returned
  * (non-managed settings cannot disable managed hooks).
- * Otherwise, returns merged hooks from all sources (backwards compatible).
+ * Otherwise, captures hooks from all enabled settings sources with provenance.
  */
-function getHooksFromAllowedSources(): HooksSettings {
+function getHooksFromAllowedSources(): HooksConfigSnapshot {
   const policySettings = settingsModule.getSettingsForSource('policySettings')
-
-  // If managed settings disables all hooks, return empty
   if (policySettings?.disableAllHooks === true) {
     return {}
   }
 
-  // If allowManagedHooksOnly is set in managed settings, only use managed hooks
-  if (policySettings?.allowManagedHooksOnly === true) {
-    return policySettings.hooks ?? {}
+  // These restrictions apply only to settings hooks. Registered SDK/plugin
+  // and session hooks retain their existing execution/registration gates.
+  const managedOnly =
+    policySettings?.allowManagedHooksOnly === true ||
+    isRestrictedToPluginOnly('hooks') ||
+    settingsModule.getSettings_DEPRECATED().disableAllHooks === true
+  const snapshot: HooksConfigSnapshot = {}
+  for (const source of getEnabledSettingSources()) {
+    if (managedOnly && source !== 'policySettings') continue
+    const hooks = (
+      source === 'policySettings'
+        ? policySettings
+        : settingsModule.getSettingsForSource(source)
+    )?.hooks
+    if (!hooks) continue
+    // Capture before merging: equal commands in distinct sources must not lose
+    // provenance, and later settings mutations must not change this snapshot.
+    for (const event of Object.keys(hooks) as (keyof HooksSettings)[]) {
+      const matchers = hooks[event]
+      if (!matchers) continue
+      snapshot[event] ??= []
+      snapshot[event]!.push(
+        ...structuredClone(matchers).map((matcher) => ({
+          ...matcher,
+          hookSource: source,
+        })),
+      )
+    }
   }
-
-  // strictPluginOnlyCustomization: block user/project/local settings hooks.
-  // Plugin hooks (registered channel, hooks.ts:1391) are NOT affected —
-  // they're assembled separately and the managedOnly skip there is keyed
-  // on shouldAllowManagedHooksOnly(), not on this policy. Agent frontmatter
-  // hooks are gated at REGISTRATION (runAgent.ts:~535) by agent source —
-  // plugin/built-in/policySettings agents register normally, user-sourced
-  // agents skip registration under ["hooks"]. A blanket execution-time
-  // block here would over-kill plugin agents' hooks.
-  if (isRestrictedToPluginOnly('hooks')) {
-    return policySettings?.hooks ?? {}
-  }
-
-  const mergedSettings = settingsModule.getSettings_DEPRECATED()
-
-  // If disableAllHooks is set in non-managed settings, only managed hooks still run
-  // (non-managed settings cannot override managed hooks)
-  if (mergedSettings.disableAllHooks === true) {
-    return policySettings?.hooks ?? {}
-  }
-
-  // Otherwise, use all hooks (merged from all sources) - backwards compatible
-  return mergedSettings.hooks ?? {}
+  return snapshot
 }
 
 /**
@@ -116,11 +129,24 @@ export function updateHooksConfigSnapshot(): void {
  * Falls back to settings if no snapshot exists
  * @returns The hooks configuration
  */
-export function getHooksConfigFromSnapshot(): HooksSettings | null {
+export function getHooksConfigFromSnapshot(
+  sourceScope: HookSourceScope = 'all',
+): HooksConfigSnapshot | null {
   if (initialHooksConfig === null) {
     captureHooksConfigSnapshot()
   }
-  return initialHooksConfig
+  if (sourceScope === 'all') return initialHooksConfig
+  const scoped: HooksConfigSnapshot = {}
+  for (const event of Object.keys(
+    initialHooksConfig!,
+  ) as (keyof HooksSettings)[]) {
+    scoped[event] = initialHooksConfig![event]?.filter((matcher) =>
+      sourceScope === 'managed'
+        ? matcher.hookSource === 'policySettings'
+        : matcher.hookSource !== 'policySettings',
+    )
+  }
+  return scoped
 }
 
 /**

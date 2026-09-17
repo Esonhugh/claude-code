@@ -39,6 +39,7 @@ import {
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
   getHooksConfigFromSnapshot,
+  type HookSourceScope,
   shouldAllowManagedHooksOnly,
   shouldDisableAllHooksIncludingManaged,
 } from './hooks/hooksConfigSnapshot.js'
@@ -161,6 +162,8 @@ import type { AppState } from '../state/AppState.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
 import { isEnvTruthy, isSSHLocalUI } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
+
+export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -358,7 +361,7 @@ export interface HookResult {
 
 export type AggregatedHookResult = {
   message?: HookResultMessage
-  hook?: HookCommand
+  hook?: HookResult['hook']
   blockingError?: HookBlockingError
   preventContinuation?: boolean
   stopReason?: string
@@ -647,7 +650,7 @@ function processHookJSONOutput({
       case 'PostToolUse':
         result.additionalContext = json.hookSpecificOutput.additionalContext
         // Extract updatedMCPToolOutput if provided
-        if (json.hookSpecificOutput.updatedMCPToolOutput) {
+        if (json.hookSpecificOutput.updatedMCPToolOutput !== undefined) {
           result.updatedMCPToolOutput =
             json.hookSpecificOutput.updatedMCPToolOutput
         }
@@ -1454,14 +1457,12 @@ function isInternalHook(matched: MatchedHook): boolean {
 /**
  * Build a dedup key for a matched hook, namespaced by source context.
  *
- * Settings-file hooks (no pluginRoot/skillRoot) share the '' prefix so the
- * same command defined in user/project/local still collapses to one — the
- * original intent of the dedup. Plugin/skill hooks get their root as the
- * prefix, so two plugins sharing an unexpanded `${CLAUDE_PLUGIN_ROOT}/hook.sh`
- * template don't collapse: after expansion they point to different files.
+ * Each settings source retains its own commands. Plugin/skill roots also
+ * distinguish identical templates that expand to different files.
  */
 function hookDedupKey(m: MatchedHook, payload: string): string {
-  return `${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
+  const source = m.pluginRoot ? 'plugin' : m.skillRoot ? 'skill' : m.hookSource
+  return `${source ?? ''}\0${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
 }
 
 /**
@@ -1503,24 +1504,21 @@ function getHooksConfig(
   appState: AppState | undefined,
   sessionId: string,
   hookEvent: HookEvent,
+  sourceScope: HookSourceScope = 'all',
 ): Array<
-  | HookMatcher
-  | HookCallbackMatcher
-  | FunctionHookMatcher
-  | PluginHookMatcher
-  | SkillHookMatcher
-  | SessionExecutionHookMatcher
-> {
-  // HookMatcher is a zod-stripped {matcher, hooks} so snapshot matchers can be
-  // pushed directly without re-wrapping.
-  const hooks: Array<
+  (
     | HookMatcher
     | HookCallbackMatcher
     | FunctionHookMatcher
     | PluginHookMatcher
     | SkillHookMatcher
     | SessionExecutionHookMatcher
-  > = [...(getHooksConfigFromSnapshot()?.[hookEvent] ?? [])]
+  ) & { hookSource?: string }
+> {
+  const hooks: ReturnType<typeof getHooksConfig> = [
+    ...(getHooksConfigFromSnapshot(sourceScope)?.[hookEvent] ?? []),
+  ]
+  if (sourceScope === 'managed') return hooks
 
   // Check if only managed hooks should run (used for both registered and session hooks)
   const managedOnly = shouldAllowManagedHooksOnly()
@@ -1534,7 +1532,9 @@ function getHooksConfig(
       if (managedOnly && 'pluginRoot' in matcher) {
         continue
       }
-      hooks.push(matcher)
+      hooks.push(
+        'pluginRoot' in matcher ? matcher : { ...matcher, hookSource: 'sdk' },
+      )
     }
   }
 
@@ -1618,9 +1618,15 @@ export async function getMatchingHooks(
   hookEvent: HookEvent,
   hookInput: HookInput,
   tools?: Tools,
+  sourceScope: HookSourceScope = 'all',
 ): Promise<MatchedHook[]> {
   try {
-    const hookMatchers = getHooksConfig(appState, sessionId, hookEvent)
+    const hookMatchers = getHooksConfig(
+      appState,
+      sessionId,
+      hookEvent,
+      sourceScope,
+    )
 
     // If you change the criteria below, then you must change
     // src/utils/hooks/hooksConfigManager.ts as well.
@@ -1703,15 +1709,17 @@ export async function getMatchingHooks(
         'pluginRoot' in matcher ? matcher.pluginRoot : undefined
       const pluginId = 'pluginId' in matcher ? matcher.pluginId : undefined
       const skillRoot = 'skillRoot' in matcher ? matcher.skillRoot : undefined
-      const hookSource = pluginRoot
-        ? 'pluginName' in matcher
-          ? `plugin:${matcher.pluginName}`
-          : 'plugin'
-        : skillRoot
-          ? 'skillName' in matcher
-            ? `skill:${matcher.skillName}`
-            : 'skill'
-          : 'settings'
+      const hookSource =
+        matcher.hookSource ??
+        (pluginRoot
+          ? 'pluginName' in matcher
+            ? `plugin:${matcher.pluginName}`
+            : 'plugin'
+          : skillRoot
+            ? 'skillName' in matcher
+              ? `skill:${matcher.skillName}`
+              : 'skill'
+            : 'session')
       return matcher.hooks.map((hook, index) => ({
         hook,
         pluginRoot,
@@ -1727,12 +1735,11 @@ export async function getMatchingHooks(
     })
 
     // Deduplicate hooks by command/prompt/url within the same source context.
-    // Key is namespaced by pluginRoot/skillRoot (see hookDedupKey above) so
+    // Key includes the settings source and plugin/skill root, so
     // cross-plugin template collisions don't drop hooks (gh-29724).
     //
     // Note: new Map(entries) keeps the LAST entry on key collision, not first.
-    // For settings hooks this means the last-merged scope wins; for
-    // same-plugin duplicates the pluginRoot is identical so it doesn't matter.
+    // Within each source, the last matching definition still wins.
     // Fast-path: callback/function hooks don't need dedup (each is unique).
     // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
     // callback/function — the common case for internal hooks like
@@ -1977,6 +1984,7 @@ async function* executeHooks({
   forceSyncExecution,
   requestPrompt,
   toolInputSummary,
+  sourceScope,
 }: {
   hookInput: HookInput
   toolUseID: string
@@ -1991,6 +1999,7 @@ async function* executeHooks({
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>
   toolInputSummary?: string | null
+  sourceScope?: HookSourceScope
 }): AsyncGenerator<AggregatedHookResult> {
   if (shouldDisableAllHooksIncludingManaged()) {
     return
@@ -2024,6 +2033,7 @@ async function* executeHooks({
     hookEvent,
     hookInput,
     toolUseContext?.options?.tools,
+    sourceScope,
   )
   if (matchingHooks.length === 0) {
     return
@@ -2109,8 +2119,10 @@ async function* executeHooks({
   )
 
   // Yield progress messages for each hook before execution
-  for (const { hook } of matchingHooks) {
+  for (const { hook, hookSource } of matchingHooks) {
     yield {
+      hook,
+      hookSource,
       message: {
         // @ts-ignore - recovered code
         type: 'progress',
@@ -2779,7 +2791,7 @@ async function* executeHooks({
     cancelled: 0,
   }
 
-  let permissionBehavior: PermissionResult['behavior'] | undefined
+  let permissionDecision: AggregatedHookResult | undefined
 
   // Run all hooks in parallel and preserve each result's original matcher.
   // Hook objects may be shared across session hook sources, so object identity
@@ -2794,6 +2806,14 @@ async function* executeHooks({
   )
   for await (const { result, hookIndex } of all(hookResults)) {
     outcomes[result.outcome]++
+    const matchedHook = matchingHooks[hookIndex]
+    const firstResult = unmatchedHookIndices.delete(hookIndex)
+    const hookMetadata = {
+      hook: result.hook,
+      hookSource: matchedHook?.hookSource,
+      stopReason: result.stopReason,
+      impossible: result.impossible,
+    }
 
     // Check for preventContinuation early
     if (result.preventContinuation) {
@@ -2801,38 +2821,26 @@ async function* executeHooks({
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) requested preventContinuation`,
       )
       yield {
+        ...hookMetadata,
         preventContinuation: true,
-        stopReason: result.stopReason,
       }
     }
 
-    // Handle different result types
-    const matchedHook = unmatchedHookIndices.delete(hookIndex)
-      ? matchingHooks[hookIndex]
-      : undefined
-    const promptHookResult =
-      result.hook.type === 'prompt'
-        ? {
-            hook: result.hook,
-            stopReason: result.stopReason,
-            impossible: result.impossible,
-          }
-        : {}
-
     if (result.blockingError) {
       yield {
+        ...hookMetadata,
         blockingError: result.blockingError,
-        ...promptHookResult,
       }
     }
 
     if (result.message) {
-      yield { message: result.message, ...promptHookResult }
+      yield { message: result.message, ...hookMetadata }
     }
 
     // Yield system message separately if present
     if (result.systemMessage) {
       yield {
+        ...hookMetadata,
         // @ts-ignore - recovered code
         message: createAttachmentMessage({
           type: 'hook_system_message',
@@ -2850,6 +2858,7 @@ async function* executeHooks({
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) provided additionalContext (${result.additionalContext.length} chars)`,
       )
       yield {
+        ...hookMetadata,
         additionalContexts: [result.additionalContext],
       }
     }
@@ -2859,6 +2868,7 @@ async function* executeHooks({
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) provided initialUserMessage (${result.initialUserMessage.length} chars)`,
       )
       yield {
+        ...hookMetadata,
         initialUserMessage: result.initialUserMessage,
       }
     }
@@ -2868,16 +2878,18 @@ async function* executeHooks({
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) provided ${result.watchPaths.length} watchPaths`,
       )
       yield {
+        ...hookMetadata,
         watchPaths: result.watchPaths,
       }
     }
 
     // Yield updatedMCPToolOutput if provided (from PostToolUse hooks)
-    if (result.updatedMCPToolOutput) {
+    if (result.updatedMCPToolOutput !== undefined) {
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) replaced MCP tool output`,
       )
       yield {
+        ...hookMetadata,
         updatedMCPToolOutput: result.updatedMCPToolOutput,
       }
     }
@@ -2887,88 +2899,73 @@ async function* executeHooks({
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) returned permissionDecision: ${result.permissionBehavior}${result.hookPermissionDecisionReason ? ` (reason: ${result.hookPermissionDecisionReason})` : ''}`,
       )
-      // Apply precedence rules
-      switch (result.permissionBehavior) {
-        case 'deny':
-          // deny always takes precedence
-          permissionBehavior = 'deny'
-          break
-        case 'ask':
-          // ask takes precedence over allow but not deny
-          if (permissionBehavior !== 'deny') {
-            permissionBehavior = 'ask'
-          }
-          break
-        case 'allow':
-          // allow only if no other behavior set
-          if (!permissionBehavior) {
-            permissionBehavior = 'allow'
-          }
-          break
-        case 'passthrough':
-          // passthrough doesn't set permission behavior
-          break
+      // Preserve the existing tie rules: latest deny/ask wins, first allow wins.
+      // The reason and identity must advance together with the winning decision.
+      if (
+        result.permissionBehavior === 'deny' ||
+        (result.permissionBehavior === 'ask' &&
+          permissionDecision?.permissionBehavior !== 'deny') ||
+        (result.permissionBehavior === 'allow' && !permissionDecision)
+      ) {
+        permissionDecision = {
+          ...hookMetadata,
+          permissionBehavior: result.permissionBehavior,
+          hookPermissionDecisionReason: result.hookPermissionDecisionReason,
+        }
       }
     }
 
-    // Yield permission behavior and updatedInput if provided (from allow or ask behavior)
-    if (permissionBehavior !== undefined) {
-      const updatedInput =
-        result.updatedInput &&
-        (result.permissionBehavior === 'allow' ||
-          result.permissionBehavior === 'ask')
-          ? result.updatedInput
-          : undefined
-      if (updatedInput) {
-        logForDebugging(
-          `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) modified tool input keys: [${Object.keys(updatedInput).join(', ')}]`,
-        )
-      }
-      yield {
-        permissionBehavior,
-        hookPermissionDecisionReason: result.hookPermissionDecisionReason,
-        hookSource: matchedHook?.hookSource,
-        updatedInput,
-      }
+    if (permissionDecision) {
+      yield { ...permissionDecision }
     }
 
-    // Yield updatedInput separately for passthrough case (no permission decision)
-    // This allows hooks to modify input without making a permission decision
-    // Note: Check result.permissionBehavior (this hook's behavior), not the aggregated permissionBehavior
-    if (result.updatedInput && result.permissionBehavior === undefined) {
+    // Input rewrites belong to the current hook, not necessarily the winning
+    // permission hook. Keep their metadata separate from the cumulative decision.
+    if (
+      result.updatedInput &&
+      (result.permissionBehavior === undefined ||
+        result.permissionBehavior === 'allow' ||
+        result.permissionBehavior === 'ask')
+    ) {
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) modified tool input keys: [${Object.keys(result.updatedInput).join(', ')}]`,
       )
       yield {
+        ...hookMetadata,
         updatedInput: result.updatedInput,
       }
     }
     // Yield permission request result if provided (from PermissionRequest hooks)
     if (result.permissionRequestResult) {
       yield {
+        ...hookMetadata,
         permissionRequestResult: result.permissionRequestResult,
       }
     }
     // Yield retry flag if provided (from PermissionDenied hooks)
     if (result.retry) {
       yield {
+        ...hookMetadata,
         retry: result.retry,
       }
     }
     // Yield elicitation response if provided (from Elicitation hooks)
     if (result.elicitationResponse) {
       yield {
+        ...hookMetadata,
         elicitationResponse: result.elicitationResponse,
       }
     }
     // Yield elicitation result response if provided (from ElicitationResult hooks)
     if (result.elicitationResultResponse) {
       yield {
+        ...hookMetadata,
         elicitationResultResponse: result.elicitationResultResponse,
       }
     }
 
     if (
+      firstResult &&
       result.hook.type !== 'callback' &&
       matchedHook?.sessionHook &&
       matchedHook.onHookSuccess &&
@@ -3458,6 +3455,7 @@ export async function* executePreToolHooks<ToolInput>(
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>,
   toolInputSummary?: string | null,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3478,6 +3476,7 @@ export async function* executePreToolHooks<ToolInput>(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID,
     matchQuery: toolName,
@@ -3510,6 +3509,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: PostToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
@@ -3521,6 +3521,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID,
     matchQuery: toolName,
@@ -3553,6 +3554,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3571,6 +3573,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID,
     matchQuery: toolName,
@@ -3589,6 +3592,7 @@ export async function* executePermissionDeniedHooks<ToolInput>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3606,6 +3610,7 @@ export async function* executePermissionDeniedHooks<ToolInput>(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID,
     matchQuery: toolName,
@@ -3705,6 +3710,7 @@ export async function* executeStopHooks(
     sourceName: string,
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookEvent = subagentId ? 'SubagentStop' : 'Stop'
   const appState = toolUseContext?.getAppState()
@@ -3742,6 +3748,7 @@ export async function* executeStopHooks(
 
   // Trust check is now centralized in executeHooks()
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID: randomUUID(),
     signal,
@@ -3887,6 +3894,7 @@ export async function* executeUserPromptSubmitHooks(
     sourceName: string,
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3901,6 +3909,7 @@ export async function* executeUserPromptSubmitHooks(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID: randomUUID(),
     signal: toolUseContext.abortController.signal,
@@ -3928,6 +3937,7 @@ export async function* executeSessionStartHooks(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   forceSyncExecution?: boolean,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SessionStartHookInput = {
     ...createBaseHookInput(undefined, sessionId),
@@ -3938,6 +3948,7 @@ export async function* executeSessionStartHooks(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID: randomUUID(),
     matchQuery: source,
@@ -3960,6 +3971,7 @@ export async function* executeSetupHooks(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   forceSyncExecution?: boolean,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SetupHookInput = {
     ...createBaseHookInput(undefined),
@@ -3968,6 +3980,7 @@ export async function* executeSetupHooks(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID: randomUUID(),
     matchQuery: trigger,
@@ -3990,6 +4003,7 @@ export async function* executeSubagentStartHooks(
   agentType: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SubagentStartHookInput = {
     ...createBaseHookInput(undefined),
@@ -3999,6 +4013,7 @@ export async function* executeSubagentStartHooks(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID: randomUUID(),
     matchQuery: agentType,
@@ -4228,6 +4243,7 @@ export async function* executePermissionRequestHooks<ToolInput>(
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>,
   toolInputSummary?: string | null,
+  sourceScope?: HookSourceScope,
 ): AsyncGenerator<AggregatedHookResult> {
   logForDebugging(`executePermissionRequestHooks called for tool: ${toolName}`)
 
@@ -4240,6 +4256,7 @@ export async function* executePermissionRequestHooks<ToolInput>(
   }
 
   yield* executeHooks({
+    sourceScope,
     hookInput,
     toolUseID,
     matchQuery: toolName,
