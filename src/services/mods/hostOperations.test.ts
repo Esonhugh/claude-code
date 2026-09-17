@@ -1,0 +1,839 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
+import { lock } from '../../utils/lockfile.js'
+import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createModHostOperations } from './hostOperations.js'
+import { getSettingsForSource } from '../../utils/settings/settings.js'
+import { acceptSettingsFile, releaseSettingsFile, resetSettingsCache, retainSettingsFile, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
+import { clearMdmSettingsCache, setMdmSettingsCache } from '../../utils/settings/mdm/settings.js'
+import { resetSyncCache, setEligibility, setSessionCache } from '../remoteManagedSettings/syncCacheState.js'
+
+const LIMIT = 4 * 1024 * 1024
+let root: string
+let cwd: string
+let controller: AbortController
+let host: ReturnType<typeof createModHostOperations>
+const envKeys = [
+  'HOME',
+  'USERPROFILE',
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CODE_PLUGIN_CACHE_DIR',
+  'CLAUDE_CODE_MANAGED_SETTINGS_PATH',
+  'CLAUDE_CODE_USE_COWORK_PLUGINS',
+]
+let savedEnv: (string | undefined)[]
+
+beforeEach(async () => {
+  root = await realpath(await mkdtemp(join(tmpdir(), 'mod-host-operations-')))
+  cwd = join(root, 'work')
+  await mkdir(cwd)
+  savedEnv = envKeys.map((key) => process.env[key])
+  process.env.HOME = root
+  process.env.USERPROFILE = root
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = join(root, 'config', 'plugins')
+  process.env.CLAUDE_CODE_MANAGED_SETTINGS_PATH = join(root, 'managed')
+  delete process.env.CLAUDE_CODE_USE_COWORK_PLUGINS
+  resetSettingsCache()
+  clearMdmSettingsCache()
+  resetSyncCache()
+  controller = new AbortController()
+  host = createModHostOperations({
+    cwd: () => cwd,
+    storageId: 'example@market',
+    signal: controller.signal,
+  })
+})
+
+afterEach(async () => {
+  controller.abort()
+  resetSettingsCache()
+  clearMdmSettingsCache()
+  resetSyncCache()
+  envKeys.forEach((key, index) => {
+    if (savedEnv[index] === undefined) delete process.env[key]
+    else process.env[key] = savedEnv[index]
+  })
+  await rm(root, { recursive: true, force: true })
+})
+
+async function storedFile(): Promise<string> {
+  const dir = getPluginDataDir('example@market')
+  const files = (await readdir(dir)).filter((name) => name.endsWith('.json'))
+  expect(files).toHaveLength(1)
+  return join(dir, files[0])
+}
+
+async function waitFor(check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 4000
+  while (!(await check())) {
+    if (Date.now() >= deadline) throw new Error('Condition did not become true')
+    await delay(10)
+  }
+}
+
+function runWorker(script: string): Promise<void> {
+  const child = spawn(process.execPath, ['-e', script], {
+    cwd: import.meta.dir,
+    env: process.env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+  return new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`Worker exited ${code}: ${stderr}`)),
+    )
+  })
+}
+
+const workerModule = new URL('./hostOperations.ts', import.meta.url).href
+
+describe('settings.read', () => {
+  test('maps every public source to accepted host data and clones the merged snapshot without filtering keys', async () => {
+    const sources = ['user', 'project', 'local', 'flag', 'policy'] as const
+    for (const source of sources) {
+      const settings = { model: source, env: { FIXTURE: source }, apiKeyHelper: 'fixture-helper', hooks: {}, unknownFixtureKey: { source } }
+      setCachedSettingsForSource(`${source}Settings`, settings)
+      expect(await host.settings.read({ source })).toEqual(settings)
+    }
+    const merged = { model:'policy', permissions:{allow:['Read']}, env:{FIXTURE:'merged'} }
+    setSessionSettingsCache({ settings:merged, errors:[] })
+    const snapshot = await host.settings.read()
+    expect(snapshot).toEqual(merged)
+    ;(snapshot.permissions as {allow:string[]}).allow.push('Bash')
+    expect(await host.settings.read({})).toEqual(merged)
+    expect(await host.settings.read({source:undefined})).toEqual(merged)
+    setCachedSettingsForSource('policySettings', { model:'updated' })
+    expect(await host.settings.read({source:'policy'})).toEqual({model:'updated'})
+  })
+
+  test('returns an empty object for a missing source and rejects invalid arguments or revoked lifetime', async () => {
+    setCachedSettingsForSource('policySettings', null)
+    expect(await host.settings.read({source:'policy'})).toEqual({})
+    for (const args of [null, [], '', 1, {source:null}, {source:1}, {source:'merged'}, {source:'policySettings'}, {source:'__proto__'}]) {
+      await expect(host.settings.read(args as never)).rejects.toThrow(TypeError)
+    }
+    controller.abort()
+    await expect(host.settings.read({source:'policy'})).rejects.toMatchObject({name:'AbortError'})
+  })
+
+  test('loads real settings files but retains pending disk changes until the host accepts them', async () => {
+    const path = join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json')
+    await mkdir(process.env.CLAUDE_CONFIG_DIR!, {recursive:true})
+    await writeFile(path, JSON.stringify({model:'accepted-fixture',env:{FIXTURE:'accepted'}}))
+    expect(getSettingsForSource('userSettings')?.model).toBe('accepted-fixture')
+    retainSettingsFile(path)
+    try {
+      await writeFile(path, JSON.stringify({model:'pending-fixture',env:{FIXTURE:'pending'}}))
+      resetSettingsCache()
+      expect(await host.settings.read({source:'user'})).toEqual({model:'accepted-fixture',env:{FIXTURE:'accepted'}})
+      expect(JSON.parse(await readFile(path,'utf8')).model).toBe('pending-fixture')
+      acceptSettingsFile(path, {settings:{model:'pending-fixture',env:{FIXTURE:'pending'}},errors:[],identity:null})
+      expect(await host.settings.read({source:'user'})).toEqual({model:'pending-fixture',env:{FIXTURE:'pending'}})
+      expect(await readFile(path,'utf8')).toBe(JSON.stringify({model:'pending-fixture',env:{FIXTURE:'pending'}}))
+    } finally { releaseSettingsFile(path) }
+  })
+
+  test('composes accepted managed tiers when the highest source opts into merge', async () => {
+    setEligibility(true)
+    setSessionCache({
+      managedSourcesBehavior: 'merge',
+      model: 'remote-model',
+      env: { REMOTE: '1' },
+      permissions: { allow: ['Remote'] },
+    })
+    setMdmSettingsCache(
+      {
+        settings: {
+          model: 'mdm-model',
+          env: { MDM: '1' },
+          permissions: { allow: ['Mdm'] },
+        },
+        errors: [],
+      },
+      { settings: {}, errors: [] },
+    )
+    resetSettingsCache()
+
+    expect(await host.settings.read({ source: 'policy' })).toEqual({
+      model: 'remote-model',
+      env: { REMOTE: '1', MDM: '1' },
+      permissions: { allow: ['Mdm', 'Remote'] },
+    })
+  })
+
+  test('keeps lower managed tiers shadowed when merge is not enabled', async () => {
+    setEligibility(true)
+    setSessionCache({ model: 'remote-model' })
+    setMdmSettingsCache(
+      { settings: { model: 'mdm-model' }, errors: [] },
+      { settings: {}, errors: [] },
+    )
+    resetSettingsCache()
+
+    expect(await host.settings.read({ source: 'policy' })).toEqual({
+      model: 'remote-model',
+    })
+  })
+})
+
+describe('store', () => {
+  test('requires nonempty keys of at most 256 UTF-16 code units without changing existing data', async () => {
+    await host.store.set('original', 1)
+    const path = await storedFile()
+    const original = await readFile(path, 'utf8')
+    for (const key of ['', 'a'.repeat(257), '\u{1D11E}'.repeat(128) + 'a']) {
+      await expect(host.store.get(key)).rejects.toThrow()
+      await expect(host.store.set(key, 'invalid')).rejects.toThrow()
+      await expect(host.store.delete(key)).rejects.toThrow()
+      expect(await readFile(path, 'utf8')).toBe(original)
+    }
+    for (const key of ['a'.repeat(256), '\u{1D11E}'.repeat(128), 'nul\0key']) {
+      await host.store.set(key, 'valid')
+      expect(await host.store.get(key)).toBe('valid')
+      await host.store.delete(key)
+      expect(await host.store.get(key)).toBeUndefined()
+    }
+    expect(await host.store.keys()).toEqual(['original'])
+  })
+
+  test('cross-process permission failure rejects without overwriting the old store and recovers', async () => {
+    await host.store.set('original', 1)
+    const path = await storedFile()
+    const original = await readFile(path, 'utf8')
+    await chmod(getPluginDataDir('example@market'), 0o500)
+    try {
+      await runWorker(`
+        import {createModHostOperations} from ${JSON.stringify(workerModule)};
+        const h=createModHostOperations({cwd:()=>${JSON.stringify(cwd)},storageId:'example@market',signal:new AbortController().signal});
+        try{await h.store.set('failed',2);process.exitCode=2}catch(e){if(e.code!=='EACCES'&&e.code!=='EPERM')throw e}
+      `)
+      expect(await readFile(path, 'utf8')).toBe(original)
+    } finally {
+      await chmod(getPluginDataDir('example@market'), 0o700)
+    }
+    await host.store.set('recovered', 3)
+    expect(await host.store.keys()).toEqual(['original', 'recovered'])
+  }, 10000)
+
+  test('actual atomic replacement failure rejects, releases the lock and removes its temp file', async () => {
+    await host.store.set('original', 1)
+    const path = await storedFile()
+    const backup = path + '.backup'
+    const signalPath = join(root, 'rename-reached')
+    const resumePath = join(root, 'continue-rename')
+    const script = `
+      import {createModHostOperations} from ${JSON.stringify(workerModule)};
+      import {getFsImplementation} from ${JSON.stringify(new URL('../../utils/fsOperations.ts', import.meta.url).href)};
+      import {access,writeFile} from 'node:fs/promises';
+      const fs=getFsImplementation(); const mkdir=fs.mkdir.bind(fs);
+      fs.mkdir=async (...args)=>{await mkdir(...args);await writeFile(${JSON.stringify(signalPath)},'ready');while(true){try{await access(${JSON.stringify(resumePath)});break}catch{await Bun.sleep(10)}}};
+      const h=createModHostOperations({cwd:()=>${JSON.stringify(cwd)},storageId:'example@market',signal:new AbortController().signal});
+      try{await h.store.set('failed',2);process.exitCode=2}catch(e){if(!['EISDIR','ENOTDIR','EEXIST','EPERM'].includes(e.code))throw e}
+    `
+    const worker = runWorker(script)
+    const outcome = worker.then(
+      () => undefined,
+      (error) => error,
+    )
+    try {
+      await waitFor(async () => {
+        try {
+          await stat(signalPath)
+          return true
+        } catch {
+          return false
+        }
+      })
+      await rename(path, backup)
+      await mkdir(path)
+      await writeFile(resumePath, 'go')
+      const error = await outcome
+      if (error) throw error
+      expect(
+        (await readdir(getPluginDataDir('example@market'))).filter(
+          (name) => name.includes('.tmp.') || name.endsWith('.lock'),
+        ),
+      ).toEqual([])
+    } finally {
+      await writeFile(resumePath, 'go')
+      await outcome
+      if (await host.fs.exists(backup)) {
+        await rm(path, { recursive: true, force: true })
+        await rename(backup, path)
+      }
+    }
+    expect(await host.store.keys()).toEqual(['original'])
+    await host.store.set('recovered', 3)
+    expect(await host.store.get('recovered')).toBe(3)
+  }, 10000)
+
+  test('normalizes JSON values without retaining shared references', async () => {
+    const value = {
+      date: new Date('2026-01-01T00:00:00Z'),
+      undef: undefined,
+      array: [undefined],
+      map: new Map(),
+      set: new Set(),
+      nested: { n: 1 },
+    }
+    await host.store.set('json', value)
+    value.nested.n = 2
+    const stored = await host.store.get('json')
+    expect(stored).toEqual({
+      date: '2026-01-01T00:00:00.000Z',
+      array: [null],
+      map: {},
+      set: {},
+      nested: { n: 1 },
+    })
+    ;(stored as typeof value).nested.n = 3
+    expect(((await host.store.get('json')) as typeof value).nested.n).toBe(1)
+    await expect(host.store.get(1 as never)).rejects.toThrow(TypeError)
+    await expect(host.store.set(1 as never, 1)).rejects.toThrow(TypeError)
+    await expect(host.store.delete(1 as never)).rejects.toThrow(TypeError)
+  })
+
+  test('isolates full canonical identities even when directory sanitizers collide', async () => {
+    const a = 'example@market'
+    const b = 'example/market'
+    const other = createModHostOperations({
+      cwd: () => cwd,
+      storageId: b,
+      signal: controller.signal,
+    })
+    await host.store.set('same', 'first')
+    await other.store.set('same', 'second')
+    expect(getPluginDataDir(a)).toBe(getPluginDataDir(b))
+    expect(await host.store.get('same')).toBe('first')
+    expect(await other.store.get('same')).toBe('second')
+    const names = await readdir(getPluginDataDir(a))
+    for (const id of [a, b])
+      expect(
+        names.some((name) =>
+          name.includes(createHash('sha256').update(id).digest('hex')),
+        ),
+      ).toBe(true)
+  })
+
+  test('enforces the official total JSON character limit including keys, not UTF-8 bytes or local file encoding', async () => {
+    const overhead = JSON.stringify({big: ''}).length
+    for (const character of ['a', 'é', '界', '\u{1D11E}']) {
+      const value = character.repeat(Math.floor((LIMIT - overhead) / character.length)) +
+        'a'.repeat((LIMIT - overhead) % character.length)
+      expect(JSON.stringify({big: value}).length).toBe(LIMIT)
+      await host.store.set('big', value)
+      expect(await host.store.get('big')).toBe(value)
+      await expect(host.store.set('another', 1)).rejects.toThrow('4194304 characters')
+      await expect(host.store.set('big', value + 'a')).rejects.toThrow('4194304 characters')
+      expect(await host.store.get('big')).toBe(value)
+      expect(await host.store.keys()).toEqual(['big'])
+    }
+    await host.store.delete('big')
+    await host.store.set('recovered', true)
+    expect(await host.store.get('recovered')).toBe(true)
+  })
+
+  test('rejects corrupt, duplicate, malformed and oversized stores without replacing them', async () => {
+    await host.store.set('key', 1)
+    const path = await storedFile()
+    for (const text of [
+      '{broken',
+      '{}',
+      '[["a",1],["a",2]]',
+      '[[1,2]]',
+      '[["a"]]',
+      ' '.repeat(LIMIT + 1),
+    ]) {
+      await writeFile(path, text)
+      await expect(host.store.get('key')).rejects.toThrow()
+      await expect(host.store.keys()).rejects.toThrow()
+      await expect(host.store.set('key', 2)).rejects.toThrow()
+      await expect(host.store.delete('key')).rejects.toThrow()
+      expect(await readFile(path, 'utf8')).toBe(text)
+    }
+  })
+
+  test('deleting an absent key does not replace the existing store file', async () => {
+    await host.store.set('original', 1)
+    const path = await storedFile()
+    const before = await stat(path)
+    await host.store.delete('absent')
+    const after = await stat(path)
+    expect({ino:after.ino,mtimeMs:after.mtimeMs}).toEqual({ino:before.ino,mtimeMs:before.mtimeMs})
+    expect(await host.store.get('original')).toBe(1)
+  })
+
+  test('concurrent callers and independent processes do not lose updates', async () => {
+    await Promise.all(
+      Array.from({ length: 16 }, (_, i) => host.store.set(`local-${i}`, i)),
+    )
+    await Promise.all(
+      Array.from({ length: 4 }, (_, worker) =>
+        runWorker(`
+      import {createModHostOperations} from ${JSON.stringify(workerModule)};
+      const h = createModHostOperations({cwd:()=>${JSON.stringify(cwd)}, storageId:'example@market', signal:new AbortController().signal});
+      for(let i=0;i<12;i++) await h.store.set('worker-${worker}-'+i,i);
+    `),
+      ),
+    )
+    const keys = await host.store.keys()
+    expect(keys).toHaveLength(64)
+    for (let worker = 0; worker < 4; worker++)
+      for (let i = 0; i < 12; i++)
+        expect(await host.store.get(`worker-${worker}-${i}`)).toBe(i)
+  }, 15000)
+
+  test('lock wait is abortable and failed writes do not leak the lock', async () => {
+    await host.store.set('original', 1)
+    const path = await storedFile()
+    const release = await lock(path, { realpath: false })
+    try {
+      const pending = host.store.set('cancelled', 2)
+      const timer = setTimeout(() => controller.abort(), 30)
+      try {
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+      } finally {
+        clearTimeout(timer)
+      }
+    } finally {
+      await release()
+    }
+    const again = createModHostOperations({
+      cwd: () => cwd,
+      storageId: 'example@market',
+      signal: new AbortController().signal,
+    })
+    expect(await again.store.keys()).toEqual(['original'])
+    await rm(path)
+    await mkdir(path)
+    await expect(again.store.set('failed', 1)).rejects.toThrow()
+    await rm(path, { recursive: true })
+    await again.store.set('restored', 3)
+    expect(await again.store.get('restored')).toBe(3)
+    expect(
+      (await readdir(getPluginDataDir('example@market'))).filter(
+        (name) => name.includes('.tmp.') || name.endsWith('.lock'),
+      ),
+    ).toEqual([])
+  })
+
+  test('cross-process cancellation waiting for another process lock leaves no mutation', async () => {
+    await host.store.set('original', 1)
+    const path = await storedFile()
+    const release = await lock(path, { realpath: false })
+    try {
+      await runWorker(`
+        import {createModHostOperations} from ${JSON.stringify(workerModule)};
+        const c=new AbortController(); const h=createModHostOperations({cwd:()=>${JSON.stringify(cwd)},storageId:'example@market',signal:c.signal});
+        const pending=h.store.set('cancelled',2); setTimeout(()=>c.abort(),50);
+        try{await pending;process.exitCode=2}catch(e){if(e.name!=='AbortError')throw e}
+      `)
+    } finally {
+      await release()
+    }
+    expect(await host.store.keys()).toEqual(['original'])
+  }, 10000)
+
+  test('uses JSON omission for nested functions and rejects non-JSON root values without mutation', async () => {
+    await host.store.set('nested', { missing: () => 1, array: [() => 1], kept: true })
+    expect(await host.store.get('nested')).toEqual({ array: [null], kept: true })
+    await host.store.set('value', 'original')
+    const cycle: Record<string, unknown> = {}
+    cycle.self = cycle
+    for (const value of [
+      () => 1,
+      cycle,
+      undefined,
+      1n,
+    ]) {
+      await expect(host.store.set('value', value)).rejects.toThrow()
+      expect(await host.store.get('value')).toBe('original')
+    }
+  })
+
+  test('persists JSON across instances and uses Object.keys ordering without prototype key collisions', async () => {
+    expect(await host.store.get('missing')).toBeUndefined()
+    expect(await host.store.keys()).toEqual([])
+    for (const key of ['10', '2', '__proto__', 'constructor'])
+      await host.store.set(key, { key })
+    await host.store.set('10', 'updated')
+    const again = createModHostOperations({
+      cwd: () => root,
+      storageId: 'example@market',
+      signal: controller.signal,
+    })
+    expect(await again.store.keys()).toEqual([
+      '2',
+      '10',
+      '__proto__',
+      'constructor',
+    ])
+    expect(await again.store.get('__proto__')).toEqual({ key: '__proto__' })
+    expect(await again.store.get('10')).toBe('updated')
+    await again.store.delete('2')
+    await again.store.delete('absent')
+    await again.store.set('2', 2)
+    expect(await host.store.keys()).toEqual([
+      '2',
+      '10',
+      '__proto__',
+      'constructor',
+    ])
+  })
+})
+
+describe('process.run', () => {
+  test('rejects null timeout instead of treating it as the default', async () => {
+    await expect(
+      host.process.run([process.execPath, '-e', ''], {
+        timeoutMs: null as never,
+      }),
+    ).rejects.toThrow()
+  })
+
+  test('does not exceed the output byte cap when truncating a multibyte character', async () => {
+    const result = await host.process.run([
+      process.execPath,
+      '-e',
+      `import {writeSync} from 'node:fs'; writeSync(1,'a'.repeat(${LIMIT - 1})+'é'); writeSync(2,'b'.repeat(${LIMIT - 1})+'é')`,
+    ])
+    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(LIMIT)
+    expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(LIMIT)
+    expect(result.stdout.endsWith('�')).toBe(false)
+  })
+
+  test('Git invocations disable repository hooks', async () => {
+    const result = await host.process.run([
+      'git',
+      'config',
+      '--get',
+      'core.hooksPath',
+    ])
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trim()).toBe(
+      process.platform === 'win32' ? '\\\\.\\NUL' : '/dev/null',
+    )
+  })
+
+  for (const mode of ['abort', 'timeout'] as const) {
+    for (const parentExits of [false, true]) {
+      test(`${mode} kills descendants even if parent ${parentExits ? 'has exited while pipes remain open' : 'is alive'}`, async () => {
+        const ready = join(root, 'ready.json')
+        const descendant = `import {writeFileSync} from 'node:fs'; process.on('SIGTERM',()=>{}); writeFileSync(${JSON.stringify(ready)},JSON.stringify({pid:process.pid})); setTimeout(()=>{},10000)`
+        const parent = `import {spawn} from 'node:child_process'; const c=spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}); console.log(process.pid); ${parentExits ? 'setTimeout(()=>process.exit(0),100)' : "process.on('SIGTERM',()=>{});setTimeout(()=>{},10000)"}`
+        const pending = host.process.run([process.execPath, '-e', parent], {
+          timeoutMs: mode === 'timeout' ? 750 : 5000,
+        })
+        const settled = pending.then(
+          (value) => ({ value, error: undefined }),
+          (error) => ({ value: undefined, error }),
+        )
+        let pid: number | undefined
+        try {
+          await waitFor(async () => {
+            try {
+              pid = JSON.parse(await readFile(ready, 'utf8')).pid
+              return true
+            } catch {
+              return false
+            }
+          })
+          if (parentExits) await delay(200)
+          if (mode === 'abort') controller.abort()
+          const result = await settled
+          expect(result.error).toMatchObject({
+            name: mode === 'abort' ? 'AbortError' : 'TimeoutError',
+          })
+          expect(result.value).toBeUndefined()
+          await waitFor(async () => {
+            try {
+              process.kill(pid!, 0)
+              return false
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code === 'ESRCH'
+            }
+          })
+        } finally {
+          controller.abort()
+          await settled
+          if (pid) {
+            try {
+              process.kill(pid, 'SIGKILL')
+            } catch {
+              // The process already exited.
+            }
+          }
+        }
+      }, 10000)
+    }
+  }
+
+  test('signal death returns 1; closed stdin does not hide the exit result', async () => {
+    const killed = await host.process.run([
+      process.execPath,
+      '-e',
+      'process.kill(process.pid,"SIGKILL")',
+    ])
+    expect(killed.exitCode).toBe(1)
+    const result = await host.process.run(
+      [process.execPath, '-e', 'process.exit(3)'],
+      { stdin: 'x'.repeat(LIMIT * 2) },
+    )
+    expect(result.exitCode).toBe(3)
+  })
+
+  test('validates init and timeout before launching', async () => {
+    const argv = [process.execPath, '-e', '']
+    for (const init of [
+      null,
+      [],
+      1,
+      { cwd: 1 },
+      { cwd: '' },
+      { cwd: 'a\0b' },
+      { env: [] },
+      { env: { A: 1 } },
+      { env: { 'A=B': 'x' } },
+      { env: { A: 'x\0y' } },
+      { stdin: 1 },
+      { timeoutMs: 0 },
+      { timeoutMs: -1 },
+      { timeoutMs: 600001 },
+      { timeoutMs: 1000.5 },
+      { timeoutMs: NaN },
+      { timeoutMs: Infinity },
+    ]) {
+      await expect(host.process.run(argv, init as never)).rejects.toThrow()
+    }
+    for (const invalid of [
+      [],
+      '',
+      [1],
+      [''],
+      [process.execPath, null],
+      [process.execPath, 'a\0b'],
+    ]) {
+      await expect(host.process.run(invalid as never)).rejects.toThrow()
+    }
+    expect((await host.process.run(argv, { timeoutMs: 600000 })).exitCode).toBe(
+      0,
+    )
+  })
+
+  test('spawn failure preserves errno and pre-abort starts no process', async () => {
+    await expect(
+      host.process.run([join(root, 'not-an-executable')]),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      host.process.run([process.execPath, '-e', ''], { cwd: 'missing' }),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    controller.abort()
+    await expect(
+      host.process.run([
+        process.execPath,
+        '-e',
+        `require('fs').writeFileSync('started','yes')`,
+      ]),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await readdir(cwd)).toEqual([])
+  })
+
+  test('timeout rejects instead of converting termination into exitCode 1', async () => {
+    await expect(
+      host.process.run([process.execPath, '-e', 'setTimeout(() => {}, 250)'], {
+        timeoutMs: 20,
+      }),
+    ).rejects.toMatchObject({ name: 'TimeoutError' })
+  })
+
+  test('in-flight abort rejects distinctly', async () => {
+    const pending = host.process.run([
+      process.execPath,
+      '-e',
+      'setTimeout(() => {}, 250)',
+    ])
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  test('caps stdout and stderr independently while draining past the cap', async () => {
+    const script = `import {writeSync} from 'node:fs'; const b = Buffer.alloc(65536, 'x'); for(let i=0;i<80;i++){writeSync(1,b);writeSync(2,b)}; process.exitCode=9`
+    const result = await host.process.run([process.execPath, '-e', script])
+    expect(result.exitCode).toBe(9)
+    expect(Buffer.byteLength(result.stdout)).toBe(LIMIT)
+    expect(Buffer.byteLength(result.stderr)).toBe(LIMIT)
+  })
+
+  test('passes literal argv, cwd, env and stdin without a shell; returns nonzero output', async () => {
+    await mkdir(join(cwd, 'child'))
+    const script = `const input = await Bun.stdin.text(); console.log(JSON.stringify({args:process.argv.slice(1), cwd:process.cwd(), env:process.env.MOD_TEST, input})); console.error('failure'); process.exitCode = 7`
+    const args = ['$(touch injected)', '; echo not-a-shell', 'a b']
+    const result = await host.process.run(
+      [process.execPath, '-e', script, ...args],
+      {
+        cwd: 'child',
+        env: { MOD_TEST: 'value' },
+        stdin: '你好\n',
+      },
+    )
+    expect(result.exitCode).toBe(7)
+    expect(result.stderr).toBe('failure\n')
+    expect(JSON.parse(result.stdout)).toEqual({
+      args,
+      cwd: join(cwd, 'child'),
+      env: 'value',
+      input: '你好\n',
+    })
+    expect(await host.fs.exists('child/injected')).toBe(false)
+  })
+})
+
+describe('fs', () => {
+  test.skipIf(process.platform === 'win32')('reads an unwritten FIFO without waiting for a writer', async () => {
+    const path = join(cwd, 'empty-fifo')
+    const fifo = Bun.spawn(['mkfifo', path], { stdout: 'pipe', stderr: 'pipe' })
+    expect(await fifo.exited).toBe(0)
+    const child = Bun.spawn([process.execPath, '-e', `
+      import {createModHostOperations} from ${JSON.stringify(workerModule)};
+      const host = createModHostOperations({cwd:()=>${JSON.stringify(cwd)}, storageId:'fifo@test', signal:new AbortController().signal});
+      const text = await host.fs.read('empty-fifo');
+      if (text !== '') throw new Error('Expected empty FIFO content');
+    `], { stdout: 'pipe', stderr: 'pipe', timeout: 3000 })
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
+    expect({ code, stderr }).toEqual({ code: 0, stderr: '' })
+  }, 10000)
+
+  test('validates exists input and respects revoked lifetime before observing the filesystem', async () => {
+    for (const path of [null, '']) {
+      await expect(host.fs.exists(path as unknown as string)).rejects.toThrow(TypeError)
+    }
+    expect(await host.fs.exists('bad\0path')).toBe(false)
+    for (const operation of [host.fs.read, host.fs.list, host.fs.stat]) {
+      await expect(operation('')).rejects.toThrow(TypeError)
+    }
+    controller.abort()
+    await expect(host.fs.exists('missing')).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  test('cancels only the filesystem invocation without revoking its activation', async () => {
+    const aborted = AbortSignal.abort()
+    for (const operation of [
+      () => host.fs.read('file', aborted),
+      () => host.fs.list('.', aborted),
+      () => host.fs.stat('file', aborted),
+      () => host.fs.exists('file', aborted),
+      () => host.fs.write('file', 'cancelled', aborted),
+    ]) {
+      await expect(operation()).rejects.toMatchObject({ name: 'AbortError' })
+    }
+    expect(controller.signal.aborted).toBe(false)
+    expect(await host.fs.exists('file')).toBe(false)
+    await host.fs.write('file', 'active')
+    expect(await host.fs.read('file')).toBe('active')
+  })
+
+  test('preserves missing errno and exists maps filesystem errors to false', async () => {
+    for (const operation of [host.fs.read, host.fs.stat, host.fs.list]) {
+      await expect(operation('missing')).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    }
+    await host.fs.write('file', 'x')
+    await expect(host.fs.write('file/child', 'x')).rejects.toMatchObject({
+      code: 'EEXIST',
+    })
+  })
+
+  test('allows absolute paths and limits write bytes before changing files', async () => {
+    const target = join(root, 'absolute')
+    const text = 'é'.repeat(LIMIT / 2)
+    await host.fs.write(target, text)
+    expect(await host.fs.read(target)).toBe(text)
+    await expect(host.fs.write(target, text + 'x')).rejects.toThrow('4 MiB')
+    expect(await readFile(target, 'utf8')).toBe(text)
+    await expect(
+      host.fs.write('not-created/large', text + 'x'),
+    ).rejects.toThrow('4 MiB')
+    expect(await host.fs.exists('not-created')).toBe(false)
+    await expect(host.fs.write('bad', 3 as unknown as string)).rejects.toThrow(
+      TypeError,
+    )
+  })
+
+  test('lists symlinks as other, follows them for stat, and keeps directory stat size', async () => {
+    await host.fs.write('file', 'abc')
+    await symlink(join(cwd, 'file'), join(cwd, 'link'))
+    await symlink(join(cwd, 'missing'), join(cwd, 'broken'))
+    expect(await host.fs.list()).toEqual([
+      { name: 'broken', kind: 'other', size: 0 },
+      { name: 'file', kind: 'file', size: 3 },
+      { name: 'link', kind: 'other', size: 0 },
+    ])
+    expect((await host.fs.stat('link')).size).toBe(3)
+    expect(await host.fs.exists('broken')).toBe(false)
+    expect(await host.fs.stat('.')).toEqual({
+      kind: 'dir',
+      size: (await stat(cwd)).size,
+      mtimeMs: (await stat(cwd)).mtimeMs,
+    })
+  })
+
+  test('writes with parent creation and lists sorted file metadata', async () => {
+    await host.fs.write('nested/z', 'é')
+    await host.fs.write('nested/a', 'hello')
+    await mkdir(join(cwd, 'nested', 'dir'))
+    expect(await host.fs.list('nested')).toEqual([
+      { name: 'a', kind: 'file', size: 5 },
+      { name: 'dir', kind: 'dir', size: 0 },
+      { name: 'z', kind: 'file', size: 2 },
+    ])
+    expect(await host.fs.stat('nested/z')).toEqual({
+      kind: 'file',
+      size: 2,
+      mtimeMs: (await stat(join(cwd, 'nested/z'))).mtimeMs,
+    })
+    expect(await host.fs.exists('nested/z')).toBe(true)
+    expect(await host.fs.exists('absent')).toBe(false)
+    expect(await host.fs.list()).toEqual([
+      { name: 'nested', kind: 'dir', size: 0 },
+    ])
+  })
+
+  test('reads UTF-8 relative to the current session cwd', async () => {
+    await writeFile(join(cwd, 'text'), '你好\n')
+    expect(await host.fs.read('text')).toBe('你好\n')
+    cwd = root
+    expect(await host.fs.read('work/text')).toBe('你好\n')
+  })
+
+  test('rejects UTF-8 reads over 4 MiB but accepts exactly the byte limit', async () => {
+    await writeFile(join(cwd, 'large'), 'é'.repeat(LIMIT / 2))
+    expect(Buffer.byteLength(await host.fs.read('large'))).toBe(LIMIT)
+    await writeFile(join(cwd, 'large'), 'é'.repeat(LIMIT / 2) + 'x')
+    await expect(host.fs.read('large')).rejects.toThrow('4 MiB')
+  })
+})
