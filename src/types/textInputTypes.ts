@@ -9,6 +9,7 @@ import type { TextHighlight } from '../utils/textHighlighting.js'
 import type { AgentId } from './ids.js'
 import type { AssistantMessage, MessageOrigin } from './message.js'
 import type { PromptSubmitMetadata } from '../services/mods/promptAdapter.js'
+import type { ProcessUserInputBaseResult } from '../utils/processUserInput/processUserInput.js'
 
 /**
  * Inline ghost text for mid-input command autocomplete
@@ -342,6 +343,10 @@ export type QueuedCommand = {
    */
   origin?: MessageOrigin
   promptSubmitMetadata?: PromptSubmitMetadata
+  /** Already admitted at ingress; dequeue must not execute submission hooks again. */
+  admitted?: Omit<ProcessUserInputBaseResult, 'shouldQuery'> & {
+    shouldQuery?: boolean
+  }
   /**
    * Workload tag threaded through to cc_workload= in the billing-header
    * attribution block. The queue is the async boundary between the cron

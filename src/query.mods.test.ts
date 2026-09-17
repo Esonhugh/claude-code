@@ -187,12 +187,97 @@ describe('public query turn lifecycle', () => {
     h.snapshot.hasHooks = event => event === 'turn.start'
     h.params.publicTurn = { text: 'hello' }
 
-    const running = drain(query(h.params))
-    await entered.promise
-    expect(h.context.mods?.activePublicTurnId).toBe(h.calls[0]!.input.turnId)
-    release.resolve()
-    await running
     expect(h.context.mods?.activePublicTurnId).toBeUndefined()
+    const running = drain(query(h.params))
+    try {
+      await entered.promise
+      expect(h.context.mods?.activePublicTurnId).toBe(h.calls[0]!.input.turnId)
+    } finally {
+      release.resolve()
+      await running
+    }
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
+  })
+
+  test('keeps the public turn visible while start and completion hooks are pending', async () => {
+    const startEntered = Promise.withResolvers<void>()
+    const startRelease = Promise.withResolvers<void>()
+    const completeEntered = Promise.withResolvers<void>()
+    const completeRelease = Promise.withResolvers<void>()
+    const h = harness(async function* () { yield response('one', 'answer') })
+    h.snapshot.hasHooks = event => event === 'turn.start' || event === 'turn.complete'
+    h.params.publicTurn = { text: 'hello' }
+    const dispatch = h.snapshot.dispatch
+    const ids: string[] = []
+    h.snapshot.dispatch = async (event, input, core, options) => {
+      ids.push(input.turnId as string)
+      if (event === 'turn.start') {
+        startEntered.resolve()
+        await startRelease.promise
+      } else {
+        completeEntered.resolve()
+        await completeRelease.promise
+      }
+      return dispatch(event, input, core, options)
+    }
+    const running = drain(query(h.params))
+    try {
+      await startEntered.promise
+      expect(h.context.mods?.activePublicTurnId).toBe(ids[0])
+      startRelease.resolve()
+      await completeEntered.promise
+      expect(ids[1]).toBe(ids[0])
+      expect(h.context.mods?.activePublicTurnId).toBe(ids[1])
+    } finally {
+      startRelease.resolve()
+      completeRelease.resolve()
+      await running
+    }
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
+  })
+
+  test('real runtime tracks public turns without any lifecycle hooks', async () => {
+    const runtime = createModsRuntime()
+    const h = harness(async function* () { yield response('one', 'answer') })
+    h.context.mods = runtime
+    h.params.publicTurn = { text: 'hello' }
+    const iterator = query(h.params)
+    try {
+      expect(runtime.activePublicTurnId).toBeUndefined()
+      expect((await iterator.next()).done).toBe(false)
+      expect(runtime.activePublicTurnId).toEqual(expect.any(String))
+      await drain(iterator)
+      expect(runtime.activePublicTurnId).toBeUndefined()
+    } finally {
+      await iterator.return({ reason: 'consumer-return' })
+      await runtime.dispose()
+    }
+  })
+
+  test('closing an older query does not clear a newer public turn on the same runtime', async () => {
+    const runtime = createModsRuntime()
+    const h = harness(async function* () { yield response('one', 'answer') })
+    h.context.mods = runtime
+    h.params.publicTurn = { text: 'hello' }
+    const older = query(h.params)
+    const newer = query(h.params)
+    try {
+      await older.next()
+      const olderId = runtime.activePublicTurnId
+      expect(olderId).toEqual(expect.any(String))
+      await newer.next()
+      const newerId = runtime.activePublicTurnId
+      expect(newerId).toEqual(expect.any(String))
+      expect(newerId).not.toBe(olderId)
+      await older.return({ reason: 'consumer-return' })
+      expect(runtime.activePublicTurnId).toBe(newerId)
+      await newer.return({ reason: 'consumer-return' })
+      expect(runtime.activePublicTurnId).toBeUndefined()
+    } finally {
+      await older.return({ reason: 'consumer-return' })
+      await newer.return({ reason: 'consumer-return' })
+      await runtime.dispose()
+    }
   })
 
   test('releases a start-only snapshot after the query', async () => {
@@ -212,9 +297,15 @@ describe('public query turn lifecycle', () => {
     h.snapshot.hasHooks = event => event === 'turn.start'
     h.params.publicTurn = { text: 'hello' }
     h.fail(error)
+    const dispatch = h.snapshot.dispatch
+    h.snapshot.dispatch = (event, input, core, options) => {
+      expect(h.context.mods?.activePublicTurnId).toBe(input.turnId as string)
+      return dispatch(event, input, core, options)
+    }
 
     await expect(drain(query(h.params))).rejects.toBe(error)
 
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
     expect(h.order).toEqual(['capture', 'dispatch', 'release'])
   })
 
@@ -317,12 +408,50 @@ describe('public query turn lifecycle', () => {
     expect(run.terminal).toEqual({ reason: 'completed' })
   })
 
+  test.each([false, true])('subagents never replace the public turn, even with publicTurn=%s', async publicTurn => {
+    const h = harness(async function* () { yield response('one', 'child answer') })
+    h.snapshot.hasHooks = event => event === 'turn.start' || event === 'turn.complete'
+    h.context.agentId = 'child-agent' as ToolUseContext['agentId']
+    if (publicTurn) h.params.publicTurn = { text: 'inherited prompt' }
+    const end = h.context.mods!.beginPublicTurn('parent-turn')
+    const iterator = query(h.params)
+    try {
+      await iterator.next()
+      expect(h.context.mods?.activePublicTurnId).toBe('parent-turn')
+      await drain(iterator)
+      expect(h.context.mods?.activePublicTurnId).toBe('parent-turn')
+      expect(h.calls.map(call => call.event)).toEqual(['turn.complete'])
+      expect(h.calls[0]!.input.turnId).not.toBe('parent-turn')
+    } finally {
+      await iterator.return({ reason: 'consumer-return' })
+      end()
+    }
+  })
+
+  test('queries without an explicit public turn do not replace an existing public turn', async () => {
+    const h = harness(async function* () { yield response('one', 'answer') })
+    const end = h.context.mods!.beginPublicTurn('parent-turn')
+    const iterator = query(h.params)
+    try {
+      await iterator.next()
+      expect(h.context.mods?.activePublicTurnId).toBe('parent-turn')
+      await drain(iterator)
+      expect(h.context.mods?.activePublicTurnId).toBe('parent-turn')
+    } finally {
+      await iterator.return({ reason: 'consumer-return' })
+      end()
+    }
+  })
+
   test('abort dispatches without the cancelled query signal and releases afterwards', async () => {
     const h = harness(async function* () {
+      expect(h.context.mods?.activePublicTurnId).toEqual(expect.any(String))
       yield response('one', 'partial')
       h.context.abortController.abort('interrupt')
     })
+    h.params.publicTurn = { text: 'hello' }
     await drain(query(h.params))
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0]?.input).toMatchObject({ reason: 'aborted', isAborted: true, answer: 'partial' })
     expect(h.calls[0]?.options.signal).toBeUndefined()
@@ -331,13 +460,16 @@ describe('public query turn lifecycle', () => {
 
   test('consumer return finalizes once without yielding a cleanup message', async () => {
     const h = harness(async function* () { yield response('one', 'unfinished') })
+    h.params.publicTurn = { text: 'hello' }
     h.rewrite(() => ({ text: 'must not keep iterator alive' }))
     const iterator = query(h.params)
     let step = await iterator.next()
     while (!step.done && step.value.type !== 'assistant') step = await iterator.next()
     expect(step.done).toBe(false)
+    expect(h.context.mods?.activePublicTurnId).toEqual(expect.any(String))
     expect(await iterator.return({ reason: 'consumer-return' })).toEqual({ done: true, value: { reason: 'consumer-return' } })
     await iterator.return({ reason: 'again' })
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0]?.input).toMatchObject({ reason: 'aborted', isAborted: true, answer: 'unfinished' })
     expect(h.order.at(-1)).toBe('release')
@@ -346,8 +478,13 @@ describe('public query turn lifecycle', () => {
   test('uncaught query failure still finalizes', async () => {
     const h = harness(async function* () {})
     const error = new Error('microcompact failed')
-    h.params.deps!.microcompact = async () => { throw error }
+    h.params.publicTurn = { text: 'hello' }
+    h.params.deps!.microcompact = async () => {
+      expect(h.context.mods?.activePublicTurnId).toEqual(expect.any(String))
+      throw error
+    }
     await expect(drain(query(h.params))).rejects.toBe(error)
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0]?.input).toMatchObject({ reason: 'error', isAborted: false, answer: '' })
     expect(h.order.at(-1)).toBe('release')
@@ -389,6 +526,42 @@ describe('public query turn lifecycle', () => {
     expect(h.calls[0]?.input).not.toHaveProperty('usage')
     expect(h.calls[0]?.input).not.toHaveProperty('refusal')
   })
+})
+
+test('mid-turn drain preserves admitted context and never injects a core-refused prompt', async () => {
+  const { enqueue, getCommandQueue, resetCommandQueue } = await import('./utils/messageQueueManager.js')
+  const { createUserMessage } = await import('./utils/messages.js')
+  const { createAttachmentMessage } = await import('./utils/attachments.js')
+  const admitted = [
+    createUserMessage({ content: '/rewritten-as-text' }),
+    createAttachmentMessage({ type: 'hook_additional_context', content: ['retained admission context'], hookName: 'prompt.submit', toolUseID: 'hook-admitted', hookEvent: 'UserPromptSubmit' }),
+  ]
+  const requests: any[] = []
+  const h = harness(async function* (request) {
+    requests.push(request)
+    if (requests.length === 1) {
+      enqueue({ value: 'raw input must not return', mode: 'prompt', admitted: {
+        messages: admitted, shouldQuery: true, admission: { text: '/rewritten-as-text' },
+      } })
+      enqueue({ value: 'refused prompt', mode: 'prompt', admitted: {
+        messages: [createUserMessage({ content: 'refused prompt' })], shouldQuery: false,
+        admission: { drop: 'stopped by core' },
+      } })
+      yield createAssistantMessage({ content: [{ type: 'tool_use', caller: { type: 'direct' }, id: 'fixture-call', name: 'UnavailableFixture', input: {} }] })
+    } else yield response('done', 'answer')
+  })
+  try {
+    const run = await drain(query(h.params))
+    expect(requests).toHaveLength(2)
+    expect(run.messages).toContainEqual(admitted[0])
+    expect(run.messages).toContainEqual(admitted[1])
+    expect(JSON.stringify(requests[1].messages)).toContain('retained admission context')
+    expect(JSON.stringify(requests[1].messages)).not.toContain('raw input must not return')
+    expect(JSON.stringify(requests[1].messages)).not.toContain('refused prompt')
+    expect(getCommandQueue().map(command => command.value)).toEqual(['refused prompt'])
+  } finally {
+    resetCommandQueue()
+  }
 })
 
 test('model request catalogs follow refreshed tools between query iterations', async () => {
@@ -611,6 +784,7 @@ for (const mode of ['none', 'no-hook', 'hook']) {
 for (const ending of ['return', 'throw', 'close']) {
   test(`finalizer failure is diagnostic without overriding ${ending}`, async () => {
     const h = harness(async function* () {})
+    h.params.publicTurn = { text: 'hello' }
     h.fail(new Error('dispatch failed'))
     const original = new Error('original failure')
     const diagnostics: any[] = []
@@ -620,9 +794,11 @@ for (const ending of ['return', 'throw', 'close']) {
       return { reason: 'completed' }
     }, diagnostics, [])(h.params)
     await run.next()
+    expect(h.context.mods?.activePublicTurnId).toEqual(expect.any(String))
     if (ending === 'throw') await expect(run.next()).rejects.toBe(original)
     else if (ending === 'close') expect(await run.return({ reason: 'consumer' })).toEqual({ done: true, value: { reason: 'consumer' } })
     else expect(await run.next()).toEqual({ done: true, value: { reason: 'completed' } })
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
     expect(diagnostics.some(value => String(value).includes('Mods turn.complete failed'))).toBe(true)
     expect(h.calls).toHaveLength(1)
     expect(h.order.at(-1)).toBe('release')

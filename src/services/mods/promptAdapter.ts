@@ -97,11 +97,13 @@ export async function runModPromptSubmit({
   input,
   core,
   signal,
+  admit,
 }: {
   snapshot: ModSnapshot
   input: PromptSubmitInput
   core: (input: PromptSubmitInput) => Promise<ProcessUserInputBaseResult>
   signal: AbortSignal
+  admit?: (result: ProcessUserInputBaseResult) => void
 }): Promise<{
   outcome: PromptSubmitResult
   submissions: ProcessUserInputBaseResult[]
@@ -194,7 +196,6 @@ export async function runModPromptSubmit({
         const index = pending.length
         const execution = (async () => {
           const result = await core(entered)
-          submissions[index] = result
           const receipt: PromptSubmitResult = result.shouldQuery
             ? {
                 text: entered.text,
@@ -208,7 +209,10 @@ export async function runModPromptSubmit({
                   result.resultText ??
                   'Prompt blocked by UserPromptSubmit hook',
               }
+          submissions[index] = { ...result, admission: structuredClone(receipt) }
           receipts.push(structuredClone(receipt))
+          // Commit before next resolves; its caller must not await a model turn.
+          admit?.(submissions[index]!)
           return receipt
         })()
         pending.push(execution)

@@ -251,10 +251,11 @@ export async function* query(
   const snapshot = catalogContext.mods?.capture({
     toolCatalog: () => createToolCatalogForContext(catalogContext),
   })
-  const handlesStart = params.publicTurn !== undefined && snapshot?.hasHooks('turn.start') === true
+  const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
+  const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
   const handlesComplete = snapshot?.hasHooks('turn.complete') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
-  if (!handlesStart && !handlesComplete && !handlesCatalog) {
+  if (!isPublicTurn && !handlesStart && !handlesComplete && !handlesCatalog) {
     snapshot?.release()
     const terminal = yield* queryLoop(params, consumedCommandUuids)
     // Only normal return completes commands; throw and iterator.return() do not.
@@ -274,8 +275,15 @@ export async function* query(
     modsSnapshot: snapshot,
   }
   params = { ...params, toolUseContext }
-  if (handlesStart) {
-    try {
+  let terminal: Terminal
+  let returned = false
+  let failed = false
+  let loopStarted = false
+  let additionalText: string | undefined
+  let endPublicTurn: (() => void) | undefined
+  try {
+    if (isPublicTurn) endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(turnId)
+    if (handlesStart) {
       await snapshot!.dispatch(
         'turn.start',
         { turnId, text: params.publicTurn!.text },
@@ -289,16 +297,8 @@ export async function* query(
           },
         },
       )
-    } catch (error) {
-      snapshot!.release()
-      throw error
     }
-  }
-  let terminal: Terminal
-  let returned = false
-  let failed = false
-  let additionalText: string | undefined
-  try {
+    loopStarted = true
     terminal = yield* queryLoop(params, consumedCommandUuids, completion?.observe,
       context => { catalogContext = context })
     returned = true
@@ -311,7 +311,7 @@ export async function* query(
   } finally {
     try {
       try {
-        if (completion) {
+        if (loopStarted && completion) {
           const { input, result } = await completion.complete(snapshot!, {
             durationMs: performance.now() - startedAt,
             aborted: params.toolUseContext.abortController.signal.aborted || (!returned && !failed),
@@ -322,12 +322,14 @@ export async function* query(
             result.text.trim() && result.text !== input.answer) additionalText = result.text
         }
       } finally {
-        snapshot!.release()
+        snapshot?.release()
       }
     } catch (error) {
       // Cleanup must never mask a query exception or its return completion.
       logForDebugging(`Mods turn.complete failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
       logError(new Error('Mods turn.complete failed', { cause: error }))
+    } finally {
+      endPublicTurn?.()
     }
   }
   // Never yield from finally: doing so would keep iterator.return() suspended.
@@ -1818,18 +1820,32 @@ async function* queryLoop(
     const queuedCommandsSnapshot = getCommandsByMaxPriority(
       sleepRan ? 'later' : 'next',
     ).filter((cmd) => {
-      if (isSlashCommand(cmd)) return false
+      if (cmd.admitted && (
+        cmd.admitted.shouldQuery === false || cmd.admitted.admission?.drop !== undefined
+      )) return false
+      if (!cmd.admitted && isSlashCommand(cmd)) return false
       if (isMainThread) return cmd.agentId === undefined
       // Subagents only drain task-notifications addressed to them — never
       // user prompts, even if someone stamps an agentId on one.
       return cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
     })
 
+    // Ingress already ran prompt hooks for admitted commands. Preserve their
+    // rewritten messages/context, including rewrites that start with a slash.
+    for (const cmd of queuedCommandsSnapshot) {
+      if (!cmd.admitted) continue
+      for (const message of cmd.admitted.messages) {
+        yield message
+        if (message.type === 'user' || message.type === 'attachment') {
+          toolResults.push(message)
+        }
+      }
+    }
     for await (const attachment of getAttachmentMessages(
       null,
       updatedToolUseContext,
       null,
-      queuedCommandsSnapshot,
+      queuedCommandsSnapshot.filter(cmd => !cmd.admitted),
       [...messagesForQuery, ...assistantMessages, ...toolResults],
       querySource,
     )) {

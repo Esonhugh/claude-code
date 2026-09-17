@@ -143,6 +143,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<string>>>() }
   let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
+  let publicTurn: { turnId: string } | undefined
   let stopped = false
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
@@ -1031,6 +1032,15 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     capture,
     commands,
     ui,
+    get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
+    beginPublicTurn(turnId: string): () => void {
+      if (stopped) throw new Error('Mods runtime disposed')
+      const turn = { turnId }
+      publicTurn = turn
+      return () => {
+        if (publicTurn === turn) publicTurn = undefined
+      }
+    },
     reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)),
     bind: (next: ModBinding) => enqueue(async () => { binding = next; if (active.length) await publish({ modules: active, table: nouns }) }),
     dispatch: (event: string, input: ModInput, core: (input: ModInput) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
@@ -1038,6 +1048,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true
+      publicTurn = undefined
       controller.abort()
       disposal = (async () => {
         await Promise.all([...activations].map(disposeActivation))

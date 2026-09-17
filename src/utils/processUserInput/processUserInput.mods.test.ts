@@ -227,6 +227,7 @@ function fixture(
       }),
     context,
     controller,
+    processUserInput,
     classicResults,
     classicInputs,
     calls,
@@ -439,6 +440,7 @@ describe('processUserInput prompt.submit', () => {
     expect(f.classicInputs).toEqual(['original'])
     expect(f.events).toEqual([])
     expect(f.calls.releases).toBe(1)
+    expect(result.admission).toEqual({ text: 'original', origin: { kind: 'unclassified' } })
   })
 
   test('remote slash-as-text still submits and cannot execute a command via rewrite', async () => {
@@ -612,6 +614,101 @@ describe('processUserInput prompt.submit', () => {
       { type: 'audio', mediaType: 'audio/wav' },
     ])
     expect(JSON.stringify(f.events)).not.toContain('private bytes')
+  })
+
+  test('real ingress queues before next resolves, survives turn completion, and never repeats hooks', async () => {
+    let resume!: () => void
+    let entered!: () => void
+    const enteredHook = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { resume = resolve })
+    const queue: any[] = []
+    const queries: any[][] = []
+    const f = fixture([async (event, next) => {
+      entered()
+      await gate
+      const receipt: any = await next({ ...event, text: 'rewritten', context: ['private context'] })
+      expect(queue).toHaveLength(1)
+      expect(receipt.text).toBe('rewritten')
+      expect(queries).toEqual([])
+      return { ...receipt, text: 'too late' }
+    }])
+    const { QueryGuard } = await import('../QueryGuard.js')
+    const guard = new QueryGuard()
+    const generation = guard.tryStart()!
+    const functions = loadFunctions('../handlePromptSubmit.ts', {
+      processUserInput: f.processUserInput,
+      parseReferences: () => [], expandPastedTextRefs: (text: string) => text,
+      isValidImagePaste: (item: any) => item.type === 'image',
+      logEvent: () => {}, startQueryProfile: () => {}, queryCheckpoint: () => {},
+      createAbortController: () => new AbortController(),
+      enqueue: (command: any) => queue.push(command),
+      runWithWorkload: (_: unknown, run: () => unknown) => run(),
+      fileHistoryEnabled: () => false,
+    }, '{ handlePromptSubmit }')
+    const params = {
+      input: 'original', mode: 'prompt', messages: [], commands: [],
+      queryGuard: guard, getToolUseContext: () => f.context,
+      mainLoopModel: 'fixture', querySource: 'repl_main_thread',
+      setToolJSX: () => {}, setAbortController: () => {}, setUserInputOnProcessing: () => {},
+      onQuery: async (...args: any[]) => { queries.push(args) },
+      promptSubmitMetadata: { origin: { kind: 'composer' }, wait: true, turnId: 'running' },
+    }
+    const pending = functions.handlePromptSubmit(params)
+    await enteredHook
+    expect(queue).toEqual([])
+    guard.end(generation)
+    resume()
+    await pending
+    expect(queue[0].admitted.admission).toEqual({ text: 'rewritten', context: ['private context'], origin: { kind: 'composer' } })
+    await functions.handlePromptSubmit({ ...params, queuedCommands: queue.splice(0) })
+    expect(f.classicInputs).toEqual(['rewritten'])
+    expect(f.events).toHaveLength(1)
+    expect(f.events[0]?.turnId).toBe('running')
+    expect(queries).toHaveLength(1)
+    expect(userTexts({ messages: queries[0]![0] })).toEqual(['rewritten'])
+    expect(queries[0]![0][1].attachment.content).toEqual(['private context'])
+    expect(queries[0]![8]).toEqual({ text: 'rewritten' })
+    expect(f.calls.releases).toBe(1)
+  })
+
+  test('each explicit next commits once even when the hook returns a drop', async () => {
+    const admitted: any[] = []
+    const f = fixture([async (event, next) => {
+      await next({ ...event, text: 'one' })
+      expect(admitted.map(result => result.admission.text)).toEqual(['one'])
+      await next({ ...event, text: 'two' })
+      expect(admitted.map(result => result.admission.text)).toEqual(['one', 'two'])
+      return { drop: 'post-admission response' }
+    }])
+    await f.run({ onPromptAdmission: (result: any) => admitted.push(result) })
+    expect(f.classicInputs).toEqual(['one', 'two'])
+    expect(admitted).toHaveLength(2)
+    expect(new Set(admitted.map(result => result.messages[0].uuid)).size).toBe(2)
+  })
+
+  test.each(['block', 'stop'])('settled classic %s is not converted to a queued success', async kind => {
+    const admissions: any[] = []
+    const f = fixture([async (event, next) => {
+      const receipt: any = await next(event)
+      expect(receipt.drop).toContain(kind === 'block' ? 'Blocked by classic hook' : 'Operation stopped')
+      return { text: 'synthetic success' }
+    }])
+    f.classicResults.push(kind === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+    const result = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
+    expect(admissions).toHaveLength(1)
+    expect(admissions[0].shouldQuery).toBe(false)
+    expect(admissions[0].admission.drop).toBeDefined()
+    expect(result.admission).toEqual(admissions[0].admission)
+    expect(result.shouldQuery).toBe(false)
+  })
+
+  test.each(['/status', 'pwd'])('deferred command %s has no early command or hook side effects', async input => {
+    const f = fixture([async (event, next) => next(event)])
+    const result = await f.run({ input, mode: input === 'pwd' ? 'bash' : 'prompt', deferCommands: true })
+    expect(result.deferred).toBe(true)
+    expect(f.calls.slash).toBe(0)
+    expect(f.calls.bash).toBe(0)
+    expect(f.classicInputs).toEqual([])
   })
 
   test('image-only input stays nontext unless explicitly rewritten', async () => {

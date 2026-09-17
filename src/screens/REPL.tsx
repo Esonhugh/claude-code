@@ -282,7 +282,7 @@ async function launchUltraplan(_opts: Record<string, unknown>): Promise<string> 
   return ''
 }
 import useCanUseTool from '../hooks/useCanUseTool.js'
-import type { ToolPermissionContext, Tool } from '../Tool.js'
+import type { ToolPermissionContext, Tool, ToolUseContext } from '../Tool.js'
 import {
   applyPermissionUpdate,
   applyPermissionUpdates,
@@ -3935,6 +3935,7 @@ export function REPL({
       additionalAllowedTools: string[],
       mainLoopModelParam: string,
       effort?: EffortValue,
+      publicTurn?: { text: string },
     ) => {
       if (modsSession) await awaitMods()
       // Prepare IDE integration for new prompt. Read mcpClients fresh from
@@ -4145,7 +4146,7 @@ export function REPL({
         canUseTool,
         toolUseContext,
         querySource: getQuerySourceForREPL(),
-        publicTurn: {
+        publicTurn: publicTurn ?? {
           text: newMessages
             .filter(
               (message): message is UserMessage =>
@@ -4255,6 +4256,7 @@ export function REPL({
       ) => Promise<boolean>,
       input?: string,
       effort?: EffortValue,
+      publicTurn?: { text: string },
     ): Promise<void> => {
       // If this is a teammate, mark them as active when starting a turn
       if (isAgentSwarmsEnabled()) {
@@ -4273,19 +4275,28 @@ export function REPL({
       if (thisGeneration === null) {
         logEvent('tengu_concurrent_onquery_detected', {})
 
-        // Extract and enqueue user message text, skipping meta messages
-        // (e.g. expanded skill content, tick prompts) that should not be
-        // replayed as user-visible text.
-        newMessages
-          .filter((m): m is UserMessage => m.type === 'user' && !m.isMeta)
-          .map(_ => getUserContentText(_.message.content))
-          .filter(_ => _ !== null)
-          .forEach((msg, i) => {
-            enqueue({ value: msg, mode: 'prompt' })
-            if (i === 0) {
-              logEvent('tengu_concurrent_onquery_enqueued', {})
-            }
+        // Admission already ran. Retain its messages and context instead of
+        // turning them back into raw prompts and replaying their hooks.
+        if (newMessages.length) {
+          const text = publicTurn?.text ?? newMessages
+            .filter((m): m is UserMessage => m.type === 'user' && !m.isMeta)
+            .map(message => getUserContentText(message.message.content))
+            .filter((value): value is string => value !== null)
+            .join('\n')
+          enqueue({
+            value: input ?? text,
+            mode: 'prompt',
+            admitted: {
+              messages: newMessages,
+              shouldQuery,
+              allowedTools: additionalAllowedTools,
+              model: mainLoopModelParam,
+              effort,
+              admission: { text },
+            },
           })
+          logEvent('tengu_concurrent_onquery_enqueued', {})
+        }
         return
       }
 
@@ -4335,6 +4346,7 @@ export function REPL({
           additionalAllowedTools,
           mainLoopModelParam,
           effort,
+          publicTurn,
         )
       } finally {
         // queryGuard.end() atomically checks generation and transitions
@@ -4655,9 +4667,13 @@ export function REPL({
           ideSelection: typeof ideSelection
           generation: number
           cursorOffset: number
+          turnId?: string
         }
       },
     ) => {
+      const submittedTurnId = options?.submission
+        ? options.submission.turnId
+        : modsSession?.runtime?.activePublicTurnId
       const submittedInputMode =
         options?.submission?.mode ??
         (options?.fromKeybinding ? 'prompt' : inputModeRef.current)
@@ -4723,8 +4739,9 @@ export function REPL({
         setPastedContents(submittedPastedContents)
         helpers.setCursorOffset(submittedCursorOffset)
       }
+      let promptAdmitted = false
       const restoreOnError = (error: unknown): never => {
-        restoreSubmission()
+        if (!promptAdmitted) restoreSubmission()
         throw error
       }
       const restoreInput = (value: string) => {
@@ -4780,6 +4797,7 @@ export function REPL({
                   ideSelection: submittedIDESelection,
                   generation: submittedGeneration,
                   cursorOffset: submittedCursorOffset,
+                  turnId: submittedTurnId,
                 },
               }),
               restore: restoreSubmission,
@@ -5137,7 +5155,12 @@ export function REPL({
         isExternalLoading,
         mode: submittedInputMode,
         commands: getCurrentCommands(),
-        promptSubmitMetadata: { origin: { kind: 'composer' }, wait: options?.wait === true },
+        onPromptAdmitted: () => { promptAdmitted = true },
+        promptSubmitMetadata: {
+          origin: { kind: 'composer' },
+          wait: options?.wait === true,
+          ...(submittedTurnId === undefined ? {} : { turnId: submittedTurnId }),
+        },
         onInputChange: restoreInput,
         setPastedContents,
         setToolJSX,

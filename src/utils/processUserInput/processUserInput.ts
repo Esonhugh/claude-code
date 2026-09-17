@@ -11,6 +11,7 @@ import {
   runModPromptSubmit,
   type PromptAttachment,
   type PromptSubmitMetadata,
+  type PromptSubmitResult,
 } from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
 import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
@@ -67,6 +68,10 @@ export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 export type ProcessUserInputBaseResult = {
   messages: Message[]
   shouldQuery: boolean
+  /** Receipt from core admission, not a middleware's post-next return value. */
+  admission?: PromptSubmitResult
+  /** Command execution is deferred until the active turn has finished. */
+  deferred?: boolean
   allowedTools?: string[]
   model?: string
   effort?: EffortValue
@@ -99,6 +104,8 @@ export async function processUserInput({
   skipAttachments,
   skipHooks,
   promptSubmitMetadata,
+  onPromptAdmission,
+  deferCommands,
 }: {
   input: string | Array<ContentBlockParam>
   /**
@@ -139,6 +146,8 @@ export async function processUserInput({
   skipHooks?: boolean
   /** Stamped at ingress and retained while queued; unstamped is unclassified. */
   promptSubmitMetadata?: PromptSubmitMetadata
+  onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
+  deferCommands?: boolean
 }): Promise<ProcessUserInputBaseResult> {
   const inputString = typeof input === 'string' ? input : null
   // Immediately show the user input prompt while we are still processing the input.
@@ -181,10 +190,12 @@ export async function processUserInput({
     isMeta,
     skipAttachments || isRemoteShellInput,
     preExpansionInput,
+    deferCommands,
   )
   queryCheckpoint('query_process_user_input_base_end')
 
   if (!result.shouldQuery || isRemoteShellInput || skipHooks) {
+    if (!result.deferred) onPromptAdmission?.(result)
     return result
   }
 
@@ -195,10 +206,10 @@ export async function processUserInput({
     isRegularPrompt && promptMessage?.type === 'user'
       ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
       : undefined
-  if (!snapshot) return runClassicHooks(result, getContentText(input) || '')
+  if (!snapshot) return admitClassicPrompt()
   try {
     if (!snapshot.hasHooks('prompt.submit'))
-      return await runClassicHooks(result, getContentText(input) || '')
+      return await admitClassicPrompt()
     const content = promptMessage!.message.content
     const text =
       typeof content === 'string'
@@ -242,6 +253,7 @@ export async function processUserInput({
     let entries = 0
     const { outcome, submissions } = await runModPromptSubmit({
       snapshot,
+      admit: onPromptAdmission,
       signal: context.abortController.signal,
       input: {
         text,
@@ -316,6 +328,27 @@ export async function processUserInput({
     snapshot.release()
   }
 
+  async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {
+    const settled = await runClassicHooks(result, getContentText(input) || '')
+    if (isRegularPrompt) {
+      const content = promptMessage?.type === 'user' ? promptMessage.message.content : input
+      settled.admission = settled.shouldQuery
+        ? {
+            text: typeof content === 'string'
+              ? content
+              : content.flatMap(block =>
+                  block.type === 'text' && 'text' in block && typeof block.text === 'string'
+                    ? [block.text]
+                    : [],
+                ).join('\n'),
+            origin: promptSubmitMetadata?.origin ?? { kind: 'unclassified' },
+          }
+        : { drop: settled.resultText ?? 'Prompt blocked by UserPromptSubmit hook' }
+    }
+    onPromptAdmission?.(settled)
+    return settled
+  }
+
   async function runClassicHooks(
     result: ProcessUserInputBaseResult,
     inputMessage: string,
@@ -349,6 +382,7 @@ export async function processUserInput({
             ),
           ],
           shouldQuery: false,
+          resultText: blockingMessage,
           allowedTools: result.allowedTools,
         }
       }
@@ -365,6 +399,7 @@ export async function processUserInput({
           }),
         )
         result.shouldQuery = false
+        result.resultText = message
         return result
       }
 
@@ -448,6 +483,7 @@ async function processUserInputBase(
   isMeta?: boolean,
   skipAttachments?: boolean,
   preExpansionInput?: string,
+  deferCommands?: boolean,
 ): Promise<ProcessUserInputBaseResult & { isRegularPrompt?: boolean }> {
   let inputString: string | null = null
   let precedingInputBlocks: ContentBlockParam[] = []
@@ -627,6 +663,7 @@ async function processUserInputBase(
     !context.getAppState().ultraplanLaunching &&
     hasUltraplanKeyword(preExpansionInput ?? inputString)
   ) {
+    if (deferCommands) return { messages: [], shouldQuery: false, deferred: true }
     logEvent('tengu_ultraplan_keyword', {})
     const rewritten = replaceUltraplanKeyword(inputString).trim()
     const { processSlashCommand } = await import('./processSlashCommand.js')
@@ -667,6 +704,7 @@ async function processUserInputBase(
 
   // Bash commands
   if (inputString !== null && mode === 'bash') {
+    if (deferCommands) return { messages: [], shouldQuery: false, deferred: true }
     const { processBashCommand } = await import('./processBashCommand.js')
     return addImageMetadataMessage(
       await processBashCommand(
@@ -687,6 +725,7 @@ async function processUserInputBase(
     !effectiveSkipSlash &&
     inputString.startsWith('/')
   ) {
+    if (deferCommands) return { messages: [], shouldQuery: false, deferred: true }
     const { processSlashCommand } = await import('./processSlashCommand.js')
     const slashResult = await processSlashCommand(
       inputString,

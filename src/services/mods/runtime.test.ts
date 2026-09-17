@@ -23,6 +23,52 @@ function runtime() {
 }
 const input = { tool: 'Bash', tool_use_id: 'test-call', command: 'original' }
 
+describe('Mods public turn lifetime', () => {
+  test('publishes synchronously without hooks and ends idempotently', () => {
+    const { value } = runtime()
+    expect(value.activePublicTurnId).toBeUndefined()
+    const end = value.beginPublicTurn('public-turn')
+    expect(value.activePublicTurnId).toBe('public-turn')
+    end()
+    expect(value.activePublicTurnId).toBeUndefined()
+    end()
+    expect(value.activePublicTurnId).toBeUndefined()
+  })
+
+  test.each(['newer-turn', 'same-turn'])('older cleanup cannot clear a newer lifetime with id %s', turnId => {
+    const { value } = runtime()
+    const endOlder = value.beginPublicTurn('same-turn')
+    const endNewer = value.beginPublicTurn(turnId)
+    endOlder()
+    expect(value.activePublicTurnId).toBe(turnId)
+    endNewer()
+    expect(value.activePublicTurnId).toBeUndefined()
+    endOlder()
+    expect(value.activePublicTurnId).toBeUndefined()
+  })
+
+  test('ending the newest turn does not restore an older turn', () => {
+    const { value } = runtime()
+    const endOlder = value.beginPublicTurn('older')
+    const endNewer = value.beginPublicTurn('newer')
+    endNewer()
+    expect(value.activePublicTurnId).toBeUndefined()
+    endOlder()
+    expect(value.activePublicTurnId).toBeUndefined()
+  })
+
+  test('disposal clears the public turn before awaiting teardown', async () => {
+    const { value } = runtime()
+    const end = value.beginPublicTurn('public-turn')
+    const disposed = value.dispose()
+    expect(value.activePublicTurnId).toBeUndefined()
+    end()
+    await disposed
+    expect(() => value.beginPublicTurn('after-disposal')).toThrow('Mods runtime disposed')
+    expect(value.activePublicTurnId).toBeUndefined()
+  })
+})
+
 describe('Mods lifecycle', () => {
   test('live and captured hook discovery use the same event patterns as dispatch', async () => {
     const plugin = await fixture(`export function register(on) {

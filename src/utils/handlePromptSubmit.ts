@@ -28,7 +28,10 @@ import { fileHistoryEnabled, fileHistoryMakeSnapshot } from './fileHistory.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { enqueue } from './messageQueueManager.js'
 import { resolveSkillModelOverride } from './model/model.js'
-import type { ProcessUserInputContext } from './processUserInput/processUserInput.js'
+import type {
+  ProcessUserInputContext,
+  ProcessUserInputBaseResult,
+} from './processUserInput/processUserInput.js'
 import { processUserInput } from './processUserInput/processUserInput.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
@@ -71,6 +74,7 @@ type BaseExecutionParams = {
     onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>,
     input?: string,
     effort?: EffortValue,
+    publicTurn?: { text: string },
   ) => Promise<void>
   setAppState: (updater: (prev: AppState) => AppState) => void
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
@@ -113,6 +117,7 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
   hasInterruptibleToolInProgress?: boolean
   uuid?: UUID
   promptSubmitMetadata?: QueuedCommand['promptSubmitMetadata']
+  onPromptAdmitted?: () => void
   /**
    * When true, input starting with `/` is treated as plain text.
    * Used for remotely-received messages (bridge/CCR) that should not
@@ -333,9 +338,7 @@ export async function handlePromptSubmit(
       params.abortController?.abort('interrupt')
     }
 
-    // Enqueue with string value + raw pastedContents. Images will be resized
-    // at execution time when processUserInput runs (not baked in here).
-    enqueue({
+    const cmd: QueuedCommand = {
       value: finalInput.trim(),
       preExpansionValue: input.trim(),
       mode,
@@ -343,8 +346,56 @@ export async function handlePromptSubmit(
       skipSlashCommands,
       uuid,
       promptSubmitMetadata: params.promptSubmitMetadata,
+    }
+    // Commands still execute after the turn; only ordinary prompts are admitted
+    // now. Never borrow or replace the running turn's abort controller/editor.
+    if (
+      mode !== 'prompt' ||
+      (!skipSlashCommands && finalInput.trim().startsWith('/'))
+    ) {
+      enqueue(cmd)
+      return
+    }
+    let committed = false
+    const admittedMessages = new Set<Message>()
+    const admit = (result: ProcessUserInputBaseResult) => {
+      committed = true
+      for (const message of result.messages) admittedMessages.add(message)
+      if (result.shouldQuery) {
+        enqueue({ ...cmd, admitted: result })
+        params.onPromptAdmitted?.()
+      } else if (result.messages.length) {
+        params.setMessages?.(previous => [...previous, ...result.messages])
+      }
+    }
+    const result = await processUserInput({
+      input: cmd.value,
+      preExpansionInput: cmd.preExpansionValue,
+      mode,
+      setToolJSX,
+      context: getToolUseContext(
+        messages, [], createAbortController(), mainLoopModel,
+      ),
+      pastedContents: params.skipLocalContext ? undefined : cmd.pastedContents,
+      ideSelection: params.skipLocalContext ? undefined : ideSelection,
+      messages,
+      isAlreadyProcessing: true,
+      querySource: params.querySource,
+      canUseTool,
+      uuid,
+      skipSlashCommands,
+      skipAttachments: params.skipLocalContext,
+      skipHooks: params.skipLocalContext,
+      promptSubmitMetadata: cmd.promptSubmitMetadata,
+      deferCommands: true,
+      onPromptAdmission: admit,
     })
-
+    if (result.deferred) enqueue(cmd)
+    else if (!committed && result.messages.length) admit(result)
+    else if (committed) {
+      const notices = result.messages.filter(message => !admittedMessages.has(message))
+      if (notices.length) params.setMessages?.(previous => [...previous, ...notices])
+    }
     return
   }
 
@@ -437,6 +488,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     queryCheckpoint('query_process_user_input_start')
 
     const newMessages: Message[] = []
+    const admittedTexts: string[] = []
     let shouldQuery = false
     let allowedTools: string[] | undefined
     let model: string | undefined
@@ -472,38 +524,43 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       for (let i = 0; i < commands.length; i++) {
         const cmd = commands[i]!
         const isFirst = i === 0
-        const result = await processUserInput({
-          input: cmd.value,
-          preExpansionInput: cmd.preExpansionValue,
-          mode: cmd.mode,
-          setToolJSX,
-          context: makeContext(),
-          pastedContents:
-            isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
-          messages,
-          setUserInputOnProcessing: isFirst
-            ? setUserInputOnProcessing
-            : undefined,
-          isAlreadyProcessing: !isFirst,
-          querySource,
-          canUseTool,
-          uuid: cmd.uuid,
-          ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
-          skipSlashCommands: cmd.skipSlashCommands,
-          bridgeOrigin: cmd.bridgeOrigin,
-          isMeta: cmd.isMeta,
-          skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
-          skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
-          promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
-            origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
-              cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
-              cmd.origin?.kind === 'human' ? { kind: 'composer' } :
-              cmd.origin ? { kind: cmd.origin.kind } :
-              cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
-              { kind: 'unclassified' },
-            wait: false,
-          },
-        })
+        const result: ProcessUserInputBaseResult = cmd.admitted
+          ? {
+              ...cmd.admitted,
+              shouldQuery: cmd.admitted.shouldQuery ?? cmd.admitted.admission?.drop === undefined,
+            }
+          : await processUserInput({
+              input: cmd.value,
+              preExpansionInput: cmd.preExpansionValue,
+              mode: cmd.mode,
+              setToolJSX,
+              context: makeContext(),
+              pastedContents:
+                isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
+              messages,
+              setUserInputOnProcessing: isFirst
+                ? setUserInputOnProcessing
+                : undefined,
+              isAlreadyProcessing: !isFirst,
+              querySource,
+              canUseTool,
+              uuid: cmd.uuid,
+              ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
+              skipSlashCommands: cmd.skipSlashCommands,
+              bridgeOrigin: cmd.bridgeOrigin,
+              isMeta: cmd.isMeta,
+              skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
+              skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
+              promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
+                origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
+                  cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
+                  cmd.origin?.kind === 'human' ? { kind: 'composer' } :
+                  cmd.origin ? { kind: cmd.origin.kind } :
+                  cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
+                  { kind: 'unclassified' },
+                wait: false,
+              },
+            })
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.
         // Derive origin from mode for task-notifications — mirrors the origin
@@ -522,6 +579,9 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           }
         }
         newMessages.push(...result.messages)
+        if (result.admission?.text !== undefined) {
+          admittedTexts.push(result.admission.text)
+        }
         if (isFirst) {
           shouldQuery = result.shouldQuery
           allowedTools = result.allowedTools
@@ -574,6 +634,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           shouldCallBeforeQuery ? onBeforeQuery : undefined,
           primaryInput,
           effort,
+          admittedTexts.length ? { text: admittedTexts.join('\n') } : undefined,
         )
       } else {
         // Local slash commands that skip messages (e.g., /model, /theme).

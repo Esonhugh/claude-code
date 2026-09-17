@@ -74,7 +74,14 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     enqueue: (v: any) => queued.push(v), startQueryProfile: noop, queryCheckpoint: noop,
     createAbortController: () => new AbortController(), runWithWorkload: (_: any, fn: any) => fn(),
     runImmediateModCommand,
-    processUserInput: async (p: any) => { executions.push(p); return { messages: [], shouldQuery: false, ...result } },
+    processUserInput: async (p: any) => {
+      executions.push(p)
+      const settled = p.mode === 'prompt' && (p.skipSlashCommands || !p.input.startsWith('/'))
+        ? { messages: [{ type: 'user', uuid: 'test-message', message: { content: p.input } }], shouldQuery: true, ...result }
+        : { messages: [], shouldQuery: false, ...result }
+      p.onPromptAdmission?.(settled)
+      return settled
+    },
     fileHistoryEnabled: () => false, createUserMessage: (p: any) => ({ ...p, uuid: 'test-message' }),
   }
   lowerScope.executeUserInput = makeExecute(lowerScope)
@@ -84,7 +91,8 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     draftGenerationRef: epoch, pastedContentsRef: pasteRef, stashedPromptRef: stashRef,
     inputMode: mode, pastedContents: draft.paste, stashedPrompt: stash,
     setInputValue: setText, setInputMode: setMode, setPastedContents: setPaste, setStashedPrompt: setStash,
-    repinScroll: noop, feature: () => false, modsSession: {}, awaitMods: () => mods.promise,
+    repinScroll: noop, feature: () => false,
+    modsSession: { runtime: { activePublicTurnId: active ? 'turn-active' : undefined } }, awaitMods: () => mods.promise,
     awaitPendingHooks: () => hooks.promise, commands, getCurrentCommands: () => commands, queryGuard: guard, isLoading: active,
     isExternalLoading: false, activeRemote: { isRemoteMode: remote, sendMessage: async (c: any) => { remoteMessages.push(c); return true } },
     sshRemote: { isRemoteMode: false }, isRemoteExecutionSession: false,
@@ -99,7 +107,6 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     abortController: undefined, onQuery: async () => {}, setAppState: noop, getQuerySourceForREPL: () => 'repl_main',
     onBeforeQuery: undefined, canUseTool: undefined, addNotification: noop, setMessages: noop,
     streamModeRef: { current: undefined }, hasInterruptibleToolInProgressRef: { current: false },
-    activePublicTurnIdRef: { current: active ? 'turn-active' : undefined },
     isFullscreenEnvEnabled: () => true,
   }
   const submit = makeSubmit(scope)
@@ -172,6 +179,29 @@ for (const active of [true, false]) {
   }
 }
 
+test('turnId is captured before barriers while scheduling uses the live guard', async () => {
+  const h = harness()
+  const pending = h.submit('submitted', h.helpers)
+  h.scope.modsSession.runtime.activePublicTurnId = 'newer-turn'
+  h.guard.isActive = false
+  h.release()
+  await pending
+  expect(h.executions[0].promptSubmitMetadata.turnId).toBe('turn-active')
+  expect(h.queued).toEqual([])
+})
+
+test('idle ingress does not acquire a later turnId when another turn starts during barriers', async () => {
+  const h = harness({ active: false })
+  const pending = h.submit('submitted', h.helpers)
+  h.guard.isActive = true
+  h.scope.modsSession.runtime.activePublicTurnId = 'later-turn'
+  h.release()
+  await pending
+  expect(h.queued).toHaveLength(1)
+  expect(h.queued[0].promptSubmitMetadata).toEqual({ origin: { kind: 'composer' }, wait: false })
+  expect(h.executions[0].promptSubmitMetadata.turnId).toBeUndefined()
+})
+
 test('late nextInput must not overwrite a same-text new edit', async () => {
   const h = harness({ active: false, input: '/later', result: { nextInput: 'command result' } })
   const pending = h.submit('/later', h.helpers)
@@ -204,7 +234,8 @@ for (const active of [false, true]) {
       expect(h.draft.cursor).toBe(2)
       expect(h.draft.paste).toEqual(savedStash.pastedContents)
       expect(h.draft.stash).toBeUndefined()
-      expect(h.executions.length + h.queued.length).toBe(1)
+      expect(h.executions).toHaveLength(active && input.startsWith('/') ? 0 : 1)
+      expect(h.queued).toHaveLength(active ? 1 : 0)
     })
   }
 }
@@ -343,6 +374,171 @@ test('admitted queued prompt bypasses hooks on dequeue and carries settled turn 
   expect(h.executions).toEqual([])
   expect(queries).toHaveLength(1)
   expect(queries[0]![8]).toEqual({ text: 'rewritten' })
+})
+
+test('prompt admission runs before enqueue and the settled result is reused once', async () => {
+  const h = harness()
+  const gate = deferred()
+  const entered = deferred()
+  const message = { type: 'user', uuid: 'settled', message: { content: 'rewritten' } }
+  const settled = { messages: [message], shouldQuery: true,
+    admission: { text: 'rewritten', origin: { kind: 'composer' } } }
+  h.lowerScope.processUserInput = async (p: any) => {
+    h.executions.push(p)
+    entered.resolve()
+    await gate.promise
+    p.onPromptAdmission?.(settled)
+    expect(h.queued).toHaveLength(1)
+    return settled
+  }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await entered.promise
+  expect(h.queued).toEqual([])
+  h.setText('new draft')
+  gate.resolve()
+  await pending
+  expect(h.queued[0].admitted.messages).toEqual([message])
+  h.guard.isActive = false
+  const queries: any[][] = []
+  h.scope.onQuery = async (...args: any[]) => { queries.push(args) }
+  const executeQueued = extract('./REPL.tsx', 'executeQueuedInput')({ ...h.scope, messages: [] })
+  await executeQueued(h.queued.splice(0))
+  expect(h.executions).toHaveLength(1)
+  expect(queries[0]?.[0]).toEqual([message])
+  expect(queries[0]?.[8]).toEqual({ text: 'rewritten' })
+  expect(h.draft.text).toBe('new draft')
+})
+
+test('core refusal displays its reason without queueing or starting another turn', async () => {
+  const warning = { type: 'system', content: 'blocked by core' }
+  const h = harness({ result: { messages: [warning], shouldQuery: false, admission: { drop: 'blocked by core' } } })
+  let messages: any[] = []
+  h.scope.setMessages = (update: any) => { messages = update(messages) }
+  h.scope.onQuery = async () => { throw new Error('refused input must not start a turn') }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await pending
+  expect(h.queued).toEqual([])
+  expect(messages).toEqual([warning])
+  expect(h.guard.isActive).toBe(true)
+})
+
+test('batched admitted prompts retain each receipt and peer dequeue still skips hooks', async () => {
+  const h = harness({ active: false })
+  const queries: any[][] = []
+  h.scope.onQuery = async (...args: any[]) => { queries.push(args) }
+  const executeQueued = extract('./REPL.tsx', 'executeQueuedInput')({ ...h.scope, messages: [] })
+  await executeQueued(['one', 'two'].map(text => ({
+    value: `original ${text}`, mode: 'prompt',
+    admitted: { shouldQuery: true, messages: [{ type: 'user', uuid: text, message: { content: text } }], admission: { text } },
+  })))
+  expect(h.executions).toEqual([])
+  expect(queries[0]?.[0].map((message: any) => message.message.content)).toEqual(['one', 'two'])
+  expect(queries[0]?.[8]).toEqual({ text: 'one\ntwo' })
+  await executeQueued([{ value: '/peer-text', mode: 'prompt', skipSlashCommands: true, origin: { kind: 'peer' } }])
+  expect(h.executions).toHaveLength(1)
+  expect(h.executions[0].skipHooks).toBe(true)
+  expect(h.executions[0].skipSlashCommands).toBe(true)
+})
+
+test('queued slash and bash keep deferred execution while remote slash text is admitted', async () => {
+  for (const [mode, skipSlashCommands, input] of [
+    ['prompt', false, '/status'], ['bash', false, 'pwd'], ['prompt', true, '/remote'],
+  ] as const) {
+    const h = harness({ input, mode })
+    await h.lowerScope.handlePromptSubmit({
+      ...h.scope, input, mode, skipSlashCommands,
+      commands: [], messages: [], querySource: 'repl_main_thread',
+      onInputChange: h.setText,
+    })
+    expect(h.queued).toHaveLength(1)
+    if (skipSlashCommands) {
+      expect(h.executions).toHaveLength(1)
+      expect(h.executions[0].skipSlashCommands).toBe(true)
+    } else {
+      expect(h.executions).toEqual([])
+      expect(h.queued[0].admitted).toBeUndefined()
+    }
+  }
+})
+
+test('a replacement turn racing admitted input preserves the whole result instead of replaying hooks', async () => {
+  const queued: any[] = []
+  const onQuery = extract('./REPL.tsx', 'onQuery')({
+    isAgentSwarmsEnabled: () => false,
+    queryGuard: { tryStart: () => null },
+    logEvent: noop, enqueue: (command: any) => queued.push(command),
+    getUserContentText: (content: string) => content,
+  })
+  const messages = [
+    { type: 'user', uuid: 'settled', message: { content: 'rewritten' } },
+    { type: 'attachment', attachment: { type: 'hook_additional_context', content: ['retained'] } },
+  ]
+  await onQuery(messages, new AbortController(), true, ['Read'], 'fixture', undefined, 'original', 'high', { text: 'rewritten' })
+  expect(queued).toHaveLength(1)
+  expect(queued[0].admitted).toMatchObject({ messages, shouldQuery: true, allowedTools: ['Read'], model: 'fixture', effort: 'high' })
+})
+
+test('admission failure never overwrites the running abort controller or a newer draft', async () => {
+  const h = harness()
+  const entered = deferred()
+  const gate = deferred()
+  const controller = new AbortController()
+  h.scope.abortController = controller
+  let replacements = 0
+  h.scope.setAbortController = () => { replacements++ }
+  h.scope.getToolUseContext = (_messages: any, _newMessages: any, current: AbortController) => {
+    expect(current).not.toBe(controller)
+    return {}
+  }
+  h.lowerScope.processUserInput = async () => {
+    entered.resolve()
+    await gate.promise
+    throw new Error('admission failed')
+  }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await entered.promise
+  h.setText('new draft')
+  gate.resolve()
+  await expect(pending).rejects.toThrow('admission failed')
+  expect(h.draft.text).toBe('new draft')
+  expect(h.queued).toEqual([])
+  expect(controller.signal.aborted).toBe(false)
+  expect(replacements).toBe(0)
+  expect(h.guard.isActive).toBe(true)
+})
+
+test('post-admission drop displays only the new warning and does not undo the queued prompt', async () => {
+  const h = harness()
+  const message = { type: 'user', uuid: 'settled', message: { content: 'entered' } }
+  const warning = { type: 'system', content: 'post-next warning' }
+  h.lowerScope.processUserInput = async (p: any) => {
+    p.onPromptAdmission({ messages: [message], shouldQuery: true, admission: { text: 'entered' } })
+    return { messages: [message, warning], shouldQuery: false }
+  }
+  let shown: any[] = []
+  h.scope.setMessages = (update: any) => { shown = update(shown) }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await pending
+  expect(shown).toEqual([warning])
+  expect(h.queued).toHaveLength(1)
+  expect(h.queued[0].admitted.messages).toEqual([message])
+})
+
+test('failure after admission reports the error without restoring a duplicate draft', async () => {
+  const h = harness()
+  h.lowerScope.processUserInput = async (p: any) => {
+    p.onPromptAdmission({ messages: [{ type: 'user', uuid: 'entered', message: { content: 'entered' } }], shouldQuery: true })
+    throw new Error('cancelled after admission')
+  }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await expect(pending).rejects.toThrow('cancelled after admission')
+  expect(h.queued).toHaveLength(1)
+  expect(h.draft.text).toBe('')
 })
 
 test('reference attachments and IDE selection are snapshots before the barrier', async () => {
@@ -680,9 +876,13 @@ test('concurrent submissions wait for Mods without early reservation and dispatc
   const entered = deferred()
   h.lowerScope.processUserInput = async (p: any) => {
     h.executions.push(p)
-    entered.resolve()
-    await processing.promise
-    return { messages: [], shouldQuery: false }
+    if (p.input === 'first') {
+      entered.resolve()
+      await processing.promise
+    }
+    const settled = { messages: [{ type: 'user', uuid: p.input, message: { content: p.input } }], shouldQuery: true }
+    p.onPromptAdmission?.(settled)
+    return settled
   }
   const first = h.submit('first', h.helpers)
   h.setText('second')
@@ -694,6 +894,7 @@ test('concurrent submissions wait for Mods without early reservation and dispatc
   expect(h.queued.map(c => c.value)).toEqual(['second'])
   processing.resolve()
   await first
-  expect(h.executions.map(c => c.input)).toEqual(['first'])
+  expect(h.executions.map(c => c.input)).toEqual(['first', 'second'])
+  expect(h.queued[0].admitted.messages[0].message.content).toBe('second')
   expect(h.draft.text).toBe('')
 })

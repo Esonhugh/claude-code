@@ -190,6 +190,46 @@ describe('prompt.submit runtime boundary contract', () => {
     expect(result.entries[0]?.context).toEqual(['entered'])
   })
 
+  test('retains the settled core drop even if middleware reports success', async () => {
+    const result = await runModPromptSubmit({
+      input: initial,
+      signal: new AbortController().signal,
+      snapshot: {
+        hasHooks: () => true,
+        release: () => {},
+        dispatch: async (_event, input, core) => {
+          expect(await core(input)).toEqual({ drop: 'blocked by core' })
+          return { text: 'synthetic success' }
+        },
+      },
+      core: async () => ({ messages: [], shouldQuery: false, resultText: 'blocked by core' }),
+    })
+    expect(result.submissions[0]?.admission).toEqual({ drop: 'blocked by core' })
+  })
+
+  test('admission completes before the receipt unwinds through middleware', async () => {
+    let admitted = false
+    const result = await runModPromptSubmit({
+      input: initial,
+      signal: new AbortController().signal,
+      snapshot: {
+        hasHooks: () => true,
+        release: () => {},
+        dispatch: async (_event, input, core) => {
+          const receipt = await core(input)
+          expect(admitted).toBe(true)
+          return receipt
+        },
+      },
+      core: async () => ({ messages: [], shouldQuery: true }),
+      admit: result => {
+        expect(result.admission).toEqual({ text: initial.text, origin: initial.origin })
+        admitted = true
+      },
+    })
+    expect(result.submissions).toHaveLength(1)
+  })
+
   test.each([
     null,
     'text',
