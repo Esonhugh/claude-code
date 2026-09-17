@@ -409,9 +409,6 @@ export function createModUi({
       !presentation.keyboardOwned
     ) {
       pane.focused = true
-    } else if (spec.focus !== true) {
-      pane.focused = false
-      pane.focusedElement = undefined
     }
     updatePresentation(pane, presentation)
     return pane

@@ -156,6 +156,45 @@ describe('mod UI ownership and pane policy', () => {
     expect(ui.getSnapshot().every(pane => pane.visible)).toBe(true)
   })
 
+  test('preserves existing focus and element when reopening only to resize an inline pane', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    const inline = { ...wide, isFullscreen: false }
+    await ui.open(owner, { id: 'diff', focus: true, rows: 6 }, { kind: 'person' }, inline)
+    await ui.commit(owner)
+    await ui.focus(owner, { requestId: 'diff', element: 'run', origin: { kind: 'person' } })
+
+    await ui.open(owner, { id: 'diff', title: 'Loaded diff', rows: 7 }, { kind: 'plugin' }, inline)
+    expect(ui.getSnapshot()).toHaveLength(1)
+    expect(ui.getSnapshot()[0]).toMatchObject({
+      title: 'Loaded diff', focused: true, focusedElement: 'run', rows: 7,
+    })
+    expect(draws.at(-1)!.input.props).toMatchObject({ isFocused: true })
+
+    await ui.focus(owner, { requestId: 'diff', origin: { kind: 'person' } })
+    await ui.open(owner, { id: 'diff', rows: 8 }, { kind: 'plugin' }, inline)
+    expect(ui.getSnapshot()[0]!.focused).toBe(false)
+    expect(ui.getSnapshot()[0]!.focusedElement).toBeUndefined()
+  })
+
+  test('reopening without focus never steals input or overrides presentation restrictions', async () => {
+    for (const changes of [
+      { composerEmpty: false }, { hasDialog: true }, { keyboardOwned: true },
+    ]) {
+      const owner = { plugin: 'fixture' }
+      const { ui } = fixture()
+      await ui.open(owner, { id: 'diff', focus: true }, { kind: 'person' }, { ...wide, ...changes })
+      await ui.commit(owner)
+      expect(ui.getSnapshot()[0]!.focused).toBe(false)
+      await ui.open(owner, { id: 'diff', rows: 7 }, { kind: 'plugin' }, wide)
+      expect(ui.getSnapshot()[0]!.focused).toBe(false)
+      await ui.open(owner, { id: 'diff', focus: true }, { kind: 'person' }, wide)
+      expect(ui.getSnapshot()[0]!.focused).toBe(true)
+      await ui.open(owner, { id: 'diff', rows: 8 }, { kind: 'plugin' }, { ...wide, ...changes })
+      expect(ui.getSnapshot()[0]!.focused).toBe(false)
+    }
+  })
+
   test('grants requested focus only while the empty composer owns unobstructed input', async () => {
     for (const [changes, expected] of [
       [{}, true],
