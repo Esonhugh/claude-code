@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { SettingsSchema, type SettingsJson } from '../../utils/settings/types.js'
 import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import type { ModTier } from './types.js'
 
 function loadedPlugin(overrides: Partial<LoadedPlugin> = {}): LoadedPlugin {
   const name = overrides.name ?? 'example'
@@ -39,7 +40,7 @@ function source(value: Partial<SettingsJson>): SettingsJson {
 describe('prepareModPlugins', () => {
   test('provider provenance uses the same effective tier even without an admitted hook module', () => {
     const plugin = loadedPlugin()
-    const cases: Array<[Partial<PrepareModPluginsSettings>, string]> = [
+    const cases: Array<[Partial<PrepareModPluginsSettings>, ModTier]> = [
       [{}, 'user'],
       [{userSettings:source({appendPlugins:['example@marketplace']})}, 'append'],
       [{userSettings:source({prependPlugins:['example@marketplace'],appendPlugins:['example@marketplace']})}, 'prepend'],

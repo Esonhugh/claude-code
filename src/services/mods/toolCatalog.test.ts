@@ -27,9 +27,11 @@ import {
   setCachedSettingsForSource,
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
+import type { LoadedPlugin } from '../../types/plugin.js'
+import { getModPluginOrigin } from './plugins.js'
 import { loadModDeclaration } from './loader.js'
 import { seatNativeModPlugins } from './native.js'
-import { createModsRuntime, type ModSnapshot } from './runtime.js'
+import { createModsRuntime, type ModHostServices, type ModSnapshot } from './runtime.js'
 
 let root: string
 const runtimes: ReturnType<typeof createModsRuntime>[] = []
@@ -119,12 +121,14 @@ const schemaOptions = (tools: Tool[], modsSnapshot?: ModSnapshot) => ({
 async function runtimeWithUser(
   source: string,
   implementation?: 'local' | 'official',
+  services?: ModHostServices,
 ) {
   const path = join(root, 'register.ts')
   await writeFile(path, source)
   const diagnostics: string[] = []
   const runtime = createModsRuntime({
     onDiagnostic: event => diagnostics.push(event.message),
+    services,
   })
   runtimes.push(runtime)
   const plugins = [
@@ -515,14 +519,37 @@ test('plugin MCP provider is its canonical storageId and captured admitted tier,
 })
 
 test('configured plugin MCP without a hook module still receives canonical settings provider', async () => {
-  setCachedSettingsForSource('policySettings', {
+  const policySettings = {
     enabledPlugins: { 'managed-no-hooks@market': true },
     appendPlugins: ['managed-no-hooks@market'],
-  })
-  const { runtime, diagnostics } =
-    await runtimeWithUser(`export function register(on) {
-    on('tool.describe', ($, e) => ({description:e.provider.plugin+'/'+e.provider.tier}));
-  }`)
+  }
+  setCachedSettingsForSource('policySettings', policySettings)
+  const origins = new Map(
+    ['ordinary-no-hooks@market', 'managed-no-hooks@market'].map(source => {
+      const name = source.split('@')[0]!
+      const plugin: LoadedPlugin = {
+        name,
+        manifest: { name },
+        path: root,
+        source,
+        repository: source,
+        enabled: true,
+      }
+      return [source, getModPluginOrigin(plugin, {
+        userSettings: null,
+        flagSettings: null,
+        policySettings,
+        hookPolicy: { managedOnly: false, allDisabled: false },
+      })] as const
+    }),
+  )
+  const { runtime, diagnostics } = await runtimeWithUser(
+    `export function register(on) {
+      on('tool.describe', ($, e) => ({description:e.provider.plugin+'/'+e.provider.tier}));
+    }`,
+    undefined,
+    { pluginOrigin: source => origins.get(source) },
+  )
   const snapshot = runtime.capture()
   try {
     for (const [source, tier] of [
