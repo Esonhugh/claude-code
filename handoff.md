@@ -1,5 +1,200 @@
 # Mods 修复与兼容性验收
 
+## 2026-09-18 修复后冻结源码：严格测试已结束，整体 failed
+
+**当前整体 failed：仍有两处settings缺陷及inline快速双Escape误开Rewind；Peer身份测试environment-blocked，官方Mods运行parity为not covered。不能宣布全量通过或 full covered。** 本节优先于后面的历史基线；分支仍为 `feat/mods`，HEAD 为 `6c7b0e0eb7a9b36d4003c3a713209449c91d1b9a`，本轮定向修复尚未追加 commit/push。源码身份由逐文件 SHA-256 固定，不能仅凭相同 HEAD 将未提交修复混同旧构建。
+
+证据根 `T` = `/private/tmp/cmtest-o4j65cp5`。最终自动化的前后源码核验均为 `source_changed: []`，见 `T/final/source-before.json`、`T/final/summary.json`、`T/tracked-final/result.json`。本次不再沿用旧同进程超时结论，也不倒改任何历史失败记录。
+
+### 最终自动化结果与资格
+
+| 检查 | 本次结果 | 证据 |
+| --- | --- | --- |
+| 全仓 TypeScript | exit 0 | `T/final-tsc.log`、`T/final-checks.json` |
+| `bun run lint` | exit 0 | `T/final-lint.log`、`T/final-checks.json` |
+| `git diff --check` | exit 0 | `T/final-diff-check.log`、`T/final-checks.json` |
+| 261 文件、每文件独立 OS 进程 | **259/261 文件 qualified；1562 registered pass / 3 fail；105 个 assertion scripts 完成、1 个失败；0 skip / todo / timeout** | `T/final/results.json`、`summary.json`；155 个 registered 文件、106 个顶层脚本 |
+| 显式 tracked 同进程 `bun test --isolate --no-orphans` | **完整结束，exit 1；原始 footer 为1562 pass / 4 fail / 1 error** | `T/tracked-final/output.log`、`result.json`、`junit.xml`；261 文件，未超时 |
+| Workflow 原有 preload 恢复后的独立补验 | **exit 0，完整脚本 sentinel 已确认** | `T/workflow-preload-recheck/result.json`、`output.log`；不替换上面原批次失败 |
+
+两个批次失败集中在相同两个文件。同进程的第四个 fail / 1 error 来自顶层 Workflow 脚本，不是额外的 registered test；它与独立批次的3个 registered fail应分层报告。父进程共 **4338 expect calls**，子进程日志中的摘要没有重复相加，资格审计见 `T/final/qualification-audit.json`。JUnit单列1565个registered cases、3个Peer failures、4333 assertions，不包含该顶层脚本error；不将JUnit与raw footer相加或静默改写其差异。交叉审计与证据hash见 `T/final-cross-audit.json`。清单排除了误匹配的生产模块 `src/ink/hit-test.ts`；261 个测试路径均唯一。
+
+同一独立批次中，`src/services/mods/` 的22个测试文件全部 qualified，**558 registered pass / 0 fail / 0 skip**；既有90文件 Mods/相邻清单为89文件 qualified、961 registered pass / 0 fail、34个完成脚本，唯一未完成脚本是下述漏 preload 的 Workflow。它们是261清单的子集，不重复累加。
+
+所有测试使用私有 HOME/config/XDG/TMP、synthetic API key、OS sandbox；非 loopback 网络与真实凭据读取被拒绝。完整官方原件及完整目标 `.d.ts` 均显式配置，相关测试不是因缺 fixture 而跳过。单测、顶层脚本、compiled CLI 和官方二进制 parity 不互相替代。
+
+### 剩余失败定位与补验边界
+
+1. **Peer IPC，3项仍为 environment-blocked。** `src/utils/udsMessaging.test.ts` 的 registry process-start、recycled PID discovery、stale authentication 检查在 sandbox 下失败。此前已确认 `/bin/ps` 无法执行、`procStart` 不可得；本次独立批次仍为12 pass / 3 fail，见 `T/final/f259/output.log`。未取消隔离、伪造身份、跳过或弱化断言。当前结果不能证明真实进程身份路径已通过。
+2. **Workflow 脚本，本次 runner 漏了既有前置条件，已补验。** `workflowScriptRuntime.test.ts:376` 的 agent 调用数1而非2，对应私有 workflow session 明确报 `Plan mode is disabled`。旧90文件清单的合格命令含 `--preload enable-plan-fixture.ts`，新 runner 重建 direct argv 时丢失此项；有界审计确认这是旧清单中唯一的 preload。恢复原 preload（只在新私有 config 写 `planModeAvailable:true`）后，完整脚本输出 `workflowScriptRuntime.test.ts passed`，exit 0、无超时、源码无变化。证据 `T/workflow-preload-recheck/preload-inventory-audit.json`、`result.json`；未修改 Workflow 生产代码、权限判断或测试断言。
+
+Workflow 补验只证明同一脚本在正确前置配置下完成，**不能将原261文件批次改写成260/261或同进程全绿**，也不能把补验与原运行的计数重复累加。它与下方历史 `LocalWorkflowTask.test.ts` 的 fixture 修复是两个不同文件、不同问题记录。
+
+3. **新增确认的 settings 审核前竞态，未修复。** 迟到的静态审查提示 `updateHooksConfigSnapshot()` 在 watcher review 开始前调用 `resetSettingsCache()`，会清空尚未 retain 的 accepted parse；随后重新 capture 直接接受外部 bytes。仓库外复制现有 settings harness、使用真实生产模块和原生 watcher ready 后定向对照：不刷新 snapshot 时旧 `disableAllHooks:true` 保持有效，block callback执行1次；外部写false后同步调用 `updateHooksConfigSnapshot()` 时立刻读到false，后续显式review看到相同identity而跳过callback，review次数为0。控制组 **1 pass**，目标组 **1 fail**；不是已有261清单中的测试，不混入其计数。源码未变，未弱化断言。
+
+   - 根因位置：`src/utils/hooks/hooksConfigSnapshot.ts:117–124`、`src/utils/settings/settingsCache.ts:90–94`、`src/utils/settings/changeDetector.ts:431–449`。
+   - 证据：`T/settings-pre-review-probe/resolved-results.json`、`control-resolved/output.log`、`refresh-before-review-resolved/output.log`；最初外部fixture无法解析chokidar的日志保留，改为指向既有依赖的绝对路径后才取得合格对照。
+   - 边界：确认真实模块组合的审核遗漏，不等于已通过终端重现所有触发入口。当前五核心 watcher/reload通过不覆盖这一前置窗口，不能声称“所有未批准配置都不会生效”。当前源码保持冻结，本轮报告列为产品未修复项；后续修复必须补对应repo回归并重新验证源码/制品身份。
+
+4. **损坏的远端 managed 缓存未被排除，未修复。** 对迟到审查中的第二个具体边界进行私有fixture对照：合法 `remote-settings.json` 正常胜出；非法 `{model:42}` 虽产生schema错误，却仍作为policy参与合并，最终model为42，合法managed文件中的model与`permissions.deny:['Bash']`均未采用。控制组 **1 pass**，非法缓存目标组 **1 fail**。`loadPolicySettings()` 使用原始remote对象，而 `loadSettingsFromDisk()` 只记录验证错误；`syncCacheState.loadSettings()` 的磁盘缓存路径仅做JSON对象形状检查，不能假设该缓存必然已验证。旧 `1476236` 的merged settings load在remote验证失败时会继续选MDM/file，因此这里有已确认的merged读取回退回归。
+
+   - 根因位置：`src/services/remoteManagedSettings/syncCacheState.ts:57–64`、`src/utils/settings/settings.ts:341–359`、`:693–714`。
+   - 证据：`T/settings-pre-review-probe/remote-policy-results.json`、`remote-valid/output.log`、`remote-invalid/output.log`。仅写私有合成缓存和私有managed文件，无真实账号、remote服务或共享policy访问；未修改源码。
+   - 边界：HTTP获取路径在 `src/services/remoteManagedSettings/index.ts:322` 已做schema验证；本次证明磁盘缓存入口的错误配置处理问题，未证明远端服务可直接发送非法配置绕过该校验，也不据此推断任意用户可修改管理员策略。
+
+### 最终覆盖率：仅父进程 LCOV 的源码行并集
+
+`T/final/coverage-summary.json`、`coverage-per-file.json` 保存逐文件结果和输入 LCOV 的 SHA-256。按 canonical source/line 合并，以正数最大 hit count 计算，不重复累加同一源码多次导入。
+
+- Mods：**5079/5813 行，87.37%，19 个已插桩源码文件**。
+- 全部被导入的父进程源码：60158/260443行，23.10%，1244文件；**不是全仓覆盖率**。
+- 仅既有90文件 Mods/相邻 inventory 中的父 LCOV；Worker、VM、child process/compiler、compiled CLI不在该插桩范围，直接 assertion scripts 无 LCOV。
+- 失败执行所经过的代码仍贡献观察到的覆盖行，不贡献验收成功。
+- `protocol.ts`、`types.ts`、`worker.ts` 不在父 LCOV；`uiRealm.ts` 为0/142，不能据此推断其真实 Worker 功能没有执行。
+
+| Mods 源文件 | covered / instrumented | line % |
+| --- | ---: | ---: |
+| classicAdapter.ts | 198 / 403 | 49.13 |
+| commandAdapter.ts | 177 / 203 | 87.19 |
+| commands.ts | 150 / 182 | 82.42 |
+| dispatch.ts | 383 / 383 | 100.00 |
+| environment.ts | 329 / 330 | 99.70 |
+| hostOperations.ts | 325 / 361 | 90.03 |
+| loader.ts | 609 / 622 | 97.91 |
+| matcher.ts | 70 / 73 | 95.89 |
+| native.ts | 89 / 90 | 98.89 |
+| plugins.ts | 176 / 185 | 95.14 |
+| promptAdapter.ts | 145 / 145 | 100.00 |
+| runtime.ts | 870 / 899 | 96.77 |
+| session.ts | 301 / 337 | 89.32 |
+| sessionMessages.ts | 36 / 36 | 100.00 |
+| toolAdapter.ts | 273 / 324 | 84.26 |
+| toolCatalog.ts | 150 / 168 | 89.29 |
+| turnAdapter.ts | 103 / 133 | 77.44 |
+| ui.ts | 695 / 797 | 87.20 |
+| uiRealm.ts | 0 / 142 | 0.00 |
+
+### 新构建、交互与官方对照：已结束
+
+新证据根 `F` = `/private/tmp/mods-final-fixed-20260918-r9vsfofu`。在最终自动化完成后实际执行 `make build`，exit 0；Makefile版本仍为 **2.1.219**。排队fixture初次超时后代理遇API socket中断，用户要求retry；接续任务沿用同一证据根和制品，保留旧raw、不重复完成场景、不重新构建。
+
+| 身份 | 本次值 |
+| --- | --- |
+| 源码内容SHA-256 | `4c960006dd9a27dabd6106a28de9f1d39592cd6bbee96c061219a0319a95d6db` |
+| 本地binary SHA-256 | `7c94b14562d53b40da61cc184f7db6161b7d514d2bfe2f33c9f0a6a48cce6576` |
+| 本地产物 | `built-claude`，100102754 bytes，实际2.1.219 |
+| 官方binary SHA-256 | `195e24e8e1f9bf46f1eaee72d434a33e18f9f5796f29a6348a00d16c5f8aee75`，实际2.1.272 |
+| 构建/身份证据 | `F/build.json`、`resume-identity-preflight.json`、`resume-identity-final.json` |
+
+2575个源码/测试文件与自动化及构建快照一致，0 changed。两端使用hash一致副本、独立cwd/HOME/config/XDG、synthetic key、loopback API、sandbox和scripted tmux；160×50，pane均为`%0`。入口保留 `./built-claude --dangerously-skip-permissions` / `./official-claude --dangerously-skip-permissions`；权限实验先通过真实Shift+Tab切换到`default`，并由hook输入独立确认模式，**不是在bypass中假测ask/deny**。
+
+#### 去重功能矩阵
+
+| 范围 | passed / failed / not covered | 结论与边界 |
+| --- | --- | --- |
+| 五核心：初始化pending、清框、新草稿、reload、native watcher | 41 / 0 / 0 | 含基础设施的原始断言为66/66；接续任务只审计、不重复 |
+| active-turn Enter / queueSubmit | 6 / 0 / 0 | 同一active turnId、wait=false/true、core admission先于next receipt、drain不重跑Mod/classic hooks、rewrite/context各一次、新草稿保留 |
+| default工具权限与host边界 | 6 / 0 / 0 | 实际ask→Yes执行/No无副作用，配置allow/deny通过；可信Mod process capability与工具权限另行观察 |
+| 官方diff原件在本地inline | 7 / 1 / 0 | open、Enter→hunks、返回、ask、单次context、独立reload、disable→builtin归属通过；快速双Escape仍失败 |
+| 官方diff原件在本地fullscreen | 5 / 0 / 1 | 现有运行只审计；disable→builtin内部归属证据仍不足，不借用inline通过替代 |
+| 官方2.1.272原件对照 | 0 / 0 / 9 | 自然rollout-off，后续Mods行为不可比较；builtin成功不计Mod通过 |
+| **合计功能矩阵** | **65 / 1 / 10** | 共76项，范围有界，不等于完整官方API或完整插件功能覆盖 |
+
+总计13次raw实验（中断前8次、接续5次），原始断言 **138 passed / 6 failed / 22 not covered**。根据同次证据纠正四处判定器缺陷后为 **142 / 2 / 22**：排队context实际位于nested tool_result.content；拒绝文案为aborted；diff上下文统计误纳入辅助Haiku请求；reload归属marker在关闭而非打开时出现。旧raw未改写，修正附独立audit。剩余两个raw失败分别为旧queued fixture拒载和快速Escape产品问题；功能表排除了基础设施、无效fixture首试和重复setup。没有将累计166条raw记录冒充166个独立功能。
+
+#### inline已修项、新失败与归属证据
+
+- **旧Enter卡住已在新binary消失**：原件文件列表→Enter→hunks通过，支持同id resize保焦点修复；未改官方源码。
+- **新失败：快速双Escape误开Rewind**。detail→list→close两次Escape间隔约 **205ms**，Mod已关闭但composer未正常恢复，反而打开Rewind。现象确认；候选原因为focused Mods pane消费Escape后，PromptInput仍计入800ms double-press窗口，尚无事件路由级插桩证明完整因果链。位置 `src/components/ModsPane.tsx:746`、`src/components/PromptInput/PromptInput.tsx:2633`、`src/hooks/useDoublePress.ts:6`。证据 `F/product-findings.json`、`runtime/local-original-inline/dialog-dismiss-viewport.txt`、`diff-closed-timeout-viewport.txt`及同次`inputs.json`。后续间隔超过1.05秒可正常关闭，仅用于继续其余场景，**不算修复，不覆盖原失败**。
+- ask/context在第二独立完整场景验证：两个主请求新增diff附件次数为`[1,0]`，辅助请求不混计；`runtime/local-original-inline-remaining/ask-context-audited.json`。
+- 在明确关闭后单独reload，reopen后对应Mod关闭marker证明归属；disable后有同次builtin归属记录。`reload-ownership-audited.json`、`disable-ownership.json`，不以旧viewport残留判断owner。
+- 所用官方diff原件固定commit `f96c3b49c4c8721685206aaab23609b2d399df4e`，该diff目录775文件哈希均一致；不是完整官方仓库文件数。
+
+#### admission、权限及官方边界
+
+- queued首试`module-ready`超时的直接原因是fixture将`$`传入helper而被loader拒绝；仅修仓库外harness为有效契约，未放宽loader。后续实际键盘`Enter`与`ctrl+x enter`的同次wire、classic/Mod调用和队列界面证据通过。私有enqueue函数的精确调用时间未插桩，运行证据证明public admission先于next receipt、API barrier释放前已显示入队、drain恰好一次；不将其夸大为内部时间戳证明。见 `F/resume-harness-diagnoses.json`、`runtime/queued-admission-ready-fix/wire-counts-audited.json`。
+- 真实default模式ask→Yes/No通过。初次allow规则fixture夹带重定向，因此又触发路径授权；后续只重跑未完成的规则场景，避免用此harness失配指责产品。见 `runtime/default-permissions/default-mode-observed.json`、`ask-deny-audited.json`、`runtime/default-permissions-remaining/result.json`。
+- **可信Mod的`$.process.run`不是模型Bash工具权限边界**：实测`deny:["Bash"]`不阻止该host capability，见 `host-boundary-observation.json`。当前工具ask/allow/deny通过不能据此承诺每个Mod进程操作都弹权限框；Mods不得作为不可信代码的隔离沙箱。
+- 官方同fixture在本轮真实启动仍记录`tengu_plugin_hooks_modules`自然关闭，原因是隔离third-party loopback provider/telemetry opt-out；未伪造账户、feature flag或读取真实认证。`F/official-local-symmetry.json`、`runtime/official-original-inline/gating-markers.json`保存对照。不推断真实获授权账号的rollout状态，也不宣称官方运行parity通过。
+
+#### 精确运行索引与清理
+
+- 全部argv/env、session/socket/pane、输入、captures、API/debug及逐条assertions：`F/runtime-evidence-index.json`、`raw-assertion-ledger.json`。
+- 最终审计汇总：`F/resume-summary.json`；原始与修正判定逐条有来源，不拼成单次全绿运行。
+- 主要tmux targets：`cc-fixed-local-original-inline:0.0`、`cc-fixed-local-original-inline-remaining:0.0`、`cc-fixed-queued-admission-ready-fix:0.0`、`cc-fixed-default-permissions:0.0`、`cc-fixed-default-permissions-remaining:0.0`、`cc-fixed-official-original-inline:0.0`。
+- **13次实验的所有自有CLI/API/tmux进程、端口与socket均已清理**，未触碰其他进程；见 `F/resume-cleanup-final.json`。无运行中验证代理。
+- 未自动追加commit/push、未改依赖或共享设置，两份cross-session设计文档未动。后续优先修两处settings边界和Escape事件归属，均需红绿回归及新制品复验；官方gate与fullscreen归属缺证据继续保留not covered。
+
+---
+
+## 2026-09-18 严格测试：feat/mods 冻结基线（历史 failed，后续修复见上节）
+
+本节优先于后面的历史状态。基线为 `feat/mods@6c7b0e0eb7a9b36d4003c3a713209449c91d1b9a`；13 个功能提交已经完成，未 push。下列自动化与 18 场 scripted tmux 均在源码冻结期间执行，前后内容身份一致。基线结束后才开始定向修复；旧制品的通过结果不覆盖后续源码。
+
+证据根：
+
+- `T` = `/private/tmp/cmtest-o4j65cp5`
+- `E` = `/var/folders/4h/pgbsmxdx3wj12mb6mkj90gmh0000gp/T/claude-mods-repair-20260916.aHC2Z1mz`
+- `V` = `/private/tmp/claude-mods-final-6c7b0e0-20260917.gC6zgZbU`
+
+### 自动化：完整运行与独立进程必须分开
+
+| 检查 | 基线结果 | 证据及限制 |
+| --- | --- | --- |
+| `bun run lint` | exit 0 | `E/integration/feat-mods-lint-01.log`；仅该基线 |
+| `tsc --noEmit --pretty false` | exit 2，5 处诊断 | `E/integration/feat-mods-precommit-typecheck.log`；public turn 成员缺失两处、REPL 缺类型 import、plugin tier 测试类型两处 |
+| 裸 `bun test` | 600 秒超时，不完整 | `E/integration/feat-mods-full-bun-test-01.log`；自动扫入 ignored `dist/codex` 的外部 SDK 测试，且有本项目红测；旧 runner 外层 exit 0 不代表内部成功 |
+| 显式 tracked 清单，`bun test --isolate --no-orphans` | 600 秒超时，最终 -9 | `T/tracked-result.json`、`tracked.log`；262 个发现项，不等于全部完成；auth-sensitive top-level Agent 脚本缺 synthetic key，错误后等待未结束 |
+| Mods＋直接相邻，37 文件独立进程 | 33 文件通过；830 pass / 6 fail；1 个完成的 assertion script | `E/integration/feat-mods-isolated-20260917-final-summary.json`；完整原件和完整目标类型均配置，0 skip / timeout |
+| 既有相邻 inventory，53 文件独立进程 | 53 文件通过；89 registered pass；34 个完成的 assertion scripts | 同上；未与同进程失败批次混算 |
+| SSH proxy / session / PTY，3 文件独立进程 | 41 registered pass / 0 fail | `T/smoke-results.json`、`smoke0.log`–`smoke2.log`；短私有路径和所需 Unix socket / PTY 权限后通过 |
+| Peer IPC 独立进程 | 12 pass / 3 fail，environment-blocked | `T/smoke3.log`；sandbox 下 `/bin/ps` exec 被拒，process-start 身份不可得；未取消凭据隔离、未伪造身份使其通过 |
+| 其余 168 个发现项，逐文件独立进程 | 165 exit 0，3 exit 1，0 timeout | `T/remaining-results.json`、`remaining-summary.json`；96 个注册测试文件为545 pass / 3 fail；另68个 assertion scripts有完成标记、2个脚本失败、1个脚本当次缺标记、1个误发现的生产模块 |
+
+三批清单已核对互不重叠，覆盖262个发现项（其中1个是上述生产模块误匹配），基线合计 **1517 registered pass / 12 fail、103 个完成的 assertion scripts**，另2个脚本失败、1个当次缺sentinel；见 `T/baseline-inventory-audit.json`。这是多个独立进程的基线汇总，不是单进程完整 `bun test` 通过，也不包含后续重试。
+
+最后一组的两个脚本失败为 `bootstrap-openai.test.ts` 与 `LocalWorkflowTask.test.ts`；Bun 将 top-level error 打印为各 1 fail，这两条不混入 registered test 计数。`src/ink/hit-test.ts` 实为生产 hit-testing 模块，仅因命名被 Bun 匹配，不计测试通过。`nativeInstaller/download.test.ts` 原运行无完成标记，后以 `await import(...)` 后置 sentinel 独立复验完成，证据 `T/main-fix-4.log`；不倒改原批次资格。
+
+90 文件 coverage 共53份 LCOV：Mods 父进程已插桩源码行并集 **5059/5796（87.28%）**。全部导入源码为23.05%，不是全仓覆盖率。Worker、VM、child compiler/process不在父进程LCOV内，直接执行脚本无LCOV；失败测试执行行也计入覆盖率。最终父进程 expect calls为3424，旧汇总3510错误重复计入 `print.peer` 子进程86次；修正和子摘要边界见 `E/integration/feat-mods-isolated-20260917-final-summary.json`、`feat-mods-isolated-20260917-coverage-summary.json`。不宣称 full covered。
+
+### 新构建、交互与官方对照
+
+实际 `make build` exit 0，版本仍为 **2.1.219**，未伪装成官方2.1.272。Bun构建成功不替代tsc通过。
+
+- 本地 SHA-256：`1ccb1c0eb4f82feb86f63e5902eb86788f1c375eabcb014311dc2e6fdf006e42`。
+- 官方2.1.272 SHA-256：`195e24e8e1f9bf46f1eaee72d434a33e18f9f5796f29a6348a00d16c5f8aee75`；指定制品与仓库 `official-claude` 一致。
+- 构建/source link：`V/build.json`、`V/source-build-link.json`；18场精确argv、输入、session/socket/pane、原始结果及审计解释：`V/final-adjudication.json`、`V/runtime-summary.json`。
+- 两端均以hash一致副本在仓库外隔离workspace中运行，独立HOME/config/XDG，160×50 scripted tmux，synthetic key、受控loopback API，无真实凭据或外部模型流量。
+
+| 场景 | 原始 passed / failed / not covered | 审计结论 |
+| --- | --- | --- |
+| 五核心：初始化pending、清框、新草稿、reload、watcher | 66 / 0 / 0 | 本轮重新执行，passed |
+| Pane 首试 | 10 / 1 / 11 | 旧harness错误期待Button事件对象；官方契约实际`onPress: () => void` |
+| Pane 新session契约复测 | 19 / 0 / 3 | 标题、重绘、scroll、resize、Tab focus、关闭和prompt恢复通过；鼠标送达/关闭后鼠标/stale callback lease未覆盖 |
+| 官方原件diff，本地inline | 9 / 3 / 3 | Enter后未进入hunks，真实未通过；后续专项确认同id调整高度清除焦点，详见下文；其后reload前置状态不成立，不算独立产品缺陷；builtin ownership缺证据 |
+| 官方原件diff，本地fullscreen | 15 / 1 / 0 | 开关、刷新、reload等通过；disable后builtin可见，但内部ownership证据不足 |
+| 官方原件diff，本地非Git | 7 / 0 / 0 | passed |
+| Store | 8 / 0 / 0 | passed |
+| cancel / worker fault / 不重放 | 20 / 0 / 0 | passed |
+| 官方六场 | 42 / 0 / 25 | 自然rollout-off，Mods行为parity为not covered；passed仅证明基础readiness/隔离/工具/清理等 |
+| 合计原始记录 | **196 / 5 / 42** | 含首试与独立复测，243条记录不是243个去重测试；整体failed |
+
+官方非Git场因gate-off实际执行builtin `/diff`，脚本错误等待Mod文案而超时；不作为官方Mod非Git缺陷。未改官方binary、未绕过账户/组织gate，未将本地运行原件当成官方binary parity。Permission ask/allow/deny和真实provider网络尚未覆盖。所有18场自有CLI/API/tmux/socket/port清理完毕，见 `V/cleanup-audit.json`，最终制品和源码身份不变。
+
+### 确认问题与修复边界
+
+1. **public turn / queued admission真实缺口**：runtime未发布active public turn，提交时queue metadata漏turnId；`processUserInput`未返回settled admission，dequeue重新执行hooks。保留5条原始红测；现已接通public turn登记/释放与提交前快照，core admission后入队再返回`next`，普通dequeue、中途drain及并发onQuery回退均保留settled消息/context。定向最终 `T/pa-final-{0..4}.log` 分别为REPL69、processUserInput44、promptAdapter31、query44、runtime63 pass；另相邻query/peer/keybinding及两个完成的assertion scripts绿，类型检查通过。`T/pa-final-results.json`保留命令与环境，子进程计数不重复加入最终全仓汇总；新binary仍待复验。
+2. **无hooks MCP provider fixture缺host注入**：standalone runtime未提供`pluginOrigin`。真实session跨generation测试已通过；修fixture注入相同canonical来源计算，不在runtime里偷偷读全局settings、不取消未知provider错误。
+3. **managed merge-only真实缺陷**：最高层只有`managedSourcesBehavior:'merge'`时被过滤，MDM与file未合并。已在过滤内容来源前独立选择模式；仓库外红测 `T/settings-merge-file-probe.ts` / `.log`、repo红测 `T/managed-mode-fix/regression-red.log` 保留。新增边界fixture最初误写schema不接受的`replace`，整合tsc发现后纠正为合法`first-wins`，未扩展schema；最新完整hostOperations复验 `T/ui-settings-green-3.log` 为45 pass / 0 fail，包含mode-only及默认first-wins不受低层merge覆盖。
+4. **SSH旧源码正则失配**：命令加载新增UDS等待分支、remote过滤迁入`useReplCommands`、mode变为提交快照。改为执行真实AST提取表达式，并增加React hook对plugin/MCP/Mod三类remote过滤断言，不仅放宽正则。中间失败保留 `T/main-fix-2.log`，定向复验 `T/ssh-behavior-recheck.log` 35/35通过，最终源码仍须重跑。
+5. **bootstrap环境失配**：测试mock了axios却被runner的nonessential开关提前跳过。仅该独立复验移除该开关，仍sandbox拒外网、禁telemetry，完整脚本sentinel通过：`T/bootstrap-recheck.json` / `.log`。未改生产代码或断言。
+6. **Workflow fixture缺Plan mode配置**：私有持久化session显示启动Agent前报`Plan mode is disabled`，不是未等待；测试只设置AppState，实际gate读取全局settings cache。该缺陷早于Mods基线，现按sibling tests显式设置`planModeAvailable:true`并afterAll恢复cache，未改产品权限gate；完整脚本通过：`T/workflow-fixture-fix.log`、`.json`。
+7. **inline diff焦点丢失真实缺陷**：原件先以`focus:true`打开pane，再以同id、省略focus调整rows；本地`openState`错误清除已有焦点。专项真实event顺序、稳定等待对照及六场清理记录在 `/private/tmp/mods-inline-enter-20260917-l8x18ywl/diagnosis.json`；不是Enter时机不足或Button参数错误。repo新测试红测 `T/ui-focus-red-0.log` 为18 pass / 1 fail；删除三行错误清焦点逻辑后，`T/ui-settings-green-{0,1,2}.log` 分别为UI service19、runtimeUi18、ModsPane24 pass。省略focus不夺取已拒绝/释放的焦点，composer/dialog/keyboard限制仍可撤权；未改renderer抢焦点、未改官方原件。新binary的Enter→hunks及Escape仍待复验。
+
+目前修复尚未整合结束，不能将上面定向绿测当最终全仓/新制品通过。后续必须重跑类型、lint、受影响及独立全仓清单、构建与相应终端场景，并在本节前追加最终结论；历史raw证据全部保留。
+
+---
+
 ## 当前源码补充：宿主取消与作者契约（整合仍在进行）
 
 本节记录指定 `4fea45f3…` 制品之后的源码验证，不将以下单测/类型结果算作新 CLI 验收。Pane 标题/滚动失败、官方 gating-off 及下方历史 raw evidence 均保留；最终构建、完整官方 diff 功能矩阵、native managed 保护链收口和最终覆盖报告尚未完成。
