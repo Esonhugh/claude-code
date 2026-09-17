@@ -15,7 +15,7 @@ import type { MessageUpdateLazy } from '../tools/toolExecution.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ModInput } from './types.js'
 
-/** Filled by the existing tool pipeline, before mapping or classic output hooks. */
+/** Filled by the existing tool pipeline; MCP output includes its classic rewrite. */
 export type ModToolExecutionRecord = {
   input: ModInput
   hasResult: boolean
@@ -27,8 +27,8 @@ export type ModToolExecutionRecord = {
 type ToolCallResult = {
   result?: unknown
   deny?: string
-  ref?: string
-  context?: string | string[]
+  ref?: number
+  context?: readonly string[]
 }
 
 export async function runModToolCall({
@@ -39,6 +39,7 @@ export async function runModToolCall({
   toolUseContext,
   assistantMessage,
   core,
+  review,
 }: {
   snapshot: ModSnapshot
   tool: Tool
@@ -50,8 +51,19 @@ export async function runModToolCall({
     input: ModInput,
     record: ModToolExecutionRecord,
   ) => Promise<MessageUpdateLazy[]>
+  /** Host review after user dispatch, before mapping/persistence; never replays core. */
+  review?: (
+    input: ModInput,
+    output: unknown,
+    context: readonly string[],
+  ) => Promise<{
+    output: unknown
+    messages: MessageUpdateLazy[]
+    context: readonly string[]
+  }>
 }): Promise<MessageUpdateLazy[]> {
   const runs: ModToolExecutionRecord[] = []
+  const referencedRuns: ModToolExecutionRecord[] = []
   const pending: Promise<unknown>[] = []
   const event = {
     ...input,
@@ -82,17 +94,20 @@ export async function runModToolCall({
   function matchingRun(value: ToolCallResult) {
     if (value.deny !== undefined) return undefined
     const referenced =
-      value.ref !== undefined ? runs[Number(value.ref)] : undefined
+      value.ref !== undefined ? referencedRuns[value.ref - 1] : undefined
     if (
       referenced?.messages.length &&
-      isEqual(value.result, valueOf(referenced))
+      (value.result === undefined || isEqual(value.result, valueOf(referenced)))
     )
       return referenced
     return runs.findLast(
       run => run.messages.length && isEqual(value.result, valueOf(run)),
     )
   }
-  function validateResult(value: unknown): asserts value is ToolCallResult {
+  function validateResult(
+    value: unknown,
+    nextResults: readonly unknown[] = [],
+  ): asserts value is ToolCallResult {
     if (value === null || typeof value !== 'object' || Array.isArray(value))
       throw new Error('tool.call must return an object')
     const result = value as ToolCallResult
@@ -104,14 +119,48 @@ export async function runModToolCall({
     if (!('result' in result))
       throw new Error('tool.call must return result or deny')
     if (
-      result.context !== undefined &&
-      typeof result.context !== 'string' &&
-      !(
-        Array.isArray(result.context) &&
-        result.context.every(item => typeof item === 'string')
-      )
+      result.ref !== undefined &&
+      (!Number.isSafeInteger(result.ref) ||
+        result.ref < 1 ||
+        !referencedRuns[result.ref - 1])
     )
-      throw new Error('tool.call context must be text or a list of texts')
+      throw new Error('tool.call ref must identify an execution of this call')
+    if (result.context !== undefined) {
+      if (!Array.isArray(result.context))
+        throw new Error('tool.call context must be a list of texts')
+      let length = 0
+      for (let index = 0; index < result.context.length; index++) {
+        const item = result.context[index]
+        if (
+          !Object.hasOwn(result.context, index) ||
+          typeof item !== 'string' ||
+          item === ''
+        )
+          throw new Error('tool.call context must contain non-empty texts')
+        length += item.length
+      }
+      if (length > 32000)
+        throw new Error('tool.call context exceeds 32000 characters')
+    }
+    const downstream = (nextResults as readonly ToolCallResult[]).filter(
+      item => item.deny === undefined,
+    )
+    const matching = downstream.filter(item =>
+      isEqual(item.result, result.result),
+    )
+    for (const below of matching.length ? matching : downstream) {
+      const remaining = new Map<string, number>()
+      for (const item of result.context ?? [])
+        remaining.set(item, (remaining.get(item) ?? 0) + 1)
+      for (const item of below.context ?? []) {
+        const count = remaining.get(item) ?? 0
+        if (count === 0)
+          throw new Error(
+            'tool.call cannot remove context attached by a downstream hook',
+          )
+        remaining.set(item, count - 1)
+      }
+    }
     if (matchingRun(result)) return
     if (runs.at(-1) && failed(runs.at(-1)!))
       throw new Error(
@@ -146,7 +195,7 @@ export async function runModToolCall({
           hasResult: false,
           messages: [],
         }
-        const ref = String(runs.push(record) - 1)
+        runs.push(record)
         const execution = (async () => {
           try {
             record.messages = await core(args, record)
@@ -165,7 +214,7 @@ export async function runModToolCall({
                     .join('\n') ?? '')
               : ''
           return {
-            ref,
+            ref: referencedRuns.push(record),
             result: valueOf(record),
             text,
             ...(failed(record) ? { isError: true } : {}),
@@ -183,22 +232,45 @@ export async function runModToolCall({
   }
   toolUseContext.abortController.signal.throwIfAborted()
   validateResult(result)
-  const unchanged = matchingRun(result)
+  const finalResult = result as ToolCallResult
+  let unchanged = matchingRun(finalResult)
   const last = runs.at(-1)
   const source = unchanged ?? last
-  const context =
-    result.deny === undefined
-      ? (typeof result.context === 'string'
-          ? [result.context]
-          : (result.context ?? [])
-        ).filter(Boolean)
-      : []
+  let context = finalResult.deny === undefined ? (finalResult.context ?? []) : []
+  let reviewedMessages: MessageUpdateLazy[] = []
+  // Real failures were reviewed in the existing catch path. No-next deny is
+  // not an execution; deny after execution still reviews the last real output.
+  if (
+    review &&
+    (finalResult.deny === undefined || last?.hasResult) &&
+    !(source && failed(source))
+  ) {
+    const output =
+      finalResult.deny !== undefined
+        ? last
+          ? valueOf(last)
+          : undefined
+        : unchanged
+          ? valueOf(unchanged)
+          : finalResult.result
+    const reviewed = await review(source?.input ?? input, output, context)
+    toolUseContext.abortController.signal.throwIfAborted()
+    reviewedMessages = reviewed.messages
+    context = reviewed.context
+    if (
+      finalResult.deny === undefined &&
+      !isEqual(output, reviewed.output)
+    ) {
+      finalResult.result = reviewed.output
+      unchanged = undefined
+    }
+  }
   const additionalContext: MessageUpdateLazy[] = context.length
     ? [
         {
           message: createAttachmentMessage({
             type: 'hook_additional_context',
-            content: context,
+            content: [...context],
             hookName: 'tool.call',
             toolUseID: `${toolUseID}-context`,
             hookEvent: 'PostToolUse',
@@ -224,21 +296,21 @@ export async function runModToolCall({
         if (processed !== block) Object.assign(block, processed)
       }
     }
-    return additionalContext.length
-      ? [...unchanged.messages, ...additionalContext]
+    return additionalContext.length || reviewedMessages.length
+      ? [...unchanged.messages, ...reviewedMessages, ...additionalContext]
       : unchanged.messages
   }
 
   const output =
-    result.deny === undefined && tool.outputSchema
-      ? tool.outputSchema.parse(result.result)
-      : result.result
+    finalResult.deny === undefined && tool.outputSchema
+      ? tool.outputSchema.parse(finalResult.result)
+      : finalResult.result
   const mapped =
-    result.deny !== undefined
+    finalResult.deny !== undefined
       ? {
           type: 'tool_result' as const,
           tool_use_id: toolUseID,
-          content: `<tool_use_error>${result.deny}</tool_use_error>`,
+          content: `<tool_use_error>${finalResult.deny}</tool_use_error>`,
           is_error: true,
         }
       : await processToolResultBlock(tool, output, toolUseID)
@@ -259,8 +331,8 @@ export async function runModToolCall({
     toolUseResult:
       toolUseContext.agentId && !toolUseContext.preserveToolUseResults
         ? undefined
-        : result.deny !== undefined
-          ? `Error: ${result.deny}`
+        : finalResult.deny !== undefined
+          ? `Error: ${finalResult.deny}`
           : output,
     sourceToolAssistantUUID: assistantMessage.uuid,
   })
@@ -276,6 +348,7 @@ export async function runModToolCall({
           update === original ? replacement : update,
         )
       : [...(source?.messages ?? []), replacement]),
+    ...reviewedMessages,
     ...additionalContext,
   ]
 }

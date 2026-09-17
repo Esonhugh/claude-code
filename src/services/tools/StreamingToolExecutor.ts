@@ -11,6 +11,7 @@ import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
 import type { ModSnapshot } from '../mods/runtime.js'
+import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 
 type MessageUpdate = {
   message?: Message
@@ -100,7 +101,9 @@ export class StreamingToolExecutor {
       if (this.admissionClosed || this.discarded)
         throw new Error('Tool executor admission is closed')
       if (!this.modsSnapshot) {
-        this.modsSnapshot = this.toolUseContext.mods.capture()
+        this.modsSnapshot = this.toolUseContext.mods.capture({
+          toolCatalog: () => createToolCatalogForContext(this.toolUseContext),
+        })
         this.toolUseContext = {
           ...this.toolUseContext,
           modsSnapshot: this.modsSnapshot,

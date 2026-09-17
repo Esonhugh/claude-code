@@ -15,6 +15,8 @@ import { createModsRuntime } from '../mods/runtime.js'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createSubagentContext } from '../../utils/forkedAgent.js'
+import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 
 const originalSettings = getSessionSettingsCache()
 setSessionSettingsCache({ settings: {}, errors: [] })
@@ -144,6 +146,42 @@ describe('Mods scheduler admission', () => {
       expect(f.releases()).toBe(1)
     })
 
+    test(`${streaming ? 'streaming' : 'batch'} author tool.list sees the executing context catalog`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'mods-scheduler-catalog-'))
+      const diagnostics: unknown[] = []
+      const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+      const f = fixture(true)
+      f.context.mods = runtime
+      f.context.options.agentDefinitions = { activeAgents: [], allAgents: [] }
+      f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+      f.tool.prompt = async () => 'Scheduler tool description'
+      try {
+        const entry = join(root, 'register.ts')
+        await writeFile(entry, `export function register(on) {
+          on('tool.call', async ($) => ({result:{value:JSON.stringify(await $.tool.list())}}));
+        }`)
+        await runtime.reconcile([{name:'catalog',storageId:'catalog@test',pluginRoot:root,entrypoints:[entry]}])
+        const executor = streaming ? new StreamingToolExecutor([f.tool], allow, f.context) : undefined
+        if (executor) executor.addTool(f.blocks[0]!, f.assistant)
+        // A failed hook would otherwise enter the real core and wait on this gate.
+        f.gates[0]!.resolve()
+        const updates = await Array.fromAsync(executor
+          ? executor.getRemainingResults()
+          : runTools([f.blocks[0]!], [f.assistant], allow, f.context))
+        const result = updates.flatMap(update => {
+          if (update.message?.type !== 'user') return []
+          const content = update.message.message.content
+          return typeof content === 'string' ? [] : content
+        }).find(block => block.type === 'tool_result')
+        expect(result).toMatchObject({content:JSON.stringify([{name:f.tool.name,description:'Scheduler tool description',mcp:false}])})
+        expect(f.started).toEqual([])
+        expect(diagnostics).toEqual([])
+      } finally {
+        await runtime.dispose()
+        await rm(root, {recursive:true,force:true})
+      }
+    })
+
     test(`${streaming ? 'streaming' : 'batch'} retains actual queued Worker activation through reload`, async () => {
       const root = await mkdtemp(join(tmpdir(), 'mods-scheduler-reload-'))
       const runtime = createModsRuntime()
@@ -201,6 +239,26 @@ describe('Mods scheduler admission', () => {
       }
     })
 
+    test(`${streaming ? 'streaming' : 'batch'} cancellation skips queued effects and releases the pinned snapshot`, async () => {
+      const f = fixture(true)
+      const executor = streaming ? new StreamingToolExecutor([f.tool], allow, f.context) : undefined
+      if (executor) for (const block of f.blocks) executor.addTool(block, f.assistant)
+      const results = Array.fromAsync(executor
+        ? executor.getRemainingResults()
+        : runTools(f.blocks, [f.assistant], allow, f.context))
+      try {
+        await f.entered[0]!.promise
+        f.context.abortController.abort()
+        f.gates[0]!.resolve()
+        await results
+        expect(f.started).toEqual(['0'])
+        expect(f.captures()).toBe(1)
+        expect(f.releases()).toBe(1)
+      } finally {
+        for (const gate of f.gates) gate.resolve()
+      }
+    })
+
     test(`${streaming ? 'streaming' : 'batch'} keeps original concurrency with no Mods`, async () => {
       const f = fixture(undefined)
       const executor = streaming
@@ -252,6 +310,28 @@ describe('Mods scheduler admission', () => {
       runTools([f.blocks[0]!], [f.assistant], allow, f.context),
     )
     expect(f.captures()).toBe(2)
+    expect(f.releases()).toBe(2)
+  })
+
+  test('real subagent context shares runtime but not a parent batch snapshot or abort ownership', async () => {
+    const f = fixture(true)
+    f.context.readFileState = createFileStateCacheWithSizeLimit(10)
+    f.context.modsSnapshot = f.context.mods!.capture()
+    const child = createSubagentContext(f.context)
+    expect(child.mods).toBe(f.context.mods)
+    expect(child.modsSnapshot).toBeUndefined()
+    expect(child.abortController).not.toBe(f.context.abortController)
+    expect(child.getAppState).not.toBe(f.context.getAppState)
+    f.tool.call = async input => ({ data: input })
+    try {
+      await Array.fromAsync(runTools([f.blocks[0]!], [f.assistant], allow, child))
+      expect(f.captures()).toBe(2)
+      expect(f.releases()).toBe(1)
+      f.context.abortController.abort()
+      expect(child.abortController.signal.aborted).toBe(true)
+    } finally {
+      f.context.modsSnapshot.release()
+    }
     expect(f.releases()).toBe(2)
   })
 

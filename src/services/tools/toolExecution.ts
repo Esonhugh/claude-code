@@ -124,6 +124,7 @@ import {
   isMcpTool,
 } from '../mcp/utils.js'
 import {
+  type ManagedPreToolUsePass,
   resolveHookPermissionDecision,
   runPostToolUseFailureHooks,
   runPostToolUseHooks,
@@ -134,6 +135,7 @@ import {
   runModToolCall,
   type ModToolExecutionRecord,
 } from '../mods/toolAdapter.js'
+import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 
 
 /** Minimum total hook duration (ms) to show inline timing summary */
@@ -515,14 +517,19 @@ function streamedCheckPermissionsAndCallTool(
   const stream = new Stream<MessageUpdateLazy>()
   const ownedSnapshot = toolUseContext.modsSnapshot
     ? undefined
-    : toolUseContext.mods?.capture()
+    : toolUseContext.mods?.capture({ toolCatalog: () => createToolCatalogForContext(toolUseContext) })
   const snapshot = toolUseContext.modsSnapshot ?? ownedSnapshot
+  const context = snapshot
+    ? { ...toolUseContext, modsSnapshot: snapshot }
+    : toolUseContext
+  const wrapped = snapshot?.hasHooks('tool.call') === true
+  const managedPass: ManagedPreToolUsePass = {}
   const core = (args: Record<string, unknown>, record?: ModToolExecutionRecord) =>
     checkPermissionsAndCallTool(
       tool,
       toolUseID,
       args,
-      toolUseContext,
+      context,
       canUseTool,
       assistantMessage,
       messageId,
@@ -566,18 +573,127 @@ function streamedCheckPermissionsAndCallTool(
         })
       },
       record,
+      wrapped ? managedPass : undefined,
     )
-  const execution = snapshot?.hasHooks('tool.call')
-    ? runModToolCall({
-        snapshot,
-        tool,
-        toolUseID,
-        input,
-        toolUseContext,
-        assistantMessage,
-        core,
-      })
-    : core(input)
+  const execution = (async () => {
+    if (!wrapped) return core(input)
+    const before: MessageUpdateLazy[] = []
+    let args = input
+    let stopped: string | undefined
+    for await (const result of runPreToolUseHooks(
+      context,
+      tool,
+      args,
+      toolUseID,
+      messageId,
+      requestId,
+      mcpServerType,
+      mcpServerBaseUrl,
+      'managed',
+      managedPass,
+    )) {
+      if (result.type === 'message' || result.type === 'additionalContext') {
+        if (result.message.message.type === 'progress')
+          stream.enqueue(result.message)
+        else before.push(result.message)
+      } else if (result.type === 'hookPermissionResult') {
+        if (result.hookPermissionResult.behavior === 'deny')
+          stopped = result.hookPermissionResult.message
+        else if ('updatedInput' in result.hookPermissionResult)
+          args = result.hookPermissionResult.updatedInput ?? args
+      } else if (result.type === 'hookUpdatedInput') args = result.updatedInput
+      else if (result.type === 'stopReason') stopped = result.stopReason
+      else if (result.type === 'stop' || result.type === 'preventContinuation')
+        stopped ??= 'Execution stopped by PreToolUse hook'
+    }
+    if (stopped !== undefined)
+      return [
+        ...before,
+        {
+          message: createUserMessage({
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolUseID,
+              is_error: true,
+              content: stopped,
+            }],
+            toolUseResult: `Error: ${stopped}`,
+            sourceToolAssistantUUID: assistantMessage.uuid,
+          }),
+        },
+      ]
+    context.abortController.signal.throwIfAborted()
+    // Deliver outer diagnostics once. Reused passes retain decisions/provenance,
+    // but their context was already delivered here.
+    if (managedPass.result)
+      managedPass.result = { ...managedPass.result, additionalContext: undefined }
+    const results = await runModToolCall({
+      snapshot: snapshot!,
+      tool,
+      toolUseID,
+      input: args,
+      toolUseContext: context,
+      assistantMessage,
+      core,
+      review: async (reviewInput, output, addedContext) => {
+        const messages: MessageUpdateLazy[] = []
+        for await (const result of runPostToolUseHooks(
+          context,
+          tool,
+          toolUseID,
+          messageId,
+          reviewInput,
+          output,
+          requestId,
+          mcpServerType,
+          mcpServerBaseUrl,
+          'managed',
+        )) {
+          if ('updatedMCPToolOutput' in result)
+            output = result.updatedMCPToolOutput
+          else if (result.message.type === 'progress') stream.enqueue(result)
+          else messages.push(result)
+        }
+        // Additive Mod context is also an output surface, reviewed separately.
+        if (addedContext.length) {
+          for await (const result of runPostToolUseHooks(
+            context,
+            tool,
+            toolUseID,
+            messageId,
+            reviewInput,
+            [...addedContext],
+            requestId,
+            mcpServerType,
+            mcpServerBaseUrl,
+            'managed',
+          )) {
+            if ('updatedMCPToolOutput' in result) {
+              const replacement = result.updatedMCPToolOutput
+              addedContext =
+                typeof replacement === 'string'
+                  ? [replacement]
+                  : Array.isArray(replacement) &&
+                      replacement.every(item => typeof item === 'string')
+                    ? replacement
+                    : []
+            } else if (result.message.type === 'progress') stream.enqueue(result)
+            else messages.push(result)
+          }
+          if (
+            messages.some(
+              update =>
+                update.message.type === 'attachment' &&
+                update.message.attachment.type === 'hook_stopped_continuation',
+            )
+          )
+            addedContext = []
+        }
+        return { output, messages, context: addedContext }
+      },
+    })
+    return [...before, ...results]
+  })()
   execution
     .then(results => {
       for (const result of results) {
@@ -643,6 +759,7 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
   executionRecord?: ModToolExecutionRecord,
+  managedPass?: ManagedPreToolUsePass,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
   const parsedInput = tool.inputSchema.safeParse(input)
@@ -839,6 +956,8 @@ async function checkPermissionsAndCallTool(
     requestId,
     mcpServerType,
     mcpServerBaseUrl,
+    'all',
+    managedPass,
   )) {
     switch (result.type) {
       case 'message':
@@ -1539,6 +1658,7 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      managedPass ? 'non-managed' : 'all',
     )) {
       if ('updatedMCPToolOutput' in hookResult) {
         if (isMcpTool(tool)) {
@@ -1591,6 +1711,7 @@ async function checkPermissionsAndCallTool(
     }
 
     if (isMcpTool(tool)) {
+      if (executionRecord) executionRecord.result = toolOutput
       await addToolResult(toolOutput)
     }
 

@@ -65,7 +65,7 @@ function fixture(invoke: ModDispatchHook['invoke']) {
     ) => ({ type: 'tool_result', tool_use_id: id, content: data.value }),
   } as unknown as Tool
   const snapshot = {
-    hasHooks: () => true,
+    hasHooks: (event: string) => event === 'tool.call',
     release: () => {
       releases++
     },
@@ -87,7 +87,7 @@ function fixture(invoke: ModDispatchHook['invoke']) {
           {
             plugin: 'fixture',
             tier: 'user',
-            registration: { id: 1, event, hasCatch: false },
+            registration: { id: 1, event: 'tool.call', hasCatch: false },
             invoke,
           },
         ],
@@ -157,6 +157,26 @@ describe('Mods at the whole tool execution boundary', () => {
           ),
       ),
     ).toBe(true)
+    expect(f.releases()).toBe(1)
+  })
+
+  test('a rewritten ask decision cannot be converted into Mod success or execute the tool', async () => {
+    const f = fixture(async (e, next) => {
+      await next({ ...e, value: 'needs approval' })
+      return { result: { value: 'must-not-mask-ask' } }
+    })
+    const permissionInputs: unknown[] = []
+    const updates = await Array.fromAsync(runToolUse(f.block, f.assistant, async (_tool, input) => {
+      permissionInputs.push(input)
+      return { behavior: 'ask', message: 'fixture approval required' }
+    }, f.context))
+    expect(permissionInputs).toEqual([{ value: 'needs approval' }])
+    expect(f.calls).toEqual([])
+    const results = updates.flatMap(update => update.message.type === 'user' && Array.isArray(update.message.message.content)
+      ? update.message.message.content.filter(block => block.type === 'tool_result') : [])
+    expect(results).toHaveLength(1)
+    expect(results[0]!.is_error).toBe(true)
+    expect(JSON.stringify(results)).not.toContain('must-not-mask-ask')
     expect(f.releases()).toBe(1)
   })
 

@@ -4,6 +4,7 @@ import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
+import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 
 function getMaxToolUseConcurrency(): number {
   return (
@@ -22,10 +23,11 @@ export async function* runTools(
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdate, void> {
-  const snapshot = toolUseContext.mods?.capture()
-  let currentContext = snapshot
-    ? { ...toolUseContext, modsSnapshot: snapshot }
-    : toolUseContext
+  let currentContext = toolUseContext
+  const snapshot = toolUseContext.mods?.capture({
+    toolCatalog: () => createToolCatalogForContext(currentContext),
+  })
+  if (snapshot) currentContext = { ...currentContext, modsSnapshot: snapshot }
   try {
     for (const { isConcurrencySafe, blocks } of partitionToolCalls(
       toolUseMessages,
