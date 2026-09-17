@@ -35,6 +35,10 @@ export type Props = Except<Styles, 'textWrap'> & {
    */
   autoFocus?: boolean
   /**
+   * Called when this button receives keyboard focus.
+   */
+  onFocus?: (event: FocusEvent) => void
+  /**
    * Render prop receiving the interactive state. Use this to
    * style children based on focus/hover/active — Button itself
    * is intentionally unstyled.
@@ -48,6 +52,7 @@ function Button({
   onAction,
   tabIndex = 0,
   autoFocus,
+  onFocus,
   children,
   ref,
   ...style
@@ -88,7 +93,13 @@ function Button({
     [onAction],
   )
 
-  const handleFocus = useCallback((_e: FocusEvent) => setIsFocused(true), [])
+  const handleFocus = useCallback(
+    (event: FocusEvent) => {
+      setIsFocused(true)
+      onFocus?.(event)
+    },
+    [onFocus],
+  )
   const handleBlur = useCallback((_e: FocusEvent) => setIsFocused(false), [])
   const handleMouseEnter = useCallback(() => setIsHovered(true), [])
   const handleMouseLeave = useCallback(() => setIsHovered(false), [])

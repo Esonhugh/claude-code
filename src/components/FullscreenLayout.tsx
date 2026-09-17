@@ -54,6 +54,10 @@ type Props = {
    *  region (not the bottom slot) so the overflowY:hidden cap doesn't clip
    *  it. Fullscreen only — used for the companion speech bubble. */
   bottomFloat?: ReactNode
+  /** Mods pane content seated beside the transcript in fullscreen dock mode. */
+  dockPane?: ReactNode
+  /** Mods pane content seated above the prompt in inline mode. */
+  inlinePane?: ReactNode
   /** Slash-command dialog content. Rendered in an absolute-positioned
    *  bottom-anchored pane (▔ divider, paddingX=2) that paints over the
    *  ScrollBox AND bottom slot. Provides ModalContext so Pane/Dialog inside
@@ -302,6 +306,8 @@ export function FullscreenLayout({
   bottom,
   overlay,
   bottomFloat,
+  dockPane,
+  inlinePane,
   modal,
   modalScrollRef,
   scrollRef,
@@ -386,34 +392,46 @@ export function FullscreenLayout({
     const padCollapsed = sticky != null && overlay == null
     return (
       <PromptOverlayProvider>
-        <Box flexGrow={1} flexDirection="column" overflow="hidden">
-          {headerPrompt && (
-            <StickyPromptHeader
-              text={headerPrompt.text}
-              onClick={headerPrompt.scrollTo}
-            />
-          )}
-          <ScrollBox
-            ref={scrollRef}
-            flexGrow={1}
-            flexDirection="column"
-            paddingTop={padCollapsed ? 0 : 1}
-            stickyScroll
-          >
-            <ScrollChromeContext value={chromeCtx}>
-              {scrollable}
-            </ScrollChromeContext>
-            {overlay}
-          </ScrollBox>
-          {!hidePill && pillVisible && overlay == null && (
-            <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
-          )}
-          {bottomFloat != null && (
-            <Box position="absolute" bottom={0} right={0} opaque>
-              {bottomFloat}
+        <Box flexGrow={1} flexDirection="row" overflow="hidden">
+          <Box flexGrow={1} flexDirection="column" overflow="hidden">
+            {headerPrompt && (
+              <StickyPromptHeader
+                text={headerPrompt.text}
+                onClick={headerPrompt.scrollTo}
+              />
+            )}
+            <ScrollBox
+              ref={scrollRef}
+              flexGrow={1}
+              flexDirection="column"
+              paddingTop={padCollapsed ? 0 : 1}
+              stickyScroll
+            >
+              <ScrollChromeContext value={chromeCtx}>
+                {scrollable}
+              </ScrollChromeContext>
+              {overlay}
+            </ScrollBox>
+            {!hidePill && pillVisible && overlay == null && (
+              <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
+            )}
+            {bottomFloat != null && (
+              <Box position="absolute" bottom={0} right={0} opaque>
+                {bottomFloat}
+              </Box>
+            )}
+          </Box>
+          {dockPane != null && (
+            <Box flexDirection="column" flexShrink={0} width="50%" overflow="hidden">
+              {dockPane}
             </Box>
           )}
         </Box>
+        {inlinePane != null && (
+          <Box flexDirection="column" flexShrink={0} width="100%" overflow="hidden">
+            {inlinePane}
+          </Box>
+        )}
         <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">
           <SuggestionsOverlay />
           <DialogOverlay />
@@ -484,6 +502,8 @@ export function FullscreenLayout({
   return (
     <>
       {scrollable}
+      {dockPane}
+      {inlinePane}
       {bottom}
       {overlay}
       {modal}
