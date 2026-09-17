@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { afterAll } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +8,11 @@ import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { WorkflowTool } from '../../tools/WorkflowTool/WorkflowTool.js'
 import type { AgentId } from '../../types/ids.js'
+import {
+  getSessionSettingsCache,
+  resetSettingsCache,
+  setSessionSettingsCache,
+} from '../../utils/settings/settingsCache.js'
 import {
   classifyWorkflowAgentError,
   completeWorkflowAgent,
@@ -24,6 +30,16 @@ import {
   workflowPhaseTerminalAgentCount,
   type LocalWorkflowTaskState,
 } from './LocalWorkflowTask.js'
+
+const originalSettings = getSessionSettingsCache()
+afterAll(() => {
+  if (originalSettings) setSessionSettingsCache(originalSettings)
+  else resetSettingsCache()
+})
+setSessionSettingsCache({
+  settings: { enableWorkflows: true, planModeAvailable: true },
+  errors: [],
+})
 
 assert.equal(
   classifyWorkflowAgentError(new Error('Prompt is too long')),
