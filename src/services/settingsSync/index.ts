@@ -514,9 +514,8 @@ async function applyRemoteEntriesToLocal(
       userSettingsPath &&
       !exceedsSizeLimit(userSettingsContent, userSettingsPath)
     ) {
-      // Mark as internal write to prevent spurious change detection
-      markInternalWrite(userSettingsPath)
       if (await writeFileForSync(userSettingsPath, userSettingsContent)) {
+        markInternalWrite(userSettingsPath, userSettingsContent)
         appliedCount++
         settingsWritten = true
       }
@@ -545,9 +544,8 @@ async function applyRemoteEntriesToLocal(
         localSettingsPath &&
         !exceedsSizeLimit(projectSettingsContent, localSettingsPath)
       ) {
-        // Mark as internal write to prevent spurious change detection
-        markInternalWrite(localSettingsPath)
         if (await writeFileForSync(localSettingsPath, projectSettingsContent)) {
+          markInternalWrite(localSettingsPath, projectSettingsContent)
           appliedCount++
           settingsWritten = true
         }

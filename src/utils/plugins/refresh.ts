@@ -27,6 +27,7 @@ import type { PluginError } from '../../types/plugin.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
+import { refreshSettings } from '../settings/changeDetector.js'
 import { clearAllCaches, refreshPluginRuntimes } from './cacheUtils.js'
 import { clearInstalledPluginsCache } from './installedPluginsManager.js'
 import { getPluginCommands, getPluginSkills } from './loadPluginCommands.js'
@@ -74,6 +75,7 @@ export type RefreshActivePluginsResult = {
 export async function refreshActivePlugins(
   setAppState: SetAppState,
 ): Promise<RefreshActivePluginsResult> {
+  await refreshSettings()
   logForDebugging('refreshActivePlugins: clearing all plugin caches')
   clearInstalledPluginsCache()
   clearAllCaches()

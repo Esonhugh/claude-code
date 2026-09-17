@@ -406,6 +406,11 @@ async function runIsolatedTests(): Promise<void> {
     ...settingsSync,
     redownloadUserSettings: async () => false,
   }));
+  // This suite supplies an installed-plugins-only filesystem. Settings freshness
+  // is covered with the real filesystem/loader in settings/changeDetector.test.ts.
+  mock.module("../settings/changeDetector.js", () => ({
+    refreshSettings: async () => {},
+  }));
   const { refreshActivePlugins } = await import("./refresh.js");
   const { call } =
     await import("../../commands/reload-plugins/reload-plugins.js");

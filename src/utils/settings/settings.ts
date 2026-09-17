@@ -28,17 +28,20 @@ import {
   getEnabledSettingSources,
   type SettingSource,
 } from './constants.js'
-import { markInternalWrite } from './internalWrites.js'
+import { markInternalWrite, settingsContentIdentity } from './internalWrites.js'
 import {
   getManagedFilePath,
   getManagedSettingsDropInDir,
 } from './managedPath.js'
 import { getHkcuSettings, getMdmSettings } from './mdm/settings.js'
 import {
+  acceptSettingsFile,
   getCachedParsedFile,
   getCachedSettingsForSource,
   getPluginSettingsBase,
   getSessionSettingsCache,
+  isSettingsFileRetained,
+  type ParsedSettings,
   resetSettingsCache,
   setCachedParsedFile,
   setCachedSettingsForSource,
@@ -190,7 +193,12 @@ export function parseSettingsFile(path: string): {
       errors: cached.errors,
     }
   }
-  const result = parseSettingsFileUncached(path)
+  let result: ParsedSettings
+  try {
+    result = readSettingsFile(path)
+  } catch {
+    return { settings: null, errors: [] }
+  }
   setCachedParsedFile(path, result)
   // Clone the first return too — the caller may mutate before
   // another caller reads the same cache entry.
@@ -200,16 +208,22 @@ export function parseSettingsFile(path: string): {
   }
 }
 
-function parseSettingsFileUncached(path: string): {
-  settings: SettingsJson | null
-  errors: ValidationError[]
-} {
+/** Read and validate a candidate without publishing it into the effective cache. */
+export function readSettingsFile(
+  path: string,
+  writtenBytes?: Buffer,
+): ParsedSettings {
+  let identity: string | null = null
   try {
-    const { resolvedPath } = safeResolvePath(getFsImplementation(), path)
-    const content = readFileSync(resolvedPath)
+    const fs = getFsImplementation()
+    const { resolvedPath } = safeResolvePath(fs, path)
+    const bytes = writtenBytes ?? fs.readFileBytesSync(resolvedPath)
+    identity = settingsContentIdentity(bytes)
+    const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf16le' : 'utf8'
+    const content = bytes.toString(encoding).replaceAll('\r\n', '\n')
 
     if (content.trim() === '') {
-      return { settings: {}, errors: [] }
+      return { settings: {}, errors: [], identity }
     }
 
     const data = safeParseJSON(content, false)
@@ -222,13 +236,14 @@ function parseSettingsFileUncached(path: string): {
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
-      return { settings: null, errors: [...ruleWarnings, ...errors] }
+      return { settings: null, errors: [...ruleWarnings, ...errors], identity }
     }
 
-    return { settings: result.data, errors: ruleWarnings }
+    return { settings: result.data, errors: ruleWarnings, identity }
   } catch (error) {
     handleFileSystemError(error, path)
-    return { settings: null, errors: [] }
+    if (!isENOENT(error)) throw error
+    return { settings: null, errors: [], identity }
   }
 }
 
@@ -442,7 +457,7 @@ export function updateSettingsForSource(
     let existingSettings = getSettingsForSourceUncached(source)
 
     // If validation failed, check if file exists with a JSON syntax error
-    if (!existingSettings) {
+    if (!existingSettings && !isSettingsFileRetained(filePath)) {
       let content: string | null = null
       try {
         content = readFileSync(filePath)
@@ -496,16 +511,13 @@ export function updateSettingsForSource(
       },
     )
 
-    // Mark this as an internal write before writing the file
-    markInternalWrite(filePath)
+    const content = jsonStringify(updatedSettings, null, 2) + '\n'
+    writeFileSyncAndFlush_DEPRECATED(filePath, content)
+    // The synchronous write has completed before a watcher callback can run.
+    markInternalWrite(filePath, content)
 
-    writeFileSyncAndFlush_DEPRECATED(
-      filePath,
-      jsonStringify(updatedSettings, null, 2) + '\n',
-    )
-
-    // Invalidate the session cache since settings have been updated
     resetSettingsCache()
+    acceptSettingsFile(filePath, readSettingsFile(filePath, Buffer.from(content)))
 
     if (source === 'localSettings') {
       // Okay to add to gitignore async without awaiting

@@ -1,5 +1,5 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { stat } from 'fs/promises'
+import { readdir, realpath, stat } from 'fs/promises'
 import * as platformPath from 'path'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
@@ -21,8 +21,19 @@ import {
   refreshMdmSettings,
   setMdmSettingsCache,
 } from './mdm/settings.js'
-import { getSettingsFilePathForSource } from './settings.js'
-import { resetSettingsCache } from './settingsCache.js'
+import {
+  getInitialSettings,
+  getSettingsFilePathForSource,
+  readSettingsFile,
+} from './settings.js'
+import {
+  acceptSettingsFile,
+  getCachedParsedFile,
+  getParsedSettingsPaths,
+  releaseSettingsFile,
+  resetSettingsCache,
+  retainSettingsFile,
+} from './settingsCache.js'
 
 /**
  * Time in milliseconds to wait for file writes to stabilize before processing.
@@ -38,9 +49,8 @@ const FILE_STABILITY_THRESHOLD_MS = 1000
 const FILE_STABILITY_POLL_INTERVAL_MS = 500
 
 /**
- * Time window in milliseconds to consider a file change as internal.
- * If a file change occurs within this window after markInternalWrite() is called,
- * it's assumed to be from Claude Code itself and won't trigger a notification.
+ * Retention window for internal-write identities, not a suppression window.
+ * A callback is suppressed only when its current bytes match the write.
  */
 const INTERNAL_WRITE_WINDOW_MS = 5000
 
@@ -67,6 +77,10 @@ let mdmPollTimer: ReturnType<typeof setInterval> | null = null
 let lastMdmSnapshot: string | null = null
 let initialized = false
 let disposed = false
+let lifecycle = 0
+let watchedPathAliases = new Map<string, string>()
+const pendingReviews = new Map<string, Promise<void>>()
+const blockedIdentities = new Map<string, string | null>()
 const pendingDeletions = new Map<string, ReturnType<typeof setTimeout>>()
 const settingsChanged = createSignal<[source: SettingSource]>()
 
@@ -85,6 +99,10 @@ export async function initialize(): Promise<void> {
   if (getIsRemoteMode()) return
   if (initialized || disposed) return
   initialized = true
+  const generation = lifecycle
+
+  // Prime the existing parsed cache before external events can arrive.
+  getInitialSettings()
 
   // Start MDM poll for registry/plist changes (independent of filesystem watching)
   startMdmPoll()
@@ -93,14 +111,33 @@ export async function initialize(): Promise<void> {
   registerCleanup(dispose)
 
   const { dirs, settingsFiles, dropInDir } = await getWatchTargets()
-  if (disposed) return // dispose() ran during the await
+  if (disposed || generation !== lifecycle) return // closed during the await
   if (dirs.length === 0) return
+
+  const watchedPaths = new Set(dirs)
+  const aliases = new Map<string, string>()
+  for (const path of settingsFiles) {
+    aliases.set(platformPath.normalize(path), path)
+    try {
+      aliases.set(platformPath.normalize(await realpath(path)), path)
+    } catch {
+      // The file may disappear between discovery and watcher setup.
+    }
+  }
+  for (const dir of dirs) {
+    try {
+      watchedPaths.add(await realpath(dir))
+    } catch {
+      // The directory may disappear between discovery and watcher setup.
+    }
+  }
+  watchedPathAliases = aliases
 
   logForDebugging(
     `Watching for changes in setting files ${[...settingsFiles].join(', ')}...${dropInDir ? ` and drop-in directory ${dropInDir}` : ''}`,
   )
 
-  watcher = chokidar.watch(dirs, {
+  watcher = chokidar.watch([...watchedPaths], {
     persistent: true,
     ignoreInitial: true,
     depth: 0, // Only watch immediate children, not subdirectories
@@ -113,7 +150,9 @@ export async function initialize(): Promise<void> {
     ignored: (path, stats) => {
       // Ignore special file types (sockets, FIFOs, devices) - they cannot be watched
       // and will error with EOPNOTSUPP on macOS.
-      if (stats && !stats.isFile() && !stats.isDirectory()) return true
+      if (stats && !stats.isFile() && !stats.isDirectory() && !stats.isSymbolicLink()) {
+        return true
+      }
       // Ignore .git directories
       if (path.split(platformPath.sep).some(dir => dir === '.git')) return true
       // Allow directories (chokidar needs them for directory-level watching)
@@ -143,6 +182,9 @@ export async function initialize(): Promise<void> {
   watcher.on('change', handleChange)
   watcher.on('unlink', handleDelete)
   watcher.on('add', handleAdd)
+  watcher.once('ready', () => {
+    if (!disposed) logForDebugging('Settings watcher ready (native events)')
+  })
 }
 
 /**
@@ -153,6 +195,7 @@ export async function initialize(): Promise<void> {
  */
 export function dispose(): Promise<void> {
   disposed = true
+  lifecycle++
   if (mdmPollTimer) {
     clearInterval(mdmPollTimer)
     mdmPollTimer = null
@@ -160,6 +203,7 @@ export function dispose(): Promise<void> {
   for (const timer of pendingDeletions.values()) clearTimeout(timer)
   pendingDeletions.clear()
   lastMdmSnapshot = null
+  watchedPathAliases.clear()
   clearInternalWrites()
   settingsChanged.clear()
   const w = watcher
@@ -266,6 +310,7 @@ function settingSourceToConfigChangeSource(
 }
 
 function handleChange(path: string): void {
+  path = getConfiguredPath(path)
   const source = getSourceForPath(path)
   if (!source) return
 
@@ -280,24 +325,8 @@ function handleChange(path: string): void {
     )
   }
 
-  // Check if this was an internal write
-  if (consumeInternalWrite(path, INTERNAL_WRITE_WINDOW_MS)) {
-    return
-  }
-
-  logForDebugging(`Detected change to ${path}`)
-
-  // Fire ConfigChange hook first — if blocked (exit code 2 or decision: 'block'),
-  // skip applying the change to the session
-  void executeConfigChangeHooks(
-    settingSourceToConfigChangeSource(source),
-    path,
-  ).then(results => {
-    if (hasBlockingResult(results)) {
-      logForDebugging(`ConfigChange hook blocked change to ${path}`)
-      return
-    }
-    fanOut(source)
+  void reviewSettingsFile(path, source).catch(error => {
+    logForDebugging(`Settings review failed for ${path}: ${errorMessage(error)}`)
   })
 }
 
@@ -306,6 +335,7 @@ function handleChange(path: string): void {
  * pending deletion grace timer and treats the event as a change.
  */
 function handleAdd(path: string): void {
+  path = getConfiguredPath(path)
   const source = getSourceForPath(path)
   if (!source) return
 
@@ -328,6 +358,7 @@ function handleAdd(path: string): void {
  * the deletion is cancelled and treated as a normal change instead.
  */
 function handleDelete(path: string): void {
+  path = getConfiguredPath(path)
   const source = getSourceForPath(path)
   if (!source) return
 
@@ -340,16 +371,8 @@ function handleDelete(path: string): void {
     (p, src) => {
       pendingDeletions.delete(p)
 
-      // Fire ConfigChange hook first — if blocked, skip applying the deletion
-      void executeConfigChangeHooks(
-        settingSourceToConfigChangeSource(src),
-        p,
-      ).then(results => {
-        if (hasBlockingResult(results)) {
-          logForDebugging(`ConfigChange hook blocked deletion of ${p}`)
-          return
-        }
-        fanOut(src)
+      void reviewSettingsFile(p, src).catch(error => {
+        logForDebugging(`Settings deletion review failed for ${p}: ${errorMessage(error)}`)
       })
     },
     testOverrides?.deletionGrace ?? DELETION_GRACE_MS,
@@ -357,6 +380,109 @@ function handleDelete(path: string): void {
     source,
   )
   pendingDeletions.set(path, timer)
+}
+
+/** Explicit reload and watcher callbacks share the same review/publication path. */
+export async function refreshSettings(): Promise<void> {
+  if (disposed || getIsRemoteMode()) return
+  const generation = lifecycle
+  const inFlight = new Map(pendingReviews)
+  const paths = new Set(getParsedSettingsPaths())
+  for (const source of SETTING_SOURCES) {
+    if (source === 'flagSettings') continue
+    const path = getSettingsFilePathForSource(source)
+    if (path) paths.add(path)
+  }
+  const dropInDir = getManagedSettingsDropInDir()
+  try {
+    for (const name of await readdir(dropInDir)) {
+      if (name.endsWith('.json') && !name.startsWith('.')) {
+        paths.add(platformPath.join(dropInDir, name))
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (disposed || generation !== lifecycle) return
+  // Retain all candidates before the first hook. A hook or a listener
+  // may reset derived caches while another file is still awaiting review.
+  for (const path of paths) {
+    const source = getSourceForPath(path)
+    if (source && source !== 'flagSettings') retainSettingsFile(path)
+  }
+  for (const path of paths) {
+    const source = getSourceForPath(path)
+    if (source && source !== 'flagSettings') {
+      const pending = inFlight.get(path)
+      if (pending) await pending
+      await reviewSettingsFile(path, source, !pending)
+    }
+  }
+}
+
+function reviewSettingsFile(
+  path: string,
+  source: SettingSource,
+  retryBlocked = false,
+): Promise<void> {
+  if (disposed) return Promise.resolve()
+  const pending = pendingReviews.get(path)
+  if (pending) return pending
+  retainSettingsFile(path)
+  const generation = lifecycle
+  const review = (async () => {
+    // Register the in-flight operation before executing user hooks.
+    await Promise.resolve()
+    while (!disposed && generation === lifecycle) {
+      // A synchronous internal write may have accepted a newer snapshot while
+      // the previous hook awaited; protect that snapshot for this next review.
+      retainSettingsFile(path)
+      const candidate = readSettingsFile(path)
+      const internal = consumeInternalWrite(
+        path,
+        candidate.identity,
+        INTERNAL_WRITE_WINDOW_MS,
+      )
+      if (candidate.identity === getCachedParsedFile(path)?.identity) {
+        blockedIdentities.delete(path)
+        acceptSettingsFile(path, candidate)
+        return
+      }
+      if (
+        !internal && !retryBlocked && blockedIdentities.has(path) &&
+        blockedIdentities.get(path) === candidate.identity
+      ) return
+      if (!internal) {
+        logForDebugging(`Reviewing settings source=${source} path=${path} version=${candidate.identity}`)
+        const results = await executeConfigChangeHooks(
+          settingSourceToConfigChangeSource(source),
+          path,
+        )
+        if (disposed || generation !== lifecycle) return
+        // Approval belongs to these bytes, never the next write during an await.
+        if (readSettingsFile(path).identity !== candidate.identity) continue
+        if (hasBlockingResult(results)) {
+          blockedIdentities.set(path, candidate.identity)
+          logForDebugging(`ConfigChange blocked source=${source} path=${path} version=${candidate.identity}`)
+          return
+        }
+      }
+      blockedIdentities.delete(path)
+      acceptSettingsFile(path, candidate)
+      logForDebugging(`Settings ${internal ? 'internal echo' : 'accepted'} source=${source} path=${path} version=${candidate.identity}`)
+      if (!internal) settingsChanged.emit(source)
+      return
+    }
+  })().finally(() => {
+    if (pendingReviews.get(path) === review) pendingReviews.delete(path)
+  })
+  pendingReviews.set(path, review)
+  return review
+}
+
+function getConfiguredPath(path: string): string {
+  const normalizedPath = platformPath.normalize(path)
+  return watchedPathAliases.get(normalizedPath) ?? normalizedPath
 }
 
 function getSourceForPath(path: string): SettingSource | undefined {
@@ -418,21 +544,9 @@ function startMdmPoll(): void {
 }
 
 /**
- * Reset the settings cache, then notify all listeners.
- *
- * The cache reset MUST happen here (single producer), not in each listener
- * (N consumers). Previously, listeners like useSettingsChange and
- * applySettingsChange reset defensively because some notification paths
- * (file-watch at :289/340, MDM poll at :385) did not reset before iterating
- * listeners. That defense caused N-way thrashing when N listeners were
- * subscribed: each listener cleared the cache, re-read from disk (populating
- * it), then the next listener cleared it again — N full disk reloads per
- * notification. Profile showed 5 loadSettingsFromDisk calls in 12ms when
- * remote managed settings resolved at startup.
- *
- * With the reset centralized here, one notification = one disk reload: the
- * first listener to call getSettingsWithErrors() pays the miss and
- * repopulates; all subsequent listeners hit the cache.
+ * Non-file producers (remote policy and MDM) invalidate once before notifying.
+ * File reviews instead publish the approved parse result with acceptSettingsFile;
+ * pending/blocked snapshots survive either kind of derived cache invalidation.
  */
 function fanOut(source: SettingSource): void {
   resetSettingsCache()
@@ -464,6 +578,11 @@ export function resetForTesting(overrides?: {
   mdmPollInterval?: number
   deletionGrace?: number
 }): Promise<void> {
+  lifecycle++
+  for (const path of getParsedSettingsPaths()) releaseSettingsFile(path)
+  pendingReviews.clear()
+  blockedIdentities.clear()
+  clearInternalWrites()
   if (mdmPollTimer) {
     clearInterval(mdmPollTimer)
     mdmPollTimer = null
@@ -471,6 +590,7 @@ export function resetForTesting(overrides?: {
   for (const timer of pendingDeletions.values()) clearTimeout(timer)
   pendingDeletions.clear()
   lastMdmSnapshot = null
+  watchedPathAliases.clear()
   initialized = false
   disposed = false
   testOverrides = overrides ?? null
