@@ -1,7 +1,23 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'bun:test'
+import ts from 'typescript'
 import { parseRootSSHArgv } from './rootSSHArgv.js'
+
+function initializer(source: string, name: string): string {
+  const file = ts.createSourceFile('source.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const matches: ts.Expression[] = []
+  function visit(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === name && node.initializer)
+      matches.push(node.initializer)
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  assert.equal(matches.length, 1)
+  return ts.transpileModule(`const value = ${matches[0]!.getText(file)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+}
 
 const source = readFileSync(new URL('../main.tsx', import.meta.url), 'utf8')
 const replSource = readFileSync(new URL('../screens/REPL.tsx', import.meta.url), 'utf8')
@@ -109,15 +125,39 @@ test('does not start local project processes for remote SSH sessions', () => {
   )
 })
 
-test('uses a fixed local SSH UI command and agent set', () => {
+test('uses a fixed local SSH UI command and agent set', async () => {
   assert.match(
     source,
     /const \[commands, agentDefinitionsResult\] = isSSHRemoteSession[\s\S]{0,220}getSSHLocalCommands\(\)[\s\S]{0,100}activeAgents: \[\], allAgents: \[\]/,
   )
-  assert.match(
-    source,
-    /worktreeEnabled \|\| isSSHRemoteSession \? null : getCommands\(preSetupCwd\)/,
+  const getCommandsPromise = new Function(
+    'worktreeEnabled', 'isSSHRemoteSession', 'feature', 'setupPromise', 'getCommands', 'preSetupCwd',
+    `${initializer(source, 'commandsPromise')} return value;`,
   )
+  for (const worktree of [false, true]) {
+    for (const remote of [false, true]) {
+      for (const uds of [false, true]) {
+        const setup = Promise.withResolvers<void>()
+        const calls: string[] = []
+        const commands = ['local-command']
+        const pending = getCommandsPromise(worktree, remote, () => uds, setup.promise, (cwd: string) => {
+          calls.push(cwd)
+          return Promise.resolve(commands)
+        }, '/fixture')
+        if (worktree || remote) {
+          assert.equal(pending, null)
+          setup.resolve()
+          await Promise.resolve()
+          assert.deepEqual(calls, [])
+        } else {
+          assert.deepEqual(calls, uds ? [] : ['/fixture'])
+          setup.resolve()
+          assert.equal(await pending, commands)
+          assert.deepEqual(calls, ['/fixture'])
+        }
+      }
+    }
+  }
   assert.match(
     source,
     /worktreeEnabled \|\| isSSHRemoteSession[\s\S]{0,100}getAgentDefinitionsWithOverrides\(preSetupCwd\)/,
@@ -173,10 +213,18 @@ test('disables local project UI facilities for every remote execution transport'
     mergedToolsSource,
     /if \(disabled\) return initialTools[\s\S]{0,160}assembleToolPool/,
   )
-  assert.match(
-    replSource,
-    /isRemoteExecutionSession \? \[\] : \(plugins\.commands as Command\[\]\)/,
+  const commandInputs: unknown[][] = []
+  const local = ['local']
+  const plugins = { commands: ['plugin'] }
+  const mcp = { commands: ['mcp'], pluginReconnectKey: 2 }
+  const getBaseCommands = new Function(
+    'useReplCommands', 'localCommands', 'plugins', 'mcp', 'isRemoteExecutionSession', 'disableSlashCommands',
+    `${initializer(replSource, 'baseCommands')} return value;`,
   )
+  for (const remote of [false, true]) {
+    getBaseCommands((...args: unknown[]) => commandInputs.push(args), local, plugins, mcp, remote, false)
+    assert.deepEqual(commandInputs.at(-1), [local, plugins.commands, mcp.commands, 2, remote, false])
+  }
   const sshSessionCall = replSource.match(
     /useSSHSession\(\{[\s\S]*?\n {2}\}\)/,
   )?.[0]
@@ -705,18 +753,36 @@ test('synchronizes permission mode changes to the SSH child before local commit'
 })
 
 test('routes SSH bash input to the remote shell executor instead of the model', () => {
-  assert.match(
-    replSource,
-    /const setInputMode = useCallback\(\(mode: PromptInputMode\) => \{\s+inputModeRef\.current = mode\s+setInputModeState\(mode\)/,
-  )
-  assert.match(
-    replSource,
-    /inputModeRef\.current === 'bash' &&\s+rawInput\.startsWith\('!'\)[\s\S]{0,80}rawInput\.slice\(1\)/,
-  )
-  assert.match(
-    replSource,
-    /const submittedInputMode = inputModeRef\.current/,
-  )
+  const inputModeRef = { current: 'prompt' }
+  const draftGenerationRef = { current: 0 }
+  const updates: string[] = []
+  const setMode = new Function(
+    'useCallback', 'inputModeRef', 'draftGenerationRef', 'setInputModeState',
+    `${initializer(replSource, 'setInputMode')} return value;`,
+  )((callback: unknown) => callback, inputModeRef, draftGenerationRef, (mode: string) => {
+    assert.equal(inputModeRef.current, mode)
+    updates.push(mode)
+  })
+  for (const mode of ['bash', 'prompt']) {
+    setMode(mode)
+    assert.equal(inputModeRef.current, mode)
+  }
+  assert.deepEqual(updates, ['bash', 'prompt'])
+  assert.equal(draftGenerationRef.current, 2)
+  const submit = initializer(replSource, 'onSubmit')
+  const captureMode = new Function('options', 'inputModeRef',
+    `${initializer(submit, 'submittedInputMode')} return value;`)
+  const normalizeInput = new Function('options', 'speculationAccept', 'submittedInputMode', 'rawInput',
+    `${initializer(submit, 'input')} return value;`)
+  inputModeRef.current = 'bash'
+  const captured = captureMode(undefined, inputModeRef)
+  inputModeRef.current = 'prompt'
+  assert.equal(captured, 'bash')
+  assert.equal(normalizeInput(undefined, undefined, captured, '!echo fixture'), 'echo fixture')
+  assert.equal(normalizeInput(undefined, undefined, 'prompt', '!echo fixture'), '!echo fixture')
+  assert.equal(captureMode({ fromKeybinding: true }, { current: 'bash' }), 'prompt')
+  assert.equal(captureMode({ submission: { mode: 'bash' } }, inputModeRef), 'bash')
+  assert.equal(normalizeInput({ submission: {} }, undefined, 'bash', '!already-normalized'), '!already-normalized')
   assert.match(
     replSource,
     /const isSSHBashCommand =\s+sshRemote\.isRemoteMode && submittedInputMode === 'bash'/,
@@ -739,7 +805,7 @@ test('routes SSH bash input to the remote shell executor instead of the model', 
   )
   assert.match(
     handlePromptSubmitSource,
-    /skipAttachments: skipLocalContext \|\| !isFirst,\s+skipHooks: skipLocalContext/,
+    /skipAttachments: cmd\.skipAttachments \|\| skipLocalContext \|\| !isFirst,\s+skipHooks: cmd\.origin\?\.kind === 'peer' \|\| skipLocalContext/,
   )
   assert.match(
     handlePromptSubmitSource,

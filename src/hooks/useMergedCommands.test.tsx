@@ -104,8 +104,9 @@ try {
 
 const { createModCommands } = await import('../services/mods/commands.js')
 const modCommands = createModCommands({getBuiltinCommands: () => [], run: async () => ({})})
+const mcpCommand = { ...additionalCommand, name: 'mcp-command' } as Command
 function CaptureMods({ disabled = false, remote = false }: {disabled?: boolean; remote?: boolean}): null {
-  current = useReplCommands([local], [], [], 0, remote, disabled, modCommands)
+  current = useReplCommands([local], [refreshedPlugin], [mcpCommand], 0, remote, disabled, modCommands)
   return null
 }
 const modInstance = await render(React.createElement(CaptureMods), {
@@ -118,7 +119,7 @@ try {
   modCommands.register(owner, {name:'mod-panel', description:'Panel'})
   modCommands.commit(owner)
   await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(current.map(command => command.name), ['local-command', 'mod-panel'])
+  assert.deepEqual(current.map(command => command.name), ['local-command', 'plugin-command', 'mcp-command', 'mod-panel'])
   for (const props of [{disabled:true}, {remote:true}]) {
     modInstance.rerender(React.createElement(CaptureMods, props))
     await new Promise(resolve => setImmediate(resolve))
@@ -128,7 +129,7 @@ try {
   await new Promise(resolve => setImmediate(resolve))
   modCommands.release(owner)
   await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(current, [local])
+  assert.deepEqual(current, [local, refreshedPlugin, mcpCommand])
 } finally {
   modInstance.unmount()
   modInstance.cleanup()
