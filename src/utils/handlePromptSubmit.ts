@@ -82,7 +82,6 @@ type BaseExecutionParams = {
  * Parameters for core execution logic (no UI concerns).
  */
 type ExecuteUserInputParams = BaseExecutionParams & {
-  resetHistory: () => void
   onInputChange: (value: string) => void
 }
 
@@ -90,6 +89,7 @@ export type PromptInputHelpers = {
   setCursorOffset: (offset: number) => void
   clearBuffer: () => void
   resetHistory: () => void
+  getCursorOffset?: () => number
 }
 
 export type HandlePromptSubmitParams = BaseExecutionParams & {
@@ -125,12 +125,10 @@ export async function handlePromptSubmit(
   params: HandlePromptSubmitParams,
 ): Promise<void> {
   const {
-    helpers,
     queryGuard,
     isExternalLoading = false,
     commands,
     onInputChange,
-    setPastedContents,
     setToolJSX,
     getToolUseContext,
     messages,
@@ -146,8 +144,6 @@ export async function handlePromptSubmit(
     uuid,
     skipSlashCommands,
   } = params
-
-  const { setCursorOffset, clearBuffer, resetHistory } = helpers
 
   // Queue processor path: commands are pre-validated and ready to execute.
   // Skip all input validation, reference parsing, and queuing logic.
@@ -168,7 +164,6 @@ export async function handlePromptSubmit(
       onQuery,
       setAppState,
       onBeforeQuery,
-      resetHistory,
       canUseTool,
       onInputChange,
       skipLocalContext: params.skipLocalContext,
@@ -260,12 +255,6 @@ export async function handlePromptSubmit(
           immediateCommand.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
 
-      // Clear input
-      onInputChange('')
-      setCursorOffset(0)
-      setPastedContents({})
-      clearBuffer()
-
       const context = getToolUseContext(
         messages,
         [],
@@ -342,7 +331,6 @@ export async function handlePromptSubmit(
           params.streamMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       params.abortController?.abort('interrupt')
-      promptSubmitMetadata: params.promptSubmitMetadata,
     }
 
     // Enqueue with string value + raw pastedContents. Images will be resized
@@ -354,14 +342,9 @@ export async function handlePromptSubmit(
       pastedContents: hasImages ? pastedContents : undefined,
       skipSlashCommands,
       uuid,
+      promptSubmitMetadata: params.promptSubmitMetadata,
     })
 
-    onInputChange('')
-    setCursorOffset(0)
-    setPastedContents({})
-    resetHistory()
-    clearBuffer()
-    promptSubmitMetadata: params.promptSubmitMetadata,
     return
   }
 
@@ -378,6 +361,7 @@ export async function handlePromptSubmit(
     pastedContents: hasImages ? pastedContents : undefined,
     skipSlashCommands,
     uuid,
+    promptSubmitMetadata: params.promptSubmitMetadata,
   }
 
   await executeUserInput({
@@ -395,7 +379,6 @@ export async function handlePromptSubmit(
     onQuery,
     setAppState,
     onBeforeQuery,
-    resetHistory,
     canUseTool,
     onInputChange,
     skipLocalContext: params.skipLocalContext,
@@ -423,7 +406,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     onQuery,
     setAppState,
     onBeforeQuery,
-    resetHistory,
     canUseTool,
     queuedCommands,
     skipLocalContext = false,
@@ -494,15 +476,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           input: cmd.value,
           preExpansionInput: cmd.preExpansionValue,
           mode: cmd.mode,
-          promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
-            origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
-              cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
-              cmd.origin?.kind === 'human' ? { kind: 'composer' } :
-              cmd.origin ? { kind: cmd.origin.kind } :
-              cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
-              { kind: 'unclassified' },
-            wait: false,
-          },
           setToolJSX,
           context: makeContext(),
           pastedContents:
@@ -521,6 +494,15 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           isMeta: cmd.isMeta,
           skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
           skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
+          promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
+            origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
+              cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
+              cmd.origin?.kind === 'human' ? { kind: 'composer' } :
+              cmd.origin ? { kind: cmd.origin.kind } :
+              cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
+              { kind: 'unclassified' },
+            wait: false,
+          },
         })
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.
@@ -568,11 +550,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       }
 
       if (newMessages.length) {
-        // History is now added in the caller (onSubmit) for direct user submissions.
-        // This ensures queued command processing (notifications, already-queued user input)
-        // doesn't add to history, since those either shouldn't be in history or were
-        // already added when originally queued.
-        resetHistory()
         setToolJSX({
           jsx: null,
           shouldHidePromptInput: false,
@@ -610,7 +587,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           shouldHidePromptInput: false,
           clearLocalJSX: true,
         })
-        resetHistory()
         setAbortController(null)
       }
 

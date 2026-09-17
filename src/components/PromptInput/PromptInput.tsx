@@ -254,6 +254,7 @@ type Props = {
   autoUpdaterResult: AutoUpdaterResult | null
   input: string
   onInputChange: (value: string) => void
+  onInputStateChange?: () => void
   mode: PromptInputMode
   onModeChange: (mode: PromptInputMode) => void
   stashedPrompt:
@@ -345,6 +346,7 @@ function PromptInput({
   autoUpdaterResult,
   input,
   onInputChange,
+  onInputStateChange,
   mode,
   onModeChange,
   stashedPrompt,
@@ -387,13 +389,21 @@ function PromptInput({
     show: boolean
     key?: string
   }>({ show: false })
-  const [cursorOffset, setCursorOffset] = useState<number>(input.length)
+  const [cursorOffset, setCursorOffsetState] = useState<number>(input.length)
+  const cursorOffsetRef = useRef(cursorOffset)
+  const getCursorOffset = useCallback(() => cursorOffsetRef.current, [])
+  const setCursorOffset = useCallback((offset: number) => {
+    cursorOffsetRef.current = offset
+    onInputStateChange?.()
+    setCursorOffsetState(offset)
+  }, [onInputStateChange])
   // Track the last input value set via internal handlers so we can detect
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
   const lastInternalInputRef = React.useRef(input)
   if (input !== lastInternalInputRef.current) {
     // Input changed externally (not through any internal handler) — move cursor to end
-    setCursorOffset(input.length)
+    cursorOffsetRef.current = input.length
+    setCursorOffsetState(input.length)
     lastInternalInputRef.current = input
   }
   // Wrap onInputChange to track internal changes before they trigger re-render
@@ -1271,10 +1281,19 @@ function PromptInput({
   }, [input.length, addNotification])
 
   // Initialize input buffer for undo functionality
-  const { pushToBuffer, undo, canUndo, clearBuffer } = useInputBuffer({
+  const { pushToBuffer, undo: undoBuffer, canUndo, clearBuffer: clearInputBuffer } = useInputBuffer({
     maxBufferSize: 50,
     debounceMs: 1000,
   })
+
+  const undo = useCallback(() => {
+    onInputStateChange?.()
+    return undoBuffer()
+  }, [onInputStateChange, undoBuffer])
+  const clearBuffer = useCallback(() => {
+    onInputStateChange?.()
+    clearInputBuffer()
+  }, [onInputStateChange, clearInputBuffer])
 
   useMaybeTruncateInput({
     input,
@@ -1359,7 +1378,7 @@ function PromptInput({
   )
 
   const {
-    resetHistory,
+    resetHistory: resetInputHistory,
     onHistoryUp,
     onHistoryDown,
     dismissSearchHint,
@@ -1379,6 +1398,11 @@ function PromptInput({
     setCursorOffset,
     mode,
   )
+
+  const resetHistory = useCallback(() => {
+    onInputStateChange?.()
+    resetInputHistory()
+  }, [onInputStateChange, resetInputHistory])
 
   // Dismiss search hint when user starts searching
   useEffect(() => {
@@ -1409,6 +1433,7 @@ function PromptInput({
       return
     }
 
+    onInputStateChange?.()
     onHistoryUp()
   }
 
@@ -1424,6 +1449,7 @@ function PromptInput({
       return
     }
 
+    onInputStateChange?.()
     // At bottom of history → enter footer at first visible pill
     if (onHistoryDown() && footerItems.length > 0) {
       const first = footerItems[0]!
@@ -1513,6 +1539,7 @@ function PromptInput({
             suggestionText,
             {
               setCursorOffset,
+              getCursorOffset,
               clearBuffer,
               resetHistory,
             },
@@ -1600,6 +1627,7 @@ function PromptInput({
         logEvent('tengu_transcript_input_to_teammate', {})
         await onAgentSubmit(inputParam, activeAgent.task, {
           setCursorOffset,
+          getCursorOffset,
           clearBuffer,
           resetHistory,
         })
@@ -1609,6 +1637,7 @@ function PromptInput({
       // Normal leader submission
       await onSubmitProp(inputParam, {
         setCursorOffset,
+        getCursorOffset,
         clearBuffer,
         resetHistory,
       })
@@ -2296,7 +2325,7 @@ function PromptInput({
       handler: () => {
         void onSubmitProp(
           input,
-          { setCursorOffset, clearBuffer, resetHistory },
+          { setCursorOffset, getCursorOffset, clearBuffer, resetHistory },
           undefined,
           { wait: true },
         )
@@ -2306,7 +2335,7 @@ function PromptInput({
       unregisterSubmit()
       unregisterQueueSubmit()
     }
-  }, [keybindingContext, isModalOverlayActive, onSubmit, onSubmitProp, input, setCursorOffset, clearBuffer, resetHistory])
+  }, [keybindingContext, isModalOverlayActive, onSubmit, onSubmitProp, input, setCursorOffset, getCursorOffset, clearBuffer, resetHistory])
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as
