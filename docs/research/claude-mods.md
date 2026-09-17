@@ -883,6 +883,43 @@ Worker 额外使用事件循环 ping/pong watchdog：未响应约 5 秒时终止
 
 **not covered**：重新启用阶段的重叠输入因果 barrier、真实 CLI ask 审批、managed Pre/Post policy 组合、真实账户和外网模型、复杂 Agent/Workflow、全部官方 Mods/UI/stream、官方精确 timer retire 与能力租约。首轮的首次 prompt barrier、本地自动测试与本轮启停运行是不同证据，不能互相替代。
 
+## 15. 当前修复轮次的契约补充（尚未完成整体验收）
+
+本节补充第 14 节首批切片之后的实现，不改写旧运行结果。完整进度和运行限制以根目录 `handoff.md` 为准；类型检查、真实 Worker、本地 CLI、官方 runtime 是四个不同证据层级。
+
+### 15.1 作者类型与可重复检查
+
+**Binary-observed / Source-confirmed**：官方 2.1.272 内嵌完整声明与公开固定 commit 附带声明不是同一文件：前者 SHA-256 `b06a496ce7e89d0dbdda290fb7fab57bc109c620ec2c23da712d63b93b4630d2`，后者 `69d14af889cae22568b6051382e72971578156b36479d4ce4ad13f473797d4ac`。本轮分别保留，不用删减的手写 ambient module 代替目标声明。官方原件许可/再分发边界不在此假定，类型及完整源码 fixture 保留在仓库外。
+
+`src/services/mods/runtimeHost.test.ts` 提供可重复的作者 TSX 契约测试。设置 `CLAUDE_CODE_OFFICIAL_MOD_TYPES` 为授权取得的目标完整 `.d.ts` 绝对路径，再使用 `bun test src/services/mods/runtimeHost.test.ts --test-name-pattern 'an author plugin compiles'`。没有指定类型时该项明确 skip；指定但路径无效时失败。测试以 `strict`、`noUncheckedIndexedAccess`、`skipLibCheck:false` 和无 Node/DOM globals 编译，然后让同一份源码经过本地 loader、真实 Worker、register 和能力调用，而不是只编译后宣称可运行。
+
+样例验证相对 `.js`→`.ts` 导入、TSX、command register/run、fs、store、Pane 回调、prompt context、turn.complete、binding 轮换不重发 start、unload/reload 持久化。负向类型断言覆盖 string ref、scalar context、string timeout 和 Node global。一个目标类型合法但本地不支持的 `$.tool.check()` 明确产生带文件路径和 capability 的 reload 诊断，并保留旧 activation（历史样例使用 `$.tool.list()`，该能力现已接入真实目录）；**完整官方类型不是本地完整功能支持清单**。
+
+本地尚未实现 `/plugin-types` 和 `claude plugin test` 的完整官方开发工具链。插件作者应使用目标官方版本生成的类型，并以本地加载诊断确认实际支持范围；不能把内部 `src/services/mods/types.ts` 当作公开官方作者契约。
+
+### 15.2 本轮宿主能力与取消
+
+**Source-confirmed（本地）**：现有能力包括 command register/list、session cwd/id/surface/messages、fs read/write/list/exists/stat、argv process.run、JSON store、accepted settings.read 和 terminal UI；matcher 已支持 RegExp、数组 any-of、nested partial 及事件 pattern。第 14.3 节的“首批未实现”列表是历史范围，不再代表这些接口当前不存在。远端 surface、全部模型流、所有 host nouns 及官方测试引擎仍不得笼统声明支持。
+
+**Binary-observed（官方静态路径）**：已追到的 optional host-op interceptor setter `ten.set` 位于插件测试引擎 `chunk-gsmvmfzk.pretty.js:485,599–608`；普通 fs/process concrete 路径并未在此进入模型工具的 `canUseTool`。因此本轮不将 argv 拼成 shell 命令后送进另一个工具权限执行器；保留 Mods trust、扫描、admission、withholding 与 op middleware，普通工具执行继续走自己的完整权限路径。此结论是定向静态证据，不是全配置、全平台动态证明。
+
+本地 fs 使用非阻塞 POSIX open 避免无人写入 FIFO 挂住；exists 将文件系统观察错误映射为 false，但非字符串/空路径与生命周期取消仍拒绝。process timeout 限 1–600000 整数毫秒。fs/process host call 合并 invocation 与 activation 信号并释放监听器。Worker 级取消测试只在真实 FileHandle.read 外加入受控 barrier，证明中断后停止继续读块、关闭句柄、activation 可继续且 core 不重放；不承诺已经发生的 mkdir/write 副作用回滚，也不宣称所有底层 I/O 可以立即取消。
+
+`store.get/set/delete` 已补齐非空、最多 256 个 UTF-16 code units 的 key 约束；官方依据分别为 `chunk-8xczzfk0.pretty.js:5353–5365` 和 `chunk-s5nh835p.pretty.js:231215–231220`。真实 Worker 红测还发现 Date 经通用 wire 后成为 `{}`：现只对 host-owned store.set bridge 在作者 realm 内做 JSON 规范化，保留 Date/custom toJSON，拒绝非法值且不将作者函数带入主线程执行。证据 `integration/store-key-contract-red-17.log`、`store-json-realm-red-19.log`、`store-json-realm-qualified-21.log`。随后以 `store-parity-red-26.log` 的四条失败回归修正此前三项差异：按逻辑 store 对象 JSON 的 string.length 限额 4194304（不是 UTF-8 bytes），keys 使用 Object.keys 顺序，嵌套函数遵循普通 JSON.stringify 省略/数组 null 规则。继续保留本地 entries-array 磁盘格式、锁和原子替换，无数据迁移；读取预算允许合法多字节数据及本地编码开销，fs/process 自身的 byte 限额不变。`store-key-middleware-red-qualified-29.log` 还证明空 key 应在作者 wrapper、长 key在host拒绝；现已分层处理，set保持先规范化value再校验key。合格回归 `store-parity-qualified-31.log`：146 pass / 890 expect，包含真实 Worker、容量 ASCII/é/界/代理对边界、恢复及生命周期。仍是本地自动化与官方静态对照，不等同官方运行 parity。
+
+`command.register` 的 description 现在拒绝纯空白但保留合法多行原文。`command.list` 按 `chunk-s5nh835p.pretty.js:228802–228838` 返回用户可见 name、builtin/plugin/user/mcp 四类 source、当前注册 activation 或 markdown manifest 的 plugin 身份，不再泄漏 Settings 枚举或额外 immediate 字段。红测 `command-description-red-23.log`、`command-list-red-37.log`；实际 Worker/adapter 回归 `command-list-green-38.log`：79 pass / 298 expect。`command.describe` 的完整 UI 自然入口不在该元数据修复的通过范围内。
+
+**Source-confirmed（工具目录接线，整合中）**：`tool.list` 是当前已准入 Tool 集合的 metadata 投影，不是第二套可执行工具注册表；目标完整声明要求 `{name, description, mcp}`。模型入口保留原 tool-search/deferred gating，禁止 Mod 添加未知/被 gate 工具、重复身份或修改 schema/call。作者 `$.tool.list()` 使用当前 request/session 的真实 base description，core leaf 不递归调用投影；query、batch/streaming、prompt、command 与 session 服务分别传入当前上下文。`tool.describe` 缓存按 Tool/base description 和捕获代际隔离，支持显式失效，不写回原 API schema cache。MCP provider 来自 canonical server/config scope/pluginSource；无 hooks 的插件也从真实 LoadedPlugin 与相同 settings tier 规则解析，旧 snapshot 保留旧来源。证据与尚红断言见 handoff 的 `catalog-*-41..58`，不是最终新 binary 通过声明。
+
+### 15.3 原件和验收边界
+
+- 固定 commit `f96c3b49c4c8721685206aaab23609b2d399df4e` 的 921 个原件文件逐 SHA 核对未变；所有原件 hooks/tests/plugin augmentations 对 binary 内嵌完整类型检查 exit 0。类型通过不等于官方测试引擎已执行。
+- 本地对 exact builtin `/diff` 的让位仅授予经过完整扫描内容 pin 核验的 provider；失败、disable、unload 恢复 builtin，不凭 manifest.name 或 isNative 自报授予覆盖权。这是本地产品接入选择，不是官方发行物已启用该行为的证明。
+- 官方 2.1.272 隔离运行仍受 rollout gating-off 阻塞；未修改 binary、未伪造身份或内部凭据，official module runtime parity 为 `not covered`。
+- 指定本地产物 `4fea45f3…` 的五核心场景通过，但 Pane 标题覆盖/滚动残影为 `failed`，鼠标送达及 stale callback 终端路径为 `not covered`。后续源码必须新构建并独立取证，不能继承该产物结果。
+
+本节自动化证据根：`/var/folders/4h/pgbsmxdx3wj12mb6mkj90gmh0000gp/T/claude-mods-repair-20260916.aHC2Z1mz`；关键索引为 `integration/author-target-contract-14.log`、`integration/fs-worker-cancel-red-10.log`、`integration/fs-worker-cancel-qualified-11.log`、`integration/official-target-types-08.log`、`integration/official-source-integrity-09.json` 和 `host-operations/official-interceptor-followup.txt`。这些中间测试不得与旧批次重复相加作为最终 unique test 数。
+
 ## Sources
 
 - **[S1] 官方 Mods README，固定提交**：[定义、测试与 Early Access](https://github.com/anthropics/claude-code/blob/f96c3b49c4c8721685206aaab23609b2d399df4e/mods/README.md)
