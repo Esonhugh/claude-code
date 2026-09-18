@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
 import { Writable } from 'node:stream'
-import React, { useState } from 'react'
+import React, { act, useState } from 'react'
 import type {
   SDKAssistantMessage,
   SDKMessage,
@@ -20,7 +20,6 @@ import type { Message } from '../types/message.js'
 process.env.NODE_ENV = 'test'
 
 const { render } = await import('../ink.js')
-const instances = (await import('../ink/instances.js')).default
 
 mock.module('../utils/gracefulShutdown.js', () => ({
   gracefulShutdown: async () => {},
@@ -199,374 +198,381 @@ class TestStdout extends Writable {
   }
 }
 
-const stdout = new TestStdout() as unknown as NodeJS.WriteStream
-const instance = await render(React.createElement(Harness), {
-  stdout,
-  patchConsole: false,
-})
-const flushUpdates = () => {
-  instances.get(stdout)?.pause()
-  instances.get(stdout)?.resume()
+const actEnvironment = globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT?: boolean
 }
-await new Promise(resolve => setImmediate(resolve))
-flushUpdates()
+const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT
+actEnvironment.IS_REACT_ACT_ENVIRONMENT = true
+let instance: Awaited<ReturnType<typeof render>> | undefined
+try {
+  await act(async () => {
+    instance = await render(React.createElement(Harness), {
+      stdout: new TestStdout() as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+    })
+  })
 
-assert.ok(snapshot)
-assert.equal(snapshot.isReady, false)
-assert.equal(snapshot.remoteFileSuggestionProvider, undefined)
-assert.equal(
-  await snapshot.sendMessage('too early', {
-    uuid: '33333333-3333-4333-8333-333333333333',
-  }),
-  false,
-)
-assert.equal(sentMessages.length, 0)
+  assert.ok(snapshot)
+  assert.equal(snapshot.isReady, false)
+  assert.equal(snapshot.remoteFileSuggestionProvider, undefined)
+  assert.equal(
+    await snapshot.sendMessage('too early', {
+      uuid: '33333333-3333-4333-8333-333333333333',
+    }),
+    false,
+  )
+  assert.equal(sentMessages.length, 0)
 
-callbacks?.onBootstrap?.({
-  sessionId: remoteSessionId,
-  history: [
-    {
-      type: 'system',
-      subtype: 'goal_state_changed',
-      goal: {
-        type: 'goal_status',
-        id: 'bootstrap-goal',
-        condition: 'resume it',
-        status: 'active',
-        sentinel: true,
-      },
-      uuid: '32323232-3232-4232-8232-323232323232',
-      session_id: remoteSessionId,
-    },
-    replayedAssistant,
-  ],
-})
-await new Promise(resolve => setImmediate(resolve))
-flushUpdates()
+  assert.ok(
+    callbacks,
+    'SSH manager callbacks must be installed before bootstrap',
+  )
+  const { onBootstrap, onMessage, onPermissionRequest, onDisconnected } =
+    callbacks
+  assert.ok(onBootstrap, 'SSH bootstrap callback must be installed')
+  assert.ok(onPermissionRequest)
+  assert.ok(onDisconnected)
+  await act(() =>
+    onBootstrap({
+      sessionId: remoteSessionId,
+      history: [
+        {
+          type: 'system',
+          subtype: 'goal_state_changed',
+          goal: {
+            type: 'goal_status',
+            id: 'bootstrap-goal',
+            condition: 'resume it',
+            status: 'active',
+            sentinel: true,
+          },
+          uuid: '32323232-3232-4232-8232-323232323232',
+          session_id: remoteSessionId,
+        },
+        replayedAssistant,
+      ],
+    }),
+  )
 
-assert.ok(snapshot)
-assert.equal(snapshot.isReady, true)
-assert.equal(snapshot.remoteSessionId, remoteSessionId)
-assert.equal(snapshot.goalActive, true)
-assert.equal(snapshot.goalId, 'bootstrap-goal')
-assert.ok(snapshot.remoteFileSuggestionProvider)
-assert.ok(snapshot.managedSSHRemotePermissions)
-assert.deepEqual(
-  snapshot.messages.map(message => message.uuid),
-  [replayedAssistant.uuid],
-)
+  assert.ok(snapshot)
+  assert.equal(snapshot.isReady, true)
+  assert.equal(snapshot.remoteSessionId, remoteSessionId)
+  assert.equal(snapshot.goalActive, true)
+  assert.equal(snapshot.goalId, 'bootstrap-goal')
+  assert.ok(snapshot.remoteFileSuggestionProvider)
+  assert.ok(snapshot.managedSSHRemotePermissions)
+  assert.deepEqual(
+    snapshot.messages.map(message => message.uuid),
+    [replayedAssistant.uuid],
+  )
 
-callbacks?.onMessage(replayedAssistant)
-await new Promise(resolve => setImmediate(resolve))
-assert.deepEqual(
-  snapshot.messages.map(message => message.uuid),
-  [replayedAssistant.uuid],
-  'a live message already present in bootstrap history must be suppressed',
-)
+  await act(() => onMessage(replayedAssistant))
+  assert.deepEqual(
+    snapshot.messages.map(message => message.uuid),
+    [replayedAssistant.uuid],
+    'a live message already present in bootstrap history must be suppressed',
+  )
 
-const emit = (message: SDKMessage) => callbacks?.onMessage(message)
-emit({
-  type: 'stream_event',
-  event: {
-    type: 'content_block_start',
-    index: 0,
-    content_block: { type: 'text', text: '' },
-  },
-  parent_tool_use_id: null,
-  uuid: '34343434-3434-4434-8434-343434343434',
-  session_id: remoteSessionId,
-})
-for (const [text, uuid] of [
-  ['streamed ', '45454545-4545-4545-8545-454545454545'],
-  ['text\n', '46464646-4646-4646-8646-464646464646'],
-] as const) {
-  emit({
+  const emit = (message: SDKMessage) => act(() => onMessage(message))
+  await emit({
     type: 'stream_event',
     event: {
-      type: 'content_block_delta',
+      type: 'content_block_start',
       index: 0,
-      delta: { type: 'text_delta', text },
+      content_block: { type: 'text', text: '' },
     },
     parent_tool_use_id: null,
-    uuid,
+    uuid: '34343434-3434-4434-8434-343434343434',
     session_id: remoteSessionId,
   })
-}
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.responseLength, 'streamed text\n'.length)
-assert.equal(snapshot.streamingText, 'streamed text\n')
+  for (const [text, uuid] of [
+    ['streamed ', '45454545-4545-4545-8545-454545454545'],
+    ['text\n', '46464646-4646-4646-8646-464646464646'],
+  ] as const) {
+    await emit({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text },
+      },
+      parent_tool_use_id: null,
+      uuid,
+      session_id: remoteSessionId,
+    })
+  }
+  assert.equal(snapshot.responseLength, 'streamed text\n'.length)
+  assert.equal(snapshot.streamingText, 'streamed text\n')
 
-emit({
-  type: 'stream_event',
-  event: {
-    type: 'content_block_start',
-    index: 0,
-    content_block: {
-      type: 'tool_use',
-      id: 'tool-1',
-      name: 'Read',
-      input: {},
+  await emit({
+    type: 'stream_event',
+    event: {
+      type: 'content_block_start',
+      index: 0,
+      content_block: {
+        type: 'tool_use',
+        id: 'tool-1',
+        name: 'Read',
+        input: {},
+      },
     },
-  },
-  parent_tool_use_id: null,
-  uuid: '55555555-5555-4555-8555-555555555555',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.streamMode, 'tool-input')
-assert.equal(snapshot.streamingToolUses.length, 1)
-assert.equal(snapshot.streamingToolUses[0]?.contentBlock.id, 'tool-1')
+    parent_tool_use_id: null,
+    uuid: '55555555-5555-4555-8555-555555555555',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.streamMode, 'tool-input')
+  assert.equal(snapshot.streamingToolUses.length, 1)
+  assert.equal(snapshot.streamingToolUses[0]?.contentBlock.id, 'tool-1')
 
-emit({
-  type: 'assistant',
-  message: {
-    role: 'assistant',
-    content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }],
-  },
-  parent_tool_use_id: null,
-  uuid: '66666666-6666-4666-8666-666666666666',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.streamingToolUses.length, 0)
-assert.equal(snapshot.streamingText, null)
-assert.equal(snapshot.inProgressToolUseIDs.has('tool-1'), true)
+  await emit({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }],
+    },
+    parent_tool_use_id: null,
+    uuid: '66666666-6666-4666-8666-666666666666',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.streamingToolUses.length, 0)
+  assert.equal(snapshot.streamingText, null)
+  assert.equal(snapshot.inProgressToolUseIDs.has('tool-1'), true)
 
-emit({
-  type: 'user',
-  message: {
-    role: 'user',
-    content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
-  },
-  parent_tool_use_id: null,
-  uuid: '77777777-7777-4777-8777-777777777777',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.inProgressToolUseIDs.has('tool-1'), false)
+  await emit({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
+    },
+    parent_tool_use_id: null,
+    uuid: '77777777-7777-4777-8777-777777777777',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.inProgressToolUseIDs.has('tool-1'), false)
 
-callbacks?.onPermissionRequest?.(
-  {
-    subtype: 'can_use_tool',
-    tool_name: 'Read',
-    input: { file_path: '/tmp/test' },
-    tool_use_id: 'permission-tool-1',
-  },
-  'permission-request-1',
-)
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.permissionQueueSize, 1)
+  await act(() =>
+    onPermissionRequest(
+      {
+        subtype: 'can_use_tool',
+        tool_name: 'Read',
+        input: { file_path: '/tmp/test' },
+        tool_use_id: 'permission-tool-1',
+      },
+      'permission-request-1',
+    ),
+  )
+  assert.equal(snapshot.permissionQueueSize, 1)
 
-emit({
-  type: 'result',
-  subtype: 'success',
-  duration_ms: 1,
-  duration_api_ms: 1,
-  is_error: false,
-  num_turns: 1,
-  result: 'done',
-  stop_reason: 'end_turn',
-  total_cost_usd: 0,
-  usage: {},
-  modelUsage: {},
-  permission_denials: [],
-  uuid: '78787878-7878-4878-8878-787878787878',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(
-  snapshot.permissionQueueSize,
-  0,
-  'a terminal result must clear SSH-owned permission prompts',
-)
+  await emit({
+    type: 'result',
+    subtype: 'success',
+    duration_ms: 1,
+    duration_api_ms: 1,
+    is_error: false,
+    num_turns: 1,
+    result: 'done',
+    stop_reason: 'end_turn',
+    total_cost_usd: 0,
+    usage: {},
+    modelUsage: {},
+    permission_denials: [],
+    uuid: '78787878-7878-4878-8878-787878787878',
+    session_id: remoteSessionId,
+  })
+  assert.equal(
+    snapshot.permissionQueueSize,
+    0,
+    'a terminal result must clear SSH-owned permission prompts',
+  )
 
-for (const [taskId, uuid] of [
-  ['task-1', '88888888-8888-4888-8888-888888888888'],
-  ['task-2', '99999999-9999-4999-8999-999999999999'],
-] as const) {
-  emit({
+  for (const [taskId, uuid] of [
+    ['task-1', '88888888-8888-4888-8888-888888888888'],
+    ['task-2', '99999999-9999-4999-8999-999999999999'],
+  ] as const) {
+    await emit({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: taskId,
+      description: taskId,
+      uuid,
+      session_id: remoteSessionId,
+    })
+  }
+  assert.deepEqual(snapshot.remoteTaskIds, ['task-1', 'task-2'])
+  assert.equal(snapshot.remoteBackgroundTaskCount, 2)
+
+  await emit({
     type: 'system',
     subtype: 'task_started',
-    task_id: taskId,
-    description: taskId,
-    uuid,
+    task_id: 'task-1',
+    description: 'task-1',
+    uuid: '89898989-8989-4989-8989-898989898989',
     session_id: remoteSessionId,
   })
-}
-await new Promise(resolve => setImmediate(resolve))
-assert.deepEqual(snapshot.remoteTaskIds, ['task-1', 'task-2'])
-assert.equal(snapshot.remoteBackgroundTaskCount, 2)
+  await emit({
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: 'unknown-task',
+    status: 'completed',
+    output_file: '/tmp/unknown-task',
+    summary: 'done',
+    uuid: '90909090-9090-4090-8090-909090909090',
+    session_id: remoteSessionId,
+  })
+  assert.deepEqual(snapshot.remoteTaskIds, ['task-1', 'task-2'])
+  assert.equal(snapshot.remoteBackgroundTaskCount, 2)
 
-emit({
-  type: 'system',
-  subtype: 'task_started',
-  task_id: 'task-1',
-  description: 'task-1',
-  uuid: '89898989-8989-4989-8989-898989898989',
-  session_id: remoteSessionId,
-})
-emit({
-  type: 'system',
-  subtype: 'task_notification',
-  task_id: 'unknown-task',
-  status: 'completed',
-  output_file: '/tmp/unknown-task',
-  summary: 'done',
-  uuid: '90909090-9090-4090-8090-909090909090',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.deepEqual(snapshot.remoteTaskIds, ['task-1', 'task-2'])
-assert.equal(snapshot.remoteBackgroundTaskCount, 2)
+  await emit({
+    type: 'system',
+    subtype: 'task_progress',
+    task_id: 'task-1',
+    description: 'checking',
+    usage: { total_tokens: 12, tool_uses: 1, duration_ms: 50 },
+    last_tool_name: 'Read',
+    summary: 'read one file',
+    uuid: 'abababab-abab-4bab-8bab-abababababab',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.remoteTaskSummary, 'read one file')
+  assert.equal(snapshot.remoteTaskLastToolName, 'Read')
 
-emit({
-  type: 'system',
-  subtype: 'task_progress',
-  task_id: 'task-1',
-  description: 'checking',
-  usage: { total_tokens: 12, tool_uses: 1, duration_ms: 50 },
-  last_tool_name: 'Read',
-  summary: 'read one file',
-  uuid: 'abababab-abab-4bab-8bab-abababababab',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.remoteTaskSummary, 'read one file')
-assert.equal(snapshot.remoteTaskLastToolName, 'Read')
+  await emit({
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: 'task-2',
+    status: 'stopped',
+    output_file: '/tmp/task-2',
+    summary: 'cancelled',
+    uuid: 'a9a9a9a9-a9a9-49a9-89a9-a9a9a9a9a9a9',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.remoteTaskIds.includes('task-2'), false)
+  assert.equal(snapshot.remoteBackgroundTaskCount, 1)
 
-emit({
-  type: 'system',
-  subtype: 'task_notification',
-  task_id: 'task-2',
-  status: 'stopped',
-  output_file: '/tmp/task-2',
-  summary: 'cancelled',
-  uuid: 'a9a9a9a9-a9a9-49a9-89a9-a9a9a9a9a9a9',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.remoteTaskIds.includes('task-2'), false)
-assert.equal(snapshot.remoteBackgroundTaskCount, 1)
+  await emit({
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: 'task-1',
+    status: 'completed',
+    output_file: '/tmp/task-1',
+    summary: 'done',
+    uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.remoteBackgroundTaskCount, 0)
+  assert.equal(snapshot.remoteTaskIds.includes('task-1'), false)
 
-emit({
-  type: 'system',
-  subtype: 'task_notification',
-  task_id: 'task-1',
-  status: 'completed',
-  output_file: '/tmp/task-1',
-  summary: 'done',
-  uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.remoteBackgroundTaskCount, 0)
-assert.equal(snapshot.remoteTaskIds.includes('task-1'), false)
+  await emit({
+    type: 'system',
+    subtype: 'goal_state_changed',
+    goal: {
+      type: 'goal_status',
+      id: 'goal-1',
+      condition: 'ship it',
+      status: 'active',
+      sentinel: true,
+    },
+    uuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.goalActive, true)
+  assert.equal(snapshot.goalId, 'goal-1')
 
-emit({
-  type: 'system',
-  subtype: 'goal_state_changed',
-  goal: {
-    type: 'goal_status',
-    id: 'goal-1',
-    condition: 'ship it',
-    status: 'active',
-    sentinel: true,
-  },
-  uuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.goalActive, true)
-assert.equal(snapshot.goalId, 'goal-1')
+  await emit({
+    type: 'system',
+    subtype: 'goal_state_changed',
+    goal: {
+      type: 'goal_status',
+      id: 'stale-goal',
+      condition: 'old',
+      status: 'met',
+      sentinel: true,
+    },
+    uuid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.goalActive, true)
+  assert.equal(snapshot.goalId, 'goal-1')
 
-emit({
-  type: 'system',
-  subtype: 'goal_state_changed',
-  goal: {
-    type: 'goal_status',
-    id: 'stale-goal',
-    condition: 'old',
-    status: 'met',
-    sentinel: true,
-  },
-  uuid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.goalActive, true)
-assert.equal(snapshot.goalId, 'goal-1')
+  await emit({
+    type: 'system',
+    subtype: 'goal_state_changed',
+    goal: {
+      type: 'goal_status',
+      id: 'goal-1',
+      condition: 'ship it',
+      status: 'met',
+      sentinel: true,
+    },
+    uuid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    session_id: remoteSessionId,
+  })
+  assert.equal(snapshot.goalActive, false)
 
-emit({
-  type: 'system',
-  subtype: 'goal_state_changed',
-  goal: {
-    type: 'goal_status',
-    id: 'goal-1',
-    condition: 'ship it',
-    status: 'met',
-    sentinel: true,
-  },
-  uuid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-  session_id: remoteSessionId,
-})
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.goalActive, false)
-
-const localUuid = '44444444-4444-4444-8444-444444444444'
-assert.equal(await snapshot.sendMessage('next', { uuid: localUuid }), true)
-assert.deepEqual(sentMessages, [
-  { content: 'next', options: { uuid: localUuid } },
-])
-const suggestions = await snapshot.remoteFileSuggestionProvider(
-  { query: 'src', mode: 'fuzzy', limit: 20 },
-  new AbortController().signal,
-)
-assert.deepEqual(suggestions.items, [{ path: 'src/index.ts', kind: 'file' }])
-assert.deepEqual(
-  await snapshot.managedSSHRemotePermissions.getDirectorySuggestions(
-    '/srv/project/s',
+  const localUuid = '44444444-4444-4444-8444-444444444444'
+  assert.equal(await snapshot.sendMessage('next', { uuid: localUuid }), true)
+  assert.deepEqual(sentMessages, [
+    { content: 'next', options: { uuid: localUuid } },
+  ])
+  const suggestions = await snapshot.remoteFileSuggestionProvider(
+    { query: 'src', mode: 'fuzzy', limit: 20 },
     new AbortController().signal,
-  ),
-  [{ path: '/srv/project/src', kind: 'directory' }],
-)
-assert.deepEqual(fileSuggestionRequests, [
-  { query: 'src', mode: 'fuzzy', limit: 20 },
-  { query: '/srv/project/s', mode: 'path', limit: 10 },
-])
+  )
+  assert.deepEqual(suggestions.items, [{ path: 'src/index.ts', kind: 'file' }])
+  assert.deepEqual(
+    await snapshot.managedSSHRemotePermissions.getDirectorySuggestions(
+      '/srv/project/s',
+      new AbortController().signal,
+    ),
+    [{ path: '/srv/project/src', kind: 'directory' }],
+  )
+  assert.deepEqual(fileSuggestionRequests, [
+    { query: 'src', mode: 'fuzzy', limit: 20 },
+    { query: '/srv/project/s', mode: 'path', limit: 10 },
+  ])
 
-callbacks?.onPermissionRequest?.(
-  {
-    subtype: 'can_use_tool',
-    tool_name: 'Read',
-    input: { file_path: '/tmp/disconnect' },
-    tool_use_id: 'disconnect-permission-tool',
-  },
-  'disconnect-permission-request',
-)
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.permissionQueueSize, 1)
-callbacks?.onDisconnected?.()
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(snapshot.permissionQueueSize, 0)
-assert.equal(snapshot.remoteSessionId, null)
-assert.equal(snapshot.isReady, false)
-assert.equal(snapshot.remoteBackgroundTaskCount, 0)
-assert.deepEqual(snapshot.remoteTaskIds, [])
-assert.equal(snapshot.inProgressToolUseIDs.size, 0)
+  await act(() =>
+    onPermissionRequest(
+      {
+        subtype: 'can_use_tool',
+        tool_name: 'Read',
+        input: { file_path: '/tmp/disconnect' },
+        tool_use_id: 'disconnect-permission-tool',
+      },
+      'disconnect-permission-request',
+    ),
+  )
+  assert.equal(snapshot.permissionQueueSize, 1)
+  await act(() => onDisconnected())
+  assert.equal(snapshot.permissionQueueSize, 0)
+  assert.equal(snapshot.remoteSessionId, null)
+  assert.equal(snapshot.isReady, false)
+  assert.equal(snapshot.remoteBackgroundTaskCount, 0)
+  assert.deepEqual(snapshot.remoteTaskIds, [])
+  assert.equal(snapshot.inProgressToolUseIDs.size, 0)
 
-snapshot.disconnect()
-await new Promise(resolve => setImmediate(resolve))
-assert.equal(disconnectCount, 1)
-assert.equal(proxyStopCount, 1)
-assert.equal(snapshot.permissionQueueSize, 0)
-assert.equal(snapshot.isReady, false)
-assert.equal(snapshot.remoteSessionId, null)
-assert.equal(snapshot.remoteFileSuggestionProvider, undefined)
-assert.equal(snapshot.remoteBackgroundTaskCount, 0)
-assert.deepEqual(snapshot.remoteTaskIds, [])
-assert.equal(snapshot.inProgressToolUseIDs.size, 0)
-
-instance.unmount()
-instance.cleanup()
+  const { disconnect } = snapshot
+  await act(() => disconnect())
+  assert.equal(disconnectCount, 1)
+  assert.equal(proxyStopCount, 1)
+  assert.equal(snapshot.permissionQueueSize, 0)
+  assert.equal(snapshot.isReady, false)
+  assert.equal(snapshot.remoteSessionId, null)
+  assert.equal(snapshot.remoteFileSuggestionProvider, undefined)
+  assert.equal(snapshot.remoteBackgroundTaskCount, 0)
+  assert.deepEqual(snapshot.remoteTaskIds, [])
+  assert.equal(snapshot.inProgressToolUseIDs.size, 0)
+} finally {
+  try {
+    await act(() => instance?.unmount())
+  } finally {
+    instance?.cleanup()
+    if (previousActEnvironment === undefined) {
+      delete actEnvironment.IS_REACT_ACT_ENVIRONMENT
+    } else {
+      actEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+    }
+  }
+}
 
 console.log('useSSHSession.test.tsx passed')
