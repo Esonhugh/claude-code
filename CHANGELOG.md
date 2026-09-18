@@ -12,6 +12,26 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-19 - Mods 输入链与 SSH 长临时路径修复
+
+### 版本状态
+
+- 未发布；版本与依赖保持不变，不创建 tag 或 release。以下修复不覆盖上一轮失败，也不宣称官方完整兼容或 full-covered。
+
+### 变更内容
+
+- Mods Pane 增加受 composer/dialog 所有权约束的人工 Tab/鼠标入焦；方向键按可见控件顺序导航，使用 middleware 最终焦点落点并串行处理连续输入，Escape 取消待处理焦点。
+- Pane 的 Button action 接入既有 keybinding/chord 系统，补齐 diff 文件导航与 base 切换默认键位，保留用户重绑/解绑及 drawing 生命周期；已被 legacy handler 消费的输入不再重复激活 DOM 控件。
+- 保留已有鼠标 parser 的 wheel 坐标，按实际命中 Pane body 转为相对坐标传入 ui.scroll；插件虚拟列表可自行消费滚轮，无需外层内容溢出，不抢焦或额外滚动 transcript。
+- SSH control/proxy socket 使用唯一私有目录，按 UTF-8 字节预算保留 OpenSSH 临时后缀空间，过长 TMP 自动选择短临时根；清理不递归删除仍存活的 socket，失败可诊断并重试。
+- SSH child close/error 的 proxy 清理异常在事件回调边界记录，避免同步逸出；显式 stop 仍保留错误与重试语义。
+
+### 测试覆盖
+
+- SSH 长路径、多字节、并发目录、真实本地 UDS、启动失败和清理重试取得红→绿；主线程追加 close/error 两项红→绿，相邻10文件142 pass / 0 fail。该结果不代表真实远端 SSH 集成。
+- Mods 输入链的红绿、相邻回归、提交后完整自动化及新制品 scripted tmux 结果以 mods-test.md 第8节和 handoff.md 顶部为准；CHANGELOG 内嵌制品，后续动态测试结果不改变已构建内容身份。
+- Workflow 原5000ms超时仍未定因；一次有界诊断的目标通过，但镜像漏内嵌 CHANGELOG 导致完整前缀不合格，不把未复现当成修复。指定 settings 的官方检查在 sandbox 编译前置受阻，official 未启动，不据此判断认证或 gate；推送门禁仍保留。
+
 ## 2026-09-18 - Mods 生命周期、宿主能力与兼容性收口
 
 ### 版本状态

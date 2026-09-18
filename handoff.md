@@ -1,5 +1,19 @@
 # Mods 修复与兼容性验收
 
+## 后续修复轮：输入链、Workflow 与 SSH 长路径（进行中）
+
+本节为最新工作状态；下方各轮结果作为历史证据保留，不改写原失败。基线为 `feat/mods@690ecbac3773c98a98664c94dfab26d57065ae44`，新证据根为 `/private/tmp/mods-input-repair-20260918-rw73i3qa/`，方案见 [mods-test.md 第 8 节](mods-test.md#8-后续修复轮输入链workflow-与-ssh-长路径)。
+
+- 已批准范围：Mods 人工入焦、方向键导航、Button action/chord 与 wheel pointer 接线；SSH control/proxy 长 TMP socket 路径；Workflow 原 5000ms 超时的透明生命周期取证，有证据支持才修复。
+- SSH 长路径已取得定向红绿；主线程评审另补 close/error 清理异常逸出的 2 项红→绿，SSH 相邻10文件最终142 pass / 0 fail、自有资源清理完成，签名提交 `1a7abc9`。仅真实本地 UDS，不等于真实 SSH 集成。
+- Mods 输入链实现及接管审查完成。API 连接中断未被当作产品失败；接管补齐 REPL pointer/当前 presentation/最终 landing 接线测试，并修复 Escape 后延迟 host focus 重新抢焦的竞态。最终7文件206 pass / 0 fail，包含跨 pane 迟到请求和正常重新入焦。
+- 当前源码 `make release-check` 全部通过（TypeScript、lint、audit、changelog和diff），检查前后 tracked 内容未变。完整自动化、新构建或新 binary 交互结果尚未产生，不引用旧通过数字充当新执行。
+- Workflow 已执行一次探针校准和一次 180 文件前缀、0 缩减；目标三项完成，普通调用 67.568ms，但原超时根因仍未定。主线程只读 raw 查明该前缀整体 exit1 来自镜像遗漏内嵌 CHANGELOG，导致 uiName/setup 导入错误，不能算输入等价的原前缀复现；不额外重跑。见新证据根 `workflow/main-review.json`，原 timeout 继续阻止推送。
+- 官方检测计划使用 `--settings /Users/esonhugh/.claude/settings.mjclouds-ant.json`。一次 Git fixture 修正后仍被 macOS sandbox 数值 remote-ip 语法阻塞，official 进程未创建、配置未被 official 消费，模型请求 0；不能判断配置有效性或新的 gate 状态。资源已清理，记录 not covered，见 `official-configured/summary.json`。配置内容不打印、上传或提交，场景与本地 synthetic/loopback 回归分开。
+- 后续按功能签名提交、冻结源码完整测试、release-check/build 和 scripted tmux 验收；CHANGELOG 在构建前定稿，最终结果只回填不内嵌报告。未解释本地失败仍阻止推送；两份既有草稿保持不动。
+
+---
+
 ## 2026-09-18 三项修复收口：最新执行记录
 
 **本节是最新状态，取代下方历史节的“当前状态”表述；历史 failed 原文不改写。** 三项已确认产品问题均已修复并取得红→绿回归。SSH测试后续以awaited React `act`修复并签名提交`d9a28d1`，两次完整同进程均通过该脚本；但第二轮新增Workflow command-runner超时，根因未定。既有SSH ControlPath长路径限制未修复，新binary交互补验又发现部分官方 diff 控件失败。当前整体不能判通过，推送继续阻塞。

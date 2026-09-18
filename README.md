@@ -598,6 +598,8 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 - 生命周期：扫描并固定模块快照 → register → `engine.create` → 准入 → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
 - 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除或拒绝准入撤下旧能力。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
 - 当前接线：tool/prompt/turn middleware、动态 slash commands、会话与 accepted settings 读取、fs、argv process、JSON store，以及 inline/fullscreen terminal Pane。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
+- Pane 输入：空 composer 且没有 dialog/其他输入所有权时，可用 Tab / Shift+Tab 或鼠标进入可见 dock。裸方向键在可见控件间导航，详情区域可滚动；Input/Select 优先处理自身按键，Escape 关闭或退焦。鼠标滚轮按实际命中的 Pane body 交给插件处理，Pane 外保持 transcript 滚动。
+- Diff action：插件声明相应 Button `action` 时，默认 Ctrl/Opt+Up/Down 切换文件，Ctrl+x 后按 b 切换 diff base；沿用现有 keybindings 配置，可重绑或解绑。显示用 `hotkey` 文本本身不会注册动作。
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：不宣称实现全部官方 API、模型流、远端 surface 或作者测试工具链；本地尚未完整提供 `/plugin-types`、`claude plugin test`。官方源码在本地通过不等于官方 binary 的动态 parity，官方 rollout gate 关闭时记为未覆盖。
 

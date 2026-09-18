@@ -1,5 +1,7 @@
 # Mods 收口测试方案与验收记录
 
+第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复的方案与状态见第 8 节。历史失败不会由后续成功覆盖。
+
 ## 1. 范围和判定规则
 
 本轮只修复三个已确认问题，不扩展 Mods API、不重构 PTY、不修改依赖、CI、版本或发布制品：
@@ -225,3 +227,51 @@ smoke agent记录的`handoff.md`、`mods-test.md`内容漂移来自主线程并�
 真实发布的 `@esonhugh/claude-code@2.1.219` 与修复前本地 binary，在隔离同场景五轮对话中：默认首轮内容为 81984 / 74771 bytes，差 -7213 bytes（-8.80%），主要是 Plan 工具暴露和描述差异；统一 Read-only 后六次规范化请求完全相同。四场均正常退出且资源清理完成。
 
 这不证明功能等价优化，也不是 Claude tokenizer、实际计费或进程 RSS 测量。发布版 binary SHA-256 为 `cda2d12bfe629d3ea3b145ca8b9cd22b4f20337e1e2685b6df28445c50d333b6`，该次本地 binary 为 `7c94b14562d53b40da61cc184f7db6161b7d514d2bfe2f33c9f0a6a48cce6576`。本轮新构建仅另做必要上下文 smoke，不将旧结果标为新制品通过。
+
+## 8. 后续修复轮：输入链、Workflow 与 SSH 长路径
+
+### 8.1 基线与范围
+
+- 基线：`feat/mods@690ecbac3773c98a98664c94dfab26d57065ae44`，启动时 tracked 干净；两份既有 cross-session 草稿不修改、不暂存。
+- 新证据根：`/private/tmp/mods-input-repair-20260918-rw73i3qa/`，`baseline.json` 保存逐文件内容身份；首轮 evidence 保留，不覆盖旧运行。
+- 只处理已确认的 Mods 输入链与 SSH 长 TMP socket 问题，以及 Workflow 原超时的有界诊断和有证据支持的修复。不扩展 Mods API、不重构 PTY、不改依赖、CI 或版本。
+- 定向修复和提交前静态门禁已完成，完整自动化、新构建及新 binary 交互验收另列后续结果。不得沿用第 7 节通过数字作为本轮结果。
+
+### 8.2 最小红绿与相邻回归
+
+| 模块 | 必要断言 |
+| --- | --- |
+| Mods focus | 空 composer 的人工 Tab/鼠标入焦；非空草稿、dialog 和其他键盘所有权不被抢占；裸 Up/Down 按可见控件顺序移动、跨五文件窗口及首尾边界；middleware 重写/拒绝/stay 后实际 DOM 落点；快速输入不依赖过时 snapshot |
+| Mods action | 当前 drawing 的 Button `action` 经现有 keybinding 系统执行；modifier arrows、完整/取消 chord、用户 remap/unbind、Enter/Space 恰好一次；重复 action 目标确定、旧 drawing/隐藏/卸载清理；不解析展示用 hotkey |
+| Mods wheel | 复用鼠标 parser 坐标和 hit-test，零基 body-relative pointer 传入既有 `ui.scroll`；list/body 分区、非顶部向上、边界、遮挡、pane 外 transcript；无宿主 overflow 仍可让插件虚拟分页，不抢焦或附加 transcript 加速 |
+| 输入相邻回归 | Input/Select 自身按键、PromptInput Escape overlay guard、快速详情→列表→关闭、新一组正常双 Escape、builtin command 恢复 |
+| SSH | 长 TMP、多字节路径、短路径保持、并发目录唯一；control 与 proxy 均满足 Unix socket 字节预算并保留 OpenSSH 临时后缀空间；本地真实 UDS bind/关闭；probe/deploy/proxy/spawn 失败与重复清理；不删除仍活跃的 master socket |
+| Workflow | 透明记录 spawn/PID/exit/close、pipe 字节与 end/close/error、TERM/KILL/timer 时序及带外心跳；不记录输出正文、不提前 resolve、不放宽 testcase timeout |
+
+Workflow 只做一次探针校准和一次原 full-b 到目标的精确前缀诊断，仓库外单轮上限 180 秒；取得失败轨迹才最多两次有信息增益的缩减。其他模块并行修改时以固定基线镜像或逐文件 manifest 保证输入身份。首轮未复现则停止，不重复此前三次单文件和十文件邻域来刷通过次数；未定因仍保留原 timeout 和推送阻塞。
+
+### 8.3 完整验证与新制品交互
+
+1. 先审各模块红绿证据、cleanup 和实际 diff，再运行相邻回归、TypeScript、lint、changelog 与 diff 门禁，按功能正常签名提交。
+2. 冻结源码后从 tracked 文件重新生成 inventory，逐文件独立 OS 进程和显式 `bun test --isolate --no-orphans` 各一轮；保留 Workflow preload、真实官方 fixture/types、短 TMP 和既有 Peer fixture 授权。registered、顶层脚本、child summaries 分开；raw 顶层错误不能被 JUnit 漏报掩盖。
+3. 执行 `make release-check`、`make build`。CHANGELOG 在构建前定稿；记录实际源码与 binary hash，不把 HEAD/index、evidence 路径和动态日志当内容身份。
+4. 专门 runtime agent 串行脚本操作 tmux，使用完整未修改官方 diff 原件、具有真实 HEAD/merge-base 和多个分离 hunk 的私有 Git fixture，验证 inline 逐文件/跨页、详情/Escape、fullscreen Tab/BTab→ask→实际提交及一次 context、modifier/chord 恰好一次、base 实际切换后 store/reload、list/body wheel 正反向、pane 外 transcript、mouse 相邻路径、disable/builtin、draft/dialog 所有权，以及 Workflow 相关执行/终态 smoke。
+5. 每场保存 exact argv、session/window/pane、操作前置状态、关键 captures、行为断言和正常退出；cleanup 单独审计。空 Mods 规范化请求对照只复用既有可靠方法，不重跑无关发布版 benchmark。
+6. 最后只回填不内嵌的本文件与 handoff；若构建输入又变，重新构建及相关 smoke。旧失败保留，新的未解释本地失败或构建/交互失败继续阻止推送。
+
+### 8.4 实施中评审记录（不作最终通过结论）
+
+- SSH 实现者交接时相邻回归为 140 pass / 0 fail（10 文件，其中 session 41 项），相关 lint 通过，见 `ssh/summary.json`；主线程评审及后续修复另外记录如下，不改写交接时结果。
+- 主线程另做真实 default proxy 的清理错误路径探针：目录存在合成 `pending` 资源时，`proc.emit('close', 0)` 经 `createSession` 的直接 `proxy.stop()` 将新增 directory cleanup 的 `ENOTEMPTY` 同步抛出。最小行为断言失败、exit 1；before/after 源码 hash 一致，finally 删除自有 marker 并停止 proxy。证据 `automated/ssh-review/result.json`、`output.log`。该失败不能被前述 140 项通过覆盖。交接后主线程补 close/error 两项源内回归，先 0 pass / 2 fail，再在事件回调边界记录 cleanup error、不让异常逸出；显式 `proxy.stop()` 仍保留错误和重试语义，非空/live socket 目录保护未改。定向绿 2/0，相邻 10 文件 142/0，lint 与 diff check 通过，自有目录无残留。证据 `ssh/review-red-events/`、`ssh/review-green-events/`、`ssh/review-green-adjacent/`、`ssh/review-lint/`；旧 140/0 及最初 probe 失败均保留。
+- 验证驱动仅准备、未启动完整清单；`automated/preparation-checks.json` 记录 sandbox 探针和 changelog 门禁（5 pass / 0 fail）。Peer 和私有 UDS fixture 探针通过；SSH 回退目录许可按本次 exec 保留的 PID 限定，其他 PID fixture 创建被拒，不能泛化为开放 `/tmp` 写入。`/bin/ps` 仍 EPERM，环境边界未改变。
+
+- Workflow 有界取证已结束，未修改生产代码：一次校准、一次 180 文件前缀，0 次缩减。目标三项完成，普通调用 67.568ms，有真实 spawn/pipe/exit/close 轨迹；原 5000ms 超时未复现且根因仍未定。该前缀整体 exit 1、JUnit 1244 项比原少 6 项，**不合格为完整原前缀复现**：主线程只读 raw 查明镜像漏了内嵌 `CHANGELOG.md`，`LogoV2/uiName` 和 `setup` 导入发生顶层错误。源码 hash 相同不能弥补缺失运行输入，不将其归因于产品、不额外重跑；`workflow/summary.json`、`workflow/main-review.json`。所有记录内自有进程及短 TMP 已回收；原超时继续阻止推送。
+
+- Mods 输入链原实现者和接管审查者先后遇到 API 连接中断，保留代码与 raw，未将中断算为产品失败或验收通过。主线程最终接管；REPL 抽取测试补当前 presentation、最终 landing、canFocus 条件和 wheel pointer 断言。进一步红测复现 Escape 之后迟到 host focus 再次抢焦，以后来的人工请求使旧请求失效修复；跨 pane 转移和重新进入均覆盖。新增红测中的 snapshot 断言最初把省略字段误写为显式 undefined，邻域205/1；改为明确断言字段不存在后，最终7文件 **206 pass / 0 fail、1123 expect**。证据 `ui/takeover-host-escape-red.log`、`ui/main-final-adjacent.log`、`ui/main-final-green.log`；原失败不覆盖。
+- `make release-check` exit0：changelog、TypeScript、lint、missing audit及diff全部通过，tracked内容前后无变化，见 `build/release-check.json`。SSH按功能签名提交 `1a7abc9`；后续完整清单和制品交互独立记录。
+
+### 8.5 官方检测配置与隔离边界
+
+本地自动化和本地 binary 回归继续使用独立 HOME/config/XDG/TMP、synthetic auth 和 loopback fixture。若需要启动根 `official-claude`，按用户指定显式传入 `--settings /Users/esonhugh/.claude/settings.mjclouds-ant.json`；已核验该路径存在，配置内容不写入报告、日志或版本控制。仅官方检测进程使用该指定配置，不读取其他真实配置或 Keychain；使用 synthetic workspace 和测试输入，不发送仓库代码、原件或 raw 日志。该配置检测与本地 loopback 场景分开记录，不宣称两者环境相同。官方自然 gate 仍关闭则记录 not covered，不 patch binary、账户或 rollout。
+
+指定配置的首次检测已结束，但 **official 进程实际未创建，配置尚未被 official 消费**：首次 harness 缺少 synthetic Git `.git/info`，修正后又被 macOS sandbox profile 的数值 remote-ip 语法拒绝。本次只证明启动前置受阻，不能声称官方 gate 仍关闭、配置无效或认证失败。计划 argv 已包含指定 `--settings`，但不是已执行 argv；模型/API 请求为 0，无正常退出资格。binary/原件完整性及自有资源 cleanup 通过，证据 `official-configured/summary.json`、`sandbox-compile.json`、`cleanup.json`。受限重试预算已停止，未通过放宽外网或秘密隔离启动。配置内容未打印或复制；sandbox 错误曾包含解析后的服务地址，已原地脱敏，未发现凭据材料。
