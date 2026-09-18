@@ -235,7 +235,7 @@ smoke agent记录的`handoff.md`、`mods-test.md`内容漂移来自主线程并�
 - 基线：`feat/mods@690ecbac3773c98a98664c94dfab26d57065ae44`，启动时 tracked 干净；两份既有 cross-session 草稿不修改、不暂存。
 - 新证据根：`/private/tmp/mods-input-repair-20260918-rw73i3qa/`，`baseline.json` 保存逐文件内容身份；首轮 evidence 保留，不覆盖旧运行。
 - 只处理已确认的 Mods 输入链与 SSH 长 TMP socket 问题，以及 Workflow 原超时的有界诊断和有证据支持的修复。不扩展 Mods API、不重构 PTY、不改依赖、CI 或版本。
-- 定向修复和提交前静态门禁已完成，完整自动化、新构建及新 binary 交互验收另列后续结果。不得沿用第 7 节通过数字作为本轮结果。
+- 定向修复、功能提交、完整自动化与构建已完成；两种完整模式均 exit 1，不能判整体通过，结果见第 8.6–8.7 节。新 binary 交互验收单独记录，不沿用第 7 节通过数字。
 
 ### 8.2 最小红绿与相邻回归
 
@@ -263,7 +263,7 @@ Workflow 只做一次探针校准和一次原 full-b 到目标的精确前缀诊
 
 - SSH 实现者交接时相邻回归为 140 pass / 0 fail（10 文件，其中 session 41 项），相关 lint 通过，见 `ssh/summary.json`；主线程评审及后续修复另外记录如下，不改写交接时结果。
 - 主线程另做真实 default proxy 的清理错误路径探针：目录存在合成 `pending` 资源时，`proc.emit('close', 0)` 经 `createSession` 的直接 `proxy.stop()` 将新增 directory cleanup 的 `ENOTEMPTY` 同步抛出。最小行为断言失败、exit 1；before/after 源码 hash 一致，finally 删除自有 marker 并停止 proxy。证据 `automated/ssh-review/result.json`、`output.log`。该失败不能被前述 140 项通过覆盖。交接后主线程补 close/error 两项源内回归，先 0 pass / 2 fail，再在事件回调边界记录 cleanup error、不让异常逸出；显式 `proxy.stop()` 仍保留错误和重试语义，非空/live socket 目录保护未改。定向绿 2/0，相邻 10 文件 142/0，lint 与 diff check 通过，自有目录无残留。证据 `ssh/review-red-events/`、`ssh/review-green-events/`、`ssh/review-green-adjacent/`、`ssh/review-lint/`；旧 140/0 及最初 probe 失败均保留。
-- 验证驱动仅准备、未启动完整清单；`automated/preparation-checks.json` 记录 sandbox 探针和 changelog 门禁（5 pass / 0 fail）。Peer 和私有 UDS fixture 探针通过；SSH 回退目录许可按本次 exec 保留的 PID 限定，其他 PID fixture 创建被拒，不能泛化为开放 `/tmp` 写入。`/bin/ps` 仍 EPERM，环境边界未改变。
+- 驱动准备阶段尚未启动完整清单；`automated/preparation-checks.json` 记录 sandbox 探针和 changelog 门禁（5 pass / 0 fail）。Peer 和私有 UDS fixture 探针通过；SSH 回退目录许可按本次 exec 保留的 PID 限定，其他 PID fixture 创建被拒，不能泛化为开放 `/tmp` 写入。`/bin/ps` 仍 EPERM，环境边界未改变。
 
 - Workflow 有界取证已结束，未修改生产代码：一次校准、一次 180 文件前缀，0 次缩减。目标三项完成，普通调用 67.568ms，有真实 spawn/pipe/exit/close 轨迹；原 5000ms 超时未复现且根因仍未定。该前缀整体 exit 1、JUnit 1244 项比原少 6 项，**不合格为完整原前缀复现**：主线程只读 raw 查明镜像漏了内嵌 `CHANGELOG.md`，`LogoV2/uiName` 和 `setup` 导入发生顶层错误。源码 hash 相同不能弥补缺失运行输入，不将其归因于产品、不额外重跑；`workflow/summary.json`、`workflow/main-review.json`。所有记录内自有进程及短 TMP 已回收；原超时继续阻止推送。
 
@@ -275,3 +275,59 @@ Workflow 只做一次探针校准和一次原 full-b 到目标的精确前缀诊
 本地自动化和本地 binary 回归继续使用独立 HOME/config/XDG/TMP、synthetic auth 和 loopback fixture。若需要启动根 `official-claude`，按用户指定显式传入 `--settings /Users/esonhugh/.claude/settings.mjclouds-ant.json`；已核验该路径存在，配置内容不写入报告、日志或版本控制。仅官方检测进程使用该指定配置，不读取其他真实配置或 Keychain；使用 synthetic workspace 和测试输入，不发送仓库代码、原件或 raw 日志。该配置检测与本地 loopback 场景分开记录，不宣称两者环境相同。官方自然 gate 仍关闭则记录 not covered，不 patch binary、账户或 rollout。
 
 指定配置的首次检测已结束，但 **official 进程实际未创建，配置尚未被 official 消费**：首次 harness 缺少 synthetic Git `.git/info`，修正后又被 macOS sandbox profile 的数值 remote-ip 语法拒绝。本次只证明启动前置受阻，不能声称官方 gate 仍关闭、配置无效或认证失败。计划 argv 已包含指定 `--settings`，但不是已执行 argv；模型/API 请求为 0，无正常退出资格。binary/原件完整性及自有资源 cleanup 通过，证据 `official-configured/summary.json`、`sandbox-compile.json`、`cleanup.json`。受限重试预算已停止，未通过放宽外网或秘密隔离启动。配置内容未打印或复制；sandbox 错误曾包含解析后的服务地址，已原地脱敏，未发现凭据材料。
+
+### 8.6 提交后完整自动化：执行结束，整体 failed
+
+本轮按功能正常签名提交 `1a7abc9`（SSH）、`5f560fa`（Mods 输入）、`6b967f3`（README/CHANGELOG/方案），冻结提交为 `6b967f36c7135dacd5c9a29a228eaea4ffe75806`。`automated/frozen.json` 动态发现261个唯一 tracked 测试文件，排除生产模块 `src/ink/hit-test.ts` 和 ignored 第三方输出。两轮2578个源码/运行输入前后逐文件 hash 一致，包含内嵌 `CHANGELOG.md`；HEAD只作 provenance。
+
+| 验证模式 | 实际结果 | 证据（相对本轮证据根） |
+| --- | --- | --- |
+| 每文件独立 OS 进程 | **260/261文件 qualified；1623 registered pass / 3 fail；106个 assertion scripts完成；0 skip/todo/timeout；exit1** | `automated/final/summary.json`、`results.json` |
+| 同进程显式261清单，`bun test --isolate --no-orphans` | **完整结束，1622 pass / 4 fail；0 skip/todo/timeout；exit1** | `automated/tracked-final/result.json`、`output.log`、`junit.xml` |
+| Mods 22文件子集（独立模式） | **22/22 qualified，572 pass / 0 fail**；已包含于完整清单，不累加 | `automated/main-review.json` |
+
+父 raw footer 两种模式均为4622 expect calls，JUnit均有1626个 testcase elements、4617 assertions；分别3和4个 failure elements，无额外 error elements。保留5个断言的计数口径差异，不相加、不悄悄改成相同数字。各模式另有一个子进程摘要6 pass / 0 fail、86 expect，单列不计入父 totals。raw告警逐条审核后无顶层 Unhandled；测试名内的 error/unhandled 和末尾重复失败摘要不算新失败。
+
+同进程确认105个脚本完成 sentinel；`nativeInstaller/download.test.ts` 无源码级完成标记，仍保留资格限制。独立模式的 awaited import+sentinel不能证明它在同进程内异步完成。交叉审计见 `automated/raw-junit-audit.json`、`automated/main-review.json`。
+
+剩余失败与边界：
+
+1. **Peer 3项 environment-blocked，两模式一致。** registry process-start、recycled PID discovery、stale authentication断言失败，`procStart`不可得。既有隔离探针再次记录 setuid `/bin/ps` 执行 EPERM；没有取消隔离、伪造身份、跳过或弱化断言。`automated/final/f259/output.log`、`automated/sandbox-probe.log`。
+2. **历史 PTY `2 !== 130` 在同进程重现，根因未定。** `src/utils/pty/bunPtyDriver.integration.test.ts:165` 实际exitCode2，预期130；同文件独立9/0，同进程8/1。raw与JUnit一致，不能归为计数误差。当前测试open→write→signal没有shell readiness，但失败进程启动/输出轨迹不足，尚不能证明启动竞态或进程级污染。此前三次单文件和tmux有界诊断均未复现，本轮不再盲跑、不改生产退出码、不放宽断言。`automated/tracked-final/output.log:2390–2409`。
+3. **Workflow本轮3项两模式均通过，但原5000ms事故仍未定因。** 新通过不覆盖旧full-b失败，也不使第8.4节遗漏CHANGELOG的前缀获得等价资格。原Workflow timeout与本轮PTY失败均继续阻止推送。
+
+父LCOV仅来自既有90文件 Mods/相邻清单：Mods **5121/5801行（88.28%）**，19个已插桩文件；全部被导入父源码61166/260628行（23.47%），1244文件。按canonical source/line并集合并；不代表全仓覆盖率、功能完整性或官方parity，不含Worker/VM/child/compiled与直接脚本。失败执行可以贡献观察行，不能贡献验收成功。`automated/final/coverage-summary.json`。
+
+资源复核：261独立进程及同进程runner均无额外process-group kill，记录内PID/直接子进程/process-group现已不存在；自有SSH目录残留和私有TMP socket entries均为空。私有测试数据保留在 `/private/tmp/mi-jvp9bp4n` 作为证据，不宣称已删除；此检查不证明不存在未被记录的detached descendants。见 `automated/main-review.json`。
+
+### 8.7 构建身份与工作区边界
+
+`make release-check` 与 `make build` 均 exit0，检查及构建前后 tracked内容无变化。构建为 **2.1.219，100119266 bytes**，SHA-256 **`13e042c2a21c2b0a3799f02832d6b357483263d9cc46db3e69a8d43deec7d31e`**。构建锁定时，仓库 `built-claude` 与 `build/artifact/built-claude` 隔离副本hash相同，见 `build/release-check.json`、`build/build.json`、`build/artifact-lock.json`。报告复核时，仓库产物已变为 `b5d6121afa250922d4ccbe395f35dba5dc3033a119a7d291dd7fc18eae84235f`；本任务未重建或覆盖它，不把该并发替换产物算作已验收。隔离副本仍为上述 `13e042c2…`，是本轮scripted tmux的唯一指定制品；最终交接与实际覆盖见第8.8节。
+
+完整测试于本地2026-09-19 00:28:47结束，首次审计发现 `src/services/api/openai-compat.ts` 和 `openai-compat.test.ts` 出现额外未提交改动，记录mtime分别00:33:10和00:30:58，均晚于测试结束；之后还观察到 `src/utils/messages.ts` 改动与新的 `src/services/api/openai-reasoning-resume.test.ts`。后续复核时，这组并发工作已由其他任务正常签名提交为 `3b0d6ce`，另包含 `src/utils/conversationRecovery.ts`，当前HEAD因而前进。两个完整模式保留的before/after hash一致；**本轮结果对应冻结的 `6b967f3` 内容和上述binary，不覆盖后来的OpenAI提交，也不声称验证了当前HEAD的全部生产代码**。未修改、暂存或代替其他任务提交这些文件。报告回填只改本文件及`handoff.md`，不改已内嵌CHANGELOG或重建产物；两份既有cross-session草稿继续保留。
+
+### 8.8 新制品交互：已结束，存在确认失败及未覆盖项
+
+首个runtime任务已结束，`runtime/summary.json` 结论为 **not covered**，不能算新binary的产品通过或失败。`inline-acceptance-a1` 在适配旧driver时找不到已变更的plugin初始化代码（`ValueError: substring not found`）；一次集中修正后的 `inline-acceptance-a2` 又因 `git init --template=` 不创建 `.git/info`、写入exclude失败而停止。两次都未创建tmux session/pane、未启动loopback API或本地/官方CLI，因此全部产品矩阵与正常`/exit`均未覆盖。计划session `cc-final-inline-acceptance-a2` 不是实际创建的session；没有关键pane输出可供产品判定。
+
+上述任务在原重试预算内停止，旧summary、raw和driver快照保留。后续有界接管已结束：先通过fixture-only preflight，再使用冻结隔离制品完成7个真实tmux场景，每场一次，未启动official或真实外部provider。交接 `runtime/continuation-summary.json`（SHA-256 `f77791c6d20668c4caa987bb28990646d5e4734629aeea04c7301cdbd7dacf70`）判为 `qualified_with_confirmed_failures_and_partial_coverage`：有合格运行证据，但**整体不通过**。主线程只读交叉审计见 `runtime/main-final-review.json`，未重跑、未覆盖raw。
+
+以下场景目录位于 `runtime/continuation-a3/`，表内关键证据路径相对各自场景目录。exact driver命令和CLI argv在交接与场景记录内；实际session/pane均为 `cc-final-<场景名>:0.0`，私有tmux socket在各result中。
+
+| 场景 | 实际结果与边界 | 关键证据 |
+| --- | --- | --- |
+| `inline-acceptance-a3` | **确认失败：** Down/Up不能连续逐文件遍历，五行窗口未持续跟随。Down落点为01、02、03、03、03、06，之后仍停在06。Enter/详情滚动断言依赖已失败的导航，不能作为独立合格失败；快速Escape中间态未满足，后续未覆盖 | `inline-down-traversal.json`、`inline-up-traversal.json`、`list-down-07-after-1-viewport.txt`、`result.json` |
+| `fullscreen-acceptance-a3` | 20次有界Tab/Enter后激活ask，出现`asked`及下一prompt携带提示；API日志确认后续`REPAIR_ASKCTX`请求已发出。**不证明官方diff context恰好一次**：宿主`/bin/ps`采集5秒超时中断后续观察，下一请求未执行。单次Tab/BTab只比viewport变化，焦点谓词不足；modifier/base/reload/draft未到达 | `ask-keyboard-attempts.json`、`api-events.jsonl`、`result.json` |
+| `mouse-acceptance-a3` | dock body从非顶部向上/向下、list正反wheel、file03 row与边缘点击6项通过。pane外wheel前后transcript/dock均无可见变化，不能区分忽略、clamp或终端路径限制，**pane外回归未确认通过** | `result.json`、`mouse-outside-pane-audit.json` |
+| `local-fullscreen-ownership` | disable移除原件视图并恢复builtin `/diff`，限定场景通过 | `ownership.json`、`result.json` |
+| `enable-ownership-a3` | enable后settings恢复且重新显示Mod风格fullscreen，观察到owner恢复；新generation显示`No changes this session`。驱动要求旧hunk/ask重现，严格断言未到达；未定义的跨generation内容保留不能据此判产品失败 | `original-restored-timeout-viewport.txt`、`result.json` |
+| `context-normalization-a3` | 独立synthetic hook的当前请求marker计数**0→1→0**通过；不是官方diff ask链路，也不是no-plugin/empty-Mod完整请求等价 | `context-observation.json`、`result.json` |
+| `workflow-smoke-a3` | 单Agent后台Workflow完成，child Bash经过Mods恰好一次；`/rename`、`/color`、`/tasks`、`/workflows`已操作；主REPL只有1条聚合行、无agent展开行，详情显示1阶段/1agent。限定smoke通过，**不解决旧runCommand超时**，也不代表PTY生命周期全覆盖 | `result-final.json`、`workflow-tool-evidence.json`、`workflow-aggregate-observation.json` |
+
+真实Git fixture有16个变更文件、两个commit、有效HEAD/default-branch merge-base及多个分离hunk。三场主矩阵的raw却要求merge-base hunk数量必须严格大于HEAD；实际数量相同而patch不同，该项是错误predicate，不是fixture无效或产品失败。原raw失败全部保留，主线程未通过删除/放宽断言重跑改绿。
+
+仍未覆盖：strict快速Escape/no-Rewind、modifier action恰好一次、`Ctrl+x b`的base实际转换及store/reload、非空草稿/弹窗/host generation编译制品路径、官方diff ask一次context链、pane外transcript有效滚动、no-plugin与empty-Mod完整wire等价，以及官方CLI parity/真实provider。
+
+正常公开退出与资源回收分别判定：inline、disable ownership、context和Workflow **4场正常`/exit` exit0**；fullscreen keyboard、mouse和enable **3场正常退出未通过或未到达**，不能用cleanup替代。7场最终自有资源均已回收；Workflow基础cleanup遗留的remain-on-exit私有tmux server已在最终审计中清理。7个loopback端口关闭，无记录内owned process或私有tmux socket；主线程再次只读复核一致。见 `final-cleanup.json`、`final-integrity.json`、`../main-final-review.json`。
+
+冻结隔离binary、775文件官方原件及首个失败summary内容未变。**本轮执行已结束，没有仍在运行的验收agent；inline导航残留缺陷、PTY退出码异常和Workflow原超时继续阻止推送。** 只提交这两份不内嵌报告，不重新构建、不把后续OpenAI代码或仓库替换产物计入本轮结果。

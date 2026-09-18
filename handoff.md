@@ -1,16 +1,20 @@
 # Mods 修复与兼容性验收
 
-## 后续修复轮：输入链、Workflow 与 SSH 长路径（进行中）
+## 后续修复轮：输入链、Workflow 与 SSH 长路径（验收已结束，仍阻塞）
 
 本节为最新工作状态；下方各轮结果作为历史证据保留，不改写原失败。基线为 `feat/mods@690ecbac3773c98a98664c94dfab26d57065ae44`，新证据根为 `/private/tmp/mods-input-repair-20260918-rw73i3qa/`，方案见 [mods-test.md 第 8 节](mods-test.md#8-后续修复轮输入链workflow-与-ssh-长路径)。
 
 - 已批准范围：Mods 人工入焦、方向键导航、Button action/chord 与 wheel pointer 接线；SSH control/proxy 长 TMP socket 路径；Workflow 原 5000ms 超时的透明生命周期取证，有证据支持才修复。
 - SSH 长路径已取得定向红绿；主线程评审另补 close/error 清理异常逸出的 2 项红→绿，SSH 相邻10文件最终142 pass / 0 fail、自有资源清理完成，签名提交 `1a7abc9`。仅真实本地 UDS，不等于真实 SSH 集成。
-- Mods 输入链实现及接管审查完成。API 连接中断未被当作产品失败；接管补齐 REPL pointer/当前 presentation/最终 landing 接线测试，并修复 Escape 后延迟 host focus 重新抢焦的竞态。最终7文件206 pass / 0 fail，包含跨 pane 迟到请求和正常重新入焦。
-- 当前源码 `make release-check` 全部通过（TypeScript、lint、audit、changelog和diff），检查前后 tracked 内容未变。完整自动化、新构建或新 binary 交互结果尚未产生，不引用旧通过数字充当新执行。
+- Mods 输入链实现及接管审查完成。API 连接中断未被当作产品失败；接管补齐 REPL pointer/当前 presentation/最终 landing 接线测试，并修复 Escape 后延迟 host focus 重新抢焦的竞态。最终7文件206 pass / 0 fail，包含跨 pane 迟到请求和正常重新入焦；签名提交 `5f560fa`。README/CHANGELOG/方案签名提交 `6b967f3`，完整测试冻结于该提交。
+- **完整261清单两模式执行结束，整体failed。** 独立OS为260/261文件qualified、1623 registered pass / 3 Peer fail、106脚本完成；同进程显式`--isolate --no-orphans`为1622 pass / 4 fail，额外重现PTY `2 !== 130`，根因未定。均无timeout/skip，源码2578项（含CHANGELOG）前后hash一致。Mods22文件子集572/0；同进程105脚本sentinel，native download无源码完成标记，子进程6/0单列。raw/JUnit及cleanup审计见 `automated/main-review.json`；不能宣称全量通过。
+- `make release-check`、`make build` 均exit0，tracked输入前后未变。新binary **2.1.219，100119266 bytes，SHA-256 `13e042c2a21c2b0a3799f02832d6b357483263d9cc46db3e69a8d43deec7d31e`**，构建锁定时隔离副本hash一致；`build/artifact-lock.json`。后续复核仓库产物已变为`b5d6121a…`，隔离副本仍为`13e042c2…`，本轮验收仅对应后者，不覆盖并发替换的仓库产物。首个runtime任务两次均在CLI前发生harness failure（旧代码替换、私有Git缺`.git/info`），旧summary仍为not covered；后续接管已完成fixture-only preflight和7场新binary真实tmux，结果如下。
+- **交互整体不通过：inline连续Up/Down导航与五行分页仍有确认缺陷。** dock body/list正反wheel、row/edge、disable恢复builtin、独立synthetic context `0→1→0`及单Agent Workflow/child Bash exactly-once/主REPL聚合显示通过。20次有界Tab/Enter激活ask且后续请求发出，但官方diff context-once未覆盖，不能用独立context smoke替代。fullscreen宿主`/bin/ps`采集超时是harness问题，modifier/base/reload/draft/dialog等未覆盖；pane外wheel无可见变化不定因，enable后Mod视图恢复但旧generation内容保留未建立。证据`runtime/continuation-summary.json`、`runtime/main-final-review.json`，详见mods-test第8.8节。
+- 7场runtime最终资源回收完成：4场正常公开`/exit`为0，另3场正常退出未通过或未到达，不能以cleanup替代。Workflow遗留私有tmux server已清理；7端口关闭、无记录内owned process/private socket，固定binary、775文件官方原件与旧summary未变。所有本轮验收执行均已结束，不再有后台runtime任务。
 - Workflow 已执行一次探针校准和一次 180 文件前缀、0 缩减；目标三项完成，普通调用 67.568ms，但原超时根因仍未定。主线程只读 raw 查明该前缀整体 exit1 来自镜像遗漏内嵌 CHANGELOG，导致 uiName/setup 导入错误，不能算输入等价的原前缀复现；不额外重跑。见新证据根 `workflow/main-review.json`，原 timeout 继续阻止推送。
 - 官方检测计划使用 `--settings /Users/esonhugh/.claude/settings.mjclouds-ant.json`。一次 Git fixture 修正后仍被 macOS sandbox 数值 remote-ip 语法阻塞，official 进程未创建、配置未被 official 消费，模型请求 0；不能判断配置有效性或新的 gate 状态。资源已清理，记录 not covered，见 `official-configured/summary.json`。配置内容不打印、上传或提交，场景与本地 synthetic/loopback 回归分开。
-- 后续按功能签名提交、冻结源码完整测试、release-check/build 和 scripted tmux 验收；CHANGELOG 在构建前定稿，最终结果只回填不内嵌报告。未解释本地失败仍阻止推送；两份既有草稿保持不动。
+- 完整自动化的记录内PID/直接子进程/process-group、自有SSH目录和私有TMP socket均无残留；私有测试数据保留为证据，不宣称已删除或已穷尽未记录的detached descendants。Peer仍是隔离环境边界；inline导航残留缺陷、PTY与Workflow未定因继续阻止推送。
+- 本轮两模式于2026-09-19 00:28:47结束后，另一个任务完成OpenAI/messages/recovery相关改动并签名提交 `3b0d6ce`，当前HEAD前进。本任务未修改或暂存这些文件；**冻结 `6b967f3` 的测试及binary不覆盖后续OpenAI提交，不声称当前HEAD全量通过**。只回填不内嵌报告并签名提交，不再改变CHANGELOG；两份既有cross-session草稿保持不动。本任务未执行推送。
 
 ---
 
