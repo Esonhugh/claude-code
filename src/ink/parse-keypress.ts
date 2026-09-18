@@ -553,6 +553,8 @@ export type ParsedKey = {
   raw: string | undefined
   code?: string
   isPasted: boolean
+  /** Zero-based terminal coordinates for mouse wheel keys. */
+  pointer?: { column: number; row: number }
 }
 
 /** A terminal response sequence (DECRPM, DA1, OSC reply, etc.) parsed
@@ -680,8 +682,15 @@ function parseKeypress(s: string = ''): ParsedKey {
   // should still be recognized as wheelup/wheeldown.
   if ((match = SGR_MOUSE_RE.exec(s))) {
     const button = parseInt(match[1]!, 10)
-    if ((button & 0x43) === 0x40) return createNavKey(s, 'wheelup', false)
-    if ((button & 0x43) === 0x41) return createNavKey(s, 'wheeldown', false)
+    if ((button & 0x43) === 0x40 || (button & 0x43) === 0x41) {
+      return {
+        ...createNavKey(s, (button & 1) === 0 ? 'wheelup' : 'wheeldown', false),
+        pointer: {
+          column: parseInt(match[2]!, 10) - 1,
+          row: parseInt(match[3]!, 10) - 1,
+        },
+      }
+    }
     // Shouldn't reach here (parseMouseEvent catches non-wheel) but be safe
     return createNavKey(s, 'mouse', false)
   }
@@ -693,8 +702,15 @@ function parseKeypress(s: string = ''): ParsedKey {
   // tracking in alt-screen and only need wheel for ScrollBox.
   if (s.length === 6 && s.startsWith('\x1b[M')) {
     const button = s.charCodeAt(3) - 32
-    if ((button & 0x43) === 0x40) return createNavKey(s, 'wheelup', false)
-    if ((button & 0x43) === 0x41) return createNavKey(s, 'wheeldown', false)
+    if ((button & 0x43) === 0x40 || (button & 0x43) === 0x41) {
+      return {
+        ...createNavKey(s, (button & 1) === 0 ? 'wheelup' : 'wheeldown', false),
+        pointer: {
+          column: s.charCodeAt(4) - 33,
+          row: s.charCodeAt(5) - 33,
+        },
+      }
+    }
     return createNavKey(s, 'mouse', false)
   }
 

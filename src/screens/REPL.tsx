@@ -2987,14 +2987,16 @@ export function REPL({
     <ModsPane
       key={`${pane.plugin}:${pane.id}`}
       pane={pane.focused && !modPaneFocused ? { ...pane, focused: false } : pane}
+      canFocus={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
+        !modUiPresentation.keyboardOwned && !modPanes.some(other => other.visible && other.focused && other.id !== pane.id)}
       onInteract={(pane, drawing, callback, kind, element, value) => {
         const ui = modsSession?.runtime?.ui
         if (!ui) return Promise.reject(new Error('Mod UI host is unavailable'))
         return ui.interact(pane.id, drawing, callback, kind, element, value)
       }}
       onClose={pane => modsSession?.runtime?.ui.close(pane.owner, pane.id, { kind: 'person' }) ?? Promise.resolve()}
-      onFocus={(pane, element) => modsSession?.runtime?.ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }) ?? Promise.resolve()}
-      onScroll={(pane, by) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, origin: { kind: 'person' } }) ?? Promise.resolve()}
+      onFocus={(pane, element) => modsSession?.runtime?.ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }, modUiPresentationRef.current) ?? Promise.resolve({ focused: false })}
+      onScroll={(pane, by, pointer) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, pointer, origin: { kind: 'person' } }) ?? Promise.resolve()}
       onReportMetrics={(pane, metrics) => {
         if (metrics.keyRows === undefined && metrics.bodyRows === pane.bodyRows &&
             metrics.contentRows === pane.contentRows) return

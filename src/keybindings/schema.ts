@@ -73,6 +73,9 @@ export const KEYBINDING_ACTIONS = [
   'app:redraw',
   'app:globalSearch',
   'app:quickOpen',
+  'app:diffFileListUp',
+  'app:diffFileListDown',
+  'app:cycleDiffBase',
   // History navigation
   'history:search',
   'history:previous',

@@ -616,8 +616,11 @@ function processKeysInBatch(
     const event = new InputEvent(item)
     app.internal_eventEmitter.emit('input', event)
 
-    // Also dispatch through the DOM tree so onKeyDown handlers fire.
-    app.props.dispatchKeyboardEvent(item)
+    // A legacy handler may already own this key (including Tab's default
+    // traversal). Do not activate a second DOM target for the same input.
+    if (!event.didStopImmediatePropagation()) {
+      app.props.dispatchKeyboardEvent(item)
+    }
   }
 }
 

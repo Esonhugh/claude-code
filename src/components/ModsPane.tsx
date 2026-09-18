@@ -2,11 +2,15 @@ import { parsePatch } from 'diff'
 import figures from 'figures'
 import React, { useMemo, useState } from 'react'
 import type { ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane } from '../services/mods/ui.js'
-import { BaseText, Box, Button, type DOMElement, Link, Text, useTheme } from '../ink.js'
+import { BaseText, Box, Button, type DOMElement, Link, Text, useStdin, useTheme } from '../ink.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import type { FocusEvent } from '../ink/events/focus-event.js'
 import type { KeyboardEvent } from '../ink/events/keyboard-event.js'
-import { getFocusManager } from '../ink/focus.js'
+import { getFocusManager, getRootNode } from '../ink/focus.js'
+import { hitTest } from '../ink/hit-test.js'
+import { nodeCache } from '../ink/node-cache.js'
+import type { InputEvent } from '../ink/events/input-event.js'
+import { useKeybindings } from '../keybindings/useKeybinding.js'
 import type { Color } from '../ink/styles.js'
 import { getTheme, type Theme } from '../utils/theme.js'
 import { HighlightedCodeFallback } from './HighlightedCode/Fallback.js'
@@ -129,6 +133,7 @@ type HoverGroupEntry = {
 }
 
 const LocalHoverContext = React.createContext(false)
+const PersonInputContext = React.createContext(false)
 const hoverGroups = new Map<string, HoverGroupEntry>()
 
 function hoverGroupKey(group: HoverGroup): string {
@@ -672,8 +677,11 @@ type Props = {
     value?: string,
   ): Promise<unknown>
   onClose(pane: ModUiPane): Promise<unknown>
+  /** Returns the host's final { focused, element } landing. */
   onFocus(pane: ModUiPane, element?: string): Promise<unknown>
-  onScroll(pane: ModUiPane, by: number): Promise<unknown>
+  onScroll(pane: ModUiPane, by: number, pointer?: { column: number; row: number }): Promise<unknown>
+  /** Person input is allowed by the current composer/dialog presentation. */
+  canFocus?: boolean
   onReportMetrics?: (
     pane: ModUiPane,
     metrics: {
@@ -693,6 +701,7 @@ export function ModsPane({
   onScroll,
   onReportMetrics,
   onError,
+  canFocus = false,
 }: Props): React.ReactNode {
   const rootRef = React.useRef<DOMElement>(null)
   const scrollRef = React.useRef<ScrollBoxHandle>(null)
@@ -716,6 +725,123 @@ export function ModsPane({
     })
   }, [onReportMetrics, pane, validated.tree])
 
+  const latest = React.useRef({ pane, onFocus, onScroll, onError, canFocus })
+  latest.current = { pane, onFocus, onScroll, onError, canFocus }
+  const applyingFocus = React.useRef(false)
+  const focusQueue = React.useRef(Promise.resolve())
+  const pendingFocus = React.useRef(0)
+  const focusGeneration = React.useRef(0)
+  const { internal_eventEmitter } = useStdin()
+
+  const navigable = () => {
+    const root = rootRef.current
+    if (!root) return []
+    const order = documentOrder(root)
+    return [...focusElements.current].flatMap(([key, entries]) => {
+      const visible = [...entries].filter(element => {
+        for (let node: DOMElement | undefined = element; node && node !== root; node = node.parentNode) {
+          if (node.style.display === 'none') return false
+        }
+        return order.has(element)
+      })
+      const element = firstInDocumentOrder(visible, order)
+      return element ? [{ key, element }] : []
+    }).sort((a, b) => order.get(a.element)! - order.get(b.element)!)
+  }
+  const applyFocus = (key: string | undefined, focused = true) => {
+    const root = rootRef.current
+    if (!root) return
+    const manager = getFocusManager(root)
+    applyingFocus.current = true
+    try {
+      if (!focused) manager.blur()
+      else manager.focus(navigable().find(entry => entry.key === key)?.element ?? root)
+    } finally { applyingFocus.current = false }
+  }
+  const requestFocus = (target: string | undefined | (() => string | undefined)) => {
+    const owner = pane.owner
+    const generation = focusGeneration.current
+    pendingFocus.current++
+    focusQueue.current = focusQueue.current.then(async () => {
+      const current = latest.current
+      if (!rootRef.current || current.pane.owner !== owner || !current.pane.visible ||
+          generation !== focusGeneration.current || !(current.pane.focused || current.canFocus)) return
+      const key = typeof target === 'function' ? target() : target
+      if (typeof target === 'function' && navigable().some(entry =>
+        entry.key === key && entry.element === getFocusManager(rootRef.current!).activeElement)) return
+      const result = await current.onFocus(current.pane, key) as {
+        deny?: string; element?: string; focused?: boolean
+      } | undefined
+      if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
+      if (result && 'focused' in result) applyFocus(result.element, result.focused)
+      else if (result?.deny) applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
+      else applyFocus(result?.element ?? key, key !== undefined)
+    }).catch(error => {
+      if (rootRef.current && generation === focusGeneration.current)
+        applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
+      latest.current.onError?.(error)
+    }).finally(() => { pendingFocus.current-- })
+    return focusQueue.current
+  }
+  const handleFocus: Props['onFocus'] = (_pane, key) =>
+    !rootRef.current || applyingFocus.current || pendingFocus.current > 0 ? Promise.resolve() : requestFocus(key)
+
+  React.useLayoutEffect(() => {
+    if (!pane.visible || !(pane.focused || canFocus)) focusGeneration.current++
+  }, [pane.visible, pane.focused, canFocus])
+
+  // Capture coordinates before transcript useInput subscribers consume the wheel.
+  React.useEffect(() => {
+    const capture = (event: InputEvent) => {
+      const current = latest.current
+      if (event.key.tab && !event.key.ctrl && !event.key.meta && !event.key.super &&
+          current.canFocus && current.pane.visible && !current.pane.focused) {
+        const controls = navigable()
+        const key = (event.key.shift ? controls.at(-1) : controls[0])?.key
+        if (key !== undefined) {
+          event.stopImmediatePropagation()
+          void requestFocus(key)
+        }
+        return
+      }
+      const pointer = event.keypress.pointer
+      const viewport = scrollRef.current?.getElement()
+      if (!current.pane.visible || !pointer || !viewport ||
+          !(event.key.wheelUp || event.key.wheelDown)) return
+      let hit: DOMElement | undefined = hitTest(getRootNode(viewport), pointer.column, pointer.row) ?? undefined
+      while (hit && hit !== viewport) hit = hit.parentNode
+      const rect = nodeCache.get(viewport)
+      if (!hit || !rect) return
+      event.stopImmediatePropagation()
+      void current.onScroll(current.pane, event.key.wheelUp ? -1 : 1, {
+        column: pointer.column - rect.x, row: pointer.row - rect.y,
+      }).catch(error => current.onError?.(error))
+    }
+    internal_eventEmitter?.prependListener('input', capture)
+    return () => { internal_eventEmitter?.removeListener('input', capture) }
+  }, [internal_eventEmitter, pane.owner])
+
+  const actions: Record<string, () => void | false> = Object.create(null)
+  const visitActions = (node: RenderElement) => {
+    const action = node.props?.action
+    if (node.type === 'Button' && typeof action === 'string' && !(action in actions)) {
+      actions[action] = () => {
+        const current = latest.current.pane
+        if (!current.visible || !(current.focused || latest.current.canFocus) ||
+            current.owner !== pane.owner || current.drawing !== pane.drawing) return false
+        const key = node.props!.key as string
+        if (!navigable().some(entry => entry.key === key)) return false
+        if (current.drawing === undefined) return false
+        void onInteract(current, current.drawing, node.press!, 'press', key).catch(error => onError?.(error))
+      }
+    }
+    if (node.props?.display !== 'none') {
+      for (const child of node.children ?? []) if (typeof child !== 'string') visitActions(child)
+    }
+  }
+  visitActions(validated.tree)
+  useKeybindings(actions, { context: 'Global', isActive: pane.visible && (pane.focused || canFocus) })
+
   React.useLayoutEffect(() => {
     const root = rootRef.current
     if (!root) return
@@ -731,12 +857,8 @@ export function ModsPane({
       }
       return
     }
-    if (pane.focusedElement === undefined) return
-    const elements = focusElements.current.get(pane.focusedElement)
-    const viewport = scrollRef.current?.getElement()
-    const element = viewport && elements
-      ? firstInDocumentOrder(elements, documentOrder(viewport))
-      : undefined
+    if (pane.focusedElement === undefined || pendingFocus.current > 0) return
+    const element = navigable().find(entry => entry.key === pane.focusedElement)?.element
     if (element) manager.focus(element)
   }, [pane.focused, pane.focusedElement, validated.tree])
 
@@ -745,6 +867,22 @@ export function ModsPane({
   }
   const handleKeyDown = (event: KeyboardEvent) => {
     if (!pane.focused) return
+    if (event.ctrl || event.meta || event.superKey || (event.shift && event.key !== 'tab')) return
+    if (event.key === 'tab' || event.key === 'up' || event.key === 'down') {
+      const controls = navigable()
+      if (controls.length > (event.key === 'tab' ? 0 : 1)) {
+        event.preventDefault()
+        const direction = event.key === 'up' || event.key === 'tab' && event.shift ? -1 : 1
+        run(requestFocus(() => {
+          const entries = navigable()
+          const active = rootRef.current && getFocusManager(rootRef.current).activeElement
+          const index = entries.findIndex(entry => entry.element === active)
+          const next = index < 0 ? (direction === 1 ? 0 : entries.length - 1) : index + direction
+          return entries[next]?.key ?? entries[index]?.key
+        }))
+        return
+      }
+    }
     let by: number | undefined
     if (event.key === 'up') by = -1
     else if (event.key === 'down') by = 1
@@ -757,6 +895,7 @@ export function ModsPane({
       run(onScroll(pane, by))
     } else if (event.key === 'escape') {
       event.preventDefault()
+      focusGeneration.current++
       run(pane.closeOnEscape ? onClose(pane) : onFocus(pane))
     }
   }
@@ -769,6 +908,16 @@ export function ModsPane({
       overflow="hidden"
       tabIndex={pane.focused ? 0 : undefined}
       autoFocus={pane.focused && !validated.hasAutoFocus}
+      onFocusCapture={event => {
+        if (pane.focused || canFocus || !rootRef.current || applyingFocus.current) return
+        const manager = getFocusManager(rootRef.current)
+        applyingFocus.current = true
+        try {
+          if (event.relatedTarget) manager.focus(event.relatedTarget as DOMElement)
+          else manager.blur()
+        } finally { applyingFocus.current = false }
+        event.stopPropagation()
+      }}
       onKeyDown={handleKeyDown}
     >
       {pane.title && <Box flexShrink={0}><Text bold>{pane.title}</Text></Box>}
@@ -778,17 +927,19 @@ export function ModsPane({
         flexDirection="column"
         width="100%"
       >
-        <RenderElementNode
-          node={validated.tree}
-          pane={pane}
-          focusElements={focusElements}
-          keyElements={keyElements}
-          onInteract={onInteract}
-          onFocus={onFocus}
-          onError={onError}
-          hoverBoxes={validated.hoverBoxes}
-          parentInline={false}
-        />
+        <PersonInputContext.Provider value={pane.visible && (pane.focused || canFocus)}>
+          <RenderElementNode
+            node={validated.tree}
+            pane={pane}
+            focusElements={focusElements}
+            keyElements={keyElements}
+            onInteract={onInteract}
+            onFocus={handleFocus}
+            onError={onError}
+            hoverBoxes={validated.hoverBoxes}
+            parentInline={false}
+          />
+        </PersonInputContext.Provider>
       </ScrollBox>
     </Box>
   )
@@ -1022,13 +1173,14 @@ function ModButton({
   active: boolean
   handlers: HoverHandlers
 }): React.ReactNode {
+  const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
   const key = props.key as string
   const press = node.press!
   const plain = props.plain === true
   const style = hoverStyles(node, active)
   const run = () => {
-    if (pane.drawing === undefined) return
+    if (!inputAllowed || pane.drawing === undefined) return
     void onInteract(pane, pane.drawing, press, 'press', key).catch(error => onError?.(error))
   }
   return (
@@ -1041,7 +1193,7 @@ function ModButton({
         onAction={run}
         tabIndex={pane.focused ? 0 : -1}
         autoFocus={pane.focused && props.autoFocus === true}
-        onFocus={event => reportElementFocus(event, pane, key, onFocus, onError)}
+        onFocus={event => { if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
       >
         {({ focused, hovered }) => {
           const chrome = focused || hovered
@@ -1077,6 +1229,7 @@ function ModSelect({
   onFocus: Props['onFocus']
   onError?: Props['onError']
 }): React.ReactNode {
+  const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
   const options = props.options as { value: string; label?: string }[]
   const initial = Math.max(0, options.findIndex(option => option.value === props.value))
@@ -1084,12 +1237,12 @@ function ModSelect({
   const key = props.key as string
   const press = node.press!
   const select = () => {
-    if (pane.drawing === undefined) return
+    if (!inputAllowed || pane.drawing === undefined) return
     const value = options[index]!.value
     void onInteract(pane, pane.drawing, press, 'select', key, value).catch(error => onError?.(error))
   }
   const handle = (event: KeyboardEvent) => {
-    if (!pane.focused) return
+    if (!pane.focused || event.ctrl || event.meta || event.superKey || event.shift) return
     if (event.key === 'up') {
       event.preventDefault()
       event.stopPropagation()
@@ -1113,7 +1266,7 @@ function ModSelect({
       }}
       tabIndex={pane.focused ? 0 : -1}
       autoFocus={pane.focused && props.autoFocus === true}
-      onFocus={event => reportElementFocus(event, pane, key, onFocus, onError)}
+      onFocus={event => { if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
       onKeyDown={handle}
       onClick={select}
     >
@@ -1134,12 +1287,13 @@ function ModInput({
   onFocus: Props['onFocus']
   onError?: Props['onError']
 }): React.ReactNode {
+  const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
   const [value, setValue] = useState((props.value as string | undefined) ?? '')
   const key = props.key as string
   const press = node.press!
   const send = (kind: 'change' | 'submit', next: string) => {
-    if (pane.drawing === undefined) return
+    if (!inputAllowed || pane.drawing === undefined) return
     void onInteract(
       pane,
       pane.drawing,
@@ -1155,6 +1309,12 @@ function ModInput({
       event.preventDefault()
       event.stopPropagation()
       send('submit', value)
+      return
+    }
+    if (['up', 'down', 'left', 'right', 'home', 'end'].includes(event.key) &&
+        !event.ctrl && !event.meta && !event.superKey) {
+      event.preventDefault()
+      event.stopPropagation()
       return
     }
     let next = value
@@ -1174,7 +1334,7 @@ function ModInput({
       }}
       tabIndex={pane.focused ? 0 : -1}
       autoFocus={pane.focused && props.autoFocus === true}
-      onFocus={event => reportElementFocus(event, pane, key, onFocus, onError)}
+      onFocus={event => { if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
       onKeyDown={handle}
     >
       {props.label ? <Text>{String(props.label)}: </Text> : null}

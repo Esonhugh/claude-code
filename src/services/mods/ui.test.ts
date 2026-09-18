@@ -195,6 +195,98 @@ describe('mod UI ownership and pane policy', () => {
     }
   })
 
+  test('person focus enters a visible unfocused pane and transfers keyboard ownership', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'first', focus: true }, { kind: 'person' }, wide)
+    await ui.open(owner, { id: 'dock' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    await ui.focus(owner, { requestId: 'first', element: 'run', origin: { kind: 'person' } })
+
+    await expect(ui.focus(owner, {
+      requestId: 'dock', element: 'run', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: true, element: 'run' })
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.focused, pane.focusedElement])).toEqual([
+      ['first', false, undefined], ['dock', true, 'run'],
+    ])
+    await expect(ui.focus(owner, {
+      requestId: 'dock', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: false })
+    expect(ui.getSnapshot().every(pane => !pane.focused)).toBe(true)
+  })
+
+  test('person focus uses the current host presentation and cannot enter hidden or undrawn panes', async () => {
+    for (const changes of [
+      { composerEmpty: false }, { hasDialog: true }, { keyboardOwned: true },
+    ]) {
+      const owner = { plugin: 'fixture' }
+      const { ui } = fixture()
+      await ui.open(owner, { id: 'dock' }, { kind: 'plugin' }, wide)
+      await ui.commit(owner)
+      await expect(ui.focus(owner, {
+        requestId: 'dock', element: 'run', origin: { kind: 'person' },
+      }, { ...wide, ...changes })).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+      expect(ui.getSnapshot()[0]!.focused).toBe(false)
+      await expect(ui.focus(owner, {
+        requestId: 'dock', element: 'run', origin: { kind: 'person' },
+      }, wide)).resolves.toEqual({ focused: true, element: 'run' })
+    }
+
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'hidden' }, { kind: 'plugin' }, { ...wide, columns: 100 })
+    await ui.commit(owner)
+    await expect(ui.focus(owner, {
+      requestId: 'hidden', element: 'run', origin: { kind: 'person' },
+    })).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: false, focused: false })
+
+    const broken = fixture({ draw: async () => { throw new Error('draw failed') } }).ui
+    await broken.commit(owner)
+    await expect(broken.open(owner, { id: 'undrawn', focus: true }, { kind: 'person' }, wide)).rejects.toThrow('draw failed')
+    await expect(broken.focus(owner, {
+      requestId: 'undrawn', element: 'run', origin: { kind: 'person' },
+    }, wide)).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+  })
+
+  test('person focus reports no landing when the current presentation blocks an already focused pane', async () => {
+    for (const changes of [
+      { composerEmpty: false }, { hasDialog: true }, { keyboardOwned: true },
+    ]) {
+      const owner = { plugin: 'fixture' }
+      const { ui } = fixture()
+      await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+      await ui.commit(owner)
+      await ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } })
+      await expect(ui.focus(owner, {
+        requestId: 'pane', element: 'run', origin: { kind: 'person' },
+      }, { ...wide, ...changes })).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+      expect(ui.getSnapshot()[0]!.focused).toBe(false)
+      await expect(ui.focus(owner, {
+        requestId: 'pane', element: 'run', origin: { kind: 'plugin', name: 'fixture' },
+      })).resolves.toEqual({ deny: 'site does not hold the keyboard' })
+    }
+  })
+
+  test('plugin focus still cannot acquire keyboard ownership from the composer or another pane', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'dock' }, { kind: 'plugin' }, wide)
+    await ui.open(owner, { id: 'current', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await ui.focus(owner, { requestId: 'current', element: 'run', origin: { kind: 'person' } })
+    await expect(ui.focus(owner, {
+      requestId: 'dock', element: 'run', origin: { kind: 'plugin', name: 'fixture' },
+    })).resolves.toEqual({ deny: 'site does not hold the keyboard' })
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.focused])).toEqual([
+      ['dock', false], ['current', true],
+    ])
+    await ui.focus(owner, { requestId: 'current', origin: { kind: 'person' } })
+    await expect(ui.focus(owner, {
+      requestId: 'dock', element: 'run', origin: { kind: 'plugin', name: 'fixture' },
+    })).resolves.toEqual({ deny: 'site does not hold the keyboard' })
+  })
+
   test('grants requested focus only while the empty composer owns unobstructed input', async () => {
     for (const [changes, expected] of [
       [{}, true],
@@ -333,8 +425,211 @@ describe('mod UI dispatch and drawing lifetime', () => {
 
     await expect(ui.focus(owner, {
       requestId: 'pane', element: 'one', origin: { kind: 'person' },
-    })).resolves.toEqual({})
+    })).resolves.toEqual({ focused: true, element: 'two' })
     expect(ui.getSnapshot()[0]!.focusedElement).toBe('two')
+  })
+
+  test('reports the actual person landing for middleware rewrite, deny, stay and no-op', async () => {
+    const owner = { plugin: 'fixture' }
+    let mode: 'rewrite' | 'deny' | 'stay' | 'pass' = 'rewrite'
+    const { ui } = fixture({
+      draw: async () => ({
+        type: 'Box',
+        children: ['one', 'two'].map((key, index) => ({
+          type: 'Button', props: { key, label: key }, press: { plugin: 'fixture', handle: index + 1 },
+        })),
+      }),
+      dispatch: async (_owner, event, input, core, options) => {
+        if (event !== 'ui.focus') return core(input)
+        if (mode === 'deny') return { deny: 'held', focused: true, element: 'one' }
+        if (mode === 'stay') return { stay: true }
+        const rewritten = mode === 'rewrite' ? { element: 'two' } : input
+        return core(options.restoreInput?.(rewritten, input) ?? rewritten)
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    mode = 'deny'
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'one', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ deny: 'held', focused: false })
+    expect(ui.getSnapshot()[0]!.focused).toBe(false)
+    mode = 'rewrite'
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'one', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: true, element: 'two' })
+    const landed = ui.getSnapshot()
+    for (const [nextMode, expected] of [
+      ['deny', { deny: 'held', focused: true, element: 'two' }],
+      ['stay', { stay: true, focused: true, element: 'two' }],
+      ['pass', { focused: true, element: 'two' }],
+    ] as const) {
+      mode = nextMode
+      await expect(ui.focus(owner, {
+        requestId: 'pane', element: nextMode === 'pass' ? 'two' : 'one', origin: { kind: 'person' },
+      }, wide)).resolves.toEqual(expected)
+      expect(ui.getSnapshot()).toBe(landed)
+    }
+    await expect(ui.focus(owner, {
+      requestId: 'missing', element: 'one', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ deny: 'site is not open', focused: false })
+  })
+
+  test('person admission rechecks visibility and presentation after asynchronous focus middleware', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const proceed = Promise.withResolvers<void>()
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus') {
+          entered.resolve()
+          await proceed.promise
+        }
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    const focusing = ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, wide)
+    await entered.promise
+    await ui.render({ ...wide, hasDialog: true })
+    proceed.resolve()
+    await expect(focusing).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+    expect(ui.getSnapshot()[0]!.focused).toBe(false)
+  })
+
+  test('a delayed person focus move cannot reacquire the pane after Escape relinquishes it', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const proceed = Promise.withResolvers<void>()
+    let delay = false
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus' && input.element !== undefined && delay) {
+          entered.resolve()
+          await proceed.promise
+        }
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } }, wide)
+    delay = true
+    const focusing = ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, wide)
+    await entered.promise
+    expect(await ui.focus(owner, { requestId: 'pane', origin: { kind: 'person' } }, wide))
+      .toEqual({ focused: false })
+    proceed.resolve()
+    await expect(focusing).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+    expect(ui.getSnapshot()[0]!.focused).toBe(false)
+    expect(ui.getSnapshot()[0]).not.toHaveProperty('focusedElement')
+    delay = false
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: true, element: 'run' })
+  })
+
+  test('a delayed person focus move cannot steal a later landing in another pane', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const proceed = Promise.withResolvers<void>()
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus' && input.requestId === 'first') {
+          entered.resolve()
+          await proceed.promise
+        }
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'first' }, { kind: 'plugin' }, wide)
+    await ui.open(owner, { id: 'second' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    const focusing = ui.focus(owner, {
+      requestId: 'first', element: 'run', origin: { kind: 'person' },
+    }, wide)
+    await entered.promise
+    await expect(ui.focus(owner, {
+      requestId: 'second', element: 'run', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: true, element: 'run' })
+    proceed.resolve()
+    await expect(focusing).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+    expect(ui.getSnapshot().filter(pane => pane.focused).map(pane => pane.id)).toEqual(['second'])
+  })
+
+  test('returns the final landing after middleware makes a later focus move', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        const result = await core(input)
+        if (event === 'ui.focus' && input.element === 'run') {
+          await ui.focus(owner, { requestId: 'pane', origin: { kind: 'person' } })
+        }
+        return result
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    })).resolves.toEqual({ focused: false })
+  })
+
+  test('scroll middleware can consume virtual-list wheel events without outer overflow or extra offset', async () => {
+    const owner = { plugin: 'fixture' }
+    const events: unknown[] = []
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        if (event !== 'ui.scroll') return core(input)
+        events.push(input)
+        return {}
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    ui.reportMetrics('pane', { bodyRows: 4, contentRows: 4 })
+    const snapshot = ui.getSnapshot()
+    for (const by of [3, -3]) {
+      await expect(ui.scroll(owner, {
+        requestId: 'pane', by, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
+      })).resolves.toEqual({})
+    }
+    expect(events).toEqual([3, -3].map(by => ({
+      component: 'Pane', requestId: 'pane', offset: 0, by, bodyRows: 4, contentRows: 4,
+      origin: { kind: 'person' }, pointer: { column: 2, row: 1 },
+    })))
+    expect(ui.getSnapshot()).toBe(snapshot)
+    expect(ui.getSnapshot()[0]).toMatchObject({ focused: false, scrollOffset: 0 })
+  })
+
+  test('accepts pointer coordinates preserved across a Worker copy but rejects coordinate rewrites', async () => {
+    const owner = { plugin: 'fixture' }
+    let rewrite = false
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        if (event !== 'ui.scroll') return core(input)
+        const copied = structuredClone(input)
+        if (rewrite) copied.pointer = { column: 3, row: 1 }
+        return core(copied)
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    ui.reportMetrics('pane', { bodyRows: 4, contentRows: 12 })
+    await expect(ui.scroll(owner, {
+      requestId: 'pane', by: 3, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
+    })).resolves.toEqual({})
+    expect(ui.getSnapshot()[0]!.scrollOffset).toBe(3)
+    rewrite = true
+    await expect(ui.scroll(owner, {
+      requestId: 'pane', by: 3, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
+    })).rejects.toThrow(/rewrite pointer/)
+    expect(ui.getSnapshot()[0]!.scrollOffset).toBe(3)
   })
 
   test('applies only valid offset rewrites, restores omissions and pins the rest of ui.scroll input', async () => {

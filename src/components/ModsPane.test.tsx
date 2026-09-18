@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict'
 import { Readable, Writable } from 'node:stream'
+import { readFileSync } from 'node:fs'
+import { resolveKeyWithChordState } from '../keybindings/resolver.js'
 import { describe, expect, test } from 'bun:test'
 import React, { useEffect } from 'react'
 import stripAnsi from 'strip-ansi'
-import { render, useStdin } from '../ink.js'
+import { Box, Text, ThemeProvider, render, useInput, useStdin } from '../ink.js'
+import { KeybindingProvider, useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js'
+import { parseBindings } from '../keybindings/parser.js'
+import type { KeybindingContextName, ParsedKeystroke } from '../keybindings/types.js'
 import type { DOMElement, DOMNode } from '../ink/dom.js'
 import { getFocusManager } from '../ink/focus.js'
 import instances from '../ink/instances.js'
 import { nodeCache } from '../ink/node-cache.js'
+import { dispatchClick } from '../ink/hit-test.js'
 import { ModsPane, validateModRenderTree } from './ModsPane.js'
 import type { ModUiPane } from '../services/mods/ui.js'
 
@@ -721,6 +727,480 @@ describe('ModsPane terminal hover', () => {
     } finally {
       instance.unmount()
     }
+  })
+})
+
+// Exercise the production interceptor without mounting its settings watcher/AppState.
+const interceptorSource = readFileSync(new URL('../keybindings/KeybindingProviderSetup.tsx', import.meta.url), 'utf8')
+const ChordInterceptor = new Function('useCallback', 'useInput', 'resolveKeyWithChordState',
+  new Bun.Transpiler({ loader: 'tsx' }).transformSync(interceptorSource.slice(interceptorSource.indexOf('function ChordInterceptor('))) + '\nreturn ChordInterceptor',
+)(React.useCallback, useInput, resolveKeyWithChordState) as React.ComponentType<Record<string, unknown>>
+
+function Bindings({ children, bindings = {} }: { children: React.ReactNode; bindings?: Record<string, string | null> }) {
+  const pending = React.useRef<ParsedKeystroke[] | null>(null)
+  const registry = React.useRef(new Map())
+  const contexts = React.useRef(new Set<KeybindingContextName>(['Global']))
+  return <KeybindingProvider
+    bindings={parseBindings([{ context: 'Global', bindings }])}
+    pendingChordRef={pending} pendingChord={null}
+    setPendingChord={value => { pending.current = value }}
+    activeContexts={contexts.current}
+    registerActiveContext={value => { contexts.current.add(value) }}
+    unregisterActiveContext={value => { contexts.current.delete(value) }}
+    handlerRegistryRef={registry}
+  ><ChordInterceptor bindings={parseBindings([{ context: 'Global', bindings }])}
+    pendingChordRef={pending} setPendingChord={(value: ParsedKeystroke[] | null) => { pending.current = value }}
+    activeContexts={contexts.current} handlerRegistryRef={registry} />{children}</KeybindingProvider>
+}
+
+const fileButton = (key: string, action?: string) => ({
+  type: 'Button', props: { key, label: key, ...(action ? { action } : {}) },
+  press: { plugin: 'fixture', handle: 1 },
+})
+
+describe('ModsPane input repair', () => {
+  test('bare arrows follow host landing, skip hidden controls and do not wrap', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const focused: string[] = []
+    const scrolls: number[] = []
+    const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [
+      fileButton('a'),
+      { type: 'Box', props: { display: 'none' }, children: [fileButton('hidden')] },
+      fileButton('b'), fileButton('c'),
+    ] }
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={pane(tree, { focusedElement: 'a' })}
+      onFocus={async (_pane, element) => {
+        focused.push(element!)
+        return { element: element === 'b' ? 'c' : element }
+      }}
+      onScroll={async (_pane, by) => { scrolls.push(by) }}
+      onInteract={async () => {}} onClose={async () => {}}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      focused.length = 0
+      stdin.push('\u001b[B')
+      await settle()
+      expect(focused).toEqual(['b'])
+      const target = renderedElement(stdout, '[ c ]', 'ink-text').parentNode!
+      expect(getFocusManager(target).activeElement).toBe(target)
+      stdin.push('\u001b[B')
+      await settle()
+      expect(focused).toEqual(['b'])
+      expect(scrolls).toEqual([])
+    } finally { instance.unmount() }
+  })
+
+  test('restores host focus on deny and stay without a changed snapshot, serializing rapid arrows', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const requests: string[] = []
+    let phase: 'deny' | 'stay' | 'allow' = 'deny'
+    let activeRequests = 0
+    let maxActive = 0
+    let current = 'a'
+    const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [fileButton('a'), fileButton('b'), fileButton('c')] }
+    const instance = await render(<><EnableInput /><ModsPane pane={pane(tree, { focusedElement: 'a' })}
+      onFocus={async (_pane, key) => {
+        requests.push(key!)
+        maxActive = Math.max(maxActive, ++activeRequests)
+        await new Promise(resolve => setTimeout(resolve, 10))
+        activeRequests--
+        if (phase === 'deny') return { deny: 'blocked', focused: true, element: current }
+        if (phase === 'allow') current = key!
+        return { focused: true, element: current }
+      }} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      requests.length = 0
+      const first = renderedElement(stdout, '[ a ]', 'ink-text').parentNode!
+      stdin.push('\u001b[B')
+      await settle()
+      expect(getFocusManager(first).activeElement).toBe(first)
+      phase = 'stay'
+      stdin.push('\u001b[B')
+      await settle()
+      expect(getFocusManager(first).activeElement).toBe(first)
+      phase = 'allow'
+      stdin.push('\u001b[B\u001b[B')
+      await settle()
+      expect(requests).toEqual(['b', 'b', 'b', 'c'])
+      expect(maxActive).toBe(1)
+      expect(getFocusManager(first).activeElement).toBe(renderedElement(stdout, '[ c ]', 'ink-text').parentNode!)
+    } finally { instance.unmount() }
+  })
+
+  test('Escape cancels queued focus moves and late landings cannot reacquire the composer', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    let requests = 0
+    let finish: ((value: unknown) => void) | undefined
+    let focused = true
+    const draw = () => <><EnableInput /><ModsPane pane={pane({ type: 'Box', children: [fileButton('a'), fileButton('b'), fileButton('c')] }, { owner, focused, focusedElement: 'a' })}
+      onFocus={async (_pane, key) => {
+        if (key === undefined) {
+          focused = false
+          instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+          return { focused: false }
+        }
+        if (key === 'a') return { focused: true, element: 'a' }
+        requests++
+        return new Promise(resolve => { finish = resolve })
+      }} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+    /></>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\u001b[B\u001b[B')
+      await settle()
+      expect(requests).toBe(1)
+      stdin.push('\u001b')
+      await settle()
+      finish!({ focused: true, element: 'b' })
+      await settle()
+      expect(requests).toBe(1)
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      expect(getFocusManager(ink.rootNode).activeElement).toBeNull()
+    } finally { instance.unmount() }
+  })
+
+  test('walks eight files across async five-row redraws using the rewritten landing', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    let selected = 0
+    let start = 0
+    let requests = 0
+    const draw = () => <><EnableInput /><ModsPane key="paging"
+      pane={pane({ type: 'Box', props: { flexDirection: 'column' }, children:
+        Array.from({ length: 5 }, (_, index) => fileButton(`slot-${index}`)),
+      }, { owner, focusedElement: `slot-${selected - start}`, drawing: 7 + requests })}
+      onFocus={async (_pane, key) => {
+        requests++
+        selected = start + Number(key!.slice(5))
+        start = Math.min(3, Math.max(0, selected - 2))
+        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+        await new Promise(resolve => setTimeout(resolve, 15))
+        return { focused: true, element: `slot-${selected - start}` }
+      }} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+    /></>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      requests = 0
+      stdin.push('\u001b[B'.repeat(7))
+      await new Promise(resolve => setTimeout(resolve, 250))
+      expect({ selected, requests, start }).toEqual({ selected: 7, requests: 7, start: 3 })
+      stdin.push('\u001b[A'.repeat(7))
+      await new Promise(resolve => setTimeout(resolve, 250))
+      expect(selected).toBe(0)
+      expect(requests).toBe(14)
+    } finally { instance.unmount() }
+  })
+
+  test('person Tab enters an unfocused dock once without visiting global or hidden focus nodes', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: (string | undefined)[] = []
+    let outerFocus = 0
+    const instance = await render(<><EnableInput />
+      <Box tabIndex={0} autoFocus><Text>composer</Text></Box>
+      <Box tabIndex={0} onFocus={() => { outerFocus++ }}><Text>unrelated</Text></Box>
+      <ModsPane canFocus pane={pane({ type: 'Box', children: [
+        { type: 'Box', props: { display: 'none' }, children: [fileButton('hidden')] },
+        { type: 'Input', props: { key: 'ask' }, press: { plugin: 'fixture', handle: 1 } },
+      ] }, { focused: false, placement: 'dock' })}
+        onFocus={async (_pane, key) => {
+          calls.push(key)
+          return { focused: true, element: key }
+        }} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+      />
+    </>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      expect(calls).toEqual([])
+      stdin.push('\t')
+      await settle()
+      expect(calls).toEqual(['ask'])
+      expect(outerFocus).toBe(0)
+    } finally { instance.unmount() }
+  })
+
+  test('blocked person entry neither Tabs nor clicks into a dock while a draft/dialog owns input', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const requests: unknown[] = []
+    const instance = await render(<><EnableInput /><Box tabIndex={0} autoFocus><Text>composer</Text></Box>
+      <ModsPane canFocus={false} pane={pane(fileButton('blocked'), { focused: false, placement: 'dock' })}
+        onFocus={async (_pane, key) => { requests.push(key); return { focused: false } }}
+        onInteract={async () => { requests.push('pressed') }} onClose={async () => {}} onScroll={async () => {}}
+      />
+    </>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\t')
+      await settle()
+      const button = renderedElement(stdout, '[ blocked ]', 'ink-text')
+      const rect = nodeCache.get(button)!
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      dispatchClick(ink.rootNode, rect.x, rect.y)
+      await settle()
+      expect(requests).toEqual([])
+      expect(getFocusManager(button).activeElement).not.toBe(button.parentNode!)
+    } finally { instance.unmount() }
+  })
+
+  test('detail arrows scroll with only a Back button but Input arrows stay in the editor', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const scrolls: number[] = []
+    const owner = {}
+    const draw = (input: boolean) => <><EnableInput /><ModsPane
+      pane={pane(input
+        ? { type: 'Input', props: { key: 'ask', autoFocus: true }, press: { plugin: 'fixture', handle: 1 } }
+        : { type: 'Box', props: { flexDirection: 'column' }, children: [fileButton('back'), { type: 'Text', children: ['detail'] }] },
+      { owner, focusedElement: input ? 'ask' : 'back' })}
+      onFocus={async (_pane, key) => ({ element: key })} onScroll={async (_pane, by) => { scrolls.push(by) }}
+      onClose={async () => {}} onInteract={async () => {}}
+    /></>
+    const instance = await render(draw(false), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\u001b[B\u001b[A')
+      await settle()
+      expect(scrolls).toEqual([1, -1])
+      instance.rerender(<ThemeProvider>{draw(true)}</ThemeProvider>)
+      await settle()
+      stdin.push('\u001b[B\u001b[A')
+      await settle()
+      expect(scrolls).toEqual([1, -1])
+    } finally { instance.unmount() }
+  })
+
+  test('PromptInput overlay Escape guard leaves pane Escape unarmed and restores normal Rewind handling', async () => {
+    const source = readFileSync(new URL('./PromptInput/PromptInput.tsx', import.meta.url), 'utf8')
+    const start = source.indexOf('  useInput((char, key) => {\n    // Skip legacy input handling')
+    const end = source.indexOf('\n  const swarmBanner', start)
+    expect(start).toBeGreaterThan(0)
+    let handler: (char: string, key: { escape: boolean }) => void = () => { throw new Error('missing PromptInput handler') }
+    let rewind = 0
+    const scope = {
+      useInput: (callback: typeof handler) => { handler = callback },
+      isModalOverlayActive: true, showTeamsDialog: false, showQuickOpen: false,
+      showGlobalSearch: false, showHistoryPicker: false, getPlatform: () => 'linux',
+      footerItemSelected: null, cursorOffset: 1, helpOpen: false, viewSelectionMode: 'none',
+      speculation: { status: 'idle' }, isSideQuestionVisible: false, queuedCommands: [],
+      isQueuedCommandEditable: () => false, messages: [{}], input: '', isLoading: false,
+      doublePressEscFromEmpty: () => { rewind++ },
+    }
+    new Function('scope', `with(scope) {${new Bun.Transpiler({ loader: 'tsx' }).transformSync(source.slice(start, end))}}`)(scope)
+    handler('', { escape: true })
+    handler('', { escape: true })
+    expect(rewind).toBe(0)
+    scope.isModalOverlayActive = false
+    handler('', { escape: true })
+    expect(rewind).toBe(1)
+  })
+
+  test('legacy ownership suppresses only consumed DOM events, leaving ordinary keys and Tab intact', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const keys: string[] = []
+    let focused = 0
+    function Owner() {
+      useInput((input, _key, event) => { if (input === 'x') event.stopImmediatePropagation() })
+      return <><Box tabIndex={0} autoFocus onKeyDown={event => { keys.push(event.key) }} />
+        <Box tabIndex={0} onFocus={() => { focused++ }} /></>
+    }
+    const instance = await render(<Owner />, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('x')
+      await settle()
+      stdin.push('y')
+      await settle()
+      stdin.push('\t')
+      await settle()
+      expect(keys).toEqual(['y', 'tab'])
+      expect(focused).toBe(1)
+    } finally { instance.unmount() }
+  })
+
+  test('pane action respects rebinding and executes Enter/Space exactly once, not the focused button', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: string[] = []
+    const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [
+      fileButton('focused'), fileButton('action', 'app:cycleDiffBase'),
+      fileButton('duplicate', 'app:cycleDiffBase'),
+    ] }
+    const instance = await render(<Bindings bindings={{ enter: 'app:cycleDiffBase', space: 'app:cycleDiffBase' }}>
+      <EnableInput /><ModsPane pane={pane(tree, { focusedElement: 'focused' })}
+        onFocus={async () => ({})} onScroll={async () => ({})} onClose={async () => {}}
+        onInteract={async (_pane, _drawing, _callback, _kind, element) => { calls.push(element) }}
+      />
+    </Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\r')
+      await settle()
+      stdin.push(' ')
+      await settle()
+      expect(calls).toEqual(['action', 'action'])
+    } finally { instance.unmount() }
+  })
+
+  test('modifier actions and complete/cancel chords honor unbind, hidden targets and drawing cleanup', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: string[] = []
+    let drawing = 7
+    let visible = true
+    let unbind = false
+    const owner = {}
+    const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [
+      { type: 'Box', props: { display: 'none' }, children: [fileButton('hidden', 'app:cycleDiffBase')] },
+      fileButton('cycle', 'app:cycleDiffBase'), fileButton('duplicate', 'app:cycleDiffBase'),
+      fileButton('up', 'app:diffFileListUp'), fileButton('down', 'app:diffFileListDown'),
+    ] }
+    function Builtin() {
+      const context = useOptionalKeybindingContext()!
+      useEffect(() => context.registerHandler({ action: 'app:cycleDiffBase', context: 'Global', handler: () => { calls.push('builtin') } }), [context])
+      return null
+    }
+    const draw = () => <Bindings bindings={{
+      'ctrl+x b': 'app:cycleDiffBase', 'ctrl+up': 'app:diffFileListUp',
+      'opt+down': unbind ? null : 'app:diffFileListDown',
+    }}><ModsPane canFocus pane={pane(tree, { owner, drawing, focused: false, visible })}
+      onFocus={async () => ({})} onScroll={async () => { throw new Error('modifier scrolled') }} onClose={async () => {}}
+      onInteract={async (_pane, lease, _callback, _kind, key) => { calls.push(`${lease}:${key}`) }}
+    />{!visible && <Builtin />}</Bindings>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\u001b[1;5A\u001b[1;3B')
+      await settle()
+      stdin.push('\u0018')
+      await settle()
+      stdin.push('b')
+      await settle()
+      expect(calls).toEqual(['7:up', '7:down', '7:cycle'])
+      stdin.push('\u0018')
+      await settle()
+      stdin.push('\u001b')
+      await settle()
+      expect(calls).toHaveLength(3)
+      drawing = 8
+      unbind = true
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      stdin.push('\u001b[1;3B')
+      await settle()
+      stdin.push('\u0018')
+      await settle()
+      stdin.push('b')
+      await settle()
+      expect(calls).toEqual(['7:up', '7:down', '7:cycle', '8:cycle'])
+      visible = false
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      stdin.push('\u0018')
+      await settle()
+      stdin.push('b')
+      await settle()
+      stdin.push('\u001b[1;5A')
+      await settle()
+      expect(calls).toEqual(['7:up', '7:down', '7:cycle', '8:cycle', 'builtin'])
+    } finally { instance.unmount() }
+  })
+
+  test('wheel body-relative coordinates distinguish virtual list/detail and exclude title, outside and covering layers', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const wheels: { by: number; pointer?: { column: number; row: number } }[] = []
+    const outside: string[] = []
+    let covered = false
+    let visible = true
+    const owner = {}
+    function Transcript() {
+      useInput((_input, key, event) => {
+        if (key.wheelUp || key.wheelDown) {
+          outside.push(key.wheelUp ? 'up' : 'down')
+          event.stopImmediatePropagation()
+        }
+      })
+      return <Text>outside</Text>
+    }
+    const draw = () => <Box flexDirection="column"><Transcript /><ModsPane
+      pane={pane({ type: 'Box', props: { flexDirection: 'column' }, children: [
+        { type: 'Text', children: ['list region'] }, { type: 'Text', children: ['detail region'] },
+      ] }, { owner, focused: false, visible, bodyRows: 4, contentRows: 2 })}
+      onFocus={async () => { throw new Error('wheel stole focus') }} onClose={async () => {}} onInteract={async () => {}}
+      onScroll={async (_pane, by, pointer) => { wheels.push({ by, pointer }) }}
+    />{covered && <Box position="absolute" top={1} left={0} width={80} height={5}><Text>cover</Text></Box>}</Box>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const list = nodeCache.get(renderedElement(stdout, 'list region', 'ink-text'))!
+      const detail = nodeCache.get(renderedElement(stdout, 'detail region', 'ink-text'))!
+      const wheel = (row: number, up = false) => stdin.push(`\u001b[<${up ? 64 : 65};3;${row + 1}M`)
+      wheel(list.y)
+      await settle()
+      wheel(detail.y, true)
+      await settle()
+      wheel(list.y - 1)
+      await settle()
+      expect(wheels).toEqual([{ by: 1, pointer: { column: 2, row: 0 } }, { by: -1, pointer: { column: 2, row: 1 } }])
+      covered = true
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      wheel(detail.y)
+      await settle()
+      covered = false
+      visible = false
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      wheel(list.y, true)
+      await settle()
+      expect(wheels).toHaveLength(2)
+      expect(outside).toEqual(['down', 'down', 'up'])
+    } finally { instance.unmount() }
+  })
+
+  test('wheel hits the visible body before earlier transcript listeners even without overflow', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const wheels: unknown[] = []
+    const transcript: string[] = []
+    function Transcript() {
+      useInput((_input, key, event) => {
+        if (!key.wheelUp && !key.wheelDown) return
+        transcript.push(key.wheelUp ? 'up' : 'down')
+        event.stopImmediatePropagation()
+      })
+      return <Text>outside</Text>
+    }
+    const instance = await render(<Box flexDirection="column"><Transcript /><ModsPane
+      pane={pane({ type: 'Text', children: ['virtual list'] }, { focused: false, contentRows: 1 })}
+      onFocus={async () => ({})} onClose={async () => {}} onInteract={async () => {}}
+      onScroll={async (_pane, by, pointer) => { wheels.push({ by, pointer }) }}
+    /></Box>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const body = nodeCache.get(renderedElement(stdout, 'virtual list', 'ink-text'))!
+      stdin.push(`\u001b[<65;${body.x + 1};${body.y + 1}M`)
+      await settle()
+      stdin.push(`\u001b[<64;${body.x + 1};${body.y + 1}M`)
+      await settle()
+      stdin.push('\u001b[<65;1;1M')
+      await settle()
+      expect(wheels).toEqual([{ by: 1, pointer: { column: 0, row: 0 } }, { by: -1, pointer: { column: 0, row: 0 } }])
+      expect(transcript).toEqual(['down'])
+    } finally { instance.unmount() }
   })
 })
 

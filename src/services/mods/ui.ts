@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type { ModInput } from './types.js'
 
 export type ModUiOwner = object
@@ -96,6 +97,7 @@ export type ModUi = {
       element?: string
       origin: Exclude<ModUiOrigin, { kind: 'unload' }>
     },
+    presentation?: ModUiPresentation,
   ): Promise<unknown>
   reveal(
     owner: ModUiOwner,
@@ -224,6 +226,7 @@ export function createModUi({
   const openGenerations = new Map<string, number>()
   let snapshot: readonly ModUiPane[] = Object.freeze([])
   let nextDrawing = 1
+  let personFocusGeneration = 0
 
   function askedKey(owner: ModUiOwner, id: string): string {
     return `${pluginOf(owner)}\0${id}`
@@ -655,7 +658,10 @@ export function createModUi({
         for (const key of [
           'component', 'requestId', 'by', 'bodyRows', 'contentRows', 'pointer',
         ] as const) {
-          if (Object.hasOwn(rewritten, key) && rewritten[key] !== input[key])
+          const unchanged = key === 'pointer'
+            ? isDeepStrictEqual(rewritten[key], input[key])
+            : rewritten[key] === input[key]
+          if (Object.hasOwn(rewritten, key) && !unchanged)
             throw new TypeError(`Mod UI scroll cannot rewrite ${key}`)
         }
         const receivedOrigin = rewritten.origin as ModUiOrigin | undefined
@@ -684,21 +690,39 @@ export function createModUi({
       })
     },
 
-    async focus(owner, request) {
+    async focus(owner, request, rawPresentation) {
       validateOwner(owner)
+      const person = request.origin.kind === 'person'
       const pane = active.get(request.requestId)
-      if (!pane) return { deny: 'site is not open' }
+      if (!pane) return { deny: 'site is not open', ...(person ? { focused: false } : {}) }
       if (request.origin.kind === 'plugin' && !ownsPane(owner, pane))
         return { deny: 'site belongs to another plugin' }
+      if (person && rawPresentation !== undefined) {
+        pane.presentation = validatePresentation(rawPresentation)
+        if (pane.focused && (!visibleOf(pane) || !pane.presentation.composerEmpty ||
+            pane.presentation.hasDialog || pane.presentation.keyboardOwned)) {
+          pane.focused = false
+          pane.focusedElement = undefined
+          publish()
+        }
+      }
+      const generation = person ? ++personFocusGeneration : personFocusGeneration
       const input: ModInput = Object.freeze({
         component: 'Pane',
         requestId: pane.id,
         ...(request.element === undefined ? {} : { plugin: pane.plugin, element: request.element }),
         origin: request.origin,
       })
-      return dispatch(owner, 'ui.focus', input, async rewritten => {
-        if (active.get(pane.id) !== pane) return { deny: 'another move landed first' }
-        if (!pane.focused) return { deny: 'site does not hold the keyboard' }
+      const result = await dispatch(owner, 'ui.focus', input, async rewritten => {
+        if (active.get(pane.id) !== pane || person && generation !== personFocusGeneration)
+          return { deny: 'another move landed first' }
+        if (!pane.visible || !visibleOf(pane) || pane.tree === undefined)
+          return { deny: 'site is not visible' }
+        const presentation = pane.presentation
+        const canFocus = person && request.element !== undefined
+          ? presentation.composerEmpty && !presentation.hasDialog && !presentation.keyboardOwned
+          : pane.focused
+        if (!canFocus) return { deny: 'site does not hold the keyboard' }
         for (const key of ['component', 'requestId', 'plugin'] as const) {
           if (Object.hasOwn(rewritten, key) && rewritten[key] !== input[key])
             throw new TypeError(`Mod UI focus cannot rewrite ${key}`)
@@ -715,12 +739,23 @@ export function createModUi({
         if (nextElement !== undefined &&
             !focusableNode(pane.tree, nextElement as string, input.plugin as string))
           return { deny: 'element is not drawn in this site' }
-        const relinquish = nextElement === undefined && request.origin.kind === 'person'
-        if (pane.focusedElement !== nextElement || relinquish && pane.focused) {
-          pane.focusedElement = nextElement as string | undefined
-          if (relinquish) pane.focused = false
-          publish()
+        const relinquish = nextElement === undefined && person
+        let changed = false
+        if (person && !relinquish) {
+          for (const current of active.values()) {
+            if (current === pane || !current.focused) continue
+            current.focused = false
+            current.focusedElement = undefined
+            changed = true
+          }
         }
+        const focused = !relinquish
+        if (pane.focusedElement !== nextElement || pane.focused !== focused) {
+          pane.focusedElement = nextElement as string | undefined
+          pane.focused = focused
+          changed = true
+        }
+        if (changed) publish()
         return {}
       }, {
         origin: request.origin,
@@ -735,6 +770,15 @@ export function createModUi({
           return restored
         },
       })
+      if (!person) return result
+      const landing = active.get(request.requestId)
+      const focused = Boolean(landing?.visible && landing.tree !== undefined && landing.focused)
+      // Middleware can withhold core, redirect it or move focus again after next().
+      const reported: Record<string, unknown> = { ...(result as Record<string, unknown>), focused }
+      delete reported.element
+      if (focused && landing?.focusedElement !== undefined)
+        reported.element = landing.focusedElement
+      return reported
     },
 
     async reveal(owner, request) {

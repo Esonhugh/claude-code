@@ -160,6 +160,77 @@ test('public ui.focus addresses the calling plugin element and raises one plugin
   expect(value.ui.getSnapshot()[0]).toMatchObject({focused:true,focusedElement:'second'})
 })
 
+test('person focus enters an unfocused Worker pane while public plugin focus cannot steal it', async () => {
+  const consumer = await plugin('ui-owner', `export function register(on) {
+    on('session.start', async ($,e,next) => { await $.ui.open({id:'panel'}); return next(e); });
+    on('ui.render', ($,e) => { const {Box,Button}=$.ui.resolve(e); return Box({children:[
+      Button({key:'first',label:'First',onPress:()=>{}}),
+      Button({key:'second',label:'Second',onPress:()=>{}}),
+    ]}); });
+    on('command.run', async ($) => { await $.ui.status(JSON.stringify(await $.ui.focus({requestId:'panel',key:'first'}))); return {}; });
+  }`)
+  const policy = await plugin('focus-policy', `let mode='rewrite'; export function register(on) {
+    on('command.run', ($,e,next) => { if(e.command==='mode'){mode=e.args;return {};} return next(e); });
+    on('ui.focus', ($,e,next) => {
+      if(mode==='deny') return {deny:'held'};
+      if(mode==='stay') return {stay:true};
+      return next({element:'second'});
+    });
+  }`)
+  const { value, statuses, diagnostics } = fixture()
+  await value.bind(binding(root)); await value.reconcile([policy, consumer])
+  const pane = value.ui.getSnapshot()[0]!
+  expect(pane).toMatchObject({ visible: true, focused: false })
+  await value.dispatch('command.run', { command: 'focus', args: '', origin: { kind: 'composer' } }, async () => ({}))
+  expect(statuses).toEqual([['ui-owner', JSON.stringify({ deny: 'site does not hold the keyboard' })]])
+  expect(await value.ui.focus(pane.owner, {
+    requestId: pane.id, element: 'first', origin: { kind: 'person' },
+  }, wide)).toEqual({ focused: true, element: 'second' })
+  expect(value.ui.getSnapshot()[0]).toMatchObject({ focused: true, focusedElement: 'second' })
+  for (const [mode, result] of [['deny', { deny: 'held' }], ['stay', { stay: true }]] as const) {
+    await value.dispatch('command.run', { command: 'mode', args: mode, origin: { kind: 'composer' } }, async () => ({}))
+    expect(await value.ui.focus(pane.owner, {
+      requestId: pane.id, element: 'first', origin: { kind: 'person' },
+    }, wide)).toEqual({ ...result, focused: true, element: 'second' })
+  }
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker wheel middleware receives body-relative pointers and consumes a virtual list without outer scrolling', async () => {
+  const consumer = await plugin('ui-owner', `let row=0; export function register(on) {
+    on('session.start', async ($,e,next) => { await $.ui.open({id:'panel'}); return next(e); });
+    on('ui.render', ($,e) => $.ui.resolve(e).Text({children:'row:'+row}));
+    on('ui.scroll', async ($,e,next) => {
+      await $.ui.status(JSON.stringify(e));
+      if(e.pointer.column>=10) return next(e);
+      row=Math.max(0,row+e.by);
+      await $.ui.invalidate('ui.render');
+      return {};
+    });
+  }`)
+  const { value, statuses, diagnostics } = fixture()
+  await value.bind(binding(root)); await value.reconcile([consumer])
+  const pane = value.ui.getSnapshot()[0]!
+  value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 4 })
+  for (const [by, row] of [[3, 3], [-1, 2]] as const) {
+    await value.ui.scroll(pane.owner, {
+      requestId: pane.id, by, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
+    })
+    expect(value.ui.getSnapshot()[0]).toMatchObject({ focused: false, scrollOffset: 0 })
+    expect((value.ui.getSnapshot()[0]!.tree as any).children).toEqual([`row:${row}`])
+  }
+  expect(statuses).toEqual([3, -1].map(by => ['ui-owner', JSON.stringify({
+    component: 'Pane', requestId: 'panel', offset: 0, by, bodyRows: 4, contentRows: 4,
+    origin: { kind: 'person' }, pointer: { column: 2, row: 1 },
+  })]))
+  value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 12 })
+  await value.ui.scroll(pane.owner, {
+    requestId: pane.id, by: 3, pointer: { column: 12, row: 1 }, origin: { kind: 'person' },
+  })
+  expect(value.ui.getSnapshot()[0]!.scrollOffset).toBe(3)
+  expect(diagnostics).toEqual([])
+})
+
 test('public focus and scroll wrappers project known fields before crossing the Worker bridge', async () => {
   const consumer = await plugin('ui-owner', `export function register(on) {
     on('session.start', async ($,e,next) => { await $.ui.open({id:'panel',focus:true}); return next(e); });
@@ -392,33 +463,71 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
   expect(callback).toBeDefined()
   const js = ts.transpileModule(`const extracted = ${callback!.getText(ast)};`,{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React,module:ts.ModuleKind.None}}).outputText
   const calls: unknown[] = []
+  const landing = {focused:true,element:'rewritten'}
   const ui = {
     interact:async (...args:unknown[]) => {calls.push(['interact',...args])},
     close:async (...args:unknown[]) => {calls.push(['close',...args])},
-    focus:async (...args:unknown[]) => {calls.push(['focus',...args])},
+    focus:async (...args:unknown[]) => {calls.push(['focus',...args]); return landing},
     scroll:async (...args:unknown[]) => {calls.push(['scroll',...args])},
     reportMetrics:(...args:unknown[]) => {calls.push(['metrics',...args])},
   }
-  const scope = {React:{createElement:(_type:unknown,props:unknown) => props},ModsPane:'ModsPane',modPaneFocused:false,modsSession:{runtime:{ui}},logError:() => {}}
+  const pane = {id:'panel',plugin:'owner',owner:{},visible:true,focused:true,bodyRows:10,contentRows:20}
+  const scope = {
+    React:{createElement:(_type:unknown,props:unknown) => props}, ModsPane:'ModsPane',
+    modPaneFocused:false, modUiPresentation:{...wide}, modUiPresentationRef:{current:{...wide}},
+    modPanes:[pane], modsSession:{runtime:{ui}} as {runtime:{ui:typeof ui}} | undefined,
+    logError:() => {},
+  }
   const render = new Function('scope',`with(scope) {${js}; return extracted;}`)(scope)
-  const pane = {id:'panel',plugin:'owner',owner:{},focused:true,bodyRows:10,contentRows:20}
   const props = render(pane)
   expect(props.pane.focused).toBe(false)
+  expect(props.canFocus).toBe(true)
+  scope.modPaneFocused = true
+  expect(render(pane).pane).toBe(pane)
+
   const press = {plugin:'owner',handle:10}
+  const pointer = {column:7,row:2}
+  // An already-rendered callback must read the current presentation, not its render snapshot.
+  const currentPresentation = {...wide,hasDialog:true,rows:27}
+  scope.modUiPresentationRef.current = currentPresentation
   await props.onInteract(pane,1,press,'press','run')
   await props.onClose(pane)
-  await props.onFocus(pane,'run')
+  expect(await props.onFocus(pane,'run')).toBe(landing)
   await props.onScroll(pane,3)
+  await props.onScroll(pane,-1,pointer)
+  props.onReportMetrics(pane,{bodyRows:10,contentRows:20})
   props.onReportMetrics(pane,{bodyRows:10,contentRows:20,keyRows:[{plugin:'owner',key:'run',top:1,bottom:2}]})
   props.onReportMetrics(pane,{bodyRows:10,contentRows:21,keyRows:[{plugin:'owner',key:'run',top:2,bottom:3}]})
   expect(calls).toEqual([
     ['interact','panel',1,press,'press','run',undefined],
     ['close',pane.owner,'panel',{kind:'person'}],
-    ['focus',pane.owner,{requestId:'panel',element:'run',origin:{kind:'person'}}],
-    ['scroll',pane.owner,{requestId:'panel',by:3,origin:{kind:'person'}}],
+    ['focus',pane.owner,{requestId:'panel',element:'run',origin:{kind:'person'}},currentPresentation],
+    ['scroll',pane.owner,{requestId:'panel',by:3,pointer:undefined,origin:{kind:'person'}}],
+    ['scroll',pane.owner,{requestId:'panel',by:-1,pointer,origin:{kind:'person'}}],
     ['metrics','panel',{bodyRows:10,contentRows:20,keyRows:[{plugin:'owner',key:'run',top:1,bottom:2}]}],
     ['metrics','panel',{bodyRows:10,contentRows:21,keyRows:[{plugin:'owner',key:'run',top:2,bottom:3}]}],
   ])
+
+  for (const changes of [{composerEmpty:false},{hasDialog:true},{keyboardOwned:true}]) {
+    scope.modUiPresentation = {...wide,...changes}
+    expect(render(pane).canFocus).toBe(false)
+  }
+  scope.modUiPresentation = {...wide}
+  for (const other of [
+    {...pane,id:'other',focused:false}, {...pane,id:'other',visible:false},
+  ]) {
+    scope.modPanes = [pane,other]
+    expect(render(pane).canFocus).toBe(true)
+  }
+  scope.modPanes = [pane,{...pane,id:'other'}]
+  expect(render(pane).canFocus).toBe(false)
+  scope.modPanes = [pane]
+  expect(render({...pane,focused:false}).canFocus).toBe(true)
+
+  scope.modsSession = undefined
+  expect(await props.onFocus(pane,'run')).toEqual({focused:false})
+  await expect(props.onInteract(pane,1,press,'press','run')).rejects.toThrow('Mod UI host is unavailable')
+  expect(calls).toHaveLength(7)
   expect(source).toContain('{modInline.map(renderModPane)}')
   expect(source).toContain('{modDock.map(renderModPane)}')
 })
