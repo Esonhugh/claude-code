@@ -202,7 +202,26 @@ export function deserializeMessagesWithInterruptDetection(
       filteredThinking,
     ) as NormalizedMessage[]
 
-    const internalState = detectTurnInterruption(filteredMessages)
+    // A retained OpenAI reasoning item is not completion evidence when the
+    // response's trailing tool call was removed as unresolved.
+    const lastOriginalMessage = migratedMessages.findLast(
+      m =>
+        m.type !== 'system' &&
+        m.type !== 'progress' &&
+        !(m.type === 'assistant' && m.isApiErrorMessage),
+    )
+    const interruptedOpenAIToolCall =
+      lastOriginalMessage?.type === 'assistant' &&
+      !filteredToolUses.some(m => m.uuid === lastOriginalMessage.uuid) &&
+      filteredMessages.some(
+        m =>
+          m.type === 'assistant' &&
+          m.message.id === lastOriginalMessage.message.id &&
+          m.message.content.some(block => 'openAIReasoning' in block),
+      )
+    const internalState: InternalInterruptionState = interruptedOpenAIToolCall
+      ? { kind: 'interrupted_turn' }
+      : detectTurnInterruption(filteredMessages)
 
     // Transform mid-turn interruptions into interrupted_prompt by appending
     // a synthetic continuation message. This unifies both interruption kinds

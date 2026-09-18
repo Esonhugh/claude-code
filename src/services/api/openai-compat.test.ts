@@ -1831,6 +1831,7 @@ try {
       type: 'thinking',
       thinking: 'Inspect the request. Use the Bash tool.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     { type: 'text', text: 'Running it now.' },
     {
@@ -1867,6 +1868,7 @@ try {
       type: 'thinking',
       thinking: 'Raw visible reasoning.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     { type: 'text', text: 'Done.' },
   ])
@@ -1896,6 +1898,7 @@ try {
       type: 'thinking',
       thinking: 'Done-only visible reasoning.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     { type: 'text', text: 'Done.' },
   ])
@@ -1927,11 +1930,13 @@ try {
       type: 'thinking',
       thinking: 'First part.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     {
       type: 'thinking',
       thinking: 'Second part.',
       signature: '',
+      openAIReasoningSummary: true,
     },
   ])
 
@@ -1962,6 +1967,7 @@ try {
       type: 'thinking',
       thinking: 'Then reason.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     {
       type: 'tool_use',
@@ -1970,6 +1976,50 @@ try {
       input: { command: 'pwd' },
     },
   ])
+
+  const encryptedReasoning = {
+    type: 'reasoning',
+    id: 'rs_replay',
+    summary: [{ type: 'summary_text', text: 'Inspect before reading.' }],
+    encrypted_content: 'synthetic-encrypted-reasoning',
+  }
+  const reasoningReplayRequests: any[] = []
+  globalThis.fetch = (async (_input, init) => {
+    reasoningReplayRequests.push(JSON.parse(String(init?.body)))
+    return new Response(
+      [
+        { type: 'response.reasoning_summary_text.done', item_id: 'rs_replay', text: 'Inspect before reading.' },
+        { type: 'response.output_item.done', item: encryptedReasoning },
+        { type: 'response.output_text.delta', delta: 'Reading now.' },
+        { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_replay', call_id: 'fc_replay', name: 'Read' } },
+        { type: 'response.function_call_arguments.done', item_id: 'fc_replay', arguments: '{"file_path":"test.txt"}' },
+        { type: 'response.completed', response: { id: 'resp_replay', usage: { input_tokens: 1, output_tokens: 3 } } },
+      ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(''),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }) as unknown as typeof fetch
+  const reasoningReply = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'read test.txt' }],
+  } as any)
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      { role: 'user', content: 'read test.txt' },
+      { role: 'assistant', content: JSON.parse(JSON.stringify(reasoningReply.content)) },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fc_replay', content: 'file contents' }] },
+    ],
+  } as any)
+  assert.deepEqual(reasoningReplayRequests[1].input, [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'read test.txt' }] },
+    encryptedReasoning,
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Reading now.' }] },
+    { type: 'function_call', id: 'fc_replay', call_id: 'fc_replay', name: 'Read', arguments: '{"file_path":"test.txt"}' },
+    { type: 'function_call_output', call_id: 'fc_replay', output: 'file contents' },
+  ])
+  assert.deepEqual(reasoningReplayRequests[0].include, ['reasoning.encrypted_content'])
 
   globalThis.fetch = (async () => {
     return new Response(

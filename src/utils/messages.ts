@@ -153,6 +153,7 @@ import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError, logMCPDebug } from './log.js'
+import { getAPIProvider } from './model/providers.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
@@ -718,6 +719,14 @@ export function isNotEmptyMessage(message: Message): boolean {
   // @ts-ignore - recovered code
   if (message.message.content.length > 1) {
     return true
+  }
+
+  if (
+    message.type === 'assistant' &&
+    message.message.content[0]?.type === 'thinking' &&
+    'openAIReasoning' in message.message.content[0]
+  ) {
+    return false
   }
 
   // @ts-ignore - recovered code
@@ -2282,11 +2291,20 @@ export function normalizeMessagesForAPI(
           // like 'caller' from tool_use blocks, as these are only valid with the
           // tool search beta header
           const toolSearchEnabled = isToolSearchEnabledOptimistic()
+          const content =
+            getAPIProvider() === 'openai'
+              ? message.message.content
+              : message.message.content.filter(
+                  block =>
+                    !('openAIReasoning' in block) &&
+                    !('openAIReasoningSummary' in block),
+                )
+          if (message.message.content.length > 0 && content.length === 0) return
           const normalizedMessage: AssistantMessage = {
             ...message,
             message: {
               ...message.message,
-              content: message.message.content.map(block => {
+              content: content.map(block => {
                 if (block.type === 'tool_use') {
                   // @ts-ignore - recovered code
                   const tool = tools.find(t => toolMatchesName(t, block.name))
@@ -4975,7 +4993,7 @@ function filterTrailingThinkingFromLastAssistant(
   const content = lastMessage.message.content
   const lastBlock = content.at(-1)
   // @ts-ignore - recovered code
-  if (!lastBlock || !isThinkingBlock(lastBlock)) {
+  if (!lastBlock || !isThinkingBlock(lastBlock) || 'openAIReasoning' in lastBlock) {
     return messages
   }
 
@@ -4984,7 +5002,7 @@ function filterTrailingThinkingFromLastAssistant(
   while (lastValidIndex >= 0) {
     const block = content[lastValidIndex]
     // @ts-ignore - recovered code
-    if (!block || !isThinkingBlock(block)) {
+    if (!block || !isThinkingBlock(block) || 'openAIReasoning' in block) {
       break
     }
     lastValidIndex--
@@ -5194,7 +5212,9 @@ export function filterOrphanedThinkingOnlyMessages(
     if (!Array.isArray(content)) continue
 
     const hasNonThinking = content.some(
-      block => block.type !== 'thinking' && block.type !== 'redacted_thinking',
+      block =>
+        (block.type !== 'thinking' && block.type !== 'redacted_thinking') ||
+        'openAIReasoning' in block,
     )
     if (hasNonThinking && msg.message.id) {
       messageIdsWithNonThinkingContent.add(msg.message.id)

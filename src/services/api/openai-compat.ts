@@ -183,10 +183,11 @@ function anthropicMessagesToResponsesInput(
       if (typeof msg.content === 'string') {
         input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: msg.content }] })
       } else {
-        const parts: any[] = []
         for (const block of msg.content) {
           if (block.type === 'text') {
-            parts.push({ type: 'output_text', text: block.text })
+            input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: block.text }] })
+          } else if (block.type === 'thinking' && 'openAIReasoning' in block) {
+            input.push(block.openAIReasoning)
           } else if (block.type === 'tool_use') {
             const b = block as any
             const fcId = ensureFcId(b.id)
@@ -198,9 +199,6 @@ function anthropicMessagesToResponsesInput(
               arguments: typeof b.input === 'string' ? b.input : JSON.stringify(b.input),
             })
           }
-        }
-        if (parts.length > 0) {
-          input.push({ type: 'message', role: 'assistant', content: parts })
         }
       }
     }
@@ -679,6 +677,7 @@ async function connectSSE(
     input: payload.input,
     store: false,
     stream: true,
+    include: ['reasoning.encrypted_content'],
     ...(payload.tools && { tools: payload.tools }),
     ...(payload.tool_choice && { tool_choice: payload.tool_choice }),
     ...(payload.reasoning && { reasoning: payload.reasoning }),
@@ -761,7 +760,7 @@ async function connectSSE(
                 stream.push({
                   type: 'content_block_start',
                   index: blockIndex,
-                  content_block: { type: 'thinking', thinking: '', signature: '' },
+                  content_block: { type: 'thinking', thinking: '', signature: '', openAIReasoningSummary: true },
                 } as any)
               }
               reasoningText += delta
@@ -798,6 +797,7 @@ async function connectSSE(
                     type: 'thinking',
                     thinking: '',
                     signature: '',
+                    openAIReasoningSummary: true,
                   },
                 } as any)
               }
@@ -820,6 +820,21 @@ async function connectSSE(
               if (hasThinking) {
                 closeCurrentBlock()
               }
+            } else if (type === 'response.output_item.done' && event.item?.type === 'reasoning') {
+              closeCurrentBlock()
+              // Emit the complete replay item before persistence, separately from visible summaries.
+              stream.push({
+                type: 'content_block_start',
+                index: blockIndex,
+                content_block: {
+                  type: 'thinking',
+                  thinking: '',
+                  signature: '',
+                  openAIReasoning: event.item,
+                },
+              } as any)
+              stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+              blockIndex++
             } else if (type === 'response.output_text.delta') {
               if (hasThinking || currentToolCallId || currentWebSearchCallId) {
                 closeCurrentBlock()
