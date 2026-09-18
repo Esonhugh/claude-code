@@ -29,6 +29,8 @@
 - `462c676`、`1f09ebb`、`bc34711` — queued admission/public turn 生命周期、Pane resize 焦点与 mode-only managed precedence。
 - `446eb28`、`d421338`、`19638f5`、`6c7b0e0`、`a46ed1a` — provenance、SSH/Workflow 回归与历史兼容性证据。
 - `c006eeb`、`8de982f`、`0da3f73` — 本轮 hooks snapshot 审核边界、非法 remote managed 磁盘缓存回退和 Pane Escape 所有权修复。
+- `be36848`、`ef1f440` — Mods 使用与测试方案；首次 SSH bootstrap 测试同步调整，后续完整复验仍重现。
+- `d9a28d1` — SSH 测试用 awaited React `act` 等待 effects/state commit，显式验证 callback 安装并保证清理；保留全部原断言，不修改生产语义。
 
 ### 变更内容
 
@@ -43,9 +45,11 @@
 
 ### 测试覆盖
 
-- 本轮要求三个问题各有最小红→绿回归；随后在提交后的冻结源码上执行 tracked 测试清单的逐文件独立进程与同进程两轮、`make release-check`、新 `make build` 和 scripted tmux 验收。此初稿不将计划当作通过结果。
-- 历史严格复测仍保留：逐文件 1562 pass / 3 Peer 环境失败，同进程 1561 pass / 4 fail（多一项未定位 PTY 退出码异常）；Mods 558 pass / 0 fail。这些不是本轮新制品结果，失败不能由其他运行的通过覆盖。
-- 官方 2.1.272 自然 Mods gate 曾关闭，官方运行时 parity 未覆盖；Worker/VM/child/compiled 路径不能由父进程 LCOV 推断完整性。默认权限 ask、官方 diff 原件、settings watcher 与 Escape 所有权必须另取真实新制品证据。
+- 三项产品修复均取得最小红→绿；settings 四文件相邻回归117 pass / 0 fail，UI 相邻回归25 pass / 0 fail。首轮提交后 `make release-check`、`make build` 通过，版本保持不变。
+- 首轮261文件独立进程为260 qualified、1565 registered pass / 3 Peer fail、106个完成脚本；同进程 raw 为1565 pass / 4 fail / 1 error，额外SSH readiness顶层失败确实存在。Mods 子集22文件559 pass / 0 fail / 0 skip，不能与全清单重复相加。
+- 后续完整复验分别暴露既有SSH ControlPath长TMP限制、短TMP runner遗漏Peer fixture授权及SSH readiness再次失败，原始记录全部保留。最终SSH测试修复在两次完整清单中均完成；两轮分别1565 pass / 3 Peer fail与1564 pass / 4 fail，第二轮新增Workflow command-runner的5000ms超时、根因未定。Peer身份环境限制保留，历史PTY异常本轮未重现，不称根因已修复。
+- 新binary的官方diff原件补验中，inline Enter、详情滚动、两级Escape及fullscreen鼠标row/边缘按钮分别通过；部分方向键导航、fullscreen快捷键与滚轮失败，不能宣称终端交互完整兼容。命令/UI smoke的13条通过不替代活跃Agent/Workflow/后台任务验收。
+- 当前整体未通过，推送门禁仍阻塞；完整数字与证据见 `mods-test.md`。官方2.1.272自然gate限制、remote managed编译制品公开入口限制单列；父LCOV不能覆盖Worker/VM/child/compiled。CHANGELOG参与制品内嵌，结果回填后的构建与smoke另列身份，不沿用首轮制品hash。
 - 已完成的真实 `@esonhugh/claude-code@2.1.219` 上下文对比：默认首轮内容 81984→74771 bytes，减少 8.80%，主要来自工具集合/描述差异；统一 Read-only 后六次规范化请求相同。不是功能等价优化、真实 tokenizer/计费测量或新构建的结果。
 
 ## 2026-09-15 - 独立会话通信、Plan 模式开关与运行时兼容性

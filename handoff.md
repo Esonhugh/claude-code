@@ -1,5 +1,45 @@
 # Mods 修复与兼容性验收
 
+## 2026-09-18 三项修复收口：最新执行记录
+
+**本节是最新状态，取代下方历史节的“当前状态”表述；历史 failed 原文不改写。** 三项已确认产品问题均已修复并取得红→绿回归。SSH测试后续以awaited React `act`修复并签名提交`d9a28d1`，两次完整同进程均通过该脚本；但第二轮新增Workflow command-runner超时，根因未定。既有SSH ControlPath长路径限制未修复，新binary交互补验又发现部分官方 diff 控件失败。当前整体不能判通过，推送继续阻塞。
+
+本轮证据根 `C` = `/private/tmp/mods-closure-20260918-dbe9mry_`。完整测试方案、判定规则、命令和结果索引见 [mods-test.md](mods-test.md)。README 已增加 Mods 当前源码特性、使用方式和可信代码边界，CHANGELOG 已增加无版本号的未发布条目。
+
+### 修复与签名提交
+
+| 提交 | 变更 | 红绿与边界 |
+| --- | --- | --- |
+| `c006eeb` | 普通 hooks snapshot 只消费 accepted settings，不清缓存绕过 ConfigChange；可信 cwd 转换显式 reset | 审核前候选不可见，block/allow/retry 与 source scope 通过 |
+| `8de982f` | remote managed 磁盘缓存先验证再参与 precedence/merge/origin；保留 schema diagnostics | 非法层让位合法 MDM/file/HKCU，修复缓存后恢复；leaf 未引入 schema 循环依赖 |
+| `0da3f73` | overlay 拥有键盘时 PromptInput 不记录 Escape 双击 | 真实 PromptInput harness 红→绿；Pane 关闭后第一下不误触发、第二下正常 Rewind；相邻 UI 25/0 |
+| `be36848` | README、CHANGELOG、mods-test 与研究历史范围勘误 | 文档链接、changelog check/tests、TypeScript、lint、diff 通过 |
+| `ef1f440` | SSH 测试首次使用 Ink 同步刷新 | 精确前缀红→绿，但后续完整批次仍重现；不能单独视为修复充分 |
+| `d9a28d1` | SSH 测试 awaited React `act`，显式callbacks和finally清理 | 受控红→绿；55前缀79/0、20独立重复、两完整批次SSH均完成；主线程单文件与release-check通过 |
+
+两项 settings 四文件相邻回归为117 pass / 0 fail。上述均为正常签名提交，未跳过 hooks/signing，未改版本、依赖、CI，也未暂存两份既有 cross-session 设计草稿。
+
+### 首轮完整自动化与新失败
+
+- `be36848`：261 文件独立 OS 进程，260 qualified；1565 registered pass / 3 Peer fail，106 个 assertion scripts 完成，0 timeout。
+- 同一提交的完整显式清单 `bun test --isolate --no-orphans`：完整结束、exit 1，raw footer 为1565 pass / 4 fail / 1 error；JUnit 只记录3个Peer failures。额外顶层 `useSSHSession.test.tsx:240` readiness 断言确实失败，不能视作统计噪音；首轮报告纠正见 `C/automated/main-review.json`。
+- SSH readiness最初定位为ConcurrentRoot的测试提交竞争：单次`setImmediate`不保证React commit。`ef1f440` 仅在测试中使用现有Ink `pause()/resume()`，精确前缀、单文件重复及 `C/automated-ssh-final/` 两完整模式均通过；但后续短TMP完整同进程又复现，说明该修复仍不充分，不能宣称根因已完全解决。`C/ssh-readiness-final/` 的受控调度已区分callback调用和commit，后续`act`修复两次自然完整运行均有SSH sentinel；原未插桩批次的精确分支不能追溯证明。
+- 最新`act`源码的两次完整261同进程为1565 pass / 3 Peer fail和1564 pass / 4 fail。第二次多出`src/tools/WorkflowTool/compatibility/runCommand.test.ts:6`的5000ms timeout，根因未定；每轮105/105既有脚本sentinel、另1脚本无标记，child6/0另计，无顶层Unhandled。Peer fixture授权恢复，ControlPath与PTY通过。新失败单独有界诊断，不再盲目全仓重跑。
+- `C/automated-ssh-final/` 两完整模式各1564 pass / 4 fail：除3个Peer外，长TMP令SSH ControlPath达到111/112字节，现有`<104`断言失败。生产与测试同起始baseline byte一致，有界对照128/105字节失败、98字节通过。此为既有非Mods限制，未修改产品。长TMP批次独立259/261文件qualified、106脚本完成；同进程105个完成sentinel，native download无独立完成标记，不能借独立通过补写同进程全覆盖。
+- `C/automated-short-final/` 使用新独立短TMP后ControlPath与PTY通过，但同进程为1553 pass / 16 fail / 1 error，独立1553 pass / 15 fail、106脚本完成。15个Peer失败来自runner误删既有`/tmp/cc-peer-test-*`路径授权，fixture创建阶段即被拒；不是之前3个process-start断言的同一证据。同进程额外1 fail / 1 error为SSH readiness重现，不能由该轮独立或55文件前缀通过覆盖。
+- 首轮 Mods 22 文件全部 qualified，559 pass / 0 fail / 0 skip；这是261清单子集，不重复累加。
+- Peer 三项保留 environment-blocked：sandbox 拒绝 setuid `/bin/ps`，私有非 setuid 原样副本亦被 OS 终止；未取消安全隔离、伪造进程身份或跳过断言。
+- 历史 PTY `2 !== 130` 首轮独立、同进程及额外9项重放均未重现，不声称根因已修复。
+- 首轮父 LCOV：Mods 5079/5813（87.37%），19个已插桩源码文件；全部导入父源码60345/260451（23.17%）。不覆盖Worker/VM/child/compiled，不代表全仓或完整功能覆盖。
+
+### 首轮构建与待收口项
+
+`be36848` 上 `make release-check`、`make build` 均 exit 0，tracked 内容前后无变化。binary 为2.1.219，100102754 bytes，SHA-256 `781fa13125c9cb2da9153c38ae260a662424cb002c50e4605d3944bf8179115a`；证据 `C/build/artifact-lock.json`。后续SSH提交只改测试，未改变生产构建输入，见 `C/build/ssh-test-content-continuity.json`。
+
+当前等待新完整自动化和 runtime 独立审计。已完成的 diff 控件补验出现新失败：inline 方向键文件导航、fullscreen 文档快捷键和滚轮未达到预期；Enter、inline 详情滚动、两级 Escape 及 fullscreen 鼠标 row/边缘按钮有独立通过证据。原始失败和不合格尝试全部保留，不能用鼠标成功替代键盘失败；推送继续阻塞，不扩展本轮产品开发范围。最终 CHANGELOG 回填会改变实际内嵌内容，必须重新 build 和相关 smoke；不能将首轮hash写成最终制品身份。官方自然 Mods gate、平台覆盖、default权限、settings编译制品路径等均按实际证据单列，不以源码或旧binary通过替代。
+
+---
+
 ## 2026-09-18 修复后冻结源码：严格测试已结束，整体 failed
 
 **当前整体 failed：仍有两处settings缺陷及inline快速双Escape误开Rewind；Peer身份测试environment-blocked，官方Mods运行parity为not covered。不能宣布全量通过或 full covered。** 本节优先于后面的历史基线；分支仍为 `feat/mods`，HEAD 为 `6c7b0e0eb7a9b36d4003c3a713209449c91d1b9a`，本轮定向修复尚未追加 commit/push。源码身份由逐文件 SHA-256 固定，不能仅凭相同 HEAD 将未提交修复混同旧构建。
