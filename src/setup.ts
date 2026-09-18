@@ -46,6 +46,7 @@ import { lockCurrentVersion } from './utils/nativeInstaller/index.js'
 import type { PermissionMode } from './utils/permissions/PermissionMode.js'
 import { getPlanSlug } from './utils/plans.js'
 import { saveWorktreeState } from './utils/sessionStorage.js'
+import { resetSettingsCache } from './utils/settings/settingsCache.js'
 import { profileCheckpoint } from './utils/startupProfiler.js'
 import {
   createTmuxSessionForWorktree,
@@ -342,6 +343,7 @@ export async function setup(
     // Settings cache was populated in init() (via applySafeConfigEnvironmentVariables)
     // and again at captureHooksConfigSnapshot() above, both from the original dir's
     // .claude/settings.json. Re-read from the worktree and re-capture hooks.
+    resetSettingsCache()
     updateHooksConfigSnapshot()
   }
 

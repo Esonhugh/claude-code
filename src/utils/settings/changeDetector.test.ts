@@ -17,6 +17,49 @@ const scenarios: Record<
   string,
   (h: Awaited<ReturnType<typeof harness>>) => Promise<void>
 > = {
+  async 'hooks snapshot reads only accepted settings before block allow and retry'(
+    h,
+  ) {
+    const hooks = await import('../hooks/hooksConfigSnapshot.js')
+    h.review(async () => true)
+    await h.detector.initialize()
+    await h.ready()
+    hooks.captureHooksConfigSnapshot()
+
+    h.write({
+      disableAllHooks: false,
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [{ type: 'command', command: 'accepted-after-review' }],
+          },
+        ],
+      },
+    })
+    hooks.updateHooksConfigSnapshot()
+    expect(h.settings.getInitialSettings().disableAllHooks).toBe(true)
+    expect(
+      hooks.getHooksConfigFromSnapshot()?.PreToolUse,
+    ).toBeUndefined()
+
+    await h.detector.refreshSettings()
+    expect(h.reviews).toHaveLength(1)
+    expect(h.reviews[0]!.effective).toBe(true)
+    expect(h.notifications()).toBe(0)
+    expect(h.settings.getInitialSettings().disableAllHooks).toBe(true)
+
+    h.review(async () => false)
+    await h.detector.refreshSettings()
+    expect(h.reviews).toHaveLength(2)
+    expect(h.reviews.every((review) => review.effective === true)).toBe(true)
+    expect(h.notifications()).toBe(1)
+    expect(h.settings.getInitialSettings().disableAllHooks).toBe(false)
+
+    hooks.updateHooksConfigSnapshot()
+    expect(
+      hooks.getHooksConfigFromSnapshot()?.PreToolUse?.[0]?.hooks[0],
+    ).toMatchObject({ type: 'command', command: 'accepted-after-review' })
+  },
   async 'real reload refreshes all settings caches without plugin settings base'(
     h,
   ) {

@@ -1003,10 +1003,58 @@ describe('source-scoped hook executor', () => {
     expect(f.calls.map((call) => call.command)).toEqual(['same', 'same'])
     expect(f.snapshot.getHooksConfigFromSnapshot()).toBe(captured)
     f.snapshot.updateHooksConfigSnapshot()
-    expect(f.controls.resets).toBe(1)
+    expect(f.controls.resets).toBe(0)
     f.calls.length = 0
     await collect(pre(f))
     expect(f.calls.map((call) => call.command)).toEqual(['changed'])
+  })
+
+  test('trusted project-root transitions reset settings before refreshing hooks', () => {
+    const assertResetBeforeSnapshot = (path: string) => {
+      const source = readFileSync(new URL(path, import.meta.url), 'utf8')
+      const file = ts.createSourceFile(
+        path,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      )
+      const pairs: string[] = []
+      const visit = (node: ts.Node) => {
+        if (ts.isBlock(node)) {
+          const calls = node.statements
+            .map((statement) =>
+              ts.isExpressionStatement(statement) &&
+              ts.isCallExpression(statement.expression) &&
+              ts.isIdentifier(statement.expression.expression)
+                ? statement.expression.expression.text
+                : undefined,
+            )
+            .filter((name): name is string => name !== undefined)
+          if (
+            calls.includes('setProjectRoot') &&
+            calls.includes('updateHooksConfigSnapshot')
+          ) {
+            pairs.push(
+              calls
+                .filter((name) =>
+                  name === 'resetSettingsCache' ||
+                  name === 'updateHooksConfigSnapshot'
+                )
+                .join(','),
+            )
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(file)
+      expect(pairs).toEqual(['resetSettingsCache,updateHooksConfigSnapshot'])
+    }
+
+    assertResetBeforeSnapshot('../setup.ts')
+    assertResetBeforeSnapshot(
+      '../tools/ExitWorktreeTool/ExitWorktreeTool.ts',
+    )
   })
 
   test('disabled setting sources are excluded at capture', async () => {
