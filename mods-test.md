@@ -148,14 +148,15 @@ make build
 | SSH `act` 修复 | 受控 Scheduler 证实 callback 已安装并执行，但旧刷新未提交默认优先级 state；awaited React `act` 后红→绿。保留原61项断言、增4项 callback 断言；55前缀79/0、独立20/20及两次完整清单均有SSH完成标记、无顶层Unhandled。主线程单文件与release-check通过；签名提交 `d9a28d1` |
 | `act` 两次自然完整复验 | `ssh-readiness-final/` full-a为1565 pass / 3 Peer fail；full-b为1564 pass / 4 fail，新增Workflow `runCommand` 5000ms timeout。每轮105/105既有源码sentinel，另1脚本无标记；子进程6/0另计。Peer fixture权限已恢复、ControlPath与PTY通过；full-b失败不可由full-a覆盖 |
 | 首轮 release-check / build | `be36848` 上均 exit 0，构建前后 tracked 内容无变化；`build/release-check.json`、`build/build.json` |
-| 新 binary scripted tmux | 补验确认部分 diff 控件失败；inline Enter、详情滚动和两级 Escape、fullscreen 鼠标 row/边缘按钮分别通过；命令/UI 补验13条限定断言通过。全矩阵仍待独立审计，不汇总为全绿 |
-| 最终提交与 push | pending，只有满足上述门禁才执行 |
+| 首轮 binary scripted tmux | 固定cutoff审计完成：49个result场景为27 passed / 17 failed / 5 not covered；另1场UI补验13条通过。合计50场、641 raw assertions，不等于641个独立功能；12组矩阵6 passed / 3 failed / 2 not covered / 1 environment-blocked，整体failed；`runtime/summary.json` |
+| 结果文档提交与新 build | `6968ad7` 已正常签名提交当前结果；内嵌CHANGELOG后重新build通过，新SHA `3fa04adb…`。CLI除CHANGELOG模块外逐字节相同，Worker/native未变；限定新制品smoke已结束，3个有效场景通过，原harness失败与未覆盖项单列（见7.3） |
+| push | blocked：diff交互失败、Workflow timeout尚未解决；没有推送、tag或release |
 
 ### 7.1 首轮失败与补验边界
 
 - **Peer，environment-blocked：** 三项真实进程身份断言未通过。sandbox 拒绝执行 setuid `/bin/ps`；字节一致、移除 setuid 的私有副本又被 OS 终止，未取得可安全使用的替代路径。没有放开凭据/网络隔离、伪造 `procStart` 或弱化断言。证据 `precommit/peer-process-identity-probe.json`、`precommit/peer-nonsetuid-ps-probe.json`、`automated/diagnostics/process-identity-analysis.json`。
 - **SSH，测试同步缺陷：** 首轮 `isReady=false` 是真实顶层失败，不是footer/JUnit计数噪音。初次 `ef1f440` 使用Ink `pause()/resume()`仍在后续完整批次重现。受控Scheduler随后确认callback已安装并执行，但默认优先级state未提交；`d9a28d1` 改为awaited React `act`并显式验证callbacks，原61断言保留、增4断言，清理和环境恢复在finally。两个自然261文件批次均观察到SSH完成标记、无顶层Unhandled；这不反推原未插桩失败一定是同一分支。原证据 `ssh-readiness/` 与 `ssh-readiness-final/` 均保留。
-- **Workflow command-runner，新失败未定因：** `ssh-readiness-final/runs/full-b/raw.log:1877` 的 `runCommand.test.ts:6` 在5007.93ms达到5000ms testcase timeout，full-a同例23.25ms通过。不能用前一轮成功覆盖，不能未经证据归因为系统忙或SSH改动。限定诊断写入 `workflow-timeout-diagnosis/`，不改生产、延长timeout或放宽断言，推送继续阻塞。
+- **Workflow command-runner，新失败未定因：** `ssh-readiness-final/runs/full-b/raw.log:1877` 的 `runCommand.test.ts:6` 在5007.93ms达到5000ms testcase timeout，full-a同例23.25ms通过。不能用前一轮成功覆盖，不能未经证据归因为系统忙或SSH改动。有界诊断完成：单文件3次各3/3、相邻10文件30/30均通过，目标耗时12–15ms，未复现但根因仍未定；未再跑全仓、延长timeout或放宽断言。compatibility的21文件自baseline未变，full-a/full-b/当前2577个源码文件一致；诊断期间主线程提交文档的HEAD/index漂移另记，不误报整个仓库静止。证据`workflow-timeout-diagnosis/summary.json`、`hash-audit.json`、`cleanup.json`；自有进程和短TMP清理完成，原full-b仍failed、推送继续阻塞。
 - **SSH ControlPath，既有长 TMP 限制未修复：** `automated-ssh-final/` 的长 evidence 路径被用作 TMPDIR，生成111/112字节的ControlPath，违反现有 `<104` 断言；同进程和独立完整批次均真实失败。有界对照128/105字节失败、98字节通过，说明触发条件为路径长度。生产和测试内容与本轮起始基线完全一致，未归因于Mods，也不扩展本轮SSH开发范围。新完整批次使用独立短TMP，不能据此宣称任意长TMP已支持。证据 `automated-ssh-final/ssh-controlpath-diagnosis.json`、`controlpath-main-review.json`。
 - **同进程脚本资格：** 长TMP批次有105个静态完成sentinel；`nativeInstaller/download.test.ts` 没有独立完成标记，不能仅凭其无错误认定脚本全部异步工作结束。逐文件 awaited-import sentinel 完成，只证明独立批次，不反向覆盖同进程边界；见 `automated-ssh-final/raw-junit-audit.json`。
 - **PTY，历史失败本轮未重现：** 首轮独立和同进程均通过，额外有界重放9 pass / 0 fail；长TMP新完整两模式也未复现，独立文件9/0。不将“未重现”称为根因已修复。
@@ -166,9 +167,46 @@ make build
 - 后续 `ef1f440` 仅改变 SSH 测试，未改变生产代码、构建脚本或内嵌 CHANGELOG；该测试不在 CLI source map 中，见 `build/ssh-test-content-continuity.json`。这允许继续使用锁定制品验收，不意味着最终 CHANGELOG 回填也不影响 binary。
 - 首轮 53 份 LCOV 的父进程源码行并集为 60345/260451（23.17%）；Mods 为 5079/5813（87.37%），19 个已插桩生产文件。`protocol.ts`、`types.ts`、`worker.ts` 未出现于父 LCOV，Worker/VM/child/compiled 不在此覆盖率内。失败运行的执行行可贡献覆盖率，不能贡献通过资格；见 `automated/final/coverage-summary.json`。
 
-### 7.3 交互补验：已确认结果与限制
+### 7.3 结果文档后的制品身份
 
-以下仅是已完成的限定场景，最终去重矩阵和全部清理仍待独立审计。使用首轮锁定 binary `781fa131…`，不冒充最终文档回填后的制品。
+- 构建提交 `6968ad7276df549a4b012e6f787a5a070a220e0d`；sandbox内`make build` exit0，tracked bytes前后不变。`build-final/build.json`保留精确argv/environment。
+- 新binary：`2.1.219 (Claude Code)`，100102754 bytes，SHA-256 `3fa04adbb474f9bbebc95581a2c8fa829f4f42e4e27313bc9f6a81f8c7aa7e6b`；身份锁 `build-final/artifact-lock.json`。
+- 对比首轮生成的CLI，仅CHANGELOG模块变化；其余CLI逐字节相同、Worker逐字节相同、sourcemap source content仅`../CHANGELOG.md`变化，三个native assets hash未变。证据`build-final/input-continuity.json`。这证明输入延续，不把旧runtime重标为新binary执行。
+- 新binary限定scripted tmux smoke已结束，证据为`runtime-final-smoke/summary.json`；`--version`与`--help`通过。三个有效场景共30条限定断言通过，均在独立隔离环境、loopback API和真实tmux中运行，正常`/exit`为0。它不是第5节全矩阵重验，也不重新执行或宣称修复已确认的diff交互缺陷。
+- `d9a28d1`提交字节与两次`act`完整运行逐文件hash一致；运行实际在该提交之前，不更改原执行时间或称为提交后复验。证据`precommit/ssh-act-committed-identity.json`。
+
+| 新制品限定场景 | 实际结果 |
+| --- | --- |
+| `basic-a3` | 8条通过：无plugin连续两轮文本请求，每轮一个主模型请求，响应后prompt恢复；正常退出 |
+| `inline-a2` | 13条通过：完整官方diff原件775文件及运行副本hash一致，真实Read/Edit各1次；间隔269.48ms的Escape完成详情→列表→关闭且无Rewind，随后新一组正常双Escape打开一次Rewind；正常退出 |
+| `context` | 9条通过：当前请求marker计数`0→1→0`，不把历史上下文当重复注入；正常退出 |
+
+三次harness失败另行保留：`basic`为sandbox地址语法错误，`inline`为manifest路径错误，均未启动CLI；`basic-a2`误将工具专属`Stopped caffeinate`作为纯文本终态谓词，cleanup中的exit0不算合格正常退出。六次attempt的自有进程、listener和tmux socket清理均通过，见`runtime-final-smoke/cleanup-audit.json`；不以清理成功覆盖行为或harness失败。
+
+新制品的no-plugin/empty-module规范化请求对照仍为**not covered**，marker通过不能证明空Mods零增量。该smoke总体记录为not covered；首轮完整交互矩阵仍failed，Workflow timeout根因仍未定，推送继续阻塞。未借此重跑官方binary自然gate或声明官方运行时parity。
+
+smoke agent记录的`handoff.md`、`mods-test.md`内容漂移来自主线程并发回填报告；这是主线程补充说明，不改写agent的“未归因”原始记录，也不把“全仓bytes不变”断言改标通过。HEAD/index在该smoke期间未变，锁定binary及生产构建输入未变；最终只补这两份不内嵌报告，CHANGELOG保持构建时内容。
+
+### 7.4 交互补验：已确认结果与限制
+
+固定审计cutoff为2026-09-18 13:03:30 +08:00，汇总`runtime/summary.json`、限定功能`runtime/final-feature-ledger.json`。使用首轮锁定binary `781fa131…`，不冒充文档回填后的新制品。
+
+| 第5节分组 | 判定与范围 |
+| --- | --- |
+| 初始化与输入 | passed：barrier、active→idle、提交一次、新草稿保留 |
+| 排队与public turn | passed：Enter/queueSubmit、turnId/wait、rewrite/context一次、drain不重跑hook |
+| settings | environment-blocked：watcher/reload/启停、ConfigChange block/allow通过；精确审核前snapshot竞态compiled未覆盖、remote非法缓存公开入口受阻 |
+| 生命周期 | passed：成功/失败reload、在途generation、unload、cancel、受控Worker故障不重放副作用 |
+| 默认权限 | passed：真实default ask/allow/deny及host process边界，不以bypass代替 |
+| 官方diff原件inline | failed：部分方向键焦点/分页失败；Enter、长详情滚动、快速和正常Escape有独立通过 |
+| 官方diff原件fullscreen | failed：keyboard ask/action和wheel失败；mouse row/edge buttons、disable/builtin ownership分别通过 |
+| 状态保持 | passed：clear/resume不重activation、同进程reload store、非Git边界；不推导跨新OS进程store通过 |
+| 受影响功能 | passed：限定foreground/background Agent终态通知、Workflow双agent聚合/详情/终态；首轮harness失败保留 |
+| 官方binary | not covered：2.1.272自然gate关闭，readiness不等于Mods parity |
+| 请求上下文 | not covered：定向marker一次通过，但首轮未量化空Mods规范化零增量 |
+| 清理 | failed（含正常退出门禁）：资源50场全部回收；正常退出45 passed / 2 failed / 3 not covered，强制cleanup不补写正常退出 |
+
+49个result目录的628条raw assertions为522 passed / 39 failed / 67 not covered；加独立UI的13条得到641条（535/39/67）。旧44场与晚到9场有4场重叠，不能重复累加。原失败全部保留，不宣称单一全局unique功能总数。只读核验1158个已记录PID、50个历史端口及自有socket均无匹配残留，未记录逸出进程不在确认范围。1604份固定输入hash未变；49场final hash为15 source+copy、7 copy-only、27未记录，0 mismatch但缺失不等于完整身份验证。成功退出错误声明需要timeout capture等证据schema问题单列于`runtime/final-integrity-ledger.json`，不改raw记录。
 
 - **inline passed：** 实际选中项的 Enter、长详情 Down/Up 滚动、Escape 详情→列表→关闭；关闭没有误开 Rewind。证据 `runtime/closure-inline-kb-a3/assertions.json`。
 - **inline failed：** Down 不移动文件焦点、不触发五文件分页；独立场景先以 Tab 选中第二个文件，再按 Up 仍停留第二项。证据 `runtime/closure-inline-kb-a3/`、`runtime/closure-inline-up-a4/`。Tab 可用不能覆盖方向键失败。

@@ -24,7 +24,7 @@
 - `be36848`：261 文件独立 OS 进程，260 qualified；1565 registered pass / 3 Peer fail，106 个 assertion scripts 完成，0 timeout。
 - 同一提交的完整显式清单 `bun test --isolate --no-orphans`：完整结束、exit 1，raw footer 为1565 pass / 4 fail / 1 error；JUnit 只记录3个Peer failures。额外顶层 `useSSHSession.test.tsx:240` readiness 断言确实失败，不能视作统计噪音；首轮报告纠正见 `C/automated/main-review.json`。
 - SSH readiness最初定位为ConcurrentRoot的测试提交竞争：单次`setImmediate`不保证React commit。`ef1f440` 仅在测试中使用现有Ink `pause()/resume()`，精确前缀、单文件重复及 `C/automated-ssh-final/` 两完整模式均通过；但后续短TMP完整同进程又复现，说明该修复仍不充分，不能宣称根因已完全解决。`C/ssh-readiness-final/` 的受控调度已区分callback调用和commit，后续`act`修复两次自然完整运行均有SSH sentinel；原未插桩批次的精确分支不能追溯证明。
-- 最新`act`源码的两次完整261同进程为1565 pass / 3 Peer fail和1564 pass / 4 fail。第二次多出`src/tools/WorkflowTool/compatibility/runCommand.test.ts:6`的5000ms timeout，根因未定；每轮105/105既有脚本sentinel、另1脚本无标记，child6/0另计，无顶层Unhandled。Peer fixture授权恢复，ControlPath与PTY通过。新失败单独有界诊断，不再盲目全仓重跑。
+- 最新`act`源码的两次完整261同进程为1565 pass / 3 Peer fail和1564 pass / 4 fail。第二次多出`src/tools/WorkflowTool/compatibility/runCommand.test.ts:6`的5000ms timeout，根因未定；每轮105/105既有脚本sentinel、另1脚本无标记，child6/0另计，无顶层Unhandled。Peer fixture授权恢复，ControlPath与PTY通过。有界诊断单文件3次各3/3、相邻10文件30/30通过，未复现、根因仍未定；不再盲目全仓重跑，原full-b仍failed。证据`C/workflow-timeout-diagnosis/summary.json`；源码内容身份未变、自有进程及短TMP已清理。
 - `C/automated-ssh-final/` 两完整模式各1564 pass / 4 fail：除3个Peer外，长TMP令SSH ControlPath达到111/112字节，现有`<104`断言失败。生产与测试同起始baseline byte一致，有界对照128/105字节失败、98字节通过。此为既有非Mods限制，未修改产品。长TMP批次独立259/261文件qualified、106脚本完成；同进程105个完成sentinel，native download无独立完成标记，不能借独立通过补写同进程全覆盖。
 - `C/automated-short-final/` 使用新独立短TMP后ControlPath与PTY通过，但同进程为1553 pass / 16 fail / 1 error，独立1553 pass / 15 fail、106脚本完成。15个Peer失败来自runner误删既有`/tmp/cc-peer-test-*`路径授权，fixture创建阶段即被拒；不是之前3个process-start断言的同一证据。同进程额外1 fail / 1 error为SSH readiness重现，不能由该轮独立或55文件前缀通过覆盖。
 - 首轮 Mods 22 文件全部 qualified，559 pass / 0 fail / 0 skip；这是261清单子集，不重复累加。
@@ -32,11 +32,27 @@
 - 历史 PTY `2 !== 130` 首轮独立、同进程及额外9项重放均未重现，不声称根因已修复。
 - 首轮父 LCOV：Mods 5079/5813（87.37%），19个已插桩源码文件；全部导入父源码60345/260451（23.17%）。不覆盖Worker/VM/child/compiled，不代表全仓或完整功能覆盖。
 
-### 首轮构建与待收口项
+### 构建、交互结果与推送阻塞
 
 `be36848` 上 `make release-check`、`make build` 均 exit 0，tracked 内容前后无变化。binary 为2.1.219，100102754 bytes，SHA-256 `781fa13125c9cb2da9153c38ae260a662424cb002c50e4605d3944bf8179115a`；证据 `C/build/artifact-lock.json`。后续SSH提交只改测试，未改变生产构建输入，见 `C/build/ssh-test-content-continuity.json`。
 
-当前等待新完整自动化和 runtime 独立审计。已完成的 diff 控件补验出现新失败：inline 方向键文件导航、fullscreen 文档快捷键和滚轮未达到预期；Enter、inline 详情滚动、两级 Escape 及 fullscreen 鼠标 row/边缘按钮有独立通过证据。原始失败和不合格尝试全部保留，不能用鼠标成功替代键盘失败；推送继续阻塞，不扩展本轮产品开发范围。最终 CHANGELOG 回填会改变实际内嵌内容，必须重新 build 和相关 smoke；不能将首轮hash写成最终制品身份。官方自然 Mods gate、平台覆盖、default权限、settings编译制品路径等均按实际证据单列，不以源码或旧binary通过替代。
+Workflow超时有界诊断已完成，未复现但根因未定；首轮runtime固定证据汇总已完成（`C/runtime/summary.json`）：含UI共50场、641 raw assertions；49个result场景27 passed / 17 failed / 5 not covered，UI另13条通过。12组矩阵6 passed / 3 failed / 2 not covered / 1 environment-blocked，整体failed。已记录资源50场回收，正常退出45/2/3分别计；身份final hash缺失与不匹配区分。文档后新制品限定smoke也已结束，结果见下表；没有仍待运行的本轮实验。已完成的 diff 控件补验出现新失败：inline 方向键文件导航、fullscreen 文档快捷键和滚轮未达到预期；Enter、inline 详情滚动、两级 Escape 及 fullscreen 鼠标 row/边缘按钮有独立通过证据。原始失败和不合格尝试全部保留，不能用鼠标成功替代键盘失败；推送继续阻塞，不扩展本轮产品开发范围。当前结果文档已签名提交`6968ad7`，其后重新`make build`通过：新binary仍为2.1.219、100102754 bytes，SHA-256 `3fa04adbb474f9bbebc95581a2c8fa829f4f42e4e27313bc9f6a81f8c7aa7e6b`。生成CLI除内嵌CHANGELOG外逐字节相同，Worker与native不变，证据`C/build-final/input-continuity.json`；新制品限定smoke写入`C/runtime-final-smoke/`，不能把首轮测试直接改标为新制品运行。官方自然 Mods gate、平台覆盖、default权限、settings编译制品路径等均按实际证据单列，不以源码或旧binary通过替代。
+
+### 最终新制品限定 smoke 与收尾
+
+使用上述`3fa04adb…`制品，`--version`、`--help`通过；真实scripted tmux的三个有效场景共30条限定断言通过，均正常`/exit`为0。证据`C/runtime-final-smoke/summary.json`，精确命令、session/pane、环境和captures在各场景目录。
+
+| 场景 | 结果 |
+| --- | --- |
+| `basic-a3` | 8条通过：无plugin连续两轮请求和响应，每轮一个主模型请求，prompt恢复 |
+| `inline-a2` | 13条通过：完整官方diff原件及运行副本775文件hash一致，真实Read/Edit各1次；快速Escape间隔269.48ms，详情→列表→关闭无Rewind，随后正常双Escape仅打开一次Rewind |
+| `context` | 9条通过：当前请求marker计数`0→1→0`，不重复注入 |
+
+三次harness失败不改标：sandbox地址语法错误、manifest路径错误各一次（均未启动CLI），另一次纯文本场景误用工具终态谓词，cleanup期间exit0不算正常退出。六次attempt资源回收均通过，见`C/runtime-final-smoke/cleanup-audit.json`。空Mods/no-plugin规范化请求对照仍not covered，因此限定smoke总体记录为not covered，不替代首轮完整矩阵failed；也未重验或修复已确认的方向键、fullscreen action/wheel及keyboard ask问题。
+
+smoke期间agent发现的两份报告内容漂移，是主线程并发更新`handoff.md`和`mods-test.md`；此处补充归因，保留agent原始“未归因”记录及全仓内容不变断言失败。binary和生产构建输入未变，CHANGELOG不再修改，只提交这两份不内嵌报告，无须因报告hash变化再次构建。
+
+**本轮实验已结束；整体验收仍failed，未推送。** 推送阻塞是已确认的diff交互缺陷和根因未定的Workflow timeout，不是后台任务仍在运行。两份既有cross-session草稿保持不动，不新增API或扩展UI开发，不创建tag/release/PR，不上传原件或raw日志。
 
 ---
 
