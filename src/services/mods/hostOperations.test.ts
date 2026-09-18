@@ -20,7 +20,12 @@ import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModHostOperations } from './hostOperations.js'
-import { getSettingsForSource } from '../../utils/settings/settings.js'
+import {
+  getPolicySettingsOrigin,
+  getSettingsForSource,
+  getSettingsWithErrors,
+} from '../../utils/settings/settings.js'
+import { getPlatform } from '../../utils/platform.js'
 import { acceptSettingsFile, releaseSettingsFile, resetSettingsCache, retainSettingsFile, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { clearMdmSettingsCache, setMdmSettingsCache } from '../../utils/settings/mdm/settings.js'
 import { getManagedFilePath, getManagedSettingsDropInDir } from '../../utils/settings/managedPath.js'
@@ -255,6 +260,113 @@ describe('settings.read', () => {
       expect(policy.env).toEqual(expectedEnv)
     })
   }
+
+  test('rejects invalid remote disk settings and consistently falls back across managed tiers', async () => {
+    const config = process.env.CLAUDE_CONFIG_DIR!
+    const managed = join(root, 'managed')
+    await mkdir(config, { recursive: true })
+    await mkdir(managed, { recursive: true })
+    await writeFile(
+      join(config, 'remote-settings.json'),
+      JSON.stringify({ model: 42 }),
+    )
+    await writeFile(
+      join(managed, 'managed-settings.json'),
+      JSON.stringify({ model: 'file-model' }),
+    )
+    setEligibility(true)
+
+    for (const fallback of [
+      {
+        label: 'mdm',
+        mdm: { model: 'mdm-model' },
+        file: { model: 'file-model' },
+        hkcu: { model: 'hkcu-model' },
+        model: 'mdm-model',
+        origin: getPlatform() === 'macos' ? 'plist' : 'hklm',
+      },
+      {
+        label: 'file',
+        mdm: {},
+        file: { model: 'file-model' },
+        hkcu: { model: 'hkcu-model' },
+        model: 'file-model',
+        origin: 'file',
+      },
+      {
+        label: 'hkcu',
+        mdm: {},
+        file: {},
+        hkcu: { model: 'hkcu-model' },
+        model: 'hkcu-model',
+        origin: 'hkcu',
+      },
+    ] as const) {
+      await writeFile(
+        join(managed, 'managed-settings.json'),
+        JSON.stringify(fallback.file),
+      )
+      setMdmSettingsCache(
+        { settings: fallback.mdm, errors: [] },
+        { settings: fallback.hkcu, errors: [] },
+      )
+      resetSyncCache()
+      setEligibility(true)
+      resetSettingsCache()
+
+      expect(
+        await host.settings.read({ source: 'policy' }),
+        fallback.label,
+      ).toEqual({ model: fallback.model })
+      expect(getPolicySettingsOrigin(), fallback.label).toBe(fallback.origin)
+      const merged = getSettingsWithErrors()
+      expect(merged.settings.model, fallback.label).toBe(fallback.model)
+      expect(
+        merged.errors.some(
+          (error) =>
+            error.file === 'remote managed settings' &&
+            error.path === 'model',
+        ),
+        fallback.label,
+      ).toBe(true)
+    }
+
+    await writeFile(
+      join(config, 'remote-settings.json'),
+      JSON.stringify({
+        managedSourcesBehavior: 'merge',
+        model: 'remote-model',
+        env: { REMOTE: '1' },
+      }),
+    )
+    await writeFile(
+      join(managed, 'managed-settings.json'),
+      JSON.stringify({ env: { FILE: '1' } }),
+    )
+    setMdmSettingsCache(
+      { settings: { env: { MDM: '1' } }, errors: [] },
+      { settings: { env: { HKCU: '1' } }, errors: [] },
+    )
+    resetSyncCache()
+    setEligibility(true)
+    resetSettingsCache()
+
+    expect(await host.settings.read({ source: 'policy' })).toEqual({
+      model: 'remote-model',
+      env: { HKCU: '1', FILE: '1', MDM: '1', REMOTE: '1' },
+    })
+    expect(getPolicySettingsOrigin()).toBe('remote')
+    const recovered = getSettingsWithErrors()
+    expect(recovered.settings).toMatchObject({
+      model: 'remote-model',
+      env: { HKCU: '1', FILE: '1', MDM: '1', REMOTE: '1' },
+    })
+    expect(
+      recovered.errors.some(
+        (error) => error.file === 'remote managed settings',
+      ),
+    ).toBe(false)
+  })
 
   test('keeps lower managed tiers shadowed when merge is not enabled', async () => {
     setEligibility(true)

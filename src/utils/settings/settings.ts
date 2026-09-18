@@ -338,8 +338,26 @@ function hasSettings(settings: SettingsJson | null): settings is SettingsJson {
     Object.keys(settings).some(key => key !== 'managedSourcesBehavior')
 }
 
-function loadPolicySettings(): SettingsJson | null {
+function getValidatedRemotePolicySettings(): {
+  settings: SettingsJson | null
+  errors: ValidationError[]
+} {
   const remoteSettings = getRemoteManagedSettingsSyncFromCache()
+  if (remoteSettings === null) return { settings: null, errors: [] }
+
+  const result = SettingsSchema().safeParse(remoteSettings)
+  if (!result.success) {
+    return {
+      settings: null,
+      errors: formatZodError(result.error, 'remote managed settings'),
+    }
+  }
+  return { settings: result.data, errors: [] }
+}
+
+function loadPolicySettings(
+  remoteSettings = getValidatedRemotePolicySettings().settings,
+): SettingsJson | null {
   const mdmSettings = getMdmSettings().settings
   const fileSettings = loadManagedFileSettings().settings
   const hkcuSettings = getHkcuSettings().settings
@@ -400,7 +418,7 @@ export function getPolicySettingsOrigin():
   | 'hkcu'
   | null {
   // 1. Remote (highest)
-  const remoteSettings = getRemoteManagedSettingsSyncFromCache()
+  const remoteSettings = getValidatedRemotePolicySettings().settings
   if (remoteSettings && Object.keys(remoteSettings).length > 0) {
     return 'remote'
   }
@@ -690,22 +708,14 @@ function loadSettingsFromDisk(): SettingsWithErrors {
     // Merge settings from each source in priority order with deep merging
     for (const source of getEnabledSettingSources()) {
       if (source === 'policySettings') {
-        const remoteSettings = getRemoteManagedSettingsSyncFromCache()
-        const policyErrors: ValidationError[] = []
-        if (remoteSettings && Object.keys(remoteSettings).length > 0) {
-          const result = SettingsSchema().safeParse(remoteSettings)
-          if (!result.success) {
-            policyErrors.push(
-              ...formatZodError(result.error, 'remote managed settings'),
-            )
-          }
-        }
-        policyErrors.push(
+        const remotePolicy = getValidatedRemotePolicySettings()
+        const policyErrors: ValidationError[] = [
+          ...remotePolicy.errors,
           ...getMdmSettings().errors,
           ...loadManagedFileSettings().errors,
           ...getHkcuSettings().errors,
-        )
-        const policySettings = loadPolicySettings()
+        ]
+        const policySettings = loadPolicySettings(remotePolicy.settings)
         if (policySettings) {
           mergedSettings = mergeWith(
             mergedSettings,
