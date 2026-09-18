@@ -312,6 +312,7 @@ chalk.level = previousColorLevel
 const { default: PromptInput } = await import('../PromptInput/PromptInput.js')
 const onShowMessageSelector = mock(() => {})
 let promptInputValue = ''
+let setLocalJSXCommandActive: (active: boolean) => void
 function PromptHarness() {
   liveState = useAppState(s => s)
   updateState = useSetAppState()
@@ -319,6 +320,8 @@ function PromptHarness() {
   const [input, setInput] = React.useState('')
   promptInputValue = input
   const [helpOpen, setHelpOpen] = React.useState(false)
+  const [isLocalJSXCommandActive, setIsLocalJSXCommandActive] = React.useState(false)
+  setLocalJSXCommandActive = setIsLocalJSXCommandActive
   return React.createElement(PromptInput, {
     debug: false, ideSelection: undefined,
     toolPermissionContext: liveState.toolPermissionContext,
@@ -334,6 +337,7 @@ function PromptHarness() {
     getToolUseContext: () => { throw new Error('Unexpected tool execution') },
     onSubmit: async () => { throw new Error('Unexpected prompt submission') },
     isSearchingHistory: false, setIsSearchingHistory: () => {}, helpOpen, setHelpOpen,
+    isLocalJSXCommandActive,
   })
 }
 test('PromptInput footer keeps completed teammate pills through Escape and grace-period reopening', async () => {
@@ -406,6 +410,19 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate Escape must not arm the first main Escape')
     await pressPromptKey('\x1b')
     assert.equal(onShowMessageSelector.mock.calls.length, 1, 'normal main double Escape still opens Rewind')
+
+    onShowMessageSelector.mockClear()
+    setLocalJSXCommandActive!(true)
+    await flush()
+    await pressPromptKey('\x1b')
+    await pressPromptKey('\x1b')
+    assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not open Rewind')
+    setLocalJSXCommandActive!(false)
+    await flush()
+    await pressPromptKey('\x1b')
+    assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not arm the first composer Escape')
+    await pressPromptKey('\x1b')
+    assert.equal(onShowMessageSelector.mock.calls.length, 1, 'second composer-owned Escape opens Rewind once')
 
     await pressPromptKey('\x1b[1;2B')
     await pressPromptKey('\x1b[1;2B')

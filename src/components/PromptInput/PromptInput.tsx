@@ -2631,10 +2631,11 @@ function PromptInput({
   )
 
   useInput((char, key) => {
-    // Skip all input handling when a full-screen dialog is open. These dialogs
-    // render via early return, but hooks run unconditionally — so without this
-    // guard, Escape inside a dialog leaks to the double-press message-selector.
+    // Skip legacy input handling while an overlay owns the keyboard. Keep the
+    // explicit dialog guards because these early-return dialogs do not all
+    // register with the overlay system.
     if (
+      isModalOverlayActive ||
       showTeamsDialog ||
       showQuickOpen ||
       showGlobalSearch ||
