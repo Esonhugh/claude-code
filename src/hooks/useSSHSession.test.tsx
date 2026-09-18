@@ -20,6 +20,7 @@ import type { Message } from '../types/message.js'
 process.env.NODE_ENV = 'test'
 
 const { render } = await import('../ink.js')
+const instances = (await import('../ink/instances.js')).default
 
 mock.module('../utils/gracefulShutdown.js', () => ({
   gracefulShutdown: async () => {},
@@ -198,11 +199,17 @@ class TestStdout extends Writable {
   }
 }
 
+const stdout = new TestStdout() as unknown as NodeJS.WriteStream
 const instance = await render(React.createElement(Harness), {
-  stdout: new TestStdout() as unknown as NodeJS.WriteStream,
+  stdout,
   patchConsole: false,
 })
+const flushUpdates = () => {
+  instances.get(stdout)?.pause()
+  instances.get(stdout)?.resume()
+}
 await new Promise(resolve => setImmediate(resolve))
+flushUpdates()
 
 assert.ok(snapshot)
 assert.equal(snapshot.isReady, false)
@@ -235,6 +242,7 @@ callbacks?.onBootstrap?.({
   ],
 })
 await new Promise(resolve => setImmediate(resolve))
+flushUpdates()
 
 assert.ok(snapshot)
 assert.equal(snapshot.isReady, true)
