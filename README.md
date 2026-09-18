@@ -88,6 +88,7 @@ bun ./dist/cli.js --help
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
+| Mods / Function Hooks | 可信插件可通过 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令和 terminal Pane；提供 scoped host capabilities、热重载、在途 generation 保留、取消与卸载。支持范围与官方运行时兼容性边界见下方 Mods 章节。 |
 | 调试与构建 | 提供 Bun 构建、binary-only npm 发布、source map/Ink/代理调试、CCH attestation、官方 CLI 对照和 tmux/PTY 验收资料；平台 binary 会内嵌并在运行时提取 ripgrep，避免依赖系统安装。 |
 
 ## 配置与使用示例
@@ -566,6 +567,42 @@ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 - `/workflows`：查看 Dynamic Workflow runs，不直接启动 workflow。
 - `/list-agents`（别名 `/peers`）：列出当前 messaging registry 中其他可发现的本地 Claude session。
 
+### Mods / Function Hooks
+
+Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针对当前源码构建，不代表已发布的 `@esonhugh/claude-code` launcher 已包含这些能力。
+
+最小目录为 `.claude-plugin/plugin.json`、`hooks/hooks.json` 和 `hooks/register.ts`。Manifest 使用普通 Plugin 的 `name`、`version`、`description`；在 `hooks/hooks.json` 声明入口（路径相对此文件）：
+
+```json
+{
+  "modules": ["./register.ts"]
+}
+```
+
+`register.ts` 导出 `register` 函数，可使用 `import type { Register } from 'claude-code'` 配合目标官方类型。模块支持受限的静态相对导入；为了可移植性使用单入口，不假设支持动态导入、任意 npm/native 模块或 Node 全局对象。完整布局和示例见[研究报告](docs/research/claude-mods.md#73-最小示例)。
+
+从源码构建后加载可信插件：
+
+```bash
+./built-claude --plugin-dir /absolute/path/to/my-mod
+```
+
+会话内可显式刷新或启停（`my-mod` 为 manifest 名称）：
+
+```text
+/reload-plugins
+/plugin disable my-mod
+/plugin enable my-mod
+```
+
+- 生命周期：扫描并固定模块快照 → register → `engine.create` → 准入 → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
+- 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除或拒绝准入撤下旧能力。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
+- 当前接线：tool/prompt/turn middleware、动态 slash commands、会话与 accepted settings 读取、fs、argv process、JSON store，以及 inline/fullscreen terminal Pane。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
+- 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
+- 兼容性边界：不宣称实现全部官方 API、模型流、远端 surface 或作者测试工具链；本地尚未完整提供 `/plugin-types`、`claude plugin test`。官方源码在本地通过不等于官方 binary 的动态 parity，官方 rollout gate 关闭时记为未覆盖。
+
+测试方案、实际结果和未覆盖项见根目录 [`mods-test.md`](mods-test.md)；生命周期与契约依据见 [`docs/research/claude-mods.md`](docs/research/claude-mods.md)。
+
 ### Cron 与 durable task
 
 Cron tools 使用本地时区的标准 5-field cron。默认任务只在当前 session 中存在；`durable: true` 时保存到 `.claude/scheduled_tasks.json`。
@@ -630,6 +667,8 @@ make build
 
 - [`docs/design/ssh-local-ui-coherence.md`](docs/design/ssh-local-ui-coherence.md) — SSH transcript、远端补全、settings/Auth 边界与交互一致性设计。
 - [`docs/research/prompt-context-optimization.md`](docs/research/prompt-context-optimization.md) — Prompt context 构成、精简结果、测量方法与剩余风险。
+- [`docs/research/claude-mods.md`](docs/research/claude-mods.md) — Mods 契约、生命周期、官方证据与本地兼容性边界。
+- [`mods-test.md`](mods-test.md) — Mods 收口测试方案、验收结果与证据索引。
 - [`docs/design/workflow-runtime-parity.md`](docs/design/workflow-runtime-parity.md) — Workflow runtime parity 的行为和证据边界。
 - [`docs/workflows/`](docs/workflows/) — Workflow 示例、兼容性材料和测试 fixture。
 - [`docs/research/`](docs/research/) — 二进制分析、CCH、Workflow 和 Codex 对比研究。

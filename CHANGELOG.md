@@ -12,6 +12,42 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-18 - Mods 生命周期、宿主能力与兼容性收口
+
+### 版本状态
+
+- 未发布；记录 Mods 实现系列及本轮 settings/Escape 修复，不代表公开包已包含这些变更，不创建 tag 或 release。
+- `Makefile VERSION` 保持 `2.1.219`，`package.json` 保持 `0.0.0-dev`；测试计划和最终验收记录位于根目录 `mods-test.md`。
+- 本地源码支持范围、官方完整类型通过、本地运行官方插件原件与官方 binary runtime parity 分别判定，不宣称全官方 API、全部平台或 full-covered。
+
+### 关联提交
+
+- `fb7b441`、`54695c3`、`1476236` — Mods 基础生命周期、tool middleware、inline 启停与研究记录。
+- `3dd5536`、`2899097`、`96e68bf` — accepted settings 内容身份、managed source merge 与 hook provenance。
+- `83f72ac`、`9a1f602`、`e859a75`、`ad9af61`、`24e416c`、`9f64669` — loader/Worker 契约、fs/process/store、scoped classic hooks、命令、Pane 与宿主准入。
+- `eb2c146`、`d48c698`、`164e811` — managed 工具审核与 prompt/turn/command 接线、初始化期间的草稿所有权。
+- `462c676`、`1f09ebb`、`bc34711` — queued admission/public turn 生命周期、Pane resize 焦点与 mode-only managed precedence。
+- `446eb28`、`d421338`、`19638f5`、`6c7b0e0`、`a46ed1a` — provenance、SSH/Workflow 回归与历史兼容性证据。
+- `c006eeb`、`8de982f`、`0da3f73` — 本轮 hooks snapshot 审核边界、非法 remote managed 磁盘缓存回退和 Pane Escape 所有权修复。
+
+### 变更内容
+
+- 可信 Plugin 可声明 Function Hooks modules；采用固定源码快照、共享 Worker 和独立 activation VM，按 register、engine.create、准入、session.start barrier 发布能力。
+- 增加作用域能力与 lazy continuation，保留在途 generation；技术 reload 失败保旧，refuse/disable/remove 撤旧，取消和 Worker 失效不重放宿主副作用。
+- 接入 tool/prompt/turn middleware、activation-owned commands、terminal Pane、session/settings、fs/process 和 JSON store；普通模型工具继续经过 managed hooks、schema 与权限主管线。
+- 排队输入保存已完成的 admission，drain 不重复运行 prompt hooks；public turn 身份与初始化输入消费、新草稿恢复分离，避免队列或 barrier 导致重复注入和草稿覆盖。
+- Pane resize 保留已有焦点，禁用释放 command/UI 所有权；本轮阻止 overlay 持有键盘时 composer 记录 Escape，避免快速关闭 Pane 误开 Rewind。
+- 本轮移除 hooks snapshot 更新中的隐式磁盘 cache reset，使外部 settings 候选不能绕过 ConfigChange；可信启动/worktree cwd 转换显式刷新缓存。
+- 本轮在 settings 边界验证 remote managed 磁盘缓存；非法 remote 层保留诊断但不参与 precedence/merge，合法 MDM、file、HKCU 层可接替，不把 schema 重依赖引回 leaf cache。
+- README 增加 Mods 加载、启停、生命周期和可信代码边界；研究报告标清历史首批范围，根目录 `mods-test.md` 记录完整测试方案及后续结果。
+
+### 测试覆盖
+
+- 本轮要求三个问题各有最小红→绿回归；随后在提交后的冻结源码上执行 tracked 测试清单的逐文件独立进程与同进程两轮、`make release-check`、新 `make build` 和 scripted tmux 验收。此初稿不将计划当作通过结果。
+- 历史严格复测仍保留：逐文件 1562 pass / 3 Peer 环境失败，同进程 1561 pass / 4 fail（多一项未定位 PTY 退出码异常）；Mods 558 pass / 0 fail。这些不是本轮新制品结果，失败不能由其他运行的通过覆盖。
+- 官方 2.1.272 自然 Mods gate 曾关闭，官方运行时 parity 未覆盖；Worker/VM/child/compiled 路径不能由父进程 LCOV 推断完整性。默认权限 ask、官方 diff 原件、settings watcher 与 Escape 所有权必须另取真实新制品证据。
+- 已完成的真实 `@esonhugh/claude-code@2.1.219` 上下文对比：默认首轮内容 81984→74771 bytes，减少 8.80%，主要来自工具集合/描述差异；统一 Read-only 后六次规范化请求相同。不是功能等价优化、真实 tokenizer/计费测量或新构建的结果。
+
 ## 2026-09-15 - 独立会话通信、Plan 模式开关与运行时兼容性
 
 ### 版本状态

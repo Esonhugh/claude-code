@@ -767,6 +767,8 @@ tPs -> function-hooks tool.call
 
 ### 14.3 首批接口及明确限制
 
+**历史范围说明**：本小节记录首批切片，不是当前支持清单；后续已接入的能力见 [15.2](#152-本轮宿主能力与取消)，最新验收与剩余限制见根目录 [`mods-test.md`](../../mods-test.md) 和 [`handoff.md`](../../handoff.md)。下文旧结果不回写为新制品通过。
+
 已实现基础层：
 
 - `hooks/hooks.json` 的 modules-only、hooks-only、共存和入口描述传递。
