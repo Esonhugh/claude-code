@@ -7,8 +7,9 @@ import {
   createReadStream,
   createWriteStream,
   rmSync,
+  rmdirSync,
 } from 'node:fs'
-import { chmod, mkdir, mkdtemp, open, rename, rm, stat } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, rename, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -347,19 +348,49 @@ function defaultScriptArgs(): string[] {
   return [process.argv[1]]
 }
 
+async function createSocketDirectory(): Promise<{
+  path: string
+  cleanup: () => void
+}> {
+  const id = randomBytes(12).toString('hex')
+  const root = tmpdir()
+  const prefix = join(root, `cc-ssh-${id}-`)
+  // OpenSSH binds ControlPath + '.' + 16 random characters before renaming it.
+  const fits = Buffer.byteLength(join(`${prefix}XXXXXX`, 's.abcdefghijklmnop')) < 104
+  const path = await mkdtemp(
+    fits ? prefix : join('/tmp', `cc-ssh-${process.pid}-${id}-`),
+  )
+  return {
+    path,
+    cleanup: () => {
+      try {
+        // A successful stop request does not prove the master released its socket.
+        rmdirSync(path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+        logForDebugging(
+          `[SSH] socket directory cleanup deferred path=${path} detail=${error instanceof Error ? error.message : String(error)}`,
+          { level: 'error' },
+        )
+        throw error
+      }
+    },
+  }
+}
+
 async function defaultProxy(): Promise<SSHAuthProxy> {
-  const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-proxy-'))
+  const directory = await createSocketDirectory()
   try {
-    const proxy = await startSSHAuthProxy({ socketPath: join(dir, 'api.sock') })
+    const proxy = await startSSHAuthProxy({ socketPath: join(directory.path, 's') })
     return {
       ...proxy,
       stop: () => {
         proxy.stop()
-        void rm(dir, { recursive: true, force: true })
+        directory.cleanup()
       },
     }
   } catch (error) {
-    await rm(dir, { recursive: true, force: true })
+    directory.cleanup()
     throw error
   }
 }
@@ -379,8 +410,18 @@ function createSession(
     stderrLines.push(...parts)
     while (stderrLines.length > 20) stderrLines.shift()
   })
-  proc.once('error', () => proxy.stop())
-  proc.once('close', () => proxy.stop())
+  const stopProxy = () => {
+    try {
+      proxy.stop()
+    } catch (error) {
+      logForDebugging(
+        `[SSH] proxy cleanup failed target=${target} detail=${error instanceof Error ? error.message : String(error)}`,
+        { level: 'error' },
+      )
+    }
+  }
+  proc.once('error', stopProxy)
+  proc.once('close', stopProxy)
 
   return {
     proc,
@@ -888,14 +929,27 @@ export async function createSSHSession(
   deps: RemoteSSHSessionDeps = {},
 ): Promise<SSHSession> {
   const resolvedConnection = resolveSSHConnection(options.host)
+  const controlDirectory = await createSocketDirectory()
   const connection = {
     ...resolvedConnection,
-    controlPath: join(tmpdir(), `cc-ssh-${randomBytes(12).toString('hex')}`),
+    controlPath: join(controlDirectory.path, 's'),
   }
   logForDebugging(
     `[SSH] session start host=${connection.host} requestedCwd=${options.cwd ?? connection.startDirectory ?? '~'} multiplexed=true`,
   )
-  const stopControlMaster = deps.stopControlMaster ?? stopSSHControlMaster
+  let unregisterCleanup = () => {}
+  let cleanedUp = false
+  const stopControlMaster = async (connection: SSHConnection) => {
+    await (deps.stopControlMaster ?? stopSSHControlMaster)(connection)
+    controlDirectory.cleanup()
+  }
+  let cleanup = async () => {
+    if (cleanedUp) return
+    await stopControlMaster(connection)
+    cleanedUp = true
+    unregisterCleanup()
+  }
+  unregisterCleanup = (deps.registerCleanup ?? registerCleanup)(() => cleanup())
   let probe: RemoteProbe
   let remoteBinaryPath: string
   let proxy: SSHAuthProxy
@@ -916,7 +970,7 @@ export async function createSSHSession(
       `[SSH] session start failed host=${connection.host} detail=${error instanceof Error ? error.message : String(error)}`,
       { level: 'error' },
     )
-    await stopControlMaster(connection)
+    await cleanup()
     throw error
   }
 
@@ -924,23 +978,37 @@ export async function createSSHSession(
     deps.createRemoteSocketDir?.() ?? `/tmp/claude-ssh-${randomUUID()}`
   const remoteSocketPath = `${remoteSocketDir}/${REMOTE_SOCKET_NAME}`
   const sshRemoteToken = randomBytes(32).toString('hex')
-  const remoteCommand = `set -eu; trap ${quote([`rm -rf -- ${remoteSocketDir}`])} EXIT HUP INT TERM; ${buildRemoteLaunchCommand({
-    remoteBinaryPath,
-    remoteSocketPath,
-    sshRemoteToken,
-    cwd: probe.cwd,
-    permissionMode: options.permissionMode,
-    dangerouslySkipPermissions: options.dangerouslySkipPermissions,
-    allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions,
-    extraCliArgs: options.extraCliArgs,
-    model: options.model,
-    provider: proxy.provider,
-    oauth: proxy.authKind === 'oauth',
-  })}`
   const cleanupRemoteSocketDirectory =
     deps.removeRemoteSocketDirectory ?? removeRemoteSocketDirectory
+  cleanup = async () => {
+    if (cleanedUp) return
+    try {
+      proxy.stop()
+    } finally {
+      try {
+        await cleanupRemoteSocketDirectory(connection, remoteSocketDir)
+      } finally {
+        await stopControlMaster(connection)
+      }
+    }
+    cleanedUp = true
+    unregisterCleanup()
+  }
 
   try {
+    const remoteCommand = `set -eu; trap ${quote([`rm -rf -- ${remoteSocketDir}`])} EXIT HUP INT TERM; ${buildRemoteLaunchCommand({
+      remoteBinaryPath,
+      remoteSocketPath,
+      sshRemoteToken,
+      cwd: probe.cwd,
+      permissionMode: options.permissionMode,
+      dangerouslySkipPermissions: options.dangerouslySkipPermissions,
+      allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions,
+      extraCliArgs: options.extraCliArgs,
+      model: options.model,
+      provider: proxy.provider,
+      oauth: proxy.authKind === 'oauth',
+    })}`
     logForDebugging(
       `[SSH] socket directory prepare start host=${connection.host} path=${remoteSocketDir}`,
     )
@@ -971,8 +1039,7 @@ export async function createSSHSession(
       },
     )
     let cleanupPromise: Promise<void> | undefined
-    let unregisterCleanup = () => {}
-    const cleanup = () => {
+    cleanup = () => {
       cleanupPromise ??= (async () => {
         if (proc.exitCode === null && proc.signalCode === null) {
           proc.kill('SIGTERM')
@@ -983,29 +1050,34 @@ export async function createSSHSession(
           try {
             proxy.stop()
           } finally {
-            try {
-              await stopControlMaster(connection)
-            } finally {
-              unregisterCleanup()
-            }
+            await stopControlMaster(connection)
           }
         }
-      })()
+        unregisterCleanup()
+      })().catch(error => {
+        cleanupPromise = undefined
+        logForDebugging(
+          `[SSH] session cleanup failed host=${connection.host} detail=${error instanceof Error ? error.message : String(error)}`,
+          { level: 'error' },
+        )
+        throw error
+      })
       return cleanupPromise
     }
-    unregisterCleanup = (deps.registerCleanup ?? registerCleanup)(cleanup)
     proc.once('close', code => {
       logForDebugging(
         `[SSH] remote child closed host=${connection.host} code=${code ?? 'null'}`,
       )
-      void cleanup()
+      // The cleanup logs failures and stays registered while its socket is live.
+      void cleanup().catch(() => {})
     })
     proc.once('error', error => {
       logForDebugging(
         `[SSH] remote child error host=${connection.host} detail=${error.message}`,
         { level: 'error' },
       )
-      void cleanup()
+      // The cleanup logs failures and stays registered while its socket is live.
+      void cleanup().catch(() => {})
     })
     logForDebugging(`[SSH] session ready host=${connection.host} cwd=${probe.cwd}`)
     return createSession(
@@ -1020,15 +1092,7 @@ export async function createSSHSession(
       `[SSH] session start failed host=${connection.host} detail=${error instanceof Error ? error.message : String(error)}`,
       { level: 'error' },
     )
-    try {
-      proxy.stop()
-    } finally {
-      try {
-        await cleanupRemoteSocketDirectory(connection, remoteSocketDir)
-      } finally {
-        await stopControlMaster(connection)
-      }
-    }
+    await cleanup()
     throw new SSHSessionError(`Failed to start SSH session to ${connection.host}`, {
       cause: error,
     })

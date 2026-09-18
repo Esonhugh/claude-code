@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { createConnection, createServer, type Server } from 'node:net'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it } from 'bun:test'
 import {
@@ -29,6 +33,64 @@ function createFakeProcess(): FakeProcess {
   proc.signalCode = null
   proc.kill = () => true
   return proc
+}
+
+async function withTempRoot(
+  kind: 'short' | 'long' | 'multibyte',
+  run: (root: string) => Promise<void>,
+): Promise<void> {
+  const parent = await mkdtemp(join('/tmp', `cc-ssh-test-${process.pid}-`))
+  const root = kind === 'short'
+    ? parent
+    : join(parent, kind === 'long' ? 'x'.repeat(100) : '界'.repeat(10))
+  const previous = process.env.TMPDIR
+  const previousKey = process.env.ANTHROPIC_API_KEY
+  try {
+    await mkdir(root, { recursive: true })
+    process.env.ANTHROPIC_API_KEY = 'isolated-socket-test-not-a-credential'
+    process.env.TMPDIR = root
+    assert.equal(tmpdir(), root)
+    if (kind === 'multibyte') {
+      const candidate = join(root, `cc-ssh-${'a'.repeat(24)}-XXXXXX`, 's.abcdefghijklmnop')
+      assert.ok(candidate.length < 104)
+      assert.ok(Buffer.byteLength(candidate) >= 104)
+    }
+    await run(root)
+  } finally {
+    if (previous === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = previous
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = previousKey
+    await rm(parent, { recursive: true, force: true })
+  }
+}
+
+async function listenUnix(server: Server, path: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(path, () => {
+      server.off('error', reject)
+      resolve()
+    })
+  })
+}
+
+async function connectUnix(path: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = createConnection(path)
+    socket.once('error', reject)
+    socket.once('connect', () => {
+      socket.end()
+    })
+    socket.once('close', hadError => { if (!hadError) resolve() })
+  })
+}
+
+async function closeUnix(server: Server): Promise<void> {
+  if (!server.listening) return
+  await new Promise<void>((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve())
+  })
 }
 
 describe('SSH connection config', () => {
@@ -170,6 +232,113 @@ describe('remote launch command', () => {
 })
 
 describe('local SSH session', () => {
+  for (const kind of ['short', 'long', 'multibyte'] as const) {
+    it(`binds the default proxy under ${kind} TMP and releases its directory`, async () => {
+      await withTempRoot(kind, async root => {
+        const proc = createFakeProcess()
+        let session: Awaited<ReturnType<typeof createLocalSSHSession>> | undefined
+        try {
+          session = await createLocalSSHSession(
+            { cwd: root },
+            { spawnProcess: () => proc as never, execPath: '/unused/claude' },
+          )
+          const path = session.proxy.socketPath
+          assert.ok(Buffer.byteLength(path) < 104)
+          assert.equal(path.startsWith(`${root}/`), kind === 'short')
+          assert.equal((await stat(dirname(path))).mode & 0o777, 0o700)
+          await connectUnix(path)
+          session.proxy.stop()
+          session.proxy.stop()
+          proc.emit('error', new Error('fixture child error'))
+          proc.emit('close', 1)
+          await new Promise(resolve => setImmediate(resolve))
+          assert.equal(existsSync(dirname(path)), false)
+        } finally {
+          session?.proxy.stop()
+        }
+      })
+    })
+  }
+
+  it('releases the default proxy directory when local spawn fails', async () => {
+    await withTempRoot('long', async root => {
+      let path = ''
+      await assert.rejects(createLocalSSHSession(
+        { cwd: root },
+        {
+          spawnProcess: (_command, _args, options) => {
+            path = options.env.ANTHROPIC_UNIX_SOCKET!
+            throw new Error('fixture spawn failed')
+          },
+        },
+      ), /Failed to start local SSH/)
+      assert.equal(existsSync(dirname(path)), false)
+    })
+  })
+
+  it('releases the default proxy directory when proxy initialization fails', async () => {
+    await withTempRoot('short', async root => {
+      const previous = process.env.ANTHROPIC_CUSTOM_HEADERS
+      process.env.ANTHROPIC_CUSTOM_HEADERS = 'host: invalid.test'
+      try {
+        await assert.rejects(createLocalSSHSession(
+          { cwd: root },
+          { spawnProcess: () => { throw new Error('must not spawn') } },
+        ), /Invalid ANTHROPIC_CUSTOM_HEADERS/)
+        assert.deepEqual(await readdir(root), [])
+      } finally {
+        if (previous === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS
+        else process.env.ANTHROPIC_CUSTOM_HEADERS = previous
+      }
+    })
+  })
+
+  it('reports proxy directory cleanup errors without deleting contents and permits retry', async () => {
+    await withTempRoot('long', async root => {
+      const session = await createLocalSSHSession(
+        { cwd: root },
+        { spawnProcess: () => createFakeProcess() as never },
+      )
+      const directory = dirname(session.proxy.socketPath)
+      const marker = join(directory, 'pending')
+      try {
+        await writeFile(marker, 'fixture pending resource')
+        assert.throws(() => session.proxy.stop(), { code: 'ENOTEMPTY' })
+        assert.equal(existsSync(marker), true)
+      } finally {
+        await rm(marker, { force: true })
+        session.proxy.stop()
+      }
+      assert.equal(existsSync(directory), false)
+    })
+  })
+
+  for (const event of ['close', 'error'] as const) {
+    it(`does not throw cleanup errors from child ${event} and permits retry`, async () => {
+      await withTempRoot('long', async root => {
+        const proc = createFakeProcess()
+        const session = await createLocalSSHSession(
+          { cwd: root },
+          { spawnProcess: () => proc as never },
+        )
+        const directory = dirname(session.proxy.socketPath)
+        const marker = join(directory, 'pending')
+        try {
+          await writeFile(marker, 'fixture pending resource')
+          assert.doesNotThrow(() => {
+            proc.emit(event, event === 'error' ? new Error('fixture child error') : 0)
+          })
+          assert.equal(existsSync(marker), true)
+          assert.equal(existsSync(session.proxy.socketPath), false)
+        } finally {
+          await rm(marker, { force: true })
+          session.proxy.stop()
+        }
+        assert.equal(existsSync(directory), false)
+      })
+    })
+  }
+
   it('forwards the resolved model and extracted root flags to the local child', async () => {
     const proc = createFakeProcess()
     let spawnArgs: string[] = []
@@ -325,6 +494,299 @@ describe('remote SSH session', () => {
     provider: 'anthropic' as const,
     authKind: 'oauth' as const,
     stop,
+  })
+
+  for (const kind of ['short', 'long', 'multibyte'] as const) {
+    it(`binds a real control socket with OpenSSH suffix under ${kind} TMP`, async () => {
+      await withTempRoot(kind, async root => {
+        const server = createServer(socket => socket.end())
+        let controlPath = ''
+        let cleanup: (() => Promise<void>) | undefined
+        try {
+          await createSSHSession(
+            { host: 'host.example', localVersion: '1.2.3' },
+            {},
+            {
+              probeRemote: async connection => {
+                controlPath = connection.controlPath!
+                await listenUnix(server, `${controlPath}.abcdefghijklmnop`)
+                assert.ok(Buffer.byteLength(`${controlPath}.abcdefghijklmnop`) < 104)
+                assert.equal(controlPath.startsWith(`${root}/`), kind === 'short')
+                await connectUnix(`${controlPath}.abcdefghijklmnop`)
+                assert.equal((await stat(dirname(controlPath))).mode & 0o777, 0o700)
+                return probe
+              },
+              ensureRemoteBinary: async () => '/remote/claude',
+              startProxy: async () => proxy(),
+              prepareRemoteSocketDirectory: async () => {},
+              removeRemoteSocketDirectory: async () => {},
+              spawnProcess: () => createFakeProcess() as never,
+              stopControlMaster: async () => { await closeUnix(server) },
+              registerCleanup: callback => {
+                cleanup = callback
+                return () => {}
+              },
+            },
+          )
+          await cleanup!()
+          assert.equal(existsSync(dirname(controlPath)), false)
+        } finally {
+          await closeUnix(server)
+          await cleanup?.()
+        }
+      })
+    })
+  }
+
+  it('allocates distinct control and default proxy directories for concurrent sessions', async () => {
+    await withTempRoot('long', async () => {
+      const paths: string[] = []
+      const cleanups: Array<() => Promise<void>> = []
+      const sessions = await Promise.all([0, 1].map(() => createSSHSession(
+        { host: 'host.example', localVersion: '1.2.3' },
+        {},
+        {
+          probeRemote: async connection => {
+            paths.push(connection.controlPath!)
+            return probe
+          },
+          ensureRemoteBinary: async () => '/remote/claude',
+          prepareRemoteSocketDirectory: async () => {},
+          removeRemoteSocketDirectory: async () => {},
+          spawnProcess: () => createFakeProcess() as never,
+          stopControlMaster: async () => {},
+          registerCleanup: callback => {
+            cleanups.push(callback)
+            return () => {}
+          },
+        },
+      )))
+      try {
+        paths.push(...sessions.map(session => session.proxy.socketPath))
+        assert.equal(new Set(paths.map(dirname)).size, 4)
+        for (const path of paths) {
+          assert.match(path, /cc-ssh-(?:[0-9]+-)?[0-9a-f]{24}-[A-Za-z0-9]{6}\/s$/)
+          assert.ok(Buffer.byteLength(`${path}.abcdefghijklmnop`) < 104)
+        }
+        await Promise.all(sessions.map(session => connectUnix(session.proxy.socketPath)))
+      } finally {
+        await Promise.all(cleanups.map(cleanup => cleanup()))
+      }
+      for (const path of paths) assert.equal(existsSync(dirname(path)), false)
+    })
+  })
+
+  for (const phase of ['probe', 'deploy', 'proxy', 'prepare', 'spawn'] as const) {
+    it(`releases its control directory after ${phase} startup failure`, async () => {
+      await withTempRoot('long', async () => {
+        let path = ''
+        let cleanup: (() => Promise<void>) | undefined
+        let proxyPath: string | undefined
+        let stopCalls = 0
+        let unregisterCalls = 0
+        await assert.rejects(createSSHSession(
+          { host: 'host.example', localVersion: '1.2.3' },
+          {},
+          {
+            probeRemote: async connection => {
+              path = connection.controlPath!
+              if (phase === 'probe') throw new Error('fixture probe failed')
+              return probe
+            },
+            ensureRemoteBinary: async () => {
+              if (phase === 'deploy') throw new Error('fixture deploy failed')
+              return '/remote/claude'
+            },
+            ...(phase === 'proxy' ? {
+              startProxy: async () => { throw new Error('fixture proxy failed') },
+            } : {}),
+            prepareRemoteSocketDirectory: async () => {
+              if (phase === 'prepare') throw new Error('fixture prepare failed')
+            },
+            spawnProcess: (_command, args) => {
+              proxyPath = args[args.indexOf('-R') + 1]!.split(':').at(-1)
+              throw new Error('fixture spawn failed')
+            },
+            removeRemoteSocketDirectory: async () => {},
+            stopControlMaster: async () => { stopCalls++ },
+            registerCleanup: callback => {
+              cleanup = callback
+              return () => { unregisterCalls++ }
+            },
+          },
+        ), /failed|Failed/)
+        assert.equal(existsSync(dirname(path)), false)
+        if (proxyPath) assert.equal(existsSync(dirname(proxyPath)), false)
+        await cleanup?.()
+        await cleanup?.()
+        assert.equal(stopCalls, 1)
+        assert.equal(unregisterCalls, 1)
+      })
+    })
+  }
+
+  for (const event of ['close', 'error'] as const) {
+    it(`releases owned directories on child ${event} and repeated cleanup`, async () => {
+      await withTempRoot('long', async () => {
+        const proc = createFakeProcess()
+        let path = ''
+        let cleanup: (() => Promise<void>) | undefined
+        let unregistered = 0
+        const session = await createSSHSession(
+          { host: 'host.example', localVersion: '1.2.3' },
+          {},
+          {
+            probeRemote: async connection => {
+              path = connection.controlPath!
+              return probe
+            },
+            ensureRemoteBinary: async () => '/remote/claude',
+            prepareRemoteSocketDirectory: async () => {},
+            removeRemoteSocketDirectory: async () => {},
+            spawnProcess: () => proc as never,
+            stopControlMaster: async () => {},
+            registerCleanup: callback => {
+              cleanup = callback
+              return () => { unregistered++ }
+            },
+          },
+        )
+        try {
+          proc.emit(event, event === 'error' ? new Error('fixture child error') : 0)
+          await cleanup!()
+          proc.emit('close', 0)
+          await cleanup!()
+          assert.equal(unregistered, 1)
+          assert.equal(existsSync(dirname(path)), false)
+          assert.equal(existsSync(dirname(session.proxy.socketPath)), false)
+        } finally {
+          await cleanup?.()
+        }
+      })
+    })
+  }
+
+  it('retains cleanup ownership when a failed probe leaves a live master', async () => {
+    await withTempRoot('long', async () => {
+      const server = createServer(socket => socket.end())
+      let path = ''
+      let cleanup: (() => Promise<void>) | undefined
+      let unregistered = 0
+      try {
+        await assert.rejects(createSSHSession(
+          { host: 'host.example', localVersion: '1.2.3' },
+          {},
+          {
+            probeRemote: async connection => {
+              path = connection.controlPath!
+              await listenUnix(server, path)
+              throw new Error('fixture probe failed')
+            },
+            stopControlMaster: async () => {},
+            registerCleanup: callback => {
+              cleanup = callback
+              return () => { unregistered++ }
+            },
+          },
+        ), { code: 'ENOTEMPTY' })
+        assert.equal(unregistered, 0)
+        await connectUnix(path)
+        await closeUnix(server)
+        await cleanup!()
+        assert.equal(unregistered, 1)
+        assert.equal(existsSync(dirname(path)), false)
+      } finally {
+        await closeUnix(server)
+        await cleanup?.()
+      }
+    })
+  })
+
+  it('retains cleanup ownership when proxy stop fails and retries on close', async () => {
+    await withTempRoot('long', async () => {
+      const proc = createFakeProcess()
+      let cleanup: (() => Promise<void>) | undefined
+      let unregistered = 0
+      let stopped = false
+      let path = ''
+      const session = await createSSHSession(
+        { host: 'host.example', localVersion: '1.2.3' },
+        {},
+        {
+          probeRemote: async connection => {
+            path = connection.controlPath!
+            return probe
+          },
+          ensureRemoteBinary: async () => '/remote/claude',
+          startProxy: async () => proxy(() => {
+            if (!stopped) throw new Error('fixture proxy stop failed')
+          }),
+          prepareRemoteSocketDirectory: async () => {},
+          removeRemoteSocketDirectory: async () => {},
+          spawnProcess: () => proc as never,
+          stopControlMaster: async () => {},
+          registerCleanup: callback => {
+            cleanup = callback
+            return () => { unregistered++ }
+          },
+        },
+      )
+      try {
+        await assert.rejects(cleanup!(), /fixture proxy stop failed/)
+        assert.equal(unregistered, 0)
+      } finally {
+        stopped = true
+        session.proc.emit('error', new Error('fixture child error'))
+        session.proc.emit('close', 1)
+        await cleanup!()
+      }
+      assert.equal(unregistered, 1)
+      assert.equal(existsSync(dirname(path)), false)
+    })
+  })
+
+  it('preserves a live control socket after stop returns and retries cleanup', async () => {
+    await withTempRoot('long', async () => {
+      const server = createServer(socket => socket.end())
+      let controlPath = ''
+      let cleanup: (() => Promise<void>) | undefined
+      let unregistered = 0
+      try {
+        await createSSHSession(
+          { host: 'host.example', localVersion: '1.2.3' },
+          {},
+          {
+            probeRemote: async connection => {
+              controlPath = connection.controlPath!
+              await listenUnix(server, controlPath)
+              return probe
+            },
+            ensureRemoteBinary: async () => '/remote/claude',
+            startProxy: async () => proxy(),
+            prepareRemoteSocketDirectory: async () => {},
+            removeRemoteSocketDirectory: async () => {},
+            spawnProcess: () => createFakeProcess() as never,
+            stopControlMaster: async () => {},
+            registerCleanup: callback => {
+              cleanup = callback
+              return () => { unregistered++ }
+            },
+          },
+        )
+        await assert.rejects(cleanup!(), { code: 'ENOTEMPTY' })
+        assert.equal(existsSync(controlPath), true)
+        await connectUnix(controlPath)
+        assert.equal(unregistered, 0)
+        await closeUnix(server)
+        await cleanup!()
+        await cleanup!()
+        assert.equal(existsSync(dirname(controlPath)), false)
+        assert.equal(unregistered, 1)
+      } finally {
+        await closeUnix(server)
+        await cleanup?.()
+      }
+    })
   })
 
   it('stops before deployment when the remote probe fails', async () => {
@@ -538,7 +1000,7 @@ describe('remote SSH session', () => {
     const controlPathArg = spawnedArgs?.find(arg => arg.startsWith('ControlPath='))
     assert.match(
       controlPathArg ?? '',
-      /^ControlPath=.*[/\\]cc-ssh-[0-9a-f]{24}$/,
+      /^ControlPath=.*[/\\]cc-ssh-(?:[0-9]+-)?[0-9a-f]{24}-[A-Za-z0-9]{6}[/\\]s$/,
     )
     assert.ok(
       Buffer.byteLength(controlPathArg?.slice('ControlPath='.length) ?? '') < 104,
@@ -589,7 +1051,9 @@ describe('remote SSH session', () => {
         spawnProcess: () => proc as never,
         removeRemoteSocketDirectory: async () => {
           calls.push('remove')
-          throw new Error('cleanup failed')
+          if (calls.filter(call => call === 'remove').length === 1) {
+            throw new Error('cleanup failed')
+          }
         },
         stopControlMaster: async () => {
           calls.push('stop-control')
@@ -605,6 +1069,11 @@ describe('remote SSH session', () => {
 
     await assert.rejects(registeredCleanup?.(), /cleanup failed/)
     assert.deepEqual(calls, ['remove', 'stop', 'stop-control'])
+    assert.equal(unregisterCalls, 0)
+    await registeredCleanup?.()
+    assert.deepEqual(calls, [
+      'remove', 'stop', 'stop-control', 'remove', 'stop', 'stop-control',
+    ])
     assert.equal(unregisterCalls, 1)
   })
 })
