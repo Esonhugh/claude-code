@@ -88,13 +88,17 @@ import {
 import {
   enterTeammateView,
   exitTeammateView,
-  stopOrDismissAgent,
+  dismissTerminalAgent,
 } from '../../state/teammateViewHelpers.js'
 import type { ToolPermissionContext } from '../../Tool.js'
-import { getViewableTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import {
+  getViewableTeammatesSorted,
+  InProcessTeammateTask,
+} from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import {
   isPanelAgentTask,
+  killAsyncAgent,
   type LocalAgentTaskState,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isBackgroundTask } from '../../tasks/types.js'
@@ -2590,38 +2594,52 @@ function PromptInput({
         selectFooterItem(null)
       },
       'footer:close': () => {
-        if (tasksSelected && selectedCoordinatorTask) {
-          const task = selectedCoordinatorTask
-          if (!task) return false
-          if (task.type === 'local_workflow') {
-            setShowBashesDialog(task.id)
-            selectFooterItem(null)
-            return
-          }
-          // When the selected row IS the viewed agent, 'x' types into the
-          // steering input. Any other row — dismiss it.
-          if (
-            viewSelectionMode === 'viewing-agent' &&
-            task.id === viewingAgentTaskId
-          ) {
-            onChange(
-              input.slice(0, cursorOffset) + 'x' + input.slice(cursorOffset),
-            )
-            setCursorOffset(cursorOffset + 1)
-            return
-          }
-          stopOrDismissAgent(task.id, setAppState)
-          if (task.status !== 'running') {
-            const nextIndex = Math.max(minCoordinatorIndex, coordinatorTaskIndex - 1)
-            setCoordinatorTaskIndex(nextIndex, {
-              targetId: resolveCoordinatorTarget(nextIndex),
-              reason: 'dismiss',
-            })
+        const task =
+          tasksSelected && isTeammateMode
+            ? teammateFooterIndex > 0
+              ? inProcessTeammates[teammateFooterIndex - 1]
+              : undefined
+            : selectedCoordinatorTask
+        if (!tasksSelected || !task) {
+          // Not handled — let 'x' fall through to type-to-exit
+          return false
+        }
+        if (task.type === 'local_workflow') {
+          setShowBashesDialog(task.id)
+          selectFooterItem(null)
+          return
+        }
+        // When the selected row IS the viewed agent, 'x' types into the
+        // steering input. Any other row stops or dismisses that task.
+        if (
+          viewSelectionMode === 'viewing-agent' &&
+          task.id === viewingAgentTaskId
+        ) {
+          onChange(
+            input.slice(0, cursorOffset) + 'x' + input.slice(cursorOffset),
+          )
+          setCursorOffset(cursorOffset + 1)
+          return
+        }
+        if (task.status === 'running') {
+          if (task.type === 'local_agent') {
+            killAsyncAgent(task.id, setAppState)
+          } else if (task.type === 'in_process_teammate') {
+            void InProcessTeammateTask.kill(task.id, setAppState)
           }
           return
         }
-        // Not handled — let 'x' fall through to type-to-exit
-        return false
+        dismissTerminalAgent(task.id, setAppState)
+        if (task.type === 'local_agent') {
+          const nextIndex = Math.max(
+            minCoordinatorIndex,
+            coordinatorTaskIndex - 1,
+          )
+          setCoordinatorTaskIndex(nextIndex, {
+            targetId: resolveCoordinatorTarget(nextIndex),
+            reason: 'dismiss',
+          })
+        }
       },
     },
     {

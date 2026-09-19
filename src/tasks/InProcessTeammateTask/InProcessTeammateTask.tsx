@@ -145,7 +145,7 @@ export function getAllInProcessTeammateTasks(
 export function isViewableTeammate(
   task: TaskStateBase | undefined,
 ): task is InProcessTeammateTaskState {
-  return isInProcessTeammateTask(task) && (
+  return isInProcessTeammateTask(task) && task.evictAfter !== 0 && (
     task.status === 'running' ||
     (isTerminalTaskStatus(task.status) &&
       (task.retain === true || task.evictAfter !== undefined))
