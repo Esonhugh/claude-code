@@ -2,11 +2,13 @@ import { expect, test } from 'bun:test'
 import { Readable, Writable } from 'node:stream'
 import React from 'react'
 import { render, useInput } from '../ink.js'
-import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
+import { AppStoreContext, getDefaultAppState, type AppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import { useBackgroundTaskNavigation } from './useBackgroundTaskNavigation.js'
+import { useTeammateViewAutoExit } from './useTeammateViewAutoExit.js'
+import { dismissTerminalAgent } from '../state/teammateViewHelpers.js'
 
 class Input extends Readable {
   isTTY = true
@@ -43,7 +45,7 @@ async function navigation({ overlay = false, footer = false, status = 'running',
     isIdle: idle,
     currentWorkAbortController: idle ? undefined : currentWorkAbortController,
   } as unknown as InProcessTeammateTaskState : task
-  const store = createStore({
+  const store = createStore<AppState>({
     ...getDefaultAppState(),
     tasks: {
       [task.id]: viewedTask,
@@ -57,6 +59,7 @@ async function navigation({ overlay = false, footer = false, status = 'running',
   const observedKeys: string[] = []
   function Harness() {
     useBackgroundTaskNavigation()
+    useTeammateViewAutoExit()
     useInput((_input, key) => { if (key.escape) observedKeys.push('escape') })
     return null
   }
@@ -97,6 +100,60 @@ test.each([false, true])('teammate Escape interrupts only active work (idle=%s)'
     expect(h.store.getState().tasks['agent-navigation']?.status).toBe('running')
     expect(h.store.getState().viewingAgentTaskId).toBe('agent-navigation')
     expect(h.observedKeys).toEqual([])
+  } finally { h.close() }
+})
+
+test.each(['completed', 'killed', 'failed'] as const)('terminal teammate transcript stays open until Escape (%s)', async status => {
+  const h = await navigation({ teammate: true, status })
+  try {
+    expect(h.store.getState().viewingAgentTaskId).toBe('agent-navigation')
+    const viewed = h.store.getState().tasks['agent-navigation']
+    if (viewed?.type !== 'in_process_teammate') throw new Error('Expected teammate')
+    expect(viewed.retain).toBe(true)
+    await h.escape()
+    expect(h.store.getState().viewingAgentTaskId).toBeUndefined()
+    const released = h.store.getState().tasks['agent-navigation']
+    if (released?.type !== 'in_process_teammate') throw new Error('Expected teammate')
+    expect(released.status).toBe(status)
+    expect(released.evictAfter).toBeGreaterThan(Date.now())
+    expect(h.observedKeys).toEqual([])
+  } finally { h.close() }
+})
+
+test('viewed teammate failure preserves the view and error until explicit dismissal', async () => {
+  const h = await navigation({ teammate: true })
+  try {
+    h.store.setState(prev => ({
+      ...prev,
+      tasks: {
+        ...prev.tasks,
+        'agent-navigation': {
+          ...prev.tasks['agent-navigation']!,
+          status: 'failed',
+          error: 'runner boom',
+        },
+      },
+    }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(h.store.getState().viewingAgentTaskId).toBe('agent-navigation')
+    expect((h.store.getState().tasks['agent-navigation'] as InProcessTeammateTaskState).error).toBe('runner boom')
+    dismissTerminalAgent('agent-navigation', h.store.setState)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(h.store.getState().viewingAgentTaskId).toBeUndefined()
+    const dismissed = h.store.getState().tasks['agent-navigation']
+    if (dismissed?.type !== 'in_process_teammate') throw new Error('Expected teammate')
+    expect(dismissed.evictAfter).toBe(0)
+  } finally { h.close() }
+})
+
+test.each([false, true])('removing a viewed task returns to main (teammate=%s)', async teammate => {
+  const h = await navigation({ teammate })
+  try {
+    h.store.setState(prev => ({ ...prev, tasks: { other: prev.tasks.other! } }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(h.store.getState().viewingAgentTaskId).toBeUndefined()
+    expect(h.store.getState().viewSelectionMode).toBe('none')
+    expect(h.store.getState().tasks.other?.status).toBe('running')
   } finally { h.close() }
 })
 

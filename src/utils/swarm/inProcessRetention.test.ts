@@ -1,18 +1,28 @@
 import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import type { ToolUseContext } from '../../Tool.js'
+import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
+import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPurposeAgent.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { createUserMessage } from '../messages.js'
+import { canEvictTerminalTask } from '../task/retention.js'
+import { dismissTerminalAgent, enterTeammateView, exitTeammateView } from '../../state/teammateViewHelpers.js'
 
 let runAgentMode: 'complete' | 'fail' = 'complete'
 let lifecycleAbortController: AbortController | undefined
+let observedResolvedModel: string | undefined
+let observedTools: string[] = []
 
 mock.module('../../constants/prompts.js', () => ({
   getSystemPrompt: async () => [],
 }))
 mock.module('../../tools/AgentTool/runAgent.js', () => ({
-  async *runAgent() {
+  async *runAgent(params: { resolvedModel?: string; agentDefinition: AgentDefinition; availableTools: Tools }) {
+    observedResolvedModel = params.resolvedModel
+    const { resolveAgentTools } = await import('../../tools/AgentTool/agentToolUtils.js')
+    observedTools = resolveAgentTools(params.agentDefinition, params.availableTools, true)
+      .resolvedTools.map(tool => tool.name)
     if (runAgentMode === 'fail') {
       throw new Error('runner boom')
     }
@@ -44,6 +54,7 @@ mock.module('../../tools/AgentTool/runAgent.js', () => ({
 }))
 mock.module('../task/framework.js', () => ({
   STOPPED_DISPLAY_MS: 0,
+  PANEL_GRACE_MS: 30_000,
   evictTerminalTask: () => {},
   registerTask: (task: { id: string }, setAppState: (updater: (prev: ReturnType<typeof getDefaultAppState>) => ReturnType<typeof getDefaultAppState>) => void) => {
     setAppState(prev => ({
@@ -67,6 +78,7 @@ mock.module('./teamHelpers.js', () => ({
 
 const { spawnInProcessTeammate, killInProcessTeammate } = await import('./spawnInProcess.js')
 const { runInProcessTeammate } = await import('./inProcessRunner.js')
+const { isViewableTeammate } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
 
 function createState() {
   return {
@@ -89,7 +101,7 @@ function createToolUseContext(
 ): ToolUseContext {
   return {
     options: {
-      tools: [],
+      tools: ['Read', 'Bash', 'SendMessage', 'TaskCreate'].map(name => ({ name }) as Tool),
       mainLoopModel: 'claude-sonnet-4-6',
       mcpClients: [],
     },
@@ -104,7 +116,7 @@ function createToolUseContext(
   } as unknown as ToolUseContext
 }
 
-async function spawnTask(retain?: true) {
+async function spawnTask(retain?: boolean) {
   let state = createState()
   const setState = (
     updater: (prev: typeof state) => typeof state,
@@ -138,7 +150,7 @@ async function spawnTask(retain?: true) {
       ...state.tasks,
       [spawnResult.taskId]: {
         ...state.tasks[spawnResult.taskId],
-        ...(retain ? { retain } : {}),
+        ...(retain !== undefined ? { retain } : {}),
         messages: seedMessages,
       },
     },
@@ -154,7 +166,7 @@ async function spawnTask(retain?: true) {
   }
 }
 
-async function runCase(mode: 'complete' | 'fail', retain?: true) {
+async function runCase(mode: 'complete' | 'fail', retain?: true, agentDefinition?: AgentDefinition) {
   const spawned = await spawnTask(retain)
   runAgentMode = mode
   lifecycleAbortController = spawned.abortController
@@ -170,6 +182,8 @@ async function runCase(mode: 'complete' | 'fail', retain?: true) {
     taskId: spawned.taskId,
     prompt: 'inspect only',
     description: 'Retention test teammate',
+    model: 'gpt-5.6-sol',
+    agentDefinition,
     teammateContext: spawned.teammateContext,
     toolUseContext: createToolUseContext(spawned.getState, spawned.setState),
     abortController: spawned.abortController,
@@ -184,6 +198,7 @@ async function runCase(mode: 'complete' | 'fail', retain?: true) {
 
 const completedRetained = await runCase('complete', true)
 assert.equal(completedRetained.result.success, true)
+assert.equal(observedResolvedModel, 'gpt-5.6-sol')
 assert.equal(completedRetained.task?.type, 'in_process_teammate')
 assert.equal(completedRetained.task?.status, 'completed')
 assert.deepEqual(
@@ -231,19 +246,62 @@ assert.deepEqual(
   killedRetainedSpawn.seedMessages,
 )
 
-const killedUnretainedSpawn = await spawnTask()
-const killedUnretained = killInProcessTeammate(
-  killedUnretainedSpawn.taskId,
-  killedUnretainedSpawn.setState,
-)
-assert.equal(killedUnretained, true)
-assert.equal(
-  killedUnretainedSpawn.getState().tasks[killedUnretainedSpawn.taskId]?.messages?.length,
-  1,
-)
-assert.deepEqual(
-  killedUnretainedSpawn.getState().tasks[killedUnretainedSpawn.taskId]?.messages?.[0],
-  killedUnretainedSpawn.seedMessages[1],
-)
+const killedViewedTask = killedRetainedSpawn.getState().tasks[killedRetainedSpawn.taskId]!
+assert.equal(isViewableTeammate(killedViewedTask), true)
+assert.equal(killedViewedTask.evictAfter, undefined)
+assert.equal(canEvictTerminalTask(killedViewedTask, Date.now() + 60_000), false)
+
+for (const retain of [undefined, false]) {
+  const stopped = await spawnTask(retain)
+  const before = Date.now()
+  assert.equal(killInProcessTeammate(stopped.taskId, stopped.setState), true)
+  const task = stopped.getState().tasks[stopped.taskId]!
+  assert.equal(task.status, 'killed')
+  assert.equal(isViewableTeammate(task), true, 'first stop must not hide the teammate')
+  assert.deepEqual(task.messages, stopped.seedMessages)
+  assert.equal(task.retain, false)
+  assert.ok(task.evictAfter! >= before + 30_000)
+  assert.ok(task.evictAfter! <= Date.now() + 30_000)
+  assert.equal(canEvictTerminalTask(task, task.evictAfter! - 1), false)
+  assert.equal(canEvictTerminalTask(task, task.evictAfter!), true)
+  assert.equal(stopped.abortController.signal.aborted, true)
+  assert.equal(killInProcessTeammate(stopped.taskId, stopped.setState), false)
+  assert.equal(stopped.getState().tasks[stopped.taskId], task)
+
+  enterTeammateView(stopped.taskId, stopped.setState)
+  const viewed = stopped.getState().tasks[stopped.taskId]!
+  assert.equal(viewed.evictAfter, undefined)
+  assert.equal(canEvictTerminalTask(viewed, before + 60_000), false)
+  assert.deepEqual(viewed.messages, stopped.seedMessages)
+  exitTeammateView(stopped.setState)
+  const released = stopped.getState().tasks[stopped.taskId]!
+  assert.ok(released.evictAfter! >= before + 30_000)
+  assert.equal(isViewableTeammate(released), true)
+  assert.deepEqual(released.messages, stopped.seedMessages)
+
+  dismissTerminalAgent(stopped.taskId, stopped.setState)
+  const cleared = stopped.getState().tasks[stopped.taskId]!
+  assert.equal(cleared.evictAfter, 0)
+  assert.equal(isViewableTeammate(cleared), false)
+  assert.equal(canEvictTerminalTask(cleared), true)
+}
+
+const originalTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+try {
+  const wildcard = await runCase('complete', true, GENERAL_PURPOSE_AGENT)
+  assert.equal(wildcard.result.success, true)
+  assert.deepEqual(observedTools, ['Read', 'Bash', 'SendMessage', 'TaskCreate'])
+
+  const restricted = await runCase('complete', true, {
+    ...GENERAL_PURPOSE_AGENT,
+    tools: ['Read'],
+  })
+  assert.equal(restricted.result.success, true)
+  assert.deepEqual(observedTools, ['Read', 'SendMessage', 'TaskCreate'])
+} finally {
+  if (originalTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+  else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = originalTeams
+}
 
 console.log('inProcessRetention.test.ts passed')

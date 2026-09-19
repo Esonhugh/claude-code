@@ -33,7 +33,7 @@ import { evictTaskOutput } from '../task/diskOutput.js'
 import {
   evictTerminalTask,
   registerTask,
-  STOPPED_DISPLAY_MS,
+  PANEL_GRACE_MS,
 } from '../task/framework.js'
 import { createTeammateContext } from '../teammateContext.js'
 import {
@@ -267,7 +267,7 @@ export function killInProcessTeammate(
     teammateTask.abortController?.abort()
 
     logForDebugging(
-      `[transcript_retention_decision] task=${taskId} status=killed retain=${teammateTask.retain ? 'keep' : 'truncate'}`,
+      `[transcript_retention_decision] task=${taskId} status=killed retain=${teammateTask.retain ? 'keep' : 'grace'}`,
     )
 
     // Call cleanup handler
@@ -299,12 +299,9 @@ export function killInProcessTeammate(
           status: 'killed' as const,
           notified: true,
           endTime: Date.now(),
+          retain: teammateTask.retain ?? false,
+          evictAfter: teammateTask.retain ? undefined : Date.now() + PANEL_GRACE_MS,
           onIdleCallbacks: [], // Clear callbacks to prevent stale references
-          messages: teammateTask.retain
-            ? teammateTask.messages
-            : teammateTask.messages?.length
-              ? [teammateTask.messages[teammateTask.messages.length - 1]!]
-              : undefined,
           pendingUserMessages: [],
           inProgressToolUseIDs: undefined,
           abortController: undefined,
@@ -332,7 +329,7 @@ export function killInProcessTeammate(
     })
     setTimeout(
       evictTerminalTask.bind(null, taskId, setAppState),
-      STOPPED_DISPLAY_MS,
+      PANEL_GRACE_MS,
     )
   }
 
