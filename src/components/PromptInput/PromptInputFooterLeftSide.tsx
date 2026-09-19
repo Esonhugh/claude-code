@@ -345,7 +345,7 @@ function ModeIndicator({
     isViewingTeammate && viewedTask != null && viewedTask.status !== 'running'
   const hasViewableTeammates = Object.values(tasks).some(isViewableTeammate)
   const hasBackgroundTasks =
-    runningTaskCount > 0 || viewedTask !== undefined || hasViewableTeammates
+    runningTaskCount > 0 || isViewingTeammate || hasViewableTeammates
 
   // Count primary items (permission mode or coordinator mode, background tasks, and teams)
   const primaryItemCount =

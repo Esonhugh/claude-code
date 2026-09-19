@@ -531,4 +531,51 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     disposeKeybindingWatcher()
   }
 })
+test.each(['running', 'completed', 'failed', 'killed'] as const)(
+  'viewed %s local agent does not leave an empty footer segment',
+  async status => {
+    const { PromptInputFooterLeftSide } = await import('../PromptInput/PromptInputFooterLeftSide.js')
+    const state = getDefaultAppState()
+    const localAgent: import('../../tasks/LocalAgentTask/LocalAgentTask.js').LocalAgentTaskState = {
+      id: 'local-footer', type: 'local_agent', status,
+      description: 'Footer probe', prompt: 'Footer probe',
+      startTime: 1, endTime: status === 'running' ? undefined : 2,
+      outputFile: '', outputOffset: 0, notified: true,
+      agentId: 'local-footer', agentType: 'general-purpose', spawnDepth: 1,
+      abortController: new AbortController(), retrieved: false,
+      lastReportedToolCount: 0, lastReportedTokenCount: 0,
+      isBackgrounded: true, pendingMessages: [], retain: true, diskLoaded: false,
+    }
+    const toolPermissionContext = { ...state.toolPermissionContext, mode: 'bypassPermissions' as const }
+    const footerOut = new TestStdout()
+    const footer = await render(React.createElement(AppStateProvider,
+      { initialState: {
+        ...state, toolPermissionContext, tasks: { [localAgent.id]: localAgent },
+        viewingAgentTaskId: localAgent.id, viewSelectionMode: 'viewing-agent',
+      } } as unknown as React.ComponentProps<typeof AppStateProvider>,
+      React.createElement(KeybindingSetup, null, React.createElement(PromptInputFooterLeftSide, {
+        exitMessage: { show: false }, vimMode: undefined, mode: 'prompt',
+        toolPermissionContext, suppressHint: false, isLoading: false,
+        tasksSelected: false, teamsSelected: false, tmuxSelected: false,
+        isSearching: false, historyQuery: '', setHistoryQuery: () => {}, historyFailedMatch: false,
+      }))), {
+      stdout: footerOut as unknown as NodeJS.WriteStream,
+      stdin: new TestStdin() as unknown as NodeJS.ReadStream,
+      patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await flush()
+      const output = stripAnsi(footerOut.output)
+      assert.match(output, /bypass permissions on/)
+      assert.match(output, /↓ to manage/)
+      assert.doesNotMatch(output, /·\s*·/)
+      if (status !== 'running') assert.doesNotMatch(output, /\bagents?\b/)
+    } finally {
+      footer.unmount()
+      footer.cleanup()
+      const { disposeKeybindingWatcher } = await import('../../keybindings/loadUserBindings.js')
+      disposeKeybindingWatcher()
+    }
+  },
+)
 console.log('BackgroundTasksDialog.test.ts passed')
