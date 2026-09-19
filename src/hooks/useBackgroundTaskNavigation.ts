@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useIsModalOverlayActive } from '../context/overlayContext.js'
 import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until REPL wires handleKeyDown to <Box onKeyDown>
 import { useInput } from '../ink.js'
@@ -19,6 +20,7 @@ import {
   type InProcessTeammateTaskState,
   isInProcessTeammateTask,
 } from '../tasks/InProcessTeammateTask/types.js'
+import { isLocalAgentTask, killAsyncAgent } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isBackgroundTask } from '../tasks/types.js'
 
 // Step teammate selection by delta, wrapping across leader(-1)..teammates(0..n-1)..hide(n).
@@ -72,6 +74,8 @@ export function useBackgroundTaskNavigation(options?: {
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId)
   const selectedIPAgentIndex = useAppState(s => s.selectedIPAgentIndex)
   const setAppState = useSetAppState()
+  const isModalOverlayActive = useIsModalOverlayActive()
+  const footerSelected = useAppState(s => s.footerSelection !== null)
 
   // Match the viewable teammate set and ordering in TeammateSpinnerTree.
   const teammateTasks = getViewableTeammatesSorted(tasks)
@@ -146,14 +150,19 @@ export function useBackgroundTaskNavigation(options?: {
   }
 
   const handleKeyDown = (e: KeyboardEvent): void => {
-    // Escape in viewing mode:
-    // - If teammate is running: abort current work only (stops current turn, teammate stays alive)
-    // - If teammate is not running (completed/killed/failed): exit the view back to leader
+    if (isModalOverlayActive || footerSelected) return
+
+    // Escape stops a local agent, but only interrupts a teammate's current turn.
+    // Terminal transcripts return to main; idle teammates stay alive and viewed.
     if (e.key === 'escape' && viewSelectionMode === 'viewing-agent') {
       e.preventDefault()
       const taskId = viewingAgentTaskId
       if (taskId) {
         const task = tasks[taskId]
+        if (isLocalAgentTask(task) && task.status === 'running') {
+          killAsyncAgent(taskId, setAppState)
+          return
+        }
         if (isInProcessTeammateTask(task) && task.status === 'running') {
           // Abort currentWorkAbortController (stops current turn) NOT abortController (kills teammate)
           task.currentWorkAbortController?.abort()
@@ -245,8 +254,10 @@ export function useBackgroundTaskNavigation(options?: {
   // KeyboardEvent until the consumer is migrated (separate PR).
   // TODO(onKeyDown-migration): remove once REPL passes handleKeyDown.
   useInput((_input, _key, event) => {
-    handleKeyDown(new KeyboardEvent(event.keypress))
-  })
+    const keyboardEvent = new KeyboardEvent(event.keypress)
+    handleKeyDown(keyboardEvent)
+    if (keyboardEvent.defaultPrevented) event.stopImmediatePropagation()
+  }, { isActive: !isModalOverlayActive && !footerSelected })
 
   return { handleKeyDown }
 }
