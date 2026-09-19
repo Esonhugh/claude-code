@@ -11,9 +11,8 @@ import {
 } from '../../context/modalContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import ScrollBox from '../../ink/components/ScrollBox.js'
-import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { stringWidth } from '../../ink/stringWidth.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text, useInput } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
 import type { Theme } from '../../utils/theme.js'
 
@@ -163,16 +162,18 @@ export function Tabs({
     },
   )
 
-  // When the header is focused, down-arrow returns focus to content. Only
-  // active when the selected tab has opted in via useTabHeaderFocus() —
-  // legacy tabs have nowhere to return focus to.
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (!headerFocused || !optedIn || hidden) return
-    if (e.key === 'down') {
-      e.preventDefault()
-      setHeaderFocused(false)
-    }
-  }
+  // When the header is focused, down-arrow returns focus to content. Use the
+  // global input stream rather than Box.onKeyDown so nested Tabs can receive
+  // the key after their parent header has released focus.
+  useInput(
+    (_input, key) => {
+      if (key.downArrow) setHeaderFocused(false)
+    },
+    {
+      isActive:
+        headerFocused && optedIn && !hidden && !disableNavigation,
+    },
+  )
 
   // Opt-in: same tabs:next/previous actions, active from content. Focuses
   // the header so subsequent presses cycle via the handler above.
@@ -225,7 +226,6 @@ export function Tabs({
         flexDirection="column"
         tabIndex={0}
         autoFocus
-        onKeyDown={handleKeyDown}
         // flexShrink=0 inside modal slot — the modal's absolute Box has no
         // explicit height (grows to fit, maxHeight cap), so flexGrow=1 here
         // resolves to 0 on re-render and the body blanks on Down arrow.

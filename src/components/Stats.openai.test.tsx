@@ -68,7 +68,11 @@ test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', a
     streaks: { currentStreak: 0, longestStreak: 0 },
     totalSpeculationTimeSavedMs: 0,
   } as unknown as import('../utils/stats.js').ClaudeCodeStats)
-  spyOn(usage, 'isOpenAIActivityAvailable').mockReturnValue(false)
+  spyOn(usage, 'isOpenAIActivityAvailable').mockReturnValue(true)
+  spyOn(usage, 'fetchOpenAIActivity').mockResolvedValue({
+    lifetime_tokens: 42,
+    daily_usage_buckets: [],
+  })
   const nestedBindings = parseBindings([
     {
       context: 'Tabs',
@@ -132,6 +136,25 @@ test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', a
     stdin.push('\u001b[C')
     await settle()
     assert.match(stripAnsi(stdout.output), /No model usage data available/)
+    stdin.push('\u001b[C')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
+    stdin.push('\u001b[B')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /↑\/↓ ±1 day/)
+    stdin.push('\u001b[A')
+    await settle()
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    assert.match(
+      stripAnsi(stdout.output),
+      new RegExp(`${yesterday.toLocaleDateString('en-CA')}: 0 tokens`),
+    )
+    stdin.push('v')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /Weekly \(Sunday/)
+    stdin.push('\t')
+    await settle()
     stdin.push('\u001b[A')
     await settle()
     stdin.push('\u001b[Z')
