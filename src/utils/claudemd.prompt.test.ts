@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, mock, spyOn, test } from 'bun:test'
 import {
   mkdirSync,
   mkdtempSync,
@@ -122,6 +122,66 @@ if (!process.env[childFlag]) {
       expect(getCachedClaudeMdContent()).toBeNull()
     } finally {
       delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+      getUserContext.cache.clear?.()
+      clearMemoryFileCaches()
+    }
+  })
+
+  test('agent generation includes both instruction sources in the model request', async () => {
+    const project = join(root, 'agent-generation-project')
+    mkdirSync(project)
+    writeFileSync(join(project, 'AGENTS.md'), 'shared agent generation marker')
+    writeFileSync(join(project, 'CLAUDE.md'), 'Claude agent generation marker')
+    const { setOriginalCwd } = await import('../bootstrap/state.js')
+    const { clearMemoryFileCaches } = await import('./claudemd.js')
+    const { getUserContext } = await import('../context.js')
+    const { createAssistantMessage } = await import('./messages.js')
+    const api = await import('../services/api/claude.js')
+    const { generateAgent } = await import('../components/agents/generateAgent.js')
+    const generated = {
+      identifier: 'fixture-agent',
+      whenToUse: 'Use this agent for fixture checks',
+      systemPrompt: 'Follow the project instructions',
+    }
+    const query = spyOn(api, 'queryModelWithoutStreaming').mockResolvedValue(
+      createAssistantMessage({ content: JSON.stringify(generated) }),
+    )
+    const { enableConfigs } = await import('./config.js')
+    enableConfigs()
+    // Exercise context injection instead of prependUserContext's test shortcut.
+    const originalNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    setOriginalCwd(project)
+    clearMemoryFileCaches()
+    getUserContext.cache.clear?.()
+    try {
+      expect(
+        await generateAgent(
+          'review changed code',
+          'claude-sonnet-4-6',
+          [],
+          new AbortController().signal,
+        ),
+      ).toEqual(generated)
+      expect(query).toHaveBeenCalledTimes(1)
+      const request = query.mock.calls[0]![0]
+      const messages = JSON.stringify(request.messages)
+      expect(messages).toContain('shared agent generation marker')
+      expect(messages).toContain('Claude agent generation marker')
+      const prompt = request.systemPrompt.join('\n')
+      expect(prompt).toContain(
+        'project-specific instructions from AGENTS.md and CLAUDE.md',
+      )
+      expect(prompt).toContain(
+        'project-specific context from AGENTS.md and CLAUDE.md',
+      )
+      expect(prompt).toContain(
+        'coding standards and patterns from AGENTS.md and CLAUDE.md',
+      )
+    } finally {
+      query.mockRestore()
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = originalNodeEnv
       getUserContext.cache.clear?.()
       clearMemoryFileCaches()
     }
