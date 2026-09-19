@@ -142,7 +142,7 @@ const scope = await agent(
     "\n1. Determine exact diff command(s) and confirm they produce a non-empty diff.\n" +
     "2. Use only the diff stat and changed-file list during this phase; derive both with --stat and --name-only variants of the exact diff command.\n" +
     "3. Summarize the scope in one paragraph from that bounded metadata. Do not read the full patch or changed source files; finder agents do that review work.\n" +
-    "4. Read only CLAUDE.md files relevant to changed files and note conventions reviewers should know.\n\n" +
+    "4. Read only AGENTS.md and CLAUDE.md files relevant to changed files and note conventions reviewers should know.\n\n" +
     "Return diffCommand exactly as a reviewer should run it. Call StructuredOutput immediately after these bounded checks. Structured output only.",
   { label: "scope", phase: "Scope", schema: SCOPE_SCHEMA },
 )

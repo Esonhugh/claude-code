@@ -32,6 +32,10 @@ assert.match(
 )
 assert.match(
   codeReview.runScriptSnapshot ?? '',
+  /Read only AGENTS\.md and CLAUDE\.md files relevant to changed files/,
+)
+assert.match(
+  codeReview.runScriptSnapshot ?? '',
   /Array\.isArray\(report\?\.findings\)/,
 )
 assert.equal(codeReview.defaults?.permissionMode, 'plan')
