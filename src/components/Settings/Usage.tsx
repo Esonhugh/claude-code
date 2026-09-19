@@ -4,14 +4,19 @@ import { extraUsage as extraUsageCommand } from 'src/commands/extra-usage/index.
 import { formatCost } from 'src/cost-tracker.js'
 import { getSubscriptionType } from 'src/utils/auth.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
-import { Box, Text } from '../../ink.js'
+import { Box, Text, useStdin } from '../../ink.js'
+import ScrollBox, { type ScrollBoxHandle } from '../../ink/components/ScrollBox.js'
+import type { InputEvent } from '../../ink/events/input-event.js'
+import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import {
   consumeRateLimitResetCredit,
   type ExtraUsage,
   fetchUtilization,
+  fetchRateLimitResetCredits,
   type OpenAIAccount,
   type RateLimit,
+  type RateLimitResetCreditsDetails,
   type Utilization,
 } from '../../services/api/usage.js'
 import { formatResetText } from '../../utils/format.js'
@@ -132,7 +137,10 @@ function LimitBar({
   }
 }
 
-export function Usage(): React.ReactNode {
+export function Usage({ contentHeight }: { contentHeight?: number } = {}): React.ReactNode {
+  const scrollRef = React.useRef<ScrollBoxHandle>(null)
+  const { internal_eventEmitter } = useStdin()
+  const keybindings = useOptionalKeybindingContext()
   const [utilization, setUtilization] = useState<Utilization | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -140,20 +148,59 @@ export function Usage(): React.ReactNode {
   const [isConfirmingReset, setIsConfirmingReset] = useState(false)
   const [isResetting, setIsResetting] = useState(false)
   const [resetMessage, setResetMessage] = useState<string | null>(null)
+  const [resetDetails, setResetDetails] = useState<RateLimitResetCreditsDetails | null>(null)
+  const [resetDetailsError, setResetDetailsError] = useState<string | null>(null)
   const isResettingRef = React.useRef(false)
   const { columns } = useTerminalSize()
 
   const availableWidth = columns - 2 // 2 for screen padding
   const maxWidth = Math.min(availableWidth, 80)
 
+  // The transcript's scroll listener mounts first; this viewport must own
+  // scroll input while Usage is open, without changing other Settings tabs.
+  useEffect(() => {
+    if (contentHeight === undefined || !keybindings) return
+    const scroll = (event: InputEvent) => {
+      const viewport = scrollRef.current
+      if (!viewport) return
+      const result = keybindings.resolve(event.input, event.key, ['Scroll', 'Global'])
+      if (result.type !== 'match') return
+      const page = Math.max(1, viewport.getViewportHeight() - 1)
+      switch (result.action) {
+        case 'scroll:pageUp': viewport.scrollBy(-page); break
+        case 'scroll:pageDown': viewport.scrollBy(page); break
+        case 'scroll:lineUp': viewport.scrollBy(-1); break
+        case 'scroll:lineDown': viewport.scrollBy(1); break
+        case 'scroll:top': viewport.scrollTo(0); break
+        case 'scroll:bottom': viewport.scrollToBottom(); break
+        default: return
+      }
+      event.stopImmediatePropagation()
+    }
+    internal_eventEmitter?.prependListener('input', scroll)
+    return () => { internal_eventEmitter?.removeListener('input', scroll) }
+  }, [contentHeight, internal_eventEmitter, keybindings])
+
   const loadUtilization = React.useCallback(async () => {
     setIsLoading(true)
     setError(null)
+    setResetDetails(null)
+    setResetDetailsError(null)
     try {
       const data = await fetchUtilization()
       setUtilization(data)
       setIsResetSelected(false)
       setIsConfirmingReset(false)
+      if (data?.source === 'chatgpt') {
+        try {
+          const details = await fetchRateLimitResetCredits()
+          setResetDetails(details)
+          if (!details) setResetDetailsError('Reset details unavailable.')
+        } catch (err) {
+          logError(err as Error)
+          setResetDetailsError(`Reset details unavailable. ${formatUsageLoadError(err)}`)
+        }
+      }
     } catch (err) {
       logError(err as Error)
       setError(formatUsageLoadError(err))
@@ -166,7 +213,7 @@ export function Usage(): React.ReactNode {
     void loadUtilization()
   }, [loadUtilization])
 
-  const resetCount = utilization?.rate_limit_reset_credits?.available_count ?? 0
+  const resetCount = resetDetails?.available_count ?? utilization?.rate_limit_reset_credits?.available_count ?? 0
   const canReset = resetCount > 0 && !isLoading && !isResetting
 
   useKeybinding(
@@ -174,7 +221,7 @@ export function Usage(): React.ReactNode {
     () => {
       void loadUtilization()
     },
-    { context: 'Settings', isActive: !!error && !isLoading },
+    { context: 'Settings', isActive: !!(error || resetDetailsError) && !isLoading && !isResetting },
   )
 
   useKeybinding(
@@ -337,7 +384,7 @@ export function Usage(): React.ReactNode {
       ]
   const accountLine = formatOpenAIAccountLine(utilization.openai_account)
 
-  return (
+  const content = (
     <Box flexDirection="column" gap={1} width="100%">
       {accountLine && <Text>{accountLine}</Text>}
 
@@ -368,12 +415,29 @@ export function Usage(): React.ReactNode {
       {resetMessage && <Text>{resetMessage}</Text>}
 
       {utilization.source === 'chatgpt' && (
-        <ResetCreditsRow
-          availableCount={resetCount}
-          isSelected={isResetSelected}
-          isConfirming={isConfirmingReset}
-          isResetting={isResetting}
-        />
+        <Box flexDirection="column" gap={1}>
+          <ResetCreditsRow
+            availableCount={resetCount}
+            isSelected={isResetSelected}
+            isConfirming={isConfirmingReset}
+            isResetting={isResetting}
+          />
+          {isLoading && <Text dimColor>Loading reset details…</Text>}
+          {resetDetailsError && (
+            <Box flexDirection="column">
+              <Text color="warning">{resetDetailsError}</Text>
+              <Text dimColor>
+                <ConfigurableShortcutHint
+                  action="settings:retry"
+                  context="Settings"
+                  fallback="r"
+                  description="retry"
+                />
+              </Text>
+            </Box>
+          )}
+          {resetDetails && <ResetCreditDetails details={resetDetails} />}
+        </Box>
       )}
 
       {isEligibleForOverageCreditGrant() && (
@@ -387,6 +451,22 @@ export function Usage(): React.ReactNode {
           fallback="Esc"
           description="cancel"
         />
+      </Text>
+    </Box>
+  )
+
+  if (contentHeight === undefined) return content
+  return (
+    <Box flexDirection="column" width="100%" height={contentHeight} flexShrink={0}>
+      <ScrollBox ref={scrollRef} flexDirection="column" height={Math.max(1, contentHeight - 1)} flexShrink={0}>
+        {content}
+      </ScrollBox>
+      <Text dimColor>
+        <ConfigurableShortcutHint action="scroll:pageUp" context="Scroll" fallback="PgUp" description="up" />
+        {' · '}
+        <ConfigurableShortcutHint action="scroll:pageDown" context="Scroll" fallback="PgDn" description="down" />
+        {' · '}
+        <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" />
       </Text>
     </Box>
   )
@@ -422,6 +502,68 @@ function ResetCreditsRow({
         <Text color="warning">Consume one reset credit? Enter to confirm, Esc to cancel.</Text>
       )}
       {isResetting && <Text dimColor>Resetting usage…</Text>}
+    </Box>
+  )
+}
+
+function formatCreditTime(value?: string | null): string {
+  if (!value) return 'Unavailable'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unavailable'
+  return date.toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, timeZoneName: 'short',
+  })
+}
+
+function ResetCreditDetails({
+  details,
+}: {
+  details: RateLimitResetCreditsDetails
+}): React.ReactNode {
+  const credits = details.credits
+    .filter(credit => credit.status !== 'redeemed')
+    .sort((a, b) =>
+      (Date.parse(a.expires_at ?? '') || Infinity) -
+      (Date.parse(b.expires_at ?? '') || Infinity),
+    )
+  const history = details.credits
+    .filter(credit => credit.status === 'redeemed')
+    .sort((a, b) =>
+      (Date.parse(b.redeemed_at ?? '') || 0) -
+      (Date.parse(a.redeemed_at ?? '') || 0),
+    )
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      {details.total_earned_count != null && (
+        <Text>Total granted: {details.total_earned_count}</Text>
+      )}
+      {[
+        { title: 'Reset credits', items: credits, isHistory: false },
+        { title: 'Used reset history', items: history, isHistory: true },
+      ].map(({ title, items, isHistory }) => (
+        <Box key={title} flexDirection="column" gap={1}>
+          <Text bold>{title}</Text>
+          {items.length === 0 && (
+            <Text dimColor>
+              {isHistory ? 'No used reset records returned.' : 'No reset credit details returned.'}
+            </Text>
+          )}
+          {items.map(credit => (
+            <Box key={credit.id} flexDirection="column">
+              <Text>{credit.title || 'Usage limit reset'} · {credit.status}</Text>
+              <Text dimColor>Granted: {formatCreditTime(credit.granted_at)}</Text>
+              <Text dimColor>
+                Expires: {credit.expires_at === null ? 'Does not expire' : formatCreditTime(credit.expires_at)}
+              </Text>
+              {isHistory && <Text dimColor>Used: {formatCreditTime(credit.redeemed_at)}</Text>}
+            </Box>
+          ))}
+        </Box>
+      ))}
+      <Text dimColor>Showing records returned by OpenAI. History may be incomplete.</Text>
     </Box>
   )
 }

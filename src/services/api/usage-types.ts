@@ -45,6 +45,22 @@ export type RateLimitResetCredits = {
   available_count: number
 }
 
+export type RateLimitResetCredit = {
+  id: string
+  reset_type: string
+  status: string
+  granted_at: string
+  expires_at?: string | null
+  title?: string | null
+  redeemed_at?: string | null
+}
+
+export type RateLimitResetCreditsDetails = {
+  available_count: number
+  credits: RateLimitResetCredit[]
+  total_earned_count?: number | null
+}
+
 export type RateLimitResetResult = {
   code: 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_redeemed'
   windows_reset: number

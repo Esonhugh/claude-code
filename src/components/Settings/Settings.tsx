@@ -113,7 +113,7 @@ export function Settings({
       </Suspense>
     </Tab>,
     <Tab key="usage" title="Usage">
-      <Usage />
+      <Usage contentHeight={insideModal ? Math.max(1, rows - 2) : contentHeight} />
     </Tab>,
     ...(isAnt()
       ? [

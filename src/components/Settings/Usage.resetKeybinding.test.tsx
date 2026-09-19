@@ -14,7 +14,32 @@ process.env.CLAUDE_CODE_USE_OPENAI = '1'
 process.env.ANTHROPIC_API_KEY = 'test-key'
 
 let fetchCount = 0
+let detailsFetchCount = 0
 let consumeCount = 0
+let failDetails = false
+let omitDetails = false
+let usageSource: 'chatgpt' | 'claude' = 'chatgpt'
+const resetCredit = {
+  id: 'fixture-credit',
+  reset_type: 'codex_rate_limits',
+  status: 'available',
+  granted_at: '2026-06-17T00:00:00Z',
+  expires_at: '2026-07-17T00:00:00Z',
+  redeemed_at: null as string | null,
+  title: 'Full reset (Weekly + 5 hr)',
+}
+const previousReset = {
+  ...resetCredit,
+  id: 'previous-credit',
+  status: 'redeemed',
+  expires_at: null,
+  redeemed_at: '2026-06-18T12:30:00Z',
+}
+const formatTime = (value: string) => new Date(value).toLocaleString('en-US', {
+  year: 'numeric', month: 'short', day: 'numeric',
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+  hour12: false, timeZoneName: 'short',
+})
 const keybindingCalls: Array<{
   action: string
   handler: () => void | false
@@ -41,9 +66,23 @@ const mocks = [
   spyOn(usageModule, 'fetchUtilization').mockImplementation(async () => {
     fetchCount += 1
     return {
-      source: 'chatgpt',
-      chatgpt_limits: [],
+      source: usageSource,
+      chatgpt_limits: [{ title: 'ChatGPT Codex weekly usage', limit: { utilization: 25, resets_at: null } }],
       rate_limit_reset_credits: { available_count: fetchCount === 1 ? 1 : 0 },
+    }
+  }),
+  spyOn(usageModule, 'fetchRateLimitResetCredits').mockImplementation(async () => {
+    detailsFetchCount += 1
+    if (failDetails) throw new Error('reset details offline')
+    if (omitDetails) return null
+    return {
+      available_count: fetchCount === 1 ? 2 : 0,
+      total_earned_count: 3,
+      credits: fetchCount === 1
+        ? [resetCredit, previousReset, { ...resetCredit, id: 'unknown-credit', status: 'future_status', granted_at: 'invalid', expires_at: undefined }]
+        : fetchCount === 2
+          ? [{ ...resetCredit, status: 'redeemed', redeemed_at: '2026-06-19T10:00:00Z' }, previousReset, { ...previousReset, id: 'missing-time', redeemed_at: null }]
+          : [],
     }
   }),
   spyOn(usageModule, 'consumeRateLimitResetCredit').mockImplementation(async () => {
@@ -58,9 +97,17 @@ function getActiveKeybinding(action: string) {
   )
 }
 
-const { render } = await import('../../ink.js')
+const { render, useInput } = await import('../../ink.js')
+let backgroundInputCount = 0
+function InputDriver() {
+  useInput(() => { backgroundInputCount += 1 })
+  return null
+}
 const instances = (await import('../../ink/instances.js')).default
 const { Usage } = await import('./Usage.js')
+const { KeybindingProvider } = await import('../../keybindings/KeybindingContext.js')
+const { DEFAULT_BINDINGS } = await import('../../keybindings/defaultBindings.js')
+const { parseBindings } = await import('../../keybindings/parser.js')
 
 class TestStdout extends Writable {
   columns = 100
@@ -140,6 +187,21 @@ try {
   await new Promise(resolve => setTimeout(resolve, 0))
   flushUpdates()
 
+  const initialOutput = stripAnsi(stdout.output)
+  assert.equal(detailsFetchCount, 1)
+  assert.match(initialOutput, /Reset: 2/)
+  assert.match(initialOutput, /Total granted: 3/)
+  assert.ok(initialOutput.includes(`Granted: ${formatTime(resetCredit.granted_at)}`))
+  assert.ok(initialOutput.includes(`Expires: ${formatTime(resetCredit.expires_at)}`))
+  assert.match(initialOutput, /Does not expire/)
+  assert.match(initialOutput, /Granted: Unavailable/)
+  assert.match(initialOutput, /Expires: Unavailable/)
+  assert.match(initialOutput, /future_status/)
+  assert.match(initialOutput, /Used reset history/)
+  assert.ok(initialOutput.includes(`Used: ${formatTime(previousReset.redeemed_at)}`))
+  assert.match(initialOutput, /History may be incomplete/)
+  assert.equal(consumeCount, 0)
+
   const selectReset = getActiveKeybinding('select:next')
   assert.equal(selectReset?.context, 'Settings')
   assert.equal(selectReset?.isActive, true)
@@ -159,6 +221,7 @@ try {
   assert.ok(confirmReset)
   assert.equal(confirmReset.context, 'Confirmation')
   assert.equal(confirmReset.isActive, true)
+  stdout.output = ''
   confirmReset.handler()
   assert.equal(confirmReset.handler(), false)
 
@@ -174,6 +237,98 @@ try {
   assert.match(output, /Reset: 0/)
   assert.equal(consumeCount, 1)
   assert.equal(fetchCount, 2)
+  assert.equal(detailsFetchCount, 2)
+  assert.ok(output.includes(`Used: ${formatTime('2026-06-19T10:00:00Z')}`))
+  assert.match(output, /Used: Unavailable/)
+  assert.ok(output.indexOf(`Used: ${formatTime('2026-06-19T10:00:00Z')}`) < output.indexOf(`Used: ${formatTime(previousReset.redeemed_at)}`))
+
+  // Remount with a failed detail request: summary and usage must remain visible.
+  failDetails = true
+  stdout.output = ''
+  keybindingCalls.length = 0
+  instance.rerender(<Usage key="offline" />)
+  await waitFor(() => detailsFetchCount === 3, 'detail failure was not requested')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  flushUpdates()
+  const offlineOutput = stripAnsi(stdout.output)
+  assert.match(offlineOutput, /ChatGPT Codex weekly usage/)
+  assert.match(offlineOutput, /Reset: 0/)
+  assert.match(offlineOutput, /Reset details unavailable/)
+  const retry = getActiveKeybinding('settings:retry')
+  assert.ok(retry)
+
+  failDetails = false
+  stdout.output = ''
+  retry.handler()
+  await waitFor(() => detailsFetchCount === 4, 'detail retry was not requested')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  flushUpdates()
+  const retriedOutput = stripAnsi(stdout.output)
+  assert.match(retriedOutput, /No used reset records returned/)
+  assert.doesNotMatch(retriedOutput, /Reset details unavailable/)
+
+  usageSource = 'claude'
+  stdout.output = ''
+  instance.rerender(<Usage key="claude" />)
+  await waitFor(() => fetchCount === 5, 'Claude usage was not requested')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  flushUpdates()
+  assert.equal(detailsFetchCount, 4)
+  assert.doesNotMatch(stripAnsi(stdout.output), /Reset:|Used reset history/)
+  assert.equal(consumeCount, 1)
+
+  usageSource = 'chatgpt'
+  omitDetails = true
+  stdout.output = ''
+  instance.rerender(<Usage key="missing-details" />)
+  await waitFor(() => detailsFetchCount === 5, 'missing detail response was not requested')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  flushUpdates()
+  assert.match(stripAnsi(stdout.output), /Reset details unavailable/)
+  assert.doesNotMatch(stripAnsi(stdout.output), /No used reset records returned/)
+  assert.equal(consumeCount, 1)
+
+  omitDetails = false
+  fetchCount = 0
+  stdout.output = ''
+  instance.rerender(
+    <KeybindingProvider
+      bindings={parseBindings(DEFAULT_BINDINGS)}
+      pendingChordRef={{ current: null }}
+      pendingChord={null}
+      setPendingChord={() => {}}
+      activeContexts={new Set()}
+      registerActiveContext={() => {}}
+      unregisterActiveContext={() => {}}
+      handlerRegistryRef={{ current: new Map() }}
+    >
+      <InputDriver />
+      <Usage key="scrollable" contentHeight={12} />
+    </KeybindingProvider>,
+  )
+  await waitFor(() => detailsFetchCount === 6, 'scrollable details were not requested')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  flushUpdates()
+  assert.doesNotMatch(stripAnsi(stdout.output), /Used reset history/)
+  stdout.output = ''
+  stdin.push('\x1b[6~')
+  await new Promise(resolve => setTimeout(resolve, 80))
+  flushUpdates()
+  assert.match(stripAnsi(stdout.output), /Used reset history/)
+  stdin.push('\x1b[1;5F')
+  await new Promise(resolve => setTimeout(resolve, 80))
+  flushUpdates()
+  assert.ok(stripAnsi(stdout.output).includes(`Used: ${formatTime(previousReset.redeemed_at)}`))
+  stdout.output = ''
+  stdin.push('\x1b[1;5H')
+  await new Promise(resolve => setTimeout(resolve, 80))
+  flushUpdates()
+  assert.match(stripAnsi(stdout.output), /Reset: 2/)
+  stdin.push('\x1b[5~')
+  stdin.push('\x1b[<65;4;4M')
+  await new Promise(resolve => setTimeout(resolve, 80))
+  assert.equal(backgroundInputCount, 0)
+  assert.equal(consumeCount, 1)
 } finally {
   instance.unmount()
   instance.cleanup()
