@@ -57,6 +57,10 @@ type Props = {
   bottomFloat?: ReactNode
   /** Mods pane content beside the conversation and composer in fullscreen dock mode. */
   dockPane?: ReactNode
+  /** Native sidebar content beside the transcript but above the full-width composer. */
+  sidebarPane?: ReactNode
+  /** Width of the native sidebar in terminal columns. */
+  sidebarWidth?: number
   /** Mods pane content seated above the prompt in inline mode. */
   inlinePane?: ReactNode
   /** Slash-command dialog content. Rendered in an absolute-positioned
@@ -308,6 +312,8 @@ export function FullscreenLayout({
   overlay,
   bottomFloat,
   dockPane,
+  sidebarPane,
+  sidebarWidth,
   inlinePane,
   modal,
   modalScrollRef,
@@ -320,10 +326,16 @@ export function FullscreenLayout({
 }: Props): React.ReactNode {
   const { rows: terminalRows, columns } = useTerminalSize()
   const hasDock = React.Children.toArray(dockPane).length > 0
+  const hasSidebar = React.Children.toArray(sidebarPane).length > 0
   const dockColumns = hasDock ? Math.floor(columns / 2) : 0
+  const sidebarColumns = hasSidebar ? (sidebarWidth ?? 0) : 0
   const conversationSize = useMemo(
-    () => ({ columns: columns - dockColumns, rows: terminalRows }),
-    [columns, dockColumns, terminalRows],
+    () => ({ columns: columns - dockColumns - sidebarColumns, rows: terminalRows }),
+    [columns, dockColumns, sidebarColumns, terminalRows],
+  )
+  const sidebarSize = useMemo(
+    () => ({ columns: sidebarColumns, rows: terminalRows }),
+    [sidebarColumns, terminalRows],
   )
   // Scroll-derived chrome state lives HERE, not in REPL. StickyTracker
   // writes via ScrollChromeContext; pillVisible subscribes directly to
@@ -397,63 +409,76 @@ export function FullscreenLayout({
     const headerPrompt =
       sticky != null && sticky !== 'clicked' && overlay == null ? sticky : null
     const padCollapsed = sticky != null && overlay == null
+    const bottomContent = (
+      <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">
+        <SuggestionsOverlay />
+        <DialogOverlay />
+        <Box
+          flexDirection="column"
+          width="100%"
+          flexGrow={1}
+          overflowY="hidden"
+        >
+          {bottom}
+        </Box>
+      </Box>
+    )
     return (
       <PromptOverlayProvider>
-        <Box flexGrow={1} flexDirection="row" overflow="hidden">
-          <TerminalSizeContext value={conversationSize}>
-            <Box width={conversationSize.columns} flexShrink={0} flexDirection="column">
-              <Box flexGrow={1} flexDirection="column" overflow="hidden">
-                {headerPrompt && (
-                  <StickyPromptHeader
-                    text={headerPrompt.text}
-                    onClick={headerPrompt.scrollTo}
-                  />
-                )}
-                <ScrollBox
-                  ref={scrollRef}
-                  flexGrow={1}
-                  flexDirection="column"
-                  paddingTop={padCollapsed ? 0 : 1}
-                  stickyScroll
-                >
-                  <ScrollChromeContext value={chromeCtx}>
-                    {scrollable}
-                  </ScrollChromeContext>
-                  {overlay}
-                </ScrollBox>
-                {!hidePill && pillVisible && overlay == null && (
-                  <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
-                )}
-                {bottomFloat != null && (
-                  <Box position="absolute" bottom={0} right={0} opaque>
-                    {bottomFloat}
+        <Box flexGrow={1} flexDirection="column" overflow="hidden">
+          <Box flexGrow={1} flexDirection="row" overflow="hidden">
+            <TerminalSizeContext value={conversationSize}>
+              <Box width={conversationSize.columns} flexShrink={0} flexDirection="column">
+                <Box flexGrow={1} flexDirection="column" overflow="hidden">
+                  {headerPrompt && (
+                    <StickyPromptHeader
+                      text={headerPrompt.text}
+                      onClick={headerPrompt.scrollTo}
+                    />
+                  )}
+                  <ScrollBox
+                    ref={scrollRef}
+                    flexGrow={1}
+                    flexDirection="column"
+                    paddingTop={padCollapsed ? 0 : 1}
+                    stickyScroll
+                  >
+                    <ScrollChromeContext value={chromeCtx}>
+                      {scrollable}
+                    </ScrollChromeContext>
+                    {overlay}
+                  </ScrollBox>
+                  {!hidePill && pillVisible && overlay == null && (
+                    <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
+                  )}
+                  {bottomFloat != null && (
+                    <Box position="absolute" bottom={0} right={0} opaque>
+                      {bottomFloat}
+                    </Box>
+                  )}
+                </Box>
+                {React.Children.toArray(inlinePane).length > 0 && (
+                  <Box flexDirection="column" flexShrink={0} width="100%" overflow="hidden">
+                    {inlinePane}
                   </Box>
                 )}
+                {hasDock && bottomContent}
               </Box>
-              {React.Children.toArray(inlinePane).length > 0 && (
-                <Box flexDirection="column" flexShrink={0} width="100%" overflow="hidden">
-                  {inlinePane}
+            </TerminalSizeContext>
+            {hasSidebar && (
+              <TerminalSizeContext value={sidebarSize}>
+                <Box flexDirection="column" flexShrink={0} width={sidebarColumns} overflow="hidden">
+                  {sidebarPane}
                 </Box>
-              )}
-              <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">
-                <SuggestionsOverlay />
-                <DialogOverlay />
-                <Box
-                  flexDirection="column"
-                  width="100%"
-                  flexGrow={1}
-                  overflowY="hidden"
-                >
-                  {bottom}
-                </Box>
+              </TerminalSizeContext>
+            )}
+            {hasDock && (
+              <Box flexDirection="column" flexShrink={0} width={dockColumns} overflow="hidden">
+                {dockPane}
               </Box>
-            </Box>
-          </TerminalSizeContext>
-          {hasDock && (
-            <Box flexDirection="column" flexShrink={0} width={dockColumns} overflow="hidden">
-              {dockPane}
-            </Box>
-          )}
+            )}
+          </Box>
+          {!hasDock && bottomContent}
         </Box>
         {modal != null && (
           <ModalContext

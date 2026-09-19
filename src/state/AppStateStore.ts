@@ -113,6 +113,7 @@ export type AppState = DeepImmutable<{
   statusLineText: string | undefined
   goalStatus: GoalStatus
   expandedView: 'none' | 'tasks' | 'teammates'
+  diffSidebarVisible: boolean
   isBriefOnly: boolean
   // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)
   showTeammateMessagePreview?: boolean
@@ -502,6 +503,7 @@ export function getDefaultAppState(): AppState {
       active: false,
     },
     expandedView: 'none',
+    diffSidebarVisible: false,
     isBriefOnly: false,
     showTeammateMessagePreview: false,
     selectedIPAgentIndex: -1,

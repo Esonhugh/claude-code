@@ -1961,6 +1961,72 @@ describe('ModsPane host layout', () => {
     }
   })
 
+  test('places a native sidebar beside the transcript above a full-width composer', async () => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    const stdout = new Output()
+    stdout.columns = 180
+    stdout.rows = 50
+    stdout.isTTY = true
+    function Content({ label }: { label: string }) {
+      const { columns } = useTerminalSize()
+      return <Box width={columns}><Text>{label}:{columns}</Text></Box>
+    }
+    let composerMounts = 0
+    function Composer() {
+      useEffect(() => { composerMounts++ }, [])
+      return <Content label="COMPOSER" />
+    }
+    function Host({ sidebarOpen }: { sidebarOpen: boolean }) {
+      const { columns, rows } = useTerminalSize()
+      const sidebarWidth = columns >= 180 ? 81 : 40
+      return <Box width={columns} height={rows} flexDirection="column">
+        <FullscreenLayout
+          scrollable={<Content label="TRANSCRIPT" />}
+          bottom={<Composer />}
+          sidebarPane={sidebarOpen ? <Content label="SIDEBAR" /> : undefined}
+          sidebarWidth={sidebarWidth}
+        />
+      </Box>
+    }
+    const instance = await render(<Host sidebarOpen />, {
+      stdout: stdout as never,
+      stdin: new Input() as never,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    })
+    try {
+      for (const [columns, rows, sidebarWidth] of [[180, 50, 81], [110, 30, 40]] as const) {
+        stdout.columns = columns
+        stdout.rows = rows
+        stdout.emit('resize')
+        await settle()
+        const transcriptWidth = columns - sidebarWidth
+        const transcript = nodeCache.get(renderedElement(stdout, `TRANSCRIPT:${transcriptWidth}`, 'ink-text'))!
+        const sidebar = nodeCache.get(renderedElement(stdout, `SIDEBAR:${sidebarWidth}`, 'ink-text'))!
+        const composer = nodeCache.get(renderedElement(stdout, `COMPOSER:${columns}`, 'ink-text'))!
+        expect(domElement(stdout, `TRANSCRIPT:${transcriptWidth}`, 'ink-box').yogaNode!.getComputedWidth()).toBe(transcriptWidth)
+        expect(domElement(stdout, `SIDEBAR:${sidebarWidth}`, 'ink-box').yogaNode!.getComputedWidth()).toBe(sidebarWidth)
+        expect(domElement(stdout, `COMPOSER:${columns}`, 'ink-box').yogaNode!.getComputedWidth()).toBe(columns)
+        expect(transcript.x).toBe(0)
+        expect(sidebar.x).toBe(transcriptWidth)
+        expect(composer.x).toBe(0)
+        expect(composer.y).toBe(rows - 1)
+      }
+
+      instance.rerender(<ThemeProvider><Host sidebarOpen={false} /></ThemeProvider>)
+      await settle()
+      expect(domElement(stdout, 'TRANSCRIPT:110', 'ink-box').yogaNode!.getComputedWidth()).toBe(110)
+      expect(domElement(stdout, 'COMPOSER:110', 'ink-box').yogaNode!.getComputedWidth()).toBe(110)
+      expect(elements(stdout, true).some(element => element.text === 'SIDEBAR:40')).toBe(false)
+      expect(composerMounts).toBe(1)
+    } finally {
+      instance.unmount()
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
+  })
+
   test('an empty dock does not reserve half of the transcript width', async () => {
     const previous = process.env.CLAUDE_CODE_NO_FLICKER
     process.env.CLAUDE_CODE_NO_FLICKER = '1'

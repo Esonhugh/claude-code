@@ -1,8 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash } from 'node:crypto'
-import { dirname, relative, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import builtinDiff from '../../commands/diff/index.js'
 import type { Tool } from '../../Tool.js'
 import { createToolCatalogForContext, type ToolCatalog } from './toolCatalog.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
@@ -78,7 +75,6 @@ type Activation = {
   state: 'candidate' | 'active' | 'retiring' | 'disposed'
   references: number
   started: boolean
-  replacesBuiltinDiff: boolean
   waits: Map<number, { kind: string; timer: ReturnType<typeof setTimeout>; reject(error: Error): void }>
   methods: WeakMap<object, (...args: unknown[]) => Promise<unknown>>
   controller: AbortController
@@ -113,25 +109,6 @@ const coreHost: Nouns = {
   command: { register: hostIdentity, list: hostIdentity },
   tool: { list: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
-}
-
-// Local product integration, not an official command-registration entitlement.
-// Pin public diff f96c3b49c4c8721685206aaab23609b2d399df4e's executable graph, not manifest claims or install paths.
-function isVerifiedDiff(declaration: ModDeclaration): boolean {
-  if (declaration.entrypoints.length !== 1 || declaration.modules.length !== 504) return false
-  const root = dirname(declaration.entrypoints[0]!)
-  const path = (value: string) => relative(root, value).split(sep).join('/')
-  const graph = {
-    entrypoints: declaration.entrypoints.map(path),
-    modules: declaration.modules.map(module => ({ path: path(module.path), source: module.source }))
-      .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-    links: declaration.links.map(link => JSON.stringify({
-      from: path(link.from), specifier: link.specifier,
-      to: link.to === 'claude-code' ? link.to : path(link.to),
-    })).sort(),
-  }
-  return createHash('sha256').update(JSON.stringify(graph)).digest('hex') ===
-    'fc83ea6d872137cc6384ce41c57d336e06a13fd5ddb89dfda10a3e86962065e2'
 }
 
 export function createModsRuntime({ onDiagnostic, services = {} }: {
@@ -225,9 +202,6 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   const commands = createModCommands({
     getBuiltinCommands: () => services.commands?.() ?? [],
-    allowBuiltinConflict: ({ owner, spec, builtin, matchedName }) =>
-      activations.has(owner as Activation) && (owner as Activation).replacesBuiltinDiff &&
-      spec.name === 'diff' && matchedName === 'diff' && builtin === builtinDiff,
     run: async (name, args, context) => {
       const command = commands.list().find(command => command.name === name)
       if (!command) throw new Error(`Mod command /${name} is no longer active`)
@@ -918,7 +892,6 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const activationController = new AbortController()
         const candidate: Activation = {
           declaration, environment, state: preAdmitted ? 'active' : 'candidate', references: 0, started: false,
-          replacesBuiltinDiff: isVerifiedDiff(declaration),
           waits: new Map(), methods: new WeakMap(), controller: activationController,
           operations: createModHostOperations({
             cwd: () => { if (!binding) throw new Error('Module session is not bound'); return binding.cwd },

@@ -201,6 +201,7 @@ describe('/tui', () => {
       expect(messages[0]).toContain('DISABLE_MOUSE_CLICKS: on')
       expect(messages[0]).toContain('/tui fullscreen')
       expect(messages[0]).toContain('/tui default')
+      expect(messages[0]).toContain('Diff sidebar: use /diff')
       expect(process.env.CLAUDE_CODE_NO_FLICKER).toBe('1')
     },
   )

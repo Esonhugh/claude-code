@@ -30,6 +30,7 @@ type TurnDiffCache = {
   completedTurns: TurnDiff[]
   currentTurn: TurnDiff | null
   lastProcessedIndex: number
+  lastProcessedUuid?: string
   lastTurnIndex: number
 }
 
@@ -108,8 +109,12 @@ export function useTurnDiffs(messages: Message[]): TurnDiff[] {
   return useMemo(() => {
     const c = cache.current
 
-    // Reset if messages shrunk (user rewound conversation)
-    if (messages.length < c.lastProcessedIndex) {
+    // Resume/rewind can replace a transcript without reducing its length.
+    if (
+      messages.length < c.lastProcessedIndex ||
+      (c.lastProcessedIndex > 0 &&
+        messages[c.lastProcessedIndex - 1]?.uuid !== c.lastProcessedUuid)
+    ) {
       c.completedTurns = []
       c.currentTurn = null
       c.lastProcessedIndex = 0
@@ -198,6 +203,7 @@ export function useTurnDiffs(messages: Message[]): TurnDiff[] {
     }
 
     c.lastProcessedIndex = messages.length
+    c.lastProcessedUuid = messages.at(-1)?.uuid
 
     // Build result: completed turns + current turn if it has files
     const result = [...c.completedTurns]

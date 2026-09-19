@@ -5,6 +5,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../ink.js'
 import { getCwd } from '../../utils/cwd.js'
 import { readFileSafe } from '../../utils/file.js'
+import { findGitRoot } from '../../utils/git.js'
 import { Divider } from '../design-system/Divider.js'
 import { StructuredDiff } from '../StructuredDiff.js'
 
@@ -35,16 +36,22 @@ export function DiffDetailView({
   // Read file content for syntax detection and multiline construct handling.
   // Only computed when this component is rendered (detail view mode).
   const { firstLine, fileContent } = useMemo(() => {
-    if (!filePath) {
+    if (
+      !filePath ||
+      hunks.length === 0 ||
+      isBinary ||
+      isLargeFile ||
+      isUntracked
+    ) {
       return { firstLine: null, fileContent: undefined }
     }
-    const fullPath = resolve(getCwd(), filePath)
+    const fullPath = resolve(findGitRoot(getCwd()) ?? getCwd(), filePath)
     const content = readFileSafe(fullPath)
     return {
       firstLine: content?.split('\n')[0] ?? null,
       fileContent: content ?? undefined,
     }
-  }, [filePath])
+  }, [filePath, hunks, isBinary, isLargeFile, isUntracked])
 
   // Handle untracked files
   if (isUntracked) {

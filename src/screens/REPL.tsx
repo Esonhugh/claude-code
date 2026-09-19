@@ -621,6 +621,8 @@ import {
   useUnseenDivider,
   computeUnseenDivider,
 } from '../components/FullscreenLayout.js'
+import { DiffSidebar } from '../components/diff/DiffSidebar.js'
+import { MIN_DIFF_SIDEBAR_COLUMNS } from '../commands/diff/index.js'
 import {
   isFullscreenEnvEnabled,
   maybeGetTmuxMouseHint,
@@ -1040,6 +1042,7 @@ export function REPL({
 
   const toolPermissionContext = useAppState(s => s.toolPermissionContext)
   const verbose = useAppState(s => s.verbose)
+  const diffSidebarVisible = useAppState(s => s.diffSidebarVisible)
   const mcp = useAppState(s => s.mcp)
   const plugins = useAppState(s => s.plugins)
   const agentDefinitions = useAppState(s => s.agentDefinitions)
@@ -3013,6 +3016,13 @@ export function REPL({
   )
   const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
   const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
+  const canShowDiffSidebar = isFullscreenEnvEnabled() &&
+    modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
+  useEffect(() => {
+    if (diffSidebarVisible && !canShowDiffSidebar) {
+      setAppState(state => ({ ...state, diffSidebarVisible: false }))
+    }
+  }, [diffSidebarVisible, canShowDiffSidebar, setAppState])
 
   // True when permission prompts exist but are hidden because the user is typing
   const hasSuppressedDialogs =
@@ -6667,6 +6677,14 @@ export function REPL({
           modal={centeredModal}
           dockPane={modDock.map(renderModPane)}
           inlinePane={modInline.map(renderModPane)}
+          sidebarWidth={Math.min(Math.floor(modTerminalSize.columns * 0.45), 90, modTerminalSize.columns - 70)}
+          sidebarPane={diffSidebarVisible && canShowDiffSidebar ? (
+            <DiffSidebar
+              key={conversationId}
+              messages={messages}
+              onClose={() => setAppState(state => ({ ...state, diffSidebarVisible: false }))}
+            />
+          ) : undefined}
           modalScrollRef={modalScrollRef}
           dividerYRef={dividerYRef}
           hidePill={!!viewedAgentTask}

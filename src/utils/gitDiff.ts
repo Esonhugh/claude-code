@@ -3,7 +3,7 @@ import { access, readFile } from 'fs/promises'
 import { dirname, join, relative, sep } from 'path'
 import { getCwd } from './cwd.js'
 import { getCachedRepository } from './detectRepository.js'
-import { execFileNoThrow, execFileNoThrowWithCwd } from './execFileNoThrow.js'
+import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { isFileWithinReadSizeLimit } from './file.js'
 import {
   findGitRoot,
@@ -59,11 +59,16 @@ export async function fetchGitDiff(): Promise<GitDiffResult | null> {
   // Quick probe: use --shortstat to get totals without loading all content.
   // This is O(1) memory and lets us detect massive diffs (e.g., jj workspaces)
   // before committing to expensive operations.
-  const { stdout: shortstatOut, code: shortstatCode } = await execFileNoThrow(
-    gitExe(),
-    ['--no-optional-locks', 'diff', 'HEAD', '--shortstat'],
-    { timeout: GIT_TIMEOUT_MS, preserveOutputOnError: false },
-  )
+  const { stdout: shortstatOut, code: shortstatCode } =
+    await execFileNoThrowWithCwd(
+      gitExe(),
+      ['--no-optional-locks', 'diff', 'HEAD', '--shortstat'],
+      {
+        cwd: findGitRoot(getCwd()) ?? getCwd(),
+        timeout: GIT_TIMEOUT_MS,
+        preserveOutputOnError: false,
+      },
+    )
 
   if (shortstatCode === 0) {
     const quickStats = parseShortstat(shortstatOut)
@@ -79,11 +84,16 @@ export async function fetchGitDiff(): Promise<GitDiffResult | null> {
   }
 
   // Get stats via --numstat (all uncommitted changes vs HEAD)
-  const { stdout: numstatOut, code: numstatCode } = await execFileNoThrow(
-    gitExe(),
-    ['--no-optional-locks', 'diff', 'HEAD', '--numstat'],
-    { timeout: GIT_TIMEOUT_MS, preserveOutputOnError: false },
-  )
+  const { stdout: numstatOut, code: numstatCode } =
+    await execFileNoThrowWithCwd(
+      gitExe(),
+      ['--no-optional-locks', 'diff', 'HEAD', '--numstat'],
+      {
+        cwd: findGitRoot(getCwd()) ?? getCwd(),
+        timeout: GIT_TIMEOUT_MS,
+        preserveOutputOnError: false,
+      },
+    )
 
   if (numstatCode !== 0) return null
 
@@ -121,10 +131,14 @@ export async function fetchGitDiffHunks(): Promise<
     return new Map()
   }
 
-  const { stdout: diffOut, code: diffCode } = await execFileNoThrow(
+  const { stdout: diffOut, code: diffCode } = await execFileNoThrowWithCwd(
     gitExe(),
     ['--no-optional-locks', 'diff', 'HEAD'],
-    { timeout: GIT_TIMEOUT_MS, preserveOutputOnError: false },
+    {
+      cwd: findGitRoot(getCwd()) ?? getCwd(),
+      timeout: GIT_TIMEOUT_MS,
+      preserveOutputOnError: false,
+    },
   )
 
   if (diffCode !== 0) {
@@ -335,10 +349,14 @@ async function fetchUntrackedFiles(
   maxFiles: number,
 ): Promise<Map<string, PerFileStats> | null> {
   // Get list of untracked files (excludes gitignored)
-  const { stdout, code } = await execFileNoThrow(
+  const { stdout, code } = await execFileNoThrowWithCwd(
     gitExe(),
     ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard'],
-    { timeout: GIT_TIMEOUT_MS, preserveOutputOnError: false },
+    {
+      cwd: findGitRoot(getCwd()) ?? getCwd(),
+      timeout: GIT_TIMEOUT_MS,
+      preserveOutputOnError: false,
+    },
   )
 
   if (code !== 0 || !stdout.trim()) return null

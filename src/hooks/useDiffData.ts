@@ -29,18 +29,18 @@ export type DiffData = {
 
 /**
  * Hook to fetch current git diff data on demand.
- * Fetches both stats and hunks when component mounts.
+ * Fetches stats and hunks on mount, optionally refreshing while visible.
  */
-export function useDiffData(): DiffData {
+export function useDiffData(refreshIntervalMs = 0): DiffData {
   const [diffResult, setDiffResult] = useState<GitDiffResult | null>(null)
   const [hunks, setHunks] = useState<Map<string, StructuredPatchHunk[]>>(
     new Map(),
   )
   const [loading, setLoading] = useState(true)
 
-  // Fetch diff data on mount
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
 
     async function loadDiffData() {
       try {
@@ -61,6 +61,10 @@ export function useDiffData(): DiffData {
           setHunks(new Map())
           setLoading(false)
         }
+      } finally {
+        if (!cancelled && refreshIntervalMs > 0) {
+          timer = setTimeout(loadDiffData, refreshIntervalMs)
+        }
       }
     }
 
@@ -68,8 +72,9 @@ export function useDiffData(): DiffData {
 
     return () => {
       cancelled = true
+      clearTimeout(timer)
     }
-  }, [])
+  }, [refreshIntervalMs])
 
   return useMemo(() => {
     if (!diffResult) {
