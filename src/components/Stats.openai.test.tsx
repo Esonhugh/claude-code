@@ -26,10 +26,9 @@ const bindings = parseBindings([
 const localStats = await import('../utils/stats.js')
 const usage = await import('../services/api/usage.js')
 const { Stats } = await import('./Stats.js')
-const { Pane } = await import('./design-system/Pane.js')
-const { Tab, Tabs } = await import('./design-system/Tabs.js')
-const { useKeybinding } = await import('../keybindings/useKeybinding.js')
-const { render, Text } = await import('../ink.js')
+const status = await import('./Settings/Status.js')
+const { Settings } = await import('./Settings/Settings.js')
+const { render } = await import('../ink.js')
 class Output extends Writable {
   columns = 60
   rows = 40
@@ -55,7 +54,7 @@ class Input extends Readable {
     return this
   }
 }
-test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', async () => {
+test.each([144, 80])('embedded Stats preserves chart rows and nested focus at %s columns', async columns => {
   spyOn(localStats, 'aggregateClaudeCodeStatsForRange').mockResolvedValue({
     totalSessions: 1,
     totalDays: 1,
@@ -71,6 +70,9 @@ test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', a
   spyOn(usage, 'isOpenAIActivityAvailable').mockReturnValue(true)
   spyOn(usage, 'fetchOpenAIActivity').mockResolvedValue({
     lifetime_tokens: 42,
+    current_streak_days: 31,
+    longest_streak_days: 37,
+    longest_running_turn_sec: 4440,
     daily_usage_buckets: [],
   })
   const nestedBindings = parseBindings([
@@ -93,19 +95,21 @@ test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', a
     },
   ])
   let closeCount = 0
+  spyOn(status, 'buildDiagnostics').mockResolvedValue([])
+  spyOn(status, 'buildStatusUsage').mockResolvedValue(null)
+  spyOn(usage, 'fetchUtilization').mockResolvedValue(null)
   function Harness() {
-    const [selectedTab, setSelectedTab] = React.useState('Stats')
-    useKeybinding('confirm:no', () => { closeCount++ }, { context: 'Settings' })
     return (
-      <Pane color="permission">
-        <Tabs selectedTab={selectedTab} onTabChange={setSelectedTab} color="permission">
-          <Tab title="Usage"><Text>Usage sentinel</Text></Tab>
-          <Tab title="Stats"><Stats embedded onClose={() => { closeCount++ }} /></Tab>
-        </Tabs>
-      </Pane>
+      <Settings
+        defaultTab="Stats"
+        context={{} as React.ComponentProps<typeof Settings>['context']}
+        onClose={() => { closeCount++ }}
+      />
     )
   }
   const stdout = new Output()
+  stdout.columns = columns
+  stdout.rows = columns === 80 ? 32 : 52
   const stdin = new Input()
   const instance = await render(
     <KeybindingProvider
@@ -139,9 +143,19 @@ test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', a
     stdin.push('\u001b[C')
     await settle()
     assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
+    stdout.output = ''
     stdin.push('\u001b[B')
     await settle()
     assert.match(stripAnsi(stdout.output), /↑\/↓ ±1 day/)
+    assert.match(stripAnsi(stdout.output), /^\s*Longest turn: 1h 14m\s*$/m)
+    assert.match(stripAnsi(stdout.output), /^\s*Streak: 31 days\s+Longest streak: 37 days\s*$/m)
+    for (const day of ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']) {
+      assert.match(stripAnsi(stdout.output), new RegExp(`^ *${day} [·■ ]+$`, 'm'))
+    }
+    assert.match(stripAnsi(stdout.output), /^ *Intensity: low → medium → high · · = zero · blank = future · inverse =\s+selected *$/m)
+    assert.match(stripAnsi(stdout.output), /^ *K = thousand · M = million · B = billion *$/m)
+    assert.match(stripAnsi(stdout.output), /^ *Weeks \d+–\d+ of 52 *$/m)
+    assert.doesNotMatch(stripAnsi(stdout.output), /14mngest|of 52 = million/)
     stdin.push('\u001b[A')
     await settle()
     const yesterday = new Date()
@@ -150,16 +164,23 @@ test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', a
       stripAnsi(stdout.output),
       new RegExp(`${yesterday.toLocaleDateString('en-CA')}: 0 tokens`),
     )
+    stdout.output = ''
     stdin.push('v')
     await settle()
     assert.match(stripAnsi(stdout.output), /Weekly \(Sunday/)
+    assert.match(stripAnsi(stdout.output), /^ *Longest turn: 1h 14m *$/m)
+    assert.match(stripAnsi(stdout.output), /^ *Day \d{4}-\d{2}-\d{2}: 0 tokens *$/m)
+    assert.match(stripAnsi(stdout.output), /^ *Weeks \d+–\d+ of 52 *$/m)
+    assert.doesNotMatch(stripAnsi(stdout.output), /14mngest|of 52 = million/)
     stdin.push('\t')
     await settle()
     stdin.push('\u001b[A')
     await settle()
+    stdout.output = ''
     stdin.push('\u001b[Z')
     await settle()
-    assert.match(stripAnsi(stdout.output), /Usage sentinel/)
+    assert.match(stripAnsi(stdout.output), /Usage data is unavailable for the current OpenAI authentication\./)
+    assert.doesNotMatch(stripAnsi(stdout.output), /Codex activity/)
     stdin.push('\t')
     await settle()
     stdin.push('\u001b')

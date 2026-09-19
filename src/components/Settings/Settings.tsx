@@ -151,7 +151,9 @@ export function Settings({
         // MCP list) flow to their natural height for the Modal's ScrollBox
         // to scroll. Config/Gates still get contentHeight above — they
         // paginate internally so this only affects Status/Usage/Stats.
-        contentHeight={tabsHidden || insideModal ? undefined : contentHeight}
+        // Stats has a variable-height chart, not internal pagination. Capping
+        // it flex-shrinks text rows into one another when focus/view changes.
+        contentHeight={tabsHidden || insideModal || selectedTab === 'Stats' ? undefined : contentHeight}
       >
         {tabs}
       </Tabs>
