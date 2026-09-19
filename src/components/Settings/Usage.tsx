@@ -4,6 +4,8 @@ import { extraUsage as extraUsageCommand } from 'src/commands/extra-usage/index.
 import { formatCost } from 'src/cost-tracker.js'
 import { getSubscriptionType } from 'src/utils/auth.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
+import { useModalOrTerminalSize } from '../../context/modalContext.js'
+import type { DOMElement } from '../../ink/dom.js'
 import { Box, Text, useStdin } from '../../ink.js'
 import ScrollBox, { type ScrollBoxHandle } from '../../ink/components/ScrollBox.js'
 import type { InputEvent } from '../../ink/events/input-event.js'
@@ -112,24 +114,57 @@ function LimitBar({
   )
 }
 
-export function Usage({ contentHeight }: { contentHeight?: number } = {}): React.ReactNode {
+export function Usage({
+  contentHeight,
+  onOwnsEscChange,
+}: {
+  contentHeight?: number
+  onOwnsEscChange?: (ownsEsc: boolean) => void
+} = {}): React.ReactNode {
   const scrollRef = React.useRef<ScrollBoxHandle>(null)
+  const selectedCreditRef = React.useRef<DOMElement>(null)
   const { internal_eventEmitter } = useStdin()
   const keybindings = useOptionalKeybindingContext()
   const [utilization, setUtilization] = useState<Utilization | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [isResetSelected, setIsResetSelected] = useState(false)
+  const [selectedCreditId, setSelectedCreditId] = useState<string | null>(null)
   const [isConfirmingReset, setIsConfirmingReset] = useState(false)
   const [isResetting, setIsResetting] = useState(false)
   const [resetMessage, setResetMessage] = useState<string | null>(null)
   const [resetDetails, setResetDetails] = useState<RateLimitResetCreditsDetails | null>(null)
   const [resetDetailsError, setResetDetailsError] = useState<string | null>(null)
   const isResettingRef = React.useRef(false)
-  const { columns } = useTerminalSize()
+  const { columns } = useModalOrTerminalSize(useTerminalSize())
+  const splitColumns = utilization?.source === 'chatgpt' && columns >= 100
+  const availableWidth = Math.max(1, columns - 6)
+  const maxWidth = splitColumns
+    ? Math.max(1, Math.floor((availableWidth - 3) / 2) - 4)
+    : Math.min(availableWidth, 80)
 
-  const availableWidth = columns - 2 // 2 for screen padding
-  const maxWidth = Math.min(availableWidth, 80)
+  useEffect(() => {
+    onOwnsEscChange?.(isConfirmingReset)
+    return () => onOwnsEscChange?.(false)
+  }, [isConfirmingReset, onOwnsEscChange])
+
+  React.useLayoutEffect(() => {
+    const viewport = scrollRef.current
+    const element = selectedCreditRef.current
+    if (!viewport || !element) return
+    // Credit cards are nested in the right column; sum relative Yoga offsets.
+    let top = 0
+    let node: DOMElement | undefined = element
+    while (node && node !== viewport.getElement()) {
+      top += node.yogaNode?.getComputedTop() ?? 0
+      node = node.parentNode
+    }
+    const bottom = top + (element.yogaNode?.getComputedHeight() ?? 0)
+    const scrollTop = viewport.getScrollTop()
+    if (top < scrollTop) viewport.scrollTo(top)
+    else if (bottom > scrollTop + viewport.getViewportHeight()) {
+      viewport.scrollTo(Math.max(top, bottom - viewport.getViewportHeight()))
+    }
+  }, [selectedCreditId, isConfirmingReset, columns, contentHeight])
 
   // The transcript's scroll listener mounts first; this viewport must own
   // scroll input while Usage is open, without changing other Settings tabs.
@@ -164,7 +199,7 @@ export function Usage({ contentHeight }: { contentHeight?: number } = {}): React
     try {
       const data = await fetchUtilization()
       setUtilization(data)
-      setIsResetSelected(false)
+      setSelectedCreditId(null)
       setIsConfirmingReset(false)
       if (data?.source === 'chatgpt') {
         try {
@@ -189,7 +224,17 @@ export function Usage({ contentHeight }: { contentHeight?: number } = {}): React
   }, [loadUtilization])
 
   const resetCount = resetDetails?.available_count ?? utilization?.rate_limit_reset_credits?.available_count ?? 0
-  const canReset = resetCount > 0 && !isLoading && !isResetting
+  const availableCredits = (resetDetails?.credits ?? [])
+    .filter(credit => credit.status === 'available')
+    .sort((a, b) => {
+      const aTime = Date.parse(a.expires_at ?? '')
+      const bTime = Date.parse(b.expires_at ?? '')
+      return (Number.isNaN(aTime) ? Infinity : aTime) -
+        (Number.isNaN(bTime) ? Infinity : bTime)
+    })
+  const selectedCredit = availableCredits.find(credit => credit.id === selectedCreditId)
+  const canReset = utilization?.source === 'chatgpt' && resetCount > 0 &&
+    availableCredits.length > 0 && !isLoading && !isResetting
 
   useKeybinding(
     'settings:retry',
@@ -202,42 +247,43 @@ export function Usage({ contentHeight }: { contentHeight?: number } = {}): React
   useKeybinding(
     'select:next',
     () => {
-      if (!canReset) return false
-      setIsResetSelected(true)
+      if (!canReset || isConfirmingReset) return false
+      const index = availableCredits.findIndex(credit => credit.id === selectedCreditId)
+      setSelectedCreditId(availableCredits[Math.min(index + 1, availableCredits.length - 1)]!.id)
     },
-    { context: 'Settings', isActive: canReset && !isResetSelected },
+    { context: 'Settings', isActive: canReset && !isConfirmingReset },
   )
 
   useKeybinding(
     'select:previous',
     () => {
-      if (!canReset) return false
-      setIsResetSelected(false)
-      setIsConfirmingReset(false)
+      if (!canReset || isConfirmingReset) return false
+      const index = availableCredits.findIndex(credit => credit.id === selectedCreditId)
+      setSelectedCreditId(index > 0 ? availableCredits[index - 1]!.id : null)
     },
-    { context: 'Settings', isActive: canReset && isResetSelected },
+    { context: 'Settings', isActive: canReset && !!selectedCredit && !isConfirmingReset },
   )
 
   useKeybinding(
     'settings:close',
     () => {
-      if (!canReset || !isResetSelected || isConfirmingReset) return false
+      if (!canReset || !selectedCredit || isConfirmingReset) return false
       setIsConfirmingReset(true)
     },
     {
       context: 'Settings',
-      isActive: canReset && isResetSelected && !isConfirmingReset,
+      isActive: canReset && !!selectedCredit && !isConfirmingReset,
     },
   )
 
   useKeybinding(
     'confirm:yes',
     () => {
-      if (!canReset || !isConfirmingReset || isResettingRef.current) return false
+      if (!canReset || !selectedCredit || !isConfirmingReset || isResettingRef.current) return false
       isResettingRef.current = true
       setIsResetting(true)
       setResetMessage(null)
-      void consumeRateLimitResetCredit()
+      void consumeRateLimitResetCredit(selectedCredit.id)
         .then(async result => {
           switch (result?.code) {
             case 'reset':
@@ -267,7 +313,7 @@ export function Usage({ contentHeight }: { contentHeight?: number } = {}): React
           setIsConfirmingReset(false)
         })
     },
-    { context: 'Confirmation', isActive: canReset && isConfirmingReset },
+    { context: 'Confirmation', isActive: canReset && !!selectedCredit && isConfirmingReset },
   )
 
   useKeybinding(
@@ -359,9 +405,10 @@ export function Usage({ contentHeight }: { contentHeight?: number } = {}): React
       ]
   const accountLine = formatOpenAIAccountLine(utilization.openai_account)
 
-  const content = (
+  const usageDetails = (
     <Box flexDirection="column" gap={1} width="100%">
-      {accountLine && <Text>{accountLine}</Text>}
+      <Text bold color="permission">Usage details</Text>
+      {accountLine && <Text dimColor>{accountLine}</Text>}
 
       {limits.some(({ limit }) => typeof limit?.utilization === 'number') || (
         <Text dimColor>/usage is only available for subscription plans.</Text>
@@ -387,96 +434,124 @@ export function Usage({ contentHeight }: { contentHeight?: number } = {}): React
         />
       )}
 
-      {resetMessage && <Text>{resetMessage}</Text>}
+      {isEligibleForOverageCreditGrant() && (
+        <OverageCreditUpsell maxWidth={maxWidth} />
+      )}
+    </Box>
+  )
 
+  const content = (
+    <Box flexDirection={splitColumns ? 'row' : 'column'} gap={2} width="100%" alignItems="flex-start">
+      <Box flexDirection="column" width={splitColumns ? '50%' : '100%'} flexShrink={1} paddingRight={splitColumns ? 1 : 0}>
+        {usageDetails}
+      </Box>
       {utilization.source === 'chatgpt' && (
-        <Box flexDirection="column" gap={1}>
-          <ResetCreditsRow
-            availableCount={resetCount}
-            isSelected={isResetSelected}
-            isConfirming={isConfirmingReset}
-            isResetting={isResetting}
-          />
+        <Box
+          flexDirection="column"
+          width={splitColumns ? '50%' : '100%'}
+          flexShrink={1}
+          gap={1}
+          borderStyle="single"
+          borderColor="promptBorder"
+          borderTop={!splitColumns}
+          borderBottom={false}
+          borderLeft={splitColumns}
+          borderRight={false}
+          paddingLeft={splitColumns ? 2 : 0}
+          paddingTop={splitColumns ? 0 : 1}
+        >
+          <Box justifyContent="space-between">
+            <Text bold color="permission">Reset credits</Text>
+            <Text bold>{resetCount} available</Text>
+          </Box>
+          {resetMessage && <Text color="success">{resetMessage}</Text>}
           {isLoading && <Text dimColor>Loading reset details…</Text>}
           {resetDetailsError && (
             <Box flexDirection="column">
               <Text color="warning">{resetDetailsError}</Text>
               <Text dimColor>
-                <ConfigurableShortcutHint
-                  action="settings:retry"
-                  context="Settings"
-                  fallback="r"
-                  description="retry"
-                />
+                <ConfigurableShortcutHint action="settings:retry" context="Settings" fallback="r" description="retry" />
               </Text>
             </Box>
           )}
-          {resetDetails && <ResetCreditDetails details={resetDetails} />}
+          {resetDetails && availableCredits.length === 0 && (
+            <Text dimColor>No available reset credits returned.</Text>
+          )}
+          {availableCredits.map((credit, index) => {
+            const isSelected = credit.id === selectedCreditId
+            return (
+              <Box
+                key={credit.id}
+                ref={isSelected ? selectedCreditRef : undefined}
+                flexDirection="column"
+                borderStyle="round"
+                borderColor={isSelected ? 'permission' : 'promptBorder'}
+                paddingX={1}
+              >
+                <Text bold color={isSelected ? 'permission' : undefined}>
+                  {isSelected ? '› ' : ''}{index + 1}. {credit.title || 'Usage limit reset'}
+                </Text>
+                <Text dimColor>Granted: {formatCreditTime(credit.granted_at)}</Text>
+                <Text dimColor>
+                  Expires: {credit.expires_at === null ? 'Does not expire' : formatCreditTime(credit.expires_at)}
+                </Text>
+                {isSelected && !isConfirmingReset && !isResetting && (
+                  <Text color="permission">
+                    <ConfigurableShortcutHint action="settings:close" context="Settings" fallback="Enter" description="use this reset" />
+                  </Text>
+                )}
+                {isSelected && isConfirmingReset && (
+                  <Box flexDirection="column" marginTop={1}>
+                    <Text bold color="warning">Use this reset?</Text>
+                    <Text>Card: {credit.title || 'Usage limit reset'}</Text>
+                    <Text dimColor>ID: {credit.id}</Text>
+                    <Text color="warning">This consumes one credit.</Text>
+                    <Text>
+                      <ConfigurableShortcutHint action="confirm:yes" context="Confirmation" fallback="Enter" description="confirm" />
+                      {' · '}
+                      <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="back" />
+                    </Text>
+                  </Box>
+                )}
+                {isSelected && isResetting && <Text color="warning">Resetting usage…</Text>}
+              </Box>
+            )
+          })}
+          {resetDetails && resetCount > availableCredits.length && (
+            <Text dimColor>Showing {availableCredits.length} of {resetCount} available credits.</Text>
+          )}
         </Box>
       )}
-
-      {isEligibleForOverageCreditGrant() && (
-        <OverageCreditUpsell maxWidth={maxWidth} />
-      )}
-
-      <Text dimColor>
-        <ConfigurableShortcutHint
-          action="confirm:no"
-          context="Settings"
-          fallback="Esc"
-          description="cancel"
-        />
-      </Text>
     </Box>
   )
+  const footer = (
+    <Text dimColor>
+      {canReset && !isConfirmingReset && (
+        <>
+          <ConfigurableShortcutHint action="select:next" context="Settings" fallback="↓" description="select reset" />
+          {' · '}
+          <ConfigurableShortcutHint action="select:previous" context="Settings" fallback="↑" description="previous" />
+          {' · '}
+        </>
+      )}
+      {contentHeight !== undefined && (
+        <>
+          <ConfigurableShortcutHint action="scroll:pageDown" context="Scroll" fallback="PgDn" description="scroll" />
+          {' · '}
+        </>
+      )}
+      <ConfigurableShortcutHint action="confirm:no" context={isConfirmingReset ? 'Confirmation' : 'Settings'} fallback="Esc" description={isConfirmingReset ? 'back' : 'close'} />
+    </Text>
+  )
 
-  if (contentHeight === undefined) return content
+  if (contentHeight === undefined) return <Box flexDirection="column" width="100%" gap={1}>{content}{footer}</Box>
   return (
     <Box flexDirection="column" width="100%" height={contentHeight} flexShrink={0}>
-      <ScrollBox ref={scrollRef} flexDirection="column" height={Math.max(1, contentHeight - 1)} flexShrink={0}>
+      {/* Start loaded content at the top instead of following the loading view's bottom. */}
+      <ScrollBox key={isLoading ? 'loading' : 'loaded'} ref={scrollRef} flexDirection="column" height={Math.max(1, contentHeight - 1)} flexShrink={0}>
         {content}
       </ScrollBox>
-      <Text dimColor>
-        <ConfigurableShortcutHint action="scroll:pageUp" context="Scroll" fallback="PgUp" description="up" />
-        {' · '}
-        <ConfigurableShortcutHint action="scroll:pageDown" context="Scroll" fallback="PgDn" description="down" />
-        {' · '}
-        <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" />
-      </Text>
-    </Box>
-  )
-}
-
-type ResetCreditsRowProps = {
-  availableCount: number
-  isSelected: boolean
-  isConfirming: boolean
-  isResetting: boolean
-}
-
-function ResetCreditsRow({
-  availableCount,
-  isSelected,
-  isConfirming,
-  isResetting,
-}: ResetCreditsRowProps): React.ReactNode {
-  if (availableCount <= 0) {
-    return <Text>Reset: 0</Text>
-  }
-
-  return (
-    <Box flexDirection="column">
-      <Text>
-        Reset: {availableCount}            <Text color="background" inverse={isSelected}>[Reset]</Text>
-      </Text>
-      {!isSelected && <Text dimColor>↓ to select reset</Text>}
-      {isSelected && !isConfirming && !isResetting && (
-        <Text dimColor>Enter to reset</Text>
-      )}
-      {isConfirming && (
-        <Text color="warning">Consume one reset credit? Enter to confirm, Esc to cancel.</Text>
-      )}
-      {isResetting && <Text dimColor>Resetting usage…</Text>}
+      {footer}
     </Box>
   )
 }
@@ -490,57 +565,6 @@ function formatCreditTime(value?: string | null): string {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false, timeZoneName: 'short',
   })
-}
-
-function ResetCreditDetails({
-  details,
-}: {
-  details: RateLimitResetCreditsDetails
-}): React.ReactNode {
-  const credits = details.credits
-    .filter(credit => credit.status !== 'redeemed')
-    .sort((a, b) =>
-      (Date.parse(a.expires_at ?? '') || Infinity) -
-      (Date.parse(b.expires_at ?? '') || Infinity),
-    )
-  const history = details.credits
-    .filter(credit => credit.status === 'redeemed')
-    .sort((a, b) =>
-      (Date.parse(b.redeemed_at ?? '') || 0) -
-      (Date.parse(a.redeemed_at ?? '') || 0),
-    )
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      {details.total_earned_count != null && (
-        <Text>Total granted: {details.total_earned_count}</Text>
-      )}
-      {[
-        { title: 'Reset credits', items: credits, isHistory: false },
-        { title: 'Used reset history', items: history, isHistory: true },
-      ].map(({ title, items, isHistory }) => (
-        <Box key={title} flexDirection="column" gap={1}>
-          <Text bold>{title}</Text>
-          {items.length === 0 && (
-            <Text dimColor>
-              {isHistory ? 'No used reset records returned.' : 'No reset credit details returned.'}
-            </Text>
-          )}
-          {items.map(credit => (
-            <Box key={credit.id} flexDirection="column">
-              <Text>{credit.title || 'Usage limit reset'} · {credit.status}</Text>
-              <Text dimColor>Granted: {formatCreditTime(credit.granted_at)}</Text>
-              <Text dimColor>
-                Expires: {credit.expires_at === null ? 'Does not expire' : formatCreditTime(credit.expires_at)}
-              </Text>
-              {isHistory && <Text dimColor>Used: {formatCreditTime(credit.redeemed_at)}</Text>}
-            </Box>
-          ))}
-        </Box>
-      ))}
-      <Text dimColor>Showing records returned by OpenAI. History may be incomplete.</Text>
-    </Box>
-  )
 }
 
 type ExtraUsageSectionProps = {

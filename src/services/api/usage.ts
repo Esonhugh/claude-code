@@ -65,12 +65,14 @@ export async function fetchRateLimitResetCredits(): Promise<RateLimitResetCredit
   return fetchChatGPTRateLimitResetCredits()
 }
 
-export async function consumeRateLimitResetCredit(): Promise<RateLimitResetResult | null> {
+export async function consumeRateLimitResetCredit(
+  creditId?: string,
+): Promise<RateLimitResetResult | null> {
   if (
     !isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
     !getOpenAIAuthInfo()?.isChatGPT
   ) {
     return null
   }
-  return consumeChatGPTRateLimitResetCredit()
+  return consumeChatGPTRateLimitResetCredit(creditId)
 }

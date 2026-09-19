@@ -151,13 +151,18 @@ export async function fetchChatGPTRateLimitResetCredits(): Promise<RateLimitRese
   })
 }
 
-export async function consumeChatGPTRateLimitResetCredit(): Promise<RateLimitResetResult | null> {
-  const redeemRequestId = randomUUID()
+export async function consumeChatGPTRateLimitResetCredit(
+  creditId?: string,
+): Promise<RateLimitResetResult | null> {
+  const body = {
+    redeem_request_id: randomUUID(),
+    ...(creditId === undefined ? {} : { credit_id: creditId }),
+  }
 
   return requestWithChatGPTOAuth(async headers => {
     const response = await axios.post<RateLimitResetResult>(
       'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
-      { redeem_request_id: redeemRequestId },
+      body,
       {
         headers,
         timeout: 5000,

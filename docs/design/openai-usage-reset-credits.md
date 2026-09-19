@@ -1,67 +1,53 @@
-# OpenAI Usage reset credit 详情
+# OpenAI Usage 与 Reset 分栏
 
-## 范围
+## 范围与布局
 
-在 `/usage` 的 Usage 页显示 ChatGPT reset credit 的可用数量、发放时间、到期时间，以及接口返回的已兑换记录和使用时间。仅对启用 OpenAI provider 且使用 ChatGPT OAuth 的认证生效；OpenAI API key 和 Claude provider 不请求此详情。
+`/usage` 在 ChatGPT OAuth 模式下将用量与 Reset 操作分开：
 
-不改变既有兑换协议，不新增历史接口或分页请求，不从数量差值推算已使用记录，不承诺完整服务端历史。
+- 宽屏左右分栏：左侧 `Usage details` 展示各限制名称、醒目的已用百分比、进度条和恢复时间；右侧 `Reset credits` 展示可用数量和可选择卡片。
+- 可用宽度小于 100 列时上下排列，避免时间和操作提示挤压。
+- 卡片显示服务端标题（例如 Weekly + 5 hr）、发放和到期时间，以边框、序号、选中颜色区分不同卡片。
+- 只展示 `status === 'available'` 的卡片；不再展示已使用记录、使用时间、累计发放数或历史提示。
+- OpenAI API key 和 Claude provider 不请求 reset 详情；Claude 的原有用量数据保持不变。
 
-## 接口依据与数据契约
+## 接口依据
 
-参考仓库内 Codex 实现：
+参考 `dist/codex/codex-rs/backend-client/src/client/rate_limit_resets.rs`：
 
-- `dist/codex/codex-rs/backend-client/src/client/rate_limit_resets.rs`：详情 GET 路径。
-- `dist/codex/codex-rs/backend-client/src/types.rs`：详情结构和必填字段。
-- `dist/codex/codex-rs/backend-client/src/client/rate_limit_resets_tests.rs`：包含 `total_earned_count` 和 `redeemed_at: null` 的响应样例。
-- `dist/codex/codex-rs/app-server-protocol/src/protocol/v2/account.rs`：可用数量不等于详情列表长度，列表可能被服务端截断。
+- `GET /backend-api/wham/rate-limit-reset-credits` 获取详情。
+- `POST /backend-api/wham/rate-limit-reset-credits/consume` 支持 `redeem_request_id` 和可选 `credit_id`。
+- 指定 `credit_id` 消耗对应卡片；省略时由服务端选择。
 
-只读接口：`GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`。
+`backend-client/src/types.rs` 定义必填 `available_count`、`credits`、`id`、`reset_type`、`status` 和 `granted_at`。`expires_at` 与 `title` 可选或 null。外部结构使用 Zod 验证，未知状态仍可被读取，但不能在 UI 中选中兑换。
 
-| 字段 | 契约 |
-|---|---|
-| `available_count` | 必填 number；详情成功时作为可用数量来源，不使用列表长度 |
-| `credits` | 必填数组；空数组表示没有返回记录，不等于详情不可用 |
-| `total_earned_count` | 可选 number 或 null；存在时显示累计发放数量 |
-| `credits[].id` | 必填 string |
-| `credits[].reset_type`、`status` | 必填 string，保留未知值 |
-| `credits[].granted_at` | 必填 string，与已知 Codex 契约一致 |
-| `credits[].expires_at` | 可选 string 或 null；明确 null 表示不失效 |
-| `credits[].title` | 可选 string 或 null |
-| `credits[].redeemed_at` | 可选 string 或 null；返回字符串时用于显示使用时间 |
+`app-server-protocol/src/protocol/v2/account.rs` 明确列表可能被截断，因此数量使用 `available_count` 而不是数组长度；实际可选记录较少时显示 `Showing N of M available credits.`。
 
-使用 Zod 验证响应结构。日期字符串的可解析性由展示层判断；非法字符串显示 `Unavailable`。缺失或 null 的必填 `granted_at` 属于结构错误，会使详情读取失败，而不是丢弃单条记录。
+## 选择与兑换
 
-Codex 样例只证实了 `redeemed_at: null` 字段，未找到独立历史 endpoint、分页参数或非空使用时间样例。因此，对非空 `redeemed_at` 的展示是可选兼容能力，不代表已证实真实服务会返回全部已兑换记录。
+1. 初始不选卡，Enter 不触发兑换。
+2. 上下键按到期时间顺序选择卡片；明确不失效或无法解析到期时间的卡片排后。选中项自动滚入视口。
+3. 选中后 Enter 打开该卡片的确认区，显示标题和精确 ID，明确会消耗一张卡。
+4. 确认期间冻结卡片选择和 Settings tab 切换。Esc 只返回卡片列表，不关闭整个 Usage。
+5. 再次确认才调用 `consumeRateLimitResetCredit(selectedCredit.id)`；请求包含对应 `credit_id`。同步 ref 阻止重复确认发出多次请求。
+6. OAuth 401 重试保留同一个 `redeem_request_id` 与 `credit_id`。未传 ID 的服务接口仍保留原服务端选卡契约，但此 Usage 界面不会静默回退为自动选卡。
+7. 兑换结果触发用量与详情刷新，重置选择状态。
 
-## 请求与恢复
+## 数据、时间与恢复
 
-1. 保留 `fetchUtilization()`、启动 prefetch 和 Status 消费者的数据流。
-2. Usage 先获取并展示用量，仅当 `source === 'chatgpt'` 时另行获取 reset 详情。
-3. 详情 GET 复用现有 ChatGPT OAuth wrapper、请求头与 5000ms timeout；401 时强制刷新认证并重试一次。
-4. 详情成功时优先使用其 `available_count`；失败或缺失时保留用量接口的数量 summary。
-5. 详情错误独立显示，可通过既有 `settings:retry` 重试，不隐藏正常用量。
-6. 既有兑换结果处理仍调用用量刷新函数，因此同时刷新数量和详情。兑换接口、幂等请求 ID 和确认流程不变。
+- 普通用量先加载，只有 `source === 'chatgpt'` 时再读取详情，不增加 Status 和启动 prefetch 的详情请求。
+- 复用 ChatGPT OAuth wrapper、请求头、5000ms timeout 和一次 401 强制刷新重试。
+- 详情失败保留用量与 summary 数量，显示独立错误并支持 `settings:retry`；没有卡片详情时不能兑换。
+- 日期显示年月日、时分秒及本地时区；`expires_at: null` 显示 `Does not expire`，非法日期字符串或缺失可选日期显示 `Unavailable`。
+- 缺失必填 `granted_at` 是响应结构错误，详情请求失败而不是静默丢弃单条卡片。
+- 成功但没有可用记录时显示 `No available reset credits returned.`；详情缺失或失败不伪装为空列表。
 
-实现入口：`src/services/api/usage.ts`、`src/services/api/usage-chatgpt.ts`、`src/services/api/usage-types.ts`。
+## 滚动与相邻界面
 
-## 展示与交互
+Settings 向 Usage 传入内容高度。局部 `ScrollBox` 优先处理已有 PageUp/PageDown、滚轮、Ctrl+Home/End，避免滚动背景 transcript。详情异步加载完成时重建局部视口，从顶部展示用量和第一张卡，避免 loading 视图的底部跟随行为将长列表带到底部。选中卡片的位置通过实际 Yoga 布局计算，不假设标题或日期固定行数。底部保留选择、滚动与关闭提示。
 
-- `Reset credits` 显示非 `redeemed` 条目，包含未知状态，按到期时间升序排列，无可解析到期时间的条目排后。
-- `Used reset history` 显示 `status === 'redeemed'` 条目，按使用时间倒序排列。
-- 每条记录显示标题、状态、发放和到期时间；历史记录额外显示使用时间。
-- 日期使用完整年月日、时分秒和本地时区；`expires_at: null` 显示 `Does not expire`，缺失的可选日期或非法日期字符串显示 `Unavailable`。
-- 空历史显示 `No used reset records returned.`，不声称用户从未兑换。
-- 显示 `Showing records returned by OpenAI. History may be incomplete.`，明确记录完整性边界。
-
-Settings 向 Usage 传入可用内容高度。Usage 使用局部 `ScrollBox`，优先处理已有 Scroll keybindings：PageUp、PageDown、滚轮、Ctrl+Home、Ctrl+End，避免长列表被截断或滚动背景 transcript。监听器随 Usage 卸载清除，不修改 REPL、Mods 或其他 Settings 页的输入处理。
-
-Enter 和 Esc 仍由既有选择、确认和关闭逻辑处理；滚动不触发兑换。
-
-实现入口：`src/components/Settings/Usage.tsx`、`src/components/Settings/Settings.tsx`。
+Settings 在 Usage 确认期间让出 Esc 并禁用 tab 切换；离开确认或卸载后恢复。未修改 REPL、Mods 或全局默认键位。
 
 ## 验证与安全边界
-
-聚焦测试命令：
 
 ```bash
 bun test src/services/api/usage.test.ts \
@@ -70,12 +56,8 @@ bun test src/services/api/usage.test.ts \
   src/commands/usage/usage.test.tsx
 ```
 
-覆盖详情字段、未知状态、空响应、认证 gating、401 重试、结构错误、日期显示、详情错误恢复、mock 兑换刷新、滚动和背景输入隔离。2026-09-19 验证结果为 21 pass、0 fail；TSX 文件中的顶层断言也已执行通过。ESLint、`bunx tsc --noEmit --pretty false`、`git diff --check` 和 `make build` 均通过。
+自动化断言覆盖左右布局、窄屏排列、时间、移除历史、选择第二张卡、确认取消、准确 `credit_id`、重复确认防护、刷新、详情失败/重试、provider gating、长列表滚动及背景输入隔离。服务测试覆盖指定 ID、默认省略 ID、401 重试身份保持。
 
-本轮构建的 `2.1.219` binary 在 scripted tmux 中通过 10 项断言：literal `/usage`、数量、发放/到期/使用时间、滚动、120x40 至 72x24 resize、Esc 返回 prompt、网络边界、Git 可见状态与进程清理。
+每轮运行时改动需本轮 `make build` 后通过 scripted tmux 验证 `/usage`、卡片选择、确认取消、滚动、resize、Esc 和相邻 Settings tab 行为。真实兑换不在交互验收范围：使用隔离 HOME/config、fake ChatGPT auth 和本地只返回 fixture、不转发且拒绝 POST 的代理；不能确认消耗卡片。
 
-- 验收 SHA-256：`8c8bbc623de52230f12b7a542dc4ec1a7e9b83ecca6e95994c588e8d383143ae`。
-- 本地证据：`/tmp/cc-usage-reset-validation.8ynn65/usage-final-revalidation.xEkMsPy0`，属于临时运行证据，不随仓库分发。
-- 使用隔离 HOME/config、fake ChatGPT auth 和只返回 fixture、不转发请求的本地代理；POST 与 consume 请求均为 0。
-- 禁止测试消耗真实 reset credit。兑换回归仅使用 mock；未读取真实凭证、未确认真实 reset。
-- 未验证真实 ChatGPT 服务、真实 OAuth 或完整服务端历史；不以 fixture 验收替代这些结论。
+禁止测试消耗真实 reset credit。兑换仅在 mock 测试中执行。真实 OAuth 与真实 ChatGPT 服务集成不由 fixture 验收证明。

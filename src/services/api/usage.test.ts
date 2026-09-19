@@ -473,7 +473,7 @@ test('consumeRateLimitResetCredit refreshes auth before posting the reset reques
   }
 })
 
-test('consumeRateLimitResetCredit retries a 401 with the same redeem request id', async () => {
+test('consumeRateLimitResetCredit retries a 401 with the same redeem request and credit ids', async () => {
   const homeDir = await mkdtemp(join(tmpdir(), 'usage-chatgpt-reset-retry-'))
   process.env.HOME = homeDir
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
@@ -494,12 +494,12 @@ test('consumeRateLimitResetCredit retries a 401 with the same redeem request id'
 
   const originalAxiosPost = axios.post
   const requests: Array<{
-    body: { redeem_request_id?: string }
+    body: { redeem_request_id?: string; credit_id?: string }
     headers: Record<string, string>
   }> = []
   axios.post = (async (
     url: string,
-    body: { redeem_request_id?: string },
+    body: { redeem_request_id?: string; credit_id?: string },
     options: { headers: Record<string, string> },
   ) => {
     if (url === 'https://auth.openai.com/oauth/token') {
@@ -523,7 +523,7 @@ test('consumeRateLimitResetCredit retries a 401 with the same redeem request id'
   }) as typeof axios.post
 
   try {
-    assert.deepEqual(await consumeRateLimitResetCredit(), {
+    assert.deepEqual(await consumeRateLimitResetCredit('credit-123'), {
       code: 'already_redeemed',
       windows_reset: 2,
     })
@@ -532,6 +532,8 @@ test('consumeRateLimitResetCredit retries a 401 with the same redeem request id'
       requests[0]?.body.redeem_request_id,
       requests[1]?.body.redeem_request_id,
     )
+    assert.equal(requests[0]?.body.credit_id, 'credit-123')
+    assert.equal(requests[1]?.body.credit_id, 'credit-123')
     assert.equal(requests[0]?.headers.Authorization, 'Bearer test-token')
     assert.equal(requests[1]?.headers.Authorization, 'Bearer refreshed-token')
   } finally {
@@ -631,7 +633,7 @@ test('fetchUtilization retries a 401 after forcing an auth refresh', async () =>
   }
 })
 
-test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', async () => {
+test('consumeRateLimitResetCredit omits credit id for automatic selection', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   authModule.getOpenAIAuthInfo.cache.set(undefined, {
     accessToken: 'test-token',
@@ -647,12 +649,12 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
   const originalAxiosPost = axios.post
   const requests: Array<{
     url: string
-    body: { redeem_request_id?: string }
+    body: { redeem_request_id?: string; credit_id?: string }
     headers: Record<string, string>
   }> = []
   axios.post = (async (
     url: string,
-    body: { redeem_request_id?: string },
+    body: { redeem_request_id?: string; credit_id?: string },
     options: { headers: Record<string, string> },
   ) => {
     requests.push({ url, body, headers: options.headers })
@@ -670,6 +672,7 @@ test('consumeRateLimitResetCredit posts ChatGPT reset credit consume request', a
       'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
     )
     assert.equal(typeof requests[0]?.body.redeem_request_id, 'string')
+    assert.equal('credit_id' in requests[0]!.body, false)
     assert.equal(requests[0]?.headers.Authorization, 'Bearer test-token')
     assert.equal(requests[0]?.headers['chatgpt-account-id'], 'account-123')
   } finally {

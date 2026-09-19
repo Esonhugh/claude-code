@@ -15,9 +15,11 @@ process.env.ANTHROPIC_API_KEY = 'test-key'
 
 let fetchCount = 0
 let detailsFetchCount = 0
-let consumeCount = 0
+const consumedIds: Array<string | undefined> = []
 let failDetails = false
 let omitDetails = false
+let longList = false
+let finishDetails: (() => void) | undefined
 let usageSource: 'chatgpt' | 'claude' = 'chatgpt'
 const resetCredit = {
   id: 'fixture-credit',
@@ -25,14 +27,20 @@ const resetCredit = {
   status: 'available',
   granted_at: '2026-06-17T00:00:00Z',
   expires_at: '2026-07-17T00:00:00Z',
-  redeemed_at: null as string | null,
   title: 'Full reset (Weekly + 5 hr)',
+}
+const secondCredit = {
+  ...resetCredit,
+  id: 'second-credit',
+  title: 'Five-hour reset',
+  granted_at: 'invalid',
+  expires_at: null,
 }
 const previousReset = {
   ...resetCredit,
   id: 'previous-credit',
+  title: 'Previously used reset',
   status: 'redeemed',
-  expires_at: null,
   redeemed_at: '2026-06-18T12:30:00Z',
 }
 const formatTime = (value: string) => new Date(value).toLocaleString('en-US', {
@@ -68,36 +76,46 @@ const mocks = [
     return {
       source: usageSource,
       chatgpt_limits: [{ title: 'ChatGPT Codex weekly usage', limit: { utilization: 25, resets_at: null } }],
-      rate_limit_reset_credits: { available_count: fetchCount === 1 ? 1 : 0 },
+      rate_limit_reset_credits: { available_count: 1 },
     }
   }),
   spyOn(usageModule, 'fetchRateLimitResetCredits').mockImplementation(async () => {
     detailsFetchCount += 1
     if (failDetails) throw new Error('reset details offline')
     if (omitDetails) return null
+    if (longList) {
+      await new Promise<void>(resolve => { finishDetails = resolve })
+      return {
+        available_count: 8,
+        credits: Array.from({ length: 8 }, (_, i) => ({
+          ...resetCredit,
+          id: `long-credit-${i}`,
+          title: `Reset option ${i + 1}`,
+          expires_at: undefined,
+        })),
+      }
+    }
     return {
-      available_count: fetchCount === 1 ? 2 : 0,
+      available_count: consumedIds.length === 0 ? 2 : 0,
       total_earned_count: 3,
-      credits: fetchCount === 1
-        ? [resetCredit, previousReset, { ...resetCredit, id: 'unknown-credit', status: 'future_status', granted_at: 'invalid', expires_at: undefined }]
-        : fetchCount === 2
-          ? [{ ...resetCredit, status: 'redeemed', redeemed_at: '2026-06-19T10:00:00Z' }, previousReset, { ...previousReset, id: 'missing-time', redeemed_at: null }]
-          : [],
+      credits: consumedIds.length === 0
+        ? [secondCredit, previousReset, resetCredit, { ...resetCredit, id: 'unknown-credit', title: 'Unknown status reset', status: 'future_status' }]
+        : [{ ...secondCredit, status: 'redeemed', redeemed_at: '2026-06-19T10:00:00Z' }, previousReset],
     }
   }),
-  spyOn(usageModule, 'consumeRateLimitResetCredit').mockImplementation(async () => {
-    consumeCount += 1
+  spyOn(usageModule, 'consumeRateLimitResetCredit').mockImplementation(async (creditId?: string) => {
+    consumedIds.push(creditId)
     return { code: 'reset', windows_reset: 2 }
   }),
 ]
 
 function getActiveKeybinding(action: string) {
-  return keybindingCalls.findLast(
-    call => call.action === action && call.isActive !== false,
-  )
+  const call = keybindingCalls.findLast(call => call.action === action)
+  return call?.isActive === false ? undefined : call
 }
 
-const { render, useInput } = await import('../../ink.js')
+const { render, useInput, Box } = await import('../../ink.js')
+const { TerminalSizeContext } = await import('../../ink/components/TerminalSizeContext.js')
 let backgroundInputCount = 0
 function InputDriver() {
   useInput(() => { backgroundInputCount += 1 })
@@ -110,7 +128,7 @@ const { DEFAULT_BINDINGS } = await import('../../keybindings/defaultBindings.js'
 const { parseBindings } = await import('../../keybindings/parser.js')
 
 class TestStdout extends Writable {
-  columns = 100
+  columns = 120
   rows = 40
   isTTY = false
   output = ''
@@ -128,171 +146,137 @@ class TestStdout extends Writable {
 class TestStdin extends Readable {
   isTTY = true
   isRaw = false
-
   _read() {}
-
-  setRawMode(value: boolean) {
-    this.isRaw = value
-    return this
-  }
-
-  ref() {
-    return this
-  }
-
-  unref() {
-    return this
-  }
+  setRawMode(value: boolean) { this.isRaw = value; return this }
+  ref() { return this }
+  unref() { return this }
 }
 
-function waitFor(
-  condition: () => boolean,
-  message: string,
-  timeoutMs = 1000,
-): Promise<void> {
+async function waitFor(condition: () => boolean, message: string): Promise<void> {
   const start = Date.now()
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (condition()) {
-        resolve()
-        return
-      }
-      if (Date.now() - start > timeoutMs) {
-        reject(new Error(message))
-        return
-      }
-      setTimeout(tick, 10)
-    }
-    tick()
-  })
+  while (!condition()) {
+    if (Date.now() - start > 1000) throw new Error(message)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
 }
 
+let ownsEsc = false
+const onOwnsEscChange = (value: boolean) => { ownsEsc = value }
 const stdout = new TestStdout()
 const stdin = new TestStdin()
-const usageElement = <Usage />
 const outputStream = stdout as unknown as NodeJS.WriteStream
-const instance = await render(usageElement, {
+const instance = await render(<Usage onOwnsEscChange={onOwnsEscChange} />, {
   stdout: outputStream,
   stdin: stdin as unknown as NodeJS.ReadStream,
   patchConsole: false,
   exitOnCtrlC: false,
 })
-const flushUpdates = () => {
+const settle = async () => {
+  await new Promise(resolve => setTimeout(resolve, 80))
   instances.get(outputStream)?.pause()
   instances.get(outputStream)?.resume()
 }
+const press = async (action: string) => {
+  const binding = getActiveKeybinding(action)
+  assert.ok(binding, `${action} is not active`)
+  binding.handler()
+  await settle()
+}
 
 try {
-  await waitFor(() => fetchCount === 1, 'initial usage request did not start')
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
-
+  await waitFor(() => detailsFetchCount === 1, 'initial details request did not start')
+  await settle()
   const initialOutput = stripAnsi(stdout.output)
+  assert.match(initialOutput, /2 available/)
   assert.match(initialOutput, /█[^\n]* 25% used/)
-  assert.equal(detailsFetchCount, 1)
-  assert.match(initialOutput, /Reset: 2/)
-  assert.match(initialOutput, /Total granted: 3/)
+  assert.ok(initialOutput.split('\n').some(line => line.includes('Usage details') && line.includes('Reset credits')), 'wide layout must show both headings on the same row')
   assert.ok(initialOutput.includes(`Granted: ${formatTime(resetCredit.granted_at)}`))
   assert.ok(initialOutput.includes(`Expires: ${formatTime(resetCredit.expires_at)}`))
   assert.match(initialOutput, /Does not expire/)
   assert.match(initialOutput, /Granted: Unavailable/)
-  assert.match(initialOutput, /Expires: Unavailable/)
-  assert.match(initialOutput, /future_status/)
-  assert.match(initialOutput, /Used reset history/)
-  assert.ok(initialOutput.includes(`Used: ${formatTime(previousReset.redeemed_at)}`))
-  assert.match(initialOutput, /History may be incomplete/)
-  assert.equal(consumeCount, 0)
+  assert.doesNotMatch(initialOutput, /Used reset history|Previously used reset|History may be incomplete|Unknown status reset/)
+  assert.ok(initialOutput.indexOf(resetCredit.title) < initialOutput.indexOf(secondCredit.title), 'expiring credit must sort first')
+  assert.equal(consumedIds.length, 0)
+  assert.equal(getActiveKeybinding('settings:close'), undefined, 'Enter must not redeem an unselected card')
 
-  const selectReset = getActiveKeybinding('select:next')
-  assert.equal(selectReset?.context, 'Settings')
-  assert.equal(selectReset?.isActive, true)
-  selectReset?.handler()
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
+  await press('select:next')
+  await press('select:next')
+  stdout.output = ''
+  await press('settings:close')
+  const confirmation = stripAnsi(stdout.output)
+  assert.match(confirmation, /Use this reset\?/)
+  assert.match(confirmation, /Five-hour reset/)
+  assert.match(confirmation, /second-credit/)
+  assert.equal(ownsEsc, true)
+  assert.equal(getActiveKeybinding('select:next'), undefined, 'selection is frozen during confirmation')
+  assert.equal(consumedIds.length, 0, 'opening confirmation must not consume')
+  await press('confirm:no')
+  assert.equal(ownsEsc, false)
+  assert.equal(consumedIds.length, 0)
 
-  const openConfirmation = getActiveKeybinding('settings:close')
-  assert.ok(openConfirmation)
-  assert.equal(openConfirmation.context, 'Settings')
-  assert.equal(openConfirmation.isActive, true)
-  openConfirmation.handler()
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
-
+  await press('select:previous')
+  await press('select:next')
+  await press('settings:close')
   const confirmReset = getActiveKeybinding('confirm:yes')
   assert.ok(confirmReset)
   assert.equal(confirmReset.context, 'Confirmation')
-  assert.equal(confirmReset.isActive, true)
   stdout.output = ''
   confirmReset.handler()
   assert.equal(confirmReset.handler(), false)
-
-  await waitFor(
-    () => consumeCount === 1 && fetchCount === 2,
-    `reset was not consumed and refreshed (consume=${consumeCount}, fetch=${fetchCount})`,
-  )
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
-
-  const output = stripAnsi(stdout.output)
-  assert.match(output, /Usage reset\./)
-  assert.match(output, /Reset: 0/)
-  assert.equal(consumeCount, 1)
-  assert.equal(fetchCount, 2)
+  await waitFor(() => consumedIds.length === 1 && fetchCount === 2, 'mock reset did not refresh')
+  await settle()
+  assert.deepEqual(consumedIds, ['second-credit'])
   assert.equal(detailsFetchCount, 2)
-  assert.ok(output.includes(`Used: ${formatTime('2026-06-19T10:00:00Z')}`))
-  assert.match(output, /Used: Unavailable/)
-  assert.ok(output.indexOf(`Used: ${formatTime('2026-06-19T10:00:00Z')}`) < output.indexOf(`Used: ${formatTime(previousReset.redeemed_at)}`))
+  assert.equal(ownsEsc, false)
+  assert.match(stripAnsi(stdout.output), /Usage reset\./)
+  assert.match(stripAnsi(stdout.output), /0 available/)
+  assert.match(stripAnsi(stdout.output), /No available reset credits/)
+  assert.doesNotMatch(stripAnsi(stdout.output), /Used reset history|Previously used reset|Used:/)
+  assert.equal(getActiveKeybinding('settings:close'), undefined)
 
-  // Remount with a failed detail request: summary and usage must remain visible.
   failDetails = true
   stdout.output = ''
   keybindingCalls.length = 0
   instance.rerender(<Usage key="offline" />)
   await waitFor(() => detailsFetchCount === 3, 'detail failure was not requested')
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
+  await settle()
   const offlineOutput = stripAnsi(stdout.output)
   assert.match(offlineOutput, /ChatGPT Codex weekly usage/)
-  assert.match(offlineOutput, /Reset: 0/)
+  assert.match(offlineOutput, /1 available/)
   assert.match(offlineOutput, /Reset details unavailable/)
-  const retry = getActiveKeybinding('settings:retry')
-  assert.ok(retry)
-
+  assert.equal(getActiveKeybinding('settings:close'), undefined, 'summary-only state cannot silently auto-select a card')
   failDetails = false
   stdout.output = ''
-  retry.handler()
+  await press('settings:retry')
   await waitFor(() => detailsFetchCount === 4, 'detail retry was not requested')
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
-  const retriedOutput = stripAnsi(stdout.output)
-  assert.match(retriedOutput, /No used reset records returned/)
-  assert.doesNotMatch(retriedOutput, /Reset details unavailable/)
+  await settle()
+  assert.match(stripAnsi(stdout.output), /No available reset credits/)
+  assert.doesNotMatch(stripAnsi(stdout.output), /Reset details unavailable/)
 
   usageSource = 'claude'
   stdout.output = ''
   instance.rerender(<Usage key="claude" />)
   await waitFor(() => fetchCount === 5, 'Claude usage was not requested')
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
+  await settle()
   assert.equal(detailsFetchCount, 4)
-  assert.doesNotMatch(stripAnsi(stdout.output), /Reset:|Used reset history/)
-  assert.equal(consumeCount, 1)
+  assert.doesNotMatch(stripAnsi(stdout.output), /Reset credits|Use this reset|Used reset history/)
 
   usageSource = 'chatgpt'
   omitDetails = true
   stdout.output = ''
   instance.rerender(<Usage key="missing-details" />)
-  await waitFor(() => detailsFetchCount === 5, 'missing detail response was not requested')
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
+  await waitFor(() => detailsFetchCount === 5, 'missing details were not requested')
+  await settle()
   assert.match(stripAnsi(stdout.output), /Reset details unavailable/)
-  assert.doesNotMatch(stripAnsi(stdout.output), /No used reset records returned/)
-  assert.equal(consumeCount, 1)
+  assert.doesNotMatch(stripAnsi(stdout.output), /No available reset credits/)
+  assert.equal(getActiveKeybinding('settings:close'), undefined)
 
   omitDetails = false
-  fetchCount = 0
+  longList = true
   stdout.output = ''
-  instance.rerender(
+  const scrollableUsage = (columns: number) => (
+    <TerminalSizeContext.Provider value={{ columns, rows: 40 }}>
+    <Box width={columns}>
     <KeybindingProvider
       bindings={parseBindings(DEFAULT_BINDINGS)}
       pendingChordRef={{ current: null }}
@@ -304,32 +288,58 @@ try {
       handlerRegistryRef={{ current: new Map() }}
     >
       <InputDriver />
-      <Usage key="scrollable" contentHeight={12} />
-    </KeybindingProvider>,
+      <Usage key="scrollable" contentHeight={16} />
+    </KeybindingProvider>
+    </Box>
+    </TerminalSizeContext.Provider>
   )
+  instance.rerender(scrollableUsage(120))
   await waitFor(() => detailsFetchCount === 6, 'scrollable details were not requested')
-  await new Promise(resolve => setTimeout(resolve, 0))
-  flushUpdates()
-  assert.doesNotMatch(stripAnsi(stdout.output), /Used reset history/)
+  await settle()
+  assert.match(stripAnsi(stdout.output), /Loading reset details/)
   stdout.output = ''
-  stdin.push('\x1b[6~')
-  await new Promise(resolve => setTimeout(resolve, 80))
-  flushUpdates()
-  assert.match(stripAnsi(stdout.output), /Used reset history/)
+  assert.ok(finishDetails)
+  finishDetails()
+  await settle()
+  assert.match(stripAnsi(stdout.output), /Usage details/, 'async details must keep the viewport at the top')
+  assert.match(stripAnsi(stdout.output), /8 available/)
+  assert.match(stripAnsi(stdout.output), /Reset option 1/)
+  assert.match(stripAnsi(stdout.output), /Expires: Unavailable/)
+  assert.doesNotMatch(stripAnsi(stdout.output), /Reset option 8/)
+  stdout.output = ''
   stdin.push('\x1b[1;5F')
-  await new Promise(resolve => setTimeout(resolve, 80))
-  flushUpdates()
-  assert.ok(stripAnsi(stdout.output).includes(`Used: ${formatTime(previousReset.redeemed_at)}`))
+  await settle()
+  assert.match(stripAnsi(stdout.output), /Reset option 8/)
   stdout.output = ''
   stdin.push('\x1b[1;5H')
-  await new Promise(resolve => setTimeout(resolve, 80))
-  flushUpdates()
-  assert.match(stripAnsi(stdout.output), /Reset: 2/)
+  await settle()
+  assert.match(stripAnsi(stdout.output), /Usage details/)
+  for (let i = 0; i < 8; i++) {
+    stdout.output = ''
+    await press('select:next')
+  }
+  assert.match(stripAnsi(stdout.output), /Reset option 8/, 'selected card must scroll into view')
+  assert.doesNotMatch(stripAnsi(stdout.output), /Use this reset\?/)
+
+  stdout.output = ''
+  instance.rerender(scrollableUsage(72))
+  await settle()
+  stdin.push('\x1b[1;5H')
+  await settle()
+  const narrowOutput = stripAnsi(stdout.output)
+  assert.match(narrowOutput, /25% used/)
+  assert.ok(!narrowOutput.split('\n').some(line => line.includes('Usage details') && line.includes('Reset credits')), 'narrow layout must stack the sections')
+  stdout.output = ''
+  stdin.push('\x1b[6~')
+  await settle()
+  stdin.push('\x1b[1;5F')
+  await settle()
+  assert.match(stripAnsi(stdout.output), /Reset option 8/)
   stdin.push('\x1b[5~')
   stdin.push('\x1b[<65;4;4M')
-  await new Promise(resolve => setTimeout(resolve, 80))
+  await settle()
   assert.equal(backgroundInputCount, 0)
-  assert.equal(consumeCount, 1)
+  assert.deepEqual(consumedIds, ['second-credit'])
 } finally {
   instance.unmount()
   instance.cleanup()
