@@ -26,7 +26,10 @@ const bindings = parseBindings([
 const localStats = await import('../utils/stats.js')
 const usage = await import('../services/api/usage.js')
 const { Stats } = await import('./Stats.js')
-const { render } = await import('../ink.js')
+const { Pane } = await import('./design-system/Pane.js')
+const { Tab, Tabs } = await import('./design-system/Tabs.js')
+const { useKeybinding } = await import('../keybindings/useKeybinding.js')
+const { render, Text } = await import('../ink.js')
 class Output extends Writable {
   columns = 60
   rows = 40
@@ -52,6 +55,99 @@ class Input extends Readable {
     return this
   }
 }
+test('embedded Stats coordinates nested tab focus and leaves Esc to Settings', async () => {
+  spyOn(localStats, 'aggregateClaudeCodeStatsForRange').mockResolvedValue({
+    totalSessions: 1,
+    totalDays: 1,
+    activeDays: 0,
+    modelUsage: {},
+    dailyActivity: [],
+    dailyModelTokens: [],
+    longestSession: null,
+    peakActivityDay: null,
+    streaks: { currentStreak: 0, longestStreak: 0 },
+    totalSpeculationTimeSavedMs: 0,
+  } as unknown as import('../utils/stats.js').ClaudeCodeStats)
+  spyOn(usage, 'isOpenAIActivityAvailable').mockReturnValue(false)
+  const nestedBindings = parseBindings([
+    {
+      context: 'Tabs',
+      bindings: {
+        tab: 'tabs:next',
+        'shift+tab': 'tabs:previous',
+        right: 'tabs:next',
+        left: 'tabs:previous',
+      },
+    },
+    {
+      context: 'Settings',
+      bindings: { esc: 'confirm:no' },
+    },
+    {
+      context: 'Confirmation',
+      bindings: { esc: 'confirm:no' },
+    },
+  ])
+  let closeCount = 0
+  function Harness() {
+    const [selectedTab, setSelectedTab] = React.useState('Stats')
+    useKeybinding('confirm:no', () => { closeCount++ }, { context: 'Settings' })
+    return (
+      <Pane color="permission">
+        <Tabs selectedTab={selectedTab} onTabChange={setSelectedTab} color="permission">
+          <Tab title="Usage"><Text>Usage sentinel</Text></Tab>
+          <Tab title="Stats"><Stats embedded onClose={() => { closeCount++ }} /></Tab>
+        </Tabs>
+      </Pane>
+    )
+  }
+  const stdout = new Output()
+  const stdin = new Input()
+  const instance = await render(
+    <KeybindingProvider
+      bindings={nestedBindings}
+      pendingChordRef={{ current: null }}
+      pendingChord={null}
+      setPendingChord={() => {}}
+      activeContexts={new Set()}
+      registerActiveContext={() => {}}
+      unregisterActiveContext={() => {}}
+      handlerRegistryRef={{ current: new Map() }}
+    >
+      <Harness />
+    </KeybindingProvider>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
+  const settle = async () => { await new Promise(resolve => setTimeout(resolve, 100)) }
+  try {
+    await settle()
+    assert.doesNotMatch(stripAnsi(stdout.output), /No model usage data available/)
+    stdin.push('\u001b[B')
+    await settle()
+    stdin.push('\u001b[C')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /No model usage data available/)
+    stdin.push('\u001b[A')
+    await settle()
+    stdin.push('\u001b[Z')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /Usage sentinel/)
+    stdin.push('\t')
+    await settle()
+    stdin.push('\u001b')
+    await settle()
+    assert.equal(closeCount, 1)
+  } finally {
+    instance.unmount()
+    mock.restore()
+  }
+})
+
 test('local empty leaves OpenAI available, lazy cached and refreshable', async () => {
   spyOn(localStats, 'aggregateClaudeCodeStatsForRange').mockResolvedValue({
     totalSessions: 0,

@@ -13,6 +13,7 @@ import { Tabs, Tab } from '../design-system/Tabs.js'
 import { Status, buildDiagnostics, buildStatusUsage } from './Status.js'
 import { Config } from './Config.js'
 import { Usage } from './Usage.js'
+import { Stats } from '../Stats.js'
 import type {
   LocalJSXCommandContext,
   CommandResultDisplay,
@@ -33,7 +34,7 @@ type Props = {
     options?: { display?: CommandResultDisplay },
   ) => void
   context: LocalJSXCommandContext
-  defaultTab: 'Status' | 'Config' | 'Usage' | 'Gates'
+  defaultTab: 'Status' | 'Config' | 'Usage' | 'Stats' | 'Gates'
 }
 
 export function Settings({
@@ -115,6 +116,9 @@ export function Settings({
     <Tab key="usage" title="Usage">
       <Usage contentHeight={insideModal ? Math.max(1, rows - 2) : contentHeight} />
     </Tab>,
+    <Tab key="stats" title="Stats">
+      <Stats embedded onClose={onClose} />
+    </Tab>,
     ...(isAnt()
       ? [
           <Tab key="gates" title="Gates">
@@ -140,7 +144,7 @@ export function Settings({
         // Inside a Modal, skip the Tabs-level cap so tall tabs (Status's
         // MCP list) flow to their natural height for the Modal's ScrollBox
         // to scroll. Config/Gates still get contentHeight above — they
-        // paginate internally so this only affects Status/Usage.
+        // paginate internally so this only affects Status/Usage/Stats.
         contentHeight={tabsHidden || insideModal ? undefined : contentHeight}
       >
         {tabs}

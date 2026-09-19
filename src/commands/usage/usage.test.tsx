@@ -40,6 +40,20 @@ try {
   })
   assert.equal(meetsAvailabilityRequirement(usageCommand), false)
 
+  const { call: statsCall } = await import('../stats/stats.js')
+  const { Settings } = await import('../../components/Settings/Settings.js')
+  const onClose = () => {}
+  const context = {} as never
+  const statsElement = await statsCall(onClose, context, '') as React.ReactElement<{
+    defaultTab: string
+    context: unknown
+    onClose: unknown
+  }>
+  assert.equal(statsElement.type, Settings)
+  assert.equal(statsElement.props.defaultTab, 'Stats')
+  assert.equal(statsElement.props.context, context)
+  assert.equal(statsElement.props.onClose, onClose)
+
   const element = await call(() => {}, {} as never, '')
   assert.equal(React.isValidElement(element), true)
   assert.equal(

@@ -52,6 +52,7 @@ type Props = {
     result?: string,
     options?: { display?: CommandResultDisplay },
   ) => void
+  embedded?: boolean
 }
 
 type StatsResult =
@@ -91,22 +92,37 @@ function createAllTimeStatsPromise(): Promise<StatsResult> {
     })
 }
 
-export function Stats({ onClose }: Props): React.ReactNode {
+export function Stats({ onClose, embedded = false }: Props): React.ReactNode {
   // Always load all-time stats first (for heatmap)
   const allTimePromise = useMemo(() => createAllTimeStatsPromise(), [])
+  const parentTabs = useTabHeaderFocus()
 
-  return <StatsContent allTimePromise={allTimePromise} onClose={onClose} />
+  return (
+    <StatsContent
+      allTimePromise={allTimePromise}
+      onClose={onClose}
+      embedded={embedded}
+      parentHeaderFocused={parentTabs.headerFocused}
+      focusParentHeader={parentTabs.focusHeader}
+    />
+  )
 }
 
 type StatsContentProps = {
   allTimePromise: Promise<StatsResult>
   onClose: Props['onClose']
+  embedded: boolean
+  parentHeaderFocused: boolean
+  focusParentHeader: () => void
 }
 
 // Keep the tab shell available while local stats are loading or unavailable.
 function StatsContent({
   allTimePromise,
   onClose,
+  embedded,
+  parentHeaderFocused,
+  focusParentHeader,
 }: StatsContentProps): React.ReactNode {
   const [allTimeResult, setAllTimeResult] = useState<StatsResult | null>(null)
   useEffect(() => {
@@ -127,6 +143,7 @@ function StatsContent({
   const [isLoadingFiltered, setIsLoadingFiltered] = useState(false)
   const [activeTab, setActiveTab] = useState<string>('Overview')
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
+  const [innerHeaderFocused, setInnerHeaderFocused] = useState(true)
 
   const [activityRequested, setActivityRequested] = useState(false)
   useEffect(() => {
@@ -199,11 +216,17 @@ function StatsContent({
     onClose('Stats dialog dismissed', { display: 'system' })
   }, [onClose])
 
-  useKeybinding('confirm:no', handleClose, { context: 'Confirmation' })
+  useKeybinding('confirm:no', handleClose, {
+    context: 'Confirmation',
+    isActive: !embedded,
+  })
 
   useInput((input, key) => {
-    // Handle ctrl+c and ctrl+d for closing
-    if (key.ctrl && (input === 'c' || input === 'd')) {
+    if (embedded && innerHeaderFocused && key.upArrow) {
+      focusParentHeader()
+    }
+    // Handle ctrl+c and ctrl+d for closing in the standalone command.
+    if (!embedded && key.ctrl && (input === 'c' || input === 'd')) {
       onClose('Stats dialog dismissed', { display: 'system' })
     }
     // r to cycle date range
@@ -227,10 +250,17 @@ function StatsContent({
       ? <Text color="warning">No stats available yet. Start using Claude Code!</Text>
       : <Text>Loading stats…</Text>
 
-  return (
-    <Pane color="claude">
+  const content = (
+    <>
       <Box flexDirection="row" gap={1} marginBottom={1}>
-        <Tabs title="" color="claude" selectedTab={activeTab} onTabChange={setActiveTab}>
+        <Tabs
+          title=""
+          color="claude"
+          selectedTab={activeTab}
+          onTabChange={setActiveTab}
+          disableNavigation={embedded && parentHeaderFocused}
+          onHeaderFocusChange={setInnerHeaderFocused}
+        >
           {[
           <Tab title="Overview" key="Overview">
             {displayStats && allTimeStats ? <OverviewTab
@@ -260,7 +290,13 @@ function StatsContent({
           {activeTab !== 'OpenAI' && copyStatus ? ` · ${copyStatus}` : ''}
         </Text>
       </Box>
-    </Pane>
+    </>
+  )
+
+  return embedded ? (
+    <Box flexDirection="column" width="100%">{content}</Box>
+  ) : (
+    <Pane color="claude">{content}</Pane>
   )
 }
 

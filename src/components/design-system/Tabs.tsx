@@ -53,6 +53,7 @@ type TabsProps = {
    * needed. Switching from content focuses the header.
    */
   navFromContent?: boolean
+  onHeaderFocusChange?: (focused: boolean) => void
 }
 
 type TabsContextValue = {
@@ -89,6 +90,7 @@ export function Tabs({
   initialHeaderFocused = true,
   contentHeight,
   navFromContent = false,
+  onHeaderFocusChange,
 }: TabsProps): React.ReactNode {
   const { columns: terminalWidth } = useTerminalSize()
   const tabs = children.map(child => [
@@ -123,6 +125,7 @@ export function Tabs({
   // returns it. Tabs that never call the hook see no behavior change —
   // initialHeaderFocused defaults to true so nav always works.
   const [headerFocused, setHeaderFocused] = useState(initialHeaderFocused)
+  useEffect(() => onHeaderFocusChange?.(headerFocused), [headerFocused, onHeaderFocusChange])
   const focusHeader = useCallback(() => setHeaderFocused(true), [])
   const blurHeader = useCallback(() => setHeaderFocused(false), [])
   // Count of mounted children using useTabHeaderFocus(). Down-arrow blur and
