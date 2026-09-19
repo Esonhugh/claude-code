@@ -99,6 +99,34 @@ if (!process.env[childFlag]) {
     expect(prompt).toContain('project claude instructions')
   })
 
+  test('injects AGENTS.md into user context and honors the instruction disable switch', async () => {
+    const project = join(root, 'context-project')
+    mkdirSync(project)
+    writeFileSync(join(project, 'AGENTS.md'), 'shared context instructions')
+    writeFileSync(join(project, 'CLAUDE.md'), 'Claude context instructions')
+    const { getCachedClaudeMdContent, setOriginalCwd } =
+      await import('../bootstrap/state.js')
+    const { clearMemoryFileCaches } = await import('./claudemd.js')
+    const { getUserContext } = await import('../context.js')
+    setOriginalCwd(project)
+    clearMemoryFileCaches()
+    getUserContext.cache.clear?.()
+    const context = await getUserContext()
+    expect(context.claudeMd).toContain('shared context instructions')
+    expect(context.claudeMd).toContain('Claude context instructions')
+    expect(getCachedClaudeMdContent()).toBe(context.claudeMd)
+    try {
+      process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1'
+      getUserContext.cache.clear?.()
+      expect((await getUserContext()).claudeMd).toBeUndefined()
+      expect(getCachedClaudeMdContent()).toBeNull()
+    } finally {
+      delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+      getUserContext.cache.clear?.()
+      clearMemoryFileCaches()
+    }
+  })
+
   test('loads nested AGENTS.md on demand alongside existing rules without duplicates', async () => {
     const project = join(root, 'nested-project')
     const nested = join(project, 'src')
@@ -141,6 +169,110 @@ if (!process.env[childFlag]) {
       ),
     ).toEqual([])
   })
+
+  test('injects nested AGENTS.md as API attachments once and respects working-directory boundaries', async () => {
+    const project = join(root, 'attachment-project')
+    const nested = join(project, 'src')
+    const outside = join(root, 'attachment-outside')
+    mkdirSync(nested, { recursive: true })
+    mkdirSync(outside)
+    writeFileSync(join(nested, 'AGENTS.md'), 'nested shared attachment')
+    writeFileSync(join(nested, 'CLAUDE.md'), 'nested Claude attachment')
+    writeFileSync(join(nested, 'index.ts'), 'export {}')
+    writeFileSync(join(outside, 'AGENTS.md'), 'outside instructions')
+    writeFileSync(join(outside, 'index.ts'), 'export {}')
+    const { setOriginalCwd, getCwdState, setCwdState } =
+      await import('../bootstrap/state.js')
+    const { clearMemoryFileCaches } = await import('./claudemd.js')
+    const { getAttachments } = await import('./attachments.js')
+    const { normalizeAttachmentForAPI } = await import('./messages.js')
+    const { getDefaultAppState } = await import('../state/AppStateStore.js')
+    const { createFileStateCacheWithSizeLimit } =
+      await import('./fileStateCache.js')
+    const originalCwd = getCwdState()
+    setOriginalCwd(project)
+    setCwdState(project)
+    clearMemoryFileCaches()
+    const state = getDefaultAppState()
+    const context = {
+      options: {
+        commands: [],
+        debug: false,
+        mainLoopModel: 'claude-sonnet-4-6',
+        tools: [],
+        verbose: false,
+        thinkingConfig: { type: 'disabled' },
+        mcpClients: [],
+        mcpResources: {},
+        isNonInteractiveSession: true,
+        agentDefinitions: { activeAgents: [], allAgents: [] },
+      },
+      abortController: new AbortController(),
+      readFileState: createFileStateCacheWithSizeLimit(10),
+      nestedMemoryAttachmentTriggers: new Set([join(nested, 'index.ts')]),
+      loadedNestedMemoryPaths: new Set<string>(),
+      messages: [],
+      getAppState: () => state,
+      setAppState: () => {},
+      setInProgressToolUseIDs: () => {},
+      setResponseLength: () => {},
+      updateFileHistoryState: () => {},
+      updateAttributionState: () => {},
+    } satisfies import('../Tool.js').ToolUseContext
+    try {
+      const attachments = (
+        await getAttachments(null, context, null, [])
+      ).filter(a => a.type === 'nested_memory')
+      expect(attachments.map(a => a.path)).toEqual([
+        join(nested, 'AGENTS.md'),
+        join(nested, 'CLAUDE.md'),
+      ])
+      const messages = attachments.flatMap(normalizeAttachmentForAPI)
+      expect(JSON.stringify(messages)).toContain('nested shared attachment')
+      expect(JSON.stringify(messages)).toContain('nested Claude attachment')
+      expect(context.nestedMemoryAttachmentTriggers.size).toBe(0)
+      context.readFileState.clear()
+      context.nestedMemoryAttachmentTriggers.add(join(nested, 'index.ts'))
+      expect(
+        (await getAttachments(null, context, null, [])).filter(
+          a => a.type === 'nested_memory',
+        ),
+      ).toEqual([])
+      context.nestedMemoryAttachmentTriggers.add(join(outside, 'index.ts'))
+      expect(
+        (await getAttachments(null, context, null, [])).filter(
+          a => a.type === 'nested_memory',
+        ),
+      ).toEqual([])
+    } finally {
+      setCwdState(originalCwd)
+      clearMemoryFileCaches()
+    }
+  })
+
+  test.each(['AGENTS.md', 'CLAUDE.md', null])(
+    'recognizes project onboarding instructions from %s',
+    async filename => {
+      const project = join(root, `onboarding-${filename ?? 'none'}`)
+      mkdirSync(project)
+      writeFileSync(join(project, 'index.ts'), 'export {}')
+      if (filename)
+        writeFileSync(join(project, filename), 'project instructions')
+      const { getCwdState, setCwdState } = await import('../bootstrap/state.js')
+      const { getSteps, isProjectOnboardingComplete } =
+        await import('../projectOnboardingState.js')
+      const cwd = getCwdState()
+      try {
+        setCwdState(project)
+        expect(
+          getSteps().find(step => step.key === 'claudemd')?.isComplete,
+        ).toBe(filename !== null)
+        expect(isProjectOnboardingComplete()).toBe(filename !== null)
+      } finally {
+        setCwdState(cwd)
+      }
+    },
+  )
 
   test('loads AGENTS.md from additional directories only when enabled', async () => {
     const project = join(root, 'add-dir-project')
