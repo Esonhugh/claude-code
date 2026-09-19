@@ -5248,14 +5248,16 @@ export function REPL({
       helpers.resetHistory()
       setInputMode('prompt')
       setPastedContents({})
+      const consumedGeneration = draftGenerationRef.current
       if (modsSession) await awaitMods()
+      const currentTask = store.getState().tasks[task.id]
       if (isLocalAgentTask(task)) {
         appendMessageToLocalAgent(
           task.id,
           createUserMessage({ content: input }),
           setAppState,
         )
-        if (task.status === 'running') {
+        if (isLocalAgentTask(currentTask) && currentTask.status === 'running') {
           queuePendingMessage(task.id, input, setAppState)
         } else {
           void resumeAgentBackground({
@@ -5284,7 +5286,23 @@ export function REPL({
           })
         }
       } else {
-        injectUserMessageToTeammate(task.id, input, setAppState)
+        const sent = isInProcessTeammateTask(currentTask)
+          ? currentTask.status === 'running' &&
+            injectUserMessageToTeammate(currentTask.id, input, setAppState)
+          : false
+        if (sent) return
+        if (
+          draftGenerationRef.current === consumedGeneration &&
+          inputValueRef.current === ''
+        ) {
+          setInputValue(input)
+          helpers.setCursorOffset(input.length)
+        }
+        addNotification({
+          key: `teammate-message-not-sent-${task.id}`,
+          text: 'Teammate has stopped; message was not sent.',
+          priority: 'immediate',
+        })
       }
     },
     [
@@ -5298,6 +5316,7 @@ export function REPL({
       addNotification,
       modsSession,
       awaitMods,
+      store,
     ],
   )
 

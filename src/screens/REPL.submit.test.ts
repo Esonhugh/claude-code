@@ -828,10 +828,13 @@ test('lower immediate dispatch also leaves the caller-owned editor untouched', a
 test('viewed-agent submit consumes before Mods and never clears a later edit', async () => {
   const h = harness()
   let sent = 0
+  const runningTask = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
   const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
-    isLocalAgentTask: () => false, injectUserMessageToTeammate: () => { sent++ },
+    store: { getState: () => ({ tasks: { teammate: runningTask } }) },
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => { sent++; return true },
   })
-  const pending = submit('submitted', { id: 'teammate' }, h.helpers)
+  const pending = submit('submitted', runningTask, h.helpers)
   expect(h.draft.text).toBe('')
   h.setText('next draft')
   h.release()
@@ -839,6 +842,112 @@ test('viewed-agent submit consumes before Mods and never clears a later edit', a
   expect(sent).toBe(1)
   expect(h.draft.text).toBe('next draft')
 })
+
+test.each(['completed', 'missing', 'running'])('local Agent submit uses fresh %s state after Mods', async status => {
+  const h = harness()
+  const task = { id: 'local', type: 'local_agent', status: status === 'running' ? 'completed' : 'running' }
+  const currentTask = status === 'missing' ? undefined : { ...task, status }
+  const queued: string[] = []
+  const resumed: string[] = []
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { local: currentTask } }) },
+    isLocalAgentTask: (value: any) => value?.type === 'local_agent',
+    appendMessageToLocalAgent: noop,
+    createUserMessage: (value: any) => value,
+    queuePendingMessage: (id: string) => queued.push(id),
+    resumeAgentBackground: async ({ agentId }: any) => { resumed.push(agentId) },
+    getToolUseContext: () => ({}),
+    canUseTool: noop,
+  })
+  const pending = submit('submitted', task, h.helpers)
+  h.release()
+  await pending
+  expect(queued).toEqual(status === 'running' ? ['local'] : [])
+  expect(resumed).toEqual(status === 'running' ? [] : ['local'])
+})
+
+test('viewed teammate that finishes during Mods keeps the input and reports it was not sent', async () => {
+  const h = harness()
+  const taskAtSubmit = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
+  let currentTask = taskAtSubmit
+  const notifications: any[] = []
+  let sent = 0
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: currentTask } }) },
+    addNotification: (notification: any) => notifications.push(notification),
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => { sent++; return false },
+  })
+  const pending = submit('submitted', taskAtSubmit, h.helpers)
+  expect(h.draft.text).toBe('')
+  currentTask = { ...taskAtSubmit, status: 'completed' }
+  h.release()
+  await pending
+  expect(sent).toBe(0)
+  expect(h.draft.text).toBe('submitted')
+  expect(notifications).toEqual([
+    expect.objectContaining({
+      key: 'teammate-message-not-sent-teammate',
+      text: 'Teammate has stopped; message was not sent.',
+    }),
+  ])
+})
+
+test('teammate terminal transition during injection retains the input and restores the draft', async () => {
+  const h = harness()
+  const task = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
+  const notifications: any[] = []
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: task } }) },
+    addNotification: (notification: any) => notifications.push(notification),
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => false,
+  })
+  const pending = submit('submitted', task, h.helpers)
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('submitted')
+  expect(notifications).toHaveLength(1)
+})
+
+
+test('terminal teammate rejection does not overwrite a later edit', async () => {
+  const h = harness()
+  const task = { id: 'teammate', type: 'in_process_teammate', status: 'completed' }
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: task } }) },
+    addNotification: noop,
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => false,
+  })
+  const pending = submit('submitted', task, h.helpers)
+  h.setText('next draft')
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('next draft')
+})
+
+for (const status of ['completed', 'failed', 'killed']) {
+  test(`viewed terminal teammate (${status}) keeps input instead of sending to the main agent`, async () => {
+    const h = harness()
+    const task = { id: 'teammate', type: 'in_process_teammate', status }
+    let sent = 0
+    let mainAgentSubmissions = 0
+    const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+      store: { getState: () => ({ tasks: { teammate: task } }) },
+      addNotification: noop,
+      onSubmit: () => { mainAgentSubmissions++ },
+      isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+      injectUserMessageToTeammate: () => { sent++; return false },
+    })
+    const pending = submit('submitted', task, h.helpers)
+    h.release()
+    await pending
+    expect(sent).toBe(0)
+    expect(mainAgentSubmissions).toBe(0)
+    expect(h.draft.text).toBe('submitted')
+  })
+}
 
 
 for (const direction of ['Up', 'Down']) {

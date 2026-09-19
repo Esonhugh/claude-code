@@ -7,11 +7,13 @@ import stripAnsi from 'strip-ansi'
 
 import type { TaskStateBase } from '../../Task.js'
 import type { ToolUseContext } from '../../Tool.js'
+import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
 import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js'
 import { render } from '../../ink.js'
 import { getDefaultAppState } from '../../state/AppState.js'
 import { AppStateProvider } from '../../state/AppState.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
 
 function createTaskBase(id: string, description: string, startTime: number): TaskStateBase {
@@ -198,7 +200,7 @@ const retainedTeammate = {
 assert.deepEqual(getBackgroundTasksDialogInitialState({ tasks: { worker: retainedTeammate } }).viewState,
   { mode: 'list' })
 
-const { isViewableTeammate, getViewableTeammatesSorted } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
+const { injectUserMessageToTeammate, isViewableTeammate, getViewableTeammatesSorted } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
 for (const status of ['pending', 'running', 'completed', 'failed', 'killed'] as const) {
   for (const retention of [{}, { retain: true }, { retain: false, evictAfter: Date.now() + 30_000 }]) {
     const task = { ...retainedTeammate, retain: undefined, status, ...retention }
@@ -207,6 +209,40 @@ for (const status of ['pending', 'running', 'completed', 'failed', 'killed'] as 
 }
 const zTeammate = { ...retainedTeammate, id: 'z', identity: { ...retainedTeammate.identity, agentName: 'z' } }
 assert.deepEqual(getViewableTeammatesSorted({ z: zTeammate, a: retainedTeammate }).map(t => t.id), ['worker', 'z'])
+
+for (const status of ['completed', 'failed', 'killed'] as const) {
+  let terminalState: AppState = {
+    ...getDefaultAppState(),
+    tasks: { worker: { ...retainedTeammate, status, pendingUserMessages: [] } },
+  }
+  const injected = injectUserMessageToTeammate(
+    'worker',
+    `${status} unsent input`,
+    updater => { terminalState = updater(terminalState) },
+  )
+  const task = terminalState.tasks.worker as InProcessTeammateTaskState
+  assert.equal(injected, false)
+  assert.deepEqual(task.pendingUserMessages, [])
+  assert.equal(task.messages, retainedMessages, 'rejected input must not appear as a sent transcript message')
+}
+
+let runningState: AppState = {
+  ...getDefaultAppState(),
+  tasks: { worker: { ...retainedTeammate, status: 'running' as const, pendingUserMessages: [] } },
+}
+assert.equal(injectUserMessageToTeammate(
+  'worker',
+  'live input',
+  updater => { runningState = updater(runningState) },
+), true)
+const runningTask = runningState.tasks.worker as InProcessTeammateTaskState
+assert.deepEqual(runningTask.pendingUserMessages, ['live input'])
+const runningMessage = runningTask.messages?.at(-1)
+assert.equal(runningMessage?.type, 'user')
+assert.equal(
+  runningMessage?.type === 'user' ? runningMessage.message.content : undefined,
+  'live input',
+)
 
 const { useAppState, useSetAppState } = await import('../../state/AppState.js')
 const { useBackgroundTaskNavigation } = await import('../../hooks/useBackgroundTaskNavigation.js')
