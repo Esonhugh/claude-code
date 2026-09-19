@@ -1,5 +1,20 @@
 #!/usr/bin/env bun
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import {
+  getCwdState,
+  getOriginalCwd,
+  setCwdState,
+  setOriginalCwd,
+} from '../../bootstrap/state.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
@@ -110,7 +125,8 @@ mock.module('../../utils/plans.js', () => ({
   getPlanFilePath: () => '/tmp/compact-test-plan.md',
 }))
 
-const { compactConversation } = await import('./compact.js')
+const { compactConversation, createPostCompactFileAttachments } =
+  await import('./compact.js')
 const { compactConversationCodexStyle } = await import('./codexCompact.js')
 
 beforeEach(() => {
@@ -205,6 +221,82 @@ function createCacheSafeParams(
     forkContextMessages: messages,
   } as unknown as CacheSafeParams
 }
+
+describe('post-compact instruction restoration', () => {
+  test('keeps the canonical auto-memory entrypoint out of the restore quota', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'compact-auto-memory-')))
+    const originalCwd = getOriginalCwd()
+    const cwd = getCwdState()
+    try {
+      setOriginalCwd(root)
+      setCwdState(root)
+      const { getMemoryPath } = await import('../../utils/config.js')
+      const source = join(root, 'index.ts')
+      writeFileSync(source, 'export const value = 1')
+      const attachments = await createPostCompactFileAttachments(
+        {
+          [getMemoryPath('AutoMem')]: { content: 'auto memory', timestamp: 2 },
+          [source]: { content: 'export const value = 1', timestamp: 1 },
+        },
+        createCompactTestContext(),
+        1,
+      )
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]?.attachment).toMatchObject({
+        type: 'file',
+        filename: source,
+      })
+    } finally {
+      setOriginalCwd(originalCwd)
+      setCwdState(cwd)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
+    'AGENTS.md',
+    'CLAUDE.md',
+    'CLAUDE.local.md',
+    'src/AGENTS.md',
+    'src/CLAUDE.md',
+    '.claude/rules/project.md',
+  ])(
+    'keeps %s out of the ordinary file restoration quota',
+    async instructionPath => {
+      const root = realpathSync(
+        mkdtempSync(join(tmpdir(), 'compact-instructions-')),
+      )
+      const originalCwd = getOriginalCwd()
+      const cwd = getCwdState()
+      try {
+        setOriginalCwd(root)
+        setCwdState(root)
+        const instructions = join(root, instructionPath)
+        const source = join(root, 'index.ts')
+        mkdirSync(dirname(instructions), { recursive: true })
+        writeFileSync(instructions, 'project instructions')
+        writeFileSync(source, 'export const value = 1')
+        const attachments = await createPostCompactFileAttachments(
+          {
+            [instructions]: { content: 'project instructions', timestamp: 2 },
+            [source]: { content: 'export const value = 1', timestamp: 1 },
+          },
+          createCompactTestContext(),
+          1,
+        )
+        expect(attachments).toHaveLength(1)
+        expect(attachments[0]?.attachment).toMatchObject({
+          type: 'file',
+          filename: source,
+        })
+      } finally {
+        setOriginalCwd(originalCwd)
+        setCwdState(cwd)
+        rmSync(root, { recursive: true, force: true })
+      }
+    },
+  )
+})
 
 describe('compactConversation remote compaction lifecycle', () => {
   test('preserves lifecycle output while storing the opaque compaction item', async () => {
