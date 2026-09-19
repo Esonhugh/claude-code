@@ -492,3 +492,95 @@ synthetic真实命令在`U/runtime/height-contract-05/command.json`：cwd为`U/r
 主线程提交前`U/main-dock-height-precommit-review.json`确认本任务10个代码/测试/静态文档仍与第五构建逐字节一致，conservative source无漂移、隔离binary hash一致、当时暂存区为空。并发提交使HEAD前进至`9ba61da`，但HEAD不作为内容身份。此后只回填两份不内嵌报告，不修改CHANGELOG或生产输入，不为报告更新重新构建。文档收尾`U/docs-close-check.log`为exit0，changelog格式检查与5项测试通过，`git diff --check`通过。
 
 后续若追加高度验收，应先离线验证fixture直接使用`$.fs.write`而不传递capability，并验证Git setup完整创建`.git/info`；不能放宽生产loader、删除旧claim或换名掩盖重试。本轮保留第四71/2/12 failed、插件长行切窗缺口、通用Yoga缓存未修以及旧Workflow/PTY门禁；代码与测试已正常签名提交`9a03f53`（`fix(mods): synchronize pane focus and measured layout`，仅本任务8文件），README/CHANGELOG及两报告另按文档目的提交。**不push，不宣称全仓或完整官方parity通过**。
+
+### 9.12 高度验收第二 attempt：官方小文件通过，synthetic 前置仍失败
+
+用户在9.11结果交付后要求“覆盖失败”。本次只修正已确认的harness前置并补验未覆盖的高度行为，不覆盖或改绿05原始失败。`U/runtime/harness-dock-height-06`的两个场景均执行一次、runtime retry0，原330秒deadline不变。审阅结果 **33 passed / 1 harness failed / 12 not covered**，整体`failed-harness-prerequisite-partial-coverage`；不能将官方小文件通过视为synthetic或完整交互验收通过。
+
+离线生产loader/真实Worker注册及私有Git初始化通过，旧capability逃逸与`.git/info`错误已修正。但校准只执行load/register，没有dispatch `command.run`，未经过实际`ui.open`参数边界，因而漏掉下列新fixture错误。
+
+| 场景 | 实际结果 | 正常退出 / 清理 |
+| --- | --- | --- |
+| `height-contract-06` | `$.ui.open({focus:false, …})`被生产契约拒绝：`Mod UI pane focus may only be true`。应省略focus，不应放宽生产guard。尚未进入synthetic绘制，高度、草稿增长/清空和相关焦点/Page均not covered | 公开`/exit 0`；自有PID、loopback端口、私有tmux socket回收通过，无强制CLI操作 |
+| `official-height-smoke-06` | 未改官方diff在本地固定CLI上限定通过。160×50→160×18→160×50时，插件budget与实际pane容量均 **44→12→44**；短屏PageDown/Up恰好一次，`by=12/-12`，可见正文改变并恢复。source/base/file焦点及激活、resize绘制收敛通过 | 公开`/exit 0`；资源回收通过，无强制CLI操作 |
+
+44/12/44是dock标题与Debug/footer之间的**总内容容量，包含插件控件**，不是文件正文文本行数。小文件smoke不证明第四长行尾部可达性，也不是官方CLI parity。两场私有session/window/pane为`cc-uiux-height-contract-06:0.0`与`cc-uiux-official-height-smoke-06:0.0`（各自socket的`%0`）。关键证据：
+
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height-06/review-index.json`、`review.json`、`completion.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height-06/official-physical-audit.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/official-height-smoke-06/height-short-viewport.txt`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/official-height-smoke-06/workspace/ui-observer.json`
+
+沿用第五隔离制品`U/build-dock-height/artifact/built-claude`，SHA-256 `dd64994b28f16cdaad4bfa497c4ecd1c6fab4129bfdb10b3e6580f6847d18a69`，未新建制品。`U/main-height-06-preflight-identity.json`在启动时确认本任务10文件未变，三个Usage生产文件已有并发漂移；仅限定固定制品，不覆盖当前HEAD。旧证据与775文件官方原件完整性通过，未启动official CLI或真实provider，未修改仓库生产代码，未push。
+
+### 9.13 Synthetic 第三 attempt：精确高度通过，wrapped 输入前置失败
+
+新`U/runtime/harness-dock-height-07`省略非法`focus:false`，保留05/06原件、失败与claim，不重跑已通过的官方小文件。真实production loader/Worker/host执行`session.start → command.run → ui.open → ui.render/resolve`、focus/press/scroll离线校准通过，并以旧06 `focus:false`做真实生产边界negative control；省略focus默认不抢焦。离线最终 **10/0**，两次离线harness失败保留（嵌套sandbox与异步invalidate绘制等待），均发生在CLI启动前，不能算runtime验收。
+
+`height-contract-07`真实tmux仅一次、runtime retry0、330秒deadline不变；审阅 **16 passed / 3 harness failed / 6 not covered**，整体failed。原始计数17/2/6保留：`draft-wrapped`原来仅凭几何记passed，但其声明还要求建立换行草稿并缩小预算，审阅纠正为failed，而不是改绿旧失败。
+
+| 阶段 | 物理容量 / budget | 判定 |
+| --- | --- | --- |
+| 160×50初始 → 160×18 → 160×50恢复 | **44/44 → 12/12 → 44/44** | HEAD/BODY/TAIL逐行连续精确匹配，title不计入，通过 |
+| 未提交三行草稿 → 清空 | **42/42 → 44/44** | 草稿可见；Tab未产生person pane操作，模型请求0，清空后editor为空 |
+| 900字符单逻辑行输入 | 44/44 | 几何仍一致，但输入被折叠为`[Pasted text #1]`，没有建立wrapped草稿；此目标failed，不能算高度回归 |
+
+生产`src/components/PromptInput/PromptInput.tsx:1777–1815`正常将超过`PASTE_THRESHOLD=800`的paste折叠；阈值位于`src/utils/imagePaste.ts:30`，与冻结制品输入一致。07只校准UI调用链及Cursor，未覆盖实际PromptInput paste折叠路径。另有退出harness错误：失败路径未先清理残留pill便输入唯一probe，实际editor为`[Pasted text #1]HEIGHT07_EXIT_COMPOSER_PROBE`，严格前置拒绝正常退出；cleanup阶段interrupt/clear后`/exit 0`不算normal exit。自有进程、61312端口及私有socket回收通过。完整双草稿ownership/clear、运行时Tab/Enter/Page、全流程收敛及normal exit仍not covered；已测阶段收敛不替代完整流程。
+
+session/window/pane为`cc-uiux-height-contract-07:0.0` / `%0`，socket为`U/runtime/s-ajyecm1t/s`；命令/cwd在`U/runtime/height-contract-07/command.json`。权威证据：
+
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height-07/completion.json`、`review.json`、`review-index.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height-07/synthetic-physical-audit.json`、`failure-analysis.json`、`resource-audit.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/height-contract-07/draft-wrapped-viewport.txt`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/height-contract-07/exit-composer-probe-visible-viewport.txt`
+
+`U/main-height-07-preflight-identity.json`确认固定`dd64994b…`未变，但当时并发`ModsPane.test.tsx`及9个生产文件（包括`FullscreenLayout.tsx`）已漂移；不触碰、不将冻结结果套当前工作区。05/06及775原件hash未变，模型请求0，没有重建、official CLI或真实provider。
+
+### 9.14 Synthetic 第四准备 attempt：输入链源码漂移，未启动 runtime
+
+基于07已定位的两个harness错误，追加新`harness-dock-height-08`/`height-contract-08`，不是新制品，也不掩盖第四attempt。将单逻辑长行改为约600字符：低于800折叠阈值但仍需跨多个160列物理行；必须先通过真实PromptInput输入/paste路径离线校准，不只用Cursor推算。保留完整production UI链校准，退出路径在probe前先用正常编辑键清理残留并确认editor空；不改产品paste行为、不放宽exact editor断言。
+
+08已停止在离线门槛，**runtime0次，15项not covered**，normal exit/cleanup均not covered；没有创建CLI/tmux资源，不把未创建资源算cleanup通过。Mods完整链及driver离线 **14/0**；PromptInput身份前置 **0/1**、行为 **0/0/3**。首次错误地对全仓身份设门槛的结果保留并纠正为局部真实输入链；后续32模块中31一致，仅关键`PromptInput.tsx`从冻结`a7d212e0…`变为并发`1f3a860c…`，因此未执行真实组件import/render。嵌套sandbox、路径后缀等离线harness失败保留，均不能计为产品失败。权威结论为`U/runtime/harness-dock-height-08/completion.json`及`prompt-input-calibration.result.json`，旧05/06/07及775原件4243项完整性检查通过。
+
+### 9.15 冻结源码镜像补验：wrapped 通过，按钮字段谓词失败
+
+主线程已用`git show 9a03f53559bf05a2ceead7dcb61765830d1504af:src/components/PromptInput/PromptInput.tsx`核对SHA-256为冻结值`a7d212e0f1a210a76e12c6ed3894a5319b6be6d107653845aa44403ec551a50f`。新`harness-dock-height-09`通过只读Git对象建立仓库外源码镜像，真实校准链逐文件与第五build manifest比对；不恢复工作区、不创建worktree、不改冻结基线、不重建。准备attempt计为第五，若离线通过后启动`height-contract-09`，才是第四次实际synthetic runtime（05/06/07已运行，08未运行）。
+
+09已完成一次runtime，第五准备attempt/第四实际synthetic runtime，330秒deadline及8秒stage不变，审阅 **22 passed / 1 harness failed / 2 not covered**，整体failed。校准镜像相关链1272文件符合冻结hash，归档2590文件前后字节未变；并非宣称整个Git snapshot等同build manifest。Mods/driver离线14/0，真实PromptInput为1测试/25断言、三项指定行为通过：600字符完整四行且无pill、8次Ctrl+U清空；900字符正常pill；残留清空后未提交probe再清空。原`DRAFT09_WRAP_`实际13字符，已修harness为587个x取得精确600，旧离线失败保留。
+
+runtime通过精确 **44→12→44**、wrapped **44→41→44**、完整四行editor、非空Tab无pane操作/零API、清空及空Tab精确落点。Enter后实际一个`ui.press`、一个fixture callback、44行全`P1`；但driver误要求`event.input.origin.kind === 'person'`，而冻结`src/services/mods/ui.ts:903–922`将origin放在dispatch options，不放input。保留原failed，分类`confirmed-harness-event-payload-contract-mismatch`，不改生产payload、不事后改绿。依赖的Page双向和全场收敛未覆盖。公开`/exit 0`与cleanup均独立通过。
+
+证据入口为`U/runtime/harness-dock-height-09/review-index.json`、`completion.json`、`synthetic-physical-audit.json`、`failure-analysis.json`、`source-snapshot.provenance.json`；session/window/pane为`cc-uiux-height-contract-09:0.0` / `%0`，命令/cwd及输入捕获位于`U/runtime/height-contract-09/command.json`与`inputs.json`。沿用固定第五制品，未重建，未启动官方CLI或真实provider，05–08原证据及775原件未变，当前HEAD不qualified。
+
+### 9.16 按钮与 Page 最小补验（第六准备 attempt，限定通过）
+
+10仅修正press payload谓词：以真实生产派发记录校准plugin/element/component/requestId/surface、事件和callback各一次及物理全P1；`origin`不属于press input，不能伪造该字段。focus/scroll仍严格验证其真实input.origin。增加重复事件/错误目标或request/重复callback/P2等负例；无pane输入的断言不能因press/select/input没有origin而漏检。
+
+复用09已hash核对的只读source镜像和固定`dd64994b…`。`harness-dock-height-10`已完成唯一一次`height-contract-10`，第六准备attempt/第五实际synthetic runtime，runtime retry0，330秒deadline及8秒stage不变。离线真实生产调用链、共享predicate和负控 **50/0**；runtime与审阅计数均为 **21 passed / 0 failed / 6 not covered**，限定补验`passed`，完整高度矩阵仍`not covered`。6项是预声明not rerun：`height-short`、`height-restored`、`draft-multiline`、`draft-wrapped`、`draft-nonempty-owner`、`draft-clear-restores`；没有以删除检查项方式宣称全覆盖，也没有重跑06官方或09 PromptInput三行为。
+
+- open后收敛到44行，HEAD/BODY/TAIL逐行匹配；空composer一次Tab精确聚焦`height-probe`，一次Enter只产生一个before-phase `ui.press`和一个fixture callback，所有物理marker均为P1。
+- PageDown/PageUp各一次，真实`ui.scroll`的`by`精确为 **+44/-44**，fixture状态与物理marker offset均 **0→44→0**，保持P1。synthetic自管虚拟offset；host input.offset为0，不能替代fixture/物理位移判定。
+- 十个阶段收敛，render共8次，无React #185/Maximum update depth；Escape交还composer，清空→未提交probe→清空期间无pane输入、模型请求0。
+- 公开`/exit`在cleanup之前正常退出0；自有进程、53653端口、私有tmux session/socket清理独立通过，不以清理代替正常退出。独立审阅 **26/0**，旧证据与只读源码链等7720项完整性检查无变化，09原failed及官方775原件保持。
+
+session/window/pane为`cc-uiux-height-contract-10:0.0` / `%0`，160×50；socket为`U/runtime/harness-dock-height-10/s-1uvt959y/s`，cwd为`U/runtime/height-contract-10/workspace`。启动使用该目录中固定binary的`./built-claude --dangerously-skip-permissions`及两个私有`--plugin-dir`，完整argv见`command.json`。关键绝对证据路径：
+
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height-10/review-index.json`、`completion.json`、`review.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height-10/driver-contract-calibration.json`、`synthetic-physical-audit.json`、`resource-review.json`、`integrity-final.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/height-contract-10/command.json`、`inputs.json`、`focus-activation.json`、`page-bidirectional.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/height-contract-10/page-down-after-viewport.txt`、`page-up-after-viewport.txt`、`normal-exit-terminal-process.txt`
+
+### 9.17 高度补验收口与仍未解除的门禁
+
+| 本次目标 | 对应真实证据 | 范围 |
+| --- | --- | --- |
+| 未改官方diff小文件高度/缩放/Page | 06：pane容量与budget **44→12→44**，Page ±12、焦点、收敛通过 | 本地第五制品加载官方插件，不是官方CLI parity |
+| Synthetic精确行数与多行草稿 | 07：HEAD/TAIL **44→12→44**；三行草稿 **44→42→44** | 07整场仍failed，不改原退出/折叠失败 |
+| 完整wrapped草稿、输入所有权、清空恢复 | 09：600字符完整四行，**44→41→44**，非空Tab不抢焦、零API | 09整场仍failed；按钮谓词错误及依赖未覆盖保留 |
+| 按钮恰好一次、Page双向、收敛与正常退出 | 10：一个press/callback，全P1，offset **0→44→0**，exit0/cleanup分别通过 | 21/0/6，6项not rerun；不替代其他场景 |
+
+以上是**同一第五固定制品的分场景限定证据**，不相加成总体通过率，不宣称一次完整流程、全仓、官方parity或当前HEAD全量通过。05–09原判定/raw不改，08仍runtime0。主线程再次核对binary SHA-256为`dd64994b28f16cdaad4bfa497c4ecd1c6fab4129bfdb10b3e6580f6847d18a69`。并发提交`5c75cbf`已改变fullscreen dock布局，后续HEAD及dirty输入不在本次冻结制品验收范围；不恢复或暂存并发工作。
+
+本次只修仓库外harness并回填这两份不内嵌报告，未再改生产协议、README/CHANGELOG、依赖、版本或CI，无新build，未启动官方CLI或真实provider。报告检查`U/docs-height-followup-check.log`为5 pass/0 fail、exit0；签名提交前另做最终diff检查。此前259/0、release-check与build属于第五制品冻结基线，不冒充当前HEAD重测。
+
+**本轮限定补验已结束，不再启动runtime。整体仍未通过，不push。** 第四制品长行尾部/Page严格谓词、依赖的rapid Escape/Rewind及其他未覆盖项仍保留；公共Yoga子布局缓存未修，旧Workflow timeout/PTY退出码异常继续阻止整体推送。仅正常签名提交`mods-test.md`与`handoff.md`，不混入两份cross-session草稿、并发源码或原始证据。

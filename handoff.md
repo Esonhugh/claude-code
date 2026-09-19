@@ -1,8 +1,22 @@
 # Mods 修复与兼容性验收
 
-## 2026-09-19 Mods UI/UX 残留修复（限定验收已结束，仍未通过）
+## 2026-09-19 Mods UI/UX 残留修复（限定高度补验结束，整体仍未通过）
 
 本节为最新状态，下方原始失败与各轮判定保留。起点 `feat/mods@656ecafb3696d817ac35134f6b00d8f93171f6cc`；证据根 `/private/tmp/mods-uiux-20260919-4y11t_bu`，方案与红绿详见 `mods-test.md` 第9节。
+
+**“覆盖失败”限定补验已结束。** 最后10场景为 **21 passed / 0 failed / 6 not covered**；六项是预声明不重跑的resize/draft目标，不算本场通过。以下均使用第五固定制品`dd64994b28f16cdaad4bfa497c4ecd1c6fab4129bfdb10b3e6580f6847d18a69`，不是当前HEAD验收。
+
+| 补验 | 新证据与保留的失败 |
+| --- | --- |
+| 06 | 未改官方diff小文件的pane容量/budget **44→12→44**、Page ±12、焦点和收敛通过；synthetic非法`focus:false`前置失败。两场exit0/cleanup通过，整体 **33/1/12**，不改绿 |
+| 07 | Synthetic精确HEAD/TAIL **44→12→44**、多行草稿 **44→42→44**通过；900字符正常折叠，wrapped前置与退出残留harness失败。审阅 **16/3/6**，raw17/2/6保留；cleanup-only exit0不算normal exit |
+| 08 | 实际PromptInput源码并发漂移，离线身份门槛停止，**runtime0、15项not covered**；不把未创建资源算cleanup通过 |
+| 09 | Git对象`9a03f53`的仓库外只读镜像通过真实PromptInput三行为校准；完整四行草稿 **44→41→44**、非空Tab不抢焦、清空恢复、exit0/cleanup通过。错误要求press input.origin导致 **22/1/2**，旧failed保留 |
+| 10 | 离线真实payload/负控 **50/0**，唯一runtime **21/0/6**，独立审阅 **26/0**。一个press/callback且全P1，Page by精确+44/-44、fixture与物理offset **0→44→0**；十阶段收敛、normal exit0/cleanup分别通过，API0 |
+
+逐轮错误分类、命令、tmux pane及绝对证据路径见`mods-test.md`9.12–9.17；最终入口为`runtime/harness-dock-height-10/review-index.json`，旧证据与只读源码链等7720项完整性检查通过。05–09原判定/raw及775文件官方原件不变，不将不同场景计数相加或宣称单次全流程、全仓、官方CLI parity通过。
+
+本次只修仓库外harness并回填两报告，无新build、官方CLI或真实provider。既有签名提交`9a03f53`/`a633c05`保持；并发`5c75cbf`已改变fullscreen dock布局，当前HEAD和dirty文件不在冻结制品验证范围，不触碰或暂存并发工作。旧第四长行尾部/Page与其他交互缺口、公共Yoga缓存、Workflow timeout/PTY退出码异常仍保留，**整体仍未通过，不push**。下列条目为此前各轮历史记录，不修改原判定。
 
 - 已修复分页复用DOM的旧key/plugin注册残留、host snapshot聚焦误反馈person事件；保留现有串行focus队列、最终landing和generation/lease。
 - Select/Input高亮跟随真实焦点；diff复用host宽度预算并受嵌套Code实际Yoga宽度约束，局部宽度收敛后更新滚动metrics。
