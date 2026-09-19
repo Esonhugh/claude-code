@@ -211,7 +211,7 @@ test('Worker wheel middleware receives body-relative pointers and consumes a vir
   const { value, statuses, diagnostics } = fixture()
   await value.bind(binding(root)); await value.reconcile([consumer])
   const pane = value.ui.getSnapshot()[0]!
-  value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 4 })
+  await value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 4 })
   for (const [by, row] of [[3, 3], [-1, 2]] as const) {
     await value.ui.scroll(pane.owner, {
       requestId: pane.id, by, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
@@ -223,7 +223,7 @@ test('Worker wheel middleware receives body-relative pointers and consumes a vir
     component: 'Pane', requestId: 'panel', offset: 0, by, bodyRows: 4, contentRows: 4,
     origin: { kind: 'person' }, pointer: { column: 2, row: 1 },
   })]))
-  value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 12 })
+  await value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 12 })
   await value.ui.scroll(pane.owner, {
     requestId: pane.id, by: 3, pointer: { column: 12, row: 1 }, origin: { kind: 'person' },
   })
@@ -292,7 +292,7 @@ test('public ui.scroll resolves end and keyed targets before raising one plugin-
   }`)
   const {value,statuses,diagnostics} = fixture()
   await value.bind(binding(root)); await value.reconcile([policy,consumer])
-  value.ui.reportMetrics('panel', {
+  await value.ui.reportMetrics('panel', {
     bodyRows: 4,
     contentRows: 12,
     keyRows: [{plugin:'ui-owner',key:'target',top:6,bottom:7}],
@@ -470,6 +470,7 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
     focus:async (...args:unknown[]) => {calls.push(['focus',...args]); return landing},
     scroll:async (...args:unknown[]) => {calls.push(['scroll',...args])},
     reportMetrics:(...args:unknown[]) => {calls.push(['metrics',...args])},
+    getSnapshot:() => [{...pane,revision:42}],
   }
   const pane = {id:'panel',plugin:'owner',owner:{},visible:true,focused:true,bodyRows:10,contentRows:20}
   const scope = {
@@ -492,7 +493,7 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
   scope.modUiPresentationRef.current = currentPresentation
   await props.onInteract(pane,1,press,'press','run')
   await props.onClose(pane)
-  expect(await props.onFocus(pane,'run')).toBe(landing)
+  expect(await props.onFocus(pane,'run')).toEqual({...landing,revision:42})
   await props.onScroll(pane,3)
   await props.onScroll(pane,-1,pointer)
   props.onReportMetrics(pane,{bodyRows:10,contentRows:20})

@@ -17,6 +17,8 @@ import { logForDebugging } from '../utils/debug.js'
 type Props = {
   scrollRef: RefObject<ScrollBoxHandle | null>
   isActive: boolean
+  /** Lets a focused pane own keyboard scrolling while transcript wheel input stays active. */
+  isKeyboardActive?: boolean
   /** Called after every scroll action with the resulting sticky state and
    *  the handle (for reading scrollTop/scrollHeight post-scroll). */
   onScroll?: (sticky: boolean, handle: ScrollBoxHandle) => void
@@ -380,6 +382,7 @@ const AUTOSCROLL_MAX_TICKS = 200 // 10s @ 50ms
 export function ScrollKeybindingHandler({
   scrollRef,
   isActive,
+  isKeyboardActive = true,
   onScroll,
   isModal = false,
 }: Props): React.ReactNode {
@@ -484,30 +487,6 @@ export function ScrollKeybindingHandler({
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
-      'scroll:lineUp': () => {
-        // Wheel: scrollBy accumulates into pendingScrollDelta, drained async
-        // by the renderer. captureScrolledRows can't read the outgoing rows
-        // before they leave (drain is non-deterministic). Clear for now.
-        selection.clearSelection()
-        const s = scrollRef.current
-        // Return false (not consumed) when the ScrollBox content fits —
-        // scroll would be a no-op. Lets a child component's handler take
-        // the wheel event instead (e.g. Settings Config's list navigation
-        // inside the centered Modal, where the paginated slice always fits).
-        if (!s || s.getScrollHeight() <= s.getViewportHeight()) return false
-        wheelAccel.current ??= initAndLogWheelAccel()
-        scrollUp(s, computeWheelStep(wheelAccel.current, -1, performance.now()))
-        onScroll?.(false, s)
-      },
-      'scroll:lineDown': () => {
-        selection.clearSelection()
-        const s = scrollRef.current
-        if (!s || s.getScrollHeight() <= s.getViewportHeight()) return false
-        wheelAccel.current ??= initAndLogWheelAccel()
-        const step = computeWheelStep(wheelAccel.current, 1, performance.now())
-        const reachedBottom = scrollDown(s, step)
-        onScroll?.(reachedBottom, s)
-      },
       'scroll:top': () => {
         const s = scrollRef.current
         if (!s) return
@@ -531,6 +510,36 @@ export function ScrollKeybindingHandler({
         s.scrollTo(max)
         s.scrollToBottom()
         onScroll?.(true, s)
+      },
+    },
+    { context: 'Scroll', isActive: isActive && isKeyboardActive },
+  )
+
+  useKeybindings(
+    {
+      'scroll:lineUp': () => {
+        // Wheel: scrollBy accumulates into pendingScrollDelta, drained async
+        // by the renderer. captureScrolledRows can't read the outgoing rows
+        // before they leave (drain is non-deterministic). Clear for now.
+        selection.clearSelection()
+        const s = scrollRef.current
+        // Return false (not consumed) when the ScrollBox content fits —
+        // scroll would be a no-op. Lets a child component's handler take
+        // the wheel event instead (e.g. Settings Config's list navigation
+        // inside the centered Modal, where the paginated slice always fits).
+        if (!s || s.getScrollHeight() <= s.getViewportHeight()) return false
+        wheelAccel.current ??= initAndLogWheelAccel()
+        scrollUp(s, computeWheelStep(wheelAccel.current, -1, performance.now()))
+        onScroll?.(false, s)
+      },
+      'scroll:lineDown': () => {
+        selection.clearSelection()
+        const s = scrollRef.current
+        if (!s || s.getScrollHeight() <= s.getViewportHeight()) return false
+        wheelAccel.current ??= initAndLogWheelAccel()
+        const step = computeWheelStep(wheelAccel.current, 1, performance.now())
+        const reachedBottom = scrollDown(s, step)
+        onScroll?.(reachedBottom, s)
       },
       'selection:copy': copyAndToast,
     },
@@ -576,7 +585,7 @@ export function ScrollKeybindingHandler({
         onScroll?.(sticky, s)
       },
     },
-    { context: 'Scroll', isActive },
+    { context: 'Scroll', isActive: isActive && isKeyboardActive },
   )
 
   // Modal pager keys — transcript mode only. less/tmux copy-mode lineage:
@@ -606,7 +615,7 @@ export function ScrollKeybindingHandler({
       onScroll?.(sticky, s)
       event.stopImmediatePropagation()
     },
-    { isActive: isActive && isModal },
+    { isActive: isActive && isKeyboardActive && isModal },
   )
 
   // Esc clears selection; any other keystroke also clears it (matches

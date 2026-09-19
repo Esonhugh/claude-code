@@ -2995,12 +2995,18 @@ export function REPL({
         return ui.interact(pane.id, drawing, callback, kind, element, value)
       }}
       onClose={pane => modsSession?.runtime?.ui.close(pane.owner, pane.id, { kind: 'person' }) ?? Promise.resolve()}
-      onFocus={(pane, element) => modsSession?.runtime?.ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }, modUiPresentationRef.current) ?? Promise.resolve({ focused: false })}
+      onFocus={async (pane, element) => {
+        const ui = modsSession?.runtime?.ui
+        if (!ui) return { focused: false }
+        const result = await ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }, modUiPresentationRef.current)
+        const landing = ui.getSnapshot().find(current => current.id === pane.id && current.owner === pane.owner)
+        return { ...(result as Record<string, unknown>), ...(landing ? { revision: landing.revision } : { focused: false }) }
+      }}
       onScroll={(pane, by, pointer) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, pointer, origin: { kind: 'person' } }) ?? Promise.resolve()}
       onReportMetrics={(pane, metrics) => {
         if (metrics.keyRows === undefined && metrics.bodyRows === pane.bodyRows &&
             metrics.contentRows === pane.contentRows) return
-        modsSession?.runtime?.ui.reportMetrics(pane.id, metrics)
+        return modsSession?.runtime?.ui.reportMetrics(pane.id, metrics)
       }}
       onError={logError}
     />
@@ -6597,8 +6603,8 @@ export function REPL({
           ctrl+c-with-selection copies instead of cancelling the active task.
           Its raw useInput handler only stops propagation when a selection
           exists — without one, ctrl+c falls through to CancelRequestHandler.
-          PgUp/PgDn/wheel always scroll the transcript behind the modal —
-          the modal's inner ScrollBox is not keyboard-driven. onScroll
+          PgUp/PgDn/wheel scroll the transcript behind the modal, except
+          keyboard scrolling yields to a focused Mods pane. onScroll
           stays suppressed while a modal is showing so scroll doesn't
           stamp divider/pill state. */}
       <ScrollKeybindingHandler
@@ -6609,6 +6615,7 @@ export function REPL({
             !focusedInputDialog ||
             focusedInputDialog === 'tool-permission')
         }
+        isKeyboardActive={!modPaneFocused}
         onScroll={
           centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined

@@ -134,6 +134,7 @@ type HoverGroupEntry = {
 
 const LocalHoverContext = React.createContext(false)
 const PersonInputContext = React.createContext(false)
+const PaneLayoutContext = React.createContext<(() => void) | undefined>(undefined)
 const hoverGroups = new Map<string, HoverGroupEntry>()
 
 function hoverGroupKey(group: HoverGroup): string {
@@ -207,50 +208,45 @@ function keyElementId(plugin: string, key: string): string {
   return `${plugin}\0${key}`
 }
 
-function registerElement(
-  elements: Map<string, Set<DOMElement>>,
-  key: string,
-  element: DOMElement | null,
-): void {
-  if (element) {
-    let entries = elements.get(key)
-    if (!entries) {
-      entries = new Set()
-      elements.set(key, entries)
-    }
-    entries.add(element)
-    return
-  }
-  const entries = elements.get(key)
-  if (!entries) return
-  for (const entry of entries) {
-    if (!entry.parentNode) entries.delete(entry)
-  }
-  if (entries.size === 0) elements.delete(key)
-}
-
-function registerKeyElement(
-  elements: KeyElements,
+function useElementRegistration(
+  keyElements: KeyElements,
   plugin: string | undefined,
   key: unknown,
-  element: DOMElement | null,
-): void {
-  if (plugin === undefined || typeof key !== 'string' || !key) return
-  const id = keyElementId(plugin, key)
-  let entry = elements.current.get(id)
-  if (element) {
-    if (!entry) {
-      entry = { plugin, key, elements: new Set() }
-      elements.current.set(id, entry)
+  focusElements?: FocusElements,
+): (element: DOMElement | null) => void {
+  return useMemo(() => {
+    let registered: DOMElement | null = null
+    return (element: DOMElement | null) => {
+      if (typeof key !== 'string' || !key) return
+      const id = plugin === undefined ? undefined : keyElementId(plugin, key)
+      if (registered) {
+        const focused = focusElements?.current.get(key)
+        focused?.delete(registered)
+        if (focused?.size === 0) focusElements!.current.delete(key)
+        const keyed = id === undefined ? undefined : keyElements.current.get(id)
+        keyed?.elements.delete(registered)
+        if (keyed?.elements.size === 0) keyElements.current.delete(id!)
+      }
+      registered = element
+      if (!element) return
+      if (focusElements) {
+        let entries = focusElements.current.get(key)
+        if (!entries) {
+          entries = new Set()
+          focusElements.current.set(key, entries)
+        }
+        entries.add(element)
+      }
+      if (id !== undefined) {
+        let entry = keyElements.current.get(id)
+        if (!entry) {
+          entry = { plugin: plugin!, key, elements: new Set() }
+          keyElements.current.set(id, entry)
+        }
+        entry.elements.add(element)
+      }
     }
-    entry.elements.add(element)
-    return
-  }
-  if (!entry) return
-  for (const current of entry.elements) {
-    if (!current.parentNode) entry.elements.delete(current)
-  }
-  if (entry.elements.size === 0) elements.current.delete(id)
+  }, [keyElements, plugin, key, focusElements])
 }
 
 function documentOrder(root: DOMElement): Map<DOMElement, number> {
@@ -509,7 +505,7 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
     else if (type === 'Text') validateTextProps(props)
     else if (type === 'Button') {
       assertKeys(props, buttonProps, 'Button')
-      const key = stringProp(props, 'key', { required: true, singleLine: true, max: 64 })!
+      const key = stringProp(props, 'key', { required: true, singleLine: true })!
       stringProp(props, 'label', { required: true, singleLine: true })
       stringProp(props, 'hotkey', { singleLine: true, max: 1 })
       stringProp(props, 'action', { singleLine: true, max: 128 })
@@ -521,7 +517,7 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
       focusKeys.add(key)
     } else if (type === 'Select') {
       assertKeys(props, selectProps, 'Select')
-      const key = stringProp(props, 'key', { required: true, singleLine: true, max: 64 })!
+      const key = stringProp(props, 'key', { required: true, singleLine: true })!
       stringProp(props, 'label', { singleLine: true })
       stringProp(props, 'value', { singleLine: true })
       trueProp(props, 'autoFocus')
@@ -543,7 +539,7 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
       focusKeys.add(key)
     } else if (type === 'Input') {
       assertKeys(props, inputProps, 'Input')
-      const key = stringProp(props, 'key', { required: true, singleLine: true, max: 64 })!
+      const key = stringProp(props, 'key', { required: true, singleLine: true })!
       for (const name of ['label', 'placeholder', 'value', 'submitLabel'])
         stringProp(props, name, { singleLine: true })
       trueProp(props, 'autoFocus')
@@ -677,7 +673,7 @@ type Props = {
     value?: string,
   ): Promise<unknown>
   onClose(pane: ModUiPane): Promise<unknown>
-  /** Returns the host's final { focused, element } landing. */
+  /** Returns the host's final landing and its published snapshot revision. */
   onFocus(pane: ModUiPane, element?: string): Promise<unknown>
   onScroll(pane: ModUiPane, by: number, pointer?: { column: number; row: number }): Promise<unknown>
   /** Person input is allowed by the current composer/dialog presentation. */
@@ -689,7 +685,7 @@ type Props = {
       contentRows: number
       keyRows?: readonly ModUiKeyRow[]
     },
-  ) => void
+  ) => void | Promise<void>
   onError?: (error: unknown) => void
 }
 
@@ -713,17 +709,20 @@ export function ModsPane({
   }>())
   const validated = useMemo(() => validateModRenderTree(pane.tree), [pane.tree])
 
-  React.useLayoutEffect(() => {
+  const reportMetrics = React.useCallback(() => {
     const scroll = scrollRef.current
-    if (!scroll) return
-    scroll.scrollTo(pane.scrollOffset)
-    if (!onReportMetrics) return
-    onReportMetrics(pane, {
-      bodyRows: pane.bodyRows,
+    const bodyRows = scroll?.getElement()?.yogaNode?.getComputedHeight()
+    if (!scroll || !onReportMetrics || bodyRows === undefined || bodyRows < 1) return
+    void Promise.resolve(onReportMetrics(pane, {
+      bodyRows: Math.floor(bodyRows),
       contentRows: Math.max(0, Math.ceil(scroll.getFreshScrollHeight())),
       keyRows: keyRowsOf(keyElements, scroll.getElement()),
-    })
-  }, [onReportMetrics, pane, validated.tree])
+    })).catch(error => onError?.(error))
+  }, [onReportMetrics, onError, pane])
+  React.useLayoutEffect(() => {
+    scrollRef.current?.scrollTo(pane.scrollOffset)
+    reportMetrics()
+  }, [reportMetrics, pane.scrollOffset, validated.tree])
 
   const latest = React.useRef({ pane, onFocus, onScroll, onError, canFocus })
   latest.current = { pane, onFocus, onScroll, onError, canFocus }
@@ -731,6 +730,14 @@ export function ModsPane({
   const focusQueue = React.useRef(Promise.resolve())
   const pendingFocus = React.useRef(0)
   const focusGeneration = React.useRef(0)
+  const committedRevision = React.useRef(pane.revision)
+  const focusCommit = React.useRef<{
+    owner: object; generation: number; revision: number; resolve(): void
+  } | undefined>(undefined)
+  const focusHandoff = React.useRef<{
+    owner: object; generation: number; tree: unknown
+    requested: string; landing: string; element: DOMElement
+  } | undefined>(undefined)
   const { internal_eventEmitter } = useStdin()
 
   const navigable = () => {
@@ -754,8 +761,21 @@ export function ModsPane({
     const manager = getFocusManager(root)
     applyingFocus.current = true
     try {
-      if (!focused) manager.blur()
-      else manager.focus(navigable().find(entry => entry.key === key)?.element ?? root)
+      if (!focused) {
+        focusHandoff.current = undefined
+        manager.blur()
+      } else {
+        const entries = navigable()
+        if (focusHandoff.current?.landing !== key) focusHandoff.current = undefined
+        const handoff = focusHandoff.current
+        // Some drawings return the old key of a row's destination slot.
+        const reused = handoff && handoff.owner === latest.current.pane.owner &&
+          handoff.generation === focusGeneration.current && handoff.landing === key &&
+          handoff.tree !== latest.current.pane.tree && entries.find(entry =>
+            entry.key === handoff.requested && entry.element === handoff.element &&
+            entry.element.attributes.autoFocus === true)
+        manager.focus(reused?.element ?? entries.find(entry => entry.key === key)?.element ?? root)
+      }
     } finally { applyingFocus.current = false }
   }
   const requestFocus = (target: string | undefined | (() => string | undefined)) => {
@@ -769,10 +789,24 @@ export function ModsPane({
       const key = typeof target === 'function' ? target() : target
       if (typeof target === 'function' && navigable().some(entry =>
         entry.key === key && entry.element === getFocusManager(rootRef.current!).activeElement)) return
+      const before = navigable()
       const result = await current.onFocus(current.pane, key) as {
-        deny?: string; element?: string; focused?: boolean
+        deny?: string; element?: string; focused?: boolean; revision?: number
       } | undefined
       if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
+      if (!result?.deny && result?.focused !== false && key !== undefined && result?.element !== undefined) {
+        const element = before.find(entry => entry.key === result.element)?.element
+        focusHandoff.current = element && result.element !== key ? {
+          owner, generation, tree: current.pane.tree, requested: key, landing: result.element, element,
+        } : undefined
+      }
+      if (result?.focused !== false && result?.revision !== undefined &&
+          committedRevision.current < result.revision) {
+        await new Promise<void>(resolve => {
+          focusCommit.current = { owner, generation, revision: result.revision!, resolve }
+        })
+        if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
+      }
       if (result && 'focused' in result) applyFocus(result.element, result.focused)
       else if (result?.deny) applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
       else applyFocus(result?.element ?? key, key !== undefined)
@@ -789,6 +823,21 @@ export function ModsPane({
   React.useLayoutEffect(() => {
     if (!pane.visible || !(pane.focused || canFocus)) focusGeneration.current++
   }, [pane.visible, pane.focused, canFocus])
+
+  React.useLayoutEffect(() => {
+    committedRevision.current = pane.revision
+    const waiting = focusCommit.current
+    if (waiting && (waiting.owner !== pane.owner || waiting.generation !== focusGeneration.current ||
+        pane.revision >= waiting.revision)) {
+      focusCommit.current = undefined
+      waiting.resolve()
+    }
+  })
+  React.useLayoutEffect(() => () => {
+    focusGeneration.current++
+    focusCommit.current?.resolve()
+    focusCommit.current = undefined
+  }, [pane.owner])
 
   // Capture coordinates before transcript useInput subscribers consume the wheel.
   React.useEffect(() => {
@@ -850,7 +899,7 @@ export function ModsPane({
       let current = manager.activeElement
       while (current) {
         if (current === root) {
-          manager.blur()
+          applyFocus(undefined, false)
           break
         }
         current = current.parentNode
@@ -858,8 +907,7 @@ export function ModsPane({
       return
     }
     if (pane.focusedElement === undefined || pendingFocus.current > 0) return
-    const element = navigable().find(entry => entry.key === pane.focusedElement)?.element
-    if (element) manager.focus(element)
+    applyFocus(pane.focusedElement)
   }, [pane.focused, pane.focusedElement, validated.tree])
 
   const run = (operation: Promise<unknown>) => {
@@ -870,7 +918,10 @@ export function ModsPane({
     if (event.ctrl || event.meta || event.superKey || (event.shift && event.key !== 'tab')) return
     if (event.key === 'tab' || event.key === 'up' || event.key === 'down') {
       const controls = navigable()
-      if (controls.length > (event.key === 'tab' ? 0 : 1)) {
+      const active = rootRef.current && getFocusManager(rootRef.current).activeElement
+      const bodyFocused = pane.focusedElement !== undefined &&
+        !controls.some(entry => entry.key === pane.focusedElement) && active === rootRef.current
+      if (event.key === 'tab' ? controls.length > 0 : controls.length > 1 && !bodyFocused) {
         event.preventDefault()
         const direction = event.key === 'up' || event.key === 'tab' && event.shift ? -1 : 1
         run(requestFocus(() => {
@@ -896,6 +947,8 @@ export function ModsPane({
     } else if (event.key === 'escape') {
       event.preventDefault()
       focusGeneration.current++
+      focusCommit.current?.resolve()
+      focusCommit.current = undefined
       run(pane.closeOnEscape ? onClose(pane) : onFocus(pane))
     }
   }
@@ -905,6 +958,7 @@ export function ModsPane({
       flexDirection="column"
       width="100%"
       height={pane.bodyRows + (pane.title ? 1 : 0)}
+      flexGrow={pane.placement === 'dock' ? 1 : 0}
       overflow="hidden"
       tabIndex={pane.focused ? 0 : undefined}
       autoFocus={pane.focused && !validated.hasAutoFocus}
@@ -928,17 +982,19 @@ export function ModsPane({
         width="100%"
       >
         <PersonInputContext.Provider value={pane.visible && (pane.focused || canFocus)}>
-          <RenderElementNode
-            node={validated.tree}
-            pane={pane}
-            focusElements={focusElements}
-            keyElements={keyElements}
-            onInteract={onInteract}
-            onFocus={handleFocus}
-            onError={onError}
-            hoverBoxes={validated.hoverBoxes}
-            parentInline={false}
-          />
+          <PaneLayoutContext.Provider value={reportMetrics}>
+            <RenderElementNode
+              node={validated.tree}
+              pane={pane}
+              focusElements={focusElements}
+              keyElements={keyElements}
+              onInteract={onInteract}
+              onFocus={handleFocus}
+              onError={onError}
+              hoverBoxes={validated.hoverBoxes}
+              parentInline={false}
+            />
+          </PaneLayoutContext.Provider>
         </PersonInputContext.Provider>
       </ScrollBox>
     </Box>
@@ -1005,6 +1061,7 @@ function RenderElementNode({
   const [themeName] = useTheme()
   const theme = getTheme(themeName)
   const props = terminalStyles(node.props ?? {})
+  const elementRef = useElementRegistration(keyElements, node.group?.plugin, props.key)
   const group = groupOf(node)
   const groupHover = useHoverGroup(group)
   const localActive = React.useContext(LocalHoverContext)
@@ -1039,12 +1096,7 @@ function RenderElementNode({
         hover={node.hover}
         group={group}
         isLive={localScopeIsLive}
-        elementRef={element => registerKeyElement(
-          keyElements,
-          node.group?.plugin,
-          props.key,
-          element,
-        )}
+        elementRef={elementRef}
       >
         {children}
       </ScopedHoverBox>
@@ -1053,7 +1105,7 @@ function RenderElementNode({
       {...props as React.ComponentProps<typeof Box>}
       {...style as React.ComponentProps<typeof Box>}
       {...(canHeatGroup ? groupHover.handlers : {})}
-      ref={element => registerKeyElement(keyElements, node.group?.plugin, props.key, element)}
+      ref={elementRef}
     >
       {children}
     </Box>
@@ -1078,17 +1130,7 @@ function RenderElementNode({
     const language = props.language as string | undefined
     const path = props.path as string | undefined
     if (props.format === 'diff') {
-      const patches = parsePatch(source).flatMap(file => file.hunks)
-      return <Box flexDirection="column">{patches.map((patch, index) => (
-        <StructuredDiff
-          key={index}
-          patch={patch}
-          dim={false}
-          filePath={path ?? 'change.diff'}
-          firstLine={null}
-          width={Math.max(1, pane.placement === 'dock' ? 76 : 80)}
-        />
-      ))}</Box>
+      return <ModDiff source={source} path={path} bodyColumns={pane.bodyColumns} />
     }
     return <HighlightedCodeFallback code={source} filePath={path ?? (language ? `code.${language}` : 'code.md')} />
   }
@@ -1099,6 +1141,36 @@ function RenderElementNode({
     return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={onInteract} onFocus={onFocus} onError={onError} />
   }
   return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={onInteract} onFocus={onFocus} onError={onError} />
+}
+
+function ModDiff({ source, path, bodyColumns }: {
+  source: string
+  path?: string
+  bodyColumns: number
+}): React.ReactNode {
+  const ref = React.useRef<DOMElement>(null)
+  const [columns, setColumns] = useState(bodyColumns)
+  const reportMetrics = React.useContext(PaneLayoutContext)
+  const patches = useMemo(() => parsePatch(source).flatMap(file => file.hunks), [source])
+  React.useLayoutEffect(() => {
+    const width = ref.current?.yogaNode?.getComputedWidth()
+    if (width !== undefined && width > 0) {
+      const next = Math.max(1, Math.floor(width))
+      if (next !== columns) setColumns(next)
+    }
+  })
+  // Child layout effects run before ScrollBox reattaches its viewport ref.
+  React.useEffect(() => { reportMetrics?.() }, [columns, reportMetrics])
+  return <Box ref={ref} flexDirection="column" width="100%" maxWidth={bodyColumns}>
+    {patches.map((patch, index) => <StructuredDiff
+      key={index}
+      patch={patch}
+      dim={false}
+      filePath={path ?? 'change.diff'}
+      firstLine={null}
+      width={Math.min(columns, bodyColumns)}
+    />)}
+  </Box>
 }
 
 function ScopedHoverBox({
@@ -1141,14 +1213,6 @@ function ScopedHoverBox({
   )
 }
 
-function registerFocusElement(
-  elements: FocusElements,
-  key: string,
-  element: DOMElement | null,
-): void {
-  registerElement(elements.current, key, element)
-}
-
 function reportElementFocus(
   event: FocusEvent,
   pane: ModUiPane,
@@ -1177,6 +1241,7 @@ function ModButton({
   const props = node.props!
   const key = props.key as string
   const press = node.press!
+  const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
   const plain = props.plain === true
   const style = hoverStyles(node, active)
   const run = () => {
@@ -1186,10 +1251,7 @@ function ModButton({
   return (
     <Box {...handlers}>
       <Button
-        ref={element => {
-          registerFocusElement(focusElements, key, element)
-          registerKeyElement(keyElements, node.group?.plugin ?? press.plugin, key, element)
-        }}
+        ref={elementRef}
         onAction={run}
         tabIndex={pane.focused ? 0 : -1}
         autoFocus={pane.focused && props.autoFocus === true}
@@ -1234,8 +1296,10 @@ function ModSelect({
   const options = props.options as { value: string; label?: string }[]
   const initial = Math.max(0, options.findIndex(option => option.value === props.value))
   const [index, setIndex] = useState(initial)
+  const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!
+  const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
   const select = () => {
     if (!inputAllowed || pane.drawing === undefined) return
     const value = options[index]!.value
@@ -1260,18 +1324,19 @@ function ModSelect({
   const option = options[index]!
   return (
     <Box
-      ref={element => {
-        registerFocusElement(focusElements, key, element)
-        registerKeyElement(keyElements, node.group?.plugin ?? press.plugin, key, element)
-      }}
+      ref={elementRef}
       tabIndex={pane.focused ? 0 : -1}
       autoFocus={pane.focused && props.autoFocus === true}
-      onFocus={event => { if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
+      onFocus={event => {
+        setFocused(true)
+        if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)
+      }}
+      onBlur={() => setFocused(false)}
       onKeyDown={handle}
       onClick={select}
     >
       {props.label ? <Text>{String(props.label)}: </Text> : null}
-      <Text>{option.label ?? option.value} {figures.arrowUp}{figures.arrowDown}</Text>
+      <Text inverse={focused}>{option.label ?? option.value} {figures.arrowUp}{figures.arrowDown}</Text>
     </Box>
   )
 }
@@ -1290,8 +1355,10 @@ function ModInput({
   const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
   const [value, setValue] = useState((props.value as string | undefined) ?? '')
+  const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!
+  const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
   const send = (kind: 'change' | 'submit', next: string) => {
     if (!inputAllowed || pane.drawing === undefined) return
     void onInteract(
@@ -1328,17 +1395,18 @@ function ModInput({
   }
   return (
     <Box
-      ref={element => {
-        registerFocusElement(focusElements, key, element)
-        registerKeyElement(keyElements, node.group?.plugin ?? press.plugin, key, element)
-      }}
+      ref={elementRef}
       tabIndex={pane.focused ? 0 : -1}
       autoFocus={pane.focused && props.autoFocus === true}
-      onFocus={event => { if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
+      onFocus={event => {
+        setFocused(true)
+        if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)
+      }}
+      onBlur={() => setFocused(false)}
       onKeyDown={handle}
     >
       {props.label ? <Text>{String(props.label)}: </Text> : null}
-      <Text inverse>{value || String(props.placeholder ?? '')}</Text>
+      <Text inverse={focused}>{value || String(props.placeholder ?? '')}</Text>
       <Text dimColor> {String(props.submitLabel ?? 'submit')}</Text>
     </Box>
   )

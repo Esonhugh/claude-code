@@ -134,6 +134,20 @@ describe('mod UI ownership and pane policy', () => {
     })
   })
 
+  test('publishes the same body width used by drawing across dock and inline resize', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    await ui.open(owner, { id: 'diff', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await ui.focus(owner, { requestId: 'diff', element: 'run', origin: { kind: 'person' } })
+    for (const columns of [160, 110, 109, 80, 160]) {
+      await ui.render({ ...wide, columns, rows: 12 })
+      const bodyColumns = columns >= 110 ? Math.floor(columns / 2) - 2 : columns - 4
+      expect(ui.getSnapshot()[0]).toMatchObject({ bodyColumns, focusedElement: 'run', focused: true })
+      expect(draws.at(-1)?.input.props).toMatchObject({ bodyColumns })
+    }
+  })
+
   test('applies person/autonomous width thresholds separately from placement', async () => {
     const owner = { plugin: 'fixture' }
     const { ui } = fixture()
@@ -390,7 +404,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     expect(ui.getSnapshot()[0]!.focusedElement).toBeUndefined()
 
     mode = 'pass'
-    ui.reportMetrics('pane', { bodyRows: 10, contentRows: 30 })
+    await ui.reportMetrics('pane', { bodyRows: 10, contentRows: 30 })
     await ui.scroll(owner, { requestId: 'pane', by: 5, origin: { kind: 'person' } })
     await ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } })
     expect(ui.getSnapshot()[0]).toMatchObject({ scrollOffset: 5, focusedElement: 'run' })
@@ -473,6 +487,343 @@ describe('mod UI dispatch and drawing lifetime', () => {
     await expect(ui.focus(owner, {
       requestId: 'missing', element: 'one', origin: { kind: 'person' },
     }, wide)).resolves.toEqual({ deny: 'site is not open', focused: false })
+  })
+
+  test('person focus waits for an already-started invalidation before returning its landing', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const proceed = Promise.withResolvers<void>()
+    let delay = false
+    let invalidating: Promise<void> | undefined
+    const { ui } = fixture({
+      draw: async () => {
+        if (delay) { entered.resolve(); await proceed.promise }
+        return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+      },
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus' && input.element !== undefined)
+          invalidating = ui.invalidate(owner, 'ui.render')
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const before = ui.getSnapshot()[0]!.drawing
+    delay = true
+    let finished = false
+    const focusing = ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } }, wide)
+      .then(result => { finished = true; return result })
+    try {
+      await entered.promise
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(finished).toBe(false)
+      proceed.resolve()
+      await expect(focusing).resolves.toEqual({ focused: true, element: 'run' })
+      expect(ui.getSnapshot()[0]!.drawing).not.toBe(before)
+    } finally {
+      proceed.resolve()
+      await Promise.all([focusing, invalidating])
+      await ui.release(owner)
+    }
+  })
+
+  test('person focus follows a superseding redraw without blocking Escape', async () => {
+    const owner = { plugin: 'fixture' }
+    const first = Promise.withResolvers<void>()
+    const second = Promise.withResolvers<void>()
+    const entered = Promise.withResolvers<void>()
+    let draws = 0
+    let invalidating: Promise<void> | undefined
+    const { ui } = fixture({
+      draw: async () => {
+        if (++draws === 2) { entered.resolve(); await first.promise }
+        else if (draws === 3) await second.promise
+        return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+      },
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus' && input.element !== undefined)
+          invalidating = ui.invalidate(owner, 'ui.render')
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    let finished = false
+    const focusing = ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } }, wide)
+      .then(result => { finished = true; return result })
+    await entered.promise
+    const replacing = ui.render({ ...wide, columns: 109 })
+    try {
+      first.resolve()
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(finished).toBe(false)
+      await expect(ui.focus(owner, { requestId: 'pane', origin: { kind: 'person' } }, wide)).resolves.toEqual({ focused: false })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(finished).toBe(true)
+      await expect(focusing).resolves.toMatchObject({ focused: false })
+      second.resolve()
+      await replacing
+      expect(ui.getSnapshot()[0]!.drawing).toBe(3)
+    } finally {
+      first.resolve(); second.resolve()
+      await Promise.all([focusing, invalidating, replacing])
+      await ui.release(owner)
+    }
+  })
+
+  test('person focus finishes after Escape and can reenter while the old draw stays pending', async () => {
+    const owner = { plugin: 'fixture' }
+    const pending = new Promise<never>(() => {})
+    let draws = 0
+    const { ui } = fixture({
+      draw: async () => {
+        if (++draws === 2) return pending
+        return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+      },
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus' && input.element !== undefined)
+          void ui.invalidate(owner, 'ui.render')
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    let finished = false
+    const focusing = ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, wide).then(result => { finished = true; return result })
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(draws).toBe(2)
+      expect(finished).toBe(false)
+      await expect(ui.focus(owner, {
+        requestId: 'pane', origin: { kind: 'person' },
+      }, wide)).resolves.toEqual({ focused: false })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(finished).toBe(true)
+      await expect(focusing).resolves.toEqual({ focused: false })
+      await expect(ui.focus(owner, {
+        requestId: 'pane', element: 'run', origin: { kind: 'person' },
+      }, wide)).resolves.toEqual({ focused: true, element: 'run' })
+      expect(ui.getSnapshot()[0]!.drawing).toBe(3)
+    } finally {
+      await ui.release(owner)
+    }
+  })
+
+  test('person focus superseded by a no-op move finishes without a snapshot publication', async () => {
+    const owner = { plugin: 'fixture' }
+    let draws = 0
+    const { ui } = fixture({
+      draw: async () => {
+        if (++draws === 2) return new Promise<never>(() => {})
+        return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    void ui.invalidate(owner, 'ui.render')
+    const request = { requestId: 'pane', element: 'run', origin: { kind: 'person' as const } }
+    let firstFinished = false
+    let secondFinished = false
+    const first = ui.focus(owner, request, wide).then(result => { firstFinished = true; return result })
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(firstFinished).toBe(false)
+      const before = ui.getSnapshot()
+      const second = ui.focus(owner, request, wide).then(result => { secondFinished = true; return result })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(ui.getSnapshot()).toBe(before)
+      expect(firstFinished).toBe(true)
+      expect(secondFinished).toBe(false)
+      await expect(first).resolves.toEqual({ focused: true, element: 'run' })
+      await ui.focus(owner, { requestId: 'pane', origin: { kind: 'person' } }, wide)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(secondFinished).toBe(true)
+      await expect(second).resolves.toEqual({ focused: false })
+    } finally {
+      await ui.release(owner)
+    }
+  })
+
+  for (const rejection of ['before', 'after'] as const) {
+    test(`person focus ignores an old draw rejecting ${rejection} the superseding draw succeeds`, async () => {
+      const owner = { plugin: 'fixture' }
+      const first = Promise.withResolvers<void>()
+      const second = Promise.withResolvers<void>()
+      const failure = new Error('obsolete draw failed')
+      let draws = 0
+      const { ui, released } = fixture({
+        draw: async () => {
+          if (++draws === 2) await first.promise
+          else if (draws === 3) await second.promise
+          return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+        },
+      })
+      await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+      await ui.commit(owner)
+      const invalidating = ui.invalidate(owner, 'ui.render').catch(error => error)
+      let finished = false
+      const focusing = ui.focus(owner, {
+        requestId: 'pane', element: 'run', origin: { kind: 'person' },
+      }, wide).then(
+        result => { finished = true; return { result } },
+        error => { finished = true; return { error } },
+      )
+      let replacing: Promise<void> | undefined
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(finished).toBe(false)
+        replacing = ui.invalidate(owner, 'ui.render')
+        await new Promise<void>(resolve => setImmediate(resolve))
+        if (rejection === 'before') {
+          first.reject(failure)
+          expect(await invalidating).toBe(failure)
+        }
+        expect(finished).toBe(false)
+        second.resolve()
+        await replacing
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(finished).toBe(true)
+        await expect(focusing).resolves.toEqual({ result: { focused: true, element: 'run' } })
+        const landed = ui.getSnapshot()
+        expect(landed[0]!.drawing).toBe(3)
+        if (rejection === 'after') first.reject(failure)
+        expect(await invalidating).toBe(failure)
+        expect(released).toContain(2)
+        expect(ui.getSnapshot()).toBe(landed)
+      } finally {
+        first.resolve(); second.resolve()
+        await Promise.all([focusing, invalidating, replacing])
+        await ui.release(owner)
+      }
+    })
+  }
+
+  for (const cancellation of ['hidden', 'close', 'replacement', 'unload'] as const) {
+    test(`person focus finishes on ${cancellation} before the pending draw rejects`, async () => {
+      const owner = { plugin: 'fixture' }
+      const nextOwner = { plugin: 'fixture' }
+      const pending = Promise.withResolvers<void>()
+      const failure = new Error('cancelled draw failed')
+      let draws = 0
+      const { ui, released } = fixture({
+        draw: async () => {
+          if (++draws === 2) await pending.promise
+          return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+        },
+      })
+      await ui.open(owner, { id: 'pane', focus: true }, { kind: 'plugin' }, wide)
+      await ui.commit(owner)
+      const rendering = ui.render(wide).catch(error => error)
+      let finished = false
+      const focusing = ui.focus(owner, {
+        requestId: 'pane', element: 'run', origin: { kind: 'person' },
+      }, wide).then(
+        result => { finished = true; return { result } },
+        error => { finished = true; return { error } },
+      )
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(finished).toBe(false)
+        if (cancellation === 'hidden') await ui.render({ ...wide, columns: 100 })
+        else if (cancellation === 'close') await ui.close(owner, 'pane', { kind: 'person' })
+        else if (cancellation === 'unload') await ui.release(owner)
+        else {
+          await ui.open(nextOwner, { id: 'pane' }, { kind: 'plugin' }, wide)
+          await ui.commit(nextOwner, owner)
+        }
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(finished).toBe(true)
+        await expect(focusing).resolves.toEqual({ result: { focused: false } })
+        const landed = ui.getSnapshot()
+        pending.reject(failure)
+        expect(await rendering).toBe(failure)
+        expect(released).toContain(2)
+        expect(ui.getSnapshot()).toBe(landed)
+      } finally {
+        pending.resolve()
+        await Promise.all([focusing, rendering])
+        await ui.release(owner)
+        await ui.release(nextOwner)
+      }
+    })
+  }
+
+  for (const cancellation of ['Escape', 'redraw'] as const) {
+    test(`person focus ignores a queued draw rejection overtaken by ${cancellation}`, async () => {
+      const owner = { plugin: 'fixture' }
+      const pending = Promise.withResolvers<void>()
+      const cleanup = Promise.withResolvers<void>()
+      const failure = new Error('cancelled draw failed')
+      let draws = 0
+      const { ui } = fixture({
+        draw: async () => {
+          if (++draws === 2) await pending.promise
+          return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+        },
+        releaseDrawing: async (_owner, drawing) => {
+          if (drawing === 2) cleanup.resolve()
+        },
+      })
+      await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+      await ui.commit(owner)
+      const invalidating = ui.invalidate(owner, 'ui.render').catch(error => error)
+      const focusing = ui.focus(owner, {
+        requestId: 'pane', element: 'run', origin: { kind: 'person' },
+      }, wide).then(result => ({ result }), error => ({ error }))
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        pending.reject(failure)
+        await cleanup.promise
+        // Queue cancellation after drawing cleanup but before focus handles the rejection.
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+        if (cancellation === 'Escape')
+          await ui.focus(owner, { requestId: 'pane', origin: { kind: 'person' } }, wide)
+        else await ui.invalidate(owner, 'ui.render')
+        await expect(focusing).resolves.toEqual({ result: cancellation === 'Escape'
+          ? { focused: false }
+          : { focused: true, element: 'run' } })
+        expect(await invalidating).toBe(failure)
+      } finally {
+        pending.resolve()
+        await Promise.all([focusing, invalidating])
+        await ui.release(owner)
+      }
+    })
+  }
+
+  test('person focus still rejects when its current draw fails', async () => {
+    const owner = { plugin: 'fixture' }
+    const pending = Promise.withResolvers<void>()
+    const failure = new Error('current draw failed')
+    let draws = 0
+    const { ui, released } = fixture({
+      draw: async () => {
+        if (++draws === 2) await pending.promise
+        return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const invalidating = ui.invalidate(owner, 'ui.render').catch(error => error)
+    const focusing = ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, wide).then(result => ({ result }), error => ({ error }))
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      pending.reject(failure)
+      await expect(focusing).resolves.toEqual({ error: failure })
+      expect(await invalidating).toBe(failure)
+      expect(released).toContain(2)
+    } finally {
+      pending.resolve()
+      await Promise.all([focusing, invalidating])
+      await ui.release(owner)
+    }
   })
 
   test('person admission rechecks visibility and presentation after asynchronous focus middleware', async () => {
@@ -592,7 +943,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     })
     await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
     await ui.commit(owner)
-    ui.reportMetrics('pane', { bodyRows: 4, contentRows: 4 })
+    await ui.reportMetrics('pane', { bodyRows: 4, contentRows: 4 })
     const snapshot = ui.getSnapshot()
     for (const by of [3, -3]) {
       await expect(ui.scroll(owner, {
@@ -620,7 +971,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     })
     await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
     await ui.commit(owner)
-    ui.reportMetrics('pane', { bodyRows: 4, contentRows: 12 })
+    await ui.reportMetrics('pane', { bodyRows: 4, contentRows: 12 })
     await expect(ui.scroll(owner, {
       requestId: 'pane', by: 3, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
     })).resolves.toEqual({})
@@ -645,7 +996,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     })
     await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
     await ui.commit(owner)
-    ui.reportMetrics('pane', { bodyRows: 4, contentRows: 12 })
+    await ui.reportMetrics('pane', { bodyRows: 4, contentRows: 12 })
 
     rewrite = { offset: 3 }
     await expect(ui.scroll(owner, { requestId: 'pane', by: 1, origin: { kind: 'person' } })).resolves.toEqual({})
@@ -682,7 +1033,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     const { ui } = fixture()
     await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
     await ui.commit(owner)
-    ui.reportMetrics('pane', {
+    await ui.reportMetrics('pane', {
       bodyRows: 4,
       contentRows: 12,
       keyRows: [{ plugin: 'fixture', key: 'row', top: 6, bottom: 7 }],
@@ -727,7 +1078,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     await ui.commit(owner)
     const current = ui.getSnapshot()[0]!
     const unsubscribe = ui.subscribe(() => observed.push(ui.getSnapshot()))
-    ui.reportMetrics('pane', { bodyRows: current.bodyRows, contentRows: current.contentRows })
+    await ui.reportMetrics('pane', { bodyRows: current.bodyRows, contentRows: current.contentRows })
     expect(observed).toEqual([])
 
     await ui.interact('pane', current.drawing!, { plugin: 'fixture', handle: 31 }, 'input.change', 'reply', 'a')
@@ -738,6 +1089,56 @@ describe('mod UI dispatch and drawing lifetime', () => {
       expect.objectContaining({ kind: 'submit', value: 'a' }),
     ])
     unsubscribe()
+  })
+
+  test('redraws measured body heights, preserves them on focus and resets them on geometry changes', async () => {
+    const owner = {}
+    const { ui, draws, released } = fixture()
+    await ui.open(owner, { id: 'pane', rows: 7 }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const original = ui.getSnapshot()[0]!.drawing!
+    await ui.reportMetrics('pane', { bodyRows: 31, contentRows: 60 })
+    expect(draws).toHaveLength(2)
+    expect(draws.at(-1)!.input.props).toMatchObject({ scroll: { bodyRows: 31 } })
+    expect(released).toContain(original)
+    await ui.reportMetrics('pane', { bodyRows: 31, contentRows: 60 })
+    await ui.reportMetrics('pane', { bodyRows: 31, contentRows: 61 })
+    expect(draws).toHaveLength(2)
+    await ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } }, wide)
+    expect(ui.getSnapshot()[0]!.bodyRows).toBe(31)
+    await ui.render({ ...wide, hasDialog: true })
+    expect(draws.at(-1)!.input.props).toMatchObject({ scroll: { bodyRows: 31 } })
+    await ui.render({ ...wide, columns: 109 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'inline', bodyRows: 7 })
+    await ui.render(wide)
+    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyRows: 36 })
+    await ui.reportMetrics('pane', { bodyRows: 33, contentRows: 60 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ scroll: { bodyRows: 33 } })
+    await ui.release(owner)
+  })
+
+  test('rejects a failed metrics redraw without dropping the current drawing and recovers on invalidate', async () => {
+    const owner = {}
+    let fail = false
+    const { ui, released } = fixture({
+      draw: async () => {
+        if (fail) throw new Error('height draw failed')
+        return { type: 'Text', children: ['body'] }
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const original = ui.getSnapshot()[0]!.drawing!
+    fail = true
+    await expect(ui.reportMetrics('pane', { bodyRows: 31, contentRows: 60 })).rejects.toThrow('height draw failed')
+    expect(ui.getSnapshot()[0]).toMatchObject({ drawing: original, bodyRows: 31 })
+    expect(released).not.toContain(original)
+    expect(released).toHaveLength(1)
+    fail = false
+    await ui.invalidate(owner, 'ui.render')
+    expect(ui.getSnapshot()[0]!.drawing).not.toBe(original)
+    expect(released).toContain(original)
+    await ui.release(owner)
   })
 
   test('revokes focus when another presentation owner takes the keyboard', async () => {

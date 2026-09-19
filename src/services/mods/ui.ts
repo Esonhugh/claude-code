@@ -53,6 +53,8 @@ export type ModUiPane = {
   rows?: number
   scrollOffset: number
   bodyRows: number
+  bodyColumns: number
+  revision: number
   contentRows: number
   focusedElement?: string
   tree?: unknown
@@ -122,7 +124,7 @@ export type ModUi = {
     bodyRows: number
     contentRows: number
     keyRows?: readonly ModUiKeyRow[]
-  }): void
+  }): void | Promise<void>
   commit(owner: ModUiOwner, replacedOwner?: ModUiOwner): Promise<void>
   releaseCandidate(owner: ModUiOwner): void
   release(owner: ModUiOwner): Promise<void>
@@ -130,10 +132,11 @@ export type ModUi = {
   subscribe(listener: () => void): () => void
 }
 
-type PaneState = ModUiPane & {
+type PaneState = Omit<ModUiPane, 'bodyColumns' | 'revision'> & {
   presentation: ModUiPresentation
   personInitiated: boolean
   drawGeneration: number
+  measuredBodyRows?: number
   keyRows: readonly ModUiKeyRow[]
 }
 
@@ -224,8 +227,11 @@ export function createModUi({
   const listeners = new Set<() => void>()
   const personRequested = new Set<string>()
   const openGenerations = new Map<string, number>()
+  const pendingDraws = new WeakMap<PaneState, Promise<void>>()
+  const focusWaiters = new Set<() => void>()
   let snapshot: readonly ModUiPane[] = Object.freeze([])
   let nextDrawing = 1
+  let revision = 0
   let personFocusGeneration = 0
 
   function askedKey(owner: ModUiOwner, id: string): string {
@@ -272,6 +278,8 @@ export function createModUi({
       ...(pane.rows === undefined ? {} : { rows: pane.rows }),
       scrollOffset: pane.scrollOffset,
       bodyRows: pane.bodyRows,
+      bodyColumns: bodyColumnsOf(pane),
+      revision,
       contentRows: pane.contentRows,
       ...(pane.focusedElement === undefined ? {} : { focusedElement: pane.focusedElement }),
       ...(pane.tree === undefined ? {} : { tree: pane.tree }),
@@ -279,8 +287,14 @@ export function createModUi({
     })
   }
 
+  function wakeFocusWaiters(): void {
+    for (const resolve of focusWaiters) resolve()
+  }
+
   function publish(): void {
+    revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
+    wakeFocusWaiters()
     for (const listener of [...listeners]) listener()
   }
 
@@ -331,7 +345,16 @@ export function createModUi({
     }
   }
 
-  async function redraw(pane: PaneState): Promise<void> {
+  function redraw(pane: PaneState): Promise<void> {
+    const work = drawPane(pane).finally(() => {
+      if (pendingDraws.get(pane) === work) pendingDraws.delete(pane)
+    })
+    pendingDraws.set(pane, work)
+    wakeFocusWaiters()
+    return work
+  }
+
+  async function drawPane(pane: PaneState): Promise<void> {
     const generation = ++pane.drawGeneration
     if (!pane.visible) {
       const hadDrawing = pane.drawing !== undefined
@@ -400,6 +423,7 @@ export function createModUi({
           drawGeneration: 0,
           keyRows: Object.freeze([]),
         }
+    pane.measuredBodyRows = undefined
     pane.title = spec.title ?? spec.id
     pane.closeOnEscape = spec.closeOnEscape === true
     pane.holdToasts = spec.holdToasts === true
@@ -418,12 +442,16 @@ export function createModUi({
   }
 
   function updatePresentation(pane: PaneState, presentation: ModUiPresentation): boolean {
-    pane.presentation = presentation
     const placement = placementOf(presentation)
+    if (pane.presentation.columns !== presentation.columns ||
+        pane.presentation.rows !== presentation.rows || pane.placement !== placement) {
+      pane.measuredBodyRows = undefined
+    }
+    pane.presentation = presentation
     const visible = visibleOf(pane)
     const focused = pane.focused && presentation.composerEmpty &&
       !presentation.hasDialog && !presentation.keyboardOwned
-    const bodyRows = bodyRowsOf(pane, placement)
+    const bodyRows = pane.measuredBodyRows ?? bodyRowsOf(pane, placement)
     const scrollOffset = Math.min(
       pane.scrollOffset,
       Math.max(0, pane.contentRows - bodyRows),
@@ -707,6 +735,7 @@ export function createModUi({
         }
       }
       const generation = person ? ++personFocusGeneration : personFocusGeneration
+      if (person) wakeFocusWaiters()
       const input: ModInput = Object.freeze({
         component: 'Pane',
         requestId: pane.id,
@@ -771,6 +800,24 @@ export function createModUi({
         },
       })
       if (!person) return result
+      // Fire-and-forget invalidation may still be publishing this move's tree.
+      while (request.element !== undefined && active.get(pane.id) === pane &&
+          pane.visible && pane.focused && generation === personFocusGeneration) {
+        const drawing = pendingDraws.get(pane)
+        if (!drawing) break
+        const drawGeneration = pane.drawGeneration
+        const changed = Promise.withResolvers<void>()
+        focusWaiters.add(changed.resolve)
+        try {
+          await Promise.race([drawing, changed.promise])
+        } catch (error) {
+          if (active.get(pane.id) === pane && pane.visible && pane.focused &&
+              generation === personFocusGeneration && drawGeneration === pane.drawGeneration)
+            throw error
+        } finally {
+          focusWaiters.delete(changed.resolve)
+        }
+      }
       const landing = active.get(request.requestId)
       const focused = Boolean(landing?.visible && landing.tree !== undefined && landing.focused)
       // Middleware can withhold core, redirect it or move focus again after next().
@@ -901,8 +948,10 @@ export function createModUi({
           return row.plugin === next.plugin && row.key === next.key &&
             row.top === next.top && row.bottom === next.bottom
         })
+      const bodyChanged = pane.bodyRows !== metrics.bodyRows
+      pane.measuredBodyRows = metrics.bodyRows
       if (
-        pane.bodyRows === metrics.bodyRows &&
+        !bodyChanged &&
         pane.contentRows === metrics.contentRows &&
         pane.scrollOffset === scrollOffset &&
         sameKeyRows
@@ -912,6 +961,7 @@ export function createModUi({
       pane.scrollOffset = scrollOffset
       pane.keyRows = keyRows
       publish()
+      if (bodyChanged) return redraw(pane)
     },
 
     async commit(owner, replacedOwner) {
