@@ -15,6 +15,8 @@ import instances from '../ink/instances.js'
 import { nodeCache } from '../ink/node-cache.js'
 import { dispatchClick } from '../ink/hit-test.js'
 import { ModsPane, validateModRenderTree } from './ModsPane.js'
+import { FullscreenLayout } from './FullscreenLayout.js'
+import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import { createModUi, type ModUiPane } from '../services/mods/ui.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
@@ -1869,6 +1871,120 @@ describe('ModsPane input repair', () => {
       expect(wheels).toEqual([{ by: 1, pointer: { column: 0, row: 0 } }, { by: -1, pointer: { column: 0, row: 0 } }])
       expect(transcript).toEqual(['down'])
     } finally { instance.unmount() }
+  })
+})
+
+describe('ModsPane host layout', () => {
+  test('keeps the conversation and composer left of the dock across terminal resize', async () => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    const stdout = new Output()
+    stdout.columns = 180
+    stdout.rows = 50
+    stdout.isTTY = true
+    const owner = {}
+    const ui = createModUi({
+      pluginOf: () => 'fixture',
+      dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async () => ({ type: 'Text', children: ['DIFF_BODY'] }),
+      invokeDrawing: async () => undefined,
+      releaseDrawing: async () => {},
+    })
+    await ui.open(owner, { id: 'diff', title: 'DIFF_TITLE' }, { kind: 'person' }, {
+      columns: 180, rows: 50, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false,
+    })
+    await ui.commit(owner)
+    function Content({ label }: { label: string }) {
+      const { columns } = useTerminalSize()
+      return <Box width={columns}><Text>{label}</Text></Box>
+    }
+    function Host({ composerRows = 1 }: { composerRows?: number }) {
+      const { columns, rows } = useTerminalSize()
+      const current = React.useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+      useEffect(() => {
+        void ui.render({ columns, rows, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false })
+      }, [columns, rows])
+      const draw = (pane: ModUiPane) => <ModsPane key={pane.id} pane={pane}
+        onReportMetrics={(pane, metrics) => ui.reportMetrics(pane.id, metrics)}
+        onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+      />
+      return <Box width={columns} height={rows} flexDirection="column">
+        <FullscreenLayout
+          scrollable={<Content label="TRANSCRIPT" />}
+          bottom={<Box height={composerRows}><Content label="COMPOSER" /></Box>}
+          dockPane={current.filter(pane => pane.placement === 'dock').map(draw)}
+          inlinePane={current.filter(pane => pane.placement === 'inline').map(draw)}
+        />
+      </Box>
+    }
+    const instance = await render(<Host />, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      for (const [columns, rows] of [[180, 50], [181, 50], [110, 50], [109, 30], [90, 30], [180, 30], [180, 50]] as const) {
+        stdout.columns = columns
+        stdout.rows = rows
+        stdout.emit('resize')
+        await settle()
+        const transcript = nodeCache.get(renderedElement(stdout, 'TRANSCRIPT', 'ink-text'))!
+        const composer = nodeCache.get(renderedElement(stdout, 'COMPOSER', 'ink-text'))!
+        const diff = nodeCache.get(renderedElement(stdout, 'DIFF_BODY', 'ink-text'))!
+        const width = columns >= 110 ? Math.ceil(columns / 2) : columns
+        expect(domElement(stdout, 'TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(width)
+        expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(width)
+        expect(transcript.x).toBe(0)
+        expect(composer.x).toBe(0)
+        expect(composer.y).toBe(rows - 1)
+        if (columns >= 110) {
+          expect(diff.x).toBe(width)
+          expect(diff.y).toBeLessThan(composer.y)
+        } else {
+          expect(diff.x).toBe(0)
+          expect(diff.y).toBeGreaterThan(transcript.y)
+          expect(diff.y).toBeLessThan(composer.y)
+        }
+      }
+      for (const composerRows of [8, 25, 1]) {
+        instance.rerender(<ThemeProvider><Host composerRows={composerRows} /></ThemeProvider>)
+        await settle()
+        expect(ui.getSnapshot()[0]!.bodyRows).toBe(49)
+        expect(nodeCache.get(renderedElement(stdout, 'COMPOSER', 'ink-text'))!.y).toBe(50 - composerRows)
+        expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(90)
+      }
+      await ui.close(owner, 'diff', { kind: 'person' })
+      await settle()
+      expect(domElement(stdout, 'TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(180)
+      expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(180)
+      expect(elements(stdout, true).some(element => element.text === 'DIFF_BODY')).toBe(false)
+    } finally {
+      instance.unmount()
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
+  })
+
+  test('an empty dock does not reserve half of the transcript width', async () => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    const stdout = new Output()
+    stdout.columns = 160
+    const instance = await render(
+      <Box width={160} height={30} flexDirection="column">
+        <FullscreenLayout
+          scrollable={<Box width="100%"><Text>TRANSCRIPT</Text></Box>}
+          bottom={<Text>COMPOSER</Text>}
+          dockPane={[]}
+          inlinePane={[]}
+        />
+      </Box>,
+      { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false },
+    )
+    try {
+      await settle()
+      expect(domElement(stdout, 'TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(160)
+    } finally {
+      instance.unmount()
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
   })
 })
 
