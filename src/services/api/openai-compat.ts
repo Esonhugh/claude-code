@@ -26,6 +26,7 @@ import {
 } from '../../utils/proxy.js'
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import type { OpenAITurnScope } from './openai-turn-scope.js'
+import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 
 // --- Auth config ---
 
@@ -67,14 +68,6 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
     })
   }
   return headers
-}
-
-// --- Model mapping: Anthropic model names → OpenAI model slugs ---
-
-const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna'
-
-function mapModel(model: string): string {
-  return model.startsWith('claude-') ? DEFAULT_OPENAI_MODEL : model
 }
 
 // OpenAI Responses API requires function_call IDs to start with 'fc_'
@@ -235,6 +228,8 @@ function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefi
       name: tool.name,
       description: tool.description || '',
       parameters: tool.input_schema || { type: 'object', properties: {} },
+      // Responses may otherwise normalize optional properties into required fields.
+      strict: false,
     }]
   })
 }
@@ -1146,7 +1141,7 @@ export function createOpenAICompatClient(options: {
       }
       input.push({ type: 'compaction_trigger' })
       const compactPayload = {
-        model: mapModel(params.model || DEFAULT_OPENAI_MODEL),
+        model: normalizeModelStringForAPI(params.model),
         instructions:
           params.instructions ?? serializeOpenAIInstructions(params.system),
         input,
@@ -1258,7 +1253,7 @@ export function createOpenAICompatClient(options: {
       return { input_tokens: Math.max(1, Math.ceil(serialized.length / 4)) }
     },
     create(params: any, requestOptions?: { signal?: AbortSignal }): any {
-      const model = mapModel(params.model || DEFAULT_OPENAI_MODEL)
+      const model = normalizeModelStringForAPI(params.model)
       const input = anthropicMessagesToResponsesInput(params.messages, params.system)
       if (
         params.openai_compaction?.type === 'compaction' &&

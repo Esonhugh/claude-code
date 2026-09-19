@@ -6,19 +6,31 @@ import { isEnvTruthy } from '../envUtils.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
 import type { ModelOption } from './modelOptions.js'
 import { getAPIProvider } from './providers.js'
+import { OPENAI_MODEL_CONFIG } from './configs.js'
+import { getModelPricingString } from '../modelCost.js'
 
-const FALLBACK_OPENAI_MODEL_OPTIONS: ModelOption[] = [
+const FALLBACK_OPENAI_MODEL_OPTIONS = [
   {
-    value: 'gpt-5.5',
-    label: 'GPT-5.5',
-    description: 'Frontier model for complex coding, research, and real-world work.',
+    value: OPENAI_MODEL_CONFIG.default,
+    label: 'GPT-5.6 Sol',
+    description: 'Recommended default for professional coding.',
   },
   {
-    value: 'gpt-5.4-mini',
-    label: 'GPT-5.4-Mini',
-    description: 'Small, fast, and cost-efficient model for simpler coding tasks.',
+    value: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    description: 'High-end option for the hardest coding and reasoning tasks.',
   },
-]
+  {
+    value: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    description: 'Balanced performance and cost for everyday work.',
+  },
+  {
+    value: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
+    description: 'Fast, low-cost option for simpler tasks.',
+  },
+] satisfies ModelOption[]
 
 type OpenAIModelsResponse = {
   data?: OpenAIModel[]
@@ -62,7 +74,16 @@ type ParseModelOptions = {
 }
 
 export function getOpenAIModelOptions(): ModelOption[] {
-  return FALLBACK_OPENAI_MODEL_OPTIONS
+  return FALLBACK_OPENAI_MODEL_OPTIONS.map(option => {
+    const pricing = getModelPricingString(option.value)
+    const promotion = option.value === OPENAI_MODEL_CONFIG.default
+      ? ' (promotional price, verified 2026-09-19)'
+      : ''
+    return {
+      ...option,
+      description: `${option.description}${pricing ? ` · ${pricing}${promotion}` : ''} · Static catalog; availability depends on account and endpoint.`,
+    }
+  })
 }
 
 export function isModelDiscoveryEnabled(): boolean {

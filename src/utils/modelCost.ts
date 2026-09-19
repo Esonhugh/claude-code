@@ -20,6 +20,7 @@ import {
   firstPartyNameToCanonical,
   getCanonicalName,
   getDefaultMainLoopModelSetting,
+  normalizeModelStringForAPI,
   type ModelShortName,
 } from './model/model.js'
 
@@ -102,6 +103,44 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
+  'claude-opus-5': COST_TIER_5_25,
+  'claude-sonnet-5': {
+    inputTokens: 2,
+    outputTokens: 10,
+    promptCacheWriteTokens: 2.5,
+    promptCacheReadTokens: 0.2,
+    webSearchRequests: 0.01,
+  },
+  // OpenAI has no separate cache-write surcharge; uncached input uses the base rate.
+  // Verified 2026-09-19: Sol promotional pricing lasts at least through 2026-11-21.
+  'gpt-5.6-sol': {
+    inputTokens: 4,
+    outputTokens: 20,
+    promptCacheWriteTokens: 4,
+    promptCacheReadTokens: 0.4,
+    webSearchRequests: 0.01,
+  },
+  'gpt-6-astra': {
+    inputTokens: 10,
+    outputTokens: 50,
+    promptCacheWriteTokens: 10,
+    promptCacheReadTokens: 1,
+    webSearchRequests: 0.01,
+  },
+  'gpt-5.6-terra': {
+    inputTokens: 2,
+    outputTokens: 12,
+    promptCacheWriteTokens: 2,
+    promptCacheReadTokens: 0.2,
+    webSearchRequests: 0.01,
+  },
+  'gpt-5.6-luna': {
+    inputTokens: 0.2,
+    outputTokens: 1.2,
+    promptCacheWriteTokens: 0.2,
+    promptCacheReadTokens: 0.02,
+    webSearchRequests: 0.01,
+  },
   [firstPartyNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.firstParty)]:
     COST_HAIKU_35,
   [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
@@ -142,7 +181,7 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 }
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
-  const shortName = getCanonicalName(model)
+  const shortName = getCanonicalName(normalizeModelStringForAPI(model))
 
   // Check if this is an Opus 4.6 model with fast mode active.
   if (
@@ -230,7 +269,7 @@ export function formatModelPricing(costs: ModelCosts): string {
  * Returns undefined if model is not found
  */
 export function getModelPricingString(model: string): string | undefined {
-  const shortName = getCanonicalName(model)
+  const shortName = getCanonicalName(normalizeModelStringForAPI(model))
   const costs = MODEL_COSTS[shortName]
   if (!costs) return undefined
   return formatModelPricing(costs)

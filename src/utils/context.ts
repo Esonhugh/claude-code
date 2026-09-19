@@ -7,7 +7,11 @@ import { getModelCapability } from './model/modelCapabilities.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
-// Model context window size (200k tokens for all models right now)
+function isOpenAI1MModel(model: string): boolean {
+  return /^(gpt-5\.6-(sol|terra|luna)|gpt-6-astra)(\[1m\])?$/i.test(model)
+}
+
+// Conservative fallback for models without known limits.
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
 
 // Maximum output tokens for compact operations
@@ -47,7 +51,12 @@ export function modelSupports1M(model: string): boolean {
     return false
   }
   const canonical = getCanonicalName(model)
-  return canonical.includes('claude-sonnet-4') || canonical.includes('opus-4-6')
+  return (
+    canonical === 'claude-opus-5' ||
+    canonical === 'claude-sonnet-5' ||
+    canonical.includes('claude-sonnet-4') ||
+    canonical.includes('opus-4-6')
+  )
 }
 
 export function getContextWindowForModel(
@@ -68,9 +77,9 @@ export function getContextWindowForModel(
     }
   }
 
-  // [1m] suffix — explicit client-side opt-in, respected over all detection
+  // [1m] is a client-side opt-in, not permission to exceed an API input limit.
   if (has1mContext(model)) {
-    return 1_000_000
+    return isOpenAI1MModel(model) ? 922_000 : 1_000_000
   }
 
   const cap = getModelCapability(model)
@@ -82,6 +91,16 @@ export function getContextWindowForModel(
       return MODEL_CONTEXT_WINDOW_DEFAULT
     }
     return cap.max_input_tokens
+  }
+
+  const canonical = getCanonicalName(model)
+  if (canonical === 'claude-opus-5' || canonical === 'claude-sonnet-5') {
+    return is1mContextDisabled() ? MODEL_CONTEXT_WINDOW_DEFAULT : 1_000_000
+  }
+  if (isOpenAI1MModel(model)) {
+    // Official total window is 1,050,000: input 922,000 + output 128,000.
+    // Local compaction decisions must use the input ceiling, not the total.
+    return is1mContextDisabled() ? MODEL_CONTEXT_WINDOW_DEFAULT : 922_000
   }
 
   if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
@@ -168,7 +187,10 @@ export function getModelMaxOutputTokens(model: string): {
 
   const m = getCanonicalName(model)
 
-  if (m.includes('opus-4-6')) {
+  if (m === 'claude-opus-5' || m === 'claude-sonnet-5' || isOpenAI1MModel(model)) {
+    defaultTokens = MAX_OUTPUT_TOKENS_DEFAULT
+    upperLimit = 128_000
+  } else if (m.includes('opus-4-6')) {
     defaultTokens = 64_000
     upperLimit = 128_000
   } else if (m.includes('sonnet-4-6')) {

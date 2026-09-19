@@ -25,7 +25,10 @@ try {
   delete process.env.CLAUDE_CODE_USE_FOUNDRY
 
   const { setIsInteractive } = await import('../bootstrap/state.js')
-  const { getAllModelBetas } = await import('./betas.js')
+  const { getAllModelBetas, modelSupportsStructuredOutputs } = await import('./betas.js')
+  for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
+    assert.equal(modelSupportsStructuredOutputs(model), true)
+  }
   const { THINKING_TOKEN_COUNT_BETA_HEADER } = await import('../constants/betas.js')
 
   setIsInteractive(true)

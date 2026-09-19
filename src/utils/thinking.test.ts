@@ -5,9 +5,11 @@ import assert from 'node:assert/strict'
   VERSION: 'test',
 }
 
-const { modelSupportsAdaptiveThinking } = await import('./thinking.js')
+const { modelSupportsAdaptiveThinking, modelSupportsThinking } = await import('./thinking.js')
 
 for (const model of [
+  'claude-opus-5',
+  'claude-sonnet-5',
   'claude-opus-4-6',
   'claude-opus-4-7',
   'claude-opus-4-8',
@@ -33,6 +35,18 @@ for (const model of [
     false,
     `${model} should not support adaptive thinking`,
   )
+}
+
+for (const provider of ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) {
+  process.env[provider] = '1'
+  try {
+    for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
+      assert.equal(modelSupportsThinking(model), true)
+      assert.equal(modelSupportsAdaptiveThinking(model), true)
+    }
+  } finally {
+    delete process.env[provider]
+  }
 }
 
 console.log('thinking.test.ts passed')

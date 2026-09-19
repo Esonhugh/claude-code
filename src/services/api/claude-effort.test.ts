@@ -36,6 +36,16 @@ try {
     toPersistableEffort,
   } = await import('../../utils/effort.js')
 
+  for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
+    assert.equal(modelSupportsEffort(model), true)
+    assert.equal(modelSupportsMaxEffort(model), true)
+    assert.ok(getSupportedEffortLevelsForModel(model).includes('xhigh'))
+    for (const value of ['none', 'minimal', 'xhigh', 'max', 'ultra'] as const) {
+      assert.equal(resolveAppliedEffort(model, value), value)
+    }
+    assert.equal(resolveAppliedEffort(model, 'ultracode'), 'xhigh')
+  }
+
   assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'none'), 'none')
   assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'minimal'), 'minimal')
   assert.equal(resolveAppliedEffort('claude-sonnet-4-6', 'ultra'), 'ultra')

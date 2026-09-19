@@ -109,7 +109,18 @@ export function modelSupportsThinking(model: string): boolean {
     return !canonical.includes('claude-3-')
   }
   // 3P (Bedrock/Vertex): only Opus 4+ and Sonnet 4+
-  return canonical.includes('sonnet-4') || canonical.includes('opus-4')
+  return (
+    canonical === 'claude-opus-5' ||
+    canonical === 'claude-sonnet-5' ||
+    canonical.includes('sonnet-4') ||
+    canonical.includes('opus-4')
+  )
+}
+
+// These models default to adaptive thinking and reject manual budgets and non-default sampling.
+export function isOpus5OrSonnet5(model: string): boolean {
+  const canonical = getCanonicalName(model)
+  return canonical === 'claude-opus-5' || canonical === 'claude-sonnet-5'
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports adaptive thinking.
@@ -121,6 +132,8 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   const canonical = getCanonicalName(model)
   // Supported by a subset of Claude 4+ models
   if (
+    canonical === 'claude-opus-5' ||
+    canonical === 'claude-sonnet-5' ||
     canonical === 'claude-fable-5' ||
     canonical === 'claude-mythos-5' ||
     canonical.includes('opus-4-8') ||

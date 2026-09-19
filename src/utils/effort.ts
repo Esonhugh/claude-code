@@ -50,6 +50,7 @@ export function modelSupportsEffort(model: string): boolean {
   }
   // Supported by current Claude effort-capable model families.
   if (
+    m.includes('opus-5') ||
     m.includes('fable-5') ||
     m.includes('mythos-5') ||
     m.includes('mythos-preview') ||
@@ -89,6 +90,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
   }
   const m = model.toLowerCase()
   if (
+    m.includes('opus-5') ||
     m.includes('fable-5') ||
     m.includes('mythos-5') ||
     m.includes('mythos-preview') ||
@@ -110,6 +112,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
 export function modelSupportsXHighEffort(model: string): boolean {
   const m = model.toLowerCase()
   return (
+    m.includes('opus-5') ||
     m.includes('fable-5') ||
     m.includes('mythos-5') ||
     m.includes('opus-4-8') ||

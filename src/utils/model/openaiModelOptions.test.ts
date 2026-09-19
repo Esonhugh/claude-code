@@ -93,11 +93,15 @@ try {
   )
 
   assert.deepEqual(
-    getModelOptions()
-      .map(option => option.value)
-      .filter(value => value === 'gpt-5.5' || value === 'gpt-5.4-mini'),
-    ['gpt-5.5', 'gpt-5.4-mini'],
+    getModelOptions().map(option => option.value),
+    ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna'],
   )
+  const { getModelPricingString } = await import('../modelCost.js')
+  for (const option of openAIModelOptions.getOpenAIModelOptions()) {
+    assert.ok(option.description.includes(getModelPricingString(option.value!)!))
+    assert.match(option.description, /availability depends on account and endpoint/)
+  }
+  assert.match(openAIModelOptions.getOpenAIModelOptions()[0]!.description, /promotional.*2026-09-19/)
   assert.equal(getModelOptions().some(option => option.value === 'sonnet'), false)
   assert.equal(getModelOptions().some(option => option.value === 'opus'), false)
 
@@ -121,7 +125,12 @@ try {
       description: 'Custom model',
     },
   ])
+  setMainLoopModelOverride('Gateway/MixedCase')
+  assert.deepEqual(getModelOptions().map(option => option.value), ['Gateway/MixedCase'])
+  setInitialMainLoopModel('claude-opus-4-6')
   setMainLoopModelOverride(undefined)
+  assert.equal(getModelOptions()[0]?.value, 'claude-opus-4-6')
+  setInitialMainLoopModel(null)
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: [

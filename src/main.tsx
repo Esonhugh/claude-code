@@ -409,11 +409,7 @@ import { migrateAutoUpdatesToSettings } from './migrations/migrateAutoUpdatesToS
 import { migrateBypassPermissionsAcceptedToSettings } from './migrations/migrateBypassPermissionsAcceptedToSettings.js'
 import { migrateEnableAllProjectMcpServersToSettings } from './migrations/migrateEnableAllProjectMcpServersToSettings.js'
 import { migrateFennecToOpus } from './migrations/migrateFennecToOpus.js'
-import { migrateLegacyOpusToCurrent } from './migrations/migrateLegacyOpusToCurrent.js'
-import { migrateOpusToOpus1m } from './migrations/migrateOpusToOpus1m.js'
 import { migrateReplBridgeEnabledToRemoteControlAtStartup } from './migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.js'
-import { migrateSonnet1mToSonnet45 } from './migrations/migrateSonnet1mToSonnet45.js'
-import { migrateSonnet45ToSonnet46 } from './migrations/migrateSonnet45ToSonnet46.js'
 import { resetAutoModeOptInForDefaultOffer } from './migrations/resetAutoModeOptInForDefaultOffer.js'
 import { resetProToOpusDefault } from './migrations/resetProToOpusDefault.js'
 import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js'
@@ -600,7 +596,6 @@ async function logStartupTelemetry(): Promise<void> {
   })
 }
 
-// @[MODEL LAUNCH]: Consider any migrations you may need for model strings. See migrateSonnet1mToSonnet45.ts for an example.
 // Bump this when adding a new sync migration so existing users re-run the set.
 const CURRENT_MIGRATION_VERSION = 12
 function runMigrations(): void {
@@ -609,10 +604,6 @@ function runMigrations(): void {
     migrateBypassPermissionsAcceptedToSettings()
     migrateEnableAllProjectMcpServersToSettings()
     resetProToOpusDefault()
-    migrateSonnet1mToSonnet45()
-    migrateLegacyOpusToCurrent()
-    migrateSonnet45ToSonnet46()
-    migrateOpusToOpus1m()
     migrateReplBridgeEnabledToRemoteControlAtStartup()
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer()
@@ -2905,7 +2896,7 @@ async function run(): Promise<CommanderCommand> {
       // Special case the default model with the null keyword
       // NOTE: Model resolution happens after setup() to ensure trust is established before AWS auth
       const userSpecifiedModel =
-        options.model === 'default' ? getDefaultMainLoopModel() : options.model
+        options.model === 'default' ? null : options.model
       const userSpecifiedFallbackModel =
         fallbackModel === 'default' ? getDefaultMainLoopModel() : fallbackModel
 
@@ -3028,20 +3019,19 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
-      // Compute effective model early so hooks can run in parallel with MCP
-      // If user didn't specify a model but agent has one, use the agent's model
-      let effectiveModel = userSpecifiedModel
+      // Set the CLI choice before considering an agent-definition fallback.
+      setMainLoopModelOverride(userSpecifiedModel)
       if (
-        !effectiveModel &&
+        getUserSpecifiedModelSetting() === undefined &&
         mainThreadAgentDefinition?.model &&
         mainThreadAgentDefinition.model !== 'inherit'
       ) {
-        effectiveModel = parseUserSpecifiedModel(
-          mainThreadAgentDefinition.model,
-        )
+        setMainLoopModelOverride(mainThreadAgentDefinition.model)
       }
-
-      setMainLoopModelOverride(effectiveModel)
+      const selectedModel = getUserSpecifiedModelSetting()
+      const effectiveModel = selectedModel === null
+        ? getDefaultMainLoopModel()
+        : selectedModel
 
       // Compute resolved model for hooks (use user-specified model at launch)
       setInitialMainLoopModel(getUserSpecifiedModelSetting() || null)

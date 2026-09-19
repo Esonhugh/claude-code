@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
 }
 
+const originalHome = process.env.HOME
+const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const tempHome = mkdtempSync(join(tmpdir(), 'openai-compat-test-'))
+process.env.HOME = tempHome
+process.env.CLAUDE_CONFIG_DIR = tempHome
 const originalFetch = globalThis.fetch
 const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
 const originalOpenAISocket = process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
@@ -13,6 +21,11 @@ const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 
 try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
+  getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'sk-test-api-key',
+    isChatGPT: false,
+  })
+  delete process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
   const { getSessionId } = await import('../../bootstrap/state.js')
   const {
     analyzeOpenAIWireRequest,
@@ -81,6 +94,99 @@ try {
       ].join('\n\n'),
       { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
     )
+  globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
+
+  const optionalAgentSchema = {
+    type: 'object',
+    properties: {
+      description: { type: 'string' },
+      prompt: { type: 'string' },
+      model: { type: 'string', minLength: 1 },
+      name: { type: 'string' },
+      team_name: { type: 'string' },
+    },
+    required: ['description', 'prompt'],
+  }
+
+  // Transport fixtures only: no account discovery or real model requests.
+  for (const endpoint of ['api', 'oauth', 'gateway'] as const) {
+    getOpenAIAuthInfo.cache.set(undefined, {
+      accessToken: 'model-contract-token',
+      isChatGPT: endpoint === 'oauth',
+    })
+    if (endpoint === 'gateway') {
+      process.env.OPENAI_BASE_URL = 'https://models.example.test/v1'
+    } else {
+      delete process.env.OPENAI_BASE_URL
+    }
+    const client = createOpenAICompatClient({
+      apiKey: 'model-contract-token', maxRetries: 2, timeout: 1000,
+    })
+    for (const stream of [false, true]) {
+      const wireTools: unknown[] = []
+      globalThis.fetch = (async (_input, init) => {
+        wireTools.push(JSON.parse(String(init?.body)).tools)
+        return wireResponse()
+      }) as typeof fetch
+      const result = await client.beta.messages.create({
+        model: 'gpt-5.6-sol', max_tokens: 16, stream,
+        messages: [{ role: 'user', content: 'delegate without a model override' }],
+        tools: [{ name: 'Agent', description: 'Launch agent', input_schema: optionalAgentSchema }],
+      } as any)
+      if (stream) {
+        for await (const _event of result as unknown as AsyncIterable<any>) { /* consume response */ }
+      }
+      assert.deepEqual(wireTools, [[{
+        type: 'function', name: 'Agent', description: 'Launch agent',
+        parameters: optionalAgentSchema, strict: false,
+      }]], `${endpoint}/${stream ? 'stream' : 'nonstream'} preserves optional tool fields`)
+    }
+    for (const mode of ['stream', 'nonstream', 'compact'] as const) {
+      for (const model of [
+        'claude-opus-4-6', 'claude-sonnet-5', 'Gateway/MixedCase',
+        'gpt-5.6-sol', 'claude-opus-5[1m]', 'Gateway/MixedCase[2M]',
+      ]) {
+        const wireModels: string[] = []
+        globalThis.fetch = (async (_input, init) => {
+          wireModels.push(JSON.parse(String(init?.body)).model)
+          return wireResponse()
+        }) as typeof fetch
+        const params = { model, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+        const expectedModel = model.replace(/\[(1|2)m\]/gi, '')
+        if (mode === 'compact') {
+          await (client.beta.messages as any).compact(params)
+        } else if (mode === 'stream') {
+          const stream = await client.beta.messages.create({ ...params, stream: true } as any)
+          const events: any[] = []
+          for await (const event of stream as unknown as AsyncIterable<any>) events.push(event)
+          assert.equal(events.find(event => event.type === 'message_start')?.message.model, expectedModel)
+        } else {
+          const result = await client.beta.messages.create(params as any)
+          assert.equal((result as any).model, expectedModel)
+        }
+        assert.deepEqual(wireModels, [expectedModel], `${endpoint}/${mode}/${model}`)
+      }
+      const rejectedModels: string[] = []
+      globalThis.fetch = (async (_input, init) => {
+        rejectedModels.push(JSON.parse(String(init?.body)).model)
+        return new Response('{"error":{"message":"unsupported model"}}', { status: 400 })
+      }) as typeof fetch
+      const params = { model: 'claude-opus-4-6', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      await assert.rejects(async () => {
+        if (mode === 'compact') {
+          await (client.beta.messages as any).compact(params)
+        } else if (mode === 'stream') {
+          const stream = await client.beta.messages.create({ ...params, stream: true } as any)
+          for await (const _event of stream as unknown as AsyncIterable<any>) { /* consume deferred errors */ }
+        } else {
+          await client.beta.messages.create(params as any)
+        }
+      }, /OpenAI API 400: .*unsupported model/)
+      assert.deepEqual(rejectedModels, ['claude-opus-4-6'])
+    }
+  }
+  getOpenAIAuthInfo.cache.set(undefined, { accessToken: 'sk-test-api-key', isChatGPT: false })
+  delete process.env.OPENAI_BASE_URL
   globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
 
   const debugArg = '--debug-to-stderr'
@@ -1118,7 +1224,7 @@ try {
     messages: [{ role: 'user', content: 'hi' }],
   })
 
-  assert.equal(requests[0]!.body.model, 'gpt-5.6-luna')
+  assert.equal(requests[0]!.body.model, 'claude-sonnet-4-5-20250929')
 
   const tokenCount = await rootURLClient.beta.messages.countTokens({
     model: 'gpt-5.5',
@@ -2169,6 +2275,11 @@ try {
     )
   }
 } finally {
+  if (originalHome === undefined) delete process.env.HOME
+  else process.env.HOME = originalHome
+  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+  rmSync(tempHome, { recursive: true, force: true })
   globalThis.fetch = originalFetch
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
   getOpenAIAuthInfo.cache.clear?.()

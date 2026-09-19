@@ -182,8 +182,10 @@ import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
+  isOpus5OrSonnet5,
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
+  shouldEnableThinkingByDefault,
   type ThinkingConfig,
 } from 'src/utils/thinking.js'
 import {
@@ -568,7 +570,9 @@ export async function verifyApiKey(
             model,
             max_tokens: 1,
             messages,
-            temperature: 1,
+            ...(isOpus5OrSonnet5(model)
+              ? { thinking: { type: 'disabled' as const } }
+              : { temperature: 1 }),
             ...(betas.length > 0 && { betas }),
             metadata: getAPIMetadata(),
             ...getExtraBodyParams(),
@@ -1636,18 +1640,24 @@ async function* queryModel(
       options.maxOutputTokensOverride ||
       getMaxOutputTokensForModel(options.model)
 
+    const adaptiveOnly = isOpus5OrSonnet5(options.model)
+    const adaptiveDisabled = isEnvTruthy(
+      process.env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING,
+    )
     const hasThinking =
       thinkingConfig.type !== 'disabled' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
-    let thinking: BetaMessageStreamParams['thinking'] | undefined = undefined
+      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) &&
+      !(adaptiveOnly && adaptiveDisabled)
+    let thinking: BetaMessageStreamParams['thinking'] | undefined =
+      adaptiveOnly && !hasThinking ? { type: 'disabled' } : undefined
 
     // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
     // without notifying the model launch DRI and research. This is a sensitive
     // setting that can greatly affect model quality and bashing.
     if (hasThinking && modelSupportsThinking(options.model)) {
       if (
-        !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING) &&
-        modelSupportsAdaptiveThinking(options.model)
+        !adaptiveDisabled &&
+        (adaptiveOnly || modelSupportsAdaptiveThinking(options.model))
       ) {
         // For models that support adaptive thinking, always use adaptive
         // thinking without a budget.
@@ -1735,9 +1745,9 @@ async function* queryModel(
       )
     }
 
-    // Only send temperature when thinking is disabled — the API requires
-    // temperature: 1 when thinking is enabled, which is already the default.
-    const temperature = !hasThinking
+    // New models reject non-default sampling, including internal temperature overrides.
+    // Explicit user extra-body parameters are still applied below without rewriting them.
+    const temperature = !hasThinking && !adaptiveOnly
       ? (options.temperatureOverride ?? 1)
       : undefined
 
@@ -3349,15 +3359,21 @@ export async function queryHaiku({
         }),
       ]
 
+      const model = getSmallFastModel()
       const result = await queryModelWithoutStreaming({
         messages,
         systemPrompt,
-        thinkingConfig: { type: 'disabled' },
+        thinkingConfig: {
+          type:
+            isOpus5OrSonnet5(model) && shouldEnableThinkingByDefault()
+              ? 'adaptive'
+              : 'disabled',
+        },
         tools: [],
         signal,
         options: {
           ...options,
-          model: getSmallFastModel(),
+          model,
           enablePromptCaching: options.enablePromptCaching ?? false,
           outputFormat,
           async getToolPermissionContext() {
@@ -3411,7 +3427,12 @@ export async function queryWithModel({
       const result = await queryModelWithoutStreaming({
         messages,
         systemPrompt,
-        thinkingConfig: { type: 'disabled' },
+        thinkingConfig: {
+          type:
+            isOpus5OrSonnet5(options.model) && shouldEnableThinkingByDefault()
+              ? 'adaptive'
+              : 'disabled',
+        },
         tools: [],
         signal,
         options: {
