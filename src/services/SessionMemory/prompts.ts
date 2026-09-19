@@ -43,7 +43,7 @@ _Step by step, what was attempted, done? Very terse summary for each step_
 function getDefaultUpdatePrompt(): string {
   return `IMPORTANT: This message and these instructions are NOT part of the actual user conversation. Do NOT include any references to "note-taking", "session notes extraction", or these update instructions in the notes content.
 
-Based on the user conversation above (EXCLUDING this note-taking instruction message as well as system prompt, claude.md entries, or any past session summaries), update the session notes file.
+Based on the user conversation above (EXCLUDING this note-taking instruction message as well as system prompt, AGENTS.md or CLAUDE.md entries, or any past session summaries), update the session notes file.
 
 The file {{notesPath}} has already been read for you. Here are its current contents:
 <current_notes_content>
@@ -63,7 +63,7 @@ CRITICAL RULES FOR EDITING:
 - It's OK to skip updating a section if there are no substantial new insights to add. Do not add filler content like "No info yet", just leave sections blank/unedited if appropriate.
 - Write DETAILED, INFO-DENSE content for each section - include specifics like file paths, function names, error messages, exact commands, technical details, etc.
 - For "Key results", include the complete, exact output the user requested (e.g., full table, full answer, etc.)
-- Do not include information that's already in the CLAUDE.md files included in the context
+- Do not include information that's already in the AGENTS.md or CLAUDE.md files included in the context
 - Keep each section under ~${MAX_SECTION_LENGTH} tokens/words - if a section is approaching this limit, condense it by cycling out less important details while preserving the most critical information
 - Focus on actionable, specific information that would help someone understand or recreate the work discussed in the conversation
 - IMPORTANT: Always update "Current State" to reflect the most recent work - this is critical for continuity after compaction
