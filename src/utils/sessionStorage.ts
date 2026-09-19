@@ -1001,6 +1001,16 @@ class Project {
     }
   }
 
+  async persistForRestart(messages: Message[]): Promise<void> {
+    if (this.shouldSkipPersistence()) {
+      throw new Error('Session persistence is disabled; automatic restart would lose history')
+    }
+    await this.flush()
+    if (this.sessionFile === null) await this.materializeSessionFile()
+    await recordTranscript(messages)
+    await this.flush()
+  }
+
   async insertMessageChain(
     messages: Transcript,
     isSidechain: boolean = false,
@@ -1457,6 +1467,12 @@ export async function recordTranscript(
   // but nothing chains TO it (see isChainParticipant).
   const lastRecorded = newMessages.findLast(isChainParticipant)
   return (lastRecorded?.uuid as UUID | undefined) ?? startingParentUuid ?? null
+}
+
+// Renderer restarts must also save local-command-only sessions, which normally
+// remain buffered until the first user/assistant turn.
+export async function persistSessionForRestart(messages: Message[]): Promise<void> {
+  await getProject().persistForRestart(messages)
 }
 
 export async function recordSidechainTranscript(
@@ -2066,7 +2082,8 @@ function findLatestMessage<T extends { timestamp: string }>(
   for (const m of messages) {
     if (!predicate(m)) continue
     const t = Date.parse(m.timestamp)
-    if (t > maxTime) {
+    // Entries are append-ordered; retain the chain tail when timestamps tie.
+    if (t >= maxTime) {
       maxTime = t
       latest = m
     }
@@ -3836,6 +3853,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   summaries: Map<UUID, string>
   customTitles: Map<UUID, string>
   tags: Map<UUID, string>
+  agentNames: Map<UUID, string>
   agentSettings: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
@@ -3891,6 +3909,7 @@ export async function getLastSessionLog(
     summaries,
     customTitles,
     tags,
+    agentNames,
     agentSettings,
     worktreeStates,
     fileHistorySnapshots,
@@ -3936,6 +3955,7 @@ export async function getLastSessionLog(
       agentSetting,
       contentReplacements.get(sessionId) ?? [],
     ),
+    agentName: agentNames.get(sessionId) ?? transcript[0]?.agentName,
     worktreeSession: worktreeStates.get(sessionId),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,

@@ -476,6 +476,8 @@ export async function gracefulShutdown(
     setAppState?: (f: (prev: AppState) => AppState) => void
     /** Printed to stderr after alt-screen exit, before forceExit. */
     finalMessage?: string
+    /** Replaces the current process after cleanup instead of exiting. */
+    restartArgs?: string[]
   },
 ): Promise<void> {
   if (shutdownInProgress) {
@@ -602,6 +604,35 @@ export async function gracefulShutdown(
       writeSync(2, options.finalMessage + '\n')
     } catch {
       // stderr may be closed (e.g., SSH disconnect). Ignore write errors.
+    }
+  }
+
+  if (options?.restartArgs) {
+    // forceExit normally owns this last stdin drain. execve bypasses process
+    // exit hooks, so perform the same drain immediately before replacement.
+    try {
+      instances.get(process.stdout)?.drainStdin()
+    } catch {
+      // Terminal may already be gone. Let execve report its own failure.
+    }
+
+    try {
+      process.execve?.(
+        process.execPath,
+        [process.execPath, ...options.restartArgs],
+        process.env,
+      )
+      throw new Error('process.execve is unavailable')
+    } catch {
+      try {
+        writeSync(
+          2,
+          '\nRestart failed. Resume this session manually with the command shown above.\n',
+        )
+      } catch {
+        // stderr may be closed. Continue to exit with failure status.
+      }
+      forceExit(1)
     }
   }
 

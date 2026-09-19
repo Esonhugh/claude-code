@@ -2,6 +2,12 @@ import { describe, expect, test } from 'bun:test'
 import { SettingsSchema } from './types.js'
 
 describe('settings schema', () => {
+  test('accepts explicit terminal renderers and rejects unknown modes', () => {
+    expect(SettingsSchema().parse({ tui: 'fullscreen' }).tui).toBe('fullscreen')
+    expect(SettingsSchema().parse({ tui: 'default' }).tui).toBe('default')
+    expect(SettingsSchema().safeParse({ tui: 'split' }).success).toBe(false)
+  })
+
   test('accepts only boolean Plan mode opt-in settings', () => {
     expect(SettingsSchema().safeParse({ planModeAvailable: 'true' }).success).toBe(false)
     expect(SettingsSchema().parse({ planModeAvailable: true }).planModeAvailable).toBe(true)

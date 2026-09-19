@@ -106,16 +106,26 @@ export function _resetTmuxControlModeProbeForTesting(): void {
   loggedTmuxCcDisable = false
 }
 
-/**
- * Runtime env-var check only. Ants default to on (CLAUDE_CODE_NO_FLICKER=0
- * to opt out); external users default to off (CLAUDE_CODE_NO_FLICKER=1 to
- * opt in).
- */
+let startupTui: 'default' | 'fullscreen' | undefined
+
+// Settings changes must not replace the mounted renderer before restart.
+export function initializeFullscreenMode(tui: typeof startupTui): void {
+  startupTui = tui
+}
+
+export function getFullscreenModeSource(): string {
+  const env = process.env.CLAUDE_CODE_NO_FLICKER
+  if (isEnvDefinedFalsy(env) || isEnvTruthy(env)) return 'CLAUDE_CODE_NO_FLICKER'
+  if (startupTui) return 'tui setting (startup)'
+  return isTmuxControlMode() ? 'tmux control mode' : 'default'
+}
+
 export function isFullscreenEnvEnabled(): boolean {
   // Explicit user opt-out always wins.
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_NO_FLICKER)) return false
   // Explicit opt-in overrides auto-detection (escape hatch).
   if (isEnvTruthy(process.env.CLAUDE_CODE_NO_FLICKER)) return true
+  if (startupTui) return startupTui === 'fullscreen'
   // Auto-disable under tmux -CC: alt-screen + mouse tracking corrupts
   // terminal state on double-click and mouse wheel is dead.
   if (isTmuxControlMode()) {

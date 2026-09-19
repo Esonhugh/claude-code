@@ -705,6 +705,10 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Path to a script that outputs OpenTelemetry headers'),
+      tui: z
+        .enum(['default', 'fullscreen'])
+        .optional()
+        .describe('Terminal UI renderer. Changing this setting requires a restart.'),
       outputStyle: z
         .string()
         .optional()

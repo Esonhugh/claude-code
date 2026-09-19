@@ -125,6 +125,8 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js'
 import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
+import { initializeFullscreenMode } from './utils/fullscreen.js'
+import { configureTuiRestart } from './utils/tuiRestart.js'
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js'
 import { settingsChangeDetector } from './utils/settings/changeDetector.js'
 import { skillChangeDetector } from './utils/skills/skillChangeDetector.js'
@@ -1640,6 +1642,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .action(async (prompt, options) => {
       profileCheckpoint('action_handler_start')
+      configureTuiRestart(program)
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
       // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
@@ -3122,6 +3125,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Show setup screens after commands are loaded
       if (!isNonInteractiveSession) {
+        initializeFullscreenMode(getInitialSettings().tui)
         const ctx = getRenderContext(false)
         getFpsMetrics = ctx.getFpsMetrics
         stats = ctx.stats
