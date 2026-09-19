@@ -864,15 +864,23 @@ function renderNodeToOutput(
           let hint: ScrollHint | null = null
           if (contentCached && contentCached.y !== contentY) {
             // delta = newScrollTop - oldScrollTop (positive = scrolled down).
-            // Capture a DECSTBM hint if the container itself didn't move
-            // and the shift fits within the viewport — otherwise the full
-            // rewrite is needed anyway, and layoutShifted stays the fallback.
+            // Capture a DECSTBM hint if the container itself didn't move,
+            // spans the terminal width, and the shift fits within the viewport.
+            // DECSTBM + SU/SD and output.shift both operate on whole rows, so a
+            // horizontally constrained ScrollBox must use the full render path
+            // or it would also shift sibling columns.
             const delta = contentCached.y - contentY
             const regionTop = Math.floor(y + contentYoga.getComputedTop())
             const regionBottom = regionTop + innerHeight - 1
             if (
               cached?.y === y &&
               cached.height === height &&
+              Math.floor(
+                x + yogaNode.getComputedBorder(LayoutEdge.Left),
+              ) === 0 &&
+              Math.ceil(
+                x + width - yogaNode.getComputedBorder(LayoutEdge.Right),
+              ) === output.width &&
               innerHeight > 0 &&
               Math.abs(delta) < innerHeight
             ) {
