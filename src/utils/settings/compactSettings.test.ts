@@ -17,6 +17,17 @@ describe('settings schema', () => {
     expect(result.data.enableWorkflows).toBe(true)
   })
 
+  test('describes exclusions for instruction files rather than two basenames', () => {
+    const description = SettingsSchema().shape.claudeMdExcludes.description
+
+    expect(description).toContain('instruction files')
+    expect(description).toContain(
+      'AGENTS.md, CLAUDE.md, CLAUDE.local.md, rules, and imported files',
+    )
+    expect(description).toContain('**/AGENTS.md')
+    expect(description).toContain('Managed/policy files cannot be excluded')
+  })
+
   test('accepts minimal effort level', () => {
     const result = SettingsSchema().safeParse({ effortLevel: 'minimal' })
 
