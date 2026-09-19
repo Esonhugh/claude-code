@@ -58,6 +58,7 @@ let controlledPermissionMode: Parameters<typeof resolveAgentTools>[0]['permissio
 let controlledAllowedTools: string[] | undefined
 let controlledCanShowPermissionPrompts: boolean | undefined
 let controlledMainLoopModel: string | undefined
+let controlledResolvedModel: string | undefined
 let controlledSpawnTeammateConfig: SpawnTeammateConfig | undefined
 mock.module('../shared/spawnMultiAgent.js', () => ({
   spawnTeammate: async (config: SpawnTeammateConfig) => {
@@ -79,6 +80,7 @@ mock.module('./runAgent.js', () => ({
     agentDefinition: Parameters<typeof resolveAgentTools>[0]
     availableTools: Parameters<typeof resolveAgentTools>[1]
     isAsync: boolean
+    resolvedModel?: string
     canShowPermissionPrompts?: boolean
     permissionMode?: Parameters<typeof resolveAgentTools>[0]['permissionMode']
     allowedTools?: string[]
@@ -97,6 +99,7 @@ mock.module('./runAgent.js', () => ({
     controlledAllowedTools = params.allowedTools
     controlledCanShowPermissionPrompts = params.canShowPermissionPrompts
     controlledMainLoopModel = params.toolUseContext.options.mainLoopModel
+    controlledResolvedModel = params.resolvedModel
     return createControlledAgentStream()
   },
 }))
@@ -273,6 +276,14 @@ await AgentTool.call(
 )
 assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
 assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
+assert.equal(controlledResolvedModel, controlledMainLoopModel)
+
+for (const model of ['gpt-5.6-sol', 'Gateway/Custom-ID', 'inherit', 'opus']) {
+  assert.equal(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'model test', model }).success, true)
+}
+for (const model of ['', null]) {
+  assert.equal(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'model test', model }).success, false)
+}
 
 setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
 const disabledPlanContext = createContext(0)
@@ -715,13 +726,14 @@ try {
     {
       description: 'named restricted teammate',
       prompt: 'inspect only',
-      subagent_type: 'named-restricted-agent',
+      subagent_type: 'Named Restricted Agent',
       name: 'named-worker',
     },
     namedRestrictedContext as never,
     async () => ({ behavior: 'allow' }),
     { message: { id: 'msg_named_restricted_teammate' } } as never,
   )
+  assert.equal(controlledSpawnTeammateConfig?.agent_type, namedRestrictedAgent.agentType)
   assert.equal(
     controlledSpawnTeammateConfig?.permissionMode,
     'bypassPermissions',

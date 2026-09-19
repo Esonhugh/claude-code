@@ -32,7 +32,7 @@ export function ModelSelector({
     return base
   }, [initialModel])
 
-  const defaultModel = initialModel ?? 'sonnet'
+  const defaultModel = initialModel ?? 'inherit'
 
   return (
     <Box flexDirection="column">
@@ -44,6 +44,7 @@ export function ModelSelector({
       <Select
         options={modelOptions}
         defaultValue={defaultModel}
+        defaultFocusValue={defaultModel}
         onChange={onComplete}
         onCancel={() => (onCancel ? onCancel() : onComplete(undefined))}
       />

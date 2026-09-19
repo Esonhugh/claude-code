@@ -3,9 +3,9 @@ import { mock } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getEmptyToolPermissionContext } from '../../Tool.js'
+import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import { setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
+import { setMainLoopModelOverride, setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
 import { handlePlanApprovalResponse } from '../../utils/inProcessTeammateHelpers.js'
 import { buildInheritedCliFlags } from '../../utils/swarm/spawnUtils.js'
 import { spawnInProcessTeammate } from '../../utils/swarm/spawnInProcess.js'
@@ -23,6 +23,13 @@ import type { AgentDefinition } from '../AgentTool/loadAgentsDir.js'
 const startedInProcessConfigs: InProcessRunnerConfig[] = []
 let useInProcessBackend = true
 let spawnedPaneCommand: string | undefined
+let envAfterDetection: string | undefined
+mock.module('../../utils/execFileNoThrow.js', () => ({
+  execFileNoThrow: async (_command: string, args: string[]) => {
+    if (args[0] === 'send-keys') spawnedPaneCommand = args[3]
+    return { code: 0, stdout: args[0] === 'new-window' ? '%separate-test-pane' : '', stderr: '' }
+  },
+}))
 mock.module('../../utils/swarm/inProcessRunner.js', () => ({
   startInProcessTeammate(config: InProcessRunnerConfig) {
     startedInProcessConfigs.push(config)
@@ -30,10 +37,10 @@ mock.module('../../utils/swarm/inProcessRunner.js', () => ({
 }))
 mock.module('../../utils/swarm/backends/registry.js', () => ({
   isInProcessEnabled: () => useInProcessBackend,
-  detectAndGetBackend: async () => ({
-    backend: { type: 'tmux' },
-    needsIt2Setup: false,
-  }),
+  detectAndGetBackend: async () => {
+    if (envAfterDetection) process.env.CLAUDE_CODE_SUBAGENT_MODEL = envAfterDetection
+    return { backend: { type: 'tmux' }, needsIt2Setup: false }
+  },
   getBackendByType: () => ({ killPane: async () => {} }),
   markInProcessFallback: () => {},
   resetBackendDetection: () => {},
@@ -288,7 +295,7 @@ const concurrentSpawnContext = {
   ) => {
     concurrentSpawnState = updater(concurrentSpawnState)
   },
-} as never
+} as unknown as ToolUseContext
 
 await Promise.all([
   spawnTeammate(
@@ -349,6 +356,22 @@ assert.deepEqual(
   ['reviewer', 'reviewer-2'],
 )
 
+setMainLoopModelOverride('gpt-5.6-sol')
+const inheritedParentResult = await spawnTeammate(
+  { name: 'parent-model-worker', prompt: 'inspect', team_name: 'concurrent-spawn-team' },
+  {
+    ...concurrentSpawnContext,
+    options: { ...concurrentSpawnContext.options, mainLoopModel: 'gpt-5.6-sol' },
+  },
+)
+assert.equal(inheritedParentResult.data.model, 'gpt-5.6-sol')
+assert.equal(startedInProcessConfigs.at(-1)?.model, 'gpt-5.6-sol')
+assert.equal(
+  (await readTeamFileAsync('concurrent-spawn-team'))?.members.find(member => member.name === 'parent-model-worker')?.model,
+  'gpt-5.6-sol',
+)
+setMainLoopModelOverride(undefined)
+
 const specializedSpawnBaseline = startedInProcessConfigs.length
 
 await writeTeamFileAsync('definition-team', {
@@ -367,6 +390,7 @@ const specializedDefinitions: AgentDefinition[] = [
   },
   {
     agentType: 'custom-restricted-agent',
+    model: 'Definition/Custom-ID',
     whenToUse: 'Test custom definition propagation',
     tools: ['Read(custom.txt)'],
     disallowedTools: ['Write'],
@@ -474,6 +498,64 @@ assert.match(spawnedPaneCommand, /--agent-type custom-restricted-agent(?:\s|$)/)
 assert.match(spawnedPaneCommand, /--permission-mode default(?:\s|$)/)
 assert.match(spawnedPaneCommand, /--allowedTools Read\\\(custom\.txt\\\)/)
 useInProcessBackend = true
+
+const modelEnvKeys = [
+  'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_OPENAI', 'OPENAI_BASE_URL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+] as const
+const savedModelEnv = Object.fromEntries(modelEnvKeys.map(key => [key, process.env[key]]))
+try {
+  setMainLoopModelOverride('parent model with spaces')
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://example.invalid/v1'
+  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'Gateway/Opus'
+  process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'Gateway/Sonnet'
+  process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'Gateway/Haiku'
+  for (const backend of ['in-process', 'split-pane', 'separate-window']) {
+    useInProcessBackend = backend === 'in-process'
+    envAfterDetection = undefined
+    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+    const definitionResult = await spawnTeammate({
+      name: `definition-${backend}`, prompt: 'inspect', team_name: 'definition-team',
+      agent_type: 'custom-restricted-agent', use_splitpane: backend !== 'separate-window',
+    }, definitionContext)
+    assert.equal(definitionResult.data.model, 'Definition/Custom-ID')
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'Gateway/Snapshot'
+    envAfterDetection = 'env-changed-after-selection'
+    spawnedPaneCommand = undefined
+    const result = await spawnTeammate({
+      name: `model-${backend}`, prompt: 'inspect', team_name: 'definition-team',
+      model: 'tool-model', agent_type: 'custom-restricted-agent',
+      use_splitpane: backend !== 'separate-window',
+    }, definitionContext)
+    assert.equal(result.data.model, 'Gateway/Snapshot')
+    const task = Object.values(definitionState.tasks).find(task =>
+      task.type === 'in_process_teammate' && task.identity.agentId === result.data.agent_id,
+    )
+    assert.equal(task?.type === 'in_process_teammate' ? task.model : undefined, 'Gateway/Snapshot')
+    assert.equal((await readTeamFileAsync('definition-team'))?.members.find(member => member.agentId === result.data.agent_id)?.model, 'Gateway/Snapshot')
+    if (backend === 'in-process') {
+      assert.equal(startedInProcessConfigs.at(-1)?.model, 'Gateway/Snapshot')
+    } else {
+      assert.ok(spawnedPaneCommand)
+      assert.equal(spawnedPaneCommand.match(/--model\b/g)?.length, 1)
+      assert.match(spawnedPaneCommand, /--model Gateway\/Snapshot(?:\s|$)/)
+      assert.doesNotMatch(spawnedPaneCommand, /model with spaces|env-changed-after-selection/)
+      for (const key of modelEnvKeys.filter(key => key !== 'CLAUDE_CODE_SUBAGENT_MODEL')) {
+        assert.ok(spawnedPaneCommand.includes(`${key}=`), `${key} should reach ${backend}`)
+      }
+      assert.doesNotMatch(spawnedPaneCommand, /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|AUTH_TOKEN|ACCESS_TOKEN)=/)
+    }
+  }
+} finally {
+  envAfterDetection = undefined
+  useInProcessBackend = true
+  setMainLoopModelOverride(undefined)
+  for (const key of modelEnvKeys) {
+    if (savedModelEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = savedModelEnv[key]
+  }
+}
 
 const extractPermissionFlags = (flags: string) =>
   flags

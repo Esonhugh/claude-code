@@ -203,10 +203,11 @@ const baseInputSchema = lazySchema(() =>
       .optional()
       .describe('The type of specialized agent to use for this task'),
     model: z
-      .enum(['sonnet', 'opus', 'haiku'])
+      .string()
+      .min(1)
       .optional()
       .describe(
-        "Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent.",
+        "Optional model override: an alias (sonnet, opus, haiku), a full model ID, or inherit. Takes precedence over the agent definition's model frontmatter. CLAUDE_CODE_SUBAGENT_MODEL takes precedence over this override. If omitted, uses the agent definition's model or the default agent/teammate selection.",
       ),
     run_in_background: z
       .boolean()
@@ -674,13 +675,8 @@ export const AgentTool = buildTool({
       const permissions = resolvedTeammateTools.hasWildcard
         ? undefined
         : resolvedTeammateTools.validTools
-      const agentDef = subagent_type
-        ? toolUseContext.options.agentDefinitions.activeAgents.find(
-            a => a.agentType === subagent_type,
-          )
-        : undefined
-      if (agentDef?.color) {
-        setAgentColor(subagent_type!, agentDef.color)
+      if (selectedAgent.color) {
+        setAgentColor(selectedAgent.agentType, selectedAgent.color)
       }
       const result = await spawnTeammate(
         {
@@ -692,8 +688,8 @@ export const AgentTool = buildTool({
           plan_mode_required: permissionMode === 'plan',
           permissionMode,
           permissions,
-          model: model ?? agentDef?.model,
-          agent_type: subagent_type,
+          model,
+          agent_type: selectedAgent.agentType,
           invokingRequestId: assistantMessage?.requestId,
         },
         toolUseContext,
@@ -785,7 +781,7 @@ export const AgentTool = buildTool({
       setAgentColor(selectedAgent.agentType, selectedAgent.color)
     }
 
-    // Resolve agent params for logging (these are already resolved in runAgent)
+    // Snapshot once for logging, task metadata, and execution.
     const resolvedAgentModel = getAgentModel(
       selectedAgent.model,
       toolUseContext.options.mainLoopModel,
@@ -1128,7 +1124,7 @@ export const AgentTool = buildTool({
           selectedAgent.agentType,
           isBuiltInAgent(selectedAgent),
         ),
-      model: isForkPath ? undefined : model,
+      resolvedModel: resolvedAgentModel,
       // Fork path: pass the parent's system prompt and tool array. runAgent
       // removes main-thread-only tools before building the child request.
       // workerTools is rebuilt under permissionMode 'bubble', so its tool-def

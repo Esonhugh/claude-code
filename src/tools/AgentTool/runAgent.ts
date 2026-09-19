@@ -67,7 +67,7 @@ import {
 } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
+import { getCanonicalName } from '../../utils/model/model.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
@@ -338,6 +338,7 @@ export async function* runAgent({
   querySource,
   override,
   model,
+  resolvedModel,
   maxTurns,
   preserveToolUseResults,
   availableTools,
@@ -375,7 +376,9 @@ export async function* runAgent({
     abortController?: AbortController
     agentId?: AgentId
   }
-  model?: ModelAlias
+  model?: string
+  /** Internal spawn snapshot. Already resolved; do not read env/config again. */
+  resolvedModel?: string
   maxTurns?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
@@ -451,12 +454,13 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  const resolvedAgentModel = getAgentModel(
-    agentDefinition.model,
-    toolUseContext.options.mainLoopModel,
-    model,
-    permissionMode,
-  )
+  const resolvedAgentModel = resolvedModel ??
+    getAgentModel(
+      agentDefinition.model,
+      toolUseContext.options.mainLoopModel,
+      model,
+      permissionMode,
+    )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
 
@@ -619,6 +623,10 @@ export async function* runAgent({
         availableTools,
         isAsync,
       ).resolvedTools
+
+  logForDebugging(
+    `[runAgent] agentId=${agentId}, agentType=${agentDefinition.agentType}, model=${resolvedAgentModel}, tools=${resolvedTools.map(tool => tool.name).join(',')}`,
+  )
 
   const additionalWorkingDirectories = Array.from(
     // @ts-ignore - recovered code
@@ -793,6 +801,12 @@ export async function* runAgent({
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
 
+  const canonicalModel = getCanonicalName(resolvedAgentModel)
+  const inheritThinking =
+    useExactTools ||
+    canonicalModel === 'claude-opus-5' ||
+    canonicalModel === 'claude-sonnet-5'
+
   // Build agent-specific options
   const agentOptions: ToolUseContext['options'] = {
     isNonInteractiveSession: useExactTools
@@ -806,10 +820,9 @@ export async function* runAgent({
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
     mainLoopModel: resolvedAgentModel,
-    // For fork children (useExactTools), inherit thinking config to match the
-    // parent's API request prefix for prompt cache hits. For regular
-    // sub-agents, disable thinking to control output token costs.
-    thinkingConfig: useExactTools
+    // Forks preserve the request prefix. Opus/Sonnet 5 preserve the user's
+    // adaptive thinking choice; older regular subagents keep the cost default.
+    thinkingConfig: inheritThinking
       ? toolUseContext.options.thinkingConfig
       : { type: 'disabled' as const },
     mcpClients: mergedMcpClients,

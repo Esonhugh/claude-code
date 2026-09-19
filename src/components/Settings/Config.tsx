@@ -106,7 +106,7 @@ import {
   getCliTeammateModeOverride,
   clearCliTeammateModeOverride,
 } from '../../utils/swarm/backends/teammateModeSnapshot.js'
-import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
+import { getModelOptions } from '../../utils/model/modelOptions.js'
 import { useSearchInput } from '../../hooks/useSearchInput.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import {
@@ -163,6 +163,8 @@ type Setting =
       onChange(value: string): void
       type: 'managedEnum'
     })
+
+const AUTO_TEAMMATE_MODEL = Symbol('auto-teammate-model')
 
 type SubMenu =
   | 'Theme'
@@ -276,6 +278,31 @@ export function Config({
   const isDirty = React.useRef(false)
   const [showThinkingWarning, setShowThinkingWarning] = useState(false)
   const [showSubmenu, setShowSubmenu] = useState<SubMenu | null>(null)
+  const teammateModelOptions = React.useMemo(() => {
+    if (showSubmenu !== 'TeammateModel') return []
+    const models = getModelOptions().filter(option => option.value !== null)
+    const current = globalConfig.teammateDefaultModel
+    if (current && !models.some(option => option.value === current)) {
+      models.push({
+        value: current,
+        label: modelDisplayString(current),
+        description: 'Current model',
+      })
+    }
+    return [
+      {
+        value: AUTO_TEAMMATE_MODEL,
+        label: teammateModelDisplayString(undefined),
+        description: 'Use automatic teammate model selection',
+      },
+      {
+        value: null,
+        label: teammateModelDisplayString(null),
+        description: 'Always inherit the current effective leader model',
+      },
+      ...models,
+    ]
+  }, [showSubmenu, globalConfig.teammateDefaultModel])
   const {
     query: searchQuery,
     setQuery: setSearchQuery,
@@ -1878,28 +1905,34 @@ export function Config({
         </>
       ) : showSubmenu === 'TeammateModel' ? (
         <>
-          <ModelPicker
-            initial={globalConfig.teammateDefaultModel ?? null}
-            skipSettingsWrite
-            headerText="Default model for newly spawned teammates. The leader can override via the tool call's model parameter."
-            onSelect={(model, _effort) => {
+          <Text dimColor>
+            Default for newly spawned teammates. Environment, tool and Agent definition model overrides take precedence.
+          </Text>
+          <Select<string | null | symbol>
+            options={teammateModelOptions}
+            defaultValue={
+              globalConfig.teammateDefaultModel === undefined
+                ? AUTO_TEAMMATE_MODEL
+                : globalConfig.teammateDefaultModel
+            }
+            defaultFocusValue={
+              globalConfig.teammateDefaultModel === undefined
+                ? AUTO_TEAMMATE_MODEL
+                : globalConfig.teammateDefaultModel
+            }
+            onChange={selected => {
               setShowSubmenu(null)
               setTabsHidden(false)
-              // First-open-then-Enter from unset: picker highlights "Default"
-              // (initial=null) and confirming would write null, silently
-              // switching Opus-fallback → follow-leader. Treat as no-op.
-              if (
-                globalConfig.teammateDefaultModel === undefined &&
-                model === null
-              ) {
-                return
-              }
+              const model = typeof selected === 'symbol' ? undefined : selected
+              if (globalConfig.teammateDefaultModel === model) return
               isDirty.current = true
-              saveGlobalConfig(current =>
-                current.teammateDefaultModel === model
-                  ? current
-                  : { ...current, teammateDefaultModel: model },
-              )
+              saveGlobalConfig(current => {
+                if (model === undefined) {
+                  const { teammateDefaultModel: _previous, ...rest } = current
+                  return rest
+                }
+                return { ...current, teammateDefaultModel: model }
+              })
               setGlobalConfig({
                 ...getGlobalConfig(),
                 teammateDefaultModel: model,
@@ -2320,9 +2353,9 @@ export function Config({
 
 function teammateModelDisplayString(value: string | null | undefined): string {
   if (value === undefined) {
-    return modelDisplayString(getHardcodedTeammateModelFallback())
+    return 'Auto (explicit leader model, otherwise provider default)'
   }
-  if (value === null) return "Default (leader's model)"
+  if (value === null) return "Inherit leader's model"
   return modelDisplayString(value)
 }
 

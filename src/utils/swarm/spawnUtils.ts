@@ -39,6 +39,7 @@ export function buildInheritedCliFlags(options?: {
   planModeRequired?: boolean
   permissionMode?: PermissionMode
   allowedTools?: string[]
+  model?: string
 }): string {
   const flags: string[] = []
   const { planModeRequired, permissionMode, allowedTools } = options || {}
@@ -59,8 +60,8 @@ export function buildInheritedCliFlags(options?: {
     flags.push(`--allowedTools ${quote([allowedTools.join(',')])}`)
   }
 
-  // Propagate --model if explicitly set via CLI
-  const modelOverride = getMainLoopModelOverride()
+  // Spawn callers supply the resolved snapshot, replacing the parent override.
+  const modelOverride = options?.model ?? getMainLoopModelOverride()
   if (modelOverride) {
     flags.push(`--model ${quote([modelOverride])}`)
   }
@@ -103,8 +104,15 @@ const TEAMMATE_ENV_VARS = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
-  // Custom API endpoint
+  'CLAUDE_CODE_USE_OPENAI',
+  // Custom API endpoints (credentials are never forwarded in shell commands)
   'ANTHROPIC_BASE_URL',
+  'OPENAI_BASE_URL',
+  // Preserve role aliases for any children spawned by the teammate.
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
   // Config directory override
   'CLAUDE_CONFIG_DIR',
   // CCR marker — teammates need this for CCR-aware code paths. Auth finds

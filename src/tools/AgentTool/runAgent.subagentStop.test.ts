@@ -192,7 +192,7 @@ async function runIsolatedTests(): Promise<void> {
     }
   }
 
-  async function drainAgent(): Promise<void> {
+  async function drainAgent(extra: Partial<Parameters<typeof runAgent>[0]> = {}): Promise<void> {
     const iterator = runAgent({
       agentDefinition: GENERAL_PURPOSE_AGENT,
       promptMessages: [createUserMessage({ content: 'finish the task' })],
@@ -207,6 +207,7 @@ async function runIsolatedTests(): Promise<void> {
         systemContext: {},
         systemPrompt: asSystemPrompt([]),
       },
+      ...extra,
     })
 
     let next = await iterator.next()
@@ -220,6 +221,52 @@ async function runIsolatedTests(): Promise<void> {
     queryMode = 'throw'
     recordedMessages.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  test('resolved model bypasses later env and definition changes', async () => {
+    queryMode = 'complete'
+    const previous = process.env.CLAUDE_CODE_SUBAGENT_MODEL
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'env-changed-after-spawn'
+    let observedModel: string | undefined
+    try {
+      await drainAgent({
+        resolvedModel: 'Snapshot/Custom-ID',
+        model: 'tool-model',
+        agentDefinition: { ...GENERAL_PURPOSE_AGENT, model: 'definition-model' },
+        onCacheSafeParams: params => { observedModel = params.toolUseContext.options.mainLoopModel },
+      })
+      expect(observedModel).toBe('Snapshot/Custom-ID')
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+      else process.env.CLAUDE_CODE_SUBAGENT_MODEL = previous
+    }
+  })
+
+  for (const model of ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-6', 'custom-opus-5-gateway']) {
+    test(`${model} uses the appropriate parent or legacy thinking default`, async () => {
+      queryMode = 'complete'
+      const context = createContext()
+      const thinkingConfig = { type: 'enabled' as const, budgetTokens: 2048 }
+      let observedThinking: unknown
+      await drainAgent({
+        resolvedModel: model,
+        toolUseContext: { ...context, options: { ...context.options, thinkingConfig } },
+        onCacheSafeParams: params => { observedThinking = params.toolUseContext.options.thinkingConfig },
+      })
+      expect(observedThinking).toEqual(
+        model === 'claude-opus-5' || model === 'claude-sonnet-5' ? thinkingConfig : { type: 'disabled' },
+      )
+    })
+  }
+
+  test('Opus 5 preserves explicitly disabled parent thinking', async () => {
+    queryMode = 'complete'
+    let observedThinking: unknown
+    await drainAgent({
+      resolvedModel: 'claude-opus-5',
+      onCacheSafeParams: params => { observedThinking = params.toolUseContext.options.thinkingConfig },
+    })
+    expect(observedThinking).toEqual({ type: 'disabled' })
   })
 
   test('runs SubagentStop once for the controlled post-start fault', async () => {

@@ -77,7 +77,6 @@ import {
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
 } from '../messages.js'
-import type { ModelAlias } from '../model/aliases.js'
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
@@ -489,7 +488,7 @@ export type InProcessRunnerConfig = {
   toolUseContext: ToolUseContext
   /** Abort controller linked to parent */
   abortController: AbortController
-  /** Optional model override for this teammate */
+  /** Resolved spawn snapshot; reused unchanged across teammate turns. */
   model?: string
   /** Optional system prompt override for this teammate */
   systemPrompt?: string
@@ -986,7 +985,7 @@ export async function runInProcessTeammate(
     // Inject team-essential tools so teammates can always respond to
     // shutdown requests, send messages, and coordinate via the task list,
     // even with explicit tool lists
-    tools: agentDefinition?.tools
+    tools: agentDefinition?.tools && !agentDefinition.tools.includes('*')
       ? [
           ...new Set([
             ...agentDefinition.tools,
@@ -1202,7 +1201,7 @@ export async function runInProcessTeammate(
             forkContextMessages,
             querySource: 'agent:custom',
             override: { abortController: currentWorkAbortController },
-            model: model as ModelAlias | undefined,
+            resolvedModel: model,
             preserveToolUseResults: true,
             availableTools: toolUseContext.options.tools,
             permissionMode: currentPermissionMode,
