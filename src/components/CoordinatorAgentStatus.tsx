@@ -20,6 +20,7 @@ import { isPanelAgentTask } from "../tasks/LocalAgentTask/LocalAgentTask.js";
 import { logForDebugging } from "../utils/debug.js";
 import { evictTerminalTask } from "../utils/task/framework.js";
 import { truncateToWidth } from "../utils/truncate.js";
+import { KeyboardShortcutHint } from "./design-system/KeyboardShortcutHint.js";
 import {
   type CoordinatorSessionRow,
   getCoordinatorSessionRows,
@@ -54,6 +55,8 @@ export function CoordinatorTaskPanel({
   const tasksSelected = useAppState((s) => s.footerSelection === "tasks");
   const selectedIndex = tasksSelected ? coordinatorTaskIndex : undefined;
   const setAppState = useSetAppState();
+  const verbose = useAppState((s) => s.verbose);
+  const { columns } = useTerminalSize();
   const setCoordinatorSelection = React.useCallback(
     (index: number, targetId?: string) => {
       setAppState((prev) => {
@@ -118,10 +121,39 @@ export function CoordinatorTaskPanel({
     selectedIndex,
     viewingAgentTaskId,
   });
-  const primaryColumnWidth = Math.max(
-    0,
-    ...rows.map(
-      (row) => stringWidth(treePrefixText(row)) + stringWidth(row.primaryText),
+  const selectedRow = rows.find((row) => row.selected);
+  const selectedTask = selectedRow?.taskId
+    ? tasks[selectedRow.taskId]
+    : undefined;
+  const contentWidth = Math.max(0, columns - 4);
+  const showMetrics = contentWidth >= 60;
+  const showDetails = verbose && contentWidth >= 100;
+  const showTools = showDetails || hasWorkflowTasks;
+  const showStatus = showDetails || hasWorkflowTasks;
+  const metricWidths = {
+    elapsed: Math.max(...rows.map((row) => stringWidth(row.elapsed))),
+    tokens: Math.max(...rows.map((row) => stringWidth(row.tokens))),
+    tools: showTools
+      ? Math.max(...rows.map((row) => stringWidth(row.tools)))
+      : 0,
+    status: showStatus
+      ? Math.max(...rows.map((row) => stringWidth(row.statusText)))
+      : 0,
+  };
+  const metricsWidth = showMetrics
+    ? metricWidths.elapsed +
+      metricWidths.tokens +
+      7 +
+      (showTools ? metricWidths.tools + 2 : 0) +
+      (showStatus ? metricWidths.status + 2 : 0)
+    : 0;
+  const primaryColumnWidth = Math.min(
+    Math.max(0, contentWidth - 4 - metricsWidth - 2),
+    Math.max(
+      ...rows.map(
+        (row) =>
+          stringWidth(treePrefixText(row)) + stringWidth(row.primaryText),
+      ),
     ),
   );
 
@@ -132,6 +164,12 @@ export function CoordinatorTaskPanel({
           key={row.id}
           row={row}
           primaryColumnWidth={primaryColumnWidth}
+          contentWidth={contentWidth}
+          metricWidths={metricWidths}
+          showMetrics={showMetrics}
+          showDetails={showDetails}
+          showTools={showTools}
+          showStatus={showStatus}
           onClick={() => {
             if (row.kind === "main") {
               setCoordinatorSelection(0, undefined);
@@ -153,6 +191,24 @@ export function CoordinatorTaskPanel({
           }}
         />
       ))}
+      {selectedRow && (
+        <Text dimColor wrap="truncate">
+          <KeyboardShortcutHint shortcut="Enter" action="view" />
+          {selectedRow.kind === "agent" &&
+            !selectedRow.viewed &&
+            selectedTask && (
+              <>
+                {" · "}
+                <KeyboardShortcutHint
+                  shortcut="x"
+                  action={selectedTask.status === "running" ? "stop" : "clear"}
+                />
+              </>
+            )}
+          {" · "}
+          <KeyboardShortcutHint shortcut="Esc" action="cancel" />
+        </Text>
+      )}
     </Box>
   );
 }
@@ -178,66 +234,103 @@ function treePrefixText(row: CoordinatorSessionRow): string {
 function SessionRow({
   row,
   primaryColumnWidth,
+  contentWidth,
+  metricWidths,
+  showMetrics,
+  showDetails,
+  showTools,
+  showStatus,
   onClick,
 }: {
   row: CoordinatorSessionRow;
   primaryColumnWidth: number;
+  contentWidth: number;
+  metricWidths: {
+    elapsed: number;
+    tokens: number;
+    tools: number;
+    status: number;
+  };
+  showMetrics: boolean;
+  showDetails: boolean;
+  showTools: boolean;
+  showStatus: boolean;
   onClick: () => void;
 }): React.ReactNode {
-  const { columns } = useTerminalSize();
   const [hover, setHover] = React.useState(false);
   const active = row.selected || hover;
-  const prefix = active ? `${figures.pointer} ` : "  ";
-  const treePrefix = treePrefixText(row);
-  const meta = row.meta ? ` ${row.meta}` : "";
-  const status = row.statusText ? ` ${row.statusText}` : "";
-  const availableTextWidth = Math.max(
-    0,
-    columns -
-      stringWidth(prefix) -
-      stringWidth(row.icon) -
-      1 -
-      stringWidth(meta) -
-      stringWidth(status),
-  );
-  const displayedPrimaryWidth = Math.min(primaryColumnWidth, availableTextWidth);
-  const primaryAvailable = Math.max(
-    0,
-    displayedPrimaryWidth - stringWidth(treePrefix),
-  );
-  const primaryText =
-    primaryAvailable > 0 ? truncateToWidth(row.primaryText, primaryAvailable) : "";
-  const primaryPadding = " ".repeat(
-    Math.max(0, displayedPrimaryWidth - stringWidth(treePrefix) - stringWidth(primaryText)),
-  );
-  const secondaryAvailable = Math.max(
-    0,
-    availableTextWidth - displayedPrimaryWidth - (row.secondaryText ? 2 : 0),
-  );
-  const secondaryText =
-    secondaryAvailable > 0
-      ? truncateToWidth(row.secondaryText, secondaryAvailable)
-      : "";
-  const secondary = secondaryText ? `  ${secondaryText}` : "";
+  const description = showDetails
+    ? row.activity || row.secondaryText
+    : row.secondaryText;
   return (
     <Box
+      width={contentWidth}
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <Text
-        dimColor={!active && !row.viewed}
-        bold={row.viewed || active}
-        wrap="truncate"
-      >
-        {prefix}
-        {row.icon} {treePrefix}
-        {primaryText}
-        {primaryPadding}
-        {secondary}
-        {meta}
-        {status}
-      </Text>
+      <Box width={4} flexShrink={0}>
+        <Text bold={active || row.viewed} dimColor={!active && !row.viewed}>
+          {active ? figures.pointer : " "} {row.icon}{" "}
+        </Text>
+      </Box>
+      <Box width={primaryColumnWidth} flexShrink={0}>
+        <Text
+          color={row.color}
+          bold={active || row.viewed}
+          dimColor={!active && !row.viewed}
+          wrap="truncate"
+        >
+          {treePrefixText(row)}
+          {row.primaryText}
+        </Text>
+      </Box>
+      <Box flexGrow={1} flexShrink={1} minWidth={0} marginLeft={2}>
+        <Text dimColor wrap="truncate">
+          {showDetails ? description : truncateToWidth(description, 60)}
+        </Text>
+      </Box>
+      {showMetrics && row.kind !== "main" && (
+        <>
+          {showStatus && (
+            <Box width={metricWidths.status} marginLeft={2} flexShrink={0}>
+              <Text dimColor>
+                {showDetails || row.kind === "workflow" ? row.statusText : ""}
+              </Text>
+            </Box>
+          )}
+          {showTools && (
+            <Box
+              width={metricWidths.tools}
+              marginLeft={2}
+              flexShrink={0}
+              justifyContent="flex-end"
+            >
+              <Text dimColor>
+                {showDetails || row.kind === "workflow" ? row.tools : ""}
+              </Text>
+            </Box>
+          )}
+          <Box
+            width={metricWidths.elapsed}
+            marginLeft={2}
+            flexShrink={0}
+            justifyContent="flex-end"
+          >
+            <Text dimColor>{row.elapsed}</Text>
+          </Box>
+          <Box width={5} flexShrink={0}>
+            <Text dimColor> · ↓ </Text>
+          </Box>
+          <Box
+            width={metricWidths.tokens}
+            flexShrink={0}
+            justifyContent="flex-end"
+          >
+            <Text dimColor>{row.tokens}</Text>
+          </Box>
+        </>
+      )}
     </Box>
   );
 }
