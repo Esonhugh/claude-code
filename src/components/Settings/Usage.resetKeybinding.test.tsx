@@ -188,6 +188,7 @@ try {
   flushUpdates()
 
   const initialOutput = stripAnsi(stdout.output)
+  assert.match(initialOutput, /█[^\n]* 25% used/)
   assert.equal(detailsFetchCount, 1)
   assert.match(initialOutput, /Reset: 2/)
   assert.match(initialOutput, /Total granted: 3/)

@@ -95,46 +95,21 @@ function LimitBar({
     }
   }
 
-  const maxBarWidth = 50
-  const usedLabelSpace = 12
-  if (maxWidth >= maxBarWidth + usedLabelSpace) {
-    return (
-      <Box flexDirection="column">
-        <Text bold>{title}</Text>
-        <Box flexDirection="row" gap={1}>
-          <ProgressBar
-            ratio={utilization / 100}
-            width={maxBarWidth}
-            fillColor="rate_limit_fill"
-            emptyColor="rate_limit_empty"
-          />
-          <Text>{usedText}</Text>
-        </Box>
-        {subtext && <Text dimColor>{subtext}</Text>}
-      </Box>
-    )
-  } else {
-    return (
-      <Box flexDirection="column">
-        <Text>
-          <Text bold>{title}</Text>
-          {subtext && (
-            <>
-              <Text> </Text>
-              <Text dimColor>· {subtext}</Text>
-            </>
-          )}
-        </Text>
+  return (
+    <Box flexDirection="column">
+      <Text bold>{title}</Text>
+      <Box columnGap={1}>
         <ProgressBar
           ratio={utilization / 100}
-          width={maxWidth}
+          width={Math.max(1, Math.min(50, maxWidth - usedText.length - 1))}
           fillColor="rate_limit_fill"
           emptyColor="rate_limit_empty"
         />
-        <Text>{usedText}</Text>
+        <Text bold color="permission">{usedText}</Text>
       </Box>
-    )
-  }
+      {subtext && <Text dimColor>{subtext}</Text>}
+    </Box>
+  )
 }
 
 export function Usage({ contentHeight }: { contentHeight?: number } = {}): React.ReactNode {
