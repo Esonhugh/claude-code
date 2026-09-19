@@ -1,6 +1,6 @@
 # Mods 收口测试方案与验收记录
 
-第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复的方案与状态见第 8 节。历史失败不会由后续成功覆盖。
+第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；最新 Mods UI/UX 修复与限定验收见第 9 节。历史失败不会由后续成功覆盖。
 
 ## 1. 范围和判定规则
 
@@ -331,3 +331,164 @@ Workflow 只做一次探针校准和一次原 full-b 到目标的精确前缀诊
 正常公开退出与资源回收分别判定：inline、disable ownership、context和Workflow **4场正常`/exit` exit0**；fullscreen keyboard、mouse和enable **3场正常退出未通过或未到达**，不能用cleanup替代。7场最终自有资源均已回收；Workflow基础cleanup遗留的remain-on-exit私有tmux server已在最终审计中清理。7个loopback端口关闭，无记录内owned process或私有tmux socket；主线程再次只读复核一致。见 `final-cleanup.json`、`final-integrity.json`、`../main-final-review.json`。
 
 冻结隔离binary、775文件官方原件及首个失败summary内容未变。**本轮执行已结束，没有仍在运行的验收agent；inline导航残留缺陷、PTY退出码异常和Workflow原超时继续阻止推送。** 只提交这两份不内嵌报告，不重新构建、不把后续OpenAI代码或仓库替换产物计入本轮结果。
+
+## 9. Mods UI/UX 残留修复与限定验收
+
+### 9.1 范围、身份与方案
+
+起点为 `feat/mods@656ecafb3696d817ac35134f6b00d8f93171f6cc`。本轮证据根 `U` = `/private/tmp/mods-uiux-20260919-4y11t_bu`，与第8节旧制品、失败日志分离。保留并发 OpenAI 提交、原有构建产物及两份 cross-session 草稿；不改官方775文件原件，不重跑261文件全量矩阵、旧 Workflow/PTY 调查或已结束的SSH修复，不修改版本、依赖或CI。本轮局部通过不解除 Workflow/PTY 推送门禁。
+
+验证顺序：先最小红测，修复逻辑 key/DOM 注册和 host 焦点回声；补16真实文件、五行窗口、focus promise完成后异步invalidate的逐次/连续正反导航；验证控件可见焦点、diff宽度/metrics和键盘与pointer所有权；运行相邻回归、release-check与新build；锁定独立binary后执行限定scripted tmux。最终回填报告、正常签名提交，不push。
+
+真实交互计划覆盖：inline逐文件/跨页/Enter/详情/Escape，fullscreen Tab/BTab与实际ask、context一次注入，modifier/chord与base真实patch变化/store/reload，pane内外双向wheel和Page键，160→110→109→80→160与短高度/长ASCII/CJK，draft/dialog不抢焦、disable→builtin→enable。每项先建立可观测前置；前置失败停止依赖步骤，区分产品、环境、harness、predicate，正常退出与资源清理分别判定。官方CLI不是本轮必需；若需启动，仅使用用户指定settings，且与loopback fixture分开记录。
+
+### 9.2 最小红绿与组件回归
+
+| 问题 | 原始失败 | 修复与验证 |
+| --- | --- | --- |
+| 分页DOM复用留下旧key | `focus-red.log`：a→b后keyRows仍含a；host聚焦b另发person请求，0/2 | 精确注销每个ref的旧 `(key, element)`，保留重复key其他节点；snapshot走既有focus guard。新增duplicate/plugin变更/卸载和其他owner不被blur断言 |
+| Select/Input焦点提示 | `chrome-width-red.log`：Input未获焦仍inverse | focus/blur更新本地chrome；真实Tab/BTab、鼠标和activeElement断言 |
+| diff固定宽度 | `render-width-qualified-red.log`：预算78实际76；`nested-width-red.log`：嵌套预算26实际76 | 内部snapshot复用drawing bodyColumns；Code按局部Yoga宽度约束，覆盖109/110、CJK和padding |
+| 宽度收敛后metrics滞后 | `nested-metrics.log`：实际高度16、报告10 | 局部布局收敛通知已有metrics路径；`nested-metrics-green.log` 2/0 |
+| transcript抢先消费PageDown | `scroll-red-01.log`：pane获焦时transcript offset20→25，0/1 | keyboard activation独立于wheel；`scroll-green-final-01.log` 9/0、80 expect，覆盖Page/Home/End、Ctrl边界、pane内外wheel、失焦恢复和原modal开关 |
+
+16真实 `file:<path>` key的新增分页测试分别验证paced/continuous Down15→Up15、首尾不wrap、请求序列和DOM实际落点。此组在修复后补充，不声称每项均单独在原生产代码上取得红测。原Input测试把host聚焦回声当成功的断言已改为actual activeElement正确且person请求为空，原change/submit断言保留。
+
+宽度测试初次缺AppStore导致 `useAppState/useSetAppState cannot be called outside of an <AppStateProvider />`，属于fixture错误；补真实AppStoreContext后才取得合格宽度红测。日志 `render-width-red.log`、`render-width-diagnose.log` 保留。首次release-check的测试记录类型漏 `bottom` 触发TS2769，修正类型后 `release-check-fixed.log` exit0；未放宽产品断言或增加timeout。
+
+主线程最终两文件 `pane-final.log` 为 **76 pass / 0 fail / 407 expect**；较早7文件 `ui-adjacent.log` 为215/0，不把早期批次标成最终冻结源码。所有命令由 `U/run-test.sh` 保存 argv/exit，独立HOME/config/XDG/TMP、env白名单、localhost-only sandbox保持启用。源码测试不替代编译制品交互证据；正常ColorDiff路径的宽度覆盖不等于fallback完整覆盖。
+
+### 9.3 最终相邻回归、构建与真实交互
+
+最终8文件相邻回归 `ui-final-adjacent.log` 为 **224 pass / 0 fail / 1303 expect，exit0**，包含ModsPane、ScrollKeybindingHandler、ui、runtimeUi、defaultBindings、runtime、session、plugins；其中包含从生产源码提取的PromptInput Escape guard回归、真实Worker及REPL接线；该guard测试不是完整PromptInput挂载，也不替代compiled快速Escape验收，不累加前面重叠批次。`release-check-final.log` 为 **exit0**，changelog、TypeScript、lint、audit、diff检查通过；audit中的fixture import字符串不是生产缺模块，missing src/text/type-only均为0。
+
+`make build` **exit0**，源码内容manifest前后无变化，见 `build/build.json`、`source-before.json`、`source-after.json`。新制品 **2.1.219，100119266 bytes**；SHA-256 **`13a70ecf1726c63a215e731aa7e5571320133ae48aa8d316bd378637d4d4fc10`**。唯一指定隔离副本为 `U/build/artifact/built-claude`，仓库产物在构建锁定时与它一致；此前仓库binary另存 `build/artifact/previous-built-claude`，没有删除旧验收制品。`build/source-identity.json` 的保守源码内容digest为 **`3f17210ff1360e6d29c97fb649dadccbe98a583b0e60a438370d910882ed41b3`**，含CHANGELOG，不含HEAD/index、动态测试输出、报告或证据绝对路径；它不声称完整hermetic依赖安装身份。HEAD `656ecaf`只是出处，实际修复包含未提交内容，不能把该HEAD本身当作制品源码身份。
+
+runtime准备agent已结束，`runtime/preparation.json` 为 preparation passed / runtime not covered；775文件原件、fixture Git/loopback、sandbox和空tmux preflight通过。新collector最初的子进程计数语义错误保留为harness证据，修正后preflight通过；未启动旧binary或official。首轮新制品验收已结束，**failed**；旧第8节制品 `13e042c2…` 不用于本轮验收。
+
+### 9.4 首轮新制品失败与追加修复
+
+`13a70ecf…` 实际运行inline、fullscreen各一次；后者的共享dock前置失败后，mouse/resize/ownership/bindings未启动。证据 `runtime/summary.json`、`acceptance-integrity-final.json`，不可用源代码224/0覆盖运行失败。
+
+- `inline-acceptance-01`：慢速Down选中01→02→03→04→04，第四次未到05；原始viewport/ANSI复核一致。后续反向、连续、详情/Escape未执行。正常`/exit`为0，cleanup通过。session/pane `cc-uiux-inline-acceptance-01:0.0`，证据 `slow-down.json`、`slow-down-05-after-viewport.txt`。
+- `fullscreen-acceptance-01`：dock入口出现React #185，栈含reportMetrics/onReportMetrics；raw driver把wait timeout记not covered，人工 `reviewed-result.json`独立记录产品failed，未改raw。Tab/ask/context/base等均未到达。正常exit未覆盖，cleanup阶段exit0不算正常退出。session/pane `cc-uiux-fullscreen-acceptance-01:0.0`，证据 `failure-pane.txt`、`failure-viewport.txt`。
+- inline独立observer被loader拒绝（event需literal pattern）；只在仓库外修observer并保留diff，没有重跑inline或修改官方原件。fullscreen两组ui.render可观察，不证明DOM实际焦点。两场自有进程/端口/tmux socket均清理，775文件原件与副本、binary hash、2313项source identity均保持。未启动official/外部provider。
+
+针对fullscreen补真实 `createModUi` + `useSyncExternalStore` + 五个Code块红测，`metrics-live-red.log`复现崩溃，`metrics-live-diagnose.log`捕获contentRows/keyRows交替为46/有效行和0/空行。根因：子ModDiff的layout effect早于ScrollBox父viewport ref重挂，读取了暂时为空的ref并发布0指标；父layout effect随后发布真实值，形成订阅更新循环。局部测宽仍在layout effect，metrics通知移至commit后的effect；`metrics-live-green.log`三个宽度/嵌套/真实订阅测试3/0、27 expect。本修复改变构建输入，首轮binary保留为失败证据，不能用于后续通过判定；inline追加修复和新构建结果见下。
+
+inline官方 `dialogFocusOf()` 返回旧窗口中目标槽位的文件key，而不是新窗口中的逻辑选择key；01–05选中03→请求04时返回03，新窗口变为02–06。旧测试把selected、snapshot和返回值合成同一个值，遗漏了该组合。新增两种受控时序（reply→redraw、redraw→reply）的红测 `window-landing-red.log`，均发现复用槽位是file04而actual activeElement不是它。保留精确注册、host guard和队列，只记录本次旧drawing的落点DOM；同owner/generation、成功返回且新树将该DOM复用为请求key并明确autoFocus时，按该槽位交接；普通key重写/deny仍走原路径。
+
+`window-landing-green.log` 为7/0；随后两种landing协议×paced/continuous的16文件正反往返及两种reply/redraw顺序 `window-landing-matrix.log` 为6/0、108 expect。未修改官方原件、公共Ink autofocus或绕过middleware。追加8文件相邻回归 `ui-repaired-adjacent.log` 为 **229 pass / 0 fail / 1368 expect**；`release-check-repaired.log` **exit0**，`build-repaired/build.json` 中 **make build exit0、内容manifest前后无变化**。
+
+第二制品 **2.1.219、100119266 bytes**，独立路径 `U/build-repaired/artifact/built-claude`，SHA-256 **`0a6a3716b068b9a0e3faa3113e4abc9b3baf5ae0144d838320b05ab7bfb2a705`**；构建源码digest **`279b8de553e8902c1f79208f348d5881c3fd99435e7c741d974b2c55a3714840`**。首轮build/runtime失败资料全部保留。第二制品六场已串行完成，每场一次、0 retry；结果如下。
+
+### 9.5 第二制品限定验收：连续导航仍失败
+
+总索引 `U/runtime/repaired-runner-index.json`，各场完整命令、环境、input与逐断言证据位于 `U/runtime/<场景>-acceptance-02/reviewed-result.json`；实际tmux target为 `cc-uiux-<场景>-acceptance-02:0.0`。本轮未修改harness或产品源码、未启动official或真实provider，不是完整parity。
+
+| 场景 | 审核结果 | 已观察行为与缺口 |
+| --- | --- | --- |
+| inline | **failed，产品行为** | paced16文件正反通过；15次burst Down从01仅到10，期望16。15次person ui.focus请求重复04–09；详情、反向burst、快速Escape等依赖项停止。证据`burst-down.json`、`burst-down-viewport.txt`、`slow-down.json`、`slow-up.json` |
+| fullscreen | not covered | 本场未再出现React #185；ask实际激活、当前请求context计数0→1→0、modifier恰好一次、HEAD/merge-base实际patch变化与store/reload、draft/dialog通过。中间base控件实际焦点及完整高亮证据不足，不能仅以source/base/source请求序列算通过 |
+| mouse | not covered | pane内外双向wheel及pane双向Page通过；driver未操作transcript反向PageUp，raw exit0不等于整场完整通过 |
+| resize | **failed，harness** | 尺寸矩阵和最终激活完成；pane仍持有输入时发送`/exit`导致超时。长ASCII/CJK文件未选中，短高度内容可达性未验证 |
+| ownership | passed | disable→builtin→enable所有权恢复；不要求旧generation内容持久化 |
+| bindings | not covered | 自然隔离配置日志为`user customization disabled`，未执行override/unbind/restore；未伪造gate或关闭隔离 |
+
+正常退出5场通过，resize失败；cleanup6场通过，resize核对自有进程身份后SIGTERM不能替代normal exit。资源、隔离和证据路径审计见`repaired-runner-resource-audit.json`、`repaired-runner-isolation-audit.json`、`repaired-runner-review-audit.json`。旧runtime3840项、旧summary及官方775文件原件未变，见`repaired-runner-integrity-final.json`；主线程另核对生产构建输入无变化、仓库及隔离binary均匹配0a6a…，见`repaired-main-source-audit.json`。无仍运行的第二轮验收任务。
+
+组件的continuous回归包含每次focus人工等待5ms，未能覆盖真实burst调度；229/0不能覆盖此次失败。下一步针对队列解析目标与异步drawing提交之间的边界补确定性红测，不通过增加sleep、修改官方插件或弱化断言规避。当前仍未提交、未推送；原Workflow/PTY门禁继续保留。
+
+### 9.6 连续输入的绘制/提交边界修复
+
+`burst-fast-reply-red.log`：保留旧四组合，仅新增立即focus reply、延迟drawing提交，得到02、03、04、04、05、05；4/1。`burst-commit-receipt-red.log`进一步携带明确待提交版本，旧组件仍重复目标。`focus-invalidation-red.log`确认已开始但未await的invalidate尚未完成时，host person focus已返回；`focus-receipt-wiring-red.log`确认REPL未传递当前发布版本。
+
+修复分两层：host仅等待该pane已开始的绘制工作，跟随superseding redraw，不等待凭空出现的新重绘；内部snapshot附单调publication revision，REPL在focus完成后从同一host取实际版本，ModsPane等该版本或更新版本的layout commit后才应用最终landing、解析下一箭头。无需sleep、不改worker/plugin公开契约；无redraw直接继续，Escape、隐藏、owner替换和卸载释放组件提交等待。旧drawing-slot交接与最终middleware landing保留。
+
+定向`burst-fence-green.log` **11/0、145 expect**，提交合并及取消五组合/替代drawing `burst-fence-cancellation.log` **6/0、16 expect**。追加真实`createModUi`/`useSyncExternalStore`的16文件burst正反闭环：最初仅等待80ms时少观察到最后两步（`burst-live-host.log`），改为等待第15次实际提交信号、不增加测试timeout后，`burst-live-host-commit.log` **1/0、6 expect**。该harness前置修正不把初始失败改标。
+
+第一批8文件`ui-burst-adjacent.log`为237/0、1395 expect；随后release-check在新增测试`let focusedElement`的prefer-const处失败，已改const。包含live-host的`ui-burst-final-adjacent.log`为 **238/0、1401 expect**，`release-check-burst-final.log` **exit0**；该批次之后仍有下述边界修复，不得把第二制品的旧runtime结果套用新增生产代码。
+
+独立只读审核另发现两个取消/寿命边界：已进入的旧draw等待不能被Escape或替代draw及时唤醒；旧分页handoff可能污染后续host焦点。主线程在原reply/redraw双时序测试追加“分页交接→host到file6→host回旧landing file4”，`handoff-lifetime-red.log`两项均失败；现已在应用不同landing时清除旧handoff，`handoff-lifetime-green.log` **13/0、142 expect**，保留原两时序与burst矩阵。服务等待取消由单独写入者在ui.ts/ui.test.ts补红绿；主线程追加真实host/ModsPane的“旧draw始终pending→Escape→Tab→新draw入焦”闭环，`escape-draw-tab-integration.log` **1/0、4 expect**。服务修复最终整文件`ui-focus-wakeup-final-green.31mWHE` **44/0、245 expect**。最小Escape红测`ui-focus-wakeup-escape-red.9h6HZn`为0/1，排队过期拒绝红测`ui-focus-wakeup-queued-red.o9ZJyc`为0/2；内部waiter在publish/redraw开始/person generation变化时唤醒，race后finally注销，仅有效draw错误传播到focus，原invalidate/render仍观察过期错误。只取消旧focus等待，不中止底层draw，也不取消尚未返回的middleware。主线程已复审实现；最终8文件`ui-reviewed-final-adjacent.log`为 **250 pass / 0 fail / 1476 expect**，`release-check-reviewed-final.log` **exit0**。audit仍列出10个既有测试fixture相对引用，text/type-only缺失为0；命令通过不表示所有字符串引用均可解析。
+
+下一轮harness在仓库外完成准备（`runtime/harness-next-burst/preparation-result.json`，9项离线检查）；第三制品四场真实验收已启动，尚待结果，离线检查不计runtime覆盖。主线程核对官方`hooks/views/sidebar-pane/sidebar-pane.tsx:18,54–61`：base原本就是无文本的action chord载体；空label不应直接归因为宿主布局缺陷。实际Tab可达性、Enter回调与可见焦点分别报告，不能凭callback成功宣称visible-style通过。审核执行副本为`driver-reviewed.py`（SHA-256 `0ecb44c2922fce454b893d654ad1221ecc44b6ca2f5aacfedfb81122ba3f22b4`），仅将该空label分支保留为not covered，准备版未改，差异见`driver-review.diff`及`main-harness-review.json`。另外官方`hooks/views/pane-view.tsx:16–22,37–53`明确规定fullscreen窄于110列显示fallback，而非inline详情；80列正文不可达若复现仍不满足本轮可达性目标，但应归为插件现有设计限制，不伪称宿主宽度计算已证实错误，也不改插件来凑绿。
+
+### 9.7 第三制品限定验收：导航通过，长路径与测试判据需收敛
+
+`build-burst/build.json`记录第三次`make build` **exit0**、构建前后源码manifest一致。制品 **2.1.219、100119266 bytes**，独立路径 `U/build-burst/artifact/built-claude`，SHA-256 **`2889ff21cfcd281ec6b8a53c1d1d872dbf42a3b83c7c22698809318f87679fe1`**；保守构建源码digest **`2db0c2169fb3d627512566f792e27b6163040c1d24217f6b6eac0a57cb9fb020`**，详见`artifact-lock.json`、`source-identity.json`。前两制品和全部历史失败保留。
+
+专用agent使用`driver-reviewed.py`串行执行`inline/fullscreen/mouse/resize-acceptance-03`，每场一次、0 retry，仅本地第三制品、未修改官方插件和loopback fixture；未启动official或真实provider。四场runtime和最终审计均已结束，索引`runtime/burst-runner-index.json`，各场`reviewed-result.json`与`command.json`关联tmux target `cc-uiux-<场景>-acceptance-03:0.0`及全部输入/captures。正常退出3通过、inline失败，cleanup4通过；不把强制回收算正常退出。
+
+| 场景 | 审核结果 | 结论与剩余项 |
+| --- | --- | --- |
+| inline | failed | paced与burst16文件正反全部通过，四组exactly-once焦点序列均通过；Enter已显示确认的file01正文，但联合谓词还要求初始viewport出现底部`Esc to back`，故raw激活判失败。缺少footer可达性证据，后续详情滚动/Escape/Rewind依赖停止；该失败不再归因于旧导航缺陷 |
+| fullscreen | failed，harness predicate | source/base/source独立Enter、ask context0→1→0、modifier等有证据；base恢复错误把absent当branch，实际初始session→uncommitted→branch，并未恢复初始有效模式。raw false-pass已在review中更正，不能以其通过证明依赖前置；空base可见性与样式仍not covered |
+| mouse | passed | pane/transcript双向wheel、pane双向Page与退焦后transcript双向Page均通过，正常exit0 |
+| resize | failed，host validation | 官方完整路径key（ASCII185/CJK89字符）触发宿主`key exceeds 64 characters`，保留旧file09–16绘制；两长文件激活前置失败，短高/CJK/80列可达性依赖not covered。80列fullscreen fallback仍为原件设计限制，不误称宽度算法缺陷；composer归还与正常退出通过 |
+
+第三轮未重跑ownership/bindings；第二制品相关结果仅保留为历史，不能冒称已在第三制品重新验证。资源审计`burst-runner-resource-audit.json`确认四场私有socket/loopback及记录内owned进程已回收；完整性审计保留775原件、11156个既有受保护文件、旧raw与5965个本轮raw一致。离线审计先因旧manifest的symlink无sha256字段报错，后因仓库可变binary被并发替换而停止；仅修复离线审计/索引，不重跑runtime，修正原因单列，原错误保留。`burst-runner-concurrency-qualification.json`确认隔离制品与四运行副本均匹配2889ff21…，仓库产物已变为a2273a0d…，`all_binaries_match:false`不改标。inline正常退出失败是在详情尚持输入时发送`/exit`，属于harness前置不成立，不能据此认定composer正常退出功能失败。
+
+构建后主线程只读复核发现并发`src/components/Settings/Settings.tsx`、`src/components/Settings/Usage.tsx`已偏离冻结源码。其余manifest既有项当时一致；本任务不改动并发工作。验收对应隔离第三制品，不等于当前工作区全量通过，也不把HEAD/index或报告变化计入源码内容身份。
+
+### 9.8 长路径 key 与详情正文输入追加修复
+
+长路径失败已由最小校验测试复现：`long-control-key-red.log` **0/3**，Button/Select/Input分别因key超过64字符失败。只移除三处较窄的专用上限，复用既有10000字符UI字符串与总文本预算，保留control字符限制；不截断或hash文件key，保证plugin/host精确身份一致。`long-control-key-green.log` **7/0、64 expect**，含10000/10001边界、控制字符、完整ASCII/CJK key实际focus/Enter激活；随后8文件`ui-long-keys-adjacent.log` **254/0、1508 expect**，`release-check-long-keys.log` exit0。此批尚不包含下述详情修复。
+
+只读调查确认footer在官方render tree末尾，初始bodyRows46、offset0，内容末行未进入viewport不能等同于Enter失败，也尚不证明硬裁剪。但真实树保留source Select与ask Button；旧文件控件消失后箭头误走多控件导航，原简化“单Back按钮”测试遗漏该情况。新增原形状组件红测`detail-body-focus-red.log` **0/1**，方向键未产生任何scroll；宿主snapshot现将不存在的focusedElement落到Pane正文，该状态的方向键滚动，Tab仍进入辅助控件，Select/Input自身事件消费不变。`detail-body-focus-green.log` **19/0、170 expect**，含原paced/burst/landing/取消/焦点chrome回归。
+
+两项追加修改已纳入CHANGELOG，旧第三制品不能证明这些修改已通过compiled验收。最终8文件`ui-detail-final-adjacent.log` **255/0、1515 expect**，`release-check-detail-final.log` **exit0**。第四次`make build` exit0、内容manifest前后无变化，隔离制品`U/build-long-keys/artifact/built-claude`为 **2.1.219、100119266 bytes**，SHA-256 **`8c8bbc623de52230f12b7a542dc4ec1a7e9b83ecca6e95994c588e8d383143ae`**，保守源码digest **`6e982937ae5c745a861b6f0499812588f0fe2e664955e4b2f274b4feed9d8f23`**。此前仓库产物已保留到该build目录的`artifact/previous-built-claude`，未删除旧隔离制品。
+
+构建provenance HEAD已因并发instructions提交前进到`dbdb97e`，不作为内容身份；未将该并发提交及Usage/compact等修改归为本任务成果或覆盖。仓库外新harness修正详情激活/三态base恢复/正常退出前置判据，并分离80列插件fallback与长文件实际正文可达性，保留第三轮raw与review，不以离线准备算交互覆盖。
+
+### 9.9 第四制品限定补验：执行与审计结束，整体仍 failed
+
+`runtime/harness-long-keys/preparation-result.json`记录准备完成，15项offline断言exit0，仅AST/纯谓词和历史raw只读验证。审核后固定driver SHA-256 `4f2bb49c32d5660c10fd7862647c512b5568fad69fd5fa3e5ef430730a27709a`，完整修改理由与差异位于同目录`driver.diff`。真实执行只使用第9.8节第四制品，计划串行`inline-long-keys-04`、`fullscreen-long-keys-04`、`resize-long-keys-04`，每场一次、0 retry，330秒场景deadline不变；不重跑第三轮mouse及更早ownership/bindings。
+
+判定保留详情精确file/唯一ui.press、真实双向ui.scroll、独立footer可达性与两级Escape；base完整session→uncommitted→branch→session逐步store恢复后才执行依赖；完整ASCII/CJK key与各自正文尾部关联必须实证。正常退出先Escape释放、无Enter composer probe、Ctrl+U，再公开`/exit`；强制cleanup不计normal exit。空base可见性、窄屏原件fallback、display-cell视觉证据不足分别not covered，前置失败停止依赖。
+
+三场执行与最终审计均已结束，索引`U/runtime/long-keys-runner-index.json`，逐项review见各场`reviewed-result.json`，raw verdict不改标。合计 **71 passed / 2 failed / 12 not covered**，整体 **failed**；normal exit **3/3**、cleanup **3/3**，CLI强制终止0次。tmux session分别为`cc-uiux-inline-long-keys-04`、`cc-uiux-fullscreen-long-keys-04`、`cc-uiux-resize-long-keys-04`，各window `0`、pane `%0`、target `<session>:0.0`。所有输入、viewport/ANSI、命令及observer记录均在对应绝对目录`U/runtime/<场景>-long-keys-04/`。
+
+| 场景 | pass / fail / not covered | 结果与资格 |
+| --- | --- | --- |
+| inline | 21 / 1 / 4 | paced/burst16文件正反及exactly-once、详情精确激活通过。8 Down/8 Up都有真实scroll，offset0→1→0、viewport移动并精确返回，End后footer可达；但contentRows47/bodyRows46只有1行overflow，36个正文marker全程可见，严格“marker集合必须变化”谓词failed，归类predicate/fixture判别力，不据此认定产品滚动失效。依赖的back/reentry、rapid Escape、Rewind停止，未补跑 |
+| fullscreen | 36 / 0 / 2 | source Enter为ui.select(current)；三次base Enter逐次唯一ui.press与真实store循环session→uncommitted→branch→session。恢复后验证HEAD/merge-base实际file01 patch与Git差异一致，reload、ask0→1→0、modifier、draft/dialog通过。空base可见性与focus style仍not covered，整场not covered而非全通过 |
+| resize | 14 / 1 / 6 | 完整ASCII/CJK key精确一次激活并显示各自FILE17/18正文，64字符拒绝已不再复现。ASCII在160×50六次PageDown未见FILE17_MAIN220及其tail，第二次Down已显示FILE18，保留reachability failed，后续只读归因见9.10，不改raw失败；CJK只见通用tail而缺精确关联，not covered。短高/恢复/最终focus完整矩阵与display-cell视觉未覆盖，不能凭基础尺寸变更判通过 |
+
+最小失败证据为inline目录`inline-detail-scroll.json`、`detail-down-viewport.txt`、`detail-up-viewport.txt`及`inline-footer-reachability.json`；resize目录`resize-ascii-reachability.json`、`resize-ascii-0-160x50-down-1-after-viewport.txt`、`resize-cjk-0-160x50-up-0-after-viewport.txt`。后续只读归因见9.10，未修改官方原件或追加第四场景重试。
+
+完整性`long-keys-runner-integrity-final.json`确认三运行副本匹配8c8bbc62…，driver及准备文件、775官方原件/副本、17171项旧证据与5161项本轮raw均未变；审计最初对旧hash-only symlink schema误判已留原错误并单列修正，不涉及runtime重跑。资源`long-keys-runner-resource-audit.json`确认记录内自有同身份存活进程0，三个私有tmux/socket移除，54417/54519/54650端口关闭。fixture API的SIGTERM只算cleanup。
+
+`U/main-long-keys-source-review.json`确认审核当时本任务10个代码/测试/静态文档匹配第四构建快照、暂存区为空、diff-check通过；另10个并发生产输入已改变，根binary也被并发替换为`3b69052788e418fb44f3d76d40bf912e726332eaffcdc541e6462bf79f9ecb6e`。仅记录边界，不恢复他人工作，不将固定binary验收说成当前工作区全量通过。未启动official/真实provider，不重跑mouse/bindings/ownership全套；旧Workflow/PTY仍阻止push。
+
+### 9.10 长行分页归因与宿主实际高度修复
+
+第四场景的尾 hunk 存在于运行后真实 Git patch，也已进入 observer 捕获的绘制树；不是fixture缺失。官方插件的`hooks/views/body/plan/hunk-window-of.ts:18–31`只裁掉完整源代码行，窗口落在长行中部时，`draw-window.tsx:42–54,89–98`仍绘制整条跨顶长行。本例正文72 cells，757 cells长行的预算和实际均为11行，未发现宿主折行宽度差异；顶部多重放7行，Page按32行逻辑窗口推进，随后进入连续文件流中的FILE18，尾部未出现在既定捕获内。FILE18不是选错文件的证明；小步滚动尚未验证，不声称任何操作都无法到达。官方原件未改，第四raw failed不改绿。
+
+另有独立宿主缺陷：50行终端中dock实际正文44行，插件收到bodyRows46。新增真实`createModUi`订阅与Yoga布局红测，`dock-body-height-red.log`得到 **0/1，Expected44/Received46**。修复以ScrollBox实际viewport高度回报metrics；高度变化才redraw，同尺寸的presentation更新保留测量值，几何/placement改变重置。异步绘制错误交回现有onError，保留旧drawing并可invalidate恢复。Pane保留基础height并在dock中flexGrow，composer增长/收缩后重新分配；不改公共FullscreenLayout或Yoga算法。中间百分比height/flexBasis方案在恢复尺寸时出现父45/子47及无约束fixture控件不可见，失败日志保留，方案已撤除。独立只读审查将前者定位到`src/native-ts/yoga-layout/index.ts:1114–1131`：容器的多条目layout cache仅恢复父宽高、不恢复子布局；本轮未修改该公共算法，也不宣称通用缓存问题已修，当前保留基础height的真实高度闭环由下述矩阵单独验证。
+
+最小`dock-minimum-layout.log` **2/0**；服务/Worker `dock-metrics-service.log` **66/0、355 expect**，包括no-op不重绘、实际budget、focus保留、109/110 placement切换、失败drawing释放与恢复。扩充有/无title及bottom5→12→3→5→25→3双向布局回归后，`dock-height-final-adjacent.log` **259/0、1590 expect、8文件**；`release-check-dock-height.log` **exit0**。CHANGELOG/README已更新，第五`make build` exit0、构建前后manifest一致，冻结`U/build-dock-height/artifact/built-claude` **2.1.219、100135778 bytes**，SHA-256 **`dd64994b28f16cdaad4bfa497c4ecd1c6fab4129bfdb10b3e6580f6847d18a69`**，source digest **`b197d80b417723b6baa9f980a6306f5e3894f8105c1a48b8499aefa6321fa73e`**。安排的独立synthetic实际高度契约与未改官方插件smoke均已各执行一次、0retry，因harness前置失败未覆盖目标，详情见9.11；未重试第四整套，不声称修复插件长行虚拟切窗。
+
+### 9.11 第五制品高度验收收尾：harness 前置失败，目标未覆盖
+
+两场执行及资源/完整性审计均已结束，没有待运行的本轮实验。使用9.10冻结制品`dd64994b…`，审阅结果为 **10 pass / 2 harness fail / 22 not covered**，整体`failed-harness-prerequisites`；10项通过只覆盖启动、生命周期或身份/完整性，不是高度功能通过。原始runner exit0仅表示编排完成，不能作为验收成功。权威索引与结论为：
+
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height/review-index.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height/review.json`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/harness-dock-height/completion.json`
+
+| 场景 | 实际执行与失败分类 | 正常退出 / 清理 |
+| --- | --- | --- |
+| `height-contract-05` | attempt1/retry0。固定CLI在私有cwd启动；synthetic fixture将`$`传给`record($, …)`，loader报`capability alias/escape of $ is unsupported; do not pass capabilities to helpers`，命令未注册，随后`Unknown skill: height-contract`。属于harness fixture失败，不是高度产品红测；observer和height-fixture输出均未生成 | 公开`/exit`为0，未强杀CLI。自有进程无残留、私有socket已移除、fixture端口59641关闭。composer probe只证明无活动Pane时编辑器可用，不证明Pane释放 |
+| `official-height-smoke-05` | attempt1/retry0。复制并校验775文件官方插件后，写`.git/info/exclude`前未建立父目录，Git fixture前置失败；CLI/tmux/provider均未启动 | normal exit及运行资源cleanup均not covered，不因未创建资源计通过；已准备的fixture保留作证据 |
+
+synthetic真实命令在`U/runtime/height-contract-05/command.json`：cwd为`U/runtime/height-contract-05/workspace`，执行`./built-claude --dangerously-skip-permissions --plugin-dir <workspace>/observer --plugin-dir <workspace>/plugin --debug --debug-file <scenario>/debug.log --model claude-sonnet-4-6`。私有tmux socket为`U/runtime/s-mr29a3i0/s`，session/window/pane为`cc-uiux-height-contract-05:0.0` / `%0`，初始160×50。关键捕获绝对路径：
+
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/height-contract-05/synthetic-open-timeout-viewport.txt`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/height-contract-05/normal-exit-terminal-pane.txt`
+- `/private/tmp/mods-uiux-20260919-4y11t_bu/runtime/official-height-smoke-05/failure.json`
+
+两场均未发送resize、draft或Page输入，实际高度、短屏恢复、composer增减、绘制收敛和相关焦点检查都未覆盖；不把自动化259/0替代compiled交互证据。未启动official CLI或真实provider，未修改官方插件、生产loader、旧driver/raw或attempt claim，未修后重试。旧证据与官方原件共23125项完整性复核通过，新raw hash清单见`U/runtime/harness-dock-height/new-raw-hashes.json`。
+
+主线程提交前`U/main-dock-height-precommit-review.json`确认本任务10个代码/测试/静态文档仍与第五构建逐字节一致，conservative source无漂移、隔离binary hash一致、当时暂存区为空。并发提交使HEAD前进至`9ba61da`，但HEAD不作为内容身份。此后只回填两份不内嵌报告，不修改CHANGELOG或生产输入，不为报告更新重新构建。文档收尾`U/docs-close-check.log`为exit0，changelog格式检查与5项测试通过，`git diff --check`通过。
+
+后续若追加高度验收，应先离线验证fixture直接使用`$.fs.write`而不传递capability，并验证Git setup完整创建`.git/info`；不能放宽生产loader、删除旧claim或换名掩盖重试。本轮保留第四71/2/12 failed、插件长行切窗缺口、通用Yoga缓存未修以及旧Workflow/PTY门禁；代码与测试已正常签名提交`9a03f53`（`fix(mods): synchronize pane focus and measured layout`，仅本任务8文件），README/CHANGELOG及两报告另按文档目的提交。**不push，不宣称全仓或完整官方parity通过**。
