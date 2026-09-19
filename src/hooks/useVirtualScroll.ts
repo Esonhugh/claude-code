@@ -315,11 +315,11 @@ export function useVirtualScroll(
   let end: number
 
   if (frozenRange) {
-    // Column just changed. Keep the pre-resize range to avoid mount churn.
-    // Clamp to n in case messages were removed (/clear, compaction).
+    // Keep existing mounts stable, but don't hide appended messages while
+    // following the bottom. Clamp for removals (/clear, compaction).
     ;[start, end] = frozenRange
     start = Math.min(start, n)
-    end = Math.min(end, n)
+    end = isSticky ? n : Math.min(end, n)
   } else if (viewportH === 0 || scrollTop < 0) {
     // Cold start: ScrollBox hasn't laid out yet. Render the tail — sticky
     // scroll pins to the bottom on first Ink render, so these are the items
