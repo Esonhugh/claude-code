@@ -7,8 +7,11 @@ import { useIsInsideModal } from '../../context/modalContext.js'
 import { Box, Text, useTheme } from '../../ink.js'
 import { type AppState, useAppState } from '../../state/AppState.js'
 import { fetchUtilization, type Utilization } from '../../services/api/usage.js'
+import { getSessionKind } from '../../utils/concurrentSessions.js'
 import { getCwd } from '../../utils/cwd.js'
+import { formatPeerAddress } from '../../utils/peerProtocol.js'
 import { getCurrentSessionTitle } from '../../utils/sessionStorage.js'
+import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
 import {
   buildAccountProperties,
   buildAPIProviderProperties,
@@ -45,15 +48,23 @@ export function buildOpenAIProperties(
   return [{ label: 'OpenAI Account', value }]
 }
 
-function buildPrimarySection(openAIUtilization?: Utilization | null): Property[] {
+export function buildPrimarySection(openAIUtilization?: Utilization | null): Property[] {
   const sessionId = getSessionId()
   const customTitle = getCurrentSessionTitle(sessionId)
   const nameValue = customTitle ?? <Text dimColor>/rename to add a name</Text>
+  const messagingSocketPath = getUdsMessagingSocketPath()
 
   return [
     { label: 'Version', value: MACRO.VERSION },
     { label: 'Session name', value: nameValue },
     { label: 'Session ID', value: sessionId },
+    { label: 'Session kind', value: getSessionKind() },
+    {
+      label: 'Peer address',
+      value: messagingSocketPath
+        ? formatPeerAddress(messagingSocketPath)
+        : 'Not available',
+    },
     { label: 'cwd', value: getCwd() },
     ...buildAccountProperties(),
     ...buildOpenAIProperties(openAIUtilization),
