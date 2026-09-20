@@ -2271,6 +2271,94 @@ describe('ModsPane Ink interaction', () => {
     }
   })
 
+  test.each([
+    { label: 'bulk input', chunks: ['sample-input\r'], values: ['sample-input'] },
+    { label: 'CJK input', chunks: ['中文输入\r'], values: ['中文输入'] },
+    { label: 'backspace in a bulk chunk', chunks: ['abc\u007f\r'], values: ['abc', 'ab'] },
+    { label: 'empty paste', chunks: ['\u001b[200~\u001b[201~\r'], values: [''] },
+    { label: 'literal key names', chunks: ['return', 'tab', 'backspace', 'delete', 'up', '\r'], values: ['return', 'returntab', 'returntabbackspace', 'returntabbackspacedelete', 'returntabbackspacedeleteup'] },
+    { label: 'bracketed paste', chunks: ['\u001b[200~paste\r\t中文\u001b[201~\r'], values: ['paste\r\t中文'] },
+    { label: 'split bracketed paste', chunks: ['\u001b[200~ret', 'urn\u001b[201~\r'], values: ['return'] },
+    { label: 'immediate submit after typing', chunks: ['a', 'b', '\r'], values: ['a', 'ab'] },
+    { label: 'special keys are not text', chunks: ['\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\u001b[25~\u001b[57358u\u0001\u001bx\u001b[97;9u\r'], values: [] },
+    { label: 'encoded printable keys', chunks: ['\u001b[97u\u001b[32u\u001b[27;1;98~\u001bOp\r'], values: ['a', 'a ', 'a b', 'a b0'] },
+  ])('preserves Input text and submit ordering for $label through stdin', async ({ chunks, values }) => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const interactions: { kind: string; value?: string }[] = []
+    const instance = await render(
+      <>
+        <EnableInput />
+        <ModsPane
+          pane={pane({ type: 'Input', props: { key: 'reply', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } })}
+          onInteract={async (_pane, _drawing, _press, kind, _element, value) => {
+            interactions.push({ kind, value })
+          }}
+          onClose={async () => {}}
+          onFocus={async () => ({})}
+          onScroll={async () => ({})}
+        />
+      </>,
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    )
+    try {
+      await settle()
+      for (const chunk of chunks) {
+        stdin.push(chunk)
+        stdin.emit('readable')
+      }
+      await settle()
+      expect(interactions).toEqual([
+        ...values.map(value => ({ kind: 'input.change', value })),
+        { kind: 'input.submit', value: values.at(-1) ?? '' },
+      ])
+    } finally {
+      instance.unmount()
+    }
+  })
+
+  test('uses real Tab for Input focus traversal without inserting text', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const interactions: string[] = []
+    const instance = await render(
+      <>
+        <EnableInput />
+        <ModsPane
+          pane={pane({ type: 'Box', children: [
+            { type: 'Input', props: { key: 'reply', autoFocus: true }, press: { plugin: 'fixture', handle: 1 } },
+            { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 2 } },
+          ] })}
+          onInteract={async (_pane, _drawing, _press, kind, element) => { interactions.push(`${kind}:${element}`) }}
+          onClose={async () => {}}
+          onFocus={async () => ({})}
+          onScroll={async () => ({})}
+        />
+      </>,
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    )
+    try {
+      await settle()
+      stdin.push('\t')
+      await settle()
+      stdin.push('\r')
+      await settle()
+      expect(interactions).toEqual(['press:run'])
+    } finally {
+      instance.unmount()
+    }
+  })
+
   test('does not take keyboard focus when the service denied pane focus', async () => {
     const stdout = new Output()
     const stdin = new Input()

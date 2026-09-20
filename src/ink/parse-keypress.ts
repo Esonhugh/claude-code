@@ -278,7 +278,12 @@ export function parseMultipleKeypresses(
         const mouse = parseMouseEvent(resynthesized)
         keys.push(mouse ?? parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        // Bulk stdin reads may contain both text and Enter/Tab/control keys.
+        // Paste above remains a single literal payload.
+        // eslint-disable-next-line no-control-regex
+        for (const part of token.value.match(/[^\x00-\x1f\x7f]+|[\x00-\x1f\x7f]/g) ?? []) {
+          keys.push(parseKeypress(part))
+        }
       }
     }
   }

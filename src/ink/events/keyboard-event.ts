@@ -6,11 +6,13 @@ import { TerminalEvent } from './terminal-event.js'
  *
  * Follows browser KeyboardEvent semantics: `key` is the literal character
  * for printable keys ('a', '3', ' ', '/') and a multi-char name for
- * special keys ('down', 'return', 'escape', 'f1'). The idiomatic
- * printable-char check is `e.key.length === 1`.
+ * special keys ('down', 'return', 'escape', 'f1'). Terminal text chunks
+ * and bracketed paste are exposed separately in `text`.
  */
 export class KeyboardEvent extends TerminalEvent {
   readonly key: string
+  readonly text: string | undefined
+  readonly isPasted: boolean
   readonly ctrl: boolean
   readonly shift: boolean
   readonly meta: boolean
@@ -26,6 +28,15 @@ export class KeyboardEvent extends TerminalEvent {
     this.meta = parsedKey.meta || parsedKey.option
     this.superKey = parsedKey.super
     this.fn = parsedKey.fn
+    this.isPasted = parsedKey.isPasted
+    const sequence = parsedKey.sequence ?? ''
+    if (this.isPasted) this.text = sequence
+    else if (!this.ctrl && !this.meta && !this.superKey) {
+      // eslint-disable-next-line no-control-regex
+      if (sequence && !/[\x00-\x1f\x7f]/.test(sequence)) this.text = sequence
+      else if (parsedKey.name === 'space') this.text = ' '
+      else if (parsedKey.name?.length === 1) this.text = parsedKey.name
+    }
   }
 }
 

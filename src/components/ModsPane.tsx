@@ -1355,6 +1355,7 @@ function ModInput({
   const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
   const [value, setValue] = useState((props.value as string | undefined) ?? '')
+  const valueRef = React.useRef(value)
   const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!
@@ -1372,10 +1373,19 @@ function ModInput({
   }
   const handle = (event: KeyboardEvent) => {
     if (!pane.focused) return
+    if (event.text !== undefined) {
+      event.preventDefault()
+      event.stopPropagation()
+      const next = valueRef.current + event.text
+      valueRef.current = next
+      setValue(next)
+      send('change', next)
+      return
+    }
     if (event.key === 'return') {
       event.preventDefault()
       event.stopPropagation()
-      send('submit', value)
+      send('submit', valueRef.current)
       return
     }
     if (['up', 'down', 'left', 'right', 'home', 'end'].includes(event.key) &&
@@ -1384,12 +1394,11 @@ function ModInput({
       event.stopPropagation()
       return
     }
-    let next = value
-    if (event.key === 'backspace' || event.key === 'delete') next = value.slice(0, -1)
-    else if (event.key.length === 1 && !event.ctrl && !event.meta) next = value + event.key
-    else return
+    if (event.key !== 'backspace' && event.key !== 'delete') return
     event.preventDefault()
     event.stopPropagation()
+    const next = valueRef.current.slice(0, -1)
+    valueRef.current = next
     setValue(next)
     send('change', next)
   }
