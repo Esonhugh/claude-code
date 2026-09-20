@@ -1,153 +1,55 @@
-import figures from 'figures'
-import React, { useMemo } from 'react'
+import React from 'react'
 import type { DiffFile } from '../../hooks/useDiffData.js'
-import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../ink.js'
-import { truncateStartToWidth } from '../../utils/format.js'
-import { plural } from '../../utils/stringUtils.js'
-
-const MAX_VISIBLE_FILES = 5
+import type { DOMElement } from '../../ink/dom.js'
+import { diffDisplayText } from './displayText.js'
 
 type Props = {
   files: DiffFile[]
   selectedIndex: number
+  onSelect?: (path: string) => void
+  rowRef?: (path: string, element: DOMElement | null) => void
 }
 
-export function DiffFileList({ files, selectedIndex }: Props): React.ReactNode {
-  const { columns } = useTerminalSize()
-
-  // Calculate scroll window - must be before early return for hooks rules
-  const { startIndex, endIndex } = useMemo(() => {
-    if (files.length === 0 || files.length <= MAX_VISIBLE_FILES) {
-      return { startIndex: 0, endIndex: files.length }
-    }
-
-    // Keep selected item roughly in the middle
-    let start = Math.max(0, selectedIndex - Math.floor(MAX_VISIBLE_FILES / 2))
-    let end = start + MAX_VISIBLE_FILES
-
-    // Adjust if we're at the end
-    if (end > files.length) {
-      end = files.length
-      start = Math.max(0, end - MAX_VISIBLE_FILES)
-    }
-
-    return { startIndex: start, endIndex: end }
-  }, [files.length, selectedIndex])
-
-  if (files.length === 0) {
-    return <Text dimColor>No changed files</Text>
-  }
-
-  const visibleFiles = files.slice(startIndex, endIndex)
-  const hasMoreAbove = startIndex > 0
-  const hasMoreBelow = endIndex < files.length
-  const needsPagination = files.length > MAX_VISIBLE_FILES
-
-  const statsWidth = 16
-  const pointerWidth = 3
-  const maxPathWidth = Math.max(20, columns - statsWidth - pointerWidth - 4)
-
+// The parent owns the bounded ScrollBox; selecting a row never replaces it.
+export function DiffFileList({
+  files,
+  selectedIndex,
+  onSelect,
+  rowRef,
+}: Props): React.ReactNode {
+  if (files.length === 0) return <Text dimColor>No changed files</Text>
   return (
-    <Box flexDirection="column">
-      {needsPagination && (
-        <Text dimColor>
-          {hasMoreAbove
-            ? ` ↑ ${startIndex} more ${plural(startIndex, 'file')}`
-            : ' '}
-        </Text>
-      )}
-      {visibleFiles.map((file, index) => (
-        <FileItem
+    <Box flexDirection="column" flexShrink={0}>
+      {files.map((file, index) => (
+        <Box
           key={file.path}
-          file={file}
-          isSelected={startIndex + index === selectedIndex}
-          maxPathWidth={maxPathWidth}
-        />
+          ref={element => rowRef?.(file.path, element)}
+          flexShrink={0}
+          height={1}
+          onClick={() => onSelect?.(file.path)}
+        >
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            <Text
+              bold={index === selectedIndex}
+              color={index === selectedIndex ? 'suggestion' : undefined}
+              wrap="truncate-middle"
+            >
+              {index === selectedIndex ? '› ' : '  '}
+              {diffDisplayText(file.path)}
+            </Text>
+          </Box>
+          {file.isBinary ? (
+            <Text dimColor> binary</Text>
+          ) : (
+            <Text>
+              <Text color="diffAdded"> +{file.linesAdded}</Text>
+              <Text color="diffRemoved"> -{file.linesRemoved}</Text>
+              {file.isUntracked && <Text dimColor> new</Text>}
+            </Text>
+          )}
+        </Box>
       ))}
-      {needsPagination && (
-        <Text dimColor>
-          {hasMoreBelow
-            ? ` ↓ ${files.length - endIndex} more ${plural(files.length - endIndex, 'file')}`
-            : ' '}
-        </Text>
-      )}
     </Box>
-  )
-}
-
-function FileItem({
-  file,
-  isSelected,
-  maxPathWidth,
-}: {
-  file: DiffFile
-  isSelected: boolean
-  maxPathWidth: number
-}): React.ReactNode {
-  const displayPath = truncateStartToWidth(file.path, maxPathWidth)
-
-  const pointer = isSelected ? figures.pointer + ' ' : '  '
-  const line = `${pointer}${displayPath}`
-
-  return (
-    <Box flexDirection="row">
-      <Text
-        bold={isSelected}
-        color={isSelected ? 'background' : undefined}
-        inverse={isSelected}
-      >
-        {line}
-      </Text>
-      <Box flexGrow={1} />
-      <FileStats file={file} isSelected={isSelected} />
-    </Box>
-  )
-}
-
-function FileStats({
-  file,
-  isSelected,
-}: {
-  file: DiffFile
-  isSelected: boolean
-}): React.ReactNode {
-  if (file.isUntracked) {
-    return (
-      <Text dimColor={!isSelected} italic>
-        untracked
-      </Text>
-    )
-  }
-  if (file.isBinary) {
-    return (
-      <Text dimColor={!isSelected} italic>
-        Binary file
-      </Text>
-    )
-  }
-  if (file.isLargeFile) {
-    return (
-      <Text dimColor={!isSelected} italic>
-        Large file modified
-      </Text>
-    )
-  }
-  // Normal or truncated file - show line counts
-  return (
-    <Text>
-      {file.linesAdded > 0 && (
-        <Text color="diffAddedWord" bold={isSelected}>
-          +{file.linesAdded}
-        </Text>
-      )}
-      {file.linesAdded > 0 && file.linesRemoved > 0 && ' '}
-      {file.linesRemoved > 0 && (
-        <Text color="diffRemovedWord" bold={isSelected}>
-          -{file.linesRemoved}
-        </Text>
-      )}
-      {file.isTruncated && <Text dimColor={!isSelected}> (truncated)</Text>}
-    </Text>
   )
 }

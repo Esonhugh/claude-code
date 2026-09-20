@@ -37,6 +37,23 @@ describe('/diff', () => {
     expect(isCommandImmediate(diffCommand, '', inline)).toBe(false)
   })
 
+  test('prepares the shared controller before opening and preserves failure feedback', async () => {
+    const { context, getState } = createContext({ columns: 144, isFullscreen: true })
+    let ready = false
+    const saved: boolean[] = []
+    context.diff = {
+      refresh: async () => { ready = true },
+      getSnapshot: () => ({ data: { outcome: 'unavailable', error: 'Git probe failed' } }),
+      setOpenPreference: (value: boolean) => saved.push(value),
+    } as unknown as NonNullable<LocalJSXCommandContext['diff']>
+    const completions: Parameters<LocalJSXCommandOnDone>[] = []
+    await call((...args) => completions.push(args), context, '')
+    expect(ready).toBe(true)
+    expect(getState().diffSidebarVisible).toBe(false)
+    expect(completions[0]?.[0]).toContain('Git probe failed')
+    expect(saved).toEqual([])
+  })
+
   test('opens the native sidebar in a wide fullscreen terminal', async () => {
     const { context, getState } = createContext({
       columns: 110,

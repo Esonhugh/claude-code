@@ -622,6 +622,7 @@ import {
   computeUnseenDivider,
 } from '../components/FullscreenLayout.js'
 import { DiffSidebar } from '../components/diff/DiffSidebar.js'
+import { DiffController } from '../services/diff/controller.js'
 import { MIN_DIFF_SIDEBAR_COLUMNS } from '../commands/diff/index.js'
 import {
   isFullscreenEnvEnabled,
@@ -1043,6 +1044,7 @@ export function REPL({
   const toolPermissionContext = useAppState(s => s.toolPermissionContext)
   const verbose = useAppState(s => s.verbose)
   const diffSidebarVisible = useAppState(s => s.diffSidebarVisible)
+  const diffDialogActive = useAppState(s => s.activeOverlays.has('diff-dialog'))
   const mcp = useAppState(s => s.mcp)
   const plugins = useAppState(s => s.plugins)
   const agentDefinitions = useAppState(s => s.agentDefinitions)
@@ -1382,10 +1384,9 @@ export function REPL({
   const scrollRef = useRef<ScrollBoxHandle>(null)
   // Separate ref for the modal slot's inner ScrollBox — passed through
   // FullscreenLayout → ModalContext so Tabs can attach it to its own
-  // ScrollBox for tall content (e.g. /status's MCP-server list). NOT
-  // keyboard-driven — ScrollKeybindingHandler stays on the outer ref so
-  // PgUp/PgDn/wheel always scroll the transcript behind the modal.
-  // Plumbing kept for future modal-scroll wiring.
+  // ScrollBox for tall content (e.g. /status's MCP-server list). The outer
+  // transcript handler remains mounted for selection and wheel routing, but
+  // yields keyboard scrolling while a local JSX modal owns those keys.
   const modalScrollRef = useRef<ScrollBoxHandle>(null)
   // Timestamp of the last user-initiated scroll (wheel, PgUp/PgDn, ctrl+u,
   // End/Home, G, drag-to-scroll). Stamped in composedOnScroll — the single
@@ -2216,6 +2217,32 @@ export function REPL({
   >(undefined)
   const [showCostDialog, setShowCostDialog] = useState(false)
   const [conversationId, setConversationId] = useState(randomUUID())
+  const [diffController] = useState(() => isRemoteExecutionSession ? undefined : new DiffController({
+    cwd: getCwd(),
+    notify: text => addNotification({ key: 'diff', text, priority: 'medium' }),
+    loadPreferences: root => {
+      const config = getGlobalConfig()
+      return { mode: config.diffPreferences?.[root]?.mode, open: config.diffSidebarOpen }
+    },
+    savePreferences: (root, value) => saveGlobalConfig(config => ({
+      ...config,
+      ...(value.open !== undefined ? { diffSidebarOpen: value.open } : {}),
+      ...(value.mode !== undefined ? {
+        diffPreferences: { ...config.diffPreferences, [root]: { mode: value.mode } },
+      } : {}),
+    })),
+  }))
+  useEffect(() => () => diffController?.dispose(), [diffController])
+  const diffSessionId = getSessionId()
+  const diffSession = useRef(diffSessionId)
+  const diffCwd = getCwd()
+  useEffect(() => {
+    if (diffSession.current !== diffSessionId || diffController?.cwd !== diffCwd) {
+      diffSession.current = diffSessionId
+      diffController?.reset(diffCwd)
+      setAppState(state => state.diffSidebarVisible ? { ...state, diffSidebarVisible: false } : state)
+    }
+  }, [diffSessionId, diffController, diffCwd, setAppState])
 
   // Idle-return dialog: shown when user submits after a long idle gap
   const [idleReturnPending, setIdleReturnPending] = useState<{
@@ -2730,6 +2757,9 @@ export function REPL({
 
         // Bind the resumed identity only after the live transcript points at it.
         setMessages(() => messages)
+        diffSession.current = getSessionId()
+        diffController?.reset(getCwd())
+        setAppState(state => state.diffSidebarVisible ? { ...state, diffSidebarVisible: false } : state)
         if (modsSession) await awaitMods()
 
         // Persist the current mode so future resumes know what mode this session was in
@@ -2788,7 +2818,7 @@ export function REPL({
         throw error
       }
     },
-    [resetLoadingState, setAppState, modsSession, awaitMods],
+    [resetLoadingState, setAppState, modsSession, awaitMods, diffController],
   )
 
   // Lazy init: useRef(createX()) would call createX on every render and
@@ -3018,11 +3048,6 @@ export function REPL({
   const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
   const canShowDiffSidebar = isFullscreenEnvEnabled() &&
     modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
-  useEffect(() => {
-    if (diffSidebarVisible && !canShowDiffSidebar) {
-      setAppState(state => ({ ...state, diffSidebarVisible: false }))
-    }
-  }, [diffSidebarVisible, canShowDiffSidebar, setAppState])
 
   // True when permission prompts exist but are hidden because the user is typing
   const hasSuppressedDialogs =
@@ -3554,6 +3579,7 @@ export function REPL({
 
       return {
         abortController,
+        diff: diffController,
         mods: modsSession?.runtime,
         modCommand: {
           origin: { kind: 'composer' },
@@ -3687,6 +3713,7 @@ export function REPL({
     [
       getCurrentCommands,
       combinedInitialTools,
+      diffController,
       modsSession,
       isRemoteExecutionSession,
       mainThreadAgentDefinition,
@@ -3835,6 +3862,25 @@ export function REPL({
       handleMessageFromStream(
         event,
         newMessage => {
+          const landed = diffController?.observeMessage(newMessage)
+          if (landed) {
+            diffController?.scheduleRefresh()
+            if (landed.edited && !store.getState().diffSidebarVisible) {
+              const session = getSessionId()
+              void diffController?.autoOpen({
+                columns: process.stdout.columns ?? 80,
+                isFullscreen: isFullscreenEnvEnabled(),
+                hasDock: modsSession?.ui.getSnapshot().some(pane => pane.visible && pane.placement === 'dock') ?? false,
+                checkpointing: fileHistoryEnabled(),
+              }).then(open => {
+                const hasDock = modsSession?.ui.getSnapshot().some(pane => pane.visible && pane.placement === 'dock')
+                if (open && session === getSessionId() && !hasDock && isFullscreenEnvEnabled() &&
+                    (process.stdout.columns ?? 80) >= MIN_DIFF_SIDEBAR_COLUMNS) {
+                  setAppState(state => ({ ...state, diffSidebarVisible: true }))
+                }
+              }).catch(logError)
+            }
+          }
           if (isCompactBoundaryMessage(newMessage)) {
             // Fullscreen: keep pre-compact messages for scrollback. query.ts
             // slices at the boundary for API calls, Messages.tsx skips the
@@ -3941,6 +3987,10 @@ export function REPL({
       setStreamingToolUses,
       setStreamingThinking,
       onStreamingText,
+      diffController,
+      modsSession,
+      store,
+      setAppState,
     ],
   )
 
@@ -5427,6 +5477,7 @@ export function REPL({
         rewindToMessageIndex: messageIndex,
       })
       setMessages(prev.slice(0, messageIndex))
+      diffController?.reset(getCwd())
       // Careful, this has to happen after setMessages
       setConversationId(randomUUID())
       // Reset cached microcompact state so stale pinned cache edits
@@ -5449,6 +5500,7 @@ export function REPL({
       // Restore state from the message we're rewinding to
       setAppState(prev => ({
         ...prev,
+        diffSidebarVisible: false,
         // Restore permission mode from the message
         toolPermissionContext:
           message.permissionMode &&
@@ -5468,7 +5520,7 @@ export function REPL({
         },
       }))
     },
-    [setMessages, setAppState],
+    [setMessages, setAppState, diffController],
   )
 
   // Synchronous rewind + input population. Used directly by auto-restore on
@@ -6625,7 +6677,7 @@ export function REPL({
           Its raw useInput handler only stops propagation when a selection
           exists — without one, ctrl+c falls through to CancelRequestHandler.
           PgUp/PgDn/wheel scroll the transcript behind the modal, except
-          keyboard scrolling yields to a focused Mods pane. onScroll
+          keyboard scrolling yields to a focused Mods pane or Diff dialog. onScroll
           stays suppressed while a modal is showing so scroll doesn't
           stamp divider/pill state. */}
       <ScrollKeybindingHandler
@@ -6636,7 +6688,7 @@ export function REPL({
             !focusedInputDialog ||
             focusedInputDialog === 'tool-permission')
         }
-        isKeyboardActive={!modPaneFocused}
+        isKeyboardActive={!modPaneFocused && !diffDialogActive}
         onScroll={
           centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined
@@ -6674,7 +6726,12 @@ export function REPL({
             <DiffSidebar
               key={conversationId}
               messages={messages}
-              onClose={() => setAppState(state => ({ ...state, diffSidebarVisible: false }))}
+              controller={diffController}
+              keyboardEnabled={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog && !modUiPresentation.keyboardOwned}
+              onClose={() => {
+                diffController?.setOpenPreference(false)
+                setAppState(state => ({ ...state, diffSidebarVisible: false }))
+              }}
             />
           ) : undefined}
           modalScrollRef={modalScrollRef}

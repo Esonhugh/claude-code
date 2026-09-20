@@ -6,6 +6,7 @@ import { MIN_DIFF_SIDEBAR_COLUMNS } from './index.js'
 export const call: LocalJSXCommandCall = async (onDone, context) => {
   const current = context.getAppState()
   if (current.diffSidebarVisible) {
+    context.diff?.setOpenPreference(false)
     context.setAppState(previous => ({
       ...previous,
       diffSidebarVisible: false,
@@ -14,7 +15,16 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
     return null
   }
 
-  if (!(await getIsGit())) {
+  if (context.diff) {
+    await context.diff.refresh()
+    const data = context.diff.getSnapshot().data
+    if (data.outcome !== 'data') {
+      onDone(data.outcome === 'no-repository'
+        ? 'Diff is unavailable outside a git repository.'
+        : `Diff is unavailable: ${data.error ?? 'Git did not return a diff'}`, { display: 'system' })
+      return null
+    }
+  } else if (!(await getIsGit())) {
     onDone('Diff is unavailable outside a git repository.', {
       display: 'system',
     })
@@ -30,6 +40,7 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
     presentation.columns >= MIN_DIFF_SIDEBAR_COLUMNS &&
     !hasVisibleModDock
   ) {
+    context.diff?.setOpenPreference(true)
     context.setAppState(previous => ({
       ...previous,
       diffSidebarVisible: true,
@@ -46,5 +57,5 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
       priority: 'medium',
     })
   }
-  return <DiffDialog messages={context.messages} onDone={onDone} />
+  return <DiffDialog messages={context.messages} controller={context.diff} onDone={onDone} />
 }

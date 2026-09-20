@@ -180,6 +180,7 @@ export type ManagedSSHRemotePermissions = {
 }
 
 export type ToolUseContext = {
+  diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
   modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
   /** OpenAI Responses state shared only within one outer query turn. */

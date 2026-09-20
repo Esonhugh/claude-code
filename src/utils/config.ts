@@ -242,6 +242,8 @@ export type GlobalConfig = {
   hasUsedBackgroundTask?: boolean // Whether the user has backgrounded a task (Ctrl+B)
   queuedCommandUpHintCount?: number // Counter for how many times the user has seen the queued command up hint
   diffTool?: DiffTool // Which tool to use for displaying diffs (terminal or vscode)
+  diffSidebarOpen?: boolean
+  diffPreferences?: Record<string, { mode?: 'session' | 'uncommitted' | 'branch' }>
 
   // Terminal setup state tracking
   iterm2SetupInProgress?: boolean

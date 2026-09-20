@@ -81,6 +81,8 @@ function fixture(
   const classicInputs: string[] = []
   const calls = { captures: 0, releases: 0, slash: 0, bash: 0 }
   const classicResults: Record<string, any>[] = []
+  const attachmentMessages: Record<string, any>[] = []
+  const classicHook: { run?: () => void | Promise<void> } = {}
   const controller = new AbortController()
   const createUserMessage = (options: Record<string, unknown>) => ({
     type: 'user',
@@ -117,6 +119,7 @@ function fixture(
     feature: () => false,
     executeUserPromptSubmitHooks: async function* (text: string) {
       classicInputs.push(text)
+      await classicHook.run?.()
       yield* classicResults
     },
     getUserPromptSubmitHookBlockingMessage: () => 'Blocked by classic hook',
@@ -129,7 +132,7 @@ function fixture(
       for await (const item of items) result.push(item)
       return result
     },
-    getAttachmentMessages: async function* () {},
+    getAttachmentMessages: async function* () { yield* attachmentMessages },
     hasUltracodeKeyword: () => false,
     isUltracodeKeywordTriggerEnabled: () => false,
     hasUltraplanKeyword: () => false,
@@ -229,6 +232,8 @@ function fixture(
     controller,
     processUserInput,
     classicResults,
+    classicHook,
+    attachmentMessages,
     classicInputs,
     calls,
     diagnostics,
@@ -241,6 +246,344 @@ function userTexts(result: any) {
     .filter((message: any) => message.type === 'user')
     .map((message: any) => message.message.content)
 }
+
+// Fake only the controller boundary; message construction, middleware receipts,
+// classic hook handling and queue admission still run production functions.
+function armAsk(context: object, text = 'selected diff snapshot') {
+  let armed = true
+  let carrying = false
+  const finishes: boolean[] = []
+  const budgets: string[][] = []
+  Object.assign(context, {
+    diff: {
+      beginAsk(context: readonly string[]) {
+        budgets.push([...context])
+        if (!armed || carrying) return undefined
+        carrying = true
+        let finished = false
+        return {
+          text,
+          finish(accepted: boolean) {
+            expect(finished).toBe(false)
+            finished = true
+            expect(carrying).toBe(true)
+            carrying = false
+            finishes.push(accepted)
+            if (accepted) armed = false
+          },
+        }
+      },
+    },
+  })
+  return { text, finishes, budgets }
+}
+
+function additionalContexts(result: any): string[] {
+  return result.messages.flatMap((message: any) =>
+    message.type === 'attachment' && message.attachment.type === 'hook_additional_context'
+      ? message.attachment.content
+      : [],
+  )
+}
+
+describe('processUserInput Diff Ask admission', () => {
+  test.each(['classic', 'Mod'])('%s keeps the controller-fitted Ask without classic hook truncation', async path => {
+    const modContext = ['m'.repeat(16000)]
+    const f = fixture(path === 'Mod' ? [async (event, next) => next({ ...event, context: modContext })] : [])
+    const ask = armAsk(f.context, 'd'.repeat(16000))
+    const result = await f.run()
+    expect(result.shouldQuery).toBe(true)
+    expect(additionalContexts(result)).toEqual(path === 'Mod' ? [...modContext, ask.text] : [ask.text])
+    expect(ask.budgets).toEqual([path === 'Mod' ? modContext : []])
+    expect(ask.finishes).toEqual([true])
+    expect(f.diagnostics).toEqual([])
+  })
+
+  test('a later Mod next can admit the Ask released by an earlier blocked next', async () => {
+    const admissions: any[] = []
+    const f = fixture([async (event, next) => {
+      await next({ ...event, text: 'blocked' })
+      f.classicResults.length = 0
+      return next({ ...event, text: 'accepted' })
+    }])
+    const ask = armAsk(f.context)
+    f.classicResults.push({ blockingError: 'denied' })
+    const result = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
+    expect(result.shouldQuery).toBe(true)
+    expect(admissions.map(settled => settled.shouldQuery)).toEqual([false, true])
+    expect(additionalContexts(admissions[0])).toEqual([])
+    expect(additionalContexts(admissions[1])).toEqual([ask.text])
+    expect(ask.finishes).toEqual([false, true])
+    expect(f.diagnostics).toEqual([])
+  })
+
+  test('classic enqueue consumes Ask before a model runs and dequeue keeps the admitted attachment', async () => {
+    const f = fixture()
+    Object.assign(f.context, { mods: undefined })
+    const ask = armAsk(f.context)
+    const queue: any[] = []
+    const queries: any[][] = []
+    const { QueryGuard } = await import('../QueryGuard.js')
+    const guard = new QueryGuard()
+    const generation = guard.tryStart()!
+    const { handlePromptSubmit } = loadFunctions('../handlePromptSubmit.ts', {
+      processUserInput: f.processUserInput,
+      parseReferences: () => [], expandPastedTextRefs: (text: string) => text,
+      isValidImagePaste: (item: any) => item.type === 'image',
+      logEvent: () => {}, startQueryProfile: () => {}, queryCheckpoint: () => {},
+      createAbortController: () => new AbortController(),
+      enqueue: (command: any) => {
+        expect(ask.finishes).toEqual([true])
+        queue.push(command)
+      },
+      runWithWorkload: (_: unknown, run: () => unknown) => run(),
+      fileHistoryEnabled: () => false,
+    }, '{ handlePromptSubmit }')
+    const params = {
+      input: 'original', mode: 'prompt', messages: [], commands: [],
+      queryGuard: guard, getToolUseContext: () => f.context,
+      mainLoopModel: 'fixture', querySource: 'repl_main_thread',
+      setToolJSX: () => {}, setAbortController: () => {}, setUserInputOnProcessing: () => {},
+      onQuery: async (...args: any[]) => { queries.push(args) },
+    }
+    await handlePromptSubmit(params)
+    expect(queue).toHaveLength(1)
+    expect(additionalContexts(queue[0].admitted)).toEqual([ask.text])
+    expect(queries).toEqual([])
+    guard.end(generation)
+    const nextAsk = armAsk(f.context, 'armed after queue admission')
+    await handlePromptSubmit({ ...params, queuedCommands: queue.splice(0) })
+    expect(queries).toHaveLength(1)
+    expect(additionalContexts({ messages: queries[0]![0] })).toEqual([ask.text])
+    expect(f.classicInputs).toEqual(['original'])
+    expect(ask.finishes).toEqual([true])
+    expect(nextAsk.budgets).toEqual([])
+    expect(nextAsk.finishes).toEqual([])
+  })
+
+  test('a controller-declined Ask keeps full Mod context and admits without a lease', async () => {
+    const modContext = ['x'.repeat(32000)]
+    const f = fixture([async (event, next) => next({ ...event, context: modContext })])
+    const budgets: string[][] = []
+    Object.assign(f.context, { diff: { beginAsk(context: readonly string[]) {
+      budgets.push([...context])
+      return undefined
+    } } })
+    const result = await f.run()
+    expect(result.shouldQuery).toBe(true)
+    expect(additionalContexts(result)).toEqual(modContext)
+    expect(result.admission.context).toEqual(modContext)
+    expect(budgets).toEqual([modContext])
+    expect(f.diagnostics).toEqual([])
+  })
+
+  test('a Mod drop before next leaves Ask available for a later prompt', async () => {
+    let drop = true
+    const f = fixture([async (event, next) => drop ? { drop: 'not admitted' } : next(event)])
+    const ask = armAsk(f.context)
+    const admissions: any[] = []
+    const dropped = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
+    expect(dropped.shouldQuery).toBe(false)
+    expect(admissions).toEqual([])
+    expect(ask.budgets).toEqual([])
+    expect(ask.finishes).toEqual([])
+    drop = false
+    const result = await f.run()
+    expect(result.shouldQuery).toBe(true)
+    expect(additionalContexts(result)).toEqual([ask.text])
+    expect(ask.finishes).toEqual([true])
+  })
+
+  test.each(['classic', 'Mod'])('%s noneligible paths leave the armed Ask untouched', async path => {
+    for (const options of [
+      { input: '/skill' },
+      { input: '/deferred', deferCommands: true },
+      { input: 'pwd', mode: 'bash' },
+      { skipHooks: true },
+      { remote: true },
+      { agent: true },
+    ]) {
+      const f = fixture(path === 'Mod' ? [async (event, next) => next(event)] : [], true)
+      const ask = armAsk(f.context)
+      if (options.remote) Object.assign(f.context, { runRemoteShellCommand: () => {} })
+      if (options.agent) Object.assign(f.context, { agentId: 'subagent' })
+      const result = await f.run(options)
+      expect(additionalContexts(result)).not.toContain(ask.text)
+      expect(ask.budgets).toEqual([])
+      expect(ask.finishes).toEqual([])
+      Object.assign(f.context, { runRemoteShellCommand: undefined, agentId: undefined })
+      expect(additionalContexts(await f.run())).toEqual([ask.text])
+      expect(ask.finishes).toEqual([true])
+    }
+  })
+
+  test.each(['sequential', 'concurrent', 'unawaited'])('Mod %s next carries Ask once and an outer drop cannot roll back admission', async style => {
+    const admissions: any[] = []
+    const f = fixture([async (event, next) => {
+      const one = next({ ...event, text: 'one' })
+      if (style === 'sequential') await one
+      const two = next({ ...event, text: 'two' })
+      if (style !== 'unawaited') await Promise.all([one, two])
+      return { drop: 'outer drop' }
+    }])
+    const ask = armAsk(f.context)
+    const result = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
+    expect(result.shouldQuery).toBe(false)
+    expect(admissions.map(settled => settled.admission.text)).toEqual(['one', 'two'])
+    expect(admissions.every(settled => settled.shouldQuery)).toBe(true)
+    expect(additionalContexts(admissions[0])).toEqual([ask.text])
+    expect(additionalContexts(admissions[1])).toEqual([])
+    expect(additionalContexts(result)).toEqual([ask.text])
+    expect(ask.finishes).toEqual([true])
+    expect(f.diagnostics).toEqual([])
+    expect(f.calls.releases).toBe(1)
+  })
+
+  test.each(['classic', 'Mod'])('%s block, stop and throw release Ask for the next accepted prompt', async path => {
+    for (const failure of ['block', 'stop', 'throw']) {
+      const f = fixture(path === 'Mod' ? [async (event, next) => next(event)] : [])
+      const ask = armAsk(f.context)
+      const admissions: any[] = []
+      if (failure === 'throw') f.classicHook.run = () => { throw new Error('classic failure') }
+      else f.classicResults.push(failure === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+      const pending = f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
+      if (failure === 'throw') {
+        await expect(pending).rejects.toThrow('classic failure')
+        expect(admissions).toEqual([])
+      } else {
+        const result = await pending
+        expect(result.shouldQuery).toBe(false)
+        expect(additionalContexts(result)).not.toContain(ask.text)
+        expect(admissions).toHaveLength(1)
+        expect(admissions[0].admission.drop).toBeDefined()
+      }
+      expect(ask.finishes).toEqual([false])
+      f.classicResults.length = 0
+      f.classicHook.run = undefined
+      const retried = await f.run()
+      expect(retried.shouldQuery).toBe(true)
+      expect(additionalContexts(retried)).toEqual([ask.text])
+      expect(ask.finishes).toEqual([false, true])
+    }
+  })
+
+  test.each(['classic', 'Mod'])('%s cancellation racing admission settles Ask exactly once', async path => {
+    // Sweep microtask timings rather than relying on a particular number of
+    // awaits inside production: cancellation either precedes or follows admission.
+    for (let delay = 0; delay < 20; delay++) {
+      const f = fixture(path === 'Mod' ? [async (event, next) => next(event)] : [])
+      const ask = armAsk(f.context)
+      const admissions: any[] = []
+      const abortedAtAdmission: boolean[] = []
+      const cancelled = new Error('cancel at admission')
+      f.classicHook.run = () => {
+        const cancel = (remaining: number) => {
+          if (remaining === 0) f.controller.abort(cancelled)
+          else queueMicrotask(() => cancel(remaining - 1))
+        }
+        cancel(delay)
+      }
+      await f.run({ onPromptAdmission: (settled: any) => {
+        abortedAtAdmission.push(f.controller.signal.aborted)
+        admissions.push(settled)
+      } }).catch((error: unknown) => { expect(error).toBe(cancelled) })
+      expect(abortedAtAdmission).not.toContain(true)
+      expect(ask.finishes).toEqual([admissions.length > 0])
+    }
+  })
+
+  test('an already cancelled classic prompt releases Ask without running hooks', async () => {
+    const f = fixture()
+    const ask = armAsk(f.context)
+    f.controller.abort(new Error('already cancelled'))
+    const admissions: any[] = []
+    await expect(f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) }))
+      .rejects.toThrow('already cancelled')
+    expect(f.classicInputs).toEqual([])
+    expect(admissions).toEqual([])
+    expect(ask.finishes).toEqual([false])
+  })
+
+  test('classic cancellation while hooks run releases Ask and admits nothing', async () => {
+    const f = fixture()
+    const ask = armAsk(f.context)
+    const admissions: any[] = []
+    f.classicHook.run = () => { f.controller.abort(new Error('cancel before admission')) }
+    await expect(f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) }))
+      .rejects.toThrow('cancel before admission')
+    expect(admissions).toEqual([])
+    expect(ask.finishes).toEqual([false])
+    f.classicHook.run = undefined
+    f.context.abortController = new AbortController()
+    const retried = await f.run()
+    expect(retried.shouldQuery).toBe(true)
+    expect(additionalContexts(retried)).toEqual([ask.text])
+    expect(ask.finishes).toEqual([false, true])
+  })
+
+  test('Mod admission budgets Ask against entered context without changing its receipt', async () => {
+    const modContext = ['m'.repeat(31900)]
+    const f = fixture([async (event, next) => {
+      const receipt = await next({ ...event, text: 'rewritten', context: modContext })
+      expect(receipt).toEqual({ text: 'rewritten', context: modContext, origin: { kind: 'unclassified' } })
+      return receipt
+    }])
+    const ask = armAsk(f.context)
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'fixture-image' } }
+    const existing = { type: 'attachment', attachment: { type: 'fixture', content: 'existing' } }
+    f.attachmentMessages.push(existing)
+    const admissions: any[] = []
+    const result = await f.run({
+      input: [image, { type: 'text', text: 'original' }],
+      onPromptAdmission: (settled: any) => {
+        expect(ask.finishes).toEqual([true])
+        admissions.push(settled)
+      },
+    })
+    expect(result.shouldQuery).toBe(true)
+    expect(additionalContexts(result)).toEqual([...modContext, ask.text])
+    expect(additionalContexts(admissions[0])).toEqual([...modContext, ask.text])
+    expect(userTexts(result)).toEqual([[image, { type: 'text', text: 'rewritten' }]])
+    expect(result.messages).toContain(existing)
+    expect(ask.budgets).toEqual([modContext])
+    expect(f.diagnostics).toEqual([])
+    expect(ask.finishes).toEqual([true])
+  })
+
+  test('classic admission carries Ask once without Mods and preserves images and attachments', async () => {
+    const f = fixture()
+    Object.assign(f.context, { mods: undefined })
+    const ask = armAsk(f.context)
+    const image = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'fixture-image' },
+    }
+    const existing = { type: 'attachment', attachment: { type: 'fixture', content: 'existing' } }
+    f.attachmentMessages.push(existing)
+    f.classicResults.push({ additionalContexts: ['classic context'] })
+    const admissions: any[] = []
+    const result = await f.run({
+      input: [image, { type: 'text', text: 'explain this' }],
+      pastedContents: { 1: { id: 1, type: 'image', content: 'pasted-image', mediaType: 'image/jpeg' } },
+      onPromptAdmission: (settled: any) => {
+        expect(ask.finishes).toEqual([true])
+        admissions.push(settled)
+      },
+    })
+    expect(result.shouldQuery).toBe(true)
+    expect(admissions).toEqual([result])
+    expect(userTexts(result)[0]).toEqual([
+      image,
+      { type: 'text', text: 'explain this' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'pasted-image' } },
+    ])
+    expect(result.messages).toContain(existing)
+    expect(additionalContexts(result)).toEqual(expect.arrayContaining([ask.text, 'classic context']))
+    expect(ask.budgets).toEqual([[]])
+    expect(additionalContexts(await f.run())).toEqual(['classic context'])
+    expect(ask.finishes).toEqual([true])
+  })
+})
 
 describe('processUserInput prompt.submit', () => {
   test('a drop without next does not submit or run classic hooks', async () => {
@@ -628,10 +971,13 @@ describe('processUserInput prompt.submit', () => {
       await gate
       const receipt: any = await next({ ...event, text: 'rewritten', context: ['private context'] })
       expect(queue).toHaveLength(1)
+      expect(ask.finishes).toEqual([true])
+      expect(additionalContexts(queue[0].admitted)).toEqual(['private context', ask.text])
       expect(receipt.text).toBe('rewritten')
       expect(queries).toEqual([])
       return { ...receipt, text: 'too late' }
     }])
+    const ask = armAsk(f.context)
     const { QueryGuard } = await import('../QueryGuard.js')
     const guard = new QueryGuard()
     const generation = guard.tryStart()!
@@ -660,7 +1006,13 @@ describe('processUserInput prompt.submit', () => {
     resume()
     await pending
     expect(queue[0].admitted.admission).toEqual({ text: 'rewritten', context: ['private context'], origin: { kind: 'composer' } })
+    const nextAsk = armAsk(f.context, 'new snapshot after enqueue')
     await functions.handlePromptSubmit({ ...params, queuedCommands: queue.splice(0) })
+    expect(nextAsk.budgets).toEqual([])
+    expect(nextAsk.finishes).toEqual([])
+    expect(ask.budgets).toEqual([['private context']])
+    expect(ask.finishes).toEqual([true])
+    expect(additionalContexts({ messages: queries[0]![0] })).toEqual(['private context', ask.text])
     expect(f.classicInputs).toEqual(['rewritten'])
     expect(f.events).toHaveLength(1)
     expect(f.events[0]?.turnId).toBe('running')

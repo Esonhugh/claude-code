@@ -206,9 +206,9 @@ export async function processUserInput({
     isRegularPrompt && promptMessage?.type === 'user'
       ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
       : undefined
-  if (!snapshot) return admitClassicPrompt()
+  const pendingAsks = new Map<Message[], { finish(accepted: boolean): void }>()
   try {
-    if (!snapshot.hasHooks('prompt.submit'))
+    if (!snapshot || !snapshot.hasHooks('prompt.submit'))
       return await admitClassicPrompt()
     const content = promptMessage!.message.content
     const text =
@@ -253,7 +253,7 @@ export async function processUserInput({
     let entries = 0
     const { outcome, submissions } = await runModPromptSubmit({
       snapshot,
-      admit: onPromptAdmission,
+      admit: admitPrompt,
       signal: context.abortController.signal,
       input: {
         text,
@@ -312,7 +312,7 @@ export async function processUserInput({
             }),
           )
         }
-        return runClassicHooks(submitted, entered.text)
+        return runHooksWithAsk(submitted, entered.text, entered.context)
       },
     })
     const last = submissions.at(-1)
@@ -325,11 +325,21 @@ export async function processUserInput({
       shouldQuery: outcome.drop === undefined && !!last?.shouldQuery,
     }
   } finally {
-    snapshot.release()
+    for (const ask of pendingAsks.values()) ask.finish(false)
+    snapshot?.release()
+  }
+
+  function admitPrompt(settled: ProcessUserInputBaseResult): void {
+    if (isRegularPrompt && !context.agentId)
+      context.abortController.signal.throwIfAborted()
+    const ask = pendingAsks.get(settled.messages)
+    pendingAsks.delete(settled.messages)
+    ask?.finish(settled.shouldQuery)
+    onPromptAdmission?.(settled)
   }
 
   async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {
-    const settled = await runClassicHooks(result, getContentText(input) || '')
+    const settled = await runHooksWithAsk(result, getContentText(input) || '')
     if (isRegularPrompt) {
       const content = promptMessage?.type === 'user' ? promptMessage.message.content : input
       settled.admission = settled.shouldQuery
@@ -345,8 +355,44 @@ export async function processUserInput({
           }
         : { drop: settled.resultText ?? 'Prompt blocked by UserPromptSubmit hook' }
     }
-    onPromptAdmission?.(settled)
+    admitPrompt(settled)
     return settled
+  }
+
+  async function runHooksWithAsk(
+    submitted: ProcessUserInputBaseResult,
+    text: string,
+    modContext: readonly string[] = [],
+  ): Promise<ProcessUserInputBaseResult> {
+    // Ask is fitted against Mod context but attached separately: changing
+    // entered.context here would invalidate prompt.submit's immutable receipt.
+    const ask = isRegularPrompt && !context.agentId
+      ? context.diff?.beginAsk(modContext)
+      : undefined
+    let pendingAdmission = false
+    try {
+      if (isRegularPrompt && !context.agentId)
+        context.abortController.signal.throwIfAborted()
+      const settled = await runClassicHooks(submitted, text)
+      if (isRegularPrompt && !context.agentId)
+        context.abortController.signal.throwIfAborted()
+      if (settled.shouldQuery && ask) {
+        settled.messages.push(createAttachmentMessage({
+          type: 'hook_additional_context',
+          content: [ask.text],
+          hookName: 'prompt.submit',
+          toolUseID: `hook-${randomUUID()}`,
+          hookEvent: 'UserPromptSubmit',
+        }))
+        // The adapter shallow-copies results before admission; messages retain
+        // identity, including when several next calls are in flight together.
+        pendingAsks.set(settled.messages, ask)
+        pendingAdmission = true
+      }
+      return settled
+    } finally {
+      if (!pendingAdmission) ask?.finish(false)
+    }
   }
 
   async function runClassicHooks(

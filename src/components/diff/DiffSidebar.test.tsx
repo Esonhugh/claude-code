@@ -6,9 +6,16 @@ import { join } from 'node:path'
 const childKey = 'DIFF_SIDEBAR_TEST_CHILD'
 
 if (!process.env[childKey]) {
-  test.each(['interaction', 'subdirectory', 'clean', 'untracked', 'binary'])(
+  test.each([
+    'continuous',
+    'interaction',
+    'subdirectory',
+    'clean',
+    'untracked',
+    'binary',
+  ])(
     'real Git sidebar: %s',
-    async (scenario) => {
+    async scenario => {
       const root = mkdtempSync(join(tmpdir(), 'diff-sidebar-'))
       try {
         const git = (...args: string[]) => {
@@ -23,6 +30,8 @@ if (!process.env[childKey]) {
         const cwd = scenario === 'subdirectory' ? join(root, 'sub') : root
         if (cwd !== root) mkdirSync(cwd)
         writeFileSync(join(cwd, 'tracked.txt'), 'before\n')
+        if (scenario === 'continuous')
+          writeFileSync(join(root, 'second.txt'), 'second-before\n')
         git('add', '.')
         git(
           '-c',
@@ -37,8 +46,12 @@ if (!process.env[childKey]) {
         )
         if (scenario === 'interaction' || scenario === 'subdirectory')
           writeFileSync(join(cwd, 'tracked.txt'), 'after\n')
+        if (scenario === 'continuous') {
+          writeFileSync(join(root, 'tracked.txt'), 'first-body-marker\n')
+          writeFileSync(join(root, 'second.txt'), 'second-body-marker\n')
+        }
         if (scenario === 'untracked')
-          writeFileSync(join(root, 'new.txt'), 'untracked\n')
+          writeFileSync(join(root, 'new.txt'), 'untracked-body-marker\n')
         if (scenario === 'binary')
           writeFileSync(join(root, 'tracked.txt'), Buffer.from([0, 1, 2]))
         const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
@@ -75,6 +88,11 @@ if (!process.env[childKey]) {
     const { Readable, Writable } = await import('node:stream')
     const { Box, Text, render, useInput } = await import('../../ink.js')
     const { DiffSidebar } = await import('./DiffSidebar.js')
+    const { DiffController } = await import('../../services/diff/controller.js')
+    const controller =
+      process.env.DIFF_SIDEBAR_SCENARIO === 'continuous'
+        ? new DiffController({ cwd: process.cwd(), sessionStartMs: 0 })
+        : undefined
     const { setOriginalCwd, setCwdState } =
       await import('../../bootstrap/state.js')
     const { default: instances } = await import('../../ink/instances.js')
@@ -135,6 +153,7 @@ if (!process.env[childKey]) {
           ) : (
             <DiffSidebar
               messages={messages}
+              controller={controller}
               onClose={() => {
                 closed = true
               }}
@@ -165,7 +184,7 @@ if (!process.env[childKey]) {
       const visit = (node: DOMElement) => {
         if (node.nodeName === 'ink-text' && nodeCache.has(node))
           found.push(node)
-        node.childNodes.forEach((child) => {
+        node.childNodes.forEach(child => {
           if (child.nodeName !== '#text') visit(child)
         })
       }
@@ -175,9 +194,9 @@ if (!process.env[childKey]) {
     const waitFor = async (text: string) => {
       const deadline = Date.now() + 3000
       while (Date.now() < deadline) {
-        const node = texts().find((node) => textContent(node).includes(text))
+        const node = texts().find(node => textContent(node).includes(text))
         if (node) return node
-        await new Promise((resolve) => setTimeout(resolve, 20))
+        await new Promise(resolve => setTimeout(resolve, 20))
       }
       throw new Error(`Missing ${text}: ${texts().map(textContent).join('\n')}`)
     }
@@ -188,6 +207,23 @@ if (!process.env[childKey]) {
     }
     try {
       const scenario = process.env.DIFF_SIDEBAR_SCENARIO
+      if (scenario === 'continuous') {
+        await waitFor('tracked.txt')
+        const deadline = Date.now() + 3000
+        while (
+          (!stdout.output.includes('first-body-marker') ||
+            !stdout.output.includes('second-body-marker')) &&
+          Date.now() < deadline
+        ) {
+          await new Promise(resolve => setTimeout(resolve, 20))
+        }
+        expect(stdout.output).toContain('first-body-marker')
+        expect(stdout.output).toContain('second-body-marker')
+        expect(texts().map(textContent).join('\n')).not.toContain(
+          'Back to files',
+        )
+        return
+      }
       if (scenario === 'clean') {
         await waitFor('Working tree is clean')
         await click('✕')
@@ -195,31 +231,39 @@ if (!process.env[childKey]) {
         return
       }
       if (scenario === 'untracked' || scenario === 'binary') {
-        await click('Other working tree changes (1) (show)')
+        await click('Pre-session 1 [off]')
         await click(scenario === 'untracked' ? 'new.txt' : 'tracked.txt')
         await waitFor(
           scenario === 'untracked'
-            ? 'New file not yet staged'
+            ? '(untracked)'
             : 'Binary file - cannot display diff',
         )
+        if (scenario === 'untracked') {
+          // The backend explicitly withholds untracked bodies. Do not imply an
+          // empty file or bypass that boundary with a component filesystem read.
+          await waitFor('New file not yet staged; diff body not loaded')
+          expect(texts().map(textContent).join('\n')).not.toContain(
+            'metadata-only',
+          )
+        }
         await click('✕')
         expect(closed).toBe(true)
         return
       }
-      await waitFor('No uncommitted tool edits this session')
-      await click('Other working tree changes (1) (show)')
+      await waitFor('No visible changes (check filters)')
+      await click('Pre-session 1 [off]')
       const fileNode = await waitFor('tracked.txt')
       const fileRect = nodeCache.get(fileNode)!
       stdin.push(`\u001b[<65;${fileRect.x + 1};${fileRect.y + 1}M`)
-      await new Promise((resolve) => setTimeout(resolve, 60))
+      await new Promise(resolve => setTimeout(resolve, 60))
       expect(transcriptWheels).toBe(0)
       stdin.push('\u001b[<65;1;1M')
-      await new Promise((resolve) => setTimeout(resolve, 60))
+      await new Promise(resolve => setTimeout(resolve, 60))
       expect(transcriptWheels).toBe(1)
       await click('tracked.txt')
       const detailDeadline = Date.now() + 3000
       while (!stdout.output.includes('after') && Date.now() < detailDeadline) {
-        await new Promise((resolve) => setTimeout(resolve, 20))
+        await new Promise(resolve => setTimeout(resolve, 20))
       }
       expect(stdout.output).toContain('after')
       writeFileSync(join(process.cwd(), 'tracked.txt'), 'refreshed-marker\n')
@@ -228,11 +272,12 @@ if (!process.env[childKey]) {
         !stdout.output.includes('refreshed-marker') &&
         Date.now() < refreshDeadline
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 20))
+        await new Promise(resolve => setTimeout(resolve, 20))
       }
       expect(stdout.output).toContain('refreshed-marker')
-      await click('Back to files')
-      await click('Other working tree changes (1) (hide)')
+      // File clicks now anchor the continuous body rather than entering detail mode.
+      expect(texts().map(textContent).join('\n')).not.toContain('Back to files')
+      await click('Pre-session 0 [on]')
       const { createUserMessage } = await import('../../utils/messages.js')
       const { ThemeProvider } = await import('../../ink.js')
       messages = [
@@ -260,26 +305,26 @@ if (!process.env[childKey]) {
         }),
       ]
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await click('Source: Current')
+      await waitFor('Source: Turn 1')
       await waitFor('tracked.txt')
-      expect(texts().map(textContent).join('\n')).not.toContain(
-        'Other working tree changes',
-      )
       messages = [
         createUserMessage({ content: 'different resumed conversation' }),
         createUserMessage({ content: 'no edits here' }),
       ]
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
-      await waitFor('No uncommitted tool edits this session')
-      await waitFor('Other working tree changes (1) (show)')
+      await waitFor('Source: Current')
+      await waitFor('Pre-session 0 [off]')
       await click('✕')
       expect(closed).toBe(true)
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await waitFor('closed')
       stdin.push(`\u001b[<65;${fileRect.x + 1};${fileRect.y + 1}M`)
-      await new Promise((resolve) => setTimeout(resolve, 60))
+      await new Promise(resolve => setTimeout(resolve, 60))
       expect(transcriptWheels).toBe(2)
     } finally {
       instance.unmount()
+      controller?.dispose()
     }
   }, 8000)
 }

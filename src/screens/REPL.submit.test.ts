@@ -7,9 +7,10 @@ import { render } from '../ink.js'
 import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuffer.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import { isCommandImmediate } from '../types/command.js'
+import { DiffController } from '../services/diff/controller.js'
 
 // Execute the actual callbacks without importing REPL's startup/services graph.
-function extract(path: string, name: string, kind: 'callback' | 'function' = 'callback') {
+function extract(path: string, name: string, kind: 'callback' | 'function' | 'effect' = 'callback') {
   const source = readFileSync(new URL(path, import.meta.url), 'utf8')
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   const matches: ts.Node[] = []
@@ -19,6 +20,8 @@ function extract(path: string, name: string, kind: 'callback' | 'function' = 'ca
       matches.push(node.initializer.arguments[0]!)
     }
     if (kind === 'function' && ts.isFunctionDeclaration(node) && node.name?.text === name) matches.push(node)
+    if (kind === 'effect' && ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' &&
+      node.arguments[0]?.getText(file).includes(name)) matches.push(node.arguments[0])
     ts.forEachChild(node, visit)
   }
   visit(file)
@@ -26,6 +29,13 @@ function extract(path: string, name: string, kind: 'callback' | 'function' = 'ca
   const text = matches[0]!.getText(file).replace(/^export /, '')
   const js = ts.transpileModule(`const extracted = (${text});`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, jsx: ts.JsxEmit.React },
+    transformers: { before: [context => root => {
+      const visit = (node: ts.Node): ts.VisitResult<ts.Node> =>
+        ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          ? ts.factory.updateCallExpression(node, ts.factory.createIdentifier('importModule'), node.typeArguments, node.arguments)
+          : ts.visitEachChild(node, visit, context)
+      return ts.visitNode(root, visit) as ts.SourceFile
+    }] },
   }).outputText
   return (scope: Record<string, any>) => new Function('scope', `with (scope) { ${js}; return extracted; }`)(scope)
 }
@@ -39,6 +49,252 @@ function deferred() {
   return { promise, resolve }
 }
 const noop = () => {}
+
+test('successful edits reach the transcript and auto-open diff without a Mods runtime', async () => {
+  let state = { diffSidebarVisible: false }
+  let messages: any[] = []
+  const surfaces: any[] = []
+  const errors: unknown[] = []
+  const diff = new DiffController({ cwd: '/synthetic' })
+  diff.autoOpen = async surface => { surfaces.push(surface); return true }
+  const onEvent = extract('./REPL.tsx', 'onQueryEvent')({
+    handleMessageFromStream: (event: any, append: any) => append(event),
+    diffController: diff, store: { getState: () => state },
+    modsSession: { runtime: undefined, ui: { getSnapshot: () => [] } },
+    getSessionId: () => 'synthetic-session', process: { stdout: { columns: 144 } },
+    isFullscreenEnvEnabled: () => true, fileHistoryEnabled: () => true,
+    MIN_DIFF_SIDEBAR_COLUMNS: 110, logError: (error: unknown) => errors.push(error),
+    setAppState: (fn: any) => { state = fn(state) },
+    setMessages: (fn: any) => { messages = fn(messages) },
+    isCompactBoundaryMessage: () => false, feature: () => false,
+    setResponseLength: noop, setStreamMode: noop, setStreamingToolUses: noop,
+    setStreamingThinking: noop, onStreamingText: undefined,
+  })
+  const assistant = { type: 'assistant', message: { content: [
+    { type: 'tool_use', id: 'edit-1', name: 'Edit', input: {} },
+  ] } }
+  const result = { type: 'user', message: { content: [
+    { type: 'tool_result', tool_use_id: 'edit-1', content: 'done' },
+  ] } }
+  try {
+    onEvent(assistant)
+    onEvent(result)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(messages).toEqual([assistant, result])
+    expect(surfaces).toEqual([{ columns: 144, isFullscreen: true, hasDock: false, checkpointing: true }])
+    expect(state.diffSidebarVisible).toBe(true)
+    expect(errors).toEqual([])
+  } finally {
+    diff.dispose()
+  }
+})
+
+test('diff open preference is global while base stays repository scoped', async () => {
+  let config: any = { diffPreferences: { '/repo-a': { mode: 'branch' }, '/repo-b': { mode: 'uncommitted' } } }
+  let cwd = '/repo-a'
+  const makeDiff = extract('./REPL.tsx', '[diffController]')({
+    isRemoteExecutionSession: false, DiffController, initialMessages: [],
+    getCwd: () => cwd, addNotification: noop,
+    getGlobalConfig: () => config,
+    saveGlobalConfig: (fn: any) => { config = fn(config) },
+  })
+  const first = makeDiff() as DiffController
+  first.setOpenPreference(false)
+  expect(config.diffSidebarOpen).toBe(false)
+  expect(config.diffPreferences).toEqual({ '/repo-a': { mode: 'branch' }, '/repo-b': { mode: 'uncommitted' } })
+  cwd = '/repo-b/subdir'
+  const second = makeDiff() as DiffController
+  // A global close must suppress opening without probing this other repository.
+  second.refresh = () => { throw new Error('unexpected Git probe') }
+  expect(await second.autoOpen({ columns: 144, isFullscreen: true, checkpointing: true, hasDock: false })).toBe(false)
+  second.setOpenPreference(true)
+  expect(config.diffSidebarOpen).toBe(true)
+  first.dispose()
+  second.dispose()
+})
+
+test('startup resume dates the diff baseline from activation, not historical messages', async () => {
+  const starts: number[] = []
+  class ObservedController extends DiffController {
+    constructor(options: ConstructorParameters<typeof DiffController>[0]) {
+      super({ ...options, createBackend: async options => { starts.push(options.sessionStartMs); return null } })
+    }
+  }
+  const before = Date.now()
+  const diff = extract('./REPL.tsx', '[diffController]')({
+    isRemoteExecutionSession: false, DiffController: ObservedController,
+    initialMessages: [{ timestamp: '2020-01-01T00:00:00Z' }],
+    getCwd: () => '/repo', addNotification: noop, getGlobalConfig: () => ({}), saveGlobalConfig: noop,
+  })() as DiffController
+  await diff.refresh()
+  expect(starts[0]).toBeGreaterThanOrEqual(before)
+  diff.dispose()
+})
+
+test('diff keeps open intent across temporary width and dock restrictions but respects an explicit close', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let layout = ''
+  let visible = ''
+  function visit(node: ts.Node) {
+    if (ts.isBlock(node)) {
+      const start = node.statements.findIndex(statement => ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations.some(declaration => declaration.name.getText(file) === 'canShowDiffSidebar'))
+      if (start !== -1) {
+        const statements = [node.statements[start]!]
+        for (const statement of node.statements.slice(start + 1)) {
+          if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression) ||
+            statement.expression.expression.getText(file) !== 'useEffect') break
+          statements.push(statement)
+        }
+        layout = statements.map(statement => statement.getText(file)).join('\n')
+      }
+    }
+    if (ts.isJsxAttribute(node) && node.name.getText(file) === 'sidebarPane' &&
+      node.initializer && ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression && ts.isConditionalExpression(node.initializer.expression)) {
+      visible = node.initializer.expression.condition.getText(file)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(layout).not.toBe('')
+  expect(visible).not.toBe('')
+  const js = ts.transpileModule(`${layout}\nreturn ${visible};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  let state = { diffSidebarVisible: true }
+  let fullscreen = true
+  const scope = {
+    get diffSidebarVisible() { return state.diffSidebarVisible },
+    modTerminalSize: { columns: 144 }, modDock: [] as unknown[],
+    MIN_DIFF_SIDEBAR_COLUMNS: 110, isFullscreenEnvEnabled: () => fullscreen,
+    useEffect: (effect: () => void) => effect(),
+    setAppState: (update: (previous: typeof state) => typeof state) => { state = update(state) },
+  }
+  const renderSidebar = () => new Function('scope', `with (scope) { ${js} }`)(scope)
+  expect(renderSidebar()).toBe(true)
+  scope.modTerminalSize.columns = 109
+  expect(renderSidebar()).toBe(false)
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.modTerminalSize.columns = 110
+  expect(renderSidebar()).toBe(true)
+  scope.modDock = [{}]
+  expect(renderSidebar()).toBe(false)
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.modDock = []
+  expect(renderSidebar()).toBe(true)
+  fullscreen = false
+  expect(renderSidebar()).toBe(false)
+  fullscreen = true
+  expect(renderSidebar()).toBe(true)
+  state.diffSidebarVisible = false
+  for (const columns of [109, 110, 144]) {
+    scope.modTerminalSize.columns = columns
+    expect(renderSidebar()).toBe(false)
+  }
+})
+
+test('Diff dialog owns scroll keys while unrelated overlays keep transcript scrolling', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let expression = ''
+  let declaration = ''
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'diffDialogActive')
+      declaration = `const ${node.getText(file)};`
+    if (ts.isJsxAttribute(node) && node.name.getText(file) === 'isKeyboardActive' &&
+      node.initializer && ts.isJsxExpression(node.initializer))
+      expression = node.initializer.expression!.getText(file)
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(expression).not.toBe('')
+  const js = ts.transpileModule(`${declaration}\nreturn ${expression};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const state = { activeOverlays: new Set<string>() }
+  const scope = { modPaneFocused: false, useAppState: (select: (s: typeof state) => unknown) => select(state) }
+  const active = () => new Function('scope', `with (scope) { ${js} }`)(scope)
+  expect(active()).toBe(true)
+  state.activeOverlays.add('diff-dialog')
+  expect(active()).toBe(false)
+  state.activeOverlays.clear()
+  state.activeOverlays.add('other-dialog')
+  expect(active()).toBe(true)
+  scope.modPaneFocused = true
+  expect(active()).toBe(false)
+})
+
+test('diff lifecycle follows session identity, not compaction row keys', () => {
+  const resets: string[] = []
+  let state = { diffSidebarVisible: true }
+  const scope = {
+    diffSession: { current: 'session-a' }, diffSessionId: 'session-a',
+    conversationId: 'new-compact-row-key', diffCwd: '/repo',
+    diffController: { cwd: '/repo', reset: (cwd: string) => resets.push(cwd) },
+    setAppState: (fn: any) => { state = fn(state) },
+  }
+  const effect = extract('./REPL.tsx', 'diffSession.current', 'effect')(scope)
+  effect()
+  expect(resets).toEqual([])
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.diffSessionId = 'session-b'
+  effect()
+  expect(resets).toEqual(['/repo'])
+  expect(state.diffSidebarVisible).toBe(false)
+})
+
+test('successful same-ID resume resets diff without waiting for identity change', async () => {
+  let resets = 0
+  let state: any = { diffSidebarVisible: true }
+  let replaced = false
+  const diffSession = { current: 'same-id' }
+  const resume = extract('./REPL.tsx', 'resume')({
+    deserializeMessages: (messages: any) => [...messages], feature: () => false,
+    getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
+    processSessionStartHooks: async () => [], mainThreadAgentDefinition: undefined,
+    mainLoopModel: 'synthetic', copyPlanForResume: noop, restoreSessionStateFromLog: noop,
+    restoreAgentFromSession: () => ({}), initialMainThreadAgentDefinition: undefined,
+    agentDefinitions: {}, setMainThreadAgentDefinition: noop,
+    setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
+    updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    getCwd: () => '/repo', resetLoadingState: noop, setAbortController: noop,
+    setConversationId: noop, getStoredSessionCosts: noop, saveCurrentSessionCosts: noop,
+    resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
+    importModule: async () => ({ renameRecordingForSession: async () => {} }),
+    resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    setHaikuTitle: noop, exitRestoredWorktree: noop, restoreWorktreeForResume: noop,
+    adoptResumedSessionFile: noop, restoreRemoteAgentTasks: noop, store: { getState: () => state },
+    setMessages: () => { replaced = true }, modsSession: undefined,
+    restoreGoalSessionFromLog: noop, contentReplacementStateRef: { current: null },
+    setToolJSX: noop, setInputValue: noop, logEvent: noop, diffSession,
+    getSessionId: () => 'same-id', diffController: { reset: () => { resets++ } },
+  })
+  await resume('same-id', { messages: [] }, 'command')
+  expect(replaced).toBe(true)
+  expect(resets).toBe(1)
+  expect(state.diffSidebarVisible).toBe(false)
+  expect(diffSession.current).toBe('same-id')
+})
+
+test('rewind resets diff state even though the session ID is unchanged', () => {
+  const target = { type: 'user', uuid: 'target' }
+  let resets = 0
+  let state = { diffSidebarVisible: true, toolPermissionContext: { mode: 'default' } }
+  const rewind = extract('./REPL.tsx', 'rewindConversationTo')({
+    messagesRef: { current: [target] }, logEvent: noop, setMessages: noop,
+    setConversationId: noop, randomUUID: () => 'new-rows', resetMicrocompactState: noop,
+    feature: () => false, getCwd: () => '/repo',
+    diffController: { reset: () => { resets++ } },
+    setAppState: (fn: any) => { state = fn(state) },
+  })
+  rewind(target)
+  expect(resets).toBe(1)
+  expect(state.diffSidebarVisible).toBe(false)
+})
 
 function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'prompt', stash = undefined as any,
   commands = [] as any[], result = {} as any, remote = false } = {}) {
