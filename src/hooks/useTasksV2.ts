@@ -1,5 +1,6 @@
 import { type FSWatcher, watch } from 'fs'
 import { useEffect, useSyncExternalStore } from 'react'
+import { onSessionSwitch } from '../bootstrap/state.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import { createSignal } from '../utils/signal.js'
 import type { Task } from '../utils/tasks.js'
@@ -29,6 +30,7 @@ const FALLBACK_POLL_MS = 5000 // Fallback in case fs.watch misses events
 class TasksV2Store {
   /** Stable array reference; replaced only on fetch. undefined until started. */
   #tasks: Task[] | undefined = undefined
+  #taskListId: string | null = null
   /**
    * Set when the hide timer has elapsed (all tasks completed for >5s), or
    * when the task list is empty. Starts false so the first fetch runs the
@@ -42,8 +44,10 @@ class TasksV2Store {
   #debounceTimer: ReturnType<typeof setTimeout> | null = null
   #pollTimer: ReturnType<typeof setTimeout> | null = null
   #unsubscribeTasksUpdated: (() => void) | null = null
+  #unsubscribeSessionSwitch: (() => void) | null = null
   #changed = createSignal()
   #subscriberCount = 0
+  #epoch = 0
   #started = false
 
   /**
@@ -64,6 +68,7 @@ class TasksV2Store {
     if (!this.#started) {
       this.#started = true
       this.#unsubscribeTasksUpdated = onTasksUpdated(this.#debouncedFetch)
+      this.#unsubscribeSessionSwitch = onSessionSwitch(this.#debouncedFetch)
       // Fire-and-forget: subscribe is called post-commit (not in render),
       // and the store notifies subscribers when the fetch resolves.
       void this.#fetch()
@@ -105,12 +110,16 @@ class TasksV2Store {
   }
 
   #debouncedFetch = (): void => {
+    if (!this.#started) return
+    this.#epoch++
     if (this.#debounceTimer) clearTimeout(this.#debounceTimer)
     this.#debounceTimer = setTimeout(() => void this.#fetch(), DEBOUNCE_MS)
     this.#debounceTimer.unref()
   }
 
   #fetch = async (): Promise<void> => {
+    if (!this.#started) return
+    const epoch = this.#epoch
     const taskListId = getTaskListId()
     // Task list ID can change mid-session (TeamCreateTool sets
     // leaderTeamName) — point the watcher at the current dir.
@@ -118,6 +127,12 @@ class TasksV2Store {
     const current = (await listTasks(taskListId)).filter(
       t => !t.metadata?._internal,
     )
+    if (!this.#started || epoch !== this.#epoch || taskListId !== getTaskListId()) return
+    if (taskListId !== this.#taskListId) {
+      this.#taskListId = taskListId
+      this.#hidden = false
+      this.#clearHideTimer()
+    }
     this.#tasks = current
 
     const hasIncomplete = current.some(t => t.status !== 'completed')
@@ -153,17 +168,21 @@ class TasksV2Store {
 
   #onHideTimerFired(scheduledForTaskListId: string): void {
     this.#hideTimer = null
+    if (!this.#started) return
     // Bail if the task list ID changed since scheduling (team created/deleted
     // during the 5s window) — don't reset the wrong list.
     const currentId = getTaskListId()
     if (currentId !== scheduledForTaskListId) return
+    const epoch = this.#epoch
     // Verify all tasks are still completed before clearing
     void listTasks(currentId).then(async tasksToCheck => {
+      if (!this.#started || epoch !== this.#epoch) return
       const allStillCompleted =
         tasksToCheck.length > 0 &&
         tasksToCheck.every(t => t.status === 'completed')
       if (allStillCompleted) {
         await resetTaskList(currentId)
+        if (!this.#started || epoch !== this.#epoch) return
         this.#tasks = []
         this.#hidden = true
       }
@@ -184,17 +203,20 @@ class TasksV2Store {
    * subsequent re-subscribe renders the last known state immediately.
    */
   #stop(): void {
+    this.#started = false
+    this.#epoch++
     this.#watcher?.close()
     this.#watcher = null
     this.#watchedDir = null
     this.#unsubscribeTasksUpdated?.()
     this.#unsubscribeTasksUpdated = null
+    this.#unsubscribeSessionSwitch?.()
+    this.#unsubscribeSessionSwitch = null
     this.#clearHideTimer()
     if (this.#debounceTimer) clearTimeout(this.#debounceTimer)
     if (this.#pollTimer) clearTimeout(this.#pollTimer)
     this.#debounceTimer = null
     this.#pollTimer = null
-    this.#started = false
   }
 }
 

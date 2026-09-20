@@ -34,6 +34,7 @@ import {
 import { logError } from '../../utils/log.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
+import { notifyTasksUpdated } from '../../utils/tasks.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import {
   clearSessionMetadata,
@@ -214,6 +215,7 @@ export async function clearConversation({
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking
   regenerateSessionId({ setCurrentAsParent: true })
+  notifyTasksUpdated()
   if (mods) await mods.bind({
     cwd: getOriginalCwd(),
     sessionId: getSessionId(),
