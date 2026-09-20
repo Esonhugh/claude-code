@@ -120,7 +120,7 @@ import {
   getCommandName,
   isCommandEnabled,
 } from '../commands.js'
-import type { LocalJSXCommandOnDone } from '../types/command.js'
+import { isCommandImmediate, type LocalJSXCommandOnDone } from '../types/command.js'
 import type {
   PromptInputMode,
   QueuedCommand,
@@ -4871,9 +4871,12 @@ export function REPL({
           idleHintShownRef.current = false
         }
 
-        const shouldTreatAsImmediate =
-          queryGuard.isActive &&
-          (matchingCommand?.immediate || options?.fromKeybinding)
+        const immediateContext = queryGuard.isActive && matchingCommand?.type === 'local-jsx' &&
+          (matchingCommand.immediate || options?.fromKeybinding)
+          ? getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel)
+          : undefined
+        const shouldTreatAsImmediate = immediateContext && matchingCommand &&
+          (options?.fromKeybinding || isCommandImmediate(matchingCommand, commandArgs, immediateContext))
 
         if (
           matchingCommand &&
@@ -4957,21 +4960,10 @@ export function REPL({
               restoreStash()
             }
 
-            // Build context for the command (reuses existing getToolUseContext).
-            // Read messages via ref to keep onSubmit stable across message
-            // updates — matches the pattern at L2384/L2400/L2662 and avoids
-            // pinning stale REPL render scopes in downstream closures.
-            const context = getToolUseContext(
-              messagesRef.current,
-              [],
-              createAbortController(),
-              mainLoopModel,
-            )
-
             const jsx = await runImmediateModCommand(
               matchingCommand,
               onDone,
-              context,
+              immediateContext!,
               commandArgs,
             )
 

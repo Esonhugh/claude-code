@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream'
 import { render } from '../ink.js'
 import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuffer.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
+import { isCommandImmediate } from '../types/command.js'
 
 // Execute the actual callbacks without importing REPL's startup/services graph.
 function extract(path: string, name: string, kind: 'callback' | 'function' = 'callback') {
@@ -73,7 +74,7 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     getCommandName: (c: any) => c.name, logEvent: noop, logForDebugging: noop,
     enqueue: (v: any) => queued.push(v), startQueryProfile: noop, queryCheckpoint: noop,
     createAbortController: () => new AbortController(), runWithWorkload: (_: any, fn: any) => fn(),
-    runImmediateModCommand,
+    runImmediateModCommand, isCommandImmediate,
     processUserInput: async (p: any) => {
       executions.push(p)
       const settled = p.mode === 'prompt' && (p.skipSlashCommands || !p.input.startsWith('/'))
@@ -812,6 +813,31 @@ test('direct processUserInput gap protects new text, history and undo until quer
   await pending
   expect(h.draft).toEqual(edited)
 })
+
+for (const fullscreen of [false, true]) {
+  for (const entry of ['repl', 'lower']) {
+    test(`${entry}: conditional immediate command respects fullscreen=${fullscreen}`, async () => {
+      let calls = 0
+      const command = { name: 'diff', type: 'local-jsx',
+        immediate: (_args: string, context: any) => context.modCommand.presentation.isFullscreen,
+        load: async () => ({ call: (done: any) => { calls++; done() } }) }
+      const h = harness({ input: '/diff', commands: [command] })
+      h.scope.getToolUseContext = () => ({ modCommand: { presentation: { isFullscreen: fullscreen } } })
+      if (entry === 'repl') {
+        const pending = h.submit('/diff', h.helpers)
+        h.release()
+        await pending
+      } else {
+        await h.lowerScope.handlePromptSubmit({
+          ...h.scope, input: '/diff', mode: 'prompt', commands: [command], helpers: h.helpers,
+          onInputChange: h.setText, messages: [], querySource: 'repl_main',
+        })
+      }
+      expect(calls).toBe(fullscreen ? 1 : 0)
+      expect(h.queued).toHaveLength(fullscreen ? 0 : 1)
+    })
+  }
+}
 
 test('lower immediate dispatch also leaves the caller-owned editor untouched', async () => {
   const h = harness({ input: '/config' })

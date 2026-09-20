@@ -205,7 +205,7 @@ export type CommandBase = {
     | 'mcp'
     | 'codex_app' // Where the command was loaded from
   kind?: 'workflow' // Distinguishes workflow-backed commands (badged in autocomplete)
-  immediate?: boolean // If true, command executes immediately without waiting for a stop point (bypasses queue)
+  immediate?: boolean | ((args: string, context: LocalJSXCommandContext) => boolean)
   isSensitive?: boolean // If true, args are redacted from the conversation history
   /** Defaults to `name`. Only override when the displayed name differs (e.g. plugin prefix stripping). */
   userFacingName?: () => string
@@ -217,6 +217,16 @@ export type Command = CommandBase &
 /** Resolves the user-visible name, falling back to `cmd.name` when not overridden. */
 export function getCommandName(cmd: CommandBase): string {
   return cmd.userFacingName?.() ?? cmd.name
+}
+
+export function isCommandImmediate(
+  cmd: CommandBase,
+  args: string,
+  context: LocalJSXCommandContext,
+): boolean {
+  return typeof cmd.immediate === 'function'
+    ? cmd.immediate(args, context)
+    : cmd.immediate === true
 }
 
 /** Resolves whether the command is enabled, defaulting to true. */

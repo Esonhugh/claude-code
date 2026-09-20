@@ -44,7 +44,7 @@ import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js'
 import { runAgent } from '../../tools/AgentTool/runAgent.js'
 import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js'
-import type { CommandResultDisplay } from '../../types/command.js'
+import { isCommandImmediate, type CommandResultDisplay } from '../../types/command.js'
 import { createAbortController } from '../abortController.js'
 import { getAgentContext } from '../agentContext.js'
 import {
@@ -905,7 +905,7 @@ async function getMessagesForSlashCommand(
                 shouldHidePromptInput: true,
                 showSpinner: false,
                 isLocalJSXCommand: true,
-                isImmediate: command.immediate === true,
+                isImmediate: isCommandImmediate(command, args, context),
               })
             })
             .catch((e) => {

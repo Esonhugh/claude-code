@@ -11,6 +11,8 @@ import type {
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { getIsGit } from '../../utils/git.js'
 import { call } from './diff.js'
+import diffCommand from './index.js'
+import { isCommandImmediate } from '../../types/command.js'
 
 function createContext(
   presentation: { columns: number; isFullscreen: boolean },
@@ -28,6 +30,13 @@ function createContext(
 }
 
 describe('/diff', () => {
+  test('only fullscreen diff bypasses the active turn queue', () => {
+    const fullscreen = createContext({ columns: 144, isFullscreen: true }).context
+    const inline = createContext({ columns: 144, isFullscreen: false }).context
+    expect(isCommandImmediate(diffCommand, '', fullscreen)).toBe(true)
+    expect(isCommandImmediate(diffCommand, '', inline)).toBe(false)
+  })
+
   test('opens the native sidebar in a wide fullscreen terminal', async () => {
     const { context, getState } = createContext({
       columns: 110,

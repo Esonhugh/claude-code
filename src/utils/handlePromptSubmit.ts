@@ -10,7 +10,7 @@ import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import type { IDESelection } from '../hooks/useIdeSelection.js'
 import type { AppState } from '../state/AppState.js'
 import type { SetToolJSXFn } from '../Tool.js'
-import type { LocalJSXCommandOnDone } from '../types/command.js'
+import { isCommandImmediate, type LocalJSXCommandOnDone } from '../types/command.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import type { Message } from '../types/message.js'
 import { createUserMessage } from './messages.js'
@@ -231,7 +231,7 @@ export async function handlePromptSubmit(
 
   // Handle local-jsx immediate commands (e.g., /config, /doctor)
   // Skip for remote bridge messages — slash commands from CCR clients are plain text
-  if (!skipSlashCommands && finalInput.trim().startsWith('/')) {
+  if (!skipSlashCommands && (queryGuard.isActive || isExternalLoading) && finalInput.trim().startsWith('/')) {
     const trimmedInput = finalInput.trim()
     const spaceIndex = trimmedInput.indexOf(' ')
     const commandName =
@@ -250,22 +250,17 @@ export async function handlePromptSubmit(
           getCommandName(cmd) === commandName),
     )
 
+    const context = immediateCommand?.type === 'local-jsx'
+      ? getToolUseContext(messages, [], createAbortController(), mainLoopModel)
+      : undefined
     if (
-      immediateCommand &&
-      immediateCommand.type === 'local-jsx' &&
-      (queryGuard.isActive || isExternalLoading)
+      immediateCommand?.type === 'local-jsx' && context &&
+      isCommandImmediate(immediateCommand, commandArgs, context)
     ) {
       logEvent('tengu_immediate_command_executed', {
         commandName:
           immediateCommand.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
-
-      const context = getToolUseContext(
-        messages,
-        [],
-        createAbortController(),
-        mainLoopModel,
-      )
 
       let doneWasCalled = false
       const onDone: LocalJSXCommandOnDone = (result, options) => {
