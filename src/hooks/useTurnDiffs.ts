@@ -10,6 +10,7 @@ export type TurnFileDiff = {
   isNewFile: boolean
   linesAdded: number
   linesRemoved: number
+  isTruncated?: boolean
 }
 
 export type TurnDiff = {
@@ -47,7 +48,9 @@ function isFileEditResult(result: unknown): result is FileEditResult {
   return hasFilePath && (hasStructuredPatch || isNewFile)
 }
 
-function isFileWriteOutput(result: FileEditResult): result is FileWriteOutput {
+function isFileWriteOutput(
+  result: FileEditResult,
+): result is FileWriteOutput {
   return (
     'type' in result && (result.type === 'create' || result.type === 'update')
   )
@@ -71,10 +74,19 @@ function countHunkLines(hunks: StructuredPatchHunk[]): {
 function getUserPromptPreview(message: Message): string {
   if (message.type !== 'user') return ''
   const content = message.message.content
-  const text = typeof content === 'string' ? content : ''
-  // Truncate to ~30 chars
-  if (text.length <= 30) return text
-  return text.slice(0, 29) + '…'
+  const text =
+    typeof content === 'string'
+      ? content
+      : content
+          .flatMap(block =>
+            block.type === 'text' && typeof block.text === 'string'
+              ? [block.text]
+              : [],
+          )
+          .join('\n')
+  const characters = [...text]
+  if (characters.length <= 30) return text
+  return characters.slice(0, 29).join('') + '…'
 }
 
 function computeTurnStats(turn: TurnDiff): void {
@@ -130,9 +142,11 @@ export function useTurnDiffs(messages: Message[]): TurnDiff[] {
       const isToolResult =
         message.toolUseResult ||
         (Array.isArray(message.message.content) &&
-          message.message.content[0]?.type === 'tool_result')
+          message.message.content.some(block => block.type === 'tool_result'))
+      const preview =
+        !isToolResult && !message.isMeta ? getUserPromptPreview(message) : ''
 
-      if (!isToolResult && !message.isMeta) {
+      if (preview !== '') {
         // Start a new turn on user prompt
         if (c.currentTurn && c.currentTurn.files.size > 0) {
           computeTurnStats(c.currentTurn)
@@ -142,12 +156,19 @@ export function useTurnDiffs(messages: Message[]): TurnDiff[] {
         c.lastTurnIndex++
         c.currentTurn = {
           turnIndex: c.lastTurnIndex,
-          userPromptPreview: getUserPromptPreview(message),
+          userPromptPreview: preview,
           timestamp: message.timestamp,
           files: new Map(),
           stats: { filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
         }
       } else if (c.currentTurn && message.toolUseResult) {
+        if (
+          Array.isArray(message.message.content) &&
+          message.message.content.some(
+            block => block.type === 'tool_result' && block.is_error === true,
+          )
+        )
+          continue
         // Collect file edits from tool results
         const result = message.toolUseResult
         if (isFileEditResult(result)) {
@@ -174,7 +195,8 @@ export function useTurnDiffs(messages: Message[]): TurnDiff[] {
             isFileWriteOutput(result)
           ) {
             const content = result.content
-            const lines = content.split('\n')
+            const lines = content === '' ? [] : content.split('\n')
+            if (content.endsWith('\n')) lines.pop()
             const syntheticHunk: StructuredPatchHunk = {
               oldStart: 0,
               oldLines: 0,
@@ -193,6 +215,14 @@ export function useTurnDiffs(messages: Message[]): TurnDiff[] {
             fileEntry.linesAdded += added
             fileEntry.linesRemoved += removed
           }
+
+          let remaining = 400
+          fileEntry.hunks = fileEntry.hunks.flatMap(hunk => {
+            const kept = hunk.lines.slice(0, remaining)
+            remaining -= kept.length
+            if (kept.length < hunk.lines.length) fileEntry.isTruncated = true
+            return kept.length ? [{ ...hunk, lines: kept }] : []
+          })
 
           // If file was created and then edited, it's still a new file
           if (isNewFile) {
