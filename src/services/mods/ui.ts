@@ -428,7 +428,7 @@ export function createModUi({
     pane.closeOnEscape = spec.closeOnEscape === true
     pane.holdToasts = spec.holdToasts === true
     pane.rows = spec.rows
-    pane.personInitiated = origin.kind === 'person'
+    pane.personInitiated = origin.kind === 'person' || (existing?.owner === owner && existing.personInitiated)
     if (
       spec.focus === true &&
       presentation.composerEmpty &&

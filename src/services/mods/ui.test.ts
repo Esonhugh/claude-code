@@ -170,6 +170,52 @@ describe('mod UI ownership and pane policy', () => {
     expect(ui.getSnapshot().every(pane => pane.visible)).toBe(true)
   })
 
+  test('keeps a person-opened pane visible through plugin resize and reopen at 96 columns', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    const initial = { ...wide, columns: 120 }
+    const narrow = { ...wide, columns: 96 }
+    await ui.open(owner, { id: 'asked', rows: 6 }, { kind: 'person' }, initial)
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, focused: false, placement: 'dock' })
+
+    await ui.open(owner, { id: 'asked', rows: 7 }, { kind: 'plugin' }, initial)
+    await ui.render(narrow)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, focused: false, placement: 'inline', rows: 7 })
+    await ui.open(owner, { id: 'asked', title: 'Loaded', rows: 8 }, { kind: 'plugin' }, narrow)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, focused: false, title: 'Loaded', rows: 8 })
+
+    await ui.open(owner, { id: 'auto' }, { kind: 'plugin' }, narrow)
+    expect(ui.getSnapshot().find(pane => pane.id === 'auto')).toMatchObject({ visible: false, focused: false })
+    await ui.render(initial)
+    expect(ui.getSnapshot().find(pane => pane.id === 'auto')).toMatchObject({ visible: false })
+    await ui.render({ ...wide, columns: 144 })
+    expect(ui.getSnapshot().find(pane => pane.id === 'auto')).toMatchObject({ visible: true, focused: false })
+  })
+
+  for (const end of ['close', 'unload', 'reload', 'candidate-release'] as const) {
+    test(`does not inherit person-opened visibility or focus after ${end}`, async () => {
+      const owner = { plugin: 'fixture' }
+      const { ui } = fixture()
+      const narrow = { ...wide, columns: 96 }
+      await ui.open(owner, { id: 'asked', focus: true }, { kind: 'person' }, { ...wide, columns: 120 })
+      if (end !== 'candidate-release') {
+        await ui.commit(owner)
+        expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, focused: true })
+      }
+
+      if (end === 'close') await ui.close(owner, 'asked', { kind: 'person' })
+      else if (end === 'unload') await ui.release(owner)
+      else if (end === 'candidate-release') ui.releaseCandidate(owner)
+      const nextOwner = end === 'reload' ? { plugin: 'fixture' } : owner
+      await ui.open(nextOwner, { id: 'asked' }, { kind: 'plugin' }, narrow)
+      if (end !== 'close') await ui.commit(nextOwner, end === 'reload' ? owner : undefined)
+      expect(ui.getSnapshot()).toHaveLength(1)
+      expect(ui.getSnapshot()[0]).toMatchObject({ owner: nextOwner, visible: false, focused: false })
+      expect(ui.getSnapshot()[0]!.focusedElement).toBeUndefined()
+    })
+  }
+
   test('preserves existing focus and element when reopening only to resize an inline pane', async () => {
     const owner = { plugin: 'fixture' }
     const { ui, draws } = fixture()
