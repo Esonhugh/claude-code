@@ -1,5 +1,33 @@
 # Mods 修复与兼容性验收
 
+## 2026-09-20 Mods 宿主三项修复（输入通过，整体视觉验收未通过）
+
+已与 native diff session 确认分工，宿主完成 Input bulk/paste/同批 submit、Pane 同 owner/id reopen 保留用户打开状态、builtin 拒绝文案对齐官方静默让位三项修复；移除无生产调用方的旧 builtin override 入口。native `/diff` 优先，不修改官方原件，不以其旧 Loading 绕过 builtin。详情见 `mods-test.md` 第 11 节。
+
+- **自动化通过**：输入/UI 114 pass；Pane/commands/runtimeHost 95 pass（原件和完整 types 无 skip）；Worker UI/sample 组合 27 pass，sample 子进程 7/249 另计；输入相邻 16 pass；launcher 14 pass。部分组合重叠，不相加当独立测试总数。
+- **构建通过但不是全工作区验收**：`303d0ce` archive + 限定 Mods/sample overlay，`make release-check`/`make build` exit0。证据根 `/private/tmp/mods-host-fix-20260920-4016xq6q`，制品 `source/built-claude`，SHA-256 `f5bfe62a03a6ba05666ec98195e9ad09b8a4af0bf7d47234652c865203c1df26`；不含并发 native/model/API/Agent 新改动。
+- **真实终端核心输入通过，整体不全绿**：四场 scripted tmux 已结束。inline/fullscreen 的 bulk/CJK/paste 后立即 Enter、literal return/tab、Button/Select、resize 状态保持、关闭通过；所有 CLI `/exit` 正常退出 0，自有进程/socket/loopback 已回收。冻结 builtin `/diff` 接管且旧原件静默让位，不算 Mod UI activation。`runtime/qualified-summary.json` 与 `runtime/final-cleanup.json` 为结论入口。
+- **残留失败/未覆盖**：inline `58×35` 下 Events/help 文字叠到 Count/Input。仓库外 `layout-probe.test.tsx` 的 direct ScrollBox 与 ModsPane 两例均红：Text 高度7→10，但后续节点 top仍为7/8/9，已证明不依赖Mods输入/生命周期；该通用布局链与303d0ce逐字节一致。具体Yoga内部修复另列后续，不靠截断样例文字绕过。inline 中间列表 wheel 未覆盖，fullscreen wheel 通过；plugin 自主同 ID reopen 本轮只有自动化覆盖。两场 inline driver exit1保留，不能用正常 CLI exit0改成全绿。旧官方 Loading、新原件缺失能力及历史 Workflow/PTY 门禁继续保留。
+
+以上为冻结制品验收时点，未覆盖共享 `built-claude`；下方历史失败保持原文。用户随后明确授权本轮按功能提交并推送，只纳入 Mods 样例、launcher、三项宿主修复及文档，不夹带并发 native/Yoga 未提交代码，也不将推送视为全仓验收通过。
+
+后续独立修复：native session 已定位 Yoga 多条目缓存只恢复尺寸、未恢复子节点位置，并限定缓存仅用于 measure。本方只读核对其 `58-shared-layout-current-green.log`，复用的 direct ScrollBox/ModsPane 探针为 2 pass，58 列兄弟 top 恢复 10/12/13；详见 `mods-test.md` 11.6。这不追认本节旧制品终端通过，Mods wheel/reopen 未覆盖项仍保留。
+
+## 2026-09-19 可复用测试 Mod 与官方原件调试
+
+本轮提供 `examples/mods/mods-test-lab` 和 `scripts/mods-test-lab.mjs`（fetch-official/check/run/clean），不扩展生产API、不修改官方源码。`/mods-test [open|status|reset|close|context]` 覆盖控件、bounded事件、透传与一次性context。使用方法见README；完整方案/红绿/失败分类见 `mods-test.md` 第10节，证据根 `L=/private/tmp/mods-test-lab-20260919-d2mvP8`。
+
+- **自动化与构建通过**：样例在冻结宿主及当前工作区分别7子测试/249断言、完整官方作者类型无skip；九文件相邻219/0（子进程另列）；launcher14/0、111断言。测试context TS2352已修，原失败保留；`make release-check`/`make build`最终exit0。
+- **冻结输入**：`b65ed54` archive加本任务文件，不混入并发 `/tui`、内置diff或跨session草稿。2746文件内容摘要 `aa83b3352d0529726db4cb5138d31c3512cc0a85cf4390562f684afbf6bddc0b`（排除动态报告）；最终 `L/artifact/final-built-claude` 2.1.219 / 100432994 bytes / SHA-256 `ca066924ce48976c590b22e97f09c73f3a816152894c1cd26d75ccf9b7fc27e3`，与本轮runtime制品逐字节相同。
+- **四份官方原件已取得**：固定 `bf7d404e26a5fb6167d21b46c93a2bf6c22ab274`，manifest全0.1.0，连同完整types共1002文件，tar/zip逐文件一致且fetch重复复用。持久缓存 `/Users/esonhugh/Library/Caches/mods-test-lab/official/bf7d404e26a5fb6167d21b46c93a2bf6c22ab274/snapshot-d2vE20/mods`。
+- **最新官方兼容限制已实测**：diff缺`env.get`；agents-md正常入口manifest `userConfig.instructionFiles.options`校验失败，直接loader另缺`session.root`；telemetry缺`session.authorize`。sec-default可扫描且compiled UI显示user scope Enabled，无managed身份或政策生效证据。下载/scan/UI Enabled不能等同activation/trigger成功。
+- **样例真实终端整体failed**：Button exactly-once、Select、Page、resize、close/Escape、reload及重新启用计数通过；bulk literal Input在两布局都为`input=0,length=0,submit=1`，根因未定。wheel坐标/边界无效与活动Pane禁用撤下未覆盖。loopback实际Read一次与turn、一次性context通过（7请求中4 primary/3辅助）；历史context保留不算重复注入。原driver错误计入辅助请求的失败保留。inline `/exit`由harness过早发送而失败，之后forced cleanup；fullscreen/API正常exit0，三个场景资源全部回收。
+- **旧官方diff只作对照**：`f96c3b4`原件在冻结宿主fullscreen完成中文/长行/Page/wheel/resize/启停；inline详情卡`Loading diff…`，相关滚动未覆盖，整体failed。含readiness的四个实际CLI正常exit0并回收资源。误用不存在的`/mods`导致一次被封闭loopback拒绝的title API尝试，不能宣称零API尝试。当前工作区并发更改builtin冲突规则，本轮旧diff结论不外推。
+
+- **launcher真实入口限定通过**：独立attempt2完成readiness/status、active clean拒绝、正常exit0、stopped clean及相邻53份证据保留。首次误将trust页判为prompt的harness失败保留。启动需确认自有fixture trust；默认marketplace安装尝试被隔离环境阻止，footer可能显示失败，不宣称零外部访问尝试。索引 `L/run-entry-evidence/evidence-index.json`。
+
+两个runtime索引为 `L/runtime-sample/evidence-index.json`、`L/runtime-official/index.json`，原始失败保留。所有本轮执行已结束，输入/旧diff问题留作独立后续；本轮不是全仓通过、不是官方CLI parity，不解除旧Workflow/PTY门禁。未commit/push，未覆盖共享built-claude，以下历史失败继续有效。
+
 ## 2026-09-19 Mods UI/UX 残留修复（限定高度补验结束，整体仍未通过）
 
 本节为最新状态，下方原始失败与各轮判定保留。起点 `feat/mods@656ecafb3696d817ac35134f6b00d8f93171f6cc`；证据根 `/private/tmp/mods-uiux-20260919-4y11t_bu`，方案与红绿详见 `mods-test.md` 第9节。

@@ -1,6 +1,6 @@
 # Mods 收口测试方案与验收记录
 
-第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；最新 Mods UI/UX 修复与限定验收见第 9 节。历史失败不会由后续成功覆盖。
+第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；Mods UI/UX 修复与限定验收见第 9 节；可复用测试 Mod 与官方原件调试见第 10 节；输入、Pane reopen 与 builtin 让位修复见第 11 节。历史失败不会由后续成功覆盖。
 
 ## 1. 范围和判定规则
 
@@ -584,3 +584,188 @@ session/window/pane为`cc-uiux-height-contract-10:0.0` / `%0`，160×50；socket
 本次只修仓库外harness并回填这两份不内嵌报告，未再改生产协议、README/CHANGELOG、依赖、版本或CI，无新build，未启动官方CLI或真实provider。报告检查`U/docs-height-followup-check.log`为5 pass/0 fail、exit0；签名提交前另做最终diff检查。此前259/0、release-check与build属于第五制品冻结基线，不冒充当前HEAD重测。
 
 **本轮限定补验已结束，不再启动runtime。整体仍未通过，不push。** 第四制品长行尾部/Page严格谓词、依赖的rapid Escape/Rewind及其他未覆盖项仍保留；公共Yoga子布局缓存未修，旧Workflow timeout/PTY退出码异常继续阻止整体推送。仅正常签名提交`mods-test.md`与`handoff.md`，不混入两份cross-session草稿、并发源码或原始证据。
+
+## 10. 可复用测试 Mod 与官方原件调试（2026-09-19）
+
+### 10.1 范围与输入
+
+本轮新增可长期加载的 `examples/mods/mods-test-lab`，以及 `scripts/mods-test-lab.mjs` 下载/检查/隔离启动入口，不扩展宿主 API 或调整官方 diff 内容 pin。基线为 `b65ed5482d74d4e6f122babbb50284254213d651`，证据根 `L=/private/tmp/mods-test-lab-20260919-d2mvP8`。原工作区并发的 `/tui`、内置 diff 和两份跨 session 草稿不混入；从 HEAD archive 导出镜像并只叠加本任务文件，不建 worktree，不覆盖仓库共享 binary。
+
+官方来源固定为 `anthropics/claude-code@bf7d404e26a5fb6167d21b46c93a2bf6c22ab274`，包含 `diff`、新增的 `agents-md`、`sec-default`、`telemetry` 四个 Mod，各 manifest 版本为 `0.1.0`。下载的完整子树与作者类型保留在仓库外，记录逐文件 SHA-256 与内容摘要；扫描、准入、activation、实际触发分别判定。
+
+### 10.2 自动化与终端方案
+
+1. 直接加载样例文件，通过真实 discovery → prepare → loader → Worker；启动不打开 Pane，注册 `/mods-test`。检查 Button/Input/Select/scroll/close、工具 core 恰好一次、context 只附加到下一真正 prompt、reset、20 条事件上限与敏感 canary 不进入日志。
+2. 检查同内容 reload 不重复 activation，卸载后旧命令/Pane/callback 失效，重新启用建立新 activation 并保留约定的 JSON store。使用完整外部作者声明严格编译，不用内部类型替代官方契约。
+3. 脚本测试覆盖缓存重复执行、损坏/中断恢复、路径与内容校验、拒绝清理活跃/非自有/封存 run。测试网络使用本地替身，不连接统计服务。
+4. 对四份官方原件执行真实加载诊断；`diff` 只有生产允许覆盖 builtin 时才计功能通过，`agents-md` 缺失能力必须原样报告，`sec-default` 不伪造 managed tier，`telemetry` 不连接真实 analytics。
+5. 在隔离源码上执行目标 Bun 测试、`make release-check`、`make build`。记录构建输入清单与新 binary SHA-256，不继承旧制品结果。
+6. 专用 agent 驱动私有 tmux，先无插件 readiness，再 sample UI-only 与 loopback prompt → 一次只读 Read → turn.complete。sample 与可激活官方 diff 分别覆盖 inline/fullscreen、宽窄 resize、键盘/滚轮及 disable/reload/enable；未送达操作记为未覆盖。
+
+隔离使用独立 HOME/config/XDG/TMP/cwd、白名单环境、fake key 和 loopback；真实 Keychain 与非 loopback 网络禁用。临时 PATH 前置 `security` 返回 44；`git init --template=` 后显式创建 `.git/info`，不使用会关闭插件的 `--bare`/simple/disableAllHooks。正常 `/exit` 与 forced cleanup 分别判定，异常 driver 必须非 0；未启动不能靠空 cleanup 获得通过。
+
+### 10.3 官方原件与静态诊断
+
+最新四个 Mod 及 `types` 共 **1002 个文件**，位于 `L/official-reviewed`（diff 785、agents-md 75、sec-default 60、telemetry 81、types 1）。原件内容清单见 `official-reviewed-inventory.json`，摘要为 `4ffdc50d53734ff67c379d6e82603caa423e1dd01e4cadad246dbcb78972e930`。下载归档 SHA-256 为 `296ee841da509853f8b0aba1181f1da15e0f318264245a78790cb4b57fe8d552`。这些原件未改写或重命名。
+
+冻结生产 loader 诊断（`official-scan.json` / `official-scan.log`）：
+
+| Mod | 扫描结果 | 尚不能声称的覆盖 |
+| --- | --- | --- |
+| diff | 拒绝：`unsupported core capability env.get` | 最新版不能激活；尚未进入 builtin 内容 pin 检查 |
+| agents-md | 拒绝：`unsupported core capability session.root` | 未执行 AGENTS.md context 或 Read 注入 |
+| sec-default | 扫描成功，21 模块、13 事件、`settings.read`、`next.to(..., 'append')` | 扫描不等于运行准入，更不等于 managed 组织策略 |
+| telemetry | 拒绝：`unsupported core capability session.authorize` | 未建立统计 noun、未发送统计事件 |
+
+随后通过实际 launcher 完成 discovery → prepare → loader 五目标检查，见 `L/launcher-checks.json`。**agents-md 在正常插件入口更早失败**：manifest 的 `userConfig.instructionFiles.options` 不被本地 schema 接受（`Unrecognized key: "options"`），尚未进入 loader；上表 `session.root` 是直接扫描入口的独立诊断，不能混为正常加载阶段。sample 与 sec-default 的 discovery/preparation/scan 通过，其余结果与上表一致；`check` 明确将 admission/activation/trigger 标为 not-run。
+
+可复用官方下载缓存为 `/Users/esonhugh/Library/Caches/mods-test-lab/official/bf7d404e26a5fb6167d21b46c93a2bf6c22ab274/snapshot-d2vE20/mods/<name>`，四个名称同上，类型在 `mods/types/claude-code.d.ts`。launcher 清单摘要 `478cdc17e1fd526164b2e7f3bcf54bfa74e7af5347ae80ba0c040a00dd6c015b` 包含 path/size/sha256，和独立归档清单格式不同；`L/download-crosscheck.json` 已确认全部1002文件的路径/字节 SHA-256 相同。第二次 fetch 为 `reused:true`，未再次下载。五份 `check` 的私有 run 均加 `SEALED` 保留，不由 clean 删除。
+
+另下载旧固定提交 `f96c3b49c4c8721685206aaab23609b2d399df4e` 到 `L/official-supported`，仅作历史支持对照，diff 775 文件（连同 sec-default 和类型共 836 文件，inventory 独立）。冻结 HEAD 的完整作者类型/Worker/loader 两文件回归为 **100 pass / 0 fail / 245 expect**，官方 fixture 和本轮完整公开类型均实际配置，未 skip。先前缺少 fake key 的批次为99/1，保存在 `supported-official.log`；补齐隔离 runner 的 fake key 与 loopback endpoint 后通过，未更改断言或产品实现，见 `supported-official-qualified.log`。新官方类型的作者契约单独1/0不与这一批重复相加。
+
+### 10.4 执行状态
+
+样例与入口已实现，样例/官方有界终端验证已结束，launcher独立启动验收单列；当前不构成整体通过报告。隔离前置已实测 empty-keychain exit44 与 Git `.git/info` 创建；最初 inline `bun -e` 校准被 shell 转义干扰，未启动 CLI，改用文件脚本后成功，两份日志保留。既有插件发现/UI/准入基线三文件45/0、174 expect。
+
+样例测试直接读取仓库的 manifest/hooks/register.ts，真实 Worker 的 **7 个子测试全部通过，249 expect**；覆盖启动无 Pane、Button/Input/Select/scroll/stale callback、纯 render、工具 success/error 透传且 core 恰好一次、一次性 context、reset、事件/输入上限、canary、disable/enable 与完整官方作者声明。父包装单独1/0，不与子测试重复计数。九文件相邻回归为 **219 registered pass / 0 fail / 566 expect**，子进程7/0另列，见 `L/mods-adjacent.log`。
+
+首次新增样例的 `make release-check` 在 `testLab.test.ts:140` 报 TS2352：测试只提供命令桥接实际读取的 `abortController/modCommand`，却直接转完整 `LocalJSXCommandContext`。原失败保留于 `L/sample-release-check.log`；修正为 `satisfies Pick<...>` 校验实际字段，再明确转换测试 double，不改生产接口或断言，复验结果单独记录。
+
+冻结宿主构建与版本检查已完成，`make build` exit0，版本2.1.219，初始制品 `L/artifact/built-claude` SHA-256 `ca066924ce48976c590b22e97f09c73f3a816152894c1cd26d75ccf9b7fc27e3`。宿主2742文件清单为 `host-source-manifest.json`。这是未叠加新样例/脚本前的宿主制品，不能当成最终新增文件检查；不覆盖共享根目录产物。并发工作已开始调整真实工作区 `src/services/mods/runtime.ts` 的 builtin diff 冲突规则，本轮不恢复、不混入该修改；旧diff覆盖资格只对冻结基线和指定 binary 有效。
+
+最终叠加样例、测试、launcher 及 README 后，`L/final-release-check.log` 与 `L/final-build.log` 均 exit0。`audit:missing` 报告10个既有测试字符串 fixture 相对引用，src 导入/文本资产/类型模块缺失为0，目标正常退出。`git diff --check` 通过显式 `GIT_DIR/GIT_WORK_TREE` 检查真实工作区，不把 archive 误称为 Git worktree。2746文件构建内容摘要 `aa83b3352d0529726db4cb5138d31c3512cc0a85cf4390562f684afbf6bddc0b`，构建前后未变；动态 `mods-test.md`/`handoff.md` 和运行输出不进入源码身份。最终 `L/artifact/final-built-claude` 为100432994 bytes，SHA-256仍为 `ca066924ce48976c590b22e97f09c73f3a816152894c1cd26d75ccf9b7fc27e3`，与全部本轮 runtime 使用的初始制品逐字节相同，见 `L/final-artifact.json`。
+
+修正后的 sample 在冻结源码和实际工作区分别 **7/0、249 expect**，完整类型无 skip，见 `sample-fixed-qualified.log`、`sample-current-workspace.log`。中间一次误把完整类型路径写成 `official-reviewed/mods/types` 导致 TS6053，原 `sample-fixed.log` 保留；实际提取路径是 `official-reviewed/types`，修正参数后通过，不改声明。launcher 最终离线测试 **14/0、111 expect**，包含真实 sandbox discovery、空 security 44、真实 security EPERM 与清理边界，主线程复验见 `launcher-main-review.log`。将其并入九文件的外层sandbox时，launcher测试固定使用短 `/private/tmp/mods-lab-test-*`，不在外层只允许L写入的范围内，12项在mkdtemp处EPERM，合批结果 **221/12** 保留于 `final-mods-adjacent.log`，不能称十文件全通过。没有扩大sandbox写权限或跳过断言；九文件在原隔离内复验 **219/0**（`final-mods-nine.log`），launcher保持其独立真实sandbox测试的14/0，分别报告。
+
+### 10.5 样例真实终端结果
+
+证据索引 `L/runtime-sample/evidence-index.json`，限定审阅 `qualified-summary.json`，原三个 driver/result 的失败与非0退出保留。只运行本地冻结制品，不是官方 CLI parity；三个场景各240秒上限。样例通过私有 filesystem marketplace 原样加载，UI inline/fullscreen 不代表这三个场景使用 `--plugin-dir` 入口，launcher 另验。初始 Git 前置因祖先目录 metadata 被 sandbox 拒绝而未启动 CLI，最小调整 fixture 后三场实际启动。
+
+| 场景 | 实际通过 | 失败或未覆盖 |
+| --- | --- | --- |
+| inline UI | Button 单次Enter计数0→1；Select切CJK；PageDown可见行变化；宽窄恢复；Close/Escape；同内容reload保留；disable/enable后activation 1→2与持久计数 | bulk literal Input 丢失：`input=0,length=0,submit=1`；wheel坐标落在Pane外，未覆盖；禁用前Pane已关，未证明活动Pane/命令撤下 |
+| fullscreen UI | 同上；正常 `/exit` 0，UI请求0 | 已等待焦点及文本落地后Input仍同样失败；wheel落在dock外且Page已到尾，不定为产品滚轮缺陷 |
+| loopback API | 真实prompt→恰好一次只读Read成功→turn.complete；显式context仅下一个新prompt附加；后续请求不重复注入；正常 `/exit` 0 | 不是真实provider；原谓词错误地计入辅助请求导致driver非0，限定审阅按原请求内容证明目标通过，不改原失败 |
+
+API场共7请求：4 primary、3辅助；一次Read发出且一次成功tool_result。`api/qualified-api-analysis.json` 给出实际请求路径：`SAMPLE_CONTEXT_NEXT`的新用户context含一个marker，`SAMPLE_CONTEXT_FOLLOW`的新context无marker，旧conversation中的历史marker保留不是再次注入；system均无marker。辅助无tools的title请求被fixture误做schema检查，返回惰性文本，不等同于Read schema失败。
+
+inline正常退出失败属于harness：过早命中旧status后在最新命令完成前发 `/exit`，变成模型输入并产生2个loopback请求；其后只强制回收自有资源，不能算正常退出通过。Fullscreen/API正常退出通过。`final-cleanup.json` 确认三个自有server/PID/socket与端口均已回收，binary/sample哈希与Git fixture不变。
+
+关键实际标识：`sample-inline-20260919:0.0 %0`、`sample-fullscreen-20260919:0.0 %0`、`sample-api-20260919:0.0 %0`；socket均为对应场景目录的 `tmux.sock`。输入见各目录 `inputs.jsonl`/`commands.jsonl`，Input失败直接证据为 `L/runtime-sample/fullscreen/05-input-submit.pane.txt`。**样例交互整体仍failed**，不以单测通过掩盖终端Input问题；单字符输入与paste差异、Input根因、有效wheel坐标补验不在本轮追加执行。
+
+### 10.6 官方原件真实终端结果
+
+索引 `L/runtime-official/index.json`，逐断言 `assertions.json`，总判定 `summary.json` 为 **failed，driver exit1**。无插件readiness加三个实质场景均使用冻结宿主；没有官方CLI或真实provider。最新原件在compiled UI中重现 env.get、manifest options、session.authorize 三项诊断；sec-default显示 user scope Enabled且无准入错误，但未独立证明Worker生命周期或managed政策效果。
+
+旧 `f96c3b4` diff 仅作冻结宿主兼容对照：
+
+- inline：六个变更文件列表、中文文件选择、resize、disable/reload→0与enable/reload→1通过；详情持续 `Loading diff…`，hunks失败，详情Page/wheel未覆盖。
+- fullscreen：dock显示与中文文件选择、长中文新增行、PageDown/PageUp、pointer wheel可见视口变化、140×38 resize、disable/reload撤dock与enable/reload恢复plugin计数通过。wheel仅证明视口变化，不宣称逐tick精确行数或完整像素布局。
+- 四个实际CLI（含readiness）均正常 `/exit` 0；初次legacy-inline被fixture目录metadata拒绝，CLI未启动，独立 `legacy-inline-2` 保留修正后的证据。所有自有PID/server已结束，确认server不存在后移除残留socket，见 `cleanup-final.json`。原件1002+836文件及binary最终哈希一致，见 `integrity-final.json`。
+
+readiness首次fixture把整个fake key放入approved，而非末20字符，导致确认提示等待；不重启CLI，完成同场prompt/exit，但原readiness无干预谓词仍failed。误输入冻结CLI不存在的 `/mods` 曾触发session-title API，closed `127.0.0.1:1` 拒绝连接；所以“零API尝试”failed，不能说完全无请求尝试。私有配置内也发生marketplace自动安装尝试，被sandbox阻止，不是用户真实配置读取或外网成功。
+
+关键标识：`mods-readiness:0.0 %0`、`mods-latest:0.0 %0`、`mods-legacy-inline-2:0.0 %0`、`mods-legacy-fullscreen:0.0 %0`；socket为各目录 `s`。实际输入在各 `commands.jsonl`，三个加载错误见 `L/runtime-official/latest/12-errors-viewport.txt`，inline卡住见 `legacy-inline-2/07-detail-timeout-viewport.txt`，fullscreen通过的hunks/Page/wheel见17/20/22/24/26/28号viewport。并发工作区已改变builtin diff规则，这些旧diff结果不能套用到当前dirty宿主。
+
+### 10.7 新启动入口与清理验收
+
+通过仓库实际 `bun scripts/mods-test-lab.mjs run sample --cache <L下短目录> --binary L/artifact/built-claude` 启动，未改script或sample。首次driver误将workspace trust选择箭头当作prompt，status没有执行；原失败保留，自有进程停止且run保留 `L/re1/runs/r-df39ac3d81b1`。修正harness readiness谓词后的独立attempt2六项通过：真实prompt、`/mods-test status`返回activation1/command1/tool-prompt-turn0、active clean exit1并保留run、`/exit`正常exit0、stopped clean exit0删除run/socket、相邻53份证据哈希不变。整个两次入口实验在240秒上限内；第一场不计通过，不混入sample完整UI验收。
+
+有效标识 `mods:0.0 %0`，socket为 `L/re2/runs/r-80444fd47fae/tmux.sock`（已清理）。输入严格为自有fixture trust确认Enter、`/mods-test status`+Enter、`/exit`+Enter。Plugin inventory SHA-256 `2fa98997e5d8400a3405ecbcddfe0c1b708c5567d0f3d094dd30b74c0d19a2b2`，launcher SHA-256 `4d0883f37fcdb64f83a1be69a9a3c13632ddcff6eb8a6c7e572494bdb293dfc8` 前后未变。完整索引 `L/run-entry-evidence/evidence-index.json`，实际summary为 `attempt2/02-status-pane.txt`，退出/清理为 `attempt2/04-exit.json`、`attempt2/05-cleanup.json`。
+
+可复制的已验制品入口：
+
+```bash
+bun scripts/mods-test-lab.mjs run sample \
+  --binary /private/tmp/mods-test-lab-20260919-d2mvP8/artifact/final-built-claude
+```
+
+按输出attach命令连接后，先确认**打印路径确为工具自己的私有fixture**，再处理workspace trust提示；`run`只创建session，不代替用户确认。宿主仍会尝试默认marketplace HTTPS/SSH自动安装，sandbox下失败并显示footer；本轮未改生产自动安装逻辑，不能声称零外部访问尝试，未观察到成功外部provider请求。正常退出后使用相同cache的clean，需保留证据时先按输出seal，SEALED目录不会删除。
+
+本轮实现、限定验证与报告已收口，所有执行agent已结束；发现的Input/旧diff问题留待单独定位。**整体交互仍未通过**，历史 Workflow/PTY 与 Mods 未覆盖项继续保留；没有commit/push，也不解除整体门禁。
+
+## 11. Mods 宿主输入、Pane reopen 与 builtin 让位修复（2026-09-20）
+
+### 11.1 范围与归属
+
+已通过 `/tmp/diff-mod-fix-message` 与 native diff session 确认分工。本节仅验收 Mods 宿主；native DiffController/DiffView、REPL、immediate 接线及其新测试由另一 session 独立负责，不用本节结果宣称其通过。
+
+- `KeyboardEvent` 保留明确的 `text`/`isPasted`，不以 key 名长度猜测文本；ModInput 先消费文本，literal `return`/`tab` 不会当特殊键。实时 ref 保证同批输入及紧随其后的 submit 使用最新值。
+- `parseMultipleKeypresses` 分开普通 bulk chunk 内的控制键与文本；bracketed paste 内的 CR/Tab 保留为字面内容，不触发提交/移焦。方向键、F-key、未知协议键和 Ctrl/Meta/Super 组合不插入 Input。
+- 同 owner/id 的存活 Pane 在插件 resize/reopen 后保留 `personInitiated`；close/unload/reload/candidate-release 后不继承，也不扩大焦点权限。
+- builtin 名称/alias 仍拒绝注册，文案对齐官方 `refused: it is the built-in /` 契约。移除无生产调用方的 `allowBuiltinConflict` 入口及专用状态；官方正常让位静默，真正注册异常仍可观察。
+- 官方 2.1.272 制品内置 native `/diff`，公开 diff Mod 是 builtin 缺席时的替代实现。旧 `f96c3b4` Mod 的 inline Loading 根因为列表/正文加载集合不一致及 fixture baseline 时序；不改官方原件、不改名、不恢复覆盖来绕过，不把它归为 native 缺陷。
+
+### 11.2 红绿与自动化
+
+证据根 `F=/private/tmp/mods-host-fix-20260920-4016xq6q`。
+
+| 检查 | 结果与边界 |
+| --- | --- |
+| 新增真实 stdin 首轮 | 1 pass / 8 fail：bulk/CJK/paste/literal key name 丢失或误判，同批输入后 submit 读旧值；真实 Tab 控制组通过 |
+| 冻结原生产代码的最终输入红测 | `F/input-red.log`：1 pass / 34 fail，含事件契约与 backspace/empty paste；没有跳过或弱化失败断言 |
+| 输入事件、ModsPane、默认键绑定 | 工作区 `F/input-tests.log` 与冻结构建源码 `F/frozen-input-tests.log` 均为 114 pass / 0 fail / 732 assertions，包含 11 条新增真实 stdin 控件场景；两次运行不相加 |
+| Pane reopen、commands、runtimeHost | `F/host-tests.log`：95 pass / 0 fail / 464 assertions；官方原件及完整作者 types 显式启用，0 skip |
+| 真异常可观察 | 官方原件遇到模拟 command catalog 故障仍调用 uiLog；正常 builtin 拒绝则日志为空，native core 恰好执行一次 |
+| Worker UI、uiRealm、sample | `F/mods-adjacent.log`：外层 27 pass / 0 fail / 115 assertions；sample 子进程 7 pass / 249 assertions 另计，完整作者类型校验实际执行 |
+| PromptInput Escape 与键绑定相邻 | `F/input-adjacent.log`：16 pass / 0 fail / 144 assertions；与默认键绑定组合有重叠，不相加宣称独立总数 |
+| launcher | `F/launcher-tests.log`：14 pass / 0 fail / 111 assertions |
+
+Pane 最小红测为 0 pass / 1 fail；builtin 契约及旧绕过参数红测为 0 pass / 2 fail；官方原件静默让位红测为 0 pass / 1 fail。修复后均转绿；另在冻结原生产代码重跑四例，`F/host-red.log` 为 0 pass / 4 fail，随后已恢复并核对镜像内容。开发中曾漏写 `React.useRef` 命名空间而导致组件挂载失败，已修正并重跑完整 114 项，不以过滤失败当通过。
+
+官方原件入口为 `/private/tmp/mods-test-lab-20260919-d2mvP8/official-supported`，完整声明为同证据根 `official-reviewed/types/claude-code.d.ts`。本轮不扩展最新官方 Mod 所需的 `env.get`、`session.root`、`session.authorize` 等能力，第 10 节限制仍有效。
+
+### 11.3 构建身份与终端验收
+
+从 `303d0ce451a8e9a513c24dde34526af95b92fa1c` 的 Git archive 建独立镜像，仅叠加本节宿主修复及既有 sample/launcher；不混入并发 native/model/API/Agent 改动、不覆盖共享 `built-claude`。2758 个内容记录见 `F/source-inventory.json`，排除动态 `handoff.md`/`mods-test.md`；源码摘要 `fded438c4f7d47e748121d724fd5e78ab7d5a49e9e1cdec9af378a9f03f9c397`，构建后无漂移。
+
+- `make release-check`：exit 0，含 TypeScript、lint、changelog、audit 与 diff 检查。
+- `make build`：exit 0，制品 `F/source/built-claude`，2.1.219，100432994 bytes，SHA-256 `f5bfe62a03a6ba05666ec98195e9ad09b8a4af0bf7d47234652c865203c1df26`。
+- 单独 lint 无错误，ModsPane 三条既有 React hooks warning 未扩域处理。
+
+### 11.4 新制品真实 tmux 结果（整体未通过）
+
+四场运行已结束。**核心 Input 修复通过，但视觉验收仍有失败，不能报全绿。** 索引为 `F/runtime/evidence-index.json`、`command-index.json`，逐项结论为 `qualified-summary.json`；最小复现为 `minimal-reproduction.txt`。本轮未启动官方 CLI，不称官方 CLI parity。
+
+| 项目 | inline | fullscreen |
+| --- | --- | --- |
+| bulk `sample-input`、CJK、bracketed paste 后紧随 Enter | passed：准确非空内容及计数 | passed：准确非空内容及计数 |
+| literal `return`/`tab` 与真正 Enter/Tab | passed：字面文本不提交/移焦，真正键仍提交/切换控件 | passed |
+| Button exactly-once、Select CJK、关闭按钮与 Escape | passed | passed |
+| `140×45 → 58×35 → 140×45` Pane/输入/计数保持 | passed | passed |
+| 中间列表视口、真实 Pane 坐标 wheel | not covered：重测有行变化，但未建立中间列表前置 | passed：`(76,24)`、Row 16–59 中间视口 |
+| 窄屏控件区域无重叠 | **failed**：Events/help 叠入 Count/Input；独立通用布局复现见 11.5 | not covered：窄屏时显示列表，未显示顶部控件 |
+| plugin 自主同 ID reopen 保留用户状态 | not covered：本轮只有宿主自动化覆盖，样例普通 resize 不能替代 | not covered |
+
+实际输入阶段两布局均为 `length/input/submit`：`12/1/1 → 16/2/2 → 24/3/3 → 33/5/3`；随后真正 Enter 为 `33/5/4`。文本至 Enter 约 5.8–7.5ms，中间未插入等待。原始准确文本和统计可查 `inline-a2/07-paste-submit.pane.txt`、`fullscreen-a1/07-paste-submit.pane.txt` 及相邻 `*-check.json`。
+
+首场 inline 顶部无可见 Row，driver 未发送 wheel，保留 not covered；只修订一次 driver。其 summary 虽列出 `inline-a1/wheel-coordinates.jsonl`，该文件实际不存在，不能作为投递证据；主线程核对其余 passed/failed 断言路径均存在。重测在实际 Row04 `(6,29)` 发送后 Row1–6 变为 Row1–7，但未满足中间视口前置，不改判通过。窄屏重叠见 `inline-a1/11-narrow.pane.txt:25–27`，恢复宽屏后数据正确；不能把状态保持通过当视觉无缺陷。
+
+旧 `f96c3b4` 官方原件共存场景通过：未改原件、未改名、无 override，未出现注册失败，`/diff` 显示 native `Uncommitted changes (git diff HEAD)` / `Working tree is clean`。见 `native-diff-a1/03-diff.pane.txt`。这仅证明该冻结宿主 builtin 接管，不算 Mod UI activation，也不外推到另一 session 的新 native 实现。
+
+| 场次 | tmux target / pane | socket（均已回收） | CLI 正常退出 / driver |
+| --- | --- | --- | --- |
+| inline-a1 | `mhf-inline-20260920:0.0` / `%0` | `/private/tmp/mhf-tkfj7sk1/inline-a1.sock` | 0 / 1 |
+| fullscreen-a1 | `mhf-fullscreen-20260920:0.0` / `%0` | `/private/tmp/mhf-tkfj7sk1/fullscreen-a1.sock` | 0 / 0 |
+| inline-a2 | `mhf-inline-20260920:0.0` / `%0` | `/private/tmp/mhf-tkfj7sk1/inline-a2.sock` | 0 / 1 |
+| native-diff-a1 | `mhf-diff-20260920:0.0` / `%0` | `/private/tmp/mhf-tkfj7sk1/native-diff-a1.sock` | 0 / 0 |
+
+每场均通过 `/exit` 正常退出 0，未强制终止 CLI；inline driver 非零表示断言不全通过，不是 CLI 退出失败。自有 CLI/tmux/socket/loopback listener 均已回收，证据保留，见 `F/runtime/final-cleanup.json`。四场 HTTP/API 计数均为 0；默认 marketplace clone 曾因白名单 PATH 无 git 而 ENOENT，不能声称无外联意图，但没有产生该连接。
+
+使用空 HOME/config/XDG/TMP、security exit44 stub、私有 Git fixture及非 loopback 网络隔离；不读真实凭据。`hash-comparison.json` 记录 binary、775 文件旧官方原件、sample 和 launcher 前后均未改变。无 commit/push、不覆盖共享制品，不解除历史 Workflow/PTY 或全仓门禁。
+
+### 11.5 窄屏重叠的独立归因（本轮冻结制品未修复）
+
+静态审阅提示 Text 测量、绘制宽度与 Yoga 几何可能不一致，但不能把推测直接当根因。主线程在仓库外增加 `F/layout-probe.test.tsx`，分别使用纯 `ScrollBox + Box + BaseText` 和 ModsPane 中等价的 Text 树，不调用 ModInput、Worker、Pane reopen 或命令注册。冻结源码运行结果 `F/layout-probe.log` / `.exit` 为 **0 pass / 2 fail、exit1**，原始失败保留；它是诊断探针，不冒充仓库正式回归通过。
+
+实际 `140→58` 几何：summary 高度由7增至10、help高度由1增至2，说明当前 Text 高度本身已经重测；**后续兄弟 top 仍保留7/8/9**，没有随高度重新排列。直接 ScrollBox 的 help在y7，下一节点仍在y8，违反 `next.y >= help.y + 2`。因此已把故障隔离到通用布局重排，而非 Input数据、宿主注册冲突或样例的API用法；静态审阅最初“文本高度没有更新”的假设被该探针纠正。
+
+`src/native-ts/yoga-layout/index.ts`、`src/ink/components/{ScrollBox,Text,Box}.tsx`、`src/ink/dom.ts`、`src/ink/render-node-to-output.ts` 均与 `303d0ce` 逐字节一致。故本轮三项 Mods 修复不是引入该独立复现的必要条件；至于具体 Yoga cache/重排分支，尚未验证到可安全修改的程度。保留为通用 Yoga 后续（与既有子布局缓存问题并列，不假定完全同根），本轮不改公共引擎、不删除样例 Events/help、不截断文字、不改绿终端视觉断言。
+
+### 11.6 后续公共布局修复与提交边界
+
+以上为本轮冻结制品的历史结论。native diff session 随后独立定位 Yoga 多条目缓存只保存宽高、在 `performLayout` 命中时跳过子节点位置更新，限定该缓存仅用于 measure。本方只读核对 `/private/tmp/diff-resize-red-green.dgCO1U/57-shared-layout-old-cache-red.log` 与 `58-shared-layout-current-green.log`：复用上述 direct ScrollBox/ModsPane 探针，旧缓存条件 0 pass / 2 fail，当前条件 2 pass / 0 fail；58 列 summary/help 高度10/2、后续兄弟 top恢复10/12/13，回140列也归位。此后续证据确认同一缓存根因，但不替代 `F` 旧制品的 Mods 终端重测，不改写第11.4节失败和未覆盖。
+
+用户随后明确要求按功能提交并推送。本轮提交只包含 Mods 样例、launcher/README、三项宿主修复与两份报告；不夹带另一 session 尚未提交的 native/TaskV2/Yoga 代码。此前各节“未 commit/push”描述对应验收时点；本次发布代码不等同于全仓通过，也不将既有 Workflow/PTY 和官方能力缺口改判通过。
+
+提交前再次核对16个源码/测试/样例文件与 `F/overlay.json` 全部一致，32份自动化/构建/终端证据哈希无漂移，`git diff --check` 通过。空 HOME/config、security stub与假 key 下重跑 KeyboardEvent、ModsPane、默认键绑定、ui、commands、runtimeHost、testLab、launcher 八文件：**224 pass / 0 fail、1308 assertions**，样例子进程另列；官方原件与完整作者类型显式启用。日志 `F/precommit-tests.log` / `.exit`。此补验运行于当前工作区，含并发公共布局代码，不替代上述冻结制品身份或重新宣称终端通过。
