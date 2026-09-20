@@ -14,18 +14,6 @@ export type ModCommandSpec = {
 export type ModCommandRunResult = { text?: string }
 export type ModCommandOwner = object
 
-type BuiltinConflict = {
-  owner: ModCommandOwner
-  spec: Readonly<ModCommandSpec>
-  builtin: Command
-  matchedName: string
-}
-
-type RegisteredCommand = {
-  command: Command
-  builtinConflicts: ReadonlySet<Command>
-}
-
 export type ModCommands = {
   register(owner: ModCommandOwner, spec: ModCommandSpec): { command: string }
   validateCommit(owner: ModCommandOwner, replacedOwner?: ModCommandOwner, preparedOwners?: readonly ModCommandOwner[]): void
@@ -48,7 +36,6 @@ export function isModCommand(command: Command): command is MarkedCommand {
 export function createModCommands({
   getBuiltinCommands,
   run,
-  allowBuiltinConflict,
 }: {
   getBuiltinCommands: () => readonly Command[]
   run: (
@@ -56,10 +43,9 @@ export function createModCommands({
     args: string,
     context: LocalJSXCommandContext,
   ) => Promise<ModCommandRunResult>
-  allowBuiltinConflict?: (conflict: BuiltinConflict) => boolean
 }): ModCommands {
-  const candidates = new Map<ModCommandOwner, Map<string, RegisteredCommand>>()
-  const active = new Map<string, RegisteredCommand & { owner: ModCommandOwner }>()
+  const candidates = new Map<ModCommandOwner, Map<string, Command>>()
+  const active = new Map<string, { command: Command; owner: ModCommandOwner }>()
   const listeners = new Set<() => void>()
   let snapshot: Command[] = Object.freeze([]) as Command[]
 
@@ -144,29 +130,23 @@ export function createModCommands({
     register(owner, input) {
       validateOwner(owner)
       const spec = copySpec(input)
-      const builtinConflicts = new Set<Command>()
       for (const builtin of getBuiltinCommands()) {
         if (builtin.name !== spec.name && builtin.aliases?.includes(spec.name) !== true)
           continue
-        if (!allowBuiltinConflict?.({ owner, spec, builtin, matchedName: spec.name }))
-          throw new Error(`Built-in command /${builtin.name} conflicts with /${spec.name}`)
-        builtinConflicts.add(builtin)
+        throw new Error(`Command /${spec.name} refused: it is the built-in /${builtin.name}`)
       }
       let owned = candidates.get(owner)
       if (!owned) {
         owned = new Map()
         candidates.set(owner, owned)
       }
-      owned.set(spec.name, {
-        command: projectCommand(spec),
-        builtinConflicts,
-      })
+      owned.set(spec.name, projectCommand(spec))
       return { command: spec.name }
     },
 
     commit(owner, replacedOwner) {
       validateCommit(owner, replacedOwner)
-      const next = candidates.get(owner) ?? new Map<string, RegisteredCommand>()
+      const next = candidates.get(owner) ?? new Map<string, Command>()
 
       let changed = false
       for (const [name, current] of [...active]) {
@@ -175,8 +155,8 @@ export function createModCommands({
           changed = true
         }
       }
-      for (const [name, registered] of next) {
-        active.set(name, { ...registered, owner })
+      for (const [name, command] of next) {
+        active.set(name, { command, owner })
         changed = true
       }
       candidates.delete(owner)
@@ -210,13 +190,8 @@ export function createModCommands({
     projection(existing) {
       if (snapshot.length === 0) return existing
       const activeNames = new Set(snapshot.map(command => command.name))
-      const suppressed = new Set<Command>()
-      for (const registered of active.values()) {
-        for (const builtin of registered.builtinConflicts) suppressed.add(builtin)
-      }
       return [
         ...existing.filter(command =>
-          !suppressed.has(command) &&
           !activeNames.has(command.name) &&
           !command.aliases?.some(alias => activeNames.has(alias)),
         ),

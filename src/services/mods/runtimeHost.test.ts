@@ -502,53 +502,61 @@ test('a self-declared diff provider cannot replace the built-in command', async 
   await value.reconcile([{ ...consumer, isNative: true, version: '1.0.0' }])
   expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
   expect(value.commands.list()).toEqual([])
-  expect(diagnostics).toContainEqual(expect.objectContaining({message:expect.stringContaining('conflicts')}))
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'diff',stage:'session.start',message:expect.stringContaining('refused: it is the built-in /diff')}))
 })
 
 const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
 // Licensed upstream source stays outside the repository; set the fixture root for this integration run.
-test.skipIf(!officialModsRoot)('official diff collision is rejected and the built-in command remains active', async () => {
-  const scenario = async () => {
-    const pluginRoot = join(officialModsRoot!, 'diff')
-    const diagnostics: unknown[] = []
-    const logs: string[] = []
-    const value = createModsRuntime({ services: {
-      commands: () => [builtinDiff],
-      uiLog: (_plugin, text) => logs.push(text),
-      uiStatus: () => {},
-      uiPresentation: () => ({columns:160, rows:40, isFullscreen:true, composerEmpty:true, hasDialog:false, keyboardOwned:false}),
-      messages: () => [],
-    }, onDiagnostic: event => diagnostics.push(event) })
-    runtimes.push(value)
-    await value.bind(binding(root))
-    await value.reconcile([{ name:'diff', storageId:'diff@official', pluginRoot, entrypoints:[join(pluginRoot, 'hooks/register.ts')] }])
-    expect(value.commands.list()).toEqual([])
-    expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
-    expect(value.ui.getSnapshot()).toEqual([])
-    let coreCalls = 0
-    expect(await value.dispatch('command.run', {
-      command:'diff', args:'', origin:{kind:'composer'}, presentation:{columns:160,isFullscreen:true},
-    }, async () => { coreCalls++; return {text:'builtin diff'} })).toEqual({text:'builtin diff'})
-    expect(coreCalls).toBe(1)
-    expect(diagnostics).toEqual([])
-    expect(logs.some(text => /conflict|already|registered/i.test(text))).toBe(true)
-  }
-  // Run with production rejection routing rather than bun test's global Worker interception.
-  const source = `
-    import {expect} from 'bun:test';
-    import {join} from 'node:path';
-    import {createModsRuntime} from ${JSON.stringify(new URL('./runtime.ts', import.meta.url).pathname)};
-    import builtinDiff from ${JSON.stringify(new URL('../../commands/diff/index.ts', import.meta.url).pathname)};
-    const root=${JSON.stringify(root)}, officialModsRoot=${JSON.stringify(officialModsRoot)}, runtimes=[];
-    const binding=cwd=>({cwd,sessionId:'test',surface:'terminal',isInteractive:true});
-    try {await (${scenario.toString()})()} finally {await Promise.all(runtimes.map(runtime=>runtime.dispose()))}
-  `
-  const child = Bun.spawn([process.execPath,'-e',source],{stdout:'pipe',stderr:'pipe'})
-  const [exit, stdout, stderr] = await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()])
-  if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
-  expect(stderr).toBe('')
-  expect(exit).toBe(0)
-})
+for (const registrationError of [undefined, 'command catalog unavailable']) {
+  const name = registrationError === undefined
+    ? 'official diff silently yields to the built-in command'
+    : 'official diff still logs unexpected command registration errors'
+  test.skipIf(!officialModsRoot)(name, async () => {
+    const scenario = async () => {
+      const pluginRoot = join(officialModsRoot!, 'diff')
+      const diagnostics: unknown[] = []
+      const logs: string[] = []
+      const value = createModsRuntime({ services: {
+        commands: () => {
+          if (registrationError !== undefined) throw new Error(registrationError)
+          return [builtinDiff]
+        },
+        uiLog: (_plugin, text) => logs.push(text),
+        uiStatus: () => {},
+        uiPresentation: () => ({columns:160, rows:40, isFullscreen:true, composerEmpty:true, hasDialog:false, keyboardOwned:false}),
+        messages: () => [],
+      }, onDiagnostic: event => diagnostics.push(event) })
+      runtimes.push(value)
+      await value.bind(binding(root))
+      await value.reconcile([{ name:'diff', storageId:'diff@official', pluginRoot, entrypoints:[join(pluginRoot, 'hooks/register.ts')] }])
+      expect(value.commands.list()).toEqual([])
+      expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
+      expect(value.ui.getSnapshot()).toEqual([])
+      let coreCalls = 0
+      expect(await value.dispatch('command.run', {
+        command:'diff', args:'', origin:{kind:'composer'}, presentation:{columns:160,isFullscreen:true},
+      }, async () => { coreCalls++; return {text:'builtin diff'} })).toEqual({text:'builtin diff'})
+      expect(coreCalls).toBe(1)
+      expect(diagnostics).toEqual([])
+      expect(logs).toEqual(registrationError === undefined ? [] : [expect.stringContaining(registrationError)])
+    }
+    // Run with production rejection routing rather than bun test's global Worker interception.
+    const source = `
+      import {expect} from 'bun:test';
+      import {join} from 'node:path';
+      import {createModsRuntime} from ${JSON.stringify(new URL('./runtime.ts', import.meta.url).pathname)};
+      import builtinDiff from ${JSON.stringify(new URL('../../commands/diff/index.ts', import.meta.url).pathname)};
+      const root=${JSON.stringify(root)}, officialModsRoot=${JSON.stringify(officialModsRoot)}, registrationError=${JSON.stringify(registrationError)}, runtimes=[];
+      const binding=cwd=>({cwd,sessionId:'test',surface:'terminal',isInteractive:true});
+      try {await (${scenario.toString()})()} finally {await Promise.all(runtimes.map(runtime=>runtime.dispose()))}
+    `
+    const child = Bun.spawn([process.execPath,'-e',source],{stdout:'pipe',stderr:'pipe'})
+    const [exit, stdout, stderr] = await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()])
+    if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
+    expect(stderr).toBe('')
+    expect(exit).toBe(0)
+  })
+}
 
 const officialTypes = process.env.CLAUDE_CODE_OFFICIAL_MOD_TYPES
 

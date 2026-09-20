@@ -75,35 +75,36 @@ describe('mod command ownership', () => {
 
     expect(() =>
       denied.register(impostor, { name: 'diff', description: 'Replacement' }),
-    ).toThrow(/built-in.*diff/i)
+    ).toThrow(/refused: it is the built-in \/diff/)
     expect(() =>
       denied.register(impostor, { name: 'changes', description: 'Alias collision' }),
-    ).toThrow(/built-in.*diff/i)
+    ).toThrow(/refused: it is the built-in \/diff/)
 
     expect(() =>
       denied.register({}, { name: 'h', description: 'Alias collision' }),
-    ).toThrow(/built-in.*help/i)
+    ).toThrow(/refused: it is the built-in \/help/)
     denied.commit(impostor)
     expect(denied.list()).toEqual([])
     expect(denied.projection([diff, help])).toEqual([diff, help])
   })
 
-  test('only an explicitly approved owner can replace the exact builtin and its aliases', () => {
+  test('cannot opt an owner into replacing built-in names or aliases', () => {
     const diff = command('diff', ['changes'])
-    const help = command('help', ['h'])
     const owner = {}
-    const registry = createRegistry({
-      getBuiltinCommands: () => [diff, help],
-      allowBuiltinConflict: conflict => conflict.owner === owner && conflict.builtin === diff && conflict.spec.name === 'diff',
-    })
-    expect(() => registry.register({}, {name:'diff',description:'Impostor'})).toThrow(/conflicts/)
-    expect(() => registry.register(owner, {name:'h',description:'Not approved'})).toThrow(/conflicts/)
-    registry.register(owner, {name:'diff',description:'Approved'})
-    expect(registry.projection([diff,help])).toEqual([diff,help])
+    const options = {
+      getBuiltinCommands: () => [diff],
+      allowBuiltinConflict: () => true,
+    }
+    const registry = createRegistry(options)
+    for (const name of ['diff', 'changes']) {
+      expect(() => registry.register(owner, { name, description: 'Replacement' }))
+        .toThrow(/refused: it is the built-in \/diff/)
+    }
     registry.commit(owner)
-    expect(registry.projection([diff,help]).map(item => item.name)).toEqual(['help','diff'])
+    expect(registry.list()).toEqual([])
+    expect(registry.projection([diff])).toEqual([diff])
     registry.release(owner)
-    expect(registry.projection([diff,help])).toEqual([diff,help])
+    expect(registry.projection([diff])).toEqual([diff])
   })
 
   test('repeated registration by one activation replaces its candidate spec', () => {
