@@ -604,6 +604,43 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：不宣称实现全部官方 API、模型流、远端 surface 或作者测试工具链；本地尚未完整提供 `/plugin-types`、`claude plugin test`。官方源码在本地通过不等于官方 binary 的动态 parity，官方 rollout gate 关闭时记为未覆盖。
 
+#### 可复用测试 Mod
+
+仓库自带 [`examples/mods/mods-test-lab`](examples/mods/mods-test-lab)，用于观察真实插件生命周期、命令、prompt/工具/turn 事件和 Pane 交互。构建后可在独立配置、私有 Git fixture 和 tmux 中启动，不读取个人认证或调用真实模型。`check/run` 当前需要 macOS `sandbox-exec`，`run` 另需已安装的 tmux；没有不隔离的 fallback：
+
+```bash
+make build
+bun scripts/mods-test-lab.mjs check sample
+bun scripts/mods-test-lab.mjs run sample
+```
+
+`run` 输出 session/socket、调试日志和连接命令；可用 `--binary /absolute/path/to/built-claude` 指定制品。默认缓存为 `~/Library/Caches/mods-test-lab`，各命令支持 `--cache /private/tmp/mods-test-lab`；路径过长无法创建 Unix socket 时改用短缓存目录。进入会话后使用：
+
+```text
+/mods-test
+/mods-test status
+/mods-test context
+/mods-test reset
+/mods-test close
+```
+
+无参数打开包含 Button、Input、Select、长列表和中英文 diff 的面板；`status` 查看计数，`context` 仅为下一条真正的 prompt 附加固定测试标记，`reset` 清理本 Mod 的测试状态。默认只观察事件，不改变工具输入/结果，不记录 prompt、工具参数或回答正文。最近事件最多 20 条；持久计数与当前 activation 状态分别展示。UI-only 入口没有模型服务，prompt/tool 完整链需要另行配置本地 loopback fixture。
+
+四个官方原件可单独下载并检查，下载不代表已经兼容或激活：
+
+```bash
+bun scripts/mods-test-lab.mjs fetch-official
+bun scripts/mods-test-lab.mjs check diff
+bun scripts/mods-test-lab.mjs check agents-md
+bun scripts/mods-test-lab.mjs check sec-default
+bun scripts/mods-test-lab.mjs check telemetry
+bun scripts/mods-test-lab.mjs run diff
+```
+
+下载固定官方提交到仓库外缓存，输出来源、内容摘要及实际路径；不全局安装、不修改用户 settings、不运行上游安装脚本。当前固定原件的 `diff` 依赖尚未支持的 `env.get`；`agents-md` 的 manifest `userConfig.options` 校验失败，直接扫描还缺 `session.root`；`telemetry` 缺 `session.authorize`。这些失败不会通过改写官方源码绕过。`sec-default` 可以扫描，但普通 inline 身份不等于 managed 安全策略。兼容旧版 `diff` 还受所选宿主的命令冲突规则约束，看到内置 diff 不能当作 Mod 触发成功。
+
+停止会话后可用 `bun scripts/mods-test-lab.mjs clean <run目录>` 回收工具自己的运行目录，活跃或封存的验收记录不会自动删除。`check` 只检查 discovery/preparation/scan，不代表准入、激活或实际触发；`run` 创建 session 也不代表 readiness，需按日志和实际命令结果判断。
+
 测试方案、实际结果和未覆盖项见根目录 [`mods-test.md`](mods-test.md)；生命周期与契约依据见 [`docs/research/claude-mods.md`](docs/research/claude-mods.md)。
 
 ### Cron 与 durable task
