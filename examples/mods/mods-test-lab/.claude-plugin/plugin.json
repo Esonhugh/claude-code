@@ -1,0 +1,5 @@
+{
+  "name": "mods-test-lab",
+  "version": "0.1.0",
+  "description": "Local Mods test panel, bounded event summaries, and explicit one-shot prompt context. Open with /mods-test."
+}
