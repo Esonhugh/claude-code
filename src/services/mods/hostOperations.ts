@@ -188,7 +188,7 @@ export function createModHostOperations({
       },
       async keys(): Promise<string[]> {
         signal.throwIfAborted()
-        return Object.keys(Object.fromEntries(await readStore(storePath())))
+        return [...(await readStore(storePath())).keys()]
       },
       async set(key: string, value: unknown): Promise<void> {
         if (typeof key !== 'string' || key.length === 0 || key.length > 256)

@@ -658,7 +658,7 @@ describe('store', () => {
     }
   })
 
-  test('persists JSON across instances and uses Object.keys ordering without prototype key collisions', async () => {
+  test('persists insertion order across reloads, overwrites and reinserts without prototype key collisions', async () => {
     expect(await host.store.get('missing')).toBeUndefined()
     expect(await host.store.keys()).toEqual([])
     for (const key of ['10', '2', '__proto__', 'constructor'])
@@ -670,8 +670,8 @@ describe('store', () => {
       signal: controller.signal,
     })
     expect(await again.store.keys()).toEqual([
-      '2',
       '10',
+      '2',
       '__proto__',
       'constructor',
     ])
@@ -680,12 +680,15 @@ describe('store', () => {
     await again.store.delete('2')
     await again.store.delete('absent')
     await again.store.set('2', 2)
-    expect(await host.store.keys()).toEqual([
-      '2',
-      '10',
-      '__proto__',
-      'constructor',
-    ])
+    const expected = ['10', '__proto__', 'constructor', '2']
+    expect(await host.store.keys()).toEqual(expected)
+    const reloaded = createModHostOperations({
+      cwd: () => cwd,
+      storageId: 'example@market',
+      signal: controller.signal,
+    })
+    expect(await reloaded.store.keys()).toEqual(expected)
+    expect(await reloaded.store.get('2')).toBe(2)
   })
 })
 
