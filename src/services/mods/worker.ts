@@ -3,13 +3,14 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { isPromise, isProxy } from 'node:util/types'
 import type { ModWorkerReply, ModWorkerRequest } from './protocol.js'
 import { createModUiRealm } from './uiRealm.js'
-import { isModEventPattern, normalizeModMatcher } from './matcher.js'
+import { isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
 const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
   const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
   const isModEventPattern = (${isModEventPattern.toString()});
+  const matchesModEventPattern = (${matchesModEventPattern.toString()});
   const normalizeModMatcher = (${normalizeModMatcher.toString()});
   const matcherWire = value => {
     if (value instanceof RegExp) return {type:'regexp', source:value.source, flags:value.flags};
@@ -288,7 +289,7 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
           signal: { value: makeSignal(request.id) },
           event: { value: meta.event }, origin: { value: decode(meta.origin, request.id) },
           trace: { get: () => frame.trace },
-          is: { value: Object.freeze((event) => event === meta.event) },
+          is: { value: Object.freeze((event) => matchesModEventPattern(event, meta.event)) },
           ...(meta.error ? { error: { value: decode(meta.error, request.id) }, called: { value: meta.called } } : {}),
         });
         args.push(Object.freeze(next));

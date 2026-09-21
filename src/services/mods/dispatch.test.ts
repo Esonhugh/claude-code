@@ -45,6 +45,20 @@ function deferred<T>() {
 }
 
 describe('ordinary mod dispatch', () => {
+  it('next.is shares exact, glob and negated matching in normal and catch handlers', async () => {
+    const phases: boolean[] = []
+    const matches: boolean[][] = []
+    await dispatchModEvent({event:'tool.call',input,
+      hooks:[hook('patterns',async (e,next,catching)=>{
+        phases.push(catching)
+        matches.push(['tool.call','tool.*','*','!tool.list','!session.*','tool.list','session.*','!tool.call','!tool.*','!*','invalid'].map(pattern=>next.is(pattern,e)))
+        if (!catching) throw Error('enter catch')
+        return next(e)
+      },{hasCatch:true})],core:async()=>({result:'core'}),
+    })
+    assert.deepEqual(phases,[false,true])
+    assert.deepEqual(matches,[0,1].map(()=>[true,true,true,true,true,false,false,false,false,false,false]))
+  })
   it('validates rewritten input before any downstream short circuit and restores command presentation', async () => {
     const initial = { command: 'diff', args: '', origin: { kind: 'composer' }, presentation: { columns: 80, isFullscreen: false } }
     for (const changed of [

@@ -359,7 +359,7 @@ describe('Mods Worker environment', () => {
       on('tool.call', async ($, e, next) => {
         const before = next.trace.length;
         await next(e);
-        return { before, trace: next.trace, exact: next.is('tool.call') && !next.is('tool.*'), later: () => next(e), clock: () => $.clock.now() };
+        return { before, trace: next.trace, exact: next.is('tool.call') && next.is('tool.*') && next.is('!tool.list') && !next.is('!tool.call') && !next.is('invalid'), later: () => next(e), clock: () => $.clock.now() };
       });
     }`))
     const frame = next(async () => {

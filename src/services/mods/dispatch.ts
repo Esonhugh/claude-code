@@ -318,7 +318,7 @@ export async function dispatchModEvent(options: {
             return continueBelow(rewritten, target)
           },
         },
-        is: { value: (event: string) => event === options.event },
+        is: { value: (event: string) => matchesModEventPattern(event, options.event) },
         signal: { value: ownController.signal },
         event: { get: () => options.event },
         origin: { get: () => origin },

@@ -794,10 +794,10 @@ describe('Mods lifecycle', () => {
     expect(events).toEqual([])
   })
 
-  test('supports exact next.is in scanned hooks including engine.create', async () => {
+  test('supports exact, glob and negated next.is in scanned hooks including engine.create', async () => {
     const plugin = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { if (!next.is('engine.create', e)) throw Error('wrong event'); return next(e); });
-      on('tool.call', ($, e, next) => ({ result: next.is('tool.call', e) && !next.is('session.start', e) }));
+      on('tool.call', ($, e, next) => ({ result: next.is('tool.call', e) && next.is('tool.*', e) && next.is('!session.*', e) && !next.is('session.start', e) }));
     }`)
     const { value, events } = runtime()
     await value.reconcile([plugin])
