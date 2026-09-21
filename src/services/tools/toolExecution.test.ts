@@ -23,6 +23,7 @@ import { createModsRuntime } from '../mods/runtime.js'
 import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { getEventListeners } from 'node:events'
 import { getToolResultPath } from '../../utils/toolResultStorage.js'
 
 const originalSettings = getSessionSettingsCache()
@@ -125,7 +126,335 @@ function fixture(invoke: ModDispatchHook['invoke']) {
   }
 }
 
+async function workerFixture(source: string) {
+  const root = await mkdtemp(join(tmpdir(), 'mods-tool-cancellation-'))
+  const diagnostics: string[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event.message),
+  })
+  const cleanup = async () => {
+    await runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, source)
+    await runtime.reconcile([
+      {
+        name: 'cancellation-fixture',
+        storageId: 'cancellation-fixture@inline',
+        pluginRoot: root,
+        entrypoints: [entry],
+      },
+    ])
+    expect(diagnostics).toEqual([])
+    expect(runtime.hasHooks('tool.call')).toBe(true)
+    const f = fixture(async (event, next) => next(event))
+    f.context.mods = runtime
+    return { ...f, runtime, diagnostics, cleanup }
+  } catch (error) {
+    await cleanup()
+    throw error
+  }
+}
+
+async function within<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('tool cancellation deadline exceeded')), 2000)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 describe('Mods at the whole tool execution boundary', () => {
+  test('real Worker early return cancels its pending Tool.call without aborting the query', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', async ($, e, next) => {
+        void next({ ...e, value: 'waiting' }).catch(() => {});
+        await next({ ...e, value: 'checkpoint' });
+        return { result: { value: 'synthetic' } };
+      });
+    }`)
+    const entered = Promise.withResolvers<void>()
+    const aborted = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const controllers: AbortController[] = []
+    f.tool.call = async (input, context) => {
+      f.calls.push(input)
+      controllers.push(context.abortController)
+      if (input.value === 'waiting') {
+        const signal = context.abortController.signal
+        const onAbort = () => { aborted.resolve(); finish.resolve() }
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+        entered.resolve()
+        try { await finish.promise }
+        finally { signal.removeEventListener('abort', onAbort) }
+      } else {
+        await entered.promise
+      }
+      return { data: input }
+    }
+    const running = Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    try {
+      await within(aborted.promise)
+      const updates = await within(running)
+      expect(f.calls).toEqual([{ value: 'waiting' }, { value: 'checkpoint' }])
+      expect(controllers[0]).not.toBe(f.context.abortController)
+      expect(controllers[1]).not.toBe(controllers[0])
+      expect(controllers[0]!.signal.aborted).toBe(true)
+      expect(controllers[1]!.signal.aborted).toBe(false)
+      expect(f.context.abortController.signal.aborted).toBe(false)
+      expect(JSON.stringify(updates)).toContain('synthetic')
+      expect(f.diagnostics).toEqual([])
+    } finally {
+      finish.resolve()
+      await running
+      await f.cleanup()
+    }
+  })
+
+  test('real Worker early return drains a non-cooperative tool before releasing cancellation listeners', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', async ($, e, next) => {
+        void next({ ...e, value: 'waiting' }).catch(() => {});
+        await next({ ...e, value: 'checkpoint' });
+        return { result: { value: 'synthetic' } };
+      });
+    }`)
+    const entered = Promise.withResolvers<void>()
+    const aborted = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    f.tool.call = async (input, context) => {
+      f.calls.push(input)
+      if (input.value === 'waiting') {
+        const signal = context.abortController.signal
+        const onAbort = () => aborted.resolve()
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+        entered.resolve()
+        try { await finish.promise }
+        finally { signal.removeEventListener('abort', onAbort) }
+      } else {
+        await entered.promise
+      }
+      return { data: input }
+    }
+    let settled = false
+    const running = Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    )).finally(() => { settled = true })
+    try {
+      await within(aborted.promise)
+      expect(settled).toBe(false)
+      expect(getEventListeners(f.context.abortController.signal, 'abort').length).toBeGreaterThan(0)
+      expect(f.context.abortController.signal.aborted).toBe(false)
+      finish.resolve()
+      expect(JSON.stringify(await within(running))).toContain('synthetic')
+      expect(f.calls).toEqual([{ value: 'waiting' }, { value: 'checkpoint' }])
+      expect(getEventListeners(f.context.abortController.signal, 'abort')).toHaveLength(0)
+      expect(f.diagnostics).toEqual([])
+    } finally {
+      finish.resolve()
+      await running
+      await f.cleanup()
+    }
+  })
+
+  test('real Worker parent abort reaches concurrent executions through independent controllers', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', ($, e, next) => next(e));
+    }`)
+    const entered = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const controllers: AbortController[] = []
+    const aborted: AbortSignal[] = []
+    f.tool.call = async (input, context) => {
+      f.calls.push(input)
+      const controller = context.abortController
+      controllers.push(controller)
+      const signal = controller.signal
+      const stopped = Promise.withResolvers<void>()
+      const onAbort = () => { aborted.push(signal); stopped.resolve() }
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+      if (controllers.length === 2) entered.resolve()
+      try {
+        await Promise.race([stopped.promise, finish.promise])
+        signal.throwIfAborted()
+        return { data: input }
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+      }
+    }
+    const blocks = ['first', 'second'].map(value => ({
+      ...f.block, id: `parent-abort-${value}`, input: { value },
+    }))
+    const running = Promise.all(blocks.map(block => Array.fromAsync(runToolUse(
+      block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))))
+    try {
+      await within(entered.promise)
+      expect(controllers[0]).not.toBe(controllers[1])
+      for (const controller of controllers)
+        expect(controller).not.toBe(f.context.abortController)
+      f.context.abortController.abort(new Error('query cancelled'))
+      const updates = await within(running)
+      expect(aborted).toHaveLength(2)
+      expect(f.calls).toHaveLength(2)
+      for (const result of updates) {
+        const blocks = result.flatMap(update => update.message.type === 'user' && Array.isArray(update.message.message.content)
+          ? update.message.message.content.filter(block => block.type === 'tool_result') : [])
+        expect(blocks).toHaveLength(1)
+        expect(blocks[0]!.is_error).toBe(true)
+      }
+    } finally {
+      finish.resolve()
+      await running
+      await f.cleanup()
+    }
+  })
+
+  test('real Worker branch cancellation leaves another next branch and the query running', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', async ($, e, next) => {
+        const cancelled = next({ ...e, value: 'cancelled' });
+        const sibling = next({ ...e, value: 'sibling' });
+        await cancelled;
+        return sibling;
+      });
+      on('tool.call', { value: 'cancelled' }, async ($, e, next) => {
+        void next(e).catch(() => {});
+        await next({ ...e, value: 'checkpoint' });
+        return { result: { value: 'synthetic' } };
+      });
+    }`)
+    const entered = Promise.withResolvers<void>()
+    const cancelled = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const controllers = new Map<string, AbortController>()
+    f.tool.call = async (input, context) => {
+      f.calls.push(input)
+      const value = input.value
+      if (typeof value !== 'string') throw new Error('expected string value')
+      controllers.set(value, context.abortController)
+      if (value === 'checkpoint') {
+        await entered.promise
+        return { data: input }
+      }
+      if (controllers.has('cancelled') && controllers.has('sibling')) entered.resolve()
+      const signal = context.abortController.signal
+      const stopped = Promise.withResolvers<void>()
+      const onAbort = () => {
+        if (value === 'cancelled') cancelled.resolve()
+        stopped.resolve()
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+      try {
+        await Promise.race([stopped.promise, finish.promise])
+        return { data: input }
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+      }
+    }
+    let settled = false
+    const running = Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    )).finally(() => { settled = true })
+    try {
+      await within(cancelled.promise)
+      expect(settled).toBe(false)
+      expect(controllers.get('cancelled')!.signal.aborted).toBe(true)
+      expect(controllers.get('sibling')!.signal.aborted).toBe(false)
+      expect(f.context.abortController.signal.aborted).toBe(false)
+      finish.resolve()
+      const updates = await within(running)
+      expect(f.calls).toHaveLength(3)
+      expect(JSON.stringify(updates)).toContain('sibling')
+      expect(f.diagnostics).toEqual([])
+    } finally {
+      finish.resolve()
+      await running
+      await f.cleanup()
+    }
+  })
+
+  test.each(['normal', 'catch-replay', 'pending-catch-replay'])(
+    'real Worker %s keeps real execution live and never duplicates permissions or Tool.call',
+    async mode => {
+      const f = await workerFixture(`export function register(on) {
+        on('tool.call', async ($, e, next) => {
+          ${mode === 'pending-catch-replay'
+            ? "void next(e).catch(() => {}); throw Error('recover pending');"
+            : `const result = await next(e); ${mode === 'catch-replay' ? "throw Error('recover completed');" : 'return result;'}`}
+        }).catch(async ($, e, next) => {
+          const first = await next({ ...e, value: 'must not execute' });
+          await next({ ...e, value: 'also must not execute' });
+          return first;
+        });
+      }`)
+      const entered = Promise.withResolvers<void>()
+      const finish = Promise.withResolvers<void>()
+      let controller: AbortController | undefined
+      let aborted = 0
+      let permissions = 0
+      f.tool.call = async (input, context) => {
+        f.calls.push(input)
+        controller = context.abortController
+        const onAbort = () => { aborted++; finish.resolve() }
+        controller.signal.addEventListener('abort', onAbort, { once: true })
+        if (controller.signal.aborted) onAbort()
+        entered.resolve()
+        try {
+          await finish.promise
+          controller.signal.throwIfAborted()
+          return { data: input }
+        } finally {
+          controller.signal.removeEventListener('abort', onAbort)
+        }
+      }
+      const running = Array.fromAsync(runToolUse(
+        f.block, f.assistant,
+        async () => { permissions++; return { behavior: 'allow' } },
+        f.context,
+      ))
+      try {
+        await within(entered.promise)
+        expect(controller).not.toBe(f.context.abortController)
+        expect(controller!.signal.aborted).toBe(false)
+        finish.resolve()
+        const updates = await within(running)
+        expect(aborted).toBe(0)
+        expect(controller!.signal.aborted).toBe(false)
+        expect(f.context.abortController.signal.aborted).toBe(false)
+        expect(f.calls).toEqual([{ value: 'original' }])
+        expect(f.validation).toEqual([{ value: 'original' }])
+        expect(permissions).toBe(1)
+        expect(JSON.stringify(updates)).toContain('original')
+        expect(JSON.stringify(updates)).not.toContain('must not execute')
+        expect(f.diagnostics).toEqual(mode === 'normal' ? [] : [
+          mode === 'pending-catch-replay' ? 'recover pending' : 'recover completed',
+        ])
+        expect(getEventListeners(f.context.abortController.signal, 'abort')).toHaveLength(0)
+        f.context.abortController.abort(new Error('after execution settled'))
+        expect(controller!.signal.aborted).toBe(false)
+      } finally {
+        finish.resolve()
+        await running
+        await f.cleanup()
+      }
+    },
+  )
+
   test('rewritten arguments pass through validateInput and permission denial before Tool.call', async () => {
     const f = fixture(async (e, next) => next({ ...e, value: 'rewritten' }))
     const permissionInputs: unknown[] = []
@@ -267,8 +596,10 @@ describe('Mods at the whole tool execution boundary', () => {
 
   test('streams progress before final reconciliation and waits for unawaited execution on return', async () => {
     const finish = Promise.withResolvers<void>()
+    const entered = Promise.withResolvers<void>()
     const f = fixture(async (e, next) => {
-      void next(e)
+      void next(e).catch(() => {})
+      await entered.promise
       return { result: { value: 'synthetic' } }
     })
     f.tool.call = async (
@@ -289,6 +620,7 @@ describe('Mods at the whole tool execution boundary', () => {
           totalBytes: 7,
         },
       } as never)
+      entered.resolve()
       await finish.promise
       return { data: { value: 'actual' } }
     }

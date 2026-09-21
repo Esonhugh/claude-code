@@ -135,7 +135,7 @@ export function createModTurnCompletion(turnId: string, agentId?: string) {
       } } : {}),
     }
     const result = await snapshot.dispatch('turn.complete', input, async rewritten => {
-      if (rewritten.agentId !== undefined && rewritten.agentId !== agentId)
+      if (rewritten.agentId !== agentId)
         throw new Error('turn.complete cannot rewrite agentId')
       return { text: rewritten.answer, ...(rewritten.usage === undefined ? {} : { usage: rewritten.usage }) }
     }, {

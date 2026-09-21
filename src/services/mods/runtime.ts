@@ -58,7 +58,7 @@ export type ModDispatchOptions = {
 export type ModSnapshot = {
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<string>>>
   pluginOrigin?(storageId: string): ModOrigin | undefined
-  dispatch(event: string, input: ModInput, core: (input: ModInput) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
+  dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
   hasHooks(event: string): boolean
   release(): void
 }
@@ -636,7 +636,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   async function dispatch(
     event: string,
     input: ModInput,
-    core: (input: ModInput) => Promise<unknown>,
+    core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>,
     snapshot: readonly Activation[] = active,
     table: Nouns = nouns,
     options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; onFailure?: (error: unknown) => void } = {},
@@ -1034,7 +1034,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     },
     reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)),
     bind: (next: ModBinding) => enqueue(async () => { binding = next; if (active.length) await publish({ modules: active, table: nouns }) }),
-    dispatch: (event: string, input: ModInput, core: (input: ModInput) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
+    dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
     hasHooks: (event: string) => active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
     dispose(): Promise<void> {
       if (disposal) return disposal

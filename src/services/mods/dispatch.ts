@@ -33,7 +33,7 @@ export async function dispatchModEvent(options: {
   event: string
   input: ModInput
   hooks: readonly ModDispatchHook[]
-  core: (input: ModInput) => Promise<unknown>
+  core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>
   signal?: AbortSignal
   origin?: ModOrigin
   skip?: { plugin: string; registrationId?: number }
@@ -61,6 +61,8 @@ export async function dispatchModEvent(options: {
   const pinned = (
     options.event === 'tool.call'
       ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'turn.complete'
+        ? ['agentId']
       : options.event === 'plugin.register'
         ? ['name', 'tier', 'root', 'provenance', 'version', 'uses']
         : options.event === 'command.run'
@@ -126,7 +128,7 @@ export async function dispatchModEvent(options: {
         const result = await Promise.race([
           Promise.resolve().then(() => {
             parent?.throwIfAborted()
-            return options.core(input)
+            return options.core(input, parent)
           }),
           abandoned,
         ])
@@ -207,6 +209,9 @@ export async function dispatchModEvent(options: {
       }
       if (options.event === 'command.run' && !Object.hasOwn(rewritten, 'presentation')) {
         rewritten = { ...rewritten, presentation: options.input.presentation }
+      }
+      if (['tool.call', 'turn.complete'].includes(options.event) && rewritten.agentId === undefined && input.agentId !== undefined) {
+        rewritten = { ...rewritten, agentId: input.agentId }
       }
       rewritten = options.restoreInput?.(rewritten, input) ?? rewritten
       for (const [key, value] of pinned) {

@@ -58,6 +58,7 @@ import type {
   StopHookInfo,
 } from '../../types/message.js'
 import { count } from '../../utils/array.js'
+import { createAbortController } from '../../utils/abortController.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -524,12 +525,27 @@ function streamedCheckPermissionsAndCallTool(
     : toolUseContext
   const wrapped = snapshot?.hasHooks('tool.call') === true
   const managedPass: ManagedPreToolUsePass = {}
-  const core = (args: Record<string, unknown>, record?: ModToolExecutionRecord) =>
-    checkPermissionsAndCallTool(
+  const core = (
+    args: Record<string, unknown>,
+    record?: ModToolExecutionRecord,
+    signal?: AbortSignal,
+  ) => {
+    const abortController = createAbortController()
+    const listeners = new Map<AbortSignal, () => void>()
+    for (const parent of new Set([context.abortController.signal, signal])) {
+      if (!parent) continue
+      const abort = () => abortController.abort(parent.reason)
+      if (parent.aborted) abort()
+      else {
+        parent.addEventListener('abort', abort, { once: true })
+        listeners.set(parent, abort)
+      }
+    }
+    return checkPermissionsAndCallTool(
       tool,
       toolUseID,
       args,
-      context,
+      { ...context, abortController },
       canUseTool,
       assistantMessage,
       messageId,
@@ -574,7 +590,13 @@ function streamedCheckPermissionsAndCallTool(
       },
       record,
       wrapped ? managedPass : undefined,
-    )
+    ).finally(() => {
+      // Dispatch may finish before a non-cooperative tool. Keep cancellation
+      // linked until the real execution, including its hooks, has settled.
+      for (const [parent, abort] of listeners)
+        parent.removeEventListener('abort', abort)
+    })
+  }
   const execution = (async () => {
     if (!wrapped) return core(input)
     const before: MessageUpdateLazy[] = []

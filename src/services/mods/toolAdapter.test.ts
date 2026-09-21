@@ -81,6 +81,33 @@ function resultMessage(value: unknown, isError = false) {
 }
 
 describe('ordinary tool.call result adapter', () => {
+  test('forwards the dispatch branch signal as the third core argument', async () => {
+    const branch = new AbortController()
+    let received: AbortSignal | undefined
+    const original = resultMessage({ value: 'raw' })
+    const messages = await runModToolCall({
+      snapshot: {
+        hasHooks: () => true,
+        release: () => {},
+        dispatch: async (_event, input, core) => core(input, branch.signal),
+      },
+      tool,
+      toolUseID: 'call-1',
+      input: {},
+      toolUseContext: context,
+      assistantMessage: assistant,
+      core: async (_input, record, signal) => {
+        received = signal
+        record.hasResult = true
+        record.result = { value: 'raw' }
+        return [original]
+      },
+    })
+    expect(received).toBe(branch.signal)
+    expect(received).not.toBe(context.abortController.signal)
+    expect(messages).toEqual([original])
+  })
+
   test('cancellation during host review prevents delivery without replaying core', async () => {
     const abortController = new AbortController()
     let calls = 0

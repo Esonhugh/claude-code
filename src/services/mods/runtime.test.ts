@@ -794,6 +794,24 @@ describe('Mods lifecycle', () => {
     expect(events).toEqual([])
   })
 
+  test('real Worker tool and turn chains restore agentId before downstream hooks', async () => {
+    const rewrite=await fixture(`export function register(on) {
+      on('tool.call',($,e,next)=>{const {agentId,...rest}=e;return next(rest);});
+      on('turn.complete',($,e,next)=>next({...e,agentId:undefined}));
+    }`,'identity-rewrite')
+    const observe=await fixture(`export function register(on) {
+      on('tool.call',($,e)=>({result:e.agentId??'main'}));
+      on('turn.complete',($,e)=>({text:e.agentId??'main'}));
+    }`,'identity-observe')
+    const {value,events}=runtime()
+    await value.reconcile([rewrite,observe])
+    for(const agentId of [undefined,'child']) {
+      expect(await value.dispatch('tool.call',{...input,agentId},async()=>({result:'core'}))).toEqual({result:agentId??'main'})
+      expect(await value.dispatch('turn.complete',{answer:'',turnId:'turn',agentId},async()=>({text:'core'}))).toEqual({text:agentId??'main'})
+    }
+    expect(events).toEqual([])
+  })
+
   test('supports exact, glob and negated next.is in scanned hooks including engine.create', async () => {
     const plugin = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { if (!next.is('engine.create', e)) throw Error('wrong event'); return next(e); });

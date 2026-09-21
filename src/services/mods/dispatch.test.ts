@@ -45,6 +45,63 @@ function deferred<T>() {
 }
 
 describe('ordinary mod dispatch', () => {
+  it('pins agentId before lower hooks and restores omissions for tools and completions', async () => {
+    for (const event of ['tool.call','turn.complete']) for (const agentId of [undefined,'child']) {
+      const original = {...input,agentId}
+      for (const omitted of [true,false]) for (const target of [undefined,'core'] as const) {
+        const seen: ModInput[]=[]
+        const failures: unknown[]=[]
+        await dispatchModEvent({event,input:original,
+          hooks:[hook('outer',async(e,next)=>{
+            const rewritten={...e}
+            if(omitted) delete rewritten.agentId
+            else rewritten.agentId=undefined
+            return target ? next.to(rewritten,target) : next(rewritten)
+          },{event,tier:'prepend'}),hook('inner',async(e,next)=>{seen.push(e);return next(e)},{event})],
+          core:async e=>{seen.push(e);return {}},onFailure:(_plugin,error)=>failures.push(error),
+        })
+        assert.equal(seen.length,target?1:2)
+        assert.ok(seen.every(e=>e.agentId===agentId))
+        assert.deepEqual(failures,[])
+      }
+      for (const changed of [null,'forged']) {
+        const seen: ModInput[]=[]
+        const failures:unknown[]=[]
+        await dispatchModEvent({event,input:original,
+          hooks:[hook('outer',async(e,next)=>next({...e,agentId:changed}),{event}),
+            hook('inner',async e=>{seen.push(e);return {}},{event})],
+          core:async()=>{throw Error('short circuit expected')},onFailure:(_plugin,error)=>failures.push(error),
+        })
+        assert.deepEqual(seen,[original])
+        assert.equal(failures.length,1)
+      }
+    }
+  })
+
+  it('passes the branch signal to core without aborting the query or a recovered replay', async () => {
+    const parent=new AbortController()
+    const started=deferred<void>()
+    let branch: AbortSignal | undefined
+    await dispatchModEvent({event:'tool.call',input,signal:parent.signal,
+      hooks:[hook('early',async(e,next)=>{void next(e).catch(()=>{});await started.promise;return {result:'early'}})],
+      core:async (_e,signal)=>{branch=signal;started.resolve();return new Promise(resolve=>signal?.addEventListener('abort',()=>resolve({result:'canceled'}),{once:true}))},
+    })
+    assert.ok(branch)
+    assert.equal(branch.aborted,true)
+    assert.equal(parent.signal.aborted,false)
+    let runs=0
+    const observedAborted: (boolean | undefined)[]=[]
+    await dispatchModEvent({event:'tool.call',input,signal:parent.signal,
+      hooks:[hook('recover',async(e,next,catching)=>{
+        if(!catching){void next(e);throw Error('recover')}
+        return next(e)
+      },{hasCatch:true})],
+      core:async(_e,signal)=>{runs++;await new Promise(resolve=>setTimeout(resolve,5));observedAborted.push(signal?.aborted);return {result:'done'}},
+    })
+    assert.equal(runs,1)
+    assert.deepEqual(observedAborted,[false])
+  })
+
   it('next.is shares exact, glob and negated matching in normal and catch handlers', async () => {
     const phases: boolean[] = []
     const matches: boolean[][] = []

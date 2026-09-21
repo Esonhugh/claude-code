@@ -50,6 +50,7 @@ export async function runModToolCall({
   core: (
     input: ModInput,
     record: ModToolExecutionRecord,
+    signal?: AbortSignal,
   ) => Promise<MessageUpdateLazy[]>
   /** Host review after user dispatch, before mapping/persistence; never replays core. */
   review?: (
@@ -180,7 +181,7 @@ export async function runModToolCall({
     result = await snapshot.dispatch(
       'tool.call',
       event,
-      rewritten => {
+      (rewritten, signal) => {
         const { tool: name, tool_use_id: id, agentId, ...args } = rewritten
         if (
           name !== event.tool ||
@@ -198,7 +199,7 @@ export async function runModToolCall({
         runs.push(record)
         const execution = (async () => {
           try {
-            record.messages = await core(args, record)
+            record.messages = await core(args, record, signal)
           } catch (error) {
             record.error = error
             throw error
