@@ -451,23 +451,26 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const clock = createModClockBridge({
       now: async () => {
         checkCall(owner, 'clock.now', table, lease)
-        return await dispatch('clock.now', {}, async () => Date.now(), snapshot, table, {
+        const result = await dispatch('clock.now', {}, async () => ({ value: Date.now() }), snapshot, table, {
           origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-        }) as number
+        }) as { value: number; deny?: string }
+        if (typeof result.deny === 'string') throw new Error(result.deny)
+        return result.value
       },
       wait: async (kind, ms, id) => {
         checkCall(owner, `clock.${kind}`, table, lease)
         if (!Number.isFinite(ms) || ms < 0 || (kind === 'every' && ms < 1)) throw new Error('Invalid clock duration')
         if (owner.state === 'retiring' && kind !== 'sleep') throw new Error('Module timer belongs to a retired activation')
-        await withReference(owner, () => dispatch(`clock.${kind}`, { ms }, async input => {
+        const result = await withReference(owner, () => dispatch(`clock.${kind}`, { ms }, async input => {
           if (typeof input.ms !== 'number' || !Number.isFinite(input.ms) || input.ms < 0 || (kind === 'every' && input.ms < 1)) throw new Error('Invalid clock duration')
           await new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => { owner.waits.delete(id); resolve() }, input.ms as number)
             timer.unref?.()
             owner.waits.set(id, { kind, timer, reject })
           })
-          return undefined
-        }, snapshot, table, { origin: { plugin: owner.declaration.name, tier: owner.declaration.tier } }))
+          return { value: undefined }
+        }, snapshot, table, { origin: { plugin: owner.declaration.name, tier: owner.declaration.tier } })) as { value?: undefined; deny?: string }
+        if (typeof result.deny === 'string') throw new Error(result.deny)
       },
       cancel: id => cancelWait(owner, id),
       run: async (callback, kind) => {
@@ -567,11 +570,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
-    if (event === 'clock.now') {
-      if (typeof result !== 'number' || !Number.isFinite(result)) throw new Error('clock.now must return a finite number')
+    if (event.startsWith('clock.')) {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result) || (event === 'clock.now'
+        ? typeof result.value !== 'number' || !Number.isFinite(result.value)
+        : result.value !== undefined)) throw new Error(`${event} must return ${event === 'clock.now' ? 'a finite number' : 'undefined'} in value or deny`)
       return
     }
-    if (event.startsWith('clock.')) return
     if (event === 'prompt.context') {
       if (!result || typeof result !== 'object' || !('blocks' in result) || !Array.isArray(result.blocks))
         throw new Error('prompt.context must return blocks')

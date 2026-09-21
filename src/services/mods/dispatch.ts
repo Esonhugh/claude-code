@@ -46,7 +46,6 @@ export async function dispatchModEvent(options: {
 }): Promise<unknown> {
   const budgetMs = options.budgetMs ?? 10_000
   const catchGraceMs = options.catchGraceMs ?? 1000
-  const permitsVoid = ['clock.sleep', 'clock.after', 'clock.every'].includes(options.event)
   const origin: ModOrigin = Object.freeze({
     ...(options.origin ?? { plugin: 'engine', tier: 'core' }),
   })
@@ -364,7 +363,7 @@ export async function dispatchModEvent(options: {
     try {
       try {
         const result = await invoke(false)
-        if (result === undefined && !permitsVoid)
+        if (result === undefined)
           throw new Error(
             `Mod ${hook.plugin} returned undefined for ${options.event}`,
           )
@@ -411,7 +410,7 @@ export async function dispatchModEvent(options: {
           })
           try {
             const result = await invoke(true, failure)
-            if (result !== undefined || permitsVoid) {
+            if (result !== undefined) {
               options.validateResult?.(result, nextResults)
               record('caught', result)
               return result

@@ -739,7 +739,49 @@ describe('Mods lifecycle', () => {
     expect(await snapshot.dispatch('tool.call', input, async () => ({ result: 'core' })).then(() => null, error => error)).toBeInstanceOf(Error)
   })
 
-  test('clock.sleep middleware may return void without producing a failure diagnostic', async () => {
+  test('clock op envelopes are rewritten and unwrapped across real Workers', async () => {
+    const policy = await fixture(`export function register(on) {
+      on('clock.now', async ($, e, next) => { const result=await next(e); return {value:result.value+1}; });
+      on('clock.now', () => ({value:123}));
+      on('clock.sleep', () => ({deny:'sleep denied'}));
+      on('clock.after', () => ({deny:'after denied'}));
+      on('clock.every', () => ({deny:'every denied'}));
+    }`, 'clock-policy')
+    const plugin = await fixture(`let callbacks=0; export function register(on) {
+      on('tool.call', async ($) => {
+        let sleep;
+        try { await $.clock.sleep(0); sleep='resolved'; } catch(error) { sleep=error.message; }
+        $.clock.after(0, () => { callbacks++; });
+        const repeating=$.clock.every(1, () => { callbacks++; repeating.cancel(); });
+        return {result:{now:await $.clock.now(),sleep}};
+      });
+      on('command.run', () => ({text:String(callbacks)}));
+    }`)
+    const {value, events} = runtime()
+    await value.reconcile([policy, plugin])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{now:124,sleep:'sleep denied'}})
+    const deadline=Date.now()+2000
+    while (events.length<2 && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,5))
+    expect(await value.dispatch('command.run', {command:'probe'}, async()=>({}))).toEqual({text:'0'})
+    expect(events.map(event=>event.message).sort()).toEqual(['after denied','every denied'])
+  })
+
+  test('clock hooks reject bare values and recover through the core envelope', async () => {
+    const policy = await fixture(`export function register(on) {
+      on('clock.now', () => 123);
+      on('clock.sleep', () => undefined);
+    }`, 'invalid-clock-policy')
+    const plugin = await fixture(`export function register(on) {
+      on('tool.call', async ($) => { await $.clock.sleep(0); return {result:await $.clock.now()}; });
+    }`)
+    const {value, events}=runtime()
+    await value.reconcile([policy,plugin])
+    const result=await value.dispatch('tool.call',input,async()=>({result:'core'})) as {result:number}
+    expect(result.result).toBeGreaterThan(123)
+    expect(events.map(event=>event.stage).sort()).toEqual(['clock.now','clock.sleep'])
+  })
+
+  test('clock.sleep middleware returns the void value envelope without a diagnostic', async () => {
     const policy = await fixture(`export function register(on) {
       on('clock.sleep', ($, e, next) => next({ ...e, ms: 0 }));
     }`, 'policy')
