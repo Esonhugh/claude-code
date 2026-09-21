@@ -38,6 +38,22 @@ describe('VM-local Mods UI constructors', () => {
     expect(run(`ui.h(() => null, null)`)).toBeNull()
   })
 
+  test('Links omit empty normalized children so label and URL fallbacks remain available', () => {
+    const { run } = realm()
+    expect(run(`(() => {
+      const {Link, Text} = ui.resolve({surface:'terminal', component:'Pane'});
+      const props = {href:'https://example.com/', label:'Docs'};
+      return [Link(props), ...[null, false, [], [null, false, []], ['', null]].map(children => ui.h(Link, props, children))]
+        .map(node => ui.materialize(node, () => {throw new Error('unexpected callback')}));
+    })()`)).toEqual(Array.from({ length: 6 }, () => ({ type: 'Link', props: { href: 'https://example.com/', label: 'Docs' } })))
+    expect(run(`(() => {
+      const {Link, Text} = ui.resolve({surface:'terminal', component:'Pane'});
+      return ui.h(Link, {href:'https://example.com/'}, 0, ' ', ui.h(Text, {bold:true}, 'docs'));
+    })()`)).toEqual({ type: 'Link', props: { href: 'https://example.com/' }, children: [
+      '0', ' ', { type: 'Text', props: { bold: true }, children: ['docs'] },
+    ] })
+  })
+
   test('callbacks remain private and receive their documented author arguments', async () => {
     const { run } = realm()
     const result = run(`(() => {

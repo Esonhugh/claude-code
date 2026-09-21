@@ -1123,7 +1123,8 @@ function RenderElementNode({
   }
   if (node.type === 'Link') {
     const label = props.label as string | undefined
-    return <Link url={props.href as string} fallback={children ?? label ?? props.href as string}>{children ?? label}</Link>
+    const content = node.children?.some(child => child !== '') ? children : label ?? props.href as string
+    return <Link url={props.href as string} fallback={content}>{content}</Link>
   }
   if (node.type === 'Code') {
     const source = props.source as string
@@ -1295,7 +1296,13 @@ function ModSelect({
   const props = node.props!
   const options = props.options as { value: string; label?: string }[]
   const initial = Math.max(0, options.findIndex(option => option.value === props.value))
-  const [index, setIndex] = useState(initial)
+  const [selectedIndex, setIndex] = useState(initial)
+  const [drawing, setDrawing] = useState(pane.drawing)
+  const index = drawing !== pane.drawing && props.value !== undefined
+    ? initial
+    : Math.min(selectedIndex, options.length - 1)
+  if (drawing !== pane.drawing) setDrawing(pane.drawing)
+  if (index !== selectedIndex) setIndex(index)
   const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!
@@ -1356,6 +1363,14 @@ function ModInput({
   const props = node.props!
   const [value, setValue] = useState((props.value as string | undefined) ?? '')
   const valueRef = React.useRef(value)
+  const [drawing, setDrawing] = useState(pane.drawing)
+  if (drawing !== pane.drawing) {
+    setDrawing(pane.drawing)
+    if (props.value !== undefined) {
+      valueRef.current = props.value as string
+      setValue(valueRef.current)
+    }
+  }
   const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!

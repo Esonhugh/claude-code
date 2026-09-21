@@ -45,6 +45,36 @@ const source = (label: string, fail = false) => `let count=0; export function re
   on('ui.render', {component:'Pane'}, ($,e) => { const {Box,Button,Text}=$.ui.resolve(e); return Box({children:[Text({children:'${label}:'+count}),Button({key:'run',label:'Run',onPress:async () => { count++; await $.ui.status('${label}:'+count); await $.ui.log('clicked'); await $.ui.invalidate('ui.render'); }}),Button({key:'close',label:'Close',onPress:() => $.ui.close({id:'panel'})})]}); });
 }`
 
+test('ui.log preserves default, debug and rewritten sinks across activation buffering', async () => {
+  const logs: unknown[]=[]
+  const policy=await plugin('log-policy',`export function register(on) {
+    on('ui.log', {text:'rewrite'}, ($,e,next)=>next({...e,to:'debug'}));
+  }`)
+  const owner=await plugin('logger',`export function register(on) {
+    on('session.start',async($,e,next)=>{
+      await $.ui.log('default'); await $.ui.log('debug',{to:'debug'}); await $.ui.log('rewrite'); return next(e);
+    });
+    on('tool.call',async($)=>{
+      await $.ui.log('live',{to:'debug'});
+      let rejected=false; try{await $.ui.log('invalid',{to:'other'});}catch{rejected=true;}
+      return {result:rejected};
+    });
+  }`)
+  const {value,diagnostics}=fixture({uiLog:(plugin,text,to)=>logs.push([plugin,text,to])})
+  await value.bind(binding(root)); await value.reconcile([policy,owner])
+  expect(logs).toEqual([['logger','default','transcript'],['logger','debug','debug'],['logger','rewrite','debug']])
+  expect(await value.dispatch('tool.call',{tool:'Probe'},async()=>({result:'core'}))).toEqual({result:true})
+  expect(logs.at(-1)).toEqual(['logger','live','debug'])
+  expect(logs).toHaveLength(4)
+  expect(diagnostics).toEqual([])
+  const failed=await plugin('failed-logger',`export function register(on) {
+    on('session.start',async($)=>{await $.ui.log('not published',{to:'debug'});throw Error('failed start');});
+  }`)
+  await value.reconcile([policy,owner,failed])
+  expect(logs).toHaveLength(4)
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'failed-logger',stage:'session.start'}))
+})
+
 test('real Worker session.start opens a pane, redraws after a leased callback, closes and reloads', async () => {
   const consumer = await plugin('ui-owner', source('old'))
   const { value, statuses, logs, diagnostics } = fixture()

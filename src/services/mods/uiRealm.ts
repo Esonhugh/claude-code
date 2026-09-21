@@ -76,7 +76,8 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
           : input?.(event.value, event)
       }
       const node: Node = { type, props: Object.freeze(props) }
-      if (['Box', 'Text', 'Link'].includes(type)) node.children = Object.freeze(children) as unknown as unknown[]
+      if (type === 'Box' || type === 'Text' || (type === 'Link' && children.some(child => child !== '')))
+        node.children = Object.freeze(children) as unknown as unknown[]
       if (hover !== undefined) node.hover = Object.freeze(ownProps(hover))
       if (props.key !== undefined || callback ||
           (node.hover as Props | undefined)?.scope !== undefined)

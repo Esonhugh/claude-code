@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { Readable, Writable } from 'node:stream'
 import { readFileSync } from 'node:fs'
+import { isProxy } from 'node:util/types'
+import { createModUiRealm } from '../services/mods/uiRealm.js'
 import { resolveKeyWithChordState } from '../keybindings/resolver.js'
 import { describe, expect, test } from 'bun:test'
 import React, { useEffect } from 'react'
@@ -217,6 +219,12 @@ describe('ModsPane validation', () => {
       props: { key: 'dup', options: [{ value: 'x' }, { value: 'x' }] },
       press: { plugin: 'fixture', handle: 1 },
     })).toThrow(/unique/i)
+    expect(() => validateModRenderTree({
+      type: 'Select', props: { key: 'empty', options: [] }, press: { plugin: 'fixture', handle: 1 },
+    })).toThrow(/must contain 1-/i)
+    expect(() => validateModRenderTree({
+      type: 'Select', props: { key: 'missing', value: 'gone', options: [{ value: 'main' }] }, press: { plugin: 'fixture', handle: 1 },
+    })).toThrow(/must name an option/i)
   })
 
   test('requires unscoped hover styles and display to live in a visible unique keyed Box', () => {
@@ -426,6 +434,30 @@ describe('ModsPane terminal hover', () => {
     } finally {
       instance.unmount()
     }
+  })
+
+  test('renders realm Links with children, then label, then URL fallback', async () => {
+    const ui = createModUiRealm('fixture', isProxy)
+    const { Box, Link, Text } = ui.resolve({ surface: 'terminal', component: 'Pane' })
+    const href = 'https://example.com/'
+    const tree = ui.materialize(Box!({ flexDirection: 'column', children: [
+      Link!({ href, label: 'Direct label' }),
+      ui.h(Link, { href, label: 'JSX label' }, [null, false, [], '']),
+      ui.h(Link, { href }, [null, undefined, false, []]),
+      ui.h(Link, { href, label: 'Ignored label' }, ui.h(Text, { bold: true }, 'Inline child')),
+      ui.h(Link, { href, label: 'Ignored zero label' }, 0),
+      { type: 'Link', props: { href, label: 'Empty array label' }, children: [] },
+      { type: 'Link', props: { href, label: 'Empty string label' }, children: [''] },
+    ] }), () => { throw new Error('unexpected callback') })
+    const stdout = new Output()
+    const instance = await modsPane(tree, stdout)
+    try {
+      await settle()
+      for (const text of ['Direct label', 'JSX label', href, 'Inline child', '0', 'Empty array label', 'Empty string label']) {
+        expect(renderedElement(stdout, text, 'ink-text')).toBeDefined()
+      }
+      expect(elements(stdout, false).some(({ text }) => text.includes('Ignored'))).toBe(false)
+    } finally { instance.unmount() }
   })
 
   test('keeps nested inline Text inert inside Link content', async () => {
@@ -1275,7 +1307,14 @@ describe('ModsPane input repair', () => {
           const expected = direction === 'down' ? files.slice(1) : files.slice(0, -1).reverse()
           if (rapid) {
             stdin.push(key.repeat(15))
-            await new Promise(resolve => setTimeout(resolve, 250))
+            const deadline = Date.now() + 2000
+            while (Date.now() < deadline) {
+              const target = elements(stdout, true).find(({ node, text }) =>
+                node.nodeName === 'ink-text' && text === `[ ${expected.at(-1)} ]`,
+              )?.node.parentNode
+              if (requests.length === expected.length && target && getFocusManager(target).activeElement === target) break
+              await new Promise(resolve => setTimeout(resolve, 5))
+            }
           } else {
             for (const file of expected) {
               stdin.push(key)
@@ -2217,6 +2256,137 @@ describe('ModsPane Ink interaction', () => {
     } finally {
       instance.unmount()
     }
+  })
+
+  test('Select applies explicit values on each drawing without resetting picks on snapshot publishes', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    const selections: { drawing: number; value?: string }[] = []
+    let drawing = 7
+    let revision = 0
+    let focused = true
+    let value: string | undefined = 'main'
+    const draw = () => <><EnableInput /><ModsPane
+      pane={pane({ type: 'Select', props: { key: 'base', value, options: [{ value: 'main' }, { value: 'dev' }, { value: 'release' }] }, press: { plugin: 'fixture', handle: 2 } }, {
+        owner, drawing, revision, focused, focusedElement: 'base', bodyRows: 10 + revision,
+      })}
+      onInteract={async (_pane, drawing, _press, _kind, _element, value) => { selections.push({ drawing, value }) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const select = renderedElement(stdout, 'main ↑↓', 'ink-text').parentNode!
+      stdin.push('\u001b[B')
+      await settle()
+      for (const nextFocus of [false, true]) {
+        focused = nextFocus
+        revision++
+        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+        await settle()
+        expect(renderedElement(stdout, 'dev ↑↓', 'ink-text').parentNode).toBe(select)
+      }
+      for (const nextValue of ['main', 'release', undefined]) {
+        value = nextValue
+        drawing++
+        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+        await settle()
+        expect(renderedElement(stdout, `${value ?? 'release'} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(getFocusManager(select).activeElement).toBe(select)
+        stdin.push('\r')
+        await settle()
+        expect(selections.at(-1)).toEqual({ drawing, value: value ?? 'release' })
+      }
+    } finally { instance.unmount() }
+  })
+
+  test('Select clamps its current index when a drawing shortens options or deletes the selected option', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    const selections: (string | undefined)[] = []
+    let drawing = 7
+    const draw = (values: string[]) => <><EnableInput /><ModsPane
+      pane={pane({ type: 'Select', props: { key: 'base', options: values.map(value => ({ value })) }, press: { plugin: 'fixture', handle: 2 } }, {
+        owner, drawing, focusedElement: 'base',
+      })}
+      onInteract={async (_pane, _drawing, _press, _kind, _element, value) => { selections.push(value) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>
+    const instance = await render(draw(['main', 'dev', 'release']), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const select = renderedElement(stdout, 'main ↑↓', 'ink-text').parentNode!
+      stdin.push('\u001b[A')
+      await settle()
+      expect(renderedElement(stdout, 'release ↑↓', 'ink-text').parentNode).toBe(select)
+      for (const values of [['main', 'dev'], ['main', 'replacement'], ['only']]) {
+        drawing++
+        instance.rerender(<ThemeProvider>{draw(values)}</ThemeProvider>)
+        await settle()
+        assert.ok(instances.get(stdout as never), stripAnsi(stdout.output))
+        expect(renderedElement(stdout, `${values.at(-1)} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(getFocusManager(select).activeElement).toBe(select)
+        stdin.push('\r')
+        await settle()
+        expect(selections.at(-1)).toBe(values.at(-1))
+      }
+      stdin.push('\u001b[B')
+      await settle()
+      stdin.push('\r')
+      await settle()
+      expect(selections).toEqual(['dev', 'replacement', 'only', 'only'])
+    } finally { instance.unmount() }
+  })
+
+  test('Input applies explicit values on each drawing without resetting edits on snapshot publishes', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    const interactions: { drawing: number; kind: string; value?: string }[] = []
+    let drawing = 7
+    let revision = 0
+    let focused = true
+    let value: string | undefined = 'seed'
+    const draw = () => <><EnableInput /><ModsPane
+      pane={pane({ type: 'Input', props: { key: 'reply', value, placeholder: 'Empty' }, press: { plugin: 'fixture', handle: 2 } }, {
+        owner, drawing, revision, focused, focusedElement: 'reply', bodyRows: 10 + revision,
+      })}
+      onInteract={async (_pane, drawing, _press, kind, _element, value) => { interactions.push({ drawing, kind, value }) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const input = renderedElement(stdout, 'seed', 'ink-text').parentNode!
+      stdin.push('-edited\r')
+      await settle()
+      expect(interactions.at(-1)).toEqual({ drawing: 7, kind: 'input.submit', value: 'seed-edited' })
+      for (const nextFocus of [false, true]) {
+        focused = nextFocus
+        revision++
+        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+        await settle()
+        expect(renderedElement(stdout, 'seed-edited', 'ink-text').parentNode).toBe(input)
+      }
+      for (const nextValue of ['seed', 'replacement', '', undefined]) {
+        value = nextValue
+        drawing++
+        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+        await settle()
+        const expected = value ?? '-paste'
+        expect(renderedElement(stdout, expected || 'Empty', 'ink-text').parentNode).toBe(input)
+        expect(getFocusManager(input).activeElement).toBe(input)
+        const count = interactions.length
+        stdin.push('\u001b[200~-paste\u001b[201~\r')
+        await settle()
+        expect(interactions.slice(count)).toEqual([
+          { drawing, kind: 'input.change', value: `${expected}-paste` },
+          { drawing, kind: 'input.submit', value: `${expected}-paste` },
+        ])
+      }
+    } finally { instance.unmount() }
   })
 
   test('distinguishes Input changes/submits and applies requested element focus', async () => {

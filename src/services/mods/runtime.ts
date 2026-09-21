@@ -43,7 +43,7 @@ export type ModHostServices = ModRequestServices & {
   builtinCommands?(): readonly Command[]
   presentation?(): CommandPresentation
   uiPresentation?(): ModUiPresentation
-  uiLog?(plugin: string, text: string): void
+  uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
   uiStatus?(plugin: string, text: string | undefined): void
 }
 export type ModDiagnostic = { plugin: string; stage: string; message: string }
@@ -82,7 +82,7 @@ type Activation = {
   operations: ReturnType<typeof createModHostOperations>
   uiPublished?: boolean
   uiStatus?: { text: string | undefined }
-  uiLogs?: string[]
+  uiLogs?: { text: string; to: 'transcript' | 'debug' }[]
   uiRelease?: Promise<void>
   dispose?: Promise<void>
 }
@@ -317,7 +317,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         return input as ModInput
       }
       case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': return args[0] as ModInput
-      case 'ui.log': case 'ui.status': return { text: args[0] }
+      case 'ui.log': {
+        const options = args[1] === undefined ? {} : args[1]
+        if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
+        return { text: args[0], to: (options as ModInput).to === undefined ? 'transcript' : (options as ModInput).to }
+      }
+      case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
       case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.id': case 'session.surface': case 'session.messages': return {}
@@ -417,8 +422,9 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
         if (op === 'ui.log') {
           if (!services.uiLog) throw new Error('UI log is unavailable on this host')
-          if (owner.uiPublished) services.uiLog(owner.declaration.name, input.text as string)
-          else (owner.uiLogs ??= []).push(input.text as string)
+          if (input.to !== 'transcript' && input.to !== 'debug') throw new TypeError('ui.log to must be transcript or debug')
+          if (owner.uiPublished) services.uiLog(owner.declaration.name, input.text as string, input.to)
+          else (owner.uiLogs ??= []).push({ text: input.text as string, to: input.to })
         } else {
           if (!services.uiStatus) throw new Error('UI status is unavailable on this host')
           owner.uiStatus = { text: input.text as string | undefined }
@@ -845,7 +851,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       commands.commit(owner, replacements.get(owner))
       owner.uiPublished = true
       if (owner.uiStatus) services.uiStatus?.(owner.declaration.name, owner.uiStatus.text)
-      for (const text of owner.uiLogs ?? []) services.uiLog?.(owner.declaration.name, text)
+      for (const { text, to } of owner.uiLogs ?? []) services.uiLog?.(owner.declaration.name, text, to)
       owner.uiLogs = undefined
     }
     for (const [noun, owners] of crashedWithholders) {

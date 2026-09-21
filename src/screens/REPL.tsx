@@ -1904,9 +1904,9 @@ export function REPL({
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     presentation: () => modUiPresentationRef.current,
     uiPresentation: () => modUiPresentationRef.current,
-    uiLog: (plugin, text) => {
+    uiLog: (plugin, text, to) => {
       logForDebugging(`[Mods:${plugin}] ${text}`)
-      setMessages(previous => [...previous, createSystemMessage(`[${plugin}] ${text}`, 'info')])
+      if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`[${plugin}] ${text}`, 'info')])
     },
     uiStatus: (plugin, text) => setModStatuses(previous => {
       const next = { ...previous }
