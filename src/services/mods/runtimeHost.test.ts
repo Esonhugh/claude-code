@@ -306,6 +306,49 @@ test('Worker command.list reports public source names, display names and the cur
   expect(diagnostics).toEqual([])
 })
 
+test('late Worker registration publishes without losing sibling commands and lists live external sources', async () => {
+  let external: Command[]=[{name:'remote',description:'Remote',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})}]
+  const owner=await plugin('late-commands',`export function register(on) {
+    on('session.start',async($,e,next)=>{await $.command.register({name:'initial',description:'Initial'});return next(e);});
+    on('tool.call',async($)=>{
+      await $.command.register({name:'late',description:'Late'});
+      await $.command.register({name:'initial',description:'Updated'});
+      return {result:await $.command.list()};
+    });
+    on('command.run',($,e)=>({text:e.command}));
+  }`)
+  const diagnostics:unknown[]=[]
+  const value=createModsRuntime({services:{commands:()=>external},onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root));await value.reconcile([owner])
+  const oldSnapshot=value.commands.getSnapshot()
+  const result=await value.dispatch('tool.call',input,async()=>({result:'core'})) as any
+  expect(result.result).toEqual([
+    {name:'remote',description:'Remote',source:'mcp'},
+    {name:'initial',description:'Updated',source:'plugin',plugin:'late-commands'},
+    {name:'late',description:'Late',source:'plugin',plugin:'late-commands'},
+  ])
+  expect(oldSnapshot.map(command=>command.description)).toEqual(['Initial'])
+  expect(value.commands.list().map(command=>command.name)).toEqual(['initial','late'])
+  external=[]
+  expect((await value.dispatch('tool.call',input,async()=>({result:'core'})) as any).result).toHaveLength(2)
+  await value.reconcile([])
+  expect(value.commands.list()).toEqual([])
+  expect(diagnostics).toEqual([])
+})
+
+test('external command names are not treated as protected builtins', async () => {
+  const owner=await plugin('external-name',`export function register(on) {
+    on('session.start',async($,e,next)=>{await $.command.register({name:'external',description:'Mod'});return next(e);});
+  }`)
+  const diagnostics:unknown[]=[]
+  const value=createModsRuntime({services:{commands:()=>[{name:'external',description:'MCP',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})}]},onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root));await value.reconcile([owner])
+  expect(value.commands.list().map(command=>command.name)).toEqual(['external'])
+  expect(diagnostics).toEqual([])
+})
+
 test('Worker command.register rejects whitespace descriptions and preserves multiline text', async () => {
   const consumer = await plugin('command-description', `export function register(on) {
     on('session.start', async ($, e, next) => {

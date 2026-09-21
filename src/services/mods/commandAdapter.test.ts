@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { Command } from '../../types/command.js'
 import {
   createCommandInputMessage,
@@ -14,6 +14,16 @@ import { dispatchModEvent } from './dispatch.js'
 import type { ModDispatchHook } from './types.js'
 import type { ModSnapshot } from './runtime.js'
 import { runImmediateModCommand, runModCommand } from './commandAdapter.js'
+
+let savedAnthropicApiKey: string | undefined
+beforeEach(() => {
+  savedAnthropicApiKey = process.env.ANTHROPIC_API_KEY
+  process.env.ANTHROPIC_API_KEY = 'test-api-key'
+})
+afterEach(() => {
+  if (savedAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+  else process.env.ANTHROPIC_API_KEY = savedAnthropicApiKey
+})
 
 function snapshot(...handlers: ModDispatchHook['invoke'][]): ModSnapshot {
   return {

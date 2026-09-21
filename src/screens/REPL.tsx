@@ -1899,7 +1899,8 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
-    commands: () => modBuiltinCommandsRef.current,
+    commands: () => baseCommandsRef.current,
+    builtinCommands: () => modBuiltinCommandsRef.current,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     presentation: () => modUiPresentationRef.current,
     uiPresentation: () => modUiPresentationRef.current,

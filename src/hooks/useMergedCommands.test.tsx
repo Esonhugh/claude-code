@@ -120,6 +120,13 @@ try {
   modCommands.commit(owner)
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(current.map(command => command.name), ['local-command', 'plugin-command', 'mcp-command', 'mod-panel'])
+  modCommands.register(owner, {name:'mod-late', description:'Late'})
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(current.map(command => command.name), ['local-command', 'plugin-command', 'mcp-command', 'mod-panel', 'mod-late'])
+  modCommands.register(owner, {name:'mod-panel', description:'Updated panel'})
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(current.find(command => command.name === 'mod-panel')?.description, 'Updated panel')
+  assert.equal(current.filter(command => command.name === 'mod-late').length, 1)
   for (const props of [{disabled:true}, {remote:true}]) {
     modInstance.rerender(React.createElement(CaptureMods, props))
     await new Promise(resolve => setImmediate(resolve))

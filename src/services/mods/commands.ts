@@ -45,6 +45,8 @@ export function createModCommands({
   ) => Promise<ModCommandRunResult>
 }): ModCommands {
   const candidates = new Map<ModCommandOwner, Map<string, Command>>()
+  // An activation may publish before it registers its first command.
+  const publishedOwners = new WeakSet<ModCommandOwner>()
   const active = new Map<string, { command: Command; owner: ModCommandOwner }>()
   const listeners = new Set<() => void>()
   let snapshot: Command[] = Object.freeze([]) as Command[]
@@ -135,6 +137,14 @@ export function createModCommands({
           continue
         throw new Error(`Command /${spec.name} refused: it is the built-in /${builtin.name}`)
       }
+      if (publishedOwners.has(owner)) {
+        const current = active.get(spec.name)
+        if (current && current.owner !== owner)
+          throw new Error(`Mod command /${spec.name} is already owned by another activation`)
+        active.set(spec.name, { command: projectCommand(spec), owner })
+        publish()
+        return { command: spec.name }
+      }
       let owned = candidates.get(owner)
       if (!owned) {
         owned = new Map()
@@ -160,11 +170,14 @@ export function createModCommands({
         changed = true
       }
       candidates.delete(owner)
+      if (replacedOwner !== undefined) publishedOwners.delete(replacedOwner)
+      publishedOwners.add(owner)
       if (changed) publish()
     },
 
     release(owner) {
       validateOwner(owner)
+      publishedOwners.delete(owner)
       candidates.delete(owner)
       let changed = false
       for (const [name, current] of [...active]) {

@@ -136,6 +136,141 @@ describe('mod command ownership', () => {
     })
   })
 
+  test('publishes commands registered after an activation commits with no initial commands', () => {
+    const owner = {}
+    const registry = createRegistry()
+    const initial = registry.getSnapshot()
+    const observed: Command[][] = []
+    registry.subscribe(() => observed.push(registry.getSnapshot()))
+
+    registry.commit(owner)
+    expect(registry.getSnapshot()).toBe(initial)
+    expect(observed).toEqual([])
+    expect(registry.register(owner, { name: 'late', description: 'Late' })).toEqual({ command: 'late' })
+    expect(registry.list()).toHaveLength(1)
+    expect(registry.list()[0]).toMatchObject({ name: 'late', description: 'Late' })
+    expect(registry.ownerOf(registry.list()[0]!)).toBe(owner)
+    expect(observed).toEqual([registry.getSnapshot()])
+  })
+
+  test('published registration updates only the named command and leaves old snapshots intact', () => {
+    const owner = {}
+    const other = {}
+    const registry = createRegistry()
+    registry.register(owner, { name: 'hello', description: 'First', immediate: true })
+    registry.register(owner, { name: 'keep', description: 'Keep' })
+    registry.commit(owner)
+    registry.register(other, { name: 'other', description: 'Other' })
+    registry.commit(other)
+    const before = registry.getSnapshot()
+    const observed: Command[][] = []
+    registry.subscribe(() => observed.push(registry.getSnapshot()))
+
+    registry.register(owner, { name: 'late', description: 'Late' })
+    const added = registry.getSnapshot()
+    expect(added.map(command => command.name)).toEqual(['hello', 'keep', 'other', 'late'])
+    expect(added.slice(0, 3)).toEqual(before)
+    const updated: ModCommandSpec = { name: 'hello', description: 'Second', argumentHint: '[new]' }
+    registry.register(owner, updated)
+    updated.description = 'mutated after registration'
+    const replaced = registry.getSnapshot()
+    expect(replaced.map(command => command.name)).toEqual(['hello', 'keep', 'other', 'late'])
+    expect(replaced[0]).toMatchObject({ description: 'Second', argumentHint: '[new]' })
+    expect(replaced[0]?.immediate).toBeUndefined()
+    expect(replaced[0]).not.toBe(before[0])
+    for (let index = 1; index < replaced.length; index++) expect(replaced[index]).toBe(added[index])
+    expect(registry.ownerOf(replaced[0]!)).toBe(owner)
+    expect(registry.ownerOf(before[0]!)).toBeUndefined()
+    expect(registry.ownerOf(replaced[2]!)).toBe(other)
+    expect(before.map(command => command.description)).toEqual(['First', 'Keep', 'Other'])
+    expect(added[0]).toBe(before[0])
+    expect(Object.isFrozen(before)).toBe(true)
+    expect(observed).toEqual([added, replaced])
+
+    registry.release(owner)
+    expect(registry.list()).toEqual([before[2]!])
+    expect(registry.ownerOf(replaced[0]!)).toBeUndefined()
+    expect(replaced).toHaveLength(4)
+    expect(observed).toEqual([added, replaced, registry.getSnapshot()])
+  })
+
+  test('rejects published registration conflicts without changing snapshots or notifying', () => {
+    const builtins = [command('diff', ['changes']), command('help', ['h'])]
+    const owner = {}
+    const other = {}
+    const registry = createRegistry({ getBuiltinCommands: () => builtins })
+    registry.register(owner, { name: 'keep', description: 'Keep' })
+    registry.commit(owner)
+    registry.register(other, { name: 'shared', description: 'Other' })
+    registry.commit(other)
+    const before = registry.getSnapshot()
+    const observed: Command[][] = []
+    registry.subscribe(() => observed.push(registry.getSnapshot()))
+
+    expect(() => registry.register(owner, { name: 'shared', description: 'Collision' }))
+      .toThrow(/already owned by another activation/)
+    for (const builtin of builtins) {
+      for (const name of [builtin.name, ...builtin.aliases!]) {
+        expect(() => registry.register(owner, { name, description: 'Collision' }))
+          .toThrow(`Command /${name} refused: it is the built-in /${builtin.name}`)
+      }
+    }
+    expect(() => registry.register(owner, { name: 'keep', description: ' ' })).toThrow(/description/)
+    expect(registry.getSnapshot()).toBe(before)
+    expect(registry.ownerOf(before[1]!)).toBe(other)
+    expect(observed).toEqual([])
+    expect(registry.projection(builtins)).toEqual([...builtins, ...before])
+
+    registry.register(owner, { name: 'keep', description: 'Updated' })
+    expect(registry.list()[0]?.description).toBe('Updated')
+    expect(registry.list()[1]).toBe(before[1])
+    expect(observed).toEqual([registry.getSnapshot()])
+  })
+
+  test.each([false, true])('release clears publication and candidates (initial command: %s)', initiallyRegistered => {
+    const owner = {}
+    const registry = createRegistry()
+    if (initiallyRegistered) registry.register(owner, { name: 'initial', description: 'Initial' })
+    registry.commit(owner)
+    registry.release(owner)
+    const empty = registry.getSnapshot()
+    expect(empty).toEqual([])
+    const observed: Command[][] = []
+    registry.subscribe(() => observed.push(registry.getSnapshot()))
+
+    registry.register(owner, { name: 'stale', description: 'Stale' })
+    expect(registry.getSnapshot()).toBe(empty)
+    registry.release(owner)
+    registry.commit(owner)
+    expect(registry.getSnapshot()).toBe(empty)
+    expect(observed).toEqual([])
+    registry.register(owner, { name: 'fresh', description: 'Fresh' })
+    expect(registry.list().map(command => command.name)).toEqual(['fresh'])
+    expect(observed).toEqual([registry.getSnapshot()])
+  })
+
+  test.each([false, true])('replacement clears the old publication (initial command: %s)', initiallyRegistered => {
+    const oldOwner = {}
+    const replacement = {}
+    const registry = createRegistry()
+    if (initiallyRegistered) registry.register(oldOwner, { name: 'old', description: 'Old' })
+    registry.commit(oldOwner)
+    registry.commit(replacement, oldOwner)
+    const empty = registry.getSnapshot()
+    expect(empty).toEqual([])
+    const observed: Command[][] = []
+    registry.subscribe(() => observed.push(registry.getSnapshot()))
+
+    registry.register(oldOwner, { name: 'stale', description: 'Stale' })
+    expect(registry.getSnapshot()).toBe(empty)
+    registry.release(oldOwner)
+    expect(observed).toEqual([])
+    registry.register(replacement, { name: 'new', description: 'New' })
+    expect(registry.list().map(command => command.name)).toEqual(['new'])
+    expect(registry.ownerOf(registry.list()[0]!)).toBe(replacement)
+    expect(observed).toEqual([registry.getSnapshot()])
+  })
+
   test('keeps the old activation visible through reload rollback, then swaps atomically by owner identity', () => {
     const oldOwner = { pluginName: 'same-plugin' }
     const failedCandidate = { pluginName: 'same-plugin' }

@@ -40,6 +40,7 @@ export type ModHostServices = ModRequestServices & {
   pluginOrigin?(storageId: string): ModOrigin | undefined
   messages?(): readonly unknown[]
   commands?(): readonly Command[]
+  builtinCommands?(): readonly Command[]
   presentation?(): CommandPresentation
   uiPresentation?(): ModUiPresentation
   uiLog?(plugin: string, text: string): void
@@ -201,7 +202,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   })
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   const commands = createModCommands({
-    getBuiltinCommands: () => services.commands?.() ?? [],
+    getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
+      command.type === 'prompt'
+        ? command.source === 'builtin' || command.source === 'bundled'
+        : !command.isMcp && (command.loadedFrom === undefined || command.loadedFrom === 'bundled'),
+    ),
     run: async (name, args, context) => {
       const command = commands.list().find(command => command.name === name)
       if (!command) throw new Error(`Mod command /${name} is no longer active`)
