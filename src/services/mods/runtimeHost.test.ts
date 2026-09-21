@@ -13,7 +13,7 @@ import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache
 
 let root: string
 const runtimes: ReturnType<typeof createModsRuntime>[] = []
-const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS']
+const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS', 'ANTHROPIC_API_KEY']
 let saved: (string | undefined)[]
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'mods-runtime-host-'))
@@ -22,6 +22,7 @@ beforeEach(async () => {
   process.env.USERPROFILE = root
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
   process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = join(root, 'config', 'plugins')
+  process.env.ANTHROPIC_API_KEY = 'test-api-key'
   delete process.env.CLAUDE_CODE_USE_COWORK_PLUGINS
   resetSettingsCache()
 })
@@ -192,6 +193,37 @@ test('session.start reads the host catalog while projected commands use their ca
   const results: unknown[] = []
   await (await command.load()).call(text=>results.push(JSON.parse(text!)),context,'')
   expect(results).toEqual([{initial:[{name:'HostTool',description:'Host description',mcp:false}],current:[{name:'CallerTool',description:'Caller description',mcp:false}]}])
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker fs options and hook rewrites reach the host without losing defaults', async () => {
+  await writeFile(join(root, 'bytes.bin'), Buffer.from([0, 255, 128]))
+  const policy = await plugin('fs-options-policy', `export function register(on) {
+    on('fs.read', ($, e, next) => e.path === 'rewrite' ? next({...e,path:'bytes.bin',as:'bytes'}) : next(e));
+    on('fs.stat', ($, e, next) => e.path === 'rewrite' ? next({...e,path:'bytes.bin',resolve:true}) : next(e));
+    on('fs.read', {path:'denied'}, () => ({deny:'read denied'}));
+    on('fs.read', {path:'defaults'}, ($, e) => ({value:e.as}));
+    on('fs.stat', {path:'defaults'}, ($, e) => ({value:e.resolve}));
+  }`)
+  const consumer = await plugin('fs-options-consumer', `export function register(on) {
+    on('tool.call', async ($) => {
+      let denied;
+      try { await $.fs.read('denied', {as:'bytes'}); } catch(error) { denied=error.message; }
+      return {result:{bytes:await $.fs.read('bytes.bin',{as:'bytes'}), rewritten:await $.fs.read('rewrite'),
+        stat:await $.fs.stat('bytes.bin',{resolve:true}), rewrittenStat:await $.fs.stat('rewrite'),
+        defaults:[await $.fs.read('defaults'),await $.fs.stat('defaults')], denied}};
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([policy, consumer])
+  const result = await value.dispatch('tool.call', input, async () => ({result:'unexpected'})) as any
+  expect(result.result.bytes).toEqual({base64:'AP+A'})
+  expect(result.result.rewritten).toEqual({base64:'AP+A'})
+  expect(result.result.stat).toMatchObject({kind:'file',isLink:false,size:3,realPath:expect.stringContaining('/bytes.bin')})
+  expect(result.result.rewrittenStat).toEqual(result.result.stat)
+  expect(result.result.defaults).toEqual(['text',false])
+  expect(result.result.denied).toBe('read denied')
   expect(diagnostics).toEqual([])
 })
 

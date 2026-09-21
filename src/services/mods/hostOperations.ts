@@ -6,7 +6,7 @@ import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { atomicWriteToZipCache } from '../../utils/plugins/zipCache.js'
 import { constants } from 'node:fs'
-import { mkdir, open, readdir, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import treeKill from 'tree-kill'
 import { getInitialSettings, getSettingsForSource } from '../../utils/settings/settings.js'
@@ -15,12 +15,23 @@ export type SettingsReadArgs = {
   source?: 'user' | 'project' | 'local' | 'flag' | 'policy'
 }
 
+export type FsBytes = { base64: string }
+export type FsReadOptions = { as: 'text' | 'bytes' }
+
 export type FsEntry = {
   name: string
   kind: 'file' | 'dir' | 'other'
   size: number
+  isLink: boolean
 }
-export type FsStat = { kind: FsEntry['kind']; size: number; mtimeMs: number }
+export type FsStatOptions = { resolve: boolean }
+export type FsStat = {
+  kind: FsEntry['kind']
+  size: number
+  mtimeMs: number
+  isLink: boolean
+  realPath?: string
+}
 
 function kind(entry: {
   isFile(): boolean
@@ -50,7 +61,7 @@ export type ProcessRunResult = {
 const MAX_BYTES = 4 * 1024 * 1024
 const MAX_STORE_CHARACTERS = 4 * 1024 * 1024
 
-async function readText(path: string, signal: AbortSignal, maxBytes = MAX_BYTES): Promise<string> {
+async function readBytes(path: string, signal: AbortSignal, maxBytes = MAX_BYTES): Promise<Buffer> {
   signal.throwIfAborted()
   // A plugin can name a FIFO: opening it must not wait for a writer.
   const file = await open(path, process.platform === 'win32' ? 'r' : constants.O_RDONLY | constants.O_NONBLOCK)
@@ -74,10 +85,14 @@ async function readText(path: string, signal: AbortSignal, maxBytes = MAX_BYTES)
       if (size > maxBytes) throw new RangeError(`Read exceeds ${maxBytes / (1024 * 1024)} MiB`)
       chunks.push(chunk.subarray(0, bytesRead))
     }
-    return Buffer.concat(chunks).toString('utf8')
+    return Buffer.concat(chunks)
   } finally {
     await file.close()
   }
+}
+
+async function readText(path: string, signal: AbortSignal, maxBytes = MAX_BYTES): Promise<string> {
+  return (await readBytes(path, signal, maxBytes)).toString('utf8')
 }
 
 export function createModHostOperations({
@@ -160,7 +175,25 @@ export function createModHostOperations({
     signal.throwIfAborted()
     if (typeof path !== 'string' || path === '')
       throw new TypeError('path must be a nonempty string')
+    if (/^[\\/]{2}/.test(path))
+      throw new TypeError('Network paths are not supported')
     return resolve(cwd(), path)
+  }
+
+  async function read(path: string, options?: { as: 'text' }, signal?: AbortSignal): Promise<string>
+  async function read(path: string, options: { as: 'bytes' }, signal?: AbortSignal): Promise<FsBytes>
+  async function read(path: string, options: FsReadOptions, signal?: AbortSignal): Promise<string | FsBytes>
+  async function read(
+    path: string,
+    options: FsReadOptions = { as: 'text' },
+    signal: AbortSignal = activationSignal,
+  ): Promise<string | FsBytes> {
+    signal.throwIfAborted()
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        (options.as !== 'text' && options.as !== 'bytes'))
+      throw new TypeError('fs.read options.as must be text or bytes')
+    const bytes = await readBytes(resolvePath(path), signal)
+    return options.as === 'bytes' ? { base64: bytes.toString('base64') } : bytes.toString('utf8')
   }
 
   return {
@@ -357,10 +390,7 @@ export function createModHostOperations({
       },
     },
     fs: {
-      async read(path: string, signal: AbortSignal = activationSignal): Promise<string> {
-        signal.throwIfAborted()
-        return readText(resolvePath(path), signal)
-      },
+      read,
       async write(path: string, text: string, signal: AbortSignal = activationSignal): Promise<void> {
         signal.throwIfAborted()
         const target = resolvePath(path)
@@ -381,6 +411,7 @@ export function createModHostOperations({
           entries.map(async (entry) => ({
             name: entry.name,
             kind: kind(entry),
+            isLink: entry.isSymbolicLink(),
             size: entry.isFile()
               ? await stat(resolve(target, entry.name)).then(
                   (s) => s.size,
@@ -399,11 +430,40 @@ export function createModHostOperations({
         signal.throwIfAborted()
         return exists
       },
-      async stat(path: string, signal: AbortSignal = activationSignal): Promise<FsStat> {
+      async stat(
+        path: string,
+        options: FsStatOptions = { resolve: false },
+        signal: AbortSignal = activationSignal,
+      ): Promise<FsStat> {
         signal.throwIfAborted()
-        const info = await stat(resolvePath(path))
+        if (!options || typeof options !== 'object' || Array.isArray(options) ||
+            typeof options.resolve !== 'boolean')
+          throw new TypeError('fs.stat options.resolve must be a boolean')
+        const target = resolvePath(path)
+        const entry = await lstat(target)
         signal.throwIfAborted()
-        return { kind: kind(info), size: info.size, mtimeMs: info.mtimeMs }
+        const isLink = entry.isSymbolicLink()
+        let info = entry
+        if (isLink) {
+          try {
+            info = await stat(target)
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+          }
+          signal.throwIfAborted()
+        }
+        const result: FsStat = { kind: kind(info), size: info.size, mtimeMs: info.mtimeMs, isLink }
+        if (options.resolve) {
+          try {
+            result.realPath = await realpath(target)
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+          }
+          signal.throwIfAborted()
+        }
+        return result
       },
     },
   }

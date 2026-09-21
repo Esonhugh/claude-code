@@ -293,7 +293,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function hostInput(op: string, args: unknown[]): ModInput {
     switch (op) {
-      case 'fs.read': case 'fs.exists': case 'fs.stat': return { path: args[0] }
+      case 'fs.read': case 'fs.stat': {
+        const options = args[1] === undefined ? {} : args[1]
+        if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError(`${op} options must be an object`)
+        return op === 'fs.read'
+          ? { path: args[0], as: (options as ModInput).as === undefined ? 'text' : (options as ModInput).as }
+          : { path: args[0], resolve: (options as ModInput).resolve === undefined ? false : (options as ModInput).resolve }
+      }
+      case 'fs.exists': return { path: args[0] }
       case 'fs.list': return { path: args[0] ?? '.' }
       case 'fs.write': return { path: args[0], text: args[1] }
       case 'store.get': case 'store.delete': return { key: args[0] }
@@ -321,9 +328,9 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const combined = createCombinedAbortSignal(invocationSignal.getStore(), {signalB:owner.controller.signal})
         try {
           switch (op) {
-            case 'fs.read': return await fs.read(input.path as string, combined.signal)
+            case 'fs.read': return await fs.read(input.path as string, { as: input.as as 'text' | 'bytes' }, combined.signal)
             case 'fs.list': return await fs.list(input.path as string, combined.signal)
-            case 'fs.stat': return await fs.stat(input.path as string, combined.signal)
+            case 'fs.stat': return await fs.stat(input.path as string, { resolve: input.resolve as boolean }, combined.signal)
             case 'fs.exists': return await fs.exists(input.path as string, combined.signal)
             case 'fs.write': return await fs.write(input.path as string, input.text as string, combined.signal)
             case 'process.run': return await process.run(input.argv as string[], input.init as Parameters<typeof process.run>[1], combined.signal)

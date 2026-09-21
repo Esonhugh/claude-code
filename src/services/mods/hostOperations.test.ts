@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   chmod,
+  link,
+  lstat,
   mkdtemp,
   mkdir,
   readFile,
@@ -19,7 +21,7 @@ import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createModHostOperations } from './hostOperations.js'
+import { createModHostOperations, type FsStat } from './hostOperations.js'
 import {
   getPolicySettingsOrigin,
   getSettingsForSource,
@@ -899,6 +901,26 @@ describe('process.run', () => {
 })
 
 describe('fs', () => {
+  test('reads non-UTF8 and empty bytes as base64 without changing default or explicit text reads', async () => {
+    const bytes = Buffer.from([0, 0xff, 0xfe, 0x80, 0xc3, 0x28, 0x61])
+    await writeFile(join(cwd, 'binary'), bytes)
+    expect(await host.fs.read('binary', { as: 'bytes' })).toEqual({
+      base64: bytes.toString('base64'),
+    })
+    expect(await host.fs.read('binary')).toBe(bytes.toString('utf8'))
+    expect(await host.fs.read('binary', { as: 'text' })).toBe(bytes.toString('utf8'))
+    await writeFile(join(cwd, 'empty'), '')
+    expect(await host.fs.read('empty', { as: 'bytes' })).toEqual({ base64: '' })
+    expect(await host.fs.read('empty', { as: 'text' })).toBe('')
+  })
+
+  test('rejects invalid read options at the host boundary', async () => {
+    await writeFile(join(cwd, 'file'), 'text')
+    for (const options of [null, [], 'bytes', 1, {}, { as: undefined }, { as: null }, { as: 'binary' }, { as: true }]) {
+      await expect(host.fs.read('file', options as never)).rejects.toThrow(TypeError)
+    }
+  })
+
   test.skipIf(process.platform === 'win32')('reads an unwritten FIFO without waiting for a writer', async () => {
     const path = join(cwd, 'empty-fifo')
     const fifo = Bun.spawn(['mkfifo', path], { stdout: 'pipe', stderr: 'pipe' })
@@ -912,6 +934,28 @@ describe('fs', () => {
     const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
     expect({ code, stderr }).toEqual({ code: 0, stderr: '' })
   }, 10000)
+
+  for (const operation of ['read', 'write', 'list', 'exists', 'stat'] as const) {
+    test(`${operation} rejects network path spellings before resolving cwd or touching the filesystem`, async () => {
+      const guarded = createModHostOperations({
+        cwd: () => { throw new Error('cwd must not be read') },
+        storageId: 'network@test',
+        signal: controller.signal,
+      })
+      for (const path of [
+        '//server/share',
+        String.raw`\\server\share`,
+        String.raw`/\server/share`,
+        String.raw`\/server/share`,
+        String.raw`\\?\UNC\server\share`,
+      ]) {
+        const pending = operation === 'write'
+          ? guarded.fs.write(path, 'unchanged')
+          : guarded.fs[operation](path)
+        await expect(pending).rejects.toThrow(/network/i)
+      }
+    })
+  }
 
   test('validates exists input and respects revoked lifetime before observing the filesystem', async () => {
     for (const path of [null, '']) {
@@ -928,9 +972,11 @@ describe('fs', () => {
   test('cancels only the filesystem invocation without revoking its activation', async () => {
     const aborted = AbortSignal.abort()
     for (const operation of [
-      () => host.fs.read('file', aborted),
+      () => host.fs.read('file', undefined, aborted),
+      () => host.fs.read('file', { as: 'bytes' }, aborted),
       () => host.fs.list('.', aborted),
-      () => host.fs.stat('file', aborted),
+      () => host.fs.stat('file', undefined, aborted),
+      () => host.fs.stat('file', { resolve: true }, aborted),
       () => host.fs.exists('file', aborted),
       () => host.fs.write('file', 'cancelled', aborted),
     ]) {
@@ -970,22 +1016,67 @@ describe('fs', () => {
     )
   })
 
-  test('lists symlinks as other, follows them for stat, and keeps directory stat size', async () => {
+  test('lists links without following them and includes isLink on every entry', async () => {
     await host.fs.write('file', 'abc')
-    await symlink(join(cwd, 'file'), join(cwd, 'link'))
-    await symlink(join(cwd, 'missing'), join(cwd, 'broken'))
+    await mkdir(join(cwd, 'dir'))
+    await symlink('file', join(cwd, 'link'))
+    await symlink('dir', join(cwd, 'dir-link'))
+    await symlink('missing', join(cwd, 'broken'))
     expect(await host.fs.list()).toEqual([
-      { name: 'broken', kind: 'other', size: 0 },
-      { name: 'file', kind: 'file', size: 3 },
-      { name: 'link', kind: 'other', size: 0 },
+      { name: 'broken', kind: 'other', size: 0, isLink: true },
+      { name: 'dir', kind: 'dir', size: 0, isLink: false },
+      { name: 'dir-link', kind: 'other', size: 0, isLink: true },
+      { name: 'file', kind: 'file', size: 3, isLink: false },
+      { name: 'link', kind: 'other', size: 0, isLink: true },
     ])
-    expect((await host.fs.stat('link')).size).toBe(3)
-    expect(await host.fs.exists('broken')).toBe(false)
-    expect(await host.fs.stat('.')).toEqual({
-      kind: 'dir',
-      size: (await stat(cwd)).size,
-      mtimeMs: (await stat(cwd)).mtimeMs,
-    })
+  })
+
+  test('stats link targets, resolves only when requested and keeps dangling link metadata', async () => {
+    await host.fs.write('dir/file', 'abc')
+    await link(join(cwd, 'dir/file'), join(cwd, 'hard'))
+    await symlink('dir/file', join(cwd, 'link'))
+    await symlink('link', join(cwd, 'chain'))
+    await symlink('dir', join(cwd, 'dir-link'))
+    await symlink('missing', join(cwd, 'broken'))
+    await symlink('dir/file/child', join(cwd, 'broken-parent'))
+    for (const [path, target, isLink] of [
+      ['dir/file', 'dir/file', false],
+      ['hard', 'hard', false],
+      ['link', 'dir/file', true],
+      ['chain', 'dir/file', true],
+      ['dir-link', 'dir', true],
+      ['dir-link/./file', 'dir/file', false],
+      ['.', '.', false],
+    ] as const) {
+      const info = await stat(join(cwd, target))
+      const expected: FsStat = {
+        kind: info.isDirectory() ? 'dir' : 'file',
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        isLink,
+      }
+      expect(await host.fs.stat(path)).toEqual(expected)
+      expect(await host.fs.stat(path, { resolve: false })).toEqual(expected)
+      expect(await host.fs.stat(path, { resolve: true })).toEqual({
+        ...expected,
+        realPath: await realpath(join(cwd, target)),
+      })
+    }
+    for (const path of ['broken', 'broken-parent']) {
+      const info = await lstat(join(cwd, path))
+      const expected: FsStat = { kind: 'other', size: info.size, mtimeMs: info.mtimeMs, isLink: true }
+      expect(await host.fs.stat(path)).toEqual(expected)
+      expect(await host.fs.stat(path, { resolve: true })).toEqual(expected)
+      expect(await host.fs.exists(path)).toBe(false)
+    }
+    await expect(host.fs.stat('missing', { resolve: true })).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  test('rejects invalid stat options at the host boundary', async () => {
+    await writeFile(join(cwd, 'file'), 'text')
+    for (const options of [null, [], true, 1, {}, { resolve: undefined }, { resolve: null }, { resolve: 'true' }, { resolve: 1 }]) {
+      await expect(host.fs.stat('file', options as never)).rejects.toThrow(TypeError)
+    }
   })
 
   test('writes with parent creation and lists sorted file metadata', async () => {
@@ -993,19 +1084,20 @@ describe('fs', () => {
     await host.fs.write('nested/a', 'hello')
     await mkdir(join(cwd, 'nested', 'dir'))
     expect(await host.fs.list('nested')).toEqual([
-      { name: 'a', kind: 'file', size: 5 },
-      { name: 'dir', kind: 'dir', size: 0 },
-      { name: 'z', kind: 'file', size: 2 },
+      { name: 'a', kind: 'file', size: 5, isLink: false },
+      { name: 'dir', kind: 'dir', size: 0, isLink: false },
+      { name: 'z', kind: 'file', size: 2, isLink: false },
     ])
     expect(await host.fs.stat('nested/z')).toEqual({
       kind: 'file',
       size: 2,
       mtimeMs: (await stat(join(cwd, 'nested/z'))).mtimeMs,
+      isLink: false,
     })
     expect(await host.fs.exists('nested/z')).toBe(true)
     expect(await host.fs.exists('absent')).toBe(false)
     expect(await host.fs.list()).toEqual([
-      { name: 'nested', kind: 'dir', size: 0 },
+      { name: 'nested', kind: 'dir', size: 0, isLink: false },
     ])
   })
 
@@ -1016,10 +1108,64 @@ describe('fs', () => {
     expect(await host.fs.read('work/text')).toBe('你好\n')
   })
 
-  test('rejects UTF-8 reads over 4 MiB but accepts exactly the byte limit', async () => {
-    await writeFile(join(cwd, 'large'), 'é'.repeat(LIMIT / 2))
-    expect(Buffer.byteLength(await host.fs.read('large'))).toBe(LIMIT)
-    await writeFile(join(cwd, 'large'), 'é'.repeat(LIMIT / 2) + 'x')
-    await expect(host.fs.read('large')).rejects.toThrow('4 MiB')
+  for (const as of ['text', 'bytes'] as const) {
+    test(`bounds ${as} reads by raw bytes, allowing exactly 4 MiB`, async () => {
+      const bytes = Buffer.from('é'.repeat(LIMIT / 2))
+      await writeFile(join(cwd, 'large'), bytes)
+      expect(await host.fs.read('large', { as })).toEqual(
+        as === 'bytes' ? { base64: bytes.toString('base64') } : bytes.toString('utf8'),
+      )
+      await writeFile(join(cwd, 'large'), Buffer.concat([bytes, Buffer.from('x')]))
+      await expect(host.fs.read('large', { as })).rejects.toThrow('4 MiB')
+    })
+
+    test(`cancels an in-flight ${as} read without revoking its activation`, async () => {
+      await writeFile(join(cwd, 'large'), Buffer.alloc(LIMIT))
+      const invocation = new AbortController()
+      const reason = new Error('cancel this read')
+      const pending = host.fs.read('large', { as }, invocation.signal)
+      invocation.abort(reason)
+      await expect(pending).rejects.toBe(reason)
+      expect(controller.signal.aborted).toBe(false)
+      await host.fs.write('small', 'still active')
+      expect(await host.fs.read('small')).toBe('still active')
+    })
+  }
+
+  test('uses the activation signal by default for read and stat', async () => {
+    await host.fs.write('file', 'text')
+    controller.abort()
+    for (const pending of [
+      host.fs.read('file'),
+      host.fs.read('file', { as: 'bytes' }),
+      host.fs.stat('file'),
+      host.fs.stat('file', { resolve: true }),
+    ]) {
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    }
+  })
+
+  test('allows parent-relative paths and links outside cwd without filesystem hooks', async () => {
+    await host.fs.write('../outside/file', 'outside')
+    await symlink(join(root, 'outside'), join(cwd, 'outside-link'))
+    for (const path of ['../outside/file', join(root, 'outside/file'), 'outside-link/file']) {
+      expect(await host.fs.read(path)).toBe('outside')
+      expect(await host.fs.exists(path)).toBe(true)
+      expect(await host.fs.stat(path, { resolve: true })).toMatchObject({
+        kind: 'file', isLink: false, realPath: join(root, 'outside/file'),
+      })
+    }
+    expect(await host.fs.list('../outside')).toEqual([
+      { name: 'file', kind: 'file', size: 7, isLink: false },
+    ])
+    expect(await host.fs.stat('outside-link', { resolve: true })).toMatchObject({
+      kind: 'dir', isLink: true, realPath: join(root, 'outside'),
+    })
+  })
+
+  test('preserves OS refusal for cyclic links instead of treating them as dangling', async () => {
+    await symlink('cycle', join(cwd, 'cycle'))
+    await expect(host.fs.stat('cycle')).rejects.toMatchObject({ code: 'ELOOP' })
+    await expect(host.fs.stat('cycle', { resolve: true })).rejects.toMatchObject({ code: 'ELOOP' })
   })
 })
