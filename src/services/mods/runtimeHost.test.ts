@@ -648,6 +648,13 @@ test.skipIf(!officialTypes)('an author plugin compiles against the complete targ
       on('command.run', {command:'author-contract'}, async ($, e) => {
         await $.fs.write('author.txt', e.args);
         await $.ui.open({id:'author-pane', title:label, focus:true});
+        const bytes = await $.fs.read('author.txt', {as:'bytes'});
+        const stat = await $.fs.stat('author.txt', {resolve:true});
+        if (typeof bytes.base64 !== 'string' || stat.isLink || !stat.realPath) throw Error('fs contract');
+        await $.clock.sleep(0);
+        if (await $.clock.now() !== 123) throw Error('clock contract');
+        await $.command.register({name:'author-late',description:'Late command'});
+        await $.ui.log('typed debug', {to:'debug'});
         return {text:JSON.stringify({starts:await $.store.get('starts'), text:await $.fs.read('author.txt'), session:await $.session.id(), answer:await $.store.get('last-answer')})};
       });
       on('ui.render', {component:'Pane'}, ($, e) => {
@@ -677,30 +684,37 @@ test.skipIf(!officialTypes)('an author plugin compiles against the complete targ
   await writeFile(unsupported, `import type {On} from 'claude-code'; export function register(on: On) {
     on('session.start', async ($, e, next) => { await $.tool.check({tool:'Read',input:{file_path:'sample.txt'}}); return next(e); });
   }`)
+  const policy=await plugin('author-clock',`import type {On} from 'claude-code'; export function register(on: On) {
+    on('clock.now',()=>({value:123}));
+    on('clock.sleep',($,e,next)=>next({...e,ms:0}));
+  }`)
   const config = join(consumer.pluginRoot, 'tsconfig.json')
   await writeFile(config, JSON.stringify({compilerOptions:{
     target:'es2023', lib:['es2023'], types:[], module:'esnext', moduleResolution:'bundler',
     strict:true, noUncheckedIndexedAccess:true, noEmit:true, skipLibCheck:false,
     jsx:'react', jsxFactory:'h', jsxFragmentFactory:'Fragment',
-  }, files:[officialTypes,entry,invalid,unsupported]}))
+  }, files:[officialTypes,entry,invalid,unsupported,policy.entrypoints[0]]}))
   const compiler = Bun.spawn([process.execPath, new URL('../../../node_modules/typescript/bin/tsc', import.meta.url).pathname, '--project', config, '--pretty', 'false'], {stdout:'pipe', stderr:'pipe', timeout:15000})
   const [exit, stdout, stderr] = await Promise.all([compiler.exited, new Response(compiler.stdout).text(), new Response(compiler.stderr).text()])
   if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
   expect(exit).toBe(0)
   const declaration = await loadModDeclaration(consumer)
   expect(declaration.modules.map(module => module.path).sort()).toEqual([entry,join(consumer.pluginRoot, 'label.ts')].sort())
-  expect(declaration.calls).toEqual(['command.register','fs.read','fs.write','session.id','store.get','store.set','ui.close','ui.open','ui.resolve'])
-  const diagnostics: unknown[] = []
+  expect(declaration.calls).toEqual(['clock.now','clock.sleep','command.register','fs.read','fs.stat','fs.write','session.id','store.get','store.set','ui.close','ui.log','ui.open','ui.resolve'])
+  const diagnostics: unknown[] = [], logs:unknown[]=[]
   const value = createModsRuntime({services:{
     uiPresentation:() => ({columns:160,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false}),
+    uiLog:(plugin,text,to)=>logs.push([plugin,text,to]),
   }, onDiagnostic:event => diagnostics.push(event)})
   runtimes.push(value)
   await value.bind(binding(root))
-  await value.reconcile([consumer])
+  await value.reconcile([policy, consumer])
   expect(diagnostics).toEqual([])
   expect(value.commands.list()).toHaveLength(1)
   const run = () => value.dispatch('command.run', {command:'author-contract',args:'literal input',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:true}}, async () => { throw Error('author command was not dispatched') })
   expect(await run()).toEqual({text:JSON.stringify({starts:1,text:'literal input',session:'test'})})
+  expect(logs).toEqual([['author-contract','typed debug','debug']])
+  expect(value.commands.list().map(command=>command.name)).toEqual(['author-contract','author-late'])
   const pane = value.ui.getSnapshot()[0]!
   expect(pane).toMatchObject({visible:true,title:'typed author contract'})
   const button = (pane.tree as any).children[1]
@@ -713,7 +727,7 @@ test.skipIf(!officialTypes)('an author plugin compiles against the complete targ
   await value.reconcile([])
   expect(value.commands.list()).toEqual([])
   expect(value.ui.getSnapshot()).toEqual([])
-  await value.reconcile([consumer])
+  await value.reconcile([policy, consumer])
   expect(await run()).toEqual({text:JSON.stringify({starts:2,text:'literal input',session:'resumed'})})
   const {createModTurnCompletion} = await import('./turnAdapter.js')
   const snapshot = value.capture()
@@ -722,7 +736,7 @@ test.skipIf(!officialTypes)('an author plugin compiles against the complete targ
   } finally { snapshot.release() }
   expect(await run()).toEqual({text:JSON.stringify({starts:2,text:'literal input',session:'resumed',answer:''})})
   expect(diagnostics).toEqual([])
-  await value.reconcile([{...consumer,entrypoints:[unsupported]}])
+  await value.reconcile([policy, {...consumer,entrypoints:[unsupported]}])
   expect(diagnostics).toEqual([expect.objectContaining({plugin:'author-contract',stage:'reload',message:expect.stringContaining(`Mod ${unsupported}: unsupported core capability tool.check`)})])
   expect(await run()).toEqual({text:JSON.stringify({starts:2,text:'literal input',session:'resumed',answer:''})})
 }, 25000)
