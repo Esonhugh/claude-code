@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSubagentContext } from '../../utils/forkedAgent.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import { getDefaultAppState } from '../../state/AppStateStore.js'
+import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 const originalSettings = getSessionSettingsCache()
 setSessionSettingsCache({ settings: {}, errors: [] })
@@ -179,6 +181,77 @@ describe('Mods scheduler admission', () => {
       } finally {
         await runtime.dispose()
         await rm(root, {recursive:true,force:true})
+      }
+    })
+
+    test(`${streaming ? 'streaming' : 'batch'} session.usage reads the executing query context instead of the session fallback`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'mods-scheduler-usage-'))
+      const diagnostics: unknown[] = []
+      const fallback = {
+        ...fixture(true).context,
+        messages: [],
+        options: {
+          ...fixture(true).context.options,
+          mainLoopModel: 'claude-sonnet-4-6',
+          agentDefinitions: { activeAgents: [], allAgents: [] },
+        },
+        getAppState: () => getDefaultAppState(),
+      } as ToolUseContext
+      const runtime = createModsRuntime({
+        onDiagnostic: event => diagnostics.push(event),
+        services: {
+          captureUsage: () => captureModSessionUsage(fallback),
+        },
+      })
+      const f = fixture(true)
+      Object.assign(f.assistant.message, {
+        model: 'claude-sonnet-4-6',
+        usage: {
+          input_tokens: 2000,
+          cache_creation_input_tokens: 1000,
+          cache_read_input_tokens: 7000,
+          output_tokens: 1,
+        },
+      })
+      f.context.mods = runtime
+      f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+      f.context.options.agentDefinitions = {
+        activeAgents: [],
+        allAgents: [],
+      }
+      f.context.getAppState = () => getDefaultAppState()
+      try {
+        const entry = join(root, 'register.ts')
+        await writeFile(
+          entry,
+          `export function register(on) {
+            on('tool.call', async $ => ({result:{value:String((await $.session.usage()).context.tokens)}}));
+          }`,
+        )
+        await runtime.reconcile([
+          {
+            name: 'usage',
+            storageId: 'usage@test',
+            pluginRoot: root,
+            entrypoints: [entry],
+          },
+        ])
+        const executor = streaming
+          ? new StreamingToolExecutor([f.tool], allow, f.context)
+          : undefined
+        if (executor) executor.addTool(f.blocks[0]!, f.assistant)
+        f.gates[0]!.resolve()
+        const updates = await Array.fromAsync(
+          executor
+            ? executor.getRemainingResults()
+            : runTools([f.blocks[0]!], [f.assistant], allow, f.context),
+        )
+        expect(JSON.stringify(updates)).toContain('10000')
+        expect(f.started).toEqual([])
+        expect(diagnostics).toEqual([])
+      } finally {
+        await runtime.dispose()
+        await rm(root, { recursive: true, force: true })
       }
     })
 

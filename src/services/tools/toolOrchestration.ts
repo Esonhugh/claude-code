@@ -5,6 +5,7 @@ import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 function getMaxToolUseConcurrency(): number {
   return (
@@ -24,8 +25,13 @@ export async function* runTools(
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdate, void> {
   let currentContext = toolUseContext
+  const usageContext = {
+    ...toolUseContext,
+    messages: [...toolUseContext.messages, ...assistantMessages],
+  }
   const snapshot = toolUseContext.mods?.capture({
     toolCatalog: () => createToolCatalogForContext(currentContext),
+    captureUsage: () => captureModSessionUsage(usageContext),
   })
   if (snapshot) currentContext = { ...currentContext, modsSnapshot: snapshot }
   try {

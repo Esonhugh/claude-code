@@ -14,6 +14,7 @@ import { createModCommands, type ModCommandSpec } from './commands.js'
 import { runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
+import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
 import { dispatchModEvent, pauseModBudget } from './dispatch.js'
 import { createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
@@ -47,6 +48,7 @@ export type ModBinding = {
 }
 export type ModRequestServices = {
   toolCatalog?(): ToolCatalog
+  captureUsage?(): ModUsageReader
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
 }
 export type ModHostServices = ModRequestServices & ModHttpServices & {
@@ -126,7 +128,7 @@ const coreHost: Nouns = {
   settings: { read: hostIdentity },
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
-  session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, authorize: hostIdentity },
+  session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   tool: { list: hostIdentity },
@@ -337,6 +339,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'store.get': case 'store.delete': return { key: args[0] }
       case 'store.set': return { key: args[0], value: args[1] }
       case 'process.run': return { argv: args[0], ...(args[1] === undefined ? {} : { init: args[1] }) }
+      case 'session.usage': {
+        const input = args[0] === undefined ? {} : args[0]
+        if (args.length > 1) throw new TypeError('session.usage takes one optional object')
+        validateModSessionUsageArgs(input)
+        return input
+      }
       case 'session.authorize': {
         if (args.length) throw new TypeError('session.authorize takes no arguments')
         return {}
@@ -703,8 +711,17 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             : undefined
           if (fn === hostIdentity && op === 'tool.list' && !catalog)
             throw new Error('Tool catalog is unavailable on this host')
+          const usage = fn === hostIdentity && op === 'session.usage'
+            ? (requestServices.getStore()?.captureUsage ?? services.captureUsage)?.()
+            : undefined
+          if (fn === hostIdentity && op === 'session.usage' && !usage)
+            throw new Error('Session usage is unavailable on this host')
           const result = await withReference(owner, () => dispatch(op, input as ModInput, async (rewritten, signal) => {
             if (catalog) return { value: await catalog.list() }
+            if (usage) {
+              validateModSessionUsageArgs(rewritten)
+              return { value: await usage(rewritten, signal) }
+            }
             const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? productionModelComplete
             if (op === 'model.complete') {
               return { value: await completion(rewritten as ModModelCompleteRequest, signal) }
@@ -792,6 +809,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
+    if (event === 'session.usage') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('session.usage must return value or deny')
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result)) throw new TypeError('session.usage must return value or deny')
+      validateModSessionUsage(result.value)
+      return
+    }
     if (event === 'model.complete' || event === 'model.classify') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
       if ('deny' in result && typeof result.deny === 'string') return
@@ -925,6 +949,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         } } : {}),
         validateResult: (result, nextResults) => { validateResult(event, result); options.validateResult?.(result, nextResults) },
         validateInput: (value, received) => {
+          if (event === 'session.usage') validateModSessionUsageArgs(value)
           if (pinsProvider && !isDeepStrictEqual(value.provider, provider)) throw new Error(`${event} cannot rewrite provider`)
           options.validateInput?.(value, received)
         },

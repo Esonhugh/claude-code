@@ -137,6 +137,7 @@ import {
   type ModToolExecutionRecord,
 } from '../mods/toolAdapter.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 
 /** Minimum total hook duration (ms) to show inline timing summary */
@@ -518,7 +519,14 @@ function streamedCheckPermissionsAndCallTool(
   const stream = new Stream<MessageUpdateLazy>()
   const ownedSnapshot = toolUseContext.modsSnapshot
     ? undefined
-    : toolUseContext.mods?.capture({ toolCatalog: () => createToolCatalogForContext(toolUseContext) })
+    : toolUseContext.mods?.capture({
+        toolCatalog: () => createToolCatalogForContext(toolUseContext),
+        captureUsage: () =>
+          captureModSessionUsage({
+            ...toolUseContext,
+            messages: [...toolUseContext.messages, assistantMessage],
+          }),
+      })
   const snapshot = toolUseContext.modsSnapshot ?? ownedSnapshot
   const context = snapshot
     ? { ...toolUseContext, modsSnapshot: snapshot }

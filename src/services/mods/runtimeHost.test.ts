@@ -84,6 +84,77 @@ test('Worker session.authorize and http.fetch reach host services without exposi
   expect(diagnostics).toEqual([])
 })
 
+test('Worker session.usage captures request data before hooks and consumes rewritten arguments', async () => {
+  const mod = await plugin('usage', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.session.usage({columns:120})}));
+    on('session.usage', async ($, e, next) => {
+      await $.tool.list();
+      return next({...e,columns:79});
+    });
+  }`)
+  let live = 17
+  let captures = 0
+  const inputs: unknown[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => { throw new Error('request-bound service must win') },
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const snapshot = value.capture({
+    captureUsage: () => {
+      captures++
+      const tokens = live
+      return async args => {
+        inputs.push(args)
+        return {context:{tokens,window:200000,percent:0},rateLimits:[],cost:{usd:0}}
+      }
+    },
+    toolCatalog: () => {live=99;return createToolCatalog([],async () => '')},
+  })
+  try {
+    expect(await snapshot.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({
+      result:{context:{tokens:17,window:200000,percent:0},rateLimits:[],cost:{usd:0}},
+    })
+    expect(captures).toBe(1)
+    expect(inputs).toEqual([{columns:79}])
+    expect(live).toBe(99)
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('Worker session.usage validates caller arguments and malformed results at the recovery boundary', async () => {
+  const mod = await plugin('usage-validation', `export function register(on) {
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.session.usage(e.args)}; }
+      catch(error) { return {result:{error:error.message}}; }
+    });
+    on('session.usage', async ($,e,next) => {
+      const result=await next(e);
+      return {value:{...result.value,context:{window:'not-a-number'}}};
+    }).catch(($,e,next) => next(e));
+  }`)
+  const inputs: unknown[] = []
+  const diagnostics: unknown[] = []
+  const expected = {context:{window:200000},rateLimits:[],cost:{usd:0}}
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => async args => {inputs.push(args);return expected},
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  for (const args of [{breakdown:'none'},{columns:'80'},[],null]) {
+    expect(await value.dispatch('tool.call',{args},async () => ({result:'core'}))).toEqual({
+      result:{error:expect.stringContaining('session.usage')},
+    })
+  }
+  expect(inputs).toEqual([])
+  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:expected})
+  expect(inputs).toEqual([{}])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'usage-validation',stage:'session.usage',message:expect.stringContaining('context')})])
+})
+
 test('Worker fs.ancestors publishes admission, walks original root and consumes imports after cwd changes', async () => {
   const project = join(root, 'project')
   const nested = join(project, 'nested')

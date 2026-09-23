@@ -644,6 +644,41 @@ describe('Mods at the whole tool execution boundary', () => {
     expect(f.releases()).toBe(1)
   })
 
+  test('direct tool admission exposes the current assistant response to session.usage', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', async $ => ({result:{value:String((await $.session.usage()).context.tokens)}}));
+    }`)
+    Object.assign(f.assistant.message, {
+      model: 'claude-sonnet-4-6',
+      usage: {
+        input_tokens: 2000,
+        cache_creation_input_tokens: 1000,
+        cache_read_input_tokens: 7000,
+        output_tokens: 1,
+      },
+    })
+    f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    f.context.options.agentDefinitions = {
+      activeAgents: [],
+      allAgents: [],
+    }
+    try {
+      const updates = await Array.fromAsync(
+        runToolUse(
+          f.block,
+          f.assistant,
+          async () => ({ behavior: 'allow' }),
+          f.context,
+        ),
+      )
+      expect(JSON.stringify(updates)).toContain('10000')
+      expect(f.calls).toEqual([])
+      expect(f.diagnostics).toEqual([])
+    } finally {
+      await f.cleanup()
+    }
+  })
+
   test('real Worker VM rewrites full-pipeline inputs and preserves unchanged mapping', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mods-tool-integration-'))
     const runtime = createModsRuntime()

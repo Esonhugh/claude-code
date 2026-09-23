@@ -9,6 +9,7 @@ import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { createModTurnCompletion } from './services/mods/turnAdapter.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
@@ -247,9 +248,10 @@ export async function* query(
   Terminal
 > {
   const consumedCommandUuids: string[] = []
-  let catalogContext = params.toolUseContext
+  let catalogContext = { ...params.toolUseContext, messages: params.messages }
   const snapshot = catalogContext.mods?.capture({
     toolCatalog: () => createToolCatalogForContext(catalogContext),
+    captureUsage: () => captureModSessionUsage(catalogContext),
   })
   const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
   const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true

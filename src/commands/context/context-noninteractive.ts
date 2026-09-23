@@ -35,7 +35,10 @@ type CollectContextDataInput = {
 
 export async function collectContextData(
   context: CollectContextDataInput,
+  _options: { detail?: 'summary' | 'full'; columns?: number } = {},
+  signal?: AbortSignal,
 ): Promise<ContextData> {
+  signal?.throwIfAborted()
   const {
     messages,
     getAppState,
