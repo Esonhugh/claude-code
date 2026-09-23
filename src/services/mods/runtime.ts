@@ -14,7 +14,9 @@ import { createModCommands, type ModCommandSpec } from './commands.js'
 import { runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
-import { dispatchModEvent } from './dispatch.js'
+import { dispatchModEvent, pauseModBudget } from './dispatch.js'
+import { createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
+import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
 import {
   applyPromptFill,
@@ -45,6 +47,7 @@ export type ModBinding = {
 }
 export type ModRequestServices = {
   toolCatalog?(): ToolCatalog
+  modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
 }
 export type ModHostServices = ModRequestServices & ModHttpServices & {
   pluginOrigin?(storageId: string): ModOrigin | undefined
@@ -64,6 +67,7 @@ export type ModDispatchOptions = {
   /** Host-pinned caller identity, never read from the event's input. */
   origin?: ModOrigin
   signal?: AbortSignal
+  caller?: { plugin: string; registrationId: number }
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
   validateInput?: (input: ModInput, received: ModInput) => void
   restoreInput?: (input: ModInput, received: ModInput) => ModInput
@@ -126,6 +130,7 @@ const coreHost: Nouns = {
   http: { fetch: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   tool: { list: hostIdentity },
+  model: { complete: hostIdentity, classify: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
@@ -149,9 +154,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   const activations = new Set<Activation>()
   const retired = new Set<Activation>()
   const interfaceStates = new WeakMap<Nouns, InterfaceState>()
-  const capabilityContext = new AsyncLocalStorage<{ table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number } }>()
+  const capabilityContext = new AsyncLocalStorage<{ table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
   const invocationSignal = new AsyncLocalStorage<AbortSignal>()
   const requestServices = new AsyncLocalStorage<ModRequestServices>()
+  const productionModelComplete = createModModelComplete()
   const uiContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; person: boolean; active?: boolean }>()
   const drawingCallbackPlugin = new AsyncLocalStorage<string>()
   const drawings = new Map<number, DrawingLease>()
@@ -365,7 +371,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           mode: (input as ModInput).mode ?? 'replace',
         }
       }
-      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': return args[0] as ModInput
+      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': return args[0] as ModInput
+      case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
@@ -687,24 +694,53 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             ...(await readPromptForCaller(owner, snapshot, table)),
           }
         }
-        const catalog = fn === hostIdentity && op === 'tool.list'
-          ? (requestServices.getStore()?.toolCatalog ?? services.toolCatalog)?.()
-          : undefined
-        if (fn === hostIdentity && op === 'tool.list' && !catalog)
-          throw new Error('Tool catalog is unavailable on this host')
-        const result = await withReference(owner, () => dispatch(op, input as ModInput, async rewritten => {
-          if (catalog) return { value: await catalog.list() }
-          const entered = capabilityContext.getStore()
-          const provider = { table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true }
-          try { return { value: await capabilityContext.run(provider, () => fn === hostIdentity ? hostCall(owner, op, rewritten) : fn(rewritten)) } }
-          finally { provider.active = false }
-        }, snapshot, table, {
-          origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-          reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
-          ...(catalog ? { validateResult: catalog.validateResult } : {}),
-        })) as { value?: unknown; deny?: string }
-        if (typeof result.deny === 'string') throw new Error(result.deny)
-        return result.value
+        const context = capabilityContext.getStore()
+        const caller = context?.active ? context.hook : undefined
+        const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
+        try {
+          const catalog = fn === hostIdentity && op === 'tool.list'
+            ? (requestServices.getStore()?.toolCatalog ?? services.toolCatalog)?.()
+            : undefined
+          if (fn === hostIdentity && op === 'tool.list' && !catalog)
+            throw new Error('Tool catalog is unavailable on this host')
+          const result = await withReference(owner, () => dispatch(op, input as ModInput, async (rewritten, signal) => {
+            if (catalog) return { value: await catalog.list() }
+            const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? productionModelComplete
+            if (op === 'model.complete') {
+              return { value: await completion(rewritten as ModModelCompleteRequest, signal) }
+            }
+            if (op === 'model.classify') {
+              const classify = createModModelClassify(async (request, completionSignal) => {
+                const completed = await dispatch('model.complete', request, async (received, nestedSignal) => ({
+                  value: await completion(received as ModModelCompleteRequest, nestedSignal),
+                }), snapshot, table, {
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  signal: completionSignal,
+                  caller,
+                }) as { value?: unknown; deny?: string }
+                if (typeof completed.deny === 'string') throw new Error(completed.deny)
+                return completed.value as string
+              }, getSmallFastModel)
+              return { value: await classify(
+                rewritten.text as string,
+                rewritten.labels as string[],
+                rewritten.options as {model?:string} | undefined,
+                signal,
+              ) }
+            }
+            const entered = capabilityContext.getStore()
+            const provider = { table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true }
+            try { return { value: await capabilityContext.run(provider, () => fn === hostIdentity ? hostCall(owner, op, rewritten) : fn(rewritten)) } }
+            finally { provider.active = false }
+          }, snapshot, table, {
+            origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+            signal: invocationSignal.getStore(),
+            reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
+            ...(catalog ? { validateResult: catalog.validateResult } : {}),
+          })) as { value?: unknown; deny?: string }
+          if (typeof result.deny === 'string') throw new Error(result.deny)
+          return result.value
+        } finally { resumeBudget?.() }
       }
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {
@@ -734,7 +770,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       registration,
       invoke: (input, next, catching) => withReference(owner, async () => {
         const lease = { entries: 1 }
-        const entered = { table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id } }
+        const entered = { table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         try {
           if (registration.event !== 'engine.create') await owner.environment.setUiAccess(uiAllowed(owner, table))
           if (drawing !== undefined) drawings.get(drawing)?.participants.add(owner)
@@ -756,6 +792,16 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
+    if (event === 'model.complete' || event === 'model.classify') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result) || (event === 'model.complete'
+        ? typeof result.value !== 'string'
+        : result.value !== undefined && typeof result.value !== 'string')) {
+        throw new Error(`${event} must return ${event === 'model.complete' ? 'a string' : 'a string, undefined'} or deny`)
+      }
+      return
+    }
     if (event === 'env.get' || event === 'env.set') {
       if (!result || typeof result !== 'object' || Array.isArray(result))
         throw new Error(`${event} must return value or deny`)
@@ -860,7 +906,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (stopped) throw new Error('Mods runtime disposed')
     const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
     const context = capabilityContext.getStore()
-    const caller = context?.active ? context.hook : undefined
+    const caller = options.caller ?? (context?.active ? context.hook : undefined)
     const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined
     for (const owner of snapshot) owner.references++
