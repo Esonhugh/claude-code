@@ -1153,20 +1153,31 @@ export function filterInjectedMemoryFiles(
   return files.filter(f => f.type !== 'AutoMem' && f.type !== 'TeamMem')
 }
 
-export const getClaudeMds = (
-  memoryFiles: MemoryFileInfo[],
+export function getRenderedMemoryFiles(
+  memoryFiles: readonly MemoryFileInfo[],
   filter?: (type: MemoryType) => boolean,
-): string => {
-  const memories: string[] = []
+): MemoryFileInfo[] {
   const skipProjectLevel = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_paper_halyard',
     false,
   )
+  return memoryFiles.filter(file =>
+    Boolean(file.content) &&
+    (!filter || filter(file.type)) &&
+    !(skipProjectLevel && (file.type === 'Project' || file.type === 'Local')),
+  )
+}
 
+export const getClaudeMds = (
+  memoryFiles: MemoryFileInfo[],
+  filter?: (type: MemoryType) => boolean,
+): string => renderClaudeMds(getRenderedMemoryFiles(memoryFiles, filter))
+
+// Render the supplied snapshot without discovery or core admission policy.
+// Mods may explicitly add any tier after that policy has already been applied.
+export function renderClaudeMds(memoryFiles: readonly MemoryFileInfo[]): string {
+  const memories: string[] = []
   for (const file of memoryFiles) {
-    if (filter && !filter(file.type)) continue
-    if (skipProjectLevel && (file.type === 'Project' || file.type === 'Local'))
-      continue
     if (file.content) {
       const description =
         file.type === 'Project'
