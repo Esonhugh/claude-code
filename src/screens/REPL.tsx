@@ -393,6 +393,7 @@ import type { ProcessUserInputContext } from '../utils/processUserInput/processU
 import type { ModsSession } from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
 import { getCwd } from '../utils/cwd.js'
@@ -1890,6 +1891,7 @@ export function REPL({
     isFullscreen: isFullscreenEnvEnabled(), composerEmpty: false, hasDialog: false, keyboardOwned: false,
   })
   const modToolContextRef = useRef<(() => ToolUseContext) | null>(null)
+  const modPromptBlockedRef = useRef(true)
   const [modStatuses, setModStatuses] = useState<Record<string, string>>({})
   const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
@@ -1902,6 +1904,30 @@ export function REPL({
     commands: () => baseCommandsRef.current,
     builtinCommands: () => modBuiltinCommandsRef.current,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
+    prompt: () => ({
+      read: () =>
+        insertTextRef.current
+          ? {
+              text: inputValueRef.current,
+              cursor: insertTextRef.current.cursorOffset,
+            }
+          : { text: '', cursor: 0 },
+      fill: input =>
+        insertTextRef.current
+          ? fillPromptBox(
+              {
+                read: () => ({
+                  text: inputValueRef.current,
+                  cursor: insertTextRef.current!.cursorOffset,
+                }),
+                set: (text, cursor) =>
+                  insertTextRef.current!.setInputWithCursor(text, cursor),
+              },
+              input,
+            )
+          : false,
+      isBlocked: () => modPromptBlockedRef.current,
+    }),
     presentation: () => modUiPresentationRef.current,
     uiPresentation: () => modUiPresentationRef.current,
     uiLog: (plugin, text, to) => {
@@ -3012,6 +3038,8 @@ export function REPL({
     keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode !== 'none',
   }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode])
   modUiPresentationRef.current = modUiPresentation
+  modPromptBlockedRef.current =
+    modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
   useEffect(() => {
     void modsSession?.ui.render(modUiPresentation).catch(logError)
   }, [modsSession, modUiPresentation])
@@ -7469,9 +7497,7 @@ export function REPL({
                         setIsSearchingHistory={setIsSearchingHistory}
                         helpOpen={isHelpOpen}
                         setHelpOpen={setIsHelpOpen}
-                        insertTextRef={
-                          feature('VOICE_MODE') ? insertTextRef : undefined
-                        }
+                        insertTextRef={insertTextRef}
                         voiceInterimRange={voice.interimRange}
                       />
                       <SessionBackgroundHint

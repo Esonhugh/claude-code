@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream'
 import { render } from '../ink.js'
 import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuffer.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
+import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { isCommandImmediate } from '../types/command.js'
 import { DiffController } from '../services/diff/controller.js'
 
@@ -49,6 +50,50 @@ function deferred() {
   return { promise, resolve }
 }
 const noop = () => {}
+
+
+test('Mods prompt host reads and fills the live mounted PromptInput bridge', async () => {
+  let services: any
+  const inputValueRef = { current: 'A😀B' }
+  const modPromptBlockedRef = { current: false }
+  const setInputWithCursorCalls: unknown[] = []
+  const insertTextRef = {
+    current: {
+      cursorOffset: 3,
+      insert: noop,
+      setInputWithCursor: (text: string, cursor: number) => {
+        inputValueRef.current = text
+        insertTextRef.current.cursorOffset = cursor
+        setInputWithCursorCalls.push([text, cursor])
+      },
+    },
+  }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: {
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => {
+        services = host
+      },
+    },
+    getCwd: () => '/repo',
+    getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session',
+    setAppState: noop,
+    messagesRef: { current: [] },
+    modToolContextRef: { current: noop },
+    inputValueRef,
+    insertTextRef,
+    modPromptBlockedRef,
+    fillPromptBox,
+  })
+  await awaitMods()
+  const prompt = services.prompt()
+  expect(prompt.read()).toEqual({ text: 'A😀B', cursor: 3 })
+  expect(prompt.fill({ text: 'x', mode: 'insert' })).toBe(true)
+  expect(setInputWithCursorCalls).toEqual([['A😀xB', 4]])
+  expect(prompt.read()).toEqual({ text: 'A😀xB', cursor: 4 })
+  modPromptBlockedRef.current = true
+  expect(prompt.isBlocked()).toBe(true)
+})
 
 test('successful edits reach the transcript and auto-open diff without a Mods runtime', async () => {
   let state = { diffSidebarVisible: false }

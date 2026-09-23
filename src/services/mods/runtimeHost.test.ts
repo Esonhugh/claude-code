@@ -865,6 +865,85 @@ test('parent cancellation reaches an in-flight Worker filesystem read without re
   expect(exit).toBe(0)
 }, 15000)
 
+test('Worker prompt.read and prompt.fill reach the mounted prompt box with caller-scoped visibility', async () => {
+  const caller = await plugin('prompt-caller', `export function register(on) {
+    on('tool.call', async ($, e) => ({result:e.read
+      ? await $.prompt.read()
+      : await $.prompt.fill({text:e.text, mode:e.mode})}));
+  }`)
+  const fillPolicy = await plugin('prompt-policy', `export function register(on) {
+    on('prompt.fill', ($, e, next) => {
+      if (e.origin.kind !== 'plugin' || e.origin.name !== 'prompt-caller') throw Error('unpinned prompt.fill origin');
+      return next({...e, text:'['+e.text+']'});
+    });
+  }`)
+  const fillOnly = await plugin('fill-only', `export function register(on) {
+    on('tool.call', async ($, e) => ({result:await $.prompt.fill({text:e.text, mode:e.mode})}));
+  }`)
+  const denied = await plugin('read-denied', `export function register(on) {
+    on('prompt.read', () => ({deny:'private draft'}));
+  }`)
+  expect((await loadModDeclaration(caller)).calls).toEqual(['prompt.fill', 'prompt.read'])
+  expect((await loadModDeclaration(fillOnly)).calls).toEqual(['prompt.fill'])
+
+  let draft = { text: 'A😀B', cursor: 3 }
+  let hasDialog = false
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: {
+      uiPresentation: () => ({columns:80, rows:24, isFullscreen:false, composerEmpty:false, hasDialog, keyboardOwned:false}),
+      prompt: () => ({
+        read: () => ({...draft}),
+        isBlocked: () => hasDialog,
+        fill: ({text, mode}: {text:string; mode:'replace'|'append'|'insert'}) => {
+          if (mode === 'replace') draft = {text, cursor:text.length}
+          else if (mode === 'append') draft = {text:draft.text + text, cursor:draft.text.length + text.length}
+          else draft = {text:draft.text.slice(0, draft.cursor) + text + draft.text.slice(draft.cursor), cursor:draft.cursor + text.length}
+          return true
+        },
+      }),
+    } as any,
+  })
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([caller, fillPolicy])
+  expect(await value.dispatch('tool.call', {read:true}, async () => ({result:'core'}))).toEqual({result:{text:'A😀B', cursor:3}})
+  expect(await value.dispatch('tool.call', {text:'x', mode:'insert'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:true, text:'A😀[x]B', cursor:6},
+  })
+  hasDialog = true
+  expect(await value.dispatch('tool.call', {text:'ignored', mode:'append'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:false, text:'A😀[x]B', cursor:6},
+  })
+  expect(draft).toEqual({text:'A😀[x]B', cursor:6})
+
+  hasDialog = false
+  await value.reconcile([fillOnly])
+  expect(await value.dispatch('tool.call', {text:'!', mode:'append'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:true, text:'', cursor:0},
+  })
+  expect(draft).toEqual({text:'A😀[x]B!', cursor:8})
+
+  await value.reconcile([caller, denied])
+  expect(await value.dispatch('tool.call', {text:'?', mode:'append'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:true, text:'', cursor:0},
+  })
+  expect(draft).toEqual({text:'A😀[x]B!?', cursor:9})
+
+  await value.reconcile([caller])
+  await value.bind({...binding(root), surface:null, isInteractive:false})
+  expect(await value.dispatch('tool.call', {read:true}, async () => ({result:'core'}))).toEqual({
+    result:{text:'', cursor:0},
+  })
+  expect(await value.dispatch('tool.call', {text:'headless', mode:'replace'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:false, text:'', cursor:0},
+  })
+  expect(draft).toEqual({text:'A😀[x]B!?', cursor:9})
+  expect(diagnostics).toEqual([])
+})
+
+
 test('session messages read a stable live getter and rebinding updates the actual working directory', async () => {
   const consumer = await plugin('session', `export function register(on) {
     on('tool.call', async ($) => ({result: {

@@ -14,6 +14,14 @@ import { runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
 import { dispatchModEvent } from './dispatch.js'
+import {
+  applyPromptFill,
+  emptyPromptBox,
+  validatePromptBox,
+  validatePromptFillInput,
+  type ModPromptHost,
+  type PromptFillInput,
+} from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier } from './types.js'
 
 export type ModPluginInput = {
@@ -45,6 +53,7 @@ export type ModHostServices = ModRequestServices & {
   uiPresentation?(): ModUiPresentation
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
   uiStatus?(plugin: string, text: string | undefined): void
+  prompt?(): ModPromptHost | undefined
 }
 export type ModDiagnostic = { plugin: string; stage: string; message: string }
 export type ModDispatchOptions = {
@@ -109,6 +118,7 @@ const coreHost: Nouns = {
   session: { cwd: hostIdentity, id: hostIdentity, surface: hostIdentity, messages: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   tool: { list: hostIdentity },
+  prompt: { read: hostIdentity, fill: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
@@ -316,6 +326,25 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('settings.read args must be an object')
         return input as ModInput
       }
+      case 'prompt.fill': {
+        const input = args[0]
+        if (
+          args.length !== 1 ||
+          !input ||
+          typeof input !== 'object' ||
+          Array.isArray(input) ||
+          typeof (input as ModInput).text !== 'string' ||
+          ((input as ModInput).mode !== undefined &&
+            !['replace', 'append', 'insert'].includes(
+              (input as ModInput).mode as string,
+            ))
+        )
+          throw new TypeError('prompt.fill takes { text, mode? }')
+        return {
+          text: (input as ModInput).text,
+          mode: (input as ModInput).mode ?? 'replace',
+        }
+      }
       case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': return args[0] as ModInput
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
@@ -325,7 +354,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
-      case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.id': case 'session.surface': case 'session.messages': return {}
+      case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.id': case 'session.surface': case 'session.messages': case 'prompt.read': {
+        if (args.length) throw new TypeError(`${op} takes no arguments`)
+        return {}
+      }
       default: throw new Error(`Unsupported host capability ${op}`)
     }
   }
@@ -454,6 +486,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'session.messages':
         if (!services.messages) throw new Error('Session messages are unavailable on this host')
         return services.messages()
+      case 'prompt.read': {
+        const box = services.prompt?.()?.read() ?? emptyPromptBox()
+        validatePromptBox(box)
+        return structuredClone(box)
+      }
       default: throw new Error(`Unsupported host capability ${op}`)
     }
   }
@@ -500,6 +537,41 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
       },
     })
+    async function readPromptForCaller(
+      caller: Activation,
+      captured: readonly Activation[],
+      interfaceTable: Nouns,
+    ) {
+      if (!caller.declaration.calls.includes('prompt.read'))
+        return emptyPromptBox()
+      checkCall(caller, 'prompt.read', interfaceTable, lease)
+      if (!binding || binding.surface !== 'terminal' || !binding.isInteractive)
+        return emptyPromptBox()
+      const result = (await withReference(caller, () =>
+        dispatch(
+          'prompt.read',
+          {},
+          async () => {
+            const box = services.prompt?.()?.read() ?? emptyPromptBox()
+            validatePromptBox(box)
+            return { value: structuredClone(box) }
+          },
+          captured,
+          interfaceTable,
+          {
+            signal: invocationSignal.getStore(),
+            origin: {
+              plugin: caller.declaration.name,
+              tier: caller.declaration.tier,
+            },
+          },
+        ),
+      )) as { value?: unknown; deny?: string }
+      if (typeof result.deny === 'string') return emptyPromptBox()
+      validatePromptBox(result.value)
+      return structuredClone(result.value)
+    }
+
     const result: Record<string, unknown> = table.clock ? { clock } : {}
     for (const [noun, methods] of Object.entries(table)) {
       if (noun === 'clock') continue
@@ -511,8 +583,55 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (fn !== hostIdentity && (args.length > 1 || typeof input !== 'object' || input === null || Array.isArray(input))) {
           throw new Error('Custom noun methods require one object argument or no arguments')
         }
+        if (fn === hostIdentity && op === 'prompt.read')
+          return readPromptForCaller(owner, snapshot, table)
         if (fn === hostIdentity && ['ui.open', 'ui.close', 'ui.scroll', 'ui.focus'].includes(op))
           return withReference(owner, () => hostCall(owner, op, input as ModInput))
+        if (fn === hostIdentity && op === 'prompt.fill') {
+          const prompt = services.prompt?.()
+          const origin = {
+            kind: 'plugin' as const,
+            name: owner.declaration.name,
+          }
+          const eventInput: PromptFillInput = {
+            ...(input as ModInput),
+            origin,
+          } as PromptFillInput
+          const result = (await withReference(owner, () =>
+            dispatch(
+              op,
+              eventInput,
+              async rewritten =>
+                applyPromptFill(
+                  prompt,
+                  rewritten as PromptFillInput,
+                  !binding ||
+                    binding.surface !== 'terminal' ||
+                    !binding.isInteractive ||
+                    prompt?.isBlocked?.() === true,
+                ),
+              snapshot,
+              table,
+              {
+                signal: invocationSignal.getStore(),
+                origin: {
+                  plugin: owner.declaration.name,
+                  tier: owner.declaration.tier,
+                },
+                validateInput: value =>
+                  validatePromptFillInput(value, origin),
+                restoreInput: (value, received) =>
+                  Object.hasOwn(value, 'origin')
+                    ? value
+                    : { ...value, origin: received.origin },
+              },
+            ),
+          )) as { isFilled: boolean }
+          return {
+            ...result,
+            ...(await readPromptForCaller(owner, snapshot, table)),
+          }
+        }
         const catalog = fn === hostIdentity && op === 'tool.list'
           ? (requestServices.getStore()?.toolCatalog ?? services.toolCatalog)?.()
           : undefined
@@ -581,6 +700,25 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
+    if (event === 'prompt.read') {
+      if (!result || typeof result !== 'object' || Array.isArray(result))
+        throw new TypeError('prompt.read must return value or deny')
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result))
+        throw new TypeError('prompt.read must return value or deny')
+      validatePromptBox(result.value)
+      return
+    }
+    if (event === 'prompt.fill') {
+      if (
+        !result ||
+        typeof result !== 'object' ||
+        Array.isArray(result) ||
+        typeof (result as Partial<{ isFilled: boolean }>).isFilled !== 'boolean'
+      )
+        throw new TypeError('prompt.fill must return isFilled')
+      return
+    }
     if (event.startsWith('clock.')) {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
       if ('deny' in result && typeof result.deny === 'string') return

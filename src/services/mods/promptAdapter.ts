@@ -24,6 +24,84 @@ export type PromptOrigin =
   | { kind: 'channel'; server: string }
   | { kind: 'plugin'; name: string }
 
+export type PromptBox = { text: string; cursor: number }
+export type PromptFillMode = 'replace' | 'append' | 'insert'
+export type PromptFillInput = {
+  text: string
+  mode: PromptFillMode
+  origin: { kind: 'engine' } | { kind: 'plugin'; name: string }
+}
+export type PromptFillResult = { isFilled: boolean }
+export type PromptFilled = PromptBox & PromptFillResult
+
+export type ModPromptHost = {
+  read(): PromptBox
+  fill(input: { text: string; mode: PromptFillMode }): boolean
+  isBlocked?(): boolean
+}
+
+export function emptyPromptBox(): PromptBox {
+  return { text: '', cursor: 0 }
+}
+
+export function validatePromptBox(value: unknown): asserts value is PromptBox {
+  const box = value as Partial<PromptBox> | null
+  if (
+    !box ||
+    typeof box !== 'object' ||
+    Array.isArray(box) ||
+    typeof box.text !== 'string' ||
+    typeof box.cursor !== 'number' ||
+    !Number.isInteger(box.cursor) ||
+    box.cursor < 0 ||
+    box.cursor > box.text.length
+  )
+    throw new TypeError('prompt.read must return text and a valid UTF-16 cursor')
+}
+
+export function validatePromptFillInput(
+  value: ModInput,
+  origin: PromptFillInput['origin'],
+): asserts value is PromptFillInput {
+  if (
+    Object.keys(value).some(key => !['text', 'mode', 'origin'].includes(key)) ||
+    typeof value.text !== 'string' ||
+    !['replace', 'append', 'insert'].includes(value.mode as string)
+  )
+    throw new TypeError('prompt.fill requires text and replace, append or insert mode')
+  if (!isDeepStrictEqual(value.origin, origin))
+    throw new TypeError('prompt.fill cannot rewrite origin')
+}
+
+export function applyPromptFill(
+  host: ModPromptHost | undefined,
+  input: Pick<PromptFillInput, 'text' | 'mode'>,
+  blocked: boolean,
+): PromptFillResult {
+  if (!host || blocked) return { isFilled: false }
+  return { isFilled: host.fill(input) }
+}
+
+export function fillPromptBox(
+  host: Pick<ModPromptHost, 'read'> & {
+    set(text: string, cursor: number): void
+  },
+  input: { text: string; mode: PromptFillMode },
+): boolean {
+  const box = host.read()
+  validatePromptBox(box)
+  const next =
+    input.mode === 'replace'
+      ? input.text
+      : input.mode === 'append'
+        ? box.text + input.text
+        : box.text.slice(0, box.cursor) + input.text + box.text.slice(box.cursor)
+  const cursor =
+    input.mode === 'insert' ? box.cursor + input.text.length : next.length
+  host.set(next, cursor)
+  return true
+}
+
 export type PromptAttachment = {
   type: 'image' | 'audio' | 'document'
   mediaType?: string
