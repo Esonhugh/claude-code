@@ -4191,27 +4191,28 @@ export async function executeSessionEndHooks(
     reason,
   }
 
-  const results = await executeHooksOutsideREPL({
-    getAppState,
-    hookInput,
-    matchQuery: reason,
-    signal,
-    timeoutMs,
-  })
+  try {
+    const results = await executeHooksOutsideREPL({
+      getAppState,
+      hookInput,
+      matchQuery: reason,
+      signal,
+      timeoutMs,
+    })
 
-  // During shutdown, Ink is unmounted so we can write directly to stderr
-  for (const result of results) {
-    if (!result.succeeded && result.output) {
-      process.stderr.write(
-        `SessionEnd hook [${result.command}] failed: ${result.output}\n`,
-      )
+    // During shutdown, Ink is unmounted so we can write directly to stderr
+    for (const result of results) {
+      if (!result.succeeded && result.output) {
+        process.stderr.write(
+          `SessionEnd hook [${result.command}] failed: ${result.output}\n`,
+        )
+      }
     }
-  }
-
-  // Clear session hooks after execution
-  if (setAppState) {
-    const sessionId = getSessionId()
-    clearSessionHooks(setAppState, sessionId)
+  } finally {
+    // Mods receive a fresh budget, not the classic hooks' possibly spent signal.
+    const { endModsSessions } = await import('./gracefulShutdown.js')
+    await endModsSessions(reason, getSessionEndHookTimeoutMs(), hookInput.session_id)
+    if (setAppState) clearSessionHooks(setAppState, hookInput.session_id)
   }
 }
 

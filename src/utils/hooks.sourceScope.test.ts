@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
+import { createModsSession } from '../services/mods/session.js'
+import { disposeModsHosts, endModsSessions } from './gracefulShutdown.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -235,6 +238,7 @@ function fixture() {
         return child
       },
     },
+    './gracefulShutdown.js': { endModsSessions },
     './file.js': { pathExists: async () => true },
     './ShellCommand.js': { wrapSpawn: () => ({ cleanup: noop }) },
     './task/TaskOutput.js': { TaskOutput: class {} },
@@ -294,6 +298,7 @@ function fixture() {
     },
     './envUtils.js': {
       isEnvTruthy: (value: string) => value === '1' || value === 'true',
+      isSSHLocalUI: () => false,
     },
     './errors.js': { errorMessage: String, getErrnoCode: () => undefined },
     './messages.js': { getLastAssistantMessage: () => undefined },
@@ -393,6 +398,45 @@ function fixture() {
     evaluatorResponse,
   }
 }
+
+test('SessionEnd executor finishes classic hooks before Worker session.end and uses a fresh signal', async () => {
+  const f = fixture()
+  const output = join(home, 'end-order')
+  await writeFile(join(home, 'register.ts'), `export function register(on) {
+    on('session.end', async ($, e, next) => {
+      const before = await $.fs.read('./end-order');
+      await $.clock.sleep(10);
+      await $.fs.write('./end-order', before + '\\nmods:' + e.reason + ':' + e.sessionId);
+      return next(e);
+    });
+  }`)
+  const diagnostics: string[] = []
+  const host = createModsSession({
+    isTrusted: true,
+    getSettings: () => ({userSettings:null, flagSettings:null, policySettings:null, hookPolicy:{managedOnly:false,allDisabled:false}}),
+    loadPlugins: async () => [{name:'end-order',manifest:{name:'end-order'},source:'end-order@inline',repository:'end-order@inline',path:home,enabled:true,hookModules:[{configPath:join(home,'hooks.json'),paths:['./register.ts']}]}],
+    onDiagnostic: event => diagnostics.push(event.message),
+  })
+  try {
+    await host.bind({cwd:home,sessionId:'executor-session',isInteractive:false,surface:null})
+    expect(diagnostics).toEqual([])
+    const classicSignal = new AbortController()
+    f.add('userSettings', 'SessionEnd', 'finish-classic')
+    f.commands.set('finish-classic', async () => {
+      await writeFile(output, 'classic')
+      classicSignal.abort()
+      return {}
+    })
+    await f.hooks.executeSessionEndHooks('clear', {signal:classicSignal.signal, timeoutMs:1500})
+    expect(f.calls.map(call => call.input.reason)).toEqual(['clear'])
+    expect(await readFile(output, 'utf8')).toBe('classic\nmods:clear:executor-session')
+    expect(diagnostics).toEqual([])
+    await disposeModsHosts()
+    expect(host.runtime).toBeUndefined()
+  } finally {
+    await host.dispose()
+  }
+})
 
 async function collect(iterator: AsyncIterable<AggregatedHookResult>) {
   const results: AggregatedHookResult[] = []

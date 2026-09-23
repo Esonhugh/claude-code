@@ -282,7 +282,11 @@ export function createModsSession(options: ModsSessionOptions) {
       unsubscribeCommands = runtime.commands.subscribe(() => {
         for (const listener of commandListeners) listener()
       })
-      unregisterShutdown = registerModsHostDisposer(dispose)
+      unregisterShutdown = registerModsHostDisposer(
+        dispose,
+        (reason, timeoutMs, sessionId) =>
+          runtime!.endSession(reason, timeoutMs, sessionId),
+      )
     }
     if (runtime) {
       // A clear can bind the runtime directly through ToolUseContext. Do not
@@ -393,7 +397,7 @@ export function createModsSession(options: ModsSessionOptions) {
       const first = !initialized
       initialize()
       if (first || timer) await refresh()
-      else if (changed && runtime)
+      else if (runtime)
         await enqueue(async () => {
           await runtime!.bind(next)
           runtimeBound = true

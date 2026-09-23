@@ -426,15 +426,25 @@ let orphanCheckInterval: ReturnType<typeof setInterval> | undefined
 let pendingShutdown: Promise<void> | undefined
 
 // Mods must stop before parallel cleanup tears down the services they use.
-const modsHostDisposers = new Set<() => Promise<void>>()
+const modsHostDisposers = new Map<() => Promise<void>, (reason: ExitReason, timeoutMs: number, sessionId?: string) => Promise<void>>()
 
-export function registerModsHostDisposer(dispose: () => Promise<void>): () => void {
-  modsHostDisposers.add(dispose)
+export function registerModsHostDisposer(
+  dispose: () => Promise<void>,
+  end: (reason: ExitReason, timeoutMs: number, sessionId?: string) => Promise<void>,
+): () => void {
+  modsHostDisposers.set(dispose, end)
   return () => { modsHostDisposers.delete(dispose) }
 }
 
+export async function endModsSessions(reason: ExitReason, timeoutMs = 1500, sessionId?: string): Promise<void> {
+  const results = await Promise.allSettled([...modsHostDisposers.values()].map(end => end(reason, timeoutMs, sessionId)))
+  for (const result of results) {
+    if (result.status === 'rejected') logForDebugging('[Mods] Session end failed', { level: 'error' })
+  }
+}
+
 export async function disposeModsHosts(): Promise<void> {
-  const results = await Promise.allSettled([...modsHostDisposers].map(dispose => dispose()))
+  const results = await Promise.allSettled([...modsHostDisposers.keys()].map(dispose => dispose()))
   for (const result of results) {
     if (result.status === 'rejected') {
       logForDebugging('[Mods] Host disposal failed', { level: 'error' })
@@ -492,7 +502,7 @@ export async function gracefulShutdown(
     './hooks.js'
   )
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
-  const modsShutdownBudgetMs = modsHostDisposers.size > 0 ? 2000 : 0
+  const modsShutdownBudgetMs = modsHostDisposers.size > 0 ? sessionEndTimeoutMs + 2000 : 0
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
@@ -519,15 +529,20 @@ export async function gracefulShutdown(
   cleanupTerminalModes()
   printResumeHint()
 
-  // Stop owned watchers synchronously, then finish Mods disposal before any
-  // general cleanup can release dependencies. The process failsafe bounds this
-  // phase; do not race ahead into dependency cleanup while disposal is pending.
+  // Classic SessionEnd runs first; its adapter then runs Mods with a fresh
+  // budget while their host services are still available.
+  try {
+    await executeSessionEndHooks(reason, {
+      ...options,
+      signal: AbortSignal.timeout(sessionEndTimeoutMs),
+      timeoutMs: sessionEndTimeoutMs,
+    })
+  } catch {
+    // Hook failure must not prevent persistence or disposal.
+  }
   if (modsShutdownBudgetMs > 0) await disposeModsHosts()
 
-  // Flush session data first — this is the most critical cleanup. If the
-  // terminal is dead (SIGHUP, SSH disconnect), hooks and analytics may hang
-  // on I/O to a dead TTY or unreachable network, eating into the
-  // failsafe budget. Session persistence must complete before anything else.
+  // Persist session data before analytics, after bounded hooks and Mods teardown.
   let cleanupTimeoutId: ReturnType<typeof setTimeout> | undefined
   try {
     const cleanupPromise = (async () => {
@@ -552,19 +567,6 @@ export async function gracefulShutdown(
   } catch {
     // Silently handle timeout and other errors
     clearTimeout(cleanupTimeoutId)
-  }
-
-  // Execute SessionEnd hooks. Bound both the per-hook default timeout and the
-  // overall execution via a single budget (CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS,
-  // default 1.5s). hook.timeout in settings is respected up to this cap.
-  try {
-    await executeSessionEndHooks(reason, {
-      ...options,
-      signal: AbortSignal.timeout(sessionEndTimeoutMs),
-      timeoutMs: sessionEndTimeoutMs,
-    })
-  } catch {
-    // Ignore SessionEnd hook exceptions (including AbortError on timeout)
   }
 
   // Log startup perf before analytics shutdown flushes/cancels timers

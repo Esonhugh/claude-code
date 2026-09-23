@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { disposeModsHosts } from '../../utils/gracefulShutdown.js'
+import * as shutdown from '../../utils/gracefulShutdown.js'
 import { refreshPluginRuntimes } from '../../utils/plugins/cacheUtils.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import type { PrepareModPluginsSettings } from './plugins.js'
@@ -352,6 +353,116 @@ describe('Mods CLI session host', () => {
     await expect(
       secondRuntime.dispatch('tool.call', input, core),
     ).rejects.toThrow('disposed')
+  })
+
+  test('session.end keeps the ending binding and runs once per bound session before disposal', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('session.end', async ($, e, next) => {
+        const events = JSON.parse(await $.fs.read('./ended.json'));
+        const result = await next(e);
+        events.push({input:e, current:await $.session.id(), result});
+        await $.fs.write('./ended.json', JSON.stringify(events));
+        return result;
+      });
+    }`)
+    const path = join(declaration.path, 'ended.json')
+    await writeFile(path, '[]')
+    const events: string[] = []
+    const host = session({ loadPlugins: async () => [declaration], onDiagnostic: event => events.push(event.message) })
+    await host.bind({ ...binding, cwd: declaration.path })
+    expect(events).toEqual([])
+    await Promise.all([
+      host.runtime!.endSession('clear'),
+      host.runtime!.endSession('clear'),
+    ])
+    await host.runtime!.endSession('other')
+    const cleared = { ...binding, cwd: declaration.path, sessionId: 'cleared' }
+    await host.bind(cleared)
+    await shutdown.endModsSessions('resume', 1500, 'unrelated')
+    expect(JSON.parse(await readFile(path, 'utf8'))).toHaveLength(1)
+    await shutdown.endModsSessions('resume', 1500, 'cleared')
+    await host.bind({ ...cleared, sessionId: 'first' })
+    await shutdown.endModsSessions('other')
+    await disposeModsHosts()
+    expect(host.runtime).toBeUndefined()
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual([
+      {input:{reason:'clear', sessionId:'first', resume:{id:'first'}}, current:'first', result:{sessionId:'first'}},
+      {input:{reason:'resume', sessionId:'cleared', resume:{id:'cleared'}}, current:'cleared', result:{sessionId:'cleared'}},
+      {input:{reason:'other', sessionId:'first', resume:{id:'first'}}, current:'first', result:{sessionId:'first'}},
+    ])
+    expect(events).toEqual([])
+  })
+
+  test('same-ID resume starts a new end lifetime without reactivating the plugin', async () => {
+    const declaration = await plugin(`let starts=0; export function register(on) {
+      on('session.start', ($,e,next) => {starts++;return next(e)});
+      on('session.end', async ($,e,next) => {
+        const events=JSON.parse(await $.fs.read('./ended.json'));
+        events.push({reason:e.reason,id:await $.session.id(),starts});
+        await $.fs.write('./ended.json',JSON.stringify(events));
+        return next(e);
+      });
+    }`)
+    const path = join(declaration.path,'ended.json')
+    await writeFile(path,'[]')
+    const host = session({loadPlugins:async()=>[declaration]})
+    const same = {...binding,cwd:declaration.path}
+    await host.bind(same)
+    await host.runtime!.endSession('resume')
+    await host.bind({...same})
+    await host.runtime!.endSession('other')
+    await host.runtime!.endSession('other')
+    expect(JSON.parse(await readFile(path,'utf8'))).toEqual([
+      {reason:'resume',id:'first',starts:1},
+      {reason:'other',id:'first',starts:1},
+    ])
+  })
+
+  test('session.end rejects rewritten engine fields inside the recovery boundary', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('session.end', async ($, e, next) => {
+        const failures = [];
+        for (const changed of [{...e,reason:'logout'}, {...e,sessionId:'fake'}, {...e,resume:{id:'fake'}}]) {
+          try { await next(changed) } catch (error) { failures.push(error.message) }
+        }
+        await $.fs.write('./pinned.json', JSON.stringify(failures));
+        return next(e);
+      });
+      on('session.end', () => ({invalid:true})).catch(async ($, e, next) => {
+        await $.fs.write('./caught', next.error.message);
+        return next(e);
+      });
+    }`)
+    const events: string[] = []
+    const host = session({ loadPlugins: async () => [declaration], onDiagnostic: event => events.push(event.message) })
+    await host.bind({ ...binding, cwd: declaration.path })
+    expect(events).toEqual([])
+    await host.runtime!.endSession('clear')
+    const failures = JSON.parse(await readFile(join(declaration.path, 'pinned.json'), 'utf8'))
+    expect(failures).toEqual(['reason','sessionId','resume'].map(key => `Mod fixture cannot rewrite ${key} for session.end`))
+    expect(await readFile(join(declaration.path, 'caught'), 'utf8')).toBe('session.end must return sessionId')
+    expect(events).toEqual(['session.end must return sessionId'])
+  })
+
+  test('session.end timeout cancels the Worker invocation without preventing host disposal', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('session.end', async ($, e, next) => {
+        await $.fs.write('./entered', e.sessionId);
+        await $.clock.sleep(10000);
+        await $.fs.write('./late', 'must not run');
+        return next(e);
+      });
+    }`)
+    const events: string[] = []
+    const host = session({ loadPlugins: async () => [declaration], onDiagnostic: event => events.push(event.stage) })
+    await host.bind({ ...binding, cwd: declaration.path })
+    expect(events).toEqual([])
+    await shutdown.endModsSessions('other', 150)
+    expect(await readFile(join(declaration.path, 'entered'), 'utf8')).toBe('first')
+    await disposeModsHosts()
+    expect(host.runtime).toBeUndefined()
+    expect(events).toContain('session.end')
+    expect(await Bun.file(join(declaration.path, 'late')).exists()).toBe(false)
   })
 
   test('explicit plugin refresh awaits activation, keeps old on technical failure and removes disabled', async () => {

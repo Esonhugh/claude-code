@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { Tool } from '../../Tool.js'
 import { createToolCatalogForContext, type ToolCatalog } from './toolCatalog.js'
@@ -831,6 +832,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (event === 'tool.call' && !('result' in value) && typeof value.deny !== 'string') throw new Error('tool.call must return result or deny')
     if (event === 'plugin.register' && value.allow !== true && typeof value.refuse !== 'string') throw new Error('plugin.register must allow or refuse')
     if (event === 'session.start' && typeof value.cwd !== 'string') throw new Error('session.start must return cwd')
+    if (event === 'session.end') {
+      if (typeof value.sessionId !== 'string') throw new Error('session.end must return sessionId')
+      return
+    }
     if (event === 'command.run' && value.text !== undefined && typeof value.text !== 'string') throw new Error('command.run text must be a string')
     if (event === 'turn.start' && typeof value.turnId !== 'string') throw new Error('turn.start must return turnId')
     if (event === 'turn.complete' && typeof value.text !== 'string') throw new Error('turn.complete must return text')
@@ -1231,8 +1236,45 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   let disposal: Promise<void> | undefined
+  let ending: Promise<void> | undefined
+  function endSession(
+    reason: ExitReason,
+    timeoutMs = 1500,
+    sessionId?: string,
+  ): Promise<void> {
+    if (
+      stopped ||
+      !binding ||
+      (sessionId !== undefined && binding.sessionId !== sessionId)
+    )
+      return Promise.resolve()
+    if (ending) return ending
+
+    const input = {
+      reason,
+      sessionId: binding.sessionId,
+      resume: { id: binding.sessionId },
+    }
+    const deadline = new AbortController()
+    const timer = setTimeout(
+      () => deadline.abort(new Error('Mods session.end timed out')),
+      timeoutMs,
+    )
+    ending = dispatch(
+      'session.end',
+      input,
+      async () => ({ sessionId: input.sessionId }),
+      active,
+      nouns,
+      { signal: deadline.signal },
+    )
+      .then(() => {}, error => diagnostic('engine', 'session.end', error))
+      .finally(() => clearTimeout(timer))
+    return ending
+  }
   return {
     capture,
+    endSession,
     commands,
     ui,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
@@ -1245,7 +1287,23 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       }
     },
     reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)),
-    bind: (next: ModBinding) => enqueue(async () => { binding = next; if (active.length) await publish({ modules: active, table: nouns }) }),
+    bind: (next: ModBinding) =>
+      enqueue(async () => {
+        if (
+          !ending &&
+          binding &&
+          Object.keys(next).every(
+            key => next[key as keyof ModBinding] === binding![key as keyof ModBinding],
+          )
+        )
+          return
+        if (ending || binding?.sessionId !== next.sessionId) {
+          await ending
+          ending = undefined
+        }
+        binding = next
+        if (active.length) await publish({ modules: active, table: nouns })
+      }),
     dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
     hasHooks: (event: string) => active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
     dispose(): Promise<void> {
