@@ -5,6 +5,18 @@ import { getFsImplementation } from './fsOperations.js'
 import { getPlatform } from './platform.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
 
+/** Expands only a leading home-directory tilde, without resolving or normalizing the path. */
+export function expandTilde(path: string): string {
+  if (
+    path === '~' ||
+    path.startsWith('~/') ||
+    (process.platform === 'win32' && path.startsWith('~\\'))
+  ) {
+    return homedir() + path.slice(1)
+  }
+  return path
+}
+
 /**
  * Expands a path that may contain tilde notation (~) to an absolute path.
  *

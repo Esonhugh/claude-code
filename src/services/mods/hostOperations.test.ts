@@ -123,6 +123,29 @@ function runWorker(script: string): Promise<void> {
 
 const workerModule = new URL('./hostOperations.ts', import.meta.url).href
 
+test('basic host operations do not eagerly load the instruction and query services', async () => {
+  await runWorker(`
+    import {expect} from 'bun:test';
+    import {createModHostOperations} from ${JSON.stringify(workerModule)};
+    import {expandTilde} from ${JSON.stringify(new URL('../../utils/path.ts', import.meta.url).href)};
+    import {getPluginsDirectory} from ${JSON.stringify(new URL('../../utils/plugins/pluginDirectories.ts', import.meta.url).href)};
+    const original=process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR;
+    process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR='~/plugins//cache/';
+    expect(getPluginsDirectory()).toBe(process.env.HOME+'/plugins//cache/');
+    expect(expandTilde('~')).toBe(process.env.HOME);
+    expect(expandTilde('~other/plugins')).toBe('~other/plugins');
+    expect(expandTilde('./plugins')).toBe('./plugins');
+    process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR=original;
+    const host=createModHostOperations({cwd:()=>${JSON.stringify(cwd)},storageId:'example@market',signal:new AbortController().signal});
+    await host.store.set('cold-start',1);
+    await host.fs.write('cold-start.txt','ready');
+    expect(await host.store.get('cold-start')).toBe(1);
+    expect(await host.fs.read('cold-start.txt',{as:'text'})).toBe('ready');
+    expect(Object.keys(require.cache).filter(path=>path.endsWith('/src/utils/claudemd.ts')||path.endsWith('/src/query.ts'))).toEqual([]);
+  `)
+}, 15000)
+
+
 describe('settings.read', () => {
   test('maps every public source to accepted host data and clones the merged snapshot without filtering keys', async () => {
     const sources = ['user', 'project', 'local', 'flag', 'policy'] as const

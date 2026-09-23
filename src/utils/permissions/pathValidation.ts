@@ -8,7 +8,7 @@ import {
   getPathsForPermissionCheck,
   safeResolvePath,
 } from '../fsOperations.js'
-import { containsPathTraversal } from '../path.js'
+import { containsPathTraversal, expandTilde } from '../path.js'
 import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import { containsVulnerableUncPath } from '../shell/readOnlyCommandValidation.js'
 import {
@@ -71,21 +71,6 @@ export function getGlobBaseDirectory(path: string): string {
   if (lastSepIndex === -1) return '.'
 
   return beforeGlob.substring(0, lastSepIndex) || '/'
-}
-
-/**
- * Expands tilde (~) at the start of a path to the user's home directory.
- * Note: ~username expansion is not supported for security reasons.
- */
-export function expandTilde(path: string): string {
-  if (
-    path === '~' ||
-    path.startsWith('~/') ||
-    (process.platform === 'win32' && path.startsWith('~\\'))
-  ) {
-    return homedir() + path.slice(1)
-  }
-  return path
 }
 
 /**
