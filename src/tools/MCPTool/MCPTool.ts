@@ -15,7 +15,28 @@ export const inputSchema = lazySchema(() => z.object({}).passthrough())
 type InputSchema = ReturnType<typeof inputSchema>
 
 export const outputSchema = lazySchema(() =>
-  z.string().describe('MCP tool execution result'),
+  z.union([
+    z.string(),
+    z.array(
+      z.discriminatedUnion('type', [
+        z.object({ type: z.literal('text'), text: z.string() }),
+        z.object({
+          type: z.literal('image'),
+          source: z.object({
+            type: z.literal('base64'),
+            media_type: z.enum([
+              'image/jpeg',
+              'image/png',
+              'image/gif',
+              'image/webp',
+            ]),
+            data: z.string(),
+          }),
+        }),
+      ]),
+    ),
+    z.undefined(),
+  ]).describe('MCP tool execution result'),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
 
@@ -65,7 +86,14 @@ export const MCPTool = buildTool({
   renderToolUseProgressMessage,
   renderToolResultMessage,
   isResultTruncated(output: Output): boolean {
-    return isOutputLineTruncated(output)
+    return isOutputLineTruncated(
+      typeof output === 'string'
+        ? output
+        : (output
+            ?.filter(block => block.type === 'text')
+            .map(block => block.text)
+            .join('\n') ?? ''),
+    )
   },
   mapToolResultToToolResultBlockParam(content, toolUseID) {
     return {

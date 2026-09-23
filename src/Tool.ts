@@ -183,6 +183,8 @@ export type ToolUseContext = {
   diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
   modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
+  /** Invocation-local author result sink; never inherited by nested tools. */
+  modToolCallResult?: (result: import('./services/mods/toolAdapter.js').ToolCallResult) => void
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {

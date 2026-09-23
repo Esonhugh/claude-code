@@ -1,18 +1,22 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { z } from 'zod/v4'
 import { runInNewContext } from 'node:vm'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import {
   createAssistantMessage,
   createUserMessage,
+  normalizeAttachmentForAPI,
 } from '../../utils/messages.js'
 import { dispatchModEvent } from './dispatch.js'
 import type { ModDispatchHook } from './types.js'
 import { runModToolCall } from './toolAdapter.js'
 import { createModsRuntime } from './runtime.js'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile, rm } from 'node:fs/promises'
+import * as fs from 'node:fs/promises'
+import { getProjectDir } from '../../utils/sessionStorage.js'
+import { getToolResultsDir } from '../../utils/toolResultStorage.js'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const assistant = createAssistantMessage({ content: 'test' })
 const tool = {
@@ -79,6 +83,276 @@ function resultMessage(value: unknown, isError = false) {
     }),
   }
 }
+
+describe('reviewed tool.call context persistence', () => {
+  let root: string
+  let configDir: string | undefined
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'mods-context-persistence-'))
+    configDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    getProjectDir.cache.clear?.()
+  })
+  afterEach(async () => {
+    if (configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = configDir
+    getProjectDir.cache.clear?.()
+    await rm(root, { recursive: true, force: true })
+  })
+  async function files() {
+    try { return await readdir(getToolResultsDir()) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+  }
+  function attachmentContexts(messages: Awaited<ReturnType<typeof runModToolCall>>) {
+    return messages.flatMap(({ message }) =>
+      message.type === 'attachment' && message.attachment.type === 'hook_additional_context'
+        ? message.attachment.content : [],
+    )
+  }
+  function run(added: string[], options: Partial<Parameters<typeof runModToolCall>[0]> = {}) {
+    return runModToolCall({
+      snapshot: snapshot(async () => ({ result: { value: 'synthetic' }, context: added })),
+      tool, toolUseID: 'call-1', input: {}, toolUseContext: context, assistantMessage: assistant,
+      core: async () => { throw new Error('core must not run') },
+      ...options,
+    })
+  }
+
+  test.each([199999, 200000, 200001])('applies the %s aggregate context boundary without ordinary tool caps', async total => {
+    const added = ['a'.repeat(100000), 'b'.repeat(total > 200000 ? 100000 : total - 100000), ...(total > 200000 ? ['c'] : [])]
+    const delivered = attachmentContexts(await run(added, {
+      tool: { ...tool, maxResultSizeChars: 50000 },
+    }))
+    const saved = await files()
+    if (total <= 200000) {
+      expect(delivered).toEqual(added)
+      expect(saved).toEqual([])
+    } else {
+      expect(delivered).toHaveLength(1)
+      expect(delivered[0]!.length).toBeLessThan(3000)
+      expect(saved).toHaveLength(1)
+      expect(JSON.parse(await readFile(join(getToolResultsDir(), saved[0]!), 'utf8'))).toEqual(added)
+    }
+  })
+
+  test('keeps duplicates and uses reviewed content identity across repeated unsafe call IDs', async () => {
+    const added = ['x'.repeat(100001)]
+    const options = { toolUseID: '../../outside' }
+    const first = attachmentContexts(await run(added, options))
+    expect(attachmentContexts(await run(added, options))).toEqual(first)
+    expect(await files()).toHaveLength(1)
+    const reviewed = ['y'.repeat(100001)]
+    const second = attachmentContexts(await run(added, {
+      ...options,
+      review: async (_input, output) => ({ output, context: reviewed, messages: [] }),
+    }))
+    expect(second).not.toEqual(first)
+    const saved = await files()
+    expect(saved).toHaveLength(2)
+    expect(saved.every(name => /^mods-context-[a-f0-9]+-[a-f0-9]+\.txt$/.test(name))).toBe(true)
+    expect(await Promise.all(saved.map(name => readFile(join(getToolResultsDir(), name), 'utf8')))).toEqual(expect.arrayContaining([added[0], reviewed[0]]))
+    const duplicates = ['d'.repeat(100000), 'd'.repeat(100000)]
+    expect(attachmentContexts(await run(duplicates))).toEqual(duplicates)
+    const grouped = [...duplicates, 'd']
+    await run(grouped)
+    const all = await files()
+    expect(all).toHaveLength(3)
+    const groupFile = all.find(name => !saved.includes(name))!
+    expect(JSON.parse(await readFile(join(getToolResultsDir(), groupFile), 'utf8'))).toEqual(grouped)
+  })
+
+  test('accepts and persists large context from a real Worker after review', async () => {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('tool.call', async ($, e, next) => ({ ...await next(e), context: ['worker '.repeat(15000)] }));
+    }`)
+    const diagnostics: string[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event.message) })
+    let calls = 0
+    try {
+      await runtime.reconcile([{ name: 'large-context', storageId: 'large-context@inline', pluginRoot: root, entrypoints: [entry] }])
+      const captured = runtime.capture()
+      try {
+        const messages = await run([], {
+          snapshot: captured,
+          core: async (_input, record) => {
+            calls++
+            record.hasResult = true
+            record.result = { value: 'raw' }
+            return [resultMessage(record.result)]
+          },
+          review: async (_input, output, context) => {
+            expect(context).toEqual(['worker '.repeat(15000)])
+            expect(await files()).toEqual([])
+            return { output, context: ['reviewed '.repeat(15000)], messages: [] }
+          },
+        })
+        expect(calls).toBe(1)
+        expect(diagnostics).toEqual([])
+        expect(attachmentContexts(messages)[0]!.startsWith('<persisted-output>')).toBe(true)
+        const modelContext = messages.flatMap(({ message }) => message.type === 'attachment' ? normalizeAttachmentForAPI(message.attachment) : [])
+        expect(modelContext).toHaveLength(1)
+        expect(modelContext[0]!.isMeta).toBe(true)
+        expect(JSON.stringify(modelContext)).toContain('<system-reminder>')
+        expect(JSON.stringify(modelContext)).toContain('Full output saved to:')
+        expect(JSON.stringify(modelContext).length).toBeLessThan(4000)
+        const saved = await files()
+        expect(saved).toHaveLength(1)
+        expect(await readFile(join(getToolResultsDir(), saved[0]!), 'utf8')).toBe('reviewed '.repeat(15000))
+      } finally { captured.release() }
+    } finally { await runtime.dispose() }
+  })
+
+  test('persists only the selected ref after multiple downstream executions', async () => {
+    let calls = 0
+    const selected = 'selected'.repeat(13000)
+    const discarded = 'discarded'.repeat(13000)
+    const messages = await run([], {
+      snapshot: snapshot(
+        async (e, next) => {
+          const first = await next({ ...e, value: 'selected' })
+          await next({ ...e, value: 'discarded' })
+          return first
+        },
+        async (e, next) => ({ ...await next(e) as object, context: [e.value === 'selected' ? selected : discarded] }),
+      ),
+      core: async (input, record) => {
+        calls++
+        record.hasResult = true
+        record.result = input
+        return [resultMessage(record.result)]
+      },
+      review: async (_input, output, context) => {
+        expect(context).toEqual([selected])
+        expect(await files()).toEqual([])
+        return { output, context, messages: [] }
+      },
+    })
+    expect(calls).toBe(2)
+    expect(attachmentContexts(messages)).toHaveLength(1)
+    const saved = await files()
+    expect(saved).toHaveLength(1)
+    expect(await readFile(join(getToolResultsDir(), saved[0]!), 'utf8')).toBe(selected)
+  })
+
+  test.each(['discarded', 'deny', 'review-deny', 'invalid-review', 'cancel-review'] as const)(
+    'does not persist context from %s branches', async mode => {
+      let calls = 0
+      const abortController = new AbortController()
+      const added = ['x'.repeat(100001)]
+      const execution = run(added, {
+        toolUseContext: { ...context, abortController },
+        snapshot: snapshot(async (e, next) => {
+          await next(e)
+          if (mode === 'discarded') throw Error('discard this branch')
+          if (mode === 'deny') return { deny: 'denied', context: added }
+          return { result: { value: 'selected' }, context: added }
+        }),
+        core: async (_input, record) => {
+          calls++
+          record.hasResult = true
+          record.result = { value: 'raw' }
+          return [resultMessage(record.result)]
+        },
+        review: async (_input, output, context) => {
+          expect(await files()).toEqual([])
+          if (mode === 'cancel-review') abortController.abort(Error('cancel before persistence'))
+          return { output: mode === 'invalid-review' ? { value: 123 } : output, context: mode === 'review-deny' ? [] : context, messages: [] }
+        },
+      })
+      if (mode === 'invalid-review' || mode === 'cancel-review') await expect(execution).rejects.toThrow()
+      else expect(attachmentContexts(await execution)).toEqual([])
+      expect(calls).toBe(1)
+      expect(await files()).toEqual([])
+    },
+  )
+
+  test('write failure keeps the tool result and a bounded head with a truthful diagnostic', async () => {
+    await mkdir(dirname(getToolResultsDir()), { recursive: true })
+    await writeFile(getToolResultsDir(), 'not a directory')
+    let calls = 0
+    const original = resultMessage({ value: 'raw' })
+    const messages = await run(['x'.repeat(200001)], {
+      snapshot: snapshot(async (e, next) => ({ ...await next(e) as object, context: ['x'.repeat(200001)] })),
+      core: async (_input, record) => {
+        calls++
+        record.hasResult = true
+        record.result = { value: 'raw' }
+        return [original]
+      },
+    })
+    expect(calls).toBe(1)
+    expect(messages[0]).toBe(original)
+    const delivered = attachmentContexts(messages)
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]!.length).toBeLessThan(3000)
+    expect(delivered[0]).toContain('context persistence failed')
+    expect(delivered[0]).toContain('Full context was not saved')
+    expect(delivered[0]).not.toContain('Full output saved to:')
+    expect(delivered[0]).not.toContain('<persisted-output>')
+  })
+
+  test('cancellation during persistence suppresses delivery and never repeats core', async () => {
+    const abortController = new AbortController()
+    const entered = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const write = fs.writeFile
+    const intercepted = spyOn(fs, 'writeFile').mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+      entered.resolve()
+      await finish.promise
+      return write(...args)
+    })
+    let calls = 0
+    const execution = run(['x'.repeat(100001)], {
+      toolUseContext: { ...context, abortController },
+      snapshot: snapshot(async (e, next) => ({ ...await next(e) as object, context: ['x'.repeat(100001)] })),
+      core: async (_input, record) => {
+        calls++
+        record.hasResult = true
+        record.result = { value: 'raw' }
+        return [resultMessage(record.result)]
+      },
+    })
+    try {
+      await entered.promise
+      abortController.abort(Error('cancel during persistence'))
+      finish.resolve()
+      await expect(execution).rejects.toThrow('cancel during persistence')
+      expect(calls).toBe(1)
+    } finally {
+      finish.resolve()
+      await execution.catch(() => {})
+      intercepted.mockRestore()
+    }
+  })
+
+  test('persists a context past 100000 only after review and preserves surrounding order', async () => {
+    const added = ['before', 'x'.repeat(100001), 'after']
+    let reviewed = false
+    const messages = await run(added, {
+      review: async (_input, output, context) => {
+        expect(await files()).toEqual([])
+        expect(context).toEqual(added)
+        reviewed = true
+        return { output, context, messages: [] }
+      },
+    })
+    expect(reviewed).toBe(true)
+    const delivered = attachmentContexts(messages)
+    expect(delivered).toHaveLength(3)
+    expect(delivered[0]).toBe('before')
+    expect(delivered[2]).toBe('after')
+    expect(delivered[1]!.startsWith('<persisted-output>')).toBe(true)
+    expect(delivered[1]!.length).toBeLessThan(3000)
+    const saved = await files()
+    expect(saved).toHaveLength(1)
+    expect(delivered[1]).toContain(join(getToolResultsDir(), saved[0]!))
+    expect(await readFile(join(getToolResultsDir(), saved[0]!), 'utf8')).toBe(added[1])
+  })
+})
 
 describe('ordinary tool.call result adapter', () => {
   test('forwards the dispatch branch signal as the third core argument', async () => {
@@ -204,7 +478,6 @@ describe('ordinary tool.call result adapter', () => {
     ['empty entry', ['']],
     ['sparse array', Array(1)],
     ['non-text entry', [123]],
-    ['over budget', ['x'.repeat(32001)]],
   ])(
     'rejects %s context without replaying an executed tool',
     async (_name, invalid) => {
@@ -233,8 +506,8 @@ describe('ordinary tool.call result adapter', () => {
     },
   )
 
-  test('accepts exactly 32000 context characters without truncation', async () => {
-    const added = ['x'.repeat(16000), 'y'.repeat(16000)]
+  test.each([31999, 32000, 32001, 99999, 100000])('accepts %s context characters without truncation', async length => {
+    const added = ['x'.repeat(length)]
     const messages = await runModToolCall({
       snapshot: snapshot(async () => ({
         result: { value: 'synthetic' },

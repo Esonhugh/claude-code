@@ -394,6 +394,7 @@ export type HookAttachment =
       hookName: string
       toolUseID: string
       hookEvent: HookEvent
+      modEvent?: 'prompt.submit' | 'tool.call'
     }
   | HookSystemMessageAttachment
   | HookPermissionDecisionAttachment

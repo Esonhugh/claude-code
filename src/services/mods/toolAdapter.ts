@@ -1,4 +1,5 @@
 import { isEqual } from 'lodash-es'
+import { createHash } from 'node:crypto'
 import type {
   ContentBlockParam,
   ToolResultBlockParam,
@@ -8,6 +9,10 @@ import type { AssistantMessage } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { createUserMessage } from '../../utils/messages.js'
 import {
+  buildLargeToolResultMessage,
+  generatePreview,
+  persistToolResult,
+  PREVIEW_SIZE_BYTES,
   processPreMappedToolResultBlock,
   processToolResultBlock,
 } from '../../utils/toolResultStorage.js'
@@ -15,7 +20,7 @@ import type { MessageUpdateLazy } from '../tools/toolExecution.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ModInput } from './types.js'
 
-/** Filled by the existing tool pipeline; MCP output includes its classic rewrite. */
+/** Filled by the existing tool pipeline after classic output rewriting. */
 export type ModToolExecutionRecord = {
   input: ModInput
   hasResult: boolean
@@ -24,10 +29,12 @@ export type ModToolExecutionRecord = {
   messages: MessageUpdateLazy[]
 }
 
-type ToolCallResult = {
+export type ToolCallResult = {
   result?: unknown
   deny?: string
   ref?: number
+  text?: string
+  isError?: true
   context?: readonly string[]
 }
 
@@ -129,7 +136,6 @@ export async function runModToolCall({
     if (result.context !== undefined) {
       if (!Array.isArray(result.context))
         throw new Error('tool.call context must be a list of texts')
-      let length = 0
       for (let index = 0; index < result.context.length; index++) {
         const item = result.context[index]
         if (
@@ -138,10 +144,7 @@ export async function runModToolCall({
           item === ''
         )
           throw new Error('tool.call context must contain non-empty texts')
-        length += item.length
       }
-      if (length > 32000)
-        throw new Error('tool.call context exceeds 32000 characters')
     }
     const downstream = (nextResults as readonly ToolCallResult[]).filter(
       item => item.deny === undefined,
@@ -266,19 +269,49 @@ export async function runModToolCall({
       unchanged = undefined
     }
   }
-  const additionalContext: MessageUpdateLazy[] = context.length
-    ? [
-        {
-          message: createAttachmentMessage({
-            type: 'hook_additional_context',
-            content: [...context],
-            hookName: 'tool.call',
-            toolUseID: `${toolUseID}-context`,
-            hookEvent: 'PostToolUse',
-          }),
-        },
-      ]
-    : []
+  toolUseContext.modToolCallResult?.(
+    finalResult.deny === undefined && (finalResult.context !== undefined || context.length)
+      ? { ...finalResult, context }
+      : finalResult,
+  )
+  async function additionalContext(): Promise<MessageUpdateLazy[]> {
+    if (toolUseContext.modToolCallResult || finalResult.deny !== undefined || !context.length) return []
+    const signal = toolUseContext.abortController.signal
+    async function persist(content: string): Promise<string> {
+      signal.throwIfAborted()
+      // A review can change the content of the same call. Content-address the
+      // reviewed bytes separately from the call ID so wx never reuses stale data.
+      const callHash = createHash('sha256').update(toolUseID).digest('hex')
+      const contentHash = createHash('sha256').update(content).digest('hex')
+      const saved = await persistToolResult(
+        content,
+        `mods-context-${callHash}-${contentHash}`,
+      )
+      signal.throwIfAborted()
+      return 'error' in saved
+        ? `[tool.call context persistence failed: ${saved.error}. Full context was not saved; showing only the head.]\n${generatePreview(content, PREVIEW_SIZE_BYTES).preview}`
+        : buildLargeToolResultMessage(saved)
+    }
+    const content: string[] = []
+    if (context.reduce((total, item) => total + item.length, 0) > 200_000)
+      content.push(await persist(JSON.stringify(context)))
+    else
+      for (const item of context)
+        content.push(item.length > 100_000 ? await persist(item) : item)
+    signal.throwIfAborted()
+    return [
+      {
+        message: createAttachmentMessage({
+          type: 'hook_additional_context',
+          content,
+          hookName: 'tool.call',
+          toolUseID: `${toolUseID}-context`,
+          hookEvent: 'PostToolUse',
+          modEvent: 'tool.call',
+        }),
+      },
+    ]
+  }
   if (unchanged) {
     if (unchanged.hasResult && !failed(unchanged)) {
       for (const update of unchanged.messages) {
@@ -297,8 +330,9 @@ export async function runModToolCall({
         if (processed !== block) Object.assign(block, processed)
       }
     }
-    return additionalContext.length || reviewedMessages.length
-      ? [...unchanged.messages, ...reviewedMessages, ...additionalContext]
+    const attachments = await additionalContext()
+    return attachments.length || reviewedMessages.length
+      ? [...unchanged.messages, ...reviewedMessages, ...attachments]
       : unchanged.messages
   }
 
@@ -350,6 +384,6 @@ export async function runModToolCall({
         )
       : [...(source?.messages ?? []), replacement]),
     ...reviewedMessages,
-    ...additionalContext,
+    ...(await additionalContext()),
   ]
 }
