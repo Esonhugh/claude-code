@@ -67,6 +67,7 @@ export type ModDispatchOptions = {
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
   validateInput?: (input: ModInput, received: ModInput) => void
   restoreInput?: (input: ModInput, received: ModInput) => ModInput
+  reportDirectCoreFailure?: boolean
 }
 export type ModSnapshot = {
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<string>>>
@@ -699,6 +700,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           finally { provider.active = false }
         }, snapshot, table, {
           origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+          reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
           ...(catalog ? { validateResult: catalog.validateResult } : {}),
         })) as { value?: unknown; deny?: string }
         if (typeof result.deny === 'string') throw new Error(result.deny)
@@ -864,6 +866,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       return await dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner), core,
         signal: combined.signal, origin: options.origin,
+        reportDirectCoreFailure: options.reportDirectCoreFailure,
         // Only the calling frame is recursive; sibling policy hooks still run.
         ...(options.origin ? { skip: {
           plugin: options.origin.plugin,
