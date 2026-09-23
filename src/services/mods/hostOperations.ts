@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { StringDecoder } from 'node:string_decoder'
@@ -7,9 +7,24 @@ import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { atomicWriteToZipCache } from '../../utils/plugins/zipCache.js'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import treeKill from 'tree-kill'
 import { getInitialSettings, getSettingsForSource } from '../../utils/settings/settings.js'
+
+export type ModCredential = { kind: 'bearer' | 'api-key'; secret: string }
+export type ModAuthorization = { handle: string; kind: ModCredential['kind'] } | null
+export type ModHttpInit = {
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+  auth?: string
+  socketPath?: string
+}
+export type ModHttpResponse = { status: number; ok: boolean; headers: Record<string, string>; text: string }
+export type ModHttpServices = {
+  firstPartyCredential?(): Promise<ModCredential | null>
+  httpFetch?(url: string, init: RequestInit): Promise<Response>
+}
 
 export type SettingsReadArgs = {
   source?: 'user' | 'project' | 'local' | 'flag' | 'policy'
@@ -17,6 +32,19 @@ export type SettingsReadArgs = {
 
 export type FsBytes = { base64: string }
 export type FsReadOptions = { as: 'text' | 'bytes' }
+
+export type FsAncestorsRequest = {
+  names: readonly string[]
+  of?: string
+  below?: string
+}
+export type FsAncestorPart = { path: string; content: string }
+export type FsAncestor = {
+  dir: string
+  name: string
+  content: string
+  parts: readonly FsAncestorPart[]
+}
 
 export type FsEntry = {
   name: string
@@ -97,16 +125,24 @@ async function readText(path: string, signal: AbortSignal, maxBytes = MAX_BYTES)
 
 export function createModHostOperations({
   cwd,
+  root = cwd,
   storageId,
   signal,
+  sessionId = () => undefined,
+  firstPartyCredential = async () => null,
+  httpFetch = (url, init) => fetch(url, init),
 }: {
   cwd: () => string
+  root?: () => string
   storageId: string
   signal: AbortSignal
-}) {
+  sessionId?: () => string | undefined
+} & ModHttpServices) {
   if (typeof storageId !== 'string' || !storageId)
     throw new TypeError('storageId must be a nonempty canonical identity')
   const activationSignal = signal
+  const authorizations = new Map<string, { session: string; credential: ModCredential }>()
+  signal.addEventListener('abort', () => authorizations.clear(), { once: true })
   const storeName = `mod-store-${createHash('sha256').update(storageId).digest('hex')}.json`
   const storePath = () => join(getPluginDataDir(storageId), storeName)
 
@@ -197,6 +233,65 @@ export function createModHostOperations({
   }
 
   return {
+    session: {
+      async authorize(): Promise<ModAuthorization> {
+        signal.throwIfAborted()
+        const session = sessionId()
+        if (!session) return null
+        const credential = await firstPartyCredential()
+        signal.throwIfAborted()
+        if (session !== sessionId()) throw new Error('Session authorization expired')
+        if (!credential) return null
+        if (!['bearer', 'api-key'].includes(credential.kind) || typeof credential.secret !== 'string' || !credential.secret || /[\r\n\0]/.test(credential.secret))
+          throw new TypeError('Invalid host credential')
+        const handle = randomUUID()
+        authorizations.set(handle, { session, credential: { ...credential } })
+        return { handle, kind: credential.kind }
+      },
+    },
+    http: {
+      async fetch(url: string, init: ModHttpInit = {}, requestSignal = activationSignal): Promise<ModHttpResponse> {
+        signal.throwIfAborted()
+        const target = new URL(url)
+        const headers = new Headers(init.headers)
+        if (init.auth !== undefined) {
+          const authorization = authorizations.get(init.auth)
+          if (!authorization || authorization.session !== sessionId()) throw new Error('Invalid or expired session authorization')
+          if (target.protocol !== 'https:' || target.hostname !== 'api.anthropic.com' || target.port || init.socketPath)
+            throw new Error('Session authorization requires a first-party HTTPS host')
+          headers.delete('authorization')
+          headers.delete('x-api-key')
+          const { kind, secret } = authorization.credential
+          headers.set(kind === 'bearer' ? 'authorization' : 'x-api-key', kind === 'bearer' ? `Bearer ${secret}` : secret)
+        }
+        const response = await httpFetch(target.href, {
+          method: init.method, headers, body: init.body, redirect: 'manual', signal: requestSignal,
+        })
+        const responseHeaders: Record<string, string> = {}
+        response.headers.forEach((value, name) => { responseHeaders[name] = value })
+        const result = { status: response.status, ok: response.ok, headers: responseHeaders, text: await response.text() }
+        signal.throwIfAborted()
+        return result
+      },
+    },
+    env: {
+      async get(name: string): Promise<string | undefined> {
+        signal.throwIfAborted()
+        checkedString(name, 'environment name')
+        if (!name || name.includes('=')) throw new TypeError('Invalid environment name')
+        return process.env[name]
+      },
+      async set(name: string, value: string | undefined): Promise<void> {
+        signal.throwIfAborted()
+        checkedString(name, 'environment name')
+        if (!name || name.includes('=')) throw new TypeError('Invalid environment name')
+        if (value === undefined) delete process.env[name]
+        else {
+          checkedString(value, 'environment value')
+          process.env[name] = value
+        }
+      },
+    },
     settings: {
       async read(args: SettingsReadArgs = {}): Promise<Readonly<Record<string, unknown>>> {
         signal.throwIfAborted()
@@ -391,6 +486,92 @@ export function createModHostOperations({
     },
     fs: {
       read,
+      async ancestors(
+        request: FsAncestorsRequest,
+        signal: AbortSignal = activationSignal,
+      ): Promise<readonly FsAncestor[]> {
+        signal = AbortSignal.any([activationSignal, signal])
+        signal.throwIfAborted()
+        if (
+          !request || typeof request !== 'object' || Array.isArray(request) ||
+          !Array.isArray(request.names)
+        )
+          throw new TypeError('fs.ancestors request.names must be a string array')
+        for (const name of request.names) {
+          checkedString(name, 'fs.ancestors name')
+          if (
+            !name.endsWith('.md') || /^[\\/]/.test(name) ||
+            /^[A-Za-z]:/.test(name) || name.split(/[\\/]/).includes('..')
+          )
+            throw new TypeError('fs.ancestors names must be relative .md file names without ..')
+        }
+        for (const path of [request.of, request.below]) {
+          if (path === undefined) continue
+          checkedString(path, 'fs.ancestors path')
+          if (!path || /^[\\/]{2}/.test(path))
+            throw new TypeError('fs.ancestors paths must be nonempty local paths')
+        }
+        const end = request.of === undefined ? resolve(root()) : dirname(resolvePath(request.of))
+        const below = request.below === undefined ? undefined : resolvePath(request.below)
+        if (below !== undefined) {
+          const child = relative(below, end)
+          if (!child || child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) return []
+        }
+        const dirs: string[] = []
+        for (let dir = end; dir !== below; dir = dirname(dir)) {
+          dirs.push(dir)
+          if (dir === dirname(dir)) break
+        }
+        const result: FsAncestor[] = []
+        let bytes = 0
+        for (const dir of dirs.reverse()) {
+          for (const name of request.names) {
+            signal.throwIfAborted()
+            const path = join(dir, name)
+            let entry: Awaited<ReturnType<typeof stat>>
+            try {
+              entry = await stat(path)
+            } catch (error) {
+              const code = (error as NodeJS.ErrnoException).code
+              if (code === 'ENOENT' || code === 'ENOTDIR') continue
+              throw error
+            }
+            signal.throwIfAborted()
+            if (!entry.isFile()) continue
+            if (bytes + entry.size > MAX_BYTES) throw new RangeError('Read exceeds 4 MiB')
+            // Basic FS and store calls must not eagerly load the query services.
+            const { processMemoryFile } = await import('../../utils/claudemd.js')
+            signal.throwIfAborted()
+            // This is an explicit FS request, not automatic project memory injection.
+            const files = await new Promise<Awaited<ReturnType<typeof processMemoryFile>>>((resolveFiles, reject) => {
+              const abort = () => reject(signal.reason)
+              signal.addEventListener('abort', abort, { once: true })
+              // The memory loader has no signal parameter; revoke the caller's wait,
+              // without replacing its global filesystem implementation.
+              void processMemoryFile(path, 'Managed', new Set(), true).then(
+                files => {
+                  signal.removeEventListener('abort', abort)
+                  resolveFiles(files)
+                },
+                error => {
+                  signal.removeEventListener('abort', abort)
+                  reject(error)
+                },
+              )
+            })
+            signal.throwIfAborted()
+            if (!files.length) continue
+            for (const file of files) {
+              bytes += Buffer.byteLength(file.rawContent ?? file.content, 'utf8')
+              if (bytes > MAX_BYTES) throw new RangeError('Read exceeds 4 MiB')
+            }
+            const parts = files.map(({ path, content }) => ({ path, content }))
+            result.push({ dir, name, content: parts.map(part => part.content).join('\n\n'), parts })
+          }
+        }
+        signal.throwIfAborted()
+        return result
+      },
       async write(path: string, text: string, signal: AbortSignal = activationSignal): Promise<void> {
         signal.throwIfAborted()
         const target = resolvePath(path)

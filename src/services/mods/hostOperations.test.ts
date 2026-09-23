@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import {
   chmod,
   link,
@@ -20,7 +20,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createModHostOperations, type FsStat } from './hostOperations.js'
 import {
   getPolicySettingsOrigin,
@@ -28,6 +28,7 @@ import {
   getSettingsWithErrors,
 } from '../../utils/settings/settings.js'
 import { getPlatform } from '../../utils/platform.js'
+import { getFsImplementation } from '../../utils/fsOperations.js'
 import { acceptSettingsFile, releaseSettingsFile, resetSettingsCache, retainSettingsFile, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { clearMdmSettingsCache, setMdmSettingsCache } from '../../utils/settings/mdm/settings.js'
 import { getManagedFilePath, getManagedSettingsDropInDir } from '../../utils/settings/managedPath.js'
@@ -145,6 +146,28 @@ test('basic host operations do not eagerly load the instruction and query servic
   `)
 }, 15000)
 
+test('session authorization keeps the credential in the host and injects it into host fetch', async () => {
+  const requests: { url: string; init: RequestInit }[] = []
+  const operations = createModHostOperations({
+    cwd: () => cwd, storageId: 'http@test', signal: controller.signal,
+    sessionId: () => 'session-a',
+    firstPartyCredential: async () => ({ kind: 'bearer', secret: 'fake-host-only-token' }),
+    httpFetch: async (url, init) => {
+      requests.push({ url, init })
+      return new Response('accepted', { status: 202, headers: { 'X-Fixture': 'host', 'Content-Type': 'text/plain;charset=utf-8' } })
+    },
+  })
+  const authorization = await operations.session.authorize()
+  expect(authorization).toEqual({ handle: expect.any(String), kind: 'bearer' })
+  expect(JSON.stringify(authorization)).not.toContain('fake-host-only-token')
+  expect(await operations.http.fetch('https://api.anthropic.com/fixture', {
+    method: 'POST', body: 'payload', auth: authorization!.handle,
+    headers: { authorization: 'plugin-override', 'X-Api-Key': 'plugin-key' },
+  })).toEqual({ status: 202, ok: true, headers: { 'content-type': 'text/plain;charset=utf-8', 'x-fixture': 'host' }, text: 'accepted' })
+  expect(requests).toHaveLength(1)
+  expect(new Headers(requests[0]!.init.headers).get('authorization')).toBe('Bearer fake-host-only-token')
+  expect(new Headers(requests[0]!.init.headers).get('x-api-key')).toBeNull()
+})
 
 describe('settings.read', () => {
   test('maps every public source to accepted host data and clones the merged snapshot without filtering keys', async () => {
@@ -920,6 +943,227 @@ describe('process.run', () => {
       input: '你好\n',
     })
     expect(await host.fs.exists('child/injected')).toBe(false)
+  })
+})
+
+describe('fs.ancestors', () => {
+  test('skips absent and non-instruction entries, preserves CRLF and spelling, and rereads disk on each call', async () => {
+    const name = `${basename(root)}.md`
+    const path = join(cwd, name)
+    const request = { names: [`./${name}`], below: root }
+    expect(await host.fs.ancestors(request)).toEqual([])
+    await mkdir(path)
+    expect(await host.fs.ancestors(request)).toEqual([])
+    await rm(path, { recursive: true })
+    for (const content of ['', ' \n\t', '<!-- only a comment -->']) {
+      await writeFile(path, content)
+      expect(await host.fs.ancestors(request)).toEqual([])
+    }
+    for (const content of ['# First\r\n\r\nText\r\n', '# Updated\n']) {
+      await writeFile(path, content)
+      expect(await host.fs.ancestors(request)).toEqual([
+        { dir: cwd, name: `./${name}`, content, parts: [{ path, content }] },
+      ])
+    }
+    for (const request of [{ names: [name], below: root }, { names: [] }]) {
+      const reason = new Error('cancel before walking')
+      await expect(host.fs.ancestors(request, AbortSignal.abort(reason))).rejects.toBe(reason)
+    }
+    controller.abort()
+    await expect(host.fs.ancestors(request, new AbortController().signal)).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  test('keeps the memory loader include-depth bound', async () => {
+    const name = `${basename(root)}.md`
+    await writeFile(join(cwd, name), 'root\n@./level-1.md')
+    for (let level = 1; level <= 6; level++) {
+      await writeFile(join(cwd, `level-${level}.md`), `level ${level}\n@./level-${level + 1}.md`)
+    }
+    const found = await host.fs.ancestors({ names: [name], below: root })
+    expect(found[0].parts.map(part => part.path)).toEqual([
+      join(cwd, name), ...[1, 2, 3, 4].map(level => join(cwd, `level-${level}.md`)),
+    ])
+  })
+
+  for (const lifetime of ['invocation', 'activation'] as const) {
+    test(`cancels a pending memory read on ${lifetime} abort without waiting for the reader`, async () => {
+      const name = `${basename(root)}.md`
+      const path = join(cwd, name)
+      await writeFile(path, 'fixture')
+      const request = { names: [name], below: root }
+      const invocation = new AbortController()
+      const reason = new Error(`cancel ${lifetime}`)
+      const fs = getFsImplementation()
+      const read = fs.readFile.bind(fs)
+      let reached!: () => void
+      const started = new Promise<void>(resolve => { reached = resolve })
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      let finish!: () => void
+      const finished = new Promise<void>(resolve => { finish = resolve })
+      const reader = spyOn(fs, 'readFile').mockImplementation(async (file, options) => {
+        if (file !== path) return read(file, options)
+        reached()
+        await gate
+        try {
+          return await read(file, options)
+        } finally {
+          finish()
+        }
+      })
+      let pending: Promise<readonly unknown[]> | undefined
+      try {
+        pending = host.fs.ancestors(request, invocation.signal)
+        await started
+        if (lifetime === 'activation') controller.abort(reason)
+        else invocation.abort(reason)
+        const outcome = await Promise.race([
+          pending.then(() => 'resolved', error => error),
+          delay(100).then(() => 'still waiting'),
+        ])
+        expect(outcome).toBe(reason)
+      } finally {
+        release()
+        await finished
+        await pending?.catch(() => {})
+        reader.mockRestore()
+      }
+      if (lifetime === 'invocation') {
+        expect(controller.signal.aborted).toBe(false)
+        expect((await host.fs.ancestors(request))[0].content).toBe('fixture')
+      }
+    })
+  }
+
+  test('enforces the raw-byte read budget for roots, stripped content and imported parts', async () => {
+    const name = `${basename(root)}.md`
+    const path = join(cwd, name)
+    const request = { names: [name], below: root }
+    const text = 'é'.repeat(LIMIT / 2)
+    await writeFile(path, text)
+    expect((await host.fs.ancestors(request))[0].content).toBe(text)
+    await writeFile(path, text + 'x')
+    await expect(host.fs.ancestors(request)).rejects.toThrow('4 MiB')
+    await writeFile(path, '<!--' + 'x'.repeat(LIMIT) + '-->\nsmall')
+    await expect(host.fs.ancestors(request)).rejects.toThrow('4 MiB')
+    await writeFile(path, '@./large.txt')
+    await writeFile(join(cwd, 'large.txt'), text)
+    await expect(host.fs.ancestors(request)).rejects.toThrow('4 MiB')
+    await writeFile(join(cwd, 'large.txt'), '<!--' + 'x'.repeat(LIMIT) + '-->\nsmall')
+    await expect(host.fs.ancestors(request)).rejects.toThrow('4 MiB')
+    await writeFile(join(cwd, 'large.txt'), 'recovered')
+    expect((await host.fs.ancestors(request))[0].parts.map(part => part.content)).toEqual(['@./large.txt', 'recovered'])
+  })
+
+  test('uses memory markdown semantics, parent-first parts and lexical path identity without global memory filtering', async () => {
+    const name = `${basename(root)}.md`
+    const target = join(root, 'external')
+    await mkdir(target)
+    const main = join(cwd, name)
+    const child = join(target, 'child.md')
+    const grandchild = join(target, 'grandchild.txt')
+    const other = join(target, 'other file.md')
+    const mainText = '# Main\n\n@./child.md#section\n@./other\\ file.md\n@./child.md\n\n`@./ignored.md`\n\n```md\n@./ignored.md\n```\n'
+    const childText = '# Child\n\n@./grandchild.txt\n@./entry.md\n@./binary.png\n@./missing.md\n'
+    await writeFile(join(target, 'entry.md'), '---\npaths: ["never-match/**"]\n---\n<!-- @./ignored.md -->\n' + mainText)
+    await writeFile(child, childText)
+    await writeFile(grandchild, 'grandchild')
+    await writeFile(other, 'other')
+    await writeFile(join(target, 'ignored.md'), 'must not load')
+    await writeFile(join(target, 'binary.png'), 'not text')
+    await symlink(join(target, 'entry.md'), main)
+    setSessionSettingsCache({ settings: { claudeMdExcludes: ['**/*.md'] }, errors: [] })
+    const parts = [
+      { path: main, content: mainText },
+      { path: child, content: childText },
+      { path: grandchild, content: 'grandchild' },
+      { path: other, content: 'other' },
+    ]
+    expect(await host.fs.ancestors({ names: [name], below: root })).toEqual([
+      { dir: cwd, name, parts, content: parts.map(part => part.content).join('\n\n') },
+    ])
+    // An include shared by separately requested roots still belongs to each entry.
+    const secondName = `${basename(root)}-second.md`
+    const secondText = `Second\n@${other.replaceAll(' ', '\\ ')}`
+    await writeFile(join(cwd, secondName), secondText)
+    const again = await host.fs.ancestors({ names: [name, secondName], below: root })
+    expect(again).toHaveLength(2)
+    expect(again[1].parts).toEqual([
+      { path: join(cwd, secondName), content: secondText },
+      { path: other, content: 'other' },
+    ])
+  })
+
+  test('rejects malformed requests and non-relative markdown names before walking', async () => {
+    const guarded = createModHostOperations({
+      cwd: () => { throw new Error('must validate before walking') },
+      storageId: 'ancestors-validation@test',
+      signal: controller.signal,
+    })
+    for (const request of [
+      undefined, null, [], 'file.md', {}, { names: 'file.md' }, { names: [null] },
+      ...['', '.', '..', '../file.md', 'dir/../file.md', 'dir\\..\\file.md', '/file.md',
+        '//server/file.md', 'C:\\file.md', 'C:file.md', '\\file.md', 'file.txt', 'file.md\0'].map(name => ({ names: [name] })),
+      ...[null, 1, '', 'bad\0file', '//server/file', '\\\\server\\file'].flatMap(path => [
+        { names: ['fixture.md'], of: path },
+        { names: ['fixture.md'], below: path },
+      ]),
+    ]) {
+      await expect(guarded.fs.ancestors(request as never)).rejects.toThrow(TypeError)
+    }
+  })
+
+  test('resolves of and below against current cwd, excludes below itself and ignores sibling prefixes', async () => {
+    const name = `${basename(root)}.md`
+    const project = join(root, 'project')
+    const nested = join(project, 'nested')
+    const deep = join(nested, 'deep')
+    const sibling = join(root, 'project-other')
+    for (const dir of [project, nested, deep, sibling]) {
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, name), dir)
+    }
+    const request = { names: [name], of: '../project/nested/deep/not-created.ts', below: '../project' }
+    const found = await host.fs.ancestors(request)
+    expect(found.map(entry => entry.dir)).toEqual([nested, deep])
+    expect(await host.fs.ancestors({ ...request, of: join(deep, 'file.ts'), below: project })).toEqual(found)
+    for (const of of [join(project, 'file.ts'), join(sibling, 'file.ts'), join(root, 'file.ts')]) {
+      expect(await host.fs.ancestors({ ...request, of })).toEqual([])
+    }
+    expect((await host.fs.ancestors({ names: [name], of: request.of })).map(entry => entry.dir)).toEqual([project, nested, deep])
+    expect((await host.fs.ancestors({ names: [name], below: root })).map(entry => entry.dir)).toEqual([])
+    expect(await host.fs.ancestors({ names: [], of: request.of })).toEqual([])
+  })
+
+  test('walks to the original session root, root first, preserving requested names and per-directory order', async () => {
+    const name = `${basename(root)}.md`
+    const hiddenName = `.claude/${name}`
+    const sessionRoot = join(cwd, 'project')
+    await mkdir(join(sessionRoot, '.claude'), { recursive: true })
+    await writeFile(join(root, name), 'outer')
+    await writeFile(join(cwd, name), 'work')
+    await writeFile(join(sessionRoot, name), 'project')
+    await writeFile(join(sessionRoot, hiddenName), 'hidden')
+    const session = createModHostOperations({
+      cwd: () => cwd,
+      root: () => sessionRoot,
+      storageId: 'ancestors@test',
+      signal: controller.signal,
+    })
+    const expected = [
+      { dir: root, name, content: 'outer' },
+      { dir: cwd, name, content: 'work' },
+      { dir: sessionRoot, name: hiddenName, content: 'hidden' },
+      { dir: sessionRoot, name, content: 'project' },
+    ].map(entry => ({
+      ...entry,
+      parts: [{ path: join(entry.dir, entry.name), content: entry.content }],
+    }))
+    expect(await session.fs.ancestors({ names: [hiddenName, name] })).toEqual(expected)
+    cwd = join(root, 'elsewhere')
+    await mkdir(cwd)
+    await writeFile(join(cwd, name), 'not the original root')
+    expect(await session.fs.ancestors({ names: [hiddenName, name] })).toEqual(expected)
   })
 })
 

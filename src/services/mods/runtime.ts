@@ -8,12 +8,13 @@ import { createModUi, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentati
 import { loadModDeclaration } from './loader.js'
 import { getNativeModDeclaration } from './native.js'
 import { matchesModEventPattern } from './matcher.js'
-import { createModHostOperations } from './hostOperations.js'
+import { createModHostOperations, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
 import { runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
 import { dispatchModEvent } from './dispatch.js'
+import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
 import {
   applyPromptFill,
   emptyPromptBox,
@@ -44,8 +45,10 @@ export type ModBinding = {
 export type ModRequestServices = {
   toolCatalog?(): ToolCatalog
 }
-export type ModHostServices = ModRequestServices & {
+export type ModHostServices = ModRequestServices & ModHttpServices & {
   pluginOrigin?(storageId: string): ModOrigin | undefined
+  cwd?(): string
+  root?(): string
   messages?(): readonly unknown[]
   commands?(): readonly Command[]
   builtinCommands?(): readonly Command[]
@@ -111,11 +114,14 @@ const coreClock = Object.freeze({
 // Core noun identity is stable; the caller's activation selects its store and lifetime.
 const hostIdentity = () => { throw new Error('Host calls must use the environment bridge') }
 const coreHost: Nouns = {
-  fs: { read: hostIdentity, write: hostIdentity, list: hostIdentity, exists: hostIdentity, stat: hostIdentity },
+  plugin: { name: hostIdentity, root: hostIdentity },
+  fs: { read: hostIdentity, write: hostIdentity, list: hostIdentity, exists: hostIdentity, stat: hostIdentity, ancestors: hostIdentity },
   process: { run: hostIdentity },
   settings: { read: hostIdentity },
+  env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
-  session: { cwd: hostIdentity, id: hostIdentity, surface: hostIdentity, messages: hostIdentity },
+  session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, authorize: hostIdentity },
+  http: { fetch: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   tool: { list: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity },
@@ -318,12 +324,24 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'fs.exists': return { path: args[0] }
       case 'fs.list': return { path: args[0] ?? '.' }
       case 'fs.write': return { path: args[0], text: args[1] }
+      case 'env.get': return { name: args[0] }
+      case 'env.set': return { name: args[0], value: args[1] }
       case 'store.get': case 'store.delete': return { key: args[0] }
       case 'store.set': return { key: args[0], value: args[1] }
       case 'process.run': return { argv: args[0], ...(args[1] === undefined ? {} : { init: args[1] }) }
-      case 'settings.read': {
-        const input = args[0] === undefined ? {} : args[0]
-        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('settings.read args must be an object')
+      case 'session.authorize': {
+        if (args.length) throw new TypeError('session.authorize takes no arguments')
+        return {}
+      }
+      case 'http.fetch': {
+        const init = args[1] === undefined ? {} : args[1]
+        if (args.length > 2 || !init || typeof init !== 'object' || Array.isArray(init))
+          throw new TypeError('http.fetch takes a URL and optional init object')
+        return { url: args[0], init }
+      }
+      case 'settings.read': case 'fs.ancestors': {
+        const input = op === 'settings.read' && args[0] === undefined ? {} : args[0]
+        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError(`${op} args must be an object`)
         return input as ModInput
       }
       case 'prompt.fill': {
@@ -354,7 +372,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
-      case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.id': case 'session.surface': case 'session.messages': case 'prompt.read': {
+      case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.id': case 'session.repo': case 'session.surface': case 'session.messages': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
       }
@@ -366,11 +384,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const { fs, process, store, settings } = owner.operations
     switch (op) {
       case 'settings.read': return settings.read(input)
-      case 'fs.read': case 'fs.list': case 'fs.stat': case 'fs.exists': case 'fs.write': case 'process.run': {
+      case 'env.get': return owner.operations.env.get(input.name as string)
+      case 'env.set': return owner.operations.env.set(input.name as string, input.value as string | undefined)
+      case 'fs.read': case 'fs.list': case 'fs.stat': case 'fs.exists': case 'fs.write': case 'fs.ancestors': case 'process.run': {
         const combined = createCombinedAbortSignal(invocationSignal.getStore(), {signalB:owner.controller.signal})
         try {
           switch (op) {
             case 'fs.read': return await fs.read(input.path as string, { as: input.as as 'text' | 'bytes' }, combined.signal)
+            case 'fs.ancestors': return await fs.ancestors(input as Parameters<typeof fs.ancestors>[0], combined.signal)
             case 'fs.list': return await fs.list(input.path as string, combined.signal)
             case 'fs.stat': return await fs.stat(input.path as string, { resolve: input.resolve as boolean }, combined.signal)
             case 'fs.exists': return await fs.exists(input.path as string, combined.signal)
@@ -383,6 +404,17 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'store.set': return store.set(input.key as string, input.value)
       case 'store.delete': return store.delete(input.key as string)
       case 'store.keys': return store.keys()
+      case 'session.authorize': return owner.operations.session.authorize()
+      case 'http.fetch': {
+        const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+        try {
+          return await owner.operations.http.fetch(
+            input.url as string,
+            input.init as Parameters<typeof owner.operations.http.fetch>[1],
+            combined.signal,
+          )
+        } finally { combined.cleanup() }
+      }
       case 'ui.open': {
         if (binding?.surface !== 'terminal' || !binding.isInteractive || !services.uiPresentation)
           throw new Error('Mod UI panes are unavailable without an interactive terminal host')
@@ -480,9 +512,20 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           ...(plugin === undefined ? {} : { plugin }),
         }
       })
-      case 'session.cwd': case 'session.id': case 'session.surface':
+      case 'session.cwd': case 'session.root': case 'session.id':
         if (!binding) throw new Error('Module session is not bound')
-        return op === 'session.cwd' ? binding.cwd : op === 'session.id' ? binding.sessionId : binding.surface
+        return op === 'session.cwd' ? services.cwd?.() ?? binding.cwd
+          : op === 'session.root' ? services.root?.() ?? binding.cwd : binding.sessionId
+      case 'session.repo': {
+        if (!binding) throw new Error('Module session is not bound')
+        const cwd = services.cwd?.() ?? binding.cwd
+        const root = findCanonicalGitRootFresh(cwd)
+        if (!root) return null
+        return { root, remote: await getOriginRemoteUrlFresh(cwd), internal: false, name: null }
+      }
+      case 'session.surface':
+        if (!binding) throw new Error('Module session is not bound')
+        return binding.surface
       case 'session.messages':
         if (!services.messages) throw new Error('Session messages are unavailable on this host')
         return services.messages()
@@ -575,11 +618,21 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const result: Record<string, unknown> = table.clock ? { clock } : {}
     for (const [noun, methods] of Object.entries(table)) {
       if (noun === 'clock') continue
+      if (noun === 'plugin') {
+        result.plugin = Object.freeze({ name: owner.declaration.name, root: owner.declaration.pluginRoot })
+        continue
+      }
       const wrapped: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
       for (const [method, fn] of Object.entries(methods)) wrapped[method] = async (...args) => {
         const op = `${noun}.${method}`
         checkCall(owner, op, table, lease)
         const input = fn === hostIdentity ? hostInput(op, args) : args[0] ?? {}
+        if (op === 'env.get' || op === 'env.set') {
+          const name = (input as ModInput).name
+          const allowed = owner.declaration.env?.[op === 'env.get' ? 'reads' : 'writes']
+          if (typeof name !== 'string' || !allowed?.includes(name))
+            throw new Error(`Module environment name ${String(name)} is absent from scan for ${op}`)
+        }
         if (fn !== hostIdentity && (args.length > 1 || typeof input !== 'object' || input === null || Array.isArray(input))) {
           throw new Error('Custom noun methods require one object argument or no arguments')
         }
@@ -700,6 +753,16 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
+    if (event === 'env.get' || event === 'env.set') {
+      if (!result || typeof result !== 'object' || Array.isArray(result))
+        throw new Error(`${event} must return value or deny`)
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result) || (event === 'env.get'
+        ? result.value !== undefined && typeof result.value !== 'string'
+        : result.value !== undefined))
+        throw new Error(`${event} must return ${event === 'env.get' ? 'a string or undefined' : 'undefined'} in value or deny`)
+      return
+    }
     if (event === 'prompt.read') {
       if (!result || typeof result !== 'object' || Array.isArray(result))
         throw new TypeError('prompt.read must return value or deny')
@@ -869,6 +932,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
               noun !== 'clock' && Object.keys(methods).length === Object.keys(item.view).length &&
               Object.entries(methods).every(([method, fn]) => fn === (item.view as Nouns[string])[method])))?.methods
             if (inherited) { table[noun] = inherited; continue }
+            if (noun === 'plugin') throw new Error('engine.create may not replace plugin identity')
             const entries = Object.entries(methods)
             if (!entries.every(([, fn]) => typeof fn === 'function')) throw new Error(`Noun ${noun} must contain callable methods`)
             const provider = state.owners.get(noun)
@@ -925,7 +989,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const result = await dispatch('plugin.register', {
       name: candidate.name, tier: candidate.tier, root: candidate.pluginRoot, provenance: candidate.storageId,
       ...(candidate.version === undefined ? {} : { version: candidate.version }),
-      uses: { events: candidate.events, calls: candidate.calls },
+      uses: { events: candidate.events, calls: candidate.calls, ...(candidate.env ? { env: candidate.env } : {}) },
     }, async () => ({ allow: true }), judges, table) as { allow?: true; refuse?: string }
     return result.refuse
   }
@@ -1056,8 +1120,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           declaration, environment, state: preAdmitted ? 'active' : 'candidate', references: 0, started: false,
           waits: new Map(), methods: new WeakMap(), controller: activationController,
           operations: createModHostOperations({
-            cwd: () => { if (!binding) throw new Error('Module session is not bound'); return binding.cwd },
+            cwd: () => { if (!binding) throw new Error('Module session is not bound'); return services.cwd?.() ?? binding.cwd },
+            root: () => { if (!binding) throw new Error('Module session is not bound'); return services.root?.() ?? binding.cwd },
             storageId: declaration.storageId, signal: activationController.signal,
+            sessionId: () => binding?.sessionId,
+            firstPartyCredential: services.firstPartyCredential,
+            httpFetch: services.httpFetch,
           }),
         }
         activations.add(candidate)

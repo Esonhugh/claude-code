@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createModsRuntime } from './runtime.js'
 import { loadModDeclaration } from './loader.js'
@@ -13,7 +13,7 @@ import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache
 
 let root: string
 const runtimes: ReturnType<typeof createModsRuntime>[] = []
-const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS', 'ANTHROPIC_API_KEY']
+const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS', 'ANTHROPIC_API_KEY', 'MODS_CONTRACT_VALUE', 'MODS_CONTRACT_REDIRECT']
 let saved: (string | undefined)[]
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'mods-runtime-host-'))
@@ -48,6 +48,270 @@ function runtime(messages: () => unknown[] = () => []) {
 function tool(name: string): Tool {
   return { name } as Tool
 }
+test('Worker session.authorize and http.fetch reach host services without exposing the credential', async () => {
+  const mod = await plugin('http-caller', `export function register(on) {
+    on('tool.call', async $ => {
+      const authorization = await $.session.authorize();
+      return {result:{authorization,response:await $.http.fetch('https://api.anthropic.com/fixture', {
+        method:'POST',body:'plugin body',auth:authorization.handle,headers:{Authorization:'plugin override'},
+      })}};
+    });
+  }`)
+  const observer = await plugin('http-observer', `export function register(on) {
+    on('session.authorize', ($,e,next) => next(e));
+    on('http.fetch', ($,e,next) => {
+      if(e.init.headers.Authorization!=='plugin override') throw Error('credential leaked into hook');
+      return next({...e,init:{...e.init,body:'rewritten body'}});
+    });
+  }`)
+  const requests: RequestInit[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    firstPartyCredential:async()=>({kind:'api-key',secret:'fake-host-only-key'}),
+    httpFetch:async (_url,init)=>{requests.push(init);return new Response('host response',{status:201})},
+  }})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([mod,observer])
+  expect(diagnostics).toEqual([])
+  const result = await value.dispatch('tool.call',{},async()=>({result:'core'}))
+  expect(result).toEqual({result:{authorization:{handle:expect.any(String),kind:'api-key'},response:{status:201,ok:true,headers:{},text:'host response'}}})
+  expect(JSON.stringify(result)).not.toContain('fake-host-only-key')
+  expect(requests).toHaveLength(1)
+  expect(new Headers(requests[0]!.headers).get('x-api-key')).toBe('fake-host-only-key')
+  expect(new Headers(requests[0]!.headers).get('authorization')).toBeNull()
+  expect(requests[0]!.body).toBe('rewritten body')
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker fs.ancestors publishes admission, walks original root and consumes imports after cwd changes', async () => {
+  const project = join(root, 'project')
+  const nested = join(project, 'nested')
+  const elsewhere = join(root, 'elsewhere')
+  for (const dir of [project, nested, elsewhere]) await mkdir(dir, { recursive: true })
+  const name = `${basename(root)}.md`
+  const projectText = 'project\n@./included.md'
+  await writeFile(join(root, name), 'outer')
+  await writeFile(join(project, name), projectText)
+  await writeFile(join(project, 'included.md'), 'included')
+  await writeFile(join(nested, name), 'nested')
+  await writeFile(join(elsewhere, name), 'elsewhere')
+  await writeFile(join(nested, 'cwd.txt'), 'current cwd')
+  const observer = await plugin('ancestor-admission', `let uses, request; export function register(on) {
+    on('plugin.register', ($,e,next) => {uses=e.uses;return next(e)});
+    on('fs.ancestors',($,e,next) => {request=e;return next(e)});
+    on('tool.call', {tool:'Admission'}, () => ({result:uses}));
+    on('tool.call', {tool:'Observed'}, () => ({result:request}));
+  }`)
+  const consumer = await plugin('ancestor-reader', `export function register(on) {
+    on('fs.ancestors',($,e,next) => next(e));
+    on('tool.call', {tool:'Ancestors'}, async ($,e) => {
+      const found=await $.fs.ancestors(e.request);
+      return {result:{found}};
+    });
+    on('tool.call', {tool:'Read'}, async ($) => ({result:await $.fs.read('./cwd.txt')}));
+  }`)
+  let cwd = elsewhere
+  let sessionRoot = project
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:e=>diagnostics.push(e),services:{cwd:()=>cwd,root:()=>sessionRoot}})
+  runtimes.push(value)
+  await value.bind(binding(root));await value.reconcile([observer,consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call',{tool:'Admission'},async () => ({result:'unexpected'}))).toEqual({result:{
+    events:['fs.ancestors','tool.call'],calls:['fs.ancestors','fs.read'],
+  }})
+  const run = (request: Record<string, unknown>) => value.dispatch('tool.call',{tool:'Ancestors',request},async () => ({result:'unexpected'}))
+  const outer = {dir:root,name,content:'outer',parts:[{path:join(root,name),content:'outer'}]}
+  const projectEntry = {dir:project,name,content:projectText+'\n\nincluded',parts:[
+    {path:join(project,name),content:projectText},{path:await realpath(join(project,'included.md')),content:'included'},
+  ]}
+  expect(await run({names:[name]})).toEqual({result:{found:[outer,projectEntry]}})
+  expect(await value.dispatch('tool.call',{tool:'Observed'},async () => ({result:'unexpected'}))).toEqual({result:{names:[name]}})
+  cwd = nested
+  expect(await run({names:[name]})).toEqual({result:{found:[outer,projectEntry]}})
+  expect(await value.dispatch('tool.call',{tool:'Observed'},async () => ({result:'unexpected'}))).toEqual({result:{names:[name]}})
+  const request = {names:[name],of:'not-created.ts',below:'..'}
+  expect(await run(request)).toEqual({result:{found:[{dir:nested,name,content:'nested',parts:[{path:join(nested,name),content:'nested'}]}]}})
+  expect(await value.dispatch('tool.call',{tool:'Observed'},async () => ({result:'unexpected'}))).toEqual({result:request})
+  expect(await value.dispatch('tool.call',{tool:'Read'},async () => ({result:'unexpected'}))).toEqual({result:'current cwd'})
+  sessionRoot = elsewhere
+  await value.bind({...binding(root),sessionId:'rebound'})
+  expect(await run({names:[name],below:root})).toEqual({result:{found:[{dir:elsewhere,name,content:'elsewhere',parts:[{path:join(elsewhere,name),content:'elsewhere'}]}]}})
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker session repo reads the live working copy and resolves its canonical main root', async () => {
+  const consumer = await plugin('session-repo', `export function register(on) {
+    on('session.repo', ($, e, next) => next(e));
+    on('tool.call', async ($) => ({result:await $.session.repo()}));
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.events).toEqual(['session.repo', 'tool.call'])
+  expect(declaration.calls).toEqual(['session.repo'])
+
+  const main = join(root, 'main')
+  const worktree = join(root, 'linked')
+  const nested = join(worktree, 'nested')
+  const worktreeGitDir = join(main, '.git', 'worktrees', 'linked')
+  await mkdir(worktreeGitDir, { recursive: true })
+  await mkdir(nested, { recursive: true })
+  await writeFile(join(worktree, '.git'), `gitdir: ${worktreeGitDir}\n`)
+  await writeFile(join(worktreeGitDir, 'commondir'), '../..\n')
+  await writeFile(join(worktreeGitDir, 'gitdir'), `${join(worktree, '.git')}\n`)
+  const config = join(main, '.git', 'config')
+  await writeFile(config, `[remote "origin"]\n  url = https://github.com/public/source.git\n  pushurl = git@github.com:public/push.git\n`)
+
+  let cwd = nested
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{cwd:()=>cwd}})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const run = () => value.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
+  expect(await run()).toEqual({result:{
+    root:main,remote:'git@github.com:public/push.git',internal:false,name:null,
+  }})
+
+  await writeFile(config, `[remote "origin"]\n  url = https://github.com/public/changed.git\n`)
+  expect(await run()).toEqual({result:{
+    root:main,remote:'https://github.com/public/changed.git',internal:false,name:null,
+  }})
+
+  await writeFile(config, '[core]\n  bare = false\n')
+  expect(await run()).toEqual({result:{root:main,remote:null,internal:false,name:null}})
+
+  await rm(join(worktree, '.git'))
+  expect(await run()).toEqual({result:null})
+  cwd = root
+  expect(await run()).toEqual({result:null})
+  expect(diagnostics).toEqual([])
+})
+
+test('plugin metadata is frozen host identity in each Worker and its engine.create continuation', async () => {
+  const first = await plugin('identity-first', `let builtIdentity; export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const built=await next(e);
+      builtIdentity={name:built.plugin.name,root:built.plugin.root};
+      return built;
+    });
+    on('tool.call', {tool:'First'}, ($) => ({result:{identity:$.plugin,builtIdentity,frozen:Object.isFrozen($.plugin)}}));
+  }`)
+  const second = await plugin('identity-second', `export function register(on) {
+    on('tool.call', {tool:'Second'}, ($) => ({result:{name:$.plugin.name,root:$.plugin.root}}));
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([first, second])
+  expect(diagnostics).toEqual([])
+  const identity = {name:first.name,root:first.pluginRoot}
+  expect(await value.dispatch('tool.call', {tool:'First'}, async () => ({result:'unexpected'}))).toEqual({
+    result:{identity,builtIdentity:identity,frozen:true},
+  })
+  expect(await value.dispatch('tool.call', {tool:'Second'}, async () => ({result:'unexpected'}))).toEqual({
+    result:{name:second.name,root:second.pluginRoot},
+  })
+  expect(diagnostics).toEqual([])
+})
+
+test('plugin identity cannot be forged through engine.create', async () => {
+  const forged = await plugin('forged-identity', `export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const built=await next(e);
+      return {...built,plugin:{name:'other',root:'/other'}};
+    });
+    on('tool.call', () => ({result:'must not activate'}));
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([forged])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'forged-identity',stage:'engine.create'})])
+  expect(await value.dispatch('tool.call', {}, async () => ({result:'core'}))).toEqual({result:'core'})
+})
+
+test('Worker environment calls publish names at admission and affect the host and later children', async () => {
+  delete process.env.MODS_CONTRACT_VALUE
+  const observer = await plugin('env-admission', `let uses; export function register(on) {
+    on('plugin.register', ($, e, next) => { uses=e.uses; return next(e); });
+    on('tool.call', {tool:'Admission'}, () => ({result:uses}));
+  }`)
+  const consumer = await plugin('env-consumer', `export function register(on) {
+    on('tool.call', {tool:'Write'}, async ($) => {
+      const before=await $.env.get('MODS_CONTRACT_VALUE');
+      await $.env.set('MODS_CONTRACT_VALUE', 'host-value');
+      const child=await $.process.run(['/bin/sh','-c','printf %s "$MODS_CONTRACT_VALUE"']);
+      return {result:{before,after:await $.env.get('MODS_CONTRACT_VALUE'),child}};
+    });
+    on('tool.call', {tool:'Delete'}, async ($) => {
+      await $.env.set('MODS_CONTRACT_VALUE', undefined);
+      return {result:{value:await $.env.get('MODS_CONTRACT_VALUE')}};
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([observer, consumer])
+  expect(diagnostics).toEqual([])
+  const run = (tool: string) => value.dispatch('tool.call', {tool}, async () => ({result:'unexpected core'}))
+  expect(await run('Admission')).toEqual({result:{
+    events:['tool.call'], calls:['env.get','env.set','process.run'],
+    env:{reads:['MODS_CONTRACT_VALUE'],writes:['MODS_CONTRACT_VALUE']},
+  }})
+  expect(await run('Write')).toEqual({result:{before:undefined,after:'host-value',child:{exitCode:0,stdout:'host-value',stderr:''}}})
+  expect(process.env.MODS_CONTRACT_VALUE).toBe('host-value')
+  expect(await run('Delete')).toEqual({result:{value:undefined}})
+  expect(process.env.MODS_CONTRACT_VALUE).toBeUndefined()
+  expect(diagnostics).toEqual([])
+})
+
+test('environment middleware can rewrite values or deny writes but cannot redirect their pinned names', async () => {
+  process.env.MODS_CONTRACT_VALUE = 'initial'
+  process.env.MODS_CONTRACT_REDIRECT = 'untouched'
+  const policy = await plugin('env-policy', `export function register(on) {
+    on('env.set', async ($, e, next) => {
+      if (e.value==='deny') return {deny:'blocked write'};
+      if (e.value==='redirect') {
+        try { await next({...e,name:'MODS_CONTRACT_REDIRECT'}); }
+        catch (error) { return {deny:error.message}; }
+      }
+      return next({...e,value:e.value+':policy'});
+    });
+  }`)
+  const consumer = await plugin('env-caller', `export function register(on) {
+    on('tool.call', async ($, e) => {
+      try { await $.env.set('MODS_CONTRACT_VALUE', e.input); return {result:await $.env.get('MODS_CONTRACT_VALUE')}; }
+      catch (error) { return {result:{error:error.message}}; }
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([policy, consumer])
+  expect(diagnostics).toEqual([])
+  const run = (input: string) => value.dispatch('tool.call', {input}, async () => ({result:'unexpected core'}))
+  expect(await run('changed')).toEqual({result:'changed:policy'})
+  expect(await run('deny')).toEqual({result:{error:'blocked write'}})
+  expect(await run('redirect')).toEqual({result:{error:expect.stringContaining('cannot rewrite name')}})
+  expect(process.env.MODS_CONTRACT_VALUE).toBe('changed:policy')
+  expect(process.env.MODS_CONTRACT_REDIRECT).toBe('untouched')
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker session cwd and root reads track live host state', async () => {
+  const consumer = await plugin('session-paths', `export function register(on) {
+    on('tool.call', async ($) => ({result:{cwd:await $.session.cwd(),root:await $.session.root()}}));
+  }`)
+  let cwd = join(root, 'shell')
+  let sessionRoot = root
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{cwd:()=>cwd,root:()=>sessionRoot}})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const run = () => value.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot}})
+  cwd = join(root, 'shell-next')
+  sessionRoot = join(root, 'moved-root')
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot}})
+  expect(diagnostics).toEqual([])
+})
+
 test('Worker tool.list uses each captured request catalog without crossing concurrent requests or reloads', async () => {
   const consumer = await plugin('catalog-consumer', `export function register(on) {
     on('tool.call', async ($) => ({result:await $.tool.list()}));
