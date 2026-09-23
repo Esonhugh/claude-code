@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import type { Tools } from '../Tool.js'
 import { clearSystemPromptSections } from './systemPromptSections.js'
+import { getSystemPromptSections } from '../utils/systemPromptType.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -134,6 +135,48 @@ describe('getSystemPrompt layering', () => {
       "Don't create one-off helpers or abstractions or design for hypothetical needs",
     )
     expect(new Set(prompt).size).toBe(prompt.length)
+  })
+
+  test('retains ordered named slots, nulls, and the cache boundary', async () => {
+    delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+    delete process.env.CLAUDE_CODE_USE_OPENAI
+    process.env.ANTHROPIC_API_KEY = 'test-key'
+
+    const prompt = await getSystemPrompt(
+      [{ name: 'Bash' }, { name: 'Read' }] as unknown as Tools,
+      'claude-opus-4-6',
+    )
+    const sections = getSystemPromptSections(prompt)
+
+    expect(sections).toBeDefined()
+    expect(
+      sections
+        ?.slice(0, 7)
+        .map(section => ('name' in section ? section.name : null)),
+    ).toEqual([
+      'identity',
+      'system',
+      'doing_tasks',
+      'action_safety',
+      'tone_style',
+      'output_efficiency',
+      'tool_guidance',
+    ])
+    expect(sections).toContainEqual({ name: 'mcp_instructions', text: null })
+    expect(sections).toContainEqual({
+      text: '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
+    })
+    expect(
+      sections?.findIndex(
+        section =>
+          'text' in section &&
+          section.text === '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
+      ),
+    ).toBeLessThan(
+      sections?.findIndex(
+        section => 'name' in section && section.name === 'session_guidance',
+      ) ?? -1,
+    )
   })
 })
 

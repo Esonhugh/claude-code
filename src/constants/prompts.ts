@@ -60,8 +60,16 @@ import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
-import { resolvePromptSections } from '../utils/promptLayers.js'
+import {
+  resolvePromptSections,
+  type PromptSection,
+} from '../utils/promptLayers.js'
 import { shouldIncludeGitInstructions } from '../utils/gitSettings.js'
+import {
+  concatSystemPrompts,
+  withSystemPromptSections,
+  type SystemPromptSection,
+} from '../utils/systemPromptType.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -446,9 +454,12 @@ export async function getSystemPrompt(
   mcpClients?: MCPServerConnection[],
 ): Promise<string[]> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
-    return [
-      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
-    ]
+    return withSystemPromptSections([
+      {
+        name: 'identity',
+        text: `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
+      },
+    ])
   }
 
   const cwd = getCwd()
@@ -466,24 +477,30 @@ export async function getSystemPrompt(
     proactiveModule?.isProactiveActive()
   ) {
     logForDebugging(`[SystemPrompt] path=simple-proactive`)
-    return [
-      `\nYou are an autonomous agent. Use the available tools to do useful work.
+    return withSystemPromptSections([
+      {
+        name: 'identity',
+        text: `\nYou are an autonomous agent. Use the available tools to do useful work.
 
 ${CYBER_RISK_INSTRUCTION}`,
-      getSystemRemindersSection(),
-      await loadMemoryPrompt(),
-      envInfo,
-      getLanguageSection(settings.language),
+      },
+      { name: 'system_reminders', text: getSystemRemindersSection() },
+      { name: 'memory', text: await loadMemoryPrompt() },
+      { name: 'env_info_simple', text: envInfo },
+      { name: 'language', text: getLanguageSection(settings.language) },
       // When delta enabled, instructions are announced via persisted
       // mcp_instructions_delta attachments (attachments.ts) instead.
-      isMcpInstructionsDeltaEnabled()
-        ? null
-        : getMcpInstructionsSection(mcpClients),
-      getScratchpadInstructions(),
-      getFunctionResultClearingSection(model),
-      SUMMARIZE_TOOL_RESULTS_SECTION,
-      getProactiveSection(),
-    ].filter(s => s !== null)
+      {
+        name: 'mcp_instructions',
+        text: isMcpInstructionsDeltaEnabled()
+          ? null
+          : getMcpInstructionsSection(mcpClients),
+      },
+      { name: 'scratchpad', text: getScratchpadInstructions() },
+      { name: 'frc', text: getFunctionResultClearingSection(model) },
+      { name: 'summarize_tool_results', text: SUMMARIZE_TOOL_RESULTS_SECTION },
+      { name: 'proactive', text: getProactiveSection() },
+    ])
   }
 
   const dynamicSections = [
@@ -558,7 +575,7 @@ ${CYBER_RISK_INSTRUCTION}`,
 
   const resolvedDynamicSections =
     await resolveSystemPromptSections(dynamicSections)
-  const promptSections = resolvePromptSections([
+  const sourceSections: PromptSection[] = [
     {
       id: 'identity',
       layer: 'stable-core',
@@ -603,7 +620,8 @@ ${CYBER_RISK_INSTRUCTION}`,
       layer: 'task-dynamic' as const,
       content,
     })),
-  ])
+  ]
+  const promptSections = resolvePromptSections(sourceSections)
   const dynamicStart = promptSections.findIndex(
     section => section.layer === 'task-dynamic',
   )
@@ -611,13 +629,30 @@ ${CYBER_RISK_INSTRUCTION}`,
     dynamicStart === -1 ? promptSections : promptSections.slice(0, dynamicStart)
   const taskDynamicSections =
     dynamicStart === -1 ? [] : promptSections.slice(dynamicStart)
-
-  return [
-    ...staticSections.map(section => section.content),
+  const selectedStaticContentByName = new Map(
+    staticSections.map(section => [section.id, section.content]),
+  )
+  const selectedDynamicContentByName = new Map(
+    taskDynamicSections.map(section => [section.id, section.content]),
+  )
+  const sections: SystemPromptSection[] = [
+    ...sourceSections
+      .filter(section => section.layer !== 'task-dynamic')
+      .map(section => ({
+        name: section.id,
+        text: selectedStaticContentByName.get(section.id) ?? null,
+      })),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
-    ...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
-    ...taskDynamicSections.map(section => section.content),
+    ...(shouldUseGlobalCacheScope()
+      ? [{ text: SYSTEM_PROMPT_DYNAMIC_BOUNDARY }]
+      : []),
+    ...dynamicSections.map(section => ({
+      name: section.name,
+      text: selectedDynamicContentByName.get(section.name) ?? null,
+    })),
   ]
+
+  return withSystemPromptSections(sections)
 }
 
 function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
@@ -797,7 +832,7 @@ export function getUnameSR(): string {
 export const DEFAULT_AGENT_PROMPT = `You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.`
 
 export async function enhanceSystemPromptWithEnvDetails(
-  existingSystemPrompt: string[],
+  existingSystemPrompt: readonly string[],
   model: string,
   additionalWorkingDirectories?: string[],
   enabledToolNames?: ReadonlySet<string>,
@@ -821,12 +856,12 @@ export async function enhanceSystemPromptWithEnvDetails(
       ? getDiscoverSkillsGuidance()
       : null
   const envInfo = await computeEnvInfo(model, additionalWorkingDirectories)
-  return [
-    ...existingSystemPrompt,
-    notes,
-    ...(discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : []),
-    envInfo,
-  ]
+  return concatSystemPrompts(
+    existingSystemPrompt,
+    [notes],
+    discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : [],
+    [envInfo],
+  )
 }
 
 /**
