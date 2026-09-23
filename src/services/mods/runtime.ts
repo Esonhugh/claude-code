@@ -859,13 +859,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       return await dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner), core,
         signal: combined.signal, origin: options.origin,
-        // A settings read must still meet the caller's other hooks (notably
-        // sec-default's policy guard); only the calling frame is recursive.
+        // Only the calling frame is recursive; sibling policy hooks still run.
         ...(options.origin ? { skip: {
           plugin: options.origin.plugin,
-          ...(event === 'settings.read' ? {
-            registrationId: caller?.plugin === options.origin.plugin ? caller.registrationId : -1,
-          } : {}),
+          registrationId:
+            caller?.plugin === options.origin.plugin
+              ? caller.registrationId
+              : -1,
         } } : {}),
         validateResult: (result, nextResults) => { validateResult(event, result); options.validateResult?.(result, nextResults) },
         validateInput: (value, received) => {

@@ -1316,6 +1316,61 @@ test('settings.read remains hookable for rewrite, deny and same-event reentry', 
   expect(diagnostics).toEqual([])
 })
 
+test('capability calls run sibling hooks and skip only the currently calling registration', async () => {
+  await writeFile(join(root, 'actual.txt'), 'host text')
+  const consumer = await plugin('sibling-reader', `let entries=0; export function register(on) {
+    on('tool.call', async ($) => ({result:{text:await $.fs.read('alias.txt'),entries}}));
+    on('fs.read', async ($, e) => { entries++; return {value:await $.fs.read('actual.txt')}; });
+    on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+e.path+':'+next.origin.plugin}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({
+    result:{text:'host text:actual.txt:sibling-reader',entries:1},
+  })
+  expect(diagnostics).toEqual([])
+})
+
+test('custom noun calls retain same-plugin middleware and host-owned origin', async () => {
+  const consumer = await plugin('custom-siblings', `export function register(on) {
+    on('engine.create', async ($, e, next) => { const below=await next(e); return {...below,greeting:{read:(e) => e.text}}; });
+    on('greeting.read', ($, e, next) => next({...e,text:e.text+':'+next.origin.plugin}));
+    on('tool.call', async ($) => ({result:await $.greeting.read({text:'hello'})}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({result:'hello:custom-siblings'})
+  expect(diagnostics).toEqual([])
+})
+
+test('clock callbacks without a live hook frame still run the owning plugin middleware', async () => {
+  await writeFile(join(root, 'callback.txt'), 'callback text')
+  const consumer = await plugin('callback-siblings', `let result; export function register(on) {
+    on('tool.call', {tool:'Start'}, ($) => {
+      $.clock.after(0, async () => { result=await $.fs.read('callback.txt'); });
+      return {result:'started'};
+    });
+    on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+next.origin.plugin}));
+    on('tool.call', {tool:'Result'}, () => ({result}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call', {...input,tool:'Start'}, async () => ({result:'unexpected core'}))).toEqual({result:'started'})
+  const deadline = Date.now() + 2000
+  let result: unknown
+  do {
+    result = await value.dispatch('tool.call', {...input,tool:'Result'}, async () => ({result:'unexpected core'}))
+    if ((result as {result?: unknown}).result !== undefined) break
+    await delay(5)
+  } while (Date.now() < deadline)
+  expect(result).toEqual({result:'callback text:callback-siblings'})
+  expect(diagnostics).toEqual([])
+})
+
 test('settings.read captured capability is revoked by withholding and recovers when withholding is removed', async () => {
   setCachedSettingsForSource('policySettings', { model:'accepted-policy' })
   const consumer = await plugin('settings-captured', `let read; export function register(on) {
