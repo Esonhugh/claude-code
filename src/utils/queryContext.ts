@@ -21,7 +21,7 @@ import { createAbortController } from './abortController.js'
 import type { FileStateCache } from './fileStateCache.js'
 import type { CacheSafeParams } from './forkedAgent.js'
 import { getMainLoopModel } from './model/model.js'
-import { asSystemPrompt } from './systemPromptType.js'
+import { asSystemPrompt, concatSystemPrompts } from './systemPromptType.js'
 import {
   shouldEnableThinkingByDefault,
   type ThinkingConfig,
@@ -60,7 +60,7 @@ export async function fetchSystemPromptParts({
 }> {
   const [defaultSystemPrompt, userContext, systemContext] = await Promise.all([
     customSystemPrompt !== undefined
-      ? Promise.resolve([])
+      ? Promise.resolve(asSystemPrompt([]))
       : getSystemPrompt(
           tools,
           mainLoopModel,
@@ -97,6 +97,7 @@ export async function buildSideQuestionFallbackParams({
   appendSystemPrompt,
   thinkingConfig,
   agents,
+  mods,
 }: {
   tools: Tools
   commands: Command[]
@@ -109,6 +110,7 @@ export async function buildSideQuestionFallbackParams({
   appendSystemPrompt: string | undefined
   thinkingConfig: ThinkingConfig | undefined
   agents: AgentDefinition[]
+  mods?: ToolUseContext['mods']
 }): Promise<CacheSafeParams> {
   const mainLoopModel = getMainLoopModel()
   const appState = getAppState()
@@ -125,12 +127,10 @@ export async function buildSideQuestionFallbackParams({
       customSystemPrompt,
     })
 
-  const systemPrompt = asSystemPrompt([
-    ...(customSystemPrompt !== undefined
-      ? [customSystemPrompt]
-      : defaultSystemPrompt),
-    ...(appendSystemPrompt ? [appendSystemPrompt] : []),
-  ])
+  const systemPrompt = concatSystemPrompts(
+    customSystemPrompt !== undefined ? [customSystemPrompt] : defaultSystemPrompt,
+    appendSystemPrompt ? [appendSystemPrompt] : [],
+  )
 
   // Strip in-progress assistant message (stop_reason === null) — same guard
   // as btw.tsx. The SDK can fire side_question mid-turn.
@@ -164,6 +164,7 @@ export async function buildSideQuestionFallbackParams({
     getAppState,
     setAppState,
     messages: forkContextMessages,
+    mods,
     setInProgressToolUseIDs: () => {},
     setResponseLength: () => {},
     updateFileHistoryState: () => {},
