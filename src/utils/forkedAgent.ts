@@ -10,7 +10,8 @@
 
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
-import type { PromptCommand } from '../commands.js'
+import type { CommandBase, PromptCommand } from '../commands.js'
+import { captureModSkillPromptSnapshot, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -189,15 +190,34 @@ export type PreparedForkedContext = {
  * This handles the common setup that both SkillTool and slash commands need.
  */
 export async function prepareForkedCommandContext(
-  command: PromptCommand,
+  command: CommandBase & PromptCommand,
   args: string,
   context: ToolUseContext,
+  canUseTool: CanUseToolFn,
 ): Promise<PreparedForkedContext> {
   // Get skill content with $ARGUMENTS replaced
   const skillPrompt = await command.getPromptForCommand(args, context)
-  const skillContent = skillPrompt
-    .map(block => (block.type === 'text' ? block.text : ''))
-    .join('\n')
+  const coreSkillContent = skillPrompt
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n')
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : captureModSkillPromptSnapshot(context)
+  let skillContent: string
+  try {
+    const snapshot = context.modsSnapshot ?? ownedSnapshot
+    skillContent = snapshot?.hasHooks('skill.prompt')
+      ? await renderModSkillPrompt({
+          snapshot,
+          skill: command.name,
+          text: coreSkillContent,
+          signal: context.abortController.signal,
+        })
+      : coreSkillContent
+  } finally {
+    ownedSnapshot?.release()
+  }
 
   // Parse and prepare allowed tools
   const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])

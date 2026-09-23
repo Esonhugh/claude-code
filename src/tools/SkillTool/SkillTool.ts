@@ -63,6 +63,10 @@ import {
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createUserMessage, normalizeMessages } from '../../utils/messages.js'
+import {
+  captureModSkillPromptSnapshot,
+  renderModSkillPrompt,
+} from '../../services/mods/skillPrompt.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import { resolveSkillModelOverride } from '../../utils/model/model.js'
 import { recordSkillUsage } from '../../utils/suggestions/skillUsageTracking.js'
@@ -253,7 +257,7 @@ async function executeForkedSkill(
   })
 
   const { modifiedGetAppState, baseAgent, promptMessages, skillContent } =
-    await prepareForkedCommandContext(command, args || '', context)
+    await prepareForkedCommandContext(command, args || '', context, canUseTool)
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
@@ -660,7 +664,13 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     ) {
       const slug = remoteSkillModules!.stripCanonicalPrefix(commandName)
       if (slug !== null) {
-        return executeRemoteSkill(slug, commandName, parentMessage, context)
+        return executeRemoteSkill(
+          slug,
+          commandName,
+          parentMessage,
+          context,
+          canUseTool,
+        )
       }
     }
 
@@ -695,6 +705,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       args || '', // Pass args if provided
       [command],
       context,
+      [],
+      canUseTool,
     )
 
     if (!processedCommand.shouldQuery) {
@@ -1047,6 +1059,7 @@ async function executeRemoteSkill(
   commandName: string,
   parentMessage: AssistantMessage,
   context: ToolUseContext,
+  canUseTool: CanUseToolFn,
 ): Promise<ToolResult<Output>> {
   const { getDiscoveredRemoteSkill, loadRemoteSkill, logRemoteSkillLoaded } =
     remoteSkillModules!
@@ -1155,6 +1168,22 @@ async function executeRemoteSkill(
     /\$\{CLAUDE_SESSION_ID\}/g,
     getSessionId(),
   )
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : captureModSkillPromptSnapshot(context)
+  try {
+    const snapshot = context.modsSnapshot ?? ownedSnapshot
+    if (snapshot?.hasHooks('skill.prompt')) {
+      finalContent = await renderModSkillPrompt({
+        snapshot,
+        skill: commandName,
+        text: finalContent,
+        signal: context.abortController.signal,
+      })
+    }
+  } finally {
+    ownedSnapshot?.release()
+  }
 
   // Register with compaction-preservation state. Use the cached file path so
   // post-compact restoration knows where the content came from. Must use

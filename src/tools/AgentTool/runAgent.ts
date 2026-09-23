@@ -3,7 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import { addInvokedSkill, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import {
   getCommand,
   getMcpSkillCommands,
@@ -21,6 +21,10 @@ import { query } from '../../query.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
+import {
+  captureModSkillPromptSnapshot,
+  renderModSkillPrompt,
+} from '../../services/mods/skillPrompt.js'
 import {
   connectToServer,
   fetchToolsForClient,
@@ -706,6 +710,7 @@ export async function* runAgent({
   // Preload skills from agent frontmatter
   const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
+    const preloadContext = { ...toolUseContext, agentId }
     const allSkills = uniqBy(
       [
         ...(await getSkillToolCommands(getProjectRoot())),
@@ -752,17 +757,55 @@ export async function* runAgent({
     // Load all skill contents concurrently and add to initial messages
     const { formatSkillLoadingMetadata } =
       await import('../../utils/processUserInput/processSlashCommand.js')
-    const loaded = await Promise.all(
-      validSkills.map(async ({ skillName, skill }) => ({
-        skillName,
-        skill,
-        content: await skill.getPromptForCommand('', toolUseContext),
-      })),
-    )
+    const ownedSkillSnapshot = toolUseContext.modsSnapshot
+      ? undefined
+      : captureModSkillPromptSnapshot(preloadContext)
+    let loaded: Array<{
+      skillName: string
+      skill: (typeof validSkills)[0]['skill']
+      content: Awaited<ReturnType<(typeof validSkills)[number]['skill']['getPromptForCommand']>>
+    }>
+    try {
+      const snapshot = toolUseContext.modsSnapshot ?? ownedSkillSnapshot
+      loaded = await Promise.all(
+        validSkills.map(async ({ skillName, skill }) => {
+          const content = await skill.getPromptForCommand('', preloadContext)
+          if (!snapshot?.hasHooks('skill.prompt'))
+            return { skillName, skill, content }
+          const text = content
+            .filter(block => block.type === 'text')
+            .map(block => block.text)
+            .join('\n\n')
+          return {
+            skillName,
+            skill,
+            content: [{
+              type: 'text' as const,
+              text: await renderModSkillPrompt({
+                snapshot,
+                skill: skill.name,
+                text,
+                signal: agentAbortController.signal,
+              }),
+            }],
+          }
+        }),
+      )
+    } finally {
+      ownedSkillSnapshot?.release()
+    }
     for (const { skillName, skill, content } of loaded) {
       logForDebugging(
         `[Agent: ${agentDefinition.agentType}] Preloaded skill '${skillName}'`,
       )
+      const skillContent = content
+        .filter(block => block.type === 'text')
+        .map(block => block.text)
+        .join('\n\n')
+      const skillPath = skill.source
+        ? `${skill.source}:${skill.name}`
+        : skill.name
+      addInvokedSkill(skill.name, skillPath, skillContent, agentId)
 
       // Add command-message metadata so the UI shows which skill is loading
       const metadata = formatSkillLoadingMetadata(

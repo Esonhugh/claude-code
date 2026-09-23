@@ -38,7 +38,10 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
-import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
+import {
+  captureModSkillPromptSnapshot,
+  renderModSkillPrompt,
+} from '../../services/mods/skillPrompt.js'
 import { buildPostCompactMessages } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js'
@@ -151,7 +154,7 @@ async function executeForkedSlashCommand(
   })
 
   const { skillContent, modifiedGetAppState, baseAgent, promptMessages } =
-    await prepareForkedCommandContext(command, args, context)
+    await prepareForkedCommandContext(command, args, context, canUseTool)
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
@@ -511,12 +514,13 @@ export async function processSlashCommand(
   }
 
   const command = userInvocableCommand ?? commandExists!
+  let commandSnapshot = context.modsSnapshot
   const core = (args: string) =>
     getMessagesForSlashCommand(
       commandName,
       args,
       setToolJSX,
-      context,
+      commandSnapshot ? { ...context, modsSnapshot: commandSnapshot } : context,
       precedingInputBlocks,
       imageContentBlocks,
       isAlreadyProcessing,
@@ -526,11 +530,13 @@ export async function processSlashCommand(
   // Registered Mod commands dispatch in their local-jsx projection, including
   // the immediate path that bypasses processSlashCommand entirely.
   const wrapsCommand = !isModCommand(command) && command.userInvocable !== false
-  const ownedSnapshot = wrapsCommand && !modInvocation
-    ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
-    : undefined
-  const invocation = modInvocation ?? (ownedSnapshot ? {
-    snapshot: ownedSnapshot,
+  const ownedSnapshot =
+    wrapsCommand && !modInvocation && !context.modsSnapshot
+      ? captureModSkillPromptSnapshot(context)
+      : undefined
+  commandSnapshot ??= modInvocation?.snapshot ?? ownedSnapshot
+  const invocation = modInvocation ?? (commandSnapshot ? {
+    snapshot: commandSnapshot,
     origin: context.modCommand?.origin ?? { kind: 'unclassified' as const },
     presentation: context.modCommand?.presentation ?? {
       columns: process.stdout.columns ?? 80,
@@ -1161,6 +1167,7 @@ export async function processPromptSlashCommand(
   commands: Command[],
   context: ToolUseContext,
   imageContentBlocks: ContentBlockParam[] = [],
+  canUseTool: CanUseToolFn = hasPermissionsToUseTool,
 ): Promise<SlashCommandResult> {
   const command = findCommand(commandName, commands)
   if (!command) {
@@ -1171,13 +1178,22 @@ export async function processPromptSlashCommand(
       `Unexpected ${command.type} command. Expected 'prompt' command. Use /${commandName} directly in the main conversation.`,
     )
   }
-  return getMessagesForPromptSlashCommand(
-    command,
-    args,
-    context,
-    [],
-    imageContentBlocks,
-  )
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : captureModSkillPromptSnapshot(context)
+  try {
+    return await getMessagesForPromptSlashCommand(
+      command,
+      args,
+      context,
+      [],
+      imageContentBlocks,
+      undefined,
+      context.modsSnapshot ?? ownedSnapshot,
+    )
+  } finally {
+    ownedSnapshot?.release()
+  }
 }
 
 async function getMessagesForPromptSlashCommand(
@@ -1187,6 +1203,7 @@ async function getMessagesForPromptSlashCommand(
   precedingInputBlocks: ContentBlockParam[] = [],
   imageContentBlocks: ContentBlockParam[] = [],
   uuid?: string,
+  snapshot = context.modsSnapshot,
 ): Promise<SlashCommandResult> {
   // In coordinator mode (main thread only), skip loading the full skill content
   // and permissions. The coordinator only has Agent + TaskStop tools, so the
@@ -1238,6 +1255,23 @@ async function getMessagesForPromptSlashCommand(
 
   const result = await command.getPromptForCommand(args, context)
   const shouldQuery = command.shouldQueryForCommand?.(args) ?? true
+  const coreSkillContent = result
+    .filter((block): block is TextBlockParam => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n')
+  const skillContent =
+    shouldQuery && snapshot?.hasHooks('skill.prompt')
+      ? await renderModSkillPrompt({
+          snapshot,
+          skill: command.name,
+          text: coreSkillContent,
+          signal: context.abortController.signal,
+        })
+      : coreSkillContent
+  const expandedResult: ContentBlockParam[] =
+    skillContent === coreSkillContent
+      ? result
+      : [{ type: 'text', text: skillContent }]
 
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),
   // user skills still load and reach this point — block hook REGISTRATION here
@@ -1282,10 +1316,6 @@ async function getMessagesForPromptSlashCommand(
   const skillPath = command.source
     ? `${command.source}:${command.name}`
     : command.name
-  const skillContent = result
-    .filter((b): b is TextBlockParam => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n\n')
   if (!isBuiltinGoal) {
     addInvokedSkill(
       command.name,
@@ -1304,8 +1334,8 @@ async function getMessagesForPromptSlashCommand(
   // Create content for the main message, including any pasted images
   const mainMessageContent: ContentBlockParam[] =
     imageContentBlocks.length > 0 || precedingInputBlocks.length > 0
-      ? [...imageContentBlocks, ...precedingInputBlocks, ...result]
-      : result
+      ? [...imageContentBlocks, ...precedingInputBlocks, ...expandedResult]
+      : expandedResult
 
   // Extract attachments from command arguments (@-mentions, MCP resources,
   // agent mentions in SKILL.md). skipSkillDiscovery prevents the SKILL.md
@@ -1314,7 +1344,7 @@ async function getMessagesForPromptSlashCommand(
   // adding seconds of latency to every skill invocation.
   const attachmentMessages = await toArray(
     getAttachmentMessages(
-      result
+      expandedResult
         .filter((block): block is TextBlockParam => block.type === 'text')
         .map((block) => block.text)
         .join(' '),
