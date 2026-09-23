@@ -10,10 +10,10 @@ export type ModSessionMessage = {
 }
 
 /** The Mods transcript is data-only and excludes UI rows and hidden user context. */
-export function projectModSessionMessages(messages: readonly Message[]): ModSessionMessage[] {
+export function projectModSessionMessages(messages: readonly Message[], limit = 4096): ModSessionMessage[] {
   const projected: ModSessionMessage[] = []
   const results = new Map<string, ToolResultSummary>()
-  for (let index = messages.length - 1; index >= 0 && projected.length < 4096; index--) {
+  for (let index = messages.length - 1; index >= 0 && projected.length < limit; index--) {
     const message = messages[index]!
     if (message.type !== 'user' && message.type !== 'assistant') continue
     if (message.type === 'user' && (message.isMeta || message.isVirtual)) continue
