@@ -367,11 +367,14 @@ test('core leaf projects only ToolInfo and cannot expose schema, closure or call
   expect((await catalog.project())[0]!.tool).toBe(tool)
 })
 
-test('author $.tool.list uses the same host catalog through a real Worker', async () => {
+test('author $.tool.list uses the host catalog and still runs sibling hooks through a real Worker', async () => {
   const { runtime, diagnostics } =
     await runtimeWithUser(`export function register(on) {
     on('tool.call', async ($) => ({result:await $.tool.list()}));
-    on('tool.list', () => ({value:[{name:'ToolSearch',description:'must not return'}]}));
+    on('tool.list', async ($,e,next) => {
+      const {value}=await next(e);
+      return {value:value.map(tool=>({...tool,description:tool.description+' via sibling'}))};
+    });
   }`)
   const tools = [builtin()]
   const snapshot = runtime.capture({
@@ -382,13 +385,12 @@ test('author $.tool.list uses the same host catalog through a real Worker', asyn
       }),
   })
   try {
-    // The noun's own author is skipped by the existing runtime origin handling.
     expect(
       await snapshot.dispatch('tool.call', {}, async () => ({
         result: 'unreachable',
       })),
     ).toEqual({
-      result: [{ name: 'Read', description: 'core Read', mcp: false }],
+      result: [{ name: 'Read', description: 'core Read via sibling', mcp: false }],
     })
     expect(diagnostics).toEqual([])
   } finally {
