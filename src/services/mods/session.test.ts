@@ -167,13 +167,13 @@ describe('Mods CLI session host', () => {
     const tool = {name:'mcp__server__read',isMcp:true,mcpInfo:{serverName:'server',toolName:'read',pluginSource:'mcp-only@marketplace'}} as Tool
     const before = host.runtime!.capture()
     try {
-      expect(await describeModTool(before, tool, 'base')).toBe('base:mcp-only@marketplace:append')
+      expect(await describeModTool(before, tool, 'base')).toEqual({description:'base:mcp-only@marketplace:append'})
       current = settings()
       await host.refresh()
       const after = host.runtime!.capture()
       try {
-        expect(await describeModTool(after, tool, 'base')).toBe('base:mcp-only@marketplace:user')
-        expect(await describeModTool(before, tool, 'uncached')).toBe('uncached:mcp-only@marketplace:append')
+        expect(await describeModTool(after, tool, 'base')).toEqual({description:'base:mcp-only@marketplace:user'})
+        expect(await describeModTool(before, tool, 'uncached')).toEqual({description:'uncached:mcp-only@marketplace:append'})
       } finally { after.release() }
       current = {...settings(), policySettings:{enabledPlugins:{'mcp-only@marketplace':true}}}
       await host.refresh()
@@ -181,7 +181,7 @@ describe('Mods CLI session host', () => {
       try {
         expect(managed.pluginOrigin?.('mcp-only@marketplace')).toEqual({plugin:'mcp-only@marketplace',tier:'prepend'})
         // Native sec-default protects the managed provider from the user hook.
-        expect(await describeModTool(managed, tool, 'base')).toBe('base')
+        expect(await describeModTool(managed, tool, 'base')).toEqual({description:'base',isDeferred:true})
       } finally { managed.release() }
     } finally { before.release() }
   })

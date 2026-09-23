@@ -324,6 +324,71 @@ test('schema overlays keep deferral/cache controls and the full prompt context a
   }
 })
 
+test('tool.describe receives engine placement and preserves explicit true, false and omitted deferral', async () => {
+  const { runtime, diagnostics } =
+    await runtimeWithUser(`export function register(on) {
+    on('tool.describe', ($, e) => {
+      const description = e.tool + ':' + String(e.isDeferred);
+      if (e.tool === 'Read') return {description, isDeferred:true};
+      if (e.tool === 'Pinned') return {description, isDeferred:false};
+      return {description};
+    });
+  }`)
+  const tools = [
+    builtin(),
+    { ...builtin('Pinned'), isMcp: true },
+    { ...builtin('Deferred'), shouldDefer: true },
+  ]
+  const snapshot = runtime.capture()
+  try {
+    const result = await toolsToAPISchemas(tools, {
+      ...schemaOptions(tools, snapshot),
+      deferLoadingForTool: tool =>
+        tool.isMcp === true || tool.shouldDefer === true,
+    })
+    expect(result.schemas[0]).toMatchObject({
+      description: 'Read:undefined',
+      defer_loading: true,
+    })
+    expect(result.schemas[1]).toMatchObject({ description: 'Pinned:true' })
+    expect(result.schemas[1]).not.toHaveProperty('defer_loading')
+    expect(result.schemas[2]).toMatchObject({
+      description: 'Deferred:true',
+      defer_loading: true,
+    })
+    expect(diagnostics).toEqual([])
+  } finally {
+    snapshot.release()
+  }
+})
+
+test('tool.describe rejects malformed deferral instead of treating truthy values as placement', async () => {
+  const { runtime, diagnostics } =
+    await runtimeWithUser(`export function register(on) {
+    on('tool.describe', ($, e) => ({description:'invalid',isDeferred:e.tool === 'Read' ? 'false' : null}));
+  }`)
+  const tools = [builtin(), { ...builtin('Deferred'), shouldDefer: true }]
+  const snapshot = runtime.capture()
+  try {
+    const result = await toolsToAPISchemas(tools, {
+      ...schemaOptions(tools, snapshot),
+      deferLoadingForTool: tool => tool.shouldDefer === true,
+    })
+    expect(result.schemas[0]).toMatchObject({ description: 'core Read' })
+    expect(result.schemas[0]).not.toHaveProperty('defer_loading')
+    expect(result.schemas[1]).toMatchObject({
+      description: 'core Deferred',
+      defer_loading: true,
+    })
+    expect(diagnostics).toHaveLength(2)
+    expect(diagnostics.every(message => message.includes('isDeferred'))).toBe(
+      true,
+    )
+  } finally {
+    snapshot.release()
+  }
+})
+
 test('context catalog uses real base descriptions and canonical host MCP flags', async () => {
   const tool = builtin()
   const corp = await mcpTool('corp', 'enterprise')

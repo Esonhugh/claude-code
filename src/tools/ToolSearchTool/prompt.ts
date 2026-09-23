@@ -58,19 +58,20 @@ Query forms:
  * - It's an MCP tool (always deferred - workflow-specific)
  * - It has shouldDefer: true
  *
- * A tool is NEVER deferred if it has alwaysLoad: true (MCP tools set this via
- * _meta['anthropic/alwaysLoad']). This check runs first, before any other rule.
+ * Without a Mods override, alwaysLoad opts out of deferral (MCP tools set it
+ * via _meta['anthropic/alwaysLoad']). ToolSearch itself is never deferred.
  */
-export function isDeferredTool(tool: Tool): boolean {
+export function isDeferredTool(tool: Tool, override?: boolean): boolean {
+  // ToolSearch must stay callable even when a hook asks to defer every tool.
+  if (tool.name === TOOL_SEARCH_TOOL_NAME) return false
+  if (override !== undefined) return override
+
   // Explicit opt-out via _meta['anthropic/alwaysLoad'] — tool appears in the
   // initial prompt with full schema. Checked first so MCP tools can opt out.
   if (tool.alwaysLoad === true) return false
 
   // MCP tools are always deferred (workflow-specific)
   if (tool.isMcp === true) return true
-
-  // Never defer ToolSearch itself — the model needs it to load everything else
-  if (tool.name === TOOL_SEARCH_TOOL_NAME) return false
 
   // Fork-first experiment: Agent must be available turn 1, not behind ToolSearch.
   // Lazy require: static import of forkSubagent → coordinatorMode creates a cycle

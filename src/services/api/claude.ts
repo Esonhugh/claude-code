@@ -55,6 +55,7 @@ import {
   logAPIPrefix,
   splitSysPromptPrefix,
   toolsToAPISchemas,
+  resolveModToolDescriptions,
 } from '../../utils/api.js'
 import { getOauthAccountInfo } from '../../utils/auth.js'
 import {
@@ -190,6 +191,7 @@ import {
 } from 'src/utils/thinking.js'
 import {
   extractDiscoveredToolNames,
+  getDeferredToolsDelta,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
 } from 'src/utils/toolSearch.js'
@@ -1146,6 +1148,16 @@ async function* queryModel(
     }
   }
 
+  const modDescriptions = await resolveModToolDescriptions(tools, {
+    getToolPermissionContext: options.getToolPermissionContext,
+    tools,
+    agents: options.agents,
+    allowedAgentTypes: options.allowedAgentTypes,
+    model: options.model,
+    modsSnapshot: options.modsSnapshot,
+    signal,
+  })
+
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
   let useToolSearch = await isToolSearchEnabled(
@@ -1154,13 +1166,15 @@ async function* queryModel(
     options.getToolPermissionContext,
     options.agents,
     'query',
+    modDescriptions,
   )
 
   // Precompute once — isDeferredTool does 2 GrowthBook lookups per call
   const deferredToolNames = new Set<string>()
   if (useToolSearch) {
     for (const t of tools) {
-      if (isDeferredTool(t)) deferredToolNames.add(t.name)
+      if (isDeferredTool(t, modDescriptions?.get(t)?.isDeferred))
+        deferredToolNames.add(t.name)
     }
   }
 
@@ -1241,7 +1255,9 @@ async function* queryModel(
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
-    useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
+    useToolSearch &&
+    (modDescriptions?.get(t)?.isDeferred ??
+      (deferredToolNames.has(t.name) || shouldDeferLspTool(t)))
   // Pass the full tool set as prompt context, but admit only the tools surviving
   // core/tool-search gating to Mods. A list hook cannot restore a gated tool.
   const catalog = await toolsToAPISchemas(filteredTools, {
@@ -1253,6 +1269,8 @@ async function* queryModel(
     modsSnapshot: options.modsSnapshot,
     signal,
     deferLoadingForTool: willDefer,
+    modDescriptions,
+    allowDeferLoading: useToolSearch,
   })
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
@@ -1306,7 +1324,54 @@ async function* queryModel(
       : undefined
 
   queryCheckpoint('query_message_normalization_start')
-  let messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
+  // Upstream delta attachments use engine placement. Re-project those entries
+  // and fill missing announcements here, without mutating retained history.
+  let schemaMessages = messages
+  if (!useToolSearch && modDescriptions) {
+    schemaMessages = messages.filter(
+      message =>
+        message.type !== 'attachment' ||
+        message.attachment.type !== 'deferred_tools_delta',
+    )
+  }
+  if (useToolSearch && modDescriptions && isDeferredToolsDeltaEnabled()) {
+    schemaMessages = messages.map(message => {
+      if (
+        message.type !== 'attachment' ||
+        message.attachment.type !== 'deferred_tools_delta'
+      )
+        return message
+      const attachment = message.attachment
+      const addedTools = tools.filter(
+        tool =>
+          attachment.addedNames.includes(tool.name) &&
+          deferredToolNames.has(tool.name),
+      )
+      return {
+        ...message,
+        attachment: {
+          ...attachment,
+          addedNames: addedTools.map(tool => tool.name),
+          addedLines: formatDeferredToolLines(addedTools),
+        },
+      }
+    })
+    const delta = getDeferredToolsDelta(
+      tools,
+      schemaMessages,
+      undefined,
+      modDescriptions,
+    )
+    if (delta) {
+      const { createAttachmentMessage } =
+        await import('../../utils/attachments.js')
+      schemaMessages = [
+        ...schemaMessages,
+        createAttachmentMessage({ type: 'deferred_tools_delta', ...delta }),
+      ]
+    }
+  }
+  let messagesForAPI = normalizeMessagesForAPI(schemaMessages, filteredTools)
   if (openAICompaction) {
     messagesForAPI = messagesForAPI.filter(
       message => message.type !== 'user' || !message.isCompactSummary,

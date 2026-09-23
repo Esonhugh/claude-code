@@ -13,6 +13,11 @@ import {
   type Tools,
 } from '../../Tool.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { resolveModToolDescriptions } from '../../utils/api.js'
+import {
+  createToolCatalogForContext,
+  type ModToolDescription,
+} from '../../services/mods/toolCatalog.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
@@ -191,6 +196,7 @@ async function searchToolsWithKeywords(
   deferredTools: Tools,
   tools: Tools,
   maxResults: number,
+  modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
 ): Promise<string[]> {
   const queryLower = query.toLowerCase().trim()
 
@@ -241,7 +247,9 @@ async function searchToolsWithKeywords(
     const matches = await Promise.all(
       deferredTools.map(async tool => {
         const parsed = parseToolName(tool.name)
-        const description = await getToolDescriptionMemoized(tool.name, tools)
+        const description =
+          modDescriptions?.get(tool)?.description ??
+          await getToolDescriptionMemoized(tool.name, tools)
         const descNormalized = description.toLowerCase()
         const hintNormalized = tool.searchHint?.toLowerCase() ?? ''
         const matchesAll = requiredTerms.every(term => {
@@ -262,7 +270,9 @@ async function searchToolsWithKeywords(
   const scored = await Promise.all(
     candidateTools.map(async tool => {
       const parsed = parseToolName(tool.name)
-      const description = await getToolDescriptionMemoized(tool.name, tools)
+      const description =
+        modDescriptions?.get(tool)?.description ??
+        await getToolDescriptionMemoized(tool.name, tools)
       const descNormalized = description.toLowerCase()
       const hintNormalized = tool.searchHint?.toLowerCase() ?? ''
 
@@ -328,7 +338,11 @@ export const ToolSearchTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  async call(input, { options: { tools: staleTools }, getAppState }) {
+  async call(input, context) {
+    const {
+      options: { tools: staleTools },
+      getAppState,
+    } = context
     const { query, max_results = 5 } = input
     const appState = getAppState()
     const tools = staleTools.filter(
@@ -338,7 +352,27 @@ export const ToolSearchTool = buildTool({
           (tool.name !== EXIT_PLAN_MODE_V2_TOOL_NAME ||
             appState.toolPermissionContext.mode === 'plan')),
     )
-    const deferredTools = tools.filter(isDeferredTool)
+    const snapshot = context.modsSnapshot ?? context.mods?.capture({
+      toolCatalog: () => createToolCatalogForContext(context),
+    })
+    let modDescriptions: ReadonlyMap<Tool, ModToolDescription> | undefined
+    try {
+      if (snapshot?.hasHooks('tool.describe')) {
+        modDescriptions = await resolveModToolDescriptions(tools, {
+          tools: staleTools,
+          agents: context.options.agentDefinitions.activeAgents,
+          getToolPermissionContext: async () => appState.toolPermissionContext,
+          model: context.options.mainLoopModel,
+          modsSnapshot: snapshot,
+          signal: context.abortController.signal,
+        })
+      }
+    } finally {
+      if (snapshot !== context.modsSnapshot) snapshot?.release()
+    }
+    const deferredTools = tools.filter(tool =>
+      isDeferredTool(tool, modDescriptions?.get(tool)?.isDeferred),
+    )
     maybeInvalidateCache(deferredTools)
 
     // Check for MCP servers still connecting
@@ -420,6 +454,7 @@ export const ToolSearchTool = buildTool({
       deferredTools,
       tools,
       max_results,
+      modDescriptions,
     )
 
     logForDebugging(

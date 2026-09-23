@@ -1,4 +1,5 @@
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { isDeferredTool } from '../../tools/ToolSearchTool/prompt.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ModOrigin } from './types.js'
 
@@ -103,14 +104,17 @@ export function createToolCatalogForContext(
   })
 }
 
+export type ModToolDescription = { description: string; isDeferred?: boolean }
+
 export async function describeModTool(
   snapshot: ModSnapshot,
   tool: Tool,
   description: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<ModToolDescription> {
   signal?.throwIfAborted()
-  if (!snapshot.hasHooks('tool.describe')) return description
+  const isDeferred = isDeferredTool(tool)
+  if (!snapshot.hasHooks('tool.describe')) return { description }
   const mcp = tool.mcpInfo
   let provider: ModOrigin
   if (mcp?.scope === 'enterprise' || mcp?.scope === 'managed') {
@@ -142,8 +146,16 @@ export async function describeModTool(
     result = snapshot
       .dispatch(
         'tool.describe',
-        { tool: tool.name, description, provider },
-        async input => ({ description: input.description }),
+        {
+          tool: tool.name,
+          description,
+          provider,
+          ...(isDeferred && { isDeferred: true }),
+        },
+        async input => ({
+          description: input.description,
+          ...(input.isDeferred === true && { isDeferred: true }),
+        }),
         {
           signal,
           restoreInput: (input, received) =>
@@ -155,6 +167,10 @@ export async function describeModTool(
               throw new Error('tool.describe cannot rewrite tool')
             if (typeof input.description !== 'string')
               throw new Error('tool.describe must provide description')
+            if (input.isDeferred !== undefined && input.isDeferred !== true)
+              throw new Error(
+                'tool.describe input isDeferred must be true or absent',
+              )
             if (
               input.description !== received.description &&
               input.description.length > 32000
@@ -163,13 +179,16 @@ export async function describeModTool(
           },
           validateResult: value => {
             // Shape and pinned provider are checked by the existing runtime.
-            const text = (value as { description: string }).description
+            const { description: text, isDeferred } =
+              value as ModToolDescription
+            if (isDeferred !== undefined && typeof isDeferred !== 'boolean')
+              throw new Error('tool.describe result isDeferred must be boolean')
             if (text !== description && text.length > 32000)
               throw new Error('tool.describe text exceeds 32000 characters')
           },
         },
       )
-      .then(value => (value as { description: string }).description)
+      .then(value => value as ModToolDescription)
     byDescription?.set(description, result)
     void result.catch(() => {
       if (byDescription?.get(description) === result)

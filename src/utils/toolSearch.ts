@@ -13,6 +13,7 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import type { Tool } from '../Tool.js'
+import type { ModToolDescription } from '../services/mods/toolCatalog.js'
 import {
   type ToolPermissionContext,
   type Tools,
@@ -129,8 +130,11 @@ const getDeferredToolTokenCount = memoize(
     getToolPermissionContext: () => Promise<ToolPermissionContext>,
     agents: AgentDefinition[],
     model: string,
+    modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
   ): Promise<number | null> => {
-    const deferredTools = tools.filter(t => isDeferredTool(t))
+    const deferredTools = tools.filter(t =>
+      isDeferredTool(t, modDescriptions?.get(t)?.isDeferred),
+    )
     if (deferredTools.length === 0) return 0
 
     try {
@@ -146,9 +150,17 @@ const getDeferredToolTokenCount = memoize(
       return null // Fall back to char heuristic
     }
   },
-  (tools: Tools) =>
+  (
+    tools: Tools,
+    _permission: unknown,
+    _agents: unknown,
+    model: string,
+    modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
+  ) =>
+    model +
+    ':' +
     tools
-      .filter(t => isDeferredTool(t))
+      .filter(t => isDeferredTool(t, modDescriptions?.get(t)?.isDeferred))
       .map(t => t.name)
       .join(','),
 )
@@ -343,8 +355,11 @@ async function calculateDeferredToolDescriptionChars(
   tools: Tools,
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
   agents: AgentDefinition[],
+  modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
 ): Promise<number> {
-  const deferredTools = tools.filter(t => isDeferredTool(t))
+  const deferredTools = tools.filter(t =>
+    isDeferredTool(t, modDescriptions?.get(t)?.isDeferred),
+  )
   if (deferredTools.length === 0) return 0
 
   const sizes = await Promise.all(
@@ -390,6 +405,7 @@ export async function isToolSearchEnabled(
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
   agents: AgentDefinition[],
   source?: string,
+  modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
 ): Promise<boolean> {
   const mcpToolCount = count(tools, t => t.isMcp)
 
@@ -449,6 +465,7 @@ export async function isToolSearchEnabled(
         getToolPermissionContext,
         agents,
         model,
+        modDescriptions,
       )
 
       if (enabled) {
@@ -650,6 +667,7 @@ export function getDeferredToolsDelta(
   tools: Tools,
   messages: Message[],
   scanContext?: DeferredToolsDeltaScanContext,
+  modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
 ): DeferredToolsDelta | null {
   const announced = new Set<string>()
   let attachmentCount = 0
@@ -669,7 +687,9 @@ export function getDeferredToolsDelta(
     for (const n of msg.attachment.removedNames) announced.delete(n)
   }
 
-  const deferred: Tool[] = tools.filter(isDeferredTool)
+  const deferred: Tool[] = tools.filter(tool =>
+    isDeferredTool(tool, modDescriptions?.get(tool)?.isDeferred),
+  )
   const deferredNames = new Set(deferred.map(t => t.name))
   const poolNames = new Set(tools.map(t => t.name))
 
@@ -721,6 +741,7 @@ async function checkAutoThreshold(
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
   agents: AgentDefinition[],
   model: string,
+  modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
 ): Promise<{
   enabled: boolean
   debugDescription: string
@@ -732,6 +753,7 @@ async function checkAutoThreshold(
     getToolPermissionContext,
     agents,
     model,
+    modDescriptions,
   )
 
   if (deferredToolTokens !== null) {
@@ -751,6 +773,7 @@ async function checkAutoThreshold(
       tools,
       getToolPermissionContext,
       agents,
+      modDescriptions,
     )
   const charThreshold = getAutoToolSearchCharThreshold(model)
   return {

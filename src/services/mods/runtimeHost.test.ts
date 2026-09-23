@@ -414,15 +414,15 @@ test('tool description caches are generation-scoped and explicit invalidation re
   const first = value.capture()
   const sibling = value.capture()
   try {
-    expect(await describeModTool(first, tool, 'base')).toBe('base:1')
-    expect(await describeModTool(sibling, tool, 'base')).toBe('base:1')
+    expect(await describeModTool(first, tool, 'base')).toEqual({description:'base:1'})
+    expect(await describeModTool(sibling, tool, 'base')).toEqual({description:'base:1'})
     expect(await first.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))).toEqual({result:'invalidated'})
-    expect(await describeModTool(sibling, tool, 'base')).toBe('base:2')
+    expect(await describeModTool(sibling, tool, 'base')).toEqual({description:'base:2'})
     await value.reconcile([{...consumer,options:{generation:2}}])
     const next = value.capture()
     try {
-      expect(await describeModTool(next, tool, 'base')).toBe('base:1')
-      expect(await describeModTool(first, tool, 'base')).toBe('base:2')
+      expect(await describeModTool(next, tool, 'base')).toEqual({description:'base:1'})
+      expect(await describeModTool(first, tool, 'base')).toEqual({description:'base:2'})
     } finally { next.release() }
     expect(diagnostics).toEqual([])
   } finally {
@@ -1443,4 +1443,15 @@ test('settings.read is refused during unadmitted engine construction', async () 
   expect(diagnostics).toEqual([])
   expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'Module has not been admitted'})
   expect(diagnostics).toEqual([])
+})
+
+test('Worker rejects invalid tool.describe deferral even without an API adapter validator', async () => {
+  const mod = await plugin('invalid-deferral', `export function register(on) {
+    on('tool.describe', async ($,e,next) => {const value=await next(e);return {...value,isDeferred:'yes'}});
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.reconcile([mod])
+  const input = {tool:'Read',description:'base',provider:{plugin:'engine',tier:'core'}}
+  expect(await value.dispatch('tool.describe',input,async()=>({description:'base',isDeferred:true}))).toEqual({description:'base',isDeferred:true})
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'tool.describe',message:expect.stringContaining('isDeferred')})])
 })

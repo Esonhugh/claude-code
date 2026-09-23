@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { Tool } from '../../Tool.js'
-import { createToolCatalogForContext, type ToolCatalog } from './toolCatalog.js'
+import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog } from './toolCatalog.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { createModClockBridge, createModEnvironmentHost, createModStoreBridge, createModUiBridge, type ModEnvironment } from './environment.js'
 import { createModUi, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
@@ -70,7 +70,7 @@ export type ModDispatchOptions = {
   reportDirectCoreFailure?: boolean
 }
 export type ModSnapshot = {
-  readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<string>>>
+  readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
   hasHooks(event: string): boolean
@@ -136,7 +136,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 } = {}) {
   let active: Activation[] = []
   let nouns: Nouns = {}
-  let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<string>>>() }
+  let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<ModToolDescription>>>() }
   let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
   let publicTurn: { turnId: string } | undefined
@@ -821,6 +821,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (event === 'tool.describe' || event === 'command.describe') {
       if (typeof value.description !== 'string' || (event === 'command.describe' && typeof value.isHidden !== 'boolean'))
         throw new Error(`${event} must return description${event === 'command.describe' ? ' and isHidden' : ''}`)
+      if (event === 'tool.describe' && value.isDeferred !== undefined && typeof value.isDeferred !== 'boolean')
+        throw new Error('tool.describe isDeferred must be boolean')
       return
     }
     if (event === 'agent.offer') {

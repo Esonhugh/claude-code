@@ -16,7 +16,12 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { prefetchAllMcpResources } from 'src/services/mcp/client.js'
-import { createToolCatalog, describeModTool } from '../services/mods/toolCatalog.js'
+import {
+  createToolCatalog,
+  describeModTool,
+  type ModToolDescription,
+} from '../services/mods/toolCatalog.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/prompt.js'
 import type { ModSnapshot } from '../services/mods/runtime.js'
 import type { ScopedMcpServerConfig } from 'src/services/mcp/types.js'
 import { BashTool } from 'src/tools/BashTool/BashTool.js'
@@ -130,7 +135,11 @@ export async function toolToAPISchema(
     allowedAgentTypes?: string[]
     model?: string
     modsSnapshot?: ModSnapshot
+    modDescription?: ModToolDescription
+    skipModDescription?: boolean
     signal?: AbortSignal
+    /** False when this request cannot use ToolSearch, regardless of Mods placement. */
+    allowDeferLoading?: boolean
     /** When true, mark this tool with defer_loading for tool search */
     deferLoading?: boolean
     cacheControl?: {
@@ -229,27 +238,35 @@ export async function toolToAPISchema(
     cache.set(cacheKey, base)
   }
 
-  // Per-request overlay: defer_loading and cache_control vary by call
-  // (tool search defers different tools per turn; cache markers move).
-  // Explicit field copy avoids mutating the cached base and sidesteps
-  // BetaTool.cache_control's `| null` clashing with our narrower type.
+  // Per-request overlay: Agent's inline listing is projected against the
+  // captured Mods generation, while defer_loading/cache_control and tool
+  // descriptions vary by call. Keep all of them out of the stable base cache.
+  const description = base.description ?? ''
+  const described = options.skipModDescription
+    ? undefined
+    : options.modDescription ??
+      (options.modsSnapshot
+        ? await describeModTool(
+            options.modsSnapshot,
+            tool,
+            description,
+            options.signal,
+          )
+        : undefined)
   const schema: BetaToolWithExtras = {
     name: base.name,
-    description: options.modsSnapshot
-      ? await describeModTool(
-          options.modsSnapshot,
-          tool,
-          base.description ?? '',
-          options.signal,
-        )
-      : base.description,
+    description: described?.description ?? description,
     input_schema: base.input_schema,
     ...(base.strict && { strict: true }),
     ...(base.eager_input_streaming && { eager_input_streaming: true }),
   }
 
   // Add defer_loading if requested (for tool search feature)
-  if (options.deferLoading) {
+  if (
+    options.allowDeferLoading !== false &&
+    tool.name !== TOOL_SEARCH_TOOL_NAME &&
+    (described?.isDeferred ?? options.deferLoading)
+  ) {
     schema.defer_loading = true
   }
 
@@ -293,11 +310,37 @@ export async function toolToAPISchema(
   return schema as BetaTool
 }
 
+/** Resolve placement before any consumer filters out undiscovered tools. */
+export async function resolveModToolDescriptions(
+  tools: Tools,
+  options: Parameters<typeof toolToAPISchema>[1],
+): Promise<ReadonlyMap<Tool, ModToolDescription> | undefined> {
+  const snapshot = options.modsSnapshot
+  if (!snapshot?.hasHooks('tool.describe')) return undefined
+  return new Map(
+    await Promise.all(tools.map(async tool => {
+      const base = await toolToAPISchema(tool, {
+        ...options,
+        modDescription: undefined,
+        skipModDescription: true,
+      })
+      const described = await describeModTool(
+        snapshot,
+        tool,
+        'description' in base ? base.description ?? '' : '',
+        options.signal,
+      )
+      return [tool, described] as const
+    })),
+  )
+}
+
 /** Apply Mods only after core/tool-search gating, preserving host Tool identities. */
 export async function toolsToAPISchemas(
   tools: Tools,
   options: Parameters<typeof toolToAPISchema>[1] & {
     deferLoadingForTool?: (tool: Tool) => boolean
+    modDescriptions?: ReadonlyMap<Tool, ModToolDescription>
   },
 ): Promise<{ tools: Tools; schemas: BetaToolUnion[] }> {
   const schemas = new Map(
@@ -306,6 +349,7 @@ export async function toolsToAPISchemas(
         tool,
         await toolToAPISchema(tool, {
           ...options,
+          modDescription: options.modDescriptions?.get(tool),
           deferLoading:
             options.deferLoadingForTool?.(tool) ?? options.deferLoading,
         }),
