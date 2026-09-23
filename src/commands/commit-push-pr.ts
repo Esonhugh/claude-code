@@ -2,6 +2,7 @@ import type { Command } from '../commands.js'
 import {
   getAttributionTexts,
   getEnhancedPRAttribution,
+  projectAttributionText,
 } from '../utils/attribution.js'
 import { getDefaultBranch } from '../utils/git.js'
 import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
@@ -27,12 +28,9 @@ const ALLOWED_TOOLS = [
 
 function getPromptContent(
   defaultBranch: string,
-  prAttribution?: string,
+  commitAttribution: string,
+  prAttribution: string,
 ): string {
-  const { commit: commitAttribution, pr: defaultPrAttribution } =
-    getAttributionTexts()
-  // Use provided PR attribution or fall back to default
-  const effectivePrAttribution = prAttribution ?? defaultPrAttribution
   const safeUser = process.env.SAFEUSER || ''
   const username = process.env.USER || ''
 
@@ -97,7 +95,7 @@ gh pr create --title "Short, descriptive title" --body "$(cat <<'EOF'
 <1-3 bullet points>
 
 ## Test plan
-[Bulleted markdown checklist of TODOs for testing the pull request...]${changelogSection}${effectivePrAttribution ? `\n\n${effectivePrAttribution}` : ''}
+[Bulleted markdown checklist of TODOs for testing the pull request...]${changelogSection}${prAttribution ? `\n\n${prAttribution}` : ''}
 EOF
 )"
 \`\`\`
@@ -113,18 +111,32 @@ const command = {
   description: 'Commit, push, and open a PR',
   allowedTools: ALLOWED_TOOLS,
   get contentLength() {
-    // Use 'main' as estimate for content length calculation
-    return getPromptContent('main').length
+    const { commit, pr } = getAttributionTexts()
+    return getPromptContent('main', commit, pr).length
   },
   progressMessage: 'creating commit and PR',
   source: 'builtin',
   async getPromptForCommand(args, context) {
-    // Get default branch and enhanced PR attribution
-    const [defaultBranch, prAttribution] = await Promise.all([
+    const { commit, pr } = getAttributionTexts()
+    const [defaultBranch, enhancedPrAttribution] = await Promise.all([
       getDefaultBranch(),
       getEnhancedPRAttribution(context.getAppState),
     ])
-    let promptContent = getPromptContent(defaultBranch, prAttribution)
+    const commitAttribution = await projectAttributionText(
+      context,
+      'commit',
+      commit,
+    )
+    const prAttribution = await projectAttributionText(
+      context,
+      'pr',
+      enhancedPrAttribution ?? pr,
+    )
+    let promptContent = getPromptContent(
+      defaultBranch,
+      commitAttribution,
+      prAttribution,
+    )
 
     // Append user instructions if args provided
     const trimmedArgs = args?.trim()

@@ -1,5 +1,8 @@
 import type { Command } from '../commands.js'
-import { getAttributionTexts } from '../utils/attribution.js'
+import {
+  getAttributionTexts,
+  projectAttributionText,
+} from '../utils/attribution.js'
 import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
 import { getUndercoverInstructions, isUndercover } from '../utils/undercover.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -11,9 +14,7 @@ const ALLOWED_TOOLS = [
   'Bash(git commit:*)',
 ]
 
-function getPromptContent(): string {
-  const { commit: commitAttribution } = getAttributionTexts()
-
+function getPromptContent(commitAttribution: string): string {
   let prefix = ''
   if (isAnt() && isUndercover()) {
     prefix = getUndercoverInstructions() + '\n'
@@ -65,7 +66,13 @@ const command = {
   progressMessage: 'creating commit',
   source: 'builtin',
   async getPromptForCommand(_args, context) {
-    const promptContent = getPromptContent()
+    const { commit } = getAttributionTexts()
+    const commitAttribution = await projectAttributionText(
+      context,
+      'commit',
+      commit,
+    )
+    const promptContent = getPromptContent(commitAttribution)
     const finalContent = await executeShellCommandsInPrompt(
       promptContent,
       {

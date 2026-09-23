@@ -38,6 +38,11 @@ import { isUndercover } from './undercover.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
+export {
+  projectAttributionText,
+  type AttributionTextKind,
+} from '../services/mods/attributionText.js'
+
 export type AttributionTexts = {
   commit: string
   pr: string

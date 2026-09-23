@@ -40,10 +40,19 @@ if (!process.env[childFlag]) {
   }
   const attribution = await import('../utils/attribution.js')
   const git = await import('../utils/git.js')
+  const projections: { kind: string; text: string }[] = []
   mock.module('../utils/attribution.js', () => ({
     ...attribution,
-    getAttributionTexts: () => ({ commit: '', pr: '' }),
-    getEnhancedPRAttribution: async () => undefined,
+    getAttributionTexts: () => ({ commit: 'core commit', pr: 'core pr' }),
+    getEnhancedPRAttribution: async () => 'enhanced pr',
+    projectAttributionText: async (
+      _context: unknown,
+      kind: string,
+      text: string,
+    ) => {
+      projections.push({ kind, text })
+      return `projected ${kind}: ${text}`
+    },
   }))
   mock.module('../utils/git.js', () => ({
     ...git,
@@ -53,7 +62,10 @@ if (!process.env[childFlag]) {
     executeShellCommandsInPrompt: async (prompt: string) => prompt,
   }))
 
-  const { default: command } = await import('./commit-push-pr.js')
+  const [{ default: command }, { default: commitCommand }] = await Promise.all([
+    import('./commit-push-pr.js'),
+    import('./commit.js'),
+  ])
 
   test('checks both project instruction filenames for Slack guidance', async () => {
     const blocks = await command.getPromptForCommand('', {} as never)
@@ -64,5 +76,34 @@ if (!process.env[childFlag]) {
     expect(prompt).toContain(
       'check if AGENTS.md or CLAUDE.md instructions mention posting to Slack channels',
     )
+  })
+
+  test('projects commit and enhanced PR attribution into the model prompt', async () => {
+    projections.length = 0
+    const blocks = await command.getPromptForCommand('', {} as never)
+    const prompt = blocks
+      .map(block => (block.type === 'text' ? block.text : ''))
+      .join('\n')
+
+    expect(projections).toEqual([
+      { kind: 'commit', text: 'core commit' },
+      { kind: 'pr', text: 'enhanced pr' },
+    ])
+    expect(prompt).toContain('projected commit: core commit')
+    expect(prompt).toContain('projected pr: enhanced pr')
+    expect(prompt).not.toContain('\n\ncore commit\n')
+    expect(prompt).not.toContain('\n\nenhanced pr\n')
+  })
+
+  test('projects commit attribution into the commit model prompt', async () => {
+    projections.length = 0
+    const blocks = await commitCommand.getPromptForCommand('', {} as never)
+    const prompt = blocks
+      .map(block => (block.type === 'text' ? block.text : ''))
+      .join('\n')
+
+    expect(projections).toEqual([{ kind: 'commit', text: 'core commit' }])
+    expect(prompt).toContain('projected commit: core commit')
+    expect(prompt).not.toContain('\n\ncore commit\n')
   })
 }
