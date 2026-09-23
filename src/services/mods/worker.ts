@@ -1,14 +1,23 @@
 import * as vm from 'node:vm'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { atob as hostAtob, btoa as hostBtoa } from 'node:buffer'
+import { webcrypto } from 'node:crypto'
+import { performance as hostPerformance } from 'node:perf_hooks'
+import { TextDecoder as HostTextDecoder, TextEncoder as HostTextEncoder } from 'node:util'
 import { isPromise, isProxy } from 'node:util/types'
-import type { ModWorkerReply, ModWorkerRequest } from './protocol.js'
+import { URL as HostURL, URLSearchParams as HostURLSearchParams } from 'node:url'
+import { createModHookStream, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
 import { createModUiRealm } from './uiRealm.js'
+import { createModClientRealm, copyModClientData } from './clientRealm.js'
 import { isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
+import { createModWebRealm } from './webRealm.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
-const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
+const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvocation) => {
   const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
+  const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
+  const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData);
   const isModEventPattern = (${isModEventPattern.toString()});
   const matchesModEventPattern = (${matchesModEventPattern.toString()});
   const normalizeModMatcher = (${normalizeModMatcher.toString()});
@@ -24,12 +33,26 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
   const functions = new Map();
   const wires = new WeakMap();
   const hostFunctions = new Map();
+  const engines = new Map();
   const frames = new Map();
   const pending = new Map();
   const hostErrors = new WeakMap();
   const signals = new Map();
   const registrations = [];
   const timers = new Map();
+  const streams = new Map();
+  const streamHandles = new Map();
+  const createStream = (${createModHookStream.toString()});
+  const settle = request => {
+    signals.delete(request.id);
+    const frame = frames.get(request.id);
+    if (frame) { frame.active = false; frame.remainingMs = readBudget(request.id, true); }
+    frames.delete(request.id);
+    if (request.next) { hostFunctions.delete(request.next.call); hostFunctions.delete(request.next.to); }
+    for (const id of streamHandles.get(request.id) ?? []) hostFunctions.delete(id);
+    streamHandles.delete(request.id);
+    streams.delete(request.id);
+  };
   const report = error => {
     const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined;
@@ -76,6 +99,10 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
     if (wire.type === 'value') return wire.value;
     if (wire.type === 'array') return Object.freeze(wire.values.map(v => decode(v, invocation)));
     if (wire.type === 'object') return Object.freeze(Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation)])));
+    if (wire.type === 'engine') {
+      if (!engines.has(wire.id)) engines.set(wire.id, decode(wire.value, invocation));
+      return engines.get(wire.id);
+    }
     if (wire.type === 'function') {
       if (!functions.has(wire.id)) throw Error('Unknown module function');
       return functions.get(wire.id);
@@ -158,14 +185,27 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
       wires.set(clock, wire);
       return clock;
     }
+    if (wire.type === 'host-stream') {
+      const pull = decode({type:'host-function', id:wire.id}, invocation);
+      let handles = streamHandles.get(invocation);
+      if (!handles) { handles = new Set(); streamHandles.set(invocation, handles); }
+      handles.add(wire.id);
+      return createStream(async (method, value) => {
+        try {
+          const item = await pull(method, value instanceof Error ? {message:value.message,name:value.name} : value);
+          if (item.done) { handles.delete(wire.id); hostFunctions.delete(wire.id); }
+          return item;
+        } catch (error) { handles.delete(wire.id); hostFunctions.delete(wire.id); throw error; }
+      });
+    }
     if (wire.type === 'host-function') {
       const cached = hostFunctions.get(wire.id);
       if (cached) return cached;
-      const proxy = (...args) => {
+      const callHost = (...args) => {
         if (disposed) return Promise.reject(Error('Module environment unloaded'));
         const call = ++nextCall;
         return new Promise((resolve, reject) => {
-          pending.set(call, { resolve, reject, invocation });
+          pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation });
           try {
             if (wire.storeMethod === 'set') {
               const text = JSON.stringify(args[1]);
@@ -179,6 +219,18 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
           } catch (error) { pending.delete(call); reject(error); }
         });
       };
+      const proxy = wire.stream ? (...args) => {
+        const opened = callHost(...args);
+        const result = opened.then(stream => stream.result);
+        result.catch(() => {});
+        return {
+          next: value => opened.then(stream => stream.next(value)),
+          return: value => opened.then(stream => stream.return(value)),
+          throw: error => opened.then(stream => stream.throw(error)),
+          result,
+          [Symbol.asyncIterator]() { return this; },
+        };
+      } : callHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
       return Object.freeze(proxy);
     }
@@ -191,19 +243,29 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
     }
     return value;
   };
+  const asyncGeneratorPrototype = Object.getPrototypeOf(async function* () {});
+  const generatorPrototype = Object.getPrototypeOf(function* () {});
+  const checkHandler = (event, handler) => {
+    if (typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook handler');
+    const prototype = Object.getPrototypeOf(handler);
+    if (event === 'turn.step') {
+      if (prototype !== asyncGeneratorPrototype) throw Error('turn.step handlers must be async generators');
+    } else if (prototype === asyncGeneratorPrototype || prototype === generatorPrototype) throw Error('Generator hooks require exact turn.step');
+  };
   function on(event, matcher, handler) {
     if (!registering) throw Error('on() is only available during register()');
     if (typeof matcher === 'function') { handler = matcher; matcher = undefined; }
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
-    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'settings', 'env']);
-    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'tool.call', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
-      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys',
-      'session.cwd', 'session.id', 'session.surface', 'session.messages', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'turn.start', 'turn.complete',
+    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'settings', 'env']);
+    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
+      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys', 'env.get', 'env.set',
+      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'prompt.fill', 'prompt.read', 'model.complete', 'model.classify', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
-      'ui.press', 'ui.input', 'ui.select',
-      'prompt.section', 'prompt.context', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
+      'ui.press', 'ui.input', 'ui.select', 'ui.message', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
+      'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
       'agent.spawn', 'tool.register', 'tool.list']);
     if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
+    checkHandler(event, handler);
     const selected = event.startsWith('!') ? event.slice(1) : event;
     if (selected !== '*' && !selected.endsWith('.*')) {
       const [noun, method] = selected.split('.');
@@ -232,6 +294,7 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
       if (!registering || registration.hasCatch || event === 'engine.create' || typeof handler !== 'function') {
         throw Error('Invalid hook catch registration');
       }
+      checkHandler(event, handler);
       registration.hasCatch = true;
       registration.catchId = encode(handler).id;
     } });
@@ -279,16 +342,20 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
       const args = request.args.map(v => decode(v, request.id));
       if (request.next) {
         const meta = request.next;
-        const frame = { active: true, trace: decode(meta.trace, request.id) };
+        const frame = { active: true, trace: decode(meta.trace, request.id), budgetMs: readBudget(request.id, false), remainingMs: undefined };
         frames.set(request.id, frame);
-        const call = decode({type:'host-function', id: meta.call}, request.id);
-        const to = decode({type:'host-function', id: meta.to}, request.id);
+        const call = decode({type:'host-function', id: meta.call, stream:meta.event === 'turn.step'}, request.id);
+        const to = decode({type:'host-function', id: meta.to, stream:meta.event === 'turn.step'}, request.id);
         const next = (...args) => frame.active ? call(...args) : Promise.reject(Error('Module invocation already settled'));
         Object.defineProperties(next, {
           to: { value: Object.freeze((...args) => frame.active ? to(...args) : Promise.reject(Error('Module invocation already settled'))) },
           signal: { value: makeSignal(request.id) },
           event: { value: meta.event }, origin: { value: decode(meta.origin, request.id) },
           trace: { get: () => frame.trace },
+          budget: { value: Object.freeze({
+            ms: frame.budgetMs,
+            get remainingMs() { return frame.remainingMs ?? readBudget(request.id, true); },
+          }) },
           is: { value: Object.freeze((event) => matchesModEventPattern(event, meta.event)) },
           ...(meta.error ? { error: { value: decode(meta.error, request.id) }, called: { value: meta.called } } : {}),
         });
@@ -297,6 +364,11 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
       try {
         const value = Reflect.apply(functions.get(request.handle), undefined, args);
         let result = isPromise(value) && !isProxy(value) ? await value : value;
+        if (request.stream) {
+          if (!result || isProxy(result) || typeof result.next !== 'function' || typeof result.return !== 'function' || typeof result.throw !== 'function') throw Error('Streaming hook must return an async generator');
+          streams.set(request.id, {iterator:result,request});
+          return JSON.stringify({type:'stream',invocation:request.id});
+        }
         if (request.drawing !== undefined) {
           if (!Number.isSafeInteger(request.drawing) || request.drawing <= 0) throw Error('Invalid module drawing');
           let handles = drawings.get(request.drawing);
@@ -313,13 +385,21 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
         }
         throw error;
       }
-      finally {
-        signals.delete(request.id);
-        const frame = frames.get(request.id);
-        if (frame) frame.active = false;
-        frames.delete(request.id);
-        if (request.next) { hostFunctions.delete(request.next.call); hostFunctions.delete(request.next.to); }
-      }
+      finally { if (!streams.has(request.id)) settle(request); }
+    },
+    hasStream(invocation) { return streams.has(invocation); },
+    async pull(text) {
+      const request = JSON.parse(text), stream = streams.get(request.invocation);
+      if (!stream || disposed) throw Error('Unknown or unloaded module stream');
+      try {
+        if (!['next','return','throw'].includes(request.method)) throw Error('Invalid stream pull');
+        let value = decode(request.value, request.invocation);
+        if (request.method === 'throw' && value?.message) value = Object.assign(Error(value.message), {name:value.name ?? 'Error'});
+        const item = await stream.iterator[request.method](value);
+        const result = JSON.stringify(encode(item));
+        if (item.done) settle(stream.request);
+        return result;
+      } catch (error) { settle(stream.request); throw error; }
     },
     result(text) {
       const result = JSON.parse(text), item = pending.get(result.call);
@@ -335,20 +415,38 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin) => {
         } else item.resolve(decode(result.value, item.invocation));
       } catch (error) { item.reject(error); }
     },
-    abort(invocation) { signals.get(invocation)?.(); },
+    trace(text) {
+      const update = JSON.parse(text), frame = frames.get(update.invocation);
+      if (frame) frame.trace = decode(update.trace, update.invocation);
+    },
+    abort(invocation) {
+      signals.get(invocation)?.();
+      if (streams.has(invocation)) for (const [call, item] of pending) {
+        if (item.invocation !== invocation) continue;
+        pending.delete(call);
+        item.reject(Object.assign(Error('Module invocation aborted'), {name:'AbortError'}));
+      }
+    },
     setUiAccess(allowed) { uiAllowed = allowed; },
+    registerClient(path, draw) { clients.register(path, draw); },
+    client(text) { return JSON.stringify(encode(clients.request(JSON.parse(text)))); },
     releaseDrawing(drawing) {
       for (const handle of drawings.get(drawing) ?? []) functions.delete(handle);
       drawings.delete(drawing);
     },
     dispose() {
       if (disposed) return;
+      clients.dispose();
       for (const stop of timers.values()) stop();
       timers.clear(); disposed = true; registering = false;
       for (const abort of signals.values()) abort();
       for (const item of pending.values()) item.reject(Error('Module environment unloaded'));
       for (const frame of frames.values()) frame.active = false;
-      signals.clear(); frames.clear(); pending.clear(); functions.clear(); hostFunctions.clear(); drawings.clear(); registrations.length = 0;
+      for (const stream of streams.values()) {
+        try { stream.iterator.return(undefined).catch(report); } catch (error) { report(error); }
+      }
+      streams.clear(); streamHandles.clear();
+      signals.clear(); frames.clear(); pending.clear(); functions.clear(); hostFunctions.clear(); engines.clear(); drawings.clear(); registrations.length = 0;
     },
   };
 })`
@@ -360,9 +458,14 @@ type Environment = {
     errorReference(error: unknown): number | undefined
     register(fn: unknown, options: string): Promise<string>
     invoke(text: string): Promise<string>
+    pull(text: string): Promise<string>
+    hasStream(invocation: number): boolean
     result(text: string): void
+    trace(text: string): void
     abort(invocation: number): void
     setUiAccess(allowed: boolean): void
+    registerClient(path: string, draw: unknown): void
+    client(text: string): string
     releaseDrawing(drawing: number): void
     dispose(): void
   }
@@ -370,6 +473,7 @@ type Environment = {
 
 const environments = new Map<number, Environment>()
 const invocations = new AsyncLocalStorage<number>()
+const budgetClocks = new Map<number, BigInt64Array>()
 const promiseRealms = new WeakMap<object, Environment['lifetime']>()
 const reply = (message: ModWorkerReply) => postMessage(message)
 
@@ -389,16 +493,43 @@ function createEnvironment(id: number, plugin: string): Environment {
     codeGeneration: { strings: false, wasm: false },
   })
   vm.runInContext(`
-    for (const name of ['ShadowRealm', 'WebAssembly', 'FinalizationRegistry',
+    for (const name of ['console', 'ShadowRealm', 'WebAssembly', 'FinalizationRegistry',
       'WeakRef', 'Atomics', 'SharedArrayBuffer', 'queueMicrotask',
       '$vm', 'gc', 'edenGC', 'fullGC', 'print', 'readFile', 'Loader']) {
       delete globalThis[name];
     }
   `, context)
+  vm.runInContext(`(${createModWebRealm.toString()})`, context)({
+    URL: HostURL,
+    URLSearchParams: HostURLSearchParams,
+    TextEncoder: HostTextEncoder,
+    TextDecoder: HostTextDecoder,
+    structuredClone: globalThis.structuredClone,
+    atob: hostAtob,
+    btoa: hostBtoa,
+    crypto: webcrypto,
+    performance: hostPerformance,
+    schedule: (callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds),
+  })
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
     reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id })
-  }, isProxy, isPromise, plugin) as Environment['api']
+  }, isProxy, isPromise, plugin, (invocation: number, remaining: boolean) => {
+    const clock = budgetClocks.get(invocation)
+    if (!clock) return remaining ? Infinity : 0
+    for (;;) {
+      const version = Atomics.load(clock, 0)
+      if (version % 2n) continue
+      const available = Atomics.load(clock, 1)
+      const started = Atomics.load(clock, 2)
+      const ms = Number(Atomics.load(clock, 3))
+      if (version !== Atomics.load(clock, 0)) continue
+      if (!remaining) return ms
+      if (ms === 0) return Infinity
+      const elapsed = started === 0n ? 0 : performance.timeOrigin + performance.now() - Number(started) / 1000
+      return Math.max(0, Number(available) / 1000 - elapsed)
+    }
+  }, () => invocations.getStore()) as Environment['api']
   const lifetime = { id, disposed: false }
   promiseRealms.set(vm.runInContext('Promise.prototype', context), lifetime)
   return { context, api, lifetime }
@@ -415,6 +546,10 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     environments.get(request.environment)?.api.abort(request.invocation)
     return
   }
+  if (request.type === 'trace') {
+    environments.get(request.environment)?.api.trace(JSON.stringify(request))
+    return
+  }
   try {
     if (request.type === 'release-drawing' || request.type === 'ui-access') {
       const environment = environments.get(request.environment)
@@ -424,10 +559,20 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       reply({ type: 'result', id: request.id })
       return
     }
+    if (request.type === 'client') {
+      const environment = environments.get(request.environment)
+      if (!environment) throw new Error('Module environment unloaded')
+      // The host owns this instance's one-second watchdog and terminates its
+      // Worker on failure. VM timeouts can poison Bun's Worker message loop.
+      const value = JSON.parse(environment.api.client(JSON.stringify(request.request)))
+      reply({ type: 'result', id: request.id, value })
+      return
+    }
     if (request.type === 'unload') {
       const environment = environments.get(request.environment)
       if (environment) {
         environment.lifetime.disposed = true
+        for (const invocation of budgetClocks.keys()) if (environment.api.hasStream(invocation)) budgetClocks.delete(invocation)
         environment.api.dispose()
       }
       environments.delete(request.environment)
@@ -437,8 +582,20 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     if (request.type === 'invoke') {
       const environment = environments.get(request.environment)
       if (!environment) throw new Error('Module environment unloaded')
-      const value = JSON.parse(await invocations.run(request.id, () => environment.api.invoke(JSON.stringify(request))))
-      reply({ type: 'result', id: request.id, value })
+      if (request.next?.budget) budgetClocks.set(request.id, new BigInt64Array(request.next.budget))
+      try {
+        const value = JSON.parse(await invocations.run(request.id, () => environment.api.invoke(JSON.stringify(request))))
+        reply({ type: 'result', id: request.id, value })
+      } finally { if (!environment.api.hasStream(request.id)) budgetClocks.delete(request.id) }
+      return
+    }
+    if (request.type === 'stream-pull') {
+      const environment = environments.get(request.environment)
+      if (!environment) throw new Error('Module environment unloaded')
+      try {
+        const value = JSON.parse(await invocations.run(request.invocation, () => environment.api.pull(JSON.stringify(request))))
+        reply({ type:'result', id:request.id, invocation:request.invocation, value })
+      } finally { if (!environment.api.hasStream(request.invocation)) budgetClocks.delete(request.invocation) }
       return
     }
     if (environments.has(request.environment)) throw new Error('Duplicate module environment')
@@ -462,7 +619,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       return module
     }
     // Multiple files declared by one plugin share a registration window.
-    const entrypoints = declaration.entrypoints.map(getModule)
+    const entrypoints = request.type === 'load-client' ? [] : declaration.entrypoints.map(getModule)
     for (const module of entrypoints) {
       if (module.status === 'unlinked') await module.link((specifier, parent) => {
         if (specifier === 'claude-code') return empty
@@ -471,6 +628,25 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
         return getModule(link.to)
       })
       if (module.status === 'linked') await module.evaluate()
+    }
+    const clients = request.type === 'load-client'
+      ? (declaration.clients ?? []).filter(client => client.module === request.module)
+      : []
+    if (request.type === 'load-client' && clients.length !== 1) throw new Error('Client module is not in the loaded snapshot')
+    for (const client of clients) {
+      const module = getModule(client.path)
+      if (module.status === 'unlinked') await module.link((specifier, parent) => {
+        if (specifier === 'claude-code') return empty
+        const link = declaration.links.find(link => link.from === parent.identifier && link.specifier === specifier)
+        if (!link) throw new Error('Client import missing from scanned snapshot')
+        return getModule(link.to)
+      })
+      if (module.status === 'linked') await module.evaluate()
+      const namespace = module.namespace as Record<string, unknown>
+      const names = Object.keys(namespace).filter(name => /^[A-Z]/.test(name) && typeof namespace[name] === 'function')
+      const draw = namespace.default ?? (names.length === 1 ? namespace[names[0]!] : undefined)
+      if (typeof draw !== 'function') throw new Error('Client module must export a default function or one PascalCase function')
+      environment.api.registerClient(client.module, draw)
     }
     const exports = entrypoints.map(module => (module.namespace as { register?: unknown }).register)
     if (exports.some(register => typeof register !== 'function')) throw new Error('Hooks module must export register(on, options)')
@@ -482,7 +658,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     ))
     reply({ type: 'result', id: request.id, registrations })
   } catch (error) {
-    if (request.type === 'load') {
+    if (request.type === 'load' || request.type === 'load-client') {
       const environment = environments.get(request.environment)
       if (environment) {
         environment.lifetime.disposed = true
@@ -493,7 +669,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value
       : undefined
-    const errorRef = request.type === 'invoke' ? environments.get(request.environment)?.api.errorReference(error) : undefined
-    reply({ type: 'result', id: request.id, error: typeof message === 'string' ? message : 'Module invocation failed', errorRef })
+    const errorRef = request.type === 'invoke' || request.type === 'stream-pull' ? environments.get(request.environment)?.api.errorReference(error) : undefined
+    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef })
   }
 }

@@ -673,6 +673,23 @@ describe('ordinary mod dispatch', () => {
     assert.equal(effects, 2)
   })
 
+  it('does not blame ordinary pass-through or catch replay for a downstream rejection', async () => {
+    for (const hasCatch of [false, true]) {
+      const failure = new Error('core rejected')
+      const failures: unknown[] = []
+      let effects = 0
+      const result = dispatchModEvent({
+        event: 'tool.call', input,
+        hooks: [hook('passing', async (e, next) => next(e), { hasCatch })],
+        core: async () => { effects++; throw failure },
+        onFailure: (_plugin, error) => { failures.push(error) },
+      })
+      await assert.rejects(result, error => error === failure)
+      assert.equal(effects, 1)
+      assert.deepEqual(failures, [])
+    }
+  })
+
   it('propagates a downstream rejection unless catch returns a valid answer', async () => {
     for (const recovery of ['none', 'undefined', 'throw', 'answer']) {
       const failure = new Error('core rejected')
@@ -1011,6 +1028,74 @@ describe('ordinary mod dispatch', () => {
     })
     assert.equal(result, 'handled')
     assert.equal(outer.trace.length, 2)
+  })
+
+  it('records trace indices, event, bypass reasons and own wall time', async () => {
+    let observed!: ModNext
+    let skippedCalls = 0
+    await dispatchModEvent({event:'tool.call',input,hooks:[
+      hook('unmatched',async()=> 'wrong',{event:'turn.complete'}),
+      hook('outer',async(e,next)=>{observed=next;return next(e)},{tier:'prepend'}),
+      hook('managed',async(e,next)=>{
+        const result=await next.to(e,'core')
+        const until=performance.now()+8
+        while(performance.now()<until) { /* Charge synchronous hook work, not a suspended next. */ }
+        return result
+      },{tier:'prepend'}),
+      hook('bypassed',async()=>{skippedCalls++;return 'wrong'}),
+    ],core:async()=>{await new Promise(resolve=>setTimeout(resolve,90));return 'core'}})
+    const entries=observed.trace
+    assert.deepEqual(entries.map(({index,event,plugin,outcome,reason})=>({index,event,plugin,outcome,reason})),[
+      {index:1,event:'tool.call',plugin:'managed',outcome:'passed',reason:undefined},
+      {index:2,event:'tool.call',plugin:'bypassed',outcome:'skipped',reason:'bypassed by managed'},
+      {index:3,event:'tool.call',plugin:'engine',outcome:'returned',reason:undefined},
+    ])
+    assert.equal(skippedCalls,0)
+    assert.ok(entries[0]!.ms>=8)
+    assert.ok(entries[0]!.ms<60)
+    assert.equal(entries[1]!.ms,0)
+    assert.ok(Object.hasOwn(entries[1]!,'returned'))
+    assert.equal(entries[1]!.returned,undefined)
+    assert.ok(entries[2]!.ms>=80)
+    assert.ok(entries.every(Object.isFrozen))
+  })
+
+  it('meters trace own time for an unbudgeted engine fold and removes overlapping next waits once', async () => {
+    let observed!: ModNext
+    await dispatchModEvent({event:'engine.create',input:{},hooks:[
+      hook('outer',async(e,next)=>{observed=next;return next(e)},{event:'engine.create'}),
+      hook('inner',async(e,next)=>{
+        const first=next({...e,branch:1})
+        const second=next({...e,branch:2})
+        await Promise.all([first,second])
+        const until=performance.now()+8
+        while(performance.now()<until) { /* Charge synchronous hook work, not a suspended next. */ }
+        return {}
+      },{event:'engine.create'}),
+    ],core:async()=>{await new Promise(resolve=>setTimeout(resolve,90));return {}}})
+    assert.deepEqual(observed.trace.map(({index,event})=>({index,event})),[
+      {index:1,event:'engine.create'},{index:2,event:'engine.create'},
+    ])
+    assert.ok(observed.trace[0]!.ms>=8)
+    assert.ok(observed.trace[0]!.ms<60)
+    assert.ok(observed.trace[1]!.ms>=80)
+  })
+
+  it('keeps a settled invocation budget from reading a later catch allowance', async () => {
+    let ordinary!: ModNext['budget']
+    let caught!: ModNext['budget']
+    let beforeCatch=0
+    await dispatchModEvent({event:'tool.call',input,budgetMs:80,catchGraceMs:200,
+      hooks:[hook('budget-phases',async(_e,next,catching)=>{
+        if(!catching){ordinary=next.budget;beforeCatch=ordinary.remainingMs;throw Error('recover')}
+        caught=next.budget
+        return 'recovered'
+      },{hasCatch:true})],core:async()=> 'core',
+    })
+    assert.equal(ordinary.ms,80)
+    assert.ok(ordinary.remainingMs<=beforeCatch)
+    assert.equal(caught.ms,200)
+    assert.ok(caught.remainingMs<=200)
   })
 
   it('pauses the own budget until every concurrent downstream call settles', async () => {
@@ -1375,9 +1460,9 @@ describe('ordinary mod dispatch', () => {
     never.resolve('late')
   })
 
-  it('catch grace expires during a newly-started downstream call without restarting it', async () => {
+  it('pauses catch grace during a newly-started downstream call without restarting it', async () => {
     const below = deferred<string>()
-    const expired = deferred<void>()
+    const entered = deferred<void>()
     let effects = 0
     let failures = 0
     let catchNext!: ModNext
@@ -1398,16 +1483,18 @@ describe('ordinary mod dispatch', () => {
       ],
       core: async () => {
         effects++
+        entered.resolve()
         return below.promise
       },
-      onFailure: () => {
-        if (++failures === 2) expired.resolve()
-      },
+      onFailure: () => { failures++ },
     })
-    await expired.promise
-    assert.ok(catchNext.signal.aborted)
+    await entered.promise
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const aborted = catchNext.signal.aborted
     below.resolve('below')
-    assert.equal(await result, 'below')
+    assert.equal(await result, 'below transformed')
+    assert.equal(aborted, false)
+    assert.equal(failures, 1)
     assert.equal(effects, 1)
   })
 

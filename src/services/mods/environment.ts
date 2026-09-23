@@ -1,8 +1,10 @@
 import { isPromise, isProxy } from 'node:util/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { ModWireValue, ModWorkerReply, ModWorkerRequest } from './protocol.js'
-import type { ModDeclaration, ModInput, ModNext, ModRegistration } from './types.js'
+import { createModHookStream, type ModWireValue, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
+import type { ModDeclaration, ModHookStream, ModInput, ModNext, ModRegistration } from './types.js'
 import { matchesModEventPattern, normalizeModMatcher } from './matcher.js'
+import { getModBudgetClock, subscribeModTrace } from './dispatch.js'
+import type { ModClientFrame, ModClientRequest } from './client.js'
 
 type ClockCallbacks = {
   now(): Promise<number>
@@ -33,17 +35,28 @@ export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: Hos
   storeMethods.set(call, method)
   return call
 }
+const streamBridges = new WeakSet<HostFunction>()
+export function createModStreamBridge<T extends HostFunction>(call: T): T {
+  streamBridges.add(call)
+  return call
+}
 type HostHandle = { environment: number; call: HostFunction; invocation?: number }
 type Result = Extract<ModWorkerReply, { type: 'result' }>
 type WithRequestId = Extract<ModWorkerRequest, { id: number }>
 type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never
 type PendingRequest = { environment: number; resolve(value: Result): void; reject(error: Error): void }
+type ClientInstance = {
+  run(input: ModClientRequest): Promise<Result>
+  stop(error: Error): void
+}
 type EnvironmentState = {
   declaration: ModDeclaration
+  clients: Map<number, ClientInstance>
   handles: WeakMap<object, number>
   remote: Map<number, HostFunction>
   clocks: WeakMap<object, ModWireValue>
   clockValues: Map<number, object>
+  engines: WeakMap<object, ModWireValue>
   cleanups: Set<() => void>
 }
 
@@ -51,9 +64,11 @@ export type ModEnvironment = {
   id: number
   registrations: NonNullable<RemoteRegistration>
   invoke(handle: number, args: unknown[], next?: ModNext, drawing?: number): Promise<unknown>
+  invokeStream(handle: number, args: unknown[], next: ModNext): ModHookStream
   invokeDrawing(drawing: number, handle: number, args: unknown[]): Promise<unknown>
   releaseDrawing(drawing: number): Promise<void>
   setUiAccess(allowed: boolean): Promise<void>
+  client(input: import('./client.js').ModClientRequest): Promise<import('./client.js').ModClientFrame>
   dispose(): Promise<void>
 }
 
@@ -72,7 +87,8 @@ export function createModEnvironmentHost({
 } = {}) {
   // Compiled builds must include worker.ts as an explicit worker.js entrypoint.
   const sourceWorker = import.meta.url.endsWith('.ts') && !import.meta.url.includes('/$bunfs/')
-  const worker = new Worker(new URL(sourceWorker ? './worker.ts' : './worker.js', import.meta.url).href)
+  const workerUrl = new URL(sourceWorker ? './worker.ts' : './worker.js', import.meta.url).href
+  const worker = new Worker(workerUrl)
   const requests = new Map<number, PendingRequest>()
   const functions = new Map<number, HostHandle>()
   const environments = new Map<number, EnvironmentState>()
@@ -80,9 +96,10 @@ export function createModEnvironmentHost({
   // Host leases must follow a provider's current call, not the invocation in
   // which its captured capability proxy was first encoded.
   const contexts = new Map<number, ReturnType<typeof AsyncLocalStorage.snapshot>>()
+  const hostStreams = new Map<number, { environment: number; invocation: number; iterator: AsyncGenerator<unknown, unknown>; continuation: boolean }>()
   const invocationErrors = new Map<number, Map<number, unknown>>()
   const unloading = new Map<number, Promise<void>>()
-  let nextRequest = 0, nextFunction = 0, nextEnvironment = 0
+  let nextRequest = 0, nextFunction = 0, nextEnvironment = 0, nextEngine = 0
   let dead: Error | undefined
   let disposal: Promise<void> | undefined
   let pingSent: number | undefined
@@ -104,9 +121,23 @@ export function createModEnvironmentHost({
     catch (failure) { console.error(new Error(errorMessage(failure, 'Module error observer failed'))) }
   }
 
+  function releaseHostStreams(environment: number, invocation?: number) {
+    for (const [id, stream] of hostStreams) {
+      if (stream.environment !== environment || invocation !== undefined && stream.invocation !== invocation) continue
+      hostStreams.delete(id)
+      functions.delete(id)
+      // A failed streaming hook leaves its continuation for dispatch to resume.
+      if (invocation !== undefined && stream.continuation) continue
+      try { void stream.iterator.return(undefined).catch(error => report(error, environment)) }
+      catch (error) { report(error, environment) }
+    }
+  }
+
   function revoke(environment: number) {
+    releaseHostStreams(environment)
     const state = environments.get(environment)
     environments.delete(environment)
+    for (const client of state?.clients.values() ?? []) client.stop(new Error('Module environment unloaded'))
     for (const cleanup of state?.cleanups ?? []) {
       try { cleanup() } catch (error) { report(error, environment) }
     }
@@ -162,7 +193,7 @@ export function createModEnvironmentHost({
         return { type: 'function', id: remote.id }
       }
       const storeMethod = storeMethods.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }) }
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)
@@ -240,6 +271,9 @@ export function createModEnvironmentHost({
         if (fn?.environment !== environment) throw new Error('Unknown module host function')
         return fn.call
       }
+      case 'stream': throw new Error('Stream invocation tokens cannot cross back as data')
+      case 'host-stream': throw new Error('Host stream tokens cannot cross back as data')
+      case 'engine': throw new Error('Engine identity tokens cannot cross back as data')
       case 'ui': throw new Error('UI capability cannot cross back as data')
       case 'clock': {
         const clock = state.clockValues.get(value.now)
@@ -247,6 +281,77 @@ export function createModEnvironmentHost({
         return clock
       }
     }
+  }
+
+  function mountClient(environment: number, input: ModClientRequest): ClientInstance {
+    const state = stateFor(environment)
+    if (!state.declaration.clients?.some(client => client.module === input.module)) throw new Error('Client module is not in the loaded snapshot')
+    // Reuse the packaged Worker entrypoint, but never run Client code in the
+    // shared hook Worker: terminating a drawing must not revoke its siblings.
+    const drawing = new Worker(workerUrl)
+    let stopped: Error | undefined
+    let pending: { id: number; resolve(value: Result): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
+    const stop = (error: Error) => {
+      if (stopped) return
+      stopped = error
+      if (state.clients.get(input.id) === instance) state.clients.delete(input.id)
+      if (pending) { clearTimeout(pending.timer); pending.reject(error); pending = undefined }
+      drawing.terminate()
+    }
+    const send = (message: WithoutId<Extract<ModWorkerRequest, { type: 'client' | 'load-client' }>>): Promise<Result> => {
+      if (stopped) return Promise.reject(stopped)
+      return new Promise((resolve, reject) => {
+        const id = ++nextRequest
+        const ms = message.type === 'load-client' ? 10000 : 1000
+        const timer = setTimeout(() => stop(new Error(`Script execution timed out after ${ms}ms`)), ms)
+        pending = { id, resolve, reject, timer }
+        try { drawing.postMessage({ ...message, id }) }
+        catch (error) { stop(new Error(errorMessage(error, 'Client Worker request failed'))) }
+      })
+    }
+    drawing.onmessage = (event: MessageEvent<ModWorkerReply>) => {
+      if (stopped) return
+      const message = event.data
+      if (message.type === 'async-error') {
+        stop(new Error(message.error))
+        report(new Error(message.error), environment)
+      } else if (message.type === 'result' && pending?.id === message.id) {
+        if (message.error !== undefined) { stop(new Error(message.error)); return }
+        const current = pending
+        pending = undefined
+        clearTimeout(current.timer)
+        current.resolve(message)
+      }
+    }
+    drawing.onerror = event => stop(new Error(event.message || 'Client Worker failed'))
+    drawing.onmessageerror = () => stop(new Error('Client Worker message could not be decoded'))
+    drawing.addEventListener('close', () => stop(new Error('Client Worker exited')))
+    let queue: Promise<void>
+    const instance: ClientInstance = {
+      stop,
+      run(request) {
+        const operation = queue.then(() => send({ type: 'client', environment, request }))
+        queue = operation.then(() => {}, () => {})
+        return operation
+      },
+    }
+    state.clients.set(input.id, instance)
+    queue = send({ type: 'load-client', environment, declaration: state.declaration, module: input.module! }).then(() => {})
+    void queue.catch(() => {})
+    return instance
+  }
+
+  async function client(environment: number, input: ModClientRequest): Promise<ModClientFrame> {
+    const state = stateFor(environment)
+    let instance = state.clients.get(input.id)
+    if (input.op === 'dispose' || input.op === 'mount') {
+      instance?.stop(new Error('Client instance unmounted'))
+      if (input.op === 'dispose') return {}
+      instance = mountClient(environment, input)
+    }
+    if (!instance) return { stopped: true }
+    const result = await instance.run(input)
+    return decode(environment, result.value!) as ModClientFrame
   }
 
   function request(message: WithoutId<WithRequestId>, id = ++nextRequest): Promise<Result> {
@@ -270,7 +375,7 @@ export function createModEnvironmentHost({
       if (!pending) return
       requests.delete(message.id)
       if (message.error !== undefined) {
-        const errors = invocationErrors.get(message.id)
+        const errors = invocationErrors.get(message.invocation ?? message.id)
         if (message.errorRef !== undefined && errors?.has(message.errorRef)) pending.reject(errors.get(message.errorRef) as Error)
         else pending.reject(new Error(message.error))
       }
@@ -282,11 +387,29 @@ export function createModEnvironmentHost({
     try {
       stateFor(message.environment)
       if (fn?.environment !== message.environment) throw new Error('Unknown or unloaded module capability')
-      if (fn.invocation !== undefined && (fn.invocation !== message.invocation || frames.get(fn.invocation)?.environment !== message.environment)) throw new Error('Module invocation already settled')
+      if (fn.invocation !== undefined && (fn.invocation !== message.invocation || !contexts.has(fn.invocation))) throw new Error('Module invocation already settled')
       const args = message.args.map(value => decode(message.environment, value))
       const context = contexts.get(message.invocation)
+      if (streamBridges.has(fn.call) && !context) throw new Error('Module invocation already settled')
       const value = context ? context(fn.call, ...args) : fn.call(...args)
-      response.value = encode(message.environment, isPromise(value) && !isProxy(value) ? await value : value)
+      if (streamBridges.has(fn.call)) {
+        const iterator = value as AsyncGenerator<unknown, unknown>
+        if (!iterator || isProxy(iterator) || typeof iterator.next !== 'function' || typeof iterator.return !== 'function' || typeof iterator.throw !== 'function') throw new Error('Streaming capability must return an async iterator')
+        const id = hostHandle(message.environment, async (method, input) => {
+          const stream = hostStreams.get(id)
+          if (!stream) throw new Error('Module stream already settled')
+          if (method !== 'next' && method !== 'return' && method !== 'throw') throw new Error('Invalid stream pull')
+          try {
+            const value = method === 'throw' && input && typeof input === 'object' && typeof (input as {message?: unknown}).message === 'string'
+              ? Object.assign(new Error((input as {message:string}).message), {name:(input as {name?:string}).name ?? 'Error'}) : input
+            const item = await iterator[method](value)
+            if (item.done) { hostStreams.delete(id); functions.delete(id) }
+            return item
+          } catch (error) { hostStreams.delete(id); functions.delete(id); throw error }
+        }, message.invocation)
+        hostStreams.set(id, {environment:message.environment, invocation:message.invocation, iterator, continuation:fn.invocation !== undefined})
+        response.value = {type:'host-stream', id}
+      } else response.value = encode(message.environment, isPromise(value) && !isProxy(value) ? await value : value)
     } catch (error) {
       response.error = errorMessage(error, 'Module capability failed')
       const errors = invocationErrors.get(message.invocation)
@@ -310,21 +433,47 @@ export function createModEnvironmentHost({
   // Bun's Web Worker exit event is named close (node:worker_threads calls it exit).
   worker.addEventListener('close', () => fail(new Error('Mods Worker exited')))
 
-  async function invoke(environment: number, handle: number, args: unknown[], next?: ModNext, drawing?: number, callbackDrawing?: number) {
+  async function invoke(environment: number, handle: number, args: unknown[], next?: ModNext, drawing?: number, callbackDrawing?: number, streaming = false) {
     const state = stateFor(environment)
     const id = ++nextRequest
     contexts.set(id, AsyncLocalStorage.snapshot())
     invocationErrors.set(id, new Map())
     let call: number | undefined, to: number | undefined
+    let unsubscribeTrace: (() => void) | undefined
     let overrun: ReturnType<typeof setTimeout> | undefined
+    let retained = false
+    const streamAbort = new AbortController()
+    const unloaded = () => streamAbort.abort(new Error('Module environment unloaded'))
+    const cleanup = () => {
+      retained = false
+      unsubscribeTrace?.()
+      frames.delete(id)
+      contexts.delete(id)
+      invocationErrors.delete(id)
+      state.cleanups.delete(unloaded)
+      next?.signal.removeEventListener('abort', cancel)
+      if (overrun) clearTimeout(overrun)
+      releaseHostStreams(environment, id)
+      if (call !== undefined) functions.delete(call)
+      if (to !== undefined) functions.delete(to)
+    }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
       worker.postMessage({ type: 'abort', environment, invocation: id } satisfies ModWorkerRequest)
       overrun ??= setTimeout(() => fail(new Error('Mods Worker did not settle an aborted invocation')), 5000)
       overrun.unref?.()
+      if (streaming) streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))
     }
     try {
-      const argsWire = args.map(value => encode(environment, value))
+      const argsWire = args.map((value, index) => {
+        if (!next || index !== 0 || !value || typeof value !== 'object') return encode(environment, value)
+        let wire = state.engines.get(value)
+        if (!wire) {
+          wire = { type: 'engine', id: ++nextEngine, value: encode(environment, value) }
+          state.engines.set(value, wire)
+        }
+        return wire
+      })
       if (next) {
         if (!state.declaration.events.some(pattern => matchesModEventPattern(pattern, next.event))) throw new Error('Invocation event is absent from scan')
         frames.set(id, { environment, next })
@@ -335,27 +484,57 @@ export function createModEnvironmentHost({
           if (!['prepend', 'user', 'append', 'builtin', 'core'].includes(tier as string) || !state.declaration.nextTiers.includes(tier as Parameters<ModNext['to']>[1])) throw new Error('Module next tier is absent from scan')
           return next.to(input as ModInput, tier as Parameters<ModNext['to']>[1])
         }, id)
+        if (next.event === 'turn.step') {
+          createModStreamBridge(functions.get(call)!.call)
+          createModStreamBridge(functions.get(to)!.call)
+        }
       }
       const message: WithoutId<Extract<ModWorkerRequest, { type: 'invoke' }>> = {
-        type: 'invoke', environment, handle, args: argsWire, drawing, callbackDrawing,
+        type: 'invoke', environment, handle, args: argsWire, drawing, callbackDrawing, stream: streaming,
         ...(next && call !== undefined && to !== undefined ? {
-          next: { call, to, event: next.event, origin: encode(environment, next.origin), trace: encode(environment, next.trace), ...(next.error ? { error: encode(environment, next.error), called: next.called } : {}) },
+          next: { call, to, event: next.event, origin: encode(environment, next.origin), trace: encode(environment, next.trace), budget: getModBudgetClock(next), ...(next.error ? { error: encode(environment, next.error), called: next.called } : {}) },
         } : {}),
       }
       next?.signal.addEventListener('abort', cancel, { once: true })
       const pending = request(message, id)
+      if (next) unsubscribeTrace = subscribeModTrace(next, () => {
+        if (dead || !environments.has(environment) || !frames.has(id)) return
+        try {
+          worker.postMessage({ type: 'trace', environment, invocation: id, trace: encode(environment, next.trace) } satisfies ModWorkerRequest)
+        } catch (error) { report(error, environment) }
+      })
       if (next?.signal.aborted) cancel()
       const result = await pending
+      if (streaming) {
+        if (result.value?.type !== 'stream' || result.value.invocation !== id) throw new Error('Module did not return a stream')
+        retained = true
+        state.cleanups.add(unloaded)
+        return createModHookStream(async (method, value) => {
+          try {
+            stateFor(environment)
+            const response = await request({ type:'stream-pull', environment, invocation:id, method,
+              value:encode(environment, value instanceof Error ? {message:value.message, name:value.name} : value) })
+            const item = decode(environment, response.value!) as IteratorResult<unknown, unknown>
+            if (item.done) cleanup()
+            return item
+          } catch (error) { cleanup(); throw error }
+        }, streamAbort.signal)
+      }
       return result.value ? decode(environment, result.value) : undefined
-    } finally {
-      frames.delete(id)
-      contexts.delete(id)
-      invocationErrors.delete(id)
-      next?.signal.removeEventListener('abort', cancel)
-      if (overrun) clearTimeout(overrun)
-      if (call !== undefined) functions.delete(call)
-      if (to !== undefined) functions.delete(to)
-    }
+    } finally { if (!retained) cleanup() }
+  }
+
+  function invokeStream(environment: number, handle: number, args: unknown[], next: ModNext): ModHookStream {
+    const opened = invoke(environment, handle, args, next, undefined, undefined, true) as Promise<ModHookStream>
+    const result = opened.then(stream => stream.result)
+    void result.catch(() => {})
+    return {
+      next: value => opened.then(stream => stream.next(value)),
+      return: value => opened.then(stream => stream.return(value)),
+      throw: error => opened.then(stream => stream.throw(error)),
+      result,
+      [Symbol.asyncIterator]() { return this },
+    } as ModHookStream
   }
 
   function unload(environment: number): Promise<void> {
@@ -377,7 +556,7 @@ export function createModEnvironmentHost({
     async load(declaration: ModDeclaration): Promise<ModEnvironment> {
       if (dead || disposal) throw dead ?? new Error('Mods Worker disposed')
       const id = ++nextEnvironment
-      environments.set(id, { declaration, handles: new WeakMap(), remote: new Map(), clocks: new WeakMap(), clockValues: new Map(), cleanups: new Set() })
+      environments.set(id, { declaration: structuredClone(declaration), clients: new Map(), handles: new WeakMap(), remote: new Map(), clocks: new WeakMap(), clockValues: new Map(), engines: new WeakMap(), cleanups: new Set() })
       const timeout = setTimeout(() => fail(new Error('Mods Worker module registration timed out')), 10000)
       timeout.unref?.()
       try {
@@ -391,7 +570,9 @@ export function createModEnvironmentHost({
         }
         return {
           id, registrations,
+          client: input => client(id, input),
           invoke: (handle, args, next, drawing) => invoke(id, handle, args, next, drawing),
+          invokeStream: (handle, args, next) => invokeStream(id, handle, args, next),
           invokeDrawing: (drawing, handle, args) => invoke(id, handle, args, undefined, undefined, drawing),
           releaseDrawing: async drawing => { if (environments.has(id)) await request({ type: 'release-drawing', environment: id, drawing }) },
           setUiAccess: async allowed => { await request({ type: 'ui-access', environment: id, allowed }) },

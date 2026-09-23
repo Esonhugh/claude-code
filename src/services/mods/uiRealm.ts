@@ -13,7 +13,7 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key)
       if (!descriptor || !('value' in descriptor)) throw new Error('Element accessors are unsupported')
-      Object.defineProperty(result, key, { value: descriptor.value, enumerable: true, configurable: true })
+      Object.defineProperty(result, key, { value: descriptor.value, enumerable: true, configurable: true, writable: true })
     }
     return result
   }
@@ -91,7 +91,7 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
   }
 
   const terminal = Object.freeze(Object.fromEntries(
-    ['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code'].map(name => [name, element(name)]),
+    ['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Client', 'Markdown'].map(name => [name, element(name)]),
   )) as Readonly<Record<string, Constructor>>
   const Fragment = Object.freeze((props: Props = {}) => terminal.Box!({ flexDirection: 'column', children: props.children }))
   const h = Object.freeze((tag: unknown, props: unknown, ...children: unknown[]) => {
@@ -139,8 +139,11 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
   return Object.freeze({
     h, Fragment, materialize,
     resolve: Object.freeze((input: Props) => {
-      if (input.surface !== 'terminal') throw new Error('This host only provides terminal UI elements')
-      return terminal
+      if (input.surface === 'terminal') return terminal
+      if (input.surface === 'desktop' || input.surface === 'vscode' || input.surface === 'mobile')
+        return Object.freeze(Object.fromEntries(Object.entries(terminal).filter(([name]) =>
+          name !== 'Client' && (input.surface !== 'mobile' || (name !== 'Input' && name !== 'Select')))))
+      throw new Error('Unknown UI surface')
     }),
   })
 }
