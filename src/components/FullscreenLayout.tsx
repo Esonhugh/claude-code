@@ -57,6 +57,8 @@ type Props = {
   bottomFloat?: ReactNode
   /** Mods pane content beside the conversation and composer in fullscreen dock mode. */
   dockPane?: ReactNode
+  /** Width of the Mods dock in terminal columns. Defaults to half the terminal. */
+  dockWidth?: number
   /** Native sidebar content beside the transcript but above the full-width composer. */
   sidebarPane?: ReactNode
   /** Width of the native sidebar in terminal columns. */
@@ -312,6 +314,7 @@ export function FullscreenLayout({
   overlay,
   bottomFloat,
   dockPane,
+  dockWidth,
   sidebarPane,
   sidebarWidth,
   inlinePane,
@@ -327,8 +330,13 @@ export function FullscreenLayout({
   const { rows: terminalRows, columns } = useTerminalSize()
   const hasDock = React.Children.toArray(dockPane).length > 0
   const hasSidebar = React.Children.toArray(sidebarPane).length > 0
-  const dockColumns = hasDock ? Math.floor(columns / 2) : 0
   const sidebarColumns = hasSidebar ? (sidebarWidth ?? 0) : 0
+  const dockColumns = hasDock
+    ? Math.min(
+        Math.max(0, dockWidth ?? Math.floor(columns / 2)),
+        Math.max(0, columns - sidebarColumns - 1),
+      )
+    : 0
   const conversationSize = useMemo(
     () => ({ columns: columns - dockColumns - sidebarColumns, rows: terminalRows }),
     [columns, dockColumns, sidebarColumns, terminalRows],
@@ -336,6 +344,10 @@ export function FullscreenLayout({
   const sidebarSize = useMemo(
     () => ({ columns: sidebarColumns, rows: terminalRows }),
     [sidebarColumns, terminalRows],
+  )
+  const dockSize = useMemo(
+    () => ({ columns: dockColumns, rows: terminalRows }),
+    [dockColumns, terminalRows],
   )
   // Scroll-derived chrome state lives HERE, not in REPL. StickyTracker
   // writes via ScrollChromeContext; pillVisible subscribes directly to
@@ -473,9 +485,11 @@ export function FullscreenLayout({
               </TerminalSizeContext>
             )}
             {hasDock && (
-              <Box flexDirection="column" flexShrink={0} width={dockColumns} overflow="hidden">
-                {dockPane}
-              </Box>
+              <TerminalSizeContext value={dockSize}>
+                <Box flexDirection="column" flexShrink={0} width={dockColumns} overflow="hidden">
+                  {dockPane}
+                </Box>
+              </TerminalSizeContext>
             )}
           </Box>
           {!hasDock && bottomContent}
