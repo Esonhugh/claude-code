@@ -86,7 +86,12 @@ import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
-import { asSystemPrompt } from '../systemPromptType.js'
+import {
+  asSystemPrompt,
+  concatSystemPrompts,
+  joinSystemPrompt,
+  type SystemPrompt,
+} from '../systemPromptType.js'
 import { claimTask, listTasks, type Task, updateTask } from '../tasks.js'
 import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
@@ -926,9 +931,9 @@ export async function runInProcessTeammate(
   }
 
   // Build system prompt based on systemPromptMode
-  let teammateSystemPrompt: string
+  let teammateSystemPrompt: SystemPrompt
   if (systemPromptMode === 'replace' && systemPrompt) {
-    teammateSystemPrompt = systemPrompt
+    teammateSystemPrompt = asSystemPrompt([systemPrompt])
   } else {
     const fullSystemPromptParts = await getSystemPrompt(
       toolUseContext.options.tools,
@@ -937,10 +942,7 @@ export async function runInProcessTeammate(
       toolUseContext.options.mcpClients,
     )
 
-    const systemPromptParts = [
-      ...fullSystemPromptParts,
-      TEAMMATE_SYSTEM_PROMPT_ADDENDUM,
-    ]
+    const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
 
     // If a specialized agent definition is provided, append its prompt.
     if (agentDefinition) {
@@ -973,7 +975,10 @@ export async function runInProcessTeammate(
       systemPromptParts.push(systemPrompt)
     }
 
-    teammateSystemPrompt = systemPromptParts.join('\n')
+    teammateSystemPrompt = joinSystemPrompt(
+      concatSystemPrompts(fullSystemPromptParts, systemPromptParts),
+      '\n',
+    )
   }
 
   // Resolve agent definition - use full system prompt with teammate addendum.
@@ -981,7 +986,7 @@ export async function runInProcessTeammate(
   const resolvedAgentDefinition: CustomAgentDefinition = {
     agentType: identity.agentName,
     whenToUse: `In-process teammate: ${identity.agentName}`,
-    getSystemPrompt: () => teammateSystemPrompt,
+    getSystemPrompt: () => teammateSystemPrompt.join('\n'),
     // Inject team-essential tools so teammates can always respond to
     // shutdown requests, send messages, and coordinate via the task list,
     // even with explicit tool lists
@@ -1180,6 +1185,7 @@ export async function runInProcessTeammate(
           // Use currentWorkAbortController so Escape stops this turn only, not the teammate.
           for await (const message of runAgent({
             agentDefinition: iterationAgentDefinition,
+            baseSystemPrompt: teammateSystemPrompt,
             promptMessages,
             toolUseContext,
             canUseTool: createInProcessCanUseTool(

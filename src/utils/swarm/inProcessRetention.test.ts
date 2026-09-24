@@ -8,18 +8,30 @@ import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { createUserMessage } from '../messages.js'
 import { canEvictTerminalTask } from '../task/retention.js'
 import { dismissTerminalAgent, enterTeammateView, exitTeammateView } from '../../state/teammateViewHelpers.js'
+import {
+  getSystemPromptSections,
+  withSystemPromptSections,
+  type SystemPrompt,
+} from '../systemPromptType.js'
+import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
 
 let runAgentMode: 'complete' | 'fail' = 'complete'
 let lifecycleAbortController: AbortController | undefined
 let observedResolvedModel: string | undefined
 let observedTools: string[] = []
+let observedSystemPrompt: SystemPrompt | undefined
 
 mock.module('../../constants/prompts.js', () => ({
-  getSystemPrompt: async () => [],
+  getSystemPrompt: async () =>
+    withSystemPromptSections([
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+    ]),
 }))
 mock.module('../../tools/AgentTool/runAgent.js', () => ({
-  async *runAgent(params: { resolvedModel?: string; agentDefinition: AgentDefinition; availableTools: Tools }) {
+  async *runAgent(params: { resolvedModel?: string; agentDefinition: AgentDefinition; availableTools: Tools; baseSystemPrompt: SystemPrompt }) {
     observedResolvedModel = params.resolvedModel
+    observedSystemPrompt = params.baseSystemPrompt
     const { resolveAgentTools } = await import('../../tools/AgentTool/agentToolUtils.js')
     observedTools = resolveAgentTools(params.agentDefinition, params.availableTools, true)
       .resolvedTools.map(tool => tool.name)
@@ -199,6 +211,20 @@ async function runCase(mode: 'complete' | 'fail', retain?: true, agentDefinition
 const completedRetained = await runCase('complete', true)
 assert.equal(completedRetained.result.success, true)
 assert.equal(observedResolvedModel, 'gpt-5.6-sol')
+assert.ok(observedSystemPrompt, 'teammate must pass its structured base prompt to runAgent')
+assert.deepEqual([...observedSystemPrompt], [
+  `CORE_IDENTITY\n${TEAMMATE_SYSTEM_PROMPT_ADDENDUM}`,
+])
+assert.deepEqual(getSystemPromptSections(observedSystemPrompt), [
+  {
+    sections: [
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+      { text: TEAMMATE_SYSTEM_PROMPT_ADDENDUM },
+    ],
+    separator: '\n',
+  },
+])
 assert.equal(completedRetained.task?.type, 'in_process_teammate')
 assert.equal(completedRetained.task?.status, 'completed')
 assert.deepEqual(

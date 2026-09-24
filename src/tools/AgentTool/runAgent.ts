@@ -333,6 +333,7 @@ function isRecordableMessage(
 
 export async function* runAgent({
   agentDefinition,
+  baseSystemPrompt,
   promptMessages,
   toolUseContext,
   canUseTool,
@@ -364,6 +365,8 @@ export async function* runAgent({
   onQueryProgress,
 }: {
   agentDefinition: AgentDefinition
+  /** Host-built named sections, before per-agent environment enhancement. */
+  baseSystemPrompt?: SystemPrompt
   promptMessages: Message[]
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
@@ -648,6 +651,7 @@ export async function* runAgent({
           // @ts-ignore - recovered code
           additionalWorkingDirectories,
           resolvedTools,
+          baseSystemPrompt,
         ),
       )
 
@@ -1187,11 +1191,12 @@ async function getAgentSystemPrompt(
   resolvedAgentModel: string,
   additionalWorkingDirectories: string[],
   resolvedTools: readonly Tool[],
+  baseSystemPrompt?: SystemPrompt,
 ): Promise<string[]> {
   const enabledToolNames = new Set(resolvedTools.map((t) => t.name))
   try {
-    const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
-    const prompts = [agentPrompt]
+    const prompts =
+      baseSystemPrompt ?? [agentDefinition.getSystemPrompt({ toolUseContext })]
 
     return await enhanceSystemPromptWithEnvDetails(
       prompts,
