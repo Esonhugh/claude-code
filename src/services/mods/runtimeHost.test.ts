@@ -10,6 +10,19 @@ import type { Command } from '../../types/command.js'
 import type { Tool } from '../../Tool.js'
 import { createToolCatalog, describeModTool } from './toolCatalog.js'
 import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
+import {
+  callMCPToolForMod,
+  connectToServer,
+  findMCPConnectionForMod,
+  getServerCacheKey,
+} from '../mcp/client.js'
+import type {
+  ConnectedMCPServer,
+  DisabledMCPServer,
+  NeedsAuthMCPServer,
+  PendingMCPServer,
+} from '../mcp/types.js'
+
 
 let root: string
 const runtimes: ReturnType<typeof createModsRuntime>[] = []
@@ -48,6 +61,192 @@ function runtime(messages: () => unknown[] = () => []) {
 function tool(name: string): Tool {
   return { name } as Tool
 }
+test('Worker positional mcp.call reaches the connected host through sibling hooks', async () => {
+  const caller = await plugin('mcp-caller', `export function register(on) {
+    on('mcp.call', async ($, e, next) => next({...e,args:{...e.args,caller:true}}));
+    on('tool.call', async $ => ({result:await $.mcp.call('claude_ai_Gmail','create_draft',{subject:'Release notes'})}));
+  }`)
+  const observer = await plugin('mcp-observer', `export function register(on) {
+    on('mcp.call', ($, e, next) => next({...e,tool:'rewritten',args:{...e.args,observer:true}}));
+  }`)
+  const calls: unknown[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    mcpCall: async (server, tool, args, signal) => {
+      calls.push({server,tool,args,aborted:signal.aborted})
+      return {content:[{type:'text',text:'drafted'}],isError:false,structuredContent:{id:'draft-1'}}
+    },
+  }})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([caller,observer])
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{
+    content:[{type:'text',text:'drafted'}],isError:false,structuredContent:{id:'draft-1'},
+  }})
+  expect(calls).toEqual([{server:'claude_ai_Gmail',tool:'rewritten',args:{subject:'Release notes',caller:true,observer:true},aborted:false}])
+  expect(diagnostics).toEqual([])
+})
+
+test('Mods MCP host resolves exact names before unique normalized aliases', () => {
+  const exact = { name: 'claude_ai_Gmail', type: 'disabled', config: {type:'stdio',command:'unused'} } as DisabledMCPServer
+  const alias = { name: 'claude.ai Gmail', type: 'disabled', config: {type:'stdio',command:'unused'} } as DisabledMCPServer
+  const collision = { name: 'claude.ai  Gmail', type: 'disabled', config: {type:'stdio',command:'unused'} } as DisabledMCPServer
+  expect(findMCPConnectionForMod([alias, exact], exact.name)).toBe(exact)
+  expect(findMCPConnectionForMod([alias], exact.name)).toBe(alias)
+  expect(() => findMCPConnectionForMod([alias, collision], exact.name)).toThrow('Ambiguous MCP server')
+  expect(() => findMCPConnectionForMod([], 'missing')).toThrow('Unknown MCP server')
+})
+
+test('Mods MCP host calls the real connected SDK client and preserves server errors', async () => {
+  const calls: unknown[] = []
+  const connection = {
+    name: 'claude.ai Gmail', type: 'connected', config: {type:'sdk'}, capabilities: {},
+    cleanup: async () => {},
+    client: {callTool: async (request: unknown, _schema: unknown, options: unknown) => {
+      calls.push({request,options})
+      return {content:[{type:'text',text:'server rejected'}],isError:true,structuredContent:{code:'denied'}}
+    }},
+  } as unknown as ConnectedMCPServer
+  const abort = new AbortController()
+  expect(await callMCPToolForMod(connection,'create_draft',{subject:'Release notes'},abort.signal)).toEqual({
+    content:[{type:'text',text:'server rejected'}],isError:true,structuredContent:{code:'denied'},
+  })
+  expect(calls).toEqual([{request:{name:'create_draft',arguments:{subject:'Release notes'}},options:{signal:abort.signal,timeout:expect.any(Number)}}])
+})
+
+test('Mods MCP host connects a cached server on first use', async () => {
+  const calls: unknown[] = []
+  const pending = {
+    name: 'cached-server',
+    type: 'pending',
+    config: { type: 'sdk', scope: 'local' },
+  } as unknown as PendingMCPServer
+  const connected = {
+    ...pending,
+    type: 'connected',
+    capabilities: {},
+    cleanup: async () => {},
+    client: {
+      callTool: async (request: unknown) => {
+        calls.push(request)
+        return { content: [{ type: 'text', text: 'connected' }] }
+      },
+    },
+  } as unknown as ConnectedMCPServer
+  const key = getServerCacheKey(pending.name, pending.config)
+  connectToServer.cache.set(key, connected)
+  try {
+    expect(await callMCPToolForMod(pending, 'ping', {}, new AbortController().signal)).toEqual({
+      content: [{ type: 'text', text: 'connected' }],
+      isError: false,
+    })
+    expect(calls).toEqual([{ name: 'ping', arguments: {} }])
+  } finally {
+    connectToServer.cache.delete(key)
+  }
+})
+
+test('Mods MCP host rejects unavailable states without connecting', async () => {
+  const unavailable = [
+    {
+      name: 'disabled-server',
+      type: 'disabled',
+      config: { type: 'stdio', command: 'unused', args: [] },
+    } as DisabledMCPServer,
+    {
+      name: 'auth-server',
+      type: 'needs-auth',
+      config: { type: 'http', url: 'https://example.invalid' },
+    } as NeedsAuthMCPServer,
+    {
+      name: 'sdk-pending',
+      type: 'pending',
+      config: { type: 'sdk', scope: 'local' },
+    } as unknown as PendingMCPServer,
+  ]
+  for (const connection of unavailable) {
+    await expect(
+      callMCPToolForMod(
+        connection,
+        'ping',
+        {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(connection.type)
+  }
+})
+
+test('Mods MCP host does not connect or call after cancellation', async () => {
+  const pending = {
+    name: 'cancelled-server',
+    type: 'pending',
+    config: { type: 'stdio', command: 'unused', args: [] },
+  } as PendingMCPServer
+  const controller = new AbortController()
+  controller.abort(new Error('cancel before connect'))
+  await expect(
+    callMCPToolForMod(pending, 'ping', {}, controller.signal),
+  ).rejects.toThrow('cancel before connect')
+})
+
+test('Worker mcp.call rejects invalid hook rewrites and invalid host results', async () => {
+  const caller = await plugin('mcp-validation', `export function register(on) {
+    on('mcp.call', ($,e,next) => next(e.mode==='rewrite' ? {...e,args:null} : e));
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.mcp.call('server','run',{mode:e.mode})} }
+      catch (error) { return {result:{error:error.message}} }
+    });
+  }`)
+  const calls: unknown[] = []
+  const value = createModsRuntime({ services: {
+    mcpCall: async (server, tool, args) => {
+      calls.push({ server, tool, args })
+      return args.mode === 'rewrite'
+        ? { content: [{ type: 'text', text: 'recovered' }], isError: false }
+        : { content: 'invalid', isError: false }
+    },
+  } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  expect(await value.dispatch('tool.call', { mode: 'rewrite' }, async () => ({ result: 'core' }))).toEqual({
+    result: { content: [{ type: 'text', text: 'recovered' }], isError: false },
+  })
+  expect(calls).toEqual([{ server: 'server', tool: 'run', args: { mode: 'rewrite' } }])
+  expect(await value.dispatch('tool.call', { mode: 'result' }, async () => ({ result: 'core' }))).toEqual({
+    result: { error: 'mcp.call must return { content, isError, structuredContent? }' },
+  })
+  expect(calls).toHaveLength(2)
+})
+
+test('Worker mcp.call cancels its actual SDK request with the parent invocation', async () => {
+  const mod = await plugin('mcp-cancel', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.mcp.call('server','wait')}));
+  }`)
+  const entered = Promise.withResolvers<void>()
+  const stopped = Promise.withResolvers<void>()
+  let callSignal: AbortSignal | undefined
+  const value = createModsRuntime({ services: {
+    mcpCall: async (_server, _tool, _args, signal) => {
+      callSignal = signal
+      entered.resolve()
+      await new Promise<void>((_resolve, reject) => {
+        const cancel = () => { stopped.resolve(); reject(signal.reason) }
+        signal.addEventListener('abort', cancel, { once: true })
+      })
+      throw new Error('unreachable')
+    },
+  } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const controller = new AbortController()
+  const pendingCall = value.dispatch('tool.call', {}, async () => ({ result: 'core' }), { signal: controller.signal })
+  await entered.promise
+  controller.abort(new Error('MCP invocation cancelled'))
+  await expect(pendingCall).rejects.toThrow()
+  await stopped.promise
+  expect(callSignal?.aborted).toBe(true)
+})
+
 test('Worker session.authorize and http.fetch reach host services without exposing the credential', async () => {
   const mod = await plugin('http-caller', `export function register(on) {
     on('tool.call', async $ => {

@@ -1746,6 +1746,52 @@ export async function ensureConnectedClient(
   return connectedClient
 }
 
+export function findMCPConnectionForMod(
+  connections: readonly MCPServerConnection[],
+  server: string,
+): MCPServerConnection {
+  const exact = connections.find(connection => connection.name === server)
+  if (exact) return exact
+  const normalized = normalizeNameForMCP(server)
+  const matches = connections.filter(connection =>
+    normalizeNameForMCP(connection.name) === normalized,
+  )
+  if (matches.length > 1)
+    throw new Error(`Ambiguous MCP server "${server}": ${matches.map(connection => connection.name).join(', ')}`)
+  if (matches[0]) return matches[0]
+  const available = connections.map(connection => connection.name).join(', ')
+  throw new Error(`Unknown MCP server "${server}"${available ? `; available servers: ${available}` : ''}`)
+}
+
+export async function callMCPToolForMod(
+  connection: MCPServerConnection,
+  tool: string,
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<{ content: Awaited<ReturnType<Client['callTool']>>['content']; isError: boolean; structuredContent?: unknown }> {
+  signal.throwIfAborted()
+  if (connection.type === 'disabled' || connection.type === 'needs-auth' || connection.type === 'failed')
+    throw new Error(`MCP server "${connection.name}" is ${connection.type}`)
+  const connected = connection.type === 'connected'
+    ? await ensureConnectedClient(connection)
+    : connection.config.type === 'sdk'
+      ? await connectToServer.cache.get(getServerCacheKey(connection.name, connection.config))
+      : await connectToServer(connection.name, connection.config)
+  signal.throwIfAborted()
+  if (connected?.type !== 'connected')
+    throw new Error(`MCP server "${connection.name}" is ${connection.type}`)
+  const result = await connected.client.callTool(
+    { name: tool, arguments: args },
+    CallToolResultSchema,
+    { signal, timeout: getMcpToolTimeoutMs() },
+  )
+  return {
+    content: result.content,
+    isError: result.isError === true,
+    ...(!Object.hasOwn(result, 'structuredContent') ? {} : { structuredContent: result.structuredContent }),
+  }
+}
+
 /**
  * Compares two MCP server configurations to determine if they are equivalent.
  * Used to detect when a server needs to be reconnected due to config changes.

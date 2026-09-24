@@ -230,6 +230,8 @@ import {
   fetchToolsForClient,
   areMcpConfigsEqual,
   reconnectMcpServerImpl,
+  callMCPToolForMod,
+  findMCPConnectionForMod,
 } from 'src/services/mcp/client.js'
 import {
   filterMcpServersByPolicy,
@@ -2812,6 +2814,17 @@ function runHeadlessStreaming(
     cwd,
     root: getOriginalCwd,
     commands: () => currentCommands,
+    mcpCall: (server, tool, args, signal) =>
+      callMCPToolForMod(
+        findMCPConnectionForMod([
+          ...getAppState().mcp.clients,
+          ...sdkClients,
+          ...dynamicMcpState.clients,
+        ], server),
+        tool,
+        args,
+        signal,
+      ),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
       let settled = false
       const finish = (settle: () => void) => {

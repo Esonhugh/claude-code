@@ -1605,6 +1605,62 @@ test('QueryEngine drains its own proactive prompt through real input admission',
   }
 })
 
+test('QueryEngine binds Mods MCP calls to its configured connection', async () => {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  const calls: unknown[] = []
+  const connection = {
+    name: 'fixture-server',
+    type: 'connected',
+    config: { type: 'sdk' },
+    capabilities: {},
+    cleanup: async () => {},
+    client: {
+      callTool: async (request: unknown) => {
+        calls.push(request)
+        return { content: [{ type: 'text', text: 'pong' }] }
+      },
+    },
+  }
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockResolvedValue({ messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [connection as any], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: { projection: (commands: unknown) => commands },
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('bind', { skipAttachments: true })) void _message
+    await expect(services.mcpCall('fixture-server', 'ping', { value: 1 }, new AbortController().signal)).resolves.toEqual({
+      content: [{ type: 'text', text: 'pong' }],
+      isError: false,
+    })
+    expect(calls).toEqual([{ name: 'ping', arguments: { value: 1 } }])
+  } finally {
+    for (const mock of mocks) mock.mockRestore()
+  }
+})
+
 test.each([false, true])('same-ID resume clears raw context after cwd/transcript restore before Mods bind (Mods=%s)', async withMods => {
   let resets = 0
   let state: any = { diffSidebarVisible: true }

@@ -40,6 +40,10 @@ import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
+import {
+  callMCPToolForMod,
+  findMCPConnectionForMod,
+} from './services/mcp/client.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
@@ -329,6 +333,13 @@ export class QueryEngine {
         })
         return 'description' in schema ? schema.description ?? '' : ''
       }),
+      mcpCall: (server, tool, args, signal) =>
+        callMCPToolForMod(
+          findMCPConnectionForMod(this.config.mcpClients, server),
+          tool,
+          args,
+          signal,
+        ),
       submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
         let settled = false
         const finish = (settle: () => void) => {

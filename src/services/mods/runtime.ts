@@ -65,6 +65,12 @@ export type ModRequestServices = {
   toolCatalog?(): ToolCatalog
   captureUsage?(): ModUsageReader
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
+  mcpCall?(
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown>
   submitPrompt?(input: {
     text: string
     attachments?: readonly PromptAttachment[]
@@ -163,6 +169,7 @@ const coreHost: Nouns = {
   tool: { list: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
+  mcp: { call: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
@@ -385,6 +392,19 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
   }
 
+  function validateMcpToolResult(value: unknown): void {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      !Array.isArray((value as ModInput).content) ||
+      typeof (value as ModInput).isError !== 'boolean'
+    )
+      throw new TypeError(
+        'mcp.call must return { content, isError, structuredContent? }',
+      )
+  }
+
   function hostInput(op: string, args: unknown[]): ModInput {
     switch (op) {
       case 'fs.read': case 'fs.stat': {
@@ -417,6 +437,21 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (args.length > 2 || !init || typeof init !== 'object' || Array.isArray(init))
           throw new TypeError('http.fetch takes a URL and optional init object')
         return { url: args[0], init }
+      }
+      case 'mcp.call': {
+        const callArgs = args[2] === undefined ? {} : args[2]
+        if (
+          args.length > 3 ||
+          typeof args[0] !== 'string' ||
+          !args[0] ||
+          typeof args[1] !== 'string' ||
+          !args[1] ||
+          !callArgs ||
+          typeof callArgs !== 'object' ||
+          Array.isArray(callArgs)
+        )
+          throw new TypeError('mcp.call takes server, tool and optional args')
+        return { server: args[0], tool: args[1], args: callArgs }
       }
       case 'config.list':
         if (args.length) throw new TypeError('config.list takes no arguments')
@@ -885,6 +920,69 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
               },
             },
           ))
+        }
+        if (fn === hostIdentity && op === 'mcp.call') {
+          const call = requestServices.getStore()?.mcpCall ?? services.mcpCall
+          if (!call)
+            throw new Error('MCP execution host is unavailable on this host')
+          const combined = createCombinedAbortSignal(invocationSignal.getStore(), {
+            signalB: owner.controller.signal,
+          })
+          try {
+            const result = (await withReference(owner, () =>
+              dispatch(
+                op,
+                input as ModInput,
+                async (rewritten, signal) => ({
+                  value: await call(
+                    rewritten.server as string,
+                    rewritten.tool as string,
+                    rewritten.args as Record<string, unknown>,
+                    signal ?? combined.signal,
+                  ).then(value => {
+                    validateMcpToolResult(value)
+                    return value
+                  }),
+                }),
+                snapshot,
+                table,
+                {
+                  origin: {
+                    plugin: owner.declaration.name,
+                    tier: owner.declaration.tier,
+                  },
+                  signal: combined.signal,
+                  ...(caller ? { caller } : {}),
+                  validateInput: rewritten => {
+                    if (
+                      typeof rewritten.server !== 'string' ||
+                      !rewritten.server ||
+                      typeof rewritten.tool !== 'string' ||
+                      !rewritten.tool ||
+                      !rewritten.args ||
+                      typeof rewritten.args !== 'object' ||
+                      Array.isArray(rewritten.args)
+                    )
+                      throw new TypeError(
+                        'mcp.call requires server, tool and args',
+                      )
+                  },
+                  validateResult: value => {
+                    const returned = value as {
+                      value?: unknown
+                      deny?: unknown
+                    }
+                    if (typeof returned.deny !== 'string')
+                      validateMcpToolResult(returned.value)
+                  },
+                },
+              ),
+            )) as { value?: unknown; deny?: string }
+            if (typeof result.deny === 'string') throw new Error(result.deny)
+            return result.value
+          } finally {
+            combined.cleanup()
+          }
         }
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         try {
