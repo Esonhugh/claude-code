@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -9,6 +9,10 @@ import { disposeModsHosts } from '../../utils/gracefulShutdown.js'
 import * as shutdown from '../../utils/gracefulShutdown.js'
 import { refreshPluginRuntimes } from '../../utils/plugins/cacheUtils.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
+import * as secureStorage from '../../utils/secureStorage/index.js'
+import * as settingsStorage from '../../utils/settings/settings.js'
+import { clearPluginOptionsCache } from '../../utils/plugins/pluginOptionsStorage.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
 import type { PrepareModPluginsSettings } from './plugins.js'
 import { createModsRuntime, type ModsRuntime } from './runtime.js'
 import { describeModTool } from './toolCatalog.js'
@@ -26,6 +30,19 @@ import {
 } from './session.js'
 
 const cleanups: (() => Promise<unknown> | void)[] = []
+beforeEach(() => {
+  const storage = spyOn(secureStorage, 'getSecureStorage').mockReturnValue({
+    read: () => ({}),
+    update: () => {
+      throw new Error('unexpected secure storage write')
+    },
+  } as unknown as ReturnType<typeof secureStorage.getSecureStorage>)
+  clearPluginOptionsCache()
+  cleanups.push(() => {
+    storage.mockRestore()
+    clearPluginOptionsCache()
+  })
+})
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
@@ -130,6 +147,151 @@ describe('Mods CLI session host', () => {
     await host.bind(binding)
     expect(host.runtime).toBeUndefined()
     expect(events).toEqual(['unsupported'])
+  })
+
+  test('config exposes plugin fields, writes scoped options and reloads the next activation', async () => {
+    const declaration = await plugin(`export function register(on,options) {
+      on('tool.call',async ($,e) => ({result:e.list ? await $.config.list() : options.mode}));
+    }`)
+    declaration.manifest.userConfig = {mode:{type:'string',title:'Mode',description:'Choose mode',default:'a',options:['a','b']}}
+    let current: PrepareModPluginsSettings = settings()
+    const write = spyOn(settingsStorage, 'updateSettingsForSource').mockImplementation((source, update) => {
+      expect(source).toBe('userSettings')
+      expect(Object.keys(update)).toEqual(['pluginConfigs'])
+      current = {...current,userSettings:{...current.userSettings,...update}}
+      settingsChangeDetector.notifyChange('userSettings')
+      return {settings:current.userSettings!,error:null} as ReturnType<typeof settingsStorage.updateSettingsForSource>
+    })
+    cleanups.push(() => write.mockRestore())
+    const host = session({loadPlugins:async () => [declaration],getSettings:() => current})
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call',{list:true},core)).toEqual({result:[{
+      key:'fixture.mode',label:'Mode',description:'Choose mode',kind:'choice',value:'a',options:['a','b'],provider:{plugin:'fixture@inline',tier:'user'},isLocked:false,
+    }]})
+    expect(await host.runtime!.config.set({key:'fixture.mode',value:'b'},{kind:'composer'})).toEqual({value:'b'})
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call',{},core)).toEqual({result:'b'})
+    current = {...current,policySettings:{pluginConfigs:{'fixture@inline':{options:{mode:'a'}}}}}
+    expect((await host.runtime!.config.list())[0]).toMatchObject({value:'a',isLocked:true})
+    expect(await host.runtime!.config.set({key:'fixture.mode',value:'b'},{kind:'bridge'})).toEqual({deny:expect.stringContaining('locked')})
+    expect(write).toHaveBeenCalledTimes(1)
+  })
+
+  test('inline config reads and writes the official bare plugin name key', async () => {
+    const declaration = await plugin(`export function register(on,options) {
+      on('tool.call', () => ({result:options.mode}));
+    }`)
+    declaration.manifest.userConfig = {mode:{type:'string',title:'Mode',description:'Choose mode',default:'a',options:['a','b']}}
+    let current: PrepareModPluginsSettings = {
+      ...settings(),
+      userSettings:{pluginConfigs:{fixture:{options:{mode:'b'}}}} as SettingsJson,
+    }
+    const write = spyOn(settingsStorage, 'updateSettingsForSource').mockImplementation((source, update) => {
+      expect(source).toBe('userSettings')
+      expect(update).toEqual({pluginConfigs:{fixture:{options:{mode:'a'}}}})
+      current = {...current,userSettings:{...current.userSettings,...update}}
+      settingsChangeDetector.notifyChange('userSettings')
+      return {settings:current.userSettings!,error:null} as ReturnType<typeof settingsStorage.updateSettingsForSource>
+    })
+    cleanups.push(() => write.mockRestore())
+    const host = session({loadPlugins:async () => [declaration],getSettings:() => current})
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call',{},core)).toEqual({result:'b'})
+    expect(await host.runtime!.config.set({key:'fixture.mode',value:'a'},{kind:'composer'})).toEqual({value:'a'})
+    expect(write).toHaveBeenCalledTimes(1)
+  })
+
+  test('config keeps descriptions cached across ordinary settings changes while publishing live values', async () => {
+    const declaration = await plugin(`let descriptions = 0; export function register(on) {
+      on('config.describe', ($, e, next) => next({ ...e, label: e.label + ++descriptions }));
+      on('tool.call', async $ => { await $.ui.invalidate('config.describe'); return { result: 'invalidated' }; });
+    }`)
+    let verbose = false
+    const host = session({ loadPlugins: async () => [declaration] })
+    await host.bind(binding, undefined, { configRows: () => [{
+      key: 'verbose', label: 'Verbose', kind: 'boolean', value: verbose,
+      provider: { plugin: 'engine', tier: 'core' }, isLocked: false,
+      set: value => { verbose = value as boolean; settingsChangeDetector.notifyChange('userSettings') },
+    }] })
+    expect(await host.runtime!.config.list()).toMatchObject([{ label: 'Verbose1', value: false }])
+    let changes = 0
+    const unsubscribe = host.runtime!.config.subscribe(() => { changes++ })
+    cleanups.push(unsubscribe)
+    await host.runtime!.config.set({ key: 'verbose', value: true }, { kind: 'composer' })
+    expect(await host.runtime!.config.list()).toMatchObject([{ label: 'Verbose1', value: true }])
+    expect(changes).toBeGreaterThan(0)
+    const before = changes
+    verbose = false
+    settingsChangeDetector.notifyChange('userSettings')
+    expect(changes).toBeGreaterThan(before)
+    expect(await host.runtime!.config.list()).toMatchObject([{ label: 'Verbose1', value: false }])
+    await host.runtime!.dispatch('tool.call', {}, core)
+    expect(await host.runtime!.config.list()).toMatchObject([{ label: 'Verbose2', value: false }])
+  })
+
+  test('config lists and writes enabled plugin fields even when the plugin declares no hook modules', async () => {
+    const declaration = await plugin()
+    declaration.hookModules = undefined
+    declaration.manifest.userConfig = { mode: { type: 'string', title: 'Mode', description: 'Choose mode', default: 'a', options: ['a', 'b'] } }
+    let current: PrepareModPluginsSettings = settings()
+    const write = spyOn(settingsStorage, 'updateSettingsForSource').mockImplementation((source, update) => {
+      expect(source).toBe('userSettings')
+      current = { ...current, userSettings: { ...current.userSettings, ...update } }
+      settingsChangeDetector.notifyChange('userSettings')
+      return { settings: current.userSettings!, error: null } as ReturnType<typeof settingsStorage.updateSettingsForSource>
+    })
+    cleanups.push(() => write.mockRestore())
+    const host = session({ loadPlugins: async () => [declaration], getSettings: () => current })
+    await host.bind(binding)
+    expect(host.runtime?.config).toBeDefined()
+    expect(await host.runtime!.config.list()).toMatchObject([{ key: 'fixture.mode', value: 'a' }])
+    expect(await host.runtime!.config.set({ key: 'fixture.mode', value: 'b' }, { kind: 'composer' })).toEqual({ value: 'b' })
+    await host.bind(binding)
+    expect(await host.runtime!.config.list()).toMatchObject([{ key: 'fixture.mode', value: 'b' }])
+    expect(write).toHaveBeenCalledTimes(1)
+    await host.refresh([{ ...declaration, enabled: false }])
+    expect(await host.runtime!.config.list()).toEqual([])
+  })
+
+  test('config preserves an unset multiple field as a list and accepts its first Worker write', async () => {
+    const declaration = await plugin(`export function register(on, options) {
+      on('tool.call', async ($, e) => ({ result: e.list ? await $.config.list() : e.saved ? options.labels : await $.config.set({ key: 'fixture.labels', value: e.value }) }));
+    }`)
+    declaration.manifest.userConfig = { labels: { type: 'string', title: 'Labels', description: 'Choose labels', multiple: true } }
+    let current: PrepareModPluginsSettings = settings()
+    const write = spyOn(settingsStorage, 'updateSettingsForSource').mockImplementation((source, update) => {
+      expect(source).toBe('userSettings')
+      current = { ...current, userSettings: { ...current.userSettings, ...update } }
+      settingsChangeDetector.notifyChange('userSettings')
+      return { settings: current.userSettings!, error: null } as ReturnType<typeof settingsStorage.updateSettingsForSource>
+    })
+    cleanups.push(() => write.mockRestore())
+    const host = session({ loadPlugins: async () => [declaration], getSettings: () => current })
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', { list: true }, core)).toMatchObject({ result: [{ key: 'fixture.labels', kind: 'text', value: [] }] })
+    expect(await host.runtime!.dispatch('tool.call', { value: ['one', 'two'] }, core)).toEqual({ result: { value: ['one', 'two'] } })
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', { saved: true }, core)).toEqual({ result: ['one', 'two'] })
+    expect(await host.runtime!.dispatch('tool.call', { value: 'not a list' }, core)).toEqual({ result: { deny: expect.stringContaining('Invalid value') } })
+    expect(write).toHaveBeenCalledTimes(1)
+  })
+
+  test('/config key=value invokes production config.set with bridge origin and does not open a dialog', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('config.set',($,e,next)=> e.origin.kind==='bridge' ? {deny:'bridge refused'} : next(e));
+    }`)
+    let verbose = false
+    const host = session({loadPlugins:async () => [declaration]})
+    await host.bind(binding,undefined,{configRows:() => [{key:'verbose',label:'Verbose output',kind:'boolean',value:verbose,provider:{plugin:'engine',tier:'core'},isLocked:false,set:value=>{verbose=value as boolean}}]})
+    const {call} = await import('../../commands/config/config.js')
+    const results: (string | undefined)[] = []
+    const context = {mods:host.runtime,modCommand:{origin:{kind:'bridge'}}} as Parameters<typeof call>[1]
+    expect(await call(text=>{results.push(text)},context,'verbose=true')).toBeNull()
+    expect(results).toEqual(['bridge refused'])
+    expect(verbose).toBe(false)
+    expect(await call(text=>{results.push(text)},{...context,modCommand:{...context.modCommand!,origin:{kind:'composer'}}},'verbose=true')).toBeNull()
+    expect(verbose).toBe(true)
+    expect(results.at(-1)).toBe('verbose = true')
   })
 
   test('bind supplies live host services before start and publishes command changes without a render race', async () => {
@@ -789,6 +951,7 @@ describe('Mods CLI session host', () => {
       bind: async () => {},
       dispose: async () => {},
       commands: { subscribe: () => () => {} },
+      config: { invalidate: () => {} },
       ui: { subscribe: () => () => {} },
     } as unknown as ModsRuntime
     const host = session({

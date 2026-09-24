@@ -3,6 +3,7 @@ import { sep } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
 import type { Command } from '../../types/command.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { seatNativeModPlugins } from './native.js'
@@ -20,9 +21,22 @@ import {
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import { getEnabledSettingSources } from '../../utils/settings/constants.js'
 import { getMdmSettings } from '../../utils/settings/mdm/settings.js'
-import { getSettingsForSource, loadManagedFileSettings } from '../../utils/settings/settings.js'
+import {
+  getSettingsForSource,
+  loadManagedFileSettings,
+  updateSettingsForSource,
+} from '../../utils/settings/settings.js'
+import {
+  validateUserConfig,
+  type UserConfigValues,
+} from '../../utils/plugins/mcpbHandler.js'
 import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
-import { getPluginStorageId } from '../../utils/plugins/pluginOptionsStorage.js'
+import {
+  getPluginStorageId,
+  resolvePluginOptions,
+  subscribePluginOptionsChange,
+} from '../../utils/plugins/pluginOptionsStorage.js'
+import type { ModConfigRowProvider } from './config.js'
 import type { ModUiPane, ModUiPresentation } from './ui.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { runModSessionReceive, type SessionReceiveInput, type SessionReceiveResult } from './receiveAdapter.js'
@@ -65,12 +79,20 @@ export function createModsSession(options: ModsSessionOptions) {
   let roots: string[] = []
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
+  let unsubscribeOptions: (() => void) | undefined
   let unregisterShutdown: (() => void) | undefined
   let unregisterCleanup: (() => void) | undefined
   let settingsKey: string | undefined
   let diagnostics: PluginError[] = []
   const reported = new Set<string>()
-  const services: ModHostServices = {}
+  let configPlugins: readonly LoadedPlugin[] = []
+  let builtinConfigRows: ModHostServices['configRows']
+  const services: ModHostServices = {
+    configRows: async () => [
+      ...(await (builtinConfigRows?.() ?? [])),
+      ...pluginConfigRows(),
+    ],
+  }
   const uiListeners = new Set<() => void>()
   const emptyPanes: readonly ModUiPane[] = Object.freeze([])
   let unsubscribeUi: (() => void) | undefined
@@ -115,6 +137,103 @@ export function createModsSession(options: ModsSessionOptions) {
   const loadPlugins =
     options.loadPlugins ??
     (async () => (await loadAllPluginsCacheOnly()).enabled)
+
+  function pluginConfigRows(): ModConfigRowProvider[] {
+    const settings = readSettings()
+    return configPlugins
+      .filter(plugin => plugin.enabled !== false)
+      .flatMap(plugin => {
+        const storageId = getPluginStorageId(plugin)
+        const usesInlineName =
+          storageId.endsWith('@inline') &&
+          [
+            settings.userSettings,
+            settings.flagSettings,
+            settings.policySettings,
+          ].some(
+            source => source?.pluginConfigs?.[plugin.name] !== undefined,
+          )
+        const configId = usesInlineName ? plugin.name : storageId
+        const readOptions = (source: SettingsJson | null) =>
+          Object.assign(
+            {},
+            storageId.endsWith('@inline')
+              ? source?.pluginConfigs?.[plugin.name]?.options
+              : undefined,
+            source?.pluginConfigs?.[storageId]?.options,
+          )
+        const saved = Object.assign(
+          {},
+          settings.enabledOptionSources?.user === false
+            ? {}
+            : readOptions(settings.userSettings),
+          settings.enabledOptionSources?.flag === false
+            ? {}
+            : readOptions(settings.flagSettings),
+          readOptions(settings.policySettings),
+        )
+        const schema = plugin.manifest.userConfig ?? {}
+        const values = resolvePluginOptions(schema, saved)
+
+        return Object.entries(schema).map(
+          ([key, field]): ModConfigRowProvider => {
+            const storedValue = (value: ModConfigRowProvider['value']) =>
+              (Array.isArray(value) ? [...value] : value) as UserConfigValues[string]
+            return {
+            key: `${plugin.name}.${key}`,
+            label: field.title || key,
+            ...(field.description === undefined
+              ? {}
+              : { description: field.description }),
+            kind:
+              field.type === 'boolean'
+                ? 'boolean'
+                : field.type === 'number'
+                  ? 'number'
+                  : field.options
+                    ? 'choice'
+                    : 'text',
+            value: field.sensitive
+              ? ''
+              : field.multiple &&
+                  (values[key] === undefined || values[key] === '')
+                ? []
+                : values[key] ?? '',
+            ...(field.options === undefined ? {} : { options: field.options }),
+            provider: getModPluginOrigin(plugin, settings),
+            isLocked: Object.hasOwn(
+              settings.policySettings?.pluginConfigs?.[configId]?.options ?? {},
+              key,
+            ),
+            ...(field.sensitive
+              ? {}
+              : {
+                  validate: value => {
+                    const result = validateUserConfig(
+                      { [key]: storedValue(value) },
+                      { [key]: field },
+                    )
+                    return result.valid
+                      ? undefined
+                      : result.errors.join('; ')
+                  },
+                  set: value => {
+                    const result = updateSettingsForSource('userSettings', {
+                      pluginConfigs: {
+                        [configId]: {
+                          options: { [key]: storedValue(value) },
+                        },
+                      },
+                    })
+                    if (result.error) throw result.error
+                    scheduleRefresh()
+                  },
+                }),
+            }
+          },
+        )
+      })
+  }
 
   function publishDiagnostics() {
     if (!setAppState || (!publishedDiagnostics && diagnostics.length === 0))
@@ -260,6 +379,7 @@ export function createModsSession(options: ModsSessionOptions) {
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
     const loaded = plugins ?? (await loadPlugins())
     if (stopped || isShuttingDown()) return
+    configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
     const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
       .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
@@ -276,7 +396,13 @@ export function createModsSession(options: ModsSessionOptions) {
       diagnostic({ plugin: 'host', stage: 'unsupported', message: disabled })
     }
     const inputs = disabled ? [] : seatNativeModPlugins(prepared.inputs, settings)
-    if (!runtime && inputs.length > 0) {
+    const hasConfigRows = loaded.some(
+      plugin =>
+        plugin.enabled !== false &&
+        !plugin.hookModules?.some(group => group.paths.length) &&
+        Object.keys(plugin.manifest.userConfig ?? {}).length > 0,
+    )
+    if (!runtime && !disabled && (inputs.length > 0 || hasConfigRows)) {
       runtime = (options.createRuntime ?? createModsRuntime)({
         onDiagnostic: diagnostic,
         services,
@@ -297,6 +423,7 @@ export function createModsSession(options: ModsSessionOptions) {
       // A clear can bind the runtime directly through ToolUseContext. Do not
       // replay the host's older binding when only declarations are refreshed.
       await runtime.reconcile(inputs)
+      runtime.config.invalidate()
       if (stopped) return
       if (binding && !runtimeBound) {
         await runtime.bind(binding)
@@ -338,8 +465,10 @@ export function createModsSession(options: ModsSessionOptions) {
       if (plugins) return refresh(plugins)
       scheduleRefresh()
     })
+    unsubscribeOptions = subscribePluginOptionsChange(scheduleRefresh)
     unsubscribeSettings = settingsChangeDetector.subscribe(() => {
       if (stopped) return
+      runtime?.config.refresh()
       const nextKey = relevantSettings(readSettings())
       if (nextKey !== settingsKey) {
         settingsKey = nextKey
@@ -358,6 +487,7 @@ export function createModsSession(options: ModsSessionOptions) {
     timer = undefined
     unsubscribeSettings?.()
     unsubscribePlugins?.()
+    unsubscribeOptions?.()
     const close = Promise.all([watcherClosing, watcher?.close()])
     watcher = undefined
     // Close watchers before the first awaited runtime teardown. Async loads and
@@ -391,7 +521,11 @@ export function createModsSession(options: ModsSessionOptions) {
     /** Await before processing a prompt, including slash commands that fork. */
     async bind(next: ModBinding, updateState?: SetAppState, hostServices?: ModHostServices): Promise<void> {
       if (stopped || !options.isTrusted) return
-      if (hostServices) Object.assign(services, hostServices)
+      if (hostServices) {
+        const { configRows, ...rest } = hostServices
+        if (configRows) builtinConfigRows = configRows
+        Object.assign(services, rest)
+      }
       if (updateState) setAppState = updateState
       const changed =
         !binding ||

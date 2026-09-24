@@ -37,6 +37,7 @@ function diagnostic(
 }
 
 function configuredOptions(
+  plugin: LoadedPlugin,
   storageId: string,
   settings: PrepareModPluginsSettings,
 ): PluginOptions {
@@ -47,6 +48,8 @@ function configuredOptions(
     enabled.flag ? settings.flagSettings : null,
     settings.policySettings,
   ]) {
+    if (storageId.endsWith('@inline'))
+      Object.assign(result, source?.pluginConfigs?.[plugin.name]?.options)
     Object.assign(result, source?.pluginConfigs?.[storageId]?.options)
   }
   return result
@@ -71,7 +74,7 @@ function prepareOptions(
     }
   }
 
-  const saved = configuredOptions(storageId, settings)
+  const saved = configuredOptions(plugin, storageId, settings)
   const options: PluginOptions = {}
   for (const [key, field] of Object.entries(schema)) {
     if (!(field.required && field.default === undefined)) {
