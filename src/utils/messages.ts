@@ -3071,6 +3071,7 @@ export function handleMessageFromStream(
   onApiMetrics?: (metrics: { ttftMs: number }) => void,
   onStreamingText?: (f: (current: string | null) => string | null) => void,
 ): void {
+  const isModTurnStep = 'isModTurnStep' in message && message.isModTurnStep === true
   if (
     message.type !== 'stream_event' &&
     message.type !== 'stream_request_start'
@@ -3085,8 +3086,9 @@ export function handleMessageFromStream(
     if (message.type === 'tool_use_summary') {
       return
     }
-    // Capture complete thinking blocks for real-time display in transcript mode
-    if (message.type === 'assistant') {
+    // turn.step streams own the display; signed history may contain different thinking.
+    // Otherwise capture complete thinking blocks for real-time transcript display.
+    if (message.type === 'assistant' && !isModTurnStep) {
       const thinkingBlock = message.message.content.find(
         block => block.type === 'thinking',
       )
@@ -3143,6 +3145,11 @@ export function handleMessageFromStream(
       // @ts-ignore - recovered code
       switch (message.event.content_block.type) {
         case 'thinking':
+          if (isModTurnStep) {
+            onStreamingThinking?.(() => ({ thinking: '', isStreaming: true }))
+          }
+          onSetStreamMode('thinking')
+          return
         case 'redacted_thinking':
           onSetStreamMode('thinking')
           return
@@ -3211,10 +3218,18 @@ export function handleMessageFromStream(
           })
           return
         }
-        case 'thinking_delta':
+        case 'thinking_delta': {
           // @ts-ignore - recovered code
-          onUpdateLength(message.event.delta.thinking)
+          const thinking = message.event.delta.thinking
+          onUpdateLength(thinking)
+          if (isModTurnStep) {
+            onStreamingThinking?.(current => ({
+              thinking: (current?.thinking ?? '') + thinking,
+              isStreaming: true,
+            }))
+          }
           return
+        }
         case 'signature_delta':
           // Signatures are cryptographic authentication strings, not model
           // output. Excluding them from onUpdateLength prevents them from
@@ -3224,6 +3239,11 @@ export function handleMessageFromStream(
           return
       }
     case 'content_block_stop':
+      if (isModTurnStep) {
+        onStreamingThinking?.(current => current?.isStreaming
+          ? { ...current, isStreaming: false, streamingEndedAt: Date.now() }
+          : current)
+      }
       return
     case 'message_delta':
       onSetStreamMode('responding')

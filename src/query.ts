@@ -8,8 +8,11 @@ import { FallbackTriggeredError } from './services/api/withRetry.js'
 import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { createModTurnCompletion } from './services/mods/turnAdapter.js'
+import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
+import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
+import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './services/mods/promptContext.js'
 import { getAPIProvider } from './utils/model/providers.js'
@@ -277,6 +280,7 @@ export async function* query(
     tools: () => catalogContext.options.tools,
     toolCatalog: () => createToolCatalogForContext(catalogContext),
     captureUsage: () => captureModSessionUsage(catalogContext),
+    messages: () => projectModSessionMessages(catalogContext.messages),
   })
   const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
   const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
@@ -288,6 +292,7 @@ export async function* query(
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
   const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
+  const handlesStep = snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
   const handlesCompact = snapshot?.hasHooks('session.compact') === true
   if (
     !isPublicTurn &&
@@ -299,6 +304,7 @@ export async function* query(
     !handlesContext &&
     !handlesSections &&
     !handlesAttachments &&
+    !handlesStep &&
     !handlesCompact
   ) {
     snapshot?.release()
@@ -354,7 +360,7 @@ export async function* query(
     }
     loopStarted = true
     terminal = yield* queryLoop(params, consumedCommandUuids, completion?.observe,
-      context => { catalogContext = context })
+      context => { catalogContext = context }, handlesStep ? turnId : undefined)
     returned = true
     for (const uuid of consumedCommandUuids) {
       notifyCommandLifecycle(uuid, 'completed')
@@ -399,6 +405,7 @@ async function* queryLoop(
   consumedCommandUuids: string[],
   observeResponse?: (message: Message | StreamEvent) => void,
   updateCatalogContext?: (context: ToolUseContext) => void,
+  turnId?: string,
 ): AsyncGenerator<
   | StreamEvent
   | RequestStartEvent
@@ -425,6 +432,7 @@ async function* queryLoop(
     Object.entries(userContext).map(([name, text]) => ({ name, text }))
   let resolvedContext: PromptContext | undefined
   let cacheSafeParamsEmitted = false
+  let stepIndex = 0
   const snapshot = params.toolUseContext.modsSnapshot
   async function refreshContext(messages: Message[]) {
     if (params.resolvedPromptContextBlocks !== undefined) return
@@ -978,8 +986,11 @@ async function* queryLoop(
         try {
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
-          for await (const message of deps.callModel({
-            messages: prependUserContext(projectedMessagesForQuery, contextBlocks ?? userContext),
+          const request: Parameters<QueryDeps['callModel']>[0] = {
+            messages: prependUserContext(
+              projectedMessagesForQuery,
+              contextBlocks ?? userContext,
+            ),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: toolUseContext.options.tools,
@@ -1029,7 +1040,21 @@ async function* queryLoop(
                 },
               }),
             },
-          })) {
+          }
+          const stepSnapshot = params.toolUseContext.modsSnapshot
+          const modelStream = turnId && stepSnapshot?.stream
+            ? streamModTurnStep(stepSnapshot, {
+                turnId, index: stepIndex++, model: currentModel,
+                effort: resolveAppliedEffort(currentModel, appState.effortValue),
+                messageCount: request.messages.length,
+                ...(toolUseContext.agentId === undefined ? {} : {agentId:toolUseContext.agentId}),
+              }, (input, signal) => deps.callModel({
+                ...request, signal: signal ?? request.signal,
+                options: {...request.options, model: input.model as string,
+                  effortValue: input.effort as EffortValue | undefined, effortResolved: true},
+              }), request.signal)
+            : deps.callModel(request)
+          for await (const message of modelStream) {
             observeResponse?.(message)
             // We won't use the tool_calls from the first attempt
             // We could.. but then we'd have to merge assistant messages
@@ -1228,6 +1253,9 @@ async function* queryLoop(
             }
           }
         } catch (innerError) {
+          const signal = toolUseContext.abortController.signal
+          if (signal.aborted && (innerError === signal.reason ||
+            (innerError instanceof Error && innerError.name === 'AbortError'))) break
           if (innerError instanceof FallbackTriggeredError && fallbackModel) {
             // Fallback was triggered - switch model and retry
             currentModel = fallbackModel

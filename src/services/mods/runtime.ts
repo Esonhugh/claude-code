@@ -1,3 +1,4 @@
+import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
 import type { AppState } from '../../state/AppState.js'
 import { createModTools, type ModToolSpec } from './tools.js'
 import { createModAgents, listModAgents } from './agents.js'
@@ -9,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Tool } from '../../Tool.js'
 import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog } from './toolCatalog.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModClockBridge, createModEnvironmentHost, createModStoreBridge, createModUiBridge, type ModEnvironment } from './environment.js'
+import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStoreBridge, createModUiBridge, type ModEnvironment } from './environment.js'
 import { createModUi, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
 import { getNativeModDeclaration } from './native.js'
@@ -25,7 +26,7 @@ import {
   validateModCompactInput,
   validateModCompactResult,
 } from './compactAdapter.js'
-import { dispatchModEvent, pauseModBudget } from './dispatch.js'
+import { createModHookStream, dispatchModEvent, dispatchModStream, pauseModBudget } from './dispatch.js'
 import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
@@ -39,7 +40,7 @@ import {
   type PromptFillInput,
   type PromptSubmitResult,
 } from './promptAdapter.js'
-import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier } from './types.js'
+import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier, ModHookStream } from './types.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
 import {
@@ -67,6 +68,7 @@ export type ModBinding = {
   sessionId: string
 }
 export type ModRequestServices = {
+  messages?(): readonly unknown[]
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
   tools?(): readonly Tool[]
   toolCatalog?(): ToolCatalog
@@ -92,7 +94,6 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   pluginOrigin?(storageId: string): ModOrigin | undefined
   cwd?(): string
   root?(): string
-  messages?(): readonly unknown[]
   tasks?(): AppState['tasks']
   agentNames?(): AppState['agentNameRegistry']
   commands?(): readonly Command[]
@@ -125,6 +126,7 @@ export type ModSnapshot = {
   readonly promptContextBoundaries?: Map<string | undefined, string>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
+  stream?(event: 'turn.step', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
   hasHooks(event: string): boolean
   release(): void
 }
@@ -184,6 +186,7 @@ const coreHost: Nouns = {
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
+  turn: { step: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
@@ -213,6 +216,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   const interfaceStates = new WeakMap<Nouns, InterfaceState>()
   const capabilityContext = new AsyncLocalStorage<{ table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
   const invocationSignal = new AsyncLocalStorage<AbortSignal>()
+  const turnStepCore = new AsyncLocalStorage<(input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>>()
   const requestServices = new AsyncLocalStorage<ModRequestServices>()
   let forkSnapshot: CacheSafeParams | null = null
   let forkGeneration = 0
@@ -746,9 +750,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'session.surface':
         if (!binding) throw new Error('Module session is not bound')
         return binding.surface
-      case 'session.messages':
-        if (!services.messages) throw new Error('Session messages are unavailable on this host')
-        return services.messages()
+      case 'session.messages': {
+        const messages = requestServices.getStore()?.messages ?? services.messages
+        if (!messages) throw new Error('Session messages are unavailable on this host')
+        return messages()
+      }
       case 'prompt.read': {
         const box = services.prompt?.()?.read() ?? emptyPromptBox()
         validatePromptBox(box)
@@ -842,7 +848,24 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         result.plugin = Object.freeze({ name: owner.declaration.name, root: owner.declaration.pluginRoot })
         continue
       }
-      const wrapped: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
+      let step: ((input: ModInput) => ModHookStream) | undefined
+      if (noun === 'turn' && methods.step === hostIdentity) {
+        step = createModStreamBridge((input: ModInput) => {
+          checkCall(owner, 'turn.step', table, lease)
+          const core = turnStepCore.getStore()
+          if (!core) throw new Error('turn.step model request is unavailable outside a model step')
+          const caller = capabilityContext.getStore()
+          const source = stream('turn.step', input, core, snapshot, table, {
+            signal: invocationSignal.getStore(), origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+          })
+          const pull = async (method: 'next' | 'return' | 'throw', value?: unknown) => {
+            const resume = pauseModBudget(caller?.active ? caller.next : undefined)
+            try { return await source[method](value as never) } finally { resume?.() }
+          }
+          return { next: () => pull('next'), return: (value: unknown) => pull('return', value), throw: (error: unknown) => pull('throw', error), result: source.result, [Symbol.asyncIterator]() { return this } }
+        })
+      }
+      const wrapped: Record<string, (...args: unknown[]) => unknown> = {}
       for (const [method, fn] of Object.entries(methods)) wrapped[method] = async (...args) => {
         const op = `${noun}.${method}`
         checkCall(owner, op, table, lease)
@@ -1105,6 +1128,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           return result.value
         } finally { resumeBudget?.() }
       }
+      if (step) wrapped.step = step
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {
           if (methods[method] === hostIdentity && wrapped[method])
@@ -1131,6 +1155,34 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       plugin: owner.declaration.name,
       tier: owner.declaration.tier,
       registration,
+      invokeStream: (input, next, catching) => {
+        const lease = { entries: 1 }
+        const entered = { table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
+        const run = <T>(call: () => T) => invocationSignal.run(next.signal, () => capabilityContext.run(entered, call))
+        return (async function* () {
+          owner.references++
+          let source: ModHookStream | undefined
+          try {
+            await owner.environment.setUiAccess(uiAllowed(owner, table))
+            source = run(() => owner.environment.invokeStream(catching ? registration.catchId! : registration.id, [engineFor(owner, snapshot, table, lease), input], next))
+            let thrown: { error: unknown } | undefined
+            for (;;) {
+              const item = await run(() => thrown ? source!.throw(thrown.error) : source!.next())
+              thrown = undefined
+              if (item.done) return item.value
+              try { yield item.value } catch (error) { thrown = { error } }
+            }
+          } finally {
+            try { if (source) await run(() => source!.return(undefined)) }
+            finally {
+              lease.entries--
+              entered.active = false
+              owner.references--
+              if (owner.state === 'retiring' && owner.references === 0) await disposeActivation(owner)
+            }
+          }
+        })()
+      },
       invoke: (input, next, catching) => withReference(owner, async () => {
         const lease = { entries: 1 }
         const entered = { table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
@@ -1311,6 +1363,63 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
   }
 
+  function stream(event: 'turn.step', input: ModInput,
+    core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>,
+    snapshot: readonly Activation[] = active, table: Nouns = nouns, options: ModDispatchOptions = {},
+  ): ModHookStream {
+    if (stopped) throw new Error('Mods runtime disposed')
+    const cancellation = new AbortController()
+    const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
+    const abort = () => cancellation.abort(options.signal?.aborted ? options.signal.reason : controller.signal.reason)
+    combined.signal.addEventListener('abort', abort, { once: true })
+    if (combined.signal.aborted) abort()
+    const caller = capabilityContext.getStore()?.hook
+    const services = requestServices.getStore()
+    for (const owner of snapshot) owner.references++
+    let entered = false
+    let released: Promise<void> | undefined
+    const release = () => released ??= (async () => {
+      for (const owner of snapshot) {
+        owner.references--
+        if (owner.state === 'retiring' && owner.references === 0) await disposeActivation(owner)
+      }
+    })()
+    const output = createModHookStream((async function* () {
+      entered = true
+      let source: ModHookStream | undefined
+      try {
+        source = dispatchModStream({ event, input, core, hooks: hooksFor(snapshot, table), signal: cancellation.signal, origin: options.origin,
+          ...(options.origin ? { skip: { plugin: options.origin.plugin, registrationId: caller?.plugin === options.origin.plugin ? caller.registrationId : -1 } } : {}),
+          validateInput: (value, received) => { validateTurnStepInput(value); options.validateInput?.(value, received) },
+          validateChunk: validateTurnStepChunk,
+          validateResult: (result, previous) => { validateTurnStepResult(result, input); options.validateResult?.(result, previous) },
+          onFailure: (plugin, error) => diagnostic(plugin, event, error),
+        })
+        let thrown: { error: unknown } | undefined
+        for (;;) {
+          const item = await requestServices.run(services ?? {}, () => turnStepCore.run(core, () => thrown ? source!.throw(thrown.error) : source!.next()))
+          thrown = undefined
+          if (item.done) return item.value
+          try { yield item.value } catch (error) { thrown = { error } }
+        }
+      } finally {
+        try { if (source) await source.return(undefined) }
+        finally {
+          combined.signal.removeEventListener('abort', abort); combined.cleanup()
+          await release()
+        }
+      }
+    })(), error => {
+      cancellation.abort(error)
+      combined.signal.removeEventListener('abort', abort)
+      combined.cleanup()
+    }, cancellation.signal)
+    void output.result.then(undefined, () => {
+      if (!entered) return release()
+    }).catch(error => diagnostic('engine', event, error))
+    return output
+  }
+
   async function dispatch(
     event: string,
     input: ModInput,
@@ -1326,8 +1435,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined
     for (const owner of snapshot) owner.references++
+    const dispatchServices = event === 'session.compact'
+      ? {...requestServices.getStore(), messages: services.messages}
+      : requestServices.getStore() ?? {}
     try {
-      return await dispatchModEvent({
+      return await requestServices.run(dispatchServices, () => dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner), core,
         signal: combined.signal, origin: options.origin,
         reportDirectCoreFailure: options.reportDirectCoreFailure,
@@ -1377,7 +1489,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           return reconcilePromptContext(result, previous)
         } } : {}),
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
-      })
+      }))
     } finally {
       combined.cleanup()
       for (const owner of snapshot) {
@@ -1753,6 +1865,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (released) throw new Error('Mods snapshot released')
         return requestServices.run(hostServices, () => dispatch(event, input, core, snapshot, table, options))
       },
+      stream: (event, input, core, options) => {
+        if (released) throw new Error('Mods snapshot released')
+        return requestServices.run(hostServices, () => stream(event, input, core, snapshot, table, options))
+      },
       hasHooks: event => snapshot.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
       release() {
         if (released) return
@@ -1834,6 +1950,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
       }
     },
+    stream: (event: 'turn.step', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
     capture,
     invalidatePromptContext,
     measure,

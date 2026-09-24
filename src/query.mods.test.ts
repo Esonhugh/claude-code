@@ -10,7 +10,7 @@ import type { Tool, ToolUseContext } from './Tool.js'
 import { asAgentId } from './types/ids.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { createModsRuntime, type ModSnapshot } from './services/mods/runtime.js'
-import { createAssistantMessage, normalizeMessagesForAPI } from './utils/messages.js'
+import { createAssistantMessage, handleMessageFromStream, normalizeMessagesForAPI, type StreamingThinking } from './utils/messages.js'
 import {
   asSystemPrompt,
   getSystemPromptSections,
@@ -33,6 +33,21 @@ function response(id: string, text: string, input = 10, output = 2): AssistantMe
     usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 },
   })
   return message
+}
+
+async function* streamedResponse(id: string, text: string): AsyncGenerator<AssistantMessage | import('./types/message.js').StreamEvent> {
+  const completed = response(id, text, 10, 0)
+  completed.message.stop_reason = null
+  yield {type:'stream_event',event:{type:'message_start',message:{...completed.message,content:[]}}} as any
+  yield {type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}}
+  yield {type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text}}}
+  // claude.ts emits the assembled block before forwarding content_block_stop.
+  yield completed
+  yield {type:'stream_event',event:{type:'content_block_stop',index:0}}
+  completed.message.usage = {...completed.message.usage,output_tokens:9}
+  completed.message.stop_reason = 'end_turn'
+  yield {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null},usage:{output_tokens:9}}} as any
+  yield {type:'stream_event',event:{type:'message_stop'}}
 }
 
 function harness(callModel: NonNullable<QueryParams['deps']>['callModel']) {
@@ -118,6 +133,462 @@ function isolatedWrapper(loop: (...args: any[]) => AsyncGenerator<any, any>, dia
 }
 
 afterEach(resetStateForTests)
+
+test('turn.step drops every model text block without manufacturing assistant history', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-drop-'))
+  const diagnostics:unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e)})
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `let completion; export function register(on) {
+      on('turn.step',async function* ($,e,next) {const s=next(e);for await(const c of s) if(c.kind!=='text') yield c;return {...await s.result,answer:'RETURN_ONLY'}});
+      on('turn.complete',($,e,next)=>{completion=e;return next(e)});
+      on('tool.call',()=>({result:completion}));
+    }`)
+    await runtime.reconcile([{name:'drop',storageId:'drop@inline',pluginRoot:root,entrypoints:[entry]}])
+    const h=harness(async function* () {yield* streamedResponse('drop','DROP_EVERYTHING')})
+    h.context.mods=runtime
+    const run=await drain(query(h.params))
+    expect(run.messages.filter(m=>m.type==='assistant')).toEqual([])
+    expect(JSON.stringify(run.messages)).not.toContain('DROP_EVERYTHING')
+    expect(JSON.stringify(run.messages)).not.toContain('RETURN_ONLY')
+    const {result}=await runtime.dispatch('tool.call',{},async()=>({result:null})) as {result:any}
+    expect(result).toMatchObject({answer:'',usage:{output_tokens:9}})
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('turn.step request overrides resolve effort once without changing later steps or session state', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-effort-'))
+  const diagnostics:unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e)})
+  const previous=process.env.CLAUDE_CODE_EFFORT_LEVEL
+  process.env.CLAUDE_CODE_EFFORT_LEVEL='high'
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `let inputs=[]; export function register(on) {
+      on('turn.step',async function* ($,e,next) {
+        inputs.push(e);const s=next({...e,model:'override-model',effort:undefined});
+        for await(const c of s) yield c;return await s.result;
+      });
+      on('tool.call',()=>({result:inputs}));
+    }`)
+    await runtime.reconcile([{name:'effort',storageId:'effort@inline',pluginRoot:root,entrypoints:[entry]}])
+    const requests:any[]=[]
+    const h=harness(async function* (request) {
+      requests.push(request)
+      if(requests.length===1) {
+        const message=response('limit','partial');Object.assign(message,{apiError:'max_output_tokens',isApiErrorMessage:true});yield message
+      } else yield* streamedResponse('effort','done')
+    })
+    h.context.mods=runtime
+    h.context.setAppState(state=>({...state,effortValue:'low'}))
+    await drain(query(h.params))
+    expect(requests.map(r=>r.options)).toEqual([expect.objectContaining({model:'override-model',effortValue:undefined,effortResolved:true}),expect.objectContaining({model:'override-model',effortValue:undefined,effortResolved:true})])
+    const {result:inputs}=await runtime.dispatch('tool.call',{},async()=>({result:[]})) as {result:any[]}
+    expect(inputs.map(e=>({model:e.model,effort:e.effort}))).toEqual([{model:'claude-test',effort:'high'},{model:'claude-test',effort:'high'}])
+    expect(h.context.options.mainLoopModel).toBe('claude-test')
+    expect(h.context.getAppState().effortValue).toBe('low')
+    expect(diagnostics).toEqual([])
+  } finally {
+    if(previous===undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+    else process.env.CLAUDE_CODE_EFFORT_LEVEL=previous
+    await runtime.dispose();await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('turn.step text reaches the consumer before the fake model finishes its response', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-live-'))
+  const runtime=createModsRuntime()
+  let iterator:ReturnType<typeof query>|undefined
+  let sourceFinished=false
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step',async function* ($,e,next) {const s=next(e);for await(const c of s) yield c.kind==='text'?{...c,text:'LIVE'}:c;return await s.result});
+    }`)
+    await runtime.reconcile([{name:'live',storageId:'live@inline',pluginRoot:root,entrypoints:[entry]}])
+    const h=harness(async function* () {yield* streamedResponse('live','raw');sourceFinished=true})
+    h.context.mods=runtime
+    iterator=query(h.params)
+    let item=await iterator.next()
+    while(!item.done && !(item.value.type==='stream_event'&&(item.value.event as any)?.delta?.type==='text_delta')) item=await iterator.next()
+    expect(item.done).toBe(false)
+    expect((item.value as any).event.delta.text).toBe('LIVE')
+    expect(sourceFinished).toBe(false)
+    await drain(iterator)
+    expect(sourceFinished).toBe(true)
+  } finally {await iterator?.return({reason:'cleanup'});await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('turn.step stop rewrite reaches streamed and recorded metadata without changing next result', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-stop-'))
+  const diagnostics:unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e)})
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `let result; export function register(on) {
+      on('turn.step',async function* ($,e,next) {
+        const s=next(e);for await(const c of s) yield c.kind==='stop'?{...c,stopReason:'stop_sequence',usage:{model:'rewrite-usage',input_tokens:21,output_tokens:34,cache_read_input_tokens:0,cache_creation_input_tokens:0}}:c;
+        result=await s.result;return result;
+      });
+      on('tool.call',()=>({result}));
+    }`)
+    await runtime.reconcile([{name:'stop',storageId:'stop@inline',pluginRoot:root,entrypoints:[entry]}])
+    const h=harness(async function* () {yield* streamedResponse('stop','answer')})
+    h.context.mods=runtime
+    const run=await drain(query(h.params))
+    const message=run.messages.find(m=>m.type==='assistant')
+    expect(message.message).toMatchObject({stop_reason:'stop_sequence',model:'rewrite-usage',usage:{input_tokens:21,output_tokens:34}})
+    expect(run.messages.find(m=>m.type==='stream_event'&&m.event.type==='message_delta').event).toMatchObject({delta:{stop_reason:'stop_sequence'},usage:{input_tokens:21,output_tokens:34}})
+    const {result}=await runtime.dispatch('tool.call',{},async()=>({result:null})) as {result:any}
+    expect(result).toMatchObject({stopReason:'end_turn',usage:{model:'claude-test',input_tokens:10,output_tokens:9}})
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+for (const ending of ['close','abort'] as const) test(`turn.step ${ending} cleans up model iterator and snapshot`, async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-cancel-'))
+  const runtime=createModsRuntime()
+  let iterator:ReturnType<typeof query>|undefined
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step',async function* ($,e,next) {const s=next(e);for await(const c of s) yield c;return await s.result});
+    }`)
+    await runtime.reconcile([{name:'cancel',storageId:'cancel@inline',pluginRoot:root,entrypoints:[entry]}])
+    let closed=false,released=0
+    const capture=runtime.capture
+    runtime.capture=services=>{const s=capture(services);return {...s,release(){released++;s.release()}}}
+    const h=harness(async function* () {try {yield* streamedResponse('cancel','partial')} finally {closed=true}})
+    h.context.mods=runtime
+    iterator=query(h.params)
+    let item=await iterator.next()
+    while(!item.done && !(item.value.type==='stream_event'&&(item.value.event as any)?.type==='content_block_delta')) item=await iterator.next()
+    expect(item.done).toBe(false)
+    if(ending==='close') await iterator.return({reason:'consumer-return'})
+    else {h.context.abortController.abort(new Error('cancel model step'));await drain(iterator)}
+    expect(closed).toBe(true)
+    expect(released).toBe(1)
+  } finally {await iterator?.return({reason:'cleanup'});await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('turn.step preserves model fallback errors and increments the retry step', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-fallback-'))
+  const diagnostics:unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e)})
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `let inputs=[]; export function register(on) {
+      on('turn.step',async function* ($,e,next) {inputs.push(e);const s=next(e);for await(const c of s) yield c;return await s.result});
+      on('tool.call',()=>({result:inputs}));
+    }`)
+    await runtime.reconcile([{name:'fallback',storageId:'fallback@inline',pluginRoot:root,entrypoints:[entry]}])
+    const {FallbackTriggeredError}=await import('./services/api/withRetry.js')
+    let calls=0
+    const h=harness(async function* () {
+      if(++calls===1) throw new FallbackTriggeredError('claude-test','fallback-model')
+      yield* streamedResponse('fallback','recovered')
+    })
+    h.context.mods=runtime
+    h.params.fallbackModel='fallback-model'
+    const run=await drain(query(h.params))
+    expect(run.terminal.reason).toBe('completed')
+    expect(calls).toBe(2)
+    const {result:inputs}=await runtime.dispatch('tool.call',{},async()=>({result:[]})) as {result:any[]}
+    expect(inputs.map(e=>({index:e.index,model:e.model}))).toEqual([{index:0,model:'claude-test'},{index:1,model:'fallback-model'}])
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('turn.step hook can call $.turn.step inside the active real query request', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-capability-'))
+  const diagnostics:unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e)})
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step',async function* ($,e) {
+        const s=$.turn.step({...e,model:'capability-model',effort:'medium'});
+        for await(const c of s) yield c.kind==='text'?{...c,text:'CAPABILITY_OUTPUT'}:c;
+        return await s.result;
+      });
+    }`)
+    await runtime.reconcile([{name:'capability',storageId:'capability@inline',pluginRoot:root,entrypoints:[entry]}])
+    const requests:any[]=[]
+    const h=harness(async function* (request) {requests.push(request);yield* streamedResponse('capability','raw')})
+    h.context.mods=runtime
+    const run=await drain(query(h.params))
+    expect(requests).toHaveLength(1)
+    expect(requests[0].options).toMatchObject({model:'capability-model',effortValue:'medium',effortResolved:true})
+    expect(run.messages.filter(m=>m.type==='assistant').flatMap(m=>m.message.content)).toEqual([{type:'text',text:'CAPABILITY_OUTPUT'}])
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test.each([false, true])('turn.step repeated next keeps both response envelopes (streaming=%s)', async streaming => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-step-repeated-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step', async function* ($, e, next) {
+        yield* next(e);
+        return yield* next(e);
+      });
+    }`)
+    await runtime.reconcile([{name:'repeated',storageId:'repeated@inline',pluginRoot:root,entrypoints:[entry]}])
+    let calls = 0
+    const h = harness(async function* () {
+      const id = `response-${++calls}`
+      if (streaming) yield* streamedResponse(id, id)
+      else yield response(id, id)
+    })
+    h.context.mods = runtime
+    const run = await drain(query(h.params))
+    expect(calls).toBe(2)
+    const messages = run.messages.filter(message => message.type === 'assistant')
+    expect(messages.map(message => message.message.id)).toEqual(['response-1', 'response-2'])
+    expect(messages.flatMap(message => message.message.content)).toEqual([
+      {type:'text',text:'response-1'}, {type:'text',text:'response-2'},
+    ])
+    const events = run.messages.filter(message => message.type === 'stream_event').map(message => message.event.type)
+    expect(events.filter(type => type === 'message_start')).toHaveLength(2)
+    expect(events.filter(type => type === 'message_stop')).toHaveLength(2)
+  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+})
+
+test('turn.step completed-only response retains one envelope and distinct block identities', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-blocks-'))
+  const runtime=createModsRuntime()
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `let complete; export function register(on) {
+      on('turn.step',async function* ($,e,next) {const s=next(e);for await(const c of s) yield c;return await s.result});
+      on('turn.complete',($,e,next)=>{complete=e;return next(e)});
+      on('tool.call',()=>({result:complete}));
+    }`)
+    await runtime.reconcile([{name:'blocks',storageId:'blocks@inline',pluginRoot:root,entrypoints:[entry]}])
+    const h=harness(async function* () {
+      const message=response('multi-block','first')
+      message.message.content.push({type:'text',text:'second'})
+      yield message
+    })
+    h.context.mods=runtime
+    const run=await drain(query(h.params))
+    const messages=run.messages.filter(m=>m.type==='assistant')
+    const start=run.messages.find(m=>m.type==='stream_event'&&m.event.type==='message_start')
+    expect(new Set(messages.map(m=>m.uuid)).size).toBe(2)
+    expect(messages.map(m=>m.message.id)).toEqual([start.event.message.id,start.event.message.id])
+    expect(start.event.message.model).toBe('claude-test')
+    const {result}=await runtime.dispatch('tool.call',{},async()=>({result:null})) as {result:any}
+    expect(result.answer).toBe('firstsecond')
+    expect(result.usage.output_tokens).toBe(2)
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('turn.step retries increment indices and completed-only fallback produces a final stop chunk', async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-retry-'))
+  const runtime=createModsRuntime()
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `let seen=[]; export function register(on) {
+      on('turn.step', async function* ($,e,next) {
+        const item={input:e,chunks:[]};seen.push(item);
+        const stream=next(e);
+        for await(const c of stream) {item.chunks.push(c);yield c}
+        item.result=await stream.result;
+        return item.result;
+      });
+      on('turn.complete',($,e,next)=>{seen.push({complete:e});return next(e)});
+      on('tool.call',()=>({result:seen}));
+    }`)
+    await runtime.reconcile([{name:'retry',storageId:'retry@inline',pluginRoot:root,entrypoints:[entry]}])
+    const requests:any[]=[]
+    const h=harness(async function* (request) {
+      requests.push(request)
+      if(requests.length===1) {
+        const exhausted=response('limit','partial')
+        Object.assign(exhausted,{apiError:'max_output_tokens',isApiErrorMessage:true})
+        yield exhausted
+      } else yield response('fallback','finished')
+    })
+    h.context.mods=runtime
+    const run=await drain(query(h.params))
+    expect(run.terminal.reason).toBe('completed')
+    const {result:seen}=await runtime.dispatch('tool.call',{},async()=>({result:[]})) as {result:any[]}
+    expect(seen.slice(0,2).map(e=>e.input.index)).toEqual([0,1])
+    expect(seen[0].input.turnId).toBe(seen[2].complete.turnId)
+    expect(seen[1].chunks.filter((c:any)=>c.kind==='stop')).toEqual([expect.objectContaining({stopReason:'end_turn',usage:{model:'claude-test',input_tokens:10,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4}})])
+    expect(seen[1].result.answer).toBe('finished')
+    expect(run.messages.filter(m=>m.type==='assistant').flatMap(m=>m.message.content)).toEqual([{type:'text',text:'finished'}])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+for (const chunks of [false,true]) test(`turn.step hook-only subagent response consumes chunks, not return value (${chunks})`, async () => {
+  const root=await mkdtemp(join(tmpdir(),'mods-step-synthetic-'))
+  const diagnostics: unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e)})
+  try {
+    const entry=join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step', async function* ($,e) {
+        if(e.agentId!=='step-child'||e.index!==0) throw new Error('lost step identity');
+        ${chunks ? "yield {kind:'thinking',index:0,text:'SYNTHETIC_THINKING'}; yield {kind:'text',index:1,text:'SYNTHETIC_ANSWER'}; yield {kind:'stop',stopReason:'end_turn',usage:null};" : ''}
+        return {turnId:e.turnId,index:e.index,answer:'RETURN_ONLY',toolUses:[],stopReason:null,usage:null};
+      });
+    }`)
+    await runtime.reconcile([{name:'synthetic',storageId:'synthetic@inline',pluginRoot:root,entrypoints:[entry]}])
+    let calls=0,releases=0
+    const capture=runtime.capture
+    runtime.capture=services=>{const snapshot=capture(services);return {...snapshot,release(){releases++;snapshot.release()}}}
+    const h=harness(async function* () {calls++;yield response('unexpected','MODEL')})
+    h.context.mods=runtime
+    h.context.agentId=asAgentId('step-child')
+    const run=await drain(query(h.params))
+    expect(run.terminal.reason).toBe('completed')
+    expect(calls).toBe(0)
+    expect(releases).toBe(1)
+    expect(run.messages.filter(m=>m.type==='assistant').flatMap(m=>m.message.content)).toEqual(chunks?[{type:'text',text:'SYNTHETIC_ANSWER'}]:[])
+    const events=run.messages.filter(m=>m.type==='stream_event').map(m=>m.event)
+    if(chunks) {
+      expect(events[0].type).toBe('message_start')
+      expect(events.at(-1).type).toBe('message_stop')
+      expect(JSON.stringify(events)).toContain('SYNTHETIC_THINKING')
+      let thinking: StreamingThinking | null = null
+      for (const message of run.messages) {
+        handleMessageFromStream(message, () => {}, () => {}, () => {}, () => {}, undefined,
+          update => { thinking = update(thinking) })
+      }
+      expect(thinking).toMatchObject({thinking:'SYNTHETIC_THINKING',isStreaming:false})
+    }
+    expect(JSON.stringify(run.messages)).not.toContain('RETURN_ONLY')
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('turn.step Worker rewrites live text and recorded blocks before query completion', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-step-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let observed=[]; export function register(on) {
+      on('turn.step', async function* ($,e,next) {
+        const stream=next({...e,model:'rewritten-model',effort:'low'});
+        for await (const chunk of stream) yield chunk.kind==='text' ? {...chunk,text:'REWRITTEN'} : chunk;
+        observed.push({input:e,result:await stream.result});
+        return {...await stream.result,answer:'RETURN_ONLY'};
+      });
+      on('turn.complete', ($,e,next) => {observed.push({complete:e});return next(e)});
+      on('tool.call', () => ({result:observed}));
+    }`)
+    await runtime.reconcile([{name:'step',storageId:'step@inline',pluginRoot:root,entrypoints:[entry]}])
+    const requests: any[] = []
+    const h = harness(async function* (request) {requests.push(request);yield* streamedResponse('step-response','ORIGINAL')})
+    h.context.mods = runtime
+    const run = await drain(query(h.params))
+    const live = run.messages.filter(m=>m.type==='stream_event'&&m.event.type==='content_block_delta').map(m=>m.event.delta.text).join('')
+    expect(live).toBe('REWRITTEN')
+    expect(run.messages.filter(m=>m.type==='assistant').flatMap(m=>m.message.content)).toEqual([{type:'text',text:'REWRITTEN'}])
+    expect(requests[0].options).toMatchObject({model:'rewritten-model',effortValue:'low'})
+    const {result:observed} = await runtime.dispatch('tool.call',{},async()=>({result:[]})) as {result:any[]}
+    expect(observed[0]).toMatchObject({input:{index:0,messageCount:requests[0].messages.length},result:{answer:'ORIGINAL',usage:{output_tokens:9}}})
+    expect(observed[1].complete).toMatchObject({turnId:observed[0].input.turnId,answer:'REWRITTEN',usage:{output_tokens:9}})
+    expect(JSON.stringify(run.messages)).not.toContain('RETURN_ONLY')
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+for (const inputJSON of ['{"value":"REWRITTEN"}', '{broken']) test.each([false, true])(`turn.step Worker rewrites tool execution and history while preserving signed thinking (${inputJSON}, drop=%s)`, async dropThinking => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-step-tools-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let seen=[]; export function register(on) {
+      on('turn.step', async function* ($,e,next) {
+        const stream=next(e); seen.push(e);
+        for await (const c of stream) {
+          if(c.kind==='text' && c.text==='DROP_TEXT' || c.kind==='tool' && c.id==='drop-tool' || ${dropThinking} && c.kind==='thinking') continue;
+          yield c.kind==='tool' ? {...c,name:'HarmlessStep'} : c.kind==='input' ? {...c,json:${JSON.stringify(inputJSON)}} : c.kind==='thinking' ? {...c,text:'DISPLAY_ONLY'} : c;
+        }
+        return await stream.result;
+      });
+      on('tool.call',{tool:'InspectSteps'},()=>({result:seen}));
+    }`)
+    await runtime.reconcile([{name:'step-tools',storageId:'step-tools@inline',pluginRoot:root,entrypoints:[entry]}])
+    const {z} = await import('zod/v4')
+    const calls: unknown[] = [], requests: any[] = []
+    const tool = {name:'HarmlessStep',inputSchema:z.object({value:z.string()}),maxResultSizeChars:Infinity,isConcurrencySafe:()=>true,
+      call:async (input: unknown)=>{calls.push(input);return {data:input}},
+      mapToolResultToToolResultBlockParam:(data: unknown,id:string)=>({type:'tool_result',tool_use_id:id,content:JSON.stringify(data)}),
+    } as unknown as Tool
+    const originalThinking = {type:'thinking' as const,thinking:'SIGNED_ORIGINAL',signature:'signed-fixture'}
+    type StreamBlock =
+      | typeof originalThinking
+      | {type:'text';text:string}
+      | {type:'tool_use';id:string;name:string;input:{value:string}}
+    const blocks: StreamBlock[] = [originalThinking,{type:'text',text:'DROP_TEXT'},
+      {type:'tool_use',id:'keep-tool',name:'OriginalTool',input:{value:'ORIGINAL'}},
+      {type:'tool_use',id:'drop-tool',name:'OriginalTool',input:{value:'DROPPED'}},
+    ]
+    const h = harness(async function* (request) {
+      requests.push(request)
+      if(requests.length>1) {yield* streamedResponse('tool-final','done');return}
+      const template=response('tool-step','',10,0)
+      template.message.stop_reason=null
+      yield {type:'stream_event',event:{type:'message_start',message:{...template.message,content:[]}}}
+      let completed=template
+      for(let index=0;index<blocks.length;index++) {
+        const block=blocks[index]!
+        yield {type:'stream_event',event:{type:'content_block_start',index,content_block:block.type==='text'?{...block,text:''}:block.type==='thinking'?{...block,thinking:'',signature:''}:{...block,input:{}}}}
+        yield {type:'stream_event',event:{type:'content_block_delta',index,delta:block.type==='text'?{type:'text_delta',text:block.text}:block.type==='thinking'?{type:'thinking_delta',thinking:block.thinking}:{type:'input_json_delta',partial_json:JSON.stringify(block.input)}}}
+        if(block.type==='thinking') yield {type:'stream_event',event:{type:'content_block_delta',index,delta:{type:'signature_delta',signature:block.signature}}}
+        completed={...template,uuid:randomUUID(),message:{...template.message,content:[block]}}
+        yield completed
+        yield {type:'stream_event',event:{type:'content_block_stop',index}}
+      }
+      completed.message.stop_reason='tool_use'
+      completed.message.usage={...completed.message.usage,output_tokens:9}
+      yield {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'tool_use',stop_sequence:null},usage:{output_tokens:9}}}
+      yield {type:'stream_event',event:{type:'message_stop'}}
+    })
+    h.context.mods=runtime
+    h.context.options.tools=[tool]
+    h.params.canUseTool=async (_tool,input)=>({behavior:'allow',updatedInput:input})
+    const run=await drain(query(h.params))
+    expect(run.terminal.reason).toBe('completed')
+    const valid = inputJSON !== '{broken'
+    expect(calls).toEqual(valid ? [{value:'REWRITTEN'}] : [])
+    if (!valid) expect(run.messages.filter(m=>m.type==='user').flatMap(m=>m.message.content).some(block=>block.type==='tool_result'&&block.is_error)).toBe(true)
+    expect(requests).toHaveLength(2)
+    const history=requests[1].messages.filter((m:any)=>m.type==='assistant').flatMap((m:any)=>m.message.content)
+    expect(history).toEqual([originalThinking,{type:'tool_use',id:'keep-tool',name:'HarmlessStep',input:valid ? {value:'REWRITTEN'} : inputJSON}])
+    expect(JSON.stringify(requests[1].messages)).not.toContain('DROP_TEXT')
+    expect(JSON.stringify(requests[1].messages)).not.toContain('drop-tool')
+    expect(JSON.stringify(run.messages.filter(m=>m.type==='stream_event')).includes('DISPLAY_ONLY')).toBe(!dropThinking)
+    let thinking: StreamingThinking | null = null
+    const displayed: string[] = []
+    for (const message of run.messages) {
+      handleMessageFromStream(message, () => {}, () => {}, () => {}, () => {}, undefined,
+        update => {
+          thinking = update(thinking)
+          if (thinking) displayed.push(thinking.thinking)
+        })
+    }
+    expect(displayed.includes('DISPLAY_ONLY')).toBe(!dropThinking)
+    expect(displayed).not.toContain('SIGNED_ORIGINAL')
+    if (dropThinking) expect(thinking === null || thinking.thinking === '').toBe(true)
+    else expect(thinking).toMatchObject({thinking:'DISPLAY_ONLY',isStreaming:false})
+    const observed=await runtime.dispatch('tool.call',{tool:'InspectSteps'},async()=>({result:[]})) as {result:any[]}
+    expect(observed.result.map(e=>e.index)).toEqual([0,1])
+    expect(observed.result.map(e=>e.messageCount)).toEqual(requests.map(r=>r.messages.length))
+    expect(observed.result[0].turnId).toBe(observed.result[1].turnId)
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
 
 describe('public query prompt.context', () => {
   test('context rendering preserves ordered numeric names and omits empty snapshots', () => {

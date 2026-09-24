@@ -714,6 +714,8 @@ export type Options = {
   skipCacheWrite?: boolean
   temperatureOverride?: number
   effortValue?: EffortValue
+  /** turn.step already resolved and may have rewritten or removed effort. */
+  effortResolved?: boolean
   mcpTools: Tools
   modsSnapshot?: import('../mods/runtime.js').ModSnapshot
   hasPendingMcpServers?: boolean
@@ -1577,7 +1579,7 @@ async function* queryModel(
     }
   }
 
-  const effort = resolveAppliedEffort(options.model, options.effortValue)
+  const effort = options.effortResolved ? options.effortValue : resolveAppliedEffort(options.model, options.effortValue)
 
   if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
     // Exclude defer_loading tools from the hash -- the API strips them from the
