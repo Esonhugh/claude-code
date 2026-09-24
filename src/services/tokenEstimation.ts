@@ -504,6 +504,7 @@ async function countTokensWithBedrock({
     const tokenCount = response.inputTokens ?? null
     return tokenCount
   } catch (error) {
+    signal?.throwIfAborted()
     logError(error)
     return null
   }

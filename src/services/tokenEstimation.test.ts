@@ -8,6 +8,7 @@ const previousApiKey = process.env.ANTHROPIC_API_KEY
 process.env.ANTHROPIC_API_KEY = 'test-only'
 
 const providers = await import('../utils/model/providers.js')
+const bedrock = await import('../utils/model/bedrock.js')
 const apiClient = await import('./api/client.js')
 
 let clientModel: string | undefined
@@ -15,7 +16,9 @@ let requestModel: string | undefined
 let requestSignal: AbortSignal | null | undefined
 let vcrModel: string | undefined
 
-spyOn(providers, 'getAPIProvider').mockReturnValue('firstParty')
+const providerSpy = spyOn(providers, 'getAPIProvider').mockReturnValue(
+  'firstParty',
+)
 spyOn(apiClient, 'getAnthropicClient').mockImplementation(
   async (options) => {
     clientModel = options.model
@@ -90,4 +93,30 @@ test('rejects an already aborted token count without opening a request', async (
     ),
   ).rejects.toThrow('cancel token count')
   expect(requestSignal).toBeUndefined()
+})
+
+test('propagates cancellation from an in-flight Bedrock token count', async () => {
+  const controller = new AbortController()
+  providerSpy.mockReturnValue('bedrock')
+  spyOn(bedrock, 'isFoundationModel').mockReturnValueOnce(true)
+  spyOn(bedrock, 'createBedrockRuntimeClient').mockResolvedValueOnce({
+    send: async (_command: unknown, options?: { abortSignal?: AbortSignal }) => {
+      expect(options?.abortSignal).toBe(controller.signal)
+      controller.abort(new Error('cancel Bedrock token count'))
+      throw controller.signal.reason
+    },
+  } as never)
+
+  try {
+    await expect(
+      countMessagesTokensWithAPI(
+        [{ role: 'user', content: 'count me' }],
+        [],
+        'anthropic.claude-sonnet-4-6-v1:0',
+        controller.signal,
+      ),
+    ).rejects.toThrow('cancel Bedrock token count')
+  } finally {
+    providerSpy.mockReturnValue('firstParty')
+  }
 })
