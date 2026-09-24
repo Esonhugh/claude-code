@@ -276,6 +276,7 @@ export async function* query(
   const handlesMeasure = !params.toolUseContext.agentId &&
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
+  const handlesAgentOffer = snapshot?.hasHooks('agent.offer') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
   const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
@@ -286,6 +287,7 @@ export async function* query(
     !handlesComplete &&
     !handlesMeasure &&
     !handlesCatalog &&
+    !handlesAgentOffer &&
     !handlesContext &&
     !handlesSections &&
     !handlesAttachments &&

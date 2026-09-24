@@ -131,6 +131,7 @@ import {
 import { filterDeniedAgents } from './permissions/permissions.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
+import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import {
   matchingRuleForInput,
   pathInAllowedWorkingPath,
@@ -1664,10 +1665,10 @@ export function getDeferredToolsDeltaAttachment(
  * Exported for compact.ts — re-announces the full set after compaction eats
  * prior deltas.
  */
-export function getAgentListingDeltaAttachment(
+export async function getAgentListingDeltaAttachment(
   toolUseContext: ToolUseContext,
   messages: Message[] | undefined,
-): Attachment[] {
+): Promise<Attachment[]> {
   if (!shouldInjectAgentListInMessages()) return []
 
   // Skip if AgentTool isn't in the pool — the listing would be unactionable.
@@ -1695,6 +1696,21 @@ export function getAgentListingDeltaAttachment(
   )
   if (allowedAgentTypes) {
     filtered = filtered.filter(a => allowedAgentTypes.includes(a.agentType))
+  }
+  const { projectOfferedAgents } = await import('../services/mods/agentOffer.js')
+  const ownedSnapshot =
+    !toolUseContext.modsSnapshot && toolUseContext.mods?.hasHooks('agent.offer')
+      ? toolUseContext.mods.capture({
+          toolCatalog: () => createToolCatalogForContext(toolUseContext),
+        })
+      : undefined
+  try {
+    filtered = await projectOfferedAgents(filtered, {
+      snapshot: toolUseContext.modsSnapshot ?? ownedSnapshot,
+      signal: toolUseContext.abortController.signal,
+    })
+  } finally {
+    ownedSnapshot?.release()
   }
 
   // Reconstruct announced set from prior deltas in the transcript.

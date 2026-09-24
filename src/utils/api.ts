@@ -241,7 +241,17 @@ export async function toolToAPISchema(
   // Per-request overlay: Agent's inline listing is projected against the
   // captured Mods generation, while defer_loading/cache_control and tool
   // descriptions vary by call. Keep all of them out of the stable base cache.
-  const description = base.description ?? ''
+  const description =
+    tool.name === AGENT_TOOL_NAME && options.modsSnapshot?.hasHooks('agent.offer')
+      ? await tool.prompt({
+          getToolPermissionContext: options.getToolPermissionContext,
+          tools: options.tools,
+          agents: options.agents,
+          allowedAgentTypes: options.allowedAgentTypes,
+          modsSnapshot: options.modsSnapshot,
+          signal: options.signal,
+        })
+      : base.description ?? ''
   const described = options.skipModDescription
     ? undefined
     : options.modDescription ??

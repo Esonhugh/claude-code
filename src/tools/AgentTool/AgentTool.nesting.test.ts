@@ -206,6 +206,91 @@ try {
 assert.ok(depthLimitError instanceof Error)
 assert.equal(depthLimitError.message, SUBAGENT_DEPTH_LIMIT_MESSAGE)
 
+const deniedOfferInputs: unknown[] = []
+const deniedOfferContext = createContext(0) as TestContext & {
+  modsSnapshot: {
+    hasHooks(event: string): boolean
+    dispatch(event: string, input: Record<string, unknown>): Promise<unknown>
+  }
+}
+deniedOfferContext.modsSnapshot = {
+  hasHooks: event => event === 'agent.offer',
+  dispatch: async (_event, input) => {
+    deniedOfferInputs.push(input)
+    return { isOffered: false }
+  },
+}
+await assert.rejects(
+  AgentTool.call(
+    {
+      description: 'denied offer',
+      prompt: 'do not launch',
+      subagent_type: 'general-purpose',
+    },
+    deniedOfferContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_denied_offer' } } as never,
+  ),
+  /Agent type 'general-purpose' is not offered/,
+)
+assert.deepEqual(deniedOfferInputs, [
+  {
+    agent: 'general-purpose',
+    description: GENERAL_PURPOSE_AGENT.whenToUse,
+    source: 'built-in',
+    provider: { plugin: 'engine', tier: 'core' },
+  },
+])
+
+const normalizedOfferAgent = {
+  ...GENERAL_PURPOSE_AGENT,
+  agentType: 'code-reviewer',
+  whenToUse: 'Use the canonical code reviewer.',
+}
+const normalizedOfferInputs: unknown[] = []
+const normalizedOfferContext = createContext(0) as TestContext & {
+  options: {
+    agentDefinitions: {
+      activeAgents: typeof normalizedOfferAgent[]
+      inactiveAgents: never[]
+      allowedAgentTypes: undefined
+    }
+  }
+  modsSnapshot: {
+    hasHooks(event: string): boolean
+    dispatch(event: string, input: Record<string, unknown>): Promise<unknown>
+  }
+}
+normalizedOfferContext.options.agentDefinitions.activeAgents = [normalizedOfferAgent]
+normalizedOfferContext.modsSnapshot = {
+  hasHooks: event => event === 'agent.offer',
+  dispatch: async (_event, input) => {
+    normalizedOfferInputs.push(input)
+    return { isOffered: false }
+  },
+}
+await assert.rejects(
+  AgentTool.call(
+    {
+      description: 'normalized denied offer',
+      prompt: 'do not launch',
+      subagent_type: 'Code Reviewer',
+    },
+    normalizedOfferContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_normalized_offer' } } as never,
+  ),
+  /Agent type 'code-reviewer' is not offered/,
+)
+assert.deepEqual(normalizedOfferInputs, [
+  {
+    agent: 'code-reviewer',
+    description: 'Use the canonical code reviewer.',
+    source: 'built-in',
+    provider: { plugin: 'engine', tier: 'core' },
+  },
+])
+
 assert.deepEqual(
   buildAgentMetadataForTesting({
     agentType: 'general-purpose',

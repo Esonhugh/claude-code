@@ -326,7 +326,7 @@ describe('public query turn lifecycle', () => {
     expect(h.calls.map(call => call.event)).toEqual(['turn.complete'])
   })
 
-  for (const event of ['tool.list', 'tool.describe'] as const) {
+  for (const event of ['tool.list', 'tool.describe', 'agent.offer'] as const) {
     test(`keeps a ${event}-only snapshot through the model request and releases it once`, async () => {
       let received: ModSnapshot | undefined
       const h = harness(async function* ({ options }) {

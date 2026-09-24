@@ -18,6 +18,7 @@ import {
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { isAgentOffered } from '../../services/mods/agentOffer.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -457,7 +458,14 @@ import { isAnt } from 'src/utils/userType.js'
 export type Progress = AgentToolProgress | ShellProgress
 
 export const AgentTool = buildTool({
-  async prompt({ agents, tools, getToolPermissionContext, allowedAgentTypes }) {
+  async prompt({
+    agents,
+    tools,
+    getToolPermissionContext,
+    allowedAgentTypes,
+    modsSnapshot,
+    signal,
+  }) {
     const toolPermissionContext = await getToolPermissionContext()
 
     // Get MCP servers that have tools available
@@ -488,7 +496,10 @@ export const AgentTool = buildTool({
     const isCoordinator = feature('COORDINATOR_MODE')
       ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
       : false
-    return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes)
+    return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes, {
+      snapshot: modsSnapshot,
+      signal,
+    })
   },
   name: AGENT_TOOL_NAME,
   searchHint: 'delegate work to a subagent',
@@ -611,6 +622,14 @@ export const AgentTool = buildTool({
       })
       selectedAgent = resolution.agent
       selectedAgentMatchKind = resolution.matchKind
+      if (
+        !(await isAgentOffered(selectedAgent, {
+          snapshot: toolUseContext.modsSnapshot,
+          signal: toolUseContext.abortController.signal,
+        }))
+      ) {
+        throw new Error(`Agent type '${selectedAgent.agentType}' is not offered`)
+      }
     }
 
     // Same lifecycle constraint as the run_in_background guard above, but for

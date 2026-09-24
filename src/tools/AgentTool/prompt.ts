@@ -1,4 +1,8 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import {
+  projectOfferedAgents,
+  type AgentOfferProjection,
+} from '../../services/mods/agentOffer.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
@@ -82,9 +86,10 @@ export async function getPrompt(
   agentDefinitions: AgentDefinition[],
   isCoordinator?: boolean,
   allowedAgentTypes?: string[],
+  projection: AgentOfferProjection = {},
 ): Promise<string> {
   // Filter agents by allowed types when Agent(x,y) restricts which agents can be spawned
-  const effectiveAgents = allowedAgentTypes
+  const allowedAgents = allowedAgentTypes
     ? agentDefinitions.filter(a => allowedAgentTypes.includes(a.agentType))
     : agentDefinitions
 
@@ -127,6 +132,9 @@ ${
   // tool description static across MCP/plugin/permission changes so the
   // tools-block prompt cache doesn't bust every time an agent loads.
   const listViaAttachment = shouldInjectAgentListInMessages()
+  const effectiveAgents = listViaAttachment
+    ? allowedAgents
+    : await projectOfferedAgents(allowedAgents, projection)
 
   const agentListSection = listViaAttachment
     ? `Available agent types are listed in <system-reminder> messages in the conversation.`

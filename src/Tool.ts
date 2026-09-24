@@ -585,6 +585,8 @@ export type Tool<
     tools: Tools
     agents: AgentDefinition[]
     allowedAgentTypes?: string[]
+    modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
+    signal?: AbortSignal
   }): Promise<string>
   userFacingName(input: Partial<z.infer<Input>> | undefined): string
   userFacingNameBackgroundColor?(

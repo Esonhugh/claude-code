@@ -610,7 +610,7 @@ export async function compactConversation(
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
-    for (const att of getAgentListingDeltaAttachment(context, [])) {
+    for (const att of await getAgentListingDeltaAttachment(context, [])) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
@@ -1034,7 +1034,7 @@ export async function partialCompactConversation(
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
-    for (const att of getAgentListingDeltaAttachment(context, messagesToKeep)) {
+    for (const att of await getAgentListingDeltaAttachment(context, messagesToKeep)) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
