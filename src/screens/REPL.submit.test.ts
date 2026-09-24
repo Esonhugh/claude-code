@@ -95,6 +95,101 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
   expect(prompt.isBlocked()).toBe(true)
 })
 
+test('Mods prompt suggestion requires a mounted box and reads live loading state', async () => {
+  let services: any
+  let stateWrites = 0
+  const inputValueRef = { current: '' }
+  const insertTextRef = { current: null as null | { cursorOffset: number } }
+  const isLoadingRef = { current: false }
+  const inputModeRef = { current: 'prompt' }
+  const modTypeaheadActiveRef = { current: false }
+  const appState = { viewingAgentTaskId: null as string | null }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: () => { stateWrites++ }, messagesRef: { current: [] },
+    getFirstPartyCredential: async () => null,
+    modToolContextRef: { current: noop }, inputValueRef, insertTextRef,
+    isLoadingRef, inputModeRef, modTypeaheadActiveRef,
+    store: { getState: () => appState },
+    modPromptBlockedRef: { current: false },
+  })
+  await awaitMods()
+  const prompt = services.prompt()
+
+  expect(prompt.suggest('draft', 'fixture@test')).toBe(false)
+  expect(stateWrites).toBe(0)
+  insertTextRef.current = { cursorOffset: 0 }
+  expect(prompt.canSuggest()).toBe(true)
+  inputModeRef.current = 'bash'
+  expect(prompt.canSuggest()).toBe(false)
+  inputModeRef.current = 'prompt'
+  appState.viewingAgentTaskId = 'agent-1'
+  expect(prompt.canSuggest()).toBe(false)
+  appState.viewingAgentTaskId = null
+  isLoadingRef.current = true
+  expect(prompt.canSuggest()).toBe(false)
+  isLoadingRef.current = false
+  modTypeaheadActiveRef.current = true
+  expect(prompt.canSuggest()).toBe(false)
+  expect(prompt.suggest('hidden by completion', 'fixture@test')).toBe(false)
+  expect(stateWrites).toBe(0)
+})
+
+test('Mods pending prompt suggestion rechecks live composer ownership', () => {
+  for (const blocked of ['bash', 'agent'] as const) {
+    let shown: boolean | undefined
+    let stateWrites = 0
+    const pendingModSuggestionRef = {
+      current: {
+        text: 'draft',
+        owner: 'fixture@test',
+        resolve(value: boolean) { shown = value },
+      } as { text: string; owner: string; resolve(value: boolean): void } | undefined,
+    }
+    const inputModeRef = { current: blocked === 'bash' ? 'bash' : 'prompt' }
+    const appState = {
+      viewingAgentTaskId: blocked === 'agent' ? 'agent-1' : null,
+    }
+    const effect = extract('./REPL.tsx', 'pendingModSuggestionRef', 'effect')({
+      pendingModSuggestionRef,
+      modPromptBlockedRef: { current: false },
+      insertTextRef: { current: { cursorOffset: 0 } },
+      inputValueRef: { current: '' },
+      isLoadingRef: { current: false },
+      inputModeRef,
+      modTypeaheadActiveRef: { current: false },
+      store: { getState: () => appState },
+      setAppState: () => { stateWrites++ },
+    })
+
+    effect()
+
+    expect(shown).toBe(false)
+    expect(stateWrites).toBe(0)
+    expect(pendingModSuggestionRef.current).toBeUndefined()
+  }
+})
+
+test('REPL unmount rejects a dialog-deferred Mod suggestion', () => {
+  let shown: boolean | undefined
+  const pendingModSuggestionRef = {
+    current: {
+      text: 'draft',
+      owner: 'fixture@test:1',
+      resolve(value: boolean) { shown = value },
+    } as { text: string; owner: string; resolve(value: boolean): void } | undefined,
+  }
+  const clearPendingModSuggestion = extract('./REPL.tsx', 'clearPendingModSuggestion')({
+    pendingModSuggestionRef,
+  })
+
+  clearPendingModSuggestion()
+
+  expect(shown).toBe(false)
+  expect(pendingModSuggestionRef.current).toBeUndefined()
+})
+
 test('successful edits reach the transcript and auto-open diff without a Mods runtime', async () => {
   let state = { diffSidebarVisible: false }
   let messages: any[] = []

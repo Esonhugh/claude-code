@@ -325,6 +325,7 @@ type Props = {
     setInputWithCursor: (value: string, cursor: number) => void
     cursorOffset: number
   } | null>
+  typeaheadActiveRef?: React.MutableRefObject<boolean>
   voiceInterimRange?: { start: number; end: number } | null
 }
 
@@ -378,6 +379,7 @@ function PromptInput({
   hasSuppressedDialogs,
   isLocalJSXCommandActive = false,
   insertTextRef,
+  typeaheadActiveRef,
   voiceInterimRange,
 }: Props): React.ReactNode {
   const mainLoopModel = useMainLoopModel()
@@ -1689,6 +1691,7 @@ function PromptInput({
     markAccepted,
     onModeChange,
   })
+  if (typeaheadActiveRef) typeaheadActiveRef.current = suggestions.length > 0
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
   // Hidden in teammate view — suggestion is leader-context only.

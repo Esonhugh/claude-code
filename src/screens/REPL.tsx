@@ -1898,6 +1898,21 @@ export function REPL({
   })
   const modToolContextRef = useRef<(() => ToolUseContext) | null>(null)
   const modPromptBlockedRef = useRef(true)
+  const modTypeaheadActiveRef = useRef(false)
+  const pendingModSuggestionRef = useRef<{
+    text: string
+    owner: string
+    resolve(shown: boolean): void
+  } | undefined>(undefined)
+  const clearPendingModSuggestion = useCallback(() => {
+    const pending = pendingModSuggestionRef.current
+    if (!pending) return
+    pendingModSuggestionRef.current = undefined
+    pending.resolve(false)
+  }, [])
+  useEffect(() => clearPendingModSuggestion, [clearPendingModSuggestion])
+  const isLoadingRef = useRef(isLoading)
+  isLoadingRef.current = isLoading
   const [modStatuses, setModStatuses] = useState<Record<string, string>>({})
   const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
@@ -1972,6 +1987,51 @@ export function REPL({
               input,
             )
           : false,
+      suggest: (text, owner) => {
+        if (!insertTextRef.current || inputValueRef.current !== '' || modTypeaheadActiveRef.current) return false
+        if (modPromptBlockedRef.current) {
+          pendingModSuggestionRef.current?.resolve(false)
+          return new Promise<boolean>(resolve => {
+            pendingModSuggestionRef.current = { text, owner, resolve }
+          })
+        }
+        setAppState(previous => ({
+          ...previous,
+          promptSuggestion: {
+            text,
+            promptId: null,
+            shownAt: 0,
+            acceptedAt: 0,
+            generationRequestId: owner,
+          },
+        }))
+        return true
+      },
+      clearSuggestion: owner => {
+        if (pendingModSuggestionRef.current?.owner === owner) {
+          pendingModSuggestionRef.current.resolve(false)
+          pendingModSuggestionRef.current = undefined
+        }
+        setAppState(previous =>
+          previous.promptSuggestion.generationRequestId !== owner
+            ? previous
+            : {
+                ...previous,
+                promptSuggestion: {
+                  text: null,
+                  promptId: null,
+                  shownAt: 0,
+                  acceptedAt: 0,
+                  generationRequestId: null,
+                },
+              },
+        )
+      },
+      canSuggest: () =>
+        !isLoadingRef.current &&
+        inputModeRef.current === 'prompt' &&
+        !modTypeaheadActiveRef.current &&
+        !store.getState().viewingAgentTaskId,
       isBlocked: () => modPromptBlockedRef.current,
     }),
     presentation: () => modUiPresentationRef.current,
@@ -3086,6 +3146,33 @@ export function REPL({
   modUiPresentationRef.current = modUiPresentation
   modPromptBlockedRef.current =
     modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
+  useEffect(() => {
+    const pending = pendingModSuggestionRef.current
+    if (!pending || modPromptBlockedRef.current) return
+    pendingModSuggestionRef.current = undefined
+    if (
+      !insertTextRef.current ||
+      inputValueRef.current !== '' ||
+      isLoadingRef.current ||
+      inputModeRef.current !== 'prompt' ||
+      modTypeaheadActiveRef.current ||
+      store.getState().viewingAgentTaskId
+    ) {
+      pending.resolve(false)
+      return
+    }
+    setAppState(previous => ({
+      ...previous,
+      promptSuggestion: {
+        text: pending.text,
+        promptId: null,
+        shownAt: 0,
+        acceptedAt: 0,
+        generationRequestId: pending.owner,
+      },
+    }))
+    pending.resolve(true)
+  }, [modUiPresentation.hasDialog, modUiPresentation.keyboardOwned, setAppState])
   useEffect(() => {
     void modsSession?.ui.render(modUiPresentation).catch(logError)
   }, [modsSession, modUiPresentation])
@@ -7544,6 +7631,7 @@ export function REPL({
                         helpOpen={isHelpOpen}
                         setHelpOpen={setIsHelpOpen}
                         insertTextRef={insertTextRef}
+                        typeaheadActiveRef={modTypeaheadActiveRef}
                         voiceInterimRange={voice.interimRange}
                       />
                       <SessionBackgroundHint
