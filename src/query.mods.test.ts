@@ -2249,3 +2249,72 @@ test('main query publishes completed cache-safe fork snapshot and sends tool-les
   await drain(query(h.params))
   expect(snapshots).toHaveLength(1)
 })
+
+test('query projects dynamic tools on first and later prompts without retaining retired registrations', async () => {
+  const { z } = await import('zod/v4')
+  const base = {name:'BaseFixture',inputSchema:z.object({})} as unknown as Tool
+  const first = {name:'mcp__fixture__dynamic',inputSchema:z.object({})} as unknown as Tool
+  const replacement = {...first} as Tool
+  let current: Tool | undefined = first
+  const owned = new Set([first, replacement])
+  const requests: (readonly Tool[])[] = []
+  const h = harness(async function* (request) {
+    requests.push(request.tools)
+    yield response('dynamic-projection', 'done')
+  })
+  h.context.options.tools = [base]
+  Object.assign(h.context.mods!, {
+    tools: {
+      projection: (tools: readonly Tool[]) => [
+        ...tools.filter(tool => !owned.has(tool)),
+        ...(current ? [current] : []),
+      ],
+    },
+  })
+  await drain(query(h.params))
+  expect(requests[0]).toEqual([base, first])
+  h.context.options.tools = requests[0]!
+  current = replacement
+  await drain(query(h.params))
+  expect(requests[1]).toEqual([base, replacement])
+  expect(requests[1]![1]).toBe(replacement)
+  h.context.options.tools = requests[1]!
+  current = undefined
+  await drain(query(h.params))
+  expect(requests[2]).toEqual([base])
+})
+
+test('session.start dynamic tool enters the first query schema and real executor', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-dynamic-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('session.start',async ($,e,next) => {
+        await $.tool.register({name:'echo',description:'Dynamic echo',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}});
+        return next(e);
+      });
+      on('tool.call',{tool:'mcp__dynamic__echo'},($,e) => ({result:'dynamic:'+e.text}));
+    }`)
+    await runtime.reconcile([{name:'dynamic',storageId:'dynamic@inline',pluginRoot:root,entrypoints:[entry]}])
+    await runtime.bind({cwd:root,surface:null,isInteractive:false,sessionId:'query-dynamic'})
+    let requests = 0
+    const h = harness(async function* (request) {
+      const tool = request.tools.find(tool => tool.name === 'mcp__dynamic__echo')
+      expect(tool).toBeDefined()
+      expect(tool!.inputJSONSchema).toMatchObject({type:'object',required:['text']})
+      if (++requests === 1) yield createAssistantMessage({content:[{
+        type:'tool_use',caller:{type:'direct'},id:'dynamic-call',name:tool!.name,input:{text:'first'},
+      }]})
+      else yield response('dynamic-answer','done')
+    })
+    h.context.mods = runtime
+    const result = await drain(query(h.params))
+    expect(result.terminal.reason).toBe('completed')
+    expect(requests).toBe(2)
+    expect(result.messages.flatMap(message => message.type === 'user' && Array.isArray(message.message.content) ? message.message.content : []))
+      .toContainEqual(expect.objectContaining({type:'tool_result',tool_use_id:'dynamic-call',content:'dynamic:first'}))
+    expect(diagnostics).toEqual([])
+  } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+})

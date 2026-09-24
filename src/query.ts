@@ -265,8 +265,16 @@ export async function* query(
     params = {...params, saveModForkSnapshot: params.toolUseContext.mods?.captureForkSnapshotWriter?.()}
   }
   const consumedCommandUuids: string[] = []
+  const tools = params.toolUseContext.mods?.tools?.projection(params.toolUseContext.options.tools)
+  if (tools && tools !== params.toolUseContext.options.tools) {
+    params = {...params, toolUseContext: {
+      ...params.toolUseContext,
+      options: {...params.toolUseContext.options, tools},
+    }}
+  }
   let catalogContext = { ...params.toolUseContext, messages: params.messages }
   const snapshot = catalogContext.mods?.capture({
+    tools: () => catalogContext.options.tools,
     toolCatalog: () => createToolCatalogForContext(catalogContext),
     captureUsage: () => captureModSessionUsage(catalogContext),
   })
@@ -2062,17 +2070,16 @@ async function* queryLoop(
       queryDepth: queryTracking.depth,
     })
 
-    // Refresh tools between turns so newly-connected MCP servers become available
-    if (updatedToolUseContext.options.refreshTools) {
-      const refreshedTools = updatedToolUseContext.options.refreshTools()
-      if (refreshedTools !== updatedToolUseContext.options.tools) {
-        updatedToolUseContext = {
-          ...updatedToolUseContext,
-          options: {
-            ...updatedToolUseContext.options,
-            tools: refreshedTools,
-          },
-        }
+    // Refresh MCP and Mod registrations between turns, removing retired versions.
+    const baseTools = updatedToolUseContext.options.refreshTools?.() ?? updatedToolUseContext.options.tools
+    const refreshedTools = updatedToolUseContext.mods?.tools?.projection(baseTools) ?? baseTools
+    if (refreshedTools !== updatedToolUseContext.options.tools) {
+      updatedToolUseContext = {
+        ...updatedToolUseContext,
+        options: {
+          ...updatedToolUseContext.options,
+          tools: refreshedTools,
+        },
       }
     }
 

@@ -411,6 +411,31 @@ test('context catalog uses real base descriptions and canonical host MCP flags',
   expect((await catalog.project()).map(value => value.tool)).toEqual(tools)
 })
 
+test('context catalog includes session-start registrations with their activation provider', async () => {
+  const entry = join(root, 'dynamic.ts')
+  await writeFile(entry, `export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'echo',description:'dynamic'});return next(e)});
+    on('tool.describe',($,e,next) => next({...e,description:e.provider.plugin+':'+e.description}));
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.reconcile([{name:'dynamic',storageId:'dynamic@test',pluginRoot:root,entrypoints:[entry]}])
+  await runtime.bind({cwd:root,surface:null,isInteractive:false,sessionId:'test'})
+  const context = {
+    mods:runtime,
+    options:{tools:[builtin()],agentDefinitions:{activeAgents:[]},mainLoopModel:'test-model'},
+    getAppState:() => ({toolPermissionContext:getEmptyToolPermissionContext()}),
+  } as unknown as ToolUseContext
+  const catalog = createToolCatalogForContext(context)
+  expect((await catalog.list()).map(tool => tool.name)).toEqual(['Read','mcp__dynamic__echo'])
+  const snapshot = runtime.capture()
+  try {
+    const tool = runtime.tools.list()[0]!
+    const schemas = await toolsToAPISchemas([tool],schemaOptions([tool],snapshot))
+    expect(schemas.schemas[0]).toMatchObject({description:'dynamic:dynamic'})
+  } finally {snapshot.release()}
+})
+
 test('core leaf projects only ToolInfo and cannot expose schema, closure or caller mutation', async () => {
   const tool = builtin()
   const catalog = createToolCatalog([tool], async value =>

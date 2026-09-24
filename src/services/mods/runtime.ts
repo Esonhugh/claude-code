@@ -1,4 +1,5 @@
 import type { AppState } from '../../state/AppState.js'
+import { createModTools, type ModToolSpec } from './tools.js'
 import { createModAgents, listModAgents } from './agents.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import type { ModModelForkRequest, ModModelForkResult } from './types.js'
@@ -67,6 +68,7 @@ export type ModBinding = {
 }
 export type ModRequestServices = {
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
+  tools?(): readonly Tool[]
   toolCatalog?(): ToolCatalog
   captureUsage?(): ModUsageReader
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
@@ -115,6 +117,7 @@ export type ModDispatchOptions = {
 export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
 export type ModPromptSection = { result: Promise<{ text: string | null }>; signal: AbortSignal }
 export type ModSnapshot = {
+  toolOrigin?(tool: Tool): ModOrigin | undefined
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
   readonly promptSections?: Map<string, ModPromptSection>
   readonly promptAttachments?: Map<string, ModPromptSection>
@@ -177,7 +180,7 @@ const coreHost: Nouns = {
   agent: { register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
-  tool: { list: hostIdentity },
+  tool: { register: hostIdentity, list: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
@@ -288,6 +291,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       dispatch(event, input, core, active, nouns, options),
     () => nouns,
   )
+  const tools = createModTools({
+    pluginOf: owner => (owner as Activation).declaration.name,
+    getTools: () => (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
+  })
   const agents = createModAgents(owner => (owner as Activation).declaration)
   const commands = createModCommands({
     getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
@@ -366,6 +373,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (owner.dispose) return owner.dispose
     owner.state = 'disposed'
     commands.release(owner)
+    tools.release(owner)
     agents.release(owner)
     owner.controller.abort()
     for (const id of owner.waits.keys()) cancelWait(owner, id)
@@ -378,6 +386,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     owner.state = 'retiring'
     void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
     commands.release(owner)
+    tools.release(owner)
     agents.release(owner)
     retired.add(owner)
     // A pending sleep may belong to an in-flight hook; stop future timer ticks,
@@ -426,6 +435,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function hostInput(op: string, args: unknown[]): ModInput {
     switch (op) {
+      case 'tool.register': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input))
+          throw new TypeError('tool.register takes a tool specification')
+        return { ...input, inputSchema: (input as ModInput).inputSchema === undefined ? { type: 'object' } : (input as ModInput).inputSchema }
+      }
       case 'fs.read': case 'fs.stat': {
         const options = args[1] === undefined ? {} : args[1]
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError(`${op} options must be an object`)
@@ -686,6 +701,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (owner.uiPublished) services.uiStatus(owner.declaration.name, owner.uiStatus.text)
         }
         return undefined
+      }
+      case 'tool.register': {
+        if (!binding) throw new Error('tool.register requires a bound session')
+        if (owner.state !== 'active') throw new Error('Tool registration belongs to a retired activation')
+        return tools.register(owner, input as ModToolSpec)
       }
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
@@ -1505,6 +1525,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             })
             if (!failed) {
               commands.validateCommit(owner, replacements.get(owner), [...prepared])
+              tools.validateCommit(owner, replacements.get(owner), [...prepared])
               agents.validateCommit(owner, replacements.get(owner), [...prepared])
               await uiContext.run({ snapshot: built.modules, table: built.table, person: false }, () => ui.commit(owner, replacements.get(owner)))
               prepared.add(owner)
@@ -1545,6 +1566,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (commandsChanged) commands.invalidateDescriptions(false)
     for (const owner of prepared) {
       commands.commit(owner, replacements.get(owner))
+      tools.commit(owner, replacements.get(owner))
       agents.commit(owner, replacements.get(owner))
       owner.uiPublished = true
       if (owner.uiStatus) services.uiStatus?.(owner.declaration.name, owner.uiStatus.text)
@@ -1679,6 +1701,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       owner.state = 'disposed'
       void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
       commands.release(owner)
+      tools.release(owner)
       agents.release(owner)
       owner.controller.abort()
       for (const id of owner.waits.keys()) cancelWait(owner, id)
@@ -1704,6 +1727,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       descriptionOrigins = pluginOrigin
       descriptionCache = { value: new WeakMap() }
     }
+    const toolOrigins = new Map(tools.list().map(tool => {
+      const owner = tools.ownerOf(tool) as Activation
+      return [tool, { plugin: owner.declaration.name, tier: owner.declaration.tier }] as const
+    }))
     const descriptions = descriptionCache
     const sections = sectionCache
     const attachments = attachmentCache
@@ -1712,6 +1739,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     let released = false
     for (const owner of snapshot) owner.references++
     return {
+      toolOrigin: tool => toolOrigins.get(tool),
       get toolDescriptions() { return descriptions.value },
       get promptSections() { return sections },
       get promptAttachments() { return attachments },
@@ -1811,6 +1839,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     measure,
     endSession,
     commands,
+    tools,
     agents,
     config,
     ui,

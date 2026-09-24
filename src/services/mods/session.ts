@@ -1,6 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { sep } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
+import type { Tool, Tools } from '../../Tool.js'
 import type { Command } from '../../types/command.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
@@ -121,6 +122,9 @@ export function createModsSession(options: ModsSessionOptions) {
     describe: (existing: Command[]) => runtime?.commands.describe(existing) ?? Promise.resolve(existing),
   }
 
+  const toolListeners = new Set<() => void>()
+  const emptyTools: Tool[] = []
+  let unsubscribeTools: (() => void) | undefined
   let unsubscribeAgents: (() => void) | undefined
   function publishAgents() {
     if (!setAppState || !runtime?.agents) return
@@ -128,6 +132,15 @@ export function createModsSession(options: ModsSessionOptions) {
       const agentDefinitions = runtime!.agents.projection(previous.agentDefinitions)
       return agentDefinitions === previous.agentDefinitions ? previous : {...previous, agentDefinitions}
     })
+  }
+
+  const tools = {
+    getSnapshot: () => runtime?.tools?.getSnapshot() ?? emptyTools,
+    subscribe(listener: () => void) {
+      toolListeners.add(listener)
+      return () => { toolListeners.delete(listener) }
+    },
+    projection: (existing: Tools) => runtime?.tools?.projection(existing) ?? existing,
   }
 
   const readSettings =
@@ -439,6 +452,9 @@ export function createModsSession(options: ModsSessionOptions) {
         for (const listener of commandListeners) listener()
       })
       unsubscribeAgents = runtime.agents?.subscribe(publishAgents)
+      unsubscribeTools = runtime.tools?.subscribe(() => {
+        for (const listener of toolListeners) listener()
+      })
       unregisterShutdown = registerModsHostDisposer(
         dispose,
         (reason, timeoutMs, sessionId) =>
@@ -534,6 +550,8 @@ export function createModsSession(options: ModsSessionOptions) {
           unsubscribeCommands?.()
           commandListeners.clear()
           unsubscribeAgents?.()
+          unsubscribeTools?.()
+          toolListeners.clear()
           unregisterShutdown?.()
           unregisterCleanup?.()
         }
@@ -544,6 +562,7 @@ export function createModsSession(options: ModsSessionOptions) {
 
   return {
     commands,
+    tools,
     ui,
     get runtime() {
       return stopped ? undefined : runtime

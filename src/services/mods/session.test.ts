@@ -337,6 +337,37 @@ describe('Mods CLI session host', () => {
     expect(published.at(-1)).toEqual([])
   })
 
+  test('tools projection publishes session-start registrations and removes retired versions while preserving base tools', async () => {
+    const source = (description: string) => `export function register(on) {
+      on('session.start',async ($,e,next) => {
+        await $.tool.register({name:'echo',description:'${description}',inputSchema:{type:'object',properties:{}}});
+        return next(e);
+      });
+    }`
+    const declaration = await plugin(source('first'))
+    const host = session({loadPlugins:async () => [declaration]})
+    const base = {name:'BaseFixture'} as Tool
+    const published: string[][] = []
+    expect(host.tools).toBeDefined()
+    const unsubscribe = host.tools.subscribe(() => published.push(host.tools.getSnapshot().map(tool => tool.name)))
+    cleanups.push(unsubscribe)
+    expect(host.tools.projection([base])).toEqual([base])
+    expect(host.tools.getSnapshot()).toBe(host.tools.getSnapshot())
+    await host.bind(binding)
+    const first = host.tools.projection([base])
+    expect(first.map(tool => tool.name)).toEqual(['BaseFixture','mcp__fixture__echo'])
+    expect(published.at(-1)).toEqual(['mcp__fixture__echo'])
+    await writeFile(join(declaration.path,'register.ts'),source('second'))
+    await host.refresh([declaration])
+    const second = host.tools.projection(first)
+    expect(second).toHaveLength(2)
+    expect(second[0]).toBe(base)
+    expect(second[1]).not.toBe(first[1])
+    await host.refresh([])
+    expect(host.tools.projection(second)).toEqual([base])
+    expect(published.at(-1)).toEqual([])
+  })
+
   test('MCP plugins without hook modules retain settings provenance across captured generations', async () => {
     const declaration = await plugin(`export function register(on) {
       on('tool.describe', ($, e) => ({description:e.description+':'+e.provider.plugin+':'+e.provider.tier}));

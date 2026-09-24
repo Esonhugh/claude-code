@@ -1297,17 +1297,23 @@ export function REPL({
     isRemoteExecutionSession,
   )
 
+  const emptyModTools = useMemo<Tool[]>(() => [], [])
+  const subscribeModTools = useCallback((listener: () => void) => modsSession?.tools?.subscribe(listener) ?? (() => {}), [modsSession])
+  const getModToolsSnapshot = useCallback(() => modsSession?.tools?.getSnapshot() ?? emptyModTools, [modsSession, emptyModTools])
+  const modTools = React.useSyncExternalStore(subscribeModTools, getModToolsSnapshot)
+
   // Apply agent tool restrictions if mainThreadAgentDefinition is set
   const { tools, allowedAgentTypes } = useMemo(() => {
+    const projectedTools = modsSession?.tools?.projection(mergedTools) ?? mergedTools
     if (!mainThreadAgentDefinition) {
       return {
-        tools: mergedTools,
+        tools: projectedTools,
         allowedAgentTypes: undefined as string[] | undefined,
       }
     }
     const resolved = resolveAgentTools(
       mainThreadAgentDefinition,
-      mergedTools,
+      projectedTools,
       false,
       true,
     )
@@ -1315,7 +1321,7 @@ export function REPL({
       tools: resolved.resolvedTools,
       allowedAgentTypes: resolved.allowedAgentTypes,
     }
-  }, [mainThreadAgentDefinition, mergedTools])
+  }, [mainThreadAgentDefinition, mergedTools, modsSession, modTools])
 
   const baseCommands = useReplCommands(
     localCommands,
@@ -1944,6 +1950,7 @@ export function REPL({
     builtinCommands: () => modBuiltinCommandsRef.current,
     tasks: () => store.getState().tasks,
     agentNames: () => store.getState().agentNameRegistry,
+    tools: () => modToolContextRef.current!().options.tools,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
       let settled = false

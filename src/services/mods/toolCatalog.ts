@@ -90,7 +90,7 @@ export function createToolCatalog(
 export function createToolCatalogForContext(
   context: ToolUseContext,
 ): ToolCatalog {
-  const tools = context.options.tools
+  const tools = context.mods?.tools?.projection(context.options.tools) ?? context.options.tools
   return createToolCatalog(tools, async tool => {
     const { toolToAPISchema } = await import('../../utils/api.js')
     const schema = await toolToAPISchema(tool, {
@@ -117,7 +117,10 @@ export async function describeModTool(
   if (!snapshot.hasHooks('tool.describe')) return { description }
   const mcp = tool.mcpInfo
   let provider: ModOrigin
-  if (mcp?.scope === 'enterprise' || mcp?.scope === 'managed') {
+  const registered = snapshot.toolOrigin?.(tool)
+  if (registered) {
+    provider = registered
+  } else if (mcp?.scope === 'enterprise' || mcp?.scope === 'managed') {
     provider = { plugin: `mcp:${mcp.serverName}`, tier: 'prepend' }
   } else if (mcp?.pluginSource) {
     const origin = snapshot.pluginOrigin?.(mcp.pluginSource)

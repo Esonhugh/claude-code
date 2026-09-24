@@ -328,7 +328,8 @@ export class QueryEngine {
       commands: () => this.config.commands,
       tasks: () => getAppState().tasks,
       agentNames: () => getAppState().agentNameRegistry,
-      toolCatalog: () => createToolCatalog(this.config.tools, async tool => {
+      tools: () => this.config.tools,
+      toolCatalog: () => createToolCatalog(this.config.modsSession?.tools?.projection(this.config.tools) ?? this.config.tools, async tool => {
         const schema = await toolToAPISchema(tool, {
           tools: this.config.tools,
           agents: this.config.agents ?? [],
@@ -500,7 +501,7 @@ export class QueryEngine {
       options: {
         commands: this.config.modsSession?.commands.projection(commands) ?? commands,
         debug: false, // we use stdout, so don't want to clobber it
-        tools,
+        tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
         verbose,
         mainLoopModel: initialMainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -550,7 +551,7 @@ export class QueryEngine {
       this.hasHandledOrphanedPermission = true
       for await (const message of handleOrphanedPermission(
         orphanedPermission,
-        tools,
+        processUserInputContext.options.tools,
         this.mutableMessages,
         processUserInputContext,
       )) {
@@ -665,7 +666,7 @@ export class QueryEngine {
       options: {
         commands: this.config.modsSession?.commands.projection(commands) ?? commands,
         debug: false,
-        tools,
+        tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
         verbose,
         mainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -713,7 +714,7 @@ export class QueryEngine {
     headlessProfilerCheckpoint('after_skills_plugins')
 
     yield buildSystemInitMessage({
-      tools,
+      tools: processUserInputContext.options.tools,
       mcpClients,
       model: mainLoopModel,
       permissionMode: initialAppState.toolPermissionContext
