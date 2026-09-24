@@ -743,6 +743,31 @@ describe('source-scoped hook executor', () => {
   })
 
   test.each([null, false, 0, ''])(
+    'preserves falsy general output %j from command JSON validation',
+    async (value) => {
+      const f = fixture()
+      f.add('policySettings', 'PostToolUse', 'replace')
+      f.commands.set('replace', {
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          updatedToolOutput: value,
+        },
+      })
+      const results = await collect(
+        f.hooks.executePostToolHooks(
+          'Read', 'tool', {}, {}, f.context,
+          undefined, undefined, undefined, 'managed',
+        ),
+      )
+      const update = results.find(
+        (result) => result.updatedToolOutput !== undefined,
+      )
+      expect(update?.updatedToolOutput).toBe(value)
+      expect(update?.hookSource).toBe('policySettings')
+    },
+  )
+
+  test.each([null, false, 0, ''])(
     'preserves falsy MCP output %j from command JSON validation',
     async (value) => {
       const f = fixture()

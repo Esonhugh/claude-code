@@ -679,8 +679,8 @@ function streamedCheckPermissionsAndCallTool(
           mcpServerBaseUrl,
           'managed',
         )) {
-          if ('updatedMCPToolOutput' in result)
-            output = result.updatedMCPToolOutput
+          if ('updatedToolOutput' in result)
+            output = result.updatedToolOutput
           else if (result.message.type === 'progress') stream.enqueue(result)
           else messages.push(result)
         }
@@ -698,8 +698,8 @@ function streamedCheckPermissionsAndCallTool(
             mcpServerBaseUrl,
             'managed',
           )) {
-            if ('updatedMCPToolOutput' in result) {
-              const replacement = result.updatedMCPToolOutput
+            if ('updatedToolOutput' in result) {
+              const replacement = result.updatedToolOutput
               addedContext =
                 typeof replacement === 'string'
                   ? [replacement]
@@ -1589,6 +1589,7 @@ async function checkPermissionsAndCallTool(
 
     // Run PostToolUse hooks
     let toolOutput = result.data
+    let toolOutputWasUpdated = false
     const hookResults = []
     const toolContextModifier = result.contextModifier
     const mcpMeta = result.mcpMeta
@@ -1671,11 +1672,6 @@ async function checkPermissionsAndCallTool(
       })
     }
 
-    // TOOD(hackyon): refactor so we don't have different experiences for MCP tools
-    if (!isMcpTool(tool)) {
-      await addToolResult(toolOutput, mappedToolResultBlock)
-    }
-
     const postToolHookInfos: StopHookInfo[] = []
     const postToolHookStart = Date.now()
     for await (const hookResult of runPostToolUseHooks(
@@ -1690,30 +1686,11 @@ async function checkPermissionsAndCallTool(
       mcpServerBaseUrl,
       managedPass ? 'non-managed' : 'all',
     )) {
-      if ('updatedMCPToolOutput' in hookResult) {
-        if (isMcpTool(tool)) {
-          toolOutput = hookResult.updatedMCPToolOutput
-        }
-      } else if (isMcpTool(tool)) {
-        hookResults.push(hookResult)
-        if (hookResult.message.type === 'attachment') {
-          const att = hookResult.message.attachment
-          if (
-            // @ts-ignore - recovered code
-            'command' in att &&
-            att.command !== undefined &&
-            'durationMs' in att &&
-            att.durationMs !== undefined
-          ) {
-            postToolHookInfos.push({
-              // @ts-ignore - recovered code
-              command: att.command,
-              durationMs: att.durationMs,
-            })
-          }
-        }
+      if ('updatedToolOutput' in hookResult) {
+        toolOutput = hookResult.updatedToolOutput
+        toolOutputWasUpdated = true
       } else {
-        resultingMessages.push(hookResult)
+        hookResults.push(hookResult)
         if (hookResult.message.type === 'attachment') {
           const att = hookResult.message.attachment
           if (
@@ -1740,10 +1717,46 @@ async function checkPermissionsAndCallTool(
       )
     }
 
-    if (isMcpTool(tool)) {
-      if (executionRecord) executionRecord.result = toolOutput
-      await addToolResult(toolOutput)
+    let finalMappedToolResultBlock = mappedToolResultBlock
+    if (!isMcpTool(tool) && toolOutputWasUpdated) {
+      const invalidOutput = (detail: string) => {
+        logForDebugging(
+          `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape: ${detail}`,
+          { level: 'error' },
+        )
+        toolOutput = result.data
+        hookResults.push({
+          message: createAttachmentMessage({
+            type: 'hook_error_during_execution',
+            content: `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape; using original output. ${detail}`,
+            hookName: `PostToolUse:${tool.name}`,
+            toolUseID,
+            hookEvent: 'PostToolUse',
+          }),
+        })
+      }
+      const validation = tool.outputSchema?.safeParse(toolOutput)
+      if (validation && !validation.success) {
+        invalidOutput(validation.error.message)
+      } else {
+        try {
+          const mapped = tool.mapToolResultToToolResultBlockParam(
+            toolOutput,
+            toolUseID,
+          )
+          if (mapped === undefined)
+            throw new Error('mapper returned undefined')
+          finalMappedToolResultBlock = mapped
+        } catch (error) {
+          invalidOutput(formatError(error))
+        }
+      }
     }
+    if (executionRecord) executionRecord.result = toolOutput
+    await addToolResult(
+      toolOutput,
+      isMcpTool(tool) ? undefined : finalMappedToolResultBlock,
+    )
 
     // Show PostToolUse hook timing inline below tool result when > 500ms.
     // Use wall-clock time (not sum of individual durations) since hooks run in parallel.

@@ -698,10 +698,12 @@ describe('classic adapter executor boundary', () => {
   test('PostToolUse folds replacement/context without serializing progress and filters event-specific fields', async () => {
     const f = fixture([
       {
+        updatedToolOutput: { value: 'general' },
         updatedMCPToolOutput: { value: 'first' },
         additionalContexts: ['one'],
       },
       {
+        updatedToolOutput: { value: 'last' },
         updatedMCPToolOutput: null,
         additionalContexts: ['two'],
         retry: true,
@@ -718,6 +720,7 @@ describe('classic adapter executor boundary', () => {
         tool_response: { old: true },
       }),
     ).toEqual({
+      updatedToolOutput: { value: 'last' },
       updatedMCPToolOutput: null,
       additionalContext: ['one', 'two'],
     })

@@ -120,6 +120,7 @@ export type ClassicResult = {
   preventContinuation?: true
   stopReason?: string
   additionalContext?: string[]
+  updatedToolOutput?: unknown
   updatedMCPToolOutput?: unknown
   retry?: true
   initialUserMessage?: string
@@ -181,6 +182,11 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
           if (decision.interrupt) result.decision.interrupt = true
         }
       }
+      if (
+        event === 'classic.PostToolUse' &&
+        item.updatedToolOutput !== undefined
+      )
+        result.updatedToolOutput = item.updatedToolOutput
       if (
         event === 'classic.PostToolUse' &&
         item.updatedMCPToolOutput !== undefined

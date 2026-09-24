@@ -411,12 +411,97 @@ describe('classic events at existing tool hook boundaries', () => {
       )
       expect(executed).toBe(1)
       expect(f.events).toEqual(['classic.PostToolUse'])
-      expect(results.filter(r => 'updatedMCPToolOutput' in r)).toEqual([
-        { updatedMCPToolOutput: replacement },
+      expect(results.filter(r => 'updatedToolOutput' in r)).toEqual([
+        { updatedToolOutput: replacement },
       ])
       expect(contexts(results)).toEqual(['post'])
     },
   )
+
+  test.each([null, false, 0, ''])(
+    'PostToolUse returns falsy general output rewrite %p for regular tools',
+    async replacement => {
+      registerHookCallbacks({
+        PostToolUse: [{ hooks: [{
+          type: 'callback',
+          callback: async () => ({ hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            updatedToolOutput: replacement,
+            additionalContext: 'post',
+          } }),
+        }] }],
+      })
+      const f = fixture(async (e, next) => next(e))
+      const results = await Array.fromAsync(runPostToolUseHooks(
+        f.context, f.tool, 'id', 'message', {}, { value: 'old' },
+        undefined, undefined, undefined,
+      ))
+      expect(results.filter(r => 'updatedToolOutput' in r)).toEqual([
+        { updatedToolOutput: replacement },
+      ])
+      expect(contexts(results)).toEqual(['post'])
+    },
+  )
+
+  test('regular tool output rewrites become the transcript and model result', async () => {
+    registerHookCallbacks({
+      PostToolUse: [{ hooks: [{
+        type: 'callback',
+        callback: async () => ({ hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          updatedToolOutput: { value: 'reviewed' },
+          additionalContext: 'after output',
+        } }),
+      }] }],
+    })
+    const f = fixture()
+    Object.assign(f.tool, {
+      outputSchema: z.object({ value: z.string() }),
+      maxResultSizeChars: Infinity,
+      isConcurrencySafe: () => true,
+      validateInput: async () => ({ result: true }),
+      checkPermissions: async () => ({ behavior: 'allow' }),
+      call: async () => ({ data: { value: 'raw' } }),
+      mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) =>
+        ({ type: 'tool_result', tool_use_id: id, content: data.value }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    f.context.options.mcpClients = []
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'regular-rewrite', name: f.tool.name, input: { value: 'original' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    const messages = updates.flatMap(update => update.message.type === 'user' ? [update.message] : [])
+    const results = messages.flatMap(message => Array.isArray(message.message.content) ? message.message.content.filter(block => block.type === 'tool_result') : [])
+    expect(results).toHaveLength(1)
+    expect(results[0]!.content).toBe('reviewed')
+    expect(messages.find(message => message.toolUseResult)?.toolUseResult).toEqual({ value: 'reviewed' })
+    expect(JSON.stringify(updates)).not.toContain('\"content\":\"raw\"')
+  })
+
+  test('invalid regular output rewrites keep the original result and report the hook error', async () => {
+    registerHookCallbacks({ PostToolUse: [{ hooks: [{
+      type: 'callback', callback: async () => ({ hookSpecificOutput: {
+        hookEventName: 'PostToolUse', updatedToolOutput: { invalid: true },
+      } }),
+    }] }] })
+    const f = fixture()
+    Object.assign(f.tool, {
+      outputSchema: z.object({ value: z.string() }),
+      maxResultSizeChars: Infinity,
+      isConcurrencySafe: () => true,
+      validateInput: async () => ({ result: true }),
+      checkPermissions: async () => ({ behavior: 'allow' }),
+      call: async () => ({ data: { value: 'raw' } }),
+      mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) =>
+        ({ type: 'tool_result', tool_use_id: id, content: data.value }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    f.context.options.mcpClients = []
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'invalid-rewrite', name: f.tool.name, input: { value: 'original' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    expect(JSON.stringify(updates)).toContain('\"content\":\"raw\"')
+    expect(JSON.stringify(updates)).toContain('does not match ClassicFixture')
+    expect(JSON.stringify(updates)).not.toContain('\"invalid\":true')
+  })
 
   test('PostToolUseFailure dispatches once, not a second execution after the callback', async () => {
     let executed = 0

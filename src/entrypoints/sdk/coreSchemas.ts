@@ -847,6 +847,7 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUse'),
     additionalContext: z.string().optional(),
+    updatedToolOutput: z.unknown().optional(),
     updatedMCPToolOutput: z.unknown().optional(),
   }),
 )

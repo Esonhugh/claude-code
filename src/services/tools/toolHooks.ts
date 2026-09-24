@@ -318,8 +318,10 @@ async function* runClassicToolHooks(
         }
         folded.preventContinuation = answer.preventContinuation
         folded.stopReason = answer.stopReason
-        if (event === 'PostToolUse')
+        if (event === 'PostToolUse') {
+          folded.updatedToolOutput = answer.updatedToolOutput
           folded.updatedMCPToolOutput = answer.updatedMCPToolOutput
+        }
       }
       // Existing post wrappers stop consuming at preventContinuation; send the
       // already-folded context/output first, then that terminal control item.
@@ -350,7 +352,7 @@ async function* runClassicToolHooks(
 
 export type PostToolUseHooksResult<Output> =
   | MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
-  | { updatedMCPToolOutput: Output }
+  | { updatedToolOutput: Output }
 
 export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   toolUseContext: ToolUseContext,
@@ -481,12 +483,15 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           }
         }
 
-        // If hooks provided updatedMCPToolOutput, yield it if this is an MCP tool
-        if (result.updatedMCPToolOutput !== undefined && isMcpTool(tool)) {
-          toolOutput = result.updatedMCPToolOutput as Output
-          yield {
-            updatedMCPToolOutput: toolOutput,
-          }
+        // General replacement works for every tool. The legacy MCP field is
+        // retained as an MCP-only alias, and wins when both are supplied.
+        const replacement =
+          result.updatedMCPToolOutput !== undefined && isMcpTool(tool)
+            ? result.updatedMCPToolOutput
+            : result.updatedToolOutput
+        if (replacement !== undefined) {
+          toolOutput = replacement as Output
+          yield { updatedToolOutput: toolOutput }
         }
       } catch (error) {
         const postToolDurationMs = Date.now() - postToolStartTime
