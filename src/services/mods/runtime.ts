@@ -31,6 +31,7 @@ import {
 } from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier } from './types.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
+import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
 import {
   createModConfig,
   type ModConfigRowProvider,
@@ -93,8 +94,11 @@ export type ModDispatchOptions = {
   restoreInput?: (input: ModInput, received: ModInput) => ModInput
   reportDirectCoreFailure?: boolean
 }
+export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
 export type ModSnapshot = {
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
+  readonly promptContexts?: Map<string | undefined, ModPromptContext>
+  readonly promptContextBoundaries?: Map<string | undefined, string>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
   hasHooks(event: string): boolean
@@ -164,6 +168,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let active: Activation[] = []
   let nouns: Nouns = {}
   let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<ModToolDescription>>>() }
+  let contextCache = new Map<string | undefined, ModPromptContext>()
+  let contextBoundaries = new Map<string | undefined, string>()
   let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
   let publicTurn: { turnId: string } | undefined
@@ -584,6 +590,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
         if (input.event === 'tool.describe') {
           descriptionCache.value = new WeakMap()
+          return undefined
+        }
+        if (input.event === 'prompt.context') {
+          contextCache = new Map()
+          contextBoundaries = new Map()
           return undefined
         }
         if (input.event !== 'ui.render') throw new Error(`Unsupported UI invalidation ${String(input.event)}`)
@@ -1054,8 +1065,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       return
     }
     if (event === 'prompt.context') {
-      if (!result || typeof result !== 'object' || !('blocks' in result) || !Array.isArray(result.blocks))
-        throw new Error('prompt.context must return blocks')
+      validatePromptContext(result)
       return
     }
     if (event.startsWith('classic.')) {
@@ -1143,7 +1153,16 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (pinsProvider && !isDeepStrictEqual(value.provider, provider)) throw new Error(`${event} cannot rewrite provider`)
           options.validateInput?.(value, received)
         },
-        restoreInput: options.restoreInput,
+        restoreInput: (value, received) => {
+          const restored = options.restoreInput?.(value, received) ?? value
+          if (event !== 'prompt.context') return restored
+          validatePromptContext(received)
+          return reconcilePromptContext(restored, received)
+        },
+        ...(event === 'prompt.context' ? { restoreResult: (result: unknown, previous: unknown) => {
+          validatePromptContext(previous)
+          return reconcilePromptContext(result, previous)
+        } } : {}),
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
       })
     } finally {
@@ -1316,7 +1335,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const replaced = active.filter(owner => !built.modules.includes(owner))
     active = built.modules
     const commandsChanged = nouns !== built.table
-    if (nouns !== built.table) descriptionCache = { value: new WeakMap() }
+    if (nouns !== built.table) {
+      descriptionCache = { value: new WeakMap() }
+      contextCache = new Map()
+      contextBoundaries = new Map()
+    }
     nouns = built.table
     lastInterface = interfaceStates.get(nouns)!
     await Promise.all(active.map(owner => owner.environment.setUiAccess(uiAllowed(owner, nouns))))
@@ -1484,10 +1507,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       descriptionCache = { value: new WeakMap() }
     }
     const descriptions = descriptionCache
+    const contexts = contextCache
+    const boundaries = contextBoundaries
     let released = false
     for (const owner of snapshot) owner.references++
     return {
       get toolDescriptions() { return descriptions.value },
+      get promptContexts() { return contexts },
+      get promptContextBoundaries() { return boundaries },
       pluginOrigin(storageId) {
         const owner = snapshot.find(value => value.declaration.storageId === storageId)
         return owner ? { plugin: owner.declaration.storageId, tier: owner.declaration.tier } : pluginOrigin?.(storageId)
@@ -1506,6 +1533,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
       },
     }
+  }
+
+  function invalidatePromptContext(agentId?: string): void {
+    contextCache = new Map(contextCache)
+    contextCache.delete(agentId)
+    contextBoundaries = new Map(contextBoundaries)
+    contextBoundaries.delete(agentId)
   }
 
   let disposal: Promise<void> | undefined
@@ -1547,6 +1581,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
   return {
     capture,
+    invalidatePromptContext,
     endSession,
     commands,
     config,
@@ -1579,6 +1614,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           }
           ending = undefined
           commands.invalidateDescriptions()
+          invalidatePromptContext()
         }
         binding = next
         if (active.length) await publish({ modules: active, table: nouns })

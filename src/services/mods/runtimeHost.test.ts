@@ -1806,6 +1806,67 @@ test('Worker prompt.suggest waits for a temporarily blocked prompt', async () =>
   expect(await result).toEqual({ result: { isShown: true } })
 })
 
+test('Worker prompt.context reconciles file rewrites before every downward and upward reader', async () => {
+  const observer = await plugin('context-observer', `let observed; export function register(on) {
+    on('prompt.context', async ($, e, next) => {
+      const result = await next(e);
+      observed = result;
+      return {blocks:[...result.blocks,{name:'outer',text:'outer marker'}]};
+    });
+    on('tool.call', () => ({result:observed}));
+  }`)
+  const files = [
+    {path:'/fixture/import.md',kind:'project',content:'import marker',parent:'/fixture/CLAUDE.md'},
+    {path:'/fixture/CLAUDE.md',kind:'project',content:'project marker'},
+  ]
+  const writer = await plugin('context-writer', `export function register(on) {
+    on('prompt.context', async ($, e, next) => {
+      const result = await next({...e,instructionFiles:${JSON.stringify(files)}});
+      return {...result,instructionFiles:[result.instructionFiles[1]]};
+    });
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.reconcile([observer,writer])
+  expect(diagnostics).toEqual([])
+  let received: any
+  const result = await value.dispatch('prompt.context', {blocks:[{name:'date',text:'today'}],instructionFiles:[]}, async input => {received=input;return input}) as any
+  expect(received.instructionFiles).toEqual(files)
+  expect(received.blocks.find((block: any) => block.name === 'claudeMd').text).toContain('import marker')
+  expect(received.blocks[0].text.indexOf('import marker')).toBeLessThan(received.blocks[0].text.indexOf('project marker'))
+  const observed = await value.dispatch('tool.call',{},async () => ({result:'unexpected'})) as any
+  expect(observed.result.instructionFiles).toEqual([files[1]])
+  expect(observed.result.blocks[0].text).not.toContain('import marker')
+  expect(result.instructionFiles).toEqual([files[1]])
+  expect(result.blocks.map((block:any) => block.name)).toEqual(['claudeMd','date','outer'])
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker prompt.context drops stale provenance and catches invalid file results without replaying core', async () => {
+  const observer = await plugin('context-observer', `export function register(on) {
+    on('prompt.context', async ($, e, next) => {const result=await next(e);return {blocks:result.blocks}});
+  }`)
+  const writer = await plugin('context-writer', `export function register(on) {
+    on('prompt.context', async ($, e, next) => {
+      const result=await next(e);
+      return {...result,instructionFiles:[{path:'relative',kind:'project',content:'invalid'}]};
+    }).catch(async ($, e, next) => {
+      const result=await next(e);
+      return {...result,blocks:[{name:'claudeMd',text:'opaque replacement'}]};
+    });
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.reconcile([observer,writer])
+  expect(diagnostics).toEqual([])
+  let calls=0
+  const result = await value.dispatch('prompt.context', {
+    blocks:[{name:'claudeMd',text:'original'}],
+    instructionFiles:[{path:'/fixture/CLAUDE.md',kind:'project',content:'original'}],
+  },async input => {calls++;return input})
+  expect(result).toEqual({blocks:[{name:'claudeMd',text:'opaque replacement'}]})
+  expect(calls).toBe(1)
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'context-writer',stage:'prompt.context',message:expect.stringContaining('absolute instruction paths')})])
+})
+
 test('Worker prompt.suggest cancellation does not wait for a blocked host suggestion', async () => {
   const caller = await plugin('suggest-cancel', `export function register(on) {
     on('tool.call', async $ => ({result:await $.prompt.suggest({text:'blocked'})}));
