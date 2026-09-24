@@ -1806,6 +1806,86 @@ test('Worker prompt.suggest waits for a temporarily blocked prompt', async () =>
   expect(await result).toEqual({ result: { isShown: true } })
 })
 
+test('Worker prompt.suggest cancellation does not wait for a blocked host suggestion', async () => {
+  const caller = await plugin('suggest-cancel', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'blocked'})}));
+  }`)
+  const entered = Promise.withResolvers<void>()
+  const blocked = Promise.withResolvers<boolean>()
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: () => { entered.resolve(); return blocked.promise },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-cancel' })
+  const controller = new AbortController()
+  const result = value.dispatch('tool.call', {}, async () => ({ result: 'core' }), {
+    signal: controller.signal,
+  }).catch(error => error)
+  await entered.promise
+  const reason = new Error('suggestion cancelled')
+  controller.abort(reason)
+  try {
+    expect(await Promise.race([
+      result,
+      new Promise(resolve => setImmediate(() => resolve('still waiting'))),
+    ])).toMatchObject({ name: 'AbortError' })
+  } finally {
+    blocked.resolve(false)
+    await result
+  }
+})
+
+test('Worker prompt.suggest rejects malformed calls, origin rewrites, and invalid results', async () => {
+  const malformed = await plugin('suggest-malformed', `export function register(on) {
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.prompt.suggest(e.input)}; }
+      catch (error) { return {result:{error:error.message}}; }
+    });
+  }`)
+  const rewrite = await plugin('suggest-rewrite', `export function register(on) {
+    on('prompt.suggest', ($,e,next) => next({...e,origin:{kind:'composer'}}));
+  }`)
+  const invalid = await plugin('suggest-invalid', `export function register(on) {
+    on('prompt.suggest', () => ({}));
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { prompt: () => ({
+      read: () => ({ text: '', cursor: 0 }),
+      fill: () => false,
+      suggest: () => true,
+    }) },
+  })
+  runtimes.push(value)
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-contract' })
+  const run = (input: unknown) => value.dispatch('tool.call', { input }, async () => ({ result: 'core' }))
+
+  await value.reconcile([malformed])
+  expect((await run({ text: 1 }) as any).result.error).toContain('prompt.suggest takes { text }')
+  expect((await run({ text: 'draft', extra: true }) as any).result.error).toContain('prompt.suggest takes { text }')
+
+  await value.reconcile([malformed, rewrite])
+  expect(await run({ text: 'draft' })).toEqual({ result: { isShown: true } })
+  expect(diagnostics).toContainEqual(expect.objectContaining({
+    plugin: 'suggest-rewrite',
+    stage: 'prompt.suggest',
+    message: expect.stringContaining('cannot rewrite origin'),
+  }))
+
+  diagnostics.length = 0
+  await value.reconcile([malformed, invalid])
+  expect(await run({ text: 'draft' })).toEqual({ result: { isShown: true } })
+  expect(diagnostics).toContainEqual(expect.objectContaining({
+    plugin: 'suggest-invalid',
+    stage: 'prompt.suggest',
+    message: expect.stringContaining('prompt.suggest must return isShown'),
+  }))
+})
+
 test('Worker prompt.suggest does not mutate headless, busy, filled, or blank prompts', async () => {
   const caller = await plugin('suggest-guards', `export function register(on) {
     on('tool.call', async ($,e) => ({result:await $.prompt.suggest({text:e.text})}));
