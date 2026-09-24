@@ -26,6 +26,11 @@ import {
   LOCAL_COMMAND_STDOUT_TAG,
 } from './constants/xml.js'
 import {
+  getUserContext,
+  getUserContextInstructionFiles,
+  withUserContextInstructionFiles,
+} from './context.js'
+import {
   getModelUsage,
   getTotalAPIDuration,
   getTotalCost,
@@ -419,13 +424,18 @@ export class QueryEngine {
       customSystemPrompt: customPrompt,
     })
     headlessProfilerCheckpoint('after_getSystemPrompt')
-    const userContext = {
-      ...baseUserContext,
-      ...getCoordinatorUserContext(
-        mcpClients,
-        isScratchpadEnabled() ? getScratchpadDir() : undefined,
-      ),
-    }
+    const buildUserContext = (base: Record<string, string>) =>
+      withUserContextInstructionFiles(
+        {
+          ...base,
+          ...getCoordinatorUserContext(
+            mcpClients,
+            isScratchpadEnabled() ? getScratchpadDir() : undefined,
+          ),
+        },
+        getUserContextInstructionFiles(base),
+      )
+    const userContext = buildUserContext(baseUserContext)
 
     // When an SDK caller provides a custom system prompt AND has set
     // CLAUDE_COWORK_MEMORY_PATH_OVERRIDE, inject the memory-mechanics prompt.
@@ -827,6 +837,7 @@ export class QueryEngine {
       messages,
       systemPrompt,
       userContext,
+      refreshUserContext: async () => buildUserContext(await getUserContext()),
       systemContext,
       canUseTool: wrappedCanUseTool,
       toolUseContext: processUserInputContext,

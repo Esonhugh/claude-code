@@ -63,6 +63,11 @@ if (process.env[childFlag] !== '1') {
   const { createAssistantMessage } = await import('../utils/messages.js')
   const queryModule = await import('../query.js')
   const contextModule = await import('../utils/queryContext.js')
+  const userContextModule = await import('../context.js')
+  const {
+    getUserContextInstructionFiles,
+    withUserContextInstructionFiles,
+  } = userContextModule
   const commandModule = await import('../commands.js')
   const plugins = await import('../utils/plugins/pluginLoader.js')
   const hooks = await import('../utils/hooks.js')
@@ -460,16 +465,43 @@ if (process.env[childFlag] !== '1') {
     async entry => {
       const transcripts: Message[][] = []
       const queryInputs: Array<{ messages: Message[]; publicTurn?: { text: string } }> = []
+      const queryUserContexts: Record<string, string>[] = []
+      const refreshCallbacks: Array<
+        (() => Promise<Record<string, string>>) | undefined
+      > = []
+      const instructionFiles = [
+        {
+          path: '/fixture/CLAUDE.md',
+          kind: 'project' as const,
+          content: 'Project instructions',
+        },
+      ]
+      const baseUserContext = withUserContextInstructionFiles(
+        { claudeMd: 'Rendered instructions', extraContext: 'base' },
+        instructionFiles,
+      )
+      const refreshedFiles = [
+        { ...instructionFiles[0]!, content: 'Updated instructions' },
+      ]
+      const refreshedBase = withUserContextInstructionFiles(
+        { claudeMd: 'Updated rendered instructions', extraContext: 'fresh' },
+        refreshedFiles,
+      )
+      const loadContext = spyOn(
+        userContextModule,
+        'getUserContext',
+      ).mockResolvedValue(refreshedBase)
       const processInput = inputModule.processUserInput
       const ingress: Parameters<typeof processInput>[0][] = []
       const mocks = [
+        loadContext,
         spyOn(inputModule, 'processUserInput').mockImplementation(args => {
           ingress.push(args)
           return processInput(args)
         }),
         spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
           defaultSystemPrompt: [],
-          userContext: {},
+          userContext: baseUserContext,
           systemContext: {},
         }),
         spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
@@ -488,6 +520,8 @@ if (process.env[childFlag] !== '1') {
         spyOn(queryModule, 'query').mockImplementation(
           async function* (params) {
             queryInputs.push(structuredClone({ messages: params.messages, publicTurn: params.publicTurn }))
+            queryUserContexts.push(params.userContext)
+            refreshCallbacks.push(params.refreshUserContext)
             yield createAssistantMessage({ content: 'peer received' })
             return { reason: 'completed' }
           },
@@ -549,6 +583,22 @@ if (process.env[childFlag] !== '1') {
         for await (const message of stream) output.push(message)
 
         expect(queryInputs).toHaveLength(1)
+        expect(queryUserContexts[0]).not.toBe(baseUserContext)
+        expect(queryUserContexts[0]).toEqual(baseUserContext)
+        expect(getUserContextInstructionFiles(queryUserContexts[0]!)).toEqual(
+          instructionFiles,
+        )
+        expect(refreshCallbacks[0]).toBeFunction()
+        const refreshed = await refreshCallbacks[0]!()
+        expect(refreshed).toEqual(refreshedBase)
+        expect(getUserContextInstructionFiles(refreshed)).toEqual(refreshedFiles)
+        loadContext.mockResolvedValue(
+          withUserContextInstructionFiles({ extraContext: 'removed' }, []),
+        )
+        const removed = await refreshCallbacks[0]!()
+        expect(removed).toEqual({ extraContext: 'removed' })
+        expect(getUserContextInstructionFiles(removed)).toEqual([])
+        expect(loadContext).toHaveBeenCalledTimes(2)
         expect(ingress[0]?.promptSubmitMetadata).toEqual(inputOptions.promptSubmitMetadata)
         expect(queryInputs[0]?.messages[0]).toMatchObject({
           type: 'user',
