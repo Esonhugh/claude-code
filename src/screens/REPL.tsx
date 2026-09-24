@@ -159,7 +159,12 @@ import {
 import { TeammateSpinnerTree } from '../components/Spinner/TeammateSpinnerTree.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js'
-import { getSystemContext, getUserContext } from '../context.js'
+import {
+  getSystemContext,
+  getUserContext,
+  getUserContextInstructionFiles,
+  withUserContextInstructionFiles,
+} from '../context.js'
 import {
   getMemoryFiles,
   hasExternalClaudeMdIncludes,
@@ -2893,6 +2898,8 @@ export function REPL({
         diffSession.current = getSessionId()
         diffController?.reset(getCwd())
         setAppState(state => state.diffSidebarVisible ? { ...state, diffSidebarVisible: false } : state)
+        getUserContext.cache.clear?.()
+        modsSession?.runtime?.invalidatePromptContext()
         if (modsSession) await awaitMods()
 
         // Persist the current mode so future resumes know what mode this session was in
@@ -4337,21 +4344,26 @@ export function REPL({
           getUserContext(),
           getSystemContext(),
         ])
-      const userContext = {
-        ...baseUserContext,
-        ...getCoordinatorUserContext(
-          freshMcpClients,
-          isScratchpadEnabled() ? getScratchpadDir() : undefined,
-        ),
-        ...((feature('PROACTIVE') || feature('KAIROS')) &&
-        proactiveModule?.isProactiveActive() &&
-        !terminalFocusRef.current
-          ? {
-              terminalFocus:
-                'The terminal is unfocused \u2014 the user is not actively watching.',
-            }
-          : {}),
-      }
+      const buildUserContext = (base: Record<string, string>) =>
+        withUserContextInstructionFiles(
+          {
+            ...base,
+            ...getCoordinatorUserContext(
+              freshMcpClients,
+              isScratchpadEnabled() ? getScratchpadDir() : undefined,
+            ),
+            ...((feature('PROACTIVE') || feature('KAIROS')) &&
+            proactiveModule?.isProactiveActive() &&
+            !terminalFocusRef.current
+              ? {
+                  terminalFocus:
+                    'The terminal is unfocused \u2014 the user is not actively watching.',
+                }
+              : {}),
+          },
+          getUserContextInstructionFiles(base),
+        )
+      const userContext = buildUserContext(baseUserContext)
       queryCheckpoint('query_context_loading_end')
 
       const systemPrompt = buildEffectiveSystemPrompt({
@@ -4372,6 +4384,7 @@ export function REPL({
         messages: messagesIncludingNewMessages,
         systemPrompt,
         userContext,
+        refreshUserContext: async () => buildUserContext(await getUserContext()),
         systemContext,
         canUseTool,
         toolUseContext,

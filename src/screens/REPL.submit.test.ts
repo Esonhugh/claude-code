@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
+import memoize from 'lodash-es/memoize.js'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import * as React from 'react'
@@ -9,6 +10,10 @@ import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { isCommandImmediate } from '../types/command.js'
 import { DiffController } from '../services/diff/controller.js'
+import {
+  getUserContextInstructionFiles,
+  withUserContextInstructionFiles,
+} from '../context.js'
 
 // Execute the actual callbacks without importing REPL's startup/services graph.
 function extract(path: string, name: string, kind: 'callback' | 'function' | 'effect' = 'callback') {
@@ -400,7 +405,8 @@ test('successful same-ID resume resets diff without waiting for identity change'
     agentDefinitions: {}, setMainThreadAgentDefinition: noop,
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
-    getCwd: () => '/repo', resetLoadingState: noop, setAbortController: noop,
+    getCwd: () => '/repo', getUserContext: Object.assign(async () => ({}), { cache: { clear: noop } }),
+    resetLoadingState: noop, setAbortController: noop,
     setConversationId: noop, getStoredSessionCosts: noop, saveCurrentSessionCosts: noop,
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
@@ -1597,4 +1603,172 @@ test('QueryEngine drains its own proactive prompt through real input admission',
     queue.resetCommandQueue()
     for (const mock of mocks) mock.mockRestore()
   }
+})
+
+test.each([false, true])('same-ID resume clears raw context after cwd/transcript restore before Mods bind (Mods=%s)', async withMods => {
+  let resets = 0
+  let state: any = { diffSidebarVisible: true }
+  let replaced = false
+  let cwd = '/old-repo'
+  let transcript = 'old-transcript'
+  const events: string[] = []
+  const getUserContext = memoize(async () => ({ claudeMd: `${cwd}:${transcript}` }))
+  expect(await getUserContext()).toEqual({ claudeMd: '/old-repo:old-transcript' })
+  const clearCache = getUserContext.cache.clear!.bind(getUserContext.cache)
+  const clear = spyOn(getUserContext.cache, 'clear').mockImplementation(() => {
+    events.push(`clear:${cwd}:${transcript}:${replaced}`)
+    clearCache()
+  })
+  const diffSession = { current: 'same-id' }
+  const resume = extract('./REPL.tsx', 'resume')({
+    deserializeMessages: (messages: any) => [...messages], feature: () => false,
+    getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
+    processSessionStartHooks: async () => [], mainThreadAgentDefinition: undefined,
+    mainLoopModel: 'synthetic', copyPlanForResume: noop, restoreSessionStateFromLog: noop,
+    restoreAgentFromSession: () => ({}), initialMainThreadAgentDefinition: undefined,
+    agentDefinitions: {}, setMainThreadAgentDefinition: noop,
+    setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
+    updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    getCwd: () => cwd, getUserContext, resetLoadingState: noop, setAbortController: noop,
+    setConversationId: noop, getStoredSessionCosts: noop, saveCurrentSessionCosts: noop,
+    resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
+    importModule: async () => ({ renameRecordingForSession: async () => {} }),
+    resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    setHaikuTitle: noop, exitRestoredWorktree: noop,
+    restoreWorktreeForResume: () => { cwd = '/target-repo' },
+    adoptResumedSessionFile: () => { transcript = 'target-transcript' },
+    restoreRemoteAgentTasks: noop, store: { getState: () => state },
+    setMessages: () => { replaced = true },
+    modsSession: withMods ? { runtime: { invalidatePromptContext: () => events.push('invalidate') } } : undefined,
+    awaitMods: async () => {
+      events.push('bind')
+      expect(await getUserContext()).toEqual({ claudeMd: '/target-repo:target-transcript' })
+    },
+    restoreGoalSessionFromLog: noop, contentReplacementStateRef: { current: null },
+    setToolJSX: noop, setInputValue: noop, logEvent: noop, diffSession,
+    getSessionId: () => 'same-id', diffController: { reset: () => { resets++ } },
+  })
+  try {
+    await resume('same-id', { messages: [] }, 'command')
+    expect(await getUserContext()).toEqual({ claudeMd: '/target-repo:target-transcript' })
+    expect(events).toEqual([
+      'clear:/target-repo:target-transcript:true', ...(withMods ? ['invalidate', 'bind'] : []),
+    ])
+    expect(clear).toHaveBeenCalledTimes(1)
+    expect(replaced).toBe(true)
+    expect(resets).toBe(1)
+    expect(state.diffSidebarVisible).toBe(false)
+    expect(diffSession.current).toBe('same-id')
+  } finally {
+    clear.mockRestore()
+  }
+})
+
+test('query refresh reloads raw REPL context with live overlays and instruction provenance', async () => {
+  const instructionFiles = [{
+    path: '/synthetic/project/CLAUDE.md',
+    kind: 'project' as const,
+    content: 'project instructions',
+  }]
+  const baseUserContext = withUserContextInstructionFiles({
+    claudeMd: 'rendered project instructions',
+    currentDate: 'Today is synthetic.',
+    coordinatorContext: 'base loses',
+    terminalFocus: 'base focus',
+  }, instructionFiles)
+  let loadedContext: Record<string, string> = baseUserContext
+  let loads = 0
+  const terminalFocusRef = { current: false }
+  let queryInput: any
+  let state: any = {
+    fastMode: false,
+    mcp: { clients: [] },
+    toolPermissionContext: { alwaysAllowRules: { command: [] } },
+  }
+  const onQueryImpl = extract('./REPL.tsx', 'onQueryImpl')({
+    modsSession: undefined,
+    awaitMods: noop,
+    initialMcpClients: [],
+    store: {
+      getState: () => state,
+      setState: (update: any) => { state = update(state) },
+    },
+    mergeClients: (_initial: any[], current: any[]) => current,
+    diagnosticTracker: { handleQueryStart: noop },
+    getConnectedIdeClient: () => undefined,
+    closeOpenDiffs: noop,
+    maybeMarkProjectOnboardingComplete: noop,
+    titleDisabled: true,
+    feature: (name: string) => name === 'PROACTIVE',
+    proactiveModule: { isProactiveActive: () => true },
+    terminalFocusRef,
+    getToolUseContext: () => ({
+      options: { tools: [], mcpClients: [] },
+      getAppState: () => ({}),
+    }),
+    toolPermissionContext: {
+      additionalWorkingDirectories: new Map(),
+    },
+    queryCheckpoint: noop,
+    checkAndDisableBypassPermissionsIfNeeded: noop,
+    setAppState: noop,
+    getSystemPrompt: async () => 'system prompt',
+    getUserContext: async () => { loads++; return loadedContext },
+    getUserContextInstructionFiles,
+    withUserContextInstructionFiles,
+    getSystemContext: async () => ({}),
+    getCoordinatorUserContext: () => ({ coordinatorContext: 'retained' }),
+    isScratchpadEnabled: () => false,
+    buildEffectiveSystemPrompt: () => 'system prompt',
+    mainThreadAgentDefinition: undefined,
+    customSystemPrompt: undefined,
+    appendSystemPrompt: undefined,
+    resetTurnHookDuration: noop,
+    resetTurnToolDuration: noop,
+    resetTurnClassifierDuration: noop,
+    query: async function* (input: any) {
+      queryInput = input
+      yield { type: 'assistant', message: { content: [] } }
+    },
+    canUseTool: noop,
+    getQuerySourceForREPL: () => 'repl_main_thread',
+    getUserContentText: (content: string) => content,
+    onQueryEvent: noop,
+    isAnt: () => false,
+    resetLoadingState: noop,
+    logQueryProfileReport: noop,
+    onTurnComplete: undefined,
+  })
+
+  await onQueryImpl([], [], new AbortController(), true, [], 'fixture')
+
+  expect(queryInput.userContext).not.toBe(baseUserContext)
+  expect(queryInput.userContext).toEqual({
+    claudeMd: 'rendered project instructions',
+    currentDate: 'Today is synthetic.',
+    coordinatorContext: 'retained',
+    terminalFocus: 'The terminal is unfocused — the user is not actively watching.',
+  })
+  expect(getUserContextInstructionFiles(queryInput.userContext)).toEqual(instructionFiles)
+  expect(getUserContextInstructionFiles(baseUserContext)).toEqual(instructionFiles)
+  expect(queryInput.refreshUserContext).toBeFunction()
+  const refreshedFiles = [{ ...instructionFiles[0]!, content: 'updated project instructions' }]
+  loadedContext = withUserContextInstructionFiles({
+    claudeMd: 'updated raw instructions', currentDate: 'Tomorrow',
+    coordinatorContext: 'fresh base loses', terminalFocus: 'fresh base focus', newlyLoaded: 'fresh',
+  }, refreshedFiles)
+  const refreshed = await queryInput.refreshUserContext()
+  expect(refreshed).toEqual({
+    ...loadedContext, coordinatorContext: 'retained',
+    terminalFocus: 'The terminal is unfocused — the user is not actively watching.',
+  })
+  expect(getUserContextInstructionFiles(refreshed)).toEqual(refreshedFiles)
+  expect(loadedContext.terminalFocus).toBe('fresh base focus')
+  terminalFocusRef.current = true
+  loadedContext = withUserContextInstructionFiles({ currentDate: 'After removal' }, [])
+  const removed = await queryInput.refreshUserContext()
+  expect(removed).toEqual({ currentDate: 'After removal', coordinatorContext: 'retained' })
+  expect(getUserContextInstructionFiles(removed)).toEqual([])
+  expect(loads).toBe(3)
 })
