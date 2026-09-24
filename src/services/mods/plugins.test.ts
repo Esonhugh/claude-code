@@ -78,6 +78,36 @@ describe('prepareModPlugins', () => {
     expect(getModPluginOrigin(loadedPlugin({source:'example@builtin',repository:'example@builtin',hookModules:undefined}),settings())).toEqual({plugin:'example@builtin',tier:'user'})
   })
 
+  test('trusted builtin Mods remain seated under external hook policy while spoofed identities do not', () => {
+    const trusted = loadedPlugin({
+      name: 'agents-md',
+      source: 'agents-md@builtin',
+      repository: 'agents-md@builtin',
+      isBuiltin: true,
+    })
+    const spoofed = loadedPlugin({
+      name: 'spoofed',
+      source: 'spoofed@builtin',
+      repository: 'spoofed@builtin',
+    })
+    for (const hookPolicy of [
+      { managedOnly: true, allDisabled: false },
+      { managedOnly: false, allDisabled: true },
+    ]) {
+      const result = prepareModPlugins(
+        [trusted, spoofed],
+        settings({ hookPolicy }),
+      )
+      expect(result.inputs.map(input => input.storageId)).toEqual([
+        'agents-md@builtin',
+      ])
+      expect(result.inputs[0]?.tier).toBe('builtin')
+      expect(result.errors).toHaveLength(1)
+      expect(result.errors[0]?.plugin).toBe('spoofed')
+      expect(result.errors[0]?.stage).toBe('policy')
+    }
+  })
+
   test('passes manifest version without treating builtin tier or manifest metadata as native identity', () => {
     const plugin = loadedPlugin({ isBuiltin: true, source: 'example@builtin', repository: 'example@builtin', manifest: { name: 'example', version: '1.2.3', isNative: true } as LoadedPlugin['manifest'] })
     const result = prepareModPlugins([plugin], settings())

@@ -156,8 +156,10 @@ export function prepareModPlugins(
       errors.push(diagnostic(plugin.name, 'native', 'sec-default is host-owned on this session; the external name collision is not loaded'))
       continue
     }
+    const trustedBuiltin =
+      plugin.isBuiltin === true && storageId === `${plugin.name}@builtin`
     const managed = policyEnabled?.[storageId] === true
-    if (allDisabled) {
+    if (!trustedBuiltin && allDisabled) {
       errors.push(
         diagnostic(
           plugin.name,
@@ -167,7 +169,7 @@ export function prepareModPlugins(
       )
       continue
     }
-    if (managedOnly && !managed) {
+    if (!trustedBuiltin && managedOnly && !managed) {
       errors.push(
         diagnostic(
           plugin.name,
