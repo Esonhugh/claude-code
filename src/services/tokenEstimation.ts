@@ -123,6 +123,7 @@ function stripToolSearchFieldsFromMessages(
 
 export async function countTokensWithAPI(
   content: string,
+  model?: string,
 ): Promise<number | null> {
   // Special case for empty content - API doesn't accept empty messages
   if (!content) {
@@ -134,16 +135,19 @@ export async function countTokensWithAPI(
     content: content,
   }
 
-  return countMessagesTokensWithAPI([message], [])
+  return countMessagesTokensWithAPI([message], [], model)
 }
 
 export async function countMessagesTokensWithAPI(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
   tools: Anthropic.Beta.Messages.BetaToolUnion[],
+  explicitModel?: string,
+  signal?: AbortSignal,
 ): Promise<number | null> {
-  return withTokenCountVCR(messages, tools, async () => {
+  signal?.throwIfAborted()
+  const model = explicitModel ?? getMainLoopModel()
+  return withTokenCountVCR(messages, tools, model, async () => {
     try {
-      const model = getMainLoopModel()
       const betas = getModelBetas(model)
       const containsThinking = hasThinkingBlocks(messages)
 
@@ -155,6 +159,7 @@ export async function countMessagesTokensWithAPI(
           tools,
           betas,
           containsThinking,
+          signal,
         })
       }
 
@@ -169,22 +174,25 @@ export async function countMessagesTokensWithAPI(
           ? betas.filter(b => VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(b))
           : betas
 
-      const response = await anthropic.beta.messages.countTokens({
-        model: normalizeModelStringForAPI(model),
-        messages:
-          // When we pass tools and no messages, we need to pass a dummy message
-          // to get an accurate tool token count.
-          messages.length > 0 ? messages : [{ role: 'user', content: 'foo' }],
-        tools,
-        ...(filteredBetas.length > 0 && { betas: filteredBetas }),
-        // Enable thinking if messages contain thinking blocks
-        ...(containsThinking && {
-          thinking: {
-            type: 'enabled',
-            budget_tokens: TOKEN_COUNT_THINKING_BUDGET,
-          },
-        }),
-      })
+      const response = await anthropic.beta.messages.countTokens(
+        {
+          model: normalizeModelStringForAPI(model),
+          messages:
+            // When we pass tools and no messages, we need to pass a dummy message
+            // to get an accurate tool token count.
+            messages.length > 0 ? messages : [{ role: 'user', content: 'foo' }],
+          tools,
+          ...(filteredBetas.length > 0 && { betas: filteredBetas }),
+          // Enable thinking if messages contain thinking blocks
+          ...(containsThinking && {
+            thinking: {
+              type: 'enabled',
+              budget_tokens: TOKEN_COUNT_THINKING_BUDGET,
+            },
+          }),
+        },
+        { signal },
+      )
 
       if (typeof response.input_tokens !== 'number') {
         // Vertex client throws
@@ -194,6 +202,7 @@ export async function countMessagesTokensWithAPI(
 
       return response.input_tokens
     } catch (error) {
+      signal?.throwIfAborted()
       logError(error)
       return null
     }
@@ -442,12 +451,14 @@ async function countTokensWithBedrock({
   tools,
   betas,
   containsThinking,
+  signal,
 }: {
   model: string
   messages: Anthropic.Beta.Messages.BetaMessageParam[]
   tools: Anthropic.Beta.Messages.BetaToolUnion[]
   betas: string[]
   containsThinking: boolean
+  signal?: AbortSignal
 }): Promise<number | null> {
   try {
     const client = await createBedrockRuntimeClient()
@@ -487,7 +498,9 @@ async function countTokensWithBedrock({
         },
       },
     }
-    const response = await client.send(new CountTokensCommand(input))
+    const response = await client.send(new CountTokensCommand(input), {
+      abortSignal: signal,
+    })
     const tokenCount = response.inputTokens ?? null
     return tokenCount
   } catch (error) {
