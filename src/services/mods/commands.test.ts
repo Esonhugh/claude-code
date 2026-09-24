@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createModsRuntime } from './runtime.js'
 import type { Command, LocalJSXCommandContext } from '../../types/command.js'
 import type { SlashCommandResult } from '../../utils/processUserInput/processSlashCommand.js'
 import { runModCommand } from './commandAdapter.js'
@@ -88,22 +92,36 @@ describe('mod command ownership', () => {
     expect(denied.projection([diff, help])).toEqual([diff, help])
   })
 
-  test('cannot opt an owner into replacing built-in names or aliases', () => {
+  test('a replacement policy never permits a built-in alias takeover', () => {
     const diff = command('diff', ['changes'])
     const owner = {}
-    const options = {
+    const registry = createRegistry({
       getBuiltinCommands: () => [diff],
-      allowBuiltinConflict: () => true,
-    }
-    const registry = createRegistry(options)
-    for (const name of ['diff', 'changes']) {
-      expect(() => registry.register(owner, { name, description: 'Replacement' }))
-        .toThrow(/refused: it is the built-in \/diff/)
-    }
+      canReplaceBuiltin: () => true,
+    })
+    expect(() => registry.register(owner, { name: 'changes', description: 'Replacement' }))
+      .toThrow(/refused: it is the built-in \/diff/)
     registry.commit(owner)
     expect(registry.list()).toEqual([])
     expect(registry.projection([diff])).toEqual([diff])
-    registry.release(owner)
+  })
+
+  test('allows only an explicitly trusted owner to replace the exact built-in command', () => {
+    const diff = command('diff', ['changes'])
+    const trusted = {}
+    const registry = createRegistry({
+      getBuiltinCommands: () => [diff],
+      canReplaceBuiltin: (owner, _spec, builtin) => owner === trusted && builtin.name === 'diff',
+    })
+    expect(registry.register(trusted, { name: 'diff', description: 'Official Mod diff' }))
+      .toEqual({ command: 'diff' })
+    expect(() => registry.register(trusted, { name: 'changes', description: 'Alias takeover' }))
+      .toThrow(/refused: it is the built-in \/diff/)
+    expect(() => registry.register({}, { name: 'diff', description: 'Spoofed takeover' }))
+      .toThrow(/refused: it is the built-in \/diff/)
+    registry.commit(trusted)
+    expect(registry.projection([diff]).map(item => item.description)).toEqual(['Official Mod diff'])
+    registry.release(trusted)
     expect(registry.projection([diff])).toEqual([diff])
   })
 
@@ -319,6 +337,167 @@ describe('mod command ownership', () => {
 })
 
 describe('mod command projection', () => {
+  test('lists real Worker command.describe answers through the shared projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-command-describe-'))
+    const entry = join(root, 'register.ts')
+    const builtin = { ...command('sample'), argumentHint: '[old]', immediate: true }
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({
+      services: { commands: () => [builtin] },
+      onDiagnostic: event => diagnostics.push(event),
+    })
+    try {
+      await writeFile(entry, `export function register(on) {
+        on('command.describe', {command:'sample'}, async ($, e, next) => {
+          if (e.description !== 'Built-in sample' || e.argumentHint !== '[old]' ||
+              e.isHidden !== false || e.immediate !== true ||
+              e.provider.plugin !== 'engine' || e.provider.tier !== 'core' ||
+              next.origin.plugin !== 'engine' || next.origin.tier !== 'core') throw Error('bad describe shape');
+          const result = await next({...e, description:'Worker description', argumentHint:'[new]', isHidden:true});
+          if (Object.keys(result).sort().join(',') !== 'argumentHint,description,isHidden') throw Error('bad result shape');
+          return result;
+        });
+        on('tool.call', async $ => ({result:await $.command.list()}));
+      }`)
+      await runtime.reconcile([{ name: 'describe', storageId: 'describe@test', pluginRoot: root, entrypoints: [entry] }])
+      expect(diagnostics).toEqual([])
+      expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+        result: [{ name: 'sample', description: 'Worker description', source: 'builtin' }],
+      })
+      const projected = runtime.commands.projection([builtin])[0]!
+      expect(projected).toMatchObject({
+        name: 'sample', description: 'Worker description', argumentHint: '[new]', isHidden: true, immediate: true,
+      })
+      expect(projected.userFacingName).toBe(builtin.userFacingName)
+      if (!('load' in projected) || !('load' in builtin)) throw new Error('Expected local command')
+      expect(projected.load).toBe(builtin.load)
+      expect(builtin.description).toBe('Built-in sample')
+      expect(diagnostics).toEqual([])
+    } finally {
+      await runtime.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rotates Worker description cache on hook reload and session change', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-command-lifecycle-'))
+    const entry = join(root, 'register.ts')
+    const builtin = command('sample')
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    const plugin = { name: 'lifecycle', storageId: 'lifecycle@test', pluginRoot: root, entrypoints: [entry] }
+    const binding = { cwd: root, surface: 'terminal' as const, isInteractive: true, sessionId: 'first' }
+    try {
+      const source = (label: string) => `let calls=0; export function register(on) {
+        on('command.describe', ($,e,next) => next({...e,description:'${label} '+(++calls)}));
+      }`
+      await writeFile(entry, source('old'))
+      await runtime.bind(binding)
+      await runtime.reconcile([plugin])
+      expect(diagnostics).toEqual([])
+      expect((await runtime.commands.describe([builtin]))[0]?.description).toBe('old 1')
+      expect((await runtime.commands.describe([builtin]))[0]?.description).toBe('old 1')
+      await writeFile(entry, source('new'))
+      await runtime.reconcile([plugin])
+      expect((await runtime.commands.describe([builtin]))[0]?.description).toBe('new 1')
+      await runtime.bind({ ...binding, sessionId: 'second' })
+      expect((await runtime.commands.describe([builtin]))[0]?.description).toBe('new 2')
+      await runtime.reconcile([])
+      expect((await runtime.commands.describe([builtin]))[0]?.description).toBe('Built-in sample')
+      expect(diagnostics).toEqual([])
+    } finally {
+      await runtime.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('preserves providers, origins, ownership and dynamic immediate while failing invalid hooks through', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-command-contract-'))
+    const entry = join(root, 'register.ts')
+    const immediate = () => true
+    const skill = {
+      type: 'prompt', name: 'pack:skill', source: 'plugin', loadedFrom: 'plugin',
+      description: 'Skill', immediate, progressMessage: 'Working', contentLength: 0,
+      pluginInfo: { pluginManifest: { name: 'pack' }, repository: 'pack@test' },
+      getPromptForCommand: async () => [],
+    } as Command
+    const invalid = ['command', 'immediate', 'provider', 'argumentHint', 'result', 'throw'].map(name => command(name))
+    const diagnostics: { stage: string; message: string }[] = []
+    const runtime = createModsRuntime({
+      services: { pluginOrigin: id => id === 'pack@test' ? { plugin: id, tier: 'append' } : undefined },
+      onDiagnostic: event => diagnostics.push(event),
+    })
+    try {
+      await writeFile(entry, `export function register(on) {
+        on('session.start', async ($,e,next) => {await $.command.register({name:'owned',description:'Owned',immediate:true});return next(e)});
+        on('command.describe', ($,e,next) => {
+          if(next.origin.plugin!=='engine'||next.origin.tier!=='core') throw Error('bad origin');
+          if(e.command==='owned') return {description:JSON.stringify(e.provider),isHidden:false};
+          if(e.command==='pack:skill') return {description:JSON.stringify({provider:e.provider,immediate:e.immediate}),isHidden:false};
+          if(e.command==='command') return next({...e,command:'other'});
+          if(e.command==='immediate') return next({...e,immediate:true});
+          if(e.command==='provider') return next({...e,provider:{plugin:'forged',tier:'core'}});
+          if(e.command==='argumentHint') return next({...e,argumentHint:17});
+          if(e.command==='result') return {description:'bad',argumentHint:17,isHidden:false};
+          throw Error('failed describe');
+        });
+      }`)
+      await runtime.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'contract' })
+      await runtime.reconcile([{ name: 'owner', storageId: 'owner@test', tier: 'prepend', pluginRoot: root, entrypoints: [entry] }])
+      expect(diagnostics).toEqual([])
+      const originals = runtime.commands.list()
+      const projected = await runtime.commands.describe([skill, ...invalid])
+      expect(JSON.parse(projected[0]!.description)).toEqual({ provider: { plugin: 'pack@test', tier: 'append' }, immediate: false })
+      expect(projected[0]!.immediate).toBe(immediate)
+      const owned = projected.at(-1)!
+      expect(JSON.parse(owned.description)).toEqual({ plugin: 'owner@test', tier: 'prepend' })
+      expect(owned.immediate).toBe(true)
+      expect(isModCommand(owned)).toBe(true)
+      expect(runtime.commands.ownerOf(owned)).toBe(runtime.commands.ownerOf(originals[0]!))
+      expect(projected.slice(1, -1).map(cmd => cmd.description)).toEqual(invalid.map(cmd => cmd.description))
+      expect(diagnostics).toHaveLength(invalid.length)
+      expect(diagnostics.every(event => event.stage === 'command.describe')).toBe(true)
+      const again = await runtime.commands.describe(projected)
+      expect(again).toEqual(projected)
+      expect(diagnostics).toHaveLength(invalid.length)
+    } finally {
+      await runtime.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('coalesces pending reads and never publishes a completion from an invalidated cache', async () => {
+    const first = Promise.withResolvers<{ description: string; isHidden: boolean }>()
+    const second = Promise.withResolvers<{ description: string; isHidden: boolean }>()
+    let calls = 0
+    const registry = createRegistry({ describe: async () => ++calls === 1 ? first.promise : second.promise })
+    const base = [command('pending')]
+    const reads = [registry.describe(base), registry.describe(base)]
+    expect(calls).toBe(1)
+    registry.invalidateDescriptions()
+    const fresh = registry.describe(base)
+    expect(calls).toBe(2)
+    second.resolve({ description: 'fresh', isHidden: false })
+    const projected = await fresh
+    const published = registry.getSnapshot()
+    first.resolve({ description: 'stale', isHidden: true })
+    await Promise.all(reads)
+    expect(registry.getSnapshot()).toBe(published)
+    expect(registry.projection(projected)[0]?.description).toBe('fresh')
+    expect((await registry.describe(projected))[0]?.description).toBe('fresh')
+    expect(calls).toBe(2)
+  })
+
+  test('does not resurrect released Mod commands from a help projection captured before release', async () => {
+    const registry = createRegistry({ describe: async command => ({ description: command.description, isHidden: false }) })
+    const owner = {}
+    registry.register(owner, { name: 'temporary', description: 'Temporary' })
+    registry.commit(owner)
+    const before = await registry.describe([])
+    registry.release(owner)
+    expect(registry.projection(before)).toEqual([])
+  })
+
   test('replaces colliding non-built-in commands while preserving unrelated order', () => {
     const owner = {}
     const registry = createRegistry()

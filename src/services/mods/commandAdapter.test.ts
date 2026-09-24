@@ -27,7 +27,7 @@ afterEach(() => {
 
 function snapshot(...handlers: ModDispatchHook['invoke'][]): ModSnapshot {
   return {
-    hasHooks: () => handlers.length > 0,
+    hasHooks: event => event === 'command.run' && handlers.length > 0,
     release() {},
     dispatch: (event, input, core, options) =>
       dispatchModEvent({
@@ -38,7 +38,7 @@ function snapshot(...handlers: ModDispatchHook['invoke'][]): ModSnapshot {
         hooks: handlers.map((invoke, index) => ({
           plugin: `test-${index}`,
           tier: 'user',
-          registration: { id: index + 1, event, hasCatch: false },
+          registration: { id: index + 1, event: 'command.run', hasCatch: false },
           invoke,
         })),
       }),

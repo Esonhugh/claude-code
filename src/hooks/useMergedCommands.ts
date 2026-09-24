@@ -1,7 +1,8 @@
 import uniqBy from 'lodash-es/uniqBy.js'
-import { useMemo, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import type { Command } from '../commands.js'
 import type { ModCommands } from '../services/mods/commands.js'
+import { logError } from '../utils/log.js'
 
 const emptyModCommands: Command[] = []
 const getEmptyModCommands = () => emptyModCommands
@@ -14,13 +15,8 @@ export function useReplCommands(
   pluginReconnectKey: number,
   isRemoteExecutionSession: boolean,
   disableSlashCommands: boolean,
-  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection'>,
+  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection' | 'describe'>,
 ): Command[] {
-  const modCommands = useSyncExternalStore(
-    mods?.subscribe ?? subscribeEmptyMods,
-    mods?.getSnapshot ?? getEmptyModCommands,
-    getEmptyModCommands,
-  )
   const localCommandsWithoutReloadedPlugins = useMemo(
     () =>
       !isRemoteExecutionSession && pluginReconnectKey > 0
@@ -38,10 +34,25 @@ export function useReplCommands(
     commandsWithPlugins,
     isRemoteExecutionSession ? [] : mcpCommands,
   )
-  return useMemo(
-    () => disableSlashCommands ? [] : !isRemoteExecutionSession && mods ? mods.projection(mergedCommands) : mergedCommands,
-    [disableSlashCommands, isRemoteExecutionSession, mergedCommands, mods, modCommands],
+  return useModCommandProjection(
+    disableSlashCommands ? emptyModCommands : mergedCommands,
+    disableSlashCommands || isRemoteExecutionSession ? undefined : mods,
   )
+}
+
+export function useModCommandProjection(
+  commands: Command[],
+  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection' | 'describe'>,
+): Command[] {
+  const snapshot = useSyncExternalStore(
+    mods?.subscribe ?? subscribeEmptyMods,
+    mods?.getSnapshot ?? getEmptyModCommands,
+    getEmptyModCommands,
+  )
+  useEffect(() => {
+    if (mods) void mods.describe(commands).catch(logError)
+  }, [commands, mods, snapshot])
+  return useMemo(() => mods?.projection(commands) ?? commands, [commands, mods, snapshot])
 }
 
 export function useMergedCommands(

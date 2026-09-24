@@ -92,6 +92,7 @@ export function createModsSession(options: ModsSessionOptions) {
       return () => { commandListeners.delete(listener) }
     },
     projection: (existing: Command[]) => runtime?.commands.projection(existing) ?? existing,
+    describe: (existing: Command[]) => runtime?.commands.describe(existing) ?? Promise.resolve(existing),
   }
 
   const readSettings =

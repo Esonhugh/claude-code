@@ -9,6 +9,8 @@ import {
 } from '../../commands.js'
 import { useIsInsideModal } from '../../context/modalContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
+import { useModCommandProjection } from '../../hooks/useMergedCommands.js'
+import type { ModCommands } from '../../services/mods/commands.js'
 import { Box, Link, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import { Pane } from '../design-system/Pane.js'
@@ -24,9 +26,11 @@ type Props = {
     options?: { display?: CommandResultDisplay },
   ) => void
   commands: Command[]
+  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection' | 'describe'>
 }
 
-export function HelpV2({ onClose, commands }: Props): React.ReactNode {
+export function HelpV2({ onClose, commands: initialCommands, mods }: Props): React.ReactNode {
+  const commands = useModCommandProjection(initialCommands, mods)
   const { rows, columns } = useTerminalSize()
   const maxHeight = Math.floor(rows / 2)
   // Inside the modal slot, FullscreenLayout already caps height and Pane/Tabs

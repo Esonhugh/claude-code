@@ -11,6 +11,7 @@ export type ModCommandSpec = {
   immediate?: true
 }
 
+export type ModCommandDescription = { description: string; argumentHint?: string; isHidden: boolean }
 export type ModCommandRunResult = { text?: string }
 export type ModCommandOwner = object
 
@@ -24,6 +25,8 @@ export type ModCommands = {
   getSnapshot(): Command[]
   subscribe(listener: () => void): () => void
   projection(existing: Command[]): Command[]
+  describe(existing: Command[]): Promise<Command[]>
+  invalidateDescriptions(notify?: boolean): void
 }
 
 const modCommand = Symbol('mod command')
@@ -36,8 +39,16 @@ export function isModCommand(command: Command): command is MarkedCommand {
 export function createModCommands({
   getBuiltinCommands,
   run,
+  describe,
+  canReplaceBuiltin,
 }: {
   getBuiltinCommands: () => readonly Command[]
+  describe?: (command: Command, owner?: ModCommandOwner) => Promise<ModCommandDescription>
+  canReplaceBuiltin?: (
+    owner: ModCommandOwner,
+    spec: Readonly<ModCommandSpec>,
+    command: Command,
+  ) => boolean
   run: (
     command: string,
     args: string,
@@ -50,6 +61,26 @@ export function createModCommands({
   const active = new Map<string, { command: Command; owner: ModCommandOwner }>()
   const listeners = new Set<() => void>()
   let snapshot: Command[] = Object.freeze([]) as Command[]
+  let descriptions = new WeakMap<Command, { pending: Promise<void>; command?: Command }>()
+  const originals = new WeakMap<Command, Command>()
+
+  function merge(existing: Command[]): Command[] {
+    const base = existing.map(command => originals.get(command) ?? command).filter(command => !isModCommand(command))
+    if (snapshot.length === 0) return base
+    const activeNames = new Set(snapshot.map(command => command.name))
+    return [
+      ...base.filter(command =>
+        !activeNames.has(command.name) &&
+        !command.aliases?.some(alias => activeNames.has(alias)),
+      ),
+      ...snapshot,
+    ]
+  }
+
+  function projection(existing: Command[]): Command[] {
+    if (!describe && snapshot.length === 0 && !existing.some(isModCommand)) return existing
+    return merge(existing).map(command => descriptions.get(command)?.command ?? command)
+  }
 
   function validateOwner(owner: ModCommandOwner): void {
     if ((typeof owner !== 'object' && typeof owner !== 'function') || owner === null)
@@ -135,6 +166,10 @@ export function createModCommands({
       for (const builtin of getBuiltinCommands()) {
         if (builtin.name !== spec.name && builtin.aliases?.includes(spec.name) !== true)
           continue
+        if (
+          builtin.name === spec.name &&
+          canReplaceBuiltin?.(owner, spec, builtin)
+        ) continue
         throw new Error(`Command /${spec.name} refused: it is the built-in /${builtin.name}`)
       }
       if (publishedOwners.has(owner)) {
@@ -191,7 +226,7 @@ export function createModCommands({
     list: () => snapshot,
     ownerOf(command) {
       const registered = active.get(command.name)
-      return registered?.command === command ? registered.owner : undefined
+      return registered?.command === (originals.get(command) ?? command) ? registered.owner : undefined
     },
     getSnapshot: () => snapshot,
 
@@ -200,16 +235,34 @@ export function createModCommands({
       return () => listeners.delete(listener)
     },
 
-    projection(existing) {
-      if (snapshot.length === 0) return existing
-      const activeNames = new Set(snapshot.map(command => command.name))
-      return [
-        ...existing.filter(command =>
-          !activeNames.has(command.name) &&
-          !command.aliases?.some(alias => activeNames.has(alias)),
-        ),
-        ...snapshot,
-      ]
+    projection,
+    async describe(existing) {
+      if (!describe) return projection(existing)
+      const cache = descriptions
+      let changed = false
+      await Promise.all(merge(existing).map(command => {
+        let entry = cache.get(command)
+        if (!entry) {
+          const next: { pending: Promise<void>; command?: Command } = { pending: Promise.resolve() }
+          cache.set(command, next)
+          next.pending = describe(command, active.get(command.name)?.owner).then(result => {
+            next.command = { ...command, description: result.description, argumentHint: result.argumentHint, isHidden: result.isHidden }
+            originals.set(next.command, command)
+            changed = true
+          }).catch(error => {
+            cache.delete(command)
+            throw error
+          })
+          entry = next
+        }
+        return entry.pending
+      }))
+      if (cache === descriptions && changed) publish()
+      return projection(existing)
+    },
+    invalidateDescriptions(notify = true) {
+      descriptions = new WeakMap()
+      if (notify) publish()
     },
   }
 }

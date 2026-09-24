@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { getCommandName, type Command, type LocalJSXCommandContext, type LocalJSXCommandOnDone } from '../../types/command.js'
-import { isModCommand } from './commands.js'
+import { isModCommand, type ModCommandDescription } from './commands.js'
+import type { ModOrigin } from './types.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import {
   createCommandInputMessage,
@@ -10,6 +11,46 @@ import type { SlashCommandResult } from '../../utils/processUserInput/processSla
 import type { PromptOrigin } from './promptAdapter.js'
 import type { ModSnapshot } from './runtime.js'
 import { createToolCatalogForContext } from './toolCatalog.js'
+
+export async function describeModCommand(
+  snapshot: ModSnapshot,
+  command: Command,
+  provider: ModOrigin,
+): Promise<ModCommandDescription> {
+  const input = {
+    command: command.name,
+    description: command.description,
+    ...(command.argumentHint === undefined ? {} : { argumentHint: command.argumentHint }),
+    isHidden: command.isHidden === true,
+    immediate: command.immediate === true,
+    provider,
+  }
+  function validateDescription(value: unknown): asserts value is ModCommandDescription {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        !('description' in value) || typeof value.description !== 'string' ||
+        !('isHidden' in value) || typeof value.isHidden !== 'boolean' ||
+        ('argumentHint' in value && value.argumentHint !== undefined && typeof value.argumentHint !== 'string'))
+      throw new Error('command.describe requires description, isHidden and an optional string argumentHint')
+  }
+  return await snapshot.dispatch('command.describe', input, async value => ({
+    description: value.description,
+    ...(value.argumentHint === undefined ? {} : { argumentHint: value.argumentHint }),
+    isHidden: value.isHidden,
+  }), {
+    validateInput: value => {
+      validateDescription(value)
+      for (const key of ['command', 'immediate', 'provider'] as const) {
+        if (!isDeepStrictEqual(value[key], input[key]))
+          throw new Error(`command.describe cannot rewrite ${key}`)
+      }
+    },
+    validateResult: value => {
+      validateDescription(value)
+      if (Object.keys(value).some(key => !['description', 'argumentHint', 'isHidden'].includes(key)))
+        throw new Error('command.describe may only return description, argumentHint and isHidden')
+    },
+  }) as ModCommandDescription
+}
 
 export type CommandPresentation = { isFullscreen: boolean; columns: number }
 export type CommandRunInput = {

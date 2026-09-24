@@ -11,7 +11,7 @@ import { getNativeModDeclaration } from './native.js'
 import { matchesModEventPattern } from './matcher.js'
 import { createModHostOperations, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
-import { runModCommand, type CommandPresentation } from './commandAdapter.js'
+import { describeModCommand, runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
@@ -234,6 +234,30 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         ? command.source === 'builtin' || command.source === 'bundled'
         : !command.isMcp && (command.loadedFrom === undefined || command.loadedFrom === 'bundled'),
     ),
+    canReplaceBuiltin: (owner, spec, command) => {
+      const declaration = (owner as Activation).declaration
+      return declaration.storageId === 'diff@builtin' &&
+        declaration.tier === 'builtin' &&
+        spec.name === 'diff' &&
+        command.name === 'diff'
+    },
+    describe: async (command, registeredOwner) => {
+      const snapshot = capture()
+      try {
+        const owner = registeredOwner as Activation | undefined
+        const plugin = command.type === 'prompt' ? command.pluginInfo?.repository : undefined
+        const provider: ModOrigin = owner
+          ? { plugin: owner.declaration.storageId, tier: owner.declaration.tier }
+          : plugin
+            ? snapshot.pluginOrigin?.(plugin) ?? { plugin, tier: 'user' }
+            : command.isMcp || command.loadedFrom === 'mcp'
+              ? { plugin: `mcp:${command.mcpServerName ?? command.name}`, tier: 'user' }
+              : command.type === 'prompt' && !['builtin', 'bundled'].includes(command.source)
+                ? { plugin: command.source, tier: command.source === 'policySettings' ? 'prepend' : 'user' }
+                : { plugin: 'engine', tier: 'core' }
+        return await describeModCommand(snapshot, command, provider)
+      } finally { snapshot.release() }
+    },
     run: async (name, args, context) => {
       const command = commands.list().find(command => command.name === name)
       if (!command) throw new Error(`Mod command /${name} is no longer active`)
@@ -493,6 +517,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       }
       case 'ui.invalidate':
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (input.event === 'command.describe') {
+          commands.invalidateDescriptions()
+          return undefined
+        }
         if (input.event === 'tool.describe') {
           descriptionCache.value = new WeakMap()
           return undefined
@@ -515,7 +543,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         return undefined
       }
       case 'command.register': return commands.register(owner, input as ModCommandSpec)
-      case 'command.list': return commands.projection([...(services.commands?.() ?? [])]).map(command => {
+      case 'command.list': return (await commands.describe([...(services.commands?.() ?? [])])).map(command => {
         const owner = commands.ownerOf(command) as Activation | undefined
         const plugin = owner?.declaration.name ?? (command.type === 'prompt' ? command.pluginInfo?.pluginManifest.name : undefined)
         const source = owner || command.loadedFrom === 'plugin'
@@ -1127,11 +1155,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     const replaced = active.filter(owner => !built.modules.includes(owner))
     active = built.modules
+    const commandsChanged = nouns !== built.table
     if (nouns !== built.table) descriptionCache = { value: new WeakMap() }
     nouns = built.table
     lastInterface = interfaceStates.get(nouns)!
     await Promise.all(active.map(owner => owner.environment.setUiAccess(uiAllowed(owner, nouns))))
     // Publish the matching hook generation before notifying command subscribers.
+    const previousCommands = commands.getSnapshot()
+    if (commandsChanged) commands.invalidateDescriptions(false)
     for (const owner of prepared) {
       commands.commit(owner, replacements.get(owner))
       owner.uiPublished = true
@@ -1144,6 +1175,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       if (!owners.size) crashedWithholders.delete(noun)
     }
     for (const owner of replaced) retire(owner)
+    if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
     const staleDrawings = [...drawings.values()].some(lease => [...lease.participants].some(owner => !active.includes(owner)))
     if (staleDrawings && services.uiPresentation && !stopped) await ui.render(services.uiPresentation())
   }
@@ -1378,6 +1410,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (ending || binding?.sessionId !== next.sessionId) {
           await ending
           ending = undefined
+          commands.invalidateDescriptions()
         }
         binding = next
         if (active.length) await publish({ modules: active, table: nouns })
