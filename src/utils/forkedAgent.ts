@@ -104,6 +104,7 @@ export type ForkedAgentParams = {
    * sharing is not a goal (e.g., compact summaries).
    */
   maxOutputTokens?: number
+  toolChoice?: { type: 'none' }
   /** Optional cap on number of turns (API round-trips) */
   maxTurns?: number
   /** Optional callback invoked for each message as it arrives (for streaming UI) */
@@ -530,6 +531,7 @@ export async function runForkedAgent({
   onMessage,
   skipTranscript,
   skipCacheWrite,
+  toolChoice,
 }: ForkedAgentParams): Promise<ForkedAgentResult> {
   const startTime = Date.now()
   const outputMessages: Message[] = []
@@ -587,6 +589,7 @@ export async function runForkedAgent({
       maxOutputTokensOverride: maxOutputTokens,
       maxTurns,
       skipCacheWrite,
+      toolChoice,
     })) {
       // Extract real usage from message_delta stream events (final usage per API call)
       if (message.type === 'stream_event') {

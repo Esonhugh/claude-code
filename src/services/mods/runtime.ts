@@ -1,3 +1,5 @@
+import type { CacheSafeParams } from '../../utils/forkedAgent.js'
+import type { ModModelForkRequest, ModModelForkResult } from './types.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -21,7 +23,7 @@ import {
   validateModCompactResult,
 } from './compactAdapter.js'
 import { dispatchModEvent, pauseModBudget } from './dispatch.js'
-import { createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
+import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
 import {
@@ -62,6 +64,7 @@ export type ModBinding = {
   sessionId: string
 }
 export type ModRequestServices = {
+  modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
   toolCatalog?(): ToolCatalog
   captureUsage?(): ModUsageReader
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
@@ -170,7 +173,7 @@ const coreHost: Nouns = {
   command: { register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
   tool: { list: hostIdentity },
-  model: { complete: hostIdentity, classify: hostIdentity },
+  model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
@@ -203,6 +206,9 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   const capabilityContext = new AsyncLocalStorage<{ table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
   const invocationSignal = new AsyncLocalStorage<AbortSignal>()
   const requestServices = new AsyncLocalStorage<ModRequestServices>()
+  let forkSnapshot: CacheSafeParams | null = null
+  let forkGeneration = 0
+  const productionModelFork = createModModelFork(() => forkSnapshot)
   const productionModelComplete = createModModelComplete()
   const uiContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; person: boolean; active?: boolean }>()
   const drawingCallbackPlugin = new AsyncLocalStorage<string>()
@@ -512,7 +518,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           throw new TypeError('prompt.suggest takes { text }')
         return { text: (input as ModInput).text }
       }
-      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': return args[0] as ModInput
+      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': case 'model.fork': return args[0] as ModInput
       case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
@@ -1016,6 +1022,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
               return { value: await usage(rewritten, signal) }
             }
             const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? productionModelComplete
+            if (op === 'model.fork') {
+              const fork = requestServices.getStore()?.modelFork ?? services.modelFork ?? productionModelFork
+              return { value: fork ? await fork(rewritten as ModModelForkRequest, signal) : null }
+            }
             if (op === 'model.complete') {
               return { value: await completion(rewritten as ModModelCompleteRequest, signal) }
             }
@@ -1135,6 +1145,20 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       if ('deny' in result && typeof result.deny === 'string') return
       if (!('value' in result)) throw new TypeError('session.usage must return value or deny')
       validateModSessionUsage(result.value)
+      return
+    }
+    if (event === 'model.fork') {
+      const envelope = result as {value?: ModModelForkResult; deny?: string} | null
+      if (typeof envelope?.deny === 'string') return
+      if (!envelope || !('value' in envelope)) throw new TypeError('model.fork must return value or deny')
+      const value = envelope.value
+      if (value === null) return
+      if (!value || typeof value.text !== 'string' || !value.usage ||
+        Object.keys(value.usage).length !== 4 ||
+        !['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'].every(key =>
+          typeof (value.usage as Record<string, unknown>)[key] === 'number' &&
+          Number.isFinite((value.usage as Record<string, unknown>)[key])))
+        throw new TypeError('model.fork must return text and four usage fields, or null')
       return
     }
     if (event === 'model.complete' || event === 'model.classify') {
@@ -1274,6 +1298,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         } } : {}),
         validateResult: (result, nextResults) => { validateResult(event, result); options.validateResult?.(result, nextResults) },
         validateInput: (value, received) => {
+          if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
+            throw new TypeError('model.fork takes only {prompt: string}')
           if (event === 'session.usage') validateModSessionUsageArgs(value)
           if (event === 'session.compact') {
             validateModCompactInput(value)
@@ -1719,6 +1745,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     )
       return Promise.resolve()
     if (ending) return ending
+    forkSnapshot = null
+    forkGeneration++
 
     const input = {
       reason,
@@ -1743,6 +1771,15 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     return ending
   }
   return {
+    captureForkSnapshotWriter() {
+      const generation = forkGeneration
+      return (params: CacheSafeParams) => {
+        if (!stopped && generation === forkGeneration) forkSnapshot = {
+          ...params, forkContextMessages:[...params.forkContextMessages],
+          toolUseContext:{...params.toolUseContext, options:{...params.toolUseContext.options}},
+        }
+      }
+    },
     capture,
     invalidatePromptContext,
     measure,
@@ -1771,6 +1808,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         )
           return
         if (ending || binding?.sessionId !== next.sessionId) {
+          forkSnapshot = null
+          forkGeneration++
           await ending
           if (binding && binding.sessionId !== next.sessionId) {
             for (const owner of active)
@@ -1792,6 +1831,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       if (disposal) return disposal
       stopped = true
       publicTurn = undefined
+      forkSnapshot = null
+      forkGeneration++
       controller.abort()
       disposal = (async () => {
         await measurements.stop()

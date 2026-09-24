@@ -1,3 +1,6 @@
+import { runForkedAgent, extractResultText, type CacheSafeParams } from '../../utils/forkedAgent.js'
+import { createUserMessage } from '../../utils/messages.js'
+import type { ModModelForkRequest, ModModelForkResult } from './types.js'
 import { getModelMaxOutputTokens } from '../../utils/context.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
@@ -146,5 +149,45 @@ export function createModModelClassify(
       maxTokens: 1024,
     }, signal)
     return labels.includes(answer) ? answer : undefined
+  }
+}
+
+export function createModModelFork(
+  snapshot: () => CacheSafeParams | null,
+  run: typeof runForkedAgent = runForkedAgent,
+) {
+  return async (request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult> => {
+    if (!request || typeof request !== 'object' || Array.isArray(request) ||
+      typeof request.prompt !== 'string' || Object.keys(request).some(key => key !== 'prompt'))
+      throw new TypeError('model.fork takes only {prompt: string}')
+    signal?.throwIfAborted()
+    const cacheSafeParams = snapshot()
+    if (!cacheSafeParams) return null
+    const abortController = new AbortController()
+    const abort = () => abortController.abort(signal?.reason)
+    signal?.addEventListener('abort', abort, {once:true})
+    try {
+      const result = await withAbort(run({
+        cacheSafeParams,
+        promptMessages: [createUserMessage({content:request.prompt})],
+        canUseTool: async () => ({behavior:'deny',message:'model.fork does not use tools',decisionReason:{type:'other',reason:'Tool-less fork'}}),
+        querySource: 'mods_model_fork',
+        forkLabel: 'mods_model_fork',
+        maxTurns: 1,
+        toolChoice: {type:'none'},
+        skipTranscript: true,
+        skipCacheWrite: true,
+        overrides: {abortController, requireCanUseTool:true},
+      }), signal)
+      signal?.throwIfAborted()
+      if (result.messages.some(message => message.type === 'assistant' && message.isApiErrorMessage)) return null
+      const {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens} = result.totalUsage
+      return {text:extractResultText(result.messages, ''),usage:{input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens}}
+    } catch {
+      signal?.throwIfAborted()
+      return null
+    } finally {
+      signal?.removeEventListener('abort', abort)
+    }
   }
 }

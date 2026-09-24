@@ -1,5 +1,8 @@
 import type { ModMatcher } from './matcher.js'
 
+export type ModModelForkRequest = { prompt: string }
+export type ModModelForkResult = { text: string; usage: Omit<ModTurnUsage, 'model'> } | null
+
 export type ModTier = 'prepend' | 'user' | 'append' | 'builtin' | 'core'
 export type ModInput = Record<string, unknown>
 export type ModHookStream<C = unknown, R = unknown> = AsyncGenerator<C, R> & { readonly result: Promise<R> }

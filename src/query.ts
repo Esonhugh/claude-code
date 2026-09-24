@@ -219,6 +219,8 @@ export type QueryParams = {
   maxOutputTokensOverride?: number
   maxTurns?: number
   stopHookActive?: boolean
+  toolChoice?: { type: 'none' }
+  saveModForkSnapshot?: (params: CacheSafeParams) => void
   skipCacheWrite?: boolean
   /** Explicit main/public prompt admitted for this model turn. */
   publicTurn?: { text: string }
@@ -259,6 +261,9 @@ export async function* query(
   | ToolUseSummaryMessage,
   Terminal
 > {
+  if (!params.toolUseContext.agentId && (params.querySource === 'repl_main_thread' || params.querySource === 'sdk')) {
+    params = {...params, saveModForkSnapshot: params.toolUseContext.mods?.captureForkSnapshotWriter?.()}
+  }
   const consumedCommandUuids: string[] = []
   let catalogContext = { ...params.toolUseContext, messages: params.messages }
   const snapshot = catalogContext.mods?.capture({
@@ -978,7 +983,7 @@ async function* queryLoop(
               ...(config.gates.fastModeEnabled && {
                 fastMode: appState.fastMode,
               }),
-              toolChoice: undefined,
+              toolChoice: params.toolChoice,
               isNonInteractiveSession:
                 toolUseContext.options.isNonInteractiveSession,
               fallbackModel,
@@ -1603,6 +1608,11 @@ async function* queryLoop(
         contextBlocks,
       )
 
+      if (!toolUseContext.abortController.signal.aborted && stopHookResult.blockingErrors.length === 0) {
+        params.saveModForkSnapshot?.({systemPrompt,userContext,systemContext,
+          resolvedPromptContextBlocks:contextBlocks,toolUseContext,
+          forkContextMessages:[...messagesForQuery,...assistantMessages]})
+      }
       if (stopHookResult.preventContinuation) {
         return { reason: 'stop_hook_prevented' }
       }

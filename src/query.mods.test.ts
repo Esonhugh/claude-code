@@ -2235,3 +2235,17 @@ describe('public query prompt.attachment', () => {
     } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
   })
 })
+
+test('main query publishes completed cache-safe fork snapshot and sends tool-less choice', async () => {
+  const requests: any[] = [], snapshots: any[] = []
+  const h = harness(async function* (request) {requests.push(request);yield response('fork-parent','completed')})
+  Object.assign(h.context.mods!, {captureForkSnapshotWriter:() => (value: unknown) => snapshots.push(value)})
+  h.params.toolChoice = {type:'none'}
+  await drain(query(h.params))
+  expect(requests[0].options.toolChoice).toEqual({type:'none'})
+  expect(snapshots).toHaveLength(1)
+  expect(snapshots[0].forkContextMessages.at(-1).message.content).toEqual([{type:'text',text:'completed'}])
+  h.context.agentId = asAgentId('child')
+  await drain(query(h.params))
+  expect(snapshots).toHaveLength(1)
+})

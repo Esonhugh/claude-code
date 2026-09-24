@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import * as forkedAgent from '../../utils/forkedAgent.js'
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -173,4 +174,75 @@ test('aborting the parent request rejects the model operation and aborts the com
 
   await expect(pending).rejects.toMatchObject({name:'AbortError'})
   expect(boundarySignal?.aborted).toBe(true)
+})
+test('model fork crosses production loader and Worker with hook rewriting', async () => {
+  const consumer = await plugin('fork-consumer', `export function register(on) {
+    on('tool.call', async ($) => ({result:await $.model.fork({prompt:'question'})}));
+  }`)
+  const policy = await plugin('fork-policy', `export function register(on) {
+    on('model.fork', ($, e, next) => next({...e,prompt:e.prompt+' rewritten'}));
+  }`)
+  const calls: unknown[] = []
+  const value = createModsRuntime({services:{modelFork:async request => {calls.push(request);return null}}})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer,policy])
+  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:null})
+  expect(calls).toEqual([{prompt:'question rewritten'}])
+})
+
+test('fork snapshots are session-owned, cleared on identity reset and reject stale writers', async () => {
+  const consumer = await plugin('session-fork', `export function register(on) {
+    on('tool.call',async ($) => ({result:await $.model.fork({prompt:'fork'})}));
+  }`)
+  const calls: any[] = []
+  const transport = spyOn(forkedAgent,'runForkedAgent').mockImplementation(async params => {
+    calls.push(params)
+    return {messages:[],totalUsage:{input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4} as any}
+  })
+  try {
+    const first = createModsRuntime(), second = createModsRuntime()
+    runtimes.push(first,second)
+    for (const runtime of [first,second]) {
+      await runtime.bind(binding(root))
+      await runtime.reconcile([consumer])
+    }
+    const invoke = (runtime: typeof first) => runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+    const stale = first.captureForkSnapshotWriter()
+    stale({systemPrompt:['first'],userContext:{},systemContext:{},forkContextMessages:[],toolUseContext:{options:{tools:[]}}} as any)
+    expect(await invoke(second)).toEqual({result:null})
+    expect(await invoke(first)).toMatchObject({result:{text:''}})
+    expect(calls).toHaveLength(1)
+    await first.bind({...binding(root),sessionId:'new'})
+    stale({systemPrompt:['stale']} as any)
+    expect(await invoke(first)).toEqual({result:null})
+    expect(calls).toHaveLength(1)
+  } finally { transport.mockRestore() }
+})
+
+test('fork deny never reaches the provider and caller abort propagates through Worker', async () => {
+  const consumer = await plugin('fork-blocked', `export function register(on) {
+    on('tool.call',async ($) => {try {return {result:await $.model.fork({prompt:'x'})}} catch(e) {return {result:e.message}}});
+  }`)
+  const policy = await plugin('fork-deny', `export function register(on) {
+    on('model.fork',() => ({deny:'fork denied'}));
+  }`)
+  let calls = 0
+  const entered = Promise.withResolvers<void>()
+  const value = createModsRuntime({services:{modelFork:async (_request,signal) => {
+    calls++; entered.resolve()
+    return await new Promise((_resolve,reject) => signal!.addEventListener('abort',() => reject(signal!.reason),{once:true}))
+  }}})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer,policy])
+  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'fork denied'})
+  expect(calls).toBe(0)
+  await value.reconcile([consumer])
+  const controller = new AbortController()
+  const pending = value.dispatch('tool.call',{},async () => ({result:'core'}),{signal:controller.signal})
+  await entered.promise
+  controller.abort(new Error('fork caller cancelled'))
+  // Runtime dispatch normalizes cancellation; the adapter separately preserves its input reason.
+  await expect(pending).rejects.toMatchObject({name:'AbortError'})
 })
