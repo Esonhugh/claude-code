@@ -1200,6 +1200,80 @@ test('parent cancellation reaches an in-flight Worker filesystem read without re
   expect(exit).toBe(0)
 }, 15000)
 
+test('Worker prompt.submit pins plugin origin, preserves attachment descriptors and waits for host admission', async () => {
+  const mod = await plugin('submit-caller', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.submit({
+      text:'queued prompt',
+      attachments:[{type:'image',mediaType:'image/png',filename:'shot.png'}]
+    })}));
+  }`)
+  const admission = Promise.withResolvers<{text:string;origin:{kind:'plugin';name:string}}>()
+  const entered = Promise.withResolvers<void>()
+  const submissions: unknown[] = []
+  const value = createModsRuntime({ services: {
+    submitPrompt: input => {
+      submissions.push(input)
+      entered.resolve()
+      return admission.promise
+    },
+  } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const pending = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  await entered.promise
+  expect(submissions).toEqual([{
+    text: 'queued prompt',
+    attachments: [{type:'image',mediaType:'image/png',filename:'shot.png'}],
+    origin: { kind: 'plugin', name: 'submit-caller' },
+    signal: expect.any(AbortSignal),
+  }])
+  let settled = false
+  void pending.finally(() => { settled = true })
+  await Bun.sleep(0)
+  expect(settled).toBe(false)
+  admission.resolve({ text: 'admitted', origin: { kind: 'plugin', name: 'submit-caller' } })
+  expect(await pending).toEqual({ result: {
+    text: 'admitted',
+    origin: { kind: 'plugin', name: 'submit-caller' },
+  } })
+})
+
+test('Worker prompt.submit rejects unsafe input and turn-holding calls', async () => {
+  const mod = await plugin('submit-validation', `export function register(on) {
+    on('prompt.submit', async ($,e,next) => {
+      try { await $.prompt.submit({text:'nested'}) }
+      catch (error) { return {drop:error.message} }
+      return next(e)
+    });
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.prompt.submit(e.input)} }
+      catch (error) { return {result:{error:error.message}} }
+    });
+  }`)
+  const value = createModsRuntime({ services: {
+    submitPrompt: async input => ({ text: input.text, origin: input.origin }),
+  } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  for (const input of [
+    { text: '' },
+    { text: '   ' },
+    { text: '/status' },
+    { text: '  /status' },
+    { text: 'hello', attachments: [{type:'binary'}] },
+    { text: 'hello', attachments: [{type:'image',data:'secret'}] },
+    { text: 'hello', origin: { kind: 'composer' } },
+  ]) {
+    const result = await value.dispatch('tool.call', { input }, async () => ({ result: 'core' }))
+    expect((result as {result:{error:string}}).result.error).toBeString()
+  }
+  expect(await value.dispatch('prompt.submit', {
+    text: 'original', origin: {kind:'composer'}, wait: false,
+  }, async input => ({text:input.text,origin:input.origin}))).toEqual({
+    drop: expect.stringContaining('turn-holding'),
+  })
+})
+
 test('Worker prompt.read and prompt.fill reach the mounted prompt box with caller-scoped visibility', async () => {
   const caller = await plugin('prompt-caller', `export function register(on) {
     on('tool.call', async ($, e) => ({result:e.read

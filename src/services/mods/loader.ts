@@ -43,7 +43,7 @@ const scanOnlyEvents = new Set([
   'agent.spawn', 'tool.register', 'tool.list',
 ])
 const supportedCalls = new Set([...supportedEvents].filter(event => ![
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'prompt.submit', 'turn.start', 'turn.complete', 'ui.render',
+  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
   'ui.press', 'ui.input', 'ui.select', 'config.describe',
 ].includes(event)))
 supportedCalls.add('config.list')

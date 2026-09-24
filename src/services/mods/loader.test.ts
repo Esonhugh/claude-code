@@ -210,16 +210,19 @@ test('rejects top-level await in imported files, including files also used as en
   await expect(loadModDeclaration({ ...input, entrypoints: [...input.entrypoints, join(input.pluginRoot, 'helper.ts')] })).rejects.toThrow('top-level await')
 })
 
-test('admits prompt.read and prompt.fill while rejecting undeclared prompt capabilities', async () => {
+test('admits active prompt.submit while rejecting unknown prompt capabilities', async () => {
   const result = await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
-    on('prompt.fill', ($, e, next) => next(e));
-    on('tool.call', async $ => ({result:{box:await $.prompt.read(),filled:await $.prompt.fill({text:'x'})}}));
+    on('tool.call', async $ => ({result:{
+      box:await $.prompt.read(),
+      filled:await $.prompt.fill({text:'x'}),
+      submitted:await $.prompt.submit({text:'queued'}),
+    }}));
   }`}))
-  expect(result.events).toEqual(['prompt.fill', 'tool.call'])
-  expect(result.calls).toEqual(['prompt.fill', 'prompt.read'])
+  expect(result.events).toEqual(['tool.call'])
+  expect(result.calls).toEqual(['prompt.fill', 'prompt.read', 'prompt.submit'])
   await expect(loadModDeclaration(await plugin({'main.ts': `export function register(on) {
-    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'x'})}));
-  }` }))).rejects.toThrow('unsupported core capability prompt.suggest')
+    on('tool.call', async $ => ({result:await $.prompt.unknown({text:'x'})}));
+  }` }))).rejects.toThrow('unsupported core capability prompt.unknown')
 })
 
 test('admits positional MCP calls and records the capability', async () => {

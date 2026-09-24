@@ -25,7 +25,9 @@ import {
   validatePromptBox,
   validatePromptFillInput,
   type ModPromptHost,
+  type PromptAttachment,
   type PromptFillInput,
+  type PromptSubmitResult,
 } from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier } from './types.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
@@ -57,6 +59,12 @@ export type ModRequestServices = {
   toolCatalog?(): ToolCatalog
   captureUsage?(): ModUsageReader
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
+  submitPrompt?(input: {
+    text: string
+    attachments?: readonly PromptAttachment[]
+    origin: { kind: 'plugin'; name: string }
+    signal: AbortSignal
+  }): Promise<PromptSubmitResult>
 }
 export type ModHostServices = ModRequestServices & ModHttpServices & {
   configRows?():
@@ -144,7 +152,7 @@ const coreHost: Nouns = {
   config: { list: hostIdentity, set: hostIdentity },
   tool: { list: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity },
-  prompt: { read: hostIdentity, fill: hostIdentity },
+  prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
@@ -409,21 +417,38 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       }
       case 'prompt.fill': {
         const input = args[0]
-        if (
-          args.length !== 1 ||
-          !input ||
-          typeof input !== 'object' ||
-          Array.isArray(input) ||
-          typeof (input as ModInput).text !== 'string' ||
-          ((input as ModInput).mode !== undefined &&
-            !['replace', 'append', 'insert'].includes(
-              (input as ModInput).mode as string,
-            ))
-        )
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string' ||
+            ((input as ModInput).mode !== undefined && !['replace', 'append', 'insert'].includes((input as ModInput).mode as string)))
           throw new TypeError('prompt.fill takes { text, mode? }')
+        return { text: (input as ModInput).text, mode: (input as ModInput).mode ?? 'replace' }
+      }
+      case 'prompt.submit': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string' ||
+            Object.keys(input).some(key => key !== 'text' && key !== 'attachments'))
+          throw new TypeError('prompt.submit takes { text, attachments? }')
+        const text = (input as ModInput).text as string
+        if (!text.trim()) throw new TypeError('prompt.submit requires a non-empty prompt')
+        if (text.trimStart().startsWith('/'))
+          throw new TypeError('prompt.submit cannot run slash commands; use command.run')
+        const attachments = (input as ModInput).attachments
+        if (attachments !== undefined) {
+          if (!Array.isArray(attachments))
+            throw new TypeError('prompt.submit attachments must be a list')
+          for (const attachment of attachments) {
+            if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment) ||
+                !['image', 'audio', 'document'].includes((attachment as ModInput).type as string) ||
+                ((attachment as ModInput).mediaType !== undefined && typeof (attachment as ModInput).mediaType !== 'string') ||
+                ((attachment as ModInput).filename !== undefined && typeof (attachment as ModInput).filename !== 'string') ||
+                Object.keys(attachment).some(key => key !== 'type' && key !== 'mediaType' && key !== 'filename'))
+              throw new TypeError('prompt.submit attachment is invalid')
+          }
+        }
         return {
-          text: (input as ModInput).text,
-          mode: (input as ModInput).mode ?? 'replace',
+          text,
+          ...(attachments === undefined ? {} : { attachments }),
         }
       }
       case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': return args[0] as ModInput
@@ -788,6 +813,25 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             ...result,
             ...(await readPromptForCaller(owner, snapshot, table)),
           }
+        }
+        if (fn === hostIdentity && op === 'prompt.submit') {
+          const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
+          if (!submit) throw new Error('Prompt submission host is unavailable on this host')
+          if (context?.active && (context.next?.event === 'prompt.submit' || publicTurn))
+            throw new Error('prompt.submit cannot wait from a turn-holding hook')
+          const origin = { kind: 'plugin' as const, name: owner.declaration.name }
+          const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+          try {
+            combined.signal.throwIfAborted()
+            return await withReference(owner, () => submit({
+              text: (input as ModInput).text as string,
+              ...((input as ModInput).attachments === undefined
+                ? {}
+                : { attachments: (input as ModInput).attachments as PromptAttachment[] }),
+              origin,
+              signal: combined.signal,
+            }))
+          } finally { combined.cleanup() }
         }
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         try {
