@@ -127,6 +127,27 @@ if (!process.env[childFlag]) {
     }
   })
 
+  test('clearing memory files also invalidates the derived user context', async () => {
+    const project = join(root, 'cache-invalidation-project')
+    mkdirSync(project)
+    const instructions = join(project, 'CLAUDE.md')
+    writeFileSync(instructions, 'first instruction value')
+    const { setOriginalCwd } = await import('../bootstrap/state.js')
+    const { clearMemoryFileCaches } = await import('./claudemd.js')
+    const { getUserContext } = await import('../context.js')
+    setOriginalCwd(project)
+    clearMemoryFileCaches()
+    expect((await getUserContext()).claudeMd).toContain(
+      'first instruction value',
+    )
+
+    writeFileSync(instructions, 'second instruction value')
+    clearMemoryFileCaches()
+    const refreshed = await getUserContext()
+    expect(refreshed.claudeMd).toContain('second instruction value')
+    expect(refreshed.claudeMd).not.toContain('first instruction value')
+  })
+
   test('agent generation includes both instruction sources in the model request', async () => {
     const project = join(root, 'agent-generation-project')
     mkdirSync(project)

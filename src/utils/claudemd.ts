@@ -1120,8 +1120,12 @@ function consumeNextEagerLoadReason(): InstructionsLoadReason | undefined {
  * compaction), use resetGetMemoryFilesCache() instead.
  */
 export function clearMemoryFileCaches(): void {
-  // ?.cache because tests spyOn this, which replaces the memoize wrapper.
+  // ?.cache because tests spyOn these, which replaces the memoize wrapper.
   getMemoryFiles.cache?.clear?.()
+  // Lazy to avoid the context -> claudemd module cycle during initialization.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getUserContext } = require('../context.js') as typeof import('../context.js')
+  getUserContext.cache.clear?.()
 }
 
 export function resetGetMemoryFilesCache(
