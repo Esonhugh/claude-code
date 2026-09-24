@@ -28,6 +28,7 @@ import {
   type PromptFillInput,
 } from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier } from './types.js'
+import { validateSessionReceiveResult } from './receiveAdapter.js'
 
 export type ModPluginInput = {
   name: string
@@ -809,6 +810,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
+    if (event === 'session.receive') return validateSessionReceiveResult(result)
     if (event === 'session.usage') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('session.usage must return value or deny')
       if ('deny' in result && typeof result.deny === 'string') return

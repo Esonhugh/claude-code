@@ -6,6 +6,7 @@ import type {
 import type { UUID } from 'crypto'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import { detectImageFormatFromBase64 } from '../utils/imageResizer.js'
+import type { SessionReceiveOrigin } from '../services/mods/receiveAdapter.js'
 
 /**
  * Process an inbound user message from the bridge, extracting content
@@ -21,12 +22,12 @@ import { detectImageFormatFromBase64 } from '../utils/imageResizer.js'
 export function extractInboundMessageFields(
   msg: SDKMessage,
 ):
-  | { content: string | Array<ContentBlockParam>; uuid: UUID | undefined }
+  | { content: string | Array<ContentBlockParam>; uuid: UUID | undefined; origin: SessionReceiveOrigin }
   | undefined {
   if (msg.type !== 'user') return undefined
   // @ts-ignore - recovered code
   const content = msg.message?.content
-  if (!content) return undefined
+  if (!content || (typeof content !== 'string' && !Array.isArray(content))) return undefined
   if (Array.isArray(content) && content.length === 0) return undefined
 
   const uuid =
@@ -34,10 +35,41 @@ export function extractInboundMessageFields(
       ? (msg.uuid as UUID)
       : undefined
 
-  return {
-    content: Array.isArray(content) ? normalizeImageBlocks(content) : content,
-    uuid,
+  const sanitized = Array.isArray(content)
+    ? normalizeImageBlocks(content)
+      .filter(block => block.type !== 'text' || typeof block.text === 'string')
+      .map(block => block.type === 'text' ? { ...block, text: stripTransportReminders(block.text) } : block)
+      .filter(block => block.type !== 'text' || block.text.trim() !== '')
+    : stripTransportReminders(content)
+  if (Array.isArray(sanitized) && sanitized.length === 0) return undefined
+  // These fields are server stamps on the bridge transport, never text parsing.
+  const platform = 'client_platform' in msg ? msg.client_platform : undefined
+  const inbound = 'inbound_origin' in msg ? msg.inbound_origin : undefined
+  const kind: SessionReceiveOrigin['kind'] =
+    ['scheduled_trigger', 'force_run_trigger', 'fire_routine'].includes(platform as string) ? 'scheduled-trigger'
+      : ['github_webhook_trigger', 'pr_steward'].includes(platform as string) || ['trigger_fire', 'plugin_fire'].includes(inbound as string) ? 'task-notification'
+        : platform === undefined || ['ios', 'android', 'web_claude_ai', 'desktop_app'].includes(platform as string) ? 'bridge'
+          : 'unclassified'
+  return { content: sanitized, uuid, origin: { kind } }
+}
+
+function stripTransportReminders(text: string): string {
+  let body = text.trimStart()
+  let changed = false
+  while (body.startsWith('<system-reminder>')) {
+    const end = body.indexOf('</system-reminder>')
+    if (end < 0) break
+    body = body.slice(end + '</system-reminder>'.length).trimStart()
+    changed = true
   }
+  body = (changed ? body : text).trimEnd()
+  while (body.endsWith('</system-reminder>')) {
+    const start = body.lastIndexOf('<system-reminder>')
+    if (start < 0 || (start > 0 && body[start - 1] !== '\n')) break
+    body = body.slice(0, start).trimEnd()
+    changed = true
+  }
+  return changed && body !== '' ? body : text
 }
 
 /**

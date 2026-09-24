@@ -49,6 +49,7 @@ import { addToHistory } from './history.js'
 import type { Root } from './ink.js'
 import { launchRepl } from './replLauncher.js'
 import { createModsSession } from './services/mods/session.js'
+import { deferInboundMessages, setInboundMessageReceiver } from './utils/inboundMessageQueue.js'
 import {
   hasGrowthBookEnvOverride,
   initializeGrowthBook,
@@ -2774,6 +2775,7 @@ async function run(): Promise<CommanderCommand> {
         await initBuiltinPlugins()
         initBundledSkills()
       }
+      deferInboundMessages()
       const setupPromise = setup(
         preSetupCwd,
         permissionMode,
@@ -3586,6 +3588,8 @@ async function run(): Promise<CommanderCommand> {
           return undefined
         },
       })
+      const clearInboundReceiver = setInboundMessageReceiver((input, admit, signal) => modsSession.receive(input, admit, signal))
+      registerCleanup(async () => { clearInboundReceiver() })
 
       // --print mode
       if (isNonInteractiveSession) {

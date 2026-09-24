@@ -18,6 +18,8 @@ import { extractTextContent } from './messages.js'
 import { objectGroupBy } from './objectGroupBy.js'
 import { recordQueueOperation } from './sessionStorage.js'
 import { createSignal } from './signal.js'
+import { enqueueInboundMessage } from './inboundMessageQueue.js'
+import { logForDebugging } from './debug.js'
 
 export type SetAppState = (f: (prev: AppState) => AppState) => void
 
@@ -139,13 +141,14 @@ export function enqueue(command: QueuedCommand): void {
  * Convenience wrapper that defaults priority to 'later' so user input
  * is never starved by system messages.
  */
-export function enqueuePendingNotification(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'later' })
-  notifySubscribers()
-  logOperation(
-    'enqueue',
-    typeof command.value === 'string' ? command.value : undefined,
-  )
+export function enqueuePendingNotification(command: QueuedCommand): void | Promise<void> {
+  const pending: QueuedCommand = { ...command, priority: command.priority ?? 'later' }
+  if (command.mode === 'task-notification' && command.agentId === undefined) {
+    return enqueueInboundMessage(pending, { kind: 'task-notification' }).then(() => {}, () => {
+      logForDebugging('[Mods] task notification receive interrupted before enqueue')
+    })
+  }
+  enqueue(pending)
 }
 
 const PRIORITY_ORDER: Record<QueuePriority, number> = {

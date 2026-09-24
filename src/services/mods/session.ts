@@ -24,6 +24,8 @@ import { getSettingsForSource, loadManagedFileSettings } from '../../utils/setti
 import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
 import { getPluginStorageId } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { ModUiPane, ModUiPresentation } from './ui.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { runModSessionReceive, type SessionReceiveInput, type SessionReceiveResult } from './receiveAdapter.js'
 import {
   createModsRuntime,
   type ModBinding,
@@ -49,6 +51,8 @@ export function createModsSession(options: ModsSessionOptions) {
   let runtime: ModsRuntime | undefined
   let binding: ModBinding | undefined
   let runtimeBound = false
+  const firstBinding = Promise.withResolvers<void>()
+  let receiveController = new AbortController()
   let setAppState: SetAppState | undefined
   let initialized = false
   let stopped = false
@@ -347,6 +351,8 @@ export function createModsSession(options: ModsSessionOptions) {
   function dispose(): Promise<void> {
     if (disposal) return disposal
     stopped = true
+    receiveController.abort(new Error('Mods session disposed'))
+    firstBinding.resolve()
     if (timer) clearTimeout(timer)
     timer = undefined
     unsubscribeSettings?.()
@@ -392,6 +398,10 @@ export function createModsSession(options: ModsSessionOptions) {
           key =>
             next[key as keyof ModBinding] !== binding![key as keyof ModBinding],
         )
+      if (binding && binding.sessionId !== next.sessionId) {
+        receiveController.abort(new Error('Mods session changed'))
+        receiveController = new AbortController()
+      }
       binding = next
       if (changed) runtimeBound = false
       const first = !initialized
@@ -403,6 +413,35 @@ export function createModsSession(options: ModsSessionOptions) {
           runtimeBound = true
         })
       else await queue
+      firstBinding.resolve()
+    },
+    async receive(input: SessionReceiveInput, admit: (input: SessionReceiveInput) => void | SessionReceiveResult | Promise<void | SessionReceiveResult>, signal?: AbortSignal) {
+      const lifetime = receiveController.signal
+      const combined = createCombinedAbortSignal(signal, { signalB: lifetime })
+      let abort: (() => void) | undefined
+      let snapshot: ReturnType<ModsRuntime['capture']> | undefined
+      try {
+        combined.signal.throwIfAborted()
+        if (options.isTrusted) {
+          const aborted = new Promise<never>((_, reject) => {
+            abort = () => reject(combined.signal.reason)
+            combined.signal.addEventListener('abort', abort, { once: true })
+          })
+          await Promise.race([firstBinding.promise, aborted])
+          await Promise.race([queue, aborted])
+        }
+        combined.signal.throwIfAborted()
+        snapshot = runtime?.capture()
+        return await runModSessionReceive(snapshot, input, admit, combined.signal)
+      } catch (error) {
+        signal?.throwIfAborted()
+        lifetime.throwIfAborted()
+        throw error
+      } finally {
+        if (abort) combined.signal.removeEventListener('abort', abort)
+        snapshot?.release()
+        combined.cleanup()
+      }
     },
     refresh,
     dispose,

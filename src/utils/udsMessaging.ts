@@ -13,6 +13,7 @@ import { errorMessage } from './errors.js'
 import { getProcessPidDomain, getProcessStartMetadata } from './genericProcessUtils.js'
 import { dequeueAllMatching, enqueue, getCommandQueue } from './messageQueueManager.js'
 import { parseAddress } from './peerAddress.js'
+import { enqueueInboundMessage } from './inboundMessageQueue.js'
 import {
   canonicalPeerEndpoint, formatPeerAddress, formatPeerMessage, parsePeerMessage,
   peerKeyFilename, PEER_MAX_FRAME_BYTES, PEER_TIMEOUT_MS, PEER_UUID,
@@ -31,12 +32,14 @@ let onEnqueue: (() => void) | null = null
 let getMode: (() => { mode: PermissionMode; isBypassPermissionsModeAvailable?: boolean }) | undefined
 let unregisterCleanup: (() => void) | undefined
 let unsubscribeSettings: (() => void) | undefined
+let unsubscribeSession: (() => void) | undefined
 let expiryTimer: ReturnType<typeof setInterval> | undefined
 const clients = new Set<Socket>()
 const held: { command: QueuedCommand; time: number }[] = []
 const seen = new Map<string, number>()
 let receipts: Promise<void> = Promise.resolve()
 let receiptController = new AbortController()
+let inboundController = new AbortController()
 let receiptCount = 0
 let stopping = false
 
@@ -113,10 +116,43 @@ function admit(command: QueuedCommand, wasHeld = false): void {
     logForDebugging('[uds-messaging] peer queue full')
     return
   }
-  enqueue(command)
-  notifyEnqueued()
-  if (wasHeld) receipt(command, 'delivered')
-  logForDebugging(`[uds-messaging] Routed user message to queue msg_id=${command.origin?.kind === 'peer' ? command.origin.msg_id ?? '(none)' : '(none)'}`)
+  const signal = inboundController.signal
+  let queued = false
+  let policyHandled = false
+  void enqueueInboundMessage(command, { kind: 'peer' }, {
+    signal,
+    enqueue: admitted => {
+      // Policy and capacity can change while a receive hook is suspended.
+      const policy = policyFor(command)
+      if (policy === 'hold') {
+        if (held.length >= 100) receipt(held.shift()!.command, 'expired')
+        held.push({ command: admitted, time: Date.now() })
+        receipt(command, 'held')
+        policyHandled = true
+        return { consumed: 'Peer delivery held by permission policy' }
+      }
+      if (policy === 'refuse') {
+        receipt(command, 'refused')
+        policyHandled = true
+        return { consumed: 'Peer delivery refused by permission policy' }
+      }
+      if (getCommandQueue().filter(c => c.origin?.kind === 'peer').length >= 100) {
+        receipt(command, 'dropped')
+        policyHandled = true
+        return { consumed: 'Peer queue full' }
+      }
+      enqueue(admitted)
+      queued = true
+      notifyEnqueued()
+      if (wasHeld) receipt(command, 'delivered')
+      logForDebugging(`[uds-messaging] Routed user message to queue msg_id=${command.origin?.kind === 'peer' ? command.origin.msg_id ?? '(none)' : '(none)'}`)
+    },
+  }).then(() => {
+    if (!queued && !policyHandled) receipt(command, 'dropped')
+  }).catch(error => {
+    receipt(command, signal.aborted ? 'expired' : 'dropped')
+    if (!signal.aborted) logForDebugging(`[uds-messaging] receive failed: ${errorMessage(error)}`)
+  })
 }
 
 export function getHeldPeerMessageCount(): number { return held.length }
@@ -134,11 +170,13 @@ export function refreshPeerInboundPolicy(): void {
   }
 }
 
-onSessionSwitch(() => {
+function handleSessionSwitch(): void {
+  inboundController.abort(new Error('Peer inbox session changed'))
+  inboundController = new AbortController()
   for (const item of held.splice(0)) receipt(item.command, 'expired')
   for (const command of dequeueAllMatching(cmd => cmd.origin?.kind === 'peer')) receipt(command, 'expired')
   seen.clear()
-})
+}
 
 function handleFrame(frame: unknown): void {
   if (typeof frame !== 'object' || frame === null) return
@@ -200,6 +238,7 @@ export async function startUdsMessaging(
 ): Promise<void> {
   if (server) throw new Error('Messaging inbox is already running')
   receiptController = new AbortController()
+  inboundController = new AbortController()
   stopping = false
   if (options.permissionMode) getMode = () => ({ mode: options.permissionMode!, isBypassPermissionsModeAvailable: options.isBypassPermissionsModeAvailable })
   const endpoint = canonicalPeerEndpoint(path)
@@ -267,6 +306,7 @@ export async function startUdsMessaging(
     process.env.CLAUDE_CODE_MESSAGING_TOKEN = childToken
     unregisterCleanup = registerCleanup(stopUdsMessaging)
     unsubscribeSettings = subscribeSettings(refreshPeerInboundPolicy)
+    unsubscribeSession = onSessionSwitch(handleSessionSwitch)
     expiryTimer = setInterval(refreshPeerInboundPolicy, 30000)
     expiryTimer.unref()
     inbox.unref()
@@ -281,9 +321,11 @@ export async function startUdsMessaging(
 export async function stopUdsMessaging(): Promise<void> {
   if (!server) return
   stopping = true
+  inboundController.abort(new Error('Peer inbox closed'))
   for (const item of held.splice(0)) receipt(item.command, 'expired')
   for (const command of dequeueAllMatching(cmd => cmd.origin?.kind === 'peer')) receipt(command, 'expired')
   unsubscribeSettings?.(); unsubscribeSettings = undefined
+  unsubscribeSession?.(); unsubscribeSession = undefined
   unregisterCleanup?.(); unregisterCleanup = undefined
   clearInterval(expiryTimer); expiryTimer = undefined
   for (const client of clients) client.destroy()

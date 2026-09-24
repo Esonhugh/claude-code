@@ -51,6 +51,7 @@ import {
   getCommandsByMaxPriority,
 } from 'src/utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from 'src/utils/commandLifecycle.js'
+import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
 import {
   getSessionState,
   notifySessionStateChanged,
@@ -285,6 +286,7 @@ import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
   getSessionId,
+  getOriginalCwd,
   setMainLoopModelOverride,
   setMainThreadAgentType,
   switchSession,
@@ -2777,6 +2779,20 @@ function runHeadlessStreaming(
     }
   }
 
+  // Bind before any delivery enters receive, including the first idle peer wake.
+  const inboundController = new AbortController()
+  const inboundBinding = options.modsSession?.bind({
+    cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
+  }, setAppState, {
+    messages: () => mutableMessages,
+    cwd,
+    root: getOriginalCwd,
+    commands: () => currentCommands,
+    presentation: () => ({ columns: 80, isFullscreen: false }),
+  })
+  void inboundBinding?.catch(logError)
+  registerCleanup(async () => { inboundController.abort() })
+
   // Set up UDS inbox callback so the query loop is kicked off
   // when a message arrives via the UDS socket in headless mode.
   let unregisterPeerWakeCleanup: (() => void) | undefined
@@ -2811,7 +2827,7 @@ function runHeadlessStreaming(
     cronScheduler = cronSchedulerModule.createCronScheduler({
       onFire: prompt => {
         if (inputClosed) return
-        enqueue({
+        void enqueueInboundMessage({
           mode: 'prompt',
           value: prompt,
           uuid: randomUUID(),
@@ -2825,8 +2841,10 @@ function runHeadlessStreaming(
           // reads this per-iteration and hoists it into bootstrap state for
           // the ask() call.
           workload: WORKLOAD_CRON,
-        })
-        void run()
+        }, { kind: 'scheduled-trigger' }, {
+          signal: inboundController.signal,
+          enqueue: command => { enqueue(command); void run() },
+        }).catch(logError)
       },
       isLoading: () => running || inputClosed,
       getJitterConfig: cronJitterConfigModule?.getCronJitterConfig,
@@ -4245,16 +4263,18 @@ function runHeadlessStreaming(
                 )
                 const handle = await initReplBridge({
                   onInboundMessage(msg) {
-                    const fields = extractInboundMessageFields(msg)
-                    if (!fields) return
-                    const { content, uuid } = fields
-                    enqueue({
-                      value: content,
-                      mode: 'prompt' as const,
-                      uuid,
-                      skipSlashCommands: true,
-                    })
-                    void run()
+                    void (async () => {
+                      const fields = extractInboundMessageFields(msg)
+                      if (!fields) return
+                      const value = await resolveAndPrepend(msg, fields.content)
+                      await enqueueInboundMessage({
+                        value, mode: 'prompt', uuid: fields.uuid,
+                        skipSlashCommands: true, bridgeOrigin: fields.origin.kind === 'bridge',
+                      }, fields.origin, {
+                        signal: inboundController.signal,
+                        enqueue: command => { enqueue(command); void run() },
+                      })
+                    })().catch(logError)
                   },
                   onPermissionResponse(response) {
                     // Forward bridge permission responses into the
@@ -4433,16 +4453,29 @@ function runHeadlessStreaming(
         trackReceivedMessageUuid(message.uuid)
       }
 
-      enqueue({
-        mode: 'prompt' as const,
+      const remoteFields = structuredIO instanceof RemoteIO ? extractInboundMessageFields(message) : undefined
+      if (structuredIO instanceof RemoteIO && !remoteFields) continue
+      const inboundCommand: QueuedCommand = {
+        mode: 'prompt',
         // file_attachments rides the protobuf catchall from the web composer.
         // Same-ref no-op when absent (no 'file_attachments' key).
         // @ts-ignore - recovered code
-        value: await resolveAndPrepend(message, message.message.content),
+        value: await resolveAndPrepend(message, remoteFields?.content ?? message.message.content),
         // @ts-ignore - recovered code
         uuid: message.uuid,
         priority: message.priority,
-      })
+      }
+      if (structuredIO instanceof RemoteIO) {
+        let admitted = false
+        await enqueueInboundMessage(inboundCommand, remoteFields!.origin, {
+          signal: inboundController.signal,
+          enqueue: command => { admitted = true; enqueue(command) },
+        })
+        if (!admitted) continue
+      } else {
+        // Local SDK/stdin is prompt.submit, not an inbound session.receive.
+        enqueue(inboundCommand)
+      }
       // Increment prompt count for attribution tracking and save snapshot
       // The snapshot persists promptCount so it survives compaction
       if (feature('COMMIT_ATTRIBUTION')) {
@@ -4458,6 +4491,7 @@ function runHeadlessStreaming(
       void run()
     }
     inputClosed = true
+    inboundController.abort()
     clearPeerWake()
     managedSSHControl.shutdown()
     shellAbortController?.abort('session-closed')
