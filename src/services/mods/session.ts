@@ -378,12 +378,7 @@ export function createModsSession(options: ModsSessionOptions) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const policy = settings.policySettings
-    // Pre now uses the protected tool boundary. Post remains gated until
-    // the classic executor supports general updatedToolOutput (not only MCP).
-    const managedPostHooks = !settings.hookPolicy.allDisabled && policy?.disableAllHooks !== true
-      && (policy?.hooks?.PostToolUse ?? []).some(group => group.hooks.length > 0)
     const disabled = options.getDisabledReason?.()
-      ?? (managedPostHooks ? 'Mods with managed tool hooks using PostToolUse remain unsupported (updatedToolOutput); external Mods are not activated' : undefined)
       ?? (policy?.allowManagedHooksOnly || policy?.strictPluginOnlyCustomization
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
     const loaded = plugins ?? (await loadPlugins())

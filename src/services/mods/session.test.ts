@@ -953,18 +953,54 @@ describe('Mods CLI session host', () => {
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
   })
 
-  test('managed PostToolUse blocks evaluation before any Worker is created', async () => {
-    const declaration = await plugin('throw Error("must not evaluate"); export function register(on) {}')
-    const events: string[] = []
+  test('managed PostToolUse permits activation and rewrites a regular tool final output', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('tool.call', async ($, e, next) => next(e));
+    }`)
+    const policy = { hooks: { PostToolUse: [{ hooks: [{
+      type: 'command' as const,
+      command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        updatedToolOutput: { value: 'managed final' },
+      } })}'`,
+    }] }] } }
+    const wasInteractive = getIsInteractive()
+    setIsInteractive(false)
+    resetSettingsCache()
+    resetHooksConfigSnapshot()
+    setSessionSettingsCache({ settings: {}, errors: [] })
+    for (const source of ['policySettings', 'userSettings', 'projectSettings', 'localSettings', 'flagSettings'] as const)
+      setCachedSettingsForSource(source, source === 'policySettings' ? policy : {})
+    cleanups.push(() => { resetSettingsCache(); resetHooksConfigSnapshot(); setIsInteractive(wasInteractive) })
     const host = session({
       loadPlugins: async () => [declaration],
-      getSettings: () => ({ ...settings(), policySettings: { hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'policy-command-must-not-run' }] }] } } }),
-      createRuntime: () => { throw Error('must not create Worker') },
-      onDiagnostic: event => events.push(event.message),
+      getSettings: () => ({ ...settings(), policySettings: policy }),
     })
     await host.bind(binding)
-    expect(host.runtime).toBeUndefined()
-    expect(events.some(message => message.includes('managed tool hooks'))).toBe(true)
+    expect(host.runtime?.hasHooks('tool.call')).toBe(true)
+    const tool = {
+      name: 'SessionPostPolicyFixture',
+      inputSchema: z.object({ value: z.string() }),
+      outputSchema: z.object({ value: z.string() }),
+      maxResultSizeChars: Infinity,
+      call: async () => ({ data: { value: 'raw' } }),
+      mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) => ({
+        type: 'tool_result', tool_use_id: id, content: data.value,
+      }),
+    } as unknown as Tool
+    const context = {
+      mods: host.runtime,
+      options: { tools: [tool], mcpClients: [], isNonInteractiveSession: true },
+      abortController: new AbortController(),
+      messages: [],
+      getAppState: () => ({ toolPermissionContext: getEmptyToolPermissionContext(), sessionHooks: new Map() }),
+      setAppState: () => {},
+      setInProgressToolUseIDs: () => {},
+    } as unknown as ToolUseContext
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'session-post-policy', name: tool.name, input: { value: 'original' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), context))
+    expect(JSON.stringify(updates)).toContain('managed final')
+    expect(JSON.stringify(updates)).not.toContain('"content":"raw"')
   })
 
   test('an explicit clear binding is not overwritten by a later declaration refresh', async () => {
