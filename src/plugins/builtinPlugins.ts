@@ -77,17 +77,18 @@ export function getBuiltinPlugins(): {
 
     const plugin: LoadedPlugin = {
       name,
-      manifest: {
+      manifest: definition.manifest ?? {
         name,
         description: definition.description,
         version: definition.version,
       },
-      path: BUILTIN_MARKETPLACE_NAME, // sentinel — no filesystem path
+      path: definition.path ?? BUILTIN_MARKETPLACE_NAME,
       source: pluginId,
       repository: pluginId,
       enabled: isEnabled,
       isBuiltin: true,
       hooksConfig: definition.hooks,
+      hookModules: definition.hookModules,
       mcpServers: definition.mcpServers,
     }
 

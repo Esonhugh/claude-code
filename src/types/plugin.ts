@@ -22,6 +22,12 @@ export type BuiltinPluginDefinition = {
   description: string
   /** Optional version string */
   version?: string
+  /** Complete manifest for a filesystem-backed built-in plugin */
+  manifest?: PluginManifest
+  /** Filesystem root for a filesystem-backed built-in plugin */
+  path?: string
+  /** Module descriptors already loaded from the plugin's hooks configuration */
+  hookModules?: LoadedPlugin['hookModules']
   /** Skills provided by this plugin */
   skills?: BundledSkillDefinition[]
   /** Hooks provided by this plugin */

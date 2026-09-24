@@ -25,6 +25,7 @@ function getProjectDir(cwd: string): string {
 export const CACHE_PATHS = {
   baseLogs: () => join(paths.cache, getProjectDir(getFsImplementation().cwd())),
   ripgrep: () => join(paths.cache, 'ripgrep'),
+  builtinMods: () => join(paths.cache, 'builtin-mods'),
   errors: () =>
     join(paths.cache, getProjectDir(getFsImplementation().cwd()), 'errors'),
   messages: () =>

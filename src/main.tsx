@@ -2771,7 +2771,7 @@ async function run(): Promise<CommanderCommand> {
         process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent' &&
         !isSSHRemoteSession
       ) {
-        initBuiltinPlugins()
+        await initBuiltinPlugins()
         initBundledSkills()
       }
       const setupPromise = setup(

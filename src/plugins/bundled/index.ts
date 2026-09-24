@@ -14,10 +14,30 @@
  * 2. Call registerBuiltinPlugin() with the plugin definition here
  */
 
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { CACHE_PATHS } from '../../utils/cachePaths.js'
+import { initializeOfficialBuiltinMods } from '../builtinMods.js'
+
+const archiveName = 'builtin-mods-2.1.277.zip'
+
+function builtinModsArchive(): string | undefined {
+  if (process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE)
+    return process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
+  const here = dirname(fileURLToPath(import.meta.url))
+  return [
+    join(here, 'assets', archiveName),
+    join(here, '..', '..', '..', 'assets', archiveName),
+  ].find(existsSync)
+}
+
 /**
  * Initialize built-in plugins. Called during CLI startup.
  */
-export function initBuiltinPlugins(): void {
-  // No built-in plugins registered yet — this is the scaffolding for
-  // migrating bundled skills that should be user-toggleable.
+export async function initBuiltinPlugins(): Promise<void> {
+  const archive = builtinModsArchive()
+  if (!archive)
+    throw new Error(`Built-in Mods archive is missing: ${archiveName}`)
+  await initializeOfficialBuiltinMods(archive, CACHE_PATHS.builtinMods())
 }

@@ -13,7 +13,11 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, URL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
-import { getEnabledFeatures, macroValues } from './build.mjs';
+import {
+  copyRuntimeAssets,
+  getEnabledFeatures,
+  macroValues,
+} from './build.mjs';
 import { feature } from './shims/bun-bundle.js';
 import imageProcessor, {
   getNativeModule,
@@ -102,6 +106,12 @@ assert.match(packageBinarySource, /'bun-windows-x64-baseline',/);
 assert.match(packageBinarySource, /ripgrep-\$\{platform\}-\$\{arch\}/);
 assert.match(packageBinarySource, /["']--target["']/);
 assert.match(packageBinarySource, /CLAUDE_CODE_EMBEDDED_SHARP: '1'/);
+assert.match(
+  packageBinarySource,
+  /assets[\s\S]*builtin-mods-2\.1\.277\.zip/,
+);
+assert.match(packageBinarySource, /__CLAUDE_CODE_BUILTIN_MODS_ARCHIVE__/);
+assert.doesNotMatch(packageBinarySource, /\/private\/tmp/);
 assert.match(packageBinarySource, /readdirSync\(libraryDirectory\)/);
 assert.doesNotMatch(packageBinarySource, /libvips-cpp\.8\.17\.3/);
 
@@ -114,6 +124,21 @@ assert.match(
   /const embedSharpNative = process\.env\.CLAUDE_CODE_EMBEDDED_SHARP === '1'/,
 );
 assert.match(buildSource, /embedSharpNative &&\s+args\.path === '\.\/sharp'/);
+assert.match(buildSource, /builtin-mods-2\.1\.277\.zip/);
+assert.doesNotMatch(buildSource, /\/private\/tmp/);
+
+const embeddedRipgrepSource = readFileSync(
+  new URL('./shims/embedded-ripgrep.js', import.meta.url),
+  'utf8',
+);
+assert.match(
+  embeddedRipgrepSource,
+  /import builtinModsArchivePath from __CLAUDE_CODE_BUILTIN_MODS_ARCHIVE__ with \{ type: 'file' \}/,
+);
+assert.match(
+  embeddedRipgrepSource,
+  /process\.env\.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = builtinModsArchivePath/,
+);
 
 const embeddedSharpSource = readFileSync(
   new URL('./shims/embedded-sharp.js', import.meta.url),
@@ -123,6 +148,46 @@ assert.match(embeddedSharpSource, /__CLAUDE_CODE_SHARP_PLATFORM_ARCH__/);
 assert.match(embeddedSharpSource, /__CLAUDE_CODE_SHARP_ADDON_NAME__/);
 assert.match(embeddedSharpSource, /process\.once\('exit', cleanup\)/);
 assert.doesNotMatch(embeddedSharpSource, /\/Users\//);
+
+const runtimeAssetsProjectDir = mkdtempSync(
+  join(tmpdir(), 'claude-runtime-assets-test-'),
+);
+const runtimeAssetsNodeModulesDir = join(
+  runtimeAssetsProjectDir,
+  'node_modules',
+);
+try {
+  await assert.rejects(
+    copyRuntimeAssets({
+      projectDir: runtimeAssetsProjectDir,
+      nodeModulesDir: runtimeAssetsNodeModulesDir,
+    }),
+    /Missing builtin Mods archive/,
+  );
+  mkdirSync(join(runtimeAssetsProjectDir, 'assets'), { recursive: true });
+  writeFileSync(
+    join(runtimeAssetsProjectDir, 'assets', 'builtin-mods-2.1.277.zip'),
+    'deterministic archive fixture',
+  );
+  await copyRuntimeAssets({
+    projectDir: runtimeAssetsProjectDir,
+    nodeModulesDir: runtimeAssetsNodeModulesDir,
+  });
+  assert.equal(
+    readFileSync(
+      join(
+        runtimeAssetsProjectDir,
+        'dist',
+        'assets',
+        'builtin-mods-2.1.277.zip',
+      ),
+      'utf8',
+    ),
+    'deterministic archive fixture',
+  );
+} finally {
+  rmSync(runtimeAssetsProjectDir, { recursive: true, force: true });
+}
 
 const releaseWorkflowSource = readFileSync(
   new URL('../.github/workflows/release.yml', import.meta.url),

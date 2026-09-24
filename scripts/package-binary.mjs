@@ -10,6 +10,11 @@ const distDir = path.join(projectDir, 'dist');
 const nodeModulesDir = path.join(projectDir, 'node_modules');
 const releaseDir = path.join(distDir, 'release');
 const cliEntrypoint = path.join(distDir, 'cli.js');
+const builtinModsArchivePath = path.join(
+  projectDir,
+  'assets',
+  'builtin-mods-2.1.277.zip',
+);
 const embeddedEntrypoint = path.join(
   projectDir,
   'scripts',
@@ -129,6 +134,9 @@ if (!fs.existsSync(cliEntrypoint)) {
     'dist/cli.js does not exist after build. Check bun run build output before packaging.',
   );
 }
+if (!fs.existsSync(builtinModsArchivePath)) {
+  throw new Error(`Missing builtin Mods archive: ${builtinModsArchivePath}`);
+}
 
 const ripgrepPackageJson = JSON.parse(
   await fs.promises.readFile(
@@ -173,6 +181,10 @@ const generatedEntrypoint = path.join(projectDir, 'embedded-cli.js');
 const generatedEntrypointContents = embeddedEntrypointContents
   .replace('__CLAUDE_CODE_RIPGREP_BINARY__', JSON.stringify(ripgrepBinaryPath))
   .replace('__CLAUDE_CODE_RIPGREP_VERSION__', ripgrepPackageJson.version)
+  .replace(
+    '__CLAUDE_CODE_BUILTIN_MODS_ARCHIVE__',
+    JSON.stringify(builtinModsArchivePath),
+  )
   .replace(
     '__CLAUDE_CODE_EMBEDDED_SHARP__',
     JSON.stringify(generatedSharpPath),
