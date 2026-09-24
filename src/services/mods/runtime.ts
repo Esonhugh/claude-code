@@ -29,6 +29,11 @@ import {
 } from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier } from './types.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
+import {
+  createModConfig,
+  type ModConfigRowProvider,
+  type ModConfigValue,
+} from './config.js'
 
 export type ModPluginInput = {
   name: string
@@ -53,6 +58,9 @@ export type ModRequestServices = {
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
 }
 export type ModHostServices = ModRequestServices & ModHttpServices & {
+  configRows?():
+    | readonly ModConfigRowProvider[]
+    | Promise<readonly ModConfigRowProvider[]>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   cwd?(): string
   root?(): string
@@ -132,6 +140,7 @@ const coreHost: Nouns = {
   session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
+  config: { list: hostIdentity, set: hostIdentity },
   tool: { list: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity },
@@ -228,6 +237,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     plugin, stage, message: error instanceof Error ? error.message : String(error),
   })
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
+  const config = createModConfig(
+    () => services.configRows?.() ?? [],
+    (event, input, core, options) =>
+      dispatch(event, input, core, active, nouns, options),
+    () => nouns,
+  )
   const commands = createModCommands({
     getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
       command.type === 'prompt'
@@ -380,6 +395,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           throw new TypeError('http.fetch takes a URL and optional init object')
         return { url: args[0], init }
       }
+      case 'config.list':
+        if (args.length) throw new TypeError('config.list takes no arguments')
+        return {}
+      case 'config.set':
+        if (args.length !== 1) throw new TypeError('config.set takes { key, value }')
+        return args[0] as ModInput
       case 'settings.read': case 'fs.ancestors': {
         const input = op === 'settings.read' && args[0] === undefined ? {} : args[0]
         if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError(`${op} args must be an object`)
@@ -517,6 +538,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       }
       case 'ui.invalidate':
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (input.event === 'config.describe') {
+          config.invalidate()
+          return undefined
+        }
         if (input.event === 'command.describe') {
           commands.invalidateDescriptions()
           return undefined
@@ -682,8 +707,40 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (fn !== hostIdentity && (args.length > 1 || typeof input !== 'object' || input === null || Array.isArray(input))) {
           throw new Error('Custom noun methods require one object argument or no arguments')
         }
+        const context = capabilityContext.getStore()
+        const caller = context?.active ? context.hook : undefined
         if (fn === hostIdentity && op === 'prompt.read')
           return readPromptForCaller(owner, snapshot, table)
+        if (fn === hostIdentity && (op === 'config.list' || op === 'config.set')) {
+          const run = (
+            event: string,
+            eventInput: ModInput,
+            core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>,
+            options?: ModDispatchOptions,
+          ) =>
+            dispatch(event, eventInput, core, snapshot, table, {
+              ...(options ?? {}),
+              signal: invocationSignal.getStore(),
+              ...(op === 'config.set'
+                ? {
+                    origin: {
+                      plugin: owner.declaration.name,
+                      tier: owner.declaration.tier,
+                    },
+                    ...(caller ? { caller } : {}),
+                  }
+                : {}),
+            })
+          if (op === 'config.list')
+            return withReference(owner, () => config.list(run, table))
+          return withReference(owner, () =>
+            config.set(
+              input as { key: string; value: ModConfigValue },
+              { kind: 'plugin', name: owner.declaration.name },
+              run,
+            ),
+          )
+        }
         if (fn === hostIdentity && ['ui.open', 'ui.close', 'ui.scroll', 'ui.focus'].includes(op))
           return withReference(owner, () => hostCall(owner, op, input as ModInput))
         if (fn === hostIdentity && op === 'prompt.fill') {
@@ -731,8 +788,6 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             ...(await readPromptForCaller(owner, snapshot, table)),
           }
         }
-        const context = capabilityContext.getStore()
-        const caller = context?.active ? context.hook : undefined
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         try {
           const catalog = fn === hostIdentity && op === 'tool.list'
@@ -839,6 +894,23 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function validateResult(event: string, result: unknown) {
     if (event === 'session.receive') return validateSessionReceiveResult(result)
+    if (event === 'config.describe') {
+      const value = result as {
+        label?: unknown
+        description?: unknown
+        isHidden?: unknown
+      } | null
+      if (
+        !value ||
+        typeof value.label !== 'string' ||
+        typeof value.isHidden !== 'boolean' ||
+        (value.description !== undefined && typeof value.description !== 'string')
+      )
+        throw new TypeError(
+          'config.describe requires label, description and isHidden',
+        )
+      return
+    }
     if (event === 'session.usage') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('session.usage must return value or deny')
       if ('deny' in result && typeof result.deny === 'string') return
@@ -1161,6 +1233,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     lastInterface = interfaceStates.get(nouns)!
     await Promise.all(active.map(owner => owner.environment.setUiAccess(uiAllowed(owner, nouns))))
     // Publish the matching hook generation before notifying command subscribers.
+    config.invalidate()
     const previousCommands = commands.getSnapshot()
     if (commandsChanged) commands.invalidateDescriptions(false)
     for (const owner of prepared) {
@@ -1386,6 +1459,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     capture,
     endSession,
     commands,
+    config,
     ui,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
     beginPublicTurn(turnId: string): () => void {
