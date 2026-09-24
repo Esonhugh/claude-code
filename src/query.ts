@@ -335,21 +335,29 @@ export async function* query(
   let additionalText: string | undefined
   let endPublicTurn: (() => void) | undefined
   try {
-    if (isPublicTurn) endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(turnId)
+    if (isPublicTurn) endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(
+      turnId, () => params.toolUseContext.abortController.abort('interrupt'),
+    )
     if (handlesStart) {
-      await snapshot!.dispatch(
-        'turn.start',
-        { turnId, text: params.publicTurn!.text },
-        async () => ({ turnId }),
-        {
-          signal: params.toolUseContext.abortController.signal,
-          validateResult(value) {
-            const result = value as Record<string, unknown> | null
-            if (!result || Array.isArray(result) || result.turnId !== turnId)
-              throw new Error('turn.start must return the current turnId')
+      try {
+        await snapshot!.dispatch(
+          'turn.start',
+          { turnId, text: params.publicTurn!.text },
+          async () => ({ turnId }),
+          {
+            signal: params.toolUseContext.abortController.signal,
+            validateResult(value) {
+              const result = value as Record<string, unknown> | null
+              if (!result || Array.isArray(result) || result.turnId !== turnId)
+                throw new Error('turn.start must return the current turnId')
+            },
           },
-        },
-      )
+        )
+      } catch (error) {
+        if (!toolUseContext.abortController.signal.aborted || toolUseContext.abortController.signal.reason !== 'interrupt') throw error
+        returned = true
+        return {reason:'aborted_streaming'}
+      }
     }
     if (handlesSections) {
       const systemPrompt = await renderModPromptSections(

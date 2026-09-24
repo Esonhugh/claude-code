@@ -199,7 +199,7 @@ const coreHost: Nouns = {
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
-  turn: { step: hostIdentity },
+  turn: { step: hostIdentity, abort: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
@@ -216,7 +216,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let contextBoundaries = new Map<string | undefined, string>()
   let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
-  let publicTurn: { turnId: string } | undefined
+  let publicTurn: { turnId: string; abort?: () => void } | undefined
   let stopped = false
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
@@ -475,6 +475,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool)
           throw new TypeError('tool.call takes { tool, ...arguments }')
         return input as ModInput
+      }
+      case 'turn.abort': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).turnId !== 'string')
+          throw new TypeError('turn.abort takes { turnId }')
+        return {turnId: (input as ModInput).turnId}
       }
       case 'tool.check': {
         const input = args[0]
@@ -795,6 +802,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'session.surface':
         if (!binding) throw new Error('Module session is not bound')
         return binding.surface
+      case 'turn.abort': {
+        if (typeof input.turnId !== 'string') throw new TypeError('turn.abort takes { turnId }')
+        if (!publicTurn || input.turnId !== publicTurn.turnId)
+          throw new Error(`Cannot abort turn ${input.turnId}; running turn is ${publicTurn?.turnId ?? 'none'}`)
+        if (!publicTurn.abort) throw new Error(`Turn ${publicTurn.turnId} has no running model request`)
+        publicTurn.abort()
+        return undefined
+      }
       case 'session.messages': {
         const messages = requestServices.getStore()?.messages ?? services.messages
         if (!messages) throw new Error('Session messages are unavailable on this host')
@@ -2084,9 +2099,9 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     config,
     ui,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
-    beginPublicTurn(turnId: string): () => void {
+    beginPublicTurn(turnId: string, abort?: () => void): () => void {
       if (stopped) throw new Error('Mods runtime disposed')
-      const turn = { turnId }
+      const turn = { turnId, abort }
       publicTurn = turn
       return () => {
         if (publicTurn === turn) publicTurn = undefined

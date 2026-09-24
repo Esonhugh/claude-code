@@ -273,6 +273,208 @@ for (const ending of ['close','abort'] as const) test(`turn.step ${ending} clean
   } finally {await iterator?.return({reason:'cleanup'});await runtime.dispose();await rm(root,{recursive:true,force:true})}
 })
 
+test.each([false, true])('turn.abort from a Worker cancels the current model without an interruption marker (blocked=%s)', async blocked => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-turn-abort-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  let iterator: ReturnType<typeof query> | undefined
+  let cancel: (() => void) | undefined
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `let turnId; export function register(on) {
+      on('turn.start', ($, e, next) => { turnId = e.turnId; return next(e); });
+      on('tool.call', async ($, e) => {
+        if (e.tool === 'wrong') {
+          try { await $.turn.abort({turnId:'not-the-running-turn'}); }
+          catch (error) { return {result:error.message}; }
+        }
+        await $.turn.abort({turnId}); return {result:'aborted'};
+      });
+    }`)
+    const gate = join(root, 'gate.ts')
+    await writeFile(gate, `let reject = ${blocked}; export function register(on) {
+      on('turn.abort', ($, e, next) => {
+        if(reject && e.turnId !== 'not-the-running-turn') { reject=false; return {deny:'abort blocked once'}; }
+        return next(e);
+      });
+    }`)
+    await runtime.reconcile([
+      {name:'abort',storageId:'abort@inline',pluginRoot:root,entrypoints:[entry]},
+      {name:'abort-gate',storageId:'abort-gate@inline',pluginRoot:root,entrypoints:[gate]},
+    ])
+    expect(diagnostics).toEqual([])
+    const entered = Promise.withResolvers<void>()
+    let closed = false
+    const h = harness(async function* (request) {
+      try {
+        entered.resolve()
+        await new Promise<void>((_resolve, reject) => {
+          request.signal.addEventListener('abort', () => reject(request.signal.reason), {once:true})
+        })
+        yield response('unreachable', 'unreachable')
+      } finally { closed = true }
+    })
+    h.context.mods = runtime
+    h.params.publicTurn = {text:'abort this turn'}
+    cancel = () => h.context.abortController.abort('interrupt')
+    iterator = query(h.params)
+    const pending = drain(iterator)
+    await entered.promise
+    expect(runtime.activePublicTurnId).toBeDefined()
+    const wrong = await runtime.dispatch('tool.call', {tool:'wrong'}, async () => ({result:'unexpected'})) as {result:string}
+    expect(wrong.result).toContain('not-the-running-turn')
+    expect(wrong.result).toContain(runtime.activePublicTurnId!)
+    expect(h.context.abortController.signal.aborted).toBe(false)
+    if (blocked) {
+      const refused = await runtime.dispatch('tool.call', {}, async () => ({result:'refused'}))
+      expect(refused).toEqual({result:'refused'})
+      expect(h.context.abortController.signal.aborted).toBe(false)
+      expect(diagnostics).toEqual([{plugin:'abort',stage:'tool.call',message:'abort blocked once'}])
+      diagnostics.length = 0
+    }
+    const aborted = await runtime.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
+    expect(diagnostics).toEqual([])
+    expect(aborted).toEqual({result:'aborted'})
+    expect(h.context.abortController.signal.reason).toBe('interrupt')
+    const run = await pending
+    expect(closed).toBe(true)
+    expect(JSON.stringify(run.messages)).not.toContain('interrupted')
+    expect(runtime.activePublicTurnId).toBeUndefined()
+    expect(diagnostics).toEqual([])
+  } finally { cancel?.(); await iterator?.return({reason:'cleanup'}); await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+})
+
+test('turn.abort cancels a running tool and leaves the next public turn usable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-turn-tool-abort-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  let cancel: (() => void) | undefined
+  let pending: ReturnType<typeof drain> | undefined
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `let turnId; export function register(on) {
+      on('turn.start', ($, e, next) => { turnId=e.turnId; return next(e); });
+      on('tool.call', {tool:'AbortTurn'}, async ($) => {
+        try { await $.turn.abort({turnId}); return {result:'aborted'}; }
+        catch(error) { return {result:error.message}; }
+      });
+    }`)
+    await runtime.reconcile([{name:'abort-tool',storageId:'abort-tool@inline',pluginRoot:root,entrypoints:[entry]}])
+    const {z} = await import('zod/v4')
+    const entered = Promise.withResolvers<void>()
+    let toolClosed = false
+    let toolSignal: AbortSignal | undefined
+    const tool = {
+      name:'WaitForAbort', inputSchema:z.object({}), maxResultSizeChars:Infinity,
+      isConcurrencySafe:() => false,
+      call:async (_input: unknown, context: ToolUseContext) => {
+        toolSignal = context.abortController.signal
+        entered.resolve()
+        try {
+          await new Promise<void>((_resolve,reject) => {
+            if (toolSignal!.aborted) reject(toolSignal!.reason)
+            else toolSignal!.addEventListener('abort', () => reject(toolSignal!.reason), {once:true})
+          })
+          return {data:'unreachable'}
+        } finally { toolClosed=true }
+      },
+      mapToolResultToToolResultBlockParam:(data:unknown,id:string) => ({type:'tool_result',tool_use_id:id,content:String(data)}),
+    } as unknown as Tool
+    let requests = 0
+    const h = harness(async function* () {
+      requests++
+      yield createAssistantMessage({content:[{type:'tool_use',caller:{type:'direct'},id:'wait-call',name:tool.name,input:{}}]})
+    })
+    h.context.mods=runtime
+    h.context.options.tools=[tool]
+    h.params.publicTurn={text:'wait for cancellation'}
+    cancel=() => h.context.abortController.abort('interrupt')
+    pending=drain(query(h.params))
+    await entered.promise
+    const turnId=runtime.activePublicTurnId
+    expect(turnId).toBeDefined()
+    expect(await runtime.dispatch('tool.call',{tool:'AbortTurn'},async()=>({result:'unexpected'}))).toEqual({result:'aborted'})
+    const run=await pending
+    expect(toolSignal?.aborted).toBe(true)
+    expect(toolClosed).toBe(true)
+    expect(requests).toBe(1)
+    expect(run.terminal.reason).toBe('aborted_tools')
+    expect(run.messages.filter(message => message.type==='user').flatMap(message => message.message.content)
+      .filter((block:any) => block.type==='text')).toEqual([])
+    expect(runtime.activePublicTurnId).toBeUndefined()
+    const stale=await runtime.dispatch('tool.call',{tool:'AbortTurn'},async()=>({result:'unexpected'})) as {result:string}
+    expect(stale.result).toContain(turnId!)
+    expect(stale.result).toContain('running turn is none')
+    const next=harness(async function* () {yield response('after-abort','fresh turn works')})
+    next.context.mods=runtime
+    next.params.publicTurn={text:'fresh turn'}
+    const fresh=await drain(query(next.params))
+    expect(fresh.terminal.reason).toBe('completed')
+    expect(JSON.stringify(fresh.messages)).toContain('fresh turn works')
+    expect(next.context.abortController.signal.aborted).toBe(false)
+    expect(diagnostics).toEqual([])
+  } finally {
+    cancel?.()
+    await pending
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('a turn.start Worker can abort its own turn before any model request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-turn-self-abort-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.start', async ($, e, next) => { await $.turn.abort({turnId:e.turnId}); return next(e); });
+    }`)
+    await runtime.reconcile([{name:'self-abort',storageId:'self-abort@inline',pluginRoot:root,entrypoints:[entry]}])
+    let calls = 0
+    const h = harness(async function* () { calls++; yield response('unexpected', 'model called') })
+    h.context.mods = runtime
+    h.params.publicTurn = {text:'stop before model'}
+    const run = await drain(query(h.params))
+    expect(calls).toBe(0)
+    expect(h.context.abortController.signal.reason).toBe('interrupt')
+    expect(JSON.stringify(run.messages)).not.toContain('interrupted')
+    expect(diagnostics).toEqual([])
+  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+})
+
+test('a turn.step Worker can abort its own stream without a model call or plugin failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-step-self-abort-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step', async function* ($, e) {
+        yield {kind:'text',index:0,text:'before abort'};
+        await $.turn.abort({turnId:e.turnId});
+        yield {kind:'text',index:0,text:'AFTER_ABORT'};
+      });
+    }`)
+    await runtime.reconcile([{name:'step-abort',storageId:'step-abort@inline',pluginRoot:root,entrypoints:[entry]}])
+    let requests = 0
+    const h = harness(async function* () {requests++; yield response('unexpected','MODEL_CALLED')})
+    h.context.mods = runtime
+    h.params.publicTurn = {text:'end from step'}
+    const run = await drain(query(h.params))
+    expect(requests).toBe(0)
+    expect(h.context.abortController.signal.reason).toBe('interrupt')
+    expect(run.terminal.reason).toBe('aborted_streaming')
+    expect(JSON.stringify(run.messages)).toContain('before abort')
+    expect(run.messages.filter(message => message.type==='assistant').flatMap(message => message.message.content))
+      .toContainEqual({type:'text',text:'before abort'})
+    expect(JSON.stringify(run.messages)).not.toContain('AFTER_ABORT')
+    expect(JSON.stringify(run.messages)).not.toContain('interrupted')
+    expect(diagnostics).toEqual([])
+    expect(runtime.activePublicTurnId).toBeUndefined()
+  } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+})
+
 test('turn.step preserves model fallback errors and increments the retry step', async () => {
   const root=await mkdtemp(join(tmpdir(),'mods-step-fallback-'))
   const diagnostics:unknown[]=[]
