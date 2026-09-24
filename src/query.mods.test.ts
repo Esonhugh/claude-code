@@ -11,7 +11,11 @@ import { asAgentId } from './types/ids.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { createModsRuntime, type ModSnapshot } from './services/mods/runtime.js'
 import { createAssistantMessage, normalizeMessagesForAPI } from './utils/messages.js'
-import { asSystemPrompt } from './utils/systemPromptType.js'
+import {
+  asSystemPrompt,
+  getSystemPromptSections,
+  withSystemPromptSections,
+} from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { getDefaultAppState } from './state/AppStateStore.js'
 import { resetStateForTests } from './bootstrap/state.js'
@@ -1601,4 +1605,245 @@ test('main query completion pushes actual response usage through session.measure
     expect(last.input.context.tokens).toBe(2007)
     expect(diagnostics).toEqual([])
   } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+describe('public query prompt.section', () => {
+  test('cache-safe callback freezes unhooked section bytes and does not mutate the parent context', async () => {
+    const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
+    const h = harness(async function* (request) {
+      expect(captured).toHaveLength(1)
+      expect(request.systemPrompt).toEqual(captured[0]!.systemPrompt)
+      yield response('unhooked', 'done')
+    })
+    h.context.mods = undefined
+    h.params.systemPrompt = withSystemPromptSections([{ name: 'identity', text: 'original' }])
+    h.params.onCacheSafeParams = params => { captured.push(params) }
+    await drain(query(h.params))
+    expect(captured).toHaveLength(1)
+    expect([...captured[0]!.systemPrompt]).toEqual(['original'])
+    expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
+    expect(captured[0]!.resolvedPromptContextBlocks).toEqual([])
+    expect(getSystemPromptSections(h.params.systemPrompt)).toEqual([{ name: 'identity', text: 'original' }])
+    expect(captured[0]!.toolUseContext.renderedSystemPrompt).toBe(captured[0]!.systemPrompt)
+    expect(h.context.renderedSystemPrompt).toBeUndefined()
+  })
+
+  test('joined teammate sections keep original block separators after Worker drop and fill', async () => {
+    const { concatSystemPrompts, joinSystemPrompt } = await import('./utils/systemPromptType.js')
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-joined-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.section', ($, e) => ({text: e.name === 'drop' ? null : 'MOD_' + e.name}));
+      }`)
+      await runtime.reconcile([{ name: 'joined', storageId: 'joined@inline', pluginRoot: root, entrypoints: [entry] }])
+      const requests: (readonly string[])[] = []
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('joined', 'done') })
+      h.context.mods = runtime
+      h.params.systemPrompt = concatSystemPrompts(joinSystemPrompt(withSystemPromptSections([
+        { name: 'identity', text: 'identity' }, { name: 'drop', text: 'drop' },
+        { name: 'language', text: null }, { text: 'TEAMMATE_APPEND' },
+      ]), '\n'), ['Notes'])
+      expect([...h.params.systemPrompt]).toEqual(['identity\ndrop\nTEAMMATE_APPEND', 'Notes'])
+      await drain(query(h.params))
+      expect(requests).toEqual([['MOD_identity\nMOD_language\nTEAMMATE_APPEND', 'Notes']])
+      expect(diagnostics).toEqual([])
+    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  test('malformed Worker answers recover inside catch and failed hooks preserve completed downstream text', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-recovery-'))
+    const diagnostics: { message: string }[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.section', {name:'caught'}, async ($,e,next) => {
+          await next(e); return {text:123};
+        }).catch(async ($,e,next) => ({text:(await next(e)).text+':caught'}));
+        on('prompt.section', {name:'kept'}, async ($,e,next) => {
+          await next({...e,text:'downstream'}); throw new Error('after next');
+        });
+        on('prompt.section', {name:'passthrough'}, () => {throw new Error('before next')});
+        on('prompt.section', {name:'bad-input'}, ($,e,next) => next({...e,text:123}));
+      }`)
+      await runtime.reconcile([{name:'recovery',storageId:'recovery@inline',pluginRoot:root,entrypoints:[entry]}])
+      const cores: string[] = [], requests: (readonly string[])[] = []
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if (event === 'prompt.section') cores.push(String(value.name))
+          return core(value,signal)
+        },options)}
+      }
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('recovered','done') })
+      h.context.mods = runtime
+      h.params.systemPrompt = withSystemPromptSections([
+        {name:'caught',text:'original'}, {name:'kept',text:'original'},
+        {name:'passthrough',text:'original'}, {name:'bad-input',text:'original'},
+      ])
+      await drain(query(h.params))
+      await drain(query(h.params))
+      expect(requests).toEqual([
+        ['original:caught','downstream','original','original'],
+        ['original:caught','downstream','original','original'],
+      ])
+      expect(cores).toEqual(['caught','kept','passthrough','bad-input'])
+      expect(diagnostics.map(event => event.message)).toEqual([
+        'prompt.section must return text', 'after next', 'before next', 'prompt.section must return text or null',
+      ])
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('invalidation during Worker section assembly keeps the old query stable without repopulating the new cache', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-invalidation-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const running: Promise<unknown>[] = []
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.section', async ($,e,next) => { const call=++calls; await next(e); return {text:e.name+':'+call}; });
+        on('tool.call', async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'invalidation',storageId:'invalidation@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      let first = true, releases = 0
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if (event === 'prompt.section' && first) { first=false; entered.resolve(); await release.promise }
+          return core(value,signal)
+        },options),release() { releases++; snapshot.release() }}
+      }
+      const requests: (readonly string[])[] = []
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('sections','done') })
+      h.context.mods = runtime
+      h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'original'},{name:'memory',text:null}])
+      const firstQuery = drain(query(h.params))
+      running.push(firstQuery)
+      await entered.promise
+      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+      await drain(query(h.params))
+      release.resolve()
+      await firstQuery
+      await drain(query(h.params))
+      expect(requests).toEqual([['identity:2','memory:3'],['identity:1','memory:4'],['identity:2','memory:3']])
+      expect(releases).toBe(3)
+      expect(diagnostics).toEqual([])
+    } finally { release.resolve(); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test.each(['owner','waiter'] as const)('cancelling the section %s preserves the other live query and releases both snapshots', async mode => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-cancellation-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    const entered = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const controllers = [new AbortController(),new AbortController()]
+    const running: Promise<unknown>[] = []
+    const snapshots: ModSnapshot[] = [], releases: number[] = [], requests: (readonly string[])[] = []
+    let cores = 0
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.section', async ($,e,next) => { const call=++calls; const value=await next(e); return {text:value.text+':'+call}; });
+      }`)
+      await runtime.reconcile([{name:'cancel',storageId:'cancel@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services), index = snapshots.length
+        snapshots.push(snapshot)
+        return {...snapshot,get promptSections() { if (index===1) waiting.resolve(); return snapshot.promptSections },
+          dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+            if (event === 'prompt.section' && ++cores===1) { entered.resolve(); await release.promise }
+            return core(value,signal)
+          },options),release() { releases.push(index); snapshot.release() }}
+      }
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('survivor','done') })
+      h.context.mods = runtime
+      h.context.abortController = controllers[0]!
+      h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'original'}])
+      const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
+      h.params.onCacheSafeParams = params => { captured.push(params) }
+      const first = drain(query(h.params)).catch(error => error)
+      running.push(first)
+      await entered.promise
+      const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}})).catch(error => error)
+      running.push(second)
+      await waiting.promise
+      expect(captured).toEqual([])
+      const reason = new Error('cancel '+mode)
+      controllers[mode==='owner' ? 0 : 1]!.abort(reason)
+      expect(await (mode==='owner' ? first : second)).toBe(reason)
+      if (mode==='waiter') release.resolve()
+      const deadline = Promise.withResolvers<never>()
+      const timer = setTimeout(() => deadline.reject(new Error('live section query blocked by cancelled peer')),1000)
+      try { expect(await Promise.race([mode==='owner' ? second : first,deadline.promise])).toMatchObject({terminal:{reason:'completed'}}) }
+      finally { clearTimeout(timer) }
+      expect(requests).toEqual([[mode==='owner' ? 'original:2' : 'original:1']])
+      expect(captured).toHaveLength(1)
+      expect([...captured[0]!.systemPrompt]).toEqual([...requests[0]!])
+      expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
+      expect(captured[0]!.toolUseContext.abortController).toBe(controllers[mode==='owner' ? 1 : 0])
+      expect(cores).toBe(mode==='owner' ? 2 : 1)
+      expect(releases.toSorted()).toEqual([0,1])
+      expect(controllers[mode==='owner' ? 1 : 0]!.signal.aborted).toBe(false)
+      for (const snapshot of snapshots)
+        await expect(snapshot.dispatch('prompt.section',{},async input => input)).rejects.toThrow('snapshot released')
+      expect(diagnostics).toEqual([])
+    } finally { release.resolve(); controllers.forEach(controller=>controller.abort()); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('real Worker rewrites, drops and fills named slots, caches by name, and preserves resolved fork bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(),'mods-query-sections-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry,`let calls=0;export function register(on) {
+        on('prompt.section',($,e) => {
+          calls++;
+          return {text:e.name==='drop' ? null : e.name+':'+String(e.text)+':'+calls};
+        });
+        on('tool.call',async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'sections',storageId:'sections@inline',pluginRoot:root,entrypoints:[entry]}])
+      const requests: (readonly string[])[] = [], forks: any[] = []
+      const h = harness(async function* (request) {
+        requests.push(request.systemPrompt)
+        yield response('section-answer','done')
+      })
+      h.context.mods = runtime
+      h.params.systemPrompt = withSystemPromptSections([
+        {name:'identity',text:'core identity'}, {text:'literal boundary'},
+        {name:'drop',text:'must disappear'}, {name:'memory',text:null}, {text:'literal append'},
+      ])
+      h.params.deps!.autocompact = async (messages,context) => {
+        forks.push(context.renderedSystemPrompt)
+        return {messages,wasCompacted:false}
+      }
+      await drain(query(h.params))
+      expect(requests[0]).toEqual(['identity:core identity:1','literal boundary','memory:null:3','literal append'])
+      expect(forks[0]).toEqual(requests[0])
+      expect(getSystemPromptSections(forks[0])).toBeUndefined()
+      expect(h.context.renderedSystemPrompt).toBeUndefined()
+      h.params.systemPrompt = withSystemPromptSections([
+        {name:'identity',text:'new core'}, {text:'literal boundary'},
+        {name:'drop',text:'different core'}, {name:'memory',text:'changed core'}, {text:'literal append'},
+      ])
+      await drain(query(h.params))
+      expect(requests[1]).toEqual(requests[0])
+      expect(await runtime.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'invalidated'})
+      await drain(query(h.params))
+      expect(requests[2]).toEqual(['identity:new core:4','literal boundary','memory:changed core:6','literal append'])
+      h.params.systemPrompt = asSystemPrompt(forks[0])
+      await drain(query(h.params))
+      expect(requests[3]).toEqual(requests[0])
+      expect(diagnostics).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
 })

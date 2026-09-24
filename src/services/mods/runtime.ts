@@ -106,8 +106,10 @@ export type ModDispatchOptions = {
   reportDirectCoreFailure?: boolean
 }
 export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
+export type ModPromptSection = { result: Promise<{ text: string | null }>; signal: AbortSignal }
 export type ModSnapshot = {
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
+  readonly promptSections?: Map<string, ModPromptSection>
   readonly promptContexts?: Map<string | undefined, ModPromptContext>
   readonly promptContextBoundaries?: Map<string | undefined, string>
   pluginOrigin?(storageId: string): ModOrigin | undefined
@@ -180,6 +182,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let active: Activation[] = []
   let nouns: Nouns = {}
   let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<ModToolDescription>>>() }
+  let sectionCache = new Map<string, ModPromptSection>()
   let contextCache = new Map<string | undefined, ModPromptContext>()
   let contextBoundaries = new Map<string | undefined, string>()
   let descriptionOrigins = services.pluginOrigin
@@ -630,6 +633,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
         if (input.event === 'tool.describe') {
           descriptionCache.value = new WeakMap()
+          return undefined
+        }
+        if (input.event === 'prompt.section') {
+          sectionCache = new Map()
           return undefined
         }
         if (input.event === 'prompt.context') {
@@ -1468,6 +1475,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const commandsChanged = nouns !== built.table
     if (nouns !== built.table) {
       descriptionCache = { value: new WeakMap() }
+      sectionCache = new Map()
       contextCache = new Map()
       contextBoundaries = new Map()
     }
@@ -1638,12 +1646,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       descriptionCache = { value: new WeakMap() }
     }
     const descriptions = descriptionCache
+    const sections = sectionCache
     const contexts = contextCache
     const boundaries = contextBoundaries
     let released = false
     for (const owner of snapshot) owner.references++
     return {
       get toolDescriptions() { return descriptions.value },
+      get promptSections() { return sections },
       get promptContexts() { return contexts },
       get promptContextBoundaries() { return boundaries },
       pluginOrigin(storageId) {
@@ -1760,6 +1770,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           await measurements.reset()
           ending = undefined
           commands.invalidateDescriptions()
+          sectionCache = new Map()
           invalidatePromptContext()
         }
         binding = next

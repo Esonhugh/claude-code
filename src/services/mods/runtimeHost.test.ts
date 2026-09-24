@@ -730,6 +730,37 @@ test('session.start reads the host catalog while projected commands use their ca
   expect(diagnostics).toEqual([])
 })
 
+test('prompt.section invalidation rotates only future snapshots and survives an in-flight generation', async () => {
+  const mod = await plugin('section-cache', `export function register(on) {
+    on('prompt.section',($,e,next) => next(e));
+    on('tool.call',async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([mod])
+  const before = value.capture()
+  const peer = value.capture()
+  try {
+    expect(before.promptSections).toBeInstanceOf(Map)
+    expect(peer.promptSections).toBe(before.promptSections)
+    const entry = {result:Promise.resolve({text:null}),signal:new AbortController().signal}
+    before.promptSections!.set('memory',entry)
+    expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'invalidated'})
+    const after = value.capture()
+    try {
+      expect(after.promptSections).not.toBe(before.promptSections)
+      expect(after.promptSections!.size).toBe(0)
+      expect(before.promptSections!.get('memory')).toBe(entry)
+      after.promptSections!.set('memory',entry)
+      await value.bind({...binding(root),sessionId:'new-session'})
+      const rebound = value.capture()
+      try {expect(rebound.promptSections!.size).toBe(0)} finally {rebound.release()}
+      expect(after.promptSections!.get('memory')).toBe(entry)
+    } finally {after.release()}
+    expect(diagnostics).toEqual([])
+  } finally {before.release();peer.release()}
+})
+
 test('Worker fs options and hook rewrites reach the host without losing defaults', async () => {
   await writeFile(join(root, 'bytes.bin'), Buffer.from([0, 255, 128]))
   const policy = await plugin('fs-options-policy', `export function register(on) {

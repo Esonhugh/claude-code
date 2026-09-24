@@ -34,7 +34,12 @@ import {
 import { ImageSizeError } from './utils/imageValidation.js'
 import { ImageResizeError } from './utils/imageResizer.js'
 import { findToolByName, type ToolUseContext } from './Tool.js'
-import { asSystemPrompt, type SystemPrompt } from './utils/systemPromptType.js'
+import {
+  asSystemPrompt,
+  getSystemPromptSections,
+  type SystemPrompt,
+} from './utils/systemPromptType.js'
+import { renderModPromptSections } from './services/mods/promptSections.js'
 import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
   AssistantMessage,
@@ -266,6 +271,7 @@ export async function* query(
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
+  const handlesSections = snapshot?.hasHooks('prompt.section') === true
   const handlesCompact = snapshot?.hasHooks('session.compact') === true
   if (
     !isPublicTurn &&
@@ -274,6 +280,7 @@ export async function* query(
     !handlesMeasure &&
     !handlesCatalog &&
     !handlesContext &&
+    !handlesSections &&
     !handlesCompact
   ) {
     snapshot?.release()
@@ -317,6 +324,15 @@ export async function* query(
           },
         },
       )
+    }
+    if (handlesSections) {
+      const systemPrompt = await renderModPromptSections(
+        params.systemPrompt,
+        snapshot!,
+        toolUseContext.abortController.signal,
+      )
+      toolUseContext.renderedSystemPrompt = systemPrompt
+      params = { ...params, systemPrompt }
     }
     loopStarted = true
     terminal = yield* queryLoop(params, consumedCommandUuids, completion?.observe,
@@ -375,7 +391,6 @@ async function* queryLoop(
 > {
   // Immutable params — never reassigned during the query loop.
   const {
-    systemPrompt,
     systemContext,
     canUseTool,
     fallbackModel,
@@ -383,6 +398,10 @@ async function* queryLoop(
     maxTurns,
     skipCacheWrite,
   } = params
+  // Query assembly is complete; cache-sharing forks inherit bytes, not plans.
+  const systemPrompt = getSystemPromptSections(params.systemPrompt)
+    ? asSystemPrompt([...params.systemPrompt])
+    : params.systemPrompt
   let userContext = params.userContext
   let contextBlocks = params.resolvedPromptContextBlocks ??
     Object.entries(userContext).map(([name, text]) => ({ name, text }))
