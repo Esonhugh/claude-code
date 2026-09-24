@@ -588,10 +588,9 @@ const PluginManifestMcpServerSchema = lazySchema(() =>
 /**
  * Schema for a single user-configurable option in plugin manifest userConfig.
  *
- * Shape intentionally matches `McpbUserConfigurationOption` from
- * `@anthropic-ai/mcpb` so the parsed result is structurally assignable to
- * `UserConfigSchema` in mcpbHandler.ts — this lets us reuse
- * `validateUserConfig` and the config dialog without modification.
+ * Extends `McpbUserConfigurationOption` from `@anthropic-ai/mcpb` with string
+ * choices. The parsed result remains assignable to `UserConfigSchema` in
+ * mcpbHandler.ts so validation and the config dialog share this contract.
  * `title` and `description` are required (not optional) because the upstream
  * type requires them and the config dialog renders them.
  *
@@ -618,6 +617,10 @@ const PluginUserConfigOptionSchema = lazySchema(() =>
         .union([z.string(), z.number(), z.boolean(), z.array(z.string())])
         .optional()
         .describe('Default value used when the user provides nothing'),
+      options: z
+        .array(z.string())
+        .optional()
+        .describe('Allowed values for a string field, shown as a configuration picker'),
       multiple: z
         .boolean()
         .optional()
@@ -631,7 +634,11 @@ const PluginUserConfigOptionSchema = lazySchema(() =>
       min: z.number().optional().describe('Minimum value (number type only)'),
       max: z.number().optional().describe('Maximum value (number type only)'),
     })
-    .strict(),
+    .strict()
+    .refine(field => field.options === undefined || field.type === 'string', {
+      path: ['options'],
+      message: 'options is only supported for string fields',
+    }),
 )
 
 /**

@@ -29,7 +29,13 @@ export type UserConfigValues = Record<
 /**
  * User configuration schema from DXT manifest
  */
-export type UserConfigSchema = NonNullable<McpbManifestAny['user_config']>
+export type UserConfigSchema = Record<
+  string,
+  NonNullable<McpbManifestAny['user_config']>[string] & {
+    /** Plugin string fields can declare a single-choice picker. */
+    options?: readonly string[]
+  }
+>
 
 /**
  * Result of loading an MCPB file (success case)
@@ -363,6 +369,21 @@ export function validateUserConfig(
     // Check required fields
     if (fieldSchema.required && (value === undefined || value === '')) {
       errors.push(`${fieldSchema.title || key} is required but not provided`)
+      continue
+    }
+
+    if (
+      fieldSchema.type === 'string' &&
+      fieldSchema.options !== undefined &&
+      value !== undefined
+    ) {
+      if (typeof value !== 'string' || !fieldSchema.options.includes(value)) {
+        errors.push(
+          fieldSchema.sensitive
+            ? `${fieldSchema.title || key} must be one of the declared options`
+            : `${fieldSchema.title || key} must be one of: ${fieldSchema.options.join(', ')}`,
+        )
+      }
       continue
     }
 
