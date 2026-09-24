@@ -93,7 +93,7 @@ import {
   flushSessionStorage,
   recordTranscript,
 } from './utils/sessionStorage.js'
-import { asSystemPrompt } from './utils/systemPromptType.js'
+import { concatSystemPrompts } from './utils/systemPromptType.js'
 import { resolveThemeSetting } from './utils/systemTheme.js'
 import {
   shouldEnableThinkingByDefault,
@@ -463,12 +463,12 @@ export class QueryEngine {
       customPrompt !== undefined && !coordinatorModeModule?.isCoordinatorMode()
         ? getProactiveSection()
         : null
-    const systemPrompt = asSystemPrompt([
-      ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
-      ...(proactiveInstructions ? [proactiveInstructions] : []),
-      ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
-      ...(appendSystemPrompt ? [appendSystemPrompt] : []),
-    ])
+    const systemPrompt = concatSystemPrompts(
+      customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt,
+      proactiveInstructions ? [proactiveInstructions] : [],
+      memoryMechanicsPrompt ? [memoryMechanicsPrompt] : [],
+      appendSystemPrompt ? [appendSystemPrompt] : [],
+    )
 
     // Register function hook for structured output enforcement
     const hasStructuredOutputTool = tools.some(t =>

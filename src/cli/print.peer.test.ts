@@ -354,6 +354,74 @@ if (process.env[childFlag] !== '1') {
     },
   )
 
+  test('QueryEngine preserves named default system prompt sections', async () => {
+    const { withSystemPromptSections, getSystemPromptSections } =
+      await import('../utils/systemPromptType.js')
+    const source = withSystemPromptSections([
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+    ])
+    let captured: import('../utils/systemPromptType.js').SystemPrompt | undefined
+    const mocks = [
+      spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
+        defaultSystemPrompt: source,
+        userContext: {},
+        systemContext: {},
+      }),
+      spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+      spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({
+        enabled: [],
+        disabled: [],
+        errors: [],
+      }),
+      spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(
+        async function* () {},
+      ),
+      spyOn(attachments, 'getAttachmentMessages').mockImplementation(
+        async function* () {},
+      ),
+      spyOn(queryModule, 'query').mockImplementation(async function* (params) {
+        captured = params.systemPrompt
+        yield createAssistantMessage({ content: 'done' })
+        return { reason: 'completed' }
+      }),
+    ]
+    let state = getDefaultAppState()
+    try {
+      const engine = new QueryEngine({
+        cwd: process.cwd(),
+        tools: [],
+        commands: [],
+        mcpClients: [],
+        agents: [],
+        appendSystemPrompt: 'APPEND_LITERAL',
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        getAppState: () => state,
+        setAppState: update => {
+          state = update(state)
+        },
+        readFileCache: createFileStateCacheWithSizeLimit(10),
+        userSpecifiedModel: 'claude-sonnet-4-6',
+        thinkingConfig: { type: 'disabled' },
+      })
+      for await (const _message of engine.submitMessage('section check')) {
+        // Drain the headless query.
+      }
+      expect(captured).toBeDefined()
+      expect([...captured!]).toEqual(['CORE_IDENTITY', 'APPEND_LITERAL'])
+      expect(getSystemPromptSections(captured!)).toEqual([
+        { name: 'identity', text: 'CORE_IDENTITY' },
+        { name: 'language', text: null },
+        { text: 'APPEND_LITERAL' },
+      ])
+      expect([...source]).toEqual(['CORE_IDENTITY'])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
   test('AppStateProvider keeps peer permissions live and releases its subscription on unmount', async () => {
     const { render } = await import('../ink.js')
     const { AppStateProvider, useAppStateStore } =
