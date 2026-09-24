@@ -6,11 +6,16 @@ import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { zipSync } from 'fflate'
-import { COMMIT, OFFICIAL, check, cleanRun, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, parseArgs, prepareFixture, sandboxProfile } from './mods-test-lab.mjs'
+import { COMMIT, OFFICIAL, check, cleanRun, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
 
 const roots = []
 function temp() {
-  const root = realpathSync(mkdtempSync(join(process.platform === 'darwin' ? '/private/tmp' : tmpdir(), 'mods-lab-test-')))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mods-lab-test-')))
+  roots.push(root)
+  return root
+}
+function shortTemp() {
+  const root = realpathSync(mkdtempSync('/private/tmp/mlt-'))
   roots.push(root)
   return root
 }
@@ -53,15 +58,17 @@ function plugin(root, source = 'export function register(on) {}') {
 
 describe('argument boundaries', () => {
   test('accepts only the four commands and fixed targets, with explicit overrides', () => {
+    expect(COMMIT).toBe('7974a70773fa229e4cc65aa1b356cc21f5c216c4')
     expect(parseArgs(['fetch-official']).command).toBe('fetch-official')
     for (const name of ['sample', ...OFFICIAL]) expect(parseArgs(['check', name]).target).toBe(name)
     const args = parseArgs(['run', 'sample', '--binary', '/tmp/custom-binary', '--cache', '/tmp/lab', '--api-url', 'http://127.0.0.1:65432'])
     expect(args.binary).toBe('/tmp/custom-binary')
     expect(args.apiUrl).toBe('http://127.0.0.1:65432')
+    expect(parseArgs(['run-builtin', '--binary', '/tmp/custom-binary']).target).toBeUndefined()
     expect(parseArgs(['clean', 'r-123456abcdef']).target).toBe('r-123456abcdef')
   })
   test('rejects arbitrary flags, targets, endpoints, duplicates and absent values', () => {
-    for (const args of [[], ['fetch-official', 'diff'], ['check'], ['check', 'unknown'], ['run', 'sample', '--bare'], ['check', 'diff', '--binary', '/tmp/x'], ['run', 'sample', '--binary'], ['run', 'sample', '--cache', '/tmp/a', '--cache', '/tmp/b']]) expect(() => parseArgs(args)).toThrow()
+    for (const args of [[], ['fetch-official', 'diff'], ['run-builtin', 'diff'], ['check'], ['check', 'unknown'], ['run', 'sample', '--bare'], ['check', 'diff', '--binary', '/tmp/x'], ['run', 'sample', '--binary'], ['run', 'sample', '--cache', '/tmp/a', '--cache', '/tmp/b']]) expect(() => parseArgs(args)).toThrow()
     for (const endpoint of ['https://api.anthropic.com', 'http://localhost:1234', 'http://127.0.0.1:1234/path', 'http://user@127.0.0.1:1234', 'http://127.0.0.1:1234?x=1', 'http://127.0.0.2:1234']) expect(() => parseArgs(['run', 'sample', '--api-url', endpoint])).toThrow()
   })
 })
@@ -190,6 +197,143 @@ describe('private fixtures without a compiled TTY', () => {
   }, 60000)
   test('check requires a downloaded official cache and never implicitly downloads', () => {
     expect(() => check(parseArgs(['check', 'diff', '--cache', temp()]))).toThrow('fetch-official first')
+  })
+})
+
+describe('builtin-only compiled launcher', () => {
+  test('builds a private sandboxed tmux launch without inline plugin or archive override', () => {
+    const cache = shortTemp()
+    const binary = join(shortTemp(), 'built-claude')
+    writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    const calls = []
+    const before = process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
+    process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = '/tmp/caller-override.zip'
+    let report
+    try {
+      report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]), (file, args, options) => {
+        calls.push({ file, args, options })
+        return 'mods:0.0 %1 12345\n'
+      }, () => '/usr/local/bin/tmux')
+    } finally {
+      if (before === undefined) delete process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
+      else process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = before
+    }
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].file).toBe('/usr/local/bin/tmux')
+    expect(calls[0].args).toContain('new-session')
+    expect(calls[0].options.cwd).toBeUndefined()
+    expect(report.argv[0]).toBe('/usr/bin/sandbox-exec')
+    expect(report.argv).not.toContain('--plugin-dir')
+    expect(report.argv).toContain('--dangerously-skip-permissions')
+    expect(report.mode).toBe('builtin-only')
+    expect(report.source).toBeUndefined()
+    expect(report.plugin).toBeUndefined()
+    expect(report.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
+    expect(calls[0].options.env).toEqual(report.env)
+    for (const key of ['HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR', 'TMP', 'TEMP']) expect(report.env[key]).toStartWith(`${report.run}/`)
+    expect(existsSync(join(report.run, 'plugin'))).toBe(false)
+    expect(readFileSync(join(report.run, 'run.json'), 'utf8')).toContain('builtin-only')
+  })
+
+
+  test('applies acceptance settings before the copied binary starts', () => {
+    const cache = shortTemp()
+    const binary = join(shortTemp(), 'built-claude')
+    writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    let configured
+    const report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]), (_file, _args, { env }) => {
+      const settings = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR, 'settings.json'), 'utf8'))
+      expect(settings.pluginConfigs['agents-md@builtin'].options.instructionFiles).toBe('managed-only')
+      expect(settings.enabledPlugins['diff@builtin']).toBe(false)
+      expect(env.ANTHROPIC_MODEL).toBe('claude-sonnet-4-5-20250929')
+      return 'mods:0.0 %1 12345\n'
+    }, () => '/usr/local/bin/tmux', (run, env) => {
+      configured = run
+      env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
+      writeFileSync(join(run, 'config/settings.json'), JSON.stringify({ enabledPlugins: { 'diff@builtin': false }, pluginConfigs: { 'agents-md@builtin': { options: { instructionFiles: 'managed-only' } } } }))
+    })
+    expect(report.run).toBe(configured)
+    expect(report.argv).not.toContain('--plugin-dir')
+    expect(report.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
+  })
+
+  test('fails clearly before tmux when the selected binary is missing', () => {
+    const cache = temp()
+    let called = false
+    expect(() => startBuiltinRun(parseArgs(['run-builtin', '--binary', join(cache, 'missing'), '--cache', cache]), () => { called = true }, () => '/usr/local/bin/tmux')).toThrow('Built Claude binary not found')
+    expect(called).toBe(false)
+  })
+})
+
+describe('deterministic compiled builtin acceptance', () => {
+  test('acceptance CLI owns its mock endpoint and accepts no target', () => {
+    expect(parseArgs(['accept-builtin', '--cache', '/private/tmp/mlab']).command).toBe('accept-builtin')
+    expect(() => parseArgs(['accept-builtin', 'diff'])).toThrow()
+    expect(() => parseArgs(['accept-builtin', '--api-url', 'http://127.0.0.1:1234'])).toThrow()
+  })
+
+  test('managed-only differential requires a real main request on both sides', async () => {
+    const { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs')
+    const request = text => ({ body: { model: 'claude-sonnet-4-5-20250929', messages: [{ role: 'user', content: `MODS_ACCEPT_PROMPT ${text}` }] } })
+    const pair = {
+      enabled: { requests: [request('')], catalog: 'Toggle the diff panel showing uncommitted changes', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
+      disabled: { requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
+      privacyOff: { ledger: [] },
+      privacyOn: { ledger: [
+        { sequence: 1, operation: 'authorize', credentialKind: 'bearer', granted: true },
+        { sequence: 2, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
+      ] },
+    }
+    const result = assessBuiltinAcceptance(pair)
+    expect(result.agents.verdict).toBe('passed')
+    const auxiliary = { body: { model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT MODS_ACCEPT_CLAUDE_MARKER' }] } }
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [auxiliary] } }).agents.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [...pair.enabled.requests, auxiliary] } }).agents.verdict).toBe('passed')
+    expect(result.diff.verdict).toBe('passed')
+    expect(result.telemetry.verdict).toBe('passed')
+    expect(assessBuiltinAcceptance({ ...pair, privacyOff: { ledger: pair.privacyOn.ledger } }).telemetry.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ledger: pair.privacyOn.ledger.slice(1) } }).telemetry.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, error: 'Timed out during exit' } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { status: 1 } } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [] } }).agents.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [request('MODS_ACCEPT_CLAUDE_MARKER')] } }).agents.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, requests: [request('')] } }).agents.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, catalog: pair.enabled.catalog } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, diff: 'Diff panel shown' } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, closed: 'bypass permissions on tracked.txt Enter to view' } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, diff: 'tracked.txt +after' } }).diff.verdict).toBe('failed')
+  })
+
+  test('places configured acceptance evidence inside the sandbox-writable child run', () => {
+    const cache = shortTemp()
+    const binary = join(shortTemp(), 'built-claude')
+    writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    const report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]),
+      () => 'mods:0.0 %1 12345\n', () => '/usr/local/bin/tmux', (run, env) => {
+        const ledger = join(run, 'host.jsonl')
+        writeFileSync(ledger, '', { mode: 0o600 })
+        env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledger
+      })
+    expect(report.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER).toStartWith(`${report.run}/`)
+    expect(readFileSync(report.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER, 'utf8')).toBe('')
+  })
+
+  test('loopback provider records bodies, never headers, and emits deterministic SSE', async () => {
+    const { startAcceptanceProvider } = await import('./mods-test-lab.mjs')
+    const root = temp()
+    const provider = await startAcceptanceProvider(root)
+    try {
+      expect(provider.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+      const response = await globalThis.fetch(`${provider.url}/v1/messages`, { method: 'POST', headers: { authorization: 'secret-header-must-not-be-recorded' }, body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT' }] }) })
+      const text = await response.text()
+      expect(text).toContain('event: message_start')
+      expect(text).toContain('MODS_ACCEPT_RESPONSE')
+      expect(text).toContain('event: message_stop')
+      expect(provider.requests).toHaveLength(1)
+      expect(readFileSync(join(root, 'requests.jsonl'), 'utf8')).not.toContain('secret-header-must-not-be-recorded')
+      expect((await globalThis.fetch(`${provider.url}/unexpected`)).status).toBe(404)
+    } finally { await provider.close() }
   })
 })
 

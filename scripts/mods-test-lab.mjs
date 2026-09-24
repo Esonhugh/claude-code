@@ -1,12 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { createServer } from 'node:http'
+import { setTimeout as delay } from 'node:timers/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { unzipSync } from 'fflate'
 
-export const COMMIT = 'bf7d404e26a5fb6167d21b46c93a2bf6c22ab274'
+export const COMMIT = '7974a70773fa229e4cc65aa1b356cc21f5c216c4'
 export const OFFICIAL = ['diff', 'agents-md', 'sec-default', 'telemetry']
 const OWNER = 'mods-test-lab/v1'
 const SCRIPT = fileURLToPath(import.meta.url)
@@ -23,18 +25,18 @@ const within = (root, path) => { const part = relative(root, path); return part 
 
 export function parseArgs(args) {
   const [command, ...rest] = args
-  if (!['fetch-official', 'check', 'run', 'clean'].includes(command)) throw new Error('Usage: fetch-official | check <sample|diff|agents-md|sec-default|telemetry> | run <name> [--binary PATH] [--api-url http://127.0.0.1:PORT] | clean <run-id>; all accept --cache DIR')
+  if (!['fetch-official', 'check', 'run', 'run-builtin', 'accept-builtin', 'clean'].includes(command)) throw new Error('Usage: fetch-official | check <sample|diff|agents-md|sec-default|telemetry> | run <name> [--binary PATH] [--api-url http://127.0.0.1:PORT] | run-builtin [--binary PATH] [--api-url http://127.0.0.1:PORT] | accept-builtin [--binary PATH] | clean <run-id>; all accept --cache DIR')
   const options = { command, cache: join(homedir(), 'Library', 'Caches', 'mods-test-lab'), binary: join(REPO, 'built-claude'), apiUrl: 'http://127.0.0.1:1' }
   const seen = new Set()
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]
     if (!arg.startsWith('-') && !options.target) { options.target = arg; continue }
     const key = { '--cache': 'cache', '--binary': 'binary', '--api-url': 'apiUrl' }[arg]
-    if (!key || seen.has(key) || !rest[i + 1] || rest[i + 1].startsWith('--') || (key !== 'cache' && command !== 'run')) throw new Error(`Invalid argument: ${arg}`)
+    if (!key || seen.has(key) || !rest[i + 1] || rest[i + 1].startsWith('--') || (key !== 'cache' && !['run', 'run-builtin', 'accept-builtin'].includes(command)) || (command === 'accept-builtin' && key === 'apiUrl')) throw new Error(`Invalid argument: ${arg}`)
     seen.add(key)
     options[key] = rest[++i]
   }
-  if (command === 'fetch-official' ? options.target !== undefined : !options.target) throw new Error('Unexpected or missing target')
+  if (['fetch-official', 'run-builtin', 'accept-builtin'].includes(command) ? options.target !== undefined : !options.target) throw new Error('Unexpected or missing target')
   if (['check', 'run'].includes(command) && !['sample', ...OFFICIAL].includes(options.target)) throw new Error('Unknown Mod')
   const url = new URL(options.apiUrl)
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname) || !url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('API URL must be an explicit loopback HTTP port, without credentials or path')
@@ -163,8 +165,10 @@ export function fixtureEnvironment(run, apiUrl = 'http://127.0.0.1:1') {
 export function prepareFixture(run, plugin) {
   for (const name of ['home', 'config', 'xdg', 'xdg-cache', 'xdg-data', 'tmp', 'bin', 'project']) directory(join(run, name))
   writeFileSync(join(run, 'bin/security'), '#!/bin/sh\nexit 44\n', { flag: 'wx', mode: 0o700 })
-  inventory(plugin) // Do not copy links to user files into the fixture.
-  cpSync(plugin, join(run, 'plugin'), { recursive: true, errorOnExist: true, force: false })
+  if (plugin !== undefined) {
+    inventory(plugin) // Do not copy links to user files into the fixture.
+    cpSync(plugin, join(run, 'plugin'), { recursive: true, errorOnExist: true, force: false })
+  }
   const cwd = join(run, 'project')
   const env = fixtureEnvironment(run)
   const git = args => execFileSync('/usr/bin/git', args, { cwd, env, stdio: 'pipe', timeout: 10000 })
@@ -265,6 +269,249 @@ export function startRun(options) {
   return report
 }
 
+export function startBuiltinRun(options, execute = execFileSync, findTmux = () => execFileSync('/usr/bin/which', ['tmux'], { encoding: 'utf8' }).trim(), configure) {
+  const cache = cacheDirectory(options.cache)
+  if (!existsSync(options.binary) || !lstatSync(options.binary).isFile()) throw new Error(`Built Claude binary not found: ${options.binary}`)
+  const run = createRun(cache, 'run-builtin')
+  const socket = join(run, 'tmux.sock')
+  if (Buffer.byteLength(socket) >= 100) throw new Error(`Socket path too long; use --cache /private/tmp/mods-test-lab. Preserved ${run}`)
+  const tmux = findTmux()
+  const env = prepareFixture(run)
+  env.ANTHROPIC_BASE_URL = options.apiUrl
+  delete env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
+  configure?.(run, env)
+  const binary = join(run, 'bin/claude')
+  cpSync(options.binary, binary, { errorOnExist: true, force: false })
+  const debug = join(run, 'debug.log')
+  const argv = sandboxCommand(run, [binary, '--dangerously-skip-permissions', '--setting-sources', 'user,project,local', '--debug-file', debug])
+  const metadata = { run, socket, session: 'mods', mode: 'builtin-only', binary: options.binary, binarySha256: sha256(readFileSync(binary)), debug, env, argv, uiOnly: options.apiUrl === 'http://127.0.0.1:1', activation: 'not-verified', trigger: 'not-run' }
+  writeJSON(join(run, 'command.json'), metadata)
+  const tmuxConfig = join(run, 'tmux.conf')
+  writeFileSync(tmuxConfig, 'set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n', { flag: 'wx', mode: 0o600 })
+  const child = execute(tmux, ['-S', socket, '-f', tmuxConfig, 'new-session', '-d', '-s', 'mods', '-x', '160', '-y', '50', '-c', join(run, 'project'), '-P', '-F', '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pid}', ...argv], { env, encoding: 'utf8', timeout: 10000 }).trim()
+  const [target, pane, serverPid] = child.split(/\s+/)
+  const tmuxArgs = [tmux, '-S', socket]
+  const report = { ...metadata, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), capture: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override. Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.' }
+  writeJSON(join(run, 'run.json'), report)
+  console.log(JSON.stringify(report, null, 2))
+  return report
+}
+
+export async function startAcceptanceProvider(root) {
+  const requests = []
+  const ledger = join(root, 'requests.jsonl')
+  writeFileSync(ledger, '', { flag: 'wx', mode: 0o600 })
+  const server = createServer(async (req, res) => {
+    if (req.method !== 'POST' || !['/v1/messages', '/v1/messages/count_tokens'].includes(new URL(req.url, 'http://127.0.0.1').pathname)) {
+      res.writeHead(404).end(); return
+    }
+    try {
+      let bytes = ''
+      for await (const chunk of req) {
+        bytes += chunk
+        if (bytes.length > 8 * 1024 * 1024) throw new Error('Request too large')
+      }
+      const body = JSON.parse(bytes)
+      if (req.url.includes('count_tokens')) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ input_tokens: 100 })); return }
+      const record = { sequence: requests.length + 1, path: req.url, body }
+      requests.push(record)
+      appendFileSync(ledger, `${JSON.stringify(record)}\n`)
+      const message = { id: `msg_lab_${requests.length}`, type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: 'MODS_ACCEPT_RESPONSE' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 100, output_tokens: 8 } }
+      if (!body.stream) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(message)); return }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      for (const event of [
+        { type: 'message_start', message: { ...message, content: [], stop_reason: null } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'MODS_ACCEPT_RESPONSE' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 8 } },
+        { type: 'message_stop' },
+      ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+      res.end()
+    } catch { res.writeHead(400).end() }
+  })
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  return { url: `http://127.0.0.1:${server.address().port}`, requests, close: () => new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() }) }
+}
+
+export function assessBuiltinAcceptance(pair) {
+  const main = side => side.requests.filter(row => row.body.model === 'claude-sonnet-4-5-20250929' && JSON.stringify(row.body.messages).includes('MODS_ACCEPT_PROMPT'))
+  const enabled = main(pair.enabled), disabled = main(pair.disabled)
+  const markers = ['MODS_ACCEPT_CLAUDE_MARKER', 'MODS_TEST_LAB_AGENTS_MARKER']
+  const agents = enabled.length > 0 && disabled.length > 0 &&
+    enabled.every(row => markers.every(marker => !JSON.stringify(row.body).includes(marker))) &&
+    disabled.every(row => markers.every(marker => JSON.stringify(row.body).includes(marker)))
+  const diff = [pair.enabled, pair.disabled].every(side => !side.error && (!side.cleanup || side.cleanup.status === 0)) && pair.enabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
+    !pair.enabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
+    pair.disabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
+    !pair.disabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
+    [pair.enabled, pair.disabled].every(side => ['tracked.txt', '-before', '+after'].every(text => side.diff.includes(text))) &&
+    [pair.enabled, pair.disabled].every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view'))
+  const privacyOff = pair.privacyOff?.ledger ?? []
+  const privacyOn = pair.privacyOn?.ledger ?? []
+  const telemetry = privacyOff.length === 0 && privacyOn.length === 2 &&
+    privacyOn[0]?.sequence === 1 && privacyOn[0]?.operation === 'authorize' && privacyOn[0]?.granted === true &&
+    privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'http' && privacyOn[1]?.method === 'POST' &&
+    privacyOn[1]?.host === 'api.anthropic.com' && privacyOn[1]?.path === '/api/event_logging/v2/batch' && privacyOn[1]?.authorized === true
+  return {
+    agents: { verdict: agents ? 'passed' : 'failed', reason: 'managed-only must remove both native instruction markers from every main request; disabled must retain both' },
+    diff: { verdict: diff ? 'passed' : 'failed', reason: 'distinct command catalog ownership plus real diff content and dismissal on both sides' },
+    telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'privacy off must make zero host calls; privacy on must append exactly authorize then sanitized first-party HTTP evidence' },
+  }
+}
+
+export async function acceptBuiltin(options) {
+  const evidence = createRun(options.cache, 'accept-builtin')
+  const pair = {}
+  for (const privacyOn of [false, true]) {
+    const name = privacyOn ? 'privacyOn' : 'privacyOff'
+    const root = directory(join(evidence, name))
+    const provider = await startAcceptanceProvider(root)
+    let launch
+    let ledgerPath
+    const side = pair[name] = { ledger: [], requests: provider.requests }
+    try {
+      launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
+        ledgerPath = join(run, 'host.jsonl')
+        writeFileSync(ledgerPath, '', { flag: 'wx', mode: 0o600 })
+        env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledgerPath
+        env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
+        if (privacyOn) {
+          delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+          delete env.DISABLE_TELEMETRY
+        }
+        const path = join(run, 'config/settings.json')
+        const settings = json(path)
+        settings.enabledPlugins = { 'agents-md@builtin': true, 'diff@builtin': false, 'telemetry@builtin': true }
+        settings.pluginConfigs = { 'agents-md@builtin': { options: { instructionFiles: 'managed-only' } } }
+        writeFileSync(path, JSON.stringify(settings))
+        const configPath = join(run, 'config/.claude.json')
+        writeFileSync(configPath, JSON.stringify({ ...json(configPath), projects: { [join(run, 'project')]: { hasTrustDialogAccepted: true } } }))
+      })
+      side.run = launch.run
+      const tmux = (...args) => execFileSync(launch.tmux, ['-S', launch.socket, ...args], { encoding: 'utf8', timeout: 10000 })
+      const wait = async predicate => {
+        const deadline = Date.now() + 45000
+        do {
+          const text = tmux('capture-pane', '-p', '-S', '-2000', '-t', launch.target)
+          if (predicate(text)) return
+          if (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() === '1') throw new Error('CLI exited during telemetry acceptance')
+          await delay(150)
+        } while (Date.now() < deadline)
+        throw new Error('Timed out during telemetry acceptance')
+      }
+      const send = async text => {
+        tmux('send-keys', '-t', launch.target, '-l', text)
+        await delay(200)
+        tmux('send-keys', '-t', launch.target, 'Enter')
+      }
+      await wait(text => /bypass permissions/i.test(text))
+      await send('/reload-plugins')
+      await wait(text => text.includes('Reloaded:'))
+      await send('MODS_ACCEPT_PROMPT Reply with the fixed response only. Do not use tools.')
+      await wait(text => text.includes('MODS_ACCEPT_RESPONSE'))
+      await send('/exit')
+      const exitDeadline = Date.now() + 45000
+      while (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() !== '1') {
+        if (Date.now() >= exitDeadline) throw new Error('Timed out during telemetry exit')
+        await delay(150)
+      }
+    } catch (error) { side.error = error.message }
+    finally {
+      if (launch) spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
+      if (ledgerPath) side.ledger = readFileSync(ledgerPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+      await provider.close()
+      writeJSON(join(root, 'result.json'), side)
+    }
+  }
+  for (const enabled of [true, false]) {
+    const name = enabled ? 'enabled' : 'disabled'
+    const root = directory(join(evidence, name))
+    const provider = await startAcceptanceProvider(root)
+    let launch
+    const side = pair[name] = { requests: provider.requests, catalog: '', diff: '', closed: '', captures: {} }
+    try {
+      launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
+        env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
+        const path = join(run, 'config/settings.json')
+        const settings = json(path)
+        settings.enabledPlugins = Object.fromEntries(OFFICIAL.map(mod => [`${mod}@builtin`, mod === 'agents-md' || mod === 'diff' ? enabled : false]))
+        settings.pluginConfigs = { 'agents-md@builtin': { options: { instructionFiles: 'managed-only' } } }
+        writeFileSync(path, JSON.stringify(settings))
+        writeFileSync(join(run, 'project/CLAUDE.md'), 'MODS_ACCEPT_CLAUDE_MARKER\n')
+        writeFileSync(join(run, 'project/tracked.txt'), 'before\n')
+        const configPath = join(run, 'config/.claude.json')
+        writeFileSync(configPath, JSON.stringify({ ...json(configPath), projects: { [join(run, 'project')]: { hasTrustDialogAccepted: true } } }))
+      })
+      side.run = launch.run
+      side.target = launch.target
+      side.socket = launch.socket
+      side.binarySha256 = launch.binarySha256
+      const tmux = (...args) => {
+        appendFileSync(join(root, 'commands.jsonl'), `${JSON.stringify(args)}\n`, { mode: 0o600 })
+        return execFileSync(launch.tmux, ['-S', launch.socket, ...args], { encoding: 'utf8', timeout: 10000 })
+      }
+      const capture = label => {
+        const text = tmux('capture-pane', '-p', '-S', '-2000', '-t', launch.target)
+        const path = join(root, `${label}.txt`)
+        writeFileSync(path, text, { mode: 0o600 })
+        side.captures[label] = path
+        return text
+      }
+      const wait = async (label, predicate) => {
+        const deadline = Date.now() + 45000
+        do {
+          const text = capture(label)
+          if (predicate(text)) return text
+          if (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() === '1') throw new Error(`CLI exited during ${label}`)
+          await delay(150)
+        } while (Date.now() < deadline)
+        throw new Error(`Timed out during ${label}`)
+      }
+      const send = async text => { tmux('send-keys', '-t', launch.target, '-l', text); await delay(200); tmux('send-keys', '-t', launch.target, 'Enter') }
+      const startup = await wait('startup', text => /Yes, I trust this folder|bypass permissions/i.test(text))
+      if (startup.includes('Yes, I trust this folder')) tmux('send-keys', '-t', launch.target, 'Enter')
+      await wait('ready', text => /bypass permissions/i.test(text))
+      await send('/reload-plugins')
+      await wait('reload', text => text.includes('Reloaded:'))
+      await send('MODS_ACCEPT_PROMPT Reply with the fixed response only. Do not use tools.')
+      await wait('response', text => text.includes('MODS_ACCEPT_RESPONSE'))
+      writeFileSync(join(launch.run, 'project/tracked.txt'), 'after\n')
+      tmux('send-keys', '-t', launch.target, '-l', '/diff')
+      side.catalog = await wait('catalog', text => /Toggle the diff panel showing uncommitted changes|View uncommitted changes and per-turn diffs/.test(text))
+      tmux('send-keys', '-t', launch.target, 'Enter')
+      const listing = await wait('files', text => text.includes('tracked.txt'))
+      if (!listing.includes('before') || !listing.includes('after')) {
+        tmux('send-keys', '-t', launch.target, 'Down')
+        await delay(200)
+        tmux('send-keys', '-t', launch.target, 'Enter')
+      }
+      side.diff = await wait('diff', text => text.includes('tracked.txt') && text.includes('before') && text.includes('after'))
+      tmux('send-keys', '-t', launch.target, 'Escape')
+      if (enabled) { await delay(200); tmux('send-keys', '-t', launch.target, 'Escape') }
+      side.closed = await wait('closed', text => text.includes('bypass permissions') && !text.includes('tracked.txt') && !text.includes('Enter to view'))
+      await send('/exit')
+      const exitDeadline = Date.now() + 45000
+      while (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() !== '1') {
+        if (Date.now() >= exitDeadline) throw new Error('Timed out during exit')
+        await delay(150)
+      }
+    } catch (error) { side.error = error.message }
+    finally {
+      if (launch) {
+        const stopped = spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
+        side.cleanup = { status: stopped.status, error: stopped.error?.message }
+      }
+      await provider.close()
+      writeJSON(join(root, 'result.json'), side)
+    }
+  }
+  const assertions = assessBuiltinAcceptance(pair)
+  const report = { evidence, pair, assertions }
+  writeJSON(join(evidence, 'acceptance.json'), report)
+  return report
+}
+
 export function cleanRun(cache, target, execute = spawnSync) {
   cache = realpathSync(cache)
   const id = isAbsolute(target) ? basename(target) : target
@@ -304,6 +551,12 @@ if (import.meta.main) {
       const report = check(options)
       if (report.scan !== 'passed' || report.preparation !== 'passed' || report.errors.length) process.exitCode = 1
     } else if (options.command === 'run') startRun(options)
+    else if (options.command === 'run-builtin') startBuiltinRun(options)
+    else if (options.command === 'accept-builtin') {
+      const report = await acceptBuiltin(options)
+      console.log(JSON.stringify(report, null, 2))
+      if (Object.values(report.assertions).some(item => item.verdict !== 'passed')) process.exitCode = 1
+    }
     else console.log(JSON.stringify(cleanRun(options.cache, options.target), null, 2))
   } catch (error) { console.error(error.message); process.exitCode = 1 }
 }
