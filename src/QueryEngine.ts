@@ -326,6 +326,8 @@ export class QueryEngine {
           options: { mcpClients: this.config.mcpClients },
         }),
       commands: () => this.config.commands,
+      tasks: () => getAppState().tasks,
+      agentNames: () => getAppState().agentNameRegistry,
       toolCatalog: () => createToolCatalog(this.config.tools, async tool => {
         const schema = await toolToAPISchema(tool, {
           tools: this.config.tools,
@@ -508,7 +510,7 @@ export class QueryEngine {
         isNonInteractiveSession: true,
         customSystemPrompt,
         appendSystemPrompt,
-        agentDefinitions: { activeAgents: agents, allAgents: [] },
+        agentDefinitions: this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
         theme: resolveThemeSetting(getGlobalConfig().theme),
         maxBudgetUsd,
       },
@@ -674,7 +676,7 @@ export class QueryEngine {
         customSystemPrompt,
         appendSystemPrompt,
         theme: resolveThemeSetting(getGlobalConfig().theme),
-        agentDefinitions: { activeAgents: agents, allAgents: [] },
+        agentDefinitions: this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
         maxBudgetUsd,
       },
       getAppState,

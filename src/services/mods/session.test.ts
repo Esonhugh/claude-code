@@ -109,6 +109,24 @@ function watchEvents() {
 }
 
 describe('Mods CLI session host', () => {
+  test('Worker registered agents publish into next-turn ToolUseContext state and disappear on unload', async () => {
+    const mod = await plugin(`export function register(on) {
+      on('command.run', async $ => ({text:JSON.stringify(await $.agent.register({name:'reviewer',description:'Review',prompt:'Review carefully',model:'inherit'}))}));
+    }`)
+    const host = session({loadPlugins:async()=>[mod]})
+    let state = {agentDefinitions:{activeAgents:[],allAgents:[]},plugins:{errors:[]}} as unknown as import('../../state/AppState.js').AppState
+    await host.bind(binding, update => { state = update(state) })
+    const snapshot = host.runtime!.capture()
+    try {
+      await snapshot.dispatch('command.run',{},async()=>({}))
+      const context = {options:{agentDefinitions:state.agentDefinitions}} as ToolUseContext
+      expect(context.options.agentDefinitions.activeAgents).toHaveLength(1)
+      expect(context.options.agentDefinitions.activeAgents[0]).toMatchObject({agentType:'fixture:reviewer',whenToUse:'Review',source:'plugin',model:'inherit'})
+      await host.refresh([])
+      expect(state.agentDefinitions).toEqual({activeAgents:[],allAgents:[]})
+    } finally { snapshot.release() }
+  })
+
   test('does not load or instantiate a Worker before trust, or without declarations', async () => {
     let loads = 0
     let creates = 0

@@ -2305,7 +2305,7 @@ function runHeadlessStreaming(
                   params.url,
                   'elicitationId' in params ? params.elicitationId : undefined,
                 ),
-              agents: currentAgents,
+              agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
               orphanedPermission: cmd.orphanedPermission,
               setSDKStatus: status => {
                 output.enqueue({
@@ -2816,6 +2816,8 @@ function runHeadlessStreaming(
     cwd,
     root: getOriginalCwd,
     commands: () => currentCommands,
+    tasks: () => getAppState().tasks,
+    agentNames: () => getAppState().agentNameRegistry,
     mcpCall: (server, tool, args, signal) =>
       callMCPToolForMod(
         findMCPConnectionForMod([
@@ -4275,7 +4277,7 @@ function runHeadlessStreaming(
                     customSystemPrompt: options.systemPrompt,
                     appendSystemPrompt: options.appendSystemPrompt,
                     thinkingConfig: options.thinkingConfig,
-                    agents: currentAgents,
+                    agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
                   })
               const result = await runSideQuestion({
                 // @ts-ignore - recovered code

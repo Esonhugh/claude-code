@@ -121,6 +121,15 @@ export function createModsSession(options: ModsSessionOptions) {
     describe: (existing: Command[]) => runtime?.commands.describe(existing) ?? Promise.resolve(existing),
   }
 
+  let unsubscribeAgents: (() => void) | undefined
+  function publishAgents() {
+    if (!setAppState || !runtime?.agents) return
+    setAppState(previous => {
+      const agentDefinitions = runtime!.agents.projection(previous.agentDefinitions)
+      return agentDefinitions === previous.agentDefinitions ? previous : {...previous, agentDefinitions}
+    })
+  }
+
   const readSettings =
     options.getSettings ??
     (() => ({
@@ -429,6 +438,7 @@ export function createModsSession(options: ModsSessionOptions) {
       unsubscribeCommands = runtime.commands.subscribe(() => {
         for (const listener of commandListeners) listener()
       })
+      unsubscribeAgents = runtime.agents?.subscribe(publishAgents)
       unregisterShutdown = registerModsHostDisposer(
         dispose,
         (reason, timeoutMs, sessionId) =>
@@ -523,6 +533,7 @@ export function createModsSession(options: ModsSessionOptions) {
           uiListeners.clear()
           unsubscribeCommands?.()
           commandListeners.clear()
+          unsubscribeAgents?.()
           unregisterShutdown?.()
           unregisterCleanup?.()
         }
@@ -567,6 +578,7 @@ export function createModsSession(options: ModsSessionOptions) {
           runtimeBound = true
         })
       else await queue
+      publishAgents()
       firstBinding.resolve()
     },
     async receive(input: SessionReceiveInput, admit: (input: SessionReceiveInput) => void | SessionReceiveResult | Promise<void | SessionReceiveResult>, signal?: AbortSignal) {

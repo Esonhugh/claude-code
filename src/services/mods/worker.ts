@@ -263,7 +263,7 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
       'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
-      'agent.spawn', 'tool.register', 'tool.list']);
+      'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);
     if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
     checkHandler(event, handler);
     const selected = event.startsWith('!') ? event.slice(1) : event;

@@ -1372,3 +1372,17 @@ test('snapshots a TS entrypoint and collects literal registrations and capabilit
   expect(declaration.tier).toBe('prepend')
   expect(declaration.fingerprint).toMatch(/^[a-f0-9]{64}$/)
 })
+
+test.each(['register', 'list'])('admits agent.%s calls and exact Worker registrations', async method => {
+  const event = `agent.${method}`
+  const input = await plugin({
+    'main.ts': `export function register(on) {
+      on('${event}', ($, e, next) => next(e));
+      on('session.start', async ($, e, next) => { await $.agent.${method}(${method === 'register' ? "{name:'reviewer',description:'Review',prompt:'Review'}" : ''}); return next(e); });
+    }`,
+  })
+  const declaration = await loadModDeclaration(input)
+  expect(declaration.calls).toEqual([event])
+  expect(declaration.events).toEqual([event, 'session.start'])
+  expect(validateModRegistrations(declaration, [{id:1,event,hasCatch:false}])).toEqual([{id:1,event,hasCatch:false}])
+})

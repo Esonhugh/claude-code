@@ -1942,6 +1942,8 @@ export function REPL({
       }),
     commands: () => baseCommandsRef.current,
     builtinCommands: () => modBuiltinCommandsRef.current,
+    tasks: () => store.getState().tasks,
+    agentNames: () => store.getState().agentNameRegistry,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
       let settled = false

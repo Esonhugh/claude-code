@@ -1,3 +1,5 @@
+import type { AppState } from '../../state/AppState.js'
+import { createModAgents, listModAgents } from './agents.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import type { ModModelForkRequest, ModModelForkResult } from './types.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -89,6 +91,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   cwd?(): string
   root?(): string
   messages?(): readonly unknown[]
+  tasks?(): AppState['tasks']
+  agentNames?(): AppState['agentNameRegistry']
   commands?(): readonly Command[]
   builtinCommands?(): readonly Command[]
   presentation?(): CommandPresentation
@@ -170,6 +174,7 @@ const coreHost: Nouns = {
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
+  agent: { register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
   tool: { list: hostIdentity },
@@ -283,6 +288,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       dispatch(event, input, core, active, nouns, options),
     () => nouns,
   )
+  const agents = createModAgents(owner => (owner as Activation).declaration)
   const commands = createModCommands({
     getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
       command.type === 'prompt'
@@ -360,6 +366,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (owner.dispose) return owner.dispose
     owner.state = 'disposed'
     commands.release(owner)
+    agents.release(owner)
     owner.controller.abort()
     for (const id of owner.waits.keys()) cancelWait(owner, id)
     owner.dispose = releaseUi(owner).finally(() => owner.environment.dispose()).finally(() => { retired.delete(owner); activations.delete(owner) })
@@ -371,6 +378,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     owner.state = 'retiring'
     void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
     commands.release(owner)
+    agents.release(owner)
     retired.add(owner)
     // A pending sleep may belong to an in-flight hook; stop future timer ticks,
     // but do not turn a normal reload into cancellation of that continuation.
@@ -518,6 +526,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           throw new TypeError('prompt.suggest takes { text }')
         return { text: (input as ModInput).text }
       }
+      case 'agent.register': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input))
+          throw new TypeError('agent.register takes an agent specification')
+        return input as ModInput
+      }
       case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': case 'model.fork': return args[0] as ModInput
       case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
       case 'ui.log': {
@@ -528,7 +542,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
-      case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.id': case 'session.repo': case 'session.surface': case 'session.messages': case 'prompt.read': {
+      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.id': case 'session.repo': case 'session.surface': case 'session.messages': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
       }
@@ -672,6 +686,15 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (owner.uiPublished) services.uiStatus(owner.declaration.name, owner.uiStatus.text)
         }
         return undefined
+      }
+      case 'agent.list': {
+        if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
+        return listModAgents(services.tasks(), services.agentNames?.())
+      }
+      case 'agent.register': {
+        if (!binding) throw new Error('agent.register requires a bound session')
+        if (owner.state !== 'active') throw new Error('Agent registration belongs to a retired activation')
+        return agents.register(owner, input)
       }
       case 'command.register': return commands.register(owner, input as ModCommandSpec)
       case 'command.list': return (await commands.describe([...(services.commands?.() ?? [])])).map(command => {
@@ -1482,6 +1505,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             })
             if (!failed) {
               commands.validateCommit(owner, replacements.get(owner), [...prepared])
+              agents.validateCommit(owner, replacements.get(owner), [...prepared])
               await uiContext.run({ snapshot: built.modules, table: built.table, person: false }, () => ui.commit(owner, replacements.get(owner)))
               prepared.add(owner)
             }
@@ -1521,6 +1545,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (commandsChanged) commands.invalidateDescriptions(false)
     for (const owner of prepared) {
       commands.commit(owner, replacements.get(owner))
+      agents.commit(owner, replacements.get(owner))
       owner.uiPublished = true
       if (owner.uiStatus) services.uiStatus?.(owner.declaration.name, owner.uiStatus.text)
       for (const { text, to } of owner.uiLogs ?? []) services.uiLog?.(owner.declaration.name, text, to)
@@ -1654,6 +1679,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       owner.state = 'disposed'
       void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
       commands.release(owner)
+      agents.release(owner)
       owner.controller.abort()
       for (const id of owner.waits.keys()) cancelWait(owner, id)
     }
@@ -1785,6 +1811,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     measure,
     endSession,
     commands,
+    agents,
     config,
     ui,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
