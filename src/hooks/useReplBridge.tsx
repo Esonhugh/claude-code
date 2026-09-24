@@ -30,7 +30,7 @@ import type { Message } from '../types/message.js'
 import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
-import { enqueue } from '../utils/messageQueueManager.js'
+import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js'
 import {
   createBridgeStatusMessage,
@@ -44,6 +44,8 @@ import {
   transitionPermissionMode,
 } from '../utils/permissions/permissionSetup.js'
 import { getLeaderToolUseConfirmQueue } from '../utils/swarm/leaderPermissionBridge.js'
+import type { ModsSession } from '../services/mods/session.js'
+import { createModUiBridgeController } from '../bridge/modUiBridgeController.js'
 
 /** How long after a failure before replBridgeEnabled is auto-cleared (stops retries). */
 export const BRIDGE_FAILURE_DISMISS_MS = 10_000
@@ -76,8 +78,14 @@ export function useReplBridge(
   abortControllerRef: React.RefObject<AbortController | null>,
   commands: readonly Command[],
   mainLoopModel: string,
+  modsSession?: ModsSession,
 ): { sendBridgeResult: () => void } {
   const handleRef = useRef<ReplBridgeHandle | null>(null)
+  const modUiControllerRef = useRef<ReturnType<typeof createModUiBridgeController> | null>(null)
+  if (!modUiControllerRef.current) modUiControllerRef.current = createModUiBridgeController()
+  useEffect(() => {
+    modUiControllerRef.current?.setSession(modsSession)
+  }, [modsSession])
   const teardownPromiseRef = useRef<Promise<void> | undefined>(undefined)
   const lastWrittenIndexRef = useRef(0)
   // Tracks UUIDs already flushed as initial messages. Persists across
@@ -163,6 +171,7 @@ export function useReplBridge(
       }
 
       let cancelled = false
+      const inboundController = new AbortController()
       // Capture messages.length now so we don't re-send initial messages
       // through writeMessages after the bridge connects.
       const initialMessageCount = messages.length
@@ -245,7 +254,7 @@ export function useReplBridge(
               logForDebugging(
                 `[bridge:repl] Injecting inbound user message: ${preview}${uuid ? ` uuid=${uuid}` : ''}`,
               )
-              enqueue({
+              await enqueueInboundMessage({
                 value: content,
                 mode: 'prompt' as const,
                 uuid,
@@ -255,8 +264,8 @@ export function useReplBridge(
                 // This keeps exit-word suppression and immediate-command blocks
                 // intact for any code path that checks skipSlashCommands directly.
                 skipSlashCommands: true,
-                bridgeOrigin: true,
-              })
+                bridgeOrigin: fields.origin.kind === 'bridge',
+              }, fields.origin, { signal: inboundController.signal })
             } catch (e) {
               logForDebugging(
                 `[bridge:repl] handleInboundMessage failed: ${e}`,
@@ -469,6 +478,7 @@ export function useReplBridge(
             outboundOnly,
             tags: outboundOnly ? ['ccr-mirror'] : undefined,
             onInboundMessage: handleInboundMessage,
+            onModUiEvent: event => modUiControllerRef.current?.handle(event),
             onPermissionResponse: handlePermissionResponse,
             onInterrupt() {
               abortControllerRef.current?.abort()
@@ -610,6 +620,7 @@ export function useReplBridge(
             return
           }
           handleRef.current = handle
+          modUiControllerRef.current?.setSender(handle)
           setReplBridgeHandle(handle)
           consecutiveFailuresRef.current = 0
           // Skip initial messages in the forwarding effect — they were
@@ -787,12 +798,14 @@ export function useReplBridge(
 
       return () => {
         cancelled = true
+        inboundController.abort()
         clearTimeout(failureTimeoutRef.current)
         failureTimeoutRef.current = undefined
         if (handleRef.current) {
           logForDebugging(
             `[bridge:repl] Hook cleanup: starting teardown for env=${handleRef.current.environmentId} session=${handleRef.current.bridgeSessionId}`,
           )
+          modUiControllerRef.current?.setSender(undefined)
           teardownPromiseRef.current = handleRef.current.teardown()
           handleRef.current = null
           setReplBridgeHandle(null)
@@ -828,6 +841,11 @@ export function useReplBridge(
     setMessages,
     addNotification,
   ])
+
+  useEffect(() => () => {
+    void modUiControllerRef.current?.dispose()
+    modUiControllerRef.current = null
+  }, [])
 
   // Write new messages as they appear.
   // Also re-runs when replBridgeConnected changes (bridge finishes init),

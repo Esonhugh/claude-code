@@ -70,6 +70,7 @@ import type {
   SDKControlResponse,
 } from '../entrypoints/sdk/controlTypes.js'
 import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
+import type { ModUiInboundEvent } from './modUiMessages.js'
 
 const ANTHROPIC_VERSION = '2023-06-01'
 
@@ -102,6 +103,7 @@ export type EnvLessBridgeParams = {
   initialHistoryCap: number
   initialMessages?: Message[]
   onInboundMessage?: (msg: SDKMessage) => void | Promise<void>
+  onModUiEvent?: (event: ModUiInboundEvent) => void | Promise<void>
   /**
    * Fired on each title-worthy user message seen in writeMessages() until
    * the callback returns true (done). Mirrors replBridge.ts's onUserMessage —
@@ -150,6 +152,7 @@ export async function initEnvLessBridgeCore(
     initialHistoryCap,
     initialMessages,
     onInboundMessage,
+    onModUiEvent,
     onUserMessage,
     onPermissionResponse,
     onInterrupt,
@@ -444,6 +447,7 @@ export async function initEnvLessBridgeCore(
             onSetPermissionMode,
             outboundOnly,
           }),
+        onModUiEvent,
       )
     })
 
@@ -821,6 +825,12 @@ export async function initEnvLessBridgeCore(
       }
       const events = filtered.map(m => ({ ...m, session_id: sessionId }))
       void transport.writeBatch(events)
+    },
+    sendModUiEvent(event) {
+      if (authRecoveryInFlight || tornDown) return
+      // Dedicated bridge control event; intentionally outside StdoutMessage/SDK transcript.
+      // @ts-expect-error ReplBridgeTransport is typed to the SDK union only.
+      void transport.write({ ...event, session_id: sessionId })
     },
     sendControlRequest(request: SDKControlRequest) {
       if (authRecoveryInFlight) {

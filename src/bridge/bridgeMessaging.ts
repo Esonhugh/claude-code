@@ -27,6 +27,7 @@ import { errorMessage } from '../utils/errors.js'
 import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
 import { jsonParse } from '../utils/slowOperations.js'
 import type { ReplBridgeTransport } from './replBridgeTransport.js'
+import { isModUiInboundEvent, type ModUiInboundEvent } from './modUiMessages.js'
 
 // ─── Type guards ─────────────────────────────────────────────────────────────
 
@@ -138,9 +139,22 @@ export function handleIngressMessage(
   onInboundMessage: ((msg: SDKMessage) => void | Promise<void>) | undefined,
   onPermissionResponse?: ((response: SDKControlResponse) => void) | undefined,
   onControlRequest?: ((request: SDKControlRequest) => void) | undefined,
+  onModUiEvent?: ((event: ModUiInboundEvent) => void | Promise<void>) | undefined,
 ): void {
   try {
     const parsed: unknown = normalizeControlMessageKeys(jsonParse(data))
+
+    // Mod UI is a dedicated control protocol, not part of the SDK transcript
+    // union. Route it before SDK user UUID echo-dedup and prompt analytics.
+    if (isModUiInboundEvent(parsed)) {
+      logForDebugging(`[bridge:repl] Ingress mod_ui subtype=${parsed.subtype}`)
+      void Promise.resolve(onModUiEvent?.(parsed)).catch(error => {
+        logForDebugging(
+          `[bridge:repl] mod_ui handler failed: ${errorMessage(error)}`,
+        )
+      })
+      return
+    }
 
     // control_response is not an SDKMessage — check before the type guard
     if (isSDKControlResponse(parsed)) {
