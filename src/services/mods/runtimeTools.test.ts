@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime, type ModsRuntime } from './runtime.js'
+import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
 const roots: string[] = []
 const runtimes: ModsRuntime[] = []
 beforeEach(() => {
@@ -30,6 +31,41 @@ async function plugin(name: string, source: string) {
   return { name, storageId: name + '@test', pluginRoot, entrypoints: [entry] }
 }
 const binding = { cwd: '/tmp', surface: null, isInteractive: false, sessionId: 'offline' } as const
+
+test('ToolSearch description consumers execute author calls with the current tools and permissions', async () => {
+  const mod=await plugin('search-host',`export function register(on) {
+    on('tool.describe',{tool:'Offline'},async ($,e,next)=>{
+      const result=await $.tool.call({tool:'Offline',value:'description'});
+      return {...await next(e),description:result.text,isDeferred:true};
+    });
+  }`)
+  const diagnostics: unknown[]=[],calls: string[]=[],permissions: string[]=[]
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'unrelated',prompt:async()=>'unrelated',renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(input.value);return {data:'needlecapability'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true,agentDefinitions:{activeAgents:[]}},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map(),mcp:{clients:[]}}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await ToolSearchTool.call({query:'needlecapability',max_results:5},context,async tool=>{
+    permissions.push(tool.name);return {behavior:'allow'}
+  })
+  expect(diagnostics).toEqual([])
+  expect(result.data.matches).toEqual(['Offline'])
+  expect(calls).toEqual(['description'])
+  expect(permissions).toEqual(['Offline'])
+})
 
 test('session.start tool.register publishes a real owned tool and replaces it atomically on reload', async () => {
   const source = (description: string) => `export function register(on) {

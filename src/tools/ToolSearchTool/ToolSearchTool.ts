@@ -14,6 +14,7 @@ import {
 } from '../../Tool.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { resolveModToolDescriptions } from '../../utils/api.js'
+import { createModToolHost } from '../../services/mods/toolHost.js'
 import {
   createToolCatalogForContext,
   type ModToolDescription,
@@ -338,7 +339,7 @@ export const ToolSearchTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  async call(input, context) {
+  async call(input, context, canUseTool) {
     const {
       options: { tools: staleTools },
       getAppState,
@@ -354,6 +355,7 @@ export const ToolSearchTool = buildTool({
     )
     const snapshot = context.modsSnapshot ?? context.mods?.capture({
       toolCatalog: () => createToolCatalogForContext(context),
+      toolHost: () => createModToolHost(context, canUseTool),
     })
     let modDescriptions: ReadonlyMap<Tool, ModToolDescription> | undefined
     try {

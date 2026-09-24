@@ -1398,9 +1398,11 @@ async function checkPermissionsAndCallTool(
       callInput,
       {
         ...toolUseContext,
-        // Agent consumes agent.offer dispatch admission. Other background/nested
-        // tools must not retain an invocation snapshot past the executor's release.
+        // ToolSearch consumes description admission and Agent consumes
+        // agent.offer dispatch admission. Other background/nested tools must not
+        // retain an invocation snapshot past the executor's release.
         ...(toolUseContext.modsSnapshot &&
+        tool.name !== TOOL_SEARCH_TOOL_NAME &&
         tool.name !== AGENT_TOOL_NAME
           ? { modsSnapshot: undefined }
           : {}),

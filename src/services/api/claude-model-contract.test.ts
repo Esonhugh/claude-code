@@ -185,6 +185,230 @@ afterEach(() => {
   streamNotFound = false
 })
 
+test.each([false, true])(
+  'Mods deferral changes initial schemas, ToolSearch candidates and discovered schema loading (delta=%s)',
+  async deltaEnabled => {
+    const deltaGate = spyOn(
+      growthbook,
+      'getFeatureValue_CACHED_MAY_BE_STALE',
+    ).mockImplementation((key, fallback) =>
+      key === 'tengu_glacier_2xr'
+        ? (deltaEnabled as typeof fallback)
+        : fallback,
+    )
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { z } = await import('zod/v4')
+    const { createModsRuntime } = await import('../mods/runtime.js')
+    const { ToolSearchTool } =
+      await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+    const { clearToolSchemaCache } =
+      await import('../../utils/toolSchemaCache.js')
+    const root = await mkdtemp(join(tmpdir(), 'mods-deferral-wire-'))
+    const entry = join(root, 'register.ts')
+    const diagnostics: string[] = []
+    const runtime = createModsRuntime({
+      onDiagnostic: event => diagnostics.push(event.message),
+    })
+    const previous = process.env.ENABLE_TOOL_SEARCH
+    process.env.ENABLE_TOOL_SEARCH = 'true'
+    clearToolSchemaCache()
+    await writeFile(
+      entry,
+      `export function register(on) {
+    let flipped = false;
+    on('tool.describe', ($, e) => ({description:'quartz '+e.tool, isDeferred:e.tool === 'ToolSearch' || (flipped ? e.tool === 'mcp__corp__lookup' : e.tool === 'LocalLookup')}));
+    on('tool.call', {tool:'Invalidate'}, async ($) => { flipped = !flipped; await $.ui.invalidate('tool.describe'); return {result:'invalidated'}; });
+  }`,
+    )
+    await runtime.reconcile([
+      {
+        name: 'placement',
+        storageId: 'placement@inline',
+        pluginRoot: root,
+        entrypoints: [entry],
+        tier: 'user',
+      },
+    ])
+    const snapshot = runtime.capture()
+    const local = {
+      name: 'LocalLookup',
+      inputSchema: z.object({ key: z.string() }),
+      async prompt() {
+        return 'local lookup'
+      },
+    } as unknown as import('../../Tool.js').Tool
+    const pinned = { ...local, name: 'mcp__corp__lookup', isMcp: true }
+    const tools = [local, pinned, ToolSearchTool]
+    const messages: import('../../types/message.js').Message[] = [
+      createUserMessage({ content: 'test' }),
+    ]
+    if (deltaEnabled) {
+      const { createAttachmentMessage } =
+        await import('../../utils/attachments.js')
+      messages.push(
+        createAttachmentMessage({
+          type: 'deferred_tools_delta',
+          addedNames: [pinned.name],
+          addedLines: [pinned.name],
+          removedNames: [],
+        }),
+      )
+    }
+    const run = async (model = 'claude-sonnet-5') => {
+      const result = await queryModelWithoutStreaming({
+        messages,
+        systemPrompt: asSystemPrompt([]),
+        thinkingConfig: { type: 'disabled' },
+        tools,
+        signal: new AbortController().signal,
+        options: {
+          model,
+          querySource: 'repl_main_thread',
+          agents: [],
+          mcpTools: [pinned],
+          hasAppendSystemPrompt: false,
+          isNonInteractiveSession: true,
+          enablePromptCaching: false,
+          getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+          modsSnapshot: snapshot,
+        },
+      })
+      expect(result.message.content).toMatchObject([
+        { type: 'text', text: 'OK' },
+      ])
+      return requests.at(-1)!
+    }
+    try {
+      const initial = await run()
+      expect(
+        initial.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
+      ).toEqual(['mcp__corp__lookup', 'ToolSearch'])
+      expect(initial.tools?.every(tool => !('defer_loading' in tool))).toBe(
+        true,
+      )
+      expect(JSON.stringify(initial.messages)).toContain(
+        deltaEnabled
+          ? 'The following deferred tools are now available via ToolSearch:\\nLocalLookup'
+          : '<available-deferred-tools>\\nLocalLookup\\n</available-deferred-tools>',
+      )
+      expect(JSON.stringify(initial.messages)).not.toContain(pinned.name)
+      if (deltaEnabled)
+        expect((messages[1] as any).attachment.addedNames).toEqual([
+          pinned.name,
+        ])
+      const context = {
+        options: {
+          tools,
+          agentDefinitions: { activeAgents: [] },
+          mainLoopModel: 'claude-sonnet-5',
+          mcpClients: [],
+          isNonInteractiveSession: true,
+        },
+        getAppState: () => ({
+          toolPermissionContext: getEmptyToolPermissionContext(),
+          mcp: { clients: [] },
+          sessionHooks: new Map(),
+        }),
+        messages: [],
+        setAppState: () => {},
+        setInProgressToolUseIDs: () => {},
+        // toolExecution clears the invocation snapshot before entering Tool.call.
+        mods: runtime,
+        abortController: new AbortController(),
+      } as unknown as import('../../Tool.js').ToolUseContext
+      const { data } = await ToolSearchTool.call(
+        { query: 'quartz', max_results: 5 },
+        context,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      )
+      expect(data).toMatchObject({
+        matches: ['LocalLookup'],
+        total_deferred_tools: 1,
+      })
+      const { runToolUse } = await import('../tools/toolExecution.js')
+      const { createAssistantMessage } = await import('../../utils/messages.js')
+      const searchUse = {
+        type: 'tool_use' as const,
+        caller: { type: 'direct' as const },
+        id: 'search-1',
+        name: 'ToolSearch',
+        input: { query: 'quartz', max_results: 5 },
+      }
+      const assistant = createAssistantMessage({ content: [searchUse] })
+      const updates = await Array.fromAsync(
+        runToolUse(
+          searchUse,
+          assistant,
+          async () => ({ behavior: 'allow' }),
+          context,
+        ),
+      )
+      const results = updates.flatMap(update =>
+        update.message?.type === 'user' ? [update.message] : [],
+      )
+      expect(JSON.stringify(results)).toContain('"tool_name":"LocalLookup"')
+      expect(JSON.stringify(results)).not.toContain(
+        '"tool_name":"mcp__corp__lookup"',
+      )
+      messages.push(assistant, ...results)
+      const loaded = await run()
+      expect(
+        loaded.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
+      ).toEqual(['LocalLookup', 'mcp__corp__lookup', 'ToolSearch'])
+      expect(loaded.tools?.[0]).toMatchObject({
+        description: 'quartz LocalLookup',
+        defer_loading: true,
+        input_schema: { required: ['key'] },
+      })
+      const unsupported = await run('claude-haiku-4-5')
+      expect(
+        unsupported.tools?.map(tool =>
+          'name' in tool ? tool.name : undefined,
+        ),
+      ).toEqual(['LocalLookup', 'mcp__corp__lookup'])
+      expect(unsupported.tools?.every(tool => !('defer_loading' in tool))).toBe(
+        true,
+      )
+      expect(JSON.stringify(unsupported.messages)).not.toContain(
+        'available via ToolSearch',
+      )
+      await snapshot.dispatch(
+        'tool.call',
+        { tool: 'Invalidate' },
+        async () => ({ result: 'core' }),
+      )
+      messages.splice(1)
+      const flipped = await run()
+      expect(
+        flipped.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
+      ).toEqual(['LocalLookup', 'ToolSearch'])
+      expect(flipped.tools?.every(tool => !('defer_loading' in tool))).toBe(
+        true,
+      )
+      const refreshed = await ToolSearchTool.call(
+        { query: 'quartz', max_results: 5 },
+        context,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      )
+      expect(refreshed.data).toMatchObject({
+        matches: ['mcp__corp__lookup'],
+        total_deferred_tools: 1,
+      })
+      expect(diagnostics).toEqual([])
+    } finally {
+      snapshot.release()
+      await runtime.dispose()
+      clearToolSchemaCache()
+      if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+      else process.env.ENABLE_TOOL_SEARCH = previous
+      await rm(root, { recursive: true, force: true })
+      deltaGate.mockImplementation((_key, fallback) => fallback)
+    }
+  },
+)
+
 test.each(['claude-opus-5', 'claude-sonnet-5'])(
   '%s explicitly disables thinking on the wire without sampling defaults',
   async (model) => {

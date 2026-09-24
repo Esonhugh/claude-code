@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEventListeners } from 'node:events'
 import { getToolResultPath } from '../../utils/toolResultStorage.js'
+import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 
 const originalSettings = getSessionSettingsCache()
@@ -747,6 +748,119 @@ describe('Mods at the whole tool execution boundary', () => {
     } finally {
       await runtime.dispose()
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.each([false, true])('ToolSearch retains invocation descriptions and catalog across permission-time reload (list=%s)', async useCatalog => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-tool-search-'))
+    const diagnostics: string[] = []
+    const runtime = createModsRuntime({
+      onDiagnostic: event => diagnostics.push(event.message),
+    })
+    const entry = join(root, 'register.ts')
+    const spec = {
+      name: 'search-fixture', storageId: 'search-fixture',
+      pluginRoot: root, entrypoints: [entry],
+    }
+    const source = (generation: string) => `export function register(on) {
+      on('tool.describe', async ($, e) => {
+        ${useCatalog ? 'const catalog = await $.tool.list();' : ''}
+        return {
+          description: ${JSON.stringify(generation)} + ':' + e.tool${useCatalog ? " + ':' + catalog.map(t => t.name).join(',')" : ''},
+          isDeferred: e.tool === 'ModFixture',
+        };
+      });
+    }`
+    const f = fixture(async (event, next) => next(event))
+    f.tool.prompt = async () => 'search target'
+    f.context.mods = runtime
+    f.context.options.tools = [f.tool, ToolSearchTool]
+    f.context.options.agentDefinitions = { activeAgents: [], allAgents: [] }
+    f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    const appState = f.context.getAppState()
+    f.context.getAppState = () => ({
+      ...appState, mcp: { clients: [], tools: [], commands: [], resources: {}, pluginReconnectKey: 0 },
+    })
+    const block = {
+      ...f.block, name: ToolSearchTool.name,
+      input: { query: 'quartz' },
+    }
+    let releases = 0
+    const snapshots: ReturnType<typeof runtime.capture>[] = []
+    const capture = runtime.capture.bind(runtime)
+    runtime.capture = services => {
+      const snapshot = capture(services)
+      const release = snapshot.release.bind(snapshot)
+      snapshot.release = () => { releases++; release() }
+      snapshots.push(snapshot)
+      return snapshot
+    }
+    let permissions = 0
+    const run = () => Array.fromAsync(runToolUse(
+      block,
+      createAssistantMessage({ content: [block] }),
+      async () => {
+        if (++permissions === 1) {
+          await writeFile(entry, source('new'))
+          await runtime.reconcile([spec])
+        }
+        return { behavior: 'allow' }
+      },
+      f.context,
+    ))
+    try {
+      await writeFile(entry, source('quartz'))
+      await runtime.reconcile([spec])
+      expect(runtime.hasHooks('tool.describe')).toBe(true)
+      const first = await run()
+      expect(JSON.stringify(first)).toContain('"type":"tool_reference","tool_name":"ModFixture"')
+      const second = await run()
+      expect(JSON.stringify(second)).not.toContain('"type":"tool_reference"')
+      expect(permissions).toBe(2)
+      expect(snapshots).toHaveLength(2)
+      expect(releases).toBe(2)
+      for (const snapshot of snapshots)
+        await expect(snapshot.dispatch('tool.list', {}, async () => ({value:[]}))).rejects.toThrow('snapshot released')
+      expect(diagnostics).toEqual([])
+    } finally {
+      await runtime.dispose()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('ToolSearch direct admission binds the actual tool catalog and releases its snapshot', async () => {
+    const f = await workerFixture(`export function register(on) {
+      on('tool.call', ($, e, next) => next(e));
+      on('tool.describe', async ($, e) => {
+        const tools = await $.tool.list();
+        return {description:'catalog-marker ' + tools.map(t => t.name).join(','), isDeferred:e.tool === 'ModFixture'};
+      });
+    }`)
+    f.tool.prompt = async () => 'search target'
+    f.context.options.tools = [f.tool, ToolSearchTool]
+    f.context.options.agentDefinitions = { activeAgents: [], allAgents: [] }
+    const appState = f.context.getAppState()
+    f.context.getAppState = () => ({
+      ...appState, mcp: { clients: [], tools: [], commands: [], resources: {}, pluginReconnectKey: 0 },
+    })
+    let releases = 0
+    const capture = f.runtime.capture.bind(f.runtime)
+    f.runtime.capture = services => {
+      const snapshot = capture(services)
+      const release = snapshot.release.bind(snapshot)
+      snapshot.release = () => { releases++; release() }
+      return snapshot
+    }
+    try {
+      const result = await ToolSearchTool.call(
+        { query: 'catalog-marker', max_results: 5 }, f.context,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      )
+      expect(result.data.matches).toEqual(['ModFixture'])
+      expect(releases).toBe(1)
+      expect(f.diagnostics).toEqual([])
+    } finally {
+      await f.cleanup()
     }
   })
 

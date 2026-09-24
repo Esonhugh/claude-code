@@ -96,6 +96,7 @@ describe('Plan mode opt-in', () => {
         options: { tools: merged },
         getAppState: () => ({ mcp: { clients: [] }, toolPermissionContext: context }),
       } as never,
+      async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
     )
     expect(result.data.matches).toEqual([])
     const active = { ...context, mode: 'plan' as const }
@@ -179,6 +180,7 @@ describe('Plan mode opt-in', () => {
             toolPermissionContext: context,
           }),
         } as never,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
       )
 
     expect(
@@ -198,6 +200,7 @@ describe('Plan mode opt-in', () => {
           toolPermissionContext: active,
         }),
       } as never,
+      async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
     )
     expect(activeResult.data.matches).toEqual(['ExitPlanMode'])
   })
