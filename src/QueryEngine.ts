@@ -47,7 +47,7 @@ import { toolToAPISchema } from './utils/api.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { Message, MessageOrigin, UserMessage } from './types/message.js'
-import type { OrphanedPermission } from './types/textInputTypes.js'
+import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
@@ -66,6 +66,7 @@ import {
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
+import { dequeue, enqueueTracked, remove } from './utils/messageQueueManager.js'
 import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import {
   getMainLoopModel,
@@ -73,6 +74,7 @@ import {
 } from './utils/model/model.js'
 import { loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js'
 import {
+  type ProcessUserInputBaseResult,
   type ProcessUserInputContext,
   processUserInput,
 } from './utils/processUserInput/processUserInput.js'
@@ -206,6 +208,7 @@ export class QueryEngine {
   // many turns in SDK mode.
   private discoveredSkillNames = new Set<string>()
   private loadedNestedMemoryPaths = new Set<string>()
+  private readonly promptSubmitOwner = Symbol('QueryEngine prompt submit owner')
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -223,6 +226,53 @@ export class QueryEngine {
       isMeta?: boolean
       origin?: MessageOrigin
       promptSubmitMetadata?: PromptSubmitMetadata
+      onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
+      skipSlashCommands?: boolean
+      skipAttachments?: boolean
+    },
+  ): AsyncGenerator<SDKMessage, void, unknown> {
+    yield* this.submitTurn(prompt, options)
+
+    let command: QueuedCommand | undefined
+    while (
+      (command = dequeue(
+        queued => queued.promptSubmitOwner === this.promptSubmitOwner,
+      ))
+    ) {
+      const queued = command
+      if (queued.mode !== 'prompt') {
+        const error = new Error('only prompt commands are supported by QueryEngine')
+        queued.promptSubmitReceipt?.cancel(error)
+        throw error
+      }
+
+      try {
+        yield* this.submitTurn(queued.value, {
+          uuid: queued.uuid,
+          isMeta: queued.isMeta,
+          origin: queued.origin,
+          promptSubmitMetadata: queued.promptSubmitMetadata,
+          onPromptAdmission: result => {
+            if (result.admission) queued.promptSubmitReceipt?.admit(result.admission)
+          },
+          skipSlashCommands: queued.skipSlashCommands,
+          skipAttachments: queued.skipAttachments,
+        })
+      } catch (error) {
+        queued.promptSubmitReceipt?.cancel(error)
+        throw error
+      }
+    }
+  }
+
+  private async *submitTurn(
+    prompt: string | ContentBlockParam[],
+    options?: {
+      uuid?: string
+      isMeta?: boolean
+      origin?: MessageOrigin
+      promptSubmitMetadata?: PromptSubmitMetadata
+      onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
       skipSlashCommands?: boolean
       skipAttachments?: boolean
     },
@@ -273,6 +323,36 @@ export class QueryEngine {
           model: this.config.userSpecifiedModel ? parseUserSpecifiedModel(this.config.userSpecifiedModel) : getMainLoopModel(),
         })
         return 'description' in schema ? schema.description ?? '' : ''
+      }),
+      submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+        let settled = false
+        const finish = (settle: () => void) => {
+          if (settled) return
+          settled = true
+          signal.removeEventListener('abort', cancel)
+          settle()
+        }
+        const cancel = () => {
+          finish(() => reject(signal.reason))
+          remove([queued])
+        }
+        const queued = enqueueTracked({
+          value: text,
+          mode: 'prompt',
+          priority: 'later',
+          promptSubmitOwner: this.promptSubmitOwner,
+          promptSubmitMetadata: {
+            origin,
+            wait: false,
+            ...(attachments === undefined ? {} : { attachments }),
+          },
+          promptSubmitReceipt: {
+            admit: result => finish(() => resolve(result)),
+            cancel: reason => finish(() => reject(reason)),
+          },
+        })
+        signal.addEventListener('abort', cancel, { once: true })
+        if (signal.aborted) cancel()
       }),
       presentation: () => ({columns:80, isFullscreen:false}),
     })
@@ -479,6 +559,7 @@ export class QueryEngine {
           options?.origin && options.origin.kind !== 'human' ? { kind: options.origin.kind } : { kind: 'sdk' },
         wait: false,
       },
+      onPromptAdmission: options?.onPromptAdmission,
       querySource: 'sdk',
     })
 

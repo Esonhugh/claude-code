@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import * as React from 'react'
@@ -1432,5 +1432,74 @@ test('Mods proactive prompt abort removes the exact REPL queue entry', async () 
     expect(queue.getCommandQueue().map(command => command.value)).toEqual(['unrelated'])
   } finally {
     queue.resetCommandQueue()
+  }
+})
+
+
+test('QueryEngine drains its own proactive prompt through real input admission', async () => {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const queue = await import('../utils/messageQueueManager.js')
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  let submitted: Promise<unknown> | undefined
+  const inputs: unknown[] = []
+  const metadata: unknown[] = []
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
+      inputs.push(args.input)
+      metadata.push(args.promptSubmitMetadata)
+      if (inputs.length === 1) {
+        submitted = services.submitPrompt({
+          text: 'plugin follow-up',
+          attachments: [{ type: 'document', mediaType: 'application/pdf', filename: 'notes.pdf' }],
+          origin: { kind: 'plugin', name: 'fixture' },
+          signal: new AbortController().signal,
+        })
+      } else {
+        args.onPromptAdmission?.({
+          messages: [], shouldQuery: false, allowedTools: [], resultText: 'admitted',
+          admission: { text: 'plugin follow-up', origin: { kind: 'plugin', name: 'fixture' } },
+        })
+      }
+      return { messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }
+    }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: { projection: (commands: unknown) => commands },
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('initial', { skipAttachments: true })) void _message
+    expect(inputs).toEqual(['initial', 'plugin follow-up'])
+    expect(metadata[1]).toEqual({
+      origin: { kind: 'plugin', name: 'fixture' }, wait: false,
+      attachments: [{ type: 'document', mediaType: 'application/pdf', filename: 'notes.pdf' }],
+    })
+    await expect(submitted!).resolves.toEqual({
+      text: 'plugin follow-up', origin: { kind: 'plugin', name: 'fixture' },
+    })
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {
+    queue.resetCommandQueue()
+    for (const mock of mocks) mock.mockRestore()
   }
 })
