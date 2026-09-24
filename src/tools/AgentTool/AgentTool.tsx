@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js'
 import type {
+  AssistantMessage,
   Message as MessageType,
   NormalizedUserMessage,
 } from 'src/types/message.js'
@@ -18,7 +19,9 @@ import {
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import { isAgentOffered } from '../../services/mods/agentOffer.js'
+import { isDeepStrictEqual } from 'node:util'
+import { isAgentOffered, providerForAgent } from '../../services/mods/agentOffer.js'
+import type { ModInput } from '../../services/mods/types.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -532,9 +535,10 @@ export const AgentTool = buildTool({
     assistantMessage,
     onProgress?,
   ) {
+    const parentMessage = assistantMessage as AssistantMessage | undefined
     const startTime = Date.now()
     description = normalizeAgentDescription(description)
-    const model = isCoordinatorMode() ? undefined : modelParam
+    let model = isCoordinatorMode() ? undefined : modelParam
 
     // Get app state for permission mode and agent filtering.
     const appState = toolUseContext.getAppState()
@@ -660,6 +664,16 @@ export const AgentTool = buildTool({
     ) {
       throw new Error(PLAN_MODE_DISABLED_MESSAGE)
     }
+    const started = Promise.withResolvers<{ model: string; agentId: string }>()
+    let launchNotified = false
+    const notifyStarted = (launch: { model: string; agentId: string }) => {
+      started.resolve(launch)
+      if (launchNotified) return
+      launchNotified = true
+      toolUseContext.modAgentStarted?.(launch)
+    }
+    // Completion remains owned by AgentTool; middleware observes launch only.
+    const execute = async () => {
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode
@@ -709,11 +723,16 @@ export const AgentTool = buildTool({
           permissions,
           model,
           agent_type: selectedAgent.agentType,
-          invokingRequestId: assistantMessage?.requestId,
+          invokingRequestId: parentMessage?.requestId,
         },
         toolUseContext,
       )
 
+      const launch = {
+        model: result.data.model ?? getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode),
+        agentId: result.data.agent_id,
+      }
+      notifyStarted(launch)
       const spawnResult: TeammateSpawnedOutput = {
         status: 'teammate_spawned' as const,
         prompt,
@@ -879,6 +898,8 @@ export const AgentTool = buildTool({
           selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
 
+      const launch = { model: resolvedAgentModel, agentId: taskId }
+      notifyStarted(launch)
       const remoteResult: RemoteLaunchedOutput = {
         status: 'remote_launched',
         taskId,
@@ -937,7 +958,9 @@ export const AgentTool = buildTool({
           appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
         })
       }
-      promptMessages = buildForkedMessages(prompt, assistantMessage)
+      if (!parentMessage)
+        throw new Error('Implicit fork requires a parent assistant message')
+      promptMessages = buildForkedMessages(prompt, parentMessage)
     } else {
       try {
         const additionalWorkingDirectories = Array.from(
@@ -1240,6 +1263,7 @@ export const AgentTool = buildTool({
         // They are killed explicitly via chat:killAgents.
         toolUseId: toolUseContext.toolUseId,
         parentAgentId,
+        spawnedBy: toolUseContext.modSpawnedBy,
         spawnDepth: childSubagentDepth,
       })
 
@@ -1263,7 +1287,7 @@ export const AgentTool = buildTool({
         agentType: 'subagent' as const,
         subagentName: selectedAgent.agentType,
         isBuiltIn: isBuiltInAgent(selectedAgent),
-        invokingRequestId: assistantMessage?.requestId,
+        invokingRequestId: parentMessage?.requestId,
         invocationKind: 'spawn' as const,
         invocationEmitted: false,
       }
@@ -1302,6 +1326,8 @@ export const AgentTool = buildTool({
         ),
       )
 
+      const launch = { model: resolvedAgentModel, agentId: agentBackgroundTask.agentId }
+      notifyStarted(launch)
       const canReadOutputFile = toolUseContext.options.tools.some(
         t =>
           toolMatchesName(t, FILE_READ_TOOL_NAME) ||
@@ -1332,7 +1358,7 @@ export const AgentTool = buildTool({
         agentType: 'subagent' as const,
         subagentName: selectedAgent.agentType,
         isBuiltIn: isBuiltInAgent(selectedAgent),
-        invokingRequestId: assistantMessage?.requestId,
+        invokingRequestId: parentMessage?.requestId,
         invocationKind: 'spawn' as const,
         invocationEmitted: false,
       }
@@ -1360,7 +1386,7 @@ export const AgentTool = buildTool({
               onProgress
             ) {
               onProgress({
-                toolUseID: `agent_${assistantMessage.message.id}`,
+                toolUseID: `agent_${parentMessage?.message.id ?? toolUseContext.toolUseId}`,
                 data: {
                   message: normalizedFirstMessage,
                   type: 'agent_progress',
@@ -1499,6 +1525,8 @@ export const AgentTool = buildTool({
               // Race between next message and background signal
               // If background tasks are disabled, just await the next message directly
               const nextMessagePromise = agentIterator.next()
+              const launch = { model: resolvedAgentModel, agentId: syncAgentId }
+              notifyStarted(launch)
               const raceResult = backgroundPromise
                 ? await Promise.race([
                     nextMessagePromise.then(r => ({
@@ -1912,7 +1940,7 @@ export const AgentTool = buildTool({
                   // Forward progress updates
                   if (onProgress) {
                     onProgress({
-                      toolUseID: `agent_${assistantMessage.message.id}`,
+                      toolUseID: `agent_${parentMessage?.message.id ?? toolUseContext.toolUseId}`,
                       data: {
                         message: m,
                         type: 'agent_progress',
@@ -2113,6 +2141,76 @@ export const AgentTool = buildTool({
         }),
       )
     }
+    }
+
+    const snapshot = toolUseContext.modsSnapshot
+    if (!snapshot?.hasHooks('agent.spawn')) return execute()
+    const input: ModInput = {
+      tool_use_id: toolUseContext.toolUseId,
+      prompt,
+      description,
+      subagentType: selectedAgent.agentType,
+      provider: providerForAgent(selectedAgent, snapshot),
+      parentModel: toolUseContext.options.mainLoopModel,
+      permissionMode,
+      background: run_in_background === true || selectedAgent.background === true,
+      fork: isForkPath,
+      ...(name !== undefined && { name }),
+      ...(model !== undefined && { model }),
+      ...(cwd !== undefined && { cwd }),
+      ...(toolUseContext.agentId !== undefined && { parentAgentId: toolUseContext.agentId }),
+    }
+    const validateInput = (value: ModInput) => {
+      for (const key of ['tool_use_id', 'name', 'fork', 'parentModel', 'permissionMode', 'parentAgentId', 'provider']) {
+        if (!isDeepStrictEqual(value[key], input[key])) {
+          throw new Error(`agent.spawn cannot rewrite ${key}`)
+        }
+      }
+      for (const key of ['prompt', 'description', 'subagentType']) {
+        if (typeof value[key] !== 'string') throw new Error(`agent.spawn requires ${key}`)
+      }
+      for (const key of ['model', 'cwd']) {
+        if (value[key] !== undefined && typeof value[key] !== 'string') {
+          throw new Error(`agent.spawn invalid ${key}`)
+        }
+      }
+      if (typeof value.background !== 'boolean') throw new Error('agent.spawn invalid background')
+    }
+    let completion: ReturnType<typeof execute> | undefined
+    const result = await snapshot.dispatch('agent.spawn', input, async value => {
+      validateInput(value)
+      if (completion) return started.promise
+      prompt = value.prompt as string
+      description = normalizeAgentDescription(value.description as string)
+      model = value.model as string | undefined
+      cwd = value.cwd as string | undefined
+      run_in_background = value.background as boolean
+      if (!isForkPath && value.subagentType !== selectedAgent.agentType) {
+        const resolution = resolveAgentType({
+          requestedType: value.subagentType as string,
+          activeAgents: toolUseContext.options.agentDefinitions.activeAgents,
+          allowedAgentTypes: toolUseContext.options.agentDefinitions.allowedAgentTypes,
+          permissionContext: appState.toolPermissionContext,
+        })
+        selectedAgent = resolution.agent
+        selectedAgentMatchKind = resolution.matchKind
+        if (!(await isAgentOffered(selectedAgent, {
+          snapshot,
+          signal: toolUseContext.abortController.signal,
+        }))) throw new Error(`Agent type '${selectedAgent.agentType}' is not offered`)
+      }
+      if (isCurrentInProcessTeammate && run_in_background) {
+        throw new Error('In-process teammates cannot spawn background agents.')
+      }
+      // Explicit middleware background overrides the definition default.
+      selectedAgent = { ...selectedAgent, background: run_in_background }
+      completion = execute()
+      void completion.catch(started.reject)
+      return started.promise
+    }, { signal: toolUseContext.abortController.signal, validateInput }) as { deny?: string }
+    if (result.deny !== undefined) throw new Error(result.deny)
+    if (!completion) throw new Error('agent.spawn did not start an agent')
+    return completion
   },
   isReadOnly() {
     return true // delegates permission checks to its underlying tools

@@ -71,10 +71,16 @@ export type ModBinding = {
 }
 export type ModRequestServices = {
   messages?(): readonly unknown[]
+  agentSpawn?(
+    input: ModInput,
+    snapshot: ModSnapshot,
+    signal: AbortSignal,
+  ): Promise<{ model: string; agentId?: string } | { deny: string }>
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
   tools?(): readonly Tool[]
   toolHost?(): {
     tools?(): readonly Tool[]
+    spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<{ model: string; agentId?: string } | { deny: string }>
     call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<unknown>
     check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }>
   }
@@ -186,7 +192,7 @@ const coreHost: Nouns = {
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
-  agent: { register: hostIdentity, list: hostIdentity },
+  agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
   tool: { register: hostIdentity, list: hostIdentity, call: hostIdentity, check: hostIdentity },
@@ -450,6 +456,19 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function hostInput(op: string, args: unknown[]): ModInput {
     switch (op) {
+      case 'agent.spawn': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).prompt !== 'string' || !(input as ModInput).prompt ||
+            ((input as ModInput).description !== undefined && typeof (input as ModInput).description !== 'string') ||
+            ((input as ModInput).subagentType !== undefined && typeof (input as ModInput).subagentType !== 'string') ||
+            ((input as ModInput).model !== undefined && typeof (input as ModInput).model !== 'string') ||
+            ((input as ModInput).name !== undefined && typeof (input as ModInput).name !== 'string') ||
+            ((input as ModInput).cwd !== undefined && typeof (input as ModInput).cwd !== 'string') ||
+            Object.keys(input).some(key => !['prompt', 'description', 'subagentType', 'model', 'name', 'cwd'].includes(key)))
+          throw new TypeError('agent.spawn takes a prompt and optional description, subagentType, model, name and cwd')
+        return input as ModInput
+      }
       case 'tool.call': {
         const input = args[0]
         if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
@@ -1032,9 +1051,36 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             },
           ))
         }
-        const resumeToolBudget = (op === 'tool.call' || op === 'tool.check')
+        const resumeToolBudget = (op === 'tool.call' || op === 'tool.check' || op === 'agent.spawn')
           ? pauseModBudget(context?.active ? context.next : undefined) : undefined
         try {
+          if (fn === hostIdentity && op === 'agent.spawn') {
+            const request = requestServices.getStore()
+            const spawn = request?.agentSpawn ?? services.agentSpawn ?? request?.toolHost?.()?.spawn ?? services.toolHost?.()?.spawn
+            if (!spawn) throw new Error('Agent spawn host is unavailable on this host')
+            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            let open = true
+            const callSnapshot: ModSnapshot = {
+              dispatch: (event, eventInput, core, options) => {
+                if (!open) throw new Error('Mod agent invocation settled')
+                return dispatch(event, eventInput, core, snapshot, table, {
+                  ...options,
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? { caller } : {}),
+                })
+              },
+              hasHooks: event => snapshot.some(item =>
+                item.environment.registrations.some(registration =>
+                  matchesModEventPattern(registration.event, event) &&
+                  (item !== owner || registration.id !== caller?.registrationId),
+                )),
+              release() {},
+            }
+            try {
+              combined.signal.throwIfAborted()
+              return await withReference(owner, () => spawn(input as ModInput, callSnapshot, combined.signal, owner.declaration.name))
+            } finally { open = false; combined.cleanup() }
+          }
           if (fn === hostIdentity && op === 'tool.call') {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (!host) throw new Error('Tool execution host is unavailable on this host')

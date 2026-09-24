@@ -48,7 +48,10 @@ function createTestAssistantMessage(text: string) {
   return createAssistantMessage({ content: text })
 }
 
+let controlledCompletion: Promise<void> | undefined
+let controlledSpawnParams: Record<string, unknown> | undefined
 async function* createControlledAgentStream() {
+  await controlledCompletion
   yield createTestAssistantMessage('controlled agent done')
 }
 
@@ -86,6 +89,7 @@ mock.module('./runAgent.js', () => ({
     allowedTools?: string[]
     toolUseContext: { options: { mainLoopModel: string } }
   }) => {
+    controlledSpawnParams = params
     controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
     controlledResolvedToolNames = resolveAgentTools(
       {
@@ -105,6 +109,8 @@ mock.module('./runAgent.js', () => ({
 }))
 
 type TestContext = {
+  toolUseId?: string
+  options: { mainLoopModel: string }
   getAppState: () => ReturnType<typeof getDefaultAppState>
   setAppState: (updater: unknown) => void
   setAppStateForTasks?: (updater: (prev: ReturnType<TestContext['getAppState']>) => unknown) => void
@@ -241,6 +247,121 @@ assert.deepEqual(deniedOfferInputs, [
     provider: { plugin: 'engine', tier: 'core' },
   },
 ])
+
+const deniedSpawnInputs: unknown[] = []
+const deniedSpawnContext = createContext(0) as TestContext & {
+  modsSnapshot: {
+    hasHooks(event: string): boolean
+    dispatch(
+      event: string,
+      input: Record<string, unknown>,
+      core: (input: Record<string, unknown>) => Promise<unknown>,
+    ): Promise<unknown>
+  }
+}
+deniedSpawnContext.modsSnapshot = {
+  hasHooks: event => event === 'agent.spawn',
+  dispatch: async (event, input) => {
+    assert.equal(event, 'agent.spawn')
+    deniedSpawnInputs.push(input)
+    return { deny: 'blocked by spawn policy' }
+  },
+}
+await assert.rejects(
+  AgentTool.call(
+    {
+      description: 'audit spawn',
+      prompt: 'inspect only',
+      subagent_type: 'general-purpose',
+      run_in_background: true,
+    },
+    deniedSpawnContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_spawn_mod' } } as never,
+  ),
+  /blocked by spawn policy/,
+)
+assert.deepEqual(deniedSpawnInputs, [
+  {
+    tool_use_id: deniedSpawnContext.toolUseId,
+    prompt: 'inspect only',
+    description: 'audit spawn',
+    subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: deniedSpawnContext.options.mainLoopModel,
+    permissionMode: 'default',
+    background: true,
+    fork: false,
+  },
+])
+assert.deepEqual(deniedSpawnContext.getAppState().tasks, {})
+
+for (const background of [false, true]) {
+  const context = createContext(0) as typeof deniedSpawnContext
+  const release = Promise.withResolvers<void>()
+  controlledCompletion = release.promise
+  const launched = Promise.withResolvers<void>()
+  let dispatchCount = 0
+  context.modsSnapshot = {
+    hasHooks: event => event === 'agent.spawn',
+    dispatch: async (_event, input, core) => {
+      dispatchCount++
+      const result = await core({
+        ...input,
+        prompt: 'rewritten prompt',
+        description: 'rewritten   description',
+        subagentType: 'general-purpose',
+        model: 'claude-haiku-4-5',
+        background,
+        cwd: '/tmp',
+      }) as { model: string; agentId: string }
+      assert.equal(result.model, 'claude-haiku-4-5')
+      assert.ok(context.getAppState().tasks[result.agentId])
+      assert.equal(context.getAppState().tasks[result.agentId].status, 'running')
+      launched.resolve()
+      return result
+    },
+  }
+  let completed = false
+  const call = AgentTool.call({
+    description: 'original', prompt: 'original', subagent_type: 'general-purpose',
+    run_in_background: !background,
+  }, context as never, async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_rewrite' } } as never).then(result => {
+    completed = true
+    return result
+  })
+  await Promise.race([
+    launched.promise,
+    call.then(() => { throw new Error('AgentTool completed before launch hook') }),
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('agent.spawn next waited for completion')), 2000)
+      void launched.promise.finally(() => clearTimeout(timer))
+    }),
+  ])
+  assert.equal(completed, false)
+  assert.equal(controlledSpawnParams?.cwd, '/tmp')
+  assert.equal(controlledSpawnParams?.description, 'rewritten description')
+  assert.equal(dispatchCount, 1)
+  release.resolve()
+  const result = await call
+  assert.equal(result.data.prompt, 'rewritten prompt')
+  if (result.data.status === 'async_launched') await context.waitForTaskLifecycle(result.data.agentId)
+  controlledCompletion = undefined
+}
+
+for (const key of ['tool_use_id', 'name', 'fork', 'parentModel', 'permissionMode', 'parentAgentId', 'provider']) {
+  const context = createContext(0) as typeof deniedSpawnContext
+  context.modsSnapshot = {
+    hasHooks: event => event === 'agent.spawn',
+    dispatch: async (_event, input, core) => core({ ...input, [key]: 'rewritten' }),
+  }
+  await assert.rejects(AgentTool.call({
+    description: 'pinned', prompt: 'no launch', subagent_type: 'general-purpose',
+  }, context as never, async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_pinned' } } as never), new RegExp(`agent.spawn cannot rewrite ${key}`))
+  assert.deepEqual(context.getAppState().tasks, {})
+}
 
 const normalizedOfferAgent = {
   ...GENERAL_PURPOSE_AGENT,

@@ -36,6 +36,7 @@ import {
   type ToolUseContext,
 } from '../../Tool.js'
 import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
+import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
@@ -1397,9 +1398,12 @@ async function checkPermissionsAndCallTool(
       callInput,
       {
         ...toolUseContext,
-        // Admission belongs to this invocation, not to a background task or
-        // nested Agent/Workflow that retains the tool context after it returns.
-        ...(toolUseContext.modsSnapshot ? { modsSnapshot: undefined } : {}),
+        // Agent consumes agent.offer dispatch admission. Other background/nested
+        // tools must not retain an invocation snapshot past the executor's release.
+        ...(toolUseContext.modsSnapshot &&
+        tool.name !== AGENT_TOOL_NAME
+          ? { modsSnapshot: undefined }
+          : {}),
         modToolCallResult: undefined,
         toolUseId: toolUseID,
         userModified: permissionDecision.userModified ?? false,

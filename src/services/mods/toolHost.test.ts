@@ -1,8 +1,9 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { z } from 'zod/v4'
 import { getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { createAssistantMessage } from '../../utils/messages.js'
+import { isForkSubagentEnabled } from '../../tools/AgentTool/forkSubagent.js'
 import { getSessionSettingsCache, setSessionSettingsCache, resetSettingsCache, setCachedSettingsForSource } from '../../utils/settings/settingsCache.js'
 import { dispatchModEvent } from './dispatch.js'
 import type { ModDispatchHook, ModInput } from './types.js'
@@ -11,6 +12,10 @@ import { createModToolHost } from './toolHost.js'
 import { runModToolCall } from './toolAdapter.js'
 import { runToolUse } from '../tools/toolExecution.js'
 import { resolveHookPermissionDecision } from '../tools/toolHooks.js'
+import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPurposeAgent.js'
+import { AgentTool } from '../../tools/AgentTool/AgentTool.js'
+import { getDefaultAppState } from '../../state/AppStateStore.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 
 const originalSettings = getSessionSettingsCache()
 setSessionSettingsCache({ settings: {}, errors: [] })
@@ -65,6 +70,136 @@ function hook(event: string, invoke: ModDispatchHook['invoke']): ModDispatchHook
 }
 
 describe('author tool host through the real executor', () => {
+  test('spawn preserves omitted subagent type on the AgentTool production path', async () => {
+    const f = fixture()
+    let actualInput: Record<string, unknown> | undefined
+    const call = spyOn(AgentTool, 'call').mockImplementation(async (input, context) => {
+      actualInput = input
+      context.modAgentStarted?.({ model: 'test-model', agentId: 'started-agent' })
+      return {} as never
+    })
+    try {
+      await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+      expect(actualInput).not.toHaveProperty('subagent_type')
+    } finally {
+      call.mockRestore()
+    }
+  })
+
+  test('spawn resolves at the AgentTool started boundary, uses parent context, and handles detached failure', async () => {
+    const f = fixture()
+    const parent = createAssistantMessage({ content: 'parent context' })
+    f.context.messages = [parent]
+    const started = Promise.withResolvers<{ model: string; agentId: string }>()
+    const failed = new Error('detached completion failed')
+    let actualParent: unknown
+    const call = spyOn(AgentTool, 'call').mockImplementation(async (_input, context, _canUseTool, parentMessage) => {
+      actualParent = parentMessage
+      context.modAgentStarted?.({ model: 'test-model', agentId: 'started-agent' })
+      started.resolve({ model: 'test-model', agentId: 'started-agent' })
+      throw failed
+    })
+    try {
+      const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+      expect(result).toEqual(await started.promise)
+      expect(actualParent).toBe(parent)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    } finally {
+      call.mockRestore()
+    }
+  })
+
+  test('spawn uses the real parent assistant context when available', async () => {
+    if (!isForkSubagentEnabled()) return
+    const f = fixture()
+    f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    f.context.options.agentDefinitions = {
+      activeAgents: [GENERAL_PURPOSE_AGENT],
+      allAgents: [GENERAL_PURPOSE_AGENT],
+      allowedAgentTypes: undefined,
+    }
+    const parent = createAssistantMessage({
+      content: [{
+        type: 'tool_use', caller: { type: 'direct' }, id: 'mod-parent-spawn',
+        name: 'Agent', input: { prompt: 'Review changes' },
+      }],
+    })
+    let state = {
+      ...getDefaultAppState(), ...f.state,
+      mcp: { ...getDefaultAppState().mcp, clients: [], tools: [] },
+      tasks: {}, agentNameRegistry: new Map(),
+    }
+    f.context.messages = [parent]
+    f.context.getAppState = () => state as never
+    f.context.setAppState = updater => {
+      state = typeof updater === 'function' ? updater(state as never) as never : updater as never
+    }
+    const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+    expect(state.tasks[result.agentId!]).toMatchObject({ agentType: 'fork', spawnedBy: 'author' })
+  })
+
+  test('spawn registers a real background agent and returns once it starts', async () => {
+    const f = fixture()
+    f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    f.context.options.agentDefinitions = {
+      activeAgents: [GENERAL_PURPOSE_AGENT],
+      allAgents: [GENERAL_PURPOSE_AGENT],
+      allowedAgentTypes: undefined,
+    }
+    let state = {
+      ...getDefaultAppState(),
+      ...f.state,
+      mcp: { ...getDefaultAppState().mcp, clients: [], tools: [] },
+      tasks: {},
+      agentNameRegistry: new Map(),
+    }
+    f.context.getAppState = () => state as never
+    f.context.setAppState = updater => {
+      state = typeof updater === 'function' ? updater(state as never) as never : updater as never
+    }
+    const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+    expect(result).toEqual({ model: expect.any(String), agentId: expect.any(String) })
+    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+      expect(state.tasks[result.agentId!]).toMatchObject({
+        type: 'local_agent', status: 'running', prompt: 'Review changes', agentType: 'general-purpose', spawnedBy: 'author', isBackgrounded: true,
+      })
+      expect(state.tasks[result.agentId!]!.parentAgentId).toBeUndefined()
+    }
+
+    f.context.agentId = 'nested-parent' as ToolUseContext['agentId']
+    f.context.options.subagentDepth = 1
+    const nested = await f.host.spawn({ prompt: 'Nested review', subagentType: 'general-purpose' }, f.snapshot, new AbortController().signal, 'nested-author')
+    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+      expect(state.tasks[nested.agentId!]).toMatchObject({
+        parentAgentId: 'nested-parent', spawnedBy: 'nested-author', spawnDepth: 2,
+      })
+    }
+  })
+
+  test('spawn deny creates no task and abort propagates', async () => {
+    const denied = fixture([hook('agent.spawn', async () => ({ deny: 'No agent' }))])
+    denied.context.options.agentDefinitions = { activeAgents: [GENERAL_PURPOSE_AGENT], allAgents: [GENERAL_PURPOSE_AGENT], allowedAgentTypes: undefined }
+    let deniedState = { ...denied.state, tasks: {}, agentNameRegistry: new Map() }
+    denied.context.getAppState = () => deniedState as never
+    denied.context.setAppState = updater => { deniedState = typeof updater === 'function' ? updater(deniedState as never) as never : updater as never }
+    await expect(denied.host.spawn({ prompt: 'Denied', subagentType: 'general-purpose' }, denied.snapshot, new AbortController().signal)).rejects.toThrow('No agent')
+    expect(deniedState.tasks).toEqual({})
+
+    const entered = Promise.withResolvers<AbortSignal>()
+    const aborted = fixture([hook('agent.spawn', async (_event, next) => {
+      entered.resolve(next.signal)
+      return new Promise((_resolve, reject) => next.signal.addEventListener('abort', () => reject(next.signal.reason), { once: true }))
+    })])
+    aborted.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    aborted.context.options.agentDefinitions = { activeAgents: [GENERAL_PURPOSE_AGENT], allAgents: [GENERAL_PURPOSE_AGENT], allowedAgentTypes: undefined }
+    const controller = new AbortController()
+    const reason = new Error('spawn aborted')
+    const running = aborted.host.spawn({ prompt: 'Aborted', subagentType: 'general-purpose' }, aborted.snapshot, controller.signal)
+    expect((await Promise.race([entered.promise, running.then(() => undefined)]) as AbortSignal).aborted).toBe(false)
+    controller.abort(reason)
+    await expect(running).rejects.toBe(reason)
+  })
+
   test('calls the permission consumer and tool mapper, returning the complete core envelope', async () => {
     const f = fixture()
     const result = await f.host.call({ tool: f.tool.name, value: 'real' }, f.snapshot, new AbortController().signal, 'author')

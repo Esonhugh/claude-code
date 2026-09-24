@@ -219,6 +219,7 @@ export type LocalAgentTaskState = TaskStateBase & {
   selectedAgent?: AgentDefinition
   agentType: string
   parentAgentId?: string
+  spawnedBy?: string
   spawnDepth: number
   model?: string
   abortController?: AbortController
@@ -669,6 +670,7 @@ export function registerAsyncAgent({
   parentAbortController,
   toolUseId,
   parentAgentId,
+  spawnedBy,
   spawnDepth,
 }: {
   agentId: string
@@ -679,6 +681,7 @@ export function registerAsyncAgent({
   parentAbortController?: AbortController
   toolUseId?: string
   parentAgentId?: string
+  spawnedBy?: string
   spawnDepth: number
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(
@@ -700,6 +703,7 @@ export function registerAsyncAgent({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     parentAgentId,
+    spawnedBy,
     spawnDepth,
     abortController,
     retrieved: false,

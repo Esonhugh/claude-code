@@ -8,7 +8,7 @@ export type AgentOfferProjection = {
   signal?: AbortSignal
 }
 
-function providerForAgent(
+export function providerForAgent(
   agent: AgentDefinition,
   snapshot: ModSnapshot,
 ): ModOrigin {

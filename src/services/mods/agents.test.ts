@@ -96,12 +96,50 @@ test('production Worker stages reload definitions atomically and preserves the o
   } finally { snapshot.release(); unsubscribe() }
 })
 
+test('production Worker agent.spawn skips only its calling hook and starts through the host', async () => {
+  const caller = await plugin('caller', `export function register(on) {
+    on('*', async ($,e,next) => {
+      if (next.event === 'agent.spawn') return {deny:'caller recursed'};
+      if (next.event === 'command.run') return {text:JSON.stringify(await $.agent.spawn({prompt:'review',description:'Review',subagentType:'reviewer',model:'haiku',name:'worker',cwd:'/tmp/work'}))};
+      return next(e);
+    });
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('agent.spawn', ($,e,next) => next({...e,prompt:e.prompt+' rewritten'}));
+  }`)
+  const calls: unknown[] = []
+  const runtime = createModsRuntime({services:{agentSpawn:async (request, spawnSnapshot, signal) =>
+    spawnSnapshot.dispatch('agent.spawn', {
+      tool_use_id:'mod-spawn',
+      description:'Agent task',
+      subagentType:'general-purpose',
+      provider:{plugin:'engine',tier:'core'},
+      parentModel:'claude-sonnet',
+      background:true,
+      fork:false,
+      ...request,
+    }, async rewritten => {
+      calls.push({request:rewritten,signal})
+      return {model:'claude-haiku',agentId:'agent-child'}
+    }, {signal}) as Promise<{model:string;agentId?:string}|{deny:string}>
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,policy])
+  const snapshot = runtime.capture()
+  try {
+    expect(await snapshot.dispatch('command.run',{},async()=>({}))).toEqual({text:'{"model":"claude-haiku","agentId":"agent-child"}'})
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({request:{prompt:'review rewritten',description:'Review',subagentType:'reviewer',model:'haiku',name:'worker',cwd:'/tmp/work'}})
+  } finally { snapshot.release() }
+})
+
 test('production Worker agent.list reads live session tasks rather than definitions', async () => {
   const mod = await plugin('observer', `export function register(on) {
     on('command.run', async $ => ({text:JSON.stringify(await $.agent.list())}));
   }`)
   let tasks: Record<string, unknown> = {
-    child: {id:'child',type:'local_agent',description:'Review changes',status:'running',agentId:'agent-child',agentType:'Explore',parentAgentId:'parent'},
+    child: {id:'child',type:'local_agent',description:'Review changes',status:'running',agentId:'agent-child',agentType:'Explore',parentAgentId:'parent',spawnedBy:'author'},
     mate: {id:'mate',type:'in_process_teammate',description:'Help',status:'running',identity:{agentId:'agent-mate',agentName:'reviewer',agentType:'general-purpose'}},
     shell: {id:'shell',type:'local_bash',description:'Ignored',status:'running'},
   }
@@ -115,7 +153,7 @@ test('production Worker agent.list reads live session tasks rather than definiti
   try {
     const list = async () => JSON.parse((await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}).text)
     expect(await list()).toEqual([
-      {id:'agent-child',description:'Review changes',type:'Explore',status:'running',parentId:'parent',name:'child-name'},
+      {id:'agent-child',description:'Review changes',type:'Explore',status:'running',parentId:'parent',spawnedBy:'author',name:'child-name'},
       {id:'agent-mate',description:'Help',type:'teammate',status:'running',name:'reviewer'},
     ])
     tasks = {}

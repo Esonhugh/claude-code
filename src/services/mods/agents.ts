@@ -11,6 +11,7 @@ export function listModAgents(tasks: AppState['tasks'], names: AppState['agentNa
     return [{
       id, description: task.description, type: task.type === 'local_agent' ? task.agentType : 'teammate', status: task.status,
       ...(parentId === undefined ? {} : {parentId}),
+      ...(task.type === 'local_agent' && task.spawnedBy !== undefined ? {spawnedBy: task.spawnedBy} : {}),
       ...(name === undefined ? {} : {name}),
     }]
   })

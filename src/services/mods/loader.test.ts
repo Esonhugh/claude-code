@@ -227,6 +227,13 @@ test('admits official active prompt capabilities while rejecting unknown ones', 
   }` }))).rejects.toThrow('unsupported core capability prompt.unknown')
 })
 
+test('admits active agent.spawn calls and records the capability', async () => {
+  const result = await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
+    on('tool.call', async $ => ({result:await $.agent.spawn({prompt:'review'})}));
+  }`}))
+  expect(result.calls).toEqual(['agent.spawn'])
+})
+
 test('admits positional MCP calls and records the capability', async () => {
   const result = await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
     on('session.start', async ($, e, next) => {

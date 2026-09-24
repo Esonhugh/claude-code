@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEventListeners } from 'node:events'
 import { getToolResultPath } from '../../utils/toolResultStorage.js'
+import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 
 const originalSettings = getSessionSettingsCache()
 setSessionSettingsCache({ settings: {}, errors: [] })
@@ -63,13 +64,16 @@ test('author result callback runs without tool.call hooks and is not inherited b
   }
 })
 
-function fixture(invoke: ModDispatchHook['invoke']) {
+function fixture(
+  invoke: ModDispatchHook['invoke'],
+  toolName = 'ModFixture',
+) {
   const calls: unknown[] = []
   const validation: unknown[] = []
   let releases = 0
   const hooks = new Map()
   const tool = {
-    name: 'ModFixture',
+    name: toolName,
     inputSchema: z.object({ value: z.string() }),
     outputSchema: z.object({ value: z.string() }),
     maxResultSizeChars: Infinity,
@@ -744,6 +748,35 @@ describe('Mods at the whole tool execution boundary', () => {
       await runtime.dispose()
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  test('Agent retains the executor snapshot for dispatch admission', async () => {
+    const f = fixture(async (event, next) => next(event), AGENT_TOOL_NAME)
+    const received: unknown[] = []
+    f.tool.call = async (input, context) => {
+      received.push(context.modsSnapshot)
+      return { data: input }
+    }
+    await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    expect(received).toHaveLength(1)
+    expect(received[0]).toBeDefined()
+    expect(f.releases()).toBe(1)
+  })
+
+  test('background-capable tools do not retain the executor snapshot', async () => {
+    const f = fixture(async (event, next) => next(event))
+    const received: unknown[] = []
+    f.tool.call = async (input, context) => {
+      received.push(context.modsSnapshot)
+      return { data: input }
+    }
+    await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    expect(received).toEqual([undefined])
+    expect(f.releases()).toBe(1)
   })
 
   test('persists the final transformed result rather than the discarded raw branch', async () => {

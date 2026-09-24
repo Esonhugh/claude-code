@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { findToolByName, type ToolUseContext } from '../../Tool.js'
-import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
+import { createAssistantMessage, createUserMessage, getLastAssistantMessage } from '../../utils/messages.js'
 import { createAbortController } from '../../utils/abortController.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ToolCallResult } from './toolAdapter.js'
@@ -11,6 +11,45 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
   const getTools = () => context.mods?.tools.projection(context.options.tools) ?? context.options.tools
   return {
     tools: getTools,
+    async spawn(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string) {
+      const { AgentTool } = await import('../../tools/AgentTool/AgentTool.js')
+      const abortController = createAbortController()
+      const parents = new Set([signal, context.abortController.signal])
+      const abort = () => {
+        const parent = [...parents].find(parent => parent.aborted)
+        if (parent) abortController.abort(parent.reason)
+      }
+      for (const parent of parents) parent.addEventListener('abort', abort, { once: true })
+      abort()
+      try {
+        abortController.signal.throwIfAborted()
+        const prompt = input.prompt as string
+        const started = Promise.withResolvers<{ model: string; agentId: string }>()
+        const parentMessage = getLastAssistantMessage(context.messages)
+        const completion = AgentTool.call({
+          prompt,
+          description: typeof input.description === 'string' && input.description.trim()
+            ? input.description
+            : prompt.replace(/\s+/g, ' ').trim().slice(0, 80),
+          ...(input.subagentType === undefined ? {} : { subagent_type: input.subagentType as string }),
+          ...(input.model === undefined ? {} : { model: input.model as string }),
+          ...(input.name === undefined ? {} : { name: input.name as string }),
+          ...(input.cwd === undefined ? {} : { cwd: input.cwd as string }),
+          run_in_background: true,
+        }, {
+          ...context,
+          toolUseId: randomUUID(),
+          modsSnapshot: snapshot,
+          modSpawnedBy: spawnedBy,
+          modAgentStarted: started.resolve,
+          abortController,
+        }, canUseTool, parentMessage)
+        void completion.catch(started.reject)
+        return await started.promise
+      } finally {
+        for (const parent of parents) parent.removeEventListener('abort', abort)
+      }
+    },
     async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<ToolCallResult> {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
         typeof input.tool !== 'string' || !input.tool.trim() ||
