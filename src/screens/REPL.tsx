@@ -505,10 +505,12 @@ import { getCurrentWorktreeSession } from '../utils/worktree.js'
 import {
   popAllEditable,
   enqueue,
+  enqueueTracked,
   type SetAppState,
   getCommandQueue,
   getCommandQueueLength,
   removeByFilter,
+  remove,
 } from '../utils/messageQueueManager.js'
 import { useCommandQueue } from '../hooks/useCommandQueue.js'
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js'
@@ -1919,6 +1921,35 @@ export function REPL({
     commands: () => baseCommandsRef.current,
     builtinCommands: () => modBuiltinCommandsRef.current,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
+    submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (settle: () => void) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', cancel)
+        settle()
+      }
+      const cancel = () => {
+        finish(() => reject(signal.reason))
+        remove([queued])
+      }
+      const queued = enqueueTracked({
+        value: text,
+        mode: 'prompt',
+        priority: 'later',
+        promptSubmitMetadata: {
+          origin,
+          wait: false,
+          ...(attachments === undefined ? {} : { attachments }),
+        },
+        promptSubmitReceipt: {
+          admit: result => finish(() => resolve(result)),
+          cancel: reason => finish(() => reject(reason)),
+        },
+      })
+      signal.addEventListener('abort', cancel, { once: true })
+      if (signal.aborted) cancel()
+    }),
     prompt: () => ({
       read: () =>
         insertTextRef.current

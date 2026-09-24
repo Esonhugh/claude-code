@@ -1375,3 +1375,62 @@ test('queue processing keeps later proactive prompts separate from next prompts'
     queue.resetCommandQueue()
   }
 })
+
+
+test('Mods proactive prompt uses the REPL queue and settles on admission', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let services: any
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    enqueueTracked: queue.enqueueTracked, remove: queue.remove,
+  })
+  try {
+    await awaitMods()
+    const submitted = services.submitPrompt({
+      text: 'follow up',
+      attachments: [{ type: 'document', filename: 'notes.pdf' }],
+      origin: { kind: 'plugin', name: 'fixture' },
+      signal: new AbortController().signal,
+    })
+    const [command] = queue.getCommandQueue()
+    expect(command).toMatchObject({
+      value: 'follow up',
+      priority: 'later',
+      promptSubmitMetadata: {
+        origin: { kind: 'plugin', name: 'fixture' },
+        wait: false,
+        attachments: [{ type: 'document', filename: 'notes.pdf' }],
+      },
+    })
+    command!.promptSubmitReceipt!.admit({ text: 'accepted' })
+    await expect(submitted).resolves.toEqual({ text: 'accepted' })
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+test('Mods proactive prompt abort removes the exact REPL queue entry', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let services: any
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    enqueueTracked: queue.enqueueTracked, remove: queue.remove,
+  })
+  const controller = new AbortController()
+  try {
+    await awaitMods()
+    queue.enqueue({ mode: 'prompt', value: 'unrelated' })
+    const submitted = services.submitPrompt({
+      text: 'cancel me', origin: { kind: 'plugin', name: 'fixture' }, signal: controller.signal,
+    })
+    controller.abort(new Error('plugin unloaded'))
+    await expect(submitted).rejects.toThrow('plugin unloaded')
+    expect(queue.getCommandQueue().map(command => command.value)).toEqual(['unrelated'])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
