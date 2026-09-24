@@ -1160,6 +1160,27 @@ test('real PromptInput rejects suggestions and empty input before invoking submi
   expect(calls[0]![0]).toBe('/actual')
 })
 
+test('real PromptInput accepts a shown suggestion after case-only edits', async () => {
+  const calls: any[] = []
+  const accepted: string[] = []
+  const path = '../components/PromptInput/PromptInput.tsx'
+  const base = {
+    store: { getState: () => ({}) }, footerItems: [], pastedContents: {},
+    promptSuggestionState: { text: 'Run the tests', shownAt: 1 },
+    speculation: {}, isAgentSwarmsEnabled: () => false,
+    markAccepted: () => accepted.push('accepted'), logOutcomeAtSubmission: noop,
+    suggestionsState: { suggestions: [] as any[] }, logForDebugging: noop,
+    removeNotification: noop, getActiveAgentForInput: () => ({ type: 'leader' }),
+    onSubmitProp: async (...args: any[]) => { calls.push(args) }, onAgentSubmit: undefined,
+    setCursorOffset: noop, getCursorOffset: () => 0, clearBuffer: noop, resetHistory: noop,
+  }
+
+  await extract(path, 'onSubmit')(base)('run the tests')
+
+  expect(accepted).toEqual(['accepted'])
+  expect(calls[0]![0]).toBe('Run the tests')
+})
+
 test('useInputBuffer.clearBuffer cancels the pending debounce, not just rendered history', async () => {
   let buffer!: UseInputBufferResult
   const tick = () => new Promise<void>(resolve => setImmediate(resolve))

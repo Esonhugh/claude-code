@@ -1528,7 +1528,10 @@ function PromptInput({
       // Only in leader view — promptSuggestion is leader-context, not teammate.
       const suggestionText = promptSuggestionState.text
       const inputMatchesSuggestion =
-        inputParam.trim() === '' || inputParam === suggestionText
+        inputParam.trim() === '' ||
+        inputParam.localeCompare(suggestionText ?? '', undefined, {
+          sensitivity: 'accent',
+        }) === 0
       if (
         inputMatchesSuggestion &&
         suggestionText &&
