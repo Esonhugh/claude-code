@@ -328,8 +328,10 @@ export function createModsSession(options: ModsSessionOptions) {
     const nextRoots = [
       ...new Set(
         plugins
-          .filter(plugin =>
-            plugin.hookModules?.some(group => group.paths.length),
+          .filter(
+            plugin =>
+              plugin.isBuiltin !== true &&
+              plugin.hookModules?.some(group => group.paths.length),
           )
           .map(plugin => plugin.path),
       ),

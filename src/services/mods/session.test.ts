@@ -1029,6 +1029,21 @@ describe('Mods CLI session host', () => {
     })
   })
 
+  test('immutable built-in module roots are not watched', async () => {
+    const watching = watchEvents()
+    const declaration = await plugin()
+    declaration.source = 'fixture@builtin'
+    declaration.repository = 'fixture@builtin'
+    declaration.isBuiltin = true
+    const host = session({ loadPlugins: async () => [declaration] })
+
+    await host.bind(binding)
+
+    expect(watching.watch).not.toHaveBeenCalled()
+    expect(watching.watchers).toEqual([])
+    await host.dispose()
+  })
+
   test('owned import changes reload with polling, idle polls do not reload plugins', async () => {
     const watching = watchEvents()
     const declaration = await plugin(
