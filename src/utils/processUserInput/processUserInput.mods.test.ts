@@ -956,6 +956,30 @@ describe('processUserInput prompt.submit', () => {
     })
   })
 
+  test('uses proactive prompt attachment descriptors when no binary blocks exist', async () => {
+    const f = fixture([async (event, next) => next(event)])
+    await f.run({
+      promptSubmitMetadata: {
+        origin: { kind: 'plugin', name: 'fixture' },
+        wait: false,
+        attachments: [
+          {
+            type: 'document',
+            mediaType: 'application/pdf',
+            filename: 'notes.pdf',
+          },
+        ],
+      },
+    })
+    expect(f.events[0]?.attachments).toEqual([
+      {
+        type: 'document',
+        mediaType: 'application/pdf',
+        filename: 'notes.pdf',
+      },
+    ])
+  })
+
   test('rewrites text without losing images, document blocks or paste names', async () => {
     const image = {
       type: 'image',

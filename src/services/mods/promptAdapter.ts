@@ -116,6 +116,7 @@ export type PromptSubmitMetadata = {
   origin: PromptOrigin
   wait: boolean
   turnId?: string
+  attachments?: readonly PromptAttachment[]
 }
 
 export type PromptSubmitInput = PromptSubmitMetadata & {

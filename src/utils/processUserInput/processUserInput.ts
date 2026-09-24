@@ -268,6 +268,9 @@ export async function processUserInput({
           origin: { kind: 'unclassified' },
           wait: false,
         }),
+        ...(attachments.length || !promptSubmitMetadata?.attachments
+          ? {}
+          : { attachments: promptSubmitMetadata.attachments }),
       },
       core: async entered => {
         const submitted = {
