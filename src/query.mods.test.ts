@@ -804,3 +804,35 @@ for (const ending of ['return', 'throw', 'close']) {
     expect(h.order.at(-1)).toBe('release')
   })
 }
+
+
+test('mid-turn drain leaves an unadmitted plugin prompt in the host queue', async () => {
+  const { enqueue, getCommandQueue, resetCommandQueue } = await import('./utils/messageQueueManager.js')
+  const requests: any[] = []
+  const h = harness(async function* (request) {
+    requests.push(request)
+    if (requests.length === 1) {
+      enqueue({
+        value: 'plugin follow-up must wait for admission',
+        mode: 'prompt',
+        priority: 'later',
+        promptSubmitReceipt: { admit() {}, cancel() {} },
+        promptSubmitMetadata: {
+          origin: { kind: 'plugin', name: 'fixture' },
+          wait: false,
+        },
+      })
+      yield createAssistantMessage({ content: [{ type: 'tool_use', caller: { type: 'direct' }, id: 'fixture-call', name: 'UnavailableFixture', input: {} }] })
+    } else yield response('done', 'answer')
+  })
+  try {
+    await drain(query(h.params))
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[1].messages)).not.toContain('plugin follow-up must wait for admission')
+    expect(getCommandQueue().map(command => command.value)).toEqual([
+      'plugin follow-up must wait for admission',
+    ])
+  } finally {
+    resetCommandQueue()
+  }
+})

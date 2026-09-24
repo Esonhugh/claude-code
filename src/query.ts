@@ -1825,7 +1825,7 @@ async function* queryLoop(
       if (cmd.admitted && (
         cmd.admitted.shouldQuery === false || cmd.admitted.admission?.drop !== undefined
       )) return false
-      if (!cmd.admitted && isSlashCommand(cmd)) return false
+      if (!cmd.admitted && (isSlashCommand(cmd) || cmd.promptSubmitReceipt)) return false
       if (isMainThread) return cmd.agentId === undefined
       // Subagents only drain task-notifications addressed to them — never
       // user prompts, even if someone stamps an agentId on one.
