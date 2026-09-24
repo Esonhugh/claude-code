@@ -1,7 +1,7 @@
 import { dirname, resolve } from 'node:path'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
-import { getPluginStorageId } from '../../utils/plugins/pluginOptionsStorage.js'
+import { getPluginStorageId, loadPluginSecrets, resolvePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { ModDiagnostic, ModPluginInput } from './runtime.js'
 import type { ModOrigin } from './types.js'
@@ -59,30 +59,14 @@ function prepareOptions(
   plugin: LoadedPlugin,
   storageId: string,
   settings: PrepareModPluginsSettings,
-): { options?: PluginOptions; error?: ModDiagnostic } {
+): { options?: PluginOptions; fingerprintOptions?: PluginOptions; error?: ModDiagnostic } {
   const schema = plugin.manifest.userConfig ?? {}
-  const sensitive = Object.entries(schema)
-    .filter(([, field]) => field.sensitive === true)
-    .map(([key]) => key)
-  if (sensitive.length > 0) {
-    return {
-      error: diagnostic(
-        plugin.name,
-        'options',
-        `Sensitive plugin options are unsupported by Mods: ${sensitive.join(', ')}; module not loaded`,
-      ),
-    }
+  const hasSensitiveOptions = Object.values(schema).some(field => field.sensitive === true)
+  const saved = {
+    ...configuredOptions(plugin, storageId, settings),
+    ...(hasSensitiveOptions ? loadPluginSecrets(storageId) : {}),
   }
-
-  const saved = configuredOptions(plugin, storageId, settings)
-  const options: PluginOptions = {}
-  for (const [key, field] of Object.entries(schema)) {
-    if (!(field.required && field.default === undefined)) {
-      options[key] = field.default ?? ''
-    }
-    if (saved[key] !== undefined) options[key] = saved[key]
-  }
-
+  const options = resolvePluginOptions(schema, saved)
   const validation = validateUserConfig(options, schema)
   if (!validation.valid) {
     return {
@@ -93,7 +77,12 @@ function prepareOptions(
       ),
     }
   }
-  return { options }
+  const fingerprintOptions = hasSensitiveOptions
+    ? Object.fromEntries(
+        Object.entries(options).filter(([key]) => schema[key]?.sensitive !== true),
+      )
+    : undefined
+  return { options, fingerprintOptions }
 }
 
 export function getModPluginOrigin(
@@ -118,7 +107,7 @@ export function getModPluginOrigin(
 
 /**
  * Converts already-loaded, trusted plugins into declarations for createModsRuntime.
- * This adapter performs no filesystem access and never reads secure option storage.
+ * Resolves and validates settings and secure options before module evaluation.
  */
 export function prepareModPlugins(
   plugins: readonly LoadedPlugin[],
@@ -202,6 +191,7 @@ export function prepareModPlugins(
       pluginRoot: plugin.path,
       entrypoints,
       options: prepared.options,
+      fingerprintOptions: prepared.fingerprintOptions,
       tier: getModPluginOrigin(plugin, settings).tier,
     })
   }

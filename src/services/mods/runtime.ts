@@ -44,6 +44,7 @@ export type ModPluginInput = {
   pluginRoot: string
   entrypoints: string[]
   options?: ModInput
+  fingerprintOptions?: ModInput
   tier?: ModTier
 }
 export type ModBinding = {
@@ -1283,6 +1284,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const declaration = getNativeModDeclaration(input) ?? await loadModDeclaration(input)
         ensureLive()
         if (old && old.declaration.fingerprint === declaration.fingerprint &&
+          isDeepStrictEqual(old.declaration.options, declaration.options) &&
           old.declaration.name === declaration.name && old.declaration.version === declaration.version &&
           old.declaration.pluginRoot === declaration.pluginRoot && old.declaration.isNative === declaration.isNative) continue
         const preAdmitted = previous.length > 0

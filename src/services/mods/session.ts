@@ -85,6 +85,8 @@ export function createModsSession(options: ModsSessionOptions) {
   let settingsKey: string | undefined
   let diagnostics: PluginError[] = []
   const reported = new Set<string>()
+  // Retired activations may still report errors after a token is rotated.
+  const diagnosticSecrets = new Set<string>()
   let configPlugins: readonly LoadedPlugin[] = []
   let builtinConfigRows: ModHostServices['configRows']
   const services: ModHostServices = {
@@ -254,6 +256,11 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   function diagnostic(event: ModDiagnostic) {
+    let message = event.message
+    for (const secret of [...diagnosticSecrets].sort((a, b) => b.length - a.length)) {
+      message = message.replaceAll(secret, '[REDACTED]')
+    }
+    event = { ...event, message }
     const key = `${event.plugin}:${event.stage}:${event.message}`
     if (reported.has(key)) return
     reported.add(key)
@@ -381,6 +388,16 @@ export function createModsSession(options: ModsSessionOptions) {
     if (stopped || isShuttingDown()) return
     configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
+    for (const input of prepared.inputs) {
+      const schema = loaded.find(plugin => getPluginStorageId(plugin) === input.storageId)?.manifest.userConfig
+      for (const [key, field] of Object.entries(schema ?? {})) {
+        if (!field.sensitive) continue
+        const value = input.options?.[key]
+        for (const secret of Array.isArray(value) ? value : [value]) {
+          if (secret !== undefined && String(secret) !== '') diagnosticSecrets.add(String(secret))
+        }
+      }
+    }
     const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
       .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
     services.pluginOrigin = storageId => origins.get(storageId)
@@ -500,6 +517,7 @@ export function createModsSession(options: ModsSessionOptions) {
           await runtime?.dispose()
         } finally {
           await queue
+          diagnosticSecrets.clear()
           unsubscribeUi?.()
           uiListeners.clear()
           unsubscribeCommands?.()

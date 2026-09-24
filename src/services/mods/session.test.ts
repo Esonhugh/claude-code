@@ -11,7 +11,8 @@ import { refreshPluginRuntimes } from '../../utils/plugins/cacheUtils.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import * as secureStorage from '../../utils/secureStorage/index.js'
 import * as settingsStorage from '../../utils/settings/settings.js'
-import { clearPluginOptionsCache } from '../../utils/plugins/pluginOptionsStorage.js'
+import * as debug from '../../utils/debug.js'
+import { clearPluginOptionsCache, savePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { PrepareModPluginsSettings } from './plugins.js'
 import { createModsRuntime, type ModsRuntime } from './runtime.js'
@@ -704,6 +705,164 @@ describe('Mods CLI session host', () => {
     settingsChangeDetector.notifyChange('policySettings')
     await host.bind(binding)
     expect(host.runtime!.hasHooks('tool.call')).toBe(false)
+  })
+
+  test('saved sensitive numbers, booleans and string arrays retain their declared types in register', async () => {
+    let stored = {}
+    spyOn(secureStorage, 'getSecureStorage').mockReturnValue({
+      read: () => structuredClone(stored),
+      update: (value: object) => { stored = structuredClone(value); return {success:true} },
+    } as unknown as ReturnType<typeof secureStorage.getSecureStorage>)
+    const readSettings = spyOn(settingsStorage, 'getSettings_DEPRECATED').mockReturnValue({})
+    cleanups.push(() => readSettings.mockRestore())
+    const declaration = await plugin(`export function register(on, options) { on('tool.call', () => ({result:options})); }`)
+    declaration.manifest.userConfig = {
+      count:{type:'number',title:'Count',description:'',sensitive:true,required:true},
+      enabled:{type:'boolean',title:'Enabled',description:'',sensitive:true,required:true},
+      labels:{type:'string',title:'Labels',description:'',sensitive:true,multiple:true,required:true},
+    }
+    const values = {count:0,enabled:false,labels:['fake,first','fake-second']}
+    savePluginOptions(declaration.source, values, declaration.manifest.userConfig)
+    const events: unknown[] = []
+    const host = session({loadPlugins:async () => [declaration],onDiagnostic:event => events.push(event)})
+    await host.bind(binding)
+    expect(events).toEqual([])
+    expect(await host.runtime!.dispatch('tool.call',input,core)).toEqual({result:values})
+  })
+
+  test('saving only a sensitive token reloads register options before the next prompt', async () => {
+    const first = 'fake-sensitive-token-one'
+    const second = 'fake-sensitive-token-two'
+    let stored = { pluginSecrets: { 'fixture@inline': { token: first } } }
+    const read = spyOn(secureStorage, 'getSecureStorage').mockReturnValue({
+      read: () => structuredClone(stored),
+      update: (value: typeof stored) => { stored = structuredClone(value); return { success: true } },
+    } as unknown as ReturnType<typeof secureStorage.getSecureStorage>)
+    const readSettings = spyOn(settingsStorage, 'getSettings_DEPRECATED').mockReturnValue({})
+    const writeSettings = spyOn(settingsStorage, 'updateSettingsForSource').mockImplementation(() => {
+      throw new Error('a token-only save must not write settings')
+    })
+    clearPluginOptionsCache()
+    cleanups.push(() => { read.mockRestore(); readSettings.mockRestore(); writeSettings.mockRestore(); clearPluginOptionsCache() })
+    const declaration = await plugin(`let calls=0; export function register(on, options) {
+      on('tool.call', ($, e) => ({result:{matches:options.token === e.token, mode:options.mode, calls:++calls}}));
+    }`)
+    declaration.manifest.userConfig = {
+      token: {type:'string', title:'Token', description:'', sensitive:true, required:true},
+      mode: {type:'string', title:'Mode', description:'', default:'safe'},
+    }
+    const events: unknown[] = []
+    const host = session({loadPlugins:async () => [declaration], onDiagnostic:event => events.push(event)})
+    await host.bind(binding)
+    expect(events).toEqual([])
+    expect(host.runtime).toBeDefined()
+    expect(await host.runtime!.dispatch('tool.call', {...input, token:first}, core)).toEqual({result:{matches:true, mode:'safe', calls:1}})
+    await host.refresh()
+    expect(await host.runtime!.dispatch('tool.call', {...input, token:first}, core)).toEqual({result:{matches:true, mode:'safe', calls:2}})
+    const previous = host.runtime!.capture()
+    try {
+      savePluginOptions(declaration.source, {token:second}, declaration.manifest.userConfig)
+      await host.bind(binding)
+      expect(await host.runtime!.dispatch('tool.call', {...input, token:second}, core)).toEqual({result:{matches:true, mode:'safe', calls:1}})
+      expect(await previous.dispatch('tool.call', {...input, token:first}, core)).toEqual({result:{matches:true, mode:'safe', calls:3}})
+    } finally { previous.release() }
+    savePluginOptions(declaration.source, {token:second}, declaration.manifest.userConfig)
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', {...input, token:second}, core)).toEqual({result:{matches:true, mode:'safe', calls:2}})
+    expect(events).toEqual([])
+    expect(writeSettings).not.toHaveBeenCalled()
+  })
+
+  test('missing required secrets block evaluation, remove old hooks and recover after save', async () => {
+    let stored: {pluginSecrets?: Record<string, Record<string, string>>} = {}
+    spyOn(secureStorage, 'getSecureStorage').mockReturnValue({
+      read: () => structuredClone(stored),
+      update: (value: typeof stored) => { stored = structuredClone(value); return {success:true} },
+    } as unknown as ReturnType<typeof secureStorage.getSecureStorage>)
+    const readSettings = spyOn(settingsStorage, 'getSettings_DEPRECATED').mockReturnValue({})
+    cleanups.push(() => readSettings.mockRestore())
+    const declaration = await plugin(`throw Error('module must not evaluate without required secret'); export function register(on) {}`)
+    declaration.manifest.userConfig = {token:{type:'string',title:'Token',description:'',sensitive:true,required:true}}
+    let creates = 0
+    const events: string[] = []
+    const host = session({
+      loadPlugins:async () => [declaration],
+      onDiagnostic:event => events.push(event.stage),
+      createRuntime:options => { creates++; return createModsRuntime(options) },
+    })
+    await host.bind(binding)
+    expect(creates).toBe(0)
+    expect(events).toEqual(['options'])
+    await writeFile(join(declaration.path,'register.ts'), `export function register(on, options) {
+      on('tool.call', ($, e) => ({result:options.token === e.token}));
+    }`)
+    savePluginOptions(declaration.source, {token:'fake-recovery-token'}, declaration.manifest.userConfig)
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call',{...input,token:'fake-recovery-token'},core)).toEqual({result:true})
+    stored = {}
+    clearPluginOptionsCache()
+    await host.refresh()
+    expect(host.runtime!.hasHooks('tool.call')).toBe(false)
+    savePluginOptions(declaration.source, {token:'fake-recovered-token'}, declaration.manifest.userConfig)
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call',{...input,token:'fake-recovered-token'},core)).toEqual({result:true})
+    expect(creates).toBe(1)
+    expect(events).toEqual(['options','options'])
+  })
+
+  test('secure storage read failure retains activation and permits a sanitized explicit retry', async () => {
+    let fail = false
+    const secret = 'fake-read-error-secret'
+    spyOn(secureStorage, 'getSecureStorage').mockReturnValue({
+      read: () => {
+        if (fail) throw Error(`backend error ${secret}`)
+        return {pluginSecrets:{'fixture@inline':{token:secret}}}
+      },
+    } as unknown as ReturnType<typeof secureStorage.getSecureStorage>)
+    const declaration = await plugin(`export function register(on, options) {
+      on('tool.call', ($, e) => ({result:options.token === e.token}));
+    }`)
+    declaration.manifest.userConfig = {token:{type:'string',title:'Token',description:'',sensitive:true,required:true}}
+    const events: unknown[] = []
+    const host = session({loadPlugins:async () => [declaration],onDiagnostic:event => events.push(event)})
+    await host.bind(binding)
+    fail = true
+    clearPluginOptionsCache()
+    await expect(host.refresh()).rejects.toThrow('Unable to read plugin options from secure storage')
+    expect(JSON.stringify(events)).not.toContain(secret)
+    expect(await host.runtime!.dispatch('tool.call',{...input,token:secret},core)).toEqual({result:true})
+    fail = false
+    await host.refresh()
+    expect(await host.runtime!.dispatch('tool.call',{...input,token:secret},core)).toEqual({result:true})
+  })
+
+  test('redacts sensitive register failures from diagnostics and logs across token rotation', async () => {
+    const first = 'fake-register-secret-one'
+    const second = 'fake-register-secret-two'
+    let stored = {pluginSecrets:{'fixture@inline':{token:first}}}
+    spyOn(secureStorage, 'getSecureStorage').mockReturnValue({
+      read: () => stored,
+    } as unknown as ReturnType<typeof secureStorage.getSecureStorage>)
+    const declaration = await plugin(`export function register(on, options) {
+      throw Error('register rejected ' + options.token);
+    }`)
+    declaration.manifest.userConfig = {token:{type:'string',title:'Token',description:'',sensitive:true,required:true}}
+    const events: unknown[] = []
+    const logs: string[] = []
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(value => { logs.push(String(value)); return true })
+    const logging = spyOn(debug, 'logForDebugging').mockImplementation(value => { logs.push(value) })
+    cleanups.push(() => { stderr.mockRestore(); logging.mockRestore() })
+    const host = session({loadPlugins:async () => [declaration],onDiagnostic:event => events.push(event)})
+    await host.bind(binding)
+    stored = {pluginSecrets:{'fixture@inline':{token:second}}}
+    clearPluginOptionsCache()
+    await host.refresh()
+    expect(events).toHaveLength(2)
+    expect(JSON.stringify(events)).toContain('[REDACTED]')
+    for (const value of [first, second]) {
+      expect(JSON.stringify(events)).not.toContain(value)
+      expect(logs.join('\n')).not.toContain(value)
+    }
   })
 
   test('tier-only settings changes reseat live modules and policy presence suppresses user ordering', async () => {

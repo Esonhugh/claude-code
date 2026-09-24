@@ -1,8 +1,20 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { SettingsSchema, type SettingsJson } from '../../utils/settings/types.js'
-import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import type { PrepareModPluginsSettings } from './plugins.js'
 import type { ModTier } from './types.js'
+
+let secureStorageData: { pluginSecrets?: Record<string, Record<string, unknown>> } = {}
+const secureStorage = {
+  read: mock(() => secureStorageData),
+  update: mock(() => ({ success: true })),
+}
+mock.module('../../utils/secureStorage/index.js', () => ({
+  getSecureStorage: () => secureStorage,
+}))
+
+const { clearPluginOptionsCache } = await import('../../utils/plugins/pluginOptionsStorage.js')
+const { getModPluginOrigin, prepareModPlugins } = await import('./plugins.js')
 
 function loadedPlugin(overrides: Partial<LoadedPlugin> = {}): LoadedPlugin {
   const name = overrides.name ?? 'example'
@@ -38,6 +50,12 @@ function source(value: Partial<SettingsJson>): SettingsJson {
 }
 
 describe('prepareModPlugins', () => {
+  beforeEach(() => {
+    secureStorageData = {}
+    secureStorage.read.mockClear()
+    secureStorage.update.mockClear()
+    clearPluginOptionsCache()
+  })
   test('provider provenance uses the same effective tier even without an admitted hook module', () => {
     const plugin = loadedPlugin()
     const cases: Array<[Partial<PrepareModPluginsSettings>, ModTier]> = [
@@ -286,7 +304,49 @@ describe('prepareModPlugins', () => {
     ])
   })
 
-  test('reports sensitive options as unsupported without loading the plugin', () => {
+
+  test('loads and validates required sensitive options from secure storage before admission', () => {
+    const secret = 'offline-secret-value'
+    secureStorageData = {
+      pluginSecrets: { 'example@marketplace': { token: secret } },
+    }
+    const plugin = loadedPlugin({
+      manifest: {
+        name: 'example',
+        userConfig: {
+          mode: {
+            type: 'string',
+            title: 'Mode',
+            description: 'Execution mode',
+            default: 'safe',
+          },
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'API token',
+            sensitive: true,
+            required: true,
+          },
+        },
+      },
+    })
+
+    const result = prepareModPlugins([plugin], settings())
+
+    expect(result.errors).toEqual([])
+    expect(result.inputs[0]?.options).toEqual({ mode: 'safe', token: secret })
+    expect(result.inputs[0]?.fingerprintOptions).toEqual({ mode: 'safe' })
+    expect(JSON.stringify(result.errors)).not.toContain(secret)
+    expect(JSON.stringify(result.inputs[0], (key, value) => key === 'options' ? undefined : value)).not.toContain(secret)
+  })
+
+  test('does not access secure storage when no sensitive fields are declared', () => {
+    const result = prepareModPlugins([loadedPlugin()], settings())
+    expect(result.errors).toEqual([])
+    expect(secureStorage.read).not.toHaveBeenCalled()
+  })
+
+  test('rejects only missing or invalid required sensitive options before admission', () => {
     const plugin = loadedPlugin({
       manifest: {
         name: 'example',
@@ -301,17 +361,79 @@ describe('prepareModPlugins', () => {
         },
       },
     })
-    const result = prepareModPlugins([plugin], settings())
 
-    expect(result.inputs).toEqual([])
-    expect(result.errors).toEqual([
-      {
+    expect(prepareModPlugins([plugin], settings())).toEqual({
+      inputs: [],
+      errors: [{
         plugin: 'example',
         stage: 'options',
-        message:
-          'Sensitive plugin options are unsupported by Mods: token; module not loaded',
+        message: 'Options do not fit plugin.json userConfig: Token is required but not provided',
+      }],
+    })
+
+    secureStorageData = {
+      pluginSecrets: { 'example@marketplace': { token: 42 } },
+    }
+    clearPluginOptionsCache()
+    const invalid = prepareModPlugins([plugin], settings())
+    expect(invalid.inputs).toEqual([])
+    expect(invalid.errors[0]?.message).toBe(
+      'Options do not fit plugin.json userConfig: Token must be a string',
+    )
+  })
+
+  test('sensitive optional fields, defaults and stale choices use the ordinary option contract', () => {
+    const token = {type:'string' as const,title:'Token',description:'',sensitive:true}
+    const plugin = loadedPlugin({manifest:{name:'example',userConfig:{
+      optional:token,
+      defaulted:{...token,required:true,default:'fake-default-token'},
+      choice:{...token,required:true,options:['allowed','fallback'],default:'fallback'},
+    }}})
+    secureStorageData = {pluginSecrets:{'example@marketplace':{choice:'removed'}}}
+    const result = prepareModPlugins([plugin], settings())
+    expect(result.errors).toEqual([])
+    expect(result.inputs[0]?.options).toEqual({optional:'',defaulted:'fake-default-token',choice:'fallback'})
+    expect(result.inputs[0]?.fingerprintOptions).toEqual({})
+  })
+
+  test('sensitive choice validation never includes allowed secrets in diagnostics', () => {
+    const allowed = 'fake-private-choice'
+    const plugin = loadedPlugin({manifest:{name:'example',userConfig:{token:{
+      type:'string',title:'Token',description:'',sensitive:true,required:true,
+      options:[allowed],default:'invalid-default',
+    }}}})
+    const result = prepareModPlugins([plugin], settings())
+    expect(result.inputs).toEqual([])
+    expect(result.errors[0]?.message).toContain('Token must be one of')
+    expect(JSON.stringify(result.errors)).not.toContain(allowed)
+  })
+
+  test('uses updated sensitive options after plugin option caches are cleared', () => {
+    const plugin = loadedPlugin({
+      manifest: {
+        name: 'example',
+        userConfig: {
+          token: {
+            type: 'string',
+            title: 'Token',
+            description: 'API token',
+            sensitive: true,
+            required: true,
+          },
+        },
       },
-    ])
+    })
+    secureStorageData = {
+      pluginSecrets: { 'example@marketplace': { token: 'first' } },
+    }
+    expect(prepareModPlugins([plugin], settings()).inputs[0]?.options).toEqual({ token: 'first' })
+
+    secureStorageData = {
+      pluginSecrets: { 'example@marketplace': { token: 'second' } },
+    }
+    expect(prepareModPlugins([plugin], settings()).inputs[0]?.options).toEqual({ token: 'first' })
+    clearPluginOptionsCache()
+    expect(prepareModPlugins([plugin], settings()).inputs[0]?.options).toEqual({ token: 'second' })
   })
 
   test('allows only policy-enabled plugins when hooks are managed-only', () => {
