@@ -22,6 +22,7 @@ import { suppressCompactWarning } from '../../services/compact/compactWarningSta
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
+import { runModSessionCompact } from '../../services/mods/compactAdapter.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { LocalCommandCall } from '../../types/command.js'
@@ -58,72 +59,71 @@ export const call: LocalCommandCall = async (args, context) => {
   const compactMode = getCompactMode()
 
   try {
-    // Try session memory compaction first if no custom instructions
-    // (session memory compaction doesn't support custom instructions)
-    // Codex mode skips session memory compact to avoid mixing two compaction models.
-    if (compactMode === 'claude' && !customInstructions) {
-      const sessionMemoryResult = await trySessionMemoryCompaction(
-        messages,
-        context.agentId,
-      )
-      if (sessionMemoryResult) {
-        getUserContext.cache.clear?.()
-        runPostCompactCleanup()
-        // Reset cache read baseline so the post-compact drop isn't flagged
-        // as a break. compactConversation does this internally; SM-compact doesn't.
-        if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-          notifyCompaction(
-            context.options.querySource ?? 'compact',
-            context.agentId,
+    const outcome = await runModSessionCompact(
+      context,
+      'manual',
+      messages,
+      customInstructions || undefined,
+      async (compactMessages, instructions, compactContext) => {
+        // Session memory doesn't support custom instructions; Codex uses its own model.
+        if (compactMode === 'claude' && !instructions) {
+          const sessionMemoryResult = await trySessionMemoryCompaction(
+            compactMessages,
+            compactContext.agentId,
           )
+          if (sessionMemoryResult) {
+            // Legacy compaction resets this baseline internally; session memory doesn't.
+            if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+              notifyCompaction(
+                compactContext.options.querySource ?? 'compact',
+                compactContext.agentId,
+              )
+            }
+            markPostCompaction()
+            return sessionMemoryResult
+          }
         }
-        markPostCompaction()
-        // Suppress warning immediately after successful compaction
-        suppressCompactWarning()
 
-        return {
-          type: 'compact',
-          compactionResult: sessionMemoryResult,
-          displayText: buildDisplayText(context),
+        if (reactiveCompact?.isReactiveOnlyMode()) {
+          return (
+            await compactViaReactive(
+              compactMessages,
+              compactContext,
+              instructions ?? '',
+              reactiveCompact,
+            )
+          ).compactionResult
         }
-      }
+
+        const microcompactResult = await microcompactMessages(
+          compactMessages,
+          compactContext,
+        )
+        const messagesForCompact = microcompactResult.messages
+        return compactMode === 'codex'
+          ? compactConversationCodexStyle(
+              messagesForCompact,
+              compactContext,
+              await getCacheSharingParams(compactContext, messagesForCompact),
+              false,
+              instructions,
+              false,
+              getCodexCompactOptions(),
+            )
+          : compactConversation(
+              messagesForCompact,
+              compactContext,
+              await getCacheSharingParams(compactContext, messagesForCompact),
+              false,
+              instructions,
+              false,
+            )
+      },
+    )
+    if (outcome.skip !== undefined) {
+      return { type: 'text', value: outcome.skip }
     }
-
-    // Reactive-only mode: route /compact through the reactive path.
-    // Checked after session-memory (that path is cheap and orthogonal).
-    if (reactiveCompact?.isReactiveOnlyMode()) {
-      return await compactViaReactive(
-        messages,
-        context,
-        customInstructions,
-        reactiveCompact,
-      )
-    }
-
-    // Fall back to traditional compaction
-    // Run microcompact first to reduce tokens before summarization
-    const microcompactResult = await microcompactMessages(messages, context)
-    const messagesForCompact = microcompactResult.messages
-
-    const result =
-      compactMode === 'codex'
-        ? await compactConversationCodexStyle(
-            messagesForCompact,
-            context,
-            await getCacheSharingParams(context, messagesForCompact),
-            false,
-            customInstructions,
-            false,
-            getCodexCompactOptions(),
-          )
-        : await compactConversation(
-            messagesForCompact,
-            context,
-            await getCacheSharingParams(context, messagesForCompact),
-            false,
-            customInstructions,
-            false,
-          )
+    const result = outcome.compactionResult
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array

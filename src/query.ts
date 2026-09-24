@@ -266,7 +266,16 @@ export async function* query(
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
-  if (!isPublicTurn && !handlesStart && !handlesComplete && !handlesMeasure && !handlesCatalog && !handlesContext) {
+  const handlesCompact = snapshot?.hasHooks('session.compact') === true
+  if (
+    !isPublicTurn &&
+    !handlesStart &&
+    !handlesComplete &&
+    !handlesMeasure &&
+    !handlesCatalog &&
+    !handlesContext &&
+    !handlesCompact
+  ) {
     snapshot?.release()
     const terminal = yield* queryLoop(params, consumedCommandUuids)
     // Only normal return completes commands; throw and iterator.return() do not.
@@ -679,8 +688,12 @@ async function* queryLoop(
     )
 
     queryCheckpoint('query_autocompact_start')
-    const { compactionResult, consecutiveFailures, compactionFailure } =
-      await deps.autocompact(
+    const {
+      compactionResult,
+      consecutiveFailures,
+      compactionFailure,
+      skip: compactionSkip,
+    } = await deps.autocompact(
         messagesForQuery,
         toolUseContext,
         {
@@ -764,6 +777,8 @@ async function* queryLoop(
       // Continue on with the current query call using the post compact messages
       messagesForQuery = postCompactMessages
       await refreshContext(messagesForQuery)
+    } else if (compactionSkip !== undefined) {
+      yield createSystemMessage(compactionSkip, 'info')
     } else if (consecutiveFailures !== undefined) {
       // Autocompact failed — propagate failure count so the circuit breaker
       // can stop retrying on the next iteration.

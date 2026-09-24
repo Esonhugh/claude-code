@@ -16,6 +16,10 @@ import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
 import { createModSessionMeasure } from './sessionMeasure.js'
+import {
+  validateModCompactInput,
+  validateModCompactResult,
+} from './compactAdapter.js'
 import { dispatchModEvent, pauseModBudget } from './dispatch.js'
 import { createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
@@ -994,6 +998,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       return
     }
     if (event === 'session.receive') return validateSessionReceiveResult(result)
+    if (event === 'session.compact') {
+      validateModCompactResult(result)
+      return
+    }
     if (event === 'config.describe') {
       const value = result as {
         label?: unknown
@@ -1156,12 +1164,28 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         validateResult: (result, nextResults) => { validateResult(event, result); options.validateResult?.(result, nextResults) },
         validateInput: (value, received) => {
           if (event === 'session.usage') validateModSessionUsageArgs(value)
+          if (event === 'session.compact') {
+            validateModCompactInput(value)
+            if (
+              value.trigger !== input.trigger ||
+              value.agentId !== input.agentId
+            )
+              throw new Error(
+                'session.compact cannot rewrite trigger or agentId',
+              )
+          }
           if (pinsProvider && !isDeepStrictEqual(value.provider, provider)) throw new Error(`${event} cannot rewrite provider`)
           options.validateInput?.(value, received)
         },
         restoreInput: (value, received) => {
           if (event === 'session.measure') return received
           const restored = options.restoreInput?.(value, received) ?? value
+          if (
+            event === 'session.compact' &&
+            restored.agentId === undefined &&
+            received.agentId !== undefined
+          )
+            return { ...restored, agentId: received.agentId }
           if (event !== 'prompt.context') return restored
           validatePromptContext(received)
           return reconcilePromptContext(restored, received)

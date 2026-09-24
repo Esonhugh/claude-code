@@ -29,6 +29,7 @@ import {
 import { compactConversationCodexStyle } from './codexCompact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
+import { runModSessionCompact } from '../mods/compactAdapter.js'
 
 // Reserve this many tokens for output during compaction
 // Based on p99.99 of compact summary output being 17,387 tokens.
@@ -252,6 +253,7 @@ export type AutoCompactResult = {
   compactionResult?: CompactionResult
   consecutiveFailures?: number
   compactionFailure?: AutoCompactFailure
+  skip?: string
 }
 
 export async function autoCompactIfNeeded(
@@ -296,58 +298,63 @@ export async function autoCompactIfNeeded(
     querySource,
   }
 
-  // EXPERIMENT: Try session memory compaction first
-  // Codex mode skips session memory compact to avoid mixing two compaction models.
-  const compactMode = getCompactMode()
-  if (compactMode === 'claude') {
-    const sessionMemoryResult = await trySessionMemoryCompaction(
-      messages,
-      toolUseContext.agentId,
-      recompactionInfo.autoCompactThreshold,
-    )
-    if (sessionMemoryResult) {
-      // Reset lastSummarizedMessageId since session memory compaction prunes messages
-      // and the old message UUID will no longer exist after the REPL replaces messages
-      setLastSummarizedMessageId(undefined)
-      runPostCompactCleanup(querySource)
-      // Reset cache read baseline so the post-compact drop isn't flagged as a
-      // break. compactConversation does this internally; SM-compact doesn't.
-      // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-      // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
-      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-        notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
-      }
-      markPostCompaction()
-      return {
-        wasCompacted: true,
-        compactionResult: sessionMemoryResult,
-      }
-    }
-  }
-
   try {
-    logForDebugging(`autocompact: running ${compactMode}-style compact`)
+    const outcome = await runModSessionCompact(
+      toolUseContext,
+      'auto',
+      messages,
+      undefined,
+      async (compactMessages, instructions, compactContext) => {
+        const compactParams = {
+          ...cacheSafeParams,
+          toolUseContext: compactContext,
+          forkContextMessages: compactMessages,
+        }
+        const compactMode = getCompactMode()
+        if (compactMode === 'claude' && !instructions) {
+          const sessionMemoryResult = await trySessionMemoryCompaction(
+            compactMessages,
+            compactContext.agentId,
+            recompactionInfo.autoCompactThreshold,
+          )
+          if (sessionMemoryResult) {
+            if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+              notifyCompaction(
+                querySource ?? 'compact',
+                compactContext.agentId,
+              )
+            }
+            markPostCompaction()
+            return sessionMemoryResult
+          }
+        }
 
-    const compactionResult =
-      compactMode === 'codex'
-        ? await compactConversationCodexStyle(
-            messages,
-            toolUseContext,
-            cacheSafeParams,
-            true, // Suppress user questions for autocompact
-            undefined, // No custom instructions for autocompact
-            true, // isAutoCompact
-            getCodexCompactOptions(),
-          )
-        : await compactConversation(
-            messages,
-            toolUseContext,
-            cacheSafeParams,
-            true, // Suppress user questions for autocompact
-            undefined, // No custom instructions for autocompact
-            true, // isAutoCompact
-            recompactionInfo,
-          )
+        logForDebugging(`autocompact: running ${compactMode}-style compact`)
+        return compactMode === 'codex'
+          ? compactConversationCodexStyle(
+              compactMessages,
+              compactContext,
+              compactParams,
+              true,
+              instructions,
+              true,
+              getCodexCompactOptions(),
+            )
+          : compactConversation(
+              compactMessages,
+              compactContext,
+              compactParams,
+              true,
+              instructions,
+              true,
+              recompactionInfo,
+            )
+      },
+    )
+    if (outcome.skip !== undefined) {
+      return { wasCompacted: false, skip: outcome.skip }
+    }
+    const compactionResult = outcome.compactionResult
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
@@ -361,7 +368,9 @@ export async function autoCompactIfNeeded(
       consecutiveFailures: 0,
     }
   } catch (error) {
-    const isUserAbort = hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
+    const isUserAbort =
+      toolUseContext.abortController.signal.aborted ||
+      hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
     if (!isUserAbort) {
       logError(error)
     }
