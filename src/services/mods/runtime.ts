@@ -15,6 +15,7 @@ import { describeModCommand, runModCommand, type CommandPresentation } from './c
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
+import { createModSessionMeasure } from './sessionMeasure.js'
 import { dispatchModEvent, pauseModBudget } from './dispatch.js'
 import { createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
@@ -1105,6 +1106,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     if (event === 'tool.call' && !('result' in value) && typeof value.deny !== 'string') throw new Error('tool.call must return result or deny')
     if (event === 'plugin.register' && value.allow !== true && typeof value.refuse !== 'string') throw new Error('plugin.register must allow or refuse')
+    if (event === 'session.measure') {
+      if (!Array.isArray(value.changed) || !value.changed.every(unit => ['context', 'rateLimits', 'cost'].includes(unit)))
+        throw new Error('session.measure must return changed units')
+      return
+    }
     if (event === 'session.start' && typeof value.cwd !== 'string') throw new Error('session.start must return cwd')
     if (event === 'session.end') {
       if (typeof value.sessionId !== 'string') throw new Error('session.end must return sessionId')
@@ -1154,12 +1160,15 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           options.validateInput?.(value, received)
         },
         restoreInput: (value, received) => {
+          if (event === 'session.measure') return received
           const restored = options.restoreInput?.(value, received) ?? value
           if (event !== 'prompt.context') return restored
           validatePromptContext(received)
           return reconcilePromptContext(restored, received)
         },
-        ...(event === 'prompt.context' ? { restoreResult: (result: unknown, previous: unknown) => {
+        ...(event === 'session.measure' ? { restoreResult: (_result: unknown, previous: unknown) => ({
+          changed: structuredClone((previous as ModInput).changed),
+        }) } : event === 'prompt.context' ? { restoreResult: (result: unknown, previous: unknown) => {
           validatePromptContext(previous)
           return reconcilePromptContext(result, previous)
         } } : {}),
@@ -1542,6 +1551,19 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     contextBoundaries.delete(agentId)
   }
 
+  const measurements = createModSessionMeasure({
+    ready: () => queue,
+    captureUsage: () => services.captureUsage?.(),
+    dispatch: (input, reader, signal) => requestServices.run({ captureUsage: () => reader }, () =>
+      dispatch('session.measure', input, async () => ({ changed: input.changed }), active, nouns, { signal })),
+    onError: error => diagnostic('engine', 'session.measure', error),
+  })
+  function measure(captureUsage?: () => ModUsageReader): Promise<void> {
+    if (stopped || ending || !binding || !active.some(owner => owner.started &&
+      owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'session.measure')))) return Promise.resolve()
+    return measurements.request(captureUsage)
+  }
+
   let disposal: Promise<void> | undefined
   let ending: Promise<void> | undefined
   function endSession(
@@ -1567,14 +1589,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       () => deadline.abort(new Error('Mods session.end timed out')),
       timeoutMs,
     )
-    ending = dispatch(
+    ending = measurements.stop().then(() => dispatch(
       'session.end',
       input,
       async () => ({ sessionId: input.sessionId }),
       active,
       nouns,
       { signal: deadline.signal },
-    )
+    ))
       .then(() => {}, error => diagnostic('engine', 'session.end', error))
       .finally(() => clearTimeout(timer))
     return ending
@@ -1582,6 +1604,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   return {
     capture,
     invalidatePromptContext,
+    measure,
     endSession,
     commands,
     config,
@@ -1612,6 +1635,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             for (const owner of active)
               services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner)
           }
+          await measurements.reset()
           ending = undefined
           commands.invalidateDescriptions()
           invalidatePromptContext()
@@ -1627,6 +1651,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       publicTurn = undefined
       controller.abort()
       disposal = (async () => {
+        await measurements.stop()
         await Promise.all([...activations].map(disposeActivation))
         active = []
         nouns = {}

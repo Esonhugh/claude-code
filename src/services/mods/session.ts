@@ -5,6 +5,7 @@ import type { Command } from '../../types/command.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
+import { subscribeRateLimitUsage } from '../claudeAiLimits.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { seatNativeModPlugins } from './native.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -77,6 +78,7 @@ export function createModsSession(options: ModsSessionOptions) {
   let watcherClosing: Promise<void> = Promise.resolve()
   let publishedDiagnostics = false
   let roots: string[] = []
+  let unsubscribeUsage: (() => void) | undefined
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
   let unsubscribeOptions: (() => void) | undefined
@@ -478,6 +480,7 @@ export function createModsSession(options: ModsSessionOptions) {
     if (initialized || stopped || !options.isTrusted) return
     initialized = true
     unregisterCleanup = registerCleanup(dispose)
+    unsubscribeUsage = subscribeRateLimitUsage(() => { if (!stopped) void runtime?.measure() })
     unsubscribePlugins = subscribePluginRefresh(plugins => {
       if (plugins) return refresh(plugins)
       scheduleRefresh()
@@ -502,6 +505,7 @@ export function createModsSession(options: ModsSessionOptions) {
     firstBinding.resolve()
     if (timer) clearTimeout(timer)
     timer = undefined
+    unsubscribeUsage?.()
     unsubscribeSettings?.()
     unsubscribePlugins?.()
     unsubscribeOptions?.()

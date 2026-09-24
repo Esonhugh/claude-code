@@ -262,9 +262,11 @@ export async function* query(
   const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
   const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
   const handlesComplete = snapshot?.hasHooks('turn.complete') === true
+  const handlesMeasure = !params.toolUseContext.agentId &&
+    (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
-  if (!isPublicTurn && !handlesStart && !handlesComplete && !handlesCatalog && !handlesContext) {
+  if (!isPublicTurn && !handlesStart && !handlesComplete && !handlesMeasure && !handlesCatalog && !handlesContext) {
     snapshot?.release()
     const terminal = yield* queryLoop(params, consumedCommandUuids)
     // Only normal return completes commands; throw and iterator.return() do not.
@@ -339,6 +341,8 @@ export async function* query(
       logError(new Error('Mods turn.complete failed', { cause: error }))
     } finally {
       endPublicTurn?.()
+      if (loopStarted && handlesMeasure)
+        await params.toolUseContext.mods!.measure(() => captureModSessionUsage(catalogContext))
     }
   }
   // Never yield from finally: doing so would keep iterator.return() suspended.
@@ -1085,6 +1089,8 @@ async function* queryLoop(
             if (isWithheldMaxOutputTokens(message)) {
               withheld = true
             }
+            if (message.type === 'assistant')
+              updateCatalogContext?.({ ...toolUseContext, messages: [...messagesForQuery, ...assistantMessages, message] })
             if (!withheld) {
               yield yieldMessage
             }

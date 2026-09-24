@@ -1560,3 +1560,45 @@ test('real Worker rejects duplicate context names and keeps the completed inner 
     await rm(root,{recursive:true,force:true})
   }
 })
+
+test('main query completion pushes actual response usage through session.measure, never for a subagent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-measure-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let events=[]; export function register(on) {
+      on('session.start', ($,e,next) => {events.push('start');return next(e)});
+      on('turn.complete', ($,e,next) => {events.push('complete');return next(e)});
+      on('session.measure', async ($,e,next) => {events.push({input:e,usage:await $.session.usage()});return next(e)});
+      on('tool.call', () => ({result:events}));
+    }`)
+    await runtime.reconcile([{name:'measure-query',storageId:'measure-query@inline',pluginRoot:root,entrypoints:[entry]}])
+    await runtime.bind({cwd:root,sessionId:'measure-query',surface:null,isInteractive:false})
+    const h = harness(async function* () {yield response('measure','actual answer',1000)})
+    h.context.mods = runtime
+    h.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    await drain(query(h.params))
+    const read = () => runtime.dispatch('tool.call',{tool:'Inspect',tool_use_id:'inspect'},async () => ({result:null})) as Promise<{result:any[]}>
+    const events = (await read()).result
+    expect(events.slice(0,2)).toEqual(['start','complete'])
+    expect(events[2].input.context).toEqual({window:200000,tokens:1007,percent:1})
+    expect(events[2].input.changed).toContain('context')
+    expect(events[2].usage.context).toEqual(events[2].input.context)
+    h.context.agentId = asAgentId('measure-child')
+    await drain(query(h.params))
+    expect((await read()).result.filter(event => typeof event === 'object')).toHaveLength(1)
+    h.context.agentId = undefined
+    h.params.deps!.callModel = async function* () {yield response('measure-cancel','last visible answer',2000)}
+    const interrupted = query(h.params)
+    while (true) {
+      const next = await interrupted.next()
+      if (next.done) throw new Error('query never yielded its response')
+      if (next.value.type === 'assistant') break
+    }
+    await interrupted.return({reason:'completed'} as never)
+    const last = (await read()).result.filter(event => typeof event === 'object').at(-1)
+    expect(last.input.context.tokens).toBe(2007)
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
