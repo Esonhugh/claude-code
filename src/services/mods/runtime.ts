@@ -121,6 +121,7 @@ type Activation = {
   uiPublished?: boolean
   uiStatus?: { text: string | undefined }
   uiLogs?: { text: string; to: 'transcript' | 'debug' }[]
+  suggestionOwner: string
   uiRelease?: Promise<void>
   dispose?: Promise<void>
 }
@@ -152,7 +153,7 @@ const coreHost: Nouns = {
   config: { list: hostIdentity, set: hostIdentity },
   tool: { list: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity },
-  prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity },
+  prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
@@ -171,6 +172,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let declarations: ModPluginInput[] = []
   let recovering = false
   let hostEpoch = 0
+  let activationId = 0
   let hostDead = false
   const activations = new Set<Activation>()
   const retired = new Set<Activation>()
@@ -317,6 +319,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function releaseUi(owner: Activation): Promise<void> {
     if (owner.uiRelease) return owner.uiRelease
+    services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner)
     ui.releaseCandidate(owner)
     if (owner.uiPublished && owner.uiStatus && !active.some(item => item !== owner && item.declaration.name === owner.declaration.name && item.uiStatus))
       services.uiStatus?.(owner.declaration.name, undefined)
@@ -450,6 +453,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           text,
           ...(attachments === undefined ? {} : { attachments }),
         }
+      }
+      case 'prompt.suggest': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string' || Object.keys(input).some(key => key !== 'text'))
+          throw new TypeError('prompt.suggest takes { text }')
+        return { text: (input as ModInput).text }
       }
       case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': return args[0] as ModInput
       case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
@@ -833,6 +843,33 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             }))
           } finally { combined.cleanup() }
         }
+        if (fn === hostIdentity && op === 'prompt.suggest') {
+          const prompt = services.prompt?.()
+          const origin = { kind: 'plugin' as const, name: owner.declaration.name }
+          const eventInput = { ...(input as ModInput), origin }
+          return withReference(owner, () => dispatch(
+            op,
+            eventInput,
+            async rewritten => {
+              if (owner.state !== 'active' || typeof rewritten.text !== 'string' || rewritten.text.trim() === '' ||
+                  binding?.surface !== 'terminal' || !binding.isInteractive ||
+                  prompt?.read().text !== '' || prompt.canSuggest?.() === false)
+                return { isShown: false }
+              const shown = await prompt.suggest?.(rewritten.text, owner.suggestionOwner) === true
+              return { isShown: shown && owner.state === 'active' }
+            },
+            snapshot,
+            table,
+            {
+              signal: invocationSignal.getStore(),
+              origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+              validateInput: rewritten => {
+                if (typeof rewritten.text !== 'string' || !isDeepStrictEqual(rewritten.origin, origin))
+                  throw new TypeError('prompt.suggest requires text and cannot rewrite origin')
+              },
+            },
+          ))
+        }
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         try {
           const catalog = fn === hostIdentity && op === 'tool.list'
@@ -938,6 +975,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function validateResult(event: string, result: unknown) {
+    if (event === 'prompt.suggest') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          typeof (result as Partial<{isShown:boolean}>).isShown !== 'boolean')
+        throw new TypeError('prompt.suggest must return isShown')
+      return
+    }
     if (event === 'session.receive') return validateSessionReceiveResult(result)
     if (event === 'config.describe') {
       const value = result as {
@@ -1353,6 +1396,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const candidate: Activation = {
           declaration, environment, state: preAdmitted ? 'active' : 'candidate', references: 0, started: false,
           waits: new Map(), methods: new WeakMap(), controller: activationController,
+          suggestionOwner: `${declaration.storageId}:${++activationId}`,
           operations: createModHostOperations({
             cwd: () => { if (!binding) throw new Error('Module session is not bound'); return services.cwd?.() ?? binding.cwd },
             root: () => { if (!binding) throw new Error('Module session is not bound'); return services.root?.() ?? binding.cwd },
@@ -1529,6 +1573,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           return
         if (ending || binding?.sessionId !== next.sessionId) {
           await ending
+          if (binding && binding.sessionId !== next.sessionId) {
+            for (const owner of active)
+              services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner)
+          }
           ending = undefined
           commands.invalidateDescriptions()
         }

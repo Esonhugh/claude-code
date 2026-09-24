@@ -1600,3 +1600,238 @@ test('Worker rejects invalid tool.describe deferral even without an API adapter 
   expect(await value.dispatch('tool.describe',input,async()=>({description:'base',isDeferred:true}))).toEqual({description:'base',isDeferred:true})
   expect(diagnostics).toEqual([expect.objectContaining({stage:'tool.describe',message:expect.stringContaining('isDeferred')})])
 })
+
+test('Worker prompt.suggest pins plugin origin and reaches the interactive prompt state', async () => {
+  const caller = await plugin('suggest-caller', `export function register(on) {
+    on('prompt.suggest', ($,e,next) => next({...e,text:e.text+' rewritten'}));
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'draft'})}));
+  }`)
+  const observer = await plugin('suggest-observer', `export function register(on) {
+    on('prompt.suggest', ($,e,next) => {
+      if(e.origin.kind!=='plugin'||e.origin.name!=='suggest-caller') throw Error('bad origin');
+      return next(e);
+    });
+  }`)
+  const suggestions: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: text => { suggestions.push(text); return true },
+    isBlocked: () => false,
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller, observer])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest' })
+  expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+    result: { isShown: true },
+  })
+  expect(suggestions).toEqual(['draft rewritten'])
+})
+
+test('retiring a plugin clears only its owned prompt suggestion', async () => {
+  const caller = await plugin('suggest-owner', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'owned draft'})}));
+  }`)
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return true },
+    clearSuggestion: nextOwner => { cleared.push(nextOwner) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-owner' })
+  expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+    result: { isShown: true },
+  })
+  expect(owner).toStartWith('suggest-owner@test:')
+
+  await value.reconcile([])
+
+  expect(cleared).toEqual([owner])
+})
+
+test('replacement activation keeps its newly published prompt suggestion', async () => {
+  const input = await plugin('suggest-reload', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.prompt.suggest({text:'version A'});
+      return next(e);
+    });
+  }`)
+  let shown: { text: string; owner: string } | undefined
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (text, owner) => { shown = { text, owner }; return true },
+    clearSuggestion: owner => { if (shown?.owner === owner) shown = undefined },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([input])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-reload' })
+  expect(shown?.text).toBe('version A')
+
+  await writeFile(input.entrypoints[0]!, `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.prompt.suggest({text:'version B'});
+      return next(e);
+    });
+  }`)
+  await value.reconcile([input])
+
+  expect(shown?.text).toBe('version B')
+})
+
+test('retiring during a pending prompt suggestion reports it as not shown', async () => {
+  const input = await plugin('suggest-pending-retire', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'pending A'})}));
+  }`)
+  const pending = Promise.withResolvers<boolean>()
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return pending.promise },
+    clearSuggestion: nextOwner => { cleared.push(nextOwner); pending.resolve(true) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([input])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-pending-retire' })
+  const call = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  await delay(20)
+
+  await value.reconcile([])
+
+  expect(await call).toEqual({ result: { isShown: false } })
+  expect(cleared).toEqual([owner])
+})
+
+test('retired activation cannot publish a stale prompt suggestion', async () => {
+  const input = await plugin('suggest-stale', `export function register(on) {
+    on('tool.call', async $ => {
+      await $.clock.sleep(80);
+      return {result:await $.prompt.suggest({text:'stale A'})};
+    });
+  }`)
+  const suggestions: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: text => { suggestions.push(text); return true },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([input])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-stale' })
+  const call = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  await delay(20)
+
+  await writeFile(input.entrypoints[0]!, `export function register(on) {
+    on('tool.call', () => ({result:'version B'}));
+  }`)
+  await value.reconcile([input])
+
+  expect(await call).toEqual({ result: { isShown: false } })
+  expect(suggestions).toEqual([])
+})
+
+test('session rebind clears prompt suggestions from the previous session', async () => {
+  const caller = await plugin('suggest-session', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'session A'})}));
+  }`)
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return true },
+    clearSuggestion: nextOwner => { cleared.push(nextOwner) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'A' })
+  await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'B' })
+
+  expect(cleared).toEqual([owner])
+})
+
+test('retiring another plugin does not clear the current prompt suggestion', async () => {
+  const caller = await plugin('suggest-owner', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'owned draft'})}));
+  }`)
+  const sibling = await plugin('suggest-sibling', `export function register(on) {
+    on('tool.check', ($,e,next) => next(e));
+  }`)
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return true },
+    clearSuggestion: nextOwner => { if (nextOwner === owner) cleared.push(nextOwner) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller, sibling])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-owner' })
+  await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+
+  await value.reconcile([caller])
+
+  expect(cleared).toEqual([])
+})
+
+test('Worker prompt.suggest waits for a temporarily blocked prompt', async () => {
+  const caller = await plugin('suggest-wait', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'after dialog'})}));
+  }`)
+  const pending = Promise.withResolvers<boolean>()
+  let blocked = true
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: () => blocked ? pending.promise : true,
+    isBlocked: () => blocked,
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-wait' })
+
+  const result = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  expect(await Promise.race([result, Promise.resolve('pending')])).toBe('pending')
+  blocked = false
+  pending.resolve(true)
+  expect(await result).toEqual({ result: { isShown: true } })
+})
+
+test('Worker prompt.suggest does not mutate headless, busy, filled, or blank prompts', async () => {
+  const caller = await plugin('suggest-guards', `export function register(on) {
+    on('tool.call', async ($,e) => ({result:await $.prompt.suggest({text:e.text})}));
+  }`)
+  const suggestions: string[] = []
+  let text = ''
+  const blocked = false
+  let canSuggest = true
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text, cursor: text.length }),
+    fill: () => false,
+    suggest: next => { suggestions.push(next); return true },
+    canSuggest: () => canSuggest,
+    isBlocked: () => blocked,
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: null, isInteractive: false, sessionId: 'suggest' })
+  expect(await value.dispatch('tool.call', { text: 'headless' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest' })
+  canSuggest = false
+  expect(await value.dispatch('tool.call', { text: 'busy' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  canSuggest = true
+  text = 'typed'
+  expect(await value.dispatch('tool.call', { text: 'filled' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  text = ''
+  expect(await value.dispatch('tool.call', { text: '   ' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  expect(suggestions).toEqual([])
+})

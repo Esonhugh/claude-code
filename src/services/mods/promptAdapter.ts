@@ -37,6 +37,9 @@ export type PromptFilled = PromptBox & PromptFillResult
 export type ModPromptHost = {
   read(): PromptBox
   fill(input: { text: string; mode: PromptFillMode }): boolean
+  suggest?(text: string, owner: string): boolean | Promise<boolean>
+  clearSuggestion?(owner: string): void
+  canSuggest?(): boolean
   isBlocked?(): boolean
 }
 
