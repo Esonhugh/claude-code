@@ -28,6 +28,10 @@ import {
   getSettingsWithErrors,
 } from '../../utils/settings/settings.js'
 import { getPlatform } from '../../utils/platform.js'
+import {
+  getAdditionalDirectoriesForClaudeMd,
+  setAdditionalDirectoriesForClaudeMd,
+} from '../../bootstrap/state.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { acceptSettingsFile, releaseSettingsFile, resetSettingsCache, retainSettingsFile, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { clearMdmSettingsCache, setMdmSettingsCache } from '../../utils/settings/mdm/settings.js'
@@ -947,6 +951,56 @@ describe('process.run', () => {
 })
 
 describe('fs.ancestors', () => {
+  for (const control of [
+    'CLAUDE_CODE_DISABLE_CLAUDE_MDS',
+    'CLAUDE_CODE_SIMPLE',
+    '--bare',
+  ]) {
+    test(`returns no instructions when disabled by ${control}, without bypassing validation`, async () => {
+      const additionalDirs = getAdditionalDirectoriesForClaudeMd()
+      const argv = process.argv
+      const disableClaudeMds = process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+      const simple = process.env.CLAUDE_CODE_SIMPLE
+      try {
+        setAdditionalDirectoriesForClaudeMd([])
+        process.argv = process.argv.filter(arg => arg !== '--bare')
+        delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+        delete process.env.CLAUDE_CODE_SIMPLE
+        await writeFile(join(cwd, 'AGENTS.md'), 'project instructions')
+        const request = { names: ['AGENTS.md'], below: root }
+        expect(await host.fs.ancestors(request)).toHaveLength(1)
+
+        if (control === '--bare') process.argv.push('--bare')
+        else process.env[control] = 'true'
+        expect(await host.fs.ancestors(request)).toEqual([])
+        await expect(
+          host.fs.ancestors({ names: ['../AGENTS.md'] }),
+        ).rejects.toThrow(TypeError)
+        const reason = new Error('disabled but aborted')
+        await expect(
+          host.fs.ancestors(request, AbortSignal.abort(reason)),
+        ).rejects.toBe(reason)
+
+        setAdditionalDirectoriesForClaudeMd([cwd])
+        expect(await host.fs.ancestors(request)).toHaveLength(
+          control === 'CLAUDE_CODE_DISABLE_CLAUDE_MDS' ? 0 : 1,
+        )
+        if (control === '--bare')
+          process.argv = process.argv.filter(arg => arg !== '--bare')
+        else process.env[control] = 'false'
+        expect(await host.fs.ancestors(request)).toHaveLength(1)
+      } finally {
+        setAdditionalDirectoriesForClaudeMd(additionalDirs)
+        process.argv = argv
+        if (disableClaudeMds === undefined)
+          delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+        else process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = disableClaudeMds
+        if (simple === undefined) delete process.env.CLAUDE_CODE_SIMPLE
+        else process.env.CLAUDE_CODE_SIMPLE = simple
+      }
+    })
+  }
+
   test('skips absent and non-instruction entries, preserves CRLF and spelling, and rereads disk on each call', async () => {
     const name = `${basename(root)}.md`
     const path = join(cwd, name)

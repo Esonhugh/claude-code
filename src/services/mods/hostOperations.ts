@@ -10,6 +10,8 @@ import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from 'node:fs/
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import treeKill from 'tree-kill'
 import { getInitialSettings, getSettingsForSource } from '../../utils/settings/settings.js'
+import { getAdditionalDirectoriesForClaudeMd } from '../../bootstrap/state.js'
+import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 
 export type ModCredential = { kind: 'bearer' | 'api-key'; secret: string }
 export type ModAuthorization = { handle: string; kind: ModCredential['kind'] } | null
@@ -511,6 +513,11 @@ export function createModHostOperations({
           if (!path || /^[\\/]{2}/.test(path))
             throw new TypeError('fs.ancestors paths must be nonempty local paths')
         }
+        if (
+          isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS) ||
+          (isBareMode() && getAdditionalDirectoriesForClaudeMd().length === 0)
+        )
+          return []
         const end = request.of === undefined ? resolve(root()) : dirname(resolvePath(request.of))
         const below = request.below === undefined ? undefined : resolvePath(request.below)
         if (below !== undefined) {
