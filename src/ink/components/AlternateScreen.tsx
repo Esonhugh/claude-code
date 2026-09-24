@@ -44,7 +44,7 @@ export function AlternateScreen({
   mouseTracking = true,
 }: Props): React.ReactNode {
   const size = useContext(TerminalSizeContext)
-  const writeRaw = useContext(TerminalWriteContext)
+  const terminal = useContext(TerminalWriteContext)
 
   // useInsertionEffect (not useLayoutEffect): react-reconciler calls
   // resetAfterCommit between the mutation and layout commit phases, and
@@ -58,9 +58,9 @@ export function AlternateScreen({
   // run in the mutation phase on unmount, before resetAfterCommit.
   useInsertionEffect(() => {
     const ink = instances.get(process.stdout)
-    if (!writeRaw) return
+    if (!terminal) return
 
-    writeRaw(
+    terminal.write(
       ENTER_ALT_SCREEN +
         '\x1b[2J\x1b[H' +
         (mouseTracking ? ENABLE_MOUSE_TRACKING : ''),
@@ -70,9 +70,9 @@ export function AlternateScreen({
     return () => {
       ink?.setAltScreenActive(false)
       ink?.clearTextSelection()
-      writeRaw((mouseTracking ? DISABLE_MOUSE_TRACKING : '') + EXIT_ALT_SCREEN)
+      terminal.write((mouseTracking ? DISABLE_MOUSE_TRACKING : '') + EXIT_ALT_SCREEN)
     }
-  }, [writeRaw, mouseTracking])
+  }, [terminal, mouseTracking])
 
   return (
     <Box

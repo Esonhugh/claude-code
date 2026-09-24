@@ -1,6 +1,7 @@
 import type { Cursor } from './cursor.js'
 import type { Size } from './layout/geometry.js'
 import type { ScrollHint } from './render-node-to-output.js'
+import type { TerminalImage } from './dom.js'
 import {
   type CharPool,
   createScreen,
@@ -9,10 +10,22 @@ import {
   type StylePool,
 } from './screen.js'
 
+export type PlacedTerminalImage = TerminalImage & {
+  x: number
+  y: number
+  columns: number
+  rows: number
+  sourceLeft: number
+  sourceTop: number
+  sourceColumns: number
+  sourceRows: number
+}
+
 export type Frame = {
   readonly screen: Screen
   readonly viewport: Size
   readonly cursor: Cursor
+  readonly terminalImages?: PlacedTerminalImage[]
   /** DECSTBM scroll optimization hint (alt-screen only, null otherwise). */
   readonly scrollHint?: ScrollHint | null
   /** A ScrollBox has remaining pendingScrollDelta — schedule another frame. */

@@ -4,14 +4,15 @@ import { readFileSync } from 'node:fs'
 import { isProxy } from 'node:util/types'
 import { createModUiRealm } from '../services/mods/uiRealm.js'
 import { resolveKeyWithChordState } from '../keybindings/resolver.js'
-import { describe, expect, test } from 'bun:test'
-import React, { useEffect } from 'react'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import React, { useEffect, useSyncExternalStore } from 'react'
 import stripAnsi from 'strip-ansi'
+import chalk from 'chalk'
 import { Box, Text, ThemeProvider, render, useInput, useStdin } from '../ink.js'
 import { KeybindingProvider, useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js'
 import { parseBindings } from '../keybindings/parser.js'
 import type { KeybindingContextName, ParsedKeystroke } from '../keybindings/types.js'
-import type { DOMElement, DOMNode } from '../ink/dom.js'
+import { appendChildNode, createNode, markDirty, type DOMElement, type DOMNode } from '../ink/dom.js'
 import { getFocusManager } from '../ink/focus.js'
 import instances from '../ink/instances.js'
 import { nodeCache } from '../ink/node-cache.js'
@@ -22,6 +23,14 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import { createModUi, type ModUiPane } from '../services/mods/ui.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createModsRuntime } from '../services/mods/runtime.js'
+import type { ModClientHandle, ModClients } from '../services/mods/client.js'
+import createRenderer from '../ink/renderer.js'
+import { CharPool, createScreen, HyperlinkPool, StylePool } from '../ink/screen.js'
+import type { Frame } from '../ink/frame.js'
 
 class Output extends Writable {
   columns = 80
@@ -54,6 +63,7 @@ function pane(tree: unknown, changes: Partial<ModUiPane> = {}): ModUiPane {
     plugin: 'fixture',
     owner: {},
     visible: true,
+    shown: true,
     placement: 'inline',
     focused: true,
     closeOnEscape: false,
@@ -161,6 +171,162 @@ function modsPane(tree: unknown, stdout: Output) {
   )
 }
 
+test.each([true, false])('Worker Markdown reaches the terminal Pane through runtime UI and the assistant renderer (dimColor=%s)', async dimColor => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-render-markdown-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { uiPresentation: () => ({ columns: 160, rows: 40, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false }) },
+  })
+  const stdout = new Output()
+  const terminal = process.env.TERM_PROGRAM
+  const colorLevel = chalk.level
+  process.env.TERM_PROGRAM = 'kitty'
+  chalk.level = 3
+  let app: Awaited<ReturnType<typeof render>> | undefined
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('session.start', async ($,e,next) => {await $.ui.open({id:'markdown'});return next(e)});
+      on('ui.render', {component:'Pane'}, ($,e) => $.ui.resolve(e).Markdown({
+        key:'reply', text:'# Render contract\\n\\n**Bold body** and \`inline code\`\\n\\n| Name | Value |\\n| --- | --- |\\n| phase | green |\\n| **Blocked table** | [**Label**](javascript:table) |\\n\\n[safe](https://example.com/) [**Unsafe label**](javascript:alert)', dimColor:${dimColor}
+      }));
+    }`)
+    await runtime.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'markdown-test' })
+    await runtime.reconcile([{ name: 'markdown', storageId: 'markdown@test', pluginRoot: root, entrypoints: [entry] }])
+    expect(diagnostics).toEqual([])
+    const current = runtime.ui.getSnapshot()[0]!
+    expect(current.tree).toMatchObject({ type: 'Markdown', props: { key: 'reply', dimColor } })
+    const state = { ...getDefaultAppState(), settings: { syntaxHighlightingDisabled: true } }
+    expect(chalk.level).toBe(3)
+    app = await render(<AppStoreContext.Provider value={createStore(state)}><ThemeProvider><ModsPane
+      pane={current} onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})}
+    /></ThemeProvider></AppStoreContext.Provider>, {
+      stdout: stdout as unknown as NodeJS.WriteStream, stdin: new Input() as unknown as NodeJS.ReadStream,
+      patchConsole: false, exitOnCtrlC: false,
+    })
+    await settle()
+    const output = stripAnsi(stdout.output)
+    expect(output).toContain('Render contract')
+    expect(output).toContain('Bold body')
+    expect(output).toContain('inline code')
+    expect(output).toContain('phase')
+    expect(output).toContain('green')
+    expect(output).not.toContain('**Bold body**')
+    expect(output).not.toContain('| --- |')
+    expect(output).toContain('Unsafe label')
+    expect(output).not.toContain('**Unsafe label**')
+    expect(output).toContain('Blocked table')
+    expect(output).not.toContain('**Label**')
+    const table = elements(stdout, false).filter(({node, text}) => node.nodeName === 'ink-text' && text.includes('phase')).at(-1)!
+    expect(table.node.textStyles?.dim === true).toBe(dimColor)
+    for (const label of ['Bold body', 'Unsafe label']) {
+      const element = domElement(stdout, label, 'ink-virtual-text')
+      expect(element.textStyles).toMatchObject(dimColor ? { dim: true } : { bold: true })
+      if (dimColor) expect(element.textStyles?.bold).toBeUndefined()
+    }
+    const links = elements(stdout, false).filter(({node}) => node.nodeName === 'ink-link').map(({node}) => node.attributes.href)
+    expect(links).toContain('https://example.com/')
+    expect(links).not.toContain('javascript:alert')
+    expect(links).not.toContain('javascript:table')
+  } finally {
+    if (terminal === undefined) delete process.env.TERM_PROGRAM
+    else process.env.TERM_PROGRAM = terminal
+    chalk.level = colorLevel
+    app?.unmount()
+    await runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+describe('ModsPane Markdown link presses', () => {
+  test('only makes selected Markdown links pressable and sends the exact href to the drawing owner', async () => {
+    const stdout = new Output()
+    const terminal = process.env.TERM_PROGRAM
+    const colorLevel = chalk.level
+    process.env.TERM_PROGRAM = 'kitty'
+    chalk.level = 3
+    const pressed: unknown[][] = []
+    const owner = {}
+    const callback = { plugin: 'markdown-owner', handle: 31 }
+    const store = createStore(getDefaultAppState())
+    const current = pane({
+      type: 'Markdown',
+      props: {
+        key: 'docs',
+        text: '[handled](https://example.com/handled) [ordinary](https://example.com/ordinary)',
+        pressableLinks: ['https://example.com/handled'],
+      },
+      press: callback,
+    }, { owner })
+    const draw = () => <AppStoreContext.Provider value={store}><ModsPane pane={current}
+      onInteract={async (...args) => { pressed.push(args) }}
+      onClose={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})} />
+    </AppStoreContext.Provider>
+    const instance = await render(draw(), {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      const handled = domElement(stdout, 'handled', 'ink-link')
+      const control = handled
+      expect(control.attributes.tabIndex).toBe(0)
+      expect(elements(stdout, false).filter(({node}) => typeof node.attributes.tabIndex === 'number'))
+        .toHaveLength(2) // pane root and the selected link
+      expect(elements(stdout, false).filter(({node}) => node.nodeName === 'ink-link' && node.attributes.href !== undefined).map(({node}) => node.attributes.href))
+        .toEqual(['https://example.com/ordinary'])
+
+      const click = handled._eventHandlers!.onClick as (event: unknown) => void
+      click({})
+      await settle()
+      expect(pressed).toEqual([[current, 7, callback, 'link.press', 'docs', 'https://example.com/handled']])
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+      chalk.level = colorLevel
+    }
+  })
+
+  test('a detached Markdown link from an older drawing cannot fire', async () => {
+    const stdout = new Output()
+    const terminal = process.env.TERM_PROGRAM
+    const colorLevel = chalk.level
+    process.env.TERM_PROGRAM = 'kitty'
+    chalk.level = 3
+    const calls: unknown[][] = []
+    const owner = {}
+    const callback = { plugin: 'markdown-owner', handle: 32 }
+    const store = createStore(getDefaultAppState())
+    const markdown = (label: string) => ({
+      type: 'Markdown', props: { key: 'docs', text: `[${label}](https://example.com/${label})` }, press: callback,
+    })
+    let current = pane(markdown('old'), { owner, drawing: 7 })
+    const draw = () => <AppStoreContext.Provider value={store}><ModsPane pane={current} onInteract={async (...args) => { calls.push(args) }}
+      onClose={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})} />
+    </AppStoreContext.Provider>
+    const instance = await render(draw(), {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      const oldControl = domElement(stdout, 'old', 'ink-link')
+      const staleClick = oldControl._eventHandlers!.onClick as (event: unknown) => void
+      current = pane(markdown('new'), { owner, drawing: 8, revision: 1 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      staleClick({})
+      await settle()
+      expect(calls).toEqual([])
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+      chalk.level = colorLevel
+    }
+  })
+})
+
 describe('ModsPane validation', () => {
   test('accepts the terminal element table and rejects unknown props, malformed callbacks and oversized trees', () => {
     expect(() => validateModRenderTree({
@@ -171,12 +337,47 @@ describe('ModsPane validation', () => {
         { type: 'Code', props: { source: 'const ok = true', language: 'typescript' } },
       ],
     })).not.toThrow()
-    expect(() => validateModRenderTree({ type: 'Box', props: { position: 'absolute' } })).toThrow(/prop/i)
+    expect(() => validateModRenderTree({ type: 'Box', props: { position: 'fixed' } })).toThrow(/position/i)
     expect(() => validateModRenderTree({ type: 'Button', props: { key: 'x', label: 'X' }, press: { plugin: 'fixture', handle: 0 } })).toThrow(/handle/i)
     expect(() => validateModRenderTree({ type: 'Code', props: { source: 'x'.repeat(10_001) } })).toThrow(/10000/i)
     expect(() => validateModRenderTree({ type: 'Code', props: { source: 'not a patch', format: 'diff' } })).toThrow(/hunk/i)
     expect(() => validateModRenderTree({ type: 'Text', children: ['\u001b[31mraw ansi'] })).toThrow(/control/i)
     expect(() => validateModRenderTree({ type: 'Box', children: Array.from({ length: 2_001 }, () => 'x') })).toThrow(/node/i)
+  })
+
+  test('accepts official Raster and Image leaves and validates their bounded payloads', () => {
+    const cells = Buffer.alloc(12)
+    cells.writeUInt32LE('A'.charCodeAt(0), 0)
+    cells.writeUInt32LE(0x00ff0000, 4)
+    cells.writeUInt32LE(0x01000000, 8)
+    const raster = {
+      type: 'Raster',
+      props: { key: 'pixels', columns: 1, rows: 1, cells: cells.toString('base64') },
+      group: { plugin: 'fixture' },
+    }
+    const image = {
+      type: 'Image',
+      props: {
+        key: 'preview', columns: 8, rows: 4, alt: 'preview unavailable',
+        source: { rgba: Buffer.alloc(4).toString('base64'), width: 1, height: 1 },
+      },
+      group: { plugin: 'fixture' },
+    }
+    expect(() => validateModRenderTree({ type: 'Box', children: [raster, image] })).not.toThrow()
+    expect(() => validateModRenderTree({ ...raster, props: { ...raster.props, cells: 'AA==' } })).toThrow(/cells|length/i)
+    expect(() => validateModRenderTree({ ...raster, props: { ...raster.props, columns: 513 } })).toThrow(/columns/i)
+    expect(() => validateModRenderTree({ ...image, props: { ...image.props, source: { png: 'not base64' } } })).toThrow(/base64/i)
+    expect(() => validateModRenderTree({ ...image, props: { ...image.props, source: { file: '/tmp/image.png', format: 'rgb' } } })).toThrow(/width|height|format/i)
+    expect(() => validateModRenderTree({ ...image, children: ['forged'] })).toThrow(/leaf/i)
+  })
+
+  test('rejects Button hotkeys outside digits/lowercase letters and unknown engine actions', () => {
+    for (const hotkey of ['', 'W', '!', 'é', 'ab']) {
+      expect(() => validateModRenderTree({ ...fileButton('bad'), props: { key: 'bad', label: 'Bad', hotkey } })).toThrow(/hotkey/i)
+    }
+    for (const action of ['', 'app:notAnEngineAction']) {
+      expect(() => validateModRenderTree({ ...fileButton('bad'), props: { key: 'bad', label: 'Bad', action } })).toThrow(/action/i)
+    }
   })
 
   test.each(['Button', 'Select', 'Input'])('accepts full-path %s keys within the existing UI string budget', type => {
@@ -297,7 +498,7 @@ describe('ModsPane validation', () => {
       type: 'Box',
       hover: { scope: 'shared', display: 'flex' },
       group: { plugin: 'owner' },
-    })).toThrow(/scope.*display/i)
+    })).toThrow(/display.*none/i)
     expect(() => validateModRenderTree({
       type: 'Text',
       children: ['label'],
@@ -307,7 +508,1012 @@ describe('ModsPane validation', () => {
   })
 })
 
+describe.serial('ModsPane terminal Image consumer', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')
+  const image = (source: Record<string, unknown>, changes: Record<string, unknown> = {}) => ({
+    type: 'Image',
+    props: { key: 'preview', source, columns: 8, rows: 4, alt: 'preview unavailable', ...changes },
+    group: { plugin: 'fixture' },
+  })
+  let ttyDescriptor: PropertyDescriptor | undefined
+  let termProgram: string | undefined
+
+  beforeEach(() => {
+    ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+    termProgram = process.env.TERM_PROGRAM
+  })
+
+  afterEach(() => {
+    if (ttyDescriptor) Object.defineProperty(process.stdout, 'isTTY', ttyDescriptor)
+    else delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY
+    if (termProgram === undefined) delete process.env.TERM_PROGRAM
+    else process.env.TERM_PROGRAM = termProgram
+  })
+
+  test('keeps the alt fallback on unsupported and non-TTY terminals without leaking image bytes', async () => {
+    for (const [isTTY, terminal] of [[false, 'kitty'], [true, 'iTerm.app']] as const) {
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: isTTY })
+      process.env.TERM_PROGRAM = terminal
+      const stdout = new Output()
+      stdout.isTTY = isTTY
+      const instance = await modsPane(image({ png }), stdout)
+      try {
+        await settle()
+        expect(stripAnsi(stdout.output)).toContain('preview')
+        expect(stdout.output).not.toContain(png)
+        expect(stdout.output).not.toContain('\u001b_G')
+      } finally { instance.unmount() }
+    }
+  })
+
+  test('uses the configured output TTY instead of global process.stdout', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const instance = await modsPane(image({ png }), stdout)
+    try {
+      await settle()
+      expect(stdout.output).toContain('\u001b_Ga=T,f=100,t=d,c=8,r=4,C=1')
+      expect(stripAnsi(stdout.output)).not.toContain('preview unavailable')
+    } finally { instance.unmount() }
+  })
+
+  test('emits Kitty protocol for inline, regular-file and POSIX shm sources without reading them', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+    process.env.TERM_PROGRAM = 'ghostty'
+    const cases = [
+      [{ png }, 'f=100,t=d'],
+      [{ rgba: Buffer.from([1, 2, 3, 4]).toString('base64'), width: 1, height: 1 }, 'f=32,s=1,v=1,t=d'],
+      [{ file: '/missing/chart.png', format: 'png' }, 'f=100,t=f'],
+      [{ file: '/missing/frame.rgb', format: 'rgb', width: 2, height: 3 }, 'f=24,s=2,v=3,t=f'],
+      [{ file: '/missing/frame.rgba', format: 'rgba', width: 2, height: 3 }, 'f=32,s=2,v=3,t=f'],
+      [{ shm: '/mods-rgb', format: 'rgb', width: 2, height: 3 }, 'f=24,s=2,v=3,t=s'],
+      [{ shm: '/mods-rgba', format: 'rgba', width: 2, height: 3 }, 'f=32,s=2,v=3,t=s'],
+    ] as const
+    for (const [source, transmission] of cases) {
+      const stdout = new Output()
+      stdout.isTTY = true
+      const instance = await modsPane(image(source), stdout)
+      try {
+        await settle()
+        expect(stdout.output).toContain(`\u001b_Ga=T,${transmission},c=8,r=4,C=1`)
+        expect(stripAnsi(stdout.output)).not.toContain('preview unavailable')
+        if ('file' in source) expect(stdout.output).toContain(Buffer.from(source.file).toString('base64'))
+        if ('shm' in source) expect(stdout.output).toContain(Buffer.from(source.shm).toString('base64'))
+      } finally { instance.unmount() }
+    }
+  })
+
+  test('suppresses ordinary equal sources, includes generation in identity, and emits every shm frame', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const owner = {}
+    const file = { file: '/missing/frame.rgb', format: 'rgb', width: 1, height: 1, generation: 1 } as const
+    const shm = { shm: '/mods-once', format: 'rgba', width: 1, height: 1 } as const
+    let current = pane(image(file), { owner })
+    const draw = () => <ModsPane pane={current} onInteract={async () => {}} onClose={async () => {}}
+      onFocus={async () => ({})} onScroll={async () => ({})} />
+    const instance = await render(<ThemeProvider>{draw()}</ThemeProvider>, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 250))
+      current = pane(image(file), { owner, revision: 1 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await new Promise(resolve => setTimeout(resolve, 250))
+      stdout.output = ''
+      const count = () => stdout.output.split('\u001b_Ga=T,').length - 1
+      let frames = count()
+      current = pane(image(file), { owner, revision: 2 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(count()).toBe(frames)
+      current = pane(image({ file: '/missing/frame.rgb', format: 'rgb', width: 1, height: 1, generation: 2 }), { owner, revision: 3 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(count()).toBe(++frames)
+
+      current = pane(image(shm), { owner, revision: 3 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(count()).toBe(++frames)
+      current = pane(image({ ...shm }), { owner, revision: 4 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(count()).toBe(++frames)
+    } finally { instance.unmount() }
+  })
+
+  test('places the image at its actual Ink layout coordinates', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const instance = await modsPane({
+      type: 'Box',
+      props: { paddingLeft: 3, paddingTop: 2 },
+      children: [image({ png })],
+    }, stdout)
+    try {
+      await settle()
+      expect(stdout.output).toContain('\u001b[3;4H\u001b_Ga=T,')
+    } finally { instance.unmount() }
+  })
+
+  test('crops clipped image source pixels instead of scaling the complete source', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const partial = await modsPane({
+      type: 'Box',
+      props: { width: 4, height: 2, overflow: 'hidden' },
+      children: [{
+        type: 'Box',
+        props: { width: 10, height: 8, flexShrink: 0 },
+        children: [image({ rgba: Buffer.alloc(100 * 80 * 4).toString('base64'), width: 100, height: 80 }, { columns: 10, rows: 8 })],
+      }],
+    }, stdout)
+    try {
+      await settle()
+      expect(stdout.output).toContain('t=d,x=0,y=0,w=40,h=20,c=4,r=2,C=1')
+    } finally { partial.unmount() }
+  })
+
+  test('does not scale clipped PNG files with unknown pixel dimensions', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const partial = await modsPane({
+      type: 'Box',
+      props: { width: 4, height: 2, overflow: 'hidden' },
+      children: [{
+        type: 'Box',
+        props: { width: 10, height: 8, flexShrink: 0 },
+        children: [image({ file: '/missing/chart.png', format: 'png' }, { columns: 10, rows: 8 })],
+      }],
+    }, stdout)
+    try {
+      await settle()
+      expect(stdout.output).not.toContain('\u001b_Ga=T,')
+    } finally { partial.unmount() }
+  })
+
+  test('does not place fully clipped images', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+
+    stdout.output = ''
+    const hidden = await modsPane({
+      type: 'Box',
+      props: { width: 6, height: 2, overflow: 'hidden' },
+      children: [{
+        type: 'Box',
+        props: { marginTop: 3 },
+        children: [image({ png }, { columns: 6, rows: 4 })],
+      }],
+    }, stdout)
+    try {
+      await settle()
+      expect(stdout.output).not.toContain('\u001b_Ga=T,')
+    } finally { hidden.unmount() }
+  })
+
+  test('deletes the old Kitty image before replacement and on unmount', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const owner = {}
+    let current = pane(image({ file: '/missing/first.png', format: 'png' }), { owner })
+    const draw = () => <ModsPane pane={current} onInteract={async () => {}} onClose={async () => {}}
+      onFocus={async () => ({})} onScroll={async () => ({})} />
+    const instance = await render(<ThemeProvider>{draw()}</ThemeProvider>, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdout.output = ''
+      current = pane(image({ file: '/missing/second.png', format: 'png' }), { owner, revision: 1 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      const deletion = stdout.output.indexOf('\u001b_Ga=d,d=i,i=')
+      const replacement = stdout.output.indexOf('\u001b_Ga=T,')
+      expect(deletion).toBeGreaterThanOrEqual(0)
+      expect(replacement).toBeGreaterThan(deletion)
+      stdout.output = ''
+      instance.unmount()
+      expect(stdout.output).toContain('\u001b_Ga=d,d=i,i=')
+    } finally { instance.unmount() }
+  })
+
+  test('delivers burst shm pane blits through the external store and Ink output', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const owner = { plugin: 'fixture' }
+    const ui = createModUi({
+      pluginOf: current => (current as { plugin: string }).plugin,
+      dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async () => image({ shm: '/initial', format: 'rgb', width: 1, height: 1 }, { columns: 1, rows: 1 }),
+      invokeDrawing: async () => undefined,
+      releaseDrawing: async () => {},
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, {
+      columns: 80,
+      rows: 30,
+      isFullscreen: false,
+      composerEmpty: true,
+      hasDialog: false,
+      keyboardOwned: false,
+    })
+    await ui.commit(owner)
+
+    function Consumer() {
+      const current = useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+      return current[0]
+        ? <ModsPane pane={current[0]} onInteract={async () => {}} onClose={async () => {}}
+          onFocus={async () => ({})} onScroll={async () => ({})} />
+        : null
+    }
+
+    const instance = await render(<ThemeProvider><Consumer /></ThemeProvider>, {
+      stdout: stdout as never,
+      stdin: new Input() as never,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      stdout.output = ''
+      const first = ui.blit(owner, {
+        requestId: 'pane', key: 'preview',
+        source: { shm: '/frame-1', format: 'rgb', width: 1, height: 1 },
+      })
+      const second = ui.blit(owner, {
+        requestId: 'pane', key: 'preview',
+        source: { shm: '/frame-2', format: 'rgb', width: 1, height: 1 },
+      })
+      await Promise.all([first, second])
+      await settle()
+      expect(stdout.output).toContain(Buffer.from('/frame-1').toString('base64'))
+      expect(stdout.output).toContain(Buffer.from('/frame-2').toString('base64'))
+    } finally {
+      instance.unmount()
+      await ui.dispose()
+    }
+  })
+
+  test('keeps a mounted terminal image in the frame when only a sibling is dirty', () => {
+    const stylePool = new StylePool()
+    const charPool = new CharPool()
+    const hyperlinkPool = new HyperlinkPool()
+    const root = createNode('ink-root')
+    const imageNode = createNode('ink-box')
+    const sibling = createNode('ink-box')
+    root.yogaNode?.setWidth(8)
+    imageNode.yogaNode?.setWidth(4)
+    imageNode.yogaNode?.setHeight(2)
+    sibling.yogaNode?.setWidth(4)
+    sibling.yogaNode?.setHeight(1)
+    imageNode.terminalImage = {
+      id: 77,
+      identity: 'stable',
+      sequences: () => [],
+    }
+    appendChildNode(root, imageNode)
+    appendChildNode(root, sibling)
+    root.yogaNode?.calculateLayout(8)
+
+    const empty = (): Frame => ({
+      screen: createScreen(8, 3, stylePool, charPool, hyperlinkPool),
+      viewport: { width: 8, height: 30 },
+      cursor: { x: 0, y: 0, visible: true },
+    })
+    const renderFrame = createRenderer(root, stylePool)
+    const first = renderFrame({
+      frontFrame: empty(),
+      backFrame: empty(),
+      isTTY: true,
+      terminalWidth: 8,
+      terminalRows: 30,
+      altScreen: false,
+      prevFrameContaminated: false,
+    })
+    expect(first.terminalImages?.map(entry => entry.id)).toEqual([77])
+
+    markDirty(sibling)
+    root.yogaNode?.calculateLayout(8)
+    const second = renderFrame({
+      frontFrame: first,
+      backFrame: empty(),
+      isTTY: true,
+      terminalWidth: 8,
+      terminalRows: 30,
+      altScreen: false,
+      prevFrameContaminated: false,
+    })
+    expect(imageNode.dirty).toBeFalse()
+    expect(second.terminalImages?.map(entry => entry.id)).toEqual([77])
+  })
+
+  test('chunks direct payloads at no more than 4096 base64 characters', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+    process.env.TERM_PROGRAM = 'kitty'
+    const stdout = new Output()
+    stdout.isTTY = true
+    const rgba = Buffer.alloc(32 * 32 * 4, 7).toString('base64')
+    const instance = await modsPane(image({ rgba, width: 32, height: 32 }), stdout)
+    try {
+      await settle()
+      const payloads = stdout.output.split('\u001b_G').slice(1)
+        .filter(sequence => sequence.startsWith('a=T,') || sequence.startsWith('m='))
+        .map(sequence => sequence.slice(sequence.indexOf(';') + 1, sequence.indexOf('\u001b\\')))
+      expect(payloads.length).toBeGreaterThan(1)
+      expect(payloads.every(payload => payload.length <= 4096)).toBe(true)
+      expect(payloads.join('')).toBe(rgba)
+    } finally { instance.unmount() }
+  })
+})
+
+describe('ModsPane Client consumer', () => {
+  function clientNode(
+    props: Record<string, unknown> = {},
+    plugin = 'fixture',
+  ): Record<string, unknown> {
+    return {
+      type: 'Client',
+      props: { key: 'chart', module: './chart.tsx', ...props },
+      group: { plugin },
+    }
+  }
+
+  function clientHost(options: {
+    mount?: (pane: ModUiPane, node: unknown, commit: (tree: unknown) => void) => void
+  } = {}): {
+    clients: ModClients
+    calls: {
+      mounts: { pane: ModUiPane; node: unknown; commit: (tree: unknown) => void }[]
+      updates: { pane: ModUiPane; node: unknown }[]
+      resizes: [number, number][]
+      pointers: unknown[]
+      keys: unknown[]
+      presses: unknown[][]
+      disposes: number
+    }
+  } {
+    const calls = {
+      mounts: [] as { pane: ModUiPane; node: unknown; commit: (tree: unknown) => void }[],
+      updates: [] as { pane: ModUiPane; node: unknown }[],
+      resizes: [] as [number, number][],
+      pointers: [] as unknown[],
+      keys: [] as unknown[],
+      presses: [] as unknown[][],
+      disposes: 0,
+    }
+    const clients: ModClients = {
+      reconcile() {},
+      mount(current, node, commit) {
+        calls.mounts.push({ pane: current, node, commit })
+        options.mount?.(current, node, commit)
+        const handle: ModClientHandle = {
+          ready: Promise.resolve(),
+          async update(nextPane, nextNode) { calls.updates.push({ pane: nextPane, node: nextNode }) },
+          async resize(columns, rows) { calls.resizes.push([columns, rows]) },
+          async pointer(event) { calls.pointers.push(event) },
+          async key(event) { calls.keys.push(event) },
+          async press(...args) { calls.presses.push(args); return undefined },
+          async dispose() { calls.disposes++ },
+        }
+        return handle
+      },
+    }
+    return { clients, calls }
+  }
+
+  function paneWithClients(tree: unknown, clients: ModClients, changes: Partial<ModUiPane> = {}): ModUiPane {
+    return Object.assign(pane(tree, changes), { clients })
+  }
+
+  test('validates a strict Client leaf with bounded plain JSON props and layout', () => {
+    expect(() => validateModRenderTree(clientNode({
+      props: { nested: [null, true, 3, 'ok', { value: 'plain' }] },
+      width: '50%', height: 4, flexGrow: 1,
+    }))).not.toThrow()
+    for (const value of [
+      { ...clientNode(), children: [] },
+      { ...clientNode(), press: { plugin: 'fixture', handle: 1 } },
+      clientNode({ extra: true }),
+      clientNode({ key: '' }),
+      clientNode({ module: '' }),
+      clientNode({ width: -1 }),
+      clientNode({ height: 'wide' }),
+      clientNode({ flexGrow: Number.POSITIVE_INFINITY }),
+      clientNode({ props: { bad: undefined } }),
+      clientNode({ props: new Date() }),
+      clientNode({ props: 'x'.repeat(1_000_001) }),
+    ]) expect(() => validateModRenderTree(value)).toThrow()
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    expect(() => validateModRenderTree(clientNode({ props: cyclic }))).toThrow(/plain JSON/i)
+    expect(() => validateModRenderTree({ type: 'Box', children: [clientNode(), clientNode()] })).toThrow(/unique/i)
+  })
+
+  test('mounts, updates and disposes a keyed Client while its committed child changes', async () => {
+    const stdout = new Output()
+    const host = clientHost({ mount: (_pane, _node, commit) => {
+      commit({ type: 'Text', children: ['first client frame'] })
+    } })
+    const owner = {}
+    let current = paneWithClients(clientNode({ props: { value: 1 } }), host.clients, { owner })
+    const draw = () => <ModsPane pane={current}
+      onInteract={async () => { throw new Error('Client callbacks must not use pane drawing') }}
+      onClose={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})} />
+    const instance = await render(draw(), {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('first client frame')
+      expect(host.calls.mounts).toHaveLength(1)
+      host.calls.mounts[0]!.commit({ type: 'Text', children: ['second client frame'] })
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('second client frame')
+
+      current = paneWithClients(clientNode({ props: { value: 2 } }), host.clients, { owner, revision: 1 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(host.calls.mounts).toHaveLength(1)
+      expect(host.calls.updates).toHaveLength(1)
+      expect(host.calls.updates[0]!.node).toMatchObject({ props: { props: { value: 2 } } })
+
+      current = paneWithClients(clientNode({ module: './other.tsx' }), host.clients, { owner, revision: 2 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(host.calls.mounts).toHaveLength(2)
+      expect(host.calls.disposes).toBe(1)
+    } finally {
+      instance.unmount()
+      await settle()
+    }
+    expect(host.calls.disposes).toBe(2)
+  })
+
+  test('reports one host-owned ready rejection', async () => {
+    const stdout = new Output()
+    const errors: unknown[] = []
+    const failure = new Error('Client module failed')
+    const clients: ModClients = {
+      reconcile() {},
+      mount(_pane, _node, _commit, onError) {
+        const ready = Promise.reject(failure)
+        void ready.catch(error => onError?.(error))
+        return {
+          ready,
+          async update() {}, async resize() {}, async pointer() {}, async key() {},
+          async press() {}, async dispose() {},
+        }
+      },
+    }
+    const instance = await render(<ModsPane pane={paneWithClients(clientNode(), clients)}
+      onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})}
+      onScroll={async () => ({})} onError={error => errors.push(error)} />, {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(errors).toEqual([failure])
+    } finally { instance.unmount() }
+  })
+
+  test('keeps sibling Client instances by plugin, key and module when keyed siblings move', async () => {
+    const stdout = new Output()
+    const host = clientHost({ mount: (_pane, raw, commit) => {
+      const node = raw as { props: { key: string } }
+      commit({ type: 'Text', children: [`frame ${node.props.key}`] })
+    } })
+    const owner = {}
+    const tree = (keys: string[]) => ({
+      type: 'Box', props: { flexDirection: 'column' },
+      children: keys.map(key => clientNode({ key })),
+    })
+    let current = paneWithClients(tree(['a', 'b']), host.clients, { owner })
+    const draw = () => <ModsPane pane={current} onInteract={async () => {}}
+      onClose={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})} />
+    const instance = await render(draw(), {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      current = paneWithClients(tree(['b', 'a']), host.clients, { owner, revision: 1 })
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(host.calls.mounts).toHaveLength(2)
+      expect(host.calls.disposes).toBe(0)
+      expect(host.calls.updates).toHaveLength(2)
+    } finally { instance.unmount() }
+  })
+
+  test('routes real Client layout, raw pointer focus, keys and local controls through the mounted handle', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const errors: unknown[] = []
+    const host = clientHost({ mount: (_pane, _node, commit) => {
+      commit({
+        type: 'Box', props: { flexDirection: 'column' }, children: [
+          { type: 'Text', children: ['client canvas'] },
+          { type: 'Button', props: { key: 'client-button', label: 'Run' }, press: { plugin: 'fixture', handle: 41 } },
+          { type: 'Input', props: { key: 'client-input', placeholder: 'type' }, press: { plugin: 'fixture', handle: 42 } },
+          { type: 'Select', props: { key: 'client-select', options: [{ value: 'one' }, { value: 'two' }] }, press: { plugin: 'fixture', handle: 43 } },
+        ],
+      })
+    } })
+    const current = paneWithClients(clientNode({ width: 24, height: 7 }), host.clients, { focusedElement: 'chart' })
+    const instance = await render(<><EnableInput /><ModsPane pane={current}
+      onInteract={async () => { throw new Error('Client callbacks must not use pane drawing') }}
+      onClose={async () => {}} onFocus={async (_pane, element) => ({ focused: true, element })}
+      onScroll={async () => ({})} onError={error => errors.push(error)} /></>, {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(host.calls.resizes).toContainEqual([24, 7])
+      const canvas = renderedElement(stdout, 'client canvas', 'ink-text')
+      const rect = nodeCache.get(canvas)!
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      ink.setAltScreenActive(true, true)
+      stdin.push(`\u001b[<0;${rect.x + 1};${rect.y + 1}M`)
+      await settle()
+      expect(host.calls.pointers).toEqual([{ type: 'down', x: 0, y: 0, button: 'left' }])
+      stdin.push(`\u001b[<0;${rect.x + 1};${rect.y + 1}m`)
+      await settle()
+      expect(host.calls.pointers).toEqual([{ type: 'down', x: 0, y: 0, button: 'left' }, { type: 'up', x: 0, y: 0, button: 'left' }])
+      expect(getFocusManager(canvas).activeElement).toBe(canvas.parentNode!.parentNode!)
+      stdin.push('x')
+      await settle()
+      expect(host.calls.keys).toEqual([{ key: 'x' }])
+      stdin.push('\u001b')
+      await settle()
+      expect(host.calls.keys).toHaveLength(1)
+
+      const button = renderedElement(stdout, '[ Run ]', 'ink-text').parentNode!
+      const pointerCount = host.calls.pointers.length
+      const keyCount = host.calls.keys.length
+      const buttonRect = nodeCache.get(button)!
+      stdin.push(`\u001b[<0;${buttonRect.x + 1};${buttonRect.y + 1}M`)
+      stdin.push(`\u001b[<0;${buttonRect.x + 1};${buttonRect.y + 1}m`)
+      await settle()
+      expect(host.calls.pointers).toHaveLength(pointerCount)
+      stdin.push('z')
+      await settle()
+      expect(host.calls.keys).toHaveLength(keyCount)
+      const input = renderedElement(stdout, 'type', 'ink-text').parentNode!
+      getFocusManager(input).focus(input)
+      stdin.push('a\r')
+      await settle()
+      const select = renderedElement(stdout, 'one ↑↓', 'ink-text').parentNode!
+      getFocusManager(select).focus(select)
+      stdin.push('\u001b[B\r')
+      await settle()
+      expect(host.calls.presses).toEqual([
+        [{ plugin: 'fixture', handle: 41 }, 'press', 'client-button'],
+        [{ plugin: 'fixture', handle: 42 }, 'input.change', 'client-input', 'a'],
+        [{ plugin: 'fixture', handle: 42 }, 'input.submit', 'client-input', 'a'],
+        [{ plugin: 'fixture', handle: 43 }, 'select', 'client-select', 'two'],
+      ])
+      expect(errors).toEqual([])
+    } finally { instance.unmount() }
+  })
+
+  test('captures real pointer drags past Client edges until release and clears capture on unmount', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const host = clientHost({ mount: (_pane, _node, commit) => {
+      commit({ type: 'Text', children: ['capture canvas'] })
+    } })
+    const other = clientHost({ mount: (_pane, _node, commit) => {
+      commit({ type: 'Text', children: ['other canvas'] })
+    } })
+    const first = paneWithClients(clientNode({ width: 16, height: 2 }), host.clients)
+    const second = paneWithClients(clientNode({ key: 'other', width: 16, height: 2 }), other.clients, { placement: 'dock' })
+    const scrolls: number[] = []
+    const draw = (showFirst = true) => <><EnableInput />
+      {showFirst && <ModsPane pane={first} onInteract={async () => {}} onClose={async () => {}}
+        onFocus={async (_pane, element) => ({ focused: true, element })}
+        onScroll={async (_pane, by) => { scrolls.push(by) }} />}
+      <ModsPane pane={second} onInteract={async () => {}} onClose={async () => {}}
+        onFocus={async (_pane, element) => ({ focused: true, element })}
+        onScroll={async (_pane, by) => { scrolls.push(by) }} />
+    </>
+    const instance = await render(draw(), {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      ink.setAltScreenActive(true, true)
+      const a = nodeCache.get(renderedElement(stdout, 'capture canvas', 'ink-text'))!
+      const b = nodeCache.get(renderedElement(stdout, 'other canvas', 'ink-text'))!
+      stdin.push(`\u001b[<2;${a.x + 1};${a.y + 1}M`)
+      stdin.push(`\u001b[<34;${b.x + 1};${b.y + 1}M`)
+      stdin.push(`\u001b[<65;${b.x + 1};${b.y + 1}M`)
+      await settle()
+      expect(host.calls.pointers).toEqual([
+        { type: 'down', x: 0, y: 0, button: 'right' },
+        { type: 'leave', x: 0, y: 0 },
+        { type: 'move', x: b.x - a.x, y: b.y - a.y, button: 'right' },
+      ])
+      expect(other.calls.pointers).toEqual([])
+      expect(scrolls).toEqual([])
+      stdin.push(`\u001b[<2;${b.x + 1};${b.y + 1}m`)
+      await settle()
+      expect(host.calls.pointers.at(-1)).toEqual({ type: 'up', x: b.x - a.x, y: b.y - a.y, button: 'right' })
+      stdin.push(`\u001b[<1;${a.x + 1};${a.y + 1}M`)
+      await settle()
+      const beforeUnmount = host.calls.pointers.length
+      instance.rerender(<ThemeProvider>{draw(false)}</ThemeProvider>)
+      await settle()
+      const remaining = nodeCache.get(renderedElement(stdout, 'other canvas', 'ink-text'))!
+      stdin.push(`\u001b[<0;${remaining.x + 1};${remaining.y + 1}M`)
+      stdin.push(`\u001b[<0;${remaining.x + 1};${remaining.y + 1}m`)
+      await settle()
+      expect(host.calls.disposes).toBe(1)
+      expect(host.calls.pointers).toHaveLength(beforeUnmount)
+      expect(other.calls.pointers).toEqual([
+        { type: 'down', x: 0, y: 0, button: 'left' },
+        { type: 'up', x: 0, y: 0, button: 'left' },
+      ])
+    } finally { instance.unmount() }
+  })
+
+  test('Client capture releases on terminal blur without synthesizing an up event', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const host = clientHost({ mount: (_pane,_node,commit) => commit({type:'Text',children:['blur canvas']}) })
+    const scrolls: number[] = []
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={paneWithClients(clientNode({width:16,height:2}),host.clients)}
+      onInteract={async()=>{}} onClose={async()=>{}} onFocus={async()=>({})}
+      onScroll={async(_pane,by)=>{scrolls.push(by)}} /></>, {
+      stdout:stdout as never,stdin:stdin as never,patchConsole:false,exitOnCtrlC:false,
+    })
+    try {
+      await settle()
+      const rect=nodeCache.get(renderedElement(stdout,'blur canvas','ink-text'))!
+      stdin.push(`\u001b[<0;${rect.x+1};${rect.y+1}M`)
+      stdin.push('\u001b[O')
+      stdin.push(`\u001b[<65;${rect.x+1};${rect.y+1}M`)
+      await settle()
+      expect(host.calls.pointers).toEqual([{type:'down',x:0,y:0,button:'left'}])
+      expect(scrolls).toEqual([1])
+    } finally {instance.unmount()}
+  })
+
+  test('reports real Client hover boundaries and only present pointer modifiers', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const host = clientHost({ mount: (_pane, _node, commit) => {
+      commit({ type: 'Text', children: ['hover canvas'] })
+    } })
+    const current = paneWithClients(clientNode({ width: 16, height: 3 }), host.clients)
+    const instance = await render(<><EnableInput /><ModsPane pane={current}
+      onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})}
+      onScroll={async () => ({})} /></>, {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      const rect = nodeCache.get(renderedElement(stdout, 'hover canvas', 'ink-text'))!
+      stdin.push(`\u001b[<35;${rect.x + 1};${rect.y + 1}M`)
+      stdin.push(`\u001b[<63;${rect.x + 3};${rect.y + 2}M`)
+      stdin.push(`\u001b[<35;${rect.x + 25};${rect.y + 2}M`)
+      await settle()
+      expect(host.calls.pointers).toEqual([
+        { type: 'enter', x: 0, y: 0 },
+        { type: 'move', x: 0, y: 0 },
+        { type: 'move', x: 2, y: 1, shift: true, alt: true, ctrl: true },
+        { type: 'leave', x: 2, y: 1 },
+      ])
+    } finally { instance.unmount() }
+  })
+
+  test('Client hover stays inside its region when the pointer crosses a local control', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const host = clientHost({ mount: (_pane, _node, commit) => {
+      commit({ type: 'Box', props: { flexDirection: 'column' }, children: [
+        { type: 'Text', children: ['region canvas'] },
+        { type: 'Button', props: { key: 'local', label: 'Local' }, press: { plugin: 'fixture', handle: 41 } },
+      ] })
+    } })
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={paneWithClients(clientNode({ width: 16, height: 3 }), host.clients)}
+      onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})}
+      onScroll={async () => ({})} /></>, {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      const canvas = nodeCache.get(renderedElement(stdout, 'region canvas', 'ink-text'))!
+      const button = nodeCache.get(renderedElement(stdout, '[ Local ]', 'ink-text'))!
+      stdin.push(`\u001b[<35;${canvas.x + 1};${canvas.y + 1}M`)
+      stdin.push(`\u001b[<35;${button.x + 1};${button.y + 1}M`)
+      stdin.push(`\u001b[<35;${canvas.x + 25};${canvas.y + 1}M`)
+      await settle()
+      expect(host.calls.pointers).toEqual([
+        { type: 'enter', x: 0, y: 0 },
+        { type: 'move', x: 0, y: 0 },
+        { type: 'move', x: button.x - canvas.x, y: button.y - canvas.y },
+        { type: 'leave', x: button.x - canvas.x, y: button.y - canvas.y },
+      ])
+    } finally { instance.unmount() }
+  })
+
+  test('real stdin pointer and key reach the production Client Worker and ui.message reply reaches Ink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-client-input-'))
+    const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR']
+    const savedEnv = envKeys.map(key => process.env[key])
+    for (const key of envKeys) process.env[key] = root
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event), services: {
+      uiPresentation: () => ({ columns: 160, rows: 40, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false }),
+    } })
+    let instance: Awaited<ReturnType<typeof render>> | undefined
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('session.start',async($,e,next)=>{await $.ui.open({id:'input',focus:true});return next(e)});
+        on('ui.render',($,e)=>{const {Box,Button,Client}=$.ui.resolve(e);return Box({children:[
+          Client({key:'surface',module:'./surface.ts',width:24,height:3}),
+          Button({key:'after',label:'After',onPress:()=>{}})
+        ]})});
+        on('ui.message',($,e)=>({props:'reply:'+e.data}));
+      }`)
+      await writeFile(join(root, 'surface.ts'), `export default function Surface(props,s) {
+        if(s.state===undefined){
+          s.setState(0);
+          s.onPointer(e=>{if(e.type==='down'){s.setState(s.state+1);s.post(e.type+':'+e.x+':'+e.y)}});
+          s.onKey(e=>s.post('key:'+e.key));
+        }
+        return s.elements.Box({flexDirection:'column',children:[
+          s.elements.Text({children:(props??'waiting')+':state='+s.state}),
+          s.elements.Input({key:'local',placeholder:'local input',onSubmit:value=>s.post('submit:'+value)})
+        ]});
+      }`)
+      await runtime.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'client-input' })
+      await runtime.reconcile([{name:'client-input',storageId:'client-input@test',pluginRoot:root,entrypoints:[entry]}])
+      const stdout = new Output()
+      const stdin = new Input()
+      const current = runtime.ui.getSnapshot()[0]!
+      expect(diagnostics).toEqual([])
+      expect(current.tree).toMatchObject({ children: [{ type: 'Client', props: { module: 'surface.ts' } }, { type: 'Button' }] })
+      const errors: unknown[] = []
+      function Consumer() {
+        const live = React.useSyncExternalStore(runtime.ui.subscribe, runtime.ui.getSnapshot)[0]!
+        return <><EnableInput /><ModsPane pane={live} canFocus
+          onInteract={async () => {}} onClose={async () => {}}
+          onFocus={async (pane, element) => runtime.ui.focus(pane.owner, {
+            requestId:pane.id, ...(element===undefined?{}:{element}), origin:{kind:'person'},
+          }, {columns:160,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false})}
+          onScroll={async () => ({})} onError={error => errors.push(error)} /></>
+      }
+      instance = await render(<Consumer />, {
+        stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+      })
+      const waitFor = async (text: string) => {
+        const deadline = Date.now() + 2_000
+        while (!stripAnsi(stdout.output).includes(text) && Date.now() < deadline) await settle()
+        expect(errors).toEqual([])
+        expect(stripAnsi(stdout.output)).toContain(text)
+      }
+      await waitFor('waiting:state=0')
+      const rect = nodeCache.get(renderedElement(stdout, 'waiting:state=0', 'ink-text'))!
+      stdin.push(`\u001b[<0;${rect.x + 2};${rect.y + 1}M`)
+      stdin.push(`\u001b[<0;${rect.x + 2};${rect.y + 1}m`)
+      await waitFor('reply:down:1:0:state=1')
+      stdin.push('k')
+      await waitFor('reply:key:k:state=1')
+      stdin.push('\u001b')
+      await settle()
+      await settle()
+      const beforeEscapeKey = stdout.output.length
+      stdin.push('q')
+      await settle()
+      expect(stripAnsi(stdout.output.slice(beforeEscapeKey))).not.toContain('reply:key:q')
+      const input = renderedElement(stdout, 'local input', 'ink-text').parentNode!
+      const inputRect = nodeCache.get(input)!
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      ink.setAltScreenActive(true, true)
+      stdin.push(`\u001b[<0;${inputRect.x + 1};${inputRect.y + 1}M`)
+      stdin.push(`\u001b[<0;${inputRect.x + 1};${inputRect.y + 1}m`)
+      await settle()
+      expect(runtime.ui.getSnapshot()[0]).toMatchObject({focused:true,focusedElement:'surface'})
+      expect(getFocusManager(input).activeElement === input).toBe(true)
+      stdin.push('abc\r')
+      await waitFor('reply:submit:abc:state=1')
+      stdin.push('\t')
+      await settle()
+      const after = renderedElement(stdout, '[ After ]', 'ink-text').parentNode!
+      expect(getFocusManager(after).activeElement === after).toBe(true)
+      expect(runtime.ui.getSnapshot()[0]).toMatchObject({ focused: true, focusedElement: 'after' })
+      stdin.push('\u001b[Z')
+      await settle()
+      expect(getFocusManager(input).activeElement === input).toBe(true)
+      expect(runtime.ui.getSnapshot()[0]).toMatchObject({ focused: true, focusedElement: 'surface' })
+      expect(errors).toEqual([])
+    } finally {
+      instance?.unmount()
+      instance?.cleanup()
+      await runtime.dispose()
+      envKeys.forEach((key, i) => { if (savedEnv[i] === undefined) delete process.env[key]; else process.env[key] = savedEnv[i] })
+      await rm(root, {recursive:true,force:true})
+    }
+  })
+
+  test('removes a stopped Client frame and input handlers after a host failure', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const errors: unknown[] = []
+    const host = clientHost({ mount: (_pane, _node, commit) => {
+      commit({ type: 'Text', children: ['failing canvas'] })
+    } })
+    let report: ((error: unknown) => void) | undefined
+    const clients: ModClients = {
+      reconcile: host.clients.reconcile,
+      mount(pane, node, commit, onError) {
+        report = onError
+        return host.clients.mount(pane, node, commit, onError)
+      },
+    }
+    const current = paneWithClients(clientNode({width:20,height:2}), clients)
+    const instance = await render(<><EnableInput /><ModsPane pane={current}
+      onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})}
+      onScroll={async () => ({})} onError={error => errors.push(error)} /></>, {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      const rect = nodeCache.get(renderedElement(stdout, 'failing canvas', 'ink-text'))!
+      stdin.push(`\u001b[<0;${rect.x + 1};${rect.y + 1}M`)
+      await settle()
+      report!(new Error('Client render failed'))
+      await settle()
+      expect(elements(stdout, true).some(item => item.text === 'failing canvas')).toBe(false)
+      const count = host.calls.pointers.length
+      stdin.push(`\u001b[<32;${rect.x + 2};${rect.y + 1}M`)
+      stdin.push('k')
+      await settle()
+      expect(host.calls.pointers).toHaveLength(count)
+      expect(host.calls.keys).toEqual([])
+      expect(errors.map(String)).toEqual(['Error: Client render failed'])
+    } finally { instance.unmount() }
+  })
+
+  test('reports a synchronous Client mount rejection without breaking the pane', async () => {
+    const stdout = new Output()
+    const errors: unknown[] = []
+    const clients: ModClients = {
+      reconcile() {},
+      mount() { throw new Error('Client drawing is stale') },
+    }
+    const instance = await render(<ModsPane pane={paneWithClients(clientNode(), clients)}
+      onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})}
+      onScroll={async () => ({})} onError={error => errors.push(error)} />, {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(errors.map(String)).toEqual(['Error: Client drawing is stale'])
+      expect(stripAnsi(stdout.output)).not.toContain('Client')
+    } finally { instance.unmount() }
+  })
+
+  test('reports a Client without a host instead of drawing an empty placeholder', async () => {
+    const stdout = new Output()
+    const errors: unknown[] = []
+    const instance = await render(<ModsPane pane={pane(clientNode())}
+      onInteract={async () => {}} onClose={async () => {}} onFocus={async () => ({})}
+      onScroll={async () => ({})} onError={error => errors.push(error)} />, {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(errors).toHaveLength(1)
+      expect(String(errors[0])).toMatch(/Client.*host|clients/i)
+      expect(stripAnsi(stdout.output)).not.toContain('Client')
+    } finally { instance.unmount() }
+  })
+})
+
 describe('ModsPane terminal hover', () => {
+  test('accepts official Box hover offsets and validates integer values', () => {
+    for (const edge of ['top', 'left', 'right', 'bottom']) {
+      expect(validateModRenderTree({ type: 'Box', props: { key: 'row' }, children: [
+        { type: 'Box', props: { position: 'absolute' }, hover: { [edge]: -1 }, children: ['CARD'] },
+      ] })).toBeDefined()
+      expect(() => validateModRenderTree({ type: 'Box', props: { [edge]: 1.5 } })).toThrow(/integer/)
+      expect(() => validateModRenderTree({ type: 'Box', props: {}, hover: { [edge]: 1.5 } })).toThrow(/integer/)
+    }
+  })
+
+  test('accepts language and startLine on official Code diff elements', () => {
+    expect(validateModRenderTree({
+      type: 'Code',
+      props: {
+        source: '@@ -1 +1 @@\n-old\n+new',
+        format: 'diff',
+        language: 'typescript',
+        startLine: 12,
+      },
+    })).toBeDefined()
+  })
+
+  test('Box offsets anchor, stretch and clip real absolute children to the pane', async () => {
+    const stdout = new Output()
+    const tree = { type: 'Box', props: { width: 12, height: 4 }, children: [
+      { type: 'Box', props: { position: 'absolute', top: -1, left: -2 }, children: ['hidden\n012345'] },
+      { type: 'Box', props: { position: 'absolute', right: 1, bottom: 0, width: 3, height: 1 }, children: ['END'] },
+      { type: 'Box', props: { position: 'absolute', top: 1, bottom: 1, left: 2, right: 2 }, children: ['span'] },
+    ] }
+    const instance = await modsPane(tree, stdout)
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).not.toContain('hidden')
+      expect(stripAnsi(stdout.output)).toContain('23span')
+      expect(nodeCache.get(renderedElement(stdout, 'END', 'ink-text'))).toMatchObject({ x: 8, y: 3 })
+      const span = renderedElement(stdout, 'span', 'ink-text').parentNode!
+      expect(nodeCache.get(span)).toMatchObject({ x: 2, y: 1, width: 8, height: 2 })
+    } finally { instance.unmount() }
+  })
+
+  test('Box position paints absolute children over earlier content without moving flow siblings', async () => {
+    const stdout = new Output()
+    const tree = { type: 'Box', props: { flexDirection: 'column', width: 16, height: 4, position: 'relative' }, children: [
+      { type: 'Text', children: ['abcdefghijklmnop'] },
+      { type: 'Text', children: ['following row'] },
+      { type: 'Box', props: { position: 'absolute', top: 0, left: 3, width: 4, height: 1 }, children: ['CARD'] },
+    ] }
+    expect(() => validateModRenderTree(tree)).not.toThrow()
+    const instance = await modsPane(tree, stdout)
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('abcCARDhijklmnop\nfollowing row')
+      expect(nodeCache.get(renderedElement(stdout, 'CARD', 'ink-text'))).toMatchObject({ x: 3, y: 0 })
+      expect(nodeCache.get(renderedElement(stdout, 'following row', 'ink-text'))).toMatchObject({ y: 1 })
+    } finally { instance.unmount() }
+  })
+
+  test('Box scoped display reveal paints real children and releases heat outside the group', async () => {
+    const stdout = new Output()
+    const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [
+      { type: 'Text', children: ['trigger'], hover: { scope: 'card', bold: true }, group: { plugin: 'fixture' } },
+      { type: 'Box', props: { display: 'none' }, hover: { scope: 'card', display: 'flex' }, group: { plugin: 'fixture' }, children: ['revealed content'] },
+      { type: 'Box', props: { display: 'none' }, hover: { scope: 'card', display: 'flex' }, group: { plugin: 'other' }, children: ['other plugin content'] },
+    ] }
+    expect(() => validateModRenderTree(tree)).not.toThrow()
+    const instance = await modsPane(tree, stdout)
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).not.toContain('revealed content')
+      stdout.output = ''
+      moveMouseTo(stdout, renderedElement(stdout, 'trigger', 'ink-text'))
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('revealed content')
+      expect(stripAnsi(stdout.output)).not.toContain('other plugin content')
+      moveMouseTo(stdout, renderedElement(stdout, 'revealed content', 'ink-text'))
+      await settle()
+      expect(renderedElement(stdout, 'trigger', 'ink-text').textStyles?.bold).toBe(true)
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      ink.dispatchHover(-1, -1)
+      await settle()
+      expect(domElement(stdout, 'revealed content', 'ink-box').style.display).toBe('none')
+      expect(renderedElement(stdout, 'trigger', 'ink-text').textStyles?.bold).not.toBe(true)
+    } finally { instance.unmount() }
+  })
+
   test('wraps Box string children as terminal text', async () => {
     const stdout = new Output()
     const instance = await modsPane({
@@ -378,7 +1584,7 @@ describe('ModsPane terminal hover', () => {
               ] },
               { type: 'Text', children: ['other peer'], hover: { scope: 'shared', italic: true }, group: { plugin: 'other' } },
             ],
-          }, { id: 'peers' })}
+          }, { id: 'peers', placement: 'dock' })}
           onInteract={async () => {}}
           onClose={async () => {}}
           onFocus={async () => ({})}
@@ -813,7 +2019,120 @@ const fileButton = (key: string, action?: string) => ({
   press: { plugin: 'fixture', handle: 1 },
 })
 
+describe('ModsPane placement tabs', () => {
+  function PaneGroup({ initial = 'first', calls }: { initial?: string; calls: string[] }) {
+    const [shown, setShown] = React.useState(initial)
+    const owner = React.useMemo(() => ({ first: {}, second: {} }), [])
+    const draw = (id: 'first' | 'second', title: string) => Object.assign(
+      pane({ type: 'Text', children: [`${title} body`] }, {
+        id,
+        title,
+        owner: owner[id],
+        focused: shown === id,
+      }),
+      { shown: shown === id },
+    ) as ModUiPane
+    const focus = async (current: ModUiPane) => {
+      calls.push(current.id)
+      setShown(current.id)
+      return { focused: true }
+    }
+    return <>
+      <ModsPane pane={draw('first', 'First')} onFocus={focus}
+        onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}} />
+      <ModsPane pane={draw('second', 'Second')} onFocus={focus}
+        onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}} />
+    </>
+  }
+
+  test('renders one placement body, omits single-pane titles, and switches tabs by real click', async () => {
+    const singleOutput = new Output()
+    const single = await modsPane({ type: 'Text', children: ['only body'] }, singleOutput)
+    try {
+      await settle()
+      expect(stripAnsi(singleOutput.output)).toContain('only body')
+      expect(stripAnsi(singleOutput.output)).not.toContain('Test')
+    } finally { single.unmount() }
+
+    const stdout = new Output()
+    const calls: string[] = []
+    const instance = await render(<PaneGroup calls={calls} />, {
+      stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(elements(stdout, true).some(item => item.text === 'First body')).toBe(true)
+      expect(elements(stdout, true).some(item => item.text === 'Second body')).toBe(false)
+      expect(renderedElement(stdout, ' First ', 'ink-text')).toBeDefined()
+      const second = renderedElement(stdout, ' Second ', 'ink-text')
+      const rect = nodeCache.get(second)!
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      dispatchClick(ink.rootNode, rect.x, rect.y)
+      await settle()
+      expect(calls).toEqual(['second'])
+      expect(elements(stdout, true).some(item => item.text === 'Second body')).toBe(true)
+      expect(elements(stdout, true).some(item => item.text === 'First body')).toBe(false)
+    } finally { instance.unmount() }
+  })
+
+  test('switches placement tabs through real arrow input and the host focus API', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: string[] = []
+    const instance = await render(<><EnableInput /><PaneGroup calls={calls} /></>, {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      stdin.push('\u001b[C')
+      await settle()
+      expect(calls).toEqual(['second'])
+      expect(stripAnsi(stdout.output)).toContain('Second body')
+      stdin.push('\u001b[D')
+      await settle()
+      expect(calls).toEqual(['second', 'first'])
+      expect(stripAnsi(stdout.output)).toContain('First body')
+    } finally { instance.unmount() }
+  })
+})
+
 describe('ModsPane input repair', () => {
+  test('Button hotkeys press the last visible match only while the pane owns keyboard focus', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    const calls: string[] = []
+    const button = (key: string, hotkey: string) => ({ ...fileButton(key), props: { key, label: key, hotkey } })
+    const draw = (focused = true, focusedElement = 'first') => <><EnableInput /><ModsPane canFocus
+      pane={pane({ type: 'Box', props: { flexDirection: 'column' }, children: [
+        button('first', 'w'), button('last', 'w'), button('digit', '1'),
+        { type: 'Box', props: { display: 'none' }, children: [button('hidden', 'w')] },
+        { type: 'Input', props: { key: 'input', placeholder: 'Type' }, press: { plugin: 'fixture', handle: 2 } },
+      ] }, { owner, focused, focusedElement })}
+      onInteract={async (_pane, _drawing, _callback, kind, key, value) => { calls.push(`${kind}:${key}:${value ?? ''}`) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      for (const key of ['w', 'W', '1', '\u001bw', '\u0017', '\u001b[200~w\u001b[201~']) {
+        stdin.push(key)
+        await settle()
+      }
+      expect(calls).toEqual(['press:last:', 'press:last:', 'press:digit:'])
+      instance.rerender(<ThemeProvider>{draw(true, 'input')}</ThemeProvider>)
+      await settle()
+      stdin.push('w\r')
+      await settle()
+      expect(calls.slice(3)).toEqual(['input.change:input:w', 'input.submit:input:w'])
+      instance.rerender(<ThemeProvider>{draw(false)}</ThemeProvider>)
+      await settle()
+      stdin.push('w')
+      await settle()
+      expect(calls).toHaveLength(5)
+    } finally { instance.unmount() }
+  })
+
   test('unregisters old logical keys when attached DOM rows are reused', async () => {
     const stdout = new Output()
     const stdin = new Input()
@@ -1037,7 +2356,7 @@ describe('ModsPane input repair', () => {
     const instance = await render(<Host bottom={5} />, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
     try {
       for (const bottom of [5, 12, 3, 5, 25, 3]) {
-        const bodyRows = 50 - bottom - (title ? 1 : 0)
+        const bodyRows = 50 - bottom
         instance.rerender(<ThemeProvider><Host bottom={bottom} /></ThemeProvider>)
         await settle()
         const viewport = elements(stdout, false).find(({ node }) => node.style.overflowY === 'scroll')!.node
@@ -1051,6 +2370,39 @@ describe('ModsPane input repair', () => {
         expect(ui.getSnapshot()[0]!.bodyRows).toBe(bodyRows)
       }
     } finally { instance.unmount(); await ui.release(owner) }
+  })
+
+  test('Input paints a dim placeholder and shows submitLabel only under actual focus', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: (string | undefined)[] = []
+    const instance = await render(<><EnableInput /><ModsPane pane={pane({ type: 'Box', props: { flexDirection: 'column' }, children: [
+      fileButton('first'),
+      { type: 'Input', props: { key: 'input', label: 'Reply', placeholder: 'Question', submitLabel: 'send' }, press: { plugin: 'fixture', handle: 2 } },
+    ] }, { focusedElement: 'first' })}
+      onInteract={async (_pane, _drawing, _callback, _kind, _key, value) => { calls.push(value) }}
+      onFocus={async (_pane, element) => ({ focused: true, element })} onClose={async () => {}} onScroll={async () => ({})}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('Reply: Question')
+      expect(stripAnsi(stdout.output)).not.toContain('send')
+      const placeholderColor = renderedElement(stdout, 'Question', 'ink-text').textStyles?.color
+      expect(placeholderColor).toBeDefined()
+      stdin.push('\t')
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('Reply: Question send')
+      expect(renderedElement(stdout, 'Question', 'ink-text').textStyles).toMatchObject({ color: placeholderColor, inverse: true })
+      stdin.push('answer\r')
+      await settle()
+      expect(calls).toEqual(['answer', 'answer'])
+      expect(renderedElement(stdout, 'answer', 'ink-text').textStyles?.color).not.toBe(placeholderColor)
+      stdout.output = ''
+      stdin.push('\u001b[Z')
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('Reply: answer')
+      expect(stripAnsi(stdout.output)).not.toContain('send')
+    } finally { instance.unmount() }
   })
 
   test('Select and Input chrome follows actual Tab, BackTab and mouse focus', async () => {
@@ -1252,10 +2604,12 @@ describe('ModsPane input repair', () => {
       await settle()
       requests = 0
       stdin.push('\u001b[B'.repeat(7))
-      await new Promise(resolve => setTimeout(resolve, 250))
+      let deadline = Date.now() + 2000
+      while (requests < 7 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
       expect({ selected, requests, start }).toEqual({ selected: 7, requests: 7, start: 3 })
       stdin.push('\u001b[A'.repeat(7))
-      await new Promise(resolve => setTimeout(resolve, 250))
+      deadline = Date.now() + 2000
+      while (requests < 14 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
       expect(selected).toBe(0)
       expect(requests).toBe(14)
     } finally { instance.unmount() }
@@ -1318,9 +2672,16 @@ describe('ModsPane input repair', () => {
           } else {
             for (const file of expected) {
               stdin.push(key)
-              await settle()
-              const target = renderedElement(stdout, `[ ${file} ]`, 'ink-text').parentNode!
-              expect(getFocusManager(target).activeElement).toBe(target)
+              const deadline = Date.now() + 2000
+              let target: DOMElement | undefined
+              do {
+                await new Promise(resolve => setTimeout(resolve, 5))
+                target = elements(stdout, true).find(({ node, text }) =>
+                  node.nodeName === 'ink-text' && text === `[ ${file} ]`,
+                )?.node.parentNode
+              } while ((!target || getFocusManager(target).activeElement !== target) && Date.now() < deadline)
+              expect(target).toBeDefined()
+              expect(getFocusManager(target!).activeElement === target).toBe(true)
             }
           }
           expect(requests.splice(0)).toEqual(expected)
@@ -1739,6 +3100,65 @@ describe('ModsPane input repair', () => {
     } finally { instance.unmount() }
   })
 
+  test('Button action does not take an unmodified prompt key while an unfocused pane is mounted', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: string[] = []
+    const instance = await render(<Bindings bindings={{ w: 'app:cycleDiffBase', 'ctrl+w': 'app:cycleDiffBase' }}>
+      <Box tabIndex={0} autoFocus onKeyDown={event => { calls.push(`composer:${event.text}`) }}><Text>composer</Text></Box>
+      <ModsPane canFocus pane={pane(fileButton('action', 'app:cycleDiffBase'), { focused: false })}
+        onInteract={async () => { calls.push('action') }} onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})} />
+    </Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('w\u0017')
+      await settle()
+      expect(calls).toEqual(['composer:w', 'action'])
+    } finally { instance.unmount() }
+  })
+
+  test('Button action leaves a focused Input printable key and submit to the editor', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: string[] = []
+    const instance = await render(<Bindings bindings={{ w: 'app:cycleDiffBase', enter: 'app:cycleDiffBase', 'ctrl+x b': 'app:cycleDiffBase' }}><ModsPane
+      pane={pane({ type: 'Box', children: [fileButton('action', 'app:cycleDiffBase'),
+        { type: 'Input', props: { key: 'reply' }, press: { plugin: 'fixture', handle: 2 } },
+      ] }, { focusedElement: 'reply' })}
+      onInteract={async (_pane, _drawing, _callback, kind, key, value) => { calls.push(`${kind}:${key}:${value ?? ''}`) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('w\r')
+      await settle()
+      expect(calls).toEqual(['input.change:reply:w', 'input.submit:reply:w'])
+      stdin.push('\u0018b')
+      await settle()
+      expect(calls.at(-1)).toBe('press:action:')
+    } finally { instance.unmount() }
+  })
+
+  test('Button action chooses the last visible drawing match for a rebound chord', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const calls: string[] = []
+    const instance = await render(<Bindings bindings={{ 'ctrl+x b': 'app:cycleDiffBase' }}><ModsPane canFocus
+      pane={pane({ type: 'Box', children: [
+        fileButton('first', 'app:cycleDiffBase'), fileButton('last', 'app:cycleDiffBase'),
+        { type: 'Box', props: { display: 'none' }, children: [fileButton('hidden', 'app:cycleDiffBase')] },
+      ] }, { focused: false })}
+      onInteract={async (_pane, _drawing, _callback, _kind, key) => { calls.push(key) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\u0018b')
+      await settle()
+      expect(calls).toEqual(['last'])
+    } finally { instance.unmount() }
+  })
+
   test('pane action respects rebinding and executes Enter/Space exactly once, not the focused button', async () => {
     const stdout = new Output()
     const stdin = new Input()
@@ -1759,7 +3179,7 @@ describe('ModsPane input repair', () => {
       await settle()
       stdin.push(' ')
       await settle()
-      expect(calls).toEqual(['action', 'action'])
+      expect(calls).toEqual(['duplicate', 'duplicate'])
     } finally { instance.unmount() }
   })
 
@@ -1797,7 +3217,7 @@ describe('ModsPane input repair', () => {
       await settle()
       stdin.push('b')
       await settle()
-      expect(calls).toEqual(['7:up', '7:down', '7:cycle'])
+      expect(calls).toEqual(['7:up', '7:down', '7:duplicate'])
       stdin.push('\u0018')
       await settle()
       stdin.push('\u001b')
@@ -1813,7 +3233,7 @@ describe('ModsPane input repair', () => {
       await settle()
       stdin.push('b')
       await settle()
-      expect(calls).toEqual(['7:up', '7:down', '7:cycle', '8:cycle'])
+      expect(calls).toEqual(['7:up', '7:down', '7:duplicate', '8:duplicate'])
       visible = false
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await settle()
@@ -1823,7 +3243,7 @@ describe('ModsPane input repair', () => {
       await settle()
       stdin.push('\u001b[1;5A')
       await settle()
-      expect(calls).toEqual(['7:up', '7:down', '7:cycle', '8:cycle', 'builtin'])
+      expect(calls).toEqual(['7:up', '7:down', '7:duplicate', '8:duplicate', 'builtin'])
     } finally { instance.unmount() }
   })
 
@@ -1984,7 +3404,7 @@ describe('ModsPane host layout', () => {
       for (const composerRows of [8, 25, 1]) {
         instance.rerender(<ThemeProvider><Host composerRows={composerRows} /></ThemeProvider>)
         await settle()
-        expect(ui.getSnapshot()[0]!.bodyRows).toBe(49)
+        expect(ui.getSnapshot()[0]!.bodyRows).toBe(50)
         expect(nodeCache.get(renderedElement(stdout, 'COMPOSER', 'ink-text'))!.y).toBe(50 - composerRows)
         expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(90)
       }
@@ -1993,6 +3413,53 @@ describe('ModsPane host layout', () => {
       expect(domElement(stdout, 'TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(180)
       expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(180)
       expect(elements(stdout, true).some(element => element.text === 'DIFF_BODY')).toBe(false)
+    } finally {
+      instance.unmount()
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
+  })
+
+  test('uses the requested Mods dock width while keeping the conversation valid', async () => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    const stdout = new Output()
+    stdout.columns = 180
+    stdout.rows = 30
+    stdout.isTTY = true
+    function Content({ label }: { label: string }) {
+      const { columns } = useTerminalSize()
+      return <Box width={columns}><Text>{label}:{columns}</Text></Box>
+    }
+    const draw = (dockWidth: number, withSidebar = false) => (
+      <Box width={stdout.columns} height={stdout.rows} flexDirection="column">
+        <FullscreenLayout
+          scrollable={<Content label="TRANSCRIPT" />}
+          bottom={<Content label="COMPOSER" />}
+          dockPane={<Content label="DOCK" />}
+          dockWidth={dockWidth}
+          sidebarPane={withSidebar ? <Content label="SIDEBAR" /> : undefined}
+          sidebarWidth={30}
+        />
+      </Box>
+    )
+    const instance = await render(draw(42), {
+      stdout: stdout as never,
+      stdin: new Input() as never,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      expect(nodeCache.get(renderedElement(stdout, 'TRANSCRIPT:138', 'ink-text'))).toMatchObject({ x: 0 })
+      expect(nodeCache.get(renderedElement(stdout, 'COMPOSER:138', 'ink-text'))).toMatchObject({ x: 0 })
+      expect(nodeCache.get(renderedElement(stdout, 'DOCK:42', 'ink-text'))).toMatchObject({ x: 138 })
+
+      instance.rerender(<ThemeProvider>{draw(240, true)}</ThemeProvider>)
+      await settle()
+      expect(domElement(stdout, 'TRANSCRIPT:1', 'ink-box').yogaNode!.getComputedWidth()).toBe(1)
+      expect(domElement(stdout, 'SIDEBAR:30', 'ink-box').yogaNode!.getComputedWidth()).toBe(30)
+      expect(domElement(stdout, 'DOCK:149', 'ink-box').yogaNode!.getComputedWidth()).toBe(149)
     } finally {
       instance.unmount()
       if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
@@ -2094,7 +3561,116 @@ describe('ModsPane host layout', () => {
 })
 
 describe('ModsPane Ink interaction', () => {
-  test('keeps the pane title above the scrollable body', async () => {
+  test.each([
+    { path: 'Dockerfile', source: 'FROM alpine', token: 'FROM' },
+    { path: 'script', source: '#!/usr/bin/env python\nreturn True', token: 'return' },
+    { path: 'source.ts', source: 'const result = true', token: 'const' },
+  ])('Code infers language from $path or its shebang', async ({ path, source, token }) => {
+    const level = chalk.level
+    chalk.level = 3
+    const stdout = new Output()
+    const instance = await modsPane({ type: 'Code', props: { path, source } }, stdout)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 400))
+      expect(stripAnsi(stdout.output)).toContain(source)
+      expect(elements(stdout, false).some(({ node, text }) => text === token && node.textStyles?.color !== undefined)).toBe(true)
+    } finally { instance.unmount(); chalk.level = level }
+  })
+
+  test('Code keeps multiline syntax colour across numbered source lines', async () => {
+    const level = chalk.level
+    chalk.level = 3
+    const stdout = new Output()
+    const instance = await modsPane({ type: 'Code', props: { source: '/* first\nsecond\n*/', language: 'ts', startLine: 20 } }, stdout)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 400))
+      expect(stripAnsi(stdout.output)).toContain('20 /* first\n21 second\n22 */')
+      const coloured = (text: string) => elements(stdout, false).find(({ node, text: content }) => content === text && node.textStyles?.color !== undefined)?.node.textStyles?.color
+      expect(coloured('/* first')).toBeDefined()
+      expect(coloured('second')).toEqual(coloured('/* first'))
+    } finally { instance.unmount(); chalk.level = level }
+  })
+
+  test('Code language overrides path, unknown language stays plain, and path is never displayed', async () => {
+    const level = chalk.level
+    chalk.level = 3
+    const stdout = new Output()
+    const draw = (language: string) => <ModsPane pane={pane({ type: 'Code', props: {
+      source: 'const answer = true', language, path: '/not-read/source.md',
+    } })} onInteract={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})} onClose={async () => {}} />
+    const instance = await render(draw('ts'), { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('const answer = true')
+      expect(stripAnsi(stdout.output)).not.toContain('/not-read/source.md')
+      expect(elements(stdout, false).some(({ node, text }) => text === 'const' && node.textStyles?.color !== undefined)).toBe(true)
+      instance.rerender(<ThemeProvider>{draw('not-a-language')}</ThemeProvider>)
+      await settle()
+      expect(elements(stdout, false).some(({ node }) => node.nodeName === 'ink-virtual-text' && node.textStyles?.color !== undefined)).toBe(false)
+    } finally { instance.unmount(); chalk.level = level }
+  })
+
+  test.each([false, true])('Code diff truncate-end keeps hunk numbers and markers without wrapping (highlight disabled=%s)', async disabled => {
+    const previous = process.env.CLAUDE_CODE_SYNTAX_HIGHLIGHT
+    if (disabled) process.env.CLAUDE_CODE_SYNTAX_HIGHLIGHT = '0'
+    const stdout = new Output()
+    const store = createStore(getDefaultAppState())
+    const instance = await render(<AppStoreContext.Provider value={store}><ModsPane
+      pane={pane({ type: 'Box', props: { width: 12 }, children: [{ type: 'Code', props: {
+        source: '@@ -9,2 +20,2 @@\n-abcdefghijklmno\n+ABCDEFGHIJKLMNO\n same\n', format: 'diff', wrap: 'truncate-end', startLine: 300,
+      } }] })}
+      onInteract={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})} onClose={async () => {}}
+    /></AppStoreContext.Provider>, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain('  9 -abcdef…\n 20 +ABCDEF…\n 21  same')
+      expect(stripAnsi(stdout.output)).not.toContain('300')
+    } finally {
+      instance.unmount()
+      if (previous === undefined) delete process.env.CLAUDE_CODE_SYNTAX_HIGHLIGHT
+      else process.env.CLAUDE_CODE_SYNTAX_HIGHLIGHT = previous
+    }
+  })
+
+  test.each(['wrap', 'truncate-end'] as const)('Code wrap=%s paints within nested width under the gutter', async wrap => {
+    const stdout = new Output()
+    const instance = await modsPane({ type: 'Box', props: { width: 8 }, children: [
+      { type: 'Code', props: { source: 'abcdefghij\n尾部', startLine: 9, wrap } },
+    ] }, stdout)
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain(wrap === 'wrap'
+        ? ' 9 abcde\n   fghij\n10 尾部'
+        : ' 9 abcd…\n10 尾部')
+    } finally { instance.unmount() }
+  })
+
+  test('Code without language or path stays plain with no implicit markdown or gutter', async () => {
+    const level = chalk.level
+    chalk.level = 3
+    const stdout = new Output()
+    const instance = await modsPane({ type: 'Code', props: { source: '**plain**\nlast' } }, stdout)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 400))
+      expect(stripAnsi(stdout.output)).toContain('**plain**\nlast')
+      expect(elements(stdout, false).some(({ node }) => node.nodeName === 'ink-virtual-text' && (node.textStyles?.bold || node.textStyles?.color))).toBe(false)
+    } finally { instance.unmount(); chalk.level = level }
+  })
+
+  test('Code startLine paints a dim right-aligned gutter and preserves empty source lines', async () => {
+    const stdout = new Output()
+    const instance = await modsPane({ type: 'Code', props: { source: 'alpha\n\nomega', startLine: 9 } }, stdout)
+    try {
+      await settle()
+      expect(stripAnsi(stdout.output)).toContain(' 9 alpha\n10\n11 omega')
+      const nine = renderedElement(stdout, '9', 'ink-text')
+      const eleven = renderedElement(stdout, '11', 'ink-text')
+      expect(nodeCache.get(nine)!.x + nodeCache.get(nine)!.width).toBe(nodeCache.get(eleven)!.x + nodeCache.get(eleven)!.width)
+      expect(nine.textStyles?.color).toBeDefined()
+    } finally { instance.unmount() }
+  })
+
+  test('omits the title for one pane and gives the full height to its body', async () => {
     const stdout = new Output()
     const tree = {
       type: 'Box', props: { flexDirection: 'column' }, children: [
@@ -2107,20 +3683,18 @@ describe('ModsPane Ink interaction', () => {
     const instance = await modsPane(tree, stdout)
     try {
       await settle()
-      const title = nodeCache.get(renderedElement(stdout, 'Test', 'ink-text'))
+      expect(elements(stdout, true).some(element => element.text === 'Test')).toBe(false)
       const body = nodeCache.get(renderedElement(stdout, 'PANE_BODY_COUNT_0', 'ink-text'))
       const scroller = elements(stdout, true)
         .find(element => element.node.nodeName === 'ink-box' && element.node.style.overflowY === 'scroll')
       const viewport = scroller && nodeCache.get(scroller.node)
-      assert.ok(title && body && viewport)
+      assert.ok(body && viewport)
       expect({
-        title: { y: title.y, height: title.height },
         body: body.y,
         viewport: { y: viewport.y, height: viewport.height },
       }).toEqual({
-        title: { y: 0, height: 1 },
-        body: 1,
-        viewport: { y: 1, height: 10 },
+        body: 0,
+        viewport: { y: 0, height: 10 },
       })
     } finally {
       instance.unmount()
@@ -2258,6 +3832,48 @@ describe('ModsPane Ink interaction', () => {
     }
   })
 
+  test.each([
+    { label: 'Down + Enter', chunk: '\u001b[B\r', value: 'dev' },
+    { label: 'multiple Down + Space', chunk: '\u001b[B\u001b[B ', value: 'release' },
+    { label: 'Down wraparound + Enter', chunk: '\u001b[B'.repeat(4) + '\r', value: 'dev' },
+    { label: 'Up wraparound + Space', chunk: '\u001b[A ', value: 'release' },
+    { label: 'multiple Up + Enter', chunk: '\u001b[A\u001b[A\r', value: 'dev' },
+    { label: 'mixed arrows + Space', chunk: '\u001b[B\u001b[A\u001b[A ', value: 'release' },
+    { label: 'Down + click', chunk: '\u001b[B', value: 'dev', click: true },
+  ])('Select submits the new value once for $label in one stdin chunk', async sample => {
+    const { value } = sample
+    let { chunk } = sample
+    const stdout = new Output()
+    const stdin = new Input()
+    const current = pane({
+      type: 'Select',
+      props: { key: 'base', value: 'main', options: [{ value: 'main' }, { value: 'dev' }, { value: 'release' }] },
+      press: { plugin: 'fixture', handle: 2 },
+    }, { focusedElement: 'base' })
+    const selections: unknown[][] = []
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={current}
+      onInteract={async (...args) => { selections.push(args) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const select = renderedElement(stdout, 'main ↑↓', 'ink-text').parentNode!
+      expect(getFocusManager(select).activeElement).toBe(select)
+      if ('click' in sample) {
+        const ink = instances.get(stdout as never) as unknown as InkInstance
+        ink.setAltScreenActive(true, true)
+        const rect = nodeCache.get(select)!
+        chunk += `\u001b[<0;${rect.x + 1};${rect.y + 1}M\u001b[<0;${rect.x + 1};${rect.y + 1}m`
+      }
+      stdin.push(chunk)
+      await settle()
+      expect(selections).toEqual([[current, 7, { plugin: 'fixture', handle: 2 }, 'select', 'base', value]])
+      expect(renderedElement(stdout, `${value} ↑↓`, 'ink-text').parentNode).toBe(select)
+      expect(getFocusManager(select).activeElement).toBe(select)
+    } finally { instance.unmount() }
+  })
+
   test('Select applies explicit values on each drawing without resetting picks on snapshot publishes', async () => {
     const stdout = new Output()
     const stdin = new Input()
@@ -2287,16 +3903,24 @@ describe('ModsPane Ink interaction', () => {
         await settle()
         expect(renderedElement(stdout, 'dev ↑↓', 'ink-text').parentNode).toBe(select)
       }
-      for (const nextValue of ['main', 'release', undefined]) {
+      stdin.push('\r')
+      await settle()
+      expect(selections).toEqual([{ drawing, value: 'dev' }])
+      for (const [nextValue, expected, nextPick] of [
+        ['main', 'main', 'dev'], ['release', 'release', 'main'], [undefined, 'main', 'dev'],
+      ] as const) {
         value = nextValue
         drawing++
         instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
         await settle()
-        expect(renderedElement(stdout, `${value ?? 'release'} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(renderedElement(stdout, `${expected} ↑↓`, 'ink-text').parentNode).toBe(select)
         expect(getFocusManager(select).activeElement).toBe(select)
-        stdin.push('\r')
+        const count = selections.length
+        stdin.push('\r\u001b[B\r')
         await settle()
-        expect(selections.at(-1)).toEqual({ drawing, value: value ?? 'release' })
+        expect(selections.slice(count)).toEqual([{ drawing, value: expected }, { drawing, value: nextPick }])
+        expect(renderedElement(stdout, `${nextPick} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(getFocusManager(select).activeElement).toBe(select)
       }
     } finally { instance.unmount() }
   })
@@ -2328,30 +3952,30 @@ describe('ModsPane Ink interaction', () => {
         assert.ok(instances.get(stdout as never), stripAnsi(stdout.output))
         expect(renderedElement(stdout, `${values.at(-1)} ↑↓`, 'ink-text').parentNode).toBe(select)
         expect(getFocusManager(select).activeElement).toBe(select)
-        stdin.push('\r')
+        const count = selections.length
+        stdin.push('\r\u001b[B\r\u001b[A ')
         await settle()
-        expect(selections.at(-1)).toBe(values.at(-1))
+        expect(selections.slice(count)).toEqual([values.at(-1), values[0], values.at(-1)])
+        expect(renderedElement(stdout, `${values.at(-1)} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(getFocusManager(select).activeElement).toBe(select)
       }
-      stdin.push('\u001b[B')
+      stdin.push('\u001b[B\r')
       await settle()
-      stdin.push('\r')
-      await settle()
-      expect(selections).toEqual(['dev', 'replacement', 'only', 'only'])
+      expect(selections).toEqual(['dev', 'main', 'dev', 'replacement', 'main', 'replacement', 'only', 'only', 'only', 'only'])
     } finally { instance.unmount() }
   })
 
-  test('Input applies explicit values on each drawing without resetting edits on snapshot publishes', async () => {
+  test('Input keeps cached typing across unrelated drawings and only applies a genuinely new explicit value', async () => {
     const stdout = new Output()
     const stdin = new Input()
     const owner = {}
     const interactions: { drawing: number; kind: string; value?: string }[] = []
     let drawing = 7
     let revision = 0
-    let focused = true
     let value: string | undefined = 'seed'
     const draw = () => <><EnableInput /><ModsPane
       pane={pane({ type: 'Input', props: { key: 'reply', value, placeholder: 'Empty' }, press: { plugin: 'fixture', handle: 2 } }, {
-        owner, drawing, revision, focused, focusedElement: 'reply', bodyRows: 10 + revision,
+        owner, drawing, revision, focusedElement: 'reply', bodyRows: 10 + revision,
       })}
       onInteract={async (_pane, drawing, _press, kind, _element, value) => { interactions.push({ drawing, kind, value }) }}
       onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
@@ -2360,32 +3984,86 @@ describe('ModsPane Ink interaction', () => {
     try {
       await settle()
       const input = renderedElement(stdout, 'seed', 'ink-text').parentNode!
-      stdin.push('-edited\r')
+      stdin.push('-edited')
       await settle()
-      expect(interactions.at(-1)).toEqual({ drawing: 7, kind: 'input.submit', value: 'seed-edited' })
-      for (const nextFocus of [false, true]) {
-        focused = nextFocus
-        revision++
-        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+
+      revision++
+      drawing++
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(renderedElement(stdout, 'seed-edited', 'ink-text').parentNode).toBe(input)
+      expect(getFocusManager(input).activeElement).toBe(input)
+      stdin.push('\r')
+      await settle()
+      expect(interactions.at(-1)).toEqual({ drawing, kind: 'input.submit', value: 'seed-edited' })
+
+      value = 'replacement'
+      drawing++
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(renderedElement(stdout, 'replacement', 'ink-text').parentNode).toBe(input)
+      expect(getFocusManager(input).activeElement).toBe(input)
+      stdin.push('\r')
+      await settle()
+      expect(interactions.at(-1)).toEqual({ drawing, kind: 'input.submit', value: 'replacement' })
+
+      value = undefined
+      drawing++
+      instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
+      await settle()
+      expect(renderedElement(stdout, 'Empty', 'ink-text').parentNode).toBe(input)
+      stdin.push('\r')
+      await settle()
+      expect(interactions.at(-1)).toEqual({ drawing, kind: 'input.submit', value: '' })
+    } finally { instance.unmount() }
+  })
+
+  test('Input navigation and deletion preserve complete grapheme clusters', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const interactions: { kind: string; value?: string }[] = []
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={pane({ type: 'Input', props: { key: 'reply', value: 'A👨‍👩‍👧‍👦B', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } })}
+      onInteract={async (_pane, _drawing, _press, kind, _element, value) => { interactions.push({ kind, value }) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\u001b[D\u007f\u001b[H\u001b[C\u001b[3~\r')
+      await settle()
+      expect(interactions).toEqual([
+        { kind: 'input.change', value: 'AB' },
+        { kind: 'input.change', value: 'A' },
+        { kind: 'input.submit', value: 'A' },
+      ])
+    } finally { instance.unmount() }
+  })
+
+  test('Input edits and submits at the cursor with real navigation, Home, End, Backspace and Delete events', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const interactions: { kind: string; value?: string }[] = []
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={pane({ type: 'Input', props: { key: 'reply', value: 'abcd', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } })}
+      onInteract={async (_pane, _drawing, _press, kind, _element, value) => { interactions.push({ kind, value }) }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const input = renderedElement(stdout, 'abcd', 'ink-text').parentNode!
+      expect(getFocusManager(input).activeElement).toBe(input)
+      for (const chunk of ['\u001b[D', '\u001b[D', 'X', '\u001b[H', '\u001b[3~', '\u001b[F', '\u007f', '\r']) {
+        stdin.push(chunk)
         await settle()
-        expect(renderedElement(stdout, 'seed-edited', 'ink-text').parentNode).toBe(input)
       }
-      for (const nextValue of ['seed', 'replacement', '', undefined]) {
-        value = nextValue
-        drawing++
-        instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
-        await settle()
-        const expected = value ?? '-paste'
-        expect(renderedElement(stdout, expected || 'Empty', 'ink-text').parentNode).toBe(input)
-        expect(getFocusManager(input).activeElement).toBe(input)
-        const count = interactions.length
-        stdin.push('\u001b[200~-paste\u001b[201~\r')
-        await settle()
-        expect(interactions.slice(count)).toEqual([
-          { drawing, kind: 'input.change', value: `${expected}-paste` },
-          { drawing, kind: 'input.submit', value: `${expected}-paste` },
-        ])
-      }
+      expect(interactions).toEqual([
+        { kind: 'input.change', value: 'abXcd' },
+        { kind: 'input.change', value: 'bXcd' },
+        { kind: 'input.change', value: 'bXc' },
+        { kind: 'input.submit', value: 'bXc' },
+      ])
+      expect(renderedElement(stdout, 'bXc', 'ink-text').parentNode).toBe(input)
+      expect(getFocusManager(input).activeElement).toBe(input)
     } finally { instance.unmount() }
   })
 

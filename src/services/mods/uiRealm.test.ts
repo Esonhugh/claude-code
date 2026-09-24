@@ -57,34 +57,40 @@ describe('VM-local Mods UI constructors', () => {
   test('callbacks remain private and receive their documented author arguments', async () => {
     const { run } = realm()
     const result = run(`(() => {
-      const {Button, Input, Select} = ui.resolve({surface: 'terminal', component: 'Pane'});
+      const {Button, Input, Select, Markdown} = ui.resolve({surface: 'terminal', component: 'Pane'});
       const calls = [];
       const button = Button({label:'Run', children:['Run'], onPress:(...args) => calls.push(['press', args.length])});
       const input = Input({key:'reply', onInput:(value, event) => calls.push(['input', value, event.kind]), onSubmit:(value, event) => calls.push(['submit', value, event.kind])});
       const select = Select({key:'source', options:[{label:'Current', value:'current'}], onSelect:(value, event) => calls.push(['select', value, event.value])});
+      const markdown = Markdown({key:'docs', text:'[Docs](https://example.com/)', onLinkPress:(link, event) => calls.push(['link', link.href, event.link.href])});
       const callbacks = [];
-      const tree = ui.materialize(ui.h(ui.Fragment, null, button, input, select), callback => callbacks.push(callback));
+      const tree = ui.materialize(ui.h(ui.Fragment, null, button, input, select, markdown), callback => callbacks.push(callback));
       return {button, tree, callbacks, calls};
     })()`)
     expect(result.button.press).toEqual({ plugin: 'owner', handle: 0 })
     expect(result.tree.children[0].press).toEqual({ plugin: 'owner', handle: 1 })
     expect(result.tree.children[1].press).toEqual({ plugin: 'owner', handle: 2 })
     expect(result.tree.children[2].press).toEqual({ plugin: 'owner', handle: 3 })
+    expect(result.tree.children[3].press).toEqual({ plugin: 'owner', handle: 4 })
     expect(result.tree.children.map((node: { group?: unknown }) => node.group)).toEqual([
+      { plugin: 'owner' },
       { plugin: 'owner' },
       { plugin: 'owner' },
       { plugin: 'owner' },
     ])
     expect(JSON.stringify(result.tree)).not.toContain('onPress')
+    expect(JSON.stringify(result.tree)).not.toContain('onLinkPress')
     await result.callbacks[0]({ element: 'Run' })
     await result.callbacks[1]({ kind: 'change', value: 'draft' })
     await result.callbacks[1]({ kind: 'submit', value: 'sent' })
     await result.callbacks[2]({ value: 'current' })
+    await result.callbacks[3]({ link: { href: 'https://example.com/' } })
     expect(result.calls).toEqual([
       ['press', 0],
       ['input', 'draft', 'change'],
       ['submit', 'sent', 'submit'],
       ['select', 'current', 'current'],
+      ['link', 'https://example.com/', 'https://example.com/'],
     ])
   })
 
@@ -98,6 +104,46 @@ describe('VM-local Mods UI constructors', () => {
       const forwarded=ui.materialize(tree, () => ++count);
       return {count, same:forwarded===tree, handles:tree.children.map(n=>n.press.handle)};
     })()`)).toEqual({ count: 1, same: true, handles: [1, 1] })
+  })
+
+  test('Svg is remote-only, exact-prop leaf data with bounded safe markup and dimensions', () => {
+    const { run } = realm()
+    expect(run(`(() => {
+      const surfaces=['terminal','desktop','mobile','vscode'];
+      return surfaces.map(surface => {
+        const elements=ui.resolve({surface,component:'Pane'});
+        return [surface, Object.keys(elements).includes('Svg'), elements.Svg?.({
+          source:'<svg xmlns="http://www.w3.org/2000/svg"><title>safe</title></svg>',
+          alt:'safe image',width:12.5,height:8,isInteractive:true,
+        })];
+      });
+    })()`)).toEqual([
+      ['terminal', false, undefined],
+      ...['desktop', 'mobile', 'vscode'].map(surface => [surface, true, {
+        type:'Svg', props:{
+          source:'<svg xmlns="http://www.w3.org/2000/svg"><title>safe</title></svg>',
+          alt:'safe image', width:12.5, height:8, isInteractive:true,
+        },
+      }]),
+    ])
+    for (const source of [
+      `'not svg'`,
+      `'<svg></svg>tail'`,
+      `'<svg><script>alert(1)</script></svg>'`,
+      `'<svg><path onclick="alert(1)"/></svg>'`,
+      `'<svg><a href="javascript:alert(1)"></a></svg>'`,
+      `'<svg><foreignObject><iframe src="https://example.com"></iframe></foreignObject></svg>'`,
+      `'<svg><style>@import url(https://example.com/x.css)</style></svg>'`,
+      `'<'+'svg>'+'x'.repeat(131072)+'</svg>'`,
+    ]) expect(() => run(`ui.resolve({surface:'desktop'}).Svg({source:${source},alt:'x'})`)).toThrow()
+    for (const props of [
+      `{source:'<svg></svg>',alt:'x',children:[]}`,
+      `{source:'<svg></svg>',alt:'x',unknown:true}`,
+      `{source:'<svg></svg>',alt:1}`,
+      `{source:'<svg></svg>',alt:'x',width:0}`,
+      `{source:'<svg></svg>',alt:'x',height:Infinity}`,
+      `{source:'<svg></svg>',alt:'x',isInteractive:1}`,
+    ]) expect(() => run(`ui.resolve({surface:'desktop'}).Svg(${props})`)).toThrow()
   })
 
   test('style and code props stay data, callbacks and children do not leak into leaf props', () => {

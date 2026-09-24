@@ -140,6 +140,12 @@ function makeAltScreenParkPatch(terminalRows: number) {
   })
 }
 
+function mapsEqual(left: ReadonlyMap<number, string>, right: ReadonlyMap<number, string>): boolean {
+  if (left.size !== right.size) return false
+  for (const [key, value] of left) if (right.get(key) !== value) return false
+  return true
+}
+
 export type Options = {
   stdout: NodeJS.WriteStream
   stdin: NodeJS.ReadStream
@@ -153,6 +159,8 @@ export type Options = {
 export default class Ink {
   private readonly log: LogUpdate
   private readonly terminal: Terminal
+  private displayedTerminalImages = new Map<number, string>()
+  private terminalImageIds = new Set<number>()
   private scheduleRender: (() => void) & { cancel?: () => void }
   // Ignore last render after unmounting a tree to prevent empty output before exit
   private isUnmounted = false
@@ -252,6 +260,12 @@ export default class Ink {
     this.terminal = {
       stdout: options.stdout,
       stderr: options.stderr,
+    }
+    this.terminalWriter = {
+      write: (data: string): void => {
+        options.stdout.write(data)
+      },
+      isTTY: Boolean(options.stdout.isTTY),
     }
 
     this.terminalColumns = options.stdout.columns || 80
@@ -878,6 +892,7 @@ export default class Ink {
       optimized,
       this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
     )
+    this.writeTerminalImages(frame)
     const writeMs = performance.now() - tWrite
 
     // Update blit safety for the NEXT frame. The frame just rendered
@@ -1635,12 +1650,11 @@ export default class Ink {
     }
   }
 
-  // Stable identity for TerminalWriteContext. An inline arrow here would
-  // change on every render() call (initial mount + each resize), which
-  // cascades through useContext → <AlternateScreen>'s useLayoutEffect dep
-  // array → spurious exit+re-enter of the alt screen on every SIGWINCH.
-  private writeRaw(data: string): void {
-    this.options.stdout.write(data)
+  // Stable identity for TerminalWriteContext. Recreating this object on each
+  // render would retrigger terminal mode effects on every SIGWINCH.
+  private terminalWriter: {
+    write(data: string): void
+    isTTY: boolean
   }
 
   private setCursorDeclaration: CursorDeclarationSetter = (
@@ -1681,7 +1695,7 @@ export default class Ink {
         onCursorDeclaration={this.setCursorDeclaration}
         dispatchKeyboardEvent={this.dispatchKeyboardEvent}
       >
-        <TerminalWriteProvider value={this.writeRaw}>
+        <TerminalWriteProvider value={this.terminalWriter}>
           {node}
         </TerminalWriteProvider>
       </App>
@@ -1693,12 +1707,40 @@ export default class Ink {
     reconciler.flushSyncWork()
   }
 
+  private writeTerminalImages(frame: Frame): void {
+    const images = frame.terminalImages ?? []
+    const next = new Map(images.map(image => [
+      image.id,
+      `${image.identity}\0${image.x}\0${image.y}\0${image.columns}\0${image.rows}\0${image.sourceLeft}\0${image.sourceTop}\0${image.sourceColumns}\0${image.sourceRows}`,
+    ]))
+    if (mapsEqual(this.displayedTerminalImages, next)) return
+    let output = ''
+    for (const [id, identity] of this.displayedTerminalImages) {
+      if (next.get(id) !== identity)
+        output += `\u001b_Ga=d,d=i,i=${id}\u001b\\`
+    }
+    for (const image of images) {
+      this.terminalImageIds.add(image.id)
+      if (this.displayedTerminalImages.get(image.id) === next.get(image.id)) continue
+      output += cursorPosition(image.y + 1, image.x + 1)
+      output += image.sequences(image).join('')
+    }
+    if (output) this.options.stdout.write(output)
+    this.displayedTerminalImages = next
+  }
+
   unmount(error?: Error | number | null): void {
     if (this.isUnmounted) {
       return
     }
 
     this.onRender()
+    let imageCleanup = ''
+    for (const id of this.terminalImageIds) {
+      imageCleanup += `\u001b_Ga=d,d=i,i=${id}\u001b\\`
+    }
+    if (imageCleanup) this.options.stdout.write(imageCleanup)
+    this.displayedTerminalImages.clear()
     this.unsubscribeExit()
 
     if (typeof this.restoreConsole === 'function') {

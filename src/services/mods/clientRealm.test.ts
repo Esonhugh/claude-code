@@ -115,6 +115,21 @@ test('Client every and replacing input listeners belong only to their mounted in
   expect(ticks).toBe(1)
 })
 
+test('Client resize breaks a consecutive render-loop chain', () => {
+  const realm = fixture()
+  realm.register('resize-loop.ts', (_, surface) => {
+    surface.setState((surface.state ?? 0) + 1)
+    return surface.elements.Text({ children: `${surface.columns}:${surface.state}` })
+  })
+
+  realm.request({ op: 'mount', id: 1, module: 'resize-loop.ts' })
+  realm.request({ op: 'frame', id: 1, now: 16 })
+  expect(realm.request({ op: 'resize', id: 1, columns: 20, rows: 5 }).tree)
+    .toMatchObject({ children: ['20:3'] })
+  expect(realm.request({ op: 'frame', id: 1, now: 32 }).tree)
+    .toMatchObject({ children: ['20:4'] })
+})
+
 test('Client keeps per-instance state and stable surface; setState coalesces until the next frame', () => {
   const realm = fixture()
   const surfaces: any[] = []

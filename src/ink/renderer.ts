@@ -146,6 +146,7 @@ export default function createRenderer(
     return {
       scrollHint: options.altScreen ? getScrollHint() : null,
       scrollDrainPending: drainNode !== null,
+      terminalImages: output.terminalImages.slice(),
       screen: renderedScreen,
       viewport: {
         width: terminalWidth,

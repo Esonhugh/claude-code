@@ -51,22 +51,22 @@ const TAB_STATUS_PRESETS: Record<
  * a stale dot. Process-exit cleanup is handled by ink.tsx's unmount path.
  */
 export function useTabStatus(kind: TabStatusKind | null): void {
-  const writeRaw = useContext(TerminalWriteContext)
+  const terminal = useContext(TerminalWriteContext)
   const prevKindRef = useRef<TabStatusKind | null>(null)
 
   useEffect(() => {
     // When kind transitions from non-null to null (e.g. user toggles off
     // showStatusInTerminalTab mid-session), clear the stale dot.
     if (kind === null) {
-      if (prevKindRef.current !== null && writeRaw && supportsTabStatus()) {
-        writeRaw(wrapForMultiplexer(CLEAR_TAB_STATUS))
+      if (prevKindRef.current !== null && terminal && supportsTabStatus()) {
+        terminal.write(wrapForMultiplexer(CLEAR_TAB_STATUS))
       }
       prevKindRef.current = null
       return
     }
 
     prevKindRef.current = kind
-    if (!writeRaw || !supportsTabStatus()) return
-    writeRaw(wrapForMultiplexer(tabStatus(TAB_STATUS_PRESETS[kind])))
-  }, [kind, writeRaw])
+    if (!terminal || !supportsTabStatus()) return
+    terminal.write(wrapForMultiplexer(tabStatus(TAB_STATUS_PRESETS[kind])))
+  }, [kind, terminal])
 }

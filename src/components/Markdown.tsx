@@ -1,7 +1,7 @@
 import { marked, type Token, type Tokens } from 'marked'
 import React, { Suspense, use, useMemo, useRef } from 'react'
 import { useSettings } from '../hooks/useSettings.js'
-import { Ansi, Box, useTheme } from '../ink.js'
+import { Ansi, Box, type DOMElement, useTheme } from '../ink.js'
 import {
   type CliHighlight,
   getCliHighlightPromise,
@@ -15,6 +15,11 @@ type Props = {
   children: string
   /** When true, render all text content as dim */
   dimColor?: boolean
+  /** Other link schemes remain text, including links inside tables. */
+  allowedLinkProtocols?: readonly string[]
+  onLinkPress?: (href: string) => void
+  pressableLinks?: readonly string[]
+  registerPressableLink?: (element: DOMElement, active: boolean) => void
 }
 
 // Module-level token cache — marked.lexer is the hot cost on virtual-scroll
@@ -100,19 +105,42 @@ function MarkdownBody({
   children,
   dimColor,
   highlight,
+  allowedLinkProtocols,
+  onLinkPress,
+  pressableLinks,
+  registerPressableLink,
 }: Props & { highlight: CliHighlight | null }): React.ReactNode {
   const [theme] = useTheme()
   configureMarked()
 
   const elements = useMemo(() => {
-    const tokens = cachedLexer(stripPromptXMLTags(children))
+    const cached = cachedLexer(stripPromptXMLTags(children))
+    const tokens = allowedLinkProtocols ? structuredClone(cached) : cached
+    if (allowedLinkProtocols) marked.walkTokens(tokens, token => {
+      if (token.type !== 'link') return
+      let protocol: string | undefined
+      try { protocol = new URL(token.href).protocol }
+      catch { protocol = undefined }
+      if (protocol === undefined || !allowedLinkProtocols.includes(protocol)) {
+        // Format the label without handing its unsupported target to Ink.
+        const text = (token.tokens ?? []).map(child =>
+          formatToken(child, theme, 0, null, token, highlight)).join('')
+        Object.assign(token, { type: 'escape', text })
+      }
+    })
     const elements: React.ReactNode[] = []
     let nonTableContent = ''
 
     function flushNonTableContent(): void {
       if (nonTableContent) {
         elements.push(
-          <Ansi key={elements.length} dimColor={dimColor}>
+          <Ansi
+            key={elements.length}
+            dimColor={dimColor}
+            onLinkPress={onLinkPress}
+            isLinkPressable={pressableLinks === undefined ? undefined : href => pressableLinks.includes(href)}
+            registerPressableLink={registerPressableLink}
+          >
             {nonTableContent.trim()}
           </Ansi>,
         )
@@ -128,6 +156,7 @@ function MarkdownBody({
             key={elements.length}
             token={token as Tokens.Table}
             highlight={highlight}
+            dimColor={dimColor}
           />,
         )
       } else {
@@ -137,7 +166,7 @@ function MarkdownBody({
 
     flushNonTableContent()
     return elements
-  }, [children, dimColor, highlight, theme])
+  }, [children, dimColor, highlight, theme, allowedLinkProtocols, onLinkPress, pressableLinks, registerPressableLink])
 
   return (
     <Box flexDirection="column" gap={1}>

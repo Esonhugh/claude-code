@@ -1,26 +1,44 @@
 import { parsePatch } from 'diff'
 import figures from 'figures'
+import { getGraphemeSegmenter } from '../utils/intl.js'
 import React, { useMemo, useState } from 'react'
-import type { ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane } from '../services/mods/ui.js'
-import { BaseText, Box, Button, type DOMElement, Link, Text, useStdin, useTheme } from '../ink.js'
+import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane } from '../services/mods/ui.js'
+import type { ModClientHandle } from '../services/mods/client.js'
+import { copyModClientData } from '../services/mods/client.js'
+import { BaseText, Box, Button, type DOMElement, Link, Text, useInput, useStdin, useTheme } from '../ink.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import type { FocusEvent } from '../ink/events/focus-event.js'
+import type { ClickEvent } from '../ink/events/click-event.js'
+import type { PointerEvent } from '../ink/events/pointer-event.js'
 import type { KeyboardEvent } from '../ink/events/keyboard-event.js'
 import { getFocusManager, getRootNode } from '../ink/focus.js'
 import { hitTest } from '../ink/hit-test.js'
+import { markDirty, scheduleRenderFrom, type TerminalImagePlacement } from '../ink/dom.js'
 import { nodeCache } from '../ink/node-cache.js'
 import type { InputEvent } from '../ink/events/input-event.js'
-import { useKeybindings } from '../keybindings/useKeybinding.js'
+import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js'
+import { KEYBINDING_ACTIONS } from '../keybindings/schema.js'
 import type { Color } from '../ink/styles.js'
 import { getTheme, type Theme } from '../utils/theme.js'
-import { HighlightedCodeFallback } from './HighlightedCode/Fallback.js'
+import { basename, extname, isAbsolute } from 'node:path'
+import { Ansi } from '../ink/Ansi.js'
+import { getCliHighlightPromise, type CliHighlight } from '../utils/cliHighlight.js'
+import { convertLeadingTabsToSpaces } from '../utils/file.js'
+import { wrapAnsi } from '../ink/wrapAnsi.js'
 import { StructuredDiff } from './StructuredDiff.js'
+import { expectColorDiff } from './StructuredDiff/colorDiff.js'
+import { stringWidth } from '../ink/stringWidth.js'
+import { useSettings } from '../hooks/useSettings.js'
+import { Markdown } from './Markdown.js'
+import { TerminalWriteContext } from '../ink/useTerminalNotification.js'
+import { wrapForMultiplexer } from '../ink/termio/osc.js'
 
 const MAX_TREE_DEPTH = 100
 const MAX_TREE_NODES = 2_000
 const MAX_TEXT_LENGTH = 10_000
 const MAX_TOTAL_TEXT = 1_000_000
 const MAX_OPTIONS = 1_000
+const markdownLinkProtocols = ['https:', 'http:', 'file:']
 
 const boxProps = new Set([
   'key', 'flexDirection', 'flexGrow', 'flexShrink', 'flexWrap', 'alignItems',
@@ -29,6 +47,7 @@ const boxProps = new Set([
   'marginBottom', 'marginLeft', 'marginRight', 'padding', 'paddingX', 'paddingY',
   'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'borderStyle',
   'borderColor', 'borderDimColor', 'backgroundColor', 'overflow', 'display',
+  'position', 'top', 'left', 'right', 'bottom',
 ])
 const textProps = new Set([
   'color', 'backgroundColor', 'dimColor', 'bold', 'italic', 'underline',
@@ -45,9 +64,15 @@ const linkProps = new Set(['href', 'label'])
 const codeProps = new Set([
   'source', 'language', 'path', 'startLine', 'format', 'wrap',
 ])
+const clientProps = new Set(['key', 'module', 'props', 'width', 'height', 'flexGrow'])
+const rasterProps = new Set(['key', 'columns', 'rows', 'cells'])
+const imageProps = new Set(['key', 'source', 'columns', 'rows', 'alt'])
+const svgProps = new Set(['source', 'alt', 'width', 'height', 'isInteractive'])
+const MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
+const MAX_IMAGE_PATH_BYTES = 3_072
 const boxHoverProps = new Set([
   'scope', 'borderStyle', 'borderColor', 'borderDimColor', 'backgroundColor',
-  'display',
+  'display', 'top', 'left', 'right', 'bottom',
 ])
 const textHoverProps = new Set([
   'scope', 'color', 'backgroundColor', 'dimColor', 'bold', 'italic',
@@ -103,7 +128,8 @@ const ansiColors: Readonly<Record<string, string>> = {
 
 type RenderNode = string | RenderElement
 type RenderElement = {
-  type: 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Link' | 'Code'
+  type: 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Link' | 'Code' | 'Markdown' | 'Client' | 'Raster' | 'Image' | 'Svg' | 'engine'
+  ref?: number
   props?: Record<string, unknown>
   children?: RenderNode[]
   hover?: Record<string, unknown>
@@ -135,7 +161,53 @@ type HoverGroupEntry = {
 const LocalHoverContext = React.createContext(false)
 const PersonInputContext = React.createContext(false)
 const PaneLayoutContext = React.createContext<(() => void) | undefined>(undefined)
+
+type PaneTabEntry = {
+  pane: ModUiPane
+  onFocus: (pane: ModUiPane, element?: string) => Promise<unknown>
+  onError?: (error: unknown) => void
+}
+type PaneTabGroup = {
+  entries: PaneTabEntry[]
+  listeners: Set<() => void>
+}
+const paneTabGroups = new WeakMap<object, Map<ModUiPane['placement'], PaneTabGroup>>()
+
+function paneShown(pane: ModUiPane): boolean | undefined {
+  return (pane as ModUiPane & { shown?: boolean }).shown
+}
+
+function paneTabGroup(root: object, placement: ModUiPane['placement']): PaneTabGroup {
+  let placements = paneTabGroups.get(root)
+  if (!placements) {
+    placements = new Map()
+    paneTabGroups.set(root, placements)
+  }
+  let group = placements.get(placement)
+  if (!group) {
+    group = { entries: [], listeners: new Set() }
+    placements.set(placement, group)
+  }
+  return group
+}
+
+function notifyPaneTabs(group: PaneTabGroup): void {
+  for (const listener of group.listeners) listener()
+}
+
+function openPaneTabs(group: PaneTabGroup | undefined): PaneTabEntry[] {
+  return group?.entries.filter(entry => entry.pane.visible) ?? []
+}
+
+function selectedPaneTab(entries: readonly PaneTabEntry[]): PaneTabEntry | undefined {
+  return entries.find(entry => paneShown(entry.pane) === true) ??
+    entries.find(entry => paneShown(entry.pane) !== false && entry.pane.focused) ??
+    entries.find(entry => paneShown(entry.pane) !== false) ?? entries[0]
+}
+
 const hoverGroups = new Map<string, HoverGroupEntry>()
+const clientPointerCapture = new WeakMap<object, DOMElement>()
+const clientRegions = new WeakSet<DOMElement>()
 
 function hoverGroupKey(group: HoverGroup): string {
   return `${group.plugin}\0scope\0${group.scope}`
@@ -387,6 +459,12 @@ function validateHover(
   if (hover.borderStyle !== undefined &&
       (typeof hover.borderStyle !== 'string' || !borderStyles.has(hover.borderStyle)))
     throw new TypeError('Unsupported hover borderStyle')
+  if (type === 'Box') {
+    for (const key of ['top', 'left', 'right', 'bottom']) {
+      if (hover[key] !== undefined && !Number.isInteger(hover[key]))
+        throw new TypeError(`Box hover ${key} must be an integer`)
+    }
+  }
   for (const key of ['color', 'backgroundColor', 'borderColor'])
     if (hover[key] !== undefined) stringProp(hover, key, { singleLine: true })
 }
@@ -398,6 +476,12 @@ function validBoxKey(value: unknown): value is string {
 
 function validateBoxProps(props: Record<string, unknown>): void {
   assertKeys(props, boxProps, 'Box')
+  if (props.position !== undefined && !['relative', 'absolute'].includes(props.position as string))
+    throw new TypeError('Unsupported Box position')
+  for (const key of ['top', 'left', 'right', 'bottom']) {
+    if (props[key] !== undefined && !Number.isInteger(props[key]))
+      throw new TypeError(`Box ${key} must be an integer`)
+  }
   for (const key of spacingProps) {
     if (props[key] !== undefined && (!Number.isInteger(props[key]) || (props[key] as number) < 0))
       throw new TypeError(`Box ${key} must be a non-negative integer`)
@@ -444,6 +528,144 @@ function validateTextProps(props: Record<string, unknown>): void {
     throw new TypeError('Unsupported Text wrap')
 }
 
+function validateClientProps(props: Record<string, unknown>): void {
+  assertKeys(props, clientProps, 'Client')
+  const key = stringProp(props, 'key', { required: true, singleLine: true })!
+  const module = stringProp(props, 'module', { required: true, singleLine: true })!
+  if (!key) throw new TypeError('Client key must not be empty')
+  if (!module) throw new TypeError('Client module must not be empty')
+  for (const name of ['width', 'height']) {
+    const value = props[name]
+    if (value !== undefined &&
+        !((typeof value === 'number' && Number.isFinite(value) && value >= 0) ||
+          (typeof value === 'string' && /^\d+(?:\.\d+)?%$/.test(value))))
+      throw new TypeError(`Client ${name} must be a non-negative size`)
+  }
+  if (props.flexGrow !== undefined &&
+      (typeof props.flexGrow !== 'number' || !Number.isFinite(props.flexGrow) || props.flexGrow < 0))
+    throw new TypeError('Client flexGrow must be a non-negative number')
+  if (props.props !== undefined) copyModClientData(props.props)
+}
+
+function boundedIntegerProp(
+  props: Record<string, unknown>,
+  key: string,
+  maximum: number,
+  type: string,
+): number {
+  const value = props[key]
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > maximum)
+    throw new TypeError(`${type} ${key} must be an integer from 1 to ${maximum}`)
+  return value as number
+}
+
+function decodeBase64(value: unknown, label: string, maximum?: number): Buffer {
+  if (typeof value !== 'string' || value.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value))
+    throw new TypeError(`${label} must be padded standard base64`)
+  const decoded = Buffer.from(value, 'base64')
+  if (maximum !== undefined && decoded.length > maximum)
+    throw new RangeError(`${label} exceeds ${maximum} decoded bytes`)
+  return decoded
+}
+
+function validateRasterProps(props: Record<string, unknown>): void {
+  assertKeys(props, rasterProps, 'Raster')
+  const key = stringProp(props, 'key', { required: true, singleLine: true })!
+  if (!key) throw new TypeError('Raster key must not be empty')
+  const columns = boundedIntegerProp(props, 'columns', 512, 'Raster')
+  const rows = boundedIntegerProp(props, 'rows', 256, 'Raster')
+  const cells = decodeBase64(props.cells, 'Raster cells')
+  if (cells.length !== columns * rows * 12)
+    throw new TypeError('Raster cells decoded length must match columns * rows * 3 little-endian u32 values')
+  for (let offset = 0; offset < cells.length; offset += 12) {
+    const codePoint = cells.readUInt32LE(offset)
+    if (codePoint < 0x20 || codePoint > 0xffff || codePoint === 0x7f ||
+        codePoint >= 0xd800 && codePoint <= 0xdfff || stringWidth(String.fromCodePoint(codePoint)) !== 1)
+      throw new TypeError('Raster codePoint must be a printable width-1 BMP character')
+    for (const colorOffset of [4, 8]) {
+      const color = cells.readUInt32LE(offset + colorOffset)
+      if (color !== 0x01000000 && color > 0x00ffffff)
+        throw new TypeError('Raster colors must be RGB or terminal default')
+    }
+  }
+}
+
+function validateImageSource(value: unknown): void {
+  const source = record(value, 'Image source')
+  if (Object.hasOwn(source, 'png')) {
+    assertKeys(source, new Set(['png']), 'Image png source')
+    const bytes = decodeBase64(source.png, 'Image png', MAX_INLINE_IMAGE_BYTES)
+    if (bytes.length < 8 || !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
+      throw new TypeError('Image png must contain a PNG file')
+    return
+  }
+  if (Object.hasOwn(source, 'rgba')) {
+    assertKeys(source, new Set(['rgba', 'width', 'height']), 'Image rgba source')
+    const width = boundedIntegerProp(source, 'width', 2_048, 'Image source')
+    const height = boundedIntegerProp(source, 'height', 2_048, 'Image source')
+    const bytes = decodeBase64(source.rgba, 'Image rgba', MAX_INLINE_IMAGE_BYTES)
+    if (bytes.length !== width * height * 4)
+      throw new TypeError('Image rgba decoded length must match width * height * 4')
+    return
+  }
+  const shared = Object.hasOwn(source, 'shm')
+  assertKeys(source, new Set([shared ? 'shm' : 'file', 'format', 'width', 'height', 'generation']), `Image ${shared ? 'shm' : 'file'} source`)
+  const path = stringProp(source, shared ? 'shm' : 'file', { required: true, singleLine: true, max: MAX_IMAGE_PATH_BYTES })!
+  if (!path || Buffer.byteLength(path) > MAX_IMAGE_PATH_BYTES)
+    throw new TypeError('Image source path must be 1-3072 bytes')
+  if (shared) {
+    if (!/^\/[A-Za-z0-9._-]{1,254}$/.test(path))
+      throw new TypeError('Image shm must be a POSIX shared-memory name')
+  } else if (!isAbsolute(path)) {
+    throw new TypeError('Image file must be an absolute path')
+  }
+  const format = source.format
+  if (shared) {
+    if (format !== 'rgba' && format !== 'rgb') throw new TypeError('Image shm format must be rgba or rgb')
+  } else if (format !== 'png' && format !== 'rgba' && format !== 'rgb') {
+    throw new TypeError('Image file format must be png, rgba, or rgb')
+  }
+  if (format !== 'png') {
+    boundedIntegerProp(source, 'width', 4_096, 'Image source')
+    boundedIntegerProp(source, 'height', 4_096, 'Image source')
+  } else if (source.width !== undefined || source.height !== undefined) {
+    throw new TypeError('Image png file source does not take width or height')
+  }
+  if (source.generation !== undefined && (!Number.isSafeInteger(source.generation) || (source.generation as number) < 0))
+    throw new TypeError('Image generation must be a non-negative safe integer')
+}
+
+function validateImageProps(props: Record<string, unknown>): void {
+  assertKeys(props, imageProps, 'Image')
+  const key = stringProp(props, 'key', { singleLine: true })
+  if (key !== undefined && !key) throw new TypeError('Image key must not be empty')
+  boundedIntegerProp(props, 'columns', 255, 'Image')
+  boundedIntegerProp(props, 'rows', 255, 'Image')
+  stringProp(props, 'alt', { required: true })
+  validateImageSource(props.source)
+}
+
+function validateSvgProps(props: Record<string, unknown>): void {
+  assertKeys(props, svgProps, 'Svg')
+  const source = stringProp(props, 'source', { required: true, max: 131_072 })!
+  const document = source.trim()
+  if (!/^<svg(?:\s[^<>]*?)?>[\s\S]*<\/svg>$/.test(document))
+    throw new TypeError('Svg source must be a complete SVG document')
+  if (/<\s*(?:script|foreignObject|iframe|object|embed)(?:\s|>)/i.test(document) ||
+      /\son[a-z][a-z0-9:_-]*\s*=/i.test(document) ||
+      /(?:href|src)\s*=\s*(['"])\s*(?:javascript:|data\s*:\s*text\/html)/i.test(document) ||
+      /<\s*style(?:\s|>)[\s\S]*(?:@import|url\s*\()/i.test(document))
+    throw new TypeError('Svg source contains active content')
+  stringProp(props, 'alt', { required: true })
+  for (const key of ['width', 'height']) {
+    const value = props[key]
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0))
+      throw new TypeError(`Svg ${key} must be positive finite CSS pixels`)
+  }
+  booleanProp(props, 'isInteractive')
+}
+
 function validateHref(href: string): void {
   if (href.length > 2_048 || !/^[\x20-\x7e]+$/.test(href) || href.includes('@') || href.includes(' '))
     throw new TypeError('Link href must be at most 2048 printable ASCII characters')
@@ -459,11 +681,13 @@ function validateHref(href: string): void {
     throw new TypeError('Link href must be canonical https or http://localhost without userinfo')
 }
 
-export function validateModRenderTree(value: unknown): ValidatedTree {
+export function validateModRenderTree(value: unknown, surface: ModRenderSurface = 'terminal', engineRefs?: ReadonlySet<number>): ValidatedTree {
   let nodes = 0
   let totalText = 0
   const path = new Set<object>()
   const focusKeys = new Set<string>()
+  const clientKeys = new Set<string>()
+  const mediaKeys = new Set<string>()
   const hoverBoxes = new Map<RenderElement, boolean>()
   let hasAutoFocus = false
 
@@ -493,22 +717,44 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
     const node = record(value, 'UI element')
     if (path.has(node)) throw new TypeError('Cyclic UI tree')
     path.add(node)
+    if (node.type === 'engine') {
+      assertKeys(node, new Set(['type', 'ref']), 'engine')
+      if (!Number.isInteger(node.ref) || !engineRefs?.has(node.ref as number))
+        throw new TypeError('Unknown Mod UI engine ref')
+      if (inInline) throw new TypeError('engine cannot be nested in an inline element')
+      path.delete(node)
+      return { type: 'engine', ref: node.ref as number }
+    }
     assertKeys(node, new Set(['type', 'props', 'children', 'hover', 'group', 'press']), 'element')
-    if (!['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code'].includes(String(node.type)))
+    if (!['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(String(node.type)))
       throw new TypeError(`Unsupported UI element ${String(node.type)}`)
     const type = node.type as RenderElement['type']
-    if (inInline && ['Box', 'Button', 'Input', 'Select', 'Code'].includes(type))
+    if (surface === 'mobile' && ['Input', 'Select'].includes(type))
+      throw new TypeError(`${type} is not supported on ${surface}`)
+    if (surface === 'terminal' && type === 'Svg')
+      throw new TypeError('Svg has no consumer on terminal')
+    if (surface !== 'terminal' && ['Client', 'Raster', 'Image'].includes(type))
+      throw new TypeError(`${type} has no consumer on ${surface}`)
+    if (inInline && ['Box', 'Button', 'Input', 'Select', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(type))
       throw new TypeError(`${type} cannot be nested in an inline element`)
     const props = node.props === undefined ? {} : record(node.props, `${type} props`)
 
     if (type === 'Box') validateBoxProps(props)
     else if (type === 'Text') validateTextProps(props)
+    else if (type === 'Client') validateClientProps(props)
+    else if (type === 'Raster') validateRasterProps(props)
+    else if (type === 'Image') validateImageProps(props)
+    else if (type === 'Svg') validateSvgProps(props)
     else if (type === 'Button') {
       assertKeys(props, buttonProps, 'Button')
       const key = stringProp(props, 'key', { required: true, singleLine: true })!
       stringProp(props, 'label', { required: true, singleLine: true })
-      stringProp(props, 'hotkey', { singleLine: true, max: 1 })
-      stringProp(props, 'action', { singleLine: true, max: 128 })
+      const hotkey = stringProp(props, 'hotkey', { singleLine: true, max: 1 })
+      if (hotkey !== undefined && !/^[a-z0-9]$/.test(hotkey))
+        throw new TypeError('Button hotkey must be one digit or lowercase letter')
+      const action = stringProp(props, 'action', { singleLine: true, max: 128 })
+      if (action !== undefined && !(KEYBINDING_ACTIONS as readonly string[]).includes(action))
+        throw new TypeError('Unsupported Button action')
       trueProp(props, 'plain')
       trueProp(props, 'autoFocus')
       hasAutoFocus ||= props.autoFocus === true
@@ -551,6 +797,25 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
       const href = stringProp(props, 'href', { required: true, singleLine: true, max: 2_048 })!
       stringProp(props, 'label', { singleLine: true })
       validateHref(href)
+    } else if (type === 'Markdown') {
+      assertKeys(props, new Set(['key', 'text', 'dimColor', 'pressableLinks']), 'Markdown')
+      const key = stringProp(props, 'key', { singleLine: true })
+      stringProp(props, 'text', { required: true })
+      booleanProp(props, 'dimColor')
+      if (node.press !== undefined) {
+        if (!key) throw new TypeError('Markdown key is required with a press callback')
+        validatePress(node.press, type)
+        focusKeys.add(key)
+      }
+      if (props.pressableLinks !== undefined) {
+        if (node.press === undefined) throw new TypeError('Markdown pressableLinks requires a press callback')
+        if (!Array.isArray(props.pressableLinks) || props.pressableLinks.length > 256)
+          throw new TypeError('Markdown pressableLinks must contain at most 256 links')
+        for (const href of props.pressableLinks) {
+          if (typeof href !== 'string' || href.length > 2_048 || hasControl(href, true))
+            throw new TypeError('Markdown pressableLinks entries must be strings of at most 2048 characters')
+        }
+      }
     } else {
       assertKeys(props, codeProps, 'Code')
       const source = stringProp(props, 'source', { required: true, max: MAX_TEXT_LENGTH })!
@@ -606,6 +871,18 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
       assertKeys(group, new Set(['plugin']), `${type} group`)
       const plugin = stringProp(group, 'plugin', { required: true, singleLine: true, max: 64 })!
       if (!plugin) throw new TypeError(`${type} group plugin must not be empty`)
+    } else if (type === 'Client' || type === 'Raster' || type === 'Image' && props.key !== undefined) {
+      throw new TypeError(`${type} requires a plugin group`)
+    }
+    if (type === 'Client') {
+      const id = keyElementId((node.group as { plugin: string }).plugin, props.key as string)
+      if (clientKeys.has(id)) throw new TypeError('Client keys must be unique within a plugin tree')
+      clientKeys.add(id)
+    }
+    if ((type === 'Raster' || type === 'Image') && props.key !== undefined) {
+      const id = `${type}\0${keyElementId((node.group as { plugin: string }).plugin, props.key as string)}`
+      if (mediaKeys.has(id)) throw new TypeError(`${type} keys must be unique within a plugin tree`)
+      mediaKeys.add(id)
     }
     if (node.hover !== undefined) {
       if (!['Box', 'Text', 'Button'].includes(type))
@@ -620,15 +897,15 @@ export function validateModRenderTree(value: unknown): ValidatedTree {
         const owner = type === 'Button' ? node.press : node.group
         if (!owner) throw new TypeError(`${type} hover scope requires a plugin group`)
       }
-      if (hover.scope !== undefined && hover.display !== undefined)
-        throw new TypeError('hover scope cannot be combined with display')
       if (hover.display !== undefined && props.display !== 'none')
         throw new TypeError('hover display flex requires Box display none')
       if (hover.borderStyle !== undefined && props.borderStyle === undefined)
         throw new TypeError('hover borderStyle requires an existing Box borderStyle')
     }
-    if (['Button', 'Input', 'Select', 'Code'].includes(type) && node.children !== undefined)
+    if (['Button', 'Input', 'Select', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(type) && node.children !== undefined)
       throw new TypeError(`${type} is a leaf element`)
+    if (['Client', 'Raster', 'Image', 'Svg'].includes(type) && (node.hover !== undefined || node.press !== undefined))
+      throw new TypeError(`${type} does not support hover or press`)
     let children: RenderNode[] | undefined
     if (node.children !== undefined) {
       if (!Array.isArray(node.children)) throw new TypeError(`${type} children must be an array`)
@@ -724,8 +1001,8 @@ export function ModsPane({
     reportMetrics()
   }, [reportMetrics, pane.scrollOffset, validated.tree])
 
-  const latest = React.useRef({ pane, onFocus, onScroll, onError, canFocus })
-  latest.current = { pane, onFocus, onScroll, onError, canFocus }
+  const latest = React.useRef({ pane, onFocus, onScroll, onInteract, onError, canFocus })
+  latest.current = { pane, onFocus, onScroll, onInteract, onError, canFocus }
   const applyingFocus = React.useRef(false)
   const focusQueue = React.useRef(Promise.resolve())
   const pendingFocus = React.useRef(0)
@@ -739,6 +1016,61 @@ export function ModsPane({
     requested: string; landing: string; element: DOMElement
   } | undefined>(undefined)
   const { internal_eventEmitter } = useStdin()
+  const [tabsRevision, setTabsRevision] = useState(0)
+  const tabGroupRef = React.useRef<PaneTabGroup | undefined>(undefined)
+  const tabEntryRef = React.useRef<PaneTabEntry | undefined>(undefined)
+  if (tabEntryRef.current) {
+    tabEntryRef.current.pane = pane
+    tabEntryRef.current.onFocus = onFocus
+    tabEntryRef.current.onError = onError
+  }
+  React.useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const group = paneTabGroup(getRootNode(root), pane.placement)
+    const entry = { pane, onFocus, onError }
+    tabGroupRef.current = group
+    tabEntryRef.current = entry
+    group.entries.push(entry)
+    setTabsRevision(value => value + 1)
+    notifyPaneTabs(group)
+    return () => {
+      const index = group.entries.indexOf(entry)
+      if (index >= 0) group.entries.splice(index, 1)
+      tabGroupRef.current = undefined
+      tabEntryRef.current = undefined
+      notifyPaneTabs(group)
+    }
+  }, [pane.owner, pane.placement])
+  React.useLayoutEffect(() => {
+    const group = tabGroupRef.current
+    if (group) notifyPaneTabs(group)
+  }, [pane.visible, pane.focused, pane.title, paneShown(pane)])
+  React.useEffect(() => {
+    const group = tabGroupRef.current
+    if (!group) return
+    const listener = () => setTabsRevision(value => value + 1)
+    group.listeners.add(listener)
+    return () => { group.listeners.delete(listener) }
+  }, [pane.owner, pane.placement])
+  void tabsRevision
+  const tabs = openPaneTabs(tabGroupRef.current)
+  const selectedTab = selectedPaneTab(tabs)
+  const showTabs = tabs.length > 1
+  const shown = !showTabs || selectedTab?.pane.owner === pane.owner && selectedTab.pane.id === pane.id
+  const selectTab = (entry: PaneTabEntry | undefined) => {
+    if (!entry || entry.pane.owner === selectedTab?.pane.owner && entry.pane.id === selectedTab.pane.id) return
+    void entry.onFocus(entry.pane).catch(error => entry.onError?.(error))
+  }
+  useInput((_input, key, event) => {
+    if (!shown || !showTabs || !pane.visible || !pane.focused || key.ctrl || key.meta || key.super) return
+    const offset = key.leftArrow || key.shift && key.tab ? -1 : key.rightArrow ? 1 : 0
+    if (!offset) return
+    const index = tabs.findIndex(entry => entry.pane.owner === pane.owner && entry.pane.id === pane.id)
+    if (index < 0) return
+    event.stopImmediatePropagation()
+    selectTab(tabs[(index + tabs.length + offset) % tabs.length])
+  }, { isActive: shown && showTabs && pane.visible && pane.focused })
 
   const navigable = () => {
     const root = rootRef.current
@@ -774,7 +1106,12 @@ export function ModsPane({
           handoff.tree !== latest.current.pane.tree && entries.find(entry =>
             entry.key === handoff.requested && entry.element === handoff.element &&
             entry.element.attributes.autoFocus === true)
-        manager.focus(reused?.element ?? entries.find(entry => entry.key === key)?.element ?? root)
+        const target = reused?.element ?? entries.find(entry => entry.key === key)?.element ?? root
+        let active = manager.activeElement
+        if (clientRegions.has(target)) {
+          while (active && active !== target) active = active.parentNode ?? null
+        }
+        if (!clientRegions.has(target) || active !== target) manager.focus(target)
       }
     } finally { applyingFocus.current = false }
   }
@@ -790,7 +1127,10 @@ export function ModsPane({
       if (typeof target === 'function' && navigable().some(entry =>
         entry.key === key && entry.element === getFocusManager(rootRef.current!).activeElement)) return
       const before = navigable()
-      const result = await current.onFocus(current.pane, key) as {
+      let region = before.find(entry => entry.key === key)?.element
+      while (region && !clientRegions.has(region)) region = region.parentNode
+      const hostKey = region ? before.find(entry => entry.element === region)?.key ?? key : key
+      const result = await current.onFocus(current.pane, hostKey) as {
         deny?: string; element?: string; focused?: boolean; revision?: number
       } | undefined
       if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
@@ -807,9 +1147,11 @@ export function ModsPane({
         })
         if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
       }
-      if (result && 'focused' in result) applyFocus(result.element, result.focused)
+      const landing = hostKey !== key && !result?.deny && result?.focused !== false &&
+        (result?.element === undefined || result.element === hostKey) ? key : result?.element
+      if (result && 'focused' in result) applyFocus(landing, result.focused)
       else if (result?.deny) applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
-      else applyFocus(result?.element ?? key, key !== undefined)
+      else applyFocus(landing ?? key, key !== undefined)
     }).catch(error => {
       if (rootRef.current && generation === focusGeneration.current)
         applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
@@ -870,10 +1212,11 @@ export function ModsPane({
     return () => { internal_eventEmitter?.removeListener('input', capture) }
   }, [internal_eventEmitter, pane.owner])
 
+  const keybindings = useOptionalKeybindingContext()
   const actions: Record<string, () => void | false> = Object.create(null)
   const visitActions = (node: RenderElement) => {
     const action = node.props?.action
-    if (node.type === 'Button' && typeof action === 'string' && !(action in actions)) {
+    if (node.type === 'Button' && typeof action === 'string') {
       actions[action] = () => {
         const current = latest.current.pane
         if (!current.visible || !(current.focused || latest.current.canFocus) ||
@@ -889,7 +1232,28 @@ export function ModsPane({
     }
   }
   visitActions(validated.tree)
-  useKeybindings(actions, { context: 'Global', isActive: pane.visible && (pane.focused || canFocus) })
+  const actionsActive = pane.visible && (pane.focused || canFocus)
+  React.useEffect(() => {
+    if (!keybindings || !actionsActive) return
+    const unregister = Object.entries(actions).map(([action, handler]) =>
+      keybindings.registerHandler({ action, context: 'Global', handler }))
+    return () => { for (const remove of unregister) remove() }
+  }, [keybindings, actionsActive, actions])
+  useInput((input, key, event) => {
+    if (!keybindings) return
+    // Chords are dispatched by the existing interceptor. Bare editor keys
+    // must reach Input's DOM handler rather than activating an action Button.
+    const root = rootRef.current
+    const active = root && getFocusManager(root).activeElement
+    const inputFocused = (node: RenderElement): boolean =>
+      node.type === 'Input' && focusElements.current.get(node.props?.key as string)?.has(active!) === true ||
+      (node.children ?? []).some(child => typeof child !== 'string' && inputFocused(child))
+    if (!key.ctrl && !key.meta && !key.super && (!pane.focused || inputFocused(validated.tree))) return
+    const result = keybindings.resolve(input, key, [...new Set([...keybindings.activeContexts, 'Global' as const])])
+    if (result.type === 'match' && result.action in actions && actions[result.action]!() !== false) {
+      event.stopImmediatePropagation()
+    }
+  }, { isActive: actionsActive })
 
   React.useLayoutEffect(() => {
     const root = rootRef.current
@@ -914,7 +1278,22 @@ export function ModsPane({
     void operation.catch(error => onError?.(error))
   }
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (!pane.focused) return
+    if (!pane.focused || !pane.visible) return
+    if (!event.ctrl && !event.meta && !event.superKey && !event.isPasted && /^[a-z0-9]$/i.test(event.key)) {
+      let target: RenderElement | undefined
+      const visit = (node: RenderElement) => {
+        if (node.props?.display === 'none') return
+        if (node.type === 'Button' && node.props?.hotkey === event.key.toLowerCase()) target = node
+        for (const child of node.children ?? []) if (typeof child !== 'string') visit(child)
+      }
+      visit(validated.tree)
+      if (target && pane.drawing !== undefined) {
+        event.preventDefault()
+        event.stopPropagation()
+        run(onInteract(pane, pane.drawing, target.press!, 'press', target.props!.key as string))
+        return
+      }
+    }
     if (event.ctrl || event.meta || event.superKey || (event.shift && event.key !== 'tab')) return
     if (event.key === 'tab' || event.key === 'up' || event.key === 'down') {
       const controls = navigable()
@@ -957,11 +1336,12 @@ export function ModsPane({
       ref={rootRef}
       flexDirection="column"
       width="100%"
-      height={pane.bodyRows + (pane.title ? 1 : 0)}
-      flexGrow={pane.placement === 'dock' ? 1 : 0}
+      height={shown ? pane.bodyRows + (showTabs ? 1 : 0) : 0}
+      flexGrow={shown && pane.placement === 'dock' ? 1 : 0}
       overflow="hidden"
-      tabIndex={pane.focused ? 0 : undefined}
-      autoFocus={pane.focused && !validated.hasAutoFocus}
+      display={shown ? 'flex' : 'none'}
+      tabIndex={shown && pane.focused ? 0 : undefined}
+      autoFocus={shown && pane.focused && !validated.hasAutoFocus}
       onFocusCapture={event => {
         if (pane.focused || canFocus || !rootRef.current || applyingFocus.current) return
         const manager = getFocusManager(rootRef.current)
@@ -974,14 +1354,21 @@ export function ModsPane({
       }}
       onKeyDown={handleKeyDown}
     >
-      {pane.title && <Box flexShrink={0}><Text bold>{pane.title}</Text></Box>}
+      {showTabs && <Box flexShrink={0} gap={1}>
+        {tabs.map((entry, index) => {
+          const selected = entry.pane.owner === selectedTab?.pane.owner && entry.pane.id === selectedTab.pane.id
+          return <Box key={`${entry.pane.plugin}:${entry.pane.id}:${index}`} onClick={() => selectTab(entry)}>
+            <Text bold={selected} inverse={selected}> {entry.pane.title} </Text>
+          </Box>
+        })}
+      </Box>}
       <ScrollBox
         ref={scrollRef}
         flexGrow={1}
         flexDirection="column"
         width="100%"
       >
-        <PersonInputContext.Provider value={pane.visible && (pane.focused || canFocus)}>
+        <PersonInputContext.Provider value={shown && pane.visible && (pane.focused || canFocus)}>
           <PaneLayoutContext.Provider value={reportMetrics}>
             <RenderElementNode
               node={validated.tree}
@@ -989,6 +1376,7 @@ export function ModsPane({
               focusElements={focusElements}
               keyElements={keyElements}
               onInteract={onInteract}
+              currentPane={() => latest.current.pane}
               onFocus={handleFocus}
               onError={onError}
               hoverBoxes={validated.hoverBoxes}
@@ -1036,15 +1424,179 @@ function hoverStyles(node: RenderElement, active: boolean): Record<string, unkno
   return terminalStyles(style)
 }
 
+function ModRaster({ props }: { props: Record<string, unknown> }): React.ReactNode {
+  const columns = props.columns as number
+  const rows = props.rows as number
+  const cells = Buffer.from(props.cells as string, 'base64')
+  const lines = Array.from({ length: rows }, (_, row) =>
+    Array.from({ length: columns }, (_, column) => {
+      const offset = (row * columns + column) * 12
+      const foreground = cells.readUInt32LE(offset + 4)
+      const background = cells.readUInt32LE(offset + 8)
+      const color = foreground === 0x01000000
+        ? undefined
+        : `#${foreground.toString(16).padStart(6, '0')}`
+      const backgroundColor = background === 0x01000000
+        ? undefined
+        : `#${background.toString(16).padStart(6, '0')}`
+      return <BaseText key={column} color={color as Color | undefined} backgroundColor={backgroundColor as Color | undefined}>
+        {String.fromCodePoint(cells.readUInt32LE(offset))}
+      </BaseText>
+    }),
+  )
+  return <Box flexDirection="column" width={columns} height={rows}>
+    {lines.map((line, row) => <BaseText key={row}>{line}</BaseText>)}
+  </Box>
+}
+
+type ImageSource =
+  | { png: string }
+  | { rgba: string; width: number; height: number }
+  | { file: string; format: 'png' | 'rgb' | 'rgba'; width?: number; height?: number; generation?: number }
+  | { shm: string; format: 'rgb' | 'rgba'; width: number; height: number; generation?: number }
+
+function supportsTerminalImages(isTTY: boolean): boolean {
+  if (!isTTY) return false
+  const terminal = `${process.env.TERM_PROGRAM ?? ''} ${process.env.LC_TERMINAL ?? ''} ${process.env.TERM ?? ''}`.toLowerCase()
+  return terminal.includes('kitty') || terminal.includes('ghostty')
+}
+
+function imageSourceIdentity(source: ImageSource): string {
+  if ('png' in source) return `png\0${source.png}`
+  if ('rgba' in source) return `rgba\0${source.width}\0${source.height}\0${source.rgba}`
+  const name = 'file' in source ? source.file : source.shm
+  return `${'file' in source ? 'file' : 'shm'}\0${name}\0${source.format}\0${source.width ?? ''}\0${source.height ?? ''}\0${source.generation ?? ''}`
+}
+
+function imagePixelSize(source: ImageSource): { width: number; height: number } | undefined {
+  if ('rgba' in source)
+    return { width: source.width, height: source.height }
+  if ('file' in source) {
+    if (source.format !== 'png')
+      return { width: source.width!, height: source.height! }
+    return source.width !== undefined && source.height !== undefined
+      ? { width: source.width, height: source.height }
+      : undefined
+  }
+  if ('shm' in source)
+    return { width: source.width, height: source.height }
+  const header = Buffer.from(source.png.slice(0, 32), 'base64')
+  if (
+    header.length < 24 ||
+    header.toString('hex', 0, 8) !== '89504e470d0a1a0a' ||
+    header.toString('ascii', 12, 16) !== 'IHDR'
+  ) return undefined
+  return {
+    width: header.readUInt32BE(16),
+    height: header.readUInt32BE(20),
+  }
+}
+
+function kittyImageSequences(source: ImageSource, placement: TerminalImagePlacement, id: number): string[] {
+  let payload: string
+  let medium: 'd' | 'f' | 's'
+  let format: 24 | 32 | 100
+  let dimensions = ''
+  if ('png' in source) {
+    payload = source.png
+    medium = 'd'
+    format = 100
+  } else if ('rgba' in source) {
+    payload = source.rgba
+    medium = 'd'
+    format = 32
+    dimensions = `,s=${source.width},v=${source.height}`
+  } else {
+    const name = 'file' in source ? source.file : source.shm
+    payload = Buffer.from(name).toString('base64')
+    medium = 'file' in source ? 'f' : 's'
+    format = source.format === 'png' ? 100 : source.format === 'rgb' ? 24 : 32
+    if (source.format !== 'png') dimensions = `,s=${source.width},v=${source.height}`
+  }
+  const chunks: string[] = []
+  for (let offset = 0; offset < payload.length || offset === 0; offset += 4_096)
+    chunks.push(payload.slice(offset, offset + 4_096))
+  const { columns, rows, sourceLeft, sourceTop, sourceColumns, sourceRows } = placement
+  const clipped = sourceLeft !== 0 || sourceTop !== 0 || columns !== sourceColumns || rows !== sourceRows
+  const pixels = imagePixelSize(source)
+  if (clipped && !pixels) return []
+  const crop = clipped
+    ? (() => {
+        const x = Math.floor(sourceLeft * pixels!.width / sourceColumns)
+        const y = Math.floor(sourceTop * pixels!.height / sourceRows)
+        const right = Math.ceil((sourceLeft + columns) * pixels!.width / sourceColumns)
+        const bottom = Math.ceil((sourceTop + rows) * pixels!.height / sourceRows)
+        return `,x=${x},y=${y},w=${right - x},h=${bottom - y}`
+      })()
+    : ''
+  return chunks.map((chunk, index) => {
+    const more = index < chunks.length - 1 ? 1 : 0
+    const control = index === 0
+      ? `a=T,f=${format}${dimensions},t=${medium}${crop},c=${columns},r=${rows},C=1,i=${id},m=${more}`
+      : `m=${more}`
+    return wrapForMultiplexer(`\u001b_G${control};${chunk}\u001b\\`)
+  })
+}
+
+let nextTerminalImageId = 1
+
+function ModImage({ props }: { props: Record<string, unknown> }): React.ReactNode {
+  const terminal = React.useContext(TerminalWriteContext)
+  const source = props.source as ImageSource
+  const identity = imageSourceIdentity(source)
+  const sharedFrame = 'shm' in source ? source : undefined
+  const sharedSequence = React.useRef(0)
+  const stable = React.useMemo(() => ({
+    identity: sharedFrame ? `${identity}\0${++sharedSequence.current}` : identity,
+    source,
+  }), [identity, sharedFrame])
+  const id = React.useState(() => nextTerminalImageId++)[0]
+  const supported = terminal !== null && supportsTerminalImages(terminal.isTTY)
+  const renderedNode = React.useRef<DOMElement | null>(null)
+  const image = React.useMemo(() => supported
+    ? {
+        id,
+        identity: stable.identity,
+        sequences: (placement: TerminalImagePlacement) => kittyImageSequences(stable.source, placement, id),
+      }
+    : undefined, [id, stable, supported])
+  const imageRef = React.useRef(image)
+  imageRef.current = image
+  React.useLayoutEffect(() => {
+    const node = renderedNode.current
+    if (!node) return
+    if (image) node.terminalImage = image
+    else delete node.terminalImage
+    markDirty(node)
+    scheduleRenderFrom(node)
+  }, [image])
+  React.useLayoutEffect(() => () => {
+    const node = renderedNode.current
+    if (!node || node.terminalImage !== imageRef.current) return
+    delete node.terminalImage
+    markDirty(node)
+    scheduleRenderFrom(node)
+  }, [])
+  const element = React.useCallback((node: DOMElement | null) => {
+    renderedNode.current = node
+  }, [])
+  if (supported) return <Box ref={element} width={props.columns as number} height={props.rows as number} />
+  return <Box width={props.columns as number} height={props.rows as number} overflow="hidden">
+    <Text wrap="truncate-end">{props.alt as string}</Text>
+  </Box>
+}
+
 function RenderElementNode({
   node,
   pane,
   focusElements,
   keyElements,
   onInteract,
+  currentPane,
   onFocus,
   onError,
   hoverBoxes,
+  clientHandle,
   parentInline = false,
 }: {
   node: RenderElement
@@ -1052,9 +1604,11 @@ function RenderElementNode({
   focusElements: FocusElements
   keyElements: KeyElements
   onInteract: Props['onInteract']
+  currentPane: () => ModUiPane
   onFocus: Props['onFocus']
   onError?: Props['onError']
   hoverBoxes: ReadonlyMap<RenderElement, boolean>
+  clientHandle?: ModClientHandle
   parentInline?: boolean
 }): React.ReactNode {
   const inline = parentInline || node.type === 'Text' || node.type === 'Link'
@@ -1062,6 +1616,32 @@ function RenderElementNode({
   const theme = getTheme(themeName)
   const props = terminalStyles(node.props ?? {})
   const elementRef = useElementRegistration(keyElements, node.group?.plugin, props.key)
+  const markdownLinks = React.useRef(new Set<DOMElement>())
+  const registerMarkdownLink = React.useCallback((element: DOMElement, active: boolean) => {
+    if (active) markdownLinks.current.add(element)
+    else markdownLinks.current.delete(element)
+    const key = props.key
+    const plugin = node.press?.plugin
+    if (typeof key !== 'string' || !plugin) return
+    const id = keyElementId(plugin, key)
+    const focused = focusElements.current.get(key)
+    const keyed = keyElements.current.get(id)
+    if (active) {
+      if (focused) focused.add(element)
+      else focusElements.current.set(key, new Set([element]))
+      if (keyed) keyed.elements.add(element)
+      else keyElements.current.set(id, { plugin, key, elements: new Set([element]) })
+    } else {
+      focused?.delete(element)
+      if (focused?.size === 0) focusElements.current.delete(key)
+      keyed?.elements.delete(element)
+      if (keyed?.elements.size === 0) keyElements.current.delete(id)
+    }
+  }, [focusElements, keyElements, node.press?.plugin, props.key])
+  React.useLayoutEffect(() => () => {
+    for (const element of markdownLinks.current) registerMarkdownLink(element, false)
+    markdownLinks.current.clear()
+  }, [registerMarkdownLink])
   const group = groupOf(node)
   const groupHover = useHoverGroup(group)
   const localActive = React.useContext(LocalHoverContext)
@@ -1070,24 +1650,36 @@ function RenderElementNode({
     ? rawTextStyles(hoverStyles(node, active), theme)
     : hoverStyles(node, active)
   const canHeatGroup = group !== undefined && !parentInline
-  const children = node.children?.map((child, index) =>
-    typeof child === 'string'
-      ? inline ? child : <Text key={index}>{child}</Text>
-      : <RenderElementNode
-          key={child.type === 'Box' && hoverBoxes.get(child) === true
-            ? String(child.props?.key)
-            : index}
-          node={child}
-          pane={pane}
-          focusElements={focusElements}
-          keyElements={keyElements}
-          onInteract={onInteract}
-          onFocus={onFocus}
-          onError={onError}
-          hoverBoxes={hoverBoxes}
-          parentInline={inline}
-        />,
-  )
+  const children = node.children?.map((child, index) => {
+    if (typeof child === 'string') return inline ? child : <Text key={index}>{child}</Text>
+    const childKey = child.type === 'Client'
+      ? `${child.group!.plugin}\0${String(child.props!.key)}\0${String(child.props!.module)}`
+      : child.type === 'Image' && child.props?.key !== undefined
+        ? `${child.group!.plugin}\0${String(child.props.key)}`
+        : child.type === 'Box' && hoverBoxes.get(child) === true
+          ? String(child.props?.key)
+          : index
+    return <RenderElementNode
+      key={childKey}
+      node={child}
+      pane={pane}
+      focusElements={focusElements}
+      keyElements={keyElements}
+      onInteract={onInteract}
+      currentPane={currentPane}
+      onFocus={onFocus}
+      onError={onError}
+      hoverBoxes={hoverBoxes}
+      clientHandle={clientHandle}
+      parentInline={inline}
+    />
+  })
+  if (node.type === 'Client') {
+    return <ModClient node={node} pane={pane} focusElements={focusElements} keyElements={keyElements}
+      onFocus={onFocus} onError={onError} hoverBoxes={hoverBoxes} />
+  }
+  if (node.type === 'Raster') return <ModRaster props={props} />
+  if (node.type === 'Image') return <ModImage props={props} />
   if (node.type === 'Box') {
     const localScopeIsLive = hoverBoxes.get(node)
     if (localScopeIsLive !== undefined) {
@@ -1126,33 +1718,359 @@ function RenderElementNode({
     const content = node.children?.some(child => child !== '') ? children : label ?? props.href as string
     return <Link url={props.href as string} fallback={content}>{content}</Link>
   }
+  if (node.type === 'Markdown') {
+    const drawing = pane.drawing
+    const owner = pane.owner
+    const key = props.key as string | undefined
+    const press = node.press
+    const onLinkPress = drawing === undefined || key === undefined || press === undefined ? undefined : (href: string) => {
+      const current = currentPane()
+      if (current.owner !== owner || current.drawing !== drawing) return
+      void onInteract(current, drawing, press, 'link.press', key, href).catch(error => onError?.(error))
+    }
+    return <Box ref={elementRef} flexDirection="column" width="100%">
+      <Markdown
+        dimColor={props.dimColor as boolean | undefined}
+        allowedLinkProtocols={markdownLinkProtocols}
+        onLinkPress={onLinkPress}
+        pressableLinks={props.pressableLinks as readonly string[] | undefined}
+        registerPressableLink={key === undefined ? undefined : registerMarkdownLink}
+      >{props.text as string}</Markdown>
+    </Box>
+  }
   if (node.type === 'Code') {
     const source = props.source as string
     const language = props.language as string | undefined
     const path = props.path as string | undefined
     if (props.format === 'diff') {
-      return <ModDiff source={source} path={path} bodyColumns={pane.bodyColumns} />
+      return <ModDiff source={source} path={path}
+        wrap={props.wrap as 'wrap' | 'truncate-end' | undefined} bodyColumns={pane.bodyColumns} />
     }
-    return <HighlightedCodeFallback code={source} filePath={path ?? (language ? `code.${language}` : 'code.md')} />
+    return <ModCode source={source} language={language} path={path}
+      startLine={props.startLine as number | undefined}
+      wrap={props.wrap as 'wrap' | 'truncate-end' | undefined} />
   }
+  const interact = clientHandle === undefined
+    ? onInteract
+    : async (
+      _pane: ModUiPane,
+      _drawing: number,
+      callback: ModUiCallback,
+      kind: ModUiInteraction,
+      element: string,
+      value?: string,
+    ) => clientHandle.press(callback, kind, element, value)
   if (node.type === 'Button') {
-    return <ModButton node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={onInteract} onFocus={onFocus} onError={onError} active={active} handlers={canHeatGroup ? groupHover.handlers : {}} />
+    return <ModButton node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} active={active} handlers={canHeatGroup ? groupHover.handlers : {}} />
   }
   if (node.type === 'Select') {
-    return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={onInteract} onFocus={onFocus} onError={onError} />
+    return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} />
   }
-  return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={onInteract} onFocus={onFocus} onError={onError} />
+  return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} />
 }
 
-function ModDiff({ source, path, bodyColumns }: {
+function ModClient({
+  node, pane, focusElements, keyElements, onFocus, onError,
+}: {
+  node: RenderElement
+  pane: ModUiPane
+  focusElements: FocusElements
+  keyElements: KeyElements
+  onFocus: Props['onFocus']
+  onError?: Props['onError']
+  hoverBoxes: ReadonlyMap<RenderElement, boolean>
+}): React.ReactNode {
+  const inputAllowed = React.useContext(PersonInputContext)
+  const reportMetrics = React.useContext(PaneLayoutContext)
+  const props = node.props!
+  const key = props.key as string
+  const plugin = node.group!.plugin
+  const module = props.module as string
+  const element = React.useRef<DOMElement>(null)
+  const handle = React.useRef<ModClientHandle | undefined>(undefined)
+  const releasePointer = React.useRef<(() => void) | undefined>(undefined)
+  const mounted = React.useRef<{ pane: ModUiPane; node: RenderElement } | undefined>(undefined)
+  const lastSize = React.useRef<[number, number] | undefined>(undefined)
+  const latestError = React.useRef(onError)
+  latestError.current = onError
+  const [frame, setFrame] = useState<ValidatedTree>()
+  const register = useElementRegistration(keyElements, plugin, key, focusElements)
+  const elementRef = React.useCallback((value: DOMElement | null) => {
+    if (element.current) clientRegions.delete(element.current)
+    element.current = value
+    if (value) clientRegions.add(value)
+    register(value)
+  }, [register])
+
+  React.useLayoutEffect(() => {
+    setFrame(undefined)
+    if (!pane.clients) {
+      latestError.current?.(new Error('Client cannot mount without a terminal clients host'))
+      return
+    }
+    let active = true
+    let next: ModClientHandle
+    try {
+      next = pane.clients.mount(pane, node, tree => {
+        if (!active) return
+        try {
+          const validated = validateModRenderTree(tree)
+          const visit = (current: RenderElement): void => {
+            if (current.type === 'Client') throw new TypeError('A Client module cannot render another Client')
+            for (const child of current.children ?? []) if (typeof child !== 'string') visit(child)
+          }
+          visit(validated.tree)
+          setFrame(validated)
+        } catch (error) {
+          active = false
+          setFrame(undefined)
+          releasePointer.current?.()
+          const failed = handle.current
+          handle.current = undefined
+          void failed?.dispose().catch(failure => latestError.current?.(failure))
+          latestError.current?.(error)
+        }
+      }, error => {
+        active = false
+        setFrame(undefined)
+        handle.current = undefined
+        releasePointer.current?.()
+        latestError.current?.(error)
+      })
+    } catch (error) {
+      latestError.current?.(error)
+      return
+    }
+    if (!active) {
+      void next.dispose().catch(error => latestError.current?.(error))
+      return
+    }
+    handle.current = next
+    mounted.current = { pane, node }
+    lastSize.current = undefined
+    // The host owns failure reporting through the onError passed to mount.
+    void next.ready.catch(() => {})
+    return () => {
+      active = false
+      if (handle.current === next) {
+        handle.current = undefined
+        mounted.current = undefined
+        lastSize.current = undefined
+      }
+      void next.dispose().catch(error => latestError.current?.(error))
+    }
+  }, [pane.clients, pane.owner, plugin, key, module])
+
+  React.useLayoutEffect(() => {
+    const current = handle.current
+    const previous = mounted.current
+    if (!current || !previous || previous.pane === pane && previous.node === node) return
+    mounted.current = { pane, node }
+    void current.update(pane, node).catch(error => latestError.current?.(error))
+  }, [pane, node])
+
+  React.useLayoutEffect(() => {
+    const current = handle.current
+    const layout = element.current?.yogaNode
+    if (!current || !layout) return
+    const columns = Math.max(0, Math.floor(layout.getComputedWidth()))
+    const rows = Math.max(0, Math.floor(layout.getComputedHeight()))
+    if (lastSize.current?.[0] === columns && lastSize.current[1] === rows) return
+    lastSize.current = [columns, rows]
+    void current.resize(columns, rows).catch(error => latestError.current?.(error))
+  })
+  React.useEffect(() => { reportMetrics?.() }, [frame, reportMetrics])
+
+  const run = (operation: Promise<unknown>) => {
+    void operation.catch(error => latestError.current?.(error))
+  }
+  const { internal_eventEmitter } = useStdin()
+  React.useEffect(() => {
+    if (!internal_eventEmitter || !inputAllowed || !pane.visible) return
+    let captured = false
+    let hovered = false
+    let lastMove = { x: 0, y: 0 }
+    const wheel = (event: InputEvent) => {
+      if (captured && (event.key.wheelUp || event.key.wheelDown)) event.stopImmediatePropagation()
+    }
+    const release = () => {
+      if (captured) clientPointerCapture.delete(internal_eventEmitter)
+      captured = false
+      internal_eventEmitter.removeListener('input', wheel)
+    }
+    releasePointer.current = release
+    const pointer = (event: PointerEvent) => {
+      const current = handle.current
+      const region = element.current
+      const rect = region && nodeCache.get(region)
+      if (!current || !region || !rect) { release(); return }
+      const owner = clientPointerCapture.get(internal_eventEmitter)
+      if (owner && owner !== region) return
+      let hit: DOMElement | undefined = hitTest(getRootNode(region), event.col, event.row) ?? undefined
+      let localControl = false
+      while (hit && hit !== region) {
+        if (typeof hit.attributes.tabIndex === 'number' || hit._eventHandlers?.onClick) localControl = true
+        hit = hit.parentNode
+      }
+      if (event.type === 'move') {
+        if (hit && !hovered) {
+          lastMove = { x: event.col - rect.x, y: event.row - rect.y }
+          void current.pointer({ type: 'enter', ...lastMove }).catch(error => latestError.current?.(error))
+        } else if (!hit && hovered) {
+          void current.pointer({ type: 'leave', ...lastMove }).catch(error => latestError.current?.(error))
+        }
+        hovered = !!hit
+      }
+      // Hover belongs to the whole region; local controls keep their clicks.
+      if (!captured && (!hit || localControl && event.type !== 'move')) return
+      if (event.type === 'move') lastMove = { x: event.col - rect.x, y: event.row - rect.y }
+      if (captured || event.type !== 'move' || event.button !== 3) event.stopImmediatePropagation()
+      if (event.type === 'down') {
+        hovered = true
+        lastMove = { x: event.col - rect.x, y: event.row - rect.y }
+        captured = true
+        clientPointerCapture.set(internal_eventEmitter, region)
+        internal_eventEmitter.removeListener('input', wheel)
+        internal_eventEmitter.prependListener('input', wheel)
+        getFocusManager(region).handleClickFocus(region)
+      }
+      if (event.type === 'up') release()
+      void current.pointer({
+        type: event.type, x: event.col - rect.x, y: event.row - rect.y,
+        ...(event.button < 3 ? { button: ['left', 'middle', 'right'][event.button] } : {}),
+        ...(event.shift ? { shift: true } : {}),
+        ...(event.alt ? { alt: true } : {}),
+        ...(event.ctrl ? { ctrl: true } : {}),
+      }).catch(error => latestError.current?.(error))
+    }
+    internal_eventEmitter.prependListener('pointer', pointer)
+    internal_eventEmitter.on('terminalblur', release)
+    return () => {
+      release()
+      if (releasePointer.current === release) releasePointer.current = undefined
+      internal_eventEmitter.removeListener('pointer', pointer)
+      internal_eventEmitter.removeListener('terminalblur', release)
+    }
+  }, [internal_eventEmitter, inputAllowed, pane.visible, pane.owner, module, key, plugin])
+  const keyDown = (event: KeyboardEvent) => {
+    const current = handle.current
+    if (!current || !inputAllowed || !pane.visible || event.currentTarget !== event.target || event.key === 'escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    run(current.key({
+      key: event.key,
+      ...(event.ctrl ? { ctrl: true as const } : {}),
+      ...(event.shift ? { shift: true as const } : {}),
+      ...(event.meta ? { meta: true as const } : {}),
+    }))
+  }
+  const style = {
+    width: props.width,
+    height: props.height,
+    flexGrow: props.flexGrow,
+  } as React.ComponentProps<typeof Box>
+  return <Box
+    {...style}
+    ref={elementRef}
+    flexDirection="column"
+    overflow="hidden"
+    tabIndex={pane.focused ? 0 : -1}
+    onFocus={event => {
+      if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)
+    }}
+    onKeyDown={keyDown}
+  >
+    {frame && <RenderElementNode
+      node={frame.tree}
+      pane={pane}
+      focusElements={focusElements}
+      keyElements={keyElements}
+      onInteract={async () => {}}
+      currentPane={() => pane}
+      onFocus={async () => onFocus(pane, key)}
+      onError={onError}
+      hoverBoxes={frame.hoverBoxes}
+      clientHandle={handle.current}
+    />}
+  </Box>
+}
+
+function ModCode({ source, language, path, startLine, wrap }: {
+  source: string; language?: string; path?: string; startLine?: number; wrap?: 'wrap' | 'truncate-end'
+}): React.ReactNode {
+  const [highlighter, setHighlighter] = useState<CliHighlight | null>(null)
+  React.useEffect(() => {
+    let mounted = true
+    void getCliHighlightPromise().then(value => { if (mounted) setHighlighter(value) })
+    return () => { mounted = false }
+  }, [])
+  const reportMetrics = React.useContext(PaneLayoutContext)
+  React.useEffect(() => { reportMetrics?.() }, [reportMetrics])
+  const lines = useMemo(() => {
+    const code = convertLeadingTabsToSpaces(source)
+    const firstLine = code.split('\n')[0]
+    const filenames: Record<string, string> = {
+      Dockerfile: 'dockerfile', Makefile: 'makefile', Rakefile: 'ruby', Gemfile: 'ruby', 'CMakeLists.txt': 'cmake',
+    }
+    let resolved = language ?? filenames[basename(path ?? '')] ?? extname(path ?? '').slice(1)
+    if (language === undefined && !highlighter?.supportsLanguage(resolved) && firstLine?.startsWith('#!')) {
+      const interpreter = firstLine.match(/\b(bash|sh|python[\d.]*|node|ruby|perl)\b/)?.[1]
+      resolved = interpreter?.startsWith('python') ? 'python'
+        : interpreter === 'node' ? 'javascript'
+        : interpreter === 'sh' ? 'bash' : interpreter ?? ''
+    }
+    const highlighted = resolved && highlighter?.supportsLanguage(resolved)
+      ? highlighter.highlight(code, { language: resolved, ignoreIllegals: true })
+      : code
+    // Reopen multiline token styles at newlines without adding any soft wraps.
+    return wrapAnsi(highlighted, MAX_TOTAL_TEXT, { hard: true, trim: false, wordWrap: false }).split('\n')
+  }, [source, language, path, highlighter])
+  const digits = String((startLine ?? 1) + lines.length - 1).length
+  return <Box flexDirection="column" width="100%">
+    {lines.map((line, index) => <Box key={index} minHeight={1}>
+      {startLine !== undefined && <Box width={digits} marginRight={1} flexShrink={0} justifyContent="flex-end">
+        <Text dimColor>{startLine + index}</Text>
+      </Box>}
+      <Text wrap={wrap}><Ansi>{line}</Ansi></Text>
+    </Box>)}
+  </Box>
+}
+
+function ModDiff({ source, path, wrap, bodyColumns }: {
   source: string
   path?: string
+  wrap?: 'wrap' | 'truncate-end'
   bodyColumns: number
 }): React.ReactNode {
+  const [theme] = useTheme()
+  const settings = useSettings()
   const ref = React.useRef<DOMElement>(null)
   const [columns, setColumns] = useState(bodyColumns)
   const reportMetrics = React.useContext(PaneLayoutContext)
   const patches = useMemo(() => parsePatch(source).flatMap(file => file.hunks), [source])
+  const truncated = useMemo(() => {
+    if (wrap !== 'truncate-end') return undefined
+    const ColorDiff = settings.syntaxHighlightingDisabled ? null : expectColorDiff()
+    return patches.flatMap(patch => {
+      const digits = String(Math.max(patch.oldStart + patch.oldLines, patch.newStart + patch.newLines)).length
+      // Ask the existing highlighter for unwrapped lines; Ink owns truncation.
+      const width = Math.max(1, ...patch.lines.map(line => stringWidth(line) + digits + 3))
+      const colored = ColorDiff && new ColorDiff(patch, null, path ?? 'change.diff', null).render(theme, width, false)
+      if (colored) return colored.map((line, index) => <Text key={`${patch.oldStart}:${patch.newStart}:${index}`} wrap="truncate-end"><Ansi>{line}</Ansi></Text>)
+      let oldLine = patch.oldStart
+      let newLine = patch.newStart
+      return patch.lines.filter(line => /^[ +\-]/.test(line)).map((line, index) => {
+        const marker = line[0]!
+        const number = marker === '-' ? oldLine : newLine
+        if (marker !== '+') oldLine++
+        if (marker !== '-') newLine++
+        return <Box key={`${patch.oldStart}:${patch.newStart}:${index}`}>
+          <Box width={digits + 1} flexShrink={0} justifyContent="flex-end"><Text dimColor>{number}</Text></Box>
+          <Text wrap="truncate-end" color={marker === '+' ? 'diffAdded' : marker === '-' ? 'diffRemoved' : undefined}> {marker}{line.slice(1)}</Text>
+        </Box>
+      })
+    })
+  }, [wrap, patches, path, theme, settings.syntaxHighlightingDisabled])
   React.useLayoutEffect(() => {
     const width = ref.current?.yogaNode?.getComputedWidth()
     if (width !== undefined && width > 0) {
@@ -1163,7 +2081,7 @@ function ModDiff({ source, path, bodyColumns }: {
   // Child layout effects run before ScrollBox reattaches its viewport ref.
   React.useEffect(() => { reportMetrics?.() }, [columns, reportMetrics])
   return <Box ref={ref} flexDirection="column" width="100%" maxWidth={bodyColumns}>
-    {patches.map((patch, index) => <StructuredDiff
+    {truncated ?? patches.map((patch, index) => <StructuredDiff
       key={index}
       patch={patch}
       dim={false}
@@ -1303,13 +2221,15 @@ function ModSelect({
     : Math.min(selectedIndex, options.length - 1)
   if (drawing !== pane.drawing) setDrawing(pane.drawing)
   if (index !== selectedIndex) setIndex(index)
+  const indexRef = React.useRef(index)
+  indexRef.current = index
   const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
   const select = () => {
     if (!inputAllowed || pane.drawing === undefined) return
-    const value = options[index]!.value
+    const value = options[indexRef.current]!.value
     void onInteract(pane, pane.drawing, press, 'select', key, value).catch(error => onError?.(error))
   }
   const handle = (event: KeyboardEvent) => {
@@ -1317,11 +2237,13 @@ function ModSelect({
     if (event.key === 'up') {
       event.preventDefault()
       event.stopPropagation()
-      setIndex(current => (current + options.length - 1) % options.length)
+      indexRef.current = (indexRef.current + options.length - 1) % options.length
+      setIndex(indexRef.current)
     } else if (event.key === 'down') {
       event.preventDefault()
       event.stopPropagation()
-      setIndex(current => (current + 1) % options.length)
+      indexRef.current = (indexRef.current + 1) % options.length
+      setIndex(indexRef.current)
     } else if (event.key === 'return' || event.key === ' ') {
       event.preventDefault()
       event.stopPropagation()
@@ -1349,52 +2271,72 @@ function ModSelect({
 }
 
 function ModInput({
-  node, pane, focusElements, keyElements, onInteract, onFocus, onError,
+  node, pane, focusElements, keyElements, onInteract, currentPane, onFocus, onError,
 }: {
   node: RenderElement
   pane: ModUiPane
   focusElements: FocusElements
   keyElements: KeyElements
   onInteract: Props['onInteract']
+  currentPane: () => ModUiPane
   onFocus: Props['onFocus']
   onError?: Props['onError']
 }): React.ReactNode {
   const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
-  const [value, setValue] = useState((props.value as string | undefined) ?? '')
+  const controlledValue = props.value as string | undefined
+  const [value, setValue] = useState(controlledValue ?? '')
   const valueRef = React.useRef(value)
-  const [drawing, setDrawing] = useState(pane.drawing)
-  if (drawing !== pane.drawing) {
-    setDrawing(pane.drawing)
-    if (props.value !== undefined) {
-      valueRef.current = props.value as string
-      setValue(valueRef.current)
-    }
+  const cursorRef = React.useRef(value.length)
+  const drawnValueRef = React.useRef(controlledValue)
+  if (controlledValue !== drawnValueRef.current) {
+    drawnValueRef.current = controlledValue
+    const next = controlledValue ?? ''
+    valueRef.current = next
+    cursorRef.current = next.length
+    setValue(next)
   }
   const [focused, setFocused] = useState(false)
   const key = props.key as string
   const press = node.press!
+  const owner = pane.owner
+  const drawing = pane.drawing
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
   const send = (kind: 'change' | 'submit', next: string) => {
-    if (!inputAllowed || pane.drawing === undefined) return
+    const current = currentPane()
+    if (!inputAllowed || drawing === undefined || current.owner !== owner || current.drawing !== drawing) return
     void onInteract(
-      pane,
-      pane.drawing,
+      current,
+      drawing,
       press,
       kind === 'change' ? 'input.change' : 'input.submit',
       key,
       next,
     ).catch(error => onError?.(error))
   }
+  const replace = (next: string, cursor: number) => {
+    valueRef.current = next
+    cursorRef.current = cursor
+    setValue(next)
+    send('change', next)
+  }
+  const boundaries = () => [
+    ...getGraphemeSegmenter().segment(valueRef.current),
+  ].map(segment => segment.index).concat(valueRef.current.length)
+  const previousBoundary = (cursor: number) => {
+    const points = boundaries()
+    return points.findLast(point => point < cursor) ?? 0
+  }
+  const nextBoundary = (cursor: number) =>
+    boundaries().find(point => point > cursor) ?? valueRef.current.length
   const handle = (event: KeyboardEvent) => {
     if (!pane.focused) return
     if (event.text !== undefined) {
       event.preventDefault()
       event.stopPropagation()
-      const next = valueRef.current + event.text
-      valueRef.current = next
-      setValue(next)
-      send('change', next)
+      const cursor = cursorRef.current
+      const next = valueRef.current.slice(0, cursor) + event.text + valueRef.current.slice(cursor)
+      replace(next, cursor + event.text.length)
       return
     }
     if (event.key === 'return') {
@@ -1403,19 +2345,28 @@ function ModInput({
       send('submit', valueRef.current)
       return
     }
-    if (['up', 'down', 'left', 'right', 'home', 'end'].includes(event.key) &&
-        !event.ctrl && !event.meta && !event.superKey) {
+    if (!event.ctrl && !event.meta && !event.superKey &&
+        ['up', 'down', 'left', 'right', 'home', 'end'].includes(event.key)) {
       event.preventDefault()
       event.stopPropagation()
+      if (event.key === 'left') cursorRef.current = previousBoundary(cursorRef.current)
+      else if (event.key === 'right') cursorRef.current = nextBoundary(cursorRef.current)
+      else if (event.key === 'home') cursorRef.current = 0
+      else if (event.key === 'end') cursorRef.current = valueRef.current.length
       return
     }
     if (event.key !== 'backspace' && event.key !== 'delete') return
     event.preventDefault()
     event.stopPropagation()
-    const next = valueRef.current.slice(0, -1)
-    valueRef.current = next
-    setValue(next)
-    send('change', next)
+    const cursor = cursorRef.current
+    if (event.key === 'backspace') {
+      if (cursor === 0) return
+      const previous = previousBoundary(cursor)
+      replace(valueRef.current.slice(0, previous) + valueRef.current.slice(cursor), previous)
+    } else {
+      if (cursor === valueRef.current.length) return
+      replace(valueRef.current.slice(0, cursor) + valueRef.current.slice(nextBoundary(cursor)), cursor)
+    }
   }
   return (
     <Box
@@ -1430,8 +2381,8 @@ function ModInput({
       onKeyDown={handle}
     >
       {props.label ? <Text>{String(props.label)}: </Text> : null}
-      <Text inverse={focused}>{value || String(props.placeholder ?? '')}</Text>
-      <Text dimColor> {String(props.submitLabel ?? 'submit')}</Text>
+      <Text inverse={focused} dimColor={!value}>{value || String(props.placeholder ?? '')}</Text>
+      {focused && <Text dimColor> {String(props.submitLabel ?? 'submit')}</Text>}
     </Box>
   )
 }

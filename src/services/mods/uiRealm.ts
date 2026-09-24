@@ -41,18 +41,52 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
     return [value]
   }
 
+  function validateSvg(props: Props): void {
+    const allowed = new Set(['source', 'alt', 'width', 'height', 'isInteractive'])
+    for (const key of Object.keys(props)) {
+      if (!allowed.has(key)) throw new Error(`Unsupported Svg prop ${key}`)
+    }
+    if (typeof props.source !== 'string') throw new Error('Svg source must be a string')
+    if (props.source.length > 131_072) throw new Error('Svg source exceeds 131072 characters')
+    const source = props.source.trim()
+    if (!/^<svg(?:\s[^<>]*?)?>[\s\S]*<\/svg>$/.test(source))
+      throw new Error('Svg source must be a complete SVG document')
+    if (/<\s*(?:script|foreignObject|iframe|object|embed)(?:\s|>)/i.test(source) ||
+        /\son[a-z][a-z0-9:_-]*\s*=/i.test(source) ||
+        /(?:href|src)\s*=\s*(['"])\s*(?:javascript:|data\s*:\s*text\/html)/i.test(source) ||
+        /<\s*style(?:\s|>)[\s\S]*(?:@import|url\s*\()/i.test(source))
+      throw new Error('Svg source contains active content')
+    if (typeof props.alt !== 'string') throw new Error('Svg alt must be a string')
+    for (const key of ['width', 'height']) {
+      const value = props[key]
+      if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0))
+        throw new Error(`Svg ${key} must be positive finite CSS pixels`)
+    }
+    if (props.isInteractive !== undefined && typeof props.isInteractive !== 'boolean')
+      throw new Error('Svg isInteractive must be a boolean')
+  }
+
   function element(type: string): Constructor {
     return Object.freeze((value: Props = {}) => {
       const props = ownProps(value)
+      if (type === 'Svg') validateSvg(props)
       const children = childrenOf(props.children)
+      if (type === 'Svg' && props.children !== undefined) throw new Error('Svg is a leaf element')
       const hover = props.hover
-      const handlers = { press: props.onPress, input: props.onInput, submit: props.onSubmit, select: props.onSelect }
+      const handlers = {
+        press: props.onPress,
+        input: props.onInput,
+        submit: props.onSubmit,
+        select: props.onSelect,
+        link: props.onLinkPress,
+      }
       delete props.children
       delete props.hover
       delete props.onPress
       delete props.onInput
       delete props.onSubmit
       delete props.onSelect
+      delete props.onLinkPress
       let callback: Callback | undefined
       if (type === 'Button') {
         const label = props.label ?? (children.length === 1 && typeof children[0] === 'string' ? children[0] : undefined)
@@ -74,6 +108,12 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
         callback = event => event.kind === 'submit'
           ? submit(event.value, event)
           : input?.(event.value, event)
+      } else if (type === 'Markdown' && handlers.link !== undefined) {
+        if (typeof handlers.link !== 'function') throw new Error('Markdown onLinkPress must be a callback')
+        if (typeof props.key !== 'string' || props.key.length === 0)
+          throw new Error('Markdown requires a non-empty key with onLinkPress')
+        const link = handlers.link as (link: unknown, event: Props) => unknown
+        callback = event => link(event.link, event)
       }
       const node: Node = { type, props: Object.freeze(props) }
       if (type === 'Box' || type === 'Text' || (type === 'Link' && children.some(child => child !== '')))
@@ -91,8 +131,9 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
   }
 
   const terminal = Object.freeze(Object.fromEntries(
-    ['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Client', 'Markdown'].map(name => [name, element(name)]),
+    ['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Client', 'Markdown', 'Raster', 'Image'].map(name => [name, element(name)]),
   )) as Readonly<Record<string, Constructor>>
+  const remote = Object.freeze({ ...terminal, Svg: element('Svg') })
   const Fragment = Object.freeze((props: Props = {}) => terminal.Box!({ flexDirection: 'column', children: props.children }))
   const h = Object.freeze((tag: unknown, props: unknown, ...children: unknown[]) => {
     if (typeof tag !== 'function') throw new Error('JSX requires an element constructor')
@@ -141,8 +182,10 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
     resolve: Object.freeze((input: Props) => {
       if (input.surface === 'terminal') return terminal
       if (input.surface === 'desktop' || input.surface === 'vscode' || input.surface === 'mobile')
-        return Object.freeze(Object.fromEntries(Object.entries(terminal).filter(([name]) =>
-          name !== 'Client' && (input.surface !== 'mobile' || (name !== 'Input' && name !== 'Select')))))
+        return Object.freeze(Object.fromEntries(Object.entries(remote).filter(([name]) =>
+          (input.surface === 'desktop' || name !== 'Client') &&
+          (input.surface !== 'mobile' || (name !== 'Input' && name !== 'Select')) &&
+          !['Raster', 'Image'].includes(name))))
       throw new Error('Unknown UI surface')
     }),
   })

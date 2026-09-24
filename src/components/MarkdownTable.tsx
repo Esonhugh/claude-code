@@ -31,6 +31,7 @@ const ANSI_BOLD_END = '\x1b[22m'
 type Props = {
   token: Tokens.Table
   highlight: CliHighlight | null
+  dimColor?: boolean
   /** Override terminal width (useful for testing) */
   forceWidth?: number
 }
@@ -75,6 +76,7 @@ function wrapText(
 export function MarkdownTable({
   token,
   highlight,
+  dimColor,
   forceWidth,
 }: Props): React.ReactNode {
   const [theme] = useTheme()
@@ -322,7 +324,7 @@ export function MarkdownTable({
 
   // Choose format based on available width
   if (useVerticalFormat) {
-    return <Ansi>{renderVerticalFormat()}</Ansi>
+    return <Ansi dimColor={dimColor}>{renderVerticalFormat()}</Ansi>
   }
 
   // Build the complete horizontal table as an array of strings
@@ -348,9 +350,9 @@ export function MarkdownTable({
   // If we're within SAFETY_MARGIN characters of the edge, use vertical format
   // to account for terminal resize race conditions.
   if (maxLineWidth > terminalWidth - SAFETY_MARGIN) {
-    return <Ansi>{renderVerticalFormat()}</Ansi>
+    return <Ansi dimColor={dimColor}>{renderVerticalFormat()}</Ansi>
   }
 
   // Render as a single Ansi block to prevent Ink from wrapping mid-row
-  return <Ansi>{tableLines.join('\n')}</Ansi>
+  return <Ansi dimColor={dimColor}>{tableLines.join('\n')}</Ansi>
 }

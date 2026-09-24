@@ -167,6 +167,7 @@ export function createModClientRealm(ui: {
         }
         if (input.op === 'resize') {
           if (instance.columns === input.columns && instance.rows === input.rows) return {}
+          instance.loops = 0
           instance.columns = input.columns!; instance.rows = input.rows!
           return render(instance)
         }

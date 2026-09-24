@@ -7,6 +7,7 @@ import { isMouseClicksDisabled } from '../../utils/fullscreen.js'
 import { logError } from '../../utils/log.js'
 import { EventEmitter } from '../events/emitter.js'
 import { InputEvent } from '../events/input-event.js'
+import { PointerEvent } from '../events/pointer-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import {
   INITIAL_STATE,
@@ -626,6 +627,10 @@ function processKeysInBatch(
 
 /** Exported for testing. Mutates app.props.selection and click/hover state. */
 export function handleMouseEvent(app: App, m: ParsedMouse): void {
+  const event = new PointerEvent(m)
+  app.internal_eventEmitter.emit('pointer', event)
+  if (event.didStopImmediatePropagation()) return
+
   // Allow disabling click handling while keeping wheel scroll (which goes
   // through the keybinding system as 'wheelup'/'wheeldown', not here).
   if (isMouseClicksDisabled()) return

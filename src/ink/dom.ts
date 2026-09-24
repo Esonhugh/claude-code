@@ -9,6 +9,21 @@ import type { Styles, TextStyles } from './styles.js'
 import { expandTabs } from './tabstops.js'
 import wrapText from './wrap-text.js'
 
+export type TerminalImagePlacement = {
+  columns: number
+  rows: number
+  sourceLeft: number
+  sourceTop: number
+  sourceColumns: number
+  sourceRows: number
+}
+
+export type TerminalImage = {
+  id: number
+  identity: string
+  sequences: (placement: TerminalImagePlacement) => string[]
+}
+
 type InkNode = {
   parentNode: DOMElement | undefined
   yogaNode?: LayoutNode
@@ -49,6 +64,7 @@ export type DOMElement = {
   // Stored separately from attributes so handler identity changes don't
   // mark dirty and defeat the blit optimization.
   _eventHandlers?: Record<string, unknown>
+  terminalImage?: TerminalImage
 
   // Scroll state for overflow: 'scroll' boxes. scrollTop is the number of
   // rows the content is scrolled down by. scrollHeight/scrollViewportHeight

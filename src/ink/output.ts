@@ -9,6 +9,8 @@ import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 import { reorderBidi } from './bidi.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
+import type { PlacedTerminalImage } from './frame.js'
+import type { TerminalImage } from './dom.js'
 import {
   blitRegion,
   CellWidth,
@@ -174,6 +176,7 @@ export default class Output {
   private screen: Screen
 
   private readonly operations: Operation[] = []
+  readonly terminalImages: PlacedTerminalImage[] = []
 
   private charCache: Map<string, ClusteredChar[]> = new Map()
 
@@ -200,6 +203,7 @@ export default class Output {
     this.height = height
     this.screen = screen
     this.operations.length = 0
+    this.terminalImages.length = 0
     resetScreen(screen, width, height)
     if (this.charCache.size > 16384) this.charCache.clear()
   }
@@ -262,6 +266,39 @@ export default class Output {
   unclip() {
     this.operations.push({
       type: 'unclip',
+    })
+  }
+
+  image(image: TerminalImage, x: number, y: number, width: number, height: number): void {
+    let x1 = Math.max(0, x)
+    let y1 = Math.max(0, y)
+    let x2 = Math.min(this.width, x + width)
+    let y2 = Math.min(this.height, y + height)
+    for (let index = this.operations.length - 1, depth = 0; index >= 0; index--) {
+      const operation = this.operations[index]!
+      if (operation.type === 'unclip') {
+        depth++
+      } else if (operation.type === 'clip') {
+        if (depth > 0) depth--
+        else {
+          x1 = Math.max(x1, operation.clip.x1 ?? -Infinity)
+          y1 = Math.max(y1, operation.clip.y1 ?? -Infinity)
+          x2 = Math.min(x2, operation.clip.x2 ?? Infinity)
+          y2 = Math.min(y2, operation.clip.y2 ?? Infinity)
+        }
+      }
+    }
+    if (x1 >= x2 || y1 >= y2) return
+    this.terminalImages.push({
+      ...image,
+      x: Math.floor(x1),
+      y: Math.floor(y1),
+      columns: Math.floor(x2 - x1),
+      rows: Math.floor(y2 - y1),
+      sourceLeft: Math.floor(x1 - x),
+      sourceTop: Math.floor(y1 - y),
+      sourceColumns: Math.floor(width),
+      sourceRows: Math.floor(height),
     })
   }
 

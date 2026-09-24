@@ -461,7 +461,8 @@ function renderNodeToOutput(
       cached.y === y &&
       cached.width === width &&
       cached.height === height &&
-      prevScreen
+      prevScreen &&
+      !subtreeHasTerminalImage(node)
     ) {
       const fx = Math.floor(x)
       const fy = Math.floor(y)
@@ -536,6 +537,10 @@ function renderNodeToOutput(
       nodeCache.set(node, { x, y, width, height, top: yogaTop })
       node.dirty = false
       return
+    }
+
+    if (node.terminalImage) {
+      output.image(node.terminalImage, x, y, width, height)
     }
 
     if (node.nodeName === 'ink-raw-ansi') {
@@ -1453,6 +1458,13 @@ function renderScrolledChildren(
       seenDirtyChild = true
     }
   }
+}
+
+function subtreeHasTerminalImage(node: DOMElement): boolean {
+  if (node.terminalImage) return true
+  return node.childNodes.some(child =>
+    child.nodeName !== '#text' && subtreeHasTerminalImage(child as DOMElement),
+  )
 }
 
 function dropSubtreeCache(node: DOMElement): void {
