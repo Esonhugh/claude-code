@@ -50,6 +50,10 @@ export function clearSessionCaches(
   preservedAgentIds: ReadonlySet<string> = new Set(),
 ): void {
   const hasPreserved = preservedAgentIds.size > 0
+  // Keep the query graph out of startup, but clear the post-turn slot synchronously.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { saveCacheSafeParams } = require('../../utils/forkedAgent.js') as typeof import('../../utils/forkedAgent.js')
+  saveCacheSafeParams(null)
   // Clear context caches
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
