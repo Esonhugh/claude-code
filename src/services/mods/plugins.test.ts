@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { LoadedPlugin } from '../../types/plugin.js'
+import { PluginManifestSchema } from '../../utils/plugins/schemas.js'
 import { SettingsSchema, type SettingsJson } from '../../utils/settings/types.js'
 import type { PrepareModPluginsSettings } from './plugins.js'
 import type { ModTier } from './types.js'
@@ -49,6 +50,21 @@ function source(value: Partial<SettingsJson>): SettingsJson {
   return value as SettingsJson
 }
 
+// Official agents-md plugin.json, with the description shortened for this fixture.
+const instructionFiles = {
+  type: 'string' as const,
+  title: 'Project instructions',
+  description: 'Instruction files to load',
+  required: false,
+  default: 'claude-md-or-agents-md',
+  options: [
+    'claude-md',
+    'claude-md-or-agents-md',
+    'claude-md-and-agents-md',
+    'managed-only',
+  ],
+}
+
 describe('prepareModPlugins', () => {
   beforeEach(() => {
     secureStorageData = {}
@@ -56,6 +72,30 @@ describe('prepareModPlugins', () => {
     secureStorage.update.mockClear()
     clearPluginOptionsCache()
   })
+  test('preserves the official agents-md legacy projectInstructions option for migration', () => {
+    const manifest = PluginManifestSchema().parse({
+      name: 'agents-md',
+      userConfig: { instructionFiles },
+    })
+    const result = prepareModPlugins(
+      [loadedPlugin({ name: 'agents-md', manifest })],
+      settings({
+        userSettings: source({
+          pluginConfigs: {
+            'agents-md@marketplace': {
+              options: { projectInstructions: 'both' },
+            },
+          },
+        }),
+      }),
+    )
+    expect(result.errors).toEqual([])
+    expect(result.inputs[0]?.options).toEqual({
+      instructionFiles: 'claude-md-or-agents-md',
+      projectInstructions: 'both',
+    })
+  })
+
   test('provider provenance uses the same effective tier even without an admitted hook module', () => {
     const plugin = loadedPlugin()
     const cases: Array<[Partial<PrepareModPluginsSettings>, ModTier]> = [

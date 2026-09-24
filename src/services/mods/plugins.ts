@@ -67,7 +67,19 @@ function prepareOptions(
     ...(hasSensitiveOptions ? loadPluginSecrets(storageId) : {}),
   }
   const options = resolvePluginOptions(schema, saved)
-  const validation = validateUserConfig(options, schema)
+  if (plugin.name === 'agents-md' && saved.projectInstructions !== undefined)
+    options.projectInstructions = saved.projectInstructions
+
+  const validation = validateUserConfig(
+    plugin.name === 'agents-md'
+      ? Object.fromEntries(
+          Object.entries(options).filter(
+            ([key]) => key !== 'projectInstructions',
+          ),
+        )
+      : options,
+    schema,
+  )
   if (!validation.valid) {
     return {
       error: diagnostic(
