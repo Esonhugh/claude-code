@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import type { SubagentStopHookInput } from '../../entrypoints/agentSdkTypes.js'
 
 const childProcessEnv = 'CLAUDE_CODE_RUN_AGENT_SUBAGENT_STOP_TEST_CHILD'
@@ -46,9 +46,23 @@ async function runIsolatedTests(): Promise<void> {
     | 'complete'
   let queryMode: QueryMode = 'throw'
   const recordedMessages: unknown[] = []
+  const queryContexts: Record<string, string>[] = []
+  const refreshCallbacks: Array<
+    (() => Promise<Record<string, string>>) | undefined
+  > = []
 
   mock.module('../../query.js', () => ({
-    query: async function* () {
+    query: async function* (params: import('../../query.js').QueryParams) {
+      params.onCacheSafeParams?.({
+        systemPrompt: params.systemPrompt,
+        userContext: params.userContext,
+        resolvedPromptContextBlocks: params.resolvedPromptContextBlocks,
+        systemContext: params.systemContext,
+        toolUseContext: params.toolUseContext,
+        forkContextMessages: params.messages,
+      })
+      queryContexts.push(params.userContext)
+      refreshCallbacks.push(params.refreshUserContext)
       if (queryMode === 'assistant_then_throw' || queryMode === 'model_error') {
         yield {
           type: 'assistant',
@@ -220,7 +234,96 @@ async function runIsolatedTests(): Promise<void> {
     resetStateForTests()
     queryMode = 'throw'
     recordedMessages.length = 0
+    queryContexts.length = 0
+    refreshCallbacks.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  test('query refresh reloads agent context while keeping explicit overrides and read-only omissions', async () => {
+    queryMode = 'complete'
+    const contextModule = await import('../../context.js')
+    const { EXPLORE_AGENT } = await import('./built-in/exploreAgent.js')
+    const { PLAN_AGENT } = await import('./built-in/planAgent.js')
+    const files = [
+      {
+        path: '/fixture/CLAUDE.md',
+        kind: 'project' as const,
+        content: 'original',
+      },
+    ]
+    const freshFiles = [{ ...files[0]!, content: 'fresh' }]
+    const original = contextModule.withUserContextInstructionFiles(
+      { claudeMd: 'original', currentDate: 'today' },
+      files,
+    )
+    const fresh = contextModule.withUserContextInstructionFiles(
+      { claudeMd: 'fresh', currentDate: 'tomorrow', extra: 'new' },
+      freshFiles,
+    )
+    const load = spyOn(contextModule, 'getUserContext').mockResolvedValue(original)
+    const override = {
+      agentId: testAgentId,
+      systemContext: {},
+      systemPrompt: asSystemPrompt([]),
+    }
+    try {
+      for (const agentDefinition of [
+        GENERAL_PURPOSE_AGENT,
+        EXPLORE_AGENT,
+        PLAN_AGENT,
+      ]) {
+        load.mockResolvedValue(original)
+        await drainAgent({ override, agentDefinition })
+        const refresh = refreshCallbacks.at(-1)
+        expect(refresh).toBeFunction()
+        load.mockResolvedValue(fresh)
+        const refreshed = await refresh!()
+        if (agentDefinition.omitClaudeMd) {
+          expect(queryContexts.at(-1)).toEqual({ currentDate: 'today' })
+          expect(refreshed).toEqual({ currentDate: 'tomorrow', extra: 'new' })
+          expect(
+            contextModule.getUserContextInstructionFiles(refreshed),
+          ).toEqual([])
+        } else {
+          expect(queryContexts.at(-1)).toBe(original)
+          expect(refreshed).toBe(fresh)
+          expect(
+            contextModule.getUserContextInstructionFiles(refreshed),
+          ).toEqual(freshFiles)
+        }
+        load.mockResolvedValue(
+          contextModule.withUserContextInstructionFiles(
+            { currentDate: 'after removal' },
+            [],
+          ),
+        )
+        const removed = await refresh!()
+        expect(removed).toEqual({ currentDate: 'after removal' })
+        expect(contextModule.getUserContextInstructionFiles(removed)).toEqual([])
+      }
+      expect(load).toHaveBeenCalledTimes(9)
+      for (const userContext of [original, { claudeMd: 'opaque override' }, {}]) {
+        await drainAgent({
+          override: { ...override, userContext },
+          agentDefinition: EXPLORE_AGENT,
+        })
+        const refresh = refreshCallbacks.at(-1)
+        expect(refresh).toBeFunction()
+        expect(await refresh!()).toBe(userContext)
+        expect(
+          contextModule.getUserContextInstructionFiles(await refresh!()),
+        ).toEqual(
+          userContext === original
+            ? files
+            : 'claudeMd' in userContext
+              ? undefined
+              : [],
+        )
+      }
+      expect(load).toHaveBeenCalledTimes(9)
+    } finally {
+      load.mockRestore()
+    }
   })
 
   test('resolved model bypasses later env and definition changes', async () => {

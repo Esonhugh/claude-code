@@ -137,6 +137,7 @@ export function createCacheSafeParams(
   return {
     systemPrompt: context.systemPrompt,
     userContext: context.userContext,
+    resolvedPromptContextBlocks: context.resolvedPromptContextBlocks,
     systemContext: context.systemContext,
     toolUseContext: context.toolUseContext,
     forkContextMessages: context.messages,
@@ -537,6 +538,7 @@ export async function runForkedAgent({
   const {
     systemPrompt,
     userContext,
+    resolvedPromptContextBlocks,
     systemContext,
     toolUseContext,
     forkContextMessages,
@@ -577,6 +579,7 @@ export async function runForkedAgent({
       messages: initialMessages,
       systemPrompt,
       userContext,
+      resolvedPromptContextBlocks,
       systemContext,
       canUseTool,
       toolUseContext: isolatedToolUseContext,

@@ -273,6 +273,10 @@ export async function resumeAgentBackground({
   const wrapWithCwd = <T>(fn: () => T): T =>
     resumedWorktreePath ? runWithCwdOverride(resumedWorktreePath, fn) : fn()
 
+  // A resumed execution reuses its logical ID but starts a new prompt-context
+  // lifetime. Running agents keep their pinned generation until this boundary.
+  toolUseContext.mods?.invalidatePromptContext(agentId)
+
   void runWithAgentContext(asyncAgentContext, () =>
     wrapWithCwd(() =>
       runAsyncAgentLifecycle({

@@ -23,6 +23,7 @@ import {
 
 let controlledPermissionMode: string | undefined
 let controlledAllowedTools: string[] | undefined
+let invalidatedAgentId: string | undefined
 
 mock.module('./runAgent.js', () => ({
   async *runAgent(params: {
@@ -137,6 +138,7 @@ async function runCase({
   }
   controlledPermissionMode = undefined
   controlledAllowedTools = undefined
+  invalidatedAgentId = undefined
 
   await resumeAgentBackground({
     agentId,
@@ -156,6 +158,11 @@ async function runCase({
       setAppState,
       toolUseId: `toolu_${agentId}`,
       contentReplacementState: undefined,
+      mods: {
+        invalidatePromptContext(id?: string) {
+          invalidatedAgentId = id
+        },
+      },
     } as never,
     canUseTool: async () => ({ behavior: 'allow' }),
   })
@@ -164,6 +171,7 @@ async function runCase({
   return {
     permissionMode: controlledPermissionMode,
     allowedTools: controlledAllowedTools,
+    invalidatedAgentId,
   }
 }
 
@@ -233,16 +241,13 @@ try {
     ).permissionMode,
     'acceptEdits',
   )
-  assert.deepEqual(
-    (
-      await runCase({
-        agentId: 'resume-definition-tools',
-        parentMode: 'default',
-        definitionTools: ['Read(example.txt)'],
-      })
-    ).allowedTools,
-    ['Read(example.txt)'],
-  )
+  const definitionTools = await runCase({
+    agentId: 'resume-definition-tools',
+    parentMode: 'default',
+    definitionTools: ['Read(example.txt)'],
+  })
+  assert.deepEqual(definitionTools.allowedTools, ['Read(example.txt)'])
+  assert.equal(definitionTools.invalidatedAgentId, 'resume-definition-tools')
 } finally {
   if (originalSettings) setSessionSettingsCache(originalSettings)
   else resetSettingsCache()

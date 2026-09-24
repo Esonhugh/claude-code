@@ -513,11 +513,12 @@ export async function* runAgent({
     agentDefinition.omitClaudeMd &&
     !override?.userContext &&
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_slim_subagent_claudemd', true)
-  const { claudeMd: _omittedClaudeMd, ...userContextNoClaudeMd } =
-    baseUserContext
-  const resolvedUserContext = shouldOmitClaudeMd
-    ? userContextNoClaudeMd
-    : baseUserContext
+  const resolveUserContext = (context: Record<string, string>) => {
+    if (!shouldOmitClaudeMd) return context
+    const { claudeMd: _omittedClaudeMd, ...userContextNoClaudeMd } = context
+    return userContextNoClaudeMd
+  }
+  const resolvedUserContext = resolveUserContext(baseUserContext)
 
   // Explore/Plan are read-only search agents — the parent-session-start
   // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
@@ -907,17 +908,6 @@ export async function* runAgent({
     agentToolUseContext.preserveToolUseResults = true
   }
 
-  // Expose cache-safe params for background summarization (prompt cache sharing)
-  if (onCacheSafeParams) {
-    onCacheSafeParams({
-      systemPrompt: agentSystemPrompt,
-      userContext: resolvedUserContext,
-      systemContext: resolvedSystemContext,
-      toolUseContext: agentToolUseContext,
-      forkContextMessages: initialMessages,
-    })
-  }
-
   // Record initial messages before the query loop starts, plus the agentType
   // so resume can route correctly when subagent_type is omitted. Both writes
   // are fire-and-forget — persistence failure shouldn't block the agent.
@@ -954,10 +944,13 @@ export async function* runAgent({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
+      refreshUserContext: async () =>
+        resolveUserContext(override?.userContext ?? await getUserContext()),
       systemContext: resolvedSystemContext,
       canUseTool,
       toolUseContext: agentToolUseContext,
       querySource,
+      onCacheSafeParams,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })
     while (true) {

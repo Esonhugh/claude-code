@@ -98,6 +98,7 @@ export async function* handleStopHooks(
   toolUseContext: ToolUseContext,
   querySource: QuerySource,
   stopHookActive?: boolean,
+  resolvedPromptContextBlocks?: REPLHookContext['resolvedPromptContextBlocks'],
 ): AsyncGenerator<
   | StreamEvent
   | RequestStartEvent
@@ -112,6 +113,7 @@ export async function* handleStopHooks(
     messages: [...messagesForQuery, ...assistantMessages],
     systemPrompt,
     userContext,
+    resolvedPromptContextBlocks,
     systemContext,
     toolUseContext,
     querySource,

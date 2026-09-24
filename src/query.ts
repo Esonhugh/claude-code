@@ -1273,6 +1273,7 @@ async function* queryLoop(
         systemContext,
         toolUseContext,
         querySource,
+        contextBlocks,
       )
     }
 
@@ -1544,6 +1545,7 @@ async function* queryLoop(
         toolUseContext,
         querySource,
         stopHookActive,
+        contextBlocks,
       )
 
       if (stopHookResult.preventContinuation) {
