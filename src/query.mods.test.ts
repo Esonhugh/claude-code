@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import ts from 'typescript'
 import { query, type QueryParams } from './query.js'
 import type { Tool, ToolUseContext } from './Tool.js'
+import { asAgentId } from './types/ids.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { createModsRuntime, type ModSnapshot } from './services/mods/runtime.js'
 import { createAssistantMessage, normalizeMessagesForAPI } from './utils/messages.js'
@@ -15,8 +16,10 @@ import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { getDefaultAppState } from './state/AppStateStore.js'
 import { resetStateForTests } from './bootstrap/state.js'
 import { createModTurnCompletion } from './services/mods/turnAdapter.js'
-import { createSystemMessage } from './utils/messages.js'
+import { createSystemMessage, createCompactBoundaryMessage, createUserMessage } from './utils/messages.js'
 import { prependUserContext } from './utils/api.js'
+import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
+import { reconcilePromptContext } from './services/mods/promptContext.js'
 
 function response(id: string, text: string, input = 10, output = 2): AssistantMessage {
   const message = createAssistantMessage({ content: text })
@@ -156,7 +159,7 @@ describe('public query prompt.context', () => {
     }
     await drain(query(h.params))
     expect(events).toEqual(['prompt.context'])
-    expect(released).toBe(2)
+    expect(released).toBe(1)
     expect(requests).toHaveLength(1)
     expect(h.params.userContext).toEqual({claudeMd:'private instruction',currentDate:'today'})
   })
@@ -834,5 +837,726 @@ test('mid-turn drain leaves an unadmitted plugin prompt in the host queue', asyn
     ])
   } finally {
     resetCommandQueue()
+  }
+})
+
+test('hands the actual instruction snapshot to hooks and preserves replacement provenance for forks', async () => {
+    const files = [{ path: '/fixture/CLAUDE.md', kind: 'project' as const, content: 'original marker' }]
+    const original = reconcilePromptContext({ blocks: [], instructionFiles: files }, { blocks: [], instructionFiles: [] })
+    const replacement = [{ ...files[0]!, content: 'replacement marker' }]
+    const h = harness(async function* () { yield response('context-sources', 'answer') })
+    h.params.userContext = withUserContextInstructionFiles(
+      Object.fromEntries(original.blocks.map(block => [block.name, block.text])), files,
+    )
+    h.context.mods = {
+      hasHooks: (event: string) => event === 'prompt.context',
+      capture: () => ({
+        hasHooks: (event: string) => event === 'prompt.context', release() {},
+        dispatch: async (_event: string, input: any, core: any, options: any) => {
+          expect(input.instructionFiles).toEqual(files)
+          const rewritten = options.restoreInput({ ...input, instructionFiles: replacement }, input)
+          expect(rewritten.blocks[0].text).toContain('replacement marker')
+          expect(rewritten.blocks[0].text).not.toContain('original marker')
+          return core(rewritten)
+        },
+      }),
+    } as unknown as NonNullable<ToolUseContext['mods']>
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      expect(forkContext.userContext.claudeMd).toContain('replacement marker')
+      expect(getUserContextInstructionFiles(forkContext.userContext)).toEqual(replacement)
+      return { messages, wasCompacted: false }
+    }
+    await drain(query(h.params))
+    expect(getUserContextInstructionFiles(h.params.userContext)).toEqual(files)
+  })
+
+test('renders ordered rewritten blocks once before the model without running classic prompt hooks', async () => {
+    const requests: any[] = []
+    const h = harness(async function* (request) {
+      requests.push(request)
+      yield response('context', 'answer')
+    })
+    const events: string[] = []
+    let released = 0
+    h.context.mods = {
+      hasHooks: (event: string) => event === 'prompt.context',
+      capture: () => ({
+        hasHooks: (event: string) => event === 'prompt.context',
+        release: () => { released++ },
+        dispatch: async (event: string, input: any, _core: any, options: any) => {
+          events.push(event)
+          expect(input).toEqual({blocks:[{name:'claudeMd',text:'private instruction'},{name:'currentDate',text:'today'}]})
+          const result = {blocks:[{name:'9',text:'first'},{name:'2',text:'second'},{name:'currentDate',text:'changed'}]}
+          options.validateResult(result, [])
+          return result
+        },
+      }),
+    } as unknown as NonNullable<ToolUseContext['mods']>
+    h.params.userContext = {claudeMd:'private instruction', currentDate:'today'}
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      expect(forkContext.userContext).toEqual({'9':'first','2':'second',currentDate:'changed'})
+      return {messages, wasCompacted:false}
+    }
+    await drain(query(h.params))
+    expect(events).toEqual(['prompt.context'])
+    expect(released).toBe(1)
+    expect(requests).toHaveLength(1)
+    expect(h.params.userContext).toEqual({claudeMd:'private instruction',currentDate:'today'})
+  })
+
+for (const ending of ['return', 'throw', 'close', 'abort'] as const) {
+  test(`prompt.context-only snapshot releases exactly once on ${ending}`, async () => {
+    const h = harness(async function* () { yield response('context-only', 'answer') })
+    h.snapshot.hasHooks = event => event === 'prompt.context'
+    h.context.mods!.hasHooks = h.snapshot.hasHooks
+    const error = new Error('context failed')
+    if (ending === 'throw') h.fail(error)
+    if (ending === 'abort') {
+      h.snapshot.dispatch = async (_event, _input, _core, options) => {
+        h.context.abortController.abort(error)
+        options!.signal!.throwIfAborted()
+      }
+    }
+    const iterator = query(h.params)
+    if (ending === 'throw' || ending === 'abort') await expect(drain(iterator)).rejects.toBe(error)
+    else if (ending === 'close') {
+      await iterator.next()
+      await iterator.return({ reason: 'consumer-return' })
+    } else await drain(iterator)
+    expect(h.order.filter(step => step === 'capture')).toHaveLength(1)
+    expect(h.order.filter(step => step === 'release')).toHaveLength(1)
+  })
+}
+
+test('real Worker caches context per input generation and invalidates through the saved engine', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-cache-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', ($,e) => ({blocks:[...e.blocks,{name:'calls',text:String(++calls)}]}));
+      on('tool.call', async $ => {await $.ui.invalidate('prompt.context');return {result:'invalidated'}});
+    }`)
+    await runtime.reconcile([{name:'context-cache',storageId:'context-cache@inline',pluginRoot:root,entrypoints:[entry]}])
+    const contexts: Record<string, string>[] = []
+    const h = harness(async function* () { yield response('cached-context', 'answer') })
+    h.context.mods = runtime
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    h.params.userContext = {date:'first'}
+    await drain(query(h.params))
+    h.params.userContext = {date:'changed but not invalidated'}
+    await drain(query(h.params))
+    h.context.agentId = asAgentId('child')
+    h.params.userContext = {}
+    await drain(query(h.params))
+    await drain(query(h.params))
+    expect(contexts).toEqual([
+      {date:'first',calls:'1'}, {date:'changed but not invalidated',calls:'2'},
+      {calls:'3'}, {calls:'3'},
+    ])
+    delete h.context.agentId
+    expect(await runtime.dispatch('tool.call', {}, async () => ({result:'core'}))).toEqual({result:'invalidated'})
+    h.params.userContext = {date:'refreshed'}
+    await drain(query(h.params))
+    h.context.agentId = asAgentId('child')
+    h.params.userContext = {}
+    await drain(query(h.params))
+    expect(contexts).toEqual([
+      {date:'first',calls:'1'}, {date:'changed but not invalidated',calls:'2'},
+      {calls:'3'}, {calls:'3'},
+      {date:'refreshed',calls:'4'}, {calls:'5'},
+    ])
+    expect(diagnostics).toEqual([])
+  } finally {
+    await runtime.dispose()
+    await rm(root, {recursive:true,force:true})
+  }
+})
+
+test('context invalidation while a real Worker is pending cannot repopulate the cleared cache', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-pending-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  const release = Promise.withResolvers<void>()
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', async ($,e,next) => {
+        const count=++calls;
+        await next(e);
+        return {blocks:[{name:'calls',text:String(count)}]};
+      });
+      on('tool.call', async $ => {await $.ui.invalidate('prompt.context');return {result:'invalidated'}});
+    }`)
+    await runtime.reconcile([{name:'pending-context',storageId:'pending-context@inline',pluginRoot:root,entrypoints:[entry]}])
+    const entered = Promise.withResolvers<void>()
+    const capture = runtime.capture
+    let first = true
+    runtime.capture = services => {
+      const snapshot = capture(services)
+      return { ...snapshot, dispatch: (event, input, core, options) => snapshot.dispatch(event,input,async value => {
+        if (event === 'prompt.context' && first) {
+          first = false
+          entered.resolve()
+          await release.promise
+        }
+        return core(value)
+      },options) }
+    }
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () { yield response('pending-context', 'answer') })
+    h.context.mods = runtime
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    const pending = drain(query(h.params))
+    await entered.promise
+    try {
+      expect(await runtime.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:'invalidated'})
+      await drain(query(h.params))
+    } finally { release.resolve(); await pending }
+    await drain(query(h.params))
+    expect(contexts).toEqual([{calls:'2'},{calls:'1'},{calls:'2'}])
+    expect(diagnostics).toEqual([])
+  } finally {
+    release.resolve()
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('context cache does not reuse a result for different explicit input', async () => {
+  const h = harness(async function* () { yield response('context-input', 'answer') })
+  h.snapshot.hasHooks = event => event === 'prompt.context'
+  Object.assign(h.snapshot, { promptContexts: new Map() })
+  h.rewrite((_result, input) => ({ blocks: input.blocks }))
+  const contexts: Record<string, string>[] = []
+  h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+    contexts.push(forkContext.userContext)
+    return { messages, wasCompacted: false }
+  }
+
+  h.params.userContext = { scenario: 'first' }
+  await drain(query(h.params))
+  h.params.userContext = { scenario: 'second' }
+  await drain(query(h.params))
+
+  expect(contexts).toEqual([{ scenario: 'first' }, { scenario: 'second' }])
+  expect(h.calls.map(call => call.event)).toEqual(['prompt.context', 'prompt.context'])
+})
+
+test('context cache evicts failed work and never exposes its owned blocks to consumers', async () => {
+  const h = harness(async function* () { yield response('cached', 'answer') })
+  h.snapshot.hasHooks = event => event === 'prompt.context'
+  const cache = new Map()
+  Object.assign(h.snapshot, {promptContexts:cache})
+  const error = new Error('read failed')
+  h.fail(error)
+  await expect(drain(query(h.params))).rejects.toBe(error)
+  expect(cache.size).toBe(0)
+  h.fail(undefined)
+  h.params.userContext = {context:'original'}
+  const contexts: Record<string,string>[] = []
+  h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+    contexts.push({...forkContext.userContext})
+    forkContext.userContext.context = 'mutated by consumer'
+    return {messages,wasCompacted:false}
+  }
+  await drain(query(h.params))
+  await drain(query(h.params))
+  expect(contexts).toEqual([{context:'original'},{context:'original'}])
+  expect(h.calls.map(call=>call.event)).toEqual(['prompt.context','prompt.context'])
+})
+
+test('an aborted context-cache waiter releases without cancelling the query computing the context', async () => {
+  const release = Promise.withResolvers<void>()
+  const entered = Promise.withResolvers<void>()
+  const h = harness(async function* () { yield response('waiter', 'answer') })
+  h.snapshot.hasHooks = event => event === 'prompt.context'
+  Object.assign(h.snapshot, {promptContexts:new Map()})
+  const dispatch = h.snapshot.dispatch
+  h.snapshot.dispatch = async (...args) => {
+    entered.resolve()
+    await release.promise
+    return dispatch(...args)
+  }
+  const first = drain(query(h.params))
+  await entered.promise
+  const controller = new AbortController()
+  const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controller}}))
+  const error = new Error('waiter cancelled')
+  let settled = false
+  const result = second.catch(reason => { settled = true; return reason })
+  controller.abort(error)
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(settled).toBe(true)
+    expect(await result).toBe(error)
+    expect(h.order.filter(step=>step==='release')).toHaveLength(1)
+    expect(h.context.abortController.signal.aborted).toBe(false)
+  } finally {
+    release.resolve()
+    await first
+    await result
+  }
+  expect(h.calls).toHaveLength(1)
+  expect(h.order.filter(step=>step==='release')).toHaveLength(2)
+})
+
+test('cancelling the context computation owner does not fail another live query waiting for it', async () => {
+  const release = Promise.withResolvers<void>()
+  const entered = Promise.withResolvers<void>()
+  const h = harness(async function* () {yield response('survivor','answer')})
+  h.snapshot.hasHooks = event => event === 'prompt.context'
+  Object.assign(h.snapshot,{promptContexts:new Map()})
+  let reads = 0
+  h.params.refreshUserContext = async () => {
+    if (++reads === 1) { entered.resolve(); await release.promise }
+    return {source:'fresh'}
+  }
+  const first = drain(query(h.params))
+  await entered.promise
+  const secondController = new AbortController()
+  const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:secondController}}))
+  const error = new Error('context owner cancelled')
+  const firstResult = first.catch(reason => reason)
+  const secondResult = second.catch(reason => reason)
+  h.context.abortController.abort(error)
+  release.resolve()
+  expect(await firstResult).toBe(error)
+  expect(await secondResult).toMatchObject({terminal:{reason:'completed'}})
+  expect(secondController.signal.aborted).toBe(false)
+  expect(reads).toBe(2)
+  expect(h.calls).toHaveLength(1)
+  expect(h.order.filter(step=>step==='release')).toHaveLength(2)
+})
+
+test('a live context waiter retries without waiting for the cancelled owner read to settle', async () => {
+  const release = Promise.withResolvers<void>()
+  const entered = Promise.withResolvers<void>()
+  const h = harness(async function* () {yield response('survivor','answer')})
+  h.snapshot.hasHooks = event => event === 'prompt.context'
+  const cache = new Map()
+  Object.assign(h.snapshot,{promptContexts:cache})
+  let reads = 0
+  h.params.refreshUserContext = async () => {
+    const read = ++reads
+    if (read === 1) { entered.resolve(); await release.promise }
+    return {source:`read-${read}`}
+  }
+  const first = drain(query(h.params)).catch(error => error)
+  await entered.promise
+  const ownerResult = cache.get(undefined).result.catch(() => {})
+  const controller = new AbortController()
+  const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controller}}))
+  const deadline = Promise.withResolvers<never>()
+  const timer = setTimeout(() => deadline.reject(new Error('live waiter is blocked on cancelled context read')), 1000)
+  try {
+    const reason = new Error('cancel raw context read')
+    h.context.abortController.abort(reason)
+    expect(await first).toBe(reason)
+    expect(await Promise.race([second,deadline.promise])).toMatchObject({terminal:{reason:'completed'}})
+    expect(reads).toBe(2)
+    expect(h.calls).toHaveLength(1)
+  } finally {
+    clearTimeout(timer)
+    release.resolve()
+    await ownerResult
+    await second
+  }
+  expect((await cache.get(undefined).result).blocks).toEqual([{name:'source',text:'read-2'}])
+  expect(h.order.filter(step => step === 'release')).toHaveLength(2)
+})
+
+test('a live query recomputes context after the real Worker computation owner is cancelled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-owner-cancel-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  const entered = Promise.withResolvers<void>()
+  const waiting = Promise.withResolvers<void>()
+  const cancelled = Promise.withResolvers<void>()
+  const snapshots: ModSnapshot[] = []
+  const releases: number[] = []
+  const controllers = [new AbortController(), new AbortController()]
+  const running: Promise<unknown>[] = []
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', async ($, e, next) => {
+        const call=++calls;
+        const result=await next(e);
+        return {blocks:[...result.blocks,{name:'calls',text:String(call)}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'owner-cancel',storageId:'owner-cancel@inline',pluginRoot:root,entrypoints:[entry]}])
+    const capture = runtime.capture
+    let coreCalls = 0
+    runtime.capture = services => {
+      const snapshot = capture(services)
+      const index = snapshots.length
+      snapshots.push(snapshot)
+      return {
+        ...snapshot,
+        get promptContexts() {
+          if (index === 1) waiting.resolve()
+          return snapshot.promptContexts
+        },
+        dispatch: (event, input, core, options) => snapshot.dispatch(event, input, async (value, signal) => {
+          if (event === 'prompt.context' && ++coreCalls === 1) {
+            entered.resolve()
+            await new Promise<void>(resolve => {
+              const abort = () => { cancelled.resolve(); resolve() }
+              signal!.addEventListener('abort', abort, {once:true})
+              if (signal!.aborted) abort()
+            })
+            signal!.throwIfAborted()
+          }
+          return core(value, signal)
+        }, options),
+        release() { releases.push(index); snapshot.release() },
+      }
+    }
+    let requests = 0
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () { requests++; yield response('survivor', 'answer') })
+    h.context.mods = runtime
+    h.context.abortController = controllers[0]!
+    let reads = 0
+    h.params.refreshUserContext = async () => ({source:`read-${++reads}`})
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    const first = drain(query(h.params)).catch(error => error)
+    running.push(first)
+    await entered.promise
+    const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}}))
+    running.push(second)
+    await waiting.promise
+    const reason = new Error('context owner cancelled')
+    controllers[0]!.abort(reason)
+    expect(await first).toBe(reason)
+    await cancelled.promise
+    expect(await second).toMatchObject({terminal:{reason:'completed'}})
+    expect(contexts).toEqual([{source:'read-2',calls:'2'}])
+    expect(requests).toBe(1)
+    expect(reads).toBe(2)
+    expect(coreCalls).toBe(2)
+    expect(controllers[1]!.signal.aborted).toBe(false)
+    expect(releases.toSorted()).toEqual([0,1])
+    expect(snapshots).toHaveLength(2)
+    for (const snapshot of snapshots)
+      await expect(snapshot.dispatch('prompt.context', {}, async input => input)).rejects.toThrow('snapshot released')
+    expect(diagnostics).toEqual([])
+  } finally {
+    for (const controller of controllers) controller.abort()
+    await Promise.allSettled(running)
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('concurrent queries share the pending context reread as well as its hook dispatch', async () => {
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const h = harness(async function* () {yield response('reread','answer')})
+  h.snapshot.hasHooks = event=>event==='prompt.context'
+  Object.assign(h.snapshot,{promptContexts:new Map()})
+  let reads = 0
+  h.params.refreshUserContext = async () => {
+    reads++
+    entered.resolve()
+    await release.promise
+    return {source:'fresh'}
+  }
+  const first = drain(query(h.params))
+  await entered.promise
+  const second = drain(query(h.params))
+  release.resolve()
+  await Promise.all([first,second])
+  expect(reads).toBe(1)
+  expect(h.calls).toHaveLength(1)
+})
+
+test('context cache follows session binding without resetting on an unchanged bind', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-binding-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', () => ({blocks:[{name:'calls',text:String(++calls)}]}));
+    }`)
+    const binding = {cwd:root,surface:'terminal' as const,isInteractive:false,sessionId:'first'}
+    await runtime.bind(binding)
+    await runtime.reconcile([{name:'binding',storageId:'binding@inline',pluginRoot:root,entrypoints:[entry]}])
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () { yield response('binding','answer') })
+    h.context.mods = runtime
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    await drain(query(h.params))
+    h.context.agentId = asAgentId('background')
+    await drain(query(h.params))
+    delete h.context.agentId
+    await runtime.bind({...binding})
+    await drain(query(h.params))
+    await runtime.bind({...binding,sessionId:'resumed'})
+    await drain(query(h.params))
+    h.context.agentId = asAgentId('background')
+    await drain(query(h.params))
+    expect(contexts).toEqual([{calls:'1'},{calls:'2'},{calls:'1'},{calls:'3'},{calls:'2'}])
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('same-ID conversation restore invalidates main context without disturbing admitted queries or background agents', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-resume-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', ($,e) => ({blocks:[...e.blocks,{name:'calls',text:String(++calls)}]}));
+    }`)
+    const binding = {cwd:root,surface:'terminal' as const,isInteractive:false,sessionId:'same-id'}
+    await runtime.bind(binding)
+    await runtime.reconcile([{name:'resume',storageId:'resume@inline',pluginRoot:root,entrypoints:[entry]}])
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () { yield response('resume','answer') })
+    h.context.mods = runtime
+    h.params.userContext = {source:'original'}
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    await drain(query(h.params))
+    h.context.agentId = asAgentId('background')
+    await drain(query(h.params))
+    delete h.context.agentId
+    const previous = runtime.capture()
+    try {
+      runtime.invalidatePromptContext()
+      await runtime.bind({...binding})
+      h.params.userContext = {source:'restored'}
+      await drain(query(h.params))
+      h.context.agentId = asAgentId('background')
+      await drain(query(h.params))
+      expect(await previous.promptContexts!.get(undefined)!.result).toEqual({blocks:[
+        {name:'source',text:'original'},{name:'calls',text:'1'},
+      ],instructionFiles:[]})
+      expect(contexts).toEqual([
+        {source:'original',calls:'1'}, {source:'original',calls:'2'},
+        {source:'restored',calls:'3'}, {source:'original',calls:'2'},
+      ])
+    } finally { previous.release() }
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('ending and rebinding the same conversation recomputes its context exactly once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-ended-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', () => ({blocks:[{name:'calls',text:String(++calls)}]}));
+    }`)
+    const binding = {cwd:root,surface:'terminal' as const,isInteractive:false,sessionId:'same-id'}
+    await runtime.bind(binding)
+    await runtime.reconcile([{name:'ended',storageId:'ended@inline',pluginRoot:root,entrypoints:[entry]}])
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () { yield response('ended','answer') })
+    h.context.mods = runtime
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    await drain(query(h.params))
+    await runtime.endSession('resume')
+    await runtime.bind({...binding})
+    await drain(query(h.params))
+    await runtime.bind({...binding})
+    await drain(query(h.params))
+    expect(contexts).toEqual([{calls:'1'},{calls:'2'},{calls:'2'}])
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('successful compaction rereads context before the same query sends its model request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-compact-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let calls=0; export function register(on) {
+      on('prompt.context', ($,e) => ({blocks:[...e.blocks,{name:'calls',text:String(++calls)}]}));
+      on('tool.call',async $=>{await $.ui.invalidate('prompt.context');return {result:'invalidated'}});
+    }`)
+    await runtime.reconcile([{name:'compact-context',storageId:'compact-context@inline',pluginRoot:root,entrypoints:[entry]}])
+    const h = harness(async function* () {yield response('compact-context','answer')})
+    h.context.mods = runtime
+    h.params.userContext = {source:'old'}
+    let refreshes = 0
+    let source = 'old'
+    Object.assign(h.params, {refreshUserContext:async()=>{refreshes++;return {source}}})
+    let compact = false
+    const boundary = createCompactBoundaryMessage('auto',100)
+    const summary = createUserMessage({content:'summary'})
+    const seen: Record<string,string>[] = []
+    const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
+    const compactParams: import('./utils/forkedAgent.js').CacheSafeParams[] = []
+    h.params.onCacheSafeParams = params => { captured.push(params) }
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      seen.push({...forkContext.userContext})
+      compactParams.push(forkContext)
+      if (!compact) return {messages,wasCompacted:false}
+      compact = false
+      source = 'reread'
+      return {wasCompacted:true,compactionResult:{
+        boundaryMarker:boundary,
+        summaryMessages:[summary],attachments:[],hookResults:[],
+      }}
+    }
+    await drain(query(h.params))
+    expect(refreshes).toBe(1)
+    compact = true
+    await drain(query(h.params))
+    expect(refreshes).toBe(2)
+    h.params.messages = [boundary, summary]
+    await drain(query(h.params))
+    expect(seen).toEqual([
+      {source:'old',calls:'1'}, {source:'old',calls:'1'}, {source:'reread',calls:'2'},
+    ])
+    expect(captured.map(params => params.userContext)).toEqual([
+      {source:'old',calls:'1'}, {source:'reread',calls:'2'}, {source:'reread',calls:'2'},
+    ])
+    expect(compactParams.map(params => params.resolvedPromptContextBlocks)).toEqual([
+      [{name:'source',text:'old'},{name:'calls',text:'1'}],
+      [{name:'source',text:'old'},{name:'calls',text:'1'}],
+      [{name:'source',text:'reread'},{name:'calls',text:'2'}],
+    ])
+    expect(refreshes).toBe(2)
+    expect(diagnostics).toEqual([])
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('a persisted compact boundary invalidates only its conversation once', async () => {
+  const h = harness(async function* () {yield response('boundary','answer')})
+  h.snapshot.hasHooks = event=>event==='prompt.context'
+  const cache = new Map()
+  const boundaries = new Map()
+  Object.assign(h.snapshot, {promptContexts:cache,promptContextBoundaries:boundaries})
+  let calls = 0
+  h.rewrite(value=>({...value,blocks:[{name:'calls',text:String(++calls)}]}))
+  const seen: Record<string,string>[] = []
+  h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+    seen.push(forkContext.userContext)
+    return {messages,wasCompacted:false}
+  }
+  await drain(query(h.params))
+  h.context.agentId = asAgentId('child')
+  await drain(query(h.params))
+  h.params.messages = [createCompactBoundaryMessage('manual',100),createUserMessage({content:'summary'})]
+  await drain(query(h.params))
+  await drain(query(h.params))
+  delete h.context.agentId
+  h.params.messages = []
+  await drain(query(h.params))
+  expect(seen).toEqual([{calls:'1'},{calls:'2'},{calls:'3'},{calls:'3'},{calls:'1'}])
+})
+
+test('real Worker prompt.context runs once for a snapshot across model recovery', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-query-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.context', async ($, e, next) => {
+        const value = await next({blocks:e.blocks.filter(block => block.name !== 'claudeMd')});
+        return {blocks:[...value.blocks, {name:'plugin',text:'extra'}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'context-query',storageId:'context-query@inline',pluginRoot:root,entrypoints:[entry]}])
+    expect(diagnostics).toEqual([])
+    expect(runtime.hasHooks('prompt.context')).toBe(true)
+    const observed: any[] = []
+    const dispatch = runtime.capture
+    runtime.capture = () => {
+      const snapshot = dispatch()
+      return {...snapshot, dispatch: async (event, input, core, options) => {
+        const result = await snapshot.dispatch(event,input,core,options)
+        if (event === 'prompt.context') observed.push(result)
+        return result
+      }}
+    }
+    let requests = 0
+    const h = harness(async function* () {
+      requests++
+      if (requests === 1) {
+        const exhausted = response('limit','partial')
+        Object.assign(exhausted, {apiError:'max_output_tokens', isApiErrorMessage:true})
+        yield exhausted
+      } else yield response('one','answer')
+    })
+    h.context.mods = runtime
+    h.params.userContext = {claudeMd:'private',currentDate:'today'}
+    await drain(query(h.params))
+    expect(requests).toBe(2)
+    expect(observed).toEqual([{blocks:[{name:'currentDate',text:'today'},{name:'plugin',text:'extra'}]}])
+    expect(diagnostics).toEqual([])
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('real Worker rejects duplicate context names and keeps the completed inner rewrite', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-invalid-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.context', async ($, e, next) => {
+        const result = await next({blocks:e.blocks.filter(block => block.name !== 'claudeMd')});
+        return {blocks:[...result.blocks, {name:'currentDate',text:'duplicate'}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'invalid-context',storageId:'invalid-context@inline',pluginRoot:root,entrypoints:[entry]}])
+    expect(diagnostics).toEqual([])
+    let models = 0
+    let compactions = 0
+    const h = harness(async function* () { models++; yield response('one','answer') })
+    h.context.mods = runtime
+    h.params.userContext = {claudeMd:'private',currentDate:'today'}
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      compactions++
+      expect(forkContext.userContext).toEqual({currentDate:'today'})
+      return {messages,wasCompacted:false}
+    }
+    await drain(query(h.params))
+    expect(models).toBe(1)
+    expect(compactions).toBe(1)
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]).toMatchObject({message:expect.stringContaining('unique named text blocks')})
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
   }
 })

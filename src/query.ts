@@ -10,6 +10,8 @@ import { randomUUID } from 'crypto'
 import { createModTurnCompletion } from './services/mods/turnAdapter.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
+import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
+import { reconcilePromptContext, validatePromptContext, type PromptContext } from './services/mods/promptContext.js'
 import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
@@ -33,6 +35,7 @@ import { ImageSizeError } from './utils/imageValidation.js'
 import { ImageResizeError } from './utils/imageResizer.js'
 import { findToolByName, type ToolUseContext } from './Tool.js'
 import { asSystemPrompt, type SystemPrompt } from './utils/systemPromptType.js'
+import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -199,6 +202,9 @@ export type QueryParams = {
   messages: Message[]
   systemPrompt: SystemPrompt
   userContext: { [k: string]: string }
+  refreshUserContext?: () => Promise<Record<string, string>>
+  resolvedPromptContextBlocks?: readonly { name: string; text: string }[]
+  onCacheSafeParams?: (params: CacheSafeParams) => void
   systemContext: { [k: string]: string }
   canUseTool: CanUseToolFn
   toolUseContext: ToolUseContext
@@ -257,7 +263,8 @@ export async function* query(
   const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
   const handlesComplete = snapshot?.hasHooks('turn.complete') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
-  if (!isPublicTurn && !handlesStart && !handlesComplete && !handlesCatalog) {
+  const handlesContext = snapshot?.hasHooks('prompt.context') === true
+  if (!isPublicTurn && !handlesStart && !handlesComplete && !handlesCatalog && !handlesContext) {
     snapshot?.release()
     const terminal = yield* queryLoop(params, consumedCommandUuids)
     // Only normal return completes commands; throw and iterator.return() do not.
@@ -364,58 +371,107 @@ async function* queryLoop(
     skipCacheWrite,
   } = params
   let userContext = params.userContext
-  let contextBlocks: readonly { name: string; text: string }[] | undefined
-  if (params.toolUseContext.mods?.hasHooks('prompt.context')) {
-    const snapshot = params.toolUseContext.mods.capture({
-      toolCatalog: () => createToolCatalogForContext(params.toolUseContext),
+  let contextBlocks = params.resolvedPromptContextBlocks ??
+    Object.entries(userContext).map(([name, text]) => ({ name, text }))
+  let resolvedContext: PromptContext | undefined
+  let cacheSafeParamsEmitted = false
+  const snapshot = params.toolUseContext.modsSnapshot
+  async function refreshContext(messages: Message[]) {
+    if (params.resolvedPromptContextBlocks !== undefined) return
+    if (!snapshot?.hasHooks('prompt.context')) return
+    updateCatalogContext?.({ ...state.toolUseContext, messages })
+    const { agentId, abortController } = params.toolUseContext
+    abortController.signal.throwIfAborted()
+    const cache = snapshot.promptContexts
+    const boundaries = snapshot.promptContextBoundaries
+    const source = JSON.stringify({
+      blocks: Object.entries(params.userContext),
+      instructionFiles: getUserContextInstructionFiles(params.userContext),
     })
-    const validate = (value: unknown) => {
-      if (
-        !value ||
-        typeof value !== 'object' ||
-        !('blocks' in value) ||
-        !Array.isArray(value.blocks)
-      )
-        throw new Error('prompt.context requires ordered blocks')
-      const names = new Set<string>()
-      for (const block of value.blocks) {
-        if (
-          !block ||
-          typeof block !== 'object' ||
-          typeof block.name !== 'string' ||
-          typeof block.text !== 'string' ||
-          names.has(block.name)
+    const boundary = messages.findLast(message =>
+      message.type === 'system' && message.subtype === 'compact_boundary',
+    )?.uuid
+    if (boundaries?.get(agentId) !== boundary) {
+      cache?.delete(agentId)
+      if (boundary === undefined) boundaries?.delete(agentId)
+      else boundaries?.set(agentId, boundary)
+    }
+    const cached = cache?.get(agentId)
+    let pending = cached as (typeof cached & { source?: string })
+    if (agentId === undefined && pending?.source !== source) {
+      cache?.delete(agentId)
+      pending = undefined
+    }
+    if (!pending) {
+      const result = Promise.resolve().then(async () => {
+        const rawContext = await params.refreshUserContext?.() ?? params.userContext
+        abortController.signal.throwIfAborted()
+        const instructionFiles = getUserContextInstructionFiles(rawContext)
+        const initial: PromptContext = {
+          blocks: Object.entries(rawContext).map(([name, text]) => ({ name, text })),
+          ...(instructionFiles === undefined ? {} : { instructionFiles }),
+        }
+        const answer = await snapshot.dispatch(
+          'prompt.context',
+          initial,
+          async input => input,
+          {
+            signal: abortController.signal,
+            validateInput: validatePromptContext,
+            validateResult: validatePromptContext,
+            restoreInput: (input, received) => {
+              validatePromptContext(received)
+              return reconcilePromptContext(input, received)
+            },
+          },
         )
-          throw new Error('prompt.context requires unique named text blocks')
-        names.add(block.name)
-      }
+        validatePromptContext(answer)
+        return structuredClone(answer)
+      })
+      pending = Object.assign(
+        { result, signal: abortController.signal },
+        agentId === undefined ? { source } : {},
+      )
+      cache?.set(agentId, pending)
+      void result.catch(() => {
+        if (cache?.get(agentId) === pending) cache.delete(agentId)
+      })
     }
+    const { signal } = abortController
+    const ownerSignal = pending.signal
+    let abort: () => void = () => {}
+    let answer: PromptContext
     try {
-      const answer = await snapshot.dispatch(
-        'prompt.context',
-        {
-          blocks: Object.entries(params.userContext).map(([name, text]) => ({
-            name,
-            text,
-          })),
-        },
-        async input => input,
-        {
-          signal: params.toolUseContext.abortController.signal,
-          validateInput: validate,
-          validateResult: validate,
-        },
-      )
-      validate(answer)
-      contextBlocks = structuredClone(
-        (answer as { blocks: { name: string; text: string }[] }).blocks,
-      )
-      userContext = Object.fromEntries(
-        contextBlocks.map(({ name, text }) => [name, text]),
-      )
+      answer = await Promise.race([
+        pending.result,
+        new Promise<never>((_resolve, reject) => {
+          abort = () => reject(signal.aborted ? signal.reason : ownerSignal.reason)
+          signal.addEventListener('abort', abort, { once: true })
+          if (ownerSignal !== signal) ownerSignal.addEventListener('abort', abort, { once: true })
+          if (signal.aborted || ownerSignal.aborted) abort()
+        }),
+      ])
+      signal.throwIfAborted()
+    } catch (error) {
+      signal.removeEventListener('abort', abort)
+      ownerSignal.removeEventListener('abort', abort)
+      if (!signal.aborted && ownerSignal.aborted) {
+        if (cache?.get(agentId) === pending) cache.delete(agentId)
+        return refreshContext(messages)
+      }
+      throw error
     } finally {
-      snapshot.release()
+      signal.removeEventListener('abort', abort)
+      ownerSignal.removeEventListener('abort', abort)
     }
+    if (answer === resolvedContext) return
+    resolvedContext = answer
+    cacheSafeParamsEmitted = false
+    contextBlocks = structuredClone(answer.blocks)
+    userContext = withUserContextInstructionFiles(
+      Object.fromEntries(contextBlocks.map(({ name, text }) => [name, text])),
+      answer.instructionFiles,
+    )
   }
   const deps = params.deps ?? productionDeps()
   const openAITurnScope =
@@ -485,6 +541,7 @@ async function* queryLoop(
       stopHookBlockingCount,
       turnCount,
     } = state
+    await refreshContext(messages)
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
     // that returns early on non-write iterations). Discovery runs while the
@@ -625,6 +682,7 @@ async function* queryLoop(
         {
           systemPrompt,
           userContext,
+          resolvedPromptContextBlocks: contextBlocks,
           systemContext,
           toolUseContext,
           forkContextMessages: messagesForQuery,
@@ -701,6 +759,7 @@ async function* queryLoop(
 
       // Continue on with the current query call using the post compact messages
       messagesForQuery = postCompactMessages
+      await refreshContext(messagesForQuery)
     } else if (consecutiveFailures !== undefined) {
       // Autocompact failed — propagate failure count so the circuit breaker
       // can stop retrying on the next iteration.
@@ -716,6 +775,17 @@ async function* queryLoop(
       messages: messagesForQuery,
     }
     updateCatalogContext?.(toolUseContext)
+    if (!cacheSafeParamsEmitted && params.onCacheSafeParams) {
+      cacheSafeParamsEmitted = true
+      params.onCacheSafeParams({
+        systemPrompt,
+        userContext,
+        resolvedPromptContextBlocks: structuredClone(contextBlocks),
+        systemContext,
+        toolUseContext: { ...toolUseContext, renderedSystemPrompt: systemPrompt },
+        forkContextMessages: messagesForQuery,
+      })
+    }
 
     const assistantMessages: AssistantMessage[] = []
     const toolResults: (UserMessage | AttachmentMessage)[] = []

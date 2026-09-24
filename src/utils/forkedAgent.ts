@@ -60,6 +60,8 @@ export type CacheSafeParams = {
   systemPrompt: SystemPrompt
   /** User context - prepended to messages, affects cache */
   userContext: { [k: string]: string }
+  /** Ordered prompt.context bytes already resolved by the parent query. */
+  resolvedPromptContextBlocks?: readonly { name: string; text: string }[]
   /** System context - appended to system prompt, affects cache */
   systemContext: { [k: string]: string }
   /** Tool use context containing tools, model, and other options */
