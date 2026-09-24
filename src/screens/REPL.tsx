@@ -405,6 +405,7 @@ import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
+import { getFirstPartyCredential } from '../utils/auth.js'
 import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
 import {
@@ -1927,6 +1928,7 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
+    firstPartyCredential: getFirstPartyCredential,
     configRows: async () =>
       getConfigRows({
         getAppState: () => store.getState(),

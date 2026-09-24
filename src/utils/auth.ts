@@ -1762,6 +1762,21 @@ export function isUsing3PServices(): boolean {
   )
 }
 
+export async function getFirstPartyCredential(): Promise<
+  { kind: 'bearer' | 'api-key'; secret: string } | null
+> {
+  if (isUsing3PServices()) return null
+
+  if (isClaudeAISubscriber()) {
+    await checkAndRefreshOAuthTokenIfNeeded()
+    const accessToken = getClaudeAIOAuthTokens()?.accessToken
+    if (accessToken) return { kind: 'bearer', secret: accessToken }
+  }
+
+  const apiKey = getAnthropicApiKey()
+  return apiKey ? { kind: 'api-key', secret: apiKey } : null
+}
+
 /**
  * Get the configured otelHeadersHelper from settings
  */

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { afterEach, beforeEach, describe, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   resetStateForTests,
   setAllowedSettingSources,
   setFlagSettingsInline,
 } from '../bootstrap/state.js'
+import * as auth from './auth.js'
 import {
   getConfiguredSettingsAuthHelper,
 } from './auth.js'
@@ -37,6 +38,72 @@ afterEach(() => {
   }
   setFlagSettingsInline(null)
   resetSettingsCache()
+})
+
+describe('Mods first-party credential selection', () => {
+  const authVariables = [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_OPENAI',
+  ] as const
+  const saved = Object.fromEntries(
+    authVariables.map(name => [name, process.env[name]]),
+  )
+
+  beforeEach(() => {
+    for (const name of authVariables) delete process.env[name]
+    setFlagSettingsInline(null)
+    resetSettingsCache()
+    auth.clearOAuthTokenCache()
+  })
+
+  afterEach(() => {
+    for (const name of authVariables) {
+      const value = saved[name]
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    auth.clearOAuthTokenCache()
+  })
+
+  test('prefers the current Claude OAuth access token', async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-only-oauth-token'
+
+    expect(await auth.getFirstPartyCredential()).toEqual({
+      kind: 'bearer',
+      secret: 'test-only-oauth-token',
+    })
+  })
+
+  test('uses an Anthropic API key when Claude OAuth is not active', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-only-api-key'
+
+    expect(await auth.getFirstPartyCredential()).toEqual({
+      kind: 'api-key',
+      secret: 'test-only-api-key',
+    })
+  })
+
+  test.each(['bedrock', 'vertex', 'foundry', 'openai'] as const)(
+    'does not expose Anthropic credentials while using %s',
+    async provider => {
+      const variable = {
+        bedrock: 'CLAUDE_CODE_USE_BEDROCK',
+        vertex: 'CLAUDE_CODE_USE_VERTEX',
+        foundry: 'CLAUDE_CODE_USE_FOUNDRY',
+        openai: 'CLAUDE_CODE_USE_OPENAI',
+      }[provider]
+      process.env[variable] = '1'
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-only-oauth-token'
+      process.env.ANTHROPIC_API_KEY = 'test-only-api-key'
+
+      expect(await auth.getFirstPartyCredential()).toBeNull()
+    },
+  )
 })
 
 describe('host-managed inference auth helpers', () => {

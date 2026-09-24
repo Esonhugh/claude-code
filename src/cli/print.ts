@@ -281,6 +281,7 @@ import {
   parseUserSpecifiedModel,
 } from 'src/utils/model/model.js'
 import { getModelOptions } from 'src/utils/model/modelOptions.js'
+import { getFirstPartyCredential } from '../utils/auth.js'
 import {
   getSupportedEffortLevelsForModel,
   modelSupportsEffort,
@@ -2799,6 +2800,7 @@ function runHeadlessStreaming(
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => mutableMessages,
+    firstPartyCredential: getFirstPartyCredential,
     configRows: () =>
       getConfigRows({
         getAppState,
