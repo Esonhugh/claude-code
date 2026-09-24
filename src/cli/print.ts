@@ -45,8 +45,10 @@ import {
   dequeue,
   dequeueAllMatching,
   enqueue,
+  enqueueTracked,
   hasCommandsInQueue,
   peek,
+  remove,
   subscribeToCommandQueue,
   getCommandsByMaxPriority,
 } from 'src/utils/messageQueueManager.js'
@@ -471,6 +473,7 @@ export function canBatchWith(
     next.origin === undefined &&
     head.promptSubmitMetadata === undefined &&
     next.promptSubmitMetadata === undefined &&
+    (next.priority ?? 'next') === (head.priority ?? 'next') &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta &&
     next.skipSlashCommands === head.skipSlashCommands &&
@@ -2231,8 +2234,9 @@ function runHeadlessStreaming(
           // const-capture: TS loses `while ((command = dequeue()))` narrowing
           // inside the closure.
           const cmd = command
-          await runWithWorkload(cmd.workload ?? options.workload, async () => {
-            for await (const message of ask({
+          try {
+            await runWithWorkload(cmd.workload ?? options.workload, async () => {
+              for await (const message of ask({
               modsSession: options.modsSession,
               commands: uniqBy(
                 [...currentCommands, ...appState.mcp.commands],
@@ -2249,6 +2253,9 @@ function runHeadlessStreaming(
                   wait: false,
                 }
               ),
+              onPromptAdmission: result => {
+                if (result.admission) cmd.promptSubmitReceipt?.admit(result.admission)
+              },
               skipSlashCommands: cmd.skipSlashCommands,
               skipAttachments: cmd.skipAttachments,
               cwd: cwd(),
@@ -2341,8 +2348,12 @@ function runHeadlessStreaming(
                 }
                 output.enqueue(message)
               }
-            }
-          }) // end runWithWorkload
+              }
+            }) // end runWithWorkload
+          } catch (error) {
+            for (const queued of batch) queued.promptSubmitReceipt?.cancel(error)
+            throw error
+          }
 
           for (const uuid of batchUuids) {
             notifyCommandLifecycle(uuid, 'completed')
@@ -2801,6 +2812,36 @@ function runHeadlessStreaming(
     cwd,
     root: getOriginalCwd,
     commands: () => currentCommands,
+    submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (settle: () => void) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', cancel)
+        settle()
+      }
+      const cancel = () => {
+        finish(() => reject(signal.reason))
+        remove([queued])
+      }
+      const queued = enqueueTracked({
+        value: text,
+        mode: 'prompt',
+        priority: 'later',
+        promptSubmitMetadata: {
+          origin,
+          wait: false,
+          ...(attachments === undefined ? {} : { attachments }),
+        },
+        promptSubmitReceipt: {
+          admit: result => finish(() => resolve(result)),
+          cancel: reason => finish(() => reject(reason)),
+        },
+      })
+      signal.addEventListener('abort', cancel, { once: true })
+      if (signal.aborted) cancel()
+      else void run()
+    }),
     presentation: () => ({ columns: 80, isFullscreen: false }),
   })
   void inboundBinding?.catch(logError)

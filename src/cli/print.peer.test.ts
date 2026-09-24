@@ -101,6 +101,8 @@ if (process.env[childFlag] !== '1') {
         canBatchWith({ ...plain, [flag]: true }, { ...plain, [flag]: true }),
       ).toBe(true)
     }
+    expect(canBatchWith(plain, { ...plain, priority: 'later' })).toBe(false)
+    expect(canBatchWith({ ...plain, priority: 'later' }, { ...plain, priority: 'later' })).toBe(true)
     expect(canBatchWith(plain, { ...plain, workload: 'other' })).toBe(false)
     expect(canBatchWith(plain, { ...plain, mode: 'task-notification' })).toBe(
       false,

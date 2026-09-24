@@ -1380,6 +1380,7 @@ export async function* ask({
   isMeta,
   origin,
   promptSubmitMetadata,
+  onPromptAdmission,
   skipSlashCommands,
   skipAttachments,
   cwd,
@@ -1417,6 +1418,7 @@ export async function* ask({
   isMeta?: boolean
   origin?: MessageOrigin
   promptSubmitMetadata?: PromptSubmitMetadata
+  onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
   skipSlashCommands?: boolean
   skipAttachments?: boolean
   cwd: string
@@ -1492,6 +1494,7 @@ export async function* ask({
       isMeta,
       origin,
       promptSubmitMetadata,
+      onPromptAdmission,
       skipSlashCommands,
       skipAttachments,
     })
