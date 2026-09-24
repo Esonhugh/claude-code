@@ -354,6 +354,7 @@ export function startBackgroundSession({
     setAppState,
     agentDefinition,
   )
+  const { publicTurn: _publicTurn, ...backgroundQueryParams } = queryParams
 
   // Persist the pre-backgrounding conversation to the task's isolated
   // transcript so TaskOutput shows context immediately. Subsequent messages
@@ -383,7 +384,11 @@ export function startBackgroundSession({
 
       for await (const event of query({
         messages: bgMessages,
-        ...queryParams,
+        ...backgroundQueryParams,
+        toolUseContext: {
+          ...backgroundQueryParams.toolUseContext,
+          agentId: asAgentId(taskId),
+        },
       })) {
         if (abortSignal.aborted) {
           // Aborted mid-stream — completeMainSessionTask won't be reached.
