@@ -53,6 +53,12 @@ function logOperation(operation: QueueOperation, content?: string): void {
 // ============================================================================
 
 const commandQueue: QueuedCommand[] = []
+
+function cancelCommands(commands: readonly QueuedCommand[], reason: string): void {
+  const error = new Error(reason)
+  for (const command of commands) command.promptSubmitReceipt?.cancel(error)
+}
+
 /** Frozen snapshot — recreated on every mutation for useSyncExternalStore. */
 let snapshot: readonly QueuedCommand[] = Object.freeze([])
 const queueChanged = createSignal()
@@ -127,13 +133,24 @@ export function recheckCommandQueue(): void {
  * Used for user-initiated commands (prompt, bash, orphaned-permission).
  * Defaults priority to 'next' (processed before task notifications).
  */
-export function enqueue(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'next' })
+function enqueueCommand(command: QueuedCommand): QueuedCommand {
+  const queued = { ...command, priority: command.priority ?? 'next' }
+  commandQueue.push(queued)
   notifySubscribers()
   logOperation(
     'enqueue',
     typeof command.value === 'string' ? command.value : undefined,
   )
+  return queued
+}
+
+export function enqueue(command: QueuedCommand): void {
+  enqueueCommand(command)
+}
+
+/** Enqueue and return the stored object for identity-based cancellation. */
+export function enqueueTracked(command: QueuedCommand): QueuedCommand {
+  return enqueueCommand(command)
 }
 
 /**
@@ -278,18 +295,17 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
     return
   }
 
-  const before = commandQueue.length
+  const removed: QueuedCommand[] = []
   for (let i = commandQueue.length - 1; i >= 0; i--) {
     if (commandsToRemove.includes(commandQueue[i]!)) {
-      commandQueue.splice(i, 1)
+      removed.unshift(commandQueue.splice(i, 1)[0]!)
     }
   }
 
-  if (commandQueue.length !== before) {
-    notifySubscribers()
-  }
+  if (removed.length) notifySubscribers()
 
-  for (const _cmd of commandsToRemove) {
+  cancelCommands(removed, 'Queued prompt removed before admission')
+  for (const _cmd of removed) {
     logOperation('remove')
   }
 }
@@ -310,6 +326,7 @@ export function removeByFilter(
 
   if (removed.length > 0) {
     notifySubscribers()
+    cancelCommands(removed, 'Queued prompt removed before admission')
     for (const _cmd of removed) {
       logOperation('remove')
     }
@@ -326,8 +343,9 @@ export function clearCommandQueue(): void {
   if (commandQueue.length === 0) {
     return
   }
-  commandQueue.length = 0
+  const removed = commandQueue.splice(0)
   notifySubscribers()
+  cancelCommands(removed, 'Queued prompt cleared before admission')
 }
 
 /**
@@ -335,8 +353,9 @@ export function clearCommandQueue(): void {
  * Used for test cleanup.
  */
 export function resetCommandQueue(): void {
-  commandQueue.length = 0
+  const removed = commandQueue.splice(0)
   snapshot = Object.freeze([])
+  cancelCommands(removed, 'Queued prompt reset before admission')
 }
 
 // ============================================================================
@@ -362,7 +381,7 @@ export function isPromptInputModeEditable(
  * the user's input.
  */
 export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
-  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta
+  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta && !cmd.promptSubmitReceipt
 }
 
 /**

@@ -1334,3 +1334,44 @@ test('concurrent submissions wait for Mods without early reservation and dispatc
   expect(h.queued[0].admitted.messages[0].message.content).toBe('second')
   expect(h.draft.text).toBe('')
 })
+
+test('tracked queue commands cancel exactly once and stay out of editable input', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let cancellations = 0
+  const command = queue.enqueueTracked({
+    mode: 'prompt',
+    value: 'plugin follow-up',
+    priority: 'later',
+    promptSubmitReceipt: { admit: noop, cancel: () => { cancellations++ } },
+  })
+  try {
+    expect(queue.popAllEditable('draft', 0)).toBeUndefined()
+    queue.remove([command])
+    queue.remove([command])
+    expect(cancellations).toBe(1)
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+test('queue processing keeps later proactive prompts separate from next prompts', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  const processor = await import('../utils/queueProcessor.js')
+  const batches: string[][] = []
+  try {
+    queue.enqueue({ mode: 'prompt', value: 'user prompt' })
+    queue.enqueue({ mode: 'prompt', value: 'plugin follow-up', priority: 'later' })
+    expect(processor.processQueueIfReady({
+      executeInput: async commands => {
+        batches.push(commands.map(command => command.value as string))
+      },
+    })).toEqual({ processed: true })
+    expect(batches).toEqual([['user prompt']])
+    expect(queue.getCommandQueue().map(command => command.value)).toEqual([
+      'plugin follow-up',
+    ])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})

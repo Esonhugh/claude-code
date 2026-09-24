@@ -519,43 +519,54 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       for (let i = 0; i < commands.length; i++) {
         const cmd = commands[i]!
         const isFirst = i === 0
-        const result: ProcessUserInputBaseResult = cmd.admitted
-          ? {
-              ...cmd.admitted,
-              shouldQuery: cmd.admitted.shouldQuery ?? cmd.admitted.admission?.drop === undefined,
-            }
-          : await processUserInput({
-              input: cmd.value,
-              preExpansionInput: cmd.preExpansionValue,
-              mode: cmd.mode,
-              setToolJSX,
-              context: makeContext(),
-              pastedContents:
-                isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
-              messages,
-              setUserInputOnProcessing: isFirst
-                ? setUserInputOnProcessing
-                : undefined,
-              isAlreadyProcessing: !isFirst,
-              querySource,
-              canUseTool,
-              uuid: cmd.uuid,
-              ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
-              skipSlashCommands: cmd.skipSlashCommands,
-              bridgeOrigin: cmd.bridgeOrigin,
-              isMeta: cmd.isMeta,
-              skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
-              skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
-              promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
-                origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
-                  cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
-                  cmd.origin?.kind === 'human' ? { kind: 'composer' } :
-                  cmd.origin ? { kind: cmd.origin.kind } :
-                  cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
-                  { kind: 'unclassified' },
-                wait: false,
-              },
-            })
+        let result: ProcessUserInputBaseResult
+        if (cmd.admitted) {
+          result = {
+            ...cmd.admitted,
+            shouldQuery: cmd.admitted.shouldQuery ?? cmd.admitted.admission?.drop === undefined,
+          }
+        } else {
+          try {
+            result = await processUserInput({
+                input: cmd.value,
+                preExpansionInput: cmd.preExpansionValue,
+                mode: cmd.mode,
+                setToolJSX,
+                context: makeContext(),
+                pastedContents:
+                  isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
+                messages,
+                setUserInputOnProcessing: isFirst
+                  ? setUserInputOnProcessing
+                  : undefined,
+                isAlreadyProcessing: !isFirst,
+                querySource,
+                canUseTool,
+                uuid: cmd.uuid,
+                ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
+                skipSlashCommands: cmd.skipSlashCommands,
+                bridgeOrigin: cmd.bridgeOrigin,
+                isMeta: cmd.isMeta,
+                skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
+                skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
+                promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
+                  origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
+                    cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
+                    cmd.origin?.kind === 'human' ? { kind: 'composer' } :
+                    cmd.origin ? { kind: cmd.origin.kind } :
+                    cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
+                    { kind: 'unclassified' },
+                  wait: false,
+                },
+                onPromptAdmission: admitted => {
+                  if (admitted.admission) cmd.promptSubmitReceipt?.admit(admitted.admission)
+                },
+              })
+          } catch (error) {
+            cmd.promptSubmitReceipt?.cancel(error)
+            throw error
+          }
+        }
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.
         // Derive origin from mode for task-notifications — mirrors the origin

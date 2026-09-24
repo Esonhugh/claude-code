@@ -8,7 +8,10 @@ import type { ImageDimensions } from '../utils/imageResizer.js'
 import type { TextHighlight } from '../utils/textHighlighting.js'
 import type { AgentId } from './ids.js'
 import type { AssistantMessage, MessageOrigin } from './message.js'
-import type { PromptSubmitMetadata } from '../services/mods/promptAdapter.js'
+import type {
+  PromptSubmitMetadata,
+  PromptSubmitResult,
+} from '../services/mods/promptAdapter.js'
 import type { ProcessUserInputBaseResult } from '../utils/processUserInput/processUserInput.js'
 
 /**
@@ -343,6 +346,13 @@ export type QueuedCommand = {
    */
   origin?: MessageOrigin
   promptSubmitMetadata?: PromptSubmitMetadata
+  /** Host-owned settlement for a plugin-submitted prompt. */
+  promptSubmitReceipt?: {
+    admit(result: PromptSubmitResult): void
+    cancel(reason: unknown): void
+  }
+  /** Host-local owner used to route proactive prompts to their active consumer. */
+  promptSubmitOwner?: symbol
   /** Already admitted at ingress; dequeue must not execute submission hooks again. */
   admitted?: Omit<ProcessUserInputBaseResult, 'shouldQuery'> & {
     shouldQuery?: boolean
