@@ -359,6 +359,18 @@ test('Worker config calls consume the official row catalog and persist through p
   } finally { await runtime.dispose() }
 })
 
+test('all CLI hosts supply production config rows to Mods', async () => {
+  for (const path of [
+    '../../QueryEngine.ts',
+    '../../screens/REPL.tsx',
+    '../../cli/print.ts',
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8')
+    expect(source).toContain('configRows:')
+    expect(source).toContain('getConfigRows(')
+  }
+})
+
 test('settings write errors propagate without changing AppState', async () => {
   const { getConfigRows } = await import('./configRows.js')
   const settings = await import('../../utils/settings/settings.js')

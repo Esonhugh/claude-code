@@ -160,7 +160,10 @@ import { TeammateSpinnerTree } from '../components/Spinner/TeammateSpinnerTree.j
 import { getSystemPrompt } from '../constants/prompts.js'
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js'
 import { getSystemContext, getUserContext } from '../context.js'
-import { getMemoryFiles } from '../utils/claudemd.js'
+import {
+  getMemoryFiles,
+  hasExternalClaudeMdIncludes,
+} from '../utils/claudemd.js'
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js'
 import {
   getTotalCost,
@@ -392,6 +395,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
 import type { ModsSession } from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
@@ -1901,6 +1905,17 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
+    configRows: async () =>
+      getConfigRows({
+        getAppState: () => store.getState(),
+        setAppState,
+        options: {
+          ...modToolContextRef.current?.().options,
+          hasExternalIncludes: hasExternalClaudeMdIncludes(
+            await getMemoryFiles(true),
+          ),
+        },
+      }),
     commands: () => baseCommandsRef.current,
     builtinCommands: () => modBuiltinCommandsRef.current,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),

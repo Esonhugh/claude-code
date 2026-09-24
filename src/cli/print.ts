@@ -52,6 +52,7 @@ import {
 } from 'src/utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from 'src/utils/commandLifecycle.js'
 import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
+import { getConfigRows } from '../components/Settings/configRows.js'
 import {
   getSessionState,
   notifySessionStateChanged,
@@ -2785,6 +2786,18 @@ function runHeadlessStreaming(
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => mutableMessages,
+    configRows: () =>
+      getConfigRows({
+        getAppState,
+        setAppState,
+        options: {
+          mcpClients: [
+            ...getAppState().mcp.clients,
+            ...sdkClients,
+            ...dynamicMcpState.clients,
+          ],
+        },
+      }),
     cwd,
     root: getOriginalCwd,
     commands: () => currentCommands,

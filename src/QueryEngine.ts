@@ -41,6 +41,7 @@ import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { ModsSession } from './services/mods/session.js'
 import type { PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
+import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalog } from './services/mods/toolCatalog.js'
 import { toolToAPISchema } from './utils/api.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
@@ -257,6 +258,12 @@ export class QueryEngine {
       cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
     }, setAppState, {
       messages: () => projectModSessionMessages(this.mutableMessages),
+      configRows: () =>
+        getConfigRows({
+          getAppState: this.config.getAppState,
+          setAppState,
+          options: { mcpClients: this.config.mcpClients },
+        }),
       commands: () => this.config.commands,
       toolCatalog: () => createToolCatalog(this.config.tools, async tool => {
         const schema = await toolToAPISchema(tool, {
