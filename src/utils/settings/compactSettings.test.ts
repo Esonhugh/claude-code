@@ -42,6 +42,13 @@ describe('settings schema', () => {
     expect(result.data.effortLevel).toBe('minimal')
   })
 
+  test('validates the auto compact window used by production compaction', () => {
+    expect(SettingsSchema().parse({ autoCompactWindow: 150_000 }).autoCompactWindow).toBe(150_000)
+    expect(SettingsSchema().safeParse({ autoCompactWindow: 99_999 }).success).toBe(false)
+    expect(SettingsSchema().safeParse({ autoCompactWindow: 1_000_001 }).success).toBe(false)
+    expect(SettingsSchema().safeParse({ autoCompactWindow: 150_000.5 }).success).toBe(false)
+  })
+
   test('accepts codex compact mode with options', () => {
     const result = SettingsSchema().safeParse({
       compact: {

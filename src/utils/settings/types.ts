@@ -264,6 +264,13 @@ export const SettingsSchema = lazySchema(() =>
         .enum(['accept', 'hold', 'refuse'])
         .optional()
         .describe('Admission policy for local peer messages. By default, matching permission classes are accepted; mismatches are held.'),
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(100_000)
+        .max(1_000_000)
+        .optional()
+        .describe('Context token window at which automatic compaction begins'),
       managedSourcesBehavior: z
         .enum(['first-wins', 'merge'])
         .optional()

@@ -25,6 +25,8 @@ try {
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
   const { fetchBootstrapData } = await import('./bootstrap.js')
   const originalClientDataCache = getGlobalConfig().clientDataCache
+  const originalAutoCompactWindowsCache =
+    getGlobalConfig().autoCompactWindowsCache
   const originalModelOptionsCache = getGlobalConfig().additionalModelOptionsCache
   const originalModelOptionsCacheKey =
     getGlobalConfig().additionalModelOptionsCacheKey
@@ -33,6 +35,7 @@ try {
     saveGlobalConfig(current => ({
       ...current,
       clientDataCache: originalClientDataCache,
+      autoCompactWindowsCache: originalAutoCompactWindowsCache,
       additionalModelOptionsCache: originalModelOptionsCache,
       additionalModelOptionsCacheKey: originalModelOptionsCacheKey,
       customApiKeyResponses: originalCustomApiKeyResponses,
@@ -41,6 +44,8 @@ try {
 
   saveGlobalConfig(current => ({
     ...current,
+    clientDataCache: { preserved: 'client-data' },
+    autoCompactWindowsCache: { preserved: 321_000 },
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
@@ -87,6 +92,12 @@ try {
     getGlobalConfig().additionalModelOptionsCacheKey,
     'openai:chatgpt:account-123',
   )
+  assert.deepEqual(getGlobalConfig().clientDataCache, {
+    preserved: 'client-data',
+  })
+  assert.deepEqual(getGlobalConfig().autoCompactWindowsCache, {
+    preserved: 321_000,
+  })
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -205,6 +216,7 @@ try {
       rejected: [],
     },
     clientDataCache: undefined,
+    autoCompactWindowsCache: undefined,
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
@@ -216,6 +228,7 @@ try {
     return {
       data: {
         client_data: { release_validation: 'first-party-bootstrap' },
+        auto_compact_windows: { 'claude-sonnet-5': 640000 },
         additional_model_options: [{
           model: 'claude-first-party-bootstrap',
           name: 'Claude First-Party Bootstrap',
@@ -235,6 +248,9 @@ try {
   assert.equal(requests[0]!.headers?.Authorization, undefined)
   assert.deepEqual(getGlobalConfig().clientDataCache, {
     release_validation: 'first-party-bootstrap',
+  })
+  assert.deepEqual(getGlobalConfig().autoCompactWindowsCache, {
+    'claude-sonnet-5': 640000,
   })
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [{
     value: 'claude-first-party-bootstrap',

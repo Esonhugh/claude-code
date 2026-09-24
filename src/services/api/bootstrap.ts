@@ -25,6 +25,7 @@ const bootstrapResponseSchema = lazySchema(() =>
   z.object({
     // @ts-ignore - recovered code
     client_data: z.record(z.string(), z.unknown()).nullish(),
+    auto_compact_windows: z.record(z.string(), z.unknown()).nullish(),
     additional_model_options: z
       .array(
         z
@@ -120,7 +121,8 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
 export async function fetchBootstrapData(): Promise<void> {
   try {
     let response: BootstrapResponse | null
-    if (isModelDiscoveryEnabled()) {
+    const modelDiscovery = isModelDiscoveryEnabled()
+    if (modelDiscovery) {
       const discovery = await fetchModelDiscoveryResult()
       if (!discovery || discovery.cacheKey !== getModelDiscoveryCacheKey()) {
         return
@@ -131,14 +133,22 @@ export async function fetchBootstrapData(): Promise<void> {
     }
     if (!response) return
 
-    const clientData = response.client_data ?? null
+    // Model discovery only updates model options; it must not erase caches that
+    // come from the first-party bootstrap endpoint.
+    const config = getGlobalConfig()
+    const clientData = modelDiscovery
+      ? config.clientDataCache
+      : (response.client_data ?? null)
+    const autoCompactWindows = modelDiscovery
+      ? config.autoCompactWindowsCache
+      : (response.auto_compact_windows ?? null)
     const additionalModelOptions = response.additional_model_options ?? []
     const additionalModelOptionsCacheKey = getModelDiscoveryCacheKey() ?? undefined
 
     // Only persist if data actually changed — avoids a config write on every startup.
-    const config = getGlobalConfig()
     if (
       isEqual(config.clientDataCache, clientData) &&
+      isEqual(config.autoCompactWindowsCache, autoCompactWindows) &&
       isEqual(config.additionalModelOptionsCache, additionalModelOptions) &&
       config.additionalModelOptionsCacheKey === additionalModelOptionsCacheKey
     ) {
@@ -150,6 +160,7 @@ export async function fetchBootstrapData(): Promise<void> {
     saveGlobalConfig(current => ({
       ...current,
       clientDataCache: clientData,
+      autoCompactWindowsCache: autoCompactWindows,
       additionalModelOptionsCache: additionalModelOptions,
       additionalModelOptionsCacheKey,
     }))
