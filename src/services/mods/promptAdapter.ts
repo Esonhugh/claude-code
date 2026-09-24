@@ -142,7 +142,6 @@ function validateContext(
   if (context === undefined) return
   if (!Array.isArray(context))
     throw new Error('prompt.submit context must be a list of texts')
-  let length = 0
   for (let index = 0; index < context.length; index++) {
     if (
       !Object.hasOwn(context, index) ||
@@ -150,10 +149,7 @@ function validateContext(
       context[index] === ''
     )
       throw new Error('prompt.submit context must contain non-empty texts')
-    length += context[index].length
   }
-  if (length > 32000)
-    throw new Error('prompt.submit context exceeds 32000 characters')
 }
 
 function retainContext(

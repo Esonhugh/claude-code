@@ -4,7 +4,7 @@ import type {
   ContentBlockParam,
   ImageBlockParam,
 } from '@anthropic-ai/sdk/resources/messages.mjs'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
@@ -47,6 +47,12 @@ import {
   maybeResizeAndDownsampleImageBlock,
 } from '../imageResizer.js'
 import { storeImages } from '../imageStore.js'
+import {
+  buildLargeToolResultMessage,
+  generatePreview,
+  persistToolResult,
+  PREVIEW_SIZE_BYTES,
+} from '../toolResultStorage.js'
 import {
   createCommandInputMessage,
   createSystemMessage,
@@ -305,10 +311,14 @@ export async function processUserInput({
             0,
             createAttachmentMessage({
               type: 'hook_additional_context',
-              content: [...entered.context],
+              content: await persistModPromptContext(
+                entered.context,
+                context.abortController.signal,
+              ),
               hookName: 'prompt.submit',
               toolUseID: `hook-${randomUUID()}`,
               hookEvent: 'UserPromptSubmit',
+              modEvent: 'prompt.submit',
             }),
           )
         }
@@ -500,6 +510,28 @@ export async function processUserInput({
     // Error paths are handled by handlePromptSubmit's finally block.
     return result
   }
+}
+
+
+async function persistModPromptContext(
+  context: readonly string[],
+  signal: AbortSignal,
+): Promise<string[]> {
+  async function persist(content: string): Promise<string> {
+    signal.throwIfAborted()
+    const id = `mods-prompt-context-${createHash('sha256').update(content).digest('hex')}`
+    const saved = await persistToolResult(content, id)
+    signal.throwIfAborted()
+    return 'error' in saved
+      ? `[prompt.submit context persistence failed: ${saved.error}. Full context was not saved; showing only the head.]\n${generatePreview(content, PREVIEW_SIZE_BYTES).preview}`
+      : buildLargeToolResultMessage(saved)
+  }
+  signal.throwIfAborted()
+  if (context.reduce((total, item) => total + item.length, 0) > 200_000)
+    return [await persist(JSON.stringify(context))]
+  const persisted = await Promise.all(context.map(item => item.length > 100_000 ? persist(item) : item))
+  signal.throwIfAborted()
+  return persisted
 }
 
 const MAX_HOOK_OUTPUT_LENGTH = 10000

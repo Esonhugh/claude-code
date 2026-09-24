@@ -49,7 +49,6 @@ describe('prompt.submit runtime boundary contract', () => {
     ['sparse', Array(2)],
     ['empty entry', ['']],
     ['nontext entry', [123]],
-    ['32001 chars', ['x'.repeat(16000), 'y'.repeat(16001)]],
   ])(
     'rejects %s context before entering downstream',
     async (_name, context) => {
@@ -63,19 +62,19 @@ describe('prompt.submit runtime boundary contract', () => {
     },
   )
 
-  test('accepts 32000 characters and empty context array without truncation', async () => {
-    await inspectContract(async (options, input, core) => {
-      options.validateInput({ ...input, context: [] }, input)
-      const next = {
-        ...input,
-        context: ['a'.repeat(16000), 'b'.repeat(16000)],
-      }
-      options.validateInput(next, input)
-      const result: any = await core(next)
-      expect(result.context).toEqual(next.context)
-      return result
-    })
-  })
+  test.each([32001, 100001, 200001])(
+    'accepts %s context characters unchanged at the dispatch boundary',
+    async length => {
+      await inspectContract(async (options, input, core) => {
+        options.validateInput({ ...input, context: [] }, input)
+        const next = { ...input, context: ['x'.repeat(length)] }
+        options.validateInput(next, input)
+        const result: any = await core(next)
+        expect(result.context).toEqual(next.context)
+        return result
+      })
+    },
+  )
 
   test.each([
     { context: undefined },

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import ts from 'typescript'
 import { dispatchModEvent } from '../../services/mods/dispatch.js'
 import { runModPromptSubmit } from '../../services/mods/promptAdapter.js'
@@ -74,6 +75,7 @@ function loadFunctions(
 function fixture(
   handlers: ModDispatchHook['invoke'][] = [],
   commandShouldQuery = false,
+  dependencyOverrides: Record<string, unknown> = {},
 ) {
   let id = 0
   const diagnostics: string[] = []
@@ -93,6 +95,15 @@ function fixture(
   })
   const dependencies = {
     randomUUID: () => `id-${++id}`,
+    createHash,
+    persistToolResult: async (content: string, toolUseID: string) => ({
+      filepath: `/fixture/${toolUseID}.txt`, originalSize: content.length,
+      isJson: false, preview: content.slice(0, 32), hasMore: content.length > 32,
+    }),
+    generatePreview: (content: string) => ({ preview: content.slice(0, 32), hasMore: content.length > 32 }),
+    PREVIEW_SIZE_BYTES: 32,
+    buildLargeToolResultMessage: (result: { filepath: string; preview: string }) =>
+      `Full output saved to: ${result.filepath}\nPreview: ${result.preview}`,
     createUserMessage,
     createAttachmentMessage: (attachment: unknown) => ({
       type: 'attachment',
@@ -159,6 +170,7 @@ function fixture(
         }
       },
     },
+    ...dependencyOverrides,
   }
   const processTextPrompt = loadFunctions(
     './processTextPrompt.ts',
@@ -602,7 +614,7 @@ describe('processUserInput prompt.submit', () => {
   })
 
   test('rewrites actual model content and passes full downward context separately from classic truncation', async () => {
-    const added = ['hunk notes\n' + 'x'.repeat(15989), 'y'.repeat(16000)]
+    const added = ['hunk notes\n' + 'x'.repeat(100001), 'y'.repeat(100000)]
     const f = fixture([
       async (event, next) =>
         next({ ...event, text: '/not-a-command', context: added }),
@@ -621,9 +633,112 @@ describe('processUserInput prompt.submit', () => {
       .filter((message: any) => message.type === 'attachment')
       .map((message: any) => message.attachment)
     expect(attachments[0].hookName).toBe('prompt.submit')
-    expect(attachments[0].content).toEqual(added)
+    expect(attachments[0].content).toHaveLength(1)
+    expect(attachments[0].content[0]).toContain('Full output saved to:')
+    expect(attachments[0].content[0]).toContain('Preview')
+    expect(attachments[0].content[0]).not.toContain('y'.repeat(100000))
     expect(attachments[1].content[0]).toContain('[output truncated')
     expect(f.calls.slash).toBe(0)
+  })
+
+  test.each([
+    { length: 100000, persisted: false },
+    { length: 100001, persisted: true },
+  ])('persists one context item only past the 100000-character boundary', async ({ length, persisted }) => {
+    const writes: string[] = []
+    const f = fixture(
+      [async (event, next) => next({ ...event, context: ['x'.repeat(length)] })],
+      false,
+      {
+        persistToolResult: async (content: string, toolUseID: string) => {
+          writes.push(content)
+          return {
+            filepath: `/fixture/${toolUseID}.txt`,
+            originalSize: content.length,
+            isJson: false,
+            preview: content.slice(0, 32),
+            hasMore: content.length > 32,
+          }
+        },
+      },
+    )
+    const result = await f.run()
+    expect(writes).toHaveLength(persisted ? 1 : 0)
+    expect(additionalContexts(result)[0]).toEqual(
+      persisted ? expect.stringContaining('Full output saved to:') : 'x'.repeat(length),
+    )
+  })
+
+  test.each([
+    { length: 100000, persisted: false },
+    { length: 100001, persisted: true },
+  ])('persists aggregate context only past the 200000-character boundary', async ({ length, persisted }) => {
+    const writes: string[] = []
+    const context = ['x'.repeat(length), 'y'.repeat(100000)]
+    const f = fixture(
+      [async (event, next) => next({ ...event, context })],
+      false,
+      {
+        persistToolResult: async (content: string, toolUseID: string) => {
+          writes.push(content)
+          return {
+            filepath: `/fixture/${toolUseID}.txt`,
+            originalSize: content.length,
+            isJson: false,
+            preview: content.slice(0, 32),
+            hasMore: content.length > 32,
+          }
+        },
+      },
+    )
+    const result = await f.run()
+    expect(writes).toHaveLength(persisted ? 1 : 0)
+    expect(additionalContexts(result)).toEqual(
+      persisted
+        ? [expect.stringContaining('Full output saved to:')]
+        : context,
+    )
+    if (persisted) expect(writes[0]).toBe(JSON.stringify(context))
+  })
+
+  test('reports context persistence failure without inventing a saved path or rerunning the prompt', async () => {
+    let calls = 0
+    const f = fixture(
+      [async (event, next) => {
+        calls++
+        return next({ ...event, context: ['x'.repeat(100001)] })
+      }],
+      false,
+      {
+        persistToolResult: async () => ({ error: 'fixture write failed' }),
+      },
+    )
+    const result = await f.run()
+    expect(calls).toBe(1)
+    expect(additionalContexts(result)[0]).toContain('fixture write failed')
+    expect(additionalContexts(result)[0]).toContain('showing only the head')
+    expect(additionalContexts(result)[0]).not.toContain('Full output saved to:')
+  })
+
+  test('does not publish context when cancellation wins during persistence', async () => {
+    const persisted = Promise.withResolvers<Record<string, unknown>>()
+    const f = fixture(
+      [async (event, next) => next({ ...event, context: ['x'.repeat(100001)] })],
+      false,
+      { persistToolResult: () => persisted.promise },
+    )
+    const running = f.run()
+    await Promise.resolve()
+    await Promise.resolve()
+    f.controller.abort()
+    persisted.resolve({
+      filepath: '/fixture/context.txt',
+      originalSize: 100001,
+      isJson: false,
+      preview: 'x'.repeat(32),
+      hasMore: true,
+    })
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   test('a synthetic success without next enters nothing', async () => {
@@ -886,7 +1001,6 @@ describe('processUserInput prompt.submit', () => {
     ['string', 'invalid'],
     ['sparse', Array(1)],
     ['empty entry', ['']],
-    ['32001 characters', ['x'.repeat(32001)]],
   ])(
     'rejects %s downward context at core before any classic hook',
     async (_name, invalid) => {
@@ -908,7 +1022,6 @@ describe('processUserInput prompt.submit', () => {
     ['string', 'invalid'],
     ['sparse', Array(1)],
     ['empty entry', ['']],
-    ['32001 characters', ['x'.repeat(32001)]],
   ])('unhandled invalid %s next recovers with the untouched prompt once', async (_name, invalid) => {
     const f = fixture([async (event, next) => next({...event, text:'must not enter', context:invalid})])
     const result = await f.run()
@@ -923,7 +1036,6 @@ describe('processUserInput prompt.submit', () => {
     ['string', 'invalid'],
     ['sparse', Array(1)],
     ['empty entry', ['']],
-    ['32001 characters', ['x'.repeat(32001)]],
   ])(
     'invalid %s result context does not replay next',
     async (_name, invalid) => {
