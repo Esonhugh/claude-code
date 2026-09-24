@@ -84,6 +84,7 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
     getSessionId: () => 'session',
     setAppState: noop,
     messagesRef: { current: [] },
+    getFirstPartyCredential: async () => null,
     modToolContextRef: { current: noop },
     inputValueRef,
     insertTextRef,
@@ -1506,6 +1507,7 @@ test('Mods proactive prompt uses the REPL queue and settles on admission', async
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
     setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    getFirstPartyCredential: async () => null,
     enqueueTracked: queue.enqueueTracked, remove: queue.remove,
   })
   try {
@@ -1540,6 +1542,7 @@ test('Mods proactive prompt abort removes the exact REPL queue entry', async () 
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
     setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    getFirstPartyCredential: async () => null,
     enqueueTracked: queue.enqueueTracked, remove: queue.remove,
   })
   const controller = new AbortController()
@@ -1848,4 +1851,27 @@ test('query refresh reloads raw REPL context with live overlays and instruction 
   expect(removed).toEqual({ currentDate: 'After removal', coordinatorContext: 'retained' })
   expect(getUserContextInstructionFiles(removed)).toEqual([])
   expect(loads).toBe(3)
+})
+
+
+test('REPL Mods tool host resolves the current context and permission callback on each capture', async () => {
+  let services: any
+  const first = { messages: ['first'], options: { tools: ['first-tool'] } }
+  const second = { messages: ['second'], options: { tools: ['second-tool'] } }
+  const modToolContextRef = { current: () => first }
+  const firstPermission = () => 'first'
+  const secondPermission = () => 'second'
+  const modCanUseToolRef = { current: firstPermission }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getSessionId: () => 'session',
+    getFirstPartyCredential: async () => null, setAppState: noop,
+    modToolContextRef, modCanUseToolRef,
+    createModToolHost: (context: unknown, canUseTool: unknown) => ({ context, canUseTool }),
+  })
+  await awaitMods()
+  expect(services.toolHost()).toEqual({ context: first, canUseTool: firstPermission })
+  modToolContextRef.current = () => second
+  modCanUseToolRef.current = secondPermission
+  expect(services.toolHost()).toEqual({ context: second, canUseTool: secondPermission })
 })

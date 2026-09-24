@@ -11,6 +11,7 @@ import { createModTurnCompletion } from './services/mods/turnAdapter.js'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
 import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { createModToolHost } from './services/mods/toolHost.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
@@ -279,6 +280,7 @@ export async function* query(
   const snapshot = catalogContext.mods?.capture({
     tools: () => catalogContext.options.tools,
     toolCatalog: () => createToolCatalogForContext(catalogContext),
+    toolHost: () => createModToolHost(catalogContext, params.canUseTool),
     captureUsage: () => captureModSessionUsage(catalogContext),
     messages: () => projectModSessionMessages(catalogContext.messages),
   })

@@ -148,6 +148,20 @@ describe('Mods scheduler admission', () => {
       expect(f.releases()).toBe(1)
     })
 
+    test(`${streaming ? 'streaming' : 'batch'} reports author results without middleware`, async () => {
+      const f = fixture(false)
+      const results: unknown[] = []
+      f.context.modToolCallResult = result => results.push(result)
+      f.gates[0]!.resolve()
+      const executor = streaming ? new StreamingToolExecutor([f.tool], allow, f.context) : undefined
+      if (executor) executor.addTool(f.blocks[0]!, f.assistant)
+      await Array.fromAsync(executor
+        ? executor.getRemainingResults()
+        : runTools([f.blocks[0]!], [f.assistant], allow, f.context))
+      expect(results).toEqual([{ ref: 1, result: { value: '0' }, text: '0' }])
+      expect(f.releases()).toBe(1)
+    })
+
     test(`${streaming ? 'streaming' : 'batch'} author tool.list sees the executing context catalog`, async () => {
       const root = await mkdtemp(join(tmpdir(), 'mods-scheduler-catalog-'))
       const diagnostics: unknown[] = []

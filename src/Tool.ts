@@ -185,6 +185,8 @@ export type ToolUseContext = {
   modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
   /** Invocation-local author result sink; never inherited by nested tools. */
   modToolCallResult?: (result: import('./services/mods/toolAdapter.js').ToolCallResult) => void
+  /** Plugin that initiated an active host call, when the call came from Mods. */
+  modSpawnedBy?: string
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {

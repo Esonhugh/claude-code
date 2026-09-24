@@ -15,6 +15,8 @@ import {
 } from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
 import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
+import { createModToolHost } from '../../services/mods/toolHost.js'
+import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import {
   findCommand,
   getCommandName,
@@ -210,7 +212,10 @@ export async function processUserInput({
   // executed in base, including bridge-safe slash and keyword routing.
   const snapshot =
     isRegularPrompt && promptMessage?.type === 'user'
-      ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
+      ? context.mods?.capture({
+          toolCatalog: () => createToolCatalogForContext(context),
+          toolHost: () => createModToolHost(context, canUseTool ?? context.canUseTool ?? hasPermissionsToUseTool),
+        })
       : undefined
   const pendingAsks = new Map<Message[], { finish(accepted: boolean): void }>()
   try {

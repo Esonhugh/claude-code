@@ -11,6 +11,8 @@ import type { SlashCommandResult } from '../../utils/processUserInput/processSla
 import type { PromptOrigin } from './promptAdapter.js'
 import type { ModSnapshot } from './runtime.js'
 import { createToolCatalogForContext } from './toolCatalog.js'
+import { createModToolHost } from './toolHost.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 
 export async function describeModCommand(
   snapshot: ModSnapshot,
@@ -74,7 +76,10 @@ export async function runImmediateModCommand(
   args: string,
 ): Promise<React.ReactNode> {
   const snapshot = !isModCommand(command) && command.userInvocable !== false
-    ? context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
+    ? context.mods?.capture({
+        toolCatalog: () => createToolCatalogForContext(context),
+        toolHost: () => createModToolHost(context, context.canUseTool ?? hasPermissionsToUseTool),
+      })
     : undefined
   if (!snapshot) return (await command.load()).call(onDone, context, args)
 

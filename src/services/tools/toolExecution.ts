@@ -137,6 +137,7 @@ import {
   type ModToolExecutionRecord,
 } from '../mods/toolAdapter.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createModToolHost } from '../mods/toolHost.js'
 import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 
@@ -521,6 +522,7 @@ function streamedCheckPermissionsAndCallTool(
     ? undefined
     : toolUseContext.mods?.capture({
         toolCatalog: () => createToolCatalogForContext(toolUseContext),
+        toolHost: () => createModToolHost(toolUseContext, canUseTool),
         captureUsage: () =>
           captureModSessionUsage({
             ...toolUseContext,
@@ -531,7 +533,8 @@ function streamedCheckPermissionsAndCallTool(
   const context = snapshot
     ? { ...toolUseContext, modsSnapshot: snapshot }
     : toolUseContext
-  const wrapped = snapshot?.hasHooks('tool.call') === true
+  const wrapped = snapshot !== undefined &&
+    (snapshot.hasHooks('tool.call') || toolUseContext.modToolCallResult !== undefined)
   const managedPass: ManagedPreToolUsePass = {}
   const core = (
     args: Record<string, unknown>,
@@ -1397,6 +1400,7 @@ async function checkPermissionsAndCallTool(
         // Admission belongs to this invocation, not to a background task or
         // nested Agent/Workflow that retains the tool context after it returns.
         ...(toolUseContext.modsSnapshot ? { modsSnapshot: undefined } : {}),
+        modToolCallResult: undefined,
         toolUseId: toolUseID,
         userModified: permissionDecision.userModified ?? false,
       },

@@ -9,6 +9,8 @@ import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { Tool } from '../../Tool.js'
 import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog } from './toolCatalog.js'
+import { createModToolHost } from './toolHost.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStoreBridge, createModUiBridge, type ModEnvironment } from './environment.js'
 import { createModUi, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
@@ -71,6 +73,11 @@ export type ModRequestServices = {
   messages?(): readonly unknown[]
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
   tools?(): readonly Tool[]
+  toolHost?(): {
+    tools?(): readonly Tool[]
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<unknown>
+    check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }>
+  }
   toolCatalog?(): ToolCatalog
   captureUsage?(): ModUsageReader
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
@@ -182,7 +189,7 @@ const coreHost: Nouns = {
   agent: { register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
-  tool: { register: hostIdentity, list: hostIdentity },
+  tool: { register: hostIdentity, list: hostIdentity, call: hostIdentity, check: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
@@ -297,7 +304,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   )
   const tools = createModTools({
     pluginOf: owner => (owner as Activation).declaration.name,
-    getTools: () => (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
+    getTools: () => (requestServices.getStore()?.toolHost ?? services.toolHost)?.()?.tools?.() ??
+      (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
   })
   const agents = createModAgents(owner => (owner as Activation).declaration)
   const commands = createModCommands({
@@ -333,7 +341,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     run: async (name, args, context) => {
       const command = commands.list().find(command => command.name === name)
       if (!command) throw new Error(`Mod command /${name} is no longer active`)
-      const snapshot = capture({ toolCatalog: () => createToolCatalogForContext(context) })
+      const snapshot = capture({
+        toolCatalog: () => createToolCatalogForContext(context),
+        toolHost: () => createModToolHost(context, context.canUseTool ?? hasPermissionsToUseTool),
+      })
       try {
         const result = await runModCommand({
           snapshot, command,
@@ -439,6 +450,21 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function hostInput(op: string, args: unknown[]): ModInput {
     switch (op) {
+      case 'tool.call': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool)
+          throw new TypeError('tool.call takes { tool, ...arguments }')
+        return input as ModInput
+      }
+      case 'tool.check': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool ||
+            !Object.hasOwn(input, 'input') || Object.keys(input).some(key => key !== 'tool' && key !== 'input'))
+          throw new TypeError('tool.check takes { tool, input }')
+        return input as ModInput
+      }
       case 'tool.register': {
         const input = args[0]
         if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input))
@@ -1006,6 +1032,49 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             },
           ))
         }
+        const resumeToolBudget = (op === 'tool.call' || op === 'tool.check')
+          ? pauseModBudget(context?.active ? context.next : undefined) : undefined
+        try {
+          if (fn === hostIdentity && op === 'tool.call') {
+            const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
+            if (!host) throw new Error('Tool execution host is unavailable on this host')
+            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            let open = true
+            const callSnapshot: ModSnapshot = {
+              dispatch: (event, input, core, options) => {
+                if (!open) throw new Error('Mod tool invocation settled')
+                return dispatch(event, input, core, snapshot, table, {
+                  ...options,
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? {caller} : {}),
+                })
+              },
+              hasHooks: event => snapshot.some(item =>
+                item.environment.registrations.some(registration =>
+                  matchesModEventPattern(registration.event, event) &&
+                  (item !== owner || registration.id !== caller?.registrationId),
+                )),
+              release() {},
+            }
+            try {
+              combined.signal.throwIfAborted()
+              return await withReference(owner, () => host.call(input as ModInput, callSnapshot, combined.signal, owner.declaration.name))
+            } finally { open = false; combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'tool.check') {
+            const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
+            if (!host) throw new Error('Tool permission host is unavailable on this host')
+            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            try {
+              return await withReference(owner, () => dispatch(op, input as ModInput,
+                async (question, signal) => host.check(question, signal ?? combined.signal), snapshot, table, {
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? { caller } : {}),
+                  signal: combined.signal,
+                }))
+            } finally { combined.cleanup() }
+          }
+        } finally { resumeToolBudget?.() }
         if (fn === hostIdentity && op === 'mcp.call') {
           const call = requestServices.getStore()?.mcpCall ?? services.mcpCall
           if (!call)
@@ -1216,6 +1285,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (event === 'session.receive') return validateSessionReceiveResult(result)
     if (event === 'session.compact') {
       validateModCompactResult(result)
+      return
+    }
+    if (event === 'tool.check') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          !['allow', 'ask', 'deny'].includes((result as ModInput).decision as string) ||
+          ['reason', 'rule'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string'))
+        throw new TypeError('tool.check must return { decision, reason?, rule? }')
       return
     }
     if (event === 'config.describe') {
@@ -1453,6 +1529,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         } } : {}),
         validateResult: (result, nextResults) => { validateResult(event, result); options.validateResult?.(result, nextResults) },
         validateInput: (value, received) => {
+          if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
           if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
             throw new TypeError('model.fork takes only {prompt: string}')
           if (event === 'session.usage') validateModSessionUsageArgs(value)

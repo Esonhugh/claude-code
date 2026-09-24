@@ -33,7 +33,7 @@ import {
   logForDiagnosticsNoPII,
   withDiagnosticsTiming,
 } from 'src/utils/diagLogs.js'
-import { toolMatchesName, type Tool, type Tools } from 'src/Tool.js'
+import { toolMatchesName, type Tool, type Tools, type ToolUseContext } from 'src/Tool.js'
 import {
   type AgentDefinition,
   isBuiltInAgent,
@@ -55,6 +55,8 @@ import {
 import { notifyCommandLifecycle } from 'src/utils/commandLifecycle.js'
 import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
+import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { createModToolHost } from '../services/mods/toolHost.js'
 import {
   getSessionState,
   notifySessionStateChanged,
@@ -2796,6 +2798,49 @@ function runHeadlessStreaming(
 
   // Bind before any delivery enters receive, including the first idle peer wake.
   const inboundController = new AbortController()
+  const modLoadedNestedMemoryPaths = new Set<string>()
+  const modDiscoveredSkillNames = new Set<string>()
+  const getModToolContext = (): ToolUseContext => ({
+    messages: mutableMessages,
+    mods: options.modsSession?.runtime,
+    options: {
+      commands: currentCommands,
+      debug: false,
+      tools: buildAllTools(getAppState()),
+      verbose: options.verbose ?? false,
+      mainLoopModel: activeUserSpecifiedModel
+        ? parseUserSpecifiedModel(activeUserSpecifiedModel)
+        : getMainLoopModel(),
+      thinkingConfig: options.thinkingConfig ?? { type: 'disabled' },
+      mcpClients: [
+        ...getAppState().mcp.clients,
+        ...sdkClients,
+        ...dynamicMcpState.clients,
+      ],
+      mcpResources: {},
+      isNonInteractiveSession: true,
+      agentDefinitions: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }) ?? { activeAgents: currentAgents, allAgents: currentAgents },
+      customSystemPrompt: options.systemPrompt,
+      appendSystemPrompt: options.appendSystemPrompt,
+      maxBudgetUsd: options.maxBudgetUsd,
+    },
+    getAppState,
+    setAppState,
+    abortController: inboundController,
+    readFileState,
+    nestedMemoryAttachmentTriggers: new Set<string>(),
+    loadedNestedMemoryPaths: modLoadedNestedMemoryPaths,
+    dynamicSkillDirTriggers: new Set<string>(),
+    discoveredSkillNames: modDiscoveredSkillNames,
+    setInProgressToolUseIDs: () => {},
+    setResponseLength: () => {},
+    updateFileHistoryState: updater => {
+      setAppState(state => ({ ...state, fileHistory: updater(state.fileHistory) }))
+    },
+    updateAttributionState: updater => {
+      setAppState(state => ({ ...state, attribution: updater(state.attribution) }))
+    },
+  })
   const inboundBinding = options.modsSession?.bind({
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
@@ -2818,6 +2863,8 @@ function runHeadlessStreaming(
     commands: () => currentCommands,
     tasks: () => getAppState().tasks,
     agentNames: () => getAppState().agentNameRegistry,
+    toolCatalog: () => createToolCatalogForContext(getModToolContext()),
+    toolHost: () => createModToolHost(getModToolContext(), canUseTool),
     mcpCall: (server, tool, args, signal) =>
       callMCPToolForMod(
         findMCPConnectionForMod([

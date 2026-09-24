@@ -402,6 +402,7 @@ import type { ModsSession } from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { createModToolHost } from '../services/mods/toolHost.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
@@ -1909,6 +1910,7 @@ export function REPL({
     isFullscreen: isFullscreenEnvEnabled(), composerEmpty: false, hasDialog: false, keyboardOwned: false,
   })
   const modToolContextRef = useRef<(() => ToolUseContext) | null>(null)
+  const modCanUseToolRef = useRef<ReturnType<typeof useCanUseTool> | null>(null)
   const modPromptBlockedRef = useRef(true)
   const modTypeaheadActiveRef = useRef(false)
   const pendingModSuggestionRef = useRef<{
@@ -1950,8 +1952,8 @@ export function REPL({
     builtinCommands: () => modBuiltinCommandsRef.current,
     tasks: () => store.getState().tasks,
     agentNames: () => store.getState().agentNameRegistry,
-    tools: () => modToolContextRef.current!().options.tools,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
+    toolHost: () => createModToolHost(modToolContextRef.current!(), modCanUseToolRef.current!),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
       let settled = false
       const finish = (settle: () => void) => {
@@ -3921,6 +3923,7 @@ export function REPL({
     ],
   )
 
+  modCanUseToolRef.current = canUseTool
   modToolContextRef.current = () => getToolUseContext(
     messagesRef.current, [], new AbortController(), mainLoopModel,
   )

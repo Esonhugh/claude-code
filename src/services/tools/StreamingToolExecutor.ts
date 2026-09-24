@@ -12,6 +12,7 @@ import { createChildAbortController } from '../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
 import type { ModSnapshot } from '../mods/runtime.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createModToolHost } from '../mods/toolHost.js'
 import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 type MessageUpdate = {
@@ -104,6 +105,7 @@ export class StreamingToolExecutor {
       if (!this.modsSnapshot) {
         this.modsSnapshot = this.toolUseContext.mods.capture({
           toolCatalog: () => createToolCatalogForContext(this.toolUseContext),
+          toolHost: () => createModToolHost(this.toolUseContext, this.canUseTool),
           captureUsage: () =>
             captureModSessionUsage({
               ...this.toolUseContext,

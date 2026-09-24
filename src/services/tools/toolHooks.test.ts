@@ -28,6 +28,8 @@ import { StreamingToolExecutor } from './StreamingToolExecutor.js'
 import { dispatchModEvent } from '../mods/dispatch.js'
 import type { ModDispatchHook } from '../mods/types.js'
 import {
+  checkModToolPermission,
+  modToolCheckResult,
   runPreToolUseHooks,
   runPostToolUseHooks,
   runPostToolUseFailureHooks,
@@ -154,6 +156,40 @@ function pre(f: ReturnType<typeof fixture>) {
     undefined,
   )
 }
+describe('declarative tool permission projection', () => {
+  test('probes the tool once and retains its updated input without running hooks', async () => {
+    const f = fixture()
+    let probes = 0
+    f.tool.checkPermissions = async () => {
+      probes++
+      return { behavior: 'allow', updatedInput: { value: 'normalized' } }
+    }
+    const decision = await checkModToolPermission(f.tool, { value: 'original' }, f.context)
+    expect(probes).toBe(1)
+    expect(decision).toMatchObject({ behavior: 'allow', updatedInput: { value: 'normalized' } })
+    expect(modToolCheckResult(decision)).toEqual({ decision: 'allow' })
+    expect(f.events).toEqual([])
+  })
+
+  test('classic capture injects the current tool host alongside the catalog', async () => {
+    const f = fixture()
+    f.tool.checkPermissions = async () => ({ behavior: 'allow' })
+    let services: Parameters<ReturnType<typeof createModsRuntime>['capture']>[0]
+    f.context.mods = {
+      tools: { projection: (tools: Tool[]) => tools },
+      capture: (captured: typeof services) => {
+        services = captured
+        return { hasHooks: () => false, release: () => {} }
+      },
+    } as unknown as NonNullable<ToolUseContext['mods']>
+    await Array.fromAsync(pre(f))
+    expect(services?.toolCatalog).toBeFunction()
+    const host = services?.toolHost?.()
+    expect(host?.tools?.()).toEqual([f.tool])
+    expect(await host?.check({ tool: f.tool.name, input: { value: 'check' } }, f.context.abortController.signal)).toEqual({ decision: 'allow' })
+  })
+})
+
 function command(output: unknown) {
   return {
     type: 'command' as const,

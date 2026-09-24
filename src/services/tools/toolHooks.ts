@@ -14,6 +14,7 @@ import {
 } from '../mods/classicAdapter.js'
 import type { ModInput } from '../mods/types.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createModToolHost } from '../mods/toolHost.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js'
 import type { HookProgress } from '../../types/hooks.js'
@@ -40,10 +41,65 @@ import {
   type PermissionDecisionReason,
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
-import { checkRuleBasedPermissions } from '../../utils/permissions/permissions.js'
+import {
+  checkRuleBasedPermissions,
+  createPermissionRequestMessage,
+  hasPermissionsToUseTool,
+  toolAlwaysAllowedRule,
+} from '../../utils/permissions/permissions.js'
+import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js'
 import { formatError } from '../../utils/toolErrors.js'
 import { isMcpTool } from '../mcp/utils.js'
 import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
+
+export type ModToolCheckResult = {
+  decision: 'allow' | 'ask' | 'deny'
+  reason?: string
+  rule?: string
+}
+
+/** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
+export async function checkModToolPermission(
+  tool: Tool,
+  input: Record<string, unknown>,
+  context: ToolUseContext,
+): Promise<PermissionDecision> {
+  context.abortController.signal.throwIfAborted()
+  let checked: PermissionResult | undefined
+  // Retain the tool check already performed by the rule pipeline, avoiding a
+  // second permission probe while preserving its bypass-immune safeguards.
+  const rule = await checkRuleBasedPermissions({
+    ...tool,
+    checkPermissions: async (args, toolContext) => {
+      checked = await tool.checkPermissions(args, toolContext)
+      return checked
+    },
+  }, input, context)
+  context.abortController.signal.throwIfAborted()
+  if (rule) return rule
+  if (checked?.behavior === 'ask' && tool.requiresUserInteraction?.()) return checked
+  const permission = context.getAppState().toolPermissionContext
+  const updatedInput =
+    checked?.behavior === 'allow' || checked?.behavior === 'ask'
+      ? checked.updatedInput
+      : undefined
+  if (permission.mode === 'bypassPermissions' ||
+    (permission.mode === 'plan' && permission.isBypassPermissionsModeAvailable))
+    return { behavior: 'allow', updatedInput, decisionReason: { type: 'mode', mode: permission.mode } }
+  const allow = toolAlwaysAllowedRule(permission, tool)
+  if (allow) return { behavior: 'allow', updatedInput, decisionReason: { type: 'rule', rule: allow } }
+  if (checked && checked.behavior !== 'passthrough') return checked
+  return { ...checked, behavior: 'ask', message: createPermissionRequestMessage(tool.name, checked?.decisionReason) }
+}
+
+export function modToolCheckResult(decision: PermissionDecision): ModToolCheckResult {
+  const why = decision.decisionReason
+  const rule = why?.type === 'rule' ? permissionRuleValueToString(why.rule.ruleValue) : undefined
+  const reason = 'message' in decision ? decision.message :
+    why && 'reason' in why ? why.reason :
+    why?.type === 'mode' ? `Permission mode: ${why.mode}` : rule
+  return { decision: decision.behavior, ...(reason !== undefined ? { reason } : {}), ...(rule !== undefined ? { rule } : {}) }
+}
 
 type ClassicToolEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
 type ClassicToolResult = ClassicResult &
@@ -72,7 +128,10 @@ async function* runClassicToolHooks(
   }
   const ownedSnapshot = context.modsSnapshot
     ? undefined
-    : context.mods?.capture({ toolCatalog: () => createToolCatalogForContext(context) })
+    : context.mods?.capture({
+        toolCatalog: () => createToolCatalogForContext(context),
+        toolHost: () => createModToolHost(context, hasPermissionsToUseTool),
+      })
   const snapshot = context.modsSnapshot ?? ownedSnapshot
   if (!snapshot) {
     yield* fallback(sourceScope)
@@ -729,6 +788,75 @@ export async function resolveHookPermissionDecision(
 }> {
   const requiresInteraction = tool.requiresUserInteraction?.()
   const requireCanUseTool = toolUseContext.requireCanUseTool
+  const snapshot = toolUseContext.modsSnapshot
+  if (snapshot?.hasHooks('tool.check')) {
+    const declarative = await resolveHookPermissionDecision(
+      hookPermissionResult, tool, input,
+      { ...toolUseContext, modsSnapshot: undefined },
+      async (checkedTool, args, context, _assistant, _id, forced) =>
+        forced ?? checkModToolPermission(checkedTool, args, context),
+      assistantMessage, toolUseID,
+    )
+    const core = declarative.decision
+    const why = core.decisionReason
+    // Managed policy and bypass-immune safety requirements remain outside the
+    // plugin verdict, as they are outside classic Pre's user-tier overrides.
+    const protectedDecision =
+      (why?.type === 'rule' && ['policySettings', 'flagSettings'].includes(why.rule.source)) ||
+      (why?.type === 'hook' && ['policySettings', 'flagSettings'].includes(why.hookSource ?? '')) ||
+      why?.type === 'safetyCheck'
+    if (protectedDecision && core.behavior === 'deny') return declarative
+    const event = { tool: tool.name, input: structuredClone(declarative.input), tool_use_id: toolUseID }
+    const pinned = structuredClone(event)
+    const validateInput = (value: ModInput) => {
+      for (const key of ['tool', 'input', 'tool_use_id'] as const)
+        if (!isDeepStrictEqual(value[key], pinned[key]))
+          throw new Error(`tool.check cannot rewrite ${key}`)
+    }
+    function validateResult(value: unknown): asserts value is ModToolCheckResult {
+      if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        !('decision' in value) || typeof value.decision !== 'string' ||
+        !['allow', 'ask', 'deny'].includes(value.decision) ||
+        ('reason' in value && value.reason !== undefined && typeof value.reason !== 'string') ||
+        ('rule' in value && value.rule !== undefined && typeof value.rule !== 'string'))
+        throw new Error('tool.check must return a decision and optional string reason/rule')
+    }
+    const projected = modToolCheckResult(core)
+    const coreUpdatedInput =
+      core.behavior === 'allow' || core.behavior === 'ask'
+        ? core.updatedInput
+        : undefined
+    const verdict = await snapshot.dispatch('tool.check', event, async value => {
+      validateInput(value)
+      return { ...projected }
+    }, { signal: toolUseContext.abortController.signal, validateInput, validateResult })
+    toolUseContext.abortController.signal.throwIfAborted()
+    validateResult(verdict)
+    let decision: PermissionDecision = isDeepStrictEqual(verdict, projected) ? core :
+      verdict.decision === 'allow' ? { behavior: 'allow', updatedInput: coreUpdatedInput } : {
+        behavior: verdict.decision,
+        message: verdict.reason ?? createPermissionRequestMessage(tool.name),
+        decisionReason: { type: 'hook', hookName: 'tool.check', reason: verdict.reason },
+        updatedInput: coreUpdatedInput,
+      }
+    if (protectedDecision && core.behavior === 'ask' && decision.behavior === 'allow') decision = core
+    if (hookPermissionResult && decision.behavior !== 'deny') {
+      // Pre's deny/ask short-circuits the ordinary rules. An override must not
+      // erase a managed rule or safety prompt that that short-circuit hid.
+      const rules = await checkRuleBasedPermissions(tool, declarative.input, toolUseContext)
+      const reason = rules?.decisionReason
+      if (rules && ((reason?.type === 'rule' &&
+        ['policySettings', 'flagSettings'].includes(reason.rule.source)) || reason?.type === 'safetyCheck'))
+        decision = rules
+    }
+    if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
+      (requireCanUseTool || (requiresInteraction &&
+        !(hookPermissionResult?.behavior === 'allow' && hookPermissionResult.updatedInput !== undefined))))) {
+      decision = await canUseTool(tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
+        decision.behavior === 'ask' ? decision : undefined)
+    }
+    return { decision, input: declarative.input }
+  }
 
   if (hookPermissionResult?.behavior === 'allow') {
     const hookInput = hookPermissionResult.updatedInput ?? input

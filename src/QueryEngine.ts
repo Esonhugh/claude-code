@@ -51,8 +51,8 @@ import type { ModsSession } from './services/mods/session.js'
 import type { PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { getConfigRows } from './components/Settings/configRows.js'
-import { createToolCatalog } from './services/mods/toolCatalog.js'
-import { toolToAPISchema } from './utils/api.js'
+import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { createModToolHost } from './services/mods/toolHost.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { Message, MessageOrigin, UserMessage } from './types/message.js'
@@ -314,69 +314,6 @@ export class QueryEngine {
 
     this.discoveredSkillNames.clear()
     setCwd(cwd)
-    if (this.config.modsSession) await this.config.modsSession.bind({
-      cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
-    }, setAppState, {
-      messages: () => projectModSessionMessages(this.mutableMessages),
-      firstPartyCredential: getFirstPartyCredential,
-      configRows: () =>
-        getConfigRows({
-          getAppState: this.config.getAppState,
-          setAppState,
-          options: { mcpClients: this.config.mcpClients },
-        }),
-      commands: () => this.config.commands,
-      tasks: () => getAppState().tasks,
-      agentNames: () => getAppState().agentNameRegistry,
-      tools: () => this.config.tools,
-      toolCatalog: () => createToolCatalog(this.config.modsSession?.tools?.projection(this.config.tools) ?? this.config.tools, async tool => {
-        const schema = await toolToAPISchema(tool, {
-          tools: this.config.tools,
-          agents: this.config.agents ?? [],
-          getToolPermissionContext: async () => this.config.getAppState().toolPermissionContext,
-          model: this.config.userSpecifiedModel ? parseUserSpecifiedModel(this.config.userSpecifiedModel) : getMainLoopModel(),
-        })
-        return 'description' in schema ? schema.description ?? '' : ''
-      }),
-      mcpCall: (server, tool, args, signal) =>
-        callMCPToolForMod(
-          findMCPConnectionForMod(this.config.mcpClients, server),
-          tool,
-          args,
-          signal,
-        ),
-      submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
-        let settled = false
-        const finish = (settle: () => void) => {
-          if (settled) return
-          settled = true
-          signal.removeEventListener('abort', cancel)
-          settle()
-        }
-        const cancel = () => {
-          finish(() => reject(signal.reason))
-          remove([queued])
-        }
-        const queued = enqueueTracked({
-          value: text,
-          mode: 'prompt',
-          priority: 'later',
-          promptSubmitOwner: this.promptSubmitOwner,
-          promptSubmitMetadata: {
-            origin,
-            wait: false,
-            ...(attachments === undefined ? {} : { attachments }),
-          },
-          promptSubmitReceipt: {
-            admit: result => finish(() => resolve(result)),
-            cancel: reason => finish(() => reject(reason)),
-          },
-        })
-        signal.addEventListener('abort', cancel, { once: true })
-        if (signal.aborted) cancel()
-      }),
-      presentation: () => ({columns:80, isFullscreen:false}),
-    })
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
 
@@ -497,6 +434,7 @@ export class QueryEngine {
       },
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
+      canUseTool: wrappedCanUseTool,
       mods: this.config.modsSession?.runtime,
       options: {
         commands: this.config.modsSession?.commands.projection(commands) ?? commands,
@@ -546,6 +484,83 @@ export class QueryEngine {
       setSDKStatus,
     }
 
+    const getModToolContext = (): ToolUseContext => ({
+      ...processUserInputContext,
+      messages: this.mutableMessages,
+      mods: this.config.modsSession?.runtime,
+      options: {
+        ...processUserInputContext.options,
+        tools: this.config.modsSession?.tools?.projection(this.config.tools) ?? this.config.tools,
+      },
+    })
+    if (this.config.modsSession) await this.config.modsSession.bind({
+      cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
+    }, setAppState, {
+      messages: () => projectModSessionMessages(this.mutableMessages),
+      firstPartyCredential: getFirstPartyCredential,
+      configRows: () =>
+        getConfigRows({
+          getAppState: this.config.getAppState,
+          setAppState,
+          options: { mcpClients: this.config.mcpClients },
+        }),
+      commands: () => this.config.commands,
+      tasks: () => getAppState().tasks,
+      agentNames: () => getAppState().agentNameRegistry,
+      toolCatalog: () => createToolCatalogForContext(getModToolContext()),
+      toolHost: () => createModToolHost(getModToolContext(), wrappedCanUseTool),
+      mcpCall: (server, tool, args, signal) =>
+        callMCPToolForMod(
+          findMCPConnectionForMod(this.config.mcpClients, server),
+          tool,
+          args,
+          signal,
+        ),
+      submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+        let settled = false
+        const finish = (settle: () => void) => {
+          if (settled) return
+          settled = true
+          signal.removeEventListener('abort', cancel)
+          settle()
+        }
+        const cancel = () => {
+          finish(() => reject(signal.reason))
+          remove([queued])
+        }
+        const queued = enqueueTracked({
+          value: text,
+          mode: 'prompt',
+          priority: 'later',
+          promptSubmitOwner: this.promptSubmitOwner,
+          promptSubmitMetadata: {
+            origin,
+            wait: false,
+            ...(attachments === undefined ? {} : { attachments }),
+          },
+          promptSubmitReceipt: {
+            admit: result => finish(() => resolve(result)),
+            cancel: reason => finish(() => reject(reason)),
+          },
+        })
+        signal.addEventListener('abort', cancel, { once: true })
+        if (signal.aborted) cancel()
+      }),
+      presentation: () => ({columns:80, isFullscreen:false}),
+    })
+    if (this.config.modsSession) {
+      processUserInputContext = {
+        ...processUserInputContext,
+        mods: this.config.modsSession.runtime,
+        options: {
+          ...processUserInputContext.options,
+          commands: this.config.modsSession.commands.projection(commands),
+          tools: this.config.modsSession.tools?.projection(tools) ?? tools,
+          agentDefinitions: this.config.modsSession.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
+        },
+      }
+    }
+
     // Handle orphaned permission (only once per engine lifetime)
     if (orphanedPermission && !this.hasHandledOrphanedPermission) {
       this.hasHandledOrphanedPermission = true
@@ -587,6 +602,7 @@ export class QueryEngine {
       },
       onPromptAdmission: options?.onPromptAdmission,
       querySource: 'sdk',
+      canUseTool: wrappedCanUseTool,
     })
 
     if (options?.origin) {
@@ -662,6 +678,7 @@ export class QueryEngine {
       setMessages: () => {},
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
+      canUseTool: wrappedCanUseTool,
       mods: this.config.modsSession?.runtime,
       options: {
         commands: this.config.modsSession?.commands.projection(commands) ?? commands,

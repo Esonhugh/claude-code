@@ -41,6 +41,28 @@ afterAll(() => {
   if (originalSettings) setSessionSettingsCache(originalSettings)
 })
 
+test('author result callback runs without tool.call hooks and is not inherited by the tool', async () => {
+  const runtime = createModsRuntime()
+  const f = fixture(async (event, next) => next(event))
+  const results: unknown[] = []
+  const inherited: unknown[] = []
+  f.context.mods = runtime
+  f.context.modToolCallResult = result => results.push(result)
+  f.tool.call = async (input, context) => {
+    inherited.push(context.modToolCallResult)
+    return { data: input }
+  }
+  try {
+    await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    expect(results).toEqual([{ ref: 1, result: { value: 'original' }, text: 'original' }])
+    expect(inherited).toEqual([undefined])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 function fixture(invoke: ModDispatchHook['invoke']) {
   const calls: unknown[] = []
   const validation: unknown[] = []
