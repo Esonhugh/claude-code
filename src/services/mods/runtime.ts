@@ -110,6 +110,7 @@ export type ModPromptSection = { result: Promise<{ text: string | null }>; signa
 export type ModSnapshot = {
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
   readonly promptSections?: Map<string, ModPromptSection>
+  readonly promptAttachments?: Map<string, ModPromptSection>
   readonly promptContexts?: Map<string | undefined, ModPromptContext>
   readonly promptContextBoundaries?: Map<string | undefined, string>
   pluginOrigin?(storageId: string): ModOrigin | undefined
@@ -183,6 +184,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   let nouns: Nouns = {}
   let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<ModToolDescription>>>() }
   let sectionCache = new Map<string, ModPromptSection>()
+  let attachmentCache = new Map<string, ModPromptSection>()
   let contextCache = new Map<string | undefined, ModPromptContext>()
   let contextBoundaries = new Map<string | undefined, string>()
   let descriptionOrigins = services.pluginOrigin
@@ -637,6 +639,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
         if (input.event === 'prompt.section') {
           sectionCache = new Map()
+          return undefined
+        }
+        if (input.event === 'prompt.attachment') {
+          attachmentCache = new Map()
           return undefined
         }
         if (input.event === 'prompt.context') {
@@ -1197,8 +1203,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     if (result === null || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object`)
     const value = result as Record<string, unknown>
-    if (['prompt.section', 'skill.prompt', 'attribution.text'].includes(event)) {
-      if (typeof value.text !== 'string' && !(event === 'prompt.section' && value.text === null))
+    if (['prompt.section', 'prompt.attachment', 'skill.prompt', 'attribution.text'].includes(event)) {
+      if (typeof value.text !== 'string' && !(['prompt.section', 'prompt.attachment'].includes(event) && value.text === null))
         throw new Error(`${event} must return text`)
       return
     }
@@ -1476,6 +1482,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (nouns !== built.table) {
       descriptionCache = { value: new WeakMap() }
       sectionCache = new Map()
+      attachmentCache = new Map()
       contextCache = new Map()
       contextBoundaries = new Map()
     }
@@ -1647,6 +1654,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     const descriptions = descriptionCache
     const sections = sectionCache
+    const attachments = attachmentCache
     const contexts = contextCache
     const boundaries = contextBoundaries
     let released = false
@@ -1654,6 +1662,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     return {
       get toolDescriptions() { return descriptions.value },
       get promptSections() { return sections },
+      get promptAttachments() { return attachments },
       get promptContexts() { return contexts },
       get promptContextBoundaries() { return boundaries },
       pluginOrigin(storageId) {
@@ -1771,6 +1780,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           ending = undefined
           commands.invalidateDescriptions()
           sectionCache = new Map()
+          attachmentCache = new Map()
           invalidatePromptContext()
         }
         binding = next

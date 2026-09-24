@@ -349,3 +349,130 @@ test.each(['claude-opus-5', 'claude-sonnet-5'])(
     expect(requests[0]!.temperature).toBeUndefined()
   },
 )
+
+test('prompt.attachment projects retained and generated deferred deltas at the SDK boundary', async () => {
+  const deltaGate = spyOn(
+    growthbook,
+    'getFeatureValue_CACHED_MAY_BE_STALE',
+  ).mockImplementation((key, fallback) =>
+    key === 'tengu_glacier_2xr' ? (true as typeof fallback) : fallback,
+  )
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { z } = await import('zod/v4')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { createAttachmentMessage } = await import('../../utils/attachments.js')
+  const root = await mkdtemp(join(tmpdir(), 'mods-attachment-wire-'))
+  const entry = join(root, 'register.ts')
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+  })
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  process.env.ENABLE_TOOL_SEARCH = 'true'
+  clearToolSchemaCache()
+  try {
+    await writeFile(
+      entry,
+      `let calls = 0;
+export function register(on) {
+  on('tool.describe', ($, e) => ({description: e.tool, isDeferred: e.tool === 'DeferredLookup'}));
+  on('prompt.attachment', ($, e) => ({text: 'PROJECTED_' + (++calls) + ':' + e.text}));
+  on('tool.call', {tool: 'AttachmentCalls'}, () => ({result: calls}));
+}`,
+    )
+    await runtime.reconcile([
+      {
+        name: 'attachment-wire',
+        storageId: 'attachment-wire@inline',
+        pluginRoot: root,
+        entrypoints: [entry],
+        tier: 'user',
+      },
+    ])
+    const snapshot = runtime.capture()
+    const deferred = {
+      name: 'DeferredLookup',
+      inputSchema: z.object({ key: z.string() }),
+      async prompt() {
+        return 'deferred lookup'
+      },
+    } as unknown as import('../../Tool.js').Tool
+    const tools = [deferred, ToolSearchTool]
+    const retainedDelta = createAttachmentMessage({
+      type: 'deferred_tools_delta',
+      addedNames: [deferred.name],
+      addedLines: ['STALE_RETAINED_LINE'],
+      removedNames: [],
+    })
+    const run = async (messages: import('../../types/message.js').Message[]) => {
+      const result = await queryModelWithoutStreaming({
+        messages,
+        systemPrompt: asSystemPrompt([]),
+        thinkingConfig: { type: 'disabled' },
+        tools,
+        signal: new AbortController().signal,
+        options: {
+          model: 'claude-sonnet-5',
+          querySource: 'repl_main_thread',
+          agents: [],
+          mcpTools: [],
+          hasAppendSystemPrompt: false,
+          isNonInteractiveSession: true,
+          enablePromptCaching: false,
+          getToolPermissionContext: async () =>
+            getEmptyToolPermissionContext(),
+          modsSnapshot: snapshot,
+        },
+      })
+      expect(result.message.content).toMatchObject([
+        { type: 'text', text: 'OK' },
+      ])
+      return requests.at(-1)!
+    }
+    try {
+      const retainedMessages = [
+        createUserMessage({ content: 'existing delta' }),
+        retainedDelta,
+      ]
+      const existing = await run(retainedMessages)
+      expect(JSON.stringify(existing.messages)).toContain('PROJECTED_1:')
+      expect(JSON.stringify(existing.messages)).toContain('DeferredLookup')
+      expect(JSON.stringify(existing.messages)).not.toContain(
+        'STALE_RETAINED_LINE',
+      )
+      expect(retainedDelta.attachment).toMatchObject({
+        type: 'deferred_tools_delta',
+        addedLines: ['STALE_RETAINED_LINE'],
+      })
+
+      const freshMessages = [createUserMessage({ content: 'new delta' })]
+      const generated = await run(freshMessages)
+      expect(JSON.stringify(generated.messages)).toContain('PROJECTED_2:')
+      expect(JSON.stringify(generated.messages)).toContain('DeferredLookup')
+      expect(freshMessages).toHaveLength(1)
+      expect(
+        await snapshot.dispatch(
+          'tool.call',
+          { tool: 'AttachmentCalls' },
+          async () => ({ result: 'unhandled' }),
+        ),
+      ).toEqual({ result: 2 })
+      expect(diagnostics).toEqual([])
+    } finally {
+      snapshot.release()
+    }
+  } finally {
+    await runtime.dispose()
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+    await rm(root, { recursive: true, force: true })
+    deltaGate.mockImplementation((_key, fallback) => fallback)
+  }
+})

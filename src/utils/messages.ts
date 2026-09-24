@@ -2069,6 +2069,12 @@ function relocateToolReferenceSiblings(
   return result
 }
 
+// Request-local attachment rendering; never written into the engine transcript.
+export const attachmentMessagesForAPI = new WeakMap<
+  AttachmentMessage,
+  UserMessage[]
+>()
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
@@ -2364,10 +2370,12 @@ export function normalizeMessagesForAPI(
           return
         }
         case 'attachment': {
-          const rawAttachmentMessage = normalizeAttachmentForAPI(
-            // @ts-ignore - recovered code
-            message.attachment,
-          )
+          const rawAttachmentMessage =
+            attachmentMessagesForAPI.get(message) ??
+            normalizeAttachmentForAPI(
+              // @ts-ignore - recovered code
+              message.attachment,
+            )
           const attachmentMessage = checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
             'tengu_chair_sermon',
           )

@@ -22,6 +22,7 @@ import { resetStateForTests } from './bootstrap/state.js'
 import { createModTurnCompletion } from './services/mods/turnAdapter.js'
 import { createSystemMessage, createCompactBoundaryMessage, createUserMessage } from './utils/messages.js'
 import { prependUserContext } from './utils/api.js'
+import { createAttachmentMessage, memoryFilesToAttachments } from './utils/attachments.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
 import { reconcilePromptContext } from './services/mods/promptContext.js'
 
@@ -1845,5 +1846,392 @@ describe('public query prompt.section', () => {
       expect(requests[3]).toEqual(requests[0])
       expect(diagnostics).toEqual([])
     } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+})
+
+describe('public query prompt.attachment', () => {
+  test('an invalidated in-flight attachment cannot overwrite the fresh cache answer', async () => {
+    const root = await mkdtemp(join(tmpdir(),'mods-attachment-inflight-'))
+    const runtime = createModsRuntime()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const running: Promise<unknown>[] = []
+    const requests: string[] = []
+    let cores = 0
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.attachment',async ($,e,next) => {const n=++calls;await next(e);return {text:'GEN_'+n}});
+        on('tool.call',async $ => {await $.ui.invalidate('prompt.attachment');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'inflight',storageId:'inflight@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if(event==='prompt.attachment' && ++cores===1) {entered.resolve();await release.promise}
+          return core(value,signal)
+        },options)}
+      }
+      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('inflight','done')})
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/fixture.ts',snippet:'original'}))
+      const first = drain(query(h.params)); running.push(first)
+      await entered.promise
+      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+      await drain(query(h.params))
+      release.resolve(); await first
+      await drain(query(h.params))
+      expect(requests[0]).toContain('GEN_2')
+      expect(requests[1]).toContain('GEN_1')
+      expect(requests[2]).toContain('GEN_2')
+    } finally {release.resolve();await Promise.allSettled(running);await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test('an old snapshot cannot seed a new attachment key after invalidation', async () => {
+    const root = await mkdtemp(join(tmpdir(),'mods-attachment-generation-'))
+    const runtime = createModsRuntime()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const running: Promise<unknown>[] = []
+    const requests: string[] = []
+    let cores = 0
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let generation='OLD'; export function register(on) {
+        on('prompt.attachment',async ($,e,next) => {const value=generation;await next(e);return {text:value+'_'+e.text}});
+        on('tool.call',async $ => {generation='NEW';await $.ui.invalidate('prompt.attachment');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'generation',storageId:'generation@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if(event==='prompt.attachment' && ++cores===1) {entered.resolve();await release.promise}
+          return core(value,signal)
+        },options)}
+      }
+      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('generation','done')})
+      h.context.mods = runtime
+      h.params.messages.push(
+        createAttachmentMessage({type:'edited_text_file',filename:'/first.ts',snippet:'first'}),
+        createAttachmentMessage({type:'edited_text_file',filename:'/second.ts',snippet:'second'}),
+      )
+      const first = drain(query(h.params)); running.push(first)
+      await entered.promise
+      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+      h.params.messages.pop()
+      await drain(query(h.params))
+      release.resolve(); await first
+      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/second.ts',snippet:'second'}))
+      await drain(query(h.params))
+      expect(requests[0]).toContain('NEW_')
+      expect(requests[0]).toContain('first')
+      expect(requests[1]).toContain('OLD_')
+      expect(requests[1]).toContain('second')
+      expect(requests[2]).toContain('NEW_')
+      expect(requests[2]).toContain('second')
+    } finally {release.resolve();await Promise.allSettled(running);await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test('joins framed text for one Worker call and preserves media and display-only attachments', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-media-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', ($,e) => {
+          if(e.type==='queued_command') return {text:'QUEUED_MEDIA_REWRITE'};
+          if(e.type!=='directory') throw new Error('display-only attachment dispatched');
+          if(e.text.includes('<system-reminder>')||!e.text.includes('Called the Bash tool')||!e.text.includes('fixture-file')) throw new Error('text not joined');
+          return {text:'DIRECTORY_REWRITE'};
+        });
+      }`)
+      await runtime.reconcile([{name:'media',storageId:'media@inline',pluginRoot:root,entrypoints:[entry]}])
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-media','done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(
+        createAttachmentMessage({type:'directory',path:'/fixture',displayPath:'fixture',content:'fixture-file'}),
+        createAttachmentMessage({type:'queued_command',prompt:[{type:'image',source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}]}),
+        createAttachmentMessage({type:'dynamic_skill',skillDir:'/fixture',skillNames:['fixture'],displayPath:'fixture'}),
+      )
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      expect(requests[0]).toContain('DIRECTORY_REWRITE')
+      expect(requests[0]).not.toContain('fixture-file')
+      expect(requests[0]).toContain('aW1hZ2U=')
+      expect(requests[0]).toContain('QUEUED_MEDIA_REWRITE')
+      expect(h.params.messages).toEqual(transcript)
+      expect(diagnostics).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test.each(['owner', 'waiter'] as const)('cancelling the attachment cache %s does not cancel the other request', async mode => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-cancel-'))
+    const runtime = createModsRuntime()
+    const entered = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const controllers = [new AbortController(), new AbortController()]
+    const running: Promise<unknown>[] = []
+    const requests: string[] = []
+    let cores = 0, captures = 0
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.attachment', async ($,e,next) => { const n=++calls; const result=await next(e); return {text:'LIVE_'+n}; });
+      }`)
+      await runtime.reconcile([{name:'cancel-attachment',storageId:'cancel-attachment@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services), index = captures++
+        return {...snapshot,
+          get promptAttachments() { if(index===1) waiting.resolve(); return snapshot.promptAttachments },
+          dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+            if(event==='prompt.attachment' && ++cores===1) { entered.resolve(); await release.promise }
+            return core(value,signal)
+          },options),
+        }
+      }
+      const h = harness(async function* (request) { requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages))); yield response('cancel-attachment','done') })
+      h.context.mods = runtime
+      h.context.abortController = controllers[0]!
+      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/fixture.ts',snippet:'original'}))
+      const first = drain(query(h.params)).catch(error => error)
+      running.push(first)
+      await entered.promise
+      const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}})).catch(error => error)
+      running.push(second)
+      await waiting.promise
+      controllers[mode==='owner' ? 0 : 1]!.abort(new Error('cancel attachment'))
+      release.resolve()
+      await Promise.all(running)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toContain(mode==='owner' ? 'LIVE_2' : 'LIVE_1')
+    } finally { release.resolve(); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('Worker restores omitted identity and rejects metadata rewrites before callModel', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-pins-'))
+    const diagnostics: { message: string }[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', {type:'nested_memory'}, ($,e,next) => next({text:'OMITTED_METADATA'}));
+        on('prompt.attachment', {type:'nested_memory'}, ($,e,next) => {
+          if(e.origin.kind!=='engine'||e.agentId!=='attachment-agent') throw new Error('lost metadata');
+          return next({...e,text:e.text+':restored'});
+        });
+        on('prompt.attachment', {type:'edited_text_file'}, ($,e,next) => next({...e,type:'skill_listing',text:'BAD_TYPE'}));
+        on('prompt.attachment', {type:'skill_listing'}, ($,e,next) => next({...e,origin:{kind:'hook',event:'SessionStart'},text:'BAD_ORIGIN'}));
+        on('prompt.attachment', {type:'date_change'}, ($,e,next) => next({...e,agentId:'spoofed',text:'BAD_AGENT'}));
+        on('prompt.attachment', {type:'hook_additional_context'}, ($,e,next) => {
+          if(e.origin.kind!=='hook'||e.origin.event!=='UserPromptSubmit') throw new Error('wrong hook author');
+          return next({...e,text:123});
+        });
+        on('prompt.attachment', {type:'todo_reminder'}, () => ({text:123})).catch(() => ({text:'RECOVERED_TODO'}));
+      }`)
+      await runtime.reconcile([{name:'pins',storageId:'pins@inline',pluginRoot:root,entrypoints:[entry]}])
+      expect(diagnostics).toEqual([])
+      expect(runtime.hasHooks('prompt.attachment')).toBe(true)
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-pins', 'done')
+      })
+      h.context.mods = runtime
+      h.context.agentId = asAgentId('attachment-agent')
+      h.params.messages.push(
+        createAttachmentMessage(memoryFilesToAttachments([{path:'/project/CLAUDE.md',type:'Project',content:'MEMORY_ORIGINAL'}], h.context)[0]!),
+        createAttachmentMessage({type:'edited_text_file',filename:'/project/file.ts',snippet:'EDIT_ORIGINAL'}),
+        createAttachmentMessage({type:'skill_listing',content:'SKILL_ORIGINAL',skillCount:1,isInitial:true}),
+        createAttachmentMessage({type:'date_change',newDate:'DATE_ORIGINAL'}),
+        createAttachmentMessage({type:'hook_additional_context',content:['HOOK_ORIGINAL'],hookName:'fixture',hookEvent:'UserPromptSubmit',toolUseID:'fixture'}),
+        createAttachmentMessage({type:'todo_reminder',content:[],itemCount:0}),
+      )
+      await drain(query(h.params))
+      expect(requests[0]).toContain('OMITTED_METADATA:restored')
+      for (const text of ['EDIT_ORIGINAL','SKILL_ORIGINAL','DATE_ORIGINAL','HOOK_ORIGINAL','RECOVERED_TODO']) expect(requests[0]).toContain(text)
+      for (const text of ['BAD_TYPE','BAD_ORIGIN','BAD_AGENT']) expect(requests[0]).not.toContain(text)
+      expect(diagnostics.map(event => event.message)).toEqual([
+        'prompt.attachment cannot rewrite type', 'prompt.attachment cannot rewrite origin',
+        'prompt.attachment cannot rewrite agentId', 'prompt.attachment requires text',
+        'prompt.attachment must return text',
+      ])
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('attributes Mod chain context to the producing plugin event', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-plugin-origin-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', {type:'hook_additional_context'}, ($,e) => ({text:e.origin.kind+':'+e.origin.event+':'+e.text}));
+      }`)
+      await runtime.reconcile([{name:'plugin-origin',storageId:'plugin-origin@inline',pluginRoot:root,entrypoints:[entry]}])
+      const requests: string[] = []
+      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('attachment-plugin-origin','done')})
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({
+        type:'hook_additional_context',content:['PLUGIN_CONTEXT'],hookName:'prompt.submit',
+        hookEvent:'UserPromptSubmit',toolUseID:'plugin-context',modEvent:'prompt.submit',
+      }))
+      await drain(query(h.params))
+      expect(requests[0]).toContain('plugin:prompt.submit:prompt.submit hook additional context: PLUGIN_CONTEXT')
+      expect(diagnostics).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test('nested memory and skill listing answers cache per attachment and recompute after Worker invalidation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-cache-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `let calls = 0; export function register(on) {
+        on('prompt.attachment', ($, e) => ({ text: e.type === 'skill_listing' ? null : 'MEMORY_' + (++calls) + ':' + e.text }));
+        on('tool.call', async $ => { await $.ui.invalidate('prompt.attachment'); return { result: 'invalidated' }; });
+      }`)
+      await runtime.reconcile([{ name: 'cache', storageId: 'cache@inline', pluginRoot: root, entrypoints: [entry] }])
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-cache', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(
+        ...memoryFilesToAttachments([{ path: '/project/nested/CLAUDE.md', type: 'Project', content: 'NESTED_MEMORY' }], h.context).map(createAttachmentMessage),
+        createAttachmentMessage({ type: 'skill_listing', content: 'SKILL_LISTING', skillCount: 1, isInitial: true }),
+      )
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      // A copied record is still the same attachment, not a cache miss.
+      await drain(query({ ...h.params, messages: structuredClone(h.params.messages) }))
+      expect(requests[0]).toContain('MEMORY_1:Contents of /project/nested/CLAUDE.md:')
+      expect(requests[1]).toContain('MEMORY_1:Contents of /project/nested/CLAUDE.md:')
+      expect(requests.every(request => !request.includes('SKILL_LISTING'))).toBe(true)
+      expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({ result: 'invalidated' })
+      await drain(query(h.params))
+      expect(requests[2]).toContain('MEMORY_2:Contents of /project/nested/CLAUDE.md:')
+      expect(requests[2]).not.toContain('SKILL_LISTING')
+      // Same contents, new record: ask again rather than caching by text/type.
+      h.params.messages[1] = { ...h.params.messages[1]!, uuid: randomUUID() }
+      await drain(query(h.params))
+      expect(requests[3]).toContain('MEMORY_3:Contents of /project/nested/CLAUDE.md:')
+      expect(transcript[1]).toEqual({ ...h.params.messages[1], uuid: transcript[1]!.uuid, timestamp: transcript[1]!.timestamp })
+      expect(diagnostics).toEqual([])
+    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  test('autocompaction and the model consume the same projected attachment bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-sizing-'))
+    const runtime = createModsRuntime()
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', ($, e) => ({text: 'PROJECTED_ATTACHMENT'}));
+      }`)
+      await runtime.reconcile([{name:'attachment-sizing',storageId:'attachment-sizing@inline',pluginRoot:root,entrypoints:[entry]}])
+      const compactInputs: string[] = []
+      const modelInputs: string[] = []
+      const h = harness(async function* (request) {
+        modelInputs.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-sizing', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({
+        type: 'edited_text_file',
+        filename: '/fixture.ts',
+        snippet: 'UNPROJECTED_ATTACHMENT',
+      }))
+      h.params.deps!.autocompact = async messages => {
+        compactInputs.push(JSON.stringify(normalizeMessagesForAPI(messages)))
+        return {messages, wasCompacted: false}
+      }
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      expect(compactInputs).toHaveLength(1)
+      expect(compactInputs[0]).toContain('PROJECTED_ATTACHMENT')
+      expect(compactInputs[0]).not.toContain('UNPROJECTED_ATTACHMENT')
+      expect(modelInputs[0]).toContain('PROJECTED_ATTACHMENT')
+      expect(modelInputs[0]).not.toContain('UNPROJECTED_ATTACHMENT')
+      expect(h.params.messages).toEqual(transcript)
+    } finally {
+      await runtime.dispose()
+      await rm(root, {recursive: true, force: true})
+    }
+  })
+
+  test('blocking limit uses projected attachment bytes', async () => {
+    const savedCompact = process.env.DISABLE_AUTO_COMPACT
+    const savedLimit = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-blocking-'))
+    const runtime = createModsRuntime()
+    try {
+      process.env.DISABLE_AUTO_COMPACT = '1'
+      process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '700'
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', () => ({text:''}));
+      }`)
+      await runtime.reconcile([{name:'attachment-blocking',storageId:'attachment-blocking@inline',pluginRoot:root,entrypoints:[entry]}])
+      let modelCalls = 0
+      const h = harness(async function* () {
+        modelCalls++
+        yield response('attachment-blocking', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({
+        type: 'edited_text_file',
+        filename: '/fixture.ts',
+        snippet: 'x'.repeat(2000),
+      }))
+      const result = await drain(query(h.params))
+      expect(result.terminal.reason).toBe('completed')
+      expect(modelCalls).toBe(1)
+    } finally {
+      if (savedCompact === undefined) delete process.env.DISABLE_AUTO_COMPACT
+      else process.env.DISABLE_AUTO_COMPACT = savedCompact
+      if (savedLimit === undefined)
+        delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+      else process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = savedLimit
+      await runtime.dispose()
+      await rm(root, {recursive: true, force: true})
+    }
+  })
+
+  test('Worker rewrites a real attachment only in the model request, not the transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', { type: 'edited_text_file' }, async ($, e, next) => {
+          if (e.origin.kind !== 'engine' || e.agentId !== undefined || e.text.includes('<system-reminder>'))
+            throw new Error('invalid attachment input');
+          return next({ ...e, text: 'MODEL_EDITED_TEXT' });
+        });
+      }`)
+      await runtime.reconcile([{ name: 'attachments', storageId: 'attachments@inline', pluginRoot: root, entrypoints: [entry] }])
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({ type: 'edited_text_file', filename: '/project/file.ts', snippet: 'ORIGINAL_EDITED_TEXT' }))
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toContain('<system-reminder>\\nMODEL_EDITED_TEXT\\n</system-reminder>')
+      expect(requests[0]).not.toContain('ORIGINAL_EDITED_TEXT')
+      expect(h.params.messages).toEqual(transcript)
+      expect(diagnostics).toEqual([])
+    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
   })
 })

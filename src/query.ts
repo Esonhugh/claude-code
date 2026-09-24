@@ -40,6 +40,7 @@ import {
   type SystemPrompt,
 } from './utils/systemPromptType.js'
 import { renderModPromptSections } from './services/mods/promptSections.js'
+import { renderModPromptAttachments } from './services/mods/promptAttachments.js'
 import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
   AssistantMessage,
@@ -272,6 +273,7 @@ export async function* query(
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
+  const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
   const handlesCompact = snapshot?.hasHooks('session.compact') === true
   if (
     !isPublicTurn &&
@@ -281,6 +283,7 @@ export async function* query(
     !handlesCatalog &&
     !handlesContext &&
     !handlesSections &&
+    !handlesAttachments &&
     !handlesCompact
   ) {
     snapshot?.release()
@@ -705,6 +708,16 @@ async function* queryLoop(
     const fullSystemPrompt = asSystemPrompt(
       appendSystemContext(systemPrompt, systemContext),
     )
+    const projectAttachments = (value: Message[]) =>
+      toolUseContext.modsSnapshot
+        ? renderModPromptAttachments(
+            value,
+            toolUseContext.modsSnapshot,
+            toolUseContext.abortController.signal,
+            toolUseContext.agentId,
+          )
+        : Promise.resolve(value)
+    let projectedMessagesForQuery = await projectAttachments(messagesForQuery)
 
     queryCheckpoint('query_autocompact_start')
     const {
@@ -713,7 +726,7 @@ async function* queryLoop(
       compactionFailure,
       skip: compactionSkip,
     } = await deps.autocompact(
-        messagesForQuery,
+        projectedMessagesForQuery,
         toolUseContext,
         {
           systemPrompt,
@@ -721,7 +734,7 @@ async function* queryLoop(
           resolvedPromptContextBlocks: contextBlocks,
           systemContext,
           toolUseContext,
-          forkContextMessages: messagesForQuery,
+          forkContextMessages: projectedMessagesForQuery,
         },
         querySource,
         tracking,
@@ -795,6 +808,7 @@ async function* queryLoop(
 
       // Continue on with the current query call using the post compact messages
       messagesForQuery = postCompactMessages
+      projectedMessagesForQuery = await projectAttachments(messagesForQuery)
       await refreshContext(messagesForQuery)
     } else if (compactionSkip !== undefined) {
       yield createSystemMessage(compactionSkip, 'info')
@@ -912,7 +926,7 @@ async function* queryLoop(
       !collapseOwnsIt
     ) {
       const { isAtBlockingLimit } = calculateTokenWarningState(
-        tokenCountWithEstimation(messagesForQuery) - snipTokensFreed,
+        tokenCountWithEstimation(projectedMessagesForQuery) - snipTokensFreed,
         toolUseContext.options.mainLoopModel,
       )
       if (isAtBlockingLimit) {
@@ -950,7 +964,7 @@ async function* queryLoop(
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
           for await (const message of deps.callModel({
-            messages: prependUserContext(messagesForQuery, contextBlocks ?? userContext),
+            messages: prependUserContext(projectedMessagesForQuery, contextBlocks ?? userContext),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: toolUseContext.options.tools,
@@ -1234,6 +1248,7 @@ async function* queryLoop(
             // Strip before retry so the fallback model gets clean history.
             if (isAnt()) {
               messagesForQuery = stripSignatureBlocks(messagesForQuery)
+              projectedMessagesForQuery = await projectAttachments(messagesForQuery)
             }
 
             // Log the fallback event

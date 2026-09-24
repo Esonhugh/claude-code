@@ -248,9 +248,11 @@ for (const implementation of ['local', 'official'] as const) {
         })),
       ).toEqual({ deny: 'policy veto' })
       expect(
-        await runtime.dispatch('prompt.context', {}, async () => ({
-          blocks: ['managed context'],
-        })),
+        await runtime.dispatch(
+          'prompt.context',
+          { blocks: [] },
+          async () => ({ blocks: ['managed context'] }),
+        ),
       ).toEqual({ blocks: ['managed context'] })
       expect(
         await runtime.dispatch('tool.list', {}, async () => ({
@@ -289,6 +291,7 @@ for (const implementation of ['local', 'official'] as const) {
       }
       for (const event of [
         'prompt.section',
+        'prompt.attachment',
         'skill.prompt',
         'attribution.text',
       ])

@@ -19,6 +19,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
+import { renderModPromptAttachments } from '../mods/promptAttachments.js'
 import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
@@ -1370,6 +1371,14 @@ async function* queryModel(
         createAttachmentMessage({ type: 'deferred_tools_delta', ...delta }),
       ]
     }
+  }
+  if (options.modsSnapshot?.hasHooks('prompt.attachment')) {
+    schemaMessages = await renderModPromptAttachments(
+      schemaMessages,
+      options.modsSnapshot,
+      signal,
+      options.agentId,
+    )
   }
   let messagesForAPI = normalizeMessagesForAPI(schemaMessages, filteredTools)
   if (openAICompaction) {
