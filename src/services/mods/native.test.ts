@@ -251,9 +251,13 @@ for (const implementation of ['local', 'official'] as const) {
         await runtime.dispatch(
           'prompt.context',
           { blocks: [] },
-          async () => ({ blocks: ['managed context'] }),
+          async () => ({
+            blocks: [{ name: 'managed', text: 'managed context' }],
+          }),
         ),
-      ).toEqual({ blocks: ['managed context'] })
+      ).toEqual({
+        blocks: [{ name: 'managed', text: 'managed context' }],
+      })
       expect(
         await runtime.dispatch('tool.list', {}, async () => ({
           value: [
