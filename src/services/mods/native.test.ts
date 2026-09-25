@@ -247,17 +247,10 @@ for (const implementation of ['local', 'official'] as const) {
           deny: 'policy veto',
         })),
       ).toEqual({ deny: 'policy veto' })
+      const promptContext = { blocks: [{ name: 'policy', text: 'managed context' }] }
       expect(
-        await runtime.dispatch(
-          'prompt.context',
-          { blocks: [] },
-          async () => ({
-            blocks: [{ name: 'managed', text: 'managed context' }],
-          }),
-        ),
-      ).toEqual({
-        blocks: [{ name: 'managed', text: 'managed context' }],
-      })
+        await runtime.dispatch('prompt.context', promptContext, async () => promptContext),
+      ).toEqual(promptContext)
       expect(
         await runtime.dispatch('tool.list', {}, async () => ({
           value: [
@@ -293,6 +286,21 @@ for (const implementation of ['local', 'official'] as const) {
             await runtime.dispatch(event, { provider }, async () => answer),
           ).toEqual(answer)
       }
+      const nativeInput = seatNativeModPlugins(
+        prepared.inputs,
+        config,
+        official,
+      ).find(input => input.storageId === SEC_DEFAULT_ID)
+      const nativeEvents = new Set(
+        nativeInput === undefined
+          ? []
+          : getNativeModDeclaration(nativeInput)?.events,
+      )
+      expect([...nativeEvents]).toEqual(expect.arrayContaining([
+        'prompt.section',
+        'prompt.context',
+      ]))
+      expect(nativeEvents.has('prompt.attachment')).toBe(implementation === 'local')
       for (const event of [
         'prompt.section',
         'prompt.attachment',
