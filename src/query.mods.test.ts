@@ -11,20 +11,16 @@ import { asAgentId } from './types/ids.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { createModsRuntime, type ModSnapshot } from './services/mods/runtime.js'
 import { createAssistantMessage, handleMessageFromStream, normalizeMessagesForAPI, type StreamingThinking } from './utils/messages.js'
-import {
-  asSystemPrompt,
-  getSystemPromptSections,
-  withSystemPromptSections,
-} from './utils/systemPromptType.js'
+import { asSystemPrompt, withSystemPromptSections, getSystemPromptSections } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { getDefaultAppState } from './state/AppStateStore.js'
 import { resetStateForTests } from './bootstrap/state.js'
 import { createModTurnCompletion } from './services/mods/turnAdapter.js'
 import { createSystemMessage, createCompactBoundaryMessage, createUserMessage } from './utils/messages.js'
 import { prependUserContext } from './utils/api.js'
-import { createAttachmentMessage, memoryFilesToAttachments } from './utils/attachments.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
 import { reconcilePromptContext } from './services/mods/promptContext.js'
+import { createAttachmentMessage, memoryFilesToAttachments } from './utils/attachments.js'
 
 function response(id: string, text: string, input = 10, output = 2): AssistantMessage {
   const message = createAssistantMessage({ content: text })
@@ -104,7 +100,7 @@ function harness(callModel: NonNullable<QueryParams['deps']>['callModel']) {
       autocompact: async messages => ({ messages, wasCompacted: false }), callModel },
   }
   return { params, context, snapshot, calls, order,
-    rewrite: (fn: typeof rewrite) => { rewrite = fn }, fail: (error: Error) => { failure = error } }
+    rewrite: (fn: typeof rewrite) => { rewrite = fn }, fail: (error: Error | undefined) => { failure = error } }
 }
 
 async function drain(iterator: ReturnType<typeof query>) {
@@ -503,6 +499,47 @@ test('turn.step preserves model fallback errors and increments the retry step', 
   } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
 })
 
+test('turn.step session.messages reads its own concurrent query rather than the main host transcript', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-step-messages-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { messages: () => [{role: 'user', text: 'HOST_ONLY', toolUses: []}] },
+  })
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `const seen = []; export function register(on) {
+      on('turn.step', async function* ($, e, next) {
+        const before = await $.session.messages();
+        const result = yield* next(e);
+        seen.push({agentId: e.agentId, before, after: await $.session.messages()});
+        return result;
+      });
+      on('tool.call', () => ({result: seen}));
+    }`)
+    await runtime.reconcile([{name:'messages',storageId:'messages@inline',pluginRoot:root,entrypoints:[entry]}])
+    const queries = ['main', 'child'].map(name => {
+      const h = harness(async function* () { yield* streamedResponse(name, `${name} reply`) })
+      h.context.mods = runtime
+      if (name === 'child') h.context.agentId = asAgentId('child')
+      h.params.messages = [createUserMessage({content: `${name} question`})]
+      return drain(query(h.params))
+    })
+    const runs = await Promise.all(queries)
+    expect(runs.map(run => run.terminal.reason)).toEqual(['completed', 'completed'])
+    const {result: seen} = await runtime.dispatch('tool.call', {}, async () => ({result: []})) as {
+      result: {agentId?: string; before: {text:string}[]; after: {text:string}[]}[]
+    }
+    expect(seen).toHaveLength(2)
+    for (const name of ['main', 'child']) {
+      const observation = seen.find(item => item.agentId === (name === 'child' ? name : undefined))!
+      expect(observation.before.map(message => message.text)).toEqual([`${name} question`])
+      expect(observation.after.map(message => message.text)).toEqual([`${name} question`, `${name} reply`])
+    }
+    expect(diagnostics).toEqual([])
+  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+})
+
 test('turn.step hook can call $.turn.step inside the active real query request', async () => {
   const root=await mkdtemp(join(tmpdir(),'mods-step-capability-'))
   const diagnostics:unknown[]=[]
@@ -791,8 +828,707 @@ for (const inputJSON of ['{"value":"REWRITTEN"}', '{broken']) test.each([false, 
   } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
 })
 
+test('main query completion pushes actual response usage through session.measure, never for a subagent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-measure-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `let events=[]; export function register(on) {
+      on('session.start', ($,e,next) => {events.push('start');return next(e)});
+      on('turn.complete', ($,e,next) => {events.push('complete');return next(e)});
+      on('session.measure', async ($,e,next) => {events.push({input:e,usage:await $.session.usage()});return next(e)});
+      on('tool.call', () => ({result:events}));
+    }`)
+    await runtime.reconcile([{name:'measure-query',storageId:'measure-query@inline',pluginRoot:root,entrypoints:[entry]}])
+    await runtime.bind({cwd:root,sessionId:'measure-query',surface:null,isInteractive:false})
+    const h = harness(async function* () {yield response('measure','actual answer',1000)})
+    h.context.mods = runtime
+    h.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    await drain(query(h.params))
+    const read = () => runtime.dispatch('tool.call',{tool:'Inspect',tool_use_id:'inspect'},async () => ({result:null})) as Promise<{result:any[]}>
+    const events = (await read()).result
+    expect(events.slice(0,2)).toEqual(['start','complete'])
+    expect(events[2].input.context).toEqual({window:200000,tokens:1007,percent:1})
+    expect(events[2].input.changed).toContain('context')
+    expect(events[2].usage.context).toEqual(events[2].input.context)
+    h.context.agentId = asAgentId('measure-child')
+    await drain(query(h.params))
+    expect((await read()).result.filter(event => typeof event === 'object')).toHaveLength(1)
+    h.context.agentId = undefined
+    h.params.deps!.callModel = async function* () {yield response('measure-cancel','last visible answer',2000)}
+    const interrupted = query(h.params)
+    while (true) {
+      const next = await interrupted.next()
+      if (next.done) throw new Error('query never yielded its response')
+      if (next.value.type === 'assistant') break
+    }
+    await interrupted.return({reason:'completed'} as never)
+    const last = (await read()).result.filter(event => typeof event === 'object').at(-1)
+    expect(last.input.context.tokens).toBe(2007)
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+describe('public query prompt.attachment', () => {
+  test('an invalidated in-flight attachment cannot overwrite the fresh cache answer', async () => {
+    const root = await mkdtemp(join(tmpdir(),'mods-attachment-inflight-'))
+    const runtime = createModsRuntime()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const running: Promise<unknown>[] = []
+    const requests: string[] = []
+    let cores = 0
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.attachment',async ($,e,next) => {const n=++calls;await next(e);return {text:'GEN_'+n}});
+        on('tool.call',async $ => {await $.ui.invalidate('prompt.attachment');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'inflight',storageId:'inflight@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if(event==='prompt.attachment' && ++cores===1) {entered.resolve();await release.promise}
+          return core(value,signal)
+        },options)}
+      }
+      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('inflight','done')})
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/fixture.ts',snippet:'original'}))
+      const first = drain(query(h.params)); running.push(first)
+      await entered.promise
+      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+      await drain(query(h.params))
+      release.resolve(); await first
+      await drain(query(h.params))
+      expect(requests[0]).toContain('GEN_2')
+      expect(requests[1]).toContain('GEN_1')
+      expect(requests[2]).toContain('GEN_2')
+    } finally {release.resolve();await Promise.allSettled(running);await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test('an old snapshot cannot seed a new attachment key after invalidation', async () => {
+    const root = await mkdtemp(join(tmpdir(),'mods-attachment-generation-'))
+    const runtime = createModsRuntime()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const running: Promise<unknown>[] = []
+    const requests: string[] = []
+    let cores = 0
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let generation='OLD'; export function register(on) {
+        on('prompt.attachment',async ($,e,next) => {const value=generation;await next(e);return {text:value+'_'+e.text}});
+        on('tool.call',async $ => {generation='NEW';await $.ui.invalidate('prompt.attachment');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'generation',storageId:'generation@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if(event==='prompt.attachment' && ++cores===1) {entered.resolve();await release.promise}
+          return core(value,signal)
+        },options)}
+      }
+      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('generation','done')})
+      h.context.mods = runtime
+      h.params.messages.push(
+        createAttachmentMessage({type:'edited_text_file',filename:'/first.ts',snippet:'first'}),
+        createAttachmentMessage({type:'edited_text_file',filename:'/second.ts',snippet:'second'}),
+      )
+      const first = drain(query(h.params)); running.push(first)
+      await entered.promise
+      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+      h.params.messages.pop()
+      await drain(query(h.params))
+      release.resolve(); await first
+      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/second.ts',snippet:'second'}))
+      await drain(query(h.params))
+      expect(requests[0]).toContain('NEW_')
+      expect(requests[0]).toContain('first')
+      expect(requests[1]).toContain('OLD_')
+      expect(requests[1]).toContain('second')
+      expect(requests[2]).toContain('NEW_')
+      expect(requests[2]).toContain('second')
+    } finally {release.resolve();await Promise.allSettled(running);await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test('joins framed text for one Worker call and preserves media and display-only attachments', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-media-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', ($,e) => {
+          if(e.type==='queued_command') return {text:'QUEUED_MEDIA_REWRITE'};
+          if(e.type!=='directory') throw new Error('display-only attachment dispatched');
+          if(e.text.includes('<system-reminder>')||!e.text.includes('Called the Bash tool')||!e.text.includes('fixture-file')) throw new Error('text not joined');
+          return {text:'DIRECTORY_REWRITE'};
+        });
+      }`)
+      await runtime.reconcile([{name:'media',storageId:'media@inline',pluginRoot:root,entrypoints:[entry]}])
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-media','done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(
+        createAttachmentMessage({type:'directory',path:'/fixture',displayPath:'fixture',content:'fixture-file'}),
+        createAttachmentMessage({type:'queued_command',prompt:[{type:'image',source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}]}),
+        createAttachmentMessage({type:'dynamic_skill',skillDir:'/fixture',skillNames:['fixture'],displayPath:'fixture'}),
+      )
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      expect(requests[0]).toContain('DIRECTORY_REWRITE')
+      expect(requests[0]).not.toContain('fixture-file')
+      expect(requests[0]).toContain('aW1hZ2U=')
+      expect(requests[0]).toContain('QUEUED_MEDIA_REWRITE')
+      expect(h.params.messages).toEqual(transcript)
+      expect(diagnostics).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test.each(['owner', 'waiter'] as const)('cancelling the attachment cache %s does not cancel the other request', async mode => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-cancel-'))
+    const runtime = createModsRuntime()
+    const entered = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const controllers = [new AbortController(), new AbortController()]
+    const running: Promise<unknown>[] = []
+    const requests: string[] = []
+    let cores = 0, captures = 0
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.attachment', async ($,e,next) => { const n=++calls; const result=await next(e); return {text:'LIVE_'+n}; });
+      }`)
+      await runtime.reconcile([{name:'cancel-attachment',storageId:'cancel-attachment@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services), index = captures++
+        return {...snapshot,
+          get promptAttachments() { if(index===1) waiting.resolve(); return snapshot.promptAttachments },
+          dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+            if(event==='prompt.attachment' && ++cores===1) { entered.resolve(); await release.promise }
+            return core(value,signal)
+          },options),
+        }
+      }
+      const h = harness(async function* (request) { requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages))); yield response('cancel-attachment','done') })
+      h.context.mods = runtime
+      h.context.abortController = controllers[0]!
+      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/fixture.ts',snippet:'original'}))
+      const first = drain(query(h.params)).catch(error => error)
+      running.push(first)
+      await entered.promise
+      const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}})).catch(error => error)
+      running.push(second)
+      await waiting.promise
+      controllers[mode==='owner' ? 0 : 1]!.abort(new Error('cancel attachment'))
+      release.resolve()
+      await Promise.all(running)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toContain(mode==='owner' ? 'LIVE_2' : 'LIVE_1')
+    } finally { release.resolve(); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('Worker restores omitted identity and rejects metadata rewrites before callModel', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-pins-'))
+    const diagnostics: { message: string }[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', {type:'nested_memory'}, ($,e,next) => next({text:'OMITTED_METADATA'}));
+        on('prompt.attachment', {type:'nested_memory'}, ($,e,next) => {
+          if(e.origin.kind!=='engine'||e.agentId!=='attachment-agent') throw new Error('lost metadata');
+          return next({...e,text:e.text+':restored'});
+        });
+        on('prompt.attachment', {type:'edited_text_file'}, ($,e,next) => next({...e,type:'skill_listing',text:'BAD_TYPE'}));
+        on('prompt.attachment', {type:'skill_listing'}, ($,e,next) => next({...e,origin:{kind:'hook',event:'SessionStart'},text:'BAD_ORIGIN'}));
+        on('prompt.attachment', {type:'date_change'}, ($,e,next) => next({...e,agentId:'spoofed',text:'BAD_AGENT'}));
+        on('prompt.attachment', {type:'hook_additional_context'}, ($,e,next) => {
+          if(e.origin.kind!=='hook'||e.origin.event!=='UserPromptSubmit') throw new Error('wrong hook author');
+          return next({...e,text:123});
+        });
+        on('prompt.attachment', {type:'todo_reminder'}, () => ({text:123})).catch(() => ({text:'RECOVERED_TODO'}));
+      }`)
+      await runtime.reconcile([{name:'pins',storageId:'pins@inline',pluginRoot:root,entrypoints:[entry]}])
+      expect(diagnostics).toEqual([])
+      expect(runtime.hasHooks('prompt.attachment')).toBe(true)
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-pins', 'done')
+      })
+      h.context.mods = runtime
+      h.context.agentId = asAgentId('attachment-agent')
+      h.params.messages.push(
+        createAttachmentMessage(memoryFilesToAttachments([{path:'/project/CLAUDE.md',type:'Project',content:'MEMORY_ORIGINAL'}], h.context)[0]!),
+        createAttachmentMessage({type:'edited_text_file',filename:'/project/file.ts',snippet:'EDIT_ORIGINAL'}),
+        createAttachmentMessage({type:'skill_listing',content:'SKILL_ORIGINAL',skillCount:1,isInitial:true}),
+        createAttachmentMessage({type:'date_change',newDate:'DATE_ORIGINAL'}),
+        createAttachmentMessage({type:'hook_additional_context',content:['HOOK_ORIGINAL'],hookName:'fixture',hookEvent:'UserPromptSubmit',toolUseID:'fixture'}),
+        createAttachmentMessage({type:'todo_reminder',content:[],itemCount:0}),
+      )
+      await drain(query(h.params))
+      expect(requests[0]).toContain('OMITTED_METADATA:restored')
+      for (const text of ['EDIT_ORIGINAL','SKILL_ORIGINAL','DATE_ORIGINAL','HOOK_ORIGINAL','RECOVERED_TODO']) expect(requests[0]).toContain(text)
+      for (const text of ['BAD_TYPE','BAD_ORIGIN','BAD_AGENT']) expect(requests[0]).not.toContain(text)
+      expect(diagnostics.map(event => event.message)).toEqual([
+        'prompt.attachment cannot rewrite type', 'prompt.attachment cannot rewrite origin',
+        'prompt.attachment cannot rewrite agentId', 'prompt.attachment requires text',
+        'prompt.attachment must return text',
+      ])
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('attributes Mod chain context to the producing plugin event', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-plugin-origin-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', {type:'hook_additional_context'}, ($,e) => ({text:e.origin.kind+':'+e.origin.event+':'+e.text}));
+      }`)
+      await runtime.reconcile([{name:'plugin-origin',storageId:'plugin-origin@inline',pluginRoot:root,entrypoints:[entry]}])
+      const requests: string[] = []
+      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('attachment-plugin-origin','done')})
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({
+        type:'hook_additional_context',content:['PLUGIN_CONTEXT'],hookName:'prompt.submit',
+        hookEvent:'UserPromptSubmit',toolUseID:'plugin-context',modEvent:'prompt.submit',
+      }))
+      await drain(query(h.params))
+      expect(requests[0]).toContain('plugin:prompt.submit:prompt.submit hook additional context: PLUGIN_CONTEXT')
+      expect(diagnostics).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+
+  test('nested memory and skill listing answers cache per attachment and recompute after Worker invalidation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-cache-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `let calls = 0; export function register(on) {
+        on('prompt.attachment', ($, e) => ({ text: e.type === 'skill_listing' ? null : 'MEMORY_' + (++calls) + ':' + e.text }));
+        on('tool.call', async $ => { await $.ui.invalidate('prompt.attachment'); return { result: 'invalidated' }; });
+      }`)
+      await runtime.reconcile([{ name: 'cache', storageId: 'cache@inline', pluginRoot: root, entrypoints: [entry] }])
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-cache', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(
+        ...memoryFilesToAttachments([{ path: '/project/nested/CLAUDE.md', type: 'Project', content: 'NESTED_MEMORY' }], h.context).map(createAttachmentMessage),
+        createAttachmentMessage({ type: 'skill_listing', content: 'SKILL_LISTING', skillCount: 1, isInitial: true }),
+      )
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      // A copied record is still the same attachment, not a cache miss.
+      await drain(query({ ...h.params, messages: structuredClone(h.params.messages) }))
+      expect(requests[0]).toContain('MEMORY_1:Contents of /project/nested/CLAUDE.md:')
+      expect(requests[1]).toContain('MEMORY_1:Contents of /project/nested/CLAUDE.md:')
+      expect(requests.every(request => !request.includes('SKILL_LISTING'))).toBe(true)
+      expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({ result: 'invalidated' })
+      await drain(query(h.params))
+      expect(requests[2]).toContain('MEMORY_2:Contents of /project/nested/CLAUDE.md:')
+      expect(requests[2]).not.toContain('SKILL_LISTING')
+      // Same contents, new record: ask again rather than caching by text/type.
+      h.params.messages[1] = { ...h.params.messages[1]!, uuid: randomUUID() }
+      await drain(query(h.params))
+      expect(requests[3]).toContain('MEMORY_3:Contents of /project/nested/CLAUDE.md:')
+      expect(transcript[1]).toEqual({ ...h.params.messages[1], uuid: transcript[1]!.uuid, timestamp: transcript[1]!.timestamp })
+      expect(diagnostics).toEqual([])
+    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  test('autocompaction and the model consume the same projected attachment bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-sizing-'))
+    const runtime = createModsRuntime()
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', ($, e) => ({text: 'PROJECTED_ATTACHMENT'}));
+      }`)
+      await runtime.reconcile([{name:'attachment-sizing',storageId:'attachment-sizing@inline',pluginRoot:root,entrypoints:[entry]}])
+      const compactInputs: string[] = []
+      const modelInputs: string[] = []
+      const h = harness(async function* (request) {
+        modelInputs.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment-sizing', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({
+        type: 'edited_text_file',
+        filename: '/fixture.ts',
+        snippet: 'UNPROJECTED_ATTACHMENT',
+      }))
+      h.params.deps!.autocompact = async messages => {
+        compactInputs.push(JSON.stringify(normalizeMessagesForAPI(messages)))
+        return {messages, wasCompacted: false}
+      }
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      expect(compactInputs).toHaveLength(1)
+      expect(compactInputs[0]).toContain('PROJECTED_ATTACHMENT')
+      expect(compactInputs[0]).not.toContain('UNPROJECTED_ATTACHMENT')
+      expect(modelInputs[0]).toContain('PROJECTED_ATTACHMENT')
+      expect(modelInputs[0]).not.toContain('UNPROJECTED_ATTACHMENT')
+      expect(h.params.messages).toEqual(transcript)
+    } finally {
+      await runtime.dispose()
+      await rm(root, {recursive: true, force: true})
+    }
+  })
+
+  test('blocking limit uses projected attachment bytes', async () => {
+    const savedCompact = process.env.DISABLE_AUTO_COMPACT
+    const savedLimit = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-blocking-'))
+    const runtime = createModsRuntime()
+    try {
+      process.env.DISABLE_AUTO_COMPACT = '1'
+      process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '700'
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', () => ({text:''}));
+      }`)
+      await runtime.reconcile([{name:'attachment-blocking',storageId:'attachment-blocking@inline',pluginRoot:root,entrypoints:[entry]}])
+      let modelCalls = 0
+      const h = harness(async function* () {
+        modelCalls++
+        yield response('attachment-blocking', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({
+        type: 'edited_text_file',
+        filename: '/fixture.ts',
+        snippet: 'x'.repeat(2000),
+      }))
+      const result = await drain(query(h.params))
+      expect(result.terminal.reason).toBe('completed')
+      expect(modelCalls).toBe(1)
+    } finally {
+      if (savedCompact === undefined) delete process.env.DISABLE_AUTO_COMPACT
+      else process.env.DISABLE_AUTO_COMPACT = savedCompact
+      if (savedLimit === undefined)
+        delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
+      else process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = savedLimit
+      await runtime.dispose()
+      await rm(root, {recursive: true, force: true})
+    }
+  })
+
+  test('Worker rewrites a real attachment only in the model request, not the transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.attachment', { type: 'edited_text_file' }, async ($, e, next) => {
+          if (e.origin.kind !== 'engine' || e.agentId !== undefined || e.text.includes('<system-reminder>'))
+            throw new Error('invalid attachment input');
+          return next({ ...e, text: 'MODEL_EDITED_TEXT' });
+        });
+      }`)
+      await runtime.reconcile([{ name: 'attachments', storageId: 'attachments@inline', pluginRoot: root, entrypoints: [entry] }])
+      const requests: string[] = []
+      const h = harness(async function* (request) {
+        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
+        yield response('attachment', 'done')
+      })
+      h.context.mods = runtime
+      h.params.messages.push(createAttachmentMessage({ type: 'edited_text_file', filename: '/project/file.ts', snippet: 'ORIGINAL_EDITED_TEXT' }))
+      const transcript = structuredClone(h.params.messages)
+      await drain(query(h.params))
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toContain('<system-reminder>\\nMODEL_EDITED_TEXT\\n</system-reminder>')
+      expect(requests[0]).not.toContain('ORIGINAL_EDITED_TEXT')
+      expect(h.params.messages).toEqual(transcript)
+      expect(diagnostics).toEqual([])
+    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+})
+
+describe('public query prompt.section', () => {
+  test('cache-safe callback freezes unhooked section bytes and does not mutate the parent context', async () => {
+    const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
+    const h = harness(async function* (request) {
+      expect(captured).toHaveLength(1)
+      expect(request.systemPrompt).toEqual(captured[0]!.systemPrompt)
+      yield response('unhooked', 'done')
+    })
+    h.context.mods = undefined
+    h.params.systemPrompt = withSystemPromptSections([{ name: 'identity', text: 'original' }])
+    h.params.onCacheSafeParams = params => { captured.push(params) }
+    await drain(query(h.params))
+    expect(captured).toHaveLength(1)
+    expect([...captured[0]!.systemPrompt]).toEqual(['original'])
+    expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
+    expect(captured[0]!.resolvedPromptContextBlocks).toEqual([])
+    expect(getSystemPromptSections(h.params.systemPrompt)).toEqual([{ name: 'identity', text: 'original' }])
+    expect(captured[0]!.toolUseContext.renderedSystemPrompt).toBe(captured[0]!.systemPrompt)
+    expect(h.context.renderedSystemPrompt).toBeUndefined()
+  })
+
+  test('joined teammate sections keep original block separators after Worker drop and fill', async () => {
+    const { concatSystemPrompts, joinSystemPrompt } = await import('./utils/systemPromptType.js')
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-joined-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.section', ($, e) => ({text: e.name === 'drop' ? null : 'MOD_' + e.name}));
+      }`)
+      await runtime.reconcile([{ name: 'joined', storageId: 'joined@inline', pluginRoot: root, entrypoints: [entry] }])
+      const requests: (readonly string[])[] = []
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('joined', 'done') })
+      h.context.mods = runtime
+      h.params.systemPrompt = concatSystemPrompts(joinSystemPrompt(withSystemPromptSections([
+        { name: 'identity', text: 'identity' }, { name: 'drop', text: 'drop' },
+        { name: 'language', text: null }, { text: 'TEAMMATE_APPEND' },
+      ]), '\n'), ['Notes'])
+      expect([...h.params.systemPrompt]).toEqual(['identity\ndrop\nTEAMMATE_APPEND', 'Notes'])
+      await drain(query(h.params))
+      expect(requests).toEqual([['MOD_identity\nMOD_language\nTEAMMATE_APPEND', 'Notes']])
+      expect(diagnostics).toEqual([])
+    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  test('malformed Worker answers recover inside catch and failed hooks preserve completed downstream text', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-recovery-'))
+    const diagnostics: { message: string }[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('prompt.section', {name:'caught'}, async ($,e,next) => {
+          await next(e); return {text:123};
+        }).catch(async ($,e,next) => ({text:(await next(e)).text+':caught'}));
+        on('prompt.section', {name:'kept'}, async ($,e,next) => {
+          await next({...e,text:'downstream'}); throw new Error('after next');
+        });
+        on('prompt.section', {name:'passthrough'}, () => {throw new Error('before next')});
+        on('prompt.section', {name:'bad-input'}, ($,e,next) => next({...e,text:123}));
+      }`)
+      await runtime.reconcile([{name:'recovery',storageId:'recovery@inline',pluginRoot:root,entrypoints:[entry]}])
+      const cores: string[] = [], requests: (readonly string[])[] = []
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if (event === 'prompt.section') cores.push(String(value.name))
+          return core(value,signal)
+        },options)}
+      }
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('recovered','done') })
+      h.context.mods = runtime
+      h.params.systemPrompt = withSystemPromptSections([
+        {name:'caught',text:'original'}, {name:'kept',text:'original'},
+        {name:'passthrough',text:'original'}, {name:'bad-input',text:'original'},
+      ])
+      await drain(query(h.params))
+      await drain(query(h.params))
+      expect(requests).toEqual([
+        ['original:caught','downstream','original','original'],
+        ['original:caught','downstream','original','original'],
+      ])
+      expect(cores).toEqual(['caught','kept','passthrough','bad-input'])
+      expect(diagnostics.map(event => event.message)).toEqual([
+        'prompt.section must return text', 'after next', 'before next', 'prompt.section must return text or null',
+      ])
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('invalidation during Worker section assembly keeps the old query stable without repopulating the new cache', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-invalidation-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const running: Promise<unknown>[] = []
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.section', async ($,e,next) => { const call=++calls; await next(e); return {text:e.name+':'+call}; });
+        on('tool.call', async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'invalidation',storageId:'invalidation@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      let first = true, releases = 0
+      runtime.capture = services => {
+        const snapshot = capture(services)
+        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+          if (event === 'prompt.section' && first) { first=false; entered.resolve(); await release.promise }
+          return core(value,signal)
+        },options),release() { releases++; snapshot.release() }}
+      }
+      const requests: (readonly string[])[] = []
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('sections','done') })
+      h.context.mods = runtime
+      h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'original'},{name:'memory',text:null}])
+      const firstQuery = drain(query(h.params))
+      running.push(firstQuery)
+      await entered.promise
+      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
+      await drain(query(h.params))
+      release.resolve()
+      await firstQuery
+      await drain(query(h.params))
+      expect(requests).toEqual([['identity:2','memory:3'],['identity:1','memory:4'],['identity:2','memory:3']])
+      expect(releases).toBe(3)
+      expect(diagnostics).toEqual([])
+    } finally { release.resolve(); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test.each(['owner','waiter'] as const)('cancelling the section %s preserves the other live query and releases both snapshots', async mode => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-section-cancellation-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    const entered = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const controllers = [new AbortController(),new AbortController()]
+    const running: Promise<unknown>[] = []
+    const snapshots: ModSnapshot[] = [], releases: number[] = [], requests: (readonly string[])[] = []
+    let cores = 0
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry, `let calls=0; export function register(on) {
+        on('prompt.section', async ($,e,next) => { const call=++calls; const value=await next(e); return {text:value.text+':'+call}; });
+      }`)
+      await runtime.reconcile([{name:'cancel',storageId:'cancel@inline',pluginRoot:root,entrypoints:[entry]}])
+      const capture = runtime.capture
+      runtime.capture = services => {
+        const snapshot = capture(services), index = snapshots.length
+        snapshots.push(snapshot)
+        return {...snapshot,get promptSections() { if (index===1) waiting.resolve(); return snapshot.promptSections },
+          dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
+            if (event === 'prompt.section' && ++cores===1) { entered.resolve(); await release.promise }
+            return core(value,signal)
+          },options),release() { releases.push(index); snapshot.release() }}
+      }
+      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('survivor','done') })
+      h.context.mods = runtime
+      h.context.abortController = controllers[0]!
+      h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'original'}])
+      const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
+      h.params.onCacheSafeParams = params => { captured.push(params) }
+      const first = drain(query(h.params)).catch(error => error)
+      running.push(first)
+      await entered.promise
+      const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}})).catch(error => error)
+      running.push(second)
+      await waiting.promise
+      expect(captured).toEqual([])
+      const reason = new Error('cancel '+mode)
+      controllers[mode==='owner' ? 0 : 1]!.abort(reason)
+      expect(await (mode==='owner' ? first : second)).toBe(reason)
+      if (mode==='waiter') release.resolve()
+      const deadline = Promise.withResolvers<never>()
+      const timer = setTimeout(() => deadline.reject(new Error('live section query blocked by cancelled peer')),1000)
+      try { expect(await Promise.race([mode==='owner' ? second : first,deadline.promise])).toMatchObject({terminal:{reason:'completed'}}) }
+      finally { clearTimeout(timer) }
+      expect(requests).toEqual([[mode==='owner' ? 'original:2' : 'original:1']])
+      expect(captured).toHaveLength(1)
+      expect([...captured[0]!.systemPrompt]).toEqual([...requests[0]!])
+      expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
+      expect(captured[0]!.toolUseContext.abortController).toBe(controllers[mode==='owner' ? 1 : 0])
+      expect(cores).toBe(mode==='owner' ? 2 : 1)
+      expect(releases.toSorted()).toEqual([0,1])
+      expect(controllers[mode==='owner' ? 1 : 0]!.signal.aborted).toBe(false)
+      for (const snapshot of snapshots)
+        await expect(snapshot.dispatch('prompt.section',{},async input => input)).rejects.toThrow('snapshot released')
+      expect(diagnostics).toEqual([])
+    } finally { release.resolve(); controllers.forEach(controller=>controller.abort()); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+
+  test('real Worker rewrites, drops and fills named slots, caches by name, and preserves resolved fork bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(),'mods-query-sections-'))
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root,'register.ts')
+      await writeFile(entry,`let calls=0;export function register(on) {
+        on('prompt.section',($,e) => {
+          calls++;
+          return {text:e.name==='drop' ? null : e.name+':'+String(e.text)+':'+calls};
+        });
+        on('tool.call',async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+      }`)
+      await runtime.reconcile([{name:'sections',storageId:'sections@inline',pluginRoot:root,entrypoints:[entry]}])
+      const requests: (readonly string[])[] = [], forks: any[] = []
+      const h = harness(async function* (request) {
+        requests.push(request.systemPrompt)
+        yield response('section-answer','done')
+      })
+      h.context.mods = runtime
+      h.params.systemPrompt = withSystemPromptSections([
+        {name:'identity',text:'core identity'}, {text:'literal boundary'},
+        {name:'drop',text:'must disappear'}, {name:'memory',text:null}, {text:'literal append'},
+      ])
+      h.params.deps!.autocompact = async (messages,context) => {
+        forks.push(context.renderedSystemPrompt)
+        return {messages,wasCompacted:false}
+      }
+      await drain(query(h.params))
+      expect(requests[0]).toEqual(['identity:core identity:1','literal boundary','memory:null:3','literal append'])
+      expect(forks[0]).toEqual(requests[0])
+      expect(getSystemPromptSections(forks[0])).toBeUndefined()
+      expect(h.context.renderedSystemPrompt).toBeUndefined()
+      h.params.systemPrompt = withSystemPromptSections([
+        {name:'identity',text:'new core'}, {text:'literal boundary'},
+        {name:'drop',text:'different core'}, {name:'memory',text:'changed core'}, {text:'literal append'},
+      ])
+      await drain(query(h.params))
+      expect(requests[1]).toEqual(requests[0])
+      expect(await runtime.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'invalidated'})
+      await drain(query(h.params))
+      expect(requests[2]).toEqual(['identity:new core:4','literal boundary','memory:changed core:6','literal append'])
+      h.params.systemPrompt = asSystemPrompt(forks[0])
+      await drain(query(h.params))
+      expect(requests[3]).toEqual(requests[0])
+      expect(diagnostics).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  })
+})
 
 describe('public query prompt.context', () => {
+  test('hands the actual instruction snapshot to hooks and preserves replacement provenance for forks', async () => {
+    const files = [{ path: '/fixture/CLAUDE.md', kind: 'project' as const, content: 'original marker' }]
+    const original = reconcilePromptContext({ blocks: [], instructionFiles: files }, { blocks: [], instructionFiles: [] })
+    const replacement = [{ ...files[0]!, content: 'replacement marker' }]
+    const h = harness(async function* () { yield response('context-sources', 'answer') })
+    h.params.userContext = withUserContextInstructionFiles(
+      Object.fromEntries(original.blocks.map(block => [block.name, block.text])), files,
+    )
+    h.context.mods = {
+      hasHooks: (event: string) => event === 'prompt.context',
+      capture: () => ({
+        hasHooks: (event: string) => event === 'prompt.context', release() {},
+        dispatch: async (_event: string, input: any, core: any, options: any) => {
+          expect(input.instructionFiles).toEqual(files)
+          const rewritten = options.restoreInput({ ...input, instructionFiles: replacement }, input)
+          expect(rewritten.blocks[0].text).toContain('replacement marker')
+          expect(rewritten.blocks[0].text).not.toContain('original marker')
+          return core(rewritten)
+        },
+      }),
+    } as unknown as NonNullable<ToolUseContext['mods']>
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      expect(forkContext.userContext.claudeMd).toContain('replacement marker')
+      expect(getUserContextInstructionFiles(forkContext.userContext)).toEqual(replacement)
+      return { messages, wasCompacted: false }
+    }
+    await drain(query(h.params))
+    expect(getUserContextInstructionFiles(h.params.userContext)).toEqual(files)
+  })
+
   test('context rendering preserves ordered numeric names and omits empty snapshots', () => {
     const original = process.env.NODE_ENV
     delete process.env.NODE_ENV
@@ -1221,6 +1957,16 @@ test('mid-turn drain preserves admitted context and never injects a core-refused
   const h = harness(async function* (request) {
     requests.push(request)
     if (requests.length === 1) {
+      enqueue({
+        value: 'plugin follow-up must wait for admission',
+        mode: 'prompt',
+        priority: 'later',
+        promptSubmitReceipt: { admit() {}, cancel() {} },
+        promptSubmitMetadata: {
+          origin: { kind: 'plugin', name: 'fixture' },
+          wait: false,
+        },
+      })
       enqueue({ value: 'raw input must not return', mode: 'prompt', admitted: {
         messages: admitted, shouldQuery: true, admission: { text: '/rewritten-as-text' },
       } })
@@ -1238,11 +1984,178 @@ test('mid-turn drain preserves admitted context and never injects a core-refused
     expect(run.messages).toContainEqual(admitted[1])
     expect(JSON.stringify(requests[1].messages)).toContain('retained admission context')
     expect(JSON.stringify(requests[1].messages)).not.toContain('raw input must not return')
+    expect(JSON.stringify(requests[1].messages)).not.toContain('plugin follow-up must wait for admission')
     expect(JSON.stringify(requests[1].messages)).not.toContain('refused prompt')
-    expect(getCommandQueue().map(command => command.value)).toEqual(['refused prompt'])
+    expect(getCommandQueue().map(command => command.value)).toEqual([
+      'plugin follow-up must wait for admission',
+      'refused prompt',
+    ])
   } finally {
     resetCommandQueue()
   }
+})
+
+test('query projects dynamic tools on first and later prompts without retaining retired registrations', async () => {
+  const { z } = await import('zod/v4')
+  const base = {name:'BaseFixture',inputSchema:z.object({})} as unknown as Tool
+  const first = {name:'mcp__fixture__dynamic',inputSchema:z.object({})} as unknown as Tool
+  const replacement = {...first} as Tool
+  let current: Tool | undefined = first
+  const owned = new Set([first, replacement])
+  const requests: (readonly Tool[])[] = []
+  const h = harness(async function* (request) {
+    requests.push(request.tools)
+    yield response('dynamic-projection', 'done')
+  })
+  h.context.options.tools = [base]
+  Object.assign(h.context.mods!, {
+    tools: {
+      projection: (tools: readonly Tool[]) => [
+        ...tools.filter(tool => !owned.has(tool)),
+        ...(current ? [current] : []),
+      ],
+    },
+  })
+  await drain(query(h.params))
+  expect(requests[0]).toEqual([base, first])
+  h.context.options.tools = requests[0]!
+  current = replacement
+  await drain(query(h.params))
+  expect(requests[1]).toEqual([base, replacement])
+  expect(requests[1]![1]).toBe(replacement)
+  h.context.options.tools = requests[1]!
+  current = undefined
+  await drain(query(h.params))
+  expect(requests[2]).toEqual([base])
+})
+
+test('session.start dynamic tool enters the first query schema and real executor', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-dynamic-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('session.start',async ($,e,next) => {
+        await $.tool.register({name:'echo',description:'Dynamic echo',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}});
+        return next(e);
+      });
+      on('tool.call',{tool:'mcp__dynamic__echo'},($,e) => ({result:'dynamic:'+e.text}));
+    }`)
+    await runtime.reconcile([{name:'dynamic',storageId:'dynamic@inline',pluginRoot:root,entrypoints:[entry]}])
+    await runtime.bind({cwd:root,surface:null,isInteractive:false,sessionId:'query-dynamic'})
+    let requests = 0
+    const h = harness(async function* (request) {
+      const tool = request.tools.find(tool => tool.name === 'mcp__dynamic__echo')
+      expect(tool).toBeDefined()
+      expect(tool!.inputJSONSchema).toMatchObject({type:'object',required:['text']})
+      if (++requests === 1) yield createAssistantMessage({content:[{
+        type:'tool_use',caller:{type:'direct'},id:'dynamic-call',name:tool!.name,input:{text:'first'},
+      }]})
+      else yield response('dynamic-answer','done')
+    })
+    h.context.mods = runtime
+    const result = await drain(query(h.params))
+    expect(result.terminal.reason).toBe('completed')
+    expect(requests).toBe(2)
+    expect(result.messages.flatMap(message => message.type === 'user' && Array.isArray(message.message.content) ? message.message.content : []))
+      .toContainEqual(expect.objectContaining({type:'tool_result',tool_use_id:'dynamic-call',content:'dynamic:first'}))
+    expect(diagnostics).toEqual([])
+  } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+})
+
+test.each([false,true])('%s executor author host follows context modifiers and the real permission consumer', async streaming => {
+  const {runTools} = await import('./services/tools/toolOrchestration.js')
+  const {StreamingToolExecutor} = await import('./services/tools/StreamingToolExecutor.js')
+  const {z} = await import('zod/v4')
+  let services: any
+  const seen: string[] = [], permissionTools: string[] = []
+  const snapshot: ModSnapshot = {hasHooks:() => false,dispatch:async (_event,input,core) => core(input),release() {}}
+  const h = harness(async function* () {yield response('unused','done')})
+  const makeTool = (name:string,call:any) => ({
+    name,inputSchema:z.object({}),maxResultSizeChars:Infinity,isConcurrencySafe:() => false,call,
+    mapToolResultToToolResultBlockParam:(_data:unknown,id:string) => ({type:'tool_result',tool_use_id:id,content:name}),
+  }) as unknown as Tool
+  const author = makeTool('CurrentAuthor',async (_input:unknown,context:ToolUseContext) => {
+    seen.push(context.options.mainLoopModel)
+    return {data:'author'}
+  })
+  const replacement = [author]
+  const update = makeTool('UpdateContext',async () => ({data:'updated',contextModifier:(context:ToolUseContext) => ({
+    ...context,options:{...context.options,mainLoopModel:'updated-model',tools:replacement},
+  })}))
+  h.context.options.tools = [update]
+  const {createModTools} = await import('./services/mods/tools.js')
+  h.context.mods = {
+    capture:(request:any) => {services=request;return snapshot},
+    tools:createModTools({pluginOf:() => 'executor-fixture'}),
+  } as unknown as ToolUseContext['mods']
+  const permission = async (tool:Tool) => {permissionTools.push(tool.name);return {behavior:'allow' as const}}
+  const block = {type:'tool_use' as const,caller:{type:'direct' as const},id:'update-context',name:update.name,input:{}}
+  const assistant = createAssistantMessage({content:[block]})
+  if (streaming) {
+    const executor = new StreamingToolExecutor([update],permission,h.context)
+    executor.addTool(block,assistant)
+    await Array.fromAsync(executor.getRemainingResults())
+  } else {
+    await Array.fromAsync(runTools([block],[assistant],permission,h.context))
+  }
+  expect(services.toolHost).toBeFunction()
+  await services.toolHost().call({tool:author.name},snapshot,h.context.abortController.signal)
+  expect(seen).toEqual(['updated-model'])
+  expect(permissionTools).toEqual([update.name,author.name])
+})
+
+test('Worker author calls inside query use the current request tools and permission consumer', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-author-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    toolHost:() => {throw new Error('query must not fall back to the session host')},
+  }})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.context',async $ => {
+        const value=await $.tool.call({tool:'AuthorQueryFixture',value:'from-worker'});
+        return {blocks:[{name:'authorResult',text:value.text}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'author',storageId:'author@inline',pluginRoot:root,entrypoints:[entry]}])
+    const { z } = await import('zod/v4')
+    const calls: unknown[] = [], permissions: ToolUseContext[] = [], contexts: Record<string,string>[] = []
+    const tool = {
+      name:'AuthorQueryFixture',inputSchema:z.object({value:z.string()}),maxResultSizeChars:Infinity,
+      isConcurrencySafe:() => true,
+      call:async (input:unknown) => {calls.push(input);return {data:input}},
+      mapToolResultToToolResultBlockParam:(data:{value:string},id:string) => ({type:'tool_result',tool_use_id:id,content:'mapped:'+data.value}),
+    } as unknown as Tool
+    const h = harness(async function* () {yield response('author-query','done')})
+    h.context.mods = runtime
+    h.context.options.tools = [tool]
+    h.context.messages = [createUserMessage({content:'stale-host-message'})]
+    h.params.messages = [createUserMessage({content:'current-query-message'})]
+    h.params.canUseTool = async (_tool,input,context) => {permissions.push(context);return {behavior:'allow',updatedInput:input}}
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    expect((await drain(query(h.params))).terminal.reason).toBe('completed')
+    expect(calls).toEqual([{value:'from-worker'}])
+    expect(permissions).toHaveLength(1)
+    expect(permissions[0]!.messages).toEqual(h.params.messages)
+    expect(contexts).toEqual([{authorResult:'mapped:from-worker'}])
+    expect(diagnostics).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('query captures a lazy author tool host for the current request context', async () => {
+  let services: any
+  const h = harness(async function* () { yield response('tool-host', 'done') })
+  const capture = h.context.mods!.capture
+  h.context.mods!.capture = request => { services = request; return capture(request) }
+  await drain(query(h.params))
+  expect(services.toolHost).toBeFunction()
+  expect(services.toolHost()).toMatchObject({call:expect.any(Function),check:expect.any(Function)})
 })
 
 test('model request catalogs follow refreshed tools between query iterations', async () => {
@@ -1324,263 +2237,145 @@ test('model requests receive a catalog-bound Mods snapshot even without turn lif
   }
 })
 
-test('real Worker prompt.context runs once for a snapshot across model recovery', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-context-query-'))
+test('Worker usage inside a query reads that conversation rather than the main host transcript', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-'))
   const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage:() => {throw new Error('query must provide its own usage snapshot')},
+  }})
   try {
-    const entry = join(root, 'register.ts')
+    const entry = join(root,'register.ts')
     await writeFile(entry, `export function register(on) {
-      on('prompt.context', async ($, e, next) => {
-        const value = await next({blocks:e.blocks.filter(block => block.name !== 'claudeMd')});
-        return {blocks:[...value.blocks, {name:'plugin',text:'extra'}]};
+      on('prompt.context',async $ => {
+        const usage=await $.session.usage();
+        return {blocks:[{name:'inputTokens',text:String(usage.context.tokens)}]};
       });
     }`)
-    await runtime.reconcile([{name:'context-query',storageId:'context-query@inline',pluginRoot:root,entrypoints:[entry]}])
+    await runtime.reconcile([{name:'query-usage',storageId:'query-usage@inline',pluginRoot:root,entrypoints:[entry]}])
     expect(diagnostics).toEqual([])
-    expect(runtime.hasHooks('prompt.context')).toBe(true)
-    const observed: any[] = []
-    const dispatch = runtime.capture
-    runtime.capture = () => {
-      const snapshot = dispatch()
-      return {...snapshot, dispatch: async (event, input, core, options) => {
-        const result = await snapshot.dispatch(event,input,core,options)
-        if (event === 'prompt.context') observed.push(result)
-        return result
-      }}
-    }
-    let requests = 0
-    const h = harness(async function* () {
-      requests++
-      if (requests === 1) {
-        const exhausted = response('limit','partial')
-        Object.assign(exhausted, {apiError:'max_output_tokens', isApiErrorMessage:true})
-        yield exhausted
-      } else yield response('one','answer')
-    })
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () {yield response('usage-result','answer')})
     h.context.mods = runtime
-    h.params.userContext = {claudeMd:'private',currentDate:'today'}
-    await drain(query(h.params))
-    expect(requests).toBe(2)
-    expect(observed).toEqual([{blocks:[{name:'currentDate',text:'today'},{name:'plugin',text:'extra'}]}])
-    expect(diagnostics).toEqual([])
-  } finally {
-    await runtime.dispose()
-    await rm(root,{recursive:true,force:true})
-  }
-})
-
-test('real Worker rejects duplicate context names and keeps the completed inner rewrite', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-context-invalid-'))
-  const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
-  try {
-    const entry = join(root, 'register.ts')
-    await writeFile(entry, `export function register(on) {
-      on('prompt.context', async ($, e, next) => {
-        const result = await next({blocks:e.blocks.filter(block => block.name !== 'claudeMd')});
-        return {blocks:[...result.blocks, {name:'currentDate',text:'duplicate'}]};
-      });
-    }`)
-    await runtime.reconcile([{name:'invalid-context',storageId:'invalid-context@inline',pluginRoot:root,entrypoints:[entry]}])
-    expect(diagnostics).toEqual([])
-    let models = 0
-    let compactions = 0
-    const h = harness(async function* () { models++; yield response('one','answer') })
-    h.context.mods = runtime
-    h.params.userContext = {claudeMd:'private',currentDate:'today'}
-    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
-      compactions++
-      expect(forkContext.userContext).toEqual({currentDate:'today'})
+    h.context.agentId = asAgentId('usage-child')
+    h.params.messages = [response('prior-child-response','earlier',200,100)]
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      contexts.push(forkContext.userContext)
       return {messages,wasCompacted:false}
     }
-    await drain(query(h.params))
-    expect(models).toBe(1)
-    expect(compactions).toBe(1)
-    expect(diagnostics).toHaveLength(1)
-    expect(diagnostics[0]).toMatchObject({message:expect.stringContaining('unique named text blocks')})
+    expect((await drain(query(h.params))).terminal.reason).toBe('completed')
+    expect(contexts).toEqual([{inputTokens:'207'}])
+    expect(diagnostics).toEqual([])
   } finally {
     await runtime.dispose()
     await rm(root,{recursive:true,force:true})
   }
 })
 
-test('real runtime wiring: Worker turn.complete rewrite reaches the public query', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-turn-query-'))
+test('usage read by refreshed context after compaction does not retain the precompact response', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-compact-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.context',async $ => {
+        const usage=await $.session.usage();
+        return {blocks:[{name:'inputTokens',text:String(usage.context.tokens)}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'usage-compact',storageId:'usage-compact@inline',pluginRoot:root,entrypoints:[entry]}])
+    const requests: any[] = []
+    const h = harness(async function* (request) {requests.push(request);yield response('answer','done')})
+    h.context.mods = runtime
+    h.params.messages = [response('prior','earlier',200,100)]
+    h.params.deps!.autocompact = async () => ({wasCompacted:true,compactionResult:{
+      boundaryMarker:createCompactBoundaryMessage('auto',307),summaryMessages:[createUserMessage({content:'summary'})],attachments:[],hookResults:[],
+    }})
+    const original = process.env.NODE_ENV
+    process.env.NODE_ENV = 'development'
+    try {await drain(query(h.params))}
+    finally {
+      if (original === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = original
+    }
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(requests[0].messages)).toContain('# inputTokens\\nundefined')
+    expect(JSON.stringify(requests[0].messages)).not.toContain('# inputTokens\\n207')
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('prompt.context and the model retain the turn snapshot across a real Worker reload', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-generation-'))
   const diagnostics: unknown[] = []
   const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
   try {
     const entry = join(root, 'register.ts')
-    await writeFile(entry, `export function register(on) {
-      on('turn.complete', async ($, e, next) => {
-        const result = await next(e);
-        return { ...result, text: 'runtime annotation' };
-      });
-    }`)
-    await runtime.reconcile([{ name: 'turn-query', storageId: 'turn-query@inline', pluginRoot: root, entrypoints: [entry] }])
-    expect(diagnostics).toEqual([])
-    expect(runtime.hasHooks('turn.complete')).toBe(true)
-    const h = harness(async function* () { yield response('one', 'real answer') })
+    const plugin = { name: 'context-generation', storageId: 'context-generation@inline', pluginRoot: root, entrypoints: [entry] }
+    const source = (generation: string) => `export function register(on) {
+      on('turn.start', ($, e, next) => next(e));
+      on('prompt.context', () => ({blocks:[{name:'generation',text:'${generation}'}]}));
+      on('prompt.section', () => ({text:'section ${generation}'}));
+      on('tool.call', () => ({result:'${generation}'}));
+    }`
+    await writeFile(entry, source('old'))
+    await runtime.reconcile([plugin])
+    const capture = runtime.capture
+    const retained: ModSnapshot[] = []
+    const releases: number[] = []
+    let reloaded = false
+    runtime.capture = services => {
+      const snapshot = capture(services)
+      const index = retained.length
+      const wrapped: ModSnapshot = {
+        ...snapshot,
+        dispatch: async (event, input, core, options) => {
+          const result = await snapshot.dispatch(event, input, core, options)
+          if (event === 'turn.start' && !reloaded) {
+            reloaded = true
+            await writeFile(entry, source('new'))
+            await runtime.reconcile([plugin])
+          }
+          return result
+        },
+        release() { releases.push(index); snapshot.release() },
+      }
+      retained.push(wrapped)
+      return wrapped
+    }
+    const requests: any[] = []
+    const providers: unknown[] = []
+    const h = harness(async function* (request) {
+      requests.push(request)
+      providers.push(await request.options.modsSnapshot!.dispatch('tool.call', {}, async () => ({result:'core'})))
+      yield response('generation', 'answer')
+    })
     h.context.mods = runtime
-    const run = await drain(query(h.params))
+    h.params.publicTurn = { text: 'hello' }
+    h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'core'}])
+    const forkContexts: Record<string, string>[] = []
+    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
+      forkContexts.push(forkContext.userContext)
+      return { messages, wasCompacted: false }
+    }
+    await drain(query(h.params))
+    await drain(query(h.params))
+    expect(requests).toHaveLength(2)
+    expect(forkContexts).toEqual([{ generation: 'old' }, { generation: 'new' }])
+    expect(requests.map(request => request.systemPrompt)).toEqual([['section old'],['section new']])
+    expect(providers).toEqual([{result:'old'}, {result:'new'}])
+    expect(retained).toHaveLength(2)
+    expect(requests.map(request => request.options.modsSnapshot)).toEqual(retained)
+    expect(releases).toEqual([0, 1])
+    for (const snapshot of retained)
+      await expect(snapshot.dispatch('tool.call', {}, async () => ({}))).rejects.toThrow('snapshot released')
     expect(diagnostics).toEqual([])
-    expect(run.messages.some(message => message.type === 'system' && message.content === 'runtime annotation')).toBe(true)
   } finally {
     await runtime.dispose()
     await rm(root, { recursive: true, force: true })
   }
 })
-
-for (const mode of ['none', 'no-hook', 'hook']) {
-  for (const ending of ['return', 'throw', 'close']) {
-    test(`actual wrapper preserves command lifecycle: ${mode}/${ending}`, async () => {
-      const h = harness(async function* () {})
-      if (mode === 'none') h.context.mods = undefined
-      if (mode === 'no-hook') h.snapshot.hasHooks = () => false
-      const lifecycle: any[] = []
-      const diagnostics: any[] = []
-      const original = new Error('query failure')
-      const run = isolatedWrapper(async function* (_params, consumed) {
-        consumed.push('command')
-        lifecycle.push(['command', 'started'])
-        yield { type: 'stream_request_start' }
-        if (ending === 'throw') throw original
-        return { reason: 'completed' }
-      }, diagnostics, lifecycle)(h.params)
-      await run.next()
-      if (ending === 'throw') await expect(run.next()).rejects.toBe(original)
-      else if (ending === 'close') await run.return({ reason: 'consumer' })
-      else await run.next()
-      expect(lifecycle).toEqual(ending === 'return'
-        ? [['command', 'started'], ['command', 'completed']]
-        : [['command', 'started']])
-      expect(diagnostics).toEqual([])
-      expect(h.calls).toHaveLength(mode === 'hook' ? 1 : 0)
-      if (mode === 'hook') expect(h.calls[0]?.input.reason).toBe(
-        ending === 'close' ? 'aborted' : ending === 'throw' ? 'error' : 'answer')
-    })
-  }
-}
-
-for (const ending of ['return', 'throw', 'close']) {
-  test(`finalizer failure is diagnostic without overriding ${ending}`, async () => {
-    const h = harness(async function* () {})
-    h.params.publicTurn = { text: 'hello' }
-    h.fail(new Error('dispatch failed'))
-    const original = new Error('original failure')
-    const diagnostics: any[] = []
-    const run = isolatedWrapper(async function* () {
-      yield { type: 'stream_request_start' }
-      if (ending === 'throw') throw original
-      return { reason: 'completed' }
-    }, diagnostics, [])(h.params)
-    await run.next()
-    expect(h.context.mods?.activePublicTurnId).toEqual(expect.any(String))
-    if (ending === 'throw') await expect(run.next()).rejects.toBe(original)
-    else if (ending === 'close') expect(await run.return({ reason: 'consumer' })).toEqual({ done: true, value: { reason: 'consumer' } })
-    else expect(await run.next()).toEqual({ done: true, value: { reason: 'completed' } })
-    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
-    expect(diagnostics.some(value => String(value).includes('Mods turn.complete failed'))).toBe(true)
-    expect(h.calls).toHaveLength(1)
-    expect(h.order.at(-1)).toBe('release')
-  })
-}
-
-
-test('mid-turn drain leaves an unadmitted plugin prompt in the host queue', async () => {
-  const { enqueue, getCommandQueue, resetCommandQueue } = await import('./utils/messageQueueManager.js')
-  const requests: any[] = []
-  const h = harness(async function* (request) {
-    requests.push(request)
-    if (requests.length === 1) {
-      enqueue({
-        value: 'plugin follow-up must wait for admission',
-        mode: 'prompt',
-        priority: 'later',
-        promptSubmitReceipt: { admit() {}, cancel() {} },
-        promptSubmitMetadata: {
-          origin: { kind: 'plugin', name: 'fixture' },
-          wait: false,
-        },
-      })
-      yield createAssistantMessage({ content: [{ type: 'tool_use', caller: { type: 'direct' }, id: 'fixture-call', name: 'UnavailableFixture', input: {} }] })
-    } else yield response('done', 'answer')
-  })
-  try {
-    await drain(query(h.params))
-    expect(requests).toHaveLength(2)
-    expect(JSON.stringify(requests[1].messages)).not.toContain('plugin follow-up must wait for admission')
-    expect(getCommandQueue().map(command => command.value)).toEqual([
-      'plugin follow-up must wait for admission',
-    ])
-  } finally {
-    resetCommandQueue()
-  }
-})
-
-test('hands the actual instruction snapshot to hooks and preserves replacement provenance for forks', async () => {
-    const files = [{ path: '/fixture/CLAUDE.md', kind: 'project' as const, content: 'original marker' }]
-    const original = reconcilePromptContext({ blocks: [], instructionFiles: files }, { blocks: [], instructionFiles: [] })
-    const replacement = [{ ...files[0]!, content: 'replacement marker' }]
-    const h = harness(async function* () { yield response('context-sources', 'answer') })
-    h.params.userContext = withUserContextInstructionFiles(
-      Object.fromEntries(original.blocks.map(block => [block.name, block.text])), files,
-    )
-    h.context.mods = {
-      hasHooks: (event: string) => event === 'prompt.context',
-      capture: () => ({
-        hasHooks: (event: string) => event === 'prompt.context', release() {},
-        dispatch: async (_event: string, input: any, core: any, options: any) => {
-          expect(input.instructionFiles).toEqual(files)
-          const rewritten = options.restoreInput({ ...input, instructionFiles: replacement }, input)
-          expect(rewritten.blocks[0].text).toContain('replacement marker')
-          expect(rewritten.blocks[0].text).not.toContain('original marker')
-          return core(rewritten)
-        },
-      }),
-    } as unknown as NonNullable<ToolUseContext['mods']>
-    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
-      expect(forkContext.userContext.claudeMd).toContain('replacement marker')
-      expect(getUserContextInstructionFiles(forkContext.userContext)).toEqual(replacement)
-      return { messages, wasCompacted: false }
-    }
-    await drain(query(h.params))
-    expect(getUserContextInstructionFiles(h.params.userContext)).toEqual(files)
-  })
-
-test('renders ordered rewritten blocks once before the model without running classic prompt hooks', async () => {
-    const requests: any[] = []
-    const h = harness(async function* (request) {
-      requests.push(request)
-      yield response('context', 'answer')
-    })
-    const events: string[] = []
-    let released = 0
-    h.context.mods = {
-      hasHooks: (event: string) => event === 'prompt.context',
-      capture: () => ({
-        hasHooks: (event: string) => event === 'prompt.context',
-        release: () => { released++ },
-        dispatch: async (event: string, input: any, _core: any, options: any) => {
-          events.push(event)
-          expect(input).toEqual({blocks:[{name:'claudeMd',text:'private instruction'},{name:'currentDate',text:'today'}]})
-          const result = {blocks:[{name:'9',text:'first'},{name:'2',text:'second'},{name:'currentDate',text:'changed'}]}
-          options.validateResult(result, [])
-          return result
-        },
-      }),
-    } as unknown as NonNullable<ToolUseContext['mods']>
-    h.params.userContext = {claudeMd:'private instruction', currentDate:'today'}
-    h.params.deps!.autocompact = async (messages, _context, forkContext) => {
-      expect(forkContext.userContext).toEqual({'9':'first','2':'second',currentDate:'changed'})
-      return {messages, wasCompacted:false}
-    }
-    await drain(query(h.params))
-    expect(events).toEqual(['prompt.context'])
-    expect(released).toBe(1)
-    expect(requests).toHaveLength(1)
-    expect(h.params.userContext).toEqual({claudeMd:'private instruction',currentDate:'today'})
-  })
 
 for (const ending of ['return', 'throw', 'close', 'abort'] as const) {
   test(`prompt.context-only snapshot releases exactly once on ${ending}`, async () => {
@@ -2239,675 +3034,86 @@ test('real Worker rejects duplicate context names and keeps the completed inner 
   }
 })
 
-test('main query completion pushes actual response usage through session.measure, never for a subagent', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-query-measure-'))
+test('real runtime wiring: Worker turn.complete rewrite reaches the public query', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-turn-query-'))
   const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
   try {
-    const entry = join(root,'register.ts')
-    await writeFile(entry, `let events=[]; export function register(on) {
-      on('session.start', ($,e,next) => {events.push('start');return next(e)});
-      on('turn.complete', ($,e,next) => {events.push('complete');return next(e)});
-      on('session.measure', async ($,e,next) => {events.push({input:e,usage:await $.session.usage()});return next(e)});
-      on('tool.call', () => ({result:events}));
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.complete', async ($, e, next) => {
+        const result = await next(e);
+        return { ...result, text: 'runtime annotation' };
+      });
     }`)
-    await runtime.reconcile([{name:'measure-query',storageId:'measure-query@inline',pluginRoot:root,entrypoints:[entry]}])
-    await runtime.bind({cwd:root,sessionId:'measure-query',surface:null,isInteractive:false})
-    const h = harness(async function* () {yield response('measure','actual answer',1000)})
-    h.context.mods = runtime
-    h.context.options.mainLoopModel = 'claude-sonnet-4-6'
-    await drain(query(h.params))
-    const read = () => runtime.dispatch('tool.call',{tool:'Inspect',tool_use_id:'inspect'},async () => ({result:null})) as Promise<{result:any[]}>
-    const events = (await read()).result
-    expect(events.slice(0,2)).toEqual(['start','complete'])
-    expect(events[2].input.context).toEqual({window:200000,tokens:1007,percent:1})
-    expect(events[2].input.changed).toContain('context')
-    expect(events[2].usage.context).toEqual(events[2].input.context)
-    h.context.agentId = asAgentId('measure-child')
-    await drain(query(h.params))
-    expect((await read()).result.filter(event => typeof event === 'object')).toHaveLength(1)
-    h.context.agentId = undefined
-    h.params.deps!.callModel = async function* () {yield response('measure-cancel','last visible answer',2000)}
-    const interrupted = query(h.params)
-    while (true) {
-      const next = await interrupted.next()
-      if (next.done) throw new Error('query never yielded its response')
-      if (next.value.type === 'assistant') break
-    }
-    await interrupted.return({reason:'completed'} as never)
-    const last = (await read()).result.filter(event => typeof event === 'object').at(-1)
-    expect(last.input.context.tokens).toBe(2007)
+    await runtime.reconcile([{ name: 'turn-query', storageId: 'turn-query@inline', pluginRoot: root, entrypoints: [entry] }])
     expect(diagnostics).toEqual([])
-  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+    expect(runtime.hasHooks('turn.complete')).toBe(true)
+    const h = harness(async function* () { yield response('one', 'real answer') })
+    h.context.mods = runtime
+    const run = await drain(query(h.params))
+    expect(diagnostics).toEqual([])
+    expect(run.messages.some(message => message.type === 'system' && message.content === 'runtime annotation')).toBe(true)
+  } finally {
+    await runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
-describe('public query prompt.section', () => {
-  test('cache-safe callback freezes unhooked section bytes and does not mutate the parent context', async () => {
-    const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
-    const h = harness(async function* (request) {
-      expect(captured).toHaveLength(1)
-      expect(request.systemPrompt).toEqual(captured[0]!.systemPrompt)
-      yield response('unhooked', 'done')
+for (const mode of ['none', 'no-hook', 'hook']) {
+  for (const ending of ['return', 'throw', 'close']) {
+    test(`actual wrapper preserves command lifecycle: ${mode}/${ending}`, async () => {
+      const h = harness(async function* () {})
+      if (mode === 'none') h.context.mods = undefined
+      if (mode === 'no-hook') h.snapshot.hasHooks = () => false
+      const lifecycle: any[] = []
+      const diagnostics: any[] = []
+      const original = new Error('query failure')
+      const run = isolatedWrapper(async function* (_params, consumed) {
+        consumed.push('command')
+        lifecycle.push(['command', 'started'])
+        yield { type: 'stream_request_start' }
+        if (ending === 'throw') throw original
+        return { reason: 'completed' }
+      }, diagnostics, lifecycle)(h.params)
+      await run.next()
+      if (ending === 'throw') await expect(run.next()).rejects.toBe(original)
+      else if (ending === 'close') await run.return({ reason: 'consumer' })
+      else await run.next()
+      expect(lifecycle).toEqual(ending === 'return'
+        ? [['command', 'started'], ['command', 'completed']]
+        : [['command', 'started']])
+      expect(diagnostics).toEqual([])
+      expect(h.calls).toHaveLength(mode === 'hook' ? 1 : 0)
+      if (mode === 'hook') expect(h.calls[0]?.input.reason).toBe(
+        ending === 'close' ? 'aborted' : ending === 'throw' ? 'error' : 'answer')
     })
-    h.context.mods = undefined
-    h.params.systemPrompt = withSystemPromptSections([{ name: 'identity', text: 'original' }])
-    h.params.onCacheSafeParams = params => { captured.push(params) }
-    await drain(query(h.params))
-    expect(captured).toHaveLength(1)
-    expect([...captured[0]!.systemPrompt]).toEqual(['original'])
-    expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
-    expect(captured[0]!.resolvedPromptContextBlocks).toEqual([])
-    expect(getSystemPromptSections(h.params.systemPrompt)).toEqual([{ name: 'identity', text: 'original' }])
-    expect(captured[0]!.toolUseContext.renderedSystemPrompt).toBe(captured[0]!.systemPrompt)
-    expect(h.context.renderedSystemPrompt).toBeUndefined()
-  })
+  }
+}
 
-  test('joined teammate sections keep original block separators after Worker drop and fill', async () => {
-    const { concatSystemPrompts, joinSystemPrompt } = await import('./utils/systemPromptType.js')
-    const root = await mkdtemp(join(tmpdir(), 'mods-section-joined-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.section', ($, e) => ({text: e.name === 'drop' ? null : 'MOD_' + e.name}));
-      }`)
-      await runtime.reconcile([{ name: 'joined', storageId: 'joined@inline', pluginRoot: root, entrypoints: [entry] }])
-      const requests: (readonly string[])[] = []
-      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('joined', 'done') })
-      h.context.mods = runtime
-      h.params.systemPrompt = concatSystemPrompts(joinSystemPrompt(withSystemPromptSections([
-        { name: 'identity', text: 'identity' }, { name: 'drop', text: 'drop' },
-        { name: 'language', text: null }, { text: 'TEAMMATE_APPEND' },
-      ]), '\n'), ['Notes'])
-      expect([...h.params.systemPrompt]).toEqual(['identity\ndrop\nTEAMMATE_APPEND', 'Notes'])
-      await drain(query(h.params))
-      expect(requests).toEqual([['MOD_identity\nMOD_language\nTEAMMATE_APPEND', 'Notes']])
-      expect(diagnostics).toEqual([])
-    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+for (const ending of ['return', 'throw', 'close']) {
+  test(`finalizer failure is diagnostic without overriding ${ending}`, async () => {
+    const h = harness(async function* () {})
+    h.params.publicTurn = { text: 'hello' }
+    h.fail(new Error('dispatch failed'))
+    const original = new Error('original failure')
+    const diagnostics: any[] = []
+    const run = isolatedWrapper(async function* () {
+      yield { type: 'stream_request_start' }
+      if (ending === 'throw') throw original
+      return { reason: 'completed' }
+    }, diagnostics, [])(h.params)
+    await run.next()
+    expect(h.context.mods?.activePublicTurnId).toEqual(expect.any(String))
+    if (ending === 'throw') await expect(run.next()).rejects.toBe(original)
+    else if (ending === 'close') expect(await run.return({ reason: 'consumer' })).toEqual({ done: true, value: { reason: 'consumer' } })
+    else expect(await run.next()).toEqual({ done: true, value: { reason: 'completed' } })
+    expect(h.context.mods?.activePublicTurnId).toBeUndefined()
+    expect(diagnostics.some(value => String(value).includes('Mods turn.complete failed'))).toBe(true)
+    expect(h.calls).toHaveLength(1)
+    expect(h.order.at(-1)).toBe('release')
   })
-
-  test('malformed Worker answers recover inside catch and failed hooks preserve completed downstream text', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-section-recovery-'))
-    const diagnostics: { message: string }[] = []
-    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.section', {name:'caught'}, async ($,e,next) => {
-          await next(e); return {text:123};
-        }).catch(async ($,e,next) => ({text:(await next(e)).text+':caught'}));
-        on('prompt.section', {name:'kept'}, async ($,e,next) => {
-          await next({...e,text:'downstream'}); throw new Error('after next');
-        });
-        on('prompt.section', {name:'passthrough'}, () => {throw new Error('before next')});
-        on('prompt.section', {name:'bad-input'}, ($,e,next) => next({...e,text:123}));
-      }`)
-      await runtime.reconcile([{name:'recovery',storageId:'recovery@inline',pluginRoot:root,entrypoints:[entry]}])
-      const cores: string[] = [], requests: (readonly string[])[] = []
-      const capture = runtime.capture
-      runtime.capture = services => {
-        const snapshot = capture(services)
-        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
-          if (event === 'prompt.section') cores.push(String(value.name))
-          return core(value,signal)
-        },options)}
-      }
-      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('recovered','done') })
-      h.context.mods = runtime
-      h.params.systemPrompt = withSystemPromptSections([
-        {name:'caught',text:'original'}, {name:'kept',text:'original'},
-        {name:'passthrough',text:'original'}, {name:'bad-input',text:'original'},
-      ])
-      await drain(query(h.params))
-      await drain(query(h.params))
-      expect(requests).toEqual([
-        ['original:caught','downstream','original','original'],
-        ['original:caught','downstream','original','original'],
-      ])
-      expect(cores).toEqual(['caught','kept','passthrough','bad-input'])
-      expect(diagnostics.map(event => event.message)).toEqual([
-        'prompt.section must return text', 'after next', 'before next', 'prompt.section must return text or null',
-      ])
-    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
-  })
-
-  test('invalidation during Worker section assembly keeps the old query stable without repopulating the new cache', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-section-invalidation-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
-    const running: Promise<unknown>[] = []
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry, `let calls=0; export function register(on) {
-        on('prompt.section', async ($,e,next) => { const call=++calls; await next(e); return {text:e.name+':'+call}; });
-        on('tool.call', async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
-      }`)
-      await runtime.reconcile([{name:'invalidation',storageId:'invalidation@inline',pluginRoot:root,entrypoints:[entry]}])
-      const capture = runtime.capture
-      let first = true, releases = 0
-      runtime.capture = services => {
-        const snapshot = capture(services)
-        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
-          if (event === 'prompt.section' && first) { first=false; entered.resolve(); await release.promise }
-          return core(value,signal)
-        },options),release() { releases++; snapshot.release() }}
-      }
-      const requests: (readonly string[])[] = []
-      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('sections','done') })
-      h.context.mods = runtime
-      h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'original'},{name:'memory',text:null}])
-      const firstQuery = drain(query(h.params))
-      running.push(firstQuery)
-      await entered.promise
-      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
-      await drain(query(h.params))
-      release.resolve()
-      await firstQuery
-      await drain(query(h.params))
-      expect(requests).toEqual([['identity:2','memory:3'],['identity:1','memory:4'],['identity:2','memory:3']])
-      expect(releases).toBe(3)
-      expect(diagnostics).toEqual([])
-    } finally { release.resolve(); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
-  })
-
-  test.each(['owner','waiter'] as const)('cancelling the section %s preserves the other live query and releases both snapshots', async mode => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-section-cancellation-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-    const entered = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
-    const controllers = [new AbortController(),new AbortController()]
-    const running: Promise<unknown>[] = []
-    const snapshots: ModSnapshot[] = [], releases: number[] = [], requests: (readonly string[])[] = []
-    let cores = 0
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry, `let calls=0; export function register(on) {
-        on('prompt.section', async ($,e,next) => { const call=++calls; const value=await next(e); return {text:value.text+':'+call}; });
-      }`)
-      await runtime.reconcile([{name:'cancel',storageId:'cancel@inline',pluginRoot:root,entrypoints:[entry]}])
-      const capture = runtime.capture
-      runtime.capture = services => {
-        const snapshot = capture(services), index = snapshots.length
-        snapshots.push(snapshot)
-        return {...snapshot,get promptSections() { if (index===1) waiting.resolve(); return snapshot.promptSections },
-          dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
-            if (event === 'prompt.section' && ++cores===1) { entered.resolve(); await release.promise }
-            return core(value,signal)
-          },options),release() { releases.push(index); snapshot.release() }}
-      }
-      const h = harness(async function* (request) { requests.push(request.systemPrompt); yield response('survivor','done') })
-      h.context.mods = runtime
-      h.context.abortController = controllers[0]!
-      h.params.systemPrompt = withSystemPromptSections([{name:'identity',text:'original'}])
-      const captured: import('./utils/forkedAgent.js').CacheSafeParams[] = []
-      h.params.onCacheSafeParams = params => { captured.push(params) }
-      const first = drain(query(h.params)).catch(error => error)
-      running.push(first)
-      await entered.promise
-      const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}})).catch(error => error)
-      running.push(second)
-      await waiting.promise
-      expect(captured).toEqual([])
-      const reason = new Error('cancel '+mode)
-      controllers[mode==='owner' ? 0 : 1]!.abort(reason)
-      expect(await (mode==='owner' ? first : second)).toBe(reason)
-      if (mode==='waiter') release.resolve()
-      const deadline = Promise.withResolvers<never>()
-      const timer = setTimeout(() => deadline.reject(new Error('live section query blocked by cancelled peer')),1000)
-      try { expect(await Promise.race([mode==='owner' ? second : first,deadline.promise])).toMatchObject({terminal:{reason:'completed'}}) }
-      finally { clearTimeout(timer) }
-      expect(requests).toEqual([[mode==='owner' ? 'original:2' : 'original:1']])
-      expect(captured).toHaveLength(1)
-      expect([...captured[0]!.systemPrompt]).toEqual([...requests[0]!])
-      expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
-      expect(captured[0]!.toolUseContext.abortController).toBe(controllers[mode==='owner' ? 1 : 0])
-      expect(cores).toBe(mode==='owner' ? 2 : 1)
-      expect(releases.toSorted()).toEqual([0,1])
-      expect(controllers[mode==='owner' ? 1 : 0]!.signal.aborted).toBe(false)
-      for (const snapshot of snapshots)
-        await expect(snapshot.dispatch('prompt.section',{},async input => input)).rejects.toThrow('snapshot released')
-      expect(diagnostics).toEqual([])
-    } finally { release.resolve(); controllers.forEach(controller=>controller.abort()); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
-  })
-
-  test('real Worker rewrites, drops and fills named slots, caches by name, and preserves resolved fork bytes', async () => {
-    const root = await mkdtemp(join(tmpdir(),'mods-query-sections-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry,`let calls=0;export function register(on) {
-        on('prompt.section',($,e) => {
-          calls++;
-          return {text:e.name==='drop' ? null : e.name+':'+String(e.text)+':'+calls};
-        });
-        on('tool.call',async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
-      }`)
-      await runtime.reconcile([{name:'sections',storageId:'sections@inline',pluginRoot:root,entrypoints:[entry]}])
-      const requests: (readonly string[])[] = [], forks: any[] = []
-      const h = harness(async function* (request) {
-        requests.push(request.systemPrompt)
-        yield response('section-answer','done')
-      })
-      h.context.mods = runtime
-      h.params.systemPrompt = withSystemPromptSections([
-        {name:'identity',text:'core identity'}, {text:'literal boundary'},
-        {name:'drop',text:'must disappear'}, {name:'memory',text:null}, {text:'literal append'},
-      ])
-      h.params.deps!.autocompact = async (messages,context) => {
-        forks.push(context.renderedSystemPrompt)
-        return {messages,wasCompacted:false}
-      }
-      await drain(query(h.params))
-      expect(requests[0]).toEqual(['identity:core identity:1','literal boundary','memory:null:3','literal append'])
-      expect(forks[0]).toEqual(requests[0])
-      expect(getSystemPromptSections(forks[0])).toBeUndefined()
-      expect(h.context.renderedSystemPrompt).toBeUndefined()
-      h.params.systemPrompt = withSystemPromptSections([
-        {name:'identity',text:'new core'}, {text:'literal boundary'},
-        {name:'drop',text:'different core'}, {name:'memory',text:'changed core'}, {text:'literal append'},
-      ])
-      await drain(query(h.params))
-      expect(requests[1]).toEqual(requests[0])
-      expect(await runtime.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'invalidated'})
-      await drain(query(h.params))
-      expect(requests[2]).toEqual(['identity:new core:4','literal boundary','memory:changed core:6','literal append'])
-      h.params.systemPrompt = asSystemPrompt(forks[0])
-      await drain(query(h.params))
-      expect(requests[3]).toEqual(requests[0])
-      expect(diagnostics).toEqual([])
-    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
-  })
-})
-
-describe('public query prompt.attachment', () => {
-  test('an invalidated in-flight attachment cannot overwrite the fresh cache answer', async () => {
-    const root = await mkdtemp(join(tmpdir(),'mods-attachment-inflight-'))
-    const runtime = createModsRuntime()
-    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
-    const running: Promise<unknown>[] = []
-    const requests: string[] = []
-    let cores = 0
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry, `let calls=0; export function register(on) {
-        on('prompt.attachment',async ($,e,next) => {const n=++calls;await next(e);return {text:'GEN_'+n}});
-        on('tool.call',async $ => {await $.ui.invalidate('prompt.attachment');return {result:'invalidated'}});
-      }`)
-      await runtime.reconcile([{name:'inflight',storageId:'inflight@inline',pluginRoot:root,entrypoints:[entry]}])
-      const capture = runtime.capture
-      runtime.capture = services => {
-        const snapshot = capture(services)
-        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
-          if(event==='prompt.attachment' && ++cores===1) {entered.resolve();await release.promise}
-          return core(value,signal)
-        },options)}
-      }
-      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('inflight','done')})
-      h.context.mods = runtime
-      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/fixture.ts',snippet:'original'}))
-      const first = drain(query(h.params)); running.push(first)
-      await entered.promise
-      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
-      await drain(query(h.params))
-      release.resolve(); await first
-      await drain(query(h.params))
-      expect(requests[0]).toContain('GEN_2')
-      expect(requests[1]).toContain('GEN_1')
-      expect(requests[2]).toContain('GEN_2')
-    } finally {release.resolve();await Promise.allSettled(running);await runtime.dispose();await rm(root,{recursive:true,force:true})}
-  })
-
-  test('an old snapshot cannot seed a new attachment key after invalidation', async () => {
-    const root = await mkdtemp(join(tmpdir(),'mods-attachment-generation-'))
-    const runtime = createModsRuntime()
-    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
-    const running: Promise<unknown>[] = []
-    const requests: string[] = []
-    let cores = 0
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry, `let generation='OLD'; export function register(on) {
-        on('prompt.attachment',async ($,e,next) => {const value=generation;await next(e);return {text:value+'_'+e.text}});
-        on('tool.call',async $ => {generation='NEW';await $.ui.invalidate('prompt.attachment');return {result:'invalidated'}});
-      }`)
-      await runtime.reconcile([{name:'generation',storageId:'generation@inline',pluginRoot:root,entrypoints:[entry]}])
-      const capture = runtime.capture
-      runtime.capture = services => {
-        const snapshot = capture(services)
-        return {...snapshot,dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
-          if(event==='prompt.attachment' && ++cores===1) {entered.resolve();await release.promise}
-          return core(value,signal)
-        },options)}
-      }
-      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('generation','done')})
-      h.context.mods = runtime
-      h.params.messages.push(
-        createAttachmentMessage({type:'edited_text_file',filename:'/first.ts',snippet:'first'}),
-        createAttachmentMessage({type:'edited_text_file',filename:'/second.ts',snippet:'second'}),
-      )
-      const first = drain(query(h.params)); running.push(first)
-      await entered.promise
-      await runtime.dispatch('tool.call',{},async () => ({result:'core'}))
-      h.params.messages.pop()
-      await drain(query(h.params))
-      release.resolve(); await first
-      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/second.ts',snippet:'second'}))
-      await drain(query(h.params))
-      expect(requests[0]).toContain('NEW_')
-      expect(requests[0]).toContain('first')
-      expect(requests[1]).toContain('OLD_')
-      expect(requests[1]).toContain('second')
-      expect(requests[2]).toContain('NEW_')
-      expect(requests[2]).toContain('second')
-    } finally {release.resolve();await Promise.allSettled(running);await runtime.dispose();await rm(root,{recursive:true,force:true})}
-  })
-
-  test('joins framed text for one Worker call and preserves media and display-only attachments', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-media-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.attachment', ($,e) => {
-          if(e.type==='queued_command') return {text:'QUEUED_MEDIA_REWRITE'};
-          if(e.type!=='directory') throw new Error('display-only attachment dispatched');
-          if(e.text.includes('<system-reminder>')||!e.text.includes('Called the Bash tool')||!e.text.includes('fixture-file')) throw new Error('text not joined');
-          return {text:'DIRECTORY_REWRITE'};
-        });
-      }`)
-      await runtime.reconcile([{name:'media',storageId:'media@inline',pluginRoot:root,entrypoints:[entry]}])
-      const requests: string[] = []
-      const h = harness(async function* (request) {
-        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
-        yield response('attachment-media','done')
-      })
-      h.context.mods = runtime
-      h.params.messages.push(
-        createAttachmentMessage({type:'directory',path:'/fixture',displayPath:'fixture',content:'fixture-file'}),
-        createAttachmentMessage({type:'queued_command',prompt:[{type:'image',source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}]}),
-        createAttachmentMessage({type:'dynamic_skill',skillDir:'/fixture',skillNames:['fixture'],displayPath:'fixture'}),
-      )
-      const transcript = structuredClone(h.params.messages)
-      await drain(query(h.params))
-      expect(requests[0]).toContain('DIRECTORY_REWRITE')
-      expect(requests[0]).not.toContain('fixture-file')
-      expect(requests[0]).toContain('aW1hZ2U=')
-      expect(requests[0]).toContain('QUEUED_MEDIA_REWRITE')
-      expect(h.params.messages).toEqual(transcript)
-      expect(diagnostics).toEqual([])
-    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
-  })
-
-  test.each(['owner', 'waiter'] as const)('cancelling the attachment cache %s does not cancel the other request', async mode => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-cancel-'))
-    const runtime = createModsRuntime()
-    const entered = Promise.withResolvers<void>(), waiting = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
-    const controllers = [new AbortController(), new AbortController()]
-    const running: Promise<unknown>[] = []
-    const requests: string[] = []
-    let cores = 0, captures = 0
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `let calls=0; export function register(on) {
-        on('prompt.attachment', async ($,e,next) => { const n=++calls; const result=await next(e); return {text:'LIVE_'+n}; });
-      }`)
-      await runtime.reconcile([{name:'cancel-attachment',storageId:'cancel-attachment@inline',pluginRoot:root,entrypoints:[entry]}])
-      const capture = runtime.capture
-      runtime.capture = services => {
-        const snapshot = capture(services), index = captures++
-        return {...snapshot,
-          get promptAttachments() { if(index===1) waiting.resolve(); return snapshot.promptAttachments },
-          dispatch:(event,input,core,options) => snapshot.dispatch(event,input,async (value,signal) => {
-            if(event==='prompt.attachment' && ++cores===1) { entered.resolve(); await release.promise }
-            return core(value,signal)
-          },options),
-        }
-      }
-      const h = harness(async function* (request) { requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages))); yield response('cancel-attachment','done') })
-      h.context.mods = runtime
-      h.context.abortController = controllers[0]!
-      h.params.messages.push(createAttachmentMessage({type:'edited_text_file',filename:'/fixture.ts',snippet:'original'}))
-      const first = drain(query(h.params)).catch(error => error)
-      running.push(first)
-      await entered.promise
-      const second = drain(query({...h.params,toolUseContext:{...h.context,abortController:controllers[1]!}})).catch(error => error)
-      running.push(second)
-      await waiting.promise
-      controllers[mode==='owner' ? 0 : 1]!.abort(new Error('cancel attachment'))
-      release.resolve()
-      await Promise.all(running)
-      expect(requests).toHaveLength(1)
-      expect(requests[0]).toContain(mode==='owner' ? 'LIVE_2' : 'LIVE_1')
-    } finally { release.resolve(); await Promise.allSettled(running); await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
-  })
-
-  test('Worker restores omitted identity and rejects metadata rewrites before callModel', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-pins-'))
-    const diagnostics: { message: string }[] = []
-    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.attachment', {type:'nested_memory'}, ($,e,next) => next({text:'OMITTED_METADATA'}));
-        on('prompt.attachment', {type:'nested_memory'}, ($,e,next) => {
-          if(e.origin.kind!=='engine'||e.agentId!=='attachment-agent') throw new Error('lost metadata');
-          return next({...e,text:e.text+':restored'});
-        });
-        on('prompt.attachment', {type:'edited_text_file'}, ($,e,next) => next({...e,type:'skill_listing',text:'BAD_TYPE'}));
-        on('prompt.attachment', {type:'skill_listing'}, ($,e,next) => next({...e,origin:{kind:'hook',event:'SessionStart'},text:'BAD_ORIGIN'}));
-        on('prompt.attachment', {type:'date_change'}, ($,e,next) => next({...e,agentId:'spoofed',text:'BAD_AGENT'}));
-        on('prompt.attachment', {type:'hook_additional_context'}, ($,e,next) => {
-          if(e.origin.kind!=='hook'||e.origin.event!=='UserPromptSubmit') throw new Error('wrong hook author');
-          return next({...e,text:123});
-        });
-        on('prompt.attachment', {type:'todo_reminder'}, () => ({text:123})).catch(() => ({text:'RECOVERED_TODO'}));
-      }`)
-      await runtime.reconcile([{name:'pins',storageId:'pins@inline',pluginRoot:root,entrypoints:[entry]}])
-      expect(diagnostics).toEqual([])
-      expect(runtime.hasHooks('prompt.attachment')).toBe(true)
-      const requests: string[] = []
-      const h = harness(async function* (request) {
-        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
-        yield response('attachment-pins', 'done')
-      })
-      h.context.mods = runtime
-      h.context.agentId = asAgentId('attachment-agent')
-      h.params.messages.push(
-        createAttachmentMessage(memoryFilesToAttachments([{path:'/project/CLAUDE.md',type:'Project',content:'MEMORY_ORIGINAL'}], h.context)[0]!),
-        createAttachmentMessage({type:'edited_text_file',filename:'/project/file.ts',snippet:'EDIT_ORIGINAL'}),
-        createAttachmentMessage({type:'skill_listing',content:'SKILL_ORIGINAL',skillCount:1,isInitial:true}),
-        createAttachmentMessage({type:'date_change',newDate:'DATE_ORIGINAL'}),
-        createAttachmentMessage({type:'hook_additional_context',content:['HOOK_ORIGINAL'],hookName:'fixture',hookEvent:'UserPromptSubmit',toolUseID:'fixture'}),
-        createAttachmentMessage({type:'todo_reminder',content:[],itemCount:0}),
-      )
-      await drain(query(h.params))
-      expect(requests[0]).toContain('OMITTED_METADATA:restored')
-      for (const text of ['EDIT_ORIGINAL','SKILL_ORIGINAL','DATE_ORIGINAL','HOOK_ORIGINAL','RECOVERED_TODO']) expect(requests[0]).toContain(text)
-      for (const text of ['BAD_TYPE','BAD_ORIGIN','BAD_AGENT']) expect(requests[0]).not.toContain(text)
-      expect(diagnostics.map(event => event.message)).toEqual([
-        'prompt.attachment cannot rewrite type', 'prompt.attachment cannot rewrite origin',
-        'prompt.attachment cannot rewrite agentId', 'prompt.attachment requires text',
-        'prompt.attachment must return text',
-      ])
-    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
-  })
-
-  test('attributes Mod chain context to the producing plugin event', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-plugin-origin-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-    try {
-      const entry = join(root,'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.attachment', {type:'hook_additional_context'}, ($,e) => ({text:e.origin.kind+':'+e.origin.event+':'+e.text}));
-      }`)
-      await runtime.reconcile([{name:'plugin-origin',storageId:'plugin-origin@inline',pluginRoot:root,entrypoints:[entry]}])
-      const requests: string[] = []
-      const h = harness(async function* (request) {requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)));yield response('attachment-plugin-origin','done')})
-      h.context.mods = runtime
-      h.params.messages.push(createAttachmentMessage({
-        type:'hook_additional_context',content:['PLUGIN_CONTEXT'],hookName:'prompt.submit',
-        hookEvent:'UserPromptSubmit',toolUseID:'plugin-context',modEvent:'prompt.submit',
-      }))
-      await drain(query(h.params))
-      expect(requests[0]).toContain('plugin:prompt.submit:prompt.submit hook additional context: PLUGIN_CONTEXT')
-      expect(diagnostics).toEqual([])
-    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
-  })
-
-  test('nested memory and skill listing answers cache per attachment and recompute after Worker invalidation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-cache-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `let calls = 0; export function register(on) {
-        on('prompt.attachment', ($, e) => ({ text: e.type === 'skill_listing' ? null : 'MEMORY_' + (++calls) + ':' + e.text }));
-        on('tool.call', async $ => { await $.ui.invalidate('prompt.attachment'); return { result: 'invalidated' }; });
-      }`)
-      await runtime.reconcile([{ name: 'cache', storageId: 'cache@inline', pluginRoot: root, entrypoints: [entry] }])
-      const requests: string[] = []
-      const h = harness(async function* (request) {
-        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
-        yield response('attachment-cache', 'done')
-      })
-      h.context.mods = runtime
-      h.params.messages.push(
-        ...memoryFilesToAttachments([{ path: '/project/nested/CLAUDE.md', type: 'Project', content: 'NESTED_MEMORY' }], h.context).map(createAttachmentMessage),
-        createAttachmentMessage({ type: 'skill_listing', content: 'SKILL_LISTING', skillCount: 1, isInitial: true }),
-      )
-      const transcript = structuredClone(h.params.messages)
-      await drain(query(h.params))
-      // A copied record is still the same attachment, not a cache miss.
-      await drain(query({ ...h.params, messages: structuredClone(h.params.messages) }))
-      expect(requests[0]).toContain('MEMORY_1:Contents of /project/nested/CLAUDE.md:')
-      expect(requests[1]).toContain('MEMORY_1:Contents of /project/nested/CLAUDE.md:')
-      expect(requests.every(request => !request.includes('SKILL_LISTING'))).toBe(true)
-      expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({ result: 'invalidated' })
-      await drain(query(h.params))
-      expect(requests[2]).toContain('MEMORY_2:Contents of /project/nested/CLAUDE.md:')
-      expect(requests[2]).not.toContain('SKILL_LISTING')
-      // Same contents, new record: ask again rather than caching by text/type.
-      h.params.messages[1] = { ...h.params.messages[1]!, uuid: randomUUID() }
-      await drain(query(h.params))
-      expect(requests[3]).toContain('MEMORY_3:Contents of /project/nested/CLAUDE.md:')
-      expect(transcript[1]).toEqual({ ...h.params.messages[1], uuid: transcript[1]!.uuid, timestamp: transcript[1]!.timestamp })
-      expect(diagnostics).toEqual([])
-    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
-  })
-
-  test('autocompaction and the model consume the same projected attachment bytes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-sizing-'))
-    const runtime = createModsRuntime()
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.attachment', ($, e) => ({text: 'PROJECTED_ATTACHMENT'}));
-      }`)
-      await runtime.reconcile([{name:'attachment-sizing',storageId:'attachment-sizing@inline',pluginRoot:root,entrypoints:[entry]}])
-      const compactInputs: string[] = []
-      const modelInputs: string[] = []
-      const h = harness(async function* (request) {
-        modelInputs.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
-        yield response('attachment-sizing', 'done')
-      })
-      h.context.mods = runtime
-      h.params.messages.push(createAttachmentMessage({
-        type: 'edited_text_file',
-        filename: '/fixture.ts',
-        snippet: 'UNPROJECTED_ATTACHMENT',
-      }))
-      h.params.deps!.autocompact = async messages => {
-        compactInputs.push(JSON.stringify(normalizeMessagesForAPI(messages)))
-        return {messages, wasCompacted: false}
-      }
-      const transcript = structuredClone(h.params.messages)
-      await drain(query(h.params))
-      expect(compactInputs).toHaveLength(1)
-      expect(compactInputs[0]).toContain('PROJECTED_ATTACHMENT')
-      expect(compactInputs[0]).not.toContain('UNPROJECTED_ATTACHMENT')
-      expect(modelInputs[0]).toContain('PROJECTED_ATTACHMENT')
-      expect(modelInputs[0]).not.toContain('UNPROJECTED_ATTACHMENT')
-      expect(h.params.messages).toEqual(transcript)
-    } finally {
-      await runtime.dispose()
-      await rm(root, {recursive: true, force: true})
-    }
-  })
-
-  test('blocking limit uses projected attachment bytes', async () => {
-    const savedCompact = process.env.DISABLE_AUTO_COMPACT
-    const savedLimit = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-blocking-'))
-    const runtime = createModsRuntime()
-    try {
-      process.env.DISABLE_AUTO_COMPACT = '1'
-      process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = '700'
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.attachment', () => ({text:''}));
-      }`)
-      await runtime.reconcile([{name:'attachment-blocking',storageId:'attachment-blocking@inline',pluginRoot:root,entrypoints:[entry]}])
-      let modelCalls = 0
-      const h = harness(async function* () {
-        modelCalls++
-        yield response('attachment-blocking', 'done')
-      })
-      h.context.mods = runtime
-      h.params.messages.push(createAttachmentMessage({
-        type: 'edited_text_file',
-        filename: '/fixture.ts',
-        snippet: 'x'.repeat(2000),
-      }))
-      const result = await drain(query(h.params))
-      expect(result.terminal.reason).toBe('completed')
-      expect(modelCalls).toBe(1)
-    } finally {
-      if (savedCompact === undefined) delete process.env.DISABLE_AUTO_COMPACT
-      else process.env.DISABLE_AUTO_COMPACT = savedCompact
-      if (savedLimit === undefined)
-        delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
-      else process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = savedLimit
-      await runtime.dispose()
-      await rm(root, {recursive: true, force: true})
-    }
-  })
-
-  test('Worker rewrites a real attachment only in the model request, not the transcript', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-attachment-'))
-    const diagnostics: unknown[] = []
-    const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
-    try {
-      const entry = join(root, 'register.ts')
-      await writeFile(entry, `export function register(on) {
-        on('prompt.attachment', { type: 'edited_text_file' }, async ($, e, next) => {
-          if (e.origin.kind !== 'engine' || e.agentId !== undefined || e.text.includes('<system-reminder>'))
-            throw new Error('invalid attachment input');
-          return next({ ...e, text: 'MODEL_EDITED_TEXT' });
-        });
-      }`)
-      await runtime.reconcile([{ name: 'attachments', storageId: 'attachments@inline', pluginRoot: root, entrypoints: [entry] }])
-      const requests: string[] = []
-      const h = harness(async function* (request) {
-        requests.push(JSON.stringify(normalizeMessagesForAPI(request.messages)))
-        yield response('attachment', 'done')
-      })
-      h.context.mods = runtime
-      h.params.messages.push(createAttachmentMessage({ type: 'edited_text_file', filename: '/project/file.ts', snippet: 'ORIGINAL_EDITED_TEXT' }))
-      const transcript = structuredClone(h.params.messages)
-      await drain(query(h.params))
-      expect(requests).toHaveLength(1)
-      expect(requests[0]).toContain('<system-reminder>\\nMODEL_EDITED_TEXT\\n</system-reminder>')
-      expect(requests[0]).not.toContain('ORIGINAL_EDITED_TEXT')
-      expect(h.params.messages).toEqual(transcript)
-      expect(diagnostics).toEqual([])
-    } finally { await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
-  })
-})
+}
 
 test('main query publishes completed cache-safe fork snapshot and sends tool-less choice', async () => {
   const requests: any[] = [], snapshots: any[] = []
@@ -2921,183 +3127,4 @@ test('main query publishes completed cache-safe fork snapshot and sends tool-les
   h.context.agentId = asAgentId('child')
   await drain(query(h.params))
   expect(snapshots).toHaveLength(1)
-})
-
-test('query projects dynamic tools on first and later prompts without retaining retired registrations', async () => {
-  const { z } = await import('zod/v4')
-  const base = {name:'BaseFixture',inputSchema:z.object({})} as unknown as Tool
-  const first = {name:'mcp__fixture__dynamic',inputSchema:z.object({})} as unknown as Tool
-  const replacement = {...first} as Tool
-  let current: Tool | undefined = first
-  const owned = new Set([first, replacement])
-  const requests: (readonly Tool[])[] = []
-  const h = harness(async function* (request) {
-    requests.push(request.tools)
-    yield response('dynamic-projection', 'done')
-  })
-  h.context.options.tools = [base]
-  Object.assign(h.context.mods!, {
-    tools: {
-      projection: (tools: readonly Tool[]) => [
-        ...tools.filter(tool => !owned.has(tool)),
-        ...(current ? [current] : []),
-      ],
-    },
-  })
-  await drain(query(h.params))
-  expect(requests[0]).toEqual([base, first])
-  h.context.options.tools = requests[0]!
-  current = replacement
-  await drain(query(h.params))
-  expect(requests[1]).toEqual([base, replacement])
-  expect(requests[1]![1]).toBe(replacement)
-  h.context.options.tools = requests[1]!
-  current = undefined
-  await drain(query(h.params))
-  expect(requests[2]).toEqual([base])
-})
-
-test('session.start dynamic tool enters the first query schema and real executor', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-query-dynamic-'))
-  const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
-  try {
-    const entry = join(root,'register.ts')
-    await writeFile(entry, `export function register(on) {
-      on('session.start',async ($,e,next) => {
-        await $.tool.register({name:'echo',description:'Dynamic echo',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}});
-        return next(e);
-      });
-      on('tool.call',{tool:'mcp__dynamic__echo'},($,e) => ({result:'dynamic:'+e.text}));
-    }`)
-    await runtime.reconcile([{name:'dynamic',storageId:'dynamic@inline',pluginRoot:root,entrypoints:[entry]}])
-    await runtime.bind({cwd:root,surface:null,isInteractive:false,sessionId:'query-dynamic'})
-    let requests = 0
-    const h = harness(async function* (request) {
-      const tool = request.tools.find(tool => tool.name === 'mcp__dynamic__echo')
-      expect(tool).toBeDefined()
-      expect(tool!.inputJSONSchema).toMatchObject({type:'object',required:['text']})
-      if (++requests === 1) yield createAssistantMessage({content:[{
-        type:'tool_use',caller:{type:'direct'},id:'dynamic-call',name:tool!.name,input:{text:'first'},
-      }]})
-      else yield response('dynamic-answer','done')
-    })
-    h.context.mods = runtime
-    const result = await drain(query(h.params))
-    expect(result.terminal.reason).toBe('completed')
-    expect(requests).toBe(2)
-    expect(result.messages.flatMap(message => message.type === 'user' && Array.isArray(message.message.content) ? message.message.content : []))
-      .toContainEqual(expect.objectContaining({type:'tool_result',tool_use_id:'dynamic-call',content:'dynamic:first'}))
-    expect(diagnostics).toEqual([])
-  } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
-})
-
-test('turn.step session.messages reads its own concurrent query rather than the main host transcript', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-step-messages-'))
-  const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({
-    onDiagnostic: event => diagnostics.push(event),
-    services: { messages: () => [{role: 'user', text: 'HOST_ONLY', toolUses: []}] },
-  })
-  try {
-    const entry = join(root, 'register.ts')
-    await writeFile(entry, `const seen = []; export function register(on) {
-      on('turn.step', async function* ($, e, next) {
-        const before = await $.session.messages();
-        const result = yield* next(e);
-        seen.push({agentId: e.agentId, before, after: await $.session.messages()});
-        return result;
-      });
-      on('tool.call', () => ({result: seen}));
-    }`)
-    await runtime.reconcile([{name:'messages',storageId:'messages@inline',pluginRoot:root,entrypoints:[entry]}])
-    const queries = ['main', 'child'].map(name => {
-      const h = harness(async function* () { yield* streamedResponse(name, `${name} reply`) })
-      h.context.mods = runtime
-      if (name === 'child') h.context.agentId = asAgentId('child')
-      h.params.messages = [createUserMessage({content: `${name} question`})]
-      return drain(query(h.params))
-    })
-    const runs = await Promise.all(queries)
-    expect(runs.map(run => run.terminal.reason)).toEqual(['completed', 'completed'])
-    const {result: seen} = await runtime.dispatch('tool.call', {}, async () => ({result: []})) as {
-      result: {agentId?: string; before: {text:string}[]; after: {text:string}[]}[]
-    }
-    expect(seen).toHaveLength(2)
-    for (const name of ['main', 'child']) {
-      const observation = seen.find(item => item.agentId === (name === 'child' ? name : undefined))!
-      expect(observation.before.map(message => message.text)).toEqual([`${name} question`])
-      expect(observation.after.map(message => message.text)).toEqual([`${name} question`, `${name} reply`])
-    }
-    expect(diagnostics).toEqual([])
-  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
-})
-
-test('Worker usage inside a query reads that conversation rather than the main host transcript', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-'))
-  const diagnostics: unknown[] = []
-  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
-    captureUsage:() => {throw new Error('query must provide its own usage snapshot')},
-  }})
-  try {
-    const entry = join(root,'register.ts')
-    await writeFile(entry, `export function register(on) {
-      on('prompt.context',async $ => {
-        const usage=await $.session.usage();
-        return {blocks:[{name:'inputTokens',text:String(usage.context.tokens)}]};
-      });
-    }`)
-    await runtime.reconcile([{name:'query-usage',storageId:'query-usage@inline',pluginRoot:root,entrypoints:[entry]}])
-    expect(diagnostics).toEqual([])
-    const contexts: Record<string,string>[] = []
-    const h = harness(async function* () {yield response('usage-result','answer')})
-    h.context.mods = runtime
-    h.context.agentId = asAgentId('usage-child')
-    h.params.messages = [response('prior-child-response','earlier',200,100)]
-    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
-      contexts.push(forkContext.userContext)
-      return {messages,wasCompacted:false}
-    }
-    expect((await drain(query(h.params))).terminal.reason).toBe('completed')
-    expect(contexts).toEqual([{inputTokens:'207'}])
-    expect(diagnostics).toEqual([])
-  } finally {
-    await runtime.dispose()
-    await rm(root,{recursive:true,force:true})
-  }
-})
-
-test('usage read by refreshed context after compaction does not retain the precompact response', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-compact-'))
-  const runtime = createModsRuntime()
-  try {
-    const entry = join(root,'register.ts')
-    await writeFile(entry, `export function register(on) {
-      on('prompt.context',async $ => {
-        const usage=await $.session.usage();
-        return {blocks:[{name:'inputTokens',text:String(usage.context.tokens)}]};
-      });
-    }`)
-    await runtime.reconcile([{name:'usage-compact',storageId:'usage-compact@inline',pluginRoot:root,entrypoints:[entry]}])
-    const requests: any[] = []
-    const h = harness(async function* (request) {requests.push(request);yield response('answer','done')})
-    h.context.mods = runtime
-    h.params.messages = [response('prior','earlier',200,100)]
-    h.params.deps!.autocompact = async () => ({wasCompacted:true,compactionResult:{
-      boundaryMarker:createCompactBoundaryMessage('auto',307),summaryMessages:[createUserMessage({content:'summary'})],attachments:[],hookResults:[],
-    }})
-    const original = process.env.NODE_ENV
-    process.env.NODE_ENV = 'development'
-    try {await drain(query(h.params))}
-    finally {
-      if (original === undefined) delete process.env.NODE_ENV
-      else process.env.NODE_ENV = original
-    }
-    expect(requests).toHaveLength(1)
-    expect(JSON.stringify(requests[0].messages)).toContain('# inputTokens\\nundefined')
-    expect(JSON.stringify(requests[0].messages)).not.toContain('# inputTokens\\n207')
-  } finally {
-    await runtime.dispose()
-    await rm(root,{recursive:true,force:true})
-  }
 })

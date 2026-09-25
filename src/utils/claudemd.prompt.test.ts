@@ -107,7 +107,7 @@ if (!process.env[childFlag]) {
     const { getCachedClaudeMdContent, setOriginalCwd } =
       await import('../bootstrap/state.js')
     const { clearMemoryFileCaches } = await import('./claudemd.js')
-    const { getUserContext } = await import('../context.js')
+    const { getUserContext, getUserContextInstructionFiles } = await import('../context.js')
     setOriginalCwd(project)
     clearMemoryFileCaches()
     getUserContext.cache.clear?.()
@@ -115,6 +115,12 @@ if (!process.env[childFlag]) {
     expect(context.claudeMd).toContain('shared context instructions')
     expect(context.claudeMd).toContain('Claude context instructions')
     expect(getCachedClaudeMdContent()).toBe(context.claudeMd)
+    expect(getUserContextInstructionFiles(context)).toEqual([
+      { path: join(project, 'AGENTS.md'), kind: 'project', content: 'shared context instructions' },
+      { path: join(project, 'CLAUDE.md'), kind: 'project', content: 'Claude context instructions' },
+    ])
+    expect(getUserContextInstructionFiles({ claudeMd: context.claudeMd! })).toBeUndefined()
+    expect(getUserContextInstructionFiles({ currentDate: 'today' })).toEqual([])
     try {
       process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1'
       getUserContext.cache.clear?.()
@@ -127,25 +133,162 @@ if (!process.env[childFlag]) {
     }
   })
 
-  test('clearing memory files also invalidates the derived user context', async () => {
-    const project = join(root, 'cache-invalidation-project')
+  test('tracks imported loaded content and core admission without rediscovering excluded files', async () => {
+    const project = join(root, 'snapshot-project')
     mkdirSync(project)
-    const instructions = join(project, 'CLAUDE.md')
-    writeFileSync(instructions, 'first instruction value')
+    writeFileSync(join(project, 'AGENTS.md'), '@./import.md\n\nproject marker')
+    writeFileSync(join(project, 'import.md'), '---\nlabel: fixture\n---\n<!-- hidden marker -->\nimport marker')
+    writeFileSync(join(project, 'CLAUDE.md'), 'Claude marker')
     const { setOriginalCwd } = await import('../bootstrap/state.js')
-    const { clearMemoryFileCaches } = await import('./claudemd.js')
-    const { getUserContext } = await import('../context.js')
+    const { clearMemoryFileCaches, getMemoryFiles } = await import('./claudemd.js')
+    const { getUserContext, getUserContextInstructionFiles } = await import('../context.js')
+    const growthbook = await import('../services/analytics/growthbook.js')
+    const featureValue = growthbook.getFeatureValue_CACHED_MAY_BE_STALE
     setOriginalCwd(project)
     clearMemoryFileCaches()
-    expect((await getUserContext()).claudeMd).toContain(
-      'first instruction value',
-    )
+    getUserContext.cache.clear?.()
+    try {
+      const context = await getUserContext()
+      const files = getUserContextInstructionFiles(context)!
+      expect(files.map(file => file.path)).toEqual([
+        join(project, 'AGENTS.md'), join(project, 'import.md'), join(project, 'CLAUDE.md'),
+      ])
+      expect(files[1]).toEqual({
+        path: join(project, 'import.md'), kind: 'project', content: 'import marker', parent: join(project, 'AGENTS.md'),
+      })
+      expect(context.claudeMd).not.toContain('hidden marker')
+      expect(context.claudeMd).not.toContain('label: fixture')
+      // The snapshot must not leak the loader's mutable cached entries.
+      files[1]!.content = 'mutated consumer'
+      expect(getUserContextInstructionFiles(context)?.[1]?.content).toBe('import marker')
+      expect((await getMemoryFiles())[1]?.content).toBe('import marker')
+      const gate = spyOn(growthbook, 'getFeatureValue_CACHED_MAY_BE_STALE').mockImplementation((name, fallback) =>
+        name === 'tengu_paper_halyard' ? true : featureValue(name, fallback) as any,
+      )
+      try {
+        getUserContext.cache.clear?.()
+        const withheld = await getUserContext()
+        expect(withheld.claudeMd).toBeUndefined()
+        expect(getUserContextInstructionFiles(withheld)).toEqual([])
+      } finally { gate.mockRestore() }
+    } finally {
+      getUserContext.cache.clear?.()
+      clearMemoryFileCaches()
+    }
+  })
 
-    writeFileSync(instructions, 'second instruction value')
+  test('Worker instruction rewrites reach Anthropic messages and OpenAI input without network', async () => {
+    const project = join(root, 'wire-project')
+    mkdirSync(project)
+    writeFileSync(join(project, 'AGENTS.md'), '@./import.md\n\nremoved project marker')
+    writeFileSync(join(project, 'import.md'), 'removed import marker')
+    writeFileSync(join(project, 'CLAUDE.md'), 'removed Claude marker')
+    const entry = join(project, 'register.ts')
+    writeFileSync(entry, `export function register(on) {
+      on('prompt.context', ($, e, next) => {
+        const scenario = e.blocks.find(b => b.name === 'scenario').text;
+        if (scenario === 'unknown') return next({ ...e, blocks: e.blocks.map(b => b.name === 'claudeMd' ? {...b, text:'opaque replacement marker'} : b) });
+        return next({ ...e, instructionFiles: scenario === 'empty' ? [] : [
+          {...e.instructionFiles[2], content:'first replacement marker'},
+          {...e.instructionFiles[1], content:'second imported replacement marker'},
+        ] });
+      });
+      on('prompt.context', ($, e, next) => {
+        const scenario = e.blocks.find(b => b.name === 'scenario').text;
+        if (scenario === 'unknown' && e.instructionFiles !== undefined) throw new Error('opaque text retained false provenance');
+        if (scenario === 'empty' && e.blocks.some(b => b.name === 'claudeMd')) throw new Error('deleted files retained text');
+        if (scenario === 'replace' && !e.blocks.find(b => b.name === 'claudeMd').text.includes('second imported replacement marker')) throw new Error('next saw stale text');
+        return next(e);
+      });
+    }`)
+    const { setOriginalCwd } = await import('../bootstrap/state.js')
+    const { clearMemoryFileCaches } = await import('./claudemd.js')
+    const { getUserContext, getUserContextInstructionFiles, withUserContextInstructionFiles } = await import('../context.js')
+    const { query } = await import('../query.js')
+    const { createModsRuntime } = await import('../services/mods/runtime.js')
+    const { getDefaultAppState } = await import('../state/AppStateStore.js')
+    const { createFileStateCacheWithSizeLimit } = await import('./fileStateCache.js')
+    const { createAssistantMessage, createUserMessage, normalizeMessagesForAPI } = await import('./messages.js')
+    const { asSystemPrompt } = await import('./systemPromptType.js')
+    const { getOpenAIAuthInfo } = await import('./auth.js')
+    const { createOpenAICompatClient } = await import('../services/api/openai-compat.js')
+    const { default: Anthropic } = await import('@anthropic-ai/sdk')
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({ onDiagnostic: diagnostic => diagnostics.push(diagnostic) })
+    const originalEnv = process.env.NODE_ENV
+    const originalFetch = globalThis.fetch
+    const { enableConfigs } = await import('./config.js')
+    enableConfigs()
+    process.env.NODE_ENV = 'production'
+    setOriginalCwd(project)
     clearMemoryFileCaches()
-    const refreshed = await getUserContext()
-    expect(refreshed.claudeMd).toContain('second instruction value')
-    expect(refreshed.claudeMd).not.toContain('first instruction value')
+    getUserContext.cache.clear?.()
+    try {
+      await runtime.reconcile([{ name: 'instructions-wire', storageId: 'instructions-wire@inline', pluginRoot: project, entrypoints: [entry] }])
+      const base = await getUserContext()
+      const sourceFiles = getUserContextInstructionFiles(base)!
+      for (const provider of ['anthropic', 'openai'] as const) {
+        for (const scenario of ['replace', 'empty', 'unknown'] as const) {
+          const bodies: any[] = []
+          const fetchMock = (async (_input: unknown, init: RequestInit) => {
+            bodies.push(JSON.parse(String(init.body)))
+            return provider === 'anthropic'
+              ? Response.json({ id: 'fixture', type: 'message', role: 'assistant', model: 'claude-test', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+              : new Response('data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n', { headers: { 'content-type': 'text/event-stream' } })
+          }) as typeof fetch
+          globalThis.fetch = fetchMock
+          getOpenAIAuthInfo.cache.set(undefined, { accessToken: 'fixture-not-a-credential', isChatGPT: false })
+          const client = provider === 'anthropic'
+            ? new Anthropic({ apiKey: 'fixture-not-a-credential', baseURL: 'https://fixture.invalid', fetch: fetchMock })
+            : createOpenAICompatClient({ apiKey: 'fixture-not-a-credential', timeout: 1000, maxRetries: 0 })
+          let state = getDefaultAppState()
+          const toolUseContext = {
+            options: { commands: [], debug: false, mainLoopModel: 'claude-test', tools: [], verbose: false,
+              thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+              agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+            abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+            getAppState: () => state, setAppState: (update: any) => { state = update(state) },
+            setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+            messages: [], mods: runtime,
+          } satisfies import('../Tool.js').ToolUseContext
+          const userContext = withUserContextInstructionFiles({ ...base, scenario }, sourceFiles)
+          for await (const _event of query({
+            messages: [createUserMessage({ content: 'answer' })], userContext, systemContext: {}, systemPrompt: asSystemPrompt([]),
+            canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext, querySource: 'repl_main_thread',
+            deps: {
+              uuid: () => crypto.randomUUID(), microcompact: async messages => ({ messages }),
+              autocompact: async messages => ({ messages, wasCompacted: false }),
+              callModel: async function* (request) {
+                await client.beta.messages.create({ model: 'claude-test', max_tokens: 8,
+                  messages: normalizeMessagesForAPI(request.messages, []).map(message => message.message),
+                } as any)
+                yield createAssistantMessage({ content: 'answer' })
+              },
+            },
+          })) { /* Drain the production context injection path. */ }
+          expect(bodies).toHaveLength(1)
+          const serialized = JSON.stringify(provider === 'anthropic' ? bodies[0].messages : bodies[0].input)
+          expect(serialized).not.toContain('removed project marker')
+          expect(serialized).not.toContain('removed import marker')
+          expect(serialized).not.toContain('removed Claude marker')
+          if (scenario === 'replace') {
+            expect(serialized).toContain('first replacement marker')
+            expect(serialized).toContain('second imported replacement marker')
+            expect(serialized.indexOf('first replacement marker')).toBeLessThan(serialized.indexOf('second imported replacement marker'))
+          } else if (scenario === 'unknown') expect(serialized).toContain('opaque replacement marker')
+          else expect(serialized).not.toContain('# claudeMd')
+        }
+      }
+      expect(diagnostics).toEqual([])
+    } finally {
+      globalThis.fetch = originalFetch
+      getOpenAIAuthInfo.cache.clear?.()
+      if (originalEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = originalEnv
+      await runtime.dispose()
+      getUserContext.cache.clear?.()
+      clearMemoryFileCaches()
+    }
   })
 
   test('agent generation includes both instruction sources in the model request', async () => {
