@@ -202,8 +202,8 @@ async function executeForkedSlashCommand(
     // drained, this triggers a main-agent turn that sees the result and
     // decides whether to SendUserMessage. Propagate workload so that
     // second turn is also tagged.
-    const enqueueResult = (value: string): void =>
-      enqueuePendingNotification({
+    const enqueueResult = (value: string): void => {
+      void enqueuePendingNotification({
         value,
         mode: 'prompt',
         priority: 'later',
@@ -211,6 +211,7 @@ async function executeForkedSlashCommand(
         skipSlashCommands: true,
         workload: spawnTimeWorkload,
       })
+    }
 
     void (async () => {
       // Wait for MCP servers to settle. Scheduled tasks fire at startup and

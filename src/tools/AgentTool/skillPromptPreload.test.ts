@@ -47,6 +47,7 @@ async function runIsolatedPreloadTest(): Promise<void> {
   mock.module('../../query.js', () => ({
     query: async function* (params: { messages: unknown[] }) {
       queryMessages = [...params.messages]
+      yield* []
       return { reason: 'completed' }
     },
   }))
