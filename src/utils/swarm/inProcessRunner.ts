@@ -59,6 +59,7 @@ import { TASK_LIST_TOOL_NAME } from '../../tools/TaskListTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../../tools/TaskUpdateTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
+import { asAgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 import type { PermissionDecision } from '../../types/permissions.js'
 import {
@@ -1206,7 +1207,10 @@ export async function runInProcessTeammate(
             canShowPermissionPrompts: allowPermissionPrompts ?? true,
             forkContextMessages,
             querySource: 'agent:custom',
-            override: { abortController: currentWorkAbortController },
+            override: {
+              abortController: currentWorkAbortController,
+              agentId: asAgentId(identity.agentId),
+            },
             resolvedModel: model,
             preserveToolUseResults: true,
             availableTools: toolUseContext.options.tools,

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { mock } from 'bun:test'
+import { mock, test } from 'bun:test'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
 import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPurposeAgent.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
+import { asAgentId } from '../../types/ids.js'
 import { createUserMessage } from '../messages.js'
 import { canEvictTerminalTask } from '../task/retention.js'
 import { dismissTerminalAgent, enterTeammateView, exitTeammateView } from '../../state/teammateViewHelpers.js'
@@ -20,6 +21,14 @@ let lifecycleAbortController: AbortController | undefined
 let observedResolvedModel: string | undefined
 let observedTools: string[] = []
 let observedSystemPrompt: SystemPrompt | undefined
+let observedOverrides: Array<{
+  abortController?: AbortController
+  agentId?: ReturnType<typeof asAgentId>
+}> = []
+let queuedFollowUp: { taskId: string; message: string } | undefined
+let currentSetState:
+  | ((updater: (prev: ReturnType<typeof createState>) => ReturnType<typeof createState>) => void)
+  | undefined
 
 mock.module('../../constants/prompts.js', () => ({
   getSystemPrompt: async () =>
@@ -29,14 +38,44 @@ mock.module('../../constants/prompts.js', () => ({
     ]),
 }))
 mock.module('../../tools/AgentTool/runAgent.js', () => ({
-  async *runAgent(params: { resolvedModel?: string; agentDefinition: AgentDefinition; availableTools: Tools; baseSystemPrompt: SystemPrompt }) {
+  async *runAgent(params: {
+    resolvedModel?: string
+    baseSystemPrompt: SystemPrompt
+    agentDefinition: AgentDefinition
+    availableTools: Tools
+    override?: {
+      abortController?: AbortController
+      agentId?: ReturnType<typeof asAgentId>
+    }
+  }) {
     observedResolvedModel = params.resolvedModel
     observedSystemPrompt = params.baseSystemPrompt
+    observedOverrides.push(params.override ?? {})
     const { resolveAgentTools } = await import('../../tools/AgentTool/agentToolUtils.js')
     observedTools = resolveAgentTools(params.agentDefinition, params.availableTools, true)
       .resolvedTools.map(tool => tool.name)
     if (runAgentMode === 'fail') {
       throw new Error('runner boom')
+    }
+    const hasFollowUp = queuedFollowUp !== undefined
+    if (queuedFollowUp) {
+      const { taskId, message } = queuedFollowUp
+      queuedFollowUp = undefined
+      params.override?.abortController?.abort()
+      currentSetState?.(prev => {
+        const task = prev.tasks[taskId]
+        if (!task || task.type !== 'in_process_teammate') return prev
+        return {
+          ...prev,
+          tasks: {
+            ...prev.tasks,
+            [taskId]: {
+              ...task,
+              pendingUserMessages: [...task.pendingUserMessages, message],
+            },
+          },
+        }
+      })
     }
     yield {
       type: 'assistant',
@@ -61,7 +100,9 @@ mock.module('../../tools/AgentTool/runAgent.js', () => ({
         },
       },
     }
-    lifecycleAbortController?.abort()
+    if (!hasFollowUp) {
+      lifecycleAbortController?.abort()
+    }
   },
 }))
 mock.module('../task/framework.js', () => ({
@@ -128,7 +169,7 @@ function createToolUseContext(
   } as unknown as ToolUseContext
 }
 
-async function spawnTask(retain?: boolean) {
+async function spawnTask(retain?: boolean, name = 'researcher', teamName = 'retention-team') {
   let state = createState()
   const setState = (
     updater: (prev: typeof state) => typeof state,
@@ -137,8 +178,8 @@ async function spawnTask(retain?: boolean) {
   }
   const spawnResult = await spawnInProcessTeammate(
     {
-      name: 'researcher',
-      teamName: 'retention-team',
+      name,
+      teamName,
       prompt: 'inspect only',
       planModeRequired: false,
       permissionMode: 'default',
@@ -178,15 +219,33 @@ async function spawnTask(retain?: boolean) {
   }
 }
 
-async function runCase(mode: 'complete' | 'fail', retain?: true, agentDefinition?: AgentDefinition) {
-  const spawned = await spawnTask(retain)
+async function runCase(
+  mode: 'complete' | 'fail',
+  retain?: true,
+  agentDefinition?: AgentDefinition,
+  agentId = 'researcher@retention-team',
+  followUp?: string,
+) {
+  const [agentName = 'researcher', teamName = 'retention-team'] =
+    agentId.split('@')
+  const spawned = await spawnTask(retain, agentName, teamName)
   runAgentMode = mode
   lifecycleAbortController = spawned.abortController
+  currentSetState = spawned.setState
+  queuedFollowUp = followUp
+    ? { taskId: spawned.taskId, message: followUp }
+    : undefined
+  const parentAgentId = asAgentId('aparent0000000000')
+  const parentToolUseContext = createToolUseContext(
+    spawned.getState,
+    spawned.setState,
+  )
+  parentToolUseContext.agentId = parentAgentId
   const result = await runInProcessTeammate({
     identity: {
-      agentId: 'researcher@retention-team',
-      agentName: 'researcher',
-      teamName: 'retention-team',
+      agentId,
+      agentName,
+      teamName,
       color: 'blue',
       planModeRequired: false,
       parentSessionId: 'session-retention-test',
@@ -197,14 +256,19 @@ async function runCase(mode: 'complete' | 'fail', retain?: true, agentDefinition
     model: 'gpt-5.6-sol',
     agentDefinition,
     teammateContext: spawned.teammateContext,
-    toolUseContext: createToolUseContext(spawned.getState, spawned.setState),
+    toolUseContext: parentToolUseContext,
     abortController: spawned.abortController,
   })
   lifecycleAbortController = undefined
+  currentSetState = undefined
+  queuedFollowUp = undefined
   return {
     result,
     task: spawned.getState().tasks[spawned.taskId],
     seedMessages: spawned.seedMessages,
+    parentAgentId,
+    parentToolUseContext,
+    taskId: spawned.taskId,
   }
 }
 
@@ -331,3 +395,47 @@ try {
 }
 
 console.log('inProcessRetention.test.ts passed')
+
+test('keeps teammate identity across turns and isolates teammates from their parent', async () => {
+  observedOverrides = []
+  const stableConversation = await runCase(
+    'complete',
+    true,
+    undefined,
+    'researcher@stable-team',
+    'second turn',
+  )
+  assert.equal(stableConversation.result.success, true)
+  assert.equal(observedOverrides.length, 2)
+  assert.deepEqual(
+    observedOverrides.map(override => override.agentId),
+    [asAgentId('researcher@stable-team'), asAgentId('researcher@stable-team')],
+  )
+  assert.notEqual(
+    observedOverrides[0]?.abortController,
+    observedOverrides[1]?.abortController,
+  )
+  assert.equal(observedOverrides[0]?.abortController?.signal.aborted, true)
+  assert.equal(stableConversation.parentToolUseContext.agentId, stableConversation.parentAgentId)
+  assert.equal(stableConversation.task?.type, 'in_process_teammate')
+  if (stableConversation.task?.type === 'in_process_teammate') {
+    assert.equal(stableConversation.task.identity.agentId, 'researcher@stable-team')
+    assert.equal(stableConversation.task.id, stableConversation.taskId)
+  }
+
+  const firstConversationOverrides = [...observedOverrides]
+  const isolatedConversation = await runCase(
+    'complete',
+    true,
+    undefined,
+    'reviewer@stable-team',
+  )
+  assert.equal(isolatedConversation.result.success, true)
+  assert.equal(observedOverrides.length, 3)
+  assert.equal(observedOverrides[2]?.agentId, asAgentId('reviewer@stable-team'))
+  assert.notEqual(
+    firstConversationOverrides[0]?.agentId,
+    observedOverrides[2]?.agentId,
+  )
+  assert.equal(isolatedConversation.parentToolUseContext.agentId, isolatedConversation.parentAgentId)
+})
