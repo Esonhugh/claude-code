@@ -234,6 +234,12 @@ test('admits active agent.spawn calls and records the capability', async () => {
   expect(result.calls).toEqual(['agent.spawn'])
 })
 
+test('rejects session.receive as an active plugin call', async () => {
+  await expect(loadModDeclaration(await plugin({'main.ts': `export function register(on) {
+    on('tool.call', async $ => ({result:await $.session.receive({origin:{kind:'peer'},text:'x'})}));
+  }` }))).rejects.toThrow('unsupported core capability session.receive')
+})
+
 test('admits positional MCP calls and records the capability', async () => {
   const result = await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
     on('session.start', async ($, e, next) => {

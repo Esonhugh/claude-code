@@ -44,6 +44,7 @@ import {
 } from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier, ModHookStream } from './types.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
 import {
   createModConfig,
@@ -1363,10 +1364,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             : Boolean(parent?.person && parent.active !== false)
           const uiInvocation = { snapshot, table, person, active: true }
           try {
-            return await uiContext.run(uiInvocation, () => invocationSignal.run(next.signal, () => capabilityContext.run(entered, () => owner.environment.invoke(
+            const result = await uiContext.run(uiInvocation, () => invocationSignal.run(next.signal, () => capabilityContext.run(entered, () => owner.environment.invoke(
               catching ? registration.catchId! : registration.id,
               [registration.event === 'engine.create' ? Object.freeze({}) : engineFacade(owner, table, snapshot), input], next, drawing,
             ))))
+            if (next.event === 'session.receive' && next.trace.length === 0 && result && typeof result === 'object' && typeof (result as ModInput).consumed === 'string')
+              logForDebugging(`[Mods] ${owner.declaration.name} session.receive consumed: ${String((result as ModInput).consumed).replace(/[\r\n]/g, ' ').replaceAll(String.fromCharCode(27), ' ')}`)
+            return result
           } finally { uiInvocation.active = false }
         } finally { entered.active = false }
       }),
