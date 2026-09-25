@@ -125,6 +125,7 @@ export type ModUi = {
     contentRows: number
     keyRows?: readonly ModUiKeyRow[]
   }): void | Promise<void>
+  prepareCommit(owner: ModUiOwner, replacedOwner?: ModUiOwner, preparedOwners?: readonly ModUiOwner[]): Promise<() => Promise<void>>
   commit(owner: ModUiOwner, replacedOwner?: ModUiOwner): Promise<void>
   releaseCandidate(owner: ModUiOwner): void
   release(owner: ModUiOwner): Promise<void>
@@ -202,6 +203,7 @@ function validateCallback(callback: ModUiCallback): void {
 }
 
 export function createModUi({
+  notify = listener => listener(),
   pluginOf,
   dispatch,
   draw,
@@ -209,6 +211,7 @@ export function createModUi({
   releaseDrawing,
   validateTree,
 }: {
+  notify?: (listener: () => void) => void
   pluginOf(owner: ModUiOwner): string
   dispatch: ModUiDispatch
   draw(owner: ModUiOwner, input: ModInput, drawing: number): Promise<unknown>
@@ -294,8 +297,8 @@ export function createModUi({
   function publish(): void {
     revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
-    wakeFocusWaiters()
-    for (const listener of [...listeners]) listener()
+    notify(wakeFocusWaiters)
+    for (const listener of [...listeners]) notify(listener)
   }
 
   async function releaseLease(pane: Pick<PaneState, 'owner' | 'drawing'>): Promise<void> {
@@ -965,12 +968,18 @@ export function createModUi({
     },
 
     async commit(owner, replacedOwner) {
+      const publish = await this.prepareCommit(owner, replacedOwner)
+      await publish()
+    },
+
+    async prepareCommit(owner, replacedOwner, preparedOwners = []) {
       validateOwner(owner)
       if (replacedOwner !== undefined) validateOwner(replacedOwner)
       const next = candidates.get(owner) ?? new Map<string, PaneState>()
       for (const [id] of next) {
         const current = active.get(id)
-        if (current && current.owner !== owner && current.owner !== replacedOwner)
+        if ((current && current.owner !== owner && current.owner !== replacedOwner) ||
+            preparedOwners.some(other => other !== owner && candidates.get(other)?.has(id)))
           throw new Error(`Mod UI pane ${id} is already owned by another activation`)
       }
       const prepared: PaneState[] = []
@@ -983,20 +992,22 @@ export function createModUi({
         await Promise.all(prepared.map(pane => releaseLease(pane).catch(() => {})))
         throw error
       }
-      const removed: PaneState[] = []
-      for (const [id, pane] of [...active]) {
-        if (pane.owner === owner || pane.owner === replacedOwner) {
-          active.delete(id)
-          pane.drawGeneration++
-          removed.push(pane)
+      return () => {
+        const removed: PaneState[] = []
+        for (const [id, pane] of [...active]) {
+          if (pane.owner === owner || pane.owner === replacedOwner) {
+            active.delete(id)
+            pane.drawGeneration++
+            removed.push(pane)
+          }
         }
+        for (const pane of prepared) active.set(pane.id, pane)
+        candidates.delete(owner)
+        activeOwners.add(owner)
+        if (replacedOwner !== undefined) activeOwners.delete(replacedOwner)
+        if (removed.length > 0 || prepared.length > 0) publish()
+        return Promise.all(removed.map(pane => releaseLease(pane).catch(() => {}))).then(() => {})
       }
-      for (const pane of prepared) active.set(pane.id, pane)
-      candidates.delete(owner)
-      activeOwners.add(owner)
-      if (replacedOwner !== undefined) activeOwners.delete(replacedOwner)
-      if (removed.length > 0 || prepared.length > 0) publish()
-      await Promise.all(removed.map(pane => releaseLease(pane).catch(() => {})))
     },
 
     releaseCandidate(owner) {

@@ -561,3 +561,29 @@ test('request-local author hosts stay isolated and skip only the current registr
     expect(diagnostics).toEqual([])
   } finally {snapshots.forEach(snapshot => snapshot.release())}
 })
+
+test('recovered session.start retains completed tool registration and publishes its hook generation', async () => {
+  const mod = await plugin('rollback',`export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'echo',description:'previous'});return next(e)});
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const previous = runtime.tools.list()[0]
+  expect(previous).toBeDefined()
+  await writeFile(mod.entrypoints[0]!,`export function register(on) {
+    on('session.start',async ($,e,next) => {
+      await $.tool.register({name:'echo',description:'candidate'});
+      throw Error('start hook failed');
+    });
+    on('tool.call',{tool:'mcp__rollback__echo'},()=>({result:'candidate'}));
+  }`)
+  await runtime.reconcile([mod])
+  expect(runtime.tools.list()).toHaveLength(1)
+  expect(runtime.tools.list()[0]).not.toBe(previous)
+  expect(await runtime.tools.list()[0]!.description({},{} as never)).toBe('candidate')
+  expect(await runtime.dispatch('tool.call',{tool:'mcp__rollback__echo'},async()=>({result:'core'}))).toEqual({result:'candidate'})
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'session.start',message:'start hook failed'})])
+})

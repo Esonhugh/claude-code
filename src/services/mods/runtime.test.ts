@@ -1095,6 +1095,45 @@ describe('Mods lifecycle', () => {
     await value.reconcile([{ ...judge, tier: 'prepend' }, plugin])
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
+  test('incremental engine.create runs only changed modules and preserves unchanged nouns', async () => {
+    const stable = await fixture(`let builds = 0; export function register(on) {
+      on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
+      on('tool.call', { tool: 'Stable' }, async ($) => ({ result: { builds, noun: await $.stable.read() } }));
+    }`, 'stable')
+    const changed = await fixture(`export function register(on) {
+      on('tool.call', { tool: 'Changed' }, () => ({ result: 'old' }));
+    }`, 'changed')
+    const { value, events } = runtime()
+    await value.reconcile([stable, changed])
+    await writeFile(changed.entrypoints[0]!, `let plugins = []; export function register(on) {
+      on('engine.create', async ($, e, next) => { plugins = e.plugins; const built = await next(e); return { ...built, changed: { read: () => 'new' } }; });
+      on('tool.call', { tool: 'Changed' }, async ($) => ({ result: { plugins, noun: await $.changed.read() } }));
+    }`)
+    await value.reconcile([stable, changed])
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: { builds: 1, noun: 1 } })
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Changed' }, async () => ({}))).toEqual({ result: { plugins: ['changed'], noun: 'new' } })
+    expect(events).toEqual([])
+  })
+
+  test('incremental engine.create reports exactly the changed and added modules', async () => {
+    const stable = await fixture(`let builds = 0; export function register(on) {
+      on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
+      on('tool.call', { tool: 'Stable' }, () => ({ result: builds }));
+    }`, 'stable')
+    const changed = await fixture(`export function register(on) { on('tool.call', { tool: 'Changed' }, () => ({ result: 'old' })); }`, 'changed')
+    const added = await fixture(`let plugins = []; export function register(on) {
+      on('engine.create', async ($, e, next) => { plugins = e.plugins; const built = await next(e); return { ...built, added: { read: () => plugins } }; });
+      on('tool.call', { tool: 'Added' }, async ($) => ({ result: await $.added.read() }));
+    }`, 'added')
+    const { value, events } = runtime()
+    await value.reconcile([stable, changed])
+    await writeFile(changed.entrypoints[0]!, `export function register(on) { on('tool.call', { tool: 'Changed' }, () => ({ result: 'new' })); }`)
+    await value.reconcile([stable, changed, added])
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: 1 })
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Added' }, async () => ({}))).toEqual({ result: ['changed', 'added'] })
+    expect(events).toEqual([])
+  })
+
 })
 
   test('a settled detached continuation cannot use a retiring activation capability', async () => {

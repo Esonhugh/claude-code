@@ -37,11 +37,13 @@ export function isModCommand(command: Command): command is MarkedCommand {
 }
 
 export function createModCommands({
+  notify = listener => listener(),
   getBuiltinCommands,
   run,
   describe,
   canReplaceBuiltin,
 }: {
+  notify?: (listener: () => void) => void
   getBuiltinCommands: () => readonly Command[]
   describe?: (command: Command, owner?: ModCommandOwner) => Promise<ModCommandDescription>
   canReplaceBuiltin?: (
@@ -137,7 +139,7 @@ export function createModCommands({
 
   function publish(): void {
     snapshot = Object.freeze([...active.values()].map(value => value.command)) as Command[]
-    for (const listener of [...listeners]) listener()
+    for (const listener of [...listeners]) notify(listener)
   }
 
   function validateCommit(

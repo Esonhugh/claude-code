@@ -242,7 +242,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   const uiContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; person: boolean; active?: boolean }>()
   const drawingCallbackPlugin = new AsyncLocalStorage<string>()
   const drawings = new Map<number, DrawingLease>()
+  let publicationNotifications: Set<() => void> | undefined
+  const notify = (listener: () => void) => {
+    if (publicationNotifications) publicationNotifications.add(listener)
+    else listener()
+  }
   const ui = createModUi({
+    notify,
     validateTree: tree => { validateModRenderTree(tree) },
     pluginOf: owner => (owner as Activation).declaration.name,
     dispatch: async (owner, event, input, core, options) => {
@@ -313,12 +319,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     () => nouns,
   )
   const tools = createModTools({
+    notify,
     pluginOf: owner => (owner as Activation).declaration.name,
     getTools: () => (requestServices.getStore()?.toolHost ?? services.toolHost)?.()?.tools?.() ??
       (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
   })
-  const agents = createModAgents(owner => (owner as Activation).declaration)
+  const agents = createModAgents(owner => (owner as Activation).declaration, notify)
   const commands = createModCommands({
+    notify,
     getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
       command.type === 'prompt'
         ? command.source === 'builtin' || command.source === 'bundled'
@@ -1681,26 +1689,40 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   async function build(
     snapshot: Activation[],
     replacements = new Map<Activation, Activation>(),
-    bootstrap?: { modules: readonly Activation[]; table: Nouns },
+    refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
   ): Promise<{ modules: Activation[]; table: Nouns }> {
-    const previousInterface = bootstrap ? interfaceStates.get(bootstrap.table)! : lastInterface
+    const previousTable = refresh?.table ?? nouns
+    const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
     let modules = [...snapshot]
     for (;;) {
       const names = new Set(modules.map(owner => owner.declaration.name))
-      const state: InterfaceState = {
+      const replacedNames = new Set(refresh?.previous.filter(previous =>
+        !modules.includes(previous) || [...replacements].some(([candidate, old]) => old === previous && modules.includes(candidate)),
+      ).map(owner => owner.declaration.name))
+      const state: InterfaceState = refresh ? {
+        owners: new Map([...previousInterface.owners].filter(([noun, owner]) =>
+          owner === 'engine' || names.has(owner) && (!replacedNames.has(owner) || owner !== previousInterface.owners.get(noun)))),
+        withheld: new Map([...previousInterface.withheld].flatMap(([noun, owners]) => {
+          const retained = new Set([...owners].filter(owner => names.has(owner) && !replacedNames.has(owner)))
+          return retained.size ? [[noun, retained] as const] : []
+        })),
+      } : {
         owners: new Map([...previousInterface.owners].filter(([, owner]) => owner === 'engine' || names.has(owner))),
-        withheld: bootstrap ? new Map([...previousInterface.withheld].map(([noun, owners]) => [noun, new Set(owners)])) : new Map(),
-        carried: bootstrap ? undefined : new Map([...previousInterface.withheld].map(([noun, owners]) => [noun, new Set([...owners].filter(owner => names.has(owner)))])),
+        withheld: new Map(),
+        carried: new Map([...previousInterface.withheld].map(([noun, owners]) => [noun, new Set([...owners].filter(owner => names.has(owner)))])),
       }
       for (const [noun, owners] of crashedWithholders) {
         const missing = new Set([...owners].filter(owner => !names.has(owner)))
         if (missing.size) state.withheld.set(noun, missing)
       }
-      const base: Nouns = bootstrap ? { ...bootstrap.table } : { clock: coreClock, ...coreHost }
+      const base: Nouns = refresh ? Object.fromEntries(Object.entries(previousTable).filter(([noun]) => {
+        const owner = previousInterface.owners.get(noun)
+        return owner === undefined || owner === 'engine' || !replacedNames.has(owner)
+      })) : { clock: coreClock, ...coreHost }
       interfaceStates.set(base, state)
       const leases: CapabilityLease[] = []
       let failed: Activation | undefined
-      const folding = bootstrap ? modules.filter(owner => !bootstrap.modules.includes(owner)) : modules
+      const folding = refresh ? modules.filter(owner => refresh.changed.has(owner)) : modules
       const hooks = folding.flatMap(owner => hooksFor([owner], base).filter(hook => hook.registration.event === 'engine.create').map(hook => ({
         ...hook,
         invoke: async (input: ModInput, next: ModNext, catching: boolean) => {
@@ -1712,7 +1734,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             called = true
             const lease: CapabilityLease = { entries: 0, building: true }
             leases.push(lease)
-            const built = engineFor(owner, modules, before, lease)
+            const built = engineFor(owner, snapshot, before, lease)
             for (const [noun, view] of Object.entries(built)) views.push({ noun, view: view as object, methods: before[noun]! })
             return built
           }
@@ -1805,6 +1827,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     replacements = new Map<Activation, Activation>(),
   ) {
     const prepared = new Set<Activation>()
+    const uiPublications = new Map<Activation, () => Promise<void>>()
     if (binding) {
       for (;;) {
         let failed: Activation | undefined
@@ -1818,15 +1841,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           const input = { cwd: binding.cwd, surface: binding.surface, isInteractive: binding.isInteractive }
           try {
             await dispatch('session.start', input, async () => ({ cwd: input.cwd }), built.modules, built.table, {
-              only: owner, onFailure: () => { failed = owner },
+              only: owner,
             })
-            if (!failed) {
-              commands.validateCommit(owner, replacements.get(owner), [...prepared])
-              tools.validateCommit(owner, replacements.get(owner), [...prepared])
-              agents.validateCommit(owner, replacements.get(owner), [...prepared])
-              await uiContext.run({ snapshot: built.modules, table: built.table, person: false }, () => ui.commit(owner, replacements.get(owner)))
-              prepared.add(owner)
-            }
+            commands.validateCommit(owner, replacements.get(owner), [...prepared])
+            tools.validateCommit(owner, replacements.get(owner), [...prepared])
+            agents.validateCommit(owner, replacements.get(owner), [...prepared])
+            uiPublications.set(owner, await uiContext.run({ snapshot: built.modules, table: built.table, person: false }, () => ui.prepareCommit(owner, replacements.get(owner), [...prepared])))
+            prepared.add(owner)
           } catch (error) {
             if (stopped || hostDead) throw error
             if (!failed) diagnostic(owner.declaration.name, 'session.start', error)
@@ -1844,38 +1865,49 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         for (const owner of prepared) if (!built.modules.includes(owner)) prepared.delete(owner)
       }
     }
-    const replaced = active.filter(owner => !built.modules.includes(owner))
-    active = built.modules
-    const commandsChanged = nouns !== built.table
-    if (nouns !== built.table) {
-      descriptionCache = { value: new WeakMap() }
-      sectionCache = new Map()
-      attachmentCache = new Map()
-      contextCache = new Map()
-      contextBoundaries = new Map()
-    }
-    nouns = built.table
-    lastInterface = interfaceStates.get(nouns)!
-    await Promise.all(active.map(owner => owner.environment.setUiAccess(uiAllowed(owner, nouns))))
-    // Publish the matching hook generation before notifying command subscribers.
-    config.invalidate()
-    const previousCommands = commands.getSnapshot()
-    if (commandsChanged) commands.invalidateDescriptions(false)
-    for (const owner of prepared) {
-      commands.commit(owner, replacements.get(owner))
-      tools.commit(owner, replacements.get(owner))
-      agents.commit(owner, replacements.get(owner))
-      owner.uiPublished = true
-      if (owner.uiStatus) services.uiStatus?.(owner.declaration.name, owner.uiStatus.text)
-      for (const { text, to } of owner.uiLogs ?? []) services.uiLog?.(owner.declaration.name, text, to)
-      owner.uiLogs = undefined
-    }
-    for (const [noun, owners] of crashedWithholders) {
-      for (const owner of active) owners.delete(owner.declaration.name)
-      if (!owners.size) crashedWithholders.delete(noun)
-    }
-    for (const owner of replaced) retire(owner)
-    if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
+    await Promise.all(built.modules.map(owner => owner.environment.setUiAccess(uiAllowed(owner, built.table))))
+    const notifications = new Set<() => void>()
+    const uiCleanup: Promise<void>[] = []
+    publicationNotifications = notifications
+    try {
+      const replaced = active.filter(owner => !built.modules.includes(owner))
+      active = built.modules
+      const commandsChanged = nouns !== built.table
+      if (nouns !== built.table) {
+        descriptionCache = { value: new WeakMap() }
+        sectionCache = new Map()
+        attachmentCache = new Map()
+        contextCache = new Map()
+        contextBoundaries = new Map()
+      }
+      nouns = built.table
+      lastInterface = interfaceStates.get(nouns)!
+      // Publish the matching hook generation before notifying command subscribers.
+      config.invalidate()
+      const previousCommands = commands.getSnapshot()
+      if (commandsChanged) commands.invalidateDescriptions(false)
+      for (const owner of prepared) {
+        commands.commit(owner, replacements.get(owner))
+        tools.commit(owner, replacements.get(owner))
+        agents.commit(owner, replacements.get(owner))
+        const publishUi = uiPublications.get(owner)
+        if (publishUi) uiCleanup.push(publishUi())
+        owner.uiPublished = true
+      }
+      for (const owner of prepared) {
+        if (owner.uiStatus) notify(() => services.uiStatus?.(owner.declaration.name, owner.uiStatus!.text))
+        for (const { text, to } of owner.uiLogs ?? []) notify(() => services.uiLog?.(owner.declaration.name, text, to))
+        owner.uiLogs = undefined
+      }
+      for (const [noun, owners] of crashedWithholders) {
+        for (const owner of active) owners.delete(owner.declaration.name)
+        if (!owners.size) crashedWithholders.delete(noun)
+      }
+      for (const owner of replaced) retire(owner)
+      if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
+    } finally { publicationNotifications = undefined }
+    for (const listener of notifications) listener()
+    await Promise.all(uiCleanup)
     const staleDrawings = [...drawings.values()].some(lease => [...lease.participants].some(owner => !active.includes(owner)))
     if (staleDrawings && services.uiPresentation && !stopped) await ui.render(services.uiPresentation())
   }
@@ -1928,7 +1960,9 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       if (bootstrap && !changed.size) return
       // Keep newly admitted providers barred during their own bootstrap fold.
       for (const owner of changed) owner.state = 'candidate'
-      bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap)
+      bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
+        previous: bootstrap.modules, changed, table: bootstrap.table,
+      })
       ensureLive()
       candidates = [...bootstrap.modules]
       for (const owner of candidates) owner.state = 'active'
@@ -1991,8 +2025,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     candidates.sort(seatOrder)
     if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) return
+    const changed = new Set(candidates.filter(owner => !previous.includes(owner)))
+    const refresh = previous.length ? { previous, changed } : undefined
     if (cold) await buildBootstrap()
-    const built = cold ? bootstrap! : await build(candidates, replacements)
+    const built = cold ? bootstrap! : await build(candidates, replacements, refresh)
     ensureLive()
     for (const owner of built.modules) owner.state = 'active'
     await publish(built, replacements)

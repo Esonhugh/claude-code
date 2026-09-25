@@ -39,10 +39,12 @@ type PreparedSpec = Readonly<{
 }>
 
 export function createModTools({
+  notify = listener => listener(),
   pluginOf,
   getBuiltinTools = () => [],
   getTools,
 }: {
+  notify?: (listener: () => void) => void
   pluginOf: (owner: ModToolOwner) => string
   getBuiltinTools?: () => Tools
   getTools?: () => Tools
@@ -183,7 +185,7 @@ export function createModTools({
 
   function publish(): void {
     snapshot = Object.freeze([...active.values()].map(value => value.tool)) as Tool[]
-    for (const listener of [...listeners]) listener()
+    for (const listener of [...listeners]) notify(listener)
   }
 
   function validateCommit(

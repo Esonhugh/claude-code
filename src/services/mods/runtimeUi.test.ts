@@ -45,6 +45,43 @@ const source = (label: string, fail = false) => `let count=0; export function re
   on('ui.render', {component:'Pane'}, ($,e) => { const {Box,Button,Text}=$.ui.resolve(e); return Box({children:[Text({children:'${label}:'+count}),Button({key:'run',label:'Run',onPress:async () => { count++; await $.ui.status('${label}:'+count); await $.ui.log('clicked'); await $.ui.invalidate('ui.render'); }}),Button({key:'close',label:'Close',onPress:() => $.ui.close({id:'panel'})})]}); });
 }`
 
+test('activation subscribers see one generation across UI, commands, tools and agents', async () => {
+  const generation = (label: string) => `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.command.register({name:'atomic',description:'${label}'});
+      await $.tool.register({name:'atomic',description:'${label}'});
+      await $.agent.register({name:'atomic',description:'${label}',prompt:'${label}'});
+      await $.ui.open({id:'panel',title:'${label}'}); return next(e);
+    });
+    on('ui.render', ($,e) => $.ui.resolve(e).Text({children:'${label}'}));
+    on('command.run', () => ({text:'${label}'}));
+  }`
+  const consumer = await plugin('atomic', generation('old'))
+  const { value, diagnostics } = fixture()
+  await value.bind(binding(root)); await value.reconcile([consumer])
+  const seen: unknown[] = []
+  const calls: Promise<unknown>[] = []
+  const observe = () => {
+    seen.push([
+      value.ui.getSnapshot()[0]?.title,
+      value.commands.getSnapshot()[0]?.description,
+      value.tools.getSnapshot()[0]?.description({}, {} as never),
+      value.agents.getSnapshot()[0]?.whenToUse,
+    ])
+    calls.push(value.dispatch('command.run', {command:'atomic',args:''}, async () => ({text:'core'})))
+  }
+  const unsubscribes = [value.ui, value.commands, value.tools, value.agents].map(registry => registry.subscribe(() => observe()))
+  try {
+    await writeFile(consumer.entrypoints[0]!, generation('new'))
+    await value.reconcile([consumer])
+    const results = await Promise.all(calls)
+    expect(seen).toHaveLength(4)
+    for (const row of seen as unknown[][]) expect(await Promise.all(row)).toEqual(['new','new','new','new'])
+    expect(results).toEqual(Array(4).fill({text:'new'}))
+    expect(diagnostics).toEqual([])
+  } finally { unsubscribes.forEach(unsubscribe => unsubscribe()) }
+})
+
 test('ui.log preserves default, debug and rewritten sinks across activation buffering', async () => {
   const logs: unknown[]=[]
   const policy=await plugin('log-policy',`export function register(on) {
@@ -68,10 +105,11 @@ test('ui.log preserves default, debug and rewritten sinks across activation buff
   expect(logs).toHaveLength(4)
   expect(diagnostics).toEqual([])
   const failed=await plugin('failed-logger',`export function register(on) {
-    on('session.start',async($)=>{await $.ui.log('not published',{to:'debug'});throw Error('failed start');});
+    on('session.start',async($)=>{await $.ui.log('recovered',{to:'debug'});throw Error('failed start');});
   }`)
   await value.reconcile([policy,owner,failed])
-  expect(logs).toHaveLength(4)
+  expect(logs).toHaveLength(5)
+  expect(logs.at(-1)).toEqual(['failed-logger','recovered','debug'])
   expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'failed-logger',stage:'session.start'}))
 })
 
@@ -103,17 +141,43 @@ test('real Worker session.start opens a pane, redraws after a leased callback, c
   expect(diagnostics).toEqual([])
 })
 
-test('a failed replacement keeps the previous drawing and suppresses candidate UI side effects', async () => {
+test('a recovered replacement publishes its drawing and completed UI side effects', async () => {
   const consumer = await plugin('ui-owner', source('old'))
   const { value, statuses } = fixture()
   await value.bind(binding(root)); await value.reconcile([consumer])
   const snapshot = value.ui.getSnapshot()
-  await writeFile(consumer.entrypoints[0]!, source('failed', true).replace("throw Error('failed UI start')", "await $.ui.status('must not publish'); throw Error('failed UI start')"))
+  await writeFile(consumer.entrypoints[0]!, source('failed', true).replace("throw Error('failed UI start')", "await $.ui.status('recovered'); throw Error('failed UI start')"))
   await value.reconcile([consumer])
-  expect(value.ui.getSnapshot()).toBe(snapshot)
-  expect(statuses).toEqual([])
+  expect(value.ui.getSnapshot()).not.toBe(snapshot)
+  expect(value.ui.getSnapshot()[0]?.title).toBe('failed')
+  expect(statuses).toEqual([['ui-owner','recovered']])
+  const pane = value.ui.getSnapshot()[0]!
+  await value.ui.interact(pane.id,pane.drawing!,(pane.tree as any).children[1].press,'press','run')
+  expect(statuses.at(-1)).toEqual(['ui-owner','failed:1'])
   await value.reconcile([])
   expect(value.ui.getSnapshot()).toEqual([])
+})
+
+test('uncaught startup failure preserves the old UI generation and suppresses buffered effects', async () => {
+  const consumer = await plugin('ui-owner', source('old'))
+  const statuses: unknown[] = [], logs: unknown[] = []
+  let fail = false
+  const value = createModsRuntime({
+    onDiagnostic: () => { if (fail) { fail = false; throw Error('uncaught host failure') } },
+    services: { uiPresentation: () => wide, uiStatus: (plugin,text) => { statuses.push([plugin,text]) }, uiLog: (plugin,text) => { logs.push([plugin,text]) } },
+  })
+  runtimes.push(value)
+  await value.bind(binding(root)); await value.reconcile([consumer])
+  const before = value.ui.getSnapshot()
+  await writeFile(consumer.entrypoints[0]!, source('failed', true).replace("throw Error('failed UI start')", "await $.ui.status('discard'); await $.ui.log('discard'); throw Error('failed UI start')"))
+  fail = true
+  await value.reconcile([consumer])
+  expect(value.ui.getSnapshot()).toBe(before)
+  expect(statuses).toEqual([])
+  expect(logs).toEqual([])
+  const pane = before[0]!
+  await value.ui.interact(pane.id,pane.drawing!,(pane.tree as any).children[1].press,'press','run')
+  expect(statuses).toEqual([['ui-owner','old:1']])
 })
 
 test('engine.create withholding revokes even a captured synchronous UI resolve bridge', async () => {
@@ -412,20 +476,23 @@ test('reloading a render participant redraws a surviving pane with the new parti
   expect(statuses).toContainEqual(['decorator','new'])
 })
 
-test('candidate close and invalidate cannot mutate the previous active drawing before failed start', async () => {
+test('recovered replacement retires the old drawing and admits its new resolver', async () => {
   const consumer = await plugin('ui-owner',source('old'))
   const {value,statuses} = fixture()
   await value.bind(binding(root)); await value.reconcile([consumer])
   const before = value.ui.getSnapshot()
   await writeFile(consumer.entrypoints[0]!,`export function register(on) {
     on('session.start',async ($,e,next) => {await $.ui.close({id:'panel'}); await $.ui.invalidate('ui.render'); throw Error('candidate failed');});
-    on('ui.render',($,e) => $.ui.resolve(e).Text({children:'wrong generation'}));
+    on('ui.render',($,e) => $.ui.resolve(e).Text({children:'new generation'}));
+    on('command.run',async ($) => {await $.ui.open({id:'panel'});return {};});
   }`)
   await value.reconcile([consumer])
-  expect(value.ui.getSnapshot() === before).toBe(true)
+  expect(value.ui.getSnapshot()).toEqual([])
   const pane = before[0]!
-  await value.ui.interact(pane.id,pane.drawing!,(pane.tree as any).children[1].press,'press','run')
-  expect(statuses).toEqual([['ui-owner','old:1']])
+  await expect(value.ui.interact(pane.id,pane.drawing!,(pane.tree as any).children[1].press,'press','run')).rejects.toThrow(/stale/)
+  await value.dispatch('command.run',{command:'open',args:''},async () => ({}))
+  expect((value.ui.getSnapshot()[0]!.tree as any).children).toEqual(['new generation'])
+  expect(statuses).toEqual([])
 })
 
 test('a new subscriber can invoke the just-published drawing generation', async () => {

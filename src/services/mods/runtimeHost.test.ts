@@ -1078,20 +1078,20 @@ test('Worker store preserves multibyte values at the official character limit an
   expect(diagnostics).toEqual([])
 }, 15000)
 
-test('failed start discards registered commands and hooks before publication', async () => {
+test('recovered start retains completed command registration and unrelated hooks', async () => {
   const consumer = await plugin('failed-start', `export function register(on) {
     on('session.start', async ($, e, next) => { await $.command.register({name:'broken', description:'Broken'}); throw Error('start failed'); });
-    on('tool.call', () => ({result:'broken'}));
+    on('tool.call', () => ({result:'still active'}));
   }`)
   const { value, diagnostics } = runtime()
   await value.reconcile([consumer])
   await value.bind(binding(root))
-  expect(value.commands.list()).toEqual([])
-  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  expect(value.commands.list().map(command=>command.name)).toEqual(['broken'])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'still active'})
   expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'failed-start', stage:'session.start', message:'start failed'}))
 })
 
-test('failed replacement start preserves the old command and callable generation', async () => {
+test('recovered replacement start publishes one new command and callable generation', async () => {
   const source = (label: string, fail: boolean) => `export function register(on) {
     on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'${label}'}); ${fail ? "throw Error('replacement failed');" : 'return next(e);'} });
     on('command.run', () => ({text:'${label}'}));
@@ -1106,14 +1106,16 @@ test('failed replacement start preserves the old command and callable generation
   value.commands.subscribe(() => notifications.push(value.commands.list().map(command => command.description)))
   await writeFile(consumer.entrypoints[0]!, source('failed', true))
   await value.reconcile([consumer])
-  expect(value.commands.list()[0]).toBe(old)
-  expect(notifications).toEqual([])
-  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'old'})
+  const current=value.commands.list()[0]!
+  expect(current).not.toBe(old)
+  expect(current.description).toBe('failed')
+  expect(notifications).toEqual([['failed']])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'failed'})
   expect(diagnostics).toContainEqual(expect.objectContaining({stage:'session.start', message:'replacement failed'}))
-  if (old.type !== 'local-jsx') throw Error('Expected JSX command')
+  if (current.type !== 'local-jsx') throw Error('Expected JSX command')
   const result: unknown[] = []
-  await (await old.load()).call(text => result.push(text), {abortController:new AbortController()} as any, '')
-  expect(result).toEqual(['old'])
+  await (await current.load()).call(text => result.push(text), {abortController:new AbortController()} as any, '')
+  expect(result).toEqual(['failed'])
 })
 
 test('successful replacement publishes one command snapshot with the new hook generation', async () => {
@@ -1138,7 +1140,6 @@ test('successful replacement publishes one command snapshot with the new hook ge
   expect(notifications).toEqual([['new']])
   expect(await Promise.all(generations)).toEqual([{result:'new'}])
 })
-
 test('command commit collision rejects only the candidate and preserves the active owner', async () => {
   const source = (label: string) => `export function register(on) {
     on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'${label}'}); return next(e); });
@@ -1154,7 +1155,6 @@ test('command commit collision rejects only the candidate and preserves the acti
   expect(await value.dispatch('tool.call', {...input, tool:'second'}, async () => ({result:'core'}))).toEqual({result:'core'})
   expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'second', stage:'session.start', message:expect.stringContaining('already owned')}))
 })
-
 test('a self-declared diff provider cannot replace the built-in command', async () => {
   const consumer = await plugin('diff', `export function register(on) {
     on('session.start', async ($, e, next) => { await $.command.register({name:'diff', description:'Impostor'}); return next(e); });
@@ -2287,4 +2287,52 @@ test('Worker usage denial never invokes its reader and invalid rewrites recover 
   expect(await run(79)).toEqual({result:expected})
   expect(inputs).toEqual([{columns:79}])
   expect(diagnostics).toEqual([expect.objectContaining({stage:'session.usage',message:expect.stringContaining('breakdown')})])
+})
+
+test('session.start catch recovery publishes the recovered module', async () => {
+  const consumer=await plugin('catch-start',`let recovered=false; export function register(on) {
+    on('session.start',()=>{throw Error('recover start')}).catch(($,e,next)=>{recovered=true;return next(e)});
+    on('tool.call',()=>({result:recovered}));
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root));await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call',input,async()=>({result:'core'}))).toEqual({result:true})
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'catch-start',stage:'session.start',message:'recover start'})])
+})
+
+
+
+
+
+test('uncaught startup dispatch failure rolls back completed registrations and preserves the callable generation', async () => {
+  const source = (label: string, fail = false) => `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.command.register({name:'uncaught',description:'${label}'});
+      await $.tool.register({name:'uncaught',description:'${label}'});
+      await $.agent.register({name:'uncaught',description:'${label}',prompt:'${label}'});
+      ${fail ? "throw Error('startup fault');" : 'return next(e);'}
+    });
+    on('tool.call',()=>({result:'${label}'}));
+  }`
+  const mod = await plugin('uncaught', source('old'))
+  let injected = false
+  const value = createModsRuntime({onDiagnostic: event => {
+    if (event.stage === 'session.start' && !injected) {
+      injected = true
+      throw Error('host startup dispatch failure')
+    }
+  }})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([mod])
+  const commands = value.commands.getSnapshot()
+  const tools = value.tools.getSnapshot()
+  const agents = value.agents.getSnapshot()
+  await writeFile(mod.entrypoints[0]!, source('candidate', true))
+  await value.reconcile([mod])
+  expect(injected).toBe(true)
+  expect(value.commands.getSnapshot()).toEqual(commands)
+  expect(value.tools.getSnapshot()).toEqual(tools)
+  expect(value.agents.getSnapshot()).toEqual(agents)
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'old'})
 })

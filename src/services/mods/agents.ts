@@ -17,7 +17,7 @@ export function listModAgents(tasks: AppState['tasks'], names: AppState['agentNa
   })
 }
 
-export function createModAgents(pluginOf: (owner: object) => { name: string; storageId: string }) {
+export function createModAgents(pluginOf: (owner: object) => { name: string; storageId: string }, notify: (listener: () => void) => void = listener => listener()) {
   const candidates = new Map<object, Map<string, AgentDefinition>>()
   const published = new WeakSet<object>()
   const projected = new WeakSet<AgentDefinition>()
@@ -26,7 +26,7 @@ export function createModAgents(pluginOf: (owner: object) => { name: string; sto
   let snapshot: AgentDefinition[] = []
   function publish() {
     snapshot = [...active.values()].map(item => item.definition)
-    for (const listener of listeners) listener()
+    for (const listener of listeners) notify(listener)
   }
   function validateCommit(owner: object, replaced?: object, prepared: readonly object[] = []) {
     for (const name of candidates.get(owner)?.keys() ?? []) {

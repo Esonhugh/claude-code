@@ -54,7 +54,7 @@ test('production Worker agent.register is hookable and replaces its real definit
   } finally { snapshot.release() }
 })
 
-test('production Worker stages reload definitions atomically and preserves the old definition on failed startup', async () => {
+test('production Worker stages reload definitions atomically and publishes a recovered startup hook', async () => {
   const source = (version: string, fail = false) => `export function register(on) {
     on('session.start', async ($,e,next) => {
       await $.agent.register({name:'reviewer',description:'${version}',prompt:'${version}',tools:['Read'],maxTurns:3});
@@ -82,12 +82,11 @@ test('production Worker stages reload definitions atomically and preserves the o
     expect(runtime.agents.getSnapshot()[0]).toBe(old)
     await writeFile(mod.entrypoints[0]!, source('failed', true))
     await runtime.reconcile([mod])
-    expect(runtime.agents.getSnapshot()[0]).toBe(old)
-    expect(seen).toEqual([])
-    expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'reload',stage:'session.start',message:'failed startup'}))
+    expect(runtime.agents.getSnapshot()[0]).toMatchObject({agentType:'reload:reviewer',whenToUse:'failed'})
+    expect(seen).toEqual([['failed']])
     await writeFile(mod.entrypoints[0]!, source('new'))
     await runtime.reconcile([mod])
-    expect(seen).toEqual([['new']])
+    expect(seen).toEqual([['failed'],['new']])
     expect(runtime.agents.getSnapshot()[0]).toMatchObject({agentType:'reload:reviewer',tools:['Read'],maxTurns:3})
     const projected = runtime.agents.projection({activeAgents:[old],allAgents:[old]})
     expect(projected.activeAgents).toEqual(runtime.agents.getSnapshot())
@@ -95,7 +94,6 @@ test('production Worker stages reload definitions atomically and preserves the o
     expect(runtime.agents.projection(projected)).toEqual({activeAgents:[],allAgents:[]})
   } finally { snapshot.release(); unsubscribe() }
 })
-
 test('production Worker agent.spawn skips only its calling hook and starts through the host', async () => {
   const caller = await plugin('caller', `export function register(on) {
     on('*', async ($,e,next) => {
