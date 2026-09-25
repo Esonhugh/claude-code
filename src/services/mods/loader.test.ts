@@ -212,6 +212,7 @@ test('rejects top-level await in imported files, including files also used as en
 
 test('admits official active prompt capabilities while rejecting unknown ones', async () => {
   const result = await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
+    on('prompt.fill', ($, e, next) => next(e));
     on('prompt.suggest', ($, e, next) => next(e));
     on('tool.call', async $ => ({result:{
       box:await $.prompt.read(),
@@ -220,7 +221,7 @@ test('admits official active prompt capabilities while rejecting unknown ones', 
       suggested:await $.prompt.suggest({text:'next'}),
     }}));
   }`}))
-  expect(result.events).toEqual(['prompt.suggest', 'tool.call'])
+  expect(result.events).toEqual(['prompt.fill', 'prompt.suggest', 'tool.call'])
   expect(result.calls).toEqual(['prompt.fill', 'prompt.read', 'prompt.submit', 'prompt.suggest'])
   await expect(loadModDeclaration(await plugin({'main.ts': `export function register(on) {
     on('tool.call', async $ => ({result:await $.prompt.unknown({text:'x'})}));
