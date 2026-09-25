@@ -622,6 +622,7 @@ export async function processMemoryFile(
   includeExternal: boolean,
   depth: number = 0,
   parent?: string,
+  projectRoot: string = getOriginalCwd(),
 ): Promise<MemoryFileInfo[]> {
   // Skip if already processed or max depth exceeded.
   // Normalize paths for comparison to handle Windows drive letter casing
@@ -666,7 +667,7 @@ export async function processMemoryFile(
   result.push(memoryFile)
 
   for (const resolvedIncludePath of resolvedIncludePaths) {
-    const isExternal = !pathInOriginalCwd(resolvedIncludePath)
+    const isExternal = !pathInWorkingPath(resolvedIncludePath, projectRoot)
     if (isExternal && !includeExternal) {
       continue
     }
@@ -679,6 +680,7 @@ export async function processMemoryFile(
       includeExternal,
       depth + 1,
       filePath, // Pass current file as parent
+      projectRoot,
     )
     result.push(...includedFiles)
   }

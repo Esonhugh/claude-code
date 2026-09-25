@@ -518,7 +518,8 @@ export function createModHostOperations({
           (isBareMode() && getAdditionalDirectoriesForClaudeMd().length === 0)
         )
           return []
-        const end = request.of === undefined ? resolve(root()) : dirname(resolvePath(request.of))
+        const projectRoot = resolve(root())
+        const end = request.of === undefined ? projectRoot : dirname(resolvePath(request.of))
         const below = request.below === undefined ? undefined : resolvePath(request.below)
         if (below !== undefined) {
           const child = relative(below, end)
@@ -548,14 +549,15 @@ export function createModHostOperations({
             if (bytes + entry.size > MAX_BYTES) throw new RangeError('Read exceeds 4 MiB')
             // Basic FS and store calls must not eagerly load the query services.
             const { processMemoryFile } = await import('../../utils/claudemd.js')
+            const { getCurrentProjectConfig } = await import('../../utils/config.js')
             signal.throwIfAborted()
-            // This is an explicit FS request, not automatic project memory injection.
+            const includeExternal = getCurrentProjectConfig().hasClaudeMdExternalIncludesApproved ?? false
             const files = await new Promise<Awaited<ReturnType<typeof processMemoryFile>>>((resolveFiles, reject) => {
               const abort = () => reject(signal.reason)
               signal.addEventListener('abort', abort, { once: true })
               // The memory loader has no signal parameter; revoke the caller's wait,
               // without replacing its global filesystem implementation.
-              void processMemoryFile(path, 'Managed', new Set(), true).then(
+              void processMemoryFile(path, 'Project', new Set(), includeExternal, 0, undefined, projectRoot).then(
                 files => {
                   signal.removeEventListener('abort', abort)
                   resolveFiles(files)

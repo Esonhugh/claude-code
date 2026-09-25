@@ -29,6 +29,8 @@ import {
 } from '../../utils/settings/settings.js'
 import { getPlatform } from '../../utils/platform.js'
 import {
+  getOriginalCwd,
+  setOriginalCwd,
   getAdditionalDirectoriesForClaudeMd,
   setAdditionalDirectoriesForClaudeMd,
 } from '../../bootstrap/state.js'
@@ -951,6 +953,109 @@ describe('process.run', () => {
 })
 
 describe('fs.ancestors', () => {
+  let originalCwd: string
+  let additionalDirs: string[]
+  let argv: string[]
+  let disableClaudeMds: string | undefined
+  let simple: string | undefined
+
+  beforeEach(() => {
+    originalCwd = getOriginalCwd()
+    additionalDirs = getAdditionalDirectoriesForClaudeMd()
+    argv = process.argv
+    disableClaudeMds = process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    simple = process.env.CLAUDE_CODE_SIMPLE
+    setOriginalCwd(cwd)
+    setAdditionalDirectoriesForClaudeMd([])
+    process.argv = process.argv.filter(arg => arg !== '--bare')
+    delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    delete process.env.CLAUDE_CODE_SIMPLE
+  })
+
+  afterEach(() => {
+    setOriginalCwd(originalCwd)
+    setAdditionalDirectoriesForClaudeMd(additionalDirs)
+    process.argv = argv
+    if (disableClaudeMds === undefined) delete process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS
+    else process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = disableClaudeMds
+    if (simple === undefined) delete process.env.CLAUDE_CODE_SIMPLE
+    else process.env.CLAUDE_CODE_SIMPLE = simple
+  })
+
+  test('honors claudeMdExcludes for requested files and imported parts', async () => {
+    const main = join(cwd, 'AGENTS.md')
+    const child = join(cwd, 'child.md')
+    await writeFile(main, 'main\n@./child.md')
+    await writeFile(child, 'child')
+    const request = { names: ['AGENTS.md'], below: root }
+    expect((await host.fs.ancestors(request))[0].parts.map(part => part.path)).toEqual([main, child])
+    setSessionSettingsCache({ settings: { claudeMdExcludes: ['**/child.md'] }, errors: [] })
+    expect((await host.fs.ancestors(request))[0].parts).toEqual([{ path: main, content: 'main\n@./child.md' }])
+    setSessionSettingsCache({ settings: { claudeMdExcludes: ['**/AGENTS.md'] }, errors: [] })
+    expect(await host.fs.ancestors(request)).toEqual([])
+  })
+
+  test('uses the active root for nested imports despite a different global original cwd', async () => {
+    const main = join(cwd, 'AGENTS.md')
+    const local = join(cwd, 'local.md')
+    const nested = join(cwd, 'nested.md')
+    const external = join(root, 'external.md')
+    await writeFile(main, '@./local.md\n@../external.md')
+    await writeFile(local, '@./nested.md')
+    await writeFile(nested, 'nested')
+    await writeFile(external, 'external must not load')
+    const request = { names: ['AGENTS.md'], below: root }
+    for (const globalRoot of [root, join(root, 'unrelated')]) {
+      setOriginalCwd(globalRoot)
+      expect((await host.fs.ancestors(request))[0].parts).toEqual([
+        { path: main, content: '@./local.md\n@../external.md' },
+        { path: local, content: '@./nested.md' },
+        { path: nested, content: 'nested' },
+      ])
+      expect(getOriginalCwd()).toBe(globalRoot)
+    }
+  })
+
+  test('does not automatically approve project-external imports', async () => {
+    const main = join(cwd, 'AGENTS.md')
+    const local = join(cwd, 'local.md')
+    const external = join(root, 'external.md')
+    await writeFile(main, 'main\n@./local.md\n@../external.md')
+    await writeFile(local, 'local\n@../external.md')
+    await writeFile(external, 'external must not load')
+    const found = await host.fs.ancestors({ names: ['AGENTS.md'], below: root })
+    expect(found[0].parts).toEqual([
+      { path: main, content: 'main\n@./local.md\n@../external.md' },
+      { path: local, content: 'local\n@../external.md' },
+    ])
+  })
+
+  test('honors existing external-import approval without bypassing excludes', async () => {
+    const config = await import('../../utils/config.js')
+    const projectConfig = config.getCurrentProjectConfig()
+    const approval = spyOn(config, 'getCurrentProjectConfig').mockReturnValue({
+      ...projectConfig,
+      hasClaudeMdExternalIncludesApproved: true,
+    })
+    try {
+      const main = join(cwd, 'AGENTS.md')
+      const external = join(root, 'external.md')
+      await writeFile(main, '@../external.md')
+      await writeFile(external, 'approved external')
+      const request = { names: ['AGENTS.md'], below: root }
+      expect((await host.fs.ancestors(request))[0].parts).toEqual([
+        { path: main, content: '@../external.md' },
+        { path: external, content: 'approved external' },
+      ])
+      setSessionSettingsCache({ settings: { claudeMdExcludes: ['**/external.md'] }, errors: [] })
+      expect((await host.fs.ancestors(request))[0].parts).toEqual([
+        { path: main, content: '@../external.md' },
+      ])
+    } finally {
+      approval.mockRestore()
+    }
+  })
+
   for (const control of [
     'CLAUDE_CODE_DISABLE_CLAUDE_MDS',
     'CLAUDE_CODE_SIMPLE',
@@ -1109,9 +1214,9 @@ describe('fs.ancestors', () => {
     expect((await host.fs.ancestors(request))[0].parts.map(part => part.content)).toEqual(['@./large.txt', 'recovered'])
   })
 
-  test('uses memory markdown semantics, parent-first parts and lexical path identity without global memory filtering', async () => {
+  test('uses memory markdown semantics, parent-first parts and lexical path identity for project imports', async () => {
     const name = `${basename(root)}.md`
-    const target = join(root, 'external')
+    const target = join(cwd, 'instructions')
     await mkdir(target)
     const main = join(cwd, name)
     const child = join(target, 'child.md')
@@ -1126,7 +1231,6 @@ describe('fs.ancestors', () => {
     await writeFile(join(target, 'ignored.md'), 'must not load')
     await writeFile(join(target, 'binary.png'), 'not text')
     await symlink(join(target, 'entry.md'), main)
-    setSessionSettingsCache({ settings: { claudeMdExcludes: ['**/*.md'] }, errors: [] })
     const parts = [
       { path: main, content: mainText },
       { path: child, content: childText },
