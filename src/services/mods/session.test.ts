@@ -1277,9 +1277,11 @@ describe('Mods CLI session host', () => {
       new URL('../../utils/gracefulShutdown.ts', import.meta.url),
       'utf8',
     )
-    expect(shutdown.indexOf('await disposeModsHosts()')).toBeLessThan(
-      shutdown.indexOf('await runCleanupFunctions()'),
-    )
+    const classicEnd = shutdown.indexOf('await executeSessionEndHooks(reason,')
+    const disposal = shutdown.indexOf('await disposeModsHosts()')
+    expect(classicEnd).toBeGreaterThan(-1)
+    expect(disposal).toBeGreaterThan(classicEnd)
+    expect(disposal).toBeLessThan(shutdown.indexOf('await runCleanupFunctions()'))
     const refresh = await readFile(
       new URL('../../utils/plugins/refresh.ts', import.meta.url),
       'utf8',
