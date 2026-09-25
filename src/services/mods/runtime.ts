@@ -1201,6 +1201,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
                   matchesModEventPattern(registration.event, event) &&
                   (item !== owner || registration.id !== caller?.registrationId),
                 )),
+              pluginOrigin: storageId => {
+                const provider = snapshot.find(value => value.declaration.storageId === storageId)
+                return provider
+                  ? { plugin: provider.declaration.storageId, tier: provider.declaration.tier }
+                  : services.pluginOrigin?.(storageId)
+              },
               release() {},
             }
             try {
@@ -1227,6 +1233,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
                   matchesModEventPattern(registration.event, event) &&
                   (item !== owner || registration.id !== caller?.registrationId),
                 )),
+              pluginOrigin: storageId => {
+                const provider = snapshot.find(value => value.declaration.storageId === storageId)
+                return provider
+                  ? { plugin: provider.declaration.storageId, tier: provider.declaration.tier }
+                  : services.pluginOrigin?.(storageId)
+              },
               release() {},
             }
             try {

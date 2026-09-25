@@ -132,6 +132,40 @@ test('production Worker agent.spawn skips only its calling hook and starts throu
   } finally { snapshot.release() }
 })
 
+test('production Worker agent.spawn of a plugin agent resolves its provider through the call snapshot', async () => {
+  const author = await plugin('author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({name:'reviewer',description:'Review',prompt:'Review'});
+      return next(e);
+    });
+  }`)
+  const spawner = await plugin('spawner', `export function register(on) {
+    on('command.run', async $ => {
+      try { return {text:JSON.stringify(await $.agent.spawn({prompt:'review',description:'Review',subagentType:'author:reviewer'}))}; }
+      catch (error) { return {text:'spawn-error:'+(error instanceof Error ? error.message : String(error))}; }
+    });
+  }`)
+  const gate = await plugin('gate', `export function register(on) {
+    on('agent.offer', ($,e,next) => next(e));
+  }`)
+  const runtime = createModsRuntime({services:{agentSpawn: async (request, spawnSnapshot, signal) => {
+    // Mirror AgentTool: resolve the target definition and run the model-facing
+    // offer check against the snapshot handed to the spawn host.
+    const { isAgentOffered } = await import('./agentOffer.js')
+    const target = runtime.agents.getSnapshot().find(agent => agent.agentType === request.subagentType)
+    if (!target) return { deny: 'unknown agent' }
+    if (!(await isAgentOffered(target, { snapshot: spawnSnapshot, signal }))) return { deny: 'not offered' }
+    return { model: 'claude-haiku', agentId: 'agent-child' }
+  }}})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([author, spawner, gate])
+  const snapshot = runtime.capture()
+  try {
+    expect(await snapshot.dispatch('command.run', {}, async () => ({}))).toEqual({text:'{"model":"claude-haiku","agentId":"agent-child"}'})
+  } finally { snapshot.release() }
+})
+
 test('production Worker agent.list reads live session tasks rather than definitions', async () => {
   const mod = await plugin('observer', `export function register(on) {
     on('command.run', async $ => ({text:JSON.stringify(await $.agent.list())}));
