@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { PluginManifestSchema } from '../../utils/plugins/schemas.js'
+import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
 import { SettingsSchema, type SettingsJson } from '../../utils/settings/types.js'
-import type { PrepareModPluginsSettings } from './plugins.js'
 import type { ModTier } from './types.js'
 
 let secureStorageData: { pluginSecrets?: Record<string, Record<string, unknown>> } = {}
@@ -16,6 +16,7 @@ mock.module('../../utils/secureStorage/index.js', () => ({
 
 const { clearPluginOptionsCache } = await import('../../utils/plugins/pluginOptionsStorage.js')
 const { getModPluginOrigin, prepareModPlugins } = await import('./plugins.js')
+import type { PrepareModPluginsSettings } from './plugins.js'
 
 function loadedPlugin(overrides: Partial<LoadedPlugin> = {}): LoadedPlugin {
   const name = overrides.name ?? 'example'
@@ -57,12 +58,7 @@ const instructionFiles = {
   description: 'Instruction files to load',
   required: false,
   default: 'claude-md-or-agents-md',
-  options: [
-    'claude-md',
-    'claude-md-or-agents-md',
-    'claude-md-and-agents-md',
-    'managed-only',
-  ],
+  options: ['claude-md', 'claude-md-or-agents-md', 'claude-md-and-agents-md', 'managed-only'],
 }
 
 describe('prepareModPlugins', () => {
@@ -72,28 +68,135 @@ describe('prepareModPlugins', () => {
     secureStorage.update.mockClear()
     clearPluginOptionsCache()
   })
+
+  test('admits the official agents-md choice manifest and supplies its default', () => {
+    const manifest = PluginManifestSchema().parse({
+      name: 'agents-md',
+      userConfig: { instructionFiles },
+    })
+    expect(manifest.userConfig?.instructionFiles?.options).toEqual(instructionFiles.options)
+    const result = prepareModPlugins([loadedPlugin({ manifest })], settings())
+    expect(result.errors).toEqual([])
+    expect(result.inputs[0]?.options).toEqual({ instructionFiles: 'claude-md-or-agents-md' })
+  })
+
   test('preserves the official agents-md legacy projectInstructions option for migration', () => {
     const manifest = PluginManifestSchema().parse({
       name: 'agents-md',
       userConfig: { instructionFiles },
     })
-    const result = prepareModPlugins(
-      [loadedPlugin({ name: 'agents-md', manifest })],
-      settings({
-        userSettings: source({
-          pluginConfigs: {
-            'agents-md@marketplace': {
-              options: { projectInstructions: 'both' },
-            },
-          },
-        }),
-      }),
-    )
+    const result = prepareModPlugins([loadedPlugin({ name: 'agents-md', manifest })], settings({
+      userSettings: source({ pluginConfigs: {
+        'agents-md@marketplace': { options: { projectInstructions: 'both' } },
+      } }),
+    }))
     expect(result.errors).toEqual([])
     expect(result.inputs[0]?.options).toEqual({
       instructionFiles: 'claude-md-or-agents-md',
       projectInstructions: 'both',
     })
+  })
+
+  test('reads inline plugin options from the official bare plugin name key', () => {
+    const manifest = PluginManifestSchema().parse({
+      name: 'agents-md',
+      userConfig: { instructionFiles },
+    })
+    const plugin = loadedPlugin({
+      name: 'agents-md',
+      manifest,
+      source: 'agents-md@inline',
+      repository: 'agents-md@inline',
+    })
+    const result = prepareModPlugins([plugin], settings({
+      userSettings: source({ pluginConfigs: {
+        'agents-md': { options: { instructionFiles: 'claude-md-and-agents-md' } },
+      } }),
+    }))
+    expect(result.errors).toEqual([])
+    expect(result.inputs[0]?.options).toEqual({ instructionFiles: 'claude-md-and-agents-md' })
+  })
+
+  test('treats stored choices outside options as unset and applies the default', () => {
+    const plugin = loadedPlugin({ manifest: { name: 'example', userConfig: { instructionFiles } } })
+    for (const value of ['removed-choice', '', 42, ['managed-only']]) {
+      const result = prepareModPlugins([plugin], settings({
+        userSettings: source({ pluginConfigs: { 'example@marketplace': { options: { instructionFiles: value } } } }),
+      }))
+      expect(result.errors).toEqual([])
+      expect(result.inputs[0]?.options).toEqual({ instructionFiles: instructionFiles.default })
+    }
+  })
+
+  test('validates picker defaults and submitted choices against the declared options', () => {
+    for (const value of instructionFiles.options) {
+      expect(validateUserConfig({ instructionFiles: value }, { instructionFiles }).valid).toBe(true)
+    }
+    for (const value of ['removed-choice', '', 42, ['managed-only']]) {
+      expect(validateUserConfig({ instructionFiles: value }, { instructionFiles }).valid).toBe(false)
+    }
+    const plugin = loadedPlugin({ manifest: { name: 'example', userConfig: {
+      instructionFiles: { ...instructionFiles, default: 'removed-choice' },
+    } } })
+    const result = prepareModPlugins([plugin], settings())
+    expect(result.inputs).toEqual([])
+    expect(result.errors[0]?.message).toContain('Project instructions must be one of')
+  })
+
+  test('accepts only string option lists without relaxing the strict manifest schema', () => {
+    for (const options of ['claude-md', [1], [{ label: 'Managed', value: 'managed-only' }], null]) {
+      expect(PluginManifestSchema().safeParse({ name: 'example', userConfig: {
+        instructionFiles: { ...instructionFiles, options },
+      } }).success).toBe(false)
+    }
+    expect(PluginManifestSchema().safeParse({ name: 'example', userConfig: {
+      instructionFiles: { ...instructionFiles, unknownField: true },
+    } }).success).toBe(false)
+  })
+
+  test('does not silently ignore options declared on a non-string field', () => {
+    for (const type of ['number', 'boolean', 'file', 'directory']) {
+      expect(PluginManifestSchema().safeParse({ name: 'example', userConfig: {
+        instructionFiles: { ...instructionFiles, type },
+      } }).success).toBe(false)
+    }
+  })
+
+  test('valid choices follow source precedence, but a stale winning choice uses the default', () => {
+    const plugin = loadedPlugin({ manifest: { name: 'example', userConfig: { instructionFiles } } })
+    const configured = (value: string) => source({ pluginConfigs: {
+      'example@marketplace': { options: { instructionFiles: value } },
+    } })
+    const userSettings = configured('managed-only')
+    const flagSettings = configured('claude-md')
+    for (const [overrides, expected] of [
+      [{ userSettings }, 'managed-only'],
+      [{ userSettings, flagSettings }, 'claude-md'],
+      [{ userSettings, flagSettings, policySettings: configured('claude-md-and-agents-md') }, 'claude-md-and-agents-md'],
+      [{ userSettings, flagSettings, policySettings: configured('removed-choice') }, instructionFiles.default],
+    ] as const) {
+      const result = prepareModPlugins([plugin], settings(overrides))
+      expect(result.errors).toEqual([])
+      expect(result.inputs[0]?.options).toEqual({ instructionFiles: expected })
+    }
+  })
+
+  test('an unset choice without a default is omitted or reports the required field', () => {
+    for (const required of [false, true]) {
+      const plugin = loadedPlugin({ manifest: { name: 'example', userConfig: {
+        instructionFiles: { ...instructionFiles, default: undefined, required },
+      } } })
+      const result = prepareModPlugins([plugin], settings({ userSettings: source({
+        pluginConfigs: { 'example@marketplace': { options: { instructionFiles: 'removed-choice' } } },
+      }) }))
+      if (required) {
+        expect(result.inputs).toEqual([])
+        expect(result.errors[0]?.message).toContain('Project instructions is required but not provided')
+      } else {
+        expect(result.errors).toEqual([])
+        expect(result.inputs[0]?.options).toEqual({})
+      }
+    }
   })
 
   test('provider provenance uses the same effective tier even without an admitted hook module', () => {
@@ -134,13 +237,8 @@ describe('prepareModPlugins', () => {
       { managedOnly: true, allDisabled: false },
       { managedOnly: false, allDisabled: true },
     ]) {
-      const result = prepareModPlugins(
-        [trusted, spoofed],
-        settings({ hookPolicy }),
-      )
-      expect(result.inputs.map(input => input.storageId)).toEqual([
-        'agents-md@builtin',
-      ])
+      const result = prepareModPlugins([trusted, spoofed], settings({ hookPolicy }))
+      expect(result.inputs.map(input => input.storageId)).toEqual(['agents-md@builtin'])
       expect(result.inputs[0]?.tier).toBe('builtin')
       expect(result.errors).toHaveLength(1)
       expect(result.errors[0]?.plugin).toBe('spoofed')
@@ -373,7 +471,6 @@ describe('prepareModPlugins', () => {
       },
     ])
   })
-
 
   test('loads and validates required sensitive options from secure storage before admission', () => {
     const secret = 'offline-secret-value'
