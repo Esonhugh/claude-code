@@ -244,6 +244,10 @@ export function createModUi({
   const personRequested = new Set<string>()
   const openGenerations = new Map<string, number>()
   const pendingDraws = new WeakMap<PaneState, Promise<void>>()
+  const paneRedraws = new WeakMap<PaneState, {
+    lastStarted: number
+    queued?: Promise<void>
+  }>()
   const pendingBlits = new Map<string, BlitFrame>()
   const serializedBlits = new Map<string, Promise<void>>()
   const blitGenerations = new Map<string, number>()
@@ -445,6 +449,31 @@ export function createModUi({
     pendingDraws.set(pane, work)
     wakeFocusWaiters()
     return work
+  }
+
+  function invalidatePane(pane: PaneState): Promise<void> {
+    let schedule = paneRedraws.get(pane)
+    if (!schedule) {
+      schedule = { lastStarted: -Infinity }
+      paneRedraws.set(pane, schedule)
+    }
+    if (schedule.queued) return schedule.queued
+    const state = schedule
+    const work = Promise.resolve().then(async () => {
+      const delay = Math.max(0, 1000 / 30 - (performance.now() - state.lastStarted))
+      if (delay > 0) await new Promise<void>(resolve => setTimeout(resolve, delay))
+      state.queued = undefined
+      state.lastStarted = performance.now()
+      if (active.get(pane.id) === pane) await redraw(pane)
+    })
+    state.queued = work
+    wakeFocusWaiters()
+    return work
+  }
+
+  function pendingPaneWork(pane: PaneState): Promise<void> | undefined {
+    const schedule = paneRedraws.get(pane)
+    return schedule?.queued ?? pendingDraws.get(pane)
   }
 
   async function drawPane(pane: PaneState): Promise<void> {
@@ -811,8 +840,7 @@ export function createModUi({
     async invalidate(owner, event) {
       validateOwner(owner)
       if (event !== invalidatableRenderEvent || !activeOwners.has(owner)) return
-      const panes = [...active.values()].filter(pane => ownsPane(owner, pane))
-      await Promise.all(panes.map(redraw))
+      await Promise.all([...active.values()].map(invalidatePane))
     },
 
     async render(rawPresentation) {
@@ -969,7 +997,7 @@ export function createModUi({
       // Fire-and-forget invalidation may still be publishing this move's tree.
       while (request.element !== undefined && active.get(pane.id) === pane &&
           pane.visible && pane.focused && generation === personFocusGeneration) {
-        const drawing = pendingDraws.get(pane)
+        const drawing = pendingPaneWork(pane)
         if (!drawing) break
         const drawGeneration = pane.drawGeneration
         const changed = Promise.withResolvers<void>()
@@ -977,8 +1005,11 @@ export function createModUi({
         try {
           await Promise.race([drawing, changed.promise])
         } catch (error) {
+          await Promise.resolve()
+          const superseded = pendingPaneWork(pane)
           if (active.get(pane.id) === pane && pane.visible && pane.focused &&
-              generation === personFocusGeneration && drawGeneration === pane.drawGeneration)
+              generation === personFocusGeneration && drawGeneration === pane.drawGeneration &&
+              (!superseded || superseded === drawing))
             throw error
         } finally {
           focusWaiters.delete(changed.resolve)

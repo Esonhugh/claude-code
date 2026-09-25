@@ -723,3 +723,23 @@ test('ui.blit cannot address another plugin drawing and expires after close', as
   expect(await value.ui.blit(pane.owner,{requestId:pane.id,key:'pixels',cells})).toEqual({deny:'site is not open'})
   expect(diagnostics).toEqual([])
 })
+
+test('a render decorator can invalidate panes opened by another plugin', async () => {
+  const decorator = await plugin('decorator', `export function register(on) {
+    let count=0;
+    on('ui.render',async ($,e,next) => {const {Box,Text}=$.ui.resolve(e); return Box({children:[await next(e),Text({children:'decorator:'+count})]});});
+    on('command.run',async ($) => {count++;await $.ui.invalidate('ui.render');return {}});
+  }`)
+  const consumer = await plugin('ui-owner', source('owner'))
+  const {value,diagnostics} = fixture()
+  await value.bind(binding(root)); await value.reconcile([decorator,consumer])
+  const before = value.ui.getSnapshot()[0]!
+  expect(JSON.stringify(before.tree)).toContain('decorator:0')
+
+  await value.dispatch('command.run',{command:'refresh',args:'',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:true}},async () => ({}))
+
+  const current = value.ui.getSnapshot()[0]!
+  expect(current.drawing).not.toBe(before.drawing)
+  expect(JSON.stringify(current.tree)).toContain('decorator:1')
+  expect(diagnostics).toEqual([])
+})

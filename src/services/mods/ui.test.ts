@@ -1351,8 +1351,8 @@ describe('mod UI dispatch and drawing lifetime', () => {
     await committing
     const first = ui.getSnapshot()[0]!
 
-    const older = ui.invalidate(owner, 'ui.render')
-    const newer = ui.invalidate(owner, 'ui.render')
+    const older = ui.render(wide)
+    const newer = ui.render(wide)
     expect(resolvers).toHaveLength(2)
     resolvers[1]!({ type: 'Button', props: { key: 'new', label: 'New' }, press: { plugin: 'fixture', handle: 22 } })
     await newer
@@ -1403,3 +1403,113 @@ test('blit validates the replacement tree before publication', async () => {
   await expect(ui.blit(owner, {requestId:'pane',key:'pixels',cells:'invalid'})).rejects.toThrow('invalid cells')
   expect(ui.getSnapshot()[0]).toBe(before)
 })
+
+  test('folds burst invalidations into one redraw and releases its replaced drawing', async () => {
+    const owner = { plugin: 'fixture' }
+    const resolvers: ((tree: unknown) => void)[] = []
+    const { ui, released } = fixture({
+      draw: async () => new Promise(resolve => resolvers.push(resolve)),
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    const committing = ui.commit(owner)
+    resolvers.shift()!({ type: 'Text', children: ['first'] })
+    await committing
+    const first = ui.getSnapshot()[0]!.drawing
+
+    const invalidations = [
+      ui.invalidate(owner, 'ui.render'),
+      ui.invalidate(owner, 'ui.render'),
+      ui.invalidate(owner, 'ui.render'),
+    ]
+    await Promise.resolve()
+    expect(resolvers).toHaveLength(1)
+    await Bun.sleep(35)
+    resolvers.shift()!({ type: 'Text', children: ['next'] })
+    await Promise.all(invalidations)
+
+    expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['next'] })
+    expect(released).toContain(first)
+  })
+
+
+  test('merges invalidations from different plugins and keeps one trailing redraw', async () => {
+    const owner = { plugin: 'fixture' }
+    const other = { plugin: 'other' }
+    const resolvers: ((tree: unknown) => void)[] = []
+    const { ui } = fixture({
+      draw: async () => new Promise(resolve => resolvers.push(resolve)),
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    const committing = ui.commit(owner)
+    resolvers.shift()!({ type: 'Text', children: ['first'] })
+    await committing
+    await ui.commit(other)
+
+    const first = ui.invalidate(owner, 'ui.render')
+    await Promise.resolve()
+    expect(resolvers).toHaveLength(1)
+    const trailing = ui.invalidate(other, 'ui.render')
+    await Promise.resolve()
+    expect(resolvers).toHaveLength(1)
+
+    resolvers.shift()!({ type: 'Text', children: ['second'] })
+    await first
+    await Bun.sleep(40)
+    expect(resolvers).toHaveLength(1)
+    resolvers.shift()!({ type: 'Text', children: ['third'] })
+    await trailing
+
+    expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['third'] })
+  })
+
+
+  test('rate limits sequential invalidations without waiting for an obsolete draw', async () => {
+    const owner = { plugin: 'fixture' }
+    const pending = Promise.withResolvers<unknown>()
+    const starts: number[] = []
+    const { ui, released } = fixture({
+      draw: async () => {
+        starts.push(performance.now())
+        if (starts.length === 2) return pending.promise
+        return { type: 'Text', children: [String(starts.length)] }
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const first = ui.invalidate(owner, 'ui.render')
+    await Promise.resolve()
+    try {
+      await ui.invalidate(owner, 'ui.render')
+      expect(starts).toHaveLength(3)
+      expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(30)
+      expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['3'] })
+    } finally {
+      pending.resolve({ type: 'Text', children: ['obsolete'] })
+      await first
+      await ui.release(owner)
+    }
+    expect(released).toContain(2)
+  })
+
+  test('does not draw a queued invalidation after its pane closes', async () => {
+    const owner = { plugin: 'fixture' }
+    const draws: number[] = []
+    const { ui } = fixture({
+      draw: async (_owner, _input, drawing) => {
+        draws.push(drawing)
+        return { type: 'Text', children: [String(drawing)] }
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    await ui.invalidate(owner, 'ui.render')
+    await Bun.sleep(1)
+
+    const queued = ui.invalidate(owner, 'ui.render')
+    await ui.close(owner, 'pane', { kind: 'unload' })
+    await queued
+    await Bun.sleep(40)
+
+    expect(draws).toHaveLength(2)
+    expect(ui.getSnapshot()).toEqual([])
+  })
