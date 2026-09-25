@@ -4330,6 +4330,7 @@ function runHeadlessStreaming(
                     appendSystemPrompt: options.appendSystemPrompt,
                     thinkingConfig: options.thinkingConfig,
                     agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
+                    mods: options.modsSession?.runtime,
                   })
               const result = await runSideQuestion({
                 // @ts-ignore - recovered code
