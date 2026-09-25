@@ -125,7 +125,7 @@ if (process.env[childFlag] !== '1') {
     const initialized = Promise.withResolvers<InitBridgeOptions>()
     const handle: ReplBridgeHandle = {
       bridgeSessionId: 'test-local-bridge', environmentId: '', sessionIngressUrl: '',
-      writeMessages() {}, writeSdkMessages() {}, sendControlRequest() {},
+      writeMessages() {}, writeSdkMessages() {}, sendModUiEvent() {}, sendControlRequest() {},
       sendControlResponse() {}, sendControlCancelRequest() {}, sendResult() {},
       async teardown() {},
     }
