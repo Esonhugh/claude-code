@@ -1,3 +1,4 @@
+import { runModSessionCompact } from './compactAdapter.js'
 import { createModToolHost } from './toolHost.js'
 import { z } from 'zod/v4'
 import { buildTool, getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
@@ -587,3 +588,111 @@ test('recovered session.start retains completed tool registration and publishes 
   expect(await runtime.dispatch('tool.call',{tool:'mcp__rollback__echo'},async()=>({result:'core'}))).toEqual({result:'candidate'})
   expect(diagnostics).toEqual([expect.objectContaining({stage:'session.start',message:'start hook failed'})])
 })
+
+test('standalone compaction consumers query author permissions from the current context', async () => {
+  const mod=await plugin('compact-host',`export function register(on) {
+    on('session.compact',async $=>({skip:(await $.tool.check({tool:'Offline',input:{value:'compact'}})).reason}));
+  }`)
+  let checked=0,compacted=0
+  const diagnostics: unknown[]=[]
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'offline',prompt:async()=>'offline',renderToolUseMessage:()=>null,
+    checkPermissions:async()=>{checked++;return {behavior:'ask',message:'current compact probe'}},
+    call:async()=>{throw Error('query must not execute')},
+    mapToolResultToToolResultBlockParam:(_data,id)=>({type:'tool_result',tool_use_id:id,content:''}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true,agentDefinitions:{activeAgents:[]}},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await runModSessionCompact(context,'manual',[],undefined,async()=>{
+    compacted++;throw Error('compaction should be skipped')
+  },async()=>{throw Error('check must not prompt')}).then(value=>value,error=>error)
+  expect(diagnostics).toEqual([])
+  expect(result).toEqual({skip:'current compact probe'})
+  expect(checked).toBe(1)
+  expect(compacted).toBe(0)
+})
+
+test('standalone compaction author calls use current tools and supplied permissions', async () => {
+  const mod=await plugin('compact-call',`export function register(on) {
+    on('session.compact',async $=>{
+      const tools=await $.tool.list();
+      const result=await $.tool.call({tool:'Offline',value:'compact'});
+      return {skip:tools.map(tool=>tool.name).join(',')+':'+result.text};
+    });
+  }`)
+  const calls: string[]=[], permissions: string[]=[], diagnostics: unknown[]=[]
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'offline',prompt:async()=>'offline',renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(input.value);return {data:'current compact result'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+    toolCatalog:()=>{throw Error('stale session tool catalog')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true,agentDefinitions:{activeAgents:[]}},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await runModSessionCompact(context,'manual',[],undefined,async()=>{
+    throw Error('compaction should be skipped')
+  },async tool=>{permissions.push(tool.name);return {behavior:'allow'}}).then(value=>value,error=>error)
+  expect(diagnostics).toEqual([])
+  expect(result).toEqual({skip:'Offline:current compact result'})
+  expect(calls).toEqual(['compact'])
+  expect(permissions).toEqual(['Offline'])
+})
+
+for (const borrowed of [false,true]) {
+  for (const outcome of ['success','skip','dispatch failure','invalid result','projection failure','abort'] as const) {
+    test(`compaction ${borrowed ? 'borrowed' : 'owned'} snapshot ownership on ${outcome}`, async () => {
+      let captures=0,releases=0
+      const failure=new Error(outcome)
+      const snapshot={
+        hasHooks:()=>true,
+        release:()=>{releases++},
+        dispatch:async()=>{
+          if(outcome==='dispatch failure') throw failure
+          if(outcome==='abort') context.abortController.abort(failure)
+          if(outcome==='invalid result') return {messages:[]}
+          if(outcome==='skip') return {skip:'skip'}
+          return {messages:[{role:'user',text:'compacted',toolUses:[]}]}
+        },
+      }
+      const context={
+        abortController:new AbortController(),
+        ...(borrowed ? {modsSnapshot:snapshot} : {}),
+        mods:{hasHooks:()=>true,capture:()=>{captures++;return snapshot}},
+      } as unknown as ToolUseContext
+      const messages=outcome==='projection failure'
+        ? [Object.defineProperty({type:'assistant'},'message',{get(){throw failure}})] as any
+        : []
+      const pending=runModSessionCompact(context,'manual',messages,undefined,async()=>{
+        throw Error('unexpected core')
+      },async()=>({behavior:'allow'}))
+      if(outcome==='dispatch failure' || outcome==='projection failure' || outcome==='abort') await expect(pending).rejects.toBe(failure)
+      else if(outcome==='invalid result') await expect(pending).rejects.toThrow('nonempty messages')
+      else if(outcome==='skip') expect(await pending).toEqual({skip:'skip'})
+      else expect((await pending).compactionResult?.messagesToKeep).toHaveLength(1)
+      expect(captures).toBe(borrowed ? 0 : 1)
+      expect(releases).toBe(borrowed ? 0 : 1)
+    })
+  }
+}

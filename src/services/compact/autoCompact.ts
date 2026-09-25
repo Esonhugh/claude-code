@@ -1,3 +1,5 @@
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { feature } from 'bun:bundle'
 import { markPostCompaction } from 'src/bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
@@ -258,6 +260,7 @@ export async function autoCompactIfNeeded(
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
+  canUseTool: CanUseToolFn = hasPermissionsToUseTool,
 ): Promise<AutoCompactResult> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
@@ -345,6 +348,7 @@ export async function autoCompactIfNeeded(
               recompactionInfo,
             )
       },
+      canUseTool,
     )
     if (outcome.skip !== undefined) {
       return { wasCompacted: false, skip: outcome.skip }

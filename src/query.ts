@@ -772,6 +772,7 @@ async function* queryLoop(
         querySource,
         tracking,
         snipTokensFreed,
+        canUseTool,
       )
     queryCheckpoint('query_autocompact_end')
 

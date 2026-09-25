@@ -1,3 +1,4 @@
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
@@ -119,6 +120,7 @@ export const call: LocalCommandCall = async (args, context) => {
               false,
             )
       },
+      context.canUseTool ?? hasPermissionsToUseTool,
     )
     if (outcome.skip !== undefined) {
       return { type: 'text', value: outcome.skip }

@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import { createToolCatalogForContext } from './toolCatalog.js'
+import { createModToolHost } from './toolHost.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import {
@@ -70,6 +73,7 @@ export async function runModSessionCompact(
   messages: Message[],
   instructions: string | undefined,
   core: (messages: Message[], instructions: string | undefined, context: ToolUseContext) => Promise<CompactionResult>,
+  canUseTool: CanUseToolFn,
 ): Promise<{ compactionResult: CompactionResult; skip?: undefined } | { skip: string; compactionResult?: undefined }> {
   const signal = context.abortController.signal
   signal.throwIfAborted()
@@ -77,9 +81,12 @@ export async function runModSessionCompact(
   if (!host?.hasHooks('session.compact')) {
     return { compactionResult: await core(messages, instructions, context) }
   }
+  const borrowedSnapshot = context.modsSnapshot
   const snapshot =
-    context.modsSnapshot ??
+    borrowedSnapshot ??
     context.mods!.capture({
+      toolCatalog: () => createToolCatalogForContext(context),
+      toolHost: () => createModToolHost(context, canUseTool),
       captureUsage: () => captureModSessionUsage({ ...context, messages }),
     })
   const handles = new Map<string, Message>()
@@ -127,8 +134,8 @@ export async function runModSessionCompact(
         : createUserMessage({ content: [...text, ...(message.toolResults ?? []).map(result => ({ type: 'tool_result' as const, tool_use_id: result.tool_use_id, content: result.text, is_error: result.isError }))] })
     })
   }
-  const input = { trigger, ...(context.agentId === undefined ? {} : { agentId: context.agentId }), ...(instructions === undefined ? {} : { instructions }), messages: project(messages) }
   try {
+    const input = { trigger, ...(context.agentId === undefined ? {} : { agentId: context.agentId }), ...(instructions === undefined ? {} : { instructions }), messages: project(messages) }
     const result = await snapshot.dispatch('session.compact', input, async (rewritten, coreSignal) => {
       const compactMessages = isDeepStrictEqual(rewritten.messages, input.messages) ? messages : restore(rewritten.messages as CompactMessage[])
       const controller = new AbortController()
@@ -168,5 +175,5 @@ export async function runModSessionCompact(
       ...(result.tokensBefore === undefined ? {} : { preCompactTokenCount: result.tokensBefore }),
       ...(result.tokensAfter === undefined ? {} : { postCompactTokenCount: result.tokensAfter }),
     } }
-  } finally { if (!context.modsSnapshot) snapshot.release() }
+  } finally { if (!borrowedSnapshot) snapshot.release() }
 }
