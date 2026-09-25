@@ -140,6 +140,7 @@ import { ElicitationDialog } from '../components/mcp/ElicitationDialog.js'
 import { PromptDialog } from '../components/hooks/PromptDialog.js'
 import type { PromptRequest, PromptResponse } from '../types/hooks.js'
 import PromptInput from '../components/PromptInput/PromptInput.js'
+import { HoldToastsProvider, shouldHoldToasts } from '../components/PromptInput/Notifications.js'
 import { PromptInputQueuedCommands } from '../components/PromptInput/PromptInputQueuedCommands.js'
 import { useRemoteSession } from '../hooks/useRemoteSession.js'
 import { useDirectConnect } from '../hooks/useDirectConnect.js'
@@ -7605,6 +7606,7 @@ export function REPL({
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {
                       }
+                      <HoldToastsProvider hold={shouldHoldToasts(modPanes)}>
                       <PromptInput
                         debug={debug}
                         ideSelection={ideSelection}
@@ -7663,6 +7665,7 @@ export function REPL({
                         typeaheadActiveRef={modTypeaheadActiveRef}
                         voiceInterimRange={voice.interimRange}
                       />
+                      </HoldToastsProvider>
                       <SessionBackgroundHint
                         onBackgroundSession={handleBackgroundSession}
                         isLoading={isLoading}
