@@ -3071,7 +3071,6 @@ export function handleMessageFromStream(
   onApiMetrics?: (metrics: { ttftMs: number }) => void,
   onStreamingText?: (f: (current: string | null) => string | null) => void,
 ): void {
-  const isModTurnStep = 'isModTurnStep' in message && message.isModTurnStep === true
   if (
     message.type !== 'stream_event' &&
     message.type !== 'stream_request_start'
@@ -3086,16 +3085,16 @@ export function handleMessageFromStream(
     if (message.type === 'tool_use_summary') {
       return
     }
-    // turn.step streams own the display; signed history may contain different thinking.
-    // Otherwise capture complete thinking blocks for real-time transcript display.
-    if (message.type === 'assistant' && !isModTurnStep) {
+    // Capture complete thinking blocks for real-time display in transcript mode
+    if (message.type === 'assistant') {
       const thinkingBlock = message.message.content.find(
         block => block.type === 'thinking',
       )
-      if (thinkingBlock && thinkingBlock.type === 'thinking') {
-        onStreamingThinking?.(() => ({
-          // @ts-ignore - recovered code
-          thinking: thinkingBlock.thinking,
+      if (thinkingBlock?.type === 'thinking' && typeof thinkingBlock.thinking === 'string') {
+        const thinking = thinkingBlock.thinking
+        onStreamingThinking?.(current => ({
+          // The live stream may be rewritten by Mods; history keeps the signed block.
+          thinking: current?.isStreaming ? current.thinking : thinking,
           isStreaming: false,
           streamingEndedAt: Date.now(),
         }))
@@ -3145,9 +3144,7 @@ export function handleMessageFromStream(
       // @ts-ignore - recovered code
       switch (message.event.content_block.type) {
         case 'thinking':
-          if (isModTurnStep) {
-            onStreamingThinking?.(() => ({ thinking: '', isStreaming: true }))
-          }
+          onStreamingThinking?.(() => ({ thinking: '', isStreaming: true }))
           onSetStreamMode('thinking')
           return
         case 'redacted_thinking':
@@ -3220,14 +3217,12 @@ export function handleMessageFromStream(
         }
         case 'thinking_delta': {
           // @ts-ignore - recovered code
-          const thinking = message.event.delta.thinking
-          onUpdateLength(thinking)
-          if (isModTurnStep) {
-            onStreamingThinking?.(current => ({
-              thinking: (current?.thinking ?? '') + thinking,
-              isStreaming: true,
-            }))
-          }
+          const delta = message.event.delta.thinking
+          onUpdateLength(delta)
+          onStreamingThinking?.(current => ({
+            thinking: (current?.isStreaming ? current.thinking : '') + delta,
+            isStreaming: true,
+          }))
           return
         }
         case 'signature_delta':
@@ -3239,11 +3234,9 @@ export function handleMessageFromStream(
           return
       }
     case 'content_block_stop':
-      if (isModTurnStep) {
-        onStreamingThinking?.(current => current?.isStreaming
-          ? { ...current, isStreaming: false, streamingEndedAt: Date.now() }
-          : current)
-      }
+      onStreamingThinking?.(current => current?.isStreaming
+        ? { ...current, isStreaming: false, streamingEndedAt: Date.now() }
+        : current)
       return
     case 'message_delta':
       onSetStreamMode('responding')

@@ -8,7 +8,7 @@ import type {
 import type { ModSnapshot } from './runtime.js'
 import type { ModInput, ModTurnStepChunk, ModTurnStepResult, ModTurnUsage } from './types.js'
 
-type ModelItem = (Message | StreamEvent) & { isModTurnStep?: boolean }
+type ModelItem = Message | StreamEvent
 type ModelEvent = {
   type: string
   index?: number
@@ -243,7 +243,7 @@ export async function* streamModTurnStep(
       event: { type: 'message_start', message: { ...envelope, content: [] } },
     }
   }
-  function* startBlock(index: number, block: Block): Generator<ModelItem> {
+  function* startBlock(index: number, block: Block): Generator<StreamEvent> {
     yield* startMessage()
     if (block.started) return
     block.started = true
@@ -256,7 +256,6 @@ export async function* streamModTurnStep(
           : { ...original, type: 'text', text: '' }
     yield {
       ...block.start,
-      isModTurnStep: true,
       type: 'stream_event',
       event: { type: 'content_block_start', index, content_block },
     }
@@ -299,9 +298,8 @@ export async function* streamModTurnStep(
         yield* startBlock(index, block)
       }
       yield* startMessage()
-      const message: AssistantMessage & { isModTurnStep: true } = {
+      const message: AssistantMessage = {
         ...block.original,
-        isModTurnStep: true,
         type: 'assistant',
         uuid: block.original?.message.content.length === 1 ? block.original.uuid : randomUUID(),
         timestamp: block.original?.timestamp ?? new Date().toISOString(),
@@ -310,7 +308,7 @@ export async function* streamModTurnStep(
       emitted.push(message)
       yield message
     }
-    if (block.started) yield { type: 'stream_event', isModTurnStep: true, event: { type: 'content_block_stop', index } }
+    if (block.started) yield { type: 'stream_event', event: { type: 'content_block_stop', index } }
   }
   function syncMetadata() {
     for (const message of emitted) {
@@ -432,7 +430,6 @@ export async function* streamModTurnStep(
       if (chunk.kind !== 'tool')
         yield {
           type: 'stream_event',
-          isModTurnStep: true,
           event: {
             type: 'content_block_delta',
             index: chunk.index,
