@@ -275,6 +275,36 @@ async function runIsolatedTests(): Promise<void> {
     expect(parent.agentId).toBe(testAgentId)
   })
 
+  test('host-built named sections survive agent enhancement while final overrides remain exact', async () => {
+    queryMode = 'complete'
+    const { withSystemPromptSections, getSystemPromptSections } = await import('../../utils/systemPromptType.js')
+    const base = withSystemPromptSections([
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+      { text: 'TEAMMATE_APPEND' },
+    ])
+    let rendered: import('../../utils/systemPromptType.js').SystemPrompt | undefined
+    const override = { agentId: testAgentId, userContext: {}, systemContext: {} }
+    await drainAgent({
+      baseSystemPrompt: base,
+      override,
+      onCacheSafeParams: params => { rendered = params.systemPrompt },
+    })
+    expect([...getSystemPromptSections(rendered!)!.slice(0, 3)]).toEqual([...getSystemPromptSections(base)!])
+    expect(rendered!.join('\n')).toContain('Notes:')
+    expect(rendered!.join('\n')).toContain('CORE_IDENTITY')
+    expect(rendered!.join('\n')).toContain('TEAMMATE_APPEND')
+    expect(getSystemPromptSections(base)).toHaveLength(3)
+    const final = asSystemPrompt(['FINAL_OVERRIDE'])
+    await drainAgent({
+      baseSystemPrompt: base,
+      override: { ...override, systemPrompt: final },
+      onCacheSafeParams: params => { rendered = params.systemPrompt },
+    })
+    expect(rendered).toBe(final)
+    expect(getSystemPromptSections(rendered!)).toBeUndefined()
+  })
+
   test('query refresh reloads agent context while keeping explicit overrides and read-only omissions', async () => {
     queryMode = 'complete'
     const contextModule = await import('../../context.js')
