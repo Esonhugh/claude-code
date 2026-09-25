@@ -161,6 +161,7 @@ type Activation = {
   started: boolean
   waits: Map<number, { kind: string; timer: ReturnType<typeof setTimeout>; reject(error: Error): void }>
   methods: WeakMap<object, (...args: unknown[]) => Promise<unknown>>
+  engine?: Record<string, unknown>
   controller: AbortController
   operations: ReturnType<typeof createModHostOperations>
   uiPublished?: boolean
@@ -229,7 +230,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   const activations = new Set<Activation>()
   const retired = new Set<Activation>()
   const interfaceStates = new WeakMap<Nouns, InterfaceState>()
-  const capabilityContext = new AsyncLocalStorage<{ table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
+  const capabilityContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
   const invocationSignal = new AsyncLocalStorage<AbortSignal>()
   const turnStepCore = new AsyncLocalStorage<(input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>>()
   const requestServices = new AsyncLocalStorage<ModRequestServices>()
@@ -429,7 +430,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
 
   function checkCall(owner: Activation, op: string, table: Nouns, lease: CapabilityLease) {
-    if (stopped || owner.state === 'disposed') throw new Error('Module environment unloaded')
+    if (stopped || owner.state === 'disposed' || (owner.state === 'retiring' && lease.entries === 0)) throw new Error('Module environment unloaded')
     if (!owner.declaration.calls.includes(op)) throw new Error(`Module capability ${op} is absent from scan`)
     if (owner.state === 'candidate' && !op.startsWith('clock.')) throw new Error('Module has not been admitted')
     const [noun, method] = op.split('.') as [string, string]
@@ -832,9 +833,19 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
   }
 
-  function engineFor(owner: Activation, snapshot: readonly Activation[], table: Nouns, lease: CapabilityLease): Record<string, unknown> {
+  function engineFor(owner: Activation, snapshot: readonly Activation[], table: Nouns, lease: CapabilityLease, dynamic = false): Record<string, unknown> {
+    const scope = () => {
+      if (!dynamic) return { snapshot, table, lease }
+      const entered = capabilityContext.getStore()
+      if (entered?.active) entered.next?.signal.throwIfAborted()
+      const current = entered?.active ? entered : uiContext.getStore()
+      return current && current.active !== false
+        ? { snapshot: current.snapshot, table: current.table, lease: { entries: 1 } }
+        : { snapshot: active, table: nouns, lease: { entries: 0 } }
+    }
     const clock = createModClockBridge({
       now: async () => {
+        const { snapshot, table, lease } = scope()
         checkCall(owner, 'clock.now', table, lease)
         const result = await dispatch('clock.now', {}, async () => ({ value: Date.now() }), snapshot, table, {
           origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
@@ -843,6 +854,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         return result.value
       },
       wait: async (kind, ms, id) => {
+        const { snapshot, table, lease } = scope()
         checkCall(owner, `clock.${kind}`, table, lease)
         if (!Number.isFinite(ms) || ms < 0 || (kind === 'every' && ms < 1)) throw new Error('Invalid clock duration')
         if (owner.state === 'retiring' && kind !== 'sleep') throw new Error('Module timer belongs to a retired activation')
@@ -859,13 +871,16 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       },
       cancel: id => cancelWait(owner, id),
       run: async (callback, kind) => {
+        const { snapshot, table, lease } = scope()
         checkCall(owner, `clock.${kind}`, table, lease)
         if (owner.state !== 'active' && !(owner.state === 'candidate' && lease.building)) throw new Error('Module timer belongs to a retired activation')
-        // A callback enters the generation captured when its clock was injected.
+        // Pin the generation current when the callback enters until it drains.
         for (const item of snapshot) item.references++
         lease.entries++
-        try { return await uiContext.run({ snapshot, table, person: false }, () => withReference(owner, callback)) }
+        const entered = { snapshot, table, person: false, active: true }
+        try { return await capabilityContext.run(entered, () => uiContext.run(entered, () => withReference(owner, callback))) }
         finally {
+          entered.active = false
           lease.entries--
           for (const item of snapshot) {
             item.references--
@@ -881,7 +896,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     ) {
       if (!caller.declaration.calls.includes('prompt.read'))
         return emptyPromptBox()
-      checkCall(caller, 'prompt.read', interfaceTable, lease)
+      checkCall(caller, 'prompt.read', interfaceTable, scope().lease)
       if (!binding || binding.surface !== 'terminal' || !binding.isInteractive)
         return emptyPromptBox()
       const result = (await withReference(caller, () =>
@@ -919,6 +934,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       let step: ((input: ModInput) => ModHookStream) | undefined
       if (noun === 'turn' && methods.step === hostIdentity) {
         step = createModStreamBridge((input: ModInput) => {
+          const { snapshot, table, lease } = scope()
           checkCall(owner, 'turn.step', table, lease)
           const core = turnStepCore.getStore()
           if (!core) throw new Error('turn.step model request is unavailable outside a model step')
@@ -934,9 +950,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         })
       }
       const wrapped: Record<string, (...args: unknown[]) => unknown> = {}
-      for (const [method, fn] of Object.entries(methods)) wrapped[method] = async (...args) => {
+      for (const [method, bound] of Object.entries(methods)) wrapped[method] = async (...args) => {
+        const { snapshot, table, lease } = scope()
         const op = `${noun}.${method}`
         checkCall(owner, op, table, lease)
+        const fn = dynamic ? table[noun]![method]! : bound
         const input = fn === hostIdentity ? hostInput(op, args) : args[0] ?? {}
         if (op === 'env.get' || op === 'env.set') {
           const name = (input as ModInput).name
@@ -1253,7 +1271,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
               ) }
             }
             const entered = capabilityContext.getStore()
-            const provider = { table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true }
+            const provider = { snapshot: entered?.active ? entered.snapshot : snapshot, table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true }
             try { return { value: await capabilityContext.run(provider, () => fn === hostIdentity ? hostCall(owner, op, rewritten) : fn(rewritten)) } }
             finally { provider.active = false }
           }, snapshot, table, {
@@ -1280,6 +1298,20 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     return Object.freeze(result)
   }
 
+  function engineFacade(owner: Activation, table: Nouns, snapshot: readonly Activation[] = active): Record<string, unknown> {
+    if (!owner.engine) {
+      const declared: Nouns = Object.create(null)
+      for (const op of owner.declaration.calls) {
+        const [noun, method] = op.split('.') as [string, string]
+        const bound = table[noun]?.[method] ?? coreHost[noun]?.[method] ?? (noun === 'clock' ? coreClock[method as keyof typeof coreClock] : hostIdentity)
+        ;(declared[noun] ??= Object.create(null))[method] = bound
+      }
+      if (table.plugin) declared.plugin = table.plugin
+      owner.engine = engineFor(owner, snapshot, declared, { entries: 0 }, true)
+    }
+    return owner.engine
+  }
+
   function uiAllowed(owner: Activation, table: Nouns): boolean {
     const current = owner.uiPublished ? nouns : table
     return binding?.surface === 'terminal' && owner.state === 'active' && owner.declaration.calls.includes('ui.resolve') &&
@@ -1294,15 +1326,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       tier: owner.declaration.tier,
       registration,
       invokeStream: (input, next, catching) => {
-        const lease = { entries: 1 }
-        const entered = { table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
+        const entered = { snapshot, table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         const run = <T>(call: () => T) => invocationSignal.run(next.signal, () => capabilityContext.run(entered, call))
         return (async function* () {
           owner.references++
           let source: ModHookStream | undefined
           try {
             await owner.environment.setUiAccess(uiAllowed(owner, table))
-            source = run(() => owner.environment.invokeStream(catching ? registration.catchId! : registration.id, [engineFor(owner, snapshot, table, lease), input], next))
+            source = run(() => owner.environment.invokeStream(catching ? registration.catchId! : registration.id, [engineFacade(owner, table, snapshot), input], next))
             let thrown: { error: unknown } | undefined
             for (;;) {
               const item = await run(() => thrown ? source!.throw(thrown.error) : source!.next())
@@ -1313,7 +1344,6 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           } finally {
             try { if (source) await run(() => source!.return(undefined)) }
             finally {
-              lease.entries--
               entered.active = false
               owner.references--
               if (owner.state === 'retiring' && owner.references === 0) await disposeActivation(owner)
@@ -1322,8 +1352,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         })()
       },
       invoke: (input, next, catching) => withReference(owner, async () => {
-        const lease = { entries: 1 }
-        const entered = { table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
+        const entered = { snapshot, table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         try {
           if (registration.event !== 'engine.create') await owner.environment.setUiAccess(uiAllowed(owner, table))
           if (drawing !== undefined) drawings.get(drawing)?.participants.add(owner)
@@ -1336,10 +1365,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           try {
             return await uiContext.run(uiInvocation, () => invocationSignal.run(next.signal, () => capabilityContext.run(entered, () => owner.environment.invoke(
               catching ? registration.catchId! : registration.id,
-              [registration.event === 'engine.create' ? Object.freeze({}) : engineFor(owner, snapshot, table, lease), input], next, drawing,
+              [registration.event === 'engine.create' ? Object.freeze({}) : engineFacade(owner, table, snapshot), input], next, drawing,
             ))))
           } finally { uiInvocation.active = false }
-        } finally { lease.entries--; entered.active = false }
+        } finally { entered.active = false }
       }),
     } satisfies ModDispatchHook)))
   }

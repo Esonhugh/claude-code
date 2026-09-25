@@ -61,6 +61,30 @@ function runtime(messages: () => unknown[] = () => []) {
 function tool(name: string): Tool {
   return { name } as Tool
 }
+test('stable engine facade keeps captured host methods on the current generation', async () => {
+  const consumer = await plugin('consumer', `let read, initialized = false; export function register(on) {
+    on('tool.call', async ($) => {
+      if (!initialized) { initialized = true; read = $.session.model; }
+      return {result:{model:await read()}};
+    });
+  }`)
+  const source = (model: string) => `export function register(on) {
+    on('session.model', () => ({value:'${model}'}));
+  }`
+  const provider = await plugin('provider', source('old'))
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{model:()=> 'core'}})
+  runtimes.push(value)
+  await value.reconcile([consumer, provider])
+  expect(diagnostics).toEqual([])
+  const inspect = () => value.dispatch('tool.call', {}, async () => ({result:'core'}))
+  expect(await inspect()).toEqual({result:{model:'old'}})
+  expect(await inspect()).toEqual({result:{model:'old'}})
+  await writeFile(provider.entrypoints[0]!, source('new'))
+  await value.reconcile([consumer, provider])
+  expect(await inspect()).toEqual({result:{model:'new'}})
+})
+
 test('Worker positional mcp.call reaches the connected host through sibling hooks', async () => {
   const caller = await plugin('mcp-caller', `export function register(on) {
     on('mcp.call', async ($, e, next) => next({...e,args:{...e.args,caller:true}}));

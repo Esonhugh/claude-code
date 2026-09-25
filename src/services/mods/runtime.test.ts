@@ -1096,3 +1096,75 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
 })
+
+  test('a settled detached continuation cannot use a retiring activation capability', async () => {
+    const provider = await fixture(`let release, hits = 0;
+      const gate = new Promise(resolve => { release = resolve });
+      export function register(on) {
+        on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built,
+          gate: { wait: () => gate, release: () => release() },
+          target: { hit: () => { hits++; } }
+        }; });
+        on('tool.call', { command: 'release' }, async ($) => { await $.gate.release(); return { result: 'released' }; });
+        on('tool.call', { command: 'count' }, () => ({ result: hits }));
+      }`, 'provider')
+    const consumer = await fixture(`export function register(on) {
+      on('tool.call', { command: 'schedule' }, ($) => {
+        $.gate.wait().then(() => $.target.hit()).catch(() => {});
+        return { result: 'scheduled' };
+      });
+      on('tool.call', { command: 'hold' }, ($, e, next) => next(e));
+    }`, 'consumer')
+    const { value } = runtime()
+    await value.reconcile([consumer, provider])
+    expect(await value.dispatch('tool.call', { ...input, command: 'schedule' }, async () => ({ result: 'core' }))).toEqual({ result: 'scheduled' })
+    const entered = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const holding = value.dispatch('tool.call', { ...input, command: 'hold' }, async () => {
+      entered.resolve()
+      await finish.promise
+      return { result: 'held' }
+    })
+    await entered.promise
+    try {
+      await writeFile(consumer.entrypoints[0]!, `export function register(on) {
+        on('tool.call', { command: 'schedule' }, () => ({ result: 'replacement' }));
+      }`)
+      await value.reconcile([consumer, provider])
+      await value.dispatch('tool.call', { ...input, command: 'release' }, async () => ({ result: 'core' }))
+      await Bun.sleep(10)
+      expect(await value.dispatch('tool.call', { ...input, command: 'count' }, async () => ({ result: 'core' }))).toEqual({ result: 0 })
+    } finally {
+      finish.resolve()
+    }
+    expect(await holding).toEqual({ result: 'held' })
+  })
+
+
+  test('a surviving timer enters the current provider generation after reload', async () => {
+    const gate=await fixture(`let start,release,finish;
+      const began=new Promise(resolve=>{start=resolve}),hold=new Promise(resolve=>{release=resolve}),done=new Promise(resolve=>{finish=resolve});
+      export function register(on) {
+        on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,gate:{hold:async()=>{start();await hold},finish:()=>{finish()}}}});
+        on('clock.after',async($,e,next)=>{await $.gate.hold();return next(e)});
+        on('tool.call',{command:'started'},async()=>{await began;return {result:'started'}});
+        on('tool.call',{command:'release'},()=>{release();return {result:'released'}});
+        on('tool.call',{command:'done'},async($,e,next)=>{await done;return next(e)});
+      }`,'gate')
+    const source=(label:string)=>`export function register(on) {
+      on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,greeting:{read:()=> '${label}'}}});
+    }`
+    const provider=await fixture(source('old'),'provider')
+    const consumer=await fixture(`let result;export function register(on) {
+      on('session.start',($,e,next)=>{$.clock.after(0,async()=>{result=await $.greeting.read();await $.gate.finish()});return next(e)});
+      on('tool.call',()=>({result}));
+    }`,'consumer')
+    const {value,events}=runtime()
+    await value.reconcile([gate,consumer,provider])
+    await value.bind({cwd:consumer.pluginRoot,surface:null,isInteractive:false,sessionId:'late-timer'})
+    await value.dispatch('tool.call',{...input,command:'started'},async()=>({result:'core'}))
+    await writeFile(provider.entrypoints[0]!,source('new'));await value.reconcile([gate,consumer,provider])
+    await value.dispatch('tool.call',{...input,command:'release'},async()=>({result:'core'}))
+    expect(await value.dispatch('tool.call',{...input,command:'done'},async()=>({result:'core'}))).toEqual({result:'new'})
+    expect(events).toEqual([])
+  })
