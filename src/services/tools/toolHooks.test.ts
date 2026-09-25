@@ -1038,6 +1038,41 @@ describe('classic events at existing tool hook boundaries', () => {
     } finally {await runtime.dispose()}
   })
 
+  test('managed outer review rewrites a regular output after non-managed classic rewriting', async () => {
+    const marker = join(home, 'regular-review')
+    configure({ hooks: { PostToolUse: [{ hooks: [{
+      type: 'command',
+      command: `cat >> '${marker}'; printf '%s' '${JSON.stringify({ hookSpecificOutput: {
+        hookEventName: 'PostToolUse', updatedToolOutput: { value: 'managed output' },
+      } })}'`,
+    }] }] } })
+    registerHookCallbacks({ PostToolUse: [{ hooks: [{
+      type: 'callback',
+      callback: async () => ({ hookSpecificOutput: {
+        hookEventName: 'PostToolUse', updatedToolOutput: { value: 'classic output' },
+      } }),
+    }] }] })
+    const f = fixture((e, next) => next(e))
+    Object.assign(f.tool, {
+      outputSchema: z.object({ value: z.string() }),
+      maxResultSizeChars: Infinity,
+      isConcurrencySafe: () => true,
+      validateInput: async () => ({ result: true }),
+      checkPermissions: async () => ({ behavior: 'allow' }),
+      call: async () => ({ data: { value: 'raw' } }),
+      mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) => ({
+        type: 'tool_result', tool_use_id: id, content: data.value,
+      }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    f.context.options.mcpClients = []
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'regular-reviewed', name: f.tool.name, input: { value: 'original' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    expect(JSON.stringify(updates)).toContain('managed output')
+    expect(JSON.stringify(updates)).not.toContain('"content":"classic output"')
+    expect(JSON.parse(readFileSync(marker, 'utf8')).tool_response).toEqual({ value: 'classic output' })
+  })
+
   test('managed outer review observes MCP output after non-managed classic rewriting', async () => {
     const marker = join(home, 'mcp-review')
     configure({hooks:{PostToolUse:[{hooks:[{type:'command',command:`cat >> '${marker}'`}]}]}})
