@@ -3162,8 +3162,9 @@ export function REPL({
     isFullscreen: isFullscreenEnvEnabled(),
     composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
     hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow),
-    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode !== 'none',
-  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode])
+    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode === 'selecting-agent',
+    agentId: viewedAgentTask?.id,
+  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode, viewedAgentTask?.id])
   modUiPresentationRef.current = modUiPresentation
   modPromptBlockedRef.current =
     modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
