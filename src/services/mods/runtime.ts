@@ -1645,24 +1645,30 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
   }
 
-  async function build(snapshot: Activation[], replacements = new Map<Activation, Activation>()): Promise<{ modules: Activation[]; table: Nouns }> {
+  async function build(
+    snapshot: Activation[],
+    replacements = new Map<Activation, Activation>(),
+    bootstrap?: { modules: readonly Activation[]; table: Nouns },
+  ): Promise<{ modules: Activation[]; table: Nouns }> {
+    const previousInterface = bootstrap ? interfaceStates.get(bootstrap.table)! : lastInterface
     let modules = [...snapshot]
     for (;;) {
       const names = new Set(modules.map(owner => owner.declaration.name))
       const state: InterfaceState = {
-        owners: new Map([...lastInterface.owners].filter(([, owner]) => owner === 'engine' || names.has(owner))),
-        withheld: new Map(),
-        carried: new Map([...lastInterface.withheld].map(([noun, owners]) => [noun, new Set([...owners].filter(owner => names.has(owner)))])),
+        owners: new Map([...previousInterface.owners].filter(([, owner]) => owner === 'engine' || names.has(owner))),
+        withheld: bootstrap ? new Map([...previousInterface.withheld].map(([noun, owners]) => [noun, new Set(owners)])) : new Map(),
+        carried: bootstrap ? undefined : new Map([...previousInterface.withheld].map(([noun, owners]) => [noun, new Set([...owners].filter(owner => names.has(owner)))])),
       }
       for (const [noun, owners] of crashedWithholders) {
         const missing = new Set([...owners].filter(owner => !names.has(owner)))
         if (missing.size) state.withheld.set(noun, missing)
       }
-      const base: Nouns = { clock: coreClock, ...coreHost }
+      const base: Nouns = bootstrap ? { ...bootstrap.table } : { clock: coreClock, ...coreHost }
       interfaceStates.set(base, state)
       const leases: CapabilityLease[] = []
       let failed: Activation | undefined
-      const hooks = modules.flatMap(owner => hooksFor([owner], base).filter(hook => hook.registration.event === 'engine.create').map(hook => ({
+      const folding = bootstrap ? modules.filter(owner => !bootstrap.modules.includes(owner)) : modules
+      const hooks = folding.flatMap(owner => hooksFor([owner], base).filter(hook => hook.registration.event === 'engine.create').map(hook => ({
         ...hook,
         invoke: async (input: ModInput, next: ModNext, catching: boolean) => {
           let before = base
@@ -1727,7 +1733,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       })))
       try {
         const table = await dispatchModEvent({
-          event: 'engine.create', input: { plugins: modules.map(item => item.declaration.name) },
+          event: 'engine.create', input: { plugins: folding.map(item => item.declaration.name) },
           hooks, core: async () => base, signal: controller.signal,
           onFailure: (plugin, error) => {
             if (failed) return
@@ -1863,24 +1869,55 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const removed = previous.filter(owner => !wanted.has(owner.declaration.storageId))
     active = previous.filter(owner => wanted.has(owner.declaration.storageId))
     for (const owner of removed) retire(owner)
-    const candidates = [...active]
+    let candidates = [...active]
     const replacements = new Map<Activation, Activation>()
-    for (const input of inputs) {
+    const order = new Map(inputs.map((input, index) => [input.storageId, index]))
+    const seatOrder = (a: { declaration: ModDeclaration }, b: { declaration: ModDeclaration }) =>
+      tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!
+    const cold = previous.length === 0
+    const scanned = new Map<ModPluginInput, ModDeclaration>()
+    let loading = inputs
+    let bootstrap: { modules: Activation[]; table: Nouns } | undefined
+    if (cold) {
+      for (const input of inputs) {
+        try {
+          scanned.set(input, getNativeModDeclaration(input) ?? await loadModDeclaration(input))
+        } catch (error) {
+          ensureLive()
+          diagnostic(input.name, 'load', error)
+        }
+      }
+      const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
+      loading = [...scanned.keys()].sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
+    }
+    async function buildBootstrap() {
+      const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
+      if (bootstrap && !changed.size) return
+      // Keep newly admitted providers barred during their own bootstrap fold.
+      for (const owner of changed) owner.state = 'candidate'
+      bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap)
+      ensureLive()
+      candidates = [...bootstrap.modules]
+      for (const owner of candidates) owner.state = 'active'
+    }
+    for (const input of loading) {
       const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
       try {
-        const declaration = getNativeModDeclaration(input) ?? await loadModDeclaration(input)
+        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? await loadModDeclaration(input)
         ensureLive()
         if (old && old.declaration.fingerprint === declaration.fingerprint &&
           isDeepStrictEqual(old.declaration.options, declaration.options) &&
           old.declaration.name === declaration.name && old.declaration.version === declaration.version &&
           old.declaration.pluginRoot === declaration.pluginRoot && old.declaration.isNative === declaration.isNative) continue
-        const preAdmitted = previous.length > 0
-        if (preAdmitted) {
-          const order = new Map(inputs.map((item, index) => [item.storageId, index]))
-          const seats = [...active.filter(owner => owner !== old), { declaration }].sort((a, b) =>
-            tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!)
+        {
+          const seats = [...(cold ? candidates : active).filter(owner => owner !== old), { declaration }].sort(seatOrder)
           const position = seats.findIndex(owner => owner.declaration === declaration)
-          const refusal = await admit(declaration, judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[]), nouns)
+          let judges = judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[])
+          if (cold && judges.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'plugin.register')))) {
+            await buildBootstrap()
+            judges = judges.filter(owner => candidates.includes(owner))
+          }
+          const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
           if (refusal !== undefined) {
             if (old) {
               candidates.splice(candidates.indexOf(old), 1)
@@ -1894,7 +1931,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const environment = await host.load(declaration)
         const activationController = new AbortController()
         const candidate: Activation = {
-          declaration, environment, state: preAdmitted ? 'active' : 'candidate', references: 0, started: false,
+          declaration, environment, state: 'active', references: 0, started: false,
           waits: new Map(), methods: new WeakMap(), controller: activationController,
           suggestionOwner: `${declaration.storageId}:${++activationId}`,
           operations: createModHostOperations({
@@ -1919,27 +1956,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }
     }
-    const order = new Map(inputs.map((input, index) => [input.storageId, index]))
-    candidates.sort((a, b) => tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier)
-      || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!)
+    candidates.sort(seatOrder)
     if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) return
-    let built = await build(candidates, replacements)
-    ensureLive()
-    const admitted = new Set<Activation>()
-    const rank = (owner: Activation) => owner.declaration.isNative ? 0 : owner.declaration.tier !== 'user' ? 1 : 2
-    for (const owner of [...built.modules].sort((a, b) => rank(a) - rank(b))) {
-      if (owner.state === 'active') { admitted.add(owner); continue }
-      const position = built.modules.indexOf(owner)
-      const refusal = await admit(owner.declaration, judgesFor(owner.declaration, built.modules.slice(0, position), built.modules.slice(position + 1)), built.table)
-      if (refusal !== undefined) {
-        diagnostic(owner.declaration.name, 'admission', refusal)
-        await disposeActivation(owner)
-      } else {
-        owner.state = 'active'
-        admitted.add(owner)
-      }
-    }
-    if (admitted.size !== built.modules.length) built = await build(built.modules.filter(owner => admitted.has(owner)))
+    if (cold) await buildBootstrap()
+    const built = cold ? bootstrap! : await build(candidates, replacements)
     ensureLive()
     for (const owner of built.modules) owner.state = 'active'
     await publish(built, replacements)

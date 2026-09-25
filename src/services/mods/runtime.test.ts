@@ -303,6 +303,47 @@ describe('Mods lifecycle', () => {
     expect(events).toEqual([{ plugin: 'refused', stage: 'admission', message: 'not allowed' }])
   })
 
+  test('cold admission refuses a module before evaluation and engine.create', async () => {
+    const judge = await fixture(`export function register(on) {
+      on('plugin.register', ($, e, next) => e.name.startsWith('refused') ? { refuse: 'not allowed' } : next(e));
+    }`, 'judge')
+    const refusedEvaluation = await fixture(`throw Error('must not evaluate'); export function register(on) { on('tool.call', () => ({})); }`, 'refused-evaluation')
+    const refusedFold = await fixture(`export function register(on) {
+      on('engine.create', () => { throw Error('must not fold'); });
+    }`, 'refused-fold')
+    const refusedRegister = await fixture(`export function register(on) {
+      throw Error('must not register');
+    }`, 'refused-register')
+    const { value, events } = runtime()
+    await value.reconcile([refusedEvaluation, refusedFold, refusedRegister, { ...judge, tier: 'append' }])
+    expect(events).toEqual([
+      { plugin: 'refused-evaluation', stage: 'admission', message: 'not allowed' },
+      { plugin: 'refused-fold', stage: 'admission', message: 'not allowed' },
+      { plugin: 'refused-register', stage: 'admission', message: 'not allowed' },
+    ])
+  })
+
+  test('cold admission builds providers once across successive judges and final publication', async () => {
+    const provider = await fixture(`let builds = 0; export function register(on) {
+      on('engine.create', async ($, e, next) => {
+        builds++; const built = await next(e); return { ...built, gate: { read: () => builds } };
+      });
+      on('tool.call', () => ({ result: builds }));
+    }`, 'provider')
+    const judge = await fixture(`export function register(on) {
+      on('plugin.register', async ($, e, next) => {
+        if (await $.gate.read() !== 1) return { refuse: 'provider folded again' };
+        return next(e);
+      });
+    }`, 'judge')
+    const first = await fixture(`export function register(on) { on('session.start', ($, e, next) => next(e)); }`, 'first')
+    const second = await fixture(`export function register(on) { on('session.start', ($, e, next) => next(e)); }`, 'second')
+    const { value, events } = runtime()
+    await value.reconcile([{ ...provider, tier: 'prepend' }, { ...judge, tier: 'prepend' }, first, second])
+    expect(events).toEqual([])
+    expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 1 })
+  })
+
   test('a failed inner create is diagnosed once and rebuilding retains its healthy outer caller', async () => {
     const outer = await fixture(`let builds = 0; export function register(on) {
       on('engine.create', async ($, e, next) => { builds++; return next(e); });
