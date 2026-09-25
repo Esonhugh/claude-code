@@ -1521,6 +1521,29 @@ test('queue processing keeps later proactive prompts separate from next prompts'
 })
 
 
+test('Mods usage captures the live REPL context and transcript when the capability is called', async () => {
+  let services: any
+  const oldContext = {messages:['old-context'],options:{mainLoopModel:'old'}}
+  const liveContext = {messages:['stale-context'],options:{mainLoopModel:'new'}}
+  const modToolContextRef = {current:() => oldContext}
+  const messagesRef = {current:['old-transcript']}
+  const captured: unknown[] = []
+  const reader = async () => ({context:{window:200000},rateLimits:[]})
+  const awaitMods = extract('./REPL.tsx','awaitMods')({
+    modsSession:{bind:async (_binding:unknown,_set:unknown,host:unknown) => {services=host}},
+    getCwd:() => '/repo',getOriginalCwd:() => '/repo',getSessionId:() => 'session',setAppState:noop,
+    messagesRef,getFirstPartyCredential:async()=>null,modToolContextRef,
+    captureModSessionUsage:(context:unknown) => {captured.push(context);return reader},
+  })
+  await awaitMods()
+  expect(captured).toEqual([])
+  modToolContextRef.current = () => liveContext
+  messagesRef.current = ['live-transcript']
+  expect(services.captureUsage()).toBe(reader)
+  expect(captured).toEqual([{...liveContext,messages:['live-transcript']}])
+})
+
+
 test('Mods proactive prompt uses the REPL queue and settles on admission', async () => {
   const queue = await import('../utils/messageQueueManager.js')
   let services: any

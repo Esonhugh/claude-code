@@ -402,6 +402,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
 import type { ModsSession } from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
@@ -1938,6 +1939,10 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
+    captureUsage: () => captureModSessionUsage({
+      ...modToolContextRef.current!(),
+      messages: messagesRef.current,
+    }),
     firstPartyCredential: getFirstPartyCredential,
     mcpCall: (server, tool, args, signal) => {
       const clients = modToolContextRef.current!().options.mcpClients
