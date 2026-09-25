@@ -6,7 +6,7 @@ set -eu
 : "${CC_VALIDATION_CONFIG_DIR:?missing CC_VALIDATION_CONFIG_DIR}"
 : "${CC_VALIDATION_HOME:?missing CC_VALIDATION_HOME}"
 
-cd "$CC_VALIDATION_REPO_ROOT"
+cd "${CC_VALIDATION_CWD:-$CC_VALIDATION_REPO_ROOT}"
 set -- env -i \
   HOME="$CC_VALIDATION_HOME" \
   CLAUDE_CONFIG_DIR="$CC_VALIDATION_CONFIG_DIR" \
@@ -42,6 +42,10 @@ if [ -n "${CC_VALIDATION_OPENAI_BASE_URL:-}" ]; then
   set -- "$@" OPENAI_BASE_URL="$CC_VALIDATION_OPENAI_BASE_URL"
 fi
 
+if [ -n "${CC_VALIDATION_ANTHROPIC_BASE_URL:-}" ]; then
+  set -- "$@" ANTHROPIC_BASE_URL="$CC_VALIDATION_ANTHROPIC_BASE_URL"
+fi
+
 if [ -n "${CC_VALIDATION_ANTHROPIC_API_KEY:-}" ]; then
   set -- "$@" ANTHROPIC_API_KEY="$CC_VALIDATION_ANTHROPIC_API_KEY"
 fi
@@ -53,7 +57,7 @@ if [ -n "${CC_VALIDATION_LOCAL_OAUTH_API_BASE:-}" ]; then
 fi
 
 set -- "$@" \
-  "$CC_VALIDATION_REPO_ROOT/built-claude"
+  "${CC_VALIDATION_BINARY:-$CC_VALIDATION_REPO_ROOT/built-claude}"
 
 if [ "${CC_VALIDATION_SKIP_PERMISSIONS:-0}" != "1" ]; then
   set -- "$@" --dangerously-skip-permissions
@@ -62,6 +66,14 @@ fi
 set -- "$@" \
   --debug \
   --debug-file "$CC_VALIDATION_EVIDENCE_DIR/debug.log"
+
+if [ -n "${CC_VALIDATION_PLUGIN_DIR:-}" ]; then
+  set -- "$@" --plugin-dir "$CC_VALIDATION_PLUGIN_DIR"
+fi
+
+if [ -n "${CC_VALIDATION_SETTINGS:-}" ]; then
+  set -- "$@" --settings "$CC_VALIDATION_SETTINGS"
+fi
 
 if [ -n "${CC_VALIDATION_SYSTEM_PROMPT:-}" ]; then
   set -- "$@" --system-prompt "$CC_VALIDATION_SYSTEM_PROMPT"
