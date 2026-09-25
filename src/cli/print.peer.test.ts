@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import React from 'react'
@@ -525,6 +525,72 @@ if (process.env[childFlag] !== '1') {
       peers.setPeerPermissionContext(undefined)
       refresh.mockRestore()
       disableBypass.mockRestore()
+    }
+  })
+
+  test('QueryEngine consumes Worker command descriptions before input, after invalidation, and in SDK init', async () => {
+    const { createModsSession } = await import('../services/mods/session.js')
+    const root = mkdtempSync(join(tmpdir(), 'print-command-describe-'))
+    writeFileSync(join(root, 'register.ts'), `let calls=0; export function register(on) {
+      on('command.describe', {command:'sample'}, ($,e,next) => next({...e,
+        description:'Worker '+(++calls),argumentHint:'[arg '+calls+']',isHidden:calls>1}));
+      on('tool.call', async $ => {await $.ui.invalidate('command.describe');return {result:'invalidated'}});
+    }`)
+    const modsSession = createModsSession({isTrusted:true,
+      getSettings:() => ({userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}),
+      loadPlugins:async () => [{name:'print-describe',manifest:{name:'print-describe'},path:root,source:'print-describe@inline',repository:'print-describe@inline',enabled:true,hookModules:[{configPath:join(root,'hooks.json'),paths:['./register.ts']}]}],
+    })
+    let state = getDefaultAppState()
+    const ingress: import('../types/command.js').Command[][] = []
+    const queried: import('../types/command.js').Command[][] = []
+    const command: import('../types/command.js').Command = {
+      type:'local',name:'sample',description:'Original',argumentHint:'[old]',supportsNonInteractive:true,
+      load:async () => ({call:async (_args,context) => ({type:'text',value:context.options.commands[0]!.description})}),
+    }
+    const originalCommand = { ...command }
+    const processInput = inputModule.processUserInput
+    const mocks = [
+      spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({defaultSystemPrompt:[],userContext:{},systemContext:{}}),
+      spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+      spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({enabled:[],disabled:[],errors:[]}),
+      spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(async function* () {}),
+      spyOn(attachments, 'getAttachmentMessages').mockImplementation(async function* () {}),
+      spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
+        ingress.push(args.context.options.commands)
+        const result = await processInput(args)
+        if (ingress.length === 1) await modsSession.runtime!.dispatch('tool.call',{},async () => ({result:null}))
+        return result
+      }),
+      spyOn(queryModule, 'query').mockImplementation(async function* (params) {
+        queried.push(params.toolUseContext.options.commands)
+        yield createAssistantMessage({content:'described'})
+        return {reason:'completed'}
+      }),
+    ]
+    try {
+      const engine = new QueryEngine({cwd:process.cwd(),tools:[],commands:[command],mcpClients:[],agents:[],
+        modsSession,canUseTool:async () => ({behavior:'allow',updatedInput:{}}),
+        getAppState:() => state,setAppState:update => {state=update(state)},
+        readFileCache:createFileStateCacheWithSizeLimit(10),userSpecifiedModel:'claude-sonnet-4-6',thinkingConfig:{type:'disabled'},
+      })
+      const outputs = []
+      for await (const message of engine.submitMessage('describe commands')) outputs.push(message)
+      expect(ingress[0]![0]).toMatchObject({description:'Worker 1',argumentHint:'[arg 1]',isHidden:false})
+      expect(queried[0]![0]).toMatchObject({description:'Worker 2',argumentHint:'[arg 2]',isHidden:true})
+      expect(outputs.find(message => message.type === 'system' && message.subtype === 'init')).toMatchObject({slash_commands:[]})
+      const local = []
+      for await (const message of engine.submitMessage('/sample')) local.push(message)
+      expect(ingress[1]![0]).toMatchObject({description:'Worker 2',isHidden:true})
+      expect(local.at(-1)).toMatchObject({type:'result',subtype:'success',result:'Worker 2'})
+      expect(queried).toHaveLength(1)
+      expect(command).toEqual(originalCommand)
+      expect(state.plugins.errors).toEqual([])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+      await modsSession.dispose()
+      rmSync(root,{recursive:true,force:true})
     }
   })
 

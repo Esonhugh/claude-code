@@ -554,7 +554,7 @@ export class QueryEngine {
         mods: this.config.modsSession.runtime,
         options: {
           ...processUserInputContext.options,
-          commands: this.config.modsSession.commands.projection(commands),
+          commands: await this.config.modsSession.commands.describe(commands),
           tools: this.config.modsSession.tools?.projection(tools) ?? tools,
           agentDefinitions: this.config.modsSession.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
         },
@@ -671,6 +671,10 @@ export class QueryEngine {
 
     const mainLoopModel = modelFromUserInput ?? initialMainLoopModel
 
+    const describedCommands = this.config.modsSession
+      ? await this.config.modsSession.commands.describe(commands)
+      : commands
+
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
     processUserInputContext = {
@@ -681,7 +685,7 @@ export class QueryEngine {
       canUseTool: wrappedCanUseTool,
       mods: this.config.modsSession?.runtime,
       options: {
-        commands: this.config.modsSession?.commands.projection(commands) ?? commands,
+        commands: describedCommands,
         debug: false,
         tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
         verbose,
@@ -736,7 +740,7 @@ export class QueryEngine {
       model: mainLoopModel,
       permissionMode: initialAppState.toolPermissionContext
         .mode as PermissionMode, // TODO: avoid the cast
-      commands,
+      commands: describedCommands,
       agents,
       skills,
       plugins: enabledPlugins,
