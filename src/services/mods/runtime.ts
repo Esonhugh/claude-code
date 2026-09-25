@@ -204,7 +204,7 @@ const coreHost: Nouns = {
   prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
-  ui: { open: hostIdentity, close: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
+  ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
 }
 
 export function createModsRuntime({ onDiagnostic, services = {} }: {
@@ -254,7 +254,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     dispatch: async (owner, event, input, core, options) => {
       const entered = uiContext.getStore()
       const interaction = ['ui.press', 'ui.input', 'ui.select'].includes(event)
-      const pane = interaction ? ui.getSnapshot().find(pane => pane.id === input.requestId) : undefined
+      const pane = (interaction || event === 'ui.blit') ? ui.getSnapshot().find(pane => pane.id === input.requestId) : undefined
       const drawing = pane?.drawing === undefined ? undefined : drawings.get(pane.drawing)
       const snapshot = drawing?.snapshot ?? entered?.snapshot ?? active
       const table = drawing?.table ?? entered?.table ?? nouns
@@ -615,6 +615,21 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           throw new TypeError('agent.register takes an agent specification')
         return input as ModInput
       }
+      case 'ui.blit': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).requestId !== 'string' || !(input as ModInput).requestId ||
+            typeof (input as ModInput).key !== 'string' || !(input as ModInput).key ||
+            Object.keys(input).some(key => !['requestId', 'key', 'cells', 'source', 'columns', 'rows'].includes(key)))
+          throw new TypeError('ui.blit takes { requestId, key, cells|source, columns?, rows? }')
+        const cells = (input as ModInput).cells
+        const source = (input as ModInput).source
+        if ((typeof cells !== 'string') === (source === undefined) ||
+            ((input as ModInput).columns !== undefined && !Number.isInteger((input as ModInput).columns)) ||
+            ((input as ModInput).rows !== undefined && !Number.isInteger((input as ModInput).rows)))
+          throw new TypeError('ui.blit takes exactly one cells or source payload and optional integer dimensions')
+        return input as ModInput
+      }
       case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': case 'model.fork': return args[0] as ModInput
       case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
       case 'ui.log': {
@@ -681,6 +696,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const result = await ui.close(owner, input.id as string, { kind: 'plugin', name: owner.declaration.name })
         if (result && typeof (result as { deny?: string }).deny === 'string') throw new Error((result as { deny: string }).deny)
         return result
+      }
+      case 'ui.blit': {
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        return ui.blit(owner, input as Parameters<typeof ui.blit>[1])
       }
       case 'ui.focus': {
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
@@ -1008,7 +1027,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             ),
           )
         }
-        if (fn === hostIdentity && ['ui.open', 'ui.close', 'ui.scroll', 'ui.focus'].includes(op))
+        if (fn === hostIdentity && ['ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus'].includes(op))
           return withReference(owner, () => hostCall(owner, op, input as ModInput))
         if (fn === hostIdentity && op === 'prompt.fill') {
           const prompt = services.prompt?.()
@@ -1502,7 +1521,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('ui.render must return an element')
       return
     }
-    if (['ui.press', 'ui.input', 'ui.select', 'ui.focus', 'ui.scroll'].includes(event)) {
+    if (['ui.press', 'ui.input', 'ui.select', 'ui.focus', 'ui.scroll', 'ui.blit'].includes(event)) {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object`)
       return
     }

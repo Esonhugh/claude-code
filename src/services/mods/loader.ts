@@ -34,7 +34,7 @@ const supportedEvents = new Set([
   'store.get', 'store.set', 'store.delete', 'store.keys', 'env.get', 'env.set',
   'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage',
   'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
-  'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
+  'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
   'ui.press', 'ui.input', 'ui.select', 'ui.message',
 ])
 const scanOnlyEvents = new Set([

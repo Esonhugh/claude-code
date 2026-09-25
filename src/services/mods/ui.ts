@@ -81,6 +81,14 @@ export type ModUi = {
     presentation: ModUiPresentation,
   ): Promise<unknown>
   close(owner: ModUiOwner, id: string, origin: ModUiOrigin): Promise<unknown>
+  blit(owner: ModUiOwner, input: {
+    requestId: string
+    key: string
+    cells?: string
+    source?: unknown
+    columns?: number
+    rows?: number
+  }): Promise<unknown>
   invalidate(owner: ModUiOwner, event: string): Promise<void>
   render(presentation: ModUiPresentation): Promise<void>
   scroll(
@@ -139,6 +147,11 @@ type PaneState = Omit<ModUiPane, 'bodyColumns' | 'revision'> & {
   drawGeneration: number
   measuredBodyRows?: number
   keyRows: readonly ModUiKeyRow[]
+}
+
+type BlitFrame = {
+  apply(): unknown | Promise<unknown>
+  waiters: ReturnType<typeof Promise.withResolvers<unknown>>[]
 }
 
 const idPattern = /^[A-Za-z0-9_-]{1,64}$/
@@ -231,11 +244,88 @@ export function createModUi({
   const personRequested = new Set<string>()
   const openGenerations = new Map<string, number>()
   const pendingDraws = new WeakMap<PaneState, Promise<void>>()
+  const pendingBlits = new Map<string, BlitFrame>()
+  const serializedBlits = new Map<string, Promise<void>>()
+  const blitGenerations = new Map<string, number>()
   const focusWaiters = new Set<() => void>()
   let snapshot: readonly ModUiPane[] = Object.freeze([])
   let nextDrawing = 1
   let revision = 0
   let personFocusGeneration = 0
+
+  function queueBlit(key: string, apply: () => unknown | Promise<unknown>): Promise<unknown> {
+    const waiter = Promise.withResolvers<unknown>()
+    const pending = pendingBlits.get(key)
+    if (pending) {
+      pending.apply = apply
+      pending.waiters.push(waiter)
+      return waiter.promise
+    }
+    const frame: BlitFrame = { apply, waiters: [waiter] }
+    pendingBlits.set(key, frame)
+    queueMicrotask(() => {
+      if (pendingBlits.get(key) !== frame) return
+      pendingBlits.delete(key)
+      void Promise.resolve().then(frame.apply).then(
+        result => frame.waiters.forEach(entry => entry.resolve(result)),
+        error => frame.waiters.forEach(entry => entry.reject(error)),
+      )
+    })
+    return waiter.promise
+  }
+
+  function serializeBlit(key: string, apply: () => unknown | Promise<unknown>): Promise<unknown> {
+    const previous = serializedBlits.get(key) ?? Promise.resolve()
+    const work = previous.then(apply)
+    const settled = work.then(() => {}, () => {})
+    serializedBlits.set(key, settled)
+    void settled.finally(() => {
+      if (serializedBlits.get(key) === settled) serializedBlits.delete(key)
+    })
+    return work
+  }
+
+  function blitNode(
+    value: unknown,
+    plugin: string,
+    key: string,
+    seen = new Set<object>(),
+  ): Record<string, unknown> | undefined {
+    if (!value || typeof value !== 'object' || seen.has(value)) return undefined
+    seen.add(value)
+    if (!Array.isArray(value)) {
+      const node = value as Record<string, unknown>
+      const props = node.props as Record<string, unknown> | undefined
+      if (
+        (node.type === 'Raster' || node.type === 'Image') &&
+        props?.key === key &&
+        (node.group as { plugin?: string } | undefined)?.plugin === plugin
+      ) return node
+    }
+    for (const child of Array.isArray(value)
+      ? value
+      : Object.values(value as Record<string, unknown>)) {
+      const found = blitNode(child, plugin, key, seen)
+      if (found) return found
+    }
+    return undefined
+  }
+
+  function replaceNode(
+    value: unknown,
+    target: Record<string, unknown>,
+    replacement: Record<string, unknown>,
+    seen = new Map<object, unknown>(),
+  ): unknown {
+    if (!value || typeof value !== 'object') return value
+    if (value === target) return replacement
+    if (seen.has(value)) return seen.get(value)
+    const output: Record<string, unknown> | unknown[] = Array.isArray(value) ? [] : {}
+    seen.set(value, output)
+    for (const [key, child] of Object.entries(value as Record<string, unknown>))
+      Object.defineProperty(output, key, { value: replaceNode(child, target, replacement, seen), enumerable: true })
+    return Object.freeze(output)
+  }
 
   function askedKey(owner: ModUiOwner, id: string): string {
     return `${pluginOf(owner)}\0${id}`
@@ -643,6 +733,79 @@ export function createModUi({
         },
         { origin, ...(origin.kind === 'unload' ? { skipOwner: pane.owner } : {}) },
       )
+    },
+
+    async blit(owner, input) {
+      validateOwner(owner)
+      if (typeof input.requestId !== 'string' || !idPattern.test(input.requestId) ||
+          typeof input.key !== 'string' || !input.key)
+        throw new TypeError('Mod UI blit requires a valid requestId and key')
+      const pane = active.get(input.requestId)
+      const plugin = pluginOf(owner)
+      const key = `${input.requestId}\0${plugin}\0${input.key}`
+      const generation = (blitGenerations.get(key) ?? 0) + 1
+      blitGenerations.set(key, generation)
+      if (!pane || !pane.visible || pane.tree === undefined) {
+        return { deny: 'site is not open' }
+      }
+      const target = blitNode(pane.tree, plugin, input.key)
+      if (!target) return { deny: 'no owned Raster or Image is mounted under that key' }
+      const props = target.props as Record<string, unknown>
+      if (input.columns !== undefined && input.columns !== props.columns ||
+          input.rows !== undefined && input.rows !== props.rows)
+        return { deny: 'mounted dimensions do not match' }
+      const raster = target.type === 'Raster'
+      if (raster !== (input.cells !== undefined) || raster === (input.source !== undefined))
+        return { deny: 'blit payload kind does not match the mounted element' }
+      const received = Object.freeze({ ...input }) as ModInput
+      return dispatch(owner, 'ui.blit', received, async rewritten => {
+        if (rewritten.requestId !== input.requestId || rewritten.key !== input.key)
+          throw new TypeError('Mod UI blit cannot rewrite requestId or key')
+        if (raster !== (typeof rewritten.cells === 'string') || raster === (rewritten.source !== undefined))
+          throw new TypeError('Mod UI blit cannot change the mounted element kind')
+        if (rewritten.columns !== undefined && rewritten.columns !== props.columns ||
+            rewritten.rows !== undefined && rewritten.rows !== props.rows)
+          return { deny: 'mounted dimensions do not match' }
+        const source = rewritten.source
+        const shared = !raster && source !== null && typeof source === 'object' &&
+          Object.hasOwn(source, 'shm')
+        const apply = () => {
+          if (!shared && blitGenerations.get(key) !== generation) return {}
+          if (active.get(pane.id) !== pane || pane.tree === undefined || !pane.visible)
+            return { deny: 'site is no longer mounted' }
+          const latest = blitNode(pane.tree, plugin, input.key)
+          if (!latest) return { deny: 'no owned Raster or Image is mounted under that key' }
+          const latestProps = latest.props as Record<string, unknown>
+          if (latest.type !== target.type)
+            return { deny: 'blit payload kind does not match the mounted element' }
+          if (rewritten.columns !== undefined && rewritten.columns !== latestProps.columns ||
+              rewritten.rows !== undefined && rewritten.rows !== latestProps.rows)
+            return { deny: 'mounted dimensions do not match' }
+          const replacement = Object.freeze({
+            ...latest,
+            props: Object.freeze({
+              ...latestProps,
+              ...(raster ? { cells: rewritten.cells } : { source: rewritten.source }),
+            }),
+          })
+          const tree = replaceNode(pane.tree, latest, replacement)
+          validateTree?.(tree)
+          pane.tree = tree
+          publish()
+          return {}
+        }
+        return shared
+          ? serializeBlit(key, async () => {
+              const result = apply()
+              if ((result as { deny?: string }).deny === undefined)
+                await new Promise<void>(resolve => setImmediate(resolve))
+              return result
+            })
+          : queueBlit(key, apply)
+      }, {
+        origin: { kind: 'plugin', name: plugin },
+        restoreInput: (rewritten, original) => ({ ...original, ...rewritten }),
+      })
     },
 
     async invalidate(owner, event) {

@@ -637,3 +637,89 @@ test('unsupported headless UI surface rejects open explicitly', async () => {
   expect(value.ui.getSnapshot()).toEqual([])
   expect(diagnostics).toContainEqual(expect.objectContaining({stage:'session.start',message:expect.stringMatching(/unsupported|unavailable|terminal/i)}))
 })
+
+test('ui.blit updates an owned mounted Raster without rerunning ui.render and rejects stale dimensions', async () => {
+  const cell = (character: string) => {
+    const bytes = Buffer.alloc(12)
+    bytes.writeUInt32LE(character.charCodeAt(0), 0)
+    bytes.writeUInt32LE(0x01000000, 4)
+    bytes.writeUInt32LE(0x01000000, 8)
+    return bytes.toString('base64')
+  }
+  const consumer = await plugin('blit-owner', `let draws=0; export function register(on) {
+    on('session.start',async($,e,next)=>{await $.ui.open({id:'media'});return next(e)});
+    on('ui.render',($,e)=>{draws++;return $.ui.resolve(e).Raster({key:'pixels',columns:1,rows:1,cells:'${cell('A')}'})});
+    on('command.run',async($)=>{
+      const changed=await $.ui.blit({requestId:'media',key:'pixels',cells:'${cell('B')}',columns:1,rows:1});
+      const wrong=await $.ui.blit({requestId:'media',key:'pixels',cells:'${cell('C')}',columns:2,rows:1});
+      await $.ui.status(JSON.stringify({changed,wrong,draws}));return {};
+    });
+  }`)
+  const {value,statuses,diagnostics}=fixture()
+  await value.bind(binding(root));await value.reconcile([consumer])
+  const before=value.ui.getSnapshot()[0]!
+  expect({before:Boolean(before),diagnostics}).toEqual({before:true,diagnostics:[]})
+  await value.dispatch('command.run',{command:'blit',args:'',origin:{kind:'composer'}},async()=>({}))
+  const after=value.ui.getSnapshot()[0]!
+  expect(after.drawing).toBe(before.drawing)
+  expect((after.tree as any).props.cells).toBe(cell('B'))
+  expect(statuses).toEqual([['blit-owner',JSON.stringify({changed:{},wrong:{deny:'mounted dimensions do not match'},draws:1})]])
+  expect(diagnostics).toEqual([])
+})
+
+test('ui.blit middleware may rewrite payload but cannot redirect the mounted address or kind', async () => {
+  const cell = (character: string) => {
+    const bytes = Buffer.alloc(12)
+    bytes.writeUInt32LE(character.charCodeAt(0), 0)
+    bytes.writeUInt32LE(0x01000000, 4)
+    bytes.writeUInt32LE(0x01000000, 8)
+    return bytes.toString('base64')
+  }
+  const policy = await plugin('blit-policy', `export function register(on) {
+    on('ui.blit',async($,e,next)=>{
+      if(e.cells==='${cell('B')}') return next({...e,cells:'${cell('C')}'});
+      try {await next({...e,key:'other'})} catch(error) {await $.ui.status(error.message)}
+      try {await next({...e,cells:undefined,source:{png:'AAAA'}})} catch(error) {await $.ui.status(error.message)}
+      return next(e);
+    });
+  }`)
+  const consumer = await plugin('blit-owner', `export function register(on) {
+    on('session.start',async($,e,next)=>{await $.ui.open({id:'media'});return next(e)});
+    on('ui.render',($,e)=>$.ui.resolve(e).Raster({key:'pixels',columns:1,rows:1,cells:'${cell('A')}'}));
+    on('command.run',async($,e)=>{await $.ui.blit({requestId:'media',key:'pixels',cells:e.args==='rewrite'?'${cell('B')}':'${cell('D')}'});return {}});
+  }`)
+  const {value,statuses,diagnostics}=fixture()
+  await value.bind(binding(root));await value.reconcile([policy,consumer])
+  await value.dispatch('command.run',{command:'blit',args:'rewrite',origin:{kind:'composer'}},async()=>({}))
+  expect((value.ui.getSnapshot()[0]!.tree as any).props.cells).toBe(cell('C'))
+  await value.dispatch('command.run',{command:'blit',args:'guards',origin:{kind:'composer'}},async()=>({}))
+  expect((value.ui.getSnapshot()[0]!.tree as any).props.cells).toBe(cell('D'))
+  expect(statuses).toEqual([
+    ['blit-policy','Mod UI blit cannot rewrite requestId or key'],
+    ['blit-policy','Mod UI blit cannot change the mounted element kind'],
+  ])
+  expect(diagnostics).toEqual([])
+})
+
+test('ui.blit cannot address another plugin drawing and expires after close', async () => {
+  const bytes = Buffer.alloc(12)
+  bytes.writeUInt32LE('A'.charCodeAt(0), 0)
+  bytes.writeUInt32LE(0x01000000, 4)
+  bytes.writeUInt32LE(0x01000000, 8)
+  const cells = bytes.toString('base64')
+  const owner = await plugin('blit-owner', `export function register(on) {
+    on('session.start',async($,e,next)=>{await $.ui.open({id:'media'});return next(e)});
+    on('ui.render',($,e)=>$.ui.resolve(e).Raster({key:'pixels',columns:1,rows:1,cells:'${cells}'}));
+  }`)
+  const stranger = await plugin('blit-stranger', `export function register(on) {
+    on('command.run',async($)=>{const result=await $.ui.blit({requestId:'media',key:'pixels',cells:'${cells}'});await $.ui.status(JSON.stringify(result));return {}});
+  }`)
+  const {value,statuses,diagnostics}=fixture()
+  await value.bind(binding(root));await value.reconcile([owner,stranger])
+  await value.dispatch('command.run',{command:'blit',args:'',origin:{kind:'composer'}},async()=>({}))
+  expect(statuses).toEqual([['blit-stranger',JSON.stringify({deny:'no owned Raster or Image is mounted under that key'})]])
+  const pane=value.ui.getSnapshot()[0]!
+  await value.ui.close(pane.owner,pane.id,{kind:'person'})
+  expect(await value.ui.blit(pane.owner,{requestId:pane.id,key:'pixels',cells})).toEqual({deny:'site is not open'})
+  expect(diagnostics).toEqual([])
+})

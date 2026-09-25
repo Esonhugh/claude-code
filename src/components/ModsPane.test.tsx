@@ -783,7 +783,7 @@ describe.serial('ModsPane terminal Image consumer', () => {
       expect(stdout.output).toContain(Buffer.from('/frame-2').toString('base64'))
     } finally {
       instance.unmount()
-      await ui.dispose()
+      await ui.release(owner)
     }
   })
 

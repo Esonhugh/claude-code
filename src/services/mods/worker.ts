@@ -111,12 +111,21 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
       const methods = Object.fromEntries(wire.methods.map(([key,value]) => [key, decode(value, invocation)]));
       const scroll = methods.scroll;
       const focus = methods.focus;
+      const blit = methods.blit;
       if (scroll) methods.scroll = input => scroll({
         to: input?.to,
         ...(input?.in !== undefined && {in:input.in}),
         ...(input?.block !== undefined && {block:input.block}),
       });
       if (focus) methods.focus = input => focus({requestId:input?.requestId, key:input?.key});
+      if (blit) methods.blit = input => blit({
+        requestId:input?.requestId,
+        key:input?.key,
+        ...(input?.cells !== undefined && {cells:input.cells}),
+        ...(input?.source !== undefined && {source:input.source}),
+        ...(input?.columns !== undefined && {columns:input.columns}),
+        ...(input?.rows !== undefined && {rows:input.rows}),
+      });
       const ui = Object.freeze({...methods, resolve: Object.freeze(input => {
         if (disposed) throw Error('Module environment unloaded');
         if (!uiAllowed) throw Error('Module capability ui.resolve was withdrawn');
@@ -260,7 +269,7 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
     const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
       'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys', 'env.get', 'env.set',
       'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
-      'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
+      'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
       'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
       'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);

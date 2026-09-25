@@ -1399,3 +1399,15 @@ test.each(['register', 'list'])('admits agent.%s calls and exact Worker registra
   expect(declaration.events).toEqual([event, 'session.start'])
   expect(validateModRegistrations(declaration, [{id:1,event,hasCatch:false}])).toEqual([{id:1,event,hasCatch:false}])
 })
+test('admits ui.blit calls and exact Worker registrations', async () => {
+  const declaration = await loadModDeclaration(await plugin({
+    'main.ts': `export function register(on) {
+      on('ui.blit', ($, e, next) => next(e));
+      on('command.run', async $ => { await $.ui.blit({requestId:'pane',key:'pixels',cells:'AAAA'}); return {}; });
+    }`,
+  }))
+  expect(declaration.calls).toEqual(['ui.blit'])
+  expect(declaration.events).toEqual(['ui.blit', 'command.run'])
+  expect(validateModRegistrations(declaration, [{id:1,event:'ui.blit',hasCatch:false}]))
+    .toEqual([{id:1,event:'ui.blit',hasCatch:false}])
+})

@@ -44,6 +44,125 @@ function fixture(overrides: Partial<Parameters<typeof createModUi>[0]> = {}) {
 }
 
 describe('mod UI ownership and pane policy', () => {
+  test('folds Raster and byte or file Image blits to the last payload per frame but publishes every shm blit', async () => {
+    const owner = { plugin: 'fixture' }
+    const source = { file: '/tmp/first.png', format: 'png' }
+    const { ui } = fixture({
+      draw: async () => ({
+        type: 'Image',
+        props: { key: 'view', source, columns: 8, rows: 2, alt: 'preview' },
+        group: { plugin: 'fixture' },
+      }),
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const frames: unknown[] = []
+    const unsubscribe = ui.subscribe(() => {
+      frames.push((ui.getSnapshot()[0]!.tree as { props: { source: unknown } }).props.source)
+    })
+
+    const first = ui.blit(owner, {
+      requestId: 'pane', key: 'view',
+      source: { file: '/tmp/second.png', format: 'png' },
+    })
+    const last = ui.blit(owner, {
+      requestId: 'pane', key: 'view',
+      source: { file: '/tmp/third.png', format: 'png' },
+    })
+    await Promise.all([first, last])
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({ file: '/tmp/third.png' })
+
+    const cells = (character: string) => {
+      const bytes = Buffer.alloc(12)
+      bytes.writeUInt32LE(character.charCodeAt(0), 0)
+      bytes.writeUInt32LE(0x01000000, 4)
+      bytes.writeUInt32LE(0x01000000, 8)
+      return bytes.toString('base64')
+    }
+    const rasterOwner = { plugin: 'raster' }
+    const raster = fixture({
+      pluginOf: current => (current as { plugin: string }).plugin,
+      draw: async () => ({
+        type: 'Raster',
+        props: { key: 'pixels', cells: cells('A'), columns: 1, rows: 1 },
+        group: { plugin: 'raster' },
+      }),
+    }).ui
+    await raster.open(rasterOwner, { id: 'raster' }, { kind: 'person' }, wide)
+    await raster.commit(rasterOwner)
+    let rasterFrames = 0
+    raster.subscribe(() => { rasterFrames++ })
+    await Promise.all([
+      raster.blit(rasterOwner, { requestId: 'raster', key: 'pixels', cells: cells('B') }),
+      raster.blit(rasterOwner, { requestId: 'raster', key: 'pixels', cells: cells('C') }),
+    ])
+    expect(rasterFrames).toBe(1)
+    expect((raster.getSnapshot()[0]!.tree as { props: { cells: string } }).props.cells).toBe(cells('C'))
+
+    frames.length = 0
+    await Promise.all([
+      ui.blit(owner, {
+        requestId: 'pane', key: 'view',
+        source: { shm: '/frame-1', format: 'rgb', width: 1, height: 1 },
+      }),
+      ui.blit(owner, {
+        requestId: 'pane', key: 'view',
+        source: { shm: '/frame-2', format: 'rgb', width: 1, height: 1 },
+      }),
+    ])
+    expect(frames).toHaveLength(2)
+    expect(frames).toEqual([
+      expect.objectContaining({ shm: '/frame-1' }),
+      expect.objectContaining({ shm: '/frame-2' }),
+    ])
+    unsubscribe()
+  })
+
+  test('does not let an older async blit overwrite a newer source', async () => {
+    const owner = { plugin: 'fixture' }
+    let releaseFirst: (() => void) | undefined
+    const firstDispatch = new Promise<void>(resolve => { releaseFirst = resolve })
+    const dispatch: ModUiDispatch = async (_owner, event, input, core) => {
+      const source = (input as { source?: { file?: string } }).source
+      if (event === 'ui.blit' && source?.file === '/tmp/second.png')
+        await firstDispatch
+      return core(input)
+    }
+    const { ui } = fixture({
+      dispatch,
+      draw: async () => ({
+        type: 'Image',
+        props: {
+          key: 'view',
+          source: { file: '/tmp/first.png', format: 'png' },
+          columns: 8,
+          rows: 2,
+          alt: 'preview',
+        },
+        group: { plugin: 'fixture' },
+      }),
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+
+    const older = ui.blit(owner, {
+      requestId: 'pane', key: 'view',
+      source: { file: '/tmp/second.png', format: 'png' },
+    })
+    const newer = ui.blit(owner, {
+      requestId: 'pane', key: 'view',
+      source: { file: '/tmp/third.png', format: 'png' },
+    })
+    await newer
+    releaseFirst?.()
+    await older
+
+    expect((ui.getSnapshot()[0]!.tree as { props: { source: unknown } }).props.source)
+      .toMatchObject({ file: '/tmp/third.png' })
+  })
+
+
   test('keeps candidates private and atomically swaps a ready replacement', async () => {
     const oldOwner = { plugin: 'fixture' }
     const failedOwner = { plugin: 'fixture' }
@@ -1247,4 +1366,40 @@ describe('mod UI dispatch and drawing lifetime', () => {
     await ui.interact('pane', current.drawing!, { plugin: 'fixture', handle: 22 }, 'press', 'new')
     expect(invoked).toEqual([{ drawing: current.drawing, handle: 22, args: [expect.objectContaining({ element: 'new' })] }])
   })
+})
+test('pending blits cannot mutate a released pane or its replacement', async () => {
+  const owner = { plugin: 'fixture' }
+  const replacement = { plugin: 'fixture' }
+  const gate = Promise.withResolvers<void>()
+  const { ui } = fixture({
+    dispatch: async (_owner, event, input, core) => {
+      if (event === 'ui.blit') await gate.promise
+      return core(input)
+    },
+    draw: async () => ({type:'Raster',props:{key:'pixels',cells:'old',columns:1,rows:1},group:{plugin:'fixture'}}),
+  })
+  await ui.open(owner, {id:'pane'}, {kind:'person'}, wide)
+  await ui.commit(owner)
+  const pending = ui.blit(owner, {requestId:'pane',key:'pixels',cells:'new'})
+  await ui.release(owner)
+  await ui.open(replacement, {id:'pane'}, {kind:'person'}, wide)
+  await ui.commit(replacement)
+  gate.resolve()
+  expect(await pending).toEqual({deny:'site is no longer mounted'})
+  expect((ui.getSnapshot()[0]!.tree as {props:{cells:string}}).props.cells).toBe('old')
+})
+
+test('blit validates the replacement tree before publication', async () => {
+  const owner = { plugin: 'fixture' }
+  const { ui } = fixture({
+    draw: async () => ({type:'Raster',props:{key:'pixels',cells:'old',columns:1,rows:1},group:{plugin:'fixture'}}),
+    validateTree: tree => {
+      if ((tree as {props:{cells:string}}).props.cells === 'invalid') throw new TypeError('invalid cells')
+    },
+  })
+  await ui.open(owner, {id:'pane'}, {kind:'person'}, wide)
+  await ui.commit(owner)
+  const before = ui.getSnapshot()[0]
+  await expect(ui.blit(owner, {requestId:'pane',key:'pixels',cells:'invalid'})).rejects.toThrow('invalid cells')
+  expect(ui.getSnapshot()[0]).toBe(before)
 })
