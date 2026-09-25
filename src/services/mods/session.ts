@@ -1,5 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import { sep } from 'node:path'
+import { createHash } from 'node:crypto'
 import type { AppState } from '../../state/AppState.js'
 import type { Tool, Tools } from '../../Tool.js'
 import type { Command } from '../../types/command.js'
@@ -313,7 +314,7 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   function relevantSettings(settings: PrepareModPluginsSettings): string {
-    return JSON.stringify([
+    return createHash('sha256').update(JSON.stringify([
       ...[
         settings.userSettings,
         settings.flagSettings,
@@ -333,7 +334,7 @@ export function createModsSession(options: ModsSessionOptions) {
       settings.subscriptionType,
       settings.enabledOptionSources,
       options.getDisabledReason?.(),
-    ])
+    ])).digest('hex')
   }
 
   function scheduleRefresh() {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { EventEmitter } from 'node:events'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -711,6 +712,35 @@ describe('Mods CLI session host', () => {
     })
   })
 
+  test('settings refresh fingerprint retains only a bounded digest of relevant settings', async () => {
+    // Inspect the private fingerprint without adding a production test export.
+    const source = await readFile(new URL('./session.ts', import.meta.url), 'utf8')
+    const body = source.match(/function relevantSettings\(settings: PrepareModPluginsSettings\): string \{([\s\S]*?)\n {2}\}/)?.[1]
+    expect(body).toBeDefined()
+    const fingerprint = new Function('createHash', 'settings', 'options', body!)
+    const key = (value: PrepareModPluginsSettings, disabled?: string): string =>
+      fingerprint(createHash, value, { getDisabledReason: () => disabled })
+    const secret = 'synthetic-sensitive-option'
+    const large = 'synthetic-large-option'.repeat(10_000)
+    const current: PrepareModPluginsSettings = {
+      ...settings(),
+      userSettings: {
+        pluginConfigs: { 'fixture@inline': { options: { secret, large } } },
+      },
+    }
+    const original = key(current)
+    expect(original).toMatch(/^[a-f0-9]{64}$/)
+    expect(original).not.toContain(secret)
+    expect(original).not.toContain(large)
+    expect(key(structuredClone(current))).toBe(original)
+    expect(key({ ...current, userSettings: { ...current.userSettings, model: 'unrelated' } })).toBe(original)
+    const changed = structuredClone(current)
+    changed.userSettings!.pluginConfigs!['fixture@inline']!.options!.secret = 'changed'
+    expect(key(changed)).not.toBe(original)
+    expect(key({ ...current, hookPolicy: { managedOnly: true, allDisabled: false } })).not.toBe(original)
+    expect(key(current, 'disabled')).not.toBe(original)
+  })
+
   test('trusted options changes refresh; unrelated settings do not rescan plugins; policy removes old', async () => {
     const declaration = await plugin(
       `export function register(on, options) { on('tool.call', () => ({ result: options.label })); }`,
@@ -736,6 +766,11 @@ describe('Mods CLI session host', () => {
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({
       result: 'one',
     })
+    current = structuredClone(current)
+    settingsChangeDetector.notifyChange('userSettings')
+    await host.bind(binding)
+    expect(loads).toBe(1)
+    current = { ...current, userSettings: { model: 'unrelated' } }
     settingsChangeDetector.notifyChange('userSettings')
     await host.bind(binding)
     expect(loads).toBe(1)
@@ -750,6 +785,11 @@ describe('Mods CLI session host', () => {
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({
       result: 'two',
     })
+    expect(loads).toBe(2)
+    current = structuredClone(current)
+    settingsChangeDetector.notifyChange('userSettings')
+    await host.bind(binding)
+    expect(loads).toBe(2)
     current = { ...current, policySettings: { disableAllHooks: true } }
     settingsChangeDetector.notifyChange('policySettings')
     await host.bind(binding)
