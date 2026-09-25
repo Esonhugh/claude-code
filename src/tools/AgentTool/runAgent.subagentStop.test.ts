@@ -245,6 +245,39 @@ async function runIsolatedTests(): Promise<void> {
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
   })
 
+  test('instruction provenance survives child overrides and forks while omit stays explicitly empty', async () => {
+    queryMode = 'complete'
+    const contextModule = await import('../../context.js')
+    const { runForkedAgent } = await import('../../utils/forkedAgent.js')
+    const files = [{ path: '/fixture/CLAUDE.md', kind: 'project' as const, content: 'known instructions' }]
+    const known = contextModule.withUserContextInstructionFiles({ claudeMd: 'known rendered text', currentDate: 'today' }, files)
+    const load = spyOn(contextModule, 'getUserContext').mockResolvedValue(known)
+    try {
+      const override = { agentId: testAgentId, systemContext: {}, systemPrompt: asSystemPrompt([]) }
+      await drainAgent({ override, agentDefinition: { ...GENERAL_PURPOSE_AGENT, omitClaudeMd: true } })
+      expect(queryContexts.at(-1)).toEqual({ currentDate: 'today' })
+      expect(contextModule.getUserContextInstructionFiles(queryContexts.at(-1)!)).toEqual([])
+      expect(load).toHaveBeenCalledTimes(1)
+      for (const userContext of [known, { claudeMd: 'opaque override' }, {}]) {
+        await drainAgent({ override: { ...override, userContext }, agentDefinition: { ...GENERAL_PURPOSE_AGENT, omitClaudeMd: true } })
+        expect(queryContexts.at(-1)).toBe(userContext)
+        expect(contextModule.getUserContextInstructionFiles(queryContexts.at(-1)!)).toEqual(
+          userContext === known ? files : 'claudeMd' in userContext ? undefined : [],
+        )
+        await runForkedAgent({
+          promptMessages: [createUserMessage({ content: 'fork' })],
+          cacheSafeParams: { systemPrompt: asSystemPrompt([]), userContext, systemContext: {}, toolUseContext: createContext(), forkContextMessages: [] },
+          canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+          querySource: 'agent:test', forkLabel: 'instruction-provenance', skipTranscript: true,
+        })
+        expect(queryContexts.at(-1)).toBe(userContext)
+      }
+      expect(load).toHaveBeenCalledTimes(1)
+    } finally {
+      load.mockRestore()
+    }
+  })
+
   test('fork transcript and query share one identity, including explicit and ephemeral forks', async () => {
     queryMode = 'complete'
     const { runForkedAgent } = await import('../../utils/forkedAgent.js')
