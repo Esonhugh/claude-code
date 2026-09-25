@@ -546,11 +546,12 @@ export async function runForkedAgent({
     forkContextMessages,
   } = cacheSafeParams
 
-  // Create isolated context to prevent mutation of parent state
-  const isolatedToolUseContext = createSubagentContext(
-    toolUseContext,
-    overrides,
-  )
+  // Create isolated context to prevent mutation of parent state.
+  const isolatedToolUseContext = createSubagentContext(toolUseContext, {
+    ...overrides,
+    agentId:
+      overrides?.agentId ?? createAgentId(skipTranscript ? undefined : forkLabel),
+  })
 
   // Do NOT filterIncompleteToolCalls here — it drops the whole assistant on
   // partial tool batches, orphaning the paired results (API 400). Dangling
@@ -558,9 +559,8 @@ export async function runForkedAgent({
   // same as the main thread — identical post-repair prefix keeps the cache hit.
   const initialMessages: Message[] = [...forkContextMessages, ...promptMessages]
 
-  // Generate agent ID and record initial messages for transcript
-  // When skipTranscript is set, skip agent ID creation and all transcript I/O
-  const agentId = skipTranscript ? undefined : createAgentId(forkLabel)
+  // Transcript and runtime hooks must refer to the same logical fork.
+  const agentId = skipTranscript ? undefined : isolatedToolUseContext.agentId
   let lastRecordedUuid: UUID | null = null
   if (agentId) {
     await recordSidechainTranscript(initialMessages, agentId).catch(err =>

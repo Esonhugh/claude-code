@@ -47,6 +47,8 @@ async function runIsolatedTests(): Promise<void> {
   let queryMode: QueryMode = 'throw'
   const recordedMessages: unknown[] = []
   const queryContexts: Record<string, string>[] = []
+  const queryAgentIds: Array<string | undefined> = []
+  const transcriptAgentIds: string[] = []
   const refreshCallbacks: Array<
     (() => Promise<Record<string, string>>) | undefined
   > = []
@@ -62,6 +64,7 @@ async function runIsolatedTests(): Promise<void> {
         forkContextMessages: params.messages,
       })
       queryContexts.push(params.userContext)
+      queryAgentIds.push(params.toolUseContext.agentId)
       refreshCallbacks.push(params.refreshUserContext)
       if (queryMode === 'assistant_then_throw' || queryMode === 'model_error') {
         yield {
@@ -144,8 +147,9 @@ async function runIsolatedTests(): Promise<void> {
   const sessionStorage = await import('../../utils/sessionStorage.js')
   mock.module('../../utils/sessionStorage.js', () => ({
     ...sessionStorage,
-    recordSidechainTranscript: async (messages: unknown[]) => {
+    recordSidechainTranscript: async (messages: unknown[], agentId: string) => {
       recordedMessages.push(...messages)
+      transcriptAgentIds.push(agentId)
     },
     writeAgentMetadata: async () => {},
     setAgentTranscriptSubdir: () => {},
@@ -235,8 +239,40 @@ async function runIsolatedTests(): Promise<void> {
     queryMode = 'throw'
     recordedMessages.length = 0
     queryContexts.length = 0
+    queryAgentIds.length = 0
+    transcriptAgentIds.length = 0
     refreshCallbacks.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  test('fork transcript and query share one identity, including explicit and ephemeral forks', async () => {
+    queryMode = 'complete'
+    const { runForkedAgent } = await import('../../utils/forkedAgent.js')
+    const parent = { ...createContext(), agentId: testAgentId }
+    const explicitId = createAgentId('explicit-fork')
+    for (const overrides of [undefined, { agentId: explicitId }]) {
+      const before = transcriptAgentIds.length
+      await runForkedAgent({
+        promptMessages: [createUserMessage({ content: 'fork' })],
+        cacheSafeParams: { systemPrompt: asSystemPrompt([]), userContext: {}, systemContext: {}, toolUseContext: parent, forkContextMessages: [] },
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        querySource: 'agent:test', forkLabel: 'identity-test', overrides,
+      })
+      expect(transcriptAgentIds.slice(before)).toEqual([queryAgentIds.at(-1)!])
+      expect(queryAgentIds.at(-1)).not.toBe(testAgentId)
+      if (overrides) expect(queryAgentIds.at(-1)).toBe(explicitId)
+    }
+    const before = transcriptAgentIds.length
+    await runForkedAgent({
+      promptMessages: [createUserMessage({ content: 'ephemeral' })],
+      cacheSafeParams: { systemPrompt: asSystemPrompt([]), userContext: {}, systemContext: {}, toolUseContext: parent, forkContextMessages: [] },
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      querySource: 'agent:test', forkLabel: 'identity-test', skipTranscript: true,
+    })
+    expect(transcriptAgentIds).toHaveLength(before)
+    expect(queryAgentIds.at(-1)).toBeString()
+    expect(queryAgentIds.at(-1)).not.toBe(testAgentId)
+    expect(parent.agentId).toBe(testAgentId)
   })
 
   test('query refresh reloads agent context while keeping explicit overrides and read-only omissions', async () => {
