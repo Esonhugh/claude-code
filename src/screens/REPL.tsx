@@ -1943,6 +1943,15 @@ export function REPL({
       ...modToolContextRef.current!(),
       messages: messagesRef.current,
     }),
+    cwd: getCwd,
+    root: getOriginalCwd,
+    model: () => modToolContextRef.current!().options.mainLoopModel,
+    turns: () => messagesRef.current.filter(message =>
+      isHumanTurn(message) &&
+      !message.isVirtual &&
+      (typeof message.message.content === 'string' ||
+        !message.message.content.every(block => block.type === 'tool_result')),
+    ).length,
     firstPartyCredential: getFirstPartyCredential,
     mcpCall: (server, tool, args, signal) => {
       const clients = modToolContextRef.current!().options.mcpClients

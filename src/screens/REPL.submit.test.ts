@@ -1532,7 +1532,7 @@ test('Mods usage captures the live REPL context and transcript when the capabili
   const awaitMods = extract('./REPL.tsx','awaitMods')({
     modsSession:{bind:async (_binding:unknown,_set:unknown,host:unknown) => {services=host}},
     getCwd:() => '/repo',getOriginalCwd:() => '/repo',getSessionId:() => 'session',setAppState:noop,
-    messagesRef,getFirstPartyCredential:async()=>null,modToolContextRef,
+    messagesRef,getFirstPartyCredential:async()=>null,modToolContextRef,isHumanTurn:(message:any)=>message.type==='user' && !message.isMeta,
     captureModSessionUsage:(context:unknown) => {captured.push(context);return reader},
   })
   await awaitMods()
@@ -1541,6 +1541,17 @@ test('Mods usage captures the live REPL context and transcript when the capabili
   messagesRef.current = ['live-transcript']
   expect(services.captureUsage()).toBe(reader)
   expect(captured).toEqual([{...liveContext,messages:['live-transcript']}])
+  expect(services.cwd()).toBe('/repo')
+  expect(services.root()).toBe('/repo')
+  expect(services.model()).toBe('new')
+  messagesRef.current = [
+    {type:'user',isMeta:false,isVirtual:false,message:{content:'one'}},
+    {type:'user',isMeta:true,isVirtual:false,message:{content:'meta'}},
+    {type:'user',isMeta:false,isVirtual:true,message:{content:'virtual'}},
+    {type:'user',isMeta:false,isVirtual:false,message:{content:[{type:'tool_result'}]}},
+    {type:'user',isMeta:false,isVirtual:false,message:{content:[{type:'text',text:'two'}]}},
+  ]
+  expect(services.turns()).toBe(2)
 })
 
 
