@@ -3197,13 +3197,13 @@ export function REPL({
     void modsSession?.ui.render(modUiPresentation).catch(logError)
   }, [modsSession, modUiPresentation])
   const modPaneFocused = modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
-    !modUiPresentation.keyboardOwned && modPanes.some(pane => pane.visible && pane.focused)
+    !modUiPresentation.keyboardOwned && modPanes.some(pane => pane.visible && pane.shown !== false && pane.focused)
   const renderModPane = (pane: ModUiPane) => (
     <ModsPane
       key={`${pane.plugin}:${pane.id}`}
       pane={pane.focused && !modPaneFocused ? { ...pane, focused: false } : pane}
       canFocus={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
-        !modUiPresentation.keyboardOwned && !modPanes.some(other => other.visible && other.focused && other.id !== pane.id)}
+        !modUiPresentation.keyboardOwned && !modPanes.some(other => other.visible && other.shown !== false && other.focused && other.id !== pane.id)}
       onInteract={(pane, drawing, callback, kind, element, value) => {
         const ui = modsSession?.runtime?.ui
         if (!ui) return Promise.reject(new Error('Mod UI host is unavailable'))
@@ -3228,6 +3228,7 @@ export function REPL({
   )
   const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
   const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
+  const shownModDock = modDock.find(pane => pane.shown !== false)
   const canShowDiffSidebar = isFullscreenEnvEnabled() &&
     modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
 
@@ -6909,6 +6910,7 @@ export function REPL({
           }
           modal={centeredModal}
           dockPane={modDock.map(renderModPane)}
+          dockWidth={shownModDock?.columns === undefined ? undefined : shownModDock.bodyColumns + 2}
           inlinePane={modInline.map(renderModPane)}
           sidebarWidth={Math.min(Math.floor(modTerminalSize.columns * 0.45), 90, modTerminalSize.columns - 70)}
           sidebarPane={diffSidebarVisible && canShowDiffSidebar ? (

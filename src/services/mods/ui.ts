@@ -24,6 +24,7 @@ export type ModUiOpenArgs = {
   closeOnEscape?: true
   holdToasts?: true
   rows?: number
+  columns?: number
 }
 
 export type ModUiCallback = { plugin: string; handle: number }
@@ -46,11 +47,13 @@ export type ModUiPane = {
   plugin: string
   owner: ModUiOwner
   visible: boolean
+  shown?: boolean
   placement: ModUiPlacement
   focused: boolean
   closeOnEscape: boolean
   holdToasts: boolean
   rows?: number
+  columns?: number
   scrollOffset: number
   bodyRows: number
   bodyColumns: number
@@ -193,6 +196,8 @@ function copyOpen(input: ModUiOpenArgs, expectedId?: string): Readonly<ModUiOpen
   }
   if (input.rows !== undefined && (!Number.isInteger(input.rows) || input.rows < 1))
     throw new TypeError('Mod UI pane rows must be a positive whole number')
+  if (input.columns !== undefined && (!Number.isInteger(input.columns) || input.columns < 1))
+    throw new TypeError('Mod UI pane columns must be a positive integer')
   return Object.freeze({
     id: input.id,
     ...(input.title === undefined ? {} : { title: input.title }),
@@ -200,6 +205,7 @@ function copyOpen(input: ModUiOpenArgs, expectedId?: string): Readonly<ModUiOpen
     ...(input.closeOnEscape === true ? { closeOnEscape: true as const } : {}),
     ...(input.holdToasts === true ? { holdToasts: true as const } : {}),
     ...(input.rows === undefined ? {} : { rows: input.rows }),
+    ...(input.columns === undefined ? {} : { columns: input.columns }),
   })
 }
 
@@ -345,9 +351,12 @@ export function createModUi({
   }
 
   function bodyColumnsOf(pane: PaneState): number {
-    return pane.placement === 'dock'
+    const available = pane.placement === 'dock'
       ? Math.max(1, Math.floor(pane.presentation.columns / 2) - 2)
       : Math.max(1, pane.presentation.columns - 4)
+    return pane.placement === 'dock' && pane.columns !== undefined
+      ? Math.min(available, pane.columns)
+      : available
   }
 
   function visibleOf(pane: PaneState): boolean {
@@ -368,11 +377,13 @@ export function createModUi({
       plugin: pane.plugin,
       owner: pane.owner,
       visible,
+      shown: visible && pane.shown,
       placement: pane.placement,
       focused: visible && pane.focused,
       closeOnEscape: pane.closeOnEscape,
       holdToasts: pane.holdToasts,
       ...(pane.rows === undefined ? {} : { rows: pane.rows }),
+      ...(pane.columns === undefined ? {} : { columns: pane.columns }),
       scrollOffset: pane.scrollOffset,
       bodyRows: pane.bodyRows,
       bodyColumns: bodyColumnsOf(pane),
@@ -388,7 +399,20 @@ export function createModUi({
     for (const resolve of focusWaiters) resolve()
   }
 
+  function reconcileShown(preferred?: PaneState): void {
+    for (const placement of ['dock', 'inline'] as const) {
+      const panes = [...active.values()].filter(pane => pane.visible && pane.placement === placement)
+      const selected = preferred?.visible && preferred.placement === placement
+        ? preferred
+        : panes.find(pane => pane.shown) ?? panes[0]
+      for (const pane of active.values()) {
+        if (pane.placement === placement) pane.shown = pane === selected
+      }
+    }
+  }
+
   function publish(): void {
+    reconcileShown()
     revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
     notify(wakeFocusWaiters)
@@ -533,6 +557,7 @@ export function createModUi({
           plugin: pluginOf(owner),
           owner,
           visible: false,
+          shown: false,
           placement: placementOf(presentation),
           focused: false,
           closeOnEscape: false,
@@ -550,6 +575,7 @@ export function createModUi({
     pane.closeOnEscape = spec.closeOnEscape === true
     pane.holdToasts = spec.holdToasts === true
     pane.rows = spec.rows
+    pane.columns = spec.columns
     pane.personInitiated = origin.kind === 'person' || (existing?.owner === owner && existing.personInitiated)
     if (
       spec.focus === true &&
@@ -681,6 +707,7 @@ export function createModUi({
           if (!existing) {
             const pane = openState(owner, undefined, spec, origin, presentation)
             active.set(spec.id, pane)
+            if (origin.kind === 'person') reconcileShown(pane)
             if (!pane.visible) {
               publish()
               return undefined
@@ -718,6 +745,7 @@ export function createModUi({
             for (const current of active.values()) current.focused = false
           }
           active.set(spec.id, pane)
+          if (pane.focused || origin.kind === 'person') reconcileShown(pane)
           publish()
           if (existing) {
             existing.drawGeneration++
@@ -942,9 +970,9 @@ export function createModUi({
         if (!pane.visible || !visibleOf(pane) || pane.tree === undefined)
           return { deny: 'site is not visible' }
         const presentation = pane.presentation
-        const canFocus = person && request.element !== undefined
+        const canFocus = person && (request.element !== undefined || pane.shown === false)
           ? presentation.composerEmpty && !presentation.hasDialog && !presentation.keyboardOwned
-          : pane.focused
+          : person || pane.focused
         if (!canFocus) return { deny: 'site does not hold the keyboard' }
         for (const key of ['component', 'requestId', 'plugin'] as const) {
           if (Object.hasOwn(rewritten, key) && rewritten[key] !== input[key])
@@ -962,7 +990,7 @@ export function createModUi({
         if (nextElement !== undefined &&
             !focusableNode(pane.tree, nextElement as string, input.plugin as string))
           return { deny: 'element is not drawn in this site' }
-        const relinquish = nextElement === undefined && person
+        const relinquish = nextElement === undefined && person && pane.shown !== false
         let changed = false
         if (person && !relinquish) {
           for (const current of active.values()) {
@@ -976,6 +1004,10 @@ export function createModUi({
         if (pane.focusedElement !== nextElement || pane.focused !== focused) {
           pane.focusedElement = nextElement as string | undefined
           pane.focused = focused
+          changed = true
+        }
+        if (person && pane.visible && !pane.shown) {
+          reconcileShown(pane)
           changed = true
         }
         if (changed) publish()
@@ -1196,6 +1228,8 @@ export function createModUi({
           }
         }
         for (const pane of prepared) active.set(pane.id, pane)
+        const preferred = prepared.find(pane => pane.focused)
+        reconcileShown(preferred)
         candidates.delete(owner)
         activeOwners.add(owner)
         if (replacedOwner !== undefined) activeOwners.delete(replacedOwner)

@@ -163,6 +163,64 @@ describe('mod UI ownership and pane policy', () => {
   })
 
 
+  test('treats columns as a positive dock body-width request and resets it on every open', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    for (const columns of [0, -1, 1.5, Number.NaN]) {
+      await expect(ui.open(owner, { id: 'pane', columns }, { kind: 'person' }, wide))
+        .rejects.toThrow(/columns.*positive integer/i)
+    }
+
+    await ui.open(owner, { id: 'pane', columns: 70 }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 70 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 70 })
+    await ui.render({ ...wide, columns: 110 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 53 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 53 })
+
+    const inline = { ...wide, isFullscreen: false, columns: 90 }
+    await ui.open(owner, { id: 'pane', columns: 33 }, { kind: 'plugin' }, inline)
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 33, placement: 'inline', bodyColumns: 86 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 86 })
+
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    expect(ui.getSnapshot()[0]).not.toHaveProperty('columns')
+    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyColumns: 78 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 78 })
+  })
+
+  test('keeps open panes as tabs while exposing one shown pane selected through person focus', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'first' }, { kind: 'plugin' }, wide)
+    await ui.open(owner, { id: 'second' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown])).toEqual([
+      ['first', true, true], ['second', true, false],
+    ])
+
+    await expect(ui.focus(owner, {
+      requestId: 'second', origin: { kind: 'person' },
+    }, { ...wide, hasDialog: true })).resolves.toMatchObject({ focused: false, deny: 'site does not hold the keyboard' })
+    expect(ui.getSnapshot().find(pane => pane.shown)?.id).toBe('first')
+    await expect(ui.focus(owner, {
+      requestId: 'second', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: true })
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown])).toEqual([
+      ['first', true, false], ['second', true, true],
+    ])
+
+    await ui.close(owner, 'second', { kind: 'person' })
+    expect(ui.getSnapshot()).toHaveLength(1)
+    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'first', visible: true, shown: true })
+
+    await ui.open(owner, { id: 'second' }, { kind: 'person' }, wide)
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.shown])).toEqual([
+      ['first', false], ['second', true],
+    ])
+  })
+
   test('keeps candidates private and atomically swaps a ready replacement', async () => {
     const oldOwner = { plugin: 'fixture' }
     const failedOwner = { plugin: 'fixture' }

@@ -2020,6 +2020,58 @@ const fileButton = (key: string, action?: string) => ({
 })
 
 describe('ModsPane placement tabs', () => {
+  test('createModUi selects placement tabs through real Ink stdin arrows', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    const presentation = { columns: 80, rows: 30, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false }
+    const ui = createModUi({
+      pluginOf: () => 'fixture',
+      dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async (_owner, input) => ({ type: 'Text', children: [`${input.requestId} host body`] }),
+      invokeDrawing: async () => undefined,
+      releaseDrawing: async () => {},
+    })
+    await ui.open(owner, { id: 'first', title: 'First', focus: true }, { kind: 'person' }, presentation)
+    await ui.open(owner, { id: 'second', title: 'Second' }, { kind: 'person' }, presentation)
+    await ui.commit(owner)
+    const calls: string[] = []
+    function Host() {
+      const current = useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+      return <><EnableInput />{current.map(pane => <ModsPane key={pane.id} pane={pane}
+        onFocus={async (pane, element) => {
+          calls.push(pane.id)
+          return ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }, presentation)
+        }}
+        onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+      />)}</>
+    }
+    const instance = await render(<Host />, {
+      stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await settle()
+      for (const [key, selected, hidden] of [
+        ['\u001b[C', 'second', 'first'],
+        ['\u001b[D', 'first', 'second'],
+      ]) {
+        stdin.push(key)
+        await settle()
+        expect(calls.at(-1)).toBe(selected)
+        expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown, pane.focused])).toEqual([
+          ['first', true, selected === 'first', selected === 'first'],
+          ['second', true, selected === 'second', selected === 'second'],
+        ])
+        expect(elements(stdout, true).some(item => item.text === `${selected} host body`)).toBe(true)
+        expect(elements(stdout, true).some(item => item.text === `${hidden} host body`)).toBe(false)
+      }
+      expect(calls).toEqual(['second', 'first'])
+    } finally {
+      instance.unmount()
+      await ui.release(owner)
+    }
+  })
+
   function PaneGroup({ initial = 'first', calls }: { initial?: string; calls: string[] }) {
     const [shown, setShown] = React.useState(initial)
     const owner = React.useMemo(() => ({ first: {}, second: {} }), [])
@@ -3334,6 +3386,71 @@ describe('ModsPane input repair', () => {
 })
 
 describe('ModsPane host layout', () => {
+  test.each([33, 70])('createModUi requested dock body width %s reaches real FullscreenLayout through resize', async requested => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    const stdout = new Output()
+    stdout.columns = 180
+    stdout.rows = 30
+    stdout.isTTY = true
+    const owner = {}
+    const presentation = { columns: 180, rows: 30, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false }
+    const ui = createModUi({
+      pluginOf: () => 'fixture',
+      dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async () => ({ type: 'Text', children: ['REQUESTED_BODY'] }),
+      invokeDrawing: async () => undefined,
+      releaseDrawing: async () => {},
+    })
+    function Content({ label }: { label: string }) {
+      const { columns } = useTerminalSize()
+      return <Box width={columns}><Text>{label}</Text></Box>
+    }
+    function Host() {
+      const { columns, rows } = useTerminalSize()
+      const current = useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+      useEffect(() => {
+        void ui.render({ ...presentation, columns, rows })
+      }, [columns, rows])
+      const dock = current.find(pane => pane.visible && pane.placement === 'dock')
+      return <Box width={columns} height={rows} flexDirection="column">
+        <FullscreenLayout
+          scrollable={<Content label="REQUESTED_TRANSCRIPT" />}
+          bottom={<Content label="REQUESTED_COMPOSER" />}
+          dockWidth={dock ? dock.bodyColumns + 2 : undefined}
+          dockPane={dock ? <ModsPane pane={dock}
+            onReportMetrics={(pane, metrics) => ui.reportMetrics(pane.id, metrics)}
+            onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+          /> : undefined}
+        />
+      </Box>
+    }
+    let instance: Awaited<ReturnType<typeof render>> | undefined
+    try {
+      await ui.open(owner, { id: 'requested', columns: requested }, { kind: 'person' }, presentation)
+      await ui.commit(owner)
+      instance = await render(<Host />, {
+        stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false,
+      })
+      for (const columns of [180, 110, 181]) {
+        stdout.columns = columns
+        stdout.emit('resize')
+        await settle()
+        const bodyColumns = Math.min(requested, Math.floor(columns / 2) - 2)
+        const conversationColumns = columns - bodyColumns - 2
+        expect(domElement(stdout, 'REQUESTED_TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
+        expect(domElement(stdout, 'REQUESTED_COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
+        expect(nodeCache.get(renderedElement(stdout, 'REQUESTED_BODY', 'ink-text'))!.x).toBe(conversationColumns)
+        expect(ui.getSnapshot()[0]).toMatchObject({ columns: requested, bodyColumns })
+      }
+    } finally {
+      instance?.unmount()
+      await ui.release(owner)
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
+  })
+
   test('keeps the conversation and composer left of the dock across terminal resize', async () => {
     const previous = process.env.CLAUDE_CODE_NO_FLICKER
     process.env.CLAUDE_CODE_NO_FLICKER = '1'

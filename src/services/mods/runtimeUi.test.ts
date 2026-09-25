@@ -45,6 +45,30 @@ const source = (label: string, fail = false) => `let count=0; export function re
   on('ui.render', {component:'Pane'}, ($,e) => { const {Box,Button,Text}=$.ui.resolve(e); return Box({children:[Text({children:'${label}:'+count}),Button({key:'run',label:'Run',onPress:async () => { count++; await $.ui.status('${label}:'+count); await $.ui.log('clicked'); await $.ui.invalidate('ui.render'); }}),Button({key:'close',label:'Close',onPress:() => $.ui.close({id:'panel'})})]}); });
 }`
 
+test('pane columns and shown selection survive the runtime UI bridge', async () => {
+  const consumer = await plugin('pane-width', `export function register(on) {
+    on('session.start', async ($, e, next) => {
+      await $.ui.open({id:'first',columns:24});
+      await $.ui.open({id:'second',columns:40});
+      return next(e);
+    });
+    on('ui.render', ($, e) => $.ui.resolve(e).Text({children:e.requestId}));
+  }`)
+  const { value, diagnostics } = fixture()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(value.ui.getSnapshot().map(pane => ({
+    id: pane.id, columns: pane.columns, bodyColumns: pane.bodyColumns, shown: pane.shown,
+  }))).toEqual([
+    { id: 'first', columns: 24, bodyColumns: 24, shown: true },
+    { id: 'second', columns: 40, bodyColumns: 40, shown: false },
+  ])
+  const second = value.ui.getSnapshot()[1]!
+  await value.ui.focus(second.owner, { requestId: second.id, origin: { kind: 'person' } }, wide)
+  expect(value.ui.getSnapshot().filter(pane => pane.shown).map(pane => pane.id)).toEqual(['second'])
+})
+
 test('activation subscribers see one generation across UI, commands, tools and agents', async () => {
   const generation = (label: string) => `export function register(on) {
     on('session.start', async ($,e,next) => {

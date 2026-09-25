@@ -46,6 +46,27 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
   return (scope: Record<string, any>) => new Function('scope', `with (scope) { ${js}; return extracted; }`)(scope)
 }
 
+test('REPL sizes the dock from the shown pane requested body columns', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let dockWidth: ts.Expression | undefined
+  let shownModDock: ts.Expression | undefined
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'shownModDock') shownModDock = node.initializer
+    if (ts.isJsxAttribute(node) && node.name.getText(file) === 'dockWidth' &&
+        node.initializer && ts.isJsxExpression(node.initializer)) dockWidth = node.initializer.expression
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(shownModDock).toBeDefined()
+  expect(dockWidth).toBeDefined()
+  const evaluate = new Function('modDock', `const shownModDock = ${shownModDock!.getText(file)}; return ${dockWidth!.getText(file)};`)
+  expect(evaluate([{ shown: false, columns: 60, bodyColumns: 60 }, { shown: true, columns: 24, bodyColumns: 24 }])).toBe(26)
+  expect(evaluate([{ shown: true, columns: 100, bodyColumns: 53 }])).toBe(55)
+  expect(evaluate([{ shown: true, bodyColumns: 78 }])).toBeUndefined()
+  expect(evaluate([])).toBeUndefined()
+})
+
 const makeSubmit = extract('./REPL.tsx', 'onSubmit')
 const makeHandle = extract('../utils/handlePromptSubmit.ts', 'handlePromptSubmit', 'function')
 const makeExecute = extract('../utils/handlePromptSubmit.ts', 'executeUserInput', 'function')
