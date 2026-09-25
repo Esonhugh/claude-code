@@ -1502,6 +1502,7 @@ async function* queryLoop(
           cacheSafeParams: {
             systemPrompt,
             userContext,
+            resolvedPromptContextBlocks: contextBlocks,
             systemContext,
             toolUseContext,
             forkContextMessages: messagesForQuery,
@@ -2141,6 +2142,7 @@ async function* queryLoop(
         taskSummaryModule!.maybeGenerateTaskSummary({
           systemPrompt,
           userContext,
+          resolvedPromptContextBlocks: contextBlocks,
           systemContext,
           toolUseContext,
           forkContextMessages: [
