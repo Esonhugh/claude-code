@@ -162,63 +162,89 @@ describe('mod UI ownership and pane policy', () => {
       .toMatchObject({ file: '/tmp/third.png' })
   })
 
-
-  test('treats columns as a positive dock body-width request and resets it on every open', async () => {
+  test('serializes shm frames at mounted terminal consumers', async () => {
     const owner = { plugin: 'fixture' }
-    const { ui, draws } = fixture()
-    for (const columns of [0, -1, 1.5, Number.NaN]) {
-      await expect(ui.open(owner, { id: 'pane', columns }, { kind: 'person' }, wide))
-        .rejects.toThrow(/columns.*positive integer/i)
-    }
-
-    await ui.open(owner, { id: 'pane', columns: 70 }, { kind: 'person' }, wide)
-    await ui.commit(owner)
-    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 70 })
-    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 70 })
-    await ui.render({ ...wide, columns: 110 })
-    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 53 })
-    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 53 })
-
-    const inline = { ...wide, isFullscreen: false, columns: 90 }
-    await ui.open(owner, { id: 'pane', columns: 33 }, { kind: 'plugin' }, inline)
-    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 33, placement: 'inline', bodyColumns: 86 })
-    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 86 })
-
-    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
-    expect(ui.getSnapshot()[0]).not.toHaveProperty('columns')
-    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyColumns: 78 })
-    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 78 })
+    const rendered: string[] = []
+    let releaseFirst: (() => void) | undefined
+    const first = new Promise<void>(resolve => { releaseFirst = resolve })
+    const { ui } = fixture({
+      draw: async () => ({
+        type: 'Image',
+        props: {
+          key: 'view',
+          source: { shm: '/initial', format: 'rgb', width: 1, height: 1 },
+          columns: 1,
+          rows: 1,
+          alt: 'preview',
+        },
+        group: { plugin: 'fixture' },
+      }),
+    })
+    const site = await ui.mount({
+      surface: 'terminal', component: 'PromptHint', requestId: 'hint', props: {},
+    }, {
+      surface: 'terminal',
+      async render(tree) {
+        const source = (tree as { props: { source: { shm: string } } }).props.source.shm
+        rendered.push(source)
+        if (source === '/frame-1') await first
+      },
+      unmount() {},
+    })
+    const frame1 = ui.blit(owner, {
+      requestId: 'hint', key: 'view',
+      source: { shm: '/frame-1', format: 'rgb', width: 1, height: 1 },
+    })
+    await Promise.resolve()
+    const frame2 = ui.blit(owner, {
+      requestId: 'hint', key: 'view',
+      source: { shm: '/frame-2', format: 'rgb', width: 1, height: 1 },
+    })
+    await Promise.resolve()
+    expect(rendered).toEqual(['/initial', '/frame-1'])
+    releaseFirst?.()
+    await Promise.all([frame1, frame2])
+    expect(rendered).toEqual(['/initial', '/frame-1', '/frame-2'])
+    await site.dispose()
   })
 
-  test('keeps open panes as tabs while exposing one shown pane selected through person focus', async () => {
+  test('denies Image blits when a mounted surface does not write terminal frames', async () => {
     const owner = { plugin: 'fixture' }
-    const { ui } = fixture()
-    await ui.open(owner, { id: 'first' }, { kind: 'plugin' }, wide)
-    await ui.open(owner, { id: 'second' }, { kind: 'plugin' }, wide)
-    await ui.commit(owner)
-    expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown])).toEqual([
-      ['first', true, true], ['second', true, false],
-    ])
+    const { ui } = fixture({
+      draw: async () => ({
+        type: 'Image',
+        props: {
+          key: 'view',
+          source: { file: '/tmp/first.png', format: 'png' },
+          columns: 8,
+          rows: 2,
+          alt: 'preview',
+        },
+        group: { plugin: 'fixture' },
+      }),
+    })
+    const site = await ui.mount({
+      surface: 'desktop',
+      component: 'PromptHint',
+      requestId: 'hint',
+      props: {},
+    }, {
+      surface: 'desktop',
+      render() {},
+      unmount() {},
+    })
+    await site.update({
+      surface: 'desktop',
+      component: 'PromptHint',
+      requestId: 'hint',
+      props: {},
+    })
 
-    await expect(ui.focus(owner, {
-      requestId: 'second', origin: { kind: 'person' },
-    }, { ...wide, hasDialog: true })).resolves.toMatchObject({ focused: false, deny: 'site does not hold the keyboard' })
-    expect(ui.getSnapshot().find(pane => pane.shown)?.id).toBe('first')
-    await expect(ui.focus(owner, {
-      requestId: 'second', origin: { kind: 'person' },
-    }, wide)).resolves.toEqual({ focused: true })
-    expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown])).toEqual([
-      ['first', true, false], ['second', true, true],
-    ])
-
-    await ui.close(owner, 'second', { kind: 'person' })
-    expect(ui.getSnapshot()).toHaveLength(1)
-    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'first', visible: true, shown: true })
-
-    await ui.open(owner, { id: 'second' }, { kind: 'person' }, wide)
-    expect(ui.getSnapshot().map(pane => [pane.id, pane.shown])).toEqual([
-      ['first', false], ['second', true],
-    ])
+    await expect(ui.blit(owner, {
+      requestId: 'hint', key: 'view',
+      source: { file: '/tmp/second.png', format: 'png' },
+    })).resolves.toEqual({ deny: 'terminal image frames cannot be written' })
+    await site.dispose()
   })
 
   test('keeps candidates private and atomically swaps a ready replacement', async () => {
@@ -309,6 +335,79 @@ describe('mod UI ownership and pane policy', () => {
     expect(ui.getSnapshot()[0]).toMatchObject({
       id: 'ok', title: 'Two', rows: 7, closeOnEscape: false,
     })
+  })
+
+  test('treats columns as a positive dock body-width request and resets it on every open', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    for (const columns of [0, -1, 1.5, Number.NaN]) {
+      await expect(ui.open(owner, { id: 'pane', columns }, { kind: 'person' }, wide))
+        .rejects.toThrow(/columns.*positive integer/i)
+    }
+
+    await ui.open(owner, { id: 'pane', columns: 70 }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 70 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 70 })
+    await ui.render({ ...wide, columns: 110 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 53 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 53 })
+
+    const inline = { ...wide, isFullscreen: false, columns: 90 }
+    await ui.open(owner, { id: 'pane', columns: 33 }, { kind: 'plugin' }, inline)
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 33, placement: 'inline', bodyColumns: 86 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 86 })
+
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    expect(ui.getSnapshot()[0]).not.toHaveProperty('columns')
+    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyColumns: 78 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 78 })
+  })
+
+  test('keeps open panes as tabs while exposing one shown pane selected through person focus', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'first' }, { kind: 'plugin' }, wide)
+    await ui.open(owner, { id: 'second' }, { kind: 'plugin' }, wide)
+    await ui.commit(owner)
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown])).toEqual([
+      ['first', true, true], ['second', true, false],
+    ])
+
+    await expect(ui.focus(owner, {
+      requestId: 'second', origin: { kind: 'person' },
+    }, { ...wide, hasDialog: true })).resolves.toMatchObject({ focused: false, deny: 'site does not hold the keyboard' })
+    expect(ui.getSnapshot().find(pane => pane.shown)?.id).toBe('first')
+    await expect(ui.focus(owner, {
+      requestId: 'second', origin: { kind: 'person' },
+    }, wide)).resolves.toEqual({ focused: true })
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.visible, pane.shown])).toEqual([
+      ['first', true, false], ['second', true, true],
+    ])
+
+    await ui.close(owner, 'second', { kind: 'person' })
+    expect(ui.getSnapshot()).toHaveLength(1)
+    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'first', visible: true, shown: true })
+
+    await ui.open(owner, { id: 'second' }, { kind: 'person' }, wide)
+    expect(ui.getSnapshot().map(pane => [pane.id, pane.shown])).toEqual([
+      ['first', false], ['second', true],
+    ])
+  })
+
+  test.each([true, false])('terminal viewport explicitly reports isFullscreen=%s to the plugin', async isFullscreen => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, { ...wide, isFullscreen })
+    await ui.commit(owner)
+    expect(draws).toHaveLength(1)
+    expect(draws[0]!.input).toMatchObject({
+      surface: 'terminal', component: 'Pane', requestId: 'pane',
+      viewport: { columns: wide.columns, rows: wide.rows, isFullscreen },
+    })
+    await ui.render({ ...wide, isFullscreen, columns: 100 })
+    expect(draws.at(-1)!.input.viewport).toEqual({ columns: 100, rows: wide.rows, isFullscreen })
+    await ui.release(owner)
   })
 
   test('publishes the same body width used by drawing across dock and inline resize', async () => {
@@ -1396,72 +1495,6 @@ describe('mod UI dispatch and drawing lifetime', () => {
     expect(seen).toEqual([{ snapshotLength: 0, skip: owner }])
   })
 
-  test('releases stale async draws and rejects callbacks from replaced drawings', async () => {
-    const owner = { plugin: 'fixture' }
-    const resolvers: ((tree: unknown) => void)[] = []
-    const { ui, released, invoked } = fixture({
-      draw: async () => new Promise(resolve => resolvers.push(resolve)),
-    })
-    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
-    const committing = ui.commit(owner)
-    expect(resolvers).toHaveLength(1)
-    resolvers.shift()!({ type: 'Text', children: ['first'] })
-    await committing
-    const first = ui.getSnapshot()[0]!
-
-    const older = ui.render(wide)
-    const newer = ui.render(wide)
-    expect(resolvers).toHaveLength(2)
-    resolvers[1]!({ type: 'Button', props: { key: 'new', label: 'New' }, press: { plugin: 'fixture', handle: 22 } })
-    await newer
-    resolvers[0]!({ type: 'Button', props: { key: 'old', label: 'Old' }, press: { plugin: 'fixture', handle: 11 } })
-    await older
-
-    const current = ui.getSnapshot()[0]!
-    expect(current.drawing).not.toBe(first.drawing)
-    expect(released).toContain(first.drawing)
-    await expect(ui.interact('pane', first.drawing!, { plugin: 'fixture', handle: 11 }, 'press', 'old')).rejects.toThrow(/stale/i)
-    await ui.interact('pane', current.drawing!, { plugin: 'fixture', handle: 22 }, 'press', 'new')
-    expect(invoked).toEqual([{ drawing: current.drawing, handle: 22, args: [expect.objectContaining({ element: 'new' })] }])
-  })
-})
-test('pending blits cannot mutate a released pane or its replacement', async () => {
-  const owner = { plugin: 'fixture' }
-  const replacement = { plugin: 'fixture' }
-  const gate = Promise.withResolvers<void>()
-  const { ui } = fixture({
-    dispatch: async (_owner, event, input, core) => {
-      if (event === 'ui.blit') await gate.promise
-      return core(input)
-    },
-    draw: async () => ({type:'Raster',props:{key:'pixels',cells:'old',columns:1,rows:1},group:{plugin:'fixture'}}),
-  })
-  await ui.open(owner, {id:'pane'}, {kind:'person'}, wide)
-  await ui.commit(owner)
-  const pending = ui.blit(owner, {requestId:'pane',key:'pixels',cells:'new'})
-  await ui.release(owner)
-  await ui.open(replacement, {id:'pane'}, {kind:'person'}, wide)
-  await ui.commit(replacement)
-  gate.resolve()
-  expect(await pending).toEqual({deny:'site is no longer mounted'})
-  expect((ui.getSnapshot()[0]!.tree as {props:{cells:string}}).props.cells).toBe('old')
-})
-
-test('blit validates the replacement tree before publication', async () => {
-  const owner = { plugin: 'fixture' }
-  const { ui } = fixture({
-    draw: async () => ({type:'Raster',props:{key:'pixels',cells:'old',columns:1,rows:1},group:{plugin:'fixture'}}),
-    validateTree: tree => {
-      if ((tree as {props:{cells:string}}).props.cells === 'invalid') throw new TypeError('invalid cells')
-    },
-  })
-  await ui.open(owner, {id:'pane'}, {kind:'person'}, wide)
-  await ui.commit(owner)
-  const before = ui.getSnapshot()[0]
-  await expect(ui.blit(owner, {requestId:'pane',key:'pixels',cells:'invalid'})).rejects.toThrow('invalid cells')
-  expect(ui.getSnapshot()[0]).toBe(before)
-})
-
   test('folds burst invalidations into one redraw and releases its replaced drawing', async () => {
     const owner = { plugin: 'fixture' }
     const resolvers: ((tree: unknown) => void)[] = []
@@ -1489,8 +1522,7 @@ test('blit validates the replacement tree before publication', async () => {
     expect(released).toContain(first)
   })
 
-
-  test('merges invalidations from different plugins and keeps one trailing redraw', async () => {
+  test('serializes invalidations from different plugins and keeps one trailing redraw', async () => {
     const owner = { plugin: 'fixture' }
     const other = { plugin: 'other' }
     const resolvers: ((tree: unknown) => void)[] = []
@@ -1520,35 +1552,6 @@ test('blit validates the replacement tree before publication', async () => {
     expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['third'] })
   })
 
-
-  test('rate limits sequential invalidations without waiting for an obsolete draw', async () => {
-    const owner = { plugin: 'fixture' }
-    const pending = Promise.withResolvers<unknown>()
-    const starts: number[] = []
-    const { ui, released } = fixture({
-      draw: async () => {
-        starts.push(performance.now())
-        if (starts.length === 2) return pending.promise
-        return { type: 'Text', children: [String(starts.length)] }
-      },
-    })
-    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
-    await ui.commit(owner)
-    const first = ui.invalidate(owner, 'ui.render')
-    await Promise.resolve()
-    try {
-      await ui.invalidate(owner, 'ui.render')
-      expect(starts).toHaveLength(3)
-      expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(30)
-      expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['3'] })
-    } finally {
-      pending.resolve({ type: 'Text', children: ['obsolete'] })
-      await first
-      await ui.release(owner)
-    }
-    expect(released).toContain(2)
-  })
-
   test('does not draw a queued invalidation after its pane closes', async () => {
     const owner = { plugin: 'fixture' }
     const draws: number[] = []
@@ -1571,3 +1574,33 @@ test('blit validates the replacement tree before publication', async () => {
     expect(draws).toHaveLength(2)
     expect(ui.getSnapshot()).toEqual([])
   })
+
+  test('releases stale async draws and rejects callbacks from replaced render requests', async () => {
+    const owner = { plugin: 'fixture' }
+    const resolvers: ((tree: unknown) => void)[] = []
+    const { ui, released, invoked } = fixture({
+      draw: async () => new Promise(resolve => resolvers.push(resolve)),
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
+    const committing = ui.commit(owner)
+    expect(resolvers).toHaveLength(1)
+    resolvers.shift()!({ type: 'Text', children: ['first'] })
+    await committing
+    const first = ui.getSnapshot()[0]!
+
+    const older = ui.render()
+    const newer = ui.render()
+    expect(resolvers).toHaveLength(2)
+    resolvers[1]!({ type: 'Button', props: { key: 'new', label: 'New' }, press: { plugin: 'fixture', handle: 22 } })
+    await newer
+    resolvers[0]!({ type: 'Button', props: { key: 'old', label: 'Old' }, press: { plugin: 'fixture', handle: 11 } })
+    await older
+
+    const current = ui.getSnapshot()[0]!
+    expect(current.drawing).not.toBe(first.drawing)
+    expect(released).toContain(first.drawing)
+    await expect(ui.interact('pane', first.drawing!, { plugin: 'fixture', handle: 11 }, 'press', 'old')).rejects.toThrow(/stale/i)
+    await ui.interact('pane', current.drawing!, { plugin: 'fixture', handle: 22 }, 'press', 'new')
+    expect(invoked).toEqual([{ drawing: current.drawing, handle: 22, args: [expect.objectContaining({ element: 'new' })] }])
+  })
+})

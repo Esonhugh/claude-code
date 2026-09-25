@@ -64,6 +64,21 @@ export type ModWireValue =
   | { type: 'stream'; invocation: number }
   | { type: 'clock'; now: number; wait: number; cancel: number; run: number }
   | { type: 'ui'; methods: [string, ModWireValue][] }
+  | { type: 'ui-core'; surface: string; component: string }
+  | {
+      type: 'ui-function'
+      publication: number
+      consumer: number
+      provider: number
+      id: number
+    }
+  | {
+      type: 'ui-consumer-function'
+      publication: number
+      consumer: number
+      provider: number
+      id: number
+    }
 
 export type ModWorkerRequest =
   | { id: number; type: 'client'; environment: number; request: import('./client.js').ModClientRequest }
@@ -94,6 +109,18 @@ export type ModWorkerRequest =
   | { id: number; type: 'unload'; environment: number }
   | { id: number; type: 'release-drawing'; environment: number; drawing: number }
   | { id: number; type: 'ui-access'; environment: number; allowed: boolean }
+  | {
+      id: number
+      type: 'ui-tables'
+      environment: number
+      publication: number
+      publish: boolean
+      staged: number[]
+      consumers: {
+        environment: number
+        tables: [string, ModWireValue][]
+      }[]
+    }
   | { type: 'abort'; environment: number; invocation: number }
   | { type: 'trace'; environment: number; invocation: number; trace: ModWireValue }
   | {
@@ -126,4 +153,11 @@ export type ModWorkerReply =
       call: number
       handle: number
       args: ModWireValue[]
+    }
+  | {
+      type: 'ui-call'
+      environment: number
+      call: number
+      wire: ModWireValue
+      props: ModWireValue
     }

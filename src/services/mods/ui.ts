@@ -1,5 +1,28 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { ModInput } from './types.js'
+import type { ModClients } from './client.js'
+
+export type ModRenderSurface = 'terminal' | 'desktop' | 'mobile' | 'vscode'
+export type ModRenderComponent = 'AskUserQuestion' | 'UserMessage' | 'AssistantMessage' | 'ToolUse' | 'ToolResult' | 'ToolGroup' | 'ToolProgress' | 'CommandOutput' | 'Spinner' | 'TurnDuration' | 'InfoNotice' | 'SessionMode' | 'PromptHint' | 'AbovePrompt' | 'Pane'
+export type ModRenderInput = {
+  surface: ModRenderSurface
+  component: ModRenderComponent
+  requestId: string
+  props: ModInput
+  viewport?: { columns: number; rows: number; isFullscreen?: boolean }
+}
+export type ModRenderConsumer = {
+  surface: ModRenderSurface
+  clientId?: string
+  signal?: AbortSignal
+  render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput): void | Promise<void>
+  unmount(): void | Promise<void>
+}
+export type ModRenderSite = {
+  update(input: ModRenderInput): Promise<void>
+  interact(drawing: number, callback: ModUiCallback, kind: ModUiInteraction, element: string, value?: string): Promise<unknown>
+  dispose(): Promise<void>
+}
 
 export type ModUiOwner = object
 export type ModUiOrigin =
@@ -30,6 +53,7 @@ export type ModUiOpenArgs = {
 export type ModUiCallback = { plugin: string; handle: number }
 export type ModUiInteraction =
   | 'press'
+  | 'link.press'
   | 'input.change'
   | 'input.submit'
   | 'select'
@@ -42,6 +66,7 @@ export type ModUiKeyRow = {
 }
 
 export type ModUiPane = {
+  clients?: ModClients
   id: string
   title: string
   plugin: string
@@ -71,12 +96,15 @@ export type ModUiDispatch = (
   core: (input: ModInput) => Promise<unknown>,
   options: {
     origin?: ModUiOrigin
+    drawing?: number
     skipOwner?: ModUiOwner
     restoreInput?: (rewritten: ModInput, received: ModInput) => ModInput
   },
 ) => Promise<unknown>
 
 export type ModUi = {
+  mount(input: ModRenderInput, consumer: ModRenderConsumer): Promise<ModRenderSite>
+  dispose(): Promise<void>
   open(
     owner: ModUiOwner,
     pane: ModUiOpenArgs,
@@ -93,7 +121,7 @@ export type ModUi = {
     rows?: number
   }): Promise<unknown>
   invalidate(owner: ModUiOwner, event: string): Promise<void>
-  render(presentation: ModUiPresentation): Promise<void>
+  render(presentation?: ModUiPresentation): Promise<void>
   scroll(
     owner: ModUiOwner,
     input: {
@@ -152,6 +180,20 @@ type PaneState = Omit<ModUiPane, 'bodyColumns' | 'revision'> & {
   keyRows: readonly ModUiKeyRow[]
 }
 
+type RedrawWaiter = {
+  promise: Promise<void>
+  resolve(): void
+  reject(reason?: unknown): void
+}
+
+type RedrawSchedule = {
+  lastStarted: number
+  running: number
+  scheduled: boolean
+  timer?: ReturnType<typeof setTimeout>
+  waiters: RedrawWaiter[]
+}
+
 type BlitFrame = {
   apply(): unknown | Promise<unknown>
   waiters: ReturnType<typeof Promise.withResolvers<unknown>>[]
@@ -159,6 +201,8 @@ type BlitFrame = {
 
 const idPattern = /^[A-Za-z0-9_-]{1,64}$/
 const invalidatableRenderEvent = 'ui.render'
+const normalRedrawInterval = 100
+const shownRedrawInterval = 1000 / 30
 
 function validateOwner(owner: ModUiOwner): void {
   if ((typeof owner !== 'object' && typeof owner !== 'function') || owner === null)
@@ -209,6 +253,13 @@ function copyOpen(input: ModUiOpenArgs, expectedId?: string): Readonly<ModUiOpen
   })
 }
 
+function freezeRenderTree(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value
+  seen.add(value)
+  for (const child of Object.values(value)) freezeRenderTree(child, seen)
+  return Object.freeze(value)
+}
+
 function validateCallback(callback: ModUiCallback): void {
   if (
     !callback ||
@@ -229,11 +280,14 @@ export function createModUi({
   invokeDrawing,
   releaseDrawing,
   validateTree,
+  attach,
+  detach,
+  clients,
 }: {
   notify?: (listener: () => void) => void
   pluginOf(owner: ModUiOwner): string
   dispatch: ModUiDispatch
-  draw(owner: ModUiOwner, input: ModInput, drawing: number): Promise<unknown>
+  draw(owner: ModUiOwner, input: ModInput, drawing: number, core?: (input: ModInput) => Promise<unknown>, validate?: (tree: unknown) => void): Promise<unknown>
   invokeDrawing(
     owner: ModUiOwner,
     drawing: number,
@@ -241,7 +295,10 @@ export function createModUi({
     args: unknown[],
   ): Promise<unknown>
   releaseDrawing(owner: ModUiOwner, drawing: number): Promise<void>
-  validateTree?: (tree: unknown) => void
+  validateTree?: (tree: unknown, input?: ModRenderInput, engineRefs?: ReadonlySet<number>) => void
+  attach?(input: { surface: ModRenderSurface; clientId: string; viewport?: ModRenderInput['viewport'] }, signal?: AbortSignal): Promise<void>
+  detach?(input: { surface: ModRenderSurface; clientId: string; reason: 'detach' }, signal?: AbortSignal): Promise<void>
+  clients?: ModClients
 }): ModUi {
   const candidates = new Map<ModUiOwner, Map<string, PaneState>>()
   const active = new Map<string, PaneState>()
@@ -250,92 +307,23 @@ export function createModUi({
   const personRequested = new Set<string>()
   const openGenerations = new Map<string, number>()
   const pendingDraws = new WeakMap<PaneState, Promise<void>>()
-  const paneRedraws = new WeakMap<PaneState, {
-    lastStarted: number
-    queued?: Promise<void>
-  }>()
+  const paneRedraws = new WeakMap<PaneState, RedrawSchedule>()
+  const siteRedraws = new WeakMap<ModRenderSite, RedrawSchedule>()
   const pendingBlits = new Map<string, BlitFrame>()
   const serializedBlits = new Map<string, Promise<void>>()
   const blitGenerations = new Map<string, number>()
   const focusWaiters = new Set<() => void>()
+  const sites = new Map<ModUiOwner, ModRenderSite & {
+    redraw(): Promise<void>
+    blit(plugin: string, input: {
+      requestId: string; key: string; cells?: string; source?: unknown
+      columns?: number; rows?: number
+    }): Promise<unknown>
+  }>()
   let snapshot: readonly ModUiPane[] = Object.freeze([])
   let nextDrawing = 1
   let revision = 0
   let personFocusGeneration = 0
-
-  function queueBlit(key: string, apply: () => unknown | Promise<unknown>): Promise<unknown> {
-    const waiter = Promise.withResolvers<unknown>()
-    const pending = pendingBlits.get(key)
-    if (pending) {
-      pending.apply = apply
-      pending.waiters.push(waiter)
-      return waiter.promise
-    }
-    const frame: BlitFrame = { apply, waiters: [waiter] }
-    pendingBlits.set(key, frame)
-    queueMicrotask(() => {
-      if (pendingBlits.get(key) !== frame) return
-      pendingBlits.delete(key)
-      void Promise.resolve().then(frame.apply).then(
-        result => frame.waiters.forEach(entry => entry.resolve(result)),
-        error => frame.waiters.forEach(entry => entry.reject(error)),
-      )
-    })
-    return waiter.promise
-  }
-
-  function serializeBlit(key: string, apply: () => unknown | Promise<unknown>): Promise<unknown> {
-    const previous = serializedBlits.get(key) ?? Promise.resolve()
-    const work = previous.then(apply)
-    const settled = work.then(() => {}, () => {})
-    serializedBlits.set(key, settled)
-    void settled.finally(() => {
-      if (serializedBlits.get(key) === settled) serializedBlits.delete(key)
-    })
-    return work
-  }
-
-  function blitNode(
-    value: unknown,
-    plugin: string,
-    key: string,
-    seen = new Set<object>(),
-  ): Record<string, unknown> | undefined {
-    if (!value || typeof value !== 'object' || seen.has(value)) return undefined
-    seen.add(value)
-    if (!Array.isArray(value)) {
-      const node = value as Record<string, unknown>
-      const props = node.props as Record<string, unknown> | undefined
-      if (
-        (node.type === 'Raster' || node.type === 'Image') &&
-        props?.key === key &&
-        (node.group as { plugin?: string } | undefined)?.plugin === plugin
-      ) return node
-    }
-    for (const child of Array.isArray(value)
-      ? value
-      : Object.values(value as Record<string, unknown>)) {
-      const found = blitNode(child, plugin, key, seen)
-      if (found) return found
-    }
-    return undefined
-  }
-
-  function replaceNode(
-    value: unknown,
-    target: Record<string, unknown>,
-    replacement: Record<string, unknown>,
-    seen = new Map<object, unknown>(),
-  ): unknown {
-    if (!value || typeof value !== 'object') return value
-    if (value === target) return replacement
-    if (seen.has(value)) return seen.get(value)
-    const output: Record<string, unknown> | unknown[] = Array.isArray(value) ? [] : {}
-    seen.set(value, output)
-    for (const [key, child] of Object.entries(value as Record<string, unknown>))
-      Object.defineProperty(output, key, { value: replaceNode(child, target, replacement, seen), enumerable: true })
-    return Object.freeze(output)
-  }
 
   function askedKey(owner: ModUiOwner, id: string): string {
     return `${pluginOf(owner)}\0${id}`
@@ -373,6 +361,7 @@ export function createModUi({
     const visible = pane.visible && pane.tree !== undefined
     return Object.freeze({
       id: pane.id,
+      ...(clients ? { clients } : {}),
       title: pane.title,
       plugin: pane.plugin,
       owner: pane.owner,
@@ -415,7 +404,8 @@ export function createModUi({
     reconcileShown()
     revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
-    notify(wakeFocusWaiters)
+    clients?.reconcile(snapshot)
+    wakeFocusWaiters()
     for (const listener of [...listeners]) notify(listener)
   }
 
@@ -434,6 +424,7 @@ export function createModUi({
       viewport: Object.freeze({
         columns: pane.presentation.columns,
         rows: pane.presentation.rows,
+        isFullscreen: pane.presentation.isFullscreen,
       }),
       props: Object.freeze({
         title: pane.title,
@@ -475,29 +466,99 @@ export function createModUi({
     return work
   }
 
-  function invalidatePane(pane: PaneState): Promise<void> {
-    let schedule = paneRedraws.get(pane)
+  function scheduleRedraw(
+    target: PaneState | ModRenderSite,
+    schedules: WeakMap<object, RedrawSchedule>,
+    interval: number,
+    drawTarget: () => Promise<void>,
+    current: () => boolean,
+  ): Promise<void> {
+    let schedule = schedules.get(target)
     if (!schedule) {
-      schedule = { lastStarted: -Infinity }
-      paneRedraws.set(pane, schedule)
+      schedule = { lastStarted: 0, running: 0, scheduled: false, waiters: [] }
+      schedules.set(target, schedule)
     }
-    if (schedule.queued) return schedule.queued
-    const state = schedule
-    const work = Promise.resolve().then(async () => {
-      const delay = Math.max(0, 1000 / 30 - (performance.now() - state.lastStarted))
-      if (delay > 0) await new Promise<void>(resolve => setTimeout(resolve, delay))
-      state.queued = undefined
-      state.lastStarted = performance.now()
-      if (active.get(pane.id) === pane) await redraw(pane)
-    })
-    state.queued = work
+    const waiter = Promise.withResolvers<void>()
+    schedule.waiters.push(waiter)
     wakeFocusWaiters()
-    return work
+    if (schedule.scheduled) return waiter.promise
+
+    const start = () => {
+      schedule!.timer = undefined
+      schedule!.scheduled = false
+      schedule!.running++
+      schedule!.lastStarted = performance.now()
+      const waiters = schedule!.waiters.splice(0)
+      const work = current() ? drawTarget() : Promise.resolve()
+      void work.then(
+        () => waiters.forEach(entry => entry.resolve()),
+        error => waiters.forEach(entry => entry.reject(error)),
+      ).finally(() => { schedule!.running-- })
+    }
+    const delay = Math.max(0, interval - (performance.now() - schedule.lastStarted))
+    schedule.scheduled = true
+    if (delay === 0) queueMicrotask(start)
+    else schedule.timer = setTimeout(start, delay)
+    return waiter.promise
   }
 
   function pendingPaneWork(pane: PaneState): Promise<void> | undefined {
     const schedule = paneRedraws.get(pane)
-    return schedule?.queued ?? pendingDraws.get(pane)
+    const scheduled = schedule?.waiters.at(-1)?.promise
+    if (scheduled) return scheduled
+    return pendingDraws.get(pane)
+  }
+
+  function queueBlit(key: string, apply: () => unknown | Promise<unknown>): Promise<unknown> {
+    const waiter = Promise.withResolvers<unknown>()
+    const pending = pendingBlits.get(key)
+    if (pending) {
+      pending.apply = apply
+      pending.waiters.push(waiter)
+      return waiter.promise
+    }
+    const frame: BlitFrame = { apply, waiters: [waiter] }
+    pendingBlits.set(key, frame)
+    queueMicrotask(() => {
+      if (pendingBlits.get(key) !== frame) return
+      pendingBlits.delete(key)
+      void Promise.resolve().then(frame.apply).then(
+        result => frame.waiters.forEach(entry => entry.resolve(result)),
+        error => frame.waiters.forEach(entry => entry.reject(error)),
+      )
+    })
+    return waiter.promise
+  }
+
+  function serializeBlit(key: string, apply: () => unknown | Promise<unknown>): Promise<unknown> {
+    const previous = serializedBlits.get(key) ?? Promise.resolve()
+    const work = previous.then(apply)
+    const settled = work.then(() => {}, () => {})
+    serializedBlits.set(key, settled)
+    void settled.finally(() => {
+      if (serializedBlits.get(key) === settled) serializedBlits.delete(key)
+    })
+    return work
+  }
+
+  function invalidatePane(pane: PaneState): Promise<void> {
+    return scheduleRedraw(
+      pane,
+      paneRedraws,
+      pane.shown ? shownRedrawInterval : normalRedrawInterval,
+      () => redraw(pane),
+      () => active.get(pane.id) === pane,
+    )
+  }
+
+  function invalidateSite(site: (typeof sites extends Map<ModUiOwner, infer S> ? S : never)): Promise<void> {
+    return scheduleRedraw(
+      site,
+      siteRedraws,
+      shownRedrawInterval,
+      () => site.redraw(),
+      () => [...sites.values()].includes(site),
+    )
   }
 
   async function drawPane(pane: PaneState): Promise<void> {
@@ -632,9 +693,9 @@ export function createModUi({
       const props = node.props as Record<string, unknown> | undefined
       const press = node.press as Partial<ModUiCallback> | undefined
       if (
-        ['Button', 'Select', 'Input'].includes(String(node.type)) &&
+        ['Button', 'Select', 'Input', 'Client'].includes(String(node.type)) &&
         props?.key === element &&
-        press?.plugin === plugin
+        (node.type === 'Client' ? (node.group as { plugin?: string } | undefined)?.plugin : press?.plugin) === plugin
       ) return true
     }
     for (const child of Array.isArray(value)
@@ -643,6 +704,48 @@ export function createModUi({
       if (focusableNode(child, element, plugin, seen)) return true
     }
     return false
+  }
+
+  function blitNode(
+    value: unknown,
+    plugin: string,
+    key: string,
+    seen = new Set<object>(),
+  ): Record<string, unknown> | undefined {
+    if (!value || typeof value !== 'object' || seen.has(value)) return undefined
+    seen.add(value)
+    if (!Array.isArray(value)) {
+      const node = value as Record<string, unknown>
+      const props = node.props as Record<string, unknown> | undefined
+      if (
+        (node.type === 'Raster' || node.type === 'Image') &&
+        props?.key === key &&
+        (node.group as { plugin?: string } | undefined)?.plugin === plugin
+      ) return node
+    }
+    for (const child of Array.isArray(value)
+      ? value
+      : Object.values(value as Record<string, unknown>)) {
+      const found = blitNode(child, plugin, key, seen)
+      if (found) return found
+    }
+    return undefined
+  }
+
+  function replaceNode(
+    value: unknown,
+    target: Record<string, unknown>,
+    replacement: Record<string, unknown>,
+    seen = new Map<object, unknown>(),
+  ): unknown {
+    if (!value || typeof value !== 'object') return value
+    if (value === target) return replacement
+    if (seen.has(value)) return seen.get(value)
+    const output: Record<string, unknown> | unknown[] = Array.isArray(value) ? [] : {}
+    seen.set(value, output)
+    for (const [key, child] of Object.entries(value as Record<string, unknown>))
+      Object.defineProperty(output, key, { value: replaceNode(child, target, replacement, seen), enumerable: true })
+    return Object.freeze(output)
   }
 
   function interactiveNode(
@@ -658,9 +761,11 @@ export function createModUi({
       const node = value as Record<string, unknown>
       const expectedType = kind === 'press'
         ? 'Button'
-        : kind === 'select'
-          ? 'Select'
-          : 'Input'
+        : kind === 'link.press'
+          ? 'Markdown'
+          : kind === 'select'
+            ? 'Select'
+            : 'Input'
       const props = node.props as Record<string, unknown> | undefined
       const press = node.press as Partial<ModUiCallback> | undefined
       if (
@@ -679,6 +784,195 @@ export function createModUi({
   }
 
   const ui: ModUi = {
+    async dispose() {
+      await Promise.all([...sites.values()].map(site => site.dispose()))
+    },
+    async mount(initial, consumer) {
+      const owner = {}
+      let current: ModRenderInput | undefined
+      let tree: unknown
+      let drawing: number | undefined
+      let disposed = false
+      let attached = false
+      let disposal: Promise<void> | undefined
+      let queue = Promise.resolve()
+      const clientId = consumer.clientId ?? `${consumer.surface}:default`
+      if (typeof clientId !== 'string' || !clientId) throw new TypeError('Mod UI render clientId must be a non-empty string')
+      const site: ModRenderSite & {
+        redraw(): Promise<void>
+        blit(plugin: string, input: {
+          requestId: string; key: string; cells?: string; source?: unknown
+          columns?: number; rows?: number
+        }): Promise<unknown>
+        update(input: ModRenderInput, force?: boolean): Promise<void>
+      } = {
+        async redraw() {
+          if (!current) await queue
+          if (current && !disposed) await site.update(current, true)
+        },
+        async blit(plugin, input) {
+          await queue
+          if (disposed || !current || tree === undefined)
+            return { deny: 'site is not open' }
+          if (current.requestId !== input.requestId)
+            return { deny: 'site is not open' }
+          const target = blitNode(tree, plugin, input.key)
+          if (!target) return { deny: 'no owned Raster or Image is mounted under that key' }
+          const props = target.props as Record<string, unknown>
+          if (input.columns !== undefined && input.columns !== props.columns ||
+              input.rows !== undefined && input.rows !== props.rows)
+            return { deny: 'mounted dimensions do not match' }
+          const raster = target.type === 'Raster'
+          if (raster !== (input.cells !== undefined) || raster === (input.source !== undefined))
+            return { deny: 'blit payload kind does not match the mounted element' }
+          if (!raster && consumer.surface !== 'terminal')
+            return { deny: 'terminal image frames cannot be written' }
+          const apply = async () => {
+            if (disposed || !current || tree === undefined)
+              return { deny: 'site is not open' }
+            const latest = blitNode(tree, plugin, input.key)
+            if (!latest) return { deny: 'no owned Raster or Image is mounted under that key' }
+            const latestProps = latest.props as Record<string, unknown>
+            if (latest.type !== target.type)
+              return { deny: 'blit payload kind does not match the mounted element' }
+            if (input.columns !== undefined && input.columns !== latestProps.columns ||
+                input.rows !== undefined && input.rows !== latestProps.rows)
+              return { deny: 'mounted dimensions do not match' }
+            const replacement = Object.freeze({
+              ...latest,
+              props: Object.freeze({
+                ...latestProps,
+                ...(raster ? { cells: input.cells } : { source: input.source }),
+              }),
+            })
+            const nextTree = replaceNode(tree, latest, replacement)
+            validateTree?.(nextTree, current)
+            await consumer.render(nextTree, drawing!, () => {
+              throw new Error('Engine refs are unavailable while blitting')
+            })
+            tree = nextTree
+            return {}
+          }
+          const serialize = () => {
+            const work = queue.then(apply)
+            queue = work.then(() => {}, () => {})
+            return work
+          }
+          const shared = !raster && input.source !== null && typeof input.source === 'object' &&
+            Object.hasOwn(input.source, 'shm')
+          return shared
+            ? serialize()
+            : queueBlit(`site\0${clientId}\0${input.requestId}\0${plugin}\0${input.key}`, serialize)
+        },
+        update(input, force = false) {
+          let request = structuredClone(input)
+          const work = queue.then(async () => {
+            if (disposed) throw new Error('Mod UI render site is stale')
+            if (force && current) request = structuredClone(current)
+            if (request.surface !== consumer.surface || !['terminal', 'desktop', 'mobile', 'vscode'].includes(request.surface))
+              throw new TypeError('Mod UI render surface must match its consumer')
+            if (!['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane'].includes(request.component))
+              throw new TypeError('Unknown Mod UI render component')
+            if (typeof request.requestId !== 'string' || !request.requestId || !request.props || typeof request.props !== 'object' || Array.isArray(request.props))
+              throw new TypeError('Mod UI render requires a requestId and props')
+            if (current && (request.component !== current.component || request.requestId !== current.requestId))
+              throw new TypeError('Mod UI render site identity cannot change')
+            if (request.viewport && (!Number.isInteger(request.viewport.columns) || request.viewport.columns < 1 ||
+                !Number.isInteger(request.viewport.rows) || request.viewport.rows < 1 ||
+                request.viewport.isFullscreen !== undefined && typeof request.viewport.isFullscreen !== 'boolean'))
+              throw new TypeError('Invalid Mod UI render viewport')
+            if (!force && current && isDeepStrictEqual({...request, viewport: {...request.viewport, rows: undefined}},
+                {...current, viewport: {...current.viewport, rows: undefined}})) {
+              current = request
+              return
+            }
+            const next = nextDrawing++
+            let painting = true
+            try {
+              if (!attached && request.surface !== 'terminal') {
+                await attach?.({
+                  surface: request.surface,
+                  clientId,
+                  ...(request.viewport === undefined ? {} : { viewport: structuredClone(request.viewport) }),
+                }, consumer.signal)
+                attached = true
+              }
+              const originals = new Map<number, ModInput>([[0, structuredClone(request.props)]])
+              const refs = new Set([0])
+              const validate = (tree: unknown) => validateTree?.(tree, request, refs)
+              const result = await draw(owner, request, next, async input => {
+                const ref = originals.size
+                originals.set(ref, structuredClone(input.props as ModInput))
+                refs.add(ref)
+                return { type: 'engine', ref }
+              }, validate)
+              validate(result)
+              if (disposed) { await releaseDrawing(owner, next); return }
+              if (request.surface !== 'terminal') freezeRenderTree(result)
+              await consumer.render(result, next, ref => {
+                if (disposed || !painting && drawing !== next || !originals.has(ref)) throw new Error('Unknown or stale Mod UI engine ref')
+                return structuredClone(originals.get(ref)!)
+              })
+              const previous = drawing
+              drawing = next
+              tree = result
+              current = request
+              if (previous !== undefined) {
+                await releaseDrawing(owner, previous)
+              }
+            } catch (error) {
+              await releaseDrawing(owner, next)
+              throw error
+            } finally { painting = false }
+          })
+          queue = work.catch(() => {})
+          return work
+        },
+        async interact(expectedDrawing, callback, kind, element, value) {
+          validateCallback(callback)
+          const lease = drawing
+          if (disposed || lease === undefined || lease !== expectedDrawing || !current || !interactiveNode(tree, kind, element, callback))
+            throw new Error('Mod UI drawing callback is stale')
+          if (!['press', 'link.press', 'input.change', 'input.submit', 'select'].includes(kind)) throw new TypeError('Mod UI interaction kind is invalid')
+          if (kind !== 'press' && typeof value !== 'string') throw new TypeError('Mod UI interaction value must be a string')
+          const input = {
+            surface: current.surface, component: current.component, requestId: current.requestId,
+            plugin: callback.plugin, element,
+            ...(kind === 'press' ? {} : kind === 'link.press' ? {link:{href:value}} : kind === 'select' ? {value} : {value, kind: kind === 'input.submit' ? 'submit' : 'change'}),
+          }
+          return dispatch(owner, kind === 'press' || kind === 'link.press' ? 'ui.press' : kind === 'select' ? 'ui.select' : 'ui.input', input, async rewritten => {
+            if (disposed || drawing !== lease) throw new Error('Mod UI drawing callback is stale')
+            await invokeDrawing(owner, lease, callback.handle, [rewritten])
+            return kind === 'press' || kind === 'link.press' ? {element: rewritten.element} : {element: rewritten.element, value: rewritten.value}
+          }, {origin: {kind:'person'}, drawing: lease})
+        },
+        dispose() {
+          if (disposal) return disposal
+          disposed = true
+          disposal = (async () => {
+            await queue
+            try {
+              if (drawing !== undefined) {
+                const previous = drawing
+                drawing = undefined
+                await releaseDrawing(owner, previous)
+              }
+            } finally {
+              try { if (attached) await detach?.({surface:consumer.surface,clientId,reason:'detach'}, consumer.signal) }
+              finally {
+                attached = false
+                try { await consumer.unmount() }
+                finally { sites.delete(owner) }
+              }
+            }
+          })()
+          return disposal
+        },
+      }
+      sites.set(owner, site)
+      try { await site.update(initial); return site }
+      catch (error) { await site.dispose(); throw error }
+    },
     async open(owner, input, origin, rawPresentation) {
       validateOwner(owner)
       const requested = copyOpen(input)
@@ -803,6 +1097,10 @@ export function createModUi({
       const generation = (blitGenerations.get(key) ?? 0) + 1
       blitGenerations.set(key, generation)
       if (!pane || !pane.visible || pane.tree === undefined) {
+        for (const site of sites.values()) {
+          const result = await site.blit(plugin, input)
+          if ((result as { deny?: string }).deny !== 'site is not open') return result
+        }
         return { deny: 'site is not open' }
       }
       const target = blitNode(pane.tree, plugin, input.key)
@@ -814,6 +1112,8 @@ export function createModUi({
       const raster = target.type === 'Raster'
       if (raster !== (input.cells !== undefined) || raster === (input.source !== undefined))
         return { deny: 'blit payload kind does not match the mounted element' }
+      if (target.type === 'Image' && pane.shown === false)
+        return { deny: 'terminal image frames cannot be written' }
       const received = Object.freeze({ ...input }) as ModInput
       return dispatch(owner, 'ui.blit', received, async rewritten => {
         if (rewritten.requestId !== input.requestId || rewritten.key !== input.key)
@@ -838,6 +1138,8 @@ export function createModUi({
           if (rewritten.columns !== undefined && rewritten.columns !== latestProps.columns ||
               rewritten.rows !== undefined && rewritten.rows !== latestProps.rows)
             return { deny: 'mounted dimensions do not match' }
+          if (latest.type === 'Image' && pane.shown === false)
+            return { deny: 'terminal image frames cannot be written' }
           const replacement = Object.freeze({
             ...latest,
             props: Object.freeze({
@@ -868,15 +1170,18 @@ export function createModUi({
     async invalidate(owner, event) {
       validateOwner(owner)
       if (event !== invalidatableRenderEvent || !activeOwners.has(owner)) return
-      await Promise.all([...active.values()].map(invalidatePane))
+      await Promise.all([
+        ...[...active.values()].map(invalidatePane),
+        ...[...sites.values()].map(invalidateSite),
+      ])
     },
 
     async render(rawPresentation) {
-      const presentation = validatePresentation(rawPresentation)
-      const work: Promise<void>[] = []
+      const presentation = rawPresentation === undefined ? undefined : validatePresentation(rawPresentation)
+      const work: Promise<void>[] = [...sites.values()].map(site => site.redraw())
       let changed = false
       for (const pane of active.values()) {
-        changed = updatePresentation(pane, presentation) || changed
+        if (presentation) changed = updatePresentation(pane, presentation) || changed
         work.push(redraw(pane))
       }
       if (changed) publish()
@@ -1111,7 +1416,7 @@ export function createModUi({
       validateCallback(callback)
       if (!idPattern.test(id) || !Number.isInteger(drawing) || drawing < 1)
         throw new TypeError('Mod UI interaction address is invalid')
-      if (!['press', 'input.change', 'input.submit', 'select'].includes(kind))
+      if (!['press', 'link.press', 'input.change', 'input.submit', 'select'].includes(kind))
         throw new TypeError('Mod UI interaction kind is invalid')
       if (typeof element !== 'string' || !element)
         throw new TypeError('Mod UI interaction element is invalid')
@@ -1124,7 +1429,7 @@ export function createModUi({
         !pane.visible ||
         !interactiveNode(pane.tree, kind, element, callback)
       ) throw new Error('Mod UI drawing callback is stale')
-      const event = kind === 'press'
+      const event = kind === 'press' || kind === 'link.press'
         ? 'ui.press'
         : kind === 'select'
           ? 'ui.select'
@@ -1137,15 +1442,17 @@ export function createModUi({
         surface: 'terminal',
         ...(kind === 'press'
           ? {}
-          : kind === 'select'
-            ? { value }
-            : { kind: kind === 'input.submit' ? 'submit' : 'change', value }),
+          : kind === 'link.press'
+            ? { link: { href: value } }
+            : kind === 'select'
+              ? { value }
+              : { kind: kind === 'input.submit' ? 'submit' : 'change', value }),
       })
       return dispatch(pane.owner, event, input, async rewritten => {
         if (active.get(id) !== pane || pane.drawing !== drawing)
           throw new Error('Mod UI drawing callback is stale')
         await invokeDrawing(pane.owner, drawing, callback.handle, [rewritten])
-        return kind === 'press'
+        return kind === 'press' || kind === 'link.press'
           ? { element: rewritten.element }
           : { element: rewritten.element, value: rewritten.value }
       }, { origin: { kind: 'person' } })

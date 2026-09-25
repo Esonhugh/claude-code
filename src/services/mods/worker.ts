@@ -14,7 +14,7 @@ import { createModWebRealm } from './webRealm.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
-const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvocation) => {
+const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation) => {
   const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
   const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
   const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData);
@@ -29,7 +29,11 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
   };
   Object.defineProperties(globalThis, { h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment} });
   const drawings = new Map();
+  let currentDrawing;
+  let nextUiCall = 0;
   let uiAllowed = true;
+  let uiTables = new Map();
+  let uiTablesText = '[]';
   const functions = new Map();
   const wires = new WeakMap();
   const hostFunctions = new Map();
@@ -94,6 +98,37 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
     seen.delete(value);
     return result;
   };
+  const encodeUiProps = (value, grant, seen = new Set()) => {
+    if (value === undefined) return { type: 'undefined' };
+    if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
+      if (typeof value === 'number' && !Number.isFinite(value)) throw Error('Non-finite module value');
+      return { type: 'value', value };
+    }
+    if ((typeof value !== 'object' && typeof value !== 'function') || isProxy(value)) throw Error('Unsupported module value (proxies are not allowed)');
+    if (typeof value === 'function') {
+      let id = wires.get(value)?.id;
+      if (typeof id !== 'number') { id = ++nextHandle; functions.set(id, value); wires.set(value, { type: 'function', id }); }
+      currentDrawing?.handles.add(id);
+      return { type: 'ui-consumer-function', publication: grant.publication, consumer: environment, provider: grant.provider, id };
+    }
+    if (seen.has(value) || seen.size > 100) throw Error('Unsupported module value');
+    seen.add(value);
+    let result;
+    if (Array.isArray(value)) result = { type: 'array', values: Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor) return { type: 'undefined' };
+      if (!('value' in descriptor)) throw Error('Module accessors cannot cross the boundary');
+      return encodeUiProps(descriptor.value, grant, seen);
+    }) };
+    else result = { type: 'object', entries: Object.keys(value).map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) throw Error('Module accessors cannot cross the boundary');
+      if (key === 'then' && typeof descriptor.value === 'function') throw Error('Module thenable values are unsupported');
+      return [key, encodeUiProps(descriptor.value, grant, seen)];
+    }) };
+    seen.delete(value);
+    return result;
+  };
   const decode = (wire, invocation) => {
     if (wire.type === 'undefined') return undefined;
     if (wire.type === 'value') return wire.value;
@@ -106,6 +141,32 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
     if (wire.type === 'function') {
       if (!functions.has(wire.id)) throw Error('Unknown module function');
       return functions.get(wire.id);
+    }
+    if (wire.type === 'ui-core') return uiRealm.resolve({surface:wire.surface,component:wire.component});
+    if (wire.type === 'ui-function') {
+      return Object.freeze(props => {
+        if (disposed) throw Error('Module environment unloaded');
+        const target = invokeUi(JSON.stringify(wire), JSON.stringify(encodeUiProps({drawing:currentDrawing?.drawing,props}, wire)));
+        if (isPromise(target)) throw Error('UI constructors must be synchronous functions');
+        return decode(JSON.parse(target), invocation);
+      });
+    }
+    if (wire.type === 'ui-consumer-function') {
+      if (wire.consumer === environment) {
+        if (!functions.has(wire.id)) throw Error('UI table callback was withdrawn');
+        return functions.get(wire.id);
+      }
+      if (wire.provider !== environment) throw Error('UI table callback was withdrawn');
+      const drawing = currentDrawing?.drawing;
+      return Object.freeze(input => {
+        if (disposed) throw Error('Module environment unloaded');
+        invokeUi(JSON.stringify(wire), JSON.stringify({type:'undefined'}));
+        return new Promise((resolve, reject) => {
+          const call = ++nextUiCall;
+          pending.set(call, {resolve, reject, invocation});
+          bridge(JSON.stringify({type:'ui-call',call,wire,props:encode({drawing,input})}));
+        });
+      });
     }
     if (wire.type === 'ui') {
       const methods = Object.fromEntries(wire.methods.map(([key,value]) => [key, decode(value, invocation)]));
@@ -129,7 +190,8 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
       const ui = Object.freeze({...methods, resolve: Object.freeze(input => {
         if (disposed) throw Error('Module environment unloaded');
         if (!uiAllowed) throw Error('Module capability ui.resolve was withdrawn');
-        return uiRealm.resolve(input);
+        const key = input && typeof input === 'object' ? input.surface + ':' + input.component : '';
+        return uiTables.get(key) ?? uiRealm.resolve(input);
       })});
       wires.set(ui, wire);
       return ui;
@@ -343,6 +405,30 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
       finally { registering = false; }
       return JSON.stringify(registrations);
     },
+    invokeUi(handle, props) {
+      if (disposed || !functions.has(handle)) throw Error('Unknown or unloaded module function');
+      const value = Reflect.apply(functions.get(handle), undefined, [decode(JSON.parse(props))]);
+      if (isPromise(value)) throw Error('UI constructors must be synchronous functions');
+      return JSON.stringify(encode(value));
+    },
+    invokeUiForDrawing(drawing, handle, props) {
+      if (disposed || !functions.has(handle)) throw Error('Unknown or unloaded module function');
+      let handles = drawings.get(drawing);
+      if (!handles) { handles = new Set(); drawings.set(drawing, handles); }
+      const allocated = [];
+      currentDrawing = { drawing, handles };
+      try {
+        const value = Reflect.apply(functions.get(handle), undefined, [decode(JSON.parse(props))]);
+        if (isPromise(value)) throw Error('UI constructors must be synchronous functions');
+        const result = uiRealm.materialize(value, callback => {
+          const id = ++nextHandle; functions.set(id, callback); handles.add(id); allocated.push(id); return id;
+        });
+        return JSON.stringify(encode(result));
+      } catch (error) {
+        for (const id of allocated) { functions.delete(id); handles.delete(id); }
+        throw error;
+      } finally { currentDrawing = undefined; }
+    },
     async invoke(text) {
       const request = JSON.parse(text);
       if (request.callbackDrawing !== undefined && !drawings.get(request.callbackDrawing)?.has(request.handle)) throw Error('Unknown drawing callback');
@@ -371,19 +457,25 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
         args.push(Object.freeze(next));
       }
       try {
-        const value = Reflect.apply(functions.get(request.handle), undefined, args);
+        let drawingHandles;
+        if (request.drawing !== undefined) {
+          if (!Number.isSafeInteger(request.drawing) || request.drawing <= 0) throw Error('Invalid module drawing');
+          drawingHandles = drawings.get(request.drawing);
+          if (!drawingHandles) { drawingHandles = new Set(); drawings.set(request.drawing, drawingHandles); }
+        }
+        currentDrawing = drawingHandles ? { drawing: request.drawing, handles: drawingHandles } : undefined;
+        let value;
+        try { value = Reflect.apply(functions.get(request.handle), undefined, args); }
+        finally { currentDrawing = undefined; }
         let result = isPromise(value) && !isProxy(value) ? await value : value;
         if (request.stream) {
           if (!result || isProxy(result) || typeof result.next !== 'function' || typeof result.return !== 'function' || typeof result.throw !== 'function') throw Error('Streaming hook must return an async generator');
           streams.set(request.id, {iterator:result,request});
           return JSON.stringify({type:'stream',invocation:request.id});
         }
-        if (request.drawing !== undefined) {
-          if (!Number.isSafeInteger(request.drawing) || request.drawing <= 0) throw Error('Invalid module drawing');
-          let handles = drawings.get(request.drawing);
-          if (!handles) { handles = new Set(); drawings.set(request.drawing, handles); }
+        if (drawingHandles) {
           result = uiRealm.materialize(result, callback => {
-            const id = ++nextHandle; functions.set(id, callback); handles.add(id); allocated.push(id); return id;
+            const id = ++nextHandle; functions.set(id, callback); drawingHandles.add(id); allocated.push(id); return id;
           });
         }
         return JSON.stringify(encode(result));
@@ -437,6 +529,8 @@ const bootstrap = `((bridge, isProxy, isPromise, plugin, readBudget, currentInvo
       }
     },
     setUiAccess(allowed) { uiAllowed = allowed; },
+    getUiTables() { return uiTablesText; },
+    setUiTables(text) { uiTables = new Map(JSON.parse(text).map(([key, wire]) => [key, decode(wire)])); uiTablesText = text; },
     registerClient(path, draw) { clients.register(path, draw); },
     client(text) { return JSON.stringify(encode(clients.request(JSON.parse(text)))); },
     releaseDrawing(drawing) {
@@ -467,12 +561,16 @@ type Environment = {
     errorReference(error: unknown): number | undefined
     register(fn: unknown, options: string): Promise<string>
     invoke(text: string): Promise<string>
+    invokeUi(handle: number, props: string): string
+    invokeUiForDrawing(drawing: number, handle: number, props: string): string
     pull(text: string): Promise<string>
     hasStream(invocation: number): boolean
     result(text: string): void
     trace(text: string): void
     abort(invocation: number): void
     setUiAccess(allowed: boolean): void
+    getUiTables(): string
+    setUiTables(text: string): void
     registerClient(path: string, draw: unknown): void
     client(text: string): string
     releaseDrawing(drawing: number): void
@@ -484,6 +582,9 @@ const environments = new Map<number, Environment>()
 const invocations = new AsyncLocalStorage<number>()
 const budgetClocks = new Map<number, BigInt64Array>()
 const promiseRealms = new WeakMap<object, Environment['lifetime']>()
+const uiPublications = new Map<number, number>()
+const stagedUiConsumers = new Map<number, number>()
+const stagedUiTables = new Map<number, ReadonlyMap<number, readonly [string, unknown][]>>()
 const reply = (message: ModWorkerReply) => postMessage(message)
 
 // Detached promises still belong to their VM, not to every plugin in this Worker.
@@ -523,7 +624,41 @@ function createEnvironment(id: number, plugin: string): Environment {
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
     reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id })
-  }, isProxy, isPromise, plugin, (invocation: number, remaining: boolean) => {
+  }, (wireText: string, props: string) => {
+    const wire = JSON.parse(wireText) as {
+      type?: unknown
+      publication?: unknown
+      consumer?: unknown
+      provider?: unknown
+      id?: unknown
+    }
+    const caller = wire.type === 'ui-function' ? wire.consumer : wire.provider
+    const activePublication = typeof wire.consumer === 'number' ? uiPublications.get(wire.consumer) : undefined
+    const stagedPublication = typeof wire.consumer === 'number' ? stagedUiConsumers.get(wire.consumer) : undefined
+    if (
+      (wire.type !== 'ui-function' && wire.type !== 'ui-consumer-function') ||
+      caller !== id ||
+      (wire.publication !== activePublication && wire.publication !== stagedPublication) ||
+      typeof wire.provider !== 'number' ||
+      typeof wire.id !== 'number'
+    )
+      throw new Error('UI table constructor was withdrawn')
+    const targetId = wire.type === 'ui-function' ? wire.provider : wire.consumer
+    if (typeof targetId !== 'number') throw new Error('UI table constructor was withdrawn')
+    const target = environments.get(targetId)
+    if (!target || target.lifetime.disposed) throw new Error('UI table constructor was withdrawn')
+    if (wire.type === 'ui-consumer-function') return JSON.stringify({ type: 'undefined' })
+    const value = JSON.parse(props) as { type?: unknown; entries?: unknown }
+    if (value.type !== 'object' || !Array.isArray(value.entries)) throw new Error('Invalid UI constructor input')
+    const entries = new Map(value.entries as [string, unknown][])
+    const drawing = entries.get('drawing') as { type?: unknown; value?: unknown } | undefined
+    const input = entries.get('props')
+    if (!input) throw new Error('Invalid UI constructor input')
+    if (drawing?.type === 'undefined') return target.api.invokeUi(wire.id, JSON.stringify(input))
+    if (drawing?.type !== 'value' || !Number.isSafeInteger(drawing.value) || (drawing.value as number) <= 0)
+      throw new Error('Invalid UI constructor input')
+    return target.api.invokeUiForDrawing(drawing.value as number, wire.id, JSON.stringify(input))
+  }, isProxy, isPromise, plugin, id, (invocation: number, remaining: boolean) => {
     const clock = budgetClocks.get(invocation)
     if (!clock) return remaining ? Infinity : 0
     for (;;) {
@@ -560,6 +695,66 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     return
   }
   try {
+    if (request.type === 'ui-tables') {
+      if (!request.publish) {
+        const prepared = new Map<number, readonly [string, unknown][]>()
+        for (const consumer of request.consumers) {
+          if (!environments.has(consumer.environment)) throw new Error('Module environment unloaded')
+          prepared.set(consumer.environment, consumer.tables)
+        }
+        const previousTables = new Map<number, string>()
+        try {
+          for (const environment of request.staged) {
+            const target = environments.get(environment)
+            const tables = prepared.get(environment)
+            if (!target || !tables) throw new Error('Module environment unloaded')
+            previousTables.set(environment, target.api.getUiTables())
+            target.api.setUiTables(JSON.stringify(tables))
+          }
+        } catch (error) {
+          for (const [environment, tables] of previousTables)
+            environments.get(environment)?.api.setUiTables(tables)
+          throw error
+        }
+        stagedUiTables.clear()
+        stagedUiTables.set(request.publication, prepared)
+        stagedUiConsumers.clear()
+        for (const environment of request.staged)
+          stagedUiConsumers.set(environment, request.publication)
+      } else {
+        const prepared = stagedUiTables.get(request.publication)
+        if (!prepared) throw new Error('Unknown UI table publication')
+        for (const environment of prepared.keys())
+          if (!environments.has(environment)) throw new Error('Module environment unloaded')
+        const previousTables = new Map<number, string>()
+        const previousPublications = new Map(uiPublications)
+        try {
+          for (const [id, environment] of environments) {
+            if (prepared.has(id)) continue
+            previousTables.set(id, environment.api.getUiTables())
+            environment.api.setUiTables('[]')
+            uiPublications.delete(id)
+          }
+          for (const [id, tables] of prepared) {
+            const environment = environments.get(id)!
+            previousTables.set(id, environment.api.getUiTables())
+            uiPublications.set(id, request.publication)
+            environment.api.setUiTables(JSON.stringify(tables))
+          }
+        } catch (error) {
+          uiPublications.clear()
+          for (const [id, publication] of previousPublications)
+            uiPublications.set(id, publication)
+          for (const [id, tables] of previousTables)
+            environments.get(id)?.api.setUiTables(tables)
+          throw error
+        }
+        stagedUiTables.clear()
+        stagedUiConsumers.clear()
+      }
+      reply({ type: 'result', id: request.id })
+      return
+    }
     if (request.type === 'release-drawing' || request.type === 'ui-access') {
       const environment = environments.get(request.environment)
       if (!environment) throw new Error('Module environment unloaded')
@@ -585,6 +780,12 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
         environment.api.dispose()
       }
       environments.delete(request.environment)
+      uiPublications.delete(request.environment)
+      stagedUiConsumers.delete(request.environment)
+      for (const [publication, tables] of stagedUiTables) {
+        if (!tables.has(request.environment)) continue
+        stagedUiTables.delete(publication)
+      }
       reply({ type: 'result', id: request.id })
       return
     }

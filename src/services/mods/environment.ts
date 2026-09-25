@@ -13,6 +13,12 @@ type ClockCallbacks = {
   run?(callback: () => Promise<unknown>, kind: 'after' | 'every'): Promise<unknown>
 }
 const uiBridges = new WeakMap<object, Record<string, (...args: unknown[]) => unknown>>()
+const uiCoreTables = new WeakMap<object, { surface: string; component: string }>()
+export function createModUiCoreTable(surface: string, component: string): object {
+  const table = Object.freeze(Object.create(null)) as object
+  uiCoreTables.set(table, { surface, component })
+  return table
+}
 export function createModUiBridge(methods: Record<string, (...args: unknown[]) => unknown>): object {
   const ui = Object.freeze(Object.create(null)) as object
   uiBridges.set(ui, methods)
@@ -189,8 +195,8 @@ export function createModEnvironmentHost({
     if (typeof value === 'function') {
       const remote = remoteFunctions.get(value)
       if (remote) {
-        if (remote.owner !== state) throw new Error('Function belongs to another module environment')
-        return { type: 'function', id: remote.id }
+        if (remote.owner === state) return { type: 'function', id: remote.id }
+        throw new Error('Function belongs to another module environment')
       }
       const storeMethod = storeMethods.get(value as HostFunction)
       return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}) }
@@ -198,6 +204,8 @@ export function createModEnvironmentHost({
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)
     if (ui) return { type: 'ui', methods: Object.entries(ui).map(([key, fn]) => [key, encode(environment, fn, seen)]) }
+    const uiCore = uiCoreTables.get(value)
+    if (uiCore) return { type: 'ui-core', ...uiCore }
     const clock = clocks.get(value)
     if (clock) {
       const cached = state.clocks.get(value)
@@ -266,6 +274,9 @@ export function createModEnvironmentHost({
         }
         return fn
       }
+      case 'ui-function':
+      case 'ui-consumer-function':
+        throw new Error('UI table functions cannot cross the generic module boundary')
       case 'host-function': {
         const fn = functions.get(value.id)
         if (fn?.environment !== environment) throw new Error('Unknown module host function')
@@ -275,6 +286,7 @@ export function createModEnvironmentHost({
       case 'host-stream': throw new Error('Host stream tokens cannot cross back as data')
       case 'engine': throw new Error('Engine identity tokens cannot cross back as data')
       case 'ui': throw new Error('UI capability cannot cross back as data')
+      case 'ui-core': throw new Error('UI core table cannot cross back as data')
       case 'clock': {
         const clock = state.clockValues.get(value.now)
         if (!clock || JSON.stringify(state.clocks.get(clock)) !== JSON.stringify(value)) throw new Error('Unknown module clock bridge')
@@ -382,11 +394,31 @@ export function createModEnvironmentHost({
       else pending.resolve(message)
       return
     }
+    if (message.type === 'ui-call') {
+      const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call }
+      try {
+        stateFor(message.environment)
+        if (message.wire.type !== 'ui-consumer-function' || message.wire.provider !== message.environment)
+          throw new Error('UI table callback was withdrawn')
+        stateFor(message.wire.consumer)
+        const value = message.props
+        if (value.type !== 'object') throw new Error('Invalid UI callback input')
+        const entries = new Map(value.entries)
+        const drawing = entries.get('drawing')
+        const input = entries.get('input')
+        if (drawing?.type !== 'value' || !Number.isSafeInteger(drawing.value) || (drawing.value as number) <= 0 || !input)
+          throw new Error('Invalid UI callback input')
+        const result = await invoke(message.wire.consumer, message.wire.id, [decode(message.wire.consumer, input)], undefined, undefined, drawing.value as number)
+        response.value = encode(message.environment, result)
+      } catch (error) { response.error = errorMessage(error, 'UI callback failed') }
+      if (!dead && environments.has(message.environment)) worker.postMessage(response)
+      return
+    }
     const fn = functions.get(message.handle)
     const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call }
     try {
       stateFor(message.environment)
-      if (fn?.environment !== message.environment) throw new Error('Unknown or unloaded module capability')
+      if (fn?.environment !== message.environment || typeof fn.call !== 'function') throw new Error('Unknown or unloaded module capability')
       if (fn.invocation !== undefined && (fn.invocation !== message.invocation || !contexts.has(fn.invocation))) throw new Error('Module invocation already settled')
       const args = message.args.map(value => decode(message.environment, value))
       const context = contexts.get(message.invocation)
@@ -552,7 +584,66 @@ export function createModEnvironmentHost({
     return pending
   }
 
+  let uiPublication = 0
+
+  function encodeUiTable(
+    consumer: number,
+    publication: number,
+    value: unknown,
+    seen = new Set<object>(),
+  ): ModWireValue {
+    if (value === undefined) return { type: 'undefined' }
+    if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
+      if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Non-finite module value')
+      return { type: 'value', value: value as null | string | boolean | number }
+    }
+    if ((typeof value !== 'object' && typeof value !== 'function') || isProxy(value)) throw new Error('Unsupported module value (proxies are not allowed)')
+    if (typeof value === 'function') {
+      const remote = remoteFunctions.get(value)
+      if (!remote) throw new Error('UI tables may only contain module constructors')
+      const provider = [...environments].find(([, owner]) => owner === remote.owner)?.[0]
+      if (provider === undefined) throw new Error('Function belongs to an unloaded module environment')
+      return { type: 'ui-function', publication, consumer, provider, id: remote.id }
+    }
+    if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
+    const uiCore = uiCoreTables.get(value)
+    if (uiCore) return { type: 'ui-core', ...uiCore }
+    seen.add(value)
+    const read = (key: string) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || !('value' in descriptor)) throw new Error('Host accessors cannot cross the module boundary')
+      if (key === 'then' && typeof descriptor.value === 'function') throw new Error('Host thenable values are unsupported')
+      return encodeUiTable(consumer, publication, descriptor.value, seen)
+    }
+    const result: ModWireValue = Array.isArray(value)
+      ? { type: 'array', values: Array.from({ length: value.length }, (_, index) => Object.hasOwn(value, index) ? read(String(index)) : { type: 'undefined' }) }
+      : { type: 'object', entries: Object.keys(value).map(key => [key, read(key)]) }
+    seen.delete(value)
+    return result
+  }
+
   return {
+    async prepareUiTables(
+      tables: ReadonlyMap<ModEnvironment, ReadonlyMap<string, object>>,
+      stagedEnvironments: readonly ModEnvironment[],
+    ): Promise<() => Promise<void>> {
+      const publication = ++uiPublication
+      const consumers = [...tables].map(([environment, values]) => {
+        stateFor(environment.id)
+        return {
+          environment: environment.id,
+          tables: [...values].map(([key, table]) => [key, encodeUiTable(environment.id, publication, table)] as [string, ModWireValue]),
+        }
+      })
+      const staged = stagedEnvironments.map(environment => {
+        stateFor(environment.id)
+        return environment.id
+      })
+      await request({ type: 'ui-tables', environment: 0, publication, publish: false, staged, consumers })
+      return async () => {
+        await request({ type: 'ui-tables', environment: 0, publication, publish: true, staged, consumers: [] })
+      }
+    },
     async load(declaration: ModDeclaration): Promise<ModEnvironment> {
       if (dead || disposal) throw dead ?? new Error('Mods Worker disposed')
       const id = ++nextEnvironment

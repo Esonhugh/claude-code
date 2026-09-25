@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { createModsRuntime } from './runtime.js'
 import type { ModTier } from './types.js'
 
+const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
+
 const cleanups: (() => Promise<unknown>)[] = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
@@ -69,7 +71,249 @@ describe('Mods public turn lifetime', () => {
   })
 })
 
+test.each([
+  `export const register = on => on('tool.call',($,e)=>({result:e.command+' returned'}))`,
+  `export const register = async on => await on('tool.call',($,e)=>({result:e.command+' returned'}))`,
+  `export function register(on) {return on('tool.call',($,e)=>({result:e.command+' returned'}))}`,
+  `export async function register(on) {return await on('tool.call',($,e)=>({result:e.command+' returned'}))}`,
+  `export const register = on => on('tool.call',()=>{throw Error('caught')}).catch(($,e)=>({result:e.command+' returned'}))`,
+])('register returns are discarded after their hook is activated in the Worker: %s', async source => {
+  const plugin = await fixture(source)
+  const {value,events}=runtime()
+  await value.reconcile([plugin])
+  expect(events).toEqual([])
+  expect(await value.dispatch('tool.call',input,async()=>({result:'core'}))).toEqual({result:'original returned'})
+})
+
 describe('Mods lifecycle', () => {
+  test('terminal binding and teardown never pretend to attach or detach a remote client', async () => {
+    const plugin = await fixture(`let events=[]; export function register(on) {
+      on('session.*', ($,e,next) => {events.push(next.event);return next(e)});
+      on('tool.call', () => ({result:events}));
+    }`)
+    const {value, events} = runtime()
+    await value.reconcile([plugin])
+    await value.bind({cwd:plugin.pluginRoot, surface:'terminal', isInteractive:true, sessionId:'terminal-only'})
+    await value.endSession('prompt_input_exit')
+    expect(await value.dispatch('tool.call', input, async () => ({result:[]}))).toEqual({
+      result:['session.start','session.end'],
+    })
+    expect(events).toEqual([])
+  })
+
+  test.skipIf(!officialModsRoot)(
+    'flushes the official agents-md startup row through official telemetry',
+    async () => {
+      const telemetryRoot = join(officialModsRoot!, 'telemetry/hooks')
+      const agentsRoot = join(officialModsRoot!, 'agents-md/hooks')
+      const telemetry = {
+        name: 'telemetry', storageId: 'telemetry@builtin', pluginRoot: telemetryRoot,
+        entrypoints: [join(telemetryRoot, 'register.ts')], tier: 'builtin' as const,
+      }
+      const agents = {
+        name: 'agents-md', storageId: 'agents-md@builtin', pluginRoot: agentsRoot,
+        entrypoints: [join(agentsRoot, 'register.ts')], tier: 'builtin' as const,
+        options: { instructionFiles: 'managed-only' },
+      }
+      const evidence: string[] = []
+      const diagnostics: unknown[] = []
+      const privacyKeys = ['NODE_ENV', 'DISABLE_TELEMETRY', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'DO_NOT_TRACK'] as const
+      const privacyEnv = privacyKeys.map(key => process.env[key])
+      for (const key of privacyKeys) delete process.env[key]
+      cleanups.push(async () => {
+        privacyKeys.forEach((key, index) => {
+          if (privacyEnv[index] === undefined) delete process.env[key]
+          else process.env[key] = privacyEnv[index]
+        })
+      })
+      const value = createModsRuntime({
+        onDiagnostic: event => diagnostics.push(event),
+        services: {
+          model: () => 'claude-sonnet-4-5-20250929',
+          uiLog: () => {},
+          firstPartyCredential: async () => {
+            evidence.push('authorize')
+            return { kind: 'bearer', secret: 'synthetic' }
+          },
+          httpFetch: async (_url, init) => {
+            evidence.push(new Headers(init.headers).has('authorization') ? 'http:authorized' : 'http:unauthorized')
+            return new Response(null, { status: 204 })
+          },
+        },
+      })
+      cleanups.push(() => value.dispose())
+      await value.bind({cwd:agentsRoot, surface:'terminal', isInteractive:true, sessionId:'official'})
+      await value.reconcile([agents, telemetry])
+      await new Promise<void>(resolve => setImmediate(resolve))
+      await value.endSession('prompt_input_exit')
+      expect({ evidence, diagnostics }).toEqual({
+        evidence: ['authorize', 'http:authorized'],
+        diagnostics: [],
+      })
+    },
+  )
+
+  test('remote render consumers drive the attached roster while terminal binding stays silent', async () => {
+    const plugin = await fixture(`let events=[]; export function register(on) {
+      on('session.attach', async ($,e,next) => {
+        const before=await $.session.surfaces();
+        for(const changed of [{...e,surface:'mobile'},{...e,clientId:'fake'},{...e,viewport:{columns:1,rows:1}}]) {
+          try {await next(changed)} catch(error) {events.push(error.message)}
+        }
+        const result=await next(e);
+        events.push({event:'attach',input:e,before,after:await $.session.surfaces(),result});
+        return {clientId:'ignored-attach'};
+      });
+      on('ui.render', async ($,e,next) => {
+        events.push({event:'render',surface:e.surface,surfaces:await $.session.surfaces()});
+        return next(e);
+      });
+      on('session.detach', async ($,e,next) => {
+        const before=await $.session.surfaces();
+        for(const changed of [{...e,surface:'vscode'},{...e,clientId:'fake'},{...e,reason:e.reason==='end'?'detach':'end'}]) {
+          try {await next(changed)} catch(error) {events.push(error.message)}
+        }
+        const result=await next(e);
+        events.push({event:'detach',input:e,before,after:await $.session.surfaces(),result});
+        return {clientId:'ignored-detach'};
+      });
+      on('tool.call', async ($) => ({result:{events,surfaces:await $.session.surfaces(),surface:await $.session.surface()}}));
+    }`)
+    const {value,events}=runtime()
+    await value.reconcile([plugin])
+    await value.bind({cwd:plugin.pluginRoot,surface:'terminal',isInteractive:true,sessionId:'roster-test'})
+    const inspect=async()=>await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any
+    expect((await inspect()).result).toEqual({events:[],surfaces:['terminal'],surface:'terminal'})
+    const input={surface:'desktop' as const,component:'PromptHint' as const,requestId:'desktop',props:{},viewport:{columns:90,rows:30,isFullscreen:true}}
+    const first=await value.ui.mount(input,{surface:'desktop',clientId:'desktop:first',render:()=>{},unmount:()=>{}})
+    const [second,duplicate]=await Promise.all([
+      value.ui.mount({...input,requestId:'second'},{surface:'desktop',clientId:'desktop:second',render:()=>{},unmount:()=>{}}),
+      value.ui.mount({...input,requestId:'duplicate'},{surface:'desktop',clientId:'desktop:second',render:()=>{},unmount:()=>{}}),
+    ])
+    const mobile=await value.ui.mount({surface:'mobile',component:'AbovePrompt',requestId:'mobile',props:{}},{surface:'mobile',render:()=>{},unmount:()=>{}})
+    expect((await inspect()).result.surfaces).toEqual(['terminal','desktop','mobile'])
+    await first.dispose()
+    expect((await inspect()).result.surfaces).toEqual(['terminal','desktop','mobile'])
+    await second.dispose()
+    expect((await inspect()).result.surfaces).toEqual(['terminal','desktop','mobile'])
+    await duplicate.dispose()
+    expect((await inspect()).result.surfaces).toEqual(['terminal','mobile'])
+    await mobile.dispose()
+    const observed=(await inspect()).result
+    expect(observed.surfaces).toEqual(['terminal'])
+    expect(observed.events.filter((event:any)=>typeof event==='object').map((event:any)=>event.event)).toEqual([
+      'attach','render','attach','render','render','attach','render','detach','detach','detach',
+    ])
+    expect(observed.events.slice(0,3)).toEqual(['Mod fixture cannot rewrite surface for session.attach','Mod fixture cannot rewrite clientId for session.attach','Mod fixture cannot rewrite viewport for session.attach'])
+    expect(observed.events.filter((event:any)=>event?.event==='attach').map((event:any)=>event.input)).toEqual([
+      {surface:'desktop',clientId:'desktop:first',viewport:{columns:90,rows:30,isFullscreen:true}},
+      {surface:'desktop',clientId:'desktop:second',viewport:{columns:90,rows:30,isFullscreen:true}},
+      {surface:'mobile',clientId:'mobile:default'},
+    ])
+    expect(observed.events.filter((event:any)=>event?.event==='attach').map((event:any)=>({before:event.before,after:event.after,result:event.result}))).toEqual([
+      {before:['terminal'],after:['terminal','desktop'],result:{clientId:'desktop:first'}},
+      {before:['terminal','desktop'],after:['terminal','desktop'],result:{clientId:'desktop:second'}},
+      {before:['terminal','desktop'],after:['terminal','desktop','mobile'],result:{clientId:'mobile:default'}},
+    ])
+    expect(observed.events.filter((event:any)=>event?.event==='detach').map((event:any)=>event.input)).toEqual([
+      {surface:'desktop',clientId:'desktop:first',reason:'detach'},
+      {surface:'desktop',clientId:'desktop:second',reason:'detach'},
+      {surface:'mobile',clientId:'mobile:default',reason:'detach'},
+    ])
+    expect(observed.events.filter((event:any)=>event?.event==='detach').map((event:any)=>({before:event.before,after:event.after,result:event.result}))).toEqual([
+      {before:['terminal','desktop','mobile'],after:['terminal','desktop','mobile'],result:{clientId:'desktop:first'}},
+      {before:['terminal','desktop','mobile'],after:['terminal','mobile'],result:{clientId:'desktop:second'}},
+      {before:['terminal','mobile'],after:['terminal'],result:{clientId:'mobile:default'}},
+    ])
+    expect(events).toEqual([])
+  })
+
+  test('aborted attach and detach do not commit partial roster transitions', async () => {
+    const plugin = await fixture(`let events=[]; export function register(on) {
+      on('session.attach',async($,e,next)=>{if(e.clientId==='desktop:cancel-attach'){events.push('attach-enter');await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}))}return next(e)});
+      on('session.detach',async($,e,next)=>{if(e.clientId==='desktop:cancel-detach'){events.push('detach-enter');await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}))}return next(e)});
+      on('tool.call',async($)=>({result:{events,surfaces:await $.session.surfaces()}}));
+    }`)
+    const {value,events}=runtime()
+    await value.reconcile([plugin])
+    await value.bind({cwd:plugin.pluginRoot,surface:null,isInteractive:false,sessionId:'cancel-lifecycle'})
+    const inspect=async()=>await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any
+    const attachController=new AbortController()
+    const attaching=value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'attach',props:{}},{surface:'desktop',clientId:'desktop:cancel-attach',signal:attachController.signal,render:()=>{},unmount:()=>{}})
+    await new Promise<void>(resolve=>{
+      const wait=async()=>{if((await inspect()).result.events.includes('attach-enter'))resolve();else setImmediate(wait)}
+      void wait()
+    })
+    attachController.abort(new Error('cancel attach'))
+    await expect(attaching).rejects.toThrow()
+    expect((await inspect()).result.surfaces).toEqual([])
+    const detachController=new AbortController()
+    const site=await value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'detach',props:{}},{surface:'desktop',clientId:'desktop:cancel-detach',signal:detachController.signal,render:()=>{},unmount:()=>{}})
+    const detaching=site.dispose()
+    await new Promise<void>(resolve=>{
+      const wait=async()=>{if((await inspect()).result.events.includes('detach-enter'))resolve();else setImmediate(wait)}
+      void wait()
+    })
+    detachController.abort(new Error('cancel detach'))
+    await expect(detaching).rejects.toThrow()
+    expect((await inspect()).result.surfaces).toEqual(['desktop'])
+    expect(events).toEqual([])
+  })
+
+  test('observe-only lifecycle hooks cannot replace the core attach and detach result', async () => {
+    const plugin = await fixture(`let events=[]; export function register(on) {
+      on('session.attach',()=>({clientId:'forged-attach'}));
+      on('session.detach',()=>({clientId:'forged-detach'}));
+      on('tool.call',async($)=>({result:{events,surfaces:await $.session.surfaces()}}));
+    }`)
+    const {value,events}=runtime()
+    await value.reconcile([plugin])
+    await value.bind({cwd:plugin.pluginRoot,surface:null,isInteractive:false,sessionId:'observe-only'})
+    const site=await value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'desktop',props:{}},{surface:'desktop',clientId:'desktop:observe',render:()=>{},unmount:()=>{}})
+    expect((await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any).result.surfaces).toEqual(['desktop'])
+    await site.dispose()
+    expect((await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any).result.surfaces).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  test('session end detaches remaining remote clients in roster order before session.end', async () => {
+    const plugin = await fixture(`let events=[]; export function register(on) {
+      on('session.attach',($,e,next)=>next(e));
+      on('session.detach',async($,e,next)=>{events.push({event:'detach',input:e,surfaces:await $.session.surfaces()});return next(e)});
+      on('session.end',async($,e,next)=>{events.push({event:'end',surfaces:await $.session.surfaces()});return next(e)});
+      on('tool.call',()=>({result:events}));
+    }`)
+    const {value,events}=runtime()
+    await value.reconcile([plugin])
+    await value.bind({cwd:plugin.pluginRoot,surface:null,isInteractive:false,sessionId:'roster-end'})
+    const desktop=await value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'desktop',props:{}},{surface:'desktop',clientId:'desktop:end',render:()=>{},unmount:()=>{}})
+    const mobile=await value.ui.mount({surface:'mobile',component:'AbovePrompt',requestId:'mobile',props:{}},{surface:'mobile',clientId:'mobile:end',render:()=>{},unmount:()=>{}})
+    await value.endSession('other')
+    expect((await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any).result).toEqual([
+      {event:'detach',input:{surface:'desktop',clientId:'desktop:end',reason:'end'},surfaces:['desktop','mobile']},
+      {event:'detach',input:{surface:'mobile',clientId:'mobile:end',reason:'end'},surfaces:['mobile']},
+      {event:'end',surfaces:[]},
+    ])
+    await Promise.all([desktop.dispose(),mobile.dispose()])
+    expect(events).toEqual([])
+  })
+
+  test('session end clears the core roster when a detach hook exhausts its deadline', async () => {
+    const plugin = await fixture(`export function register(on) {
+      on('session.attach',($,e,next)=>next(e));
+      on('session.detach',async($,e,next)=>{await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}));return next(e)});
+      on('tool.call',async($)=>({result:await $.session.surfaces()}));
+    }`)
+    const {value}=runtime()
+    await value.reconcile([plugin])
+    await value.bind({cwd:plugin.pluginRoot,surface:null,isInteractive:false,sessionId:'roster-timeout'})
+    const desktop=await value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'desktop',props:{}},{surface:'desktop',clientId:'desktop:timeout',render:()=>{},unmount:()=>{}})
+    const mobile=await value.ui.mount({surface:'mobile',component:'AbovePrompt',requestId:'mobile',props:{}},{surface:'mobile',clientId:'mobile:timeout',render:()=>{},unmount:()=>{}})
+    await value.endSession('other',25)
+    expect((await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any).result).toEqual([])
+    await Promise.all([desktop.dispose(),mobile.dispose()])
+  })
+
   test('live and captured hook discovery use the same event patterns as dispatch', async () => {
     const plugin = await fixture(`export function register(on) {
       on('classic.*', ($, e, next) => next(e));
@@ -89,6 +333,20 @@ describe('Mods lifecycle', () => {
       expect(value.hasHooks('classic.PreToolUse')).toBe(false)
       expect(snapshot.hasHooks('classic.PreToolUse')).toBe(true)
     } finally { snapshot.release() }
+  })
+
+  test.each(['engine.*', '*', '!ui.*'])('engine.create folds matching %s registrations with the empty engine interface', async pattern => {
+    const plugin = await fixture(`let builds=0, empty; export function register(on) {
+      on('${pattern}', ($,e,next) => {
+        if(next.is('engine.create',e)) {builds++;empty=$.plugin===undefined;}
+        return next(e);
+      });
+      on('tool.call', () => ({result:{builds,empty}}));
+    }`)
+    const {value,events}=runtime()
+    await value.reconcile([plugin])
+    expect(events).toEqual([])
+    expect(await value.dispatch('tool.call',input,async()=>({result:'core'}))).toEqual({result:{builds:1,empty:true}})
   })
 
   test('engine.create is lazy and preserves registration order within each plugin', async () => {
@@ -724,6 +982,45 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 1 })
   })
 
+  test('incremental engine.create runs only changed modules and preserves unchanged nouns', async () => {
+    const stable = await fixture(`let builds = 0; export function register(on) {
+      on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
+      on('tool.call', { tool: 'Stable' }, async ($) => ({ result: { builds, noun: await $.stable.read() } }));
+    }`, 'stable')
+    const changed = await fixture(`export function register(on) {
+      on('tool.call', { tool: 'Changed' }, () => ({ result: 'old' }));
+    }`, 'changed')
+    const { value, events } = runtime()
+    await value.reconcile([stable, changed])
+    await writeFile(changed.entrypoints[0]!, `let plugins = []; export function register(on) {
+      on('engine.create', async ($, e, next) => { plugins = e.plugins; const built = await next(e); return { ...built, changed: { read: () => 'new' } }; });
+      on('tool.call', { tool: 'Changed' }, async ($) => ({ result: { plugins, noun: await $.changed.read() } }));
+    }`)
+    await value.reconcile([stable, changed])
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: { builds: 1, noun: 1 } })
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Changed' }, async () => ({}))).toEqual({ result: { plugins: ['changed'], noun: 'new' } })
+    expect(events).toEqual([])
+  })
+
+  test('incremental engine.create reports exactly the changed and added modules', async () => {
+    const stable = await fixture(`let builds = 0; export function register(on) {
+      on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
+      on('tool.call', { tool: 'Stable' }, () => ({ result: builds }));
+    }`, 'stable')
+    const changed = await fixture(`export function register(on) { on('tool.call', { tool: 'Changed' }, () => ({ result: 'old' })); }`, 'changed')
+    const added = await fixture(`let plugins = []; export function register(on) {
+      on('engine.create', async ($, e, next) => { plugins = e.plugins; const built = await next(e); return { ...built, added: { read: () => plugins } }; });
+      on('tool.call', { tool: 'Added' }, async ($) => ({ result: await $.added.read() }));
+    }`, 'added')
+    const { value, events } = runtime()
+    await value.reconcile([stable, changed])
+    await writeFile(changed.entrypoints[0]!, `export function register(on) { on('tool.call', { tool: 'Changed' }, () => ({ result: 'new' })); }`)
+    await value.reconcile([stable, changed, added])
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: 1 })
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Added' }, async () => ({}))).toEqual({ result: ['changed', 'added'] })
+    expect(events).toEqual([])
+  })
+
   test('surviving consumers cannot call a removed provider through captured methods', async () => {
     const provider = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, greeting: { read: () => 'hello' } }; });
@@ -889,6 +1186,49 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', { ...input, command: 'done' }, async () => ({ result: 'core' }))).toEqual({ result: 'done' })
   })
 
+  test('a settled detached continuation cannot use a retiring activation capability', async () => {
+    const provider = await fixture(`let release, hits = 0;
+      const gate = new Promise(resolve => { release = resolve });
+      export function register(on) {
+        on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built,
+          gate: { wait: () => gate, release: () => release() },
+          target: { hit: () => { hits++; } }
+        }; });
+        on('tool.call', { command: 'release' }, async ($) => { await $.gate.release(); return { result: 'released' }; });
+        on('tool.call', { command: 'count' }, () => ({ result: hits }));
+      }`, 'provider')
+    const consumer = await fixture(`export function register(on) {
+      on('tool.call', { command: 'schedule' }, ($) => {
+        $.gate.wait().then(() => $.target.hit()).catch(() => {});
+        return { result: 'scheduled' };
+      });
+      on('tool.call', { command: 'hold' }, ($, e, next) => next(e));
+    }`, 'consumer')
+    const { value } = runtime()
+    await value.reconcile([consumer, provider])
+    expect(await value.dispatch('tool.call', { ...input, command: 'schedule' }, async () => ({ result: 'core' }))).toEqual({ result: 'scheduled' })
+    const entered = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const holding = value.dispatch('tool.call', { ...input, command: 'hold' }, async () => {
+      entered.resolve()
+      await finish.promise
+      return { result: 'held' }
+    })
+    await entered.promise
+    try {
+      await writeFile(consumer.entrypoints[0]!, `export function register(on) {
+        on('tool.call', { command: 'schedule' }, () => ({ result: 'replacement' }));
+      }`)
+      await value.reconcile([consumer, provider])
+      await value.dispatch('tool.call', { ...input, command: 'release' }, async () => ({ result: 'core' }))
+      await Bun.sleep(10)
+      expect(await value.dispatch('tool.call', { ...input, command: 'count' }, async () => ({ result: 'core' }))).toEqual({ result: 0 })
+    } finally {
+      finish.resolve()
+    }
+    expect(await holding).toEqual({ result: 'held' })
+  })
+
   test('retains the old provider for an already-entered consumer hook during provider reload', async () => {
     const provider = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, greeting: { read: () => 'old' } }; });
@@ -941,6 +1281,34 @@ describe('Mods lifecycle', () => {
     await value.reconcile([gate, plugin, provider])
     await value.dispatch('tool.call', { ...input, command: 'release' }, async () => ({ result: 'core' }))
     expect(await value.dispatch('tool.call', { ...input, command: 'done' }, async () => ({ result: 'core' }))).toEqual({ result: 'old' })
+  })
+
+  test('a surviving timer enters the current provider generation after reload', async () => {
+    const gate=await fixture(`let start,release,finish;
+      const began=new Promise(resolve=>{start=resolve}),hold=new Promise(resolve=>{release=resolve}),done=new Promise(resolve=>{finish=resolve});
+      export function register(on) {
+        on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,gate:{hold:async()=>{start();await hold},finish:()=>{finish()}}}});
+        on('clock.after',async($,e,next)=>{await $.gate.hold();return next(e)});
+        on('tool.call',{command:'started'},async()=>{await began;return {result:'started'}});
+        on('tool.call',{command:'release'},()=>{release();return {result:'released'}});
+        on('tool.call',{command:'done'},async($,e,next)=>{await done;return next(e)});
+      }`,'gate')
+    const source=(label:string)=>`export function register(on) {
+      on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,greeting:{read:()=> '${label}'}}});
+    }`
+    const provider=await fixture(source('old'),'provider')
+    const consumer=await fixture(`let result;export function register(on) {
+      on('session.start',($,e,next)=>{$.clock.after(0,async()=>{result=await $.greeting.read();await $.gate.finish()});return next(e)});
+      on('tool.call',()=>({result}));
+    }`,'consumer')
+    const {value,events}=runtime()
+    await value.reconcile([gate,consumer,provider])
+    await value.bind({cwd:consumer.pluginRoot,surface:null,isInteractive:false,sessionId:'late-timer'})
+    await value.dispatch('tool.call',{...input,command:'started'},async()=>({result:'core'}))
+    await writeFile(provider.entrypoints[0]!,source('new'));await value.reconcile([gate,consumer,provider])
+    await value.dispatch('tool.call',{...input,command:'release'},async()=>({result:'core'}))
+    expect(await value.dispatch('tool.call',{...input,command:'done'},async()=>({result:'core'}))).toEqual({result:'new'})
+    expect(events).toEqual([])
   })
 
   test('worker failure does not replay an entered core and rebuilds declarations once', async () => {
@@ -1095,115 +1463,4 @@ describe('Mods lifecycle', () => {
     await value.reconcile([{ ...judge, tier: 'prepend' }, plugin])
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
-  test('incremental engine.create runs only changed modules and preserves unchanged nouns', async () => {
-    const stable = await fixture(`let builds = 0; export function register(on) {
-      on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
-      on('tool.call', { tool: 'Stable' }, async ($) => ({ result: { builds, noun: await $.stable.read() } }));
-    }`, 'stable')
-    const changed = await fixture(`export function register(on) {
-      on('tool.call', { tool: 'Changed' }, () => ({ result: 'old' }));
-    }`, 'changed')
-    const { value, events } = runtime()
-    await value.reconcile([stable, changed])
-    await writeFile(changed.entrypoints[0]!, `let plugins = []; export function register(on) {
-      on('engine.create', async ($, e, next) => { plugins = e.plugins; const built = await next(e); return { ...built, changed: { read: () => 'new' } }; });
-      on('tool.call', { tool: 'Changed' }, async ($) => ({ result: { plugins, noun: await $.changed.read() } }));
-    }`)
-    await value.reconcile([stable, changed])
-    expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: { builds: 1, noun: 1 } })
-    expect(await value.dispatch('tool.call', { ...input, tool: 'Changed' }, async () => ({}))).toEqual({ result: { plugins: ['changed'], noun: 'new' } })
-    expect(events).toEqual([])
-  })
-
-  test('incremental engine.create reports exactly the changed and added modules', async () => {
-    const stable = await fixture(`let builds = 0; export function register(on) {
-      on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
-      on('tool.call', { tool: 'Stable' }, () => ({ result: builds }));
-    }`, 'stable')
-    const changed = await fixture(`export function register(on) { on('tool.call', { tool: 'Changed' }, () => ({ result: 'old' })); }`, 'changed')
-    const added = await fixture(`let plugins = []; export function register(on) {
-      on('engine.create', async ($, e, next) => { plugins = e.plugins; const built = await next(e); return { ...built, added: { read: () => plugins } }; });
-      on('tool.call', { tool: 'Added' }, async ($) => ({ result: await $.added.read() }));
-    }`, 'added')
-    const { value, events } = runtime()
-    await value.reconcile([stable, changed])
-    await writeFile(changed.entrypoints[0]!, `export function register(on) { on('tool.call', { tool: 'Changed' }, () => ({ result: 'new' })); }`)
-    await value.reconcile([stable, changed, added])
-    expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: 1 })
-    expect(await value.dispatch('tool.call', { ...input, tool: 'Added' }, async () => ({}))).toEqual({ result: ['changed', 'added'] })
-    expect(events).toEqual([])
-  })
-
 })
-
-  test('a settled detached continuation cannot use a retiring activation capability', async () => {
-    const provider = await fixture(`let release, hits = 0;
-      const gate = new Promise(resolve => { release = resolve });
-      export function register(on) {
-        on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built,
-          gate: { wait: () => gate, release: () => release() },
-          target: { hit: () => { hits++; } }
-        }; });
-        on('tool.call', { command: 'release' }, async ($) => { await $.gate.release(); return { result: 'released' }; });
-        on('tool.call', { command: 'count' }, () => ({ result: hits }));
-      }`, 'provider')
-    const consumer = await fixture(`export function register(on) {
-      on('tool.call', { command: 'schedule' }, ($) => {
-        $.gate.wait().then(() => $.target.hit()).catch(() => {});
-        return { result: 'scheduled' };
-      });
-      on('tool.call', { command: 'hold' }, ($, e, next) => next(e));
-    }`, 'consumer')
-    const { value } = runtime()
-    await value.reconcile([consumer, provider])
-    expect(await value.dispatch('tool.call', { ...input, command: 'schedule' }, async () => ({ result: 'core' }))).toEqual({ result: 'scheduled' })
-    const entered = Promise.withResolvers<void>()
-    const finish = Promise.withResolvers<void>()
-    const holding = value.dispatch('tool.call', { ...input, command: 'hold' }, async () => {
-      entered.resolve()
-      await finish.promise
-      return { result: 'held' }
-    })
-    await entered.promise
-    try {
-      await writeFile(consumer.entrypoints[0]!, `export function register(on) {
-        on('tool.call', { command: 'schedule' }, () => ({ result: 'replacement' }));
-      }`)
-      await value.reconcile([consumer, provider])
-      await value.dispatch('tool.call', { ...input, command: 'release' }, async () => ({ result: 'core' }))
-      await Bun.sleep(10)
-      expect(await value.dispatch('tool.call', { ...input, command: 'count' }, async () => ({ result: 'core' }))).toEqual({ result: 0 })
-    } finally {
-      finish.resolve()
-    }
-    expect(await holding).toEqual({ result: 'held' })
-  })
-
-
-  test('a surviving timer enters the current provider generation after reload', async () => {
-    const gate=await fixture(`let start,release,finish;
-      const began=new Promise(resolve=>{start=resolve}),hold=new Promise(resolve=>{release=resolve}),done=new Promise(resolve=>{finish=resolve});
-      export function register(on) {
-        on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,gate:{hold:async()=>{start();await hold},finish:()=>{finish()}}}});
-        on('clock.after',async($,e,next)=>{await $.gate.hold();return next(e)});
-        on('tool.call',{command:'started'},async()=>{await began;return {result:'started'}});
-        on('tool.call',{command:'release'},()=>{release();return {result:'released'}});
-        on('tool.call',{command:'done'},async($,e,next)=>{await done;return next(e)});
-      }`,'gate')
-    const source=(label:string)=>`export function register(on) {
-      on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,greeting:{read:()=> '${label}'}}});
-    }`
-    const provider=await fixture(source('old'),'provider')
-    const consumer=await fixture(`let result;export function register(on) {
-      on('session.start',($,e,next)=>{$.clock.after(0,async()=>{result=await $.greeting.read();await $.gate.finish()});return next(e)});
-      on('tool.call',()=>({result}));
-    }`,'consumer')
-    const {value,events}=runtime()
-    await value.reconcile([gate,consumer,provider])
-    await value.bind({cwd:consumer.pluginRoot,surface:null,isInteractive:false,sessionId:'late-timer'})
-    await value.dispatch('tool.call',{...input,command:'started'},async()=>({result:'core'}))
-    await writeFile(provider.entrypoints[0]!,source('new'));await value.reconcile([gate,consumer,provider])
-    await value.dispatch('tool.call',{...input,command:'release'},async()=>({result:'core'}))
-    expect(await value.dispatch('tool.call',{...input,command:'done'},async()=>({result:'core'}))).toEqual({result:'new'})
-    expect(events).toEqual([])
-  })
