@@ -150,6 +150,7 @@ type Activation = {
   waits: Map<number, { kind: string; timer: ReturnType<typeof setTimeout>; reject(error: Error): void }>
   methods: WeakMap<object, (...args: unknown[]) => Promise<unknown>>
   engine?: Record<string, unknown>
+  engineScope?: { snapshot: readonly Activation[]; table: Nouns }
   controller: AbortController
   operations: ReturnType<typeof createModHostOperations>
   uiPublished?: boolean
@@ -539,7 +540,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (owner.state === 'candidate' && !op.startsWith('clock.')) throw new Error('Module has not been admitted')
     const [noun, method] = op.split('.') as [string, string]
     const provider = capabilityContext.getStore()
-    const current = provider?.active ? provider.table : lease.building || lease.entries > 0 ? table : nouns
+    const published = owner.engineScope
+    const current = provider?.active ? provider.table : lease.building || lease.entries > 0 ? table : published?.table ?? nouns
     const state = interfaceStates.get(current)
     const withholders = new Set([...(state?.withheld.get(noun) ?? []), ...(lease.building ? state?.carried?.get(noun) ?? [] : [])].filter(plugin => plugin !== owner.declaration.name))
     if (withholders.size) throw new Error(`Module capability ${op} was withheld by ${[...withholders].join(', ')}`)
@@ -944,13 +946,16 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const scope = () => {
       if (!dynamic) return { snapshot, table, lease }
       const entered = capabilityContext.getStore()
-      if (entered?.active) entered.next?.signal.throwIfAborted()
-      const current = entered?.active ? entered : uiContext.getStore()
-      return current && current.active !== false
-        ? { snapshot: current.snapshot, table: current.table, lease: { entries: 1 } }
-        : owner.state === 'active' && !active.includes(owner)
-          ? { snapshot, table, lease: { entries: 1 } }
-          : { snapshot: active, table: nouns, lease: { entries: 0 } }
+      const invocation = invocationSignal.getStore()
+      if (entered?.active && !invocation?.aborted) entered.next?.signal.throwIfAborted()
+      const ui = uiContext.getStore()
+      const current = entered?.active && !invocation?.aborted ? entered : ui?.active !== false ? ui : undefined
+      if (current)
+        return { snapshot: current.snapshot, table: current.table, lease: { entries: 1 } }
+      const published = owner.engineScope
+      return published && owner.state === 'active'
+        ? { snapshot: published.snapshot, table: published.table, lease: { entries: 1 } }
+        : { snapshot: active, table: nouns, lease: { entries: 0 } }
     }
     const clock = createModClockBridge({
       now: async () => {
@@ -1074,7 +1079,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
         const context = capabilityContext.getStore()
         const caller = context?.active ? context.hook : undefined
-        const signal = context?.active ? invocationSignal.getStore() : undefined
+        const invocation = invocationSignal.getStore()
+        const signal = context?.active && !invocation?.aborted ? invocation : undefined
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         try {
           if (fn === hostIdentity && op === 'prompt.read')
@@ -1130,7 +1136,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             if (context?.active && (context.next?.event === 'prompt.submit' || publicTurn))
               throw new Error('prompt.submit cannot wait from a turn-holding hook')
             const origin = { kind: 'plugin' as const, name: owner.declaration.name }
-            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             try {
               combined.signal.throwIfAborted()
               return await withReference(owner, () => submit({
@@ -1179,7 +1185,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             const request = requestServices.getStore()
             const spawn = request?.agentSpawn ?? services.agentSpawn ?? request?.toolHost?.()?.spawn ?? services.toolHost?.()?.spawn
             if (!spawn) throw new Error('Agent spawn host is unavailable on this host')
-            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
               dispatch: (event, eventInput, core, options) => {
@@ -1205,7 +1211,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (fn === hostIdentity && op === 'tool.call') {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (!host) throw new Error('Tool execution host is unavailable on this host')
-            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
               dispatch: (event, input, core, options) => {
@@ -1231,7 +1237,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (fn === hostIdentity && op === 'tool.check') {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (!host) throw new Error('Tool permission host is unavailable on this host')
-            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             try {
               return await withReference(owner, () => dispatch(op, input as ModInput,
                 async (question, signal) => host.check(question, signal ?? combined.signal), snapshot, table, {
@@ -1243,7 +1249,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (fn === hostIdentity && op === 'mcp.call') {
             const call = requestServices.getStore()?.mcpCall ?? services.mcpCall
             if (!call) throw new Error('MCP execution host is unavailable on this host')
-            const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             try {
               const result = await withReference(owner, () => dispatch(op, input as ModInput, async (rewritten, signal) => ({
                 value: await call(
@@ -1908,6 +1914,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         let failed: Activation | undefined
         for (const owner of built.modules) {
           if (owner.state !== 'active') continue
+          owner.engineScope = { snapshot: built.modules, table: built.table }
           if (owner.started) {
             if (!owner.uiPublished) prepared.add(owner)
             continue
@@ -1956,6 +1963,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       const replaced = active.filter(owner => !built.modules.includes(owner))
       await publishUiTables()
       active = built.modules
+      for (const owner of active) owner.engineScope = { snapshot: active, table: built.table }
       const commandsChanged = nouns !== built.table
       if (nouns !== built.table) {
         descriptionCache = { value: new WeakMap() }

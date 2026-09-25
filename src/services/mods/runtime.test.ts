@@ -153,6 +153,34 @@ describe('Mods lifecycle', () => {
     },
   )
 
+  test('session start fire-and-forget capabilities finish against the generation being published', async () => {
+    const completed = Promise.withResolvers<void>()
+    const logs: string[] = []
+    const diagnostics: unknown[] = []
+    const provider = await fixture(`export function register(on) {
+      on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, telemetry: { log: async ({message}) => built.ui.log('telemetry:' + message) } }; });
+    }`, 'provider')
+    const consumer = await fixture(`export function register(on) {
+      on('session.start', ($, e, next) => {
+        $.ui.log('starting');
+        void Promise.resolve().then(() => $.telemetry.log({message:'started'})).catch(() => {});
+        return next(e);
+      });
+    }`, 'consumer')
+    const value = createModsRuntime({
+      onDiagnostic: event => diagnostics.push(event),
+      services: { uiLog: (_plugin, text) => { logs.push(text); if (text === 'telemetry:started') completed.resolve() } },
+    })
+    cleanups.push(() => value.dispose())
+    await value.bind({cwd:consumer.pluginRoot,surface:'terminal',isInteractive:true,sessionId:'detached-start'})
+    await value.reconcile([consumer, provider])
+    await Promise.race([
+      completed.promise,
+      Bun.sleep(1000).then(() => { throw new Error(`detached session.start capability did not finish: ${JSON.stringify({logs,diagnostics})}`) }),
+    ])
+    expect({logs, diagnostics}).toEqual({logs:['starting', 'telemetry:started'], diagnostics:[]})
+  })
+
   test('remote render consumers drive the attached roster while terminal binding stays silent', async () => {
     const plugin = await fixture(`let events=[]; export function register(on) {
       on('session.attach', async ($,e,next) => {
