@@ -8,7 +8,7 @@ import { KeybindingProvider } from '../keybindings/KeybindingContext.js'
 import { DEFAULT_BINDINGS } from '../keybindings/defaultBindings.js'
 import { parseBindings } from '../keybindings/parser.js'
 import type { KeybindingContextName, ParsedKeystroke } from '../keybindings/types.js'
-import type { ModUiPane } from '../services/mods/ui.js'
+import { createModUi, type ModUiPane } from '../services/mods/ui.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import { ModsPane } from './ModsPane.js'
@@ -84,6 +84,7 @@ async function mount({ focused = true, isActive = true } = {}) {
     plugin: 'fixture',
     owner: {},
     visible: true,
+    shown: true,
     placement: 'inline',
     focused,
     closeOnEscape: false,
@@ -155,6 +156,43 @@ async function mount({ focused = true, isActive = true } = {}) {
 }
 
 describe('ScrollKeybindingHandler input routing', () => {
+  test('switches same-owner pane tabs repeatedly through the real UI lifecycle', async () => {
+    const ui = createModUi({
+      pluginOf: () => 'fixture',
+      dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async (_owner, input) => ({ type: 'Text', children: [String(input.requestId)] }),
+      invokeDrawing: async () => {},
+      releaseDrawing: async () => {},
+    })
+    const owner = {}
+    const presentation = { columns: 80, rows: 30, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false }
+    await ui.open(owner, { id: 'first', focus: true }, { kind: 'person' }, presentation)
+    await ui.open(owner, { id: 'second' }, { kind: 'person' }, presentation)
+    await ui.commit(owner)
+    function View() {
+      const panes = React.useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+      return <Providers><Box flexDirection="column">{panes.map(pane => <ModsPane
+        key={pane.id} pane={pane}
+        onFocus={(pane, element) => ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }, presentation)}
+        onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+      />)}</Box></Providers>
+    }
+    const stdout = new Output()
+    const stdin = new Input()
+    const instance = await render(<View />, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      stdin.push('\u001b[C')
+      await settle()
+      expect(ui.getSnapshot().find(pane => pane.shown)?.id).toBe('second')
+      stdin.push('\u001b[D')
+      await settle()
+      expect(ui.getSnapshot().find(pane => pane.shown)?.id).toBe('first')
+    } finally {
+      instance.unmount()
+      await ui.dispose()
+    }
+  })
   test('lets a focused Mods pane receive PageDown without scrolling the transcript', async () => {
     const view = await mount()
     try {
@@ -197,7 +235,7 @@ describe('ScrollKeybindingHandler input routing', () => {
       expect(view.transcriptScrolls).toEqual([false])
       expect(view.paneScrolls).toEqual([])
       const top = view.scroll.getScrollTop()
-      // Row 12 is the pane body, below the ten-row transcript and pane title.
+      // Row 12 is inside the pane body below the ten-row transcript.
       await view.input('\u001b[<65;1;12M')
       expect(view.scroll.getScrollTop()).toBe(top)
       expect(view.transcriptScrolls).toEqual([false])
