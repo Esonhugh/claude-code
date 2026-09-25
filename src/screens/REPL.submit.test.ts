@@ -1650,6 +1650,38 @@ test('QueryEngine drains its own proactive prompt through real input admission',
   }
 })
 
+test('REPL binds Mods MCP calls to the current connection and forwards cancellation', async () => {
+  const { callMCPToolForMod, findMCPConnectionForMod } = await import('../services/mcp/client.js')
+  let services: any
+  const calls: unknown[] = []
+  const connection = {
+    name: 'fixture-server', type: 'connected', config: { type: 'sdk' }, capabilities: {},
+    cleanup: async () => {},
+    client: { callTool: async (request: unknown, _schema: unknown, options: any) => {
+      calls.push({ request, signal: options.signal })
+      return { content: [{ type: 'text', text: 'pong' }] }
+    } },
+  }
+  let clients: any[] = []
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getSessionId: () => 'session', setAppState: noop,
+    getFirstPartyCredential: async () => null,
+    modToolContextRef: { current: () => ({ options: { mcpClients: clients } }) },
+    callMCPToolForMod, findMCPConnectionForMod,
+  })
+  await awaitMods()
+  clients = [connection]
+  const controller = new AbortController()
+  await expect(services.mcpCall('fixture-server', 'ping', { value: 1 }, controller.signal)).resolves.toEqual({
+    content: [{ type: 'text', text: 'pong' }], isError: false,
+  })
+  expect(calls).toEqual([{ request: { name: 'ping', arguments: { value: 1 } }, signal: controller.signal }])
+  controller.abort(new Error('cancel MCP'))
+  await expect(services.mcpCall('fixture-server', 'ping', {}, controller.signal)).rejects.toThrow('cancel MCP')
+  expect(calls).toHaveLength(1)
+})
+
 test('QueryEngine binds Mods MCP calls to its configured connection', async () => {
   const { QueryEngine } = await import('../QueryEngine.js')
   const contextModule = await import('../utils/queryContext.js')

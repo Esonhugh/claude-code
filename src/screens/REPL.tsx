@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
+import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
 import { spawnSync } from 'child_process'
 import {
   snapshotOutputTokensForTurn,
@@ -1938,6 +1939,10 @@ export function REPL({
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
     firstPartyCredential: getFirstPartyCredential,
+    mcpCall: (server, tool, args, signal) => {
+      const clients = modToolContextRef.current!().options.mcpClients
+      return callMCPToolForMod(findMCPConnectionForMod(clients, server), tool, args, signal)
+    },
     configRows: async () =>
       getConfigRows({
         getAppState: () => store.getState(),
