@@ -3,6 +3,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import { randomUUID } from 'crypto'
 import last from 'lodash-es/last.js'
 import {
+  getOriginalCwd,
   getSessionId,
   isSessionPersistenceDisabled,
 } from 'src/bootstrap/state.js'
@@ -50,6 +51,7 @@ import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { ModsSession } from './services/mods/session.js'
 import type { PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
+import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
@@ -497,6 +499,13 @@ export class QueryEngine {
       cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
     }, setAppState, {
       messages: () => projectModSessionMessages(this.mutableMessages),
+      captureUsage: () => captureModSessionUsage(getModToolContext()),
+      cwd: getCwd,
+      root: getOriginalCwd,
+      model: () => getModToolContext().options.mainLoopModel,
+      turns: () => this.mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual &&
+        message.toolUseResult === undefined &&
+        (typeof message.message.content === 'string' || !message.message.content.every(block => block.type === 'tool_result'))).length,
       firstPartyCredential: getFirstPartyCredential,
       configRows: () =>
         getConfigRows({

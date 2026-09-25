@@ -107,6 +107,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   pluginOrigin?(storageId: string): ModOrigin | undefined
   cwd?(): string
   root?(): string
+  model?(): string
+  turns?(): number
   tasks?(): AppState['tasks']
   agentNames?(): AppState['agentNameRegistry']
   commands?(): readonly Command[]
@@ -190,7 +192,7 @@ const coreHost: Nouns = {
   settings: { read: hostIdentity },
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
-  session: { cwd: hostIdentity, root: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
+  session: { cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
@@ -613,7 +615,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
-      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.id': case 'session.repo': case 'session.surface': case 'session.messages': case 'prompt.read': {
+      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.messages': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
       }
@@ -802,6 +804,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'session.surface':
         if (!binding) throw new Error('Module session is not bound')
         return binding.surface
+      case 'session.model':
+        if (!services.model) throw new Error('Session model is unavailable on this host')
+        return services.model()
+      case 'session.turns':
+        if (!services.turns) throw new Error('Session turn count is unavailable on this host')
+        return services.turns()
       case 'turn.abort': {
         if (typeof input.turnId !== 'string') throw new TypeError('turn.abort takes { turnId }')
         if (!publicTurn || input.turnId !== publicTurn.turnId)

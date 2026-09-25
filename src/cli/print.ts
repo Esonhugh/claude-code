@@ -57,6 +57,8 @@ import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
+import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import {
   getSessionState,
   notifySessionStateChanged,
@@ -2844,7 +2846,10 @@ function runHeadlessStreaming(
   const inboundBinding = options.modsSession?.bind({
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
-    messages: () => mutableMessages,
+    messages: () => projectModSessionMessages(mutableMessages),
+    captureUsage: () => captureModSessionUsage(getModToolContext()),
+    model: () => activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
+    turns: () => mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual && message.toolUseResult === undefined).length,
     firstPartyCredential: getFirstPartyCredential,
     configRows: () =>
       getConfigRows({

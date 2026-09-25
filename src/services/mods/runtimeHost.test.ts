@@ -2206,3 +2206,61 @@ test('Worker prompt.suggest does not mutate headless, busy, filled, or blank pro
   expect(await value.dispatch('tool.call', { text: '   ' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
   expect(suggestions).toEqual([])
 })
+
+test('Worker session reads track live host state and distinguish cwd, root and headless surface', async () => {
+  const consumer = await plugin('session-reads', `export function register(on) {
+    on('tool.call', async ($) => ({result:{cwd:await $.session.cwd(),root:await $.session.root(),
+      model:await $.session.model(),turns:await $.session.turns(),surface:await $.session.surface()}}));
+  }`)
+  let cwd = join(root,'shell')
+  let sessionRoot = root
+  let model = 'model-one'
+  let turns = 4100
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:e=>diagnostics.push(e),services:{
+    cwd:()=>cwd,root:()=>sessionRoot,model:()=>model,turns:()=>turns,
+  }})
+  runtimes.push(value)
+  await value.bind({...binding(root),surface:null,isInteractive:false})
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const run = () => value.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot,model,turns,surface:null}})
+  cwd = join(root,'shell-next')
+  model = 'model-two'
+  turns++
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot,model,turns,surface:null}})
+  sessionRoot = join(root,'moved-root')
+  await value.bind(binding(root))
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot,model,turns,surface:'terminal'}})
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker usage denial never invokes its reader and invalid rewrites recover to the received arguments', async () => {
+  const mod = await plugin('usage-policy', `export function register(on) {
+    on('tool.call', async ($,e) => {
+      try {return {result:await $.session.usage({columns:e.columns}, ...e.extra)}}
+      catch(error) {return {result:{error:error.message}}}
+    });
+    on('session.usage', ($,e,next) => {
+      if(e.columns===1) return {deny:'usage denied'};
+      return next({...e,breakdown:'invalid'});
+    }).catch(($,e,next) => next(e));
+  }`)
+  const inputs: unknown[] = [], diagnostics: unknown[] = []
+  const expected = {context:{window:200000},rateLimits:[]}
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => async args => {inputs.push(args);return expected},
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const run = (columns:number,extra:unknown[] = []) => value.dispatch('tool.call',{columns,extra},async () => ({result:'core'}))
+  expect(await run(1)).toEqual({result:{error:'usage denied'}})
+  expect(inputs).toEqual([])
+  expect(await run(2,[{}])).toEqual({result:{error:'session.usage takes one optional object'}})
+  expect(inputs).toEqual([])
+  expect(await run(79)).toEqual({result:expected})
+  expect(inputs).toEqual([{columns:79}])
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'session.usage',message:expect.stringContaining('breakdown')})])
+})

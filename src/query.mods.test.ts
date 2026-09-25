@@ -2991,3 +2991,113 @@ test('session.start dynamic tool enters the first query schema and real executor
     expect(diagnostics).toEqual([])
   } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
 })
+
+test('turn.step session.messages reads its own concurrent query rather than the main host transcript', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-step-messages-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { messages: () => [{role: 'user', text: 'HOST_ONLY', toolUses: []}] },
+  })
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `const seen = []; export function register(on) {
+      on('turn.step', async function* ($, e, next) {
+        const before = await $.session.messages();
+        const result = yield* next(e);
+        seen.push({agentId: e.agentId, before, after: await $.session.messages()});
+        return result;
+      });
+      on('tool.call', () => ({result: seen}));
+    }`)
+    await runtime.reconcile([{name:'messages',storageId:'messages@inline',pluginRoot:root,entrypoints:[entry]}])
+    const queries = ['main', 'child'].map(name => {
+      const h = harness(async function* () { yield* streamedResponse(name, `${name} reply`) })
+      h.context.mods = runtime
+      if (name === 'child') h.context.agentId = asAgentId('child')
+      h.params.messages = [createUserMessage({content: `${name} question`})]
+      return drain(query(h.params))
+    })
+    const runs = await Promise.all(queries)
+    expect(runs.map(run => run.terminal.reason)).toEqual(['completed', 'completed'])
+    const {result: seen} = await runtime.dispatch('tool.call', {}, async () => ({result: []})) as {
+      result: {agentId?: string; before: {text:string}[]; after: {text:string}[]}[]
+    }
+    expect(seen).toHaveLength(2)
+    for (const name of ['main', 'child']) {
+      const observation = seen.find(item => item.agentId === (name === 'child' ? name : undefined))!
+      expect(observation.before.map(message => message.text)).toEqual([`${name} question`])
+      expect(observation.after.map(message => message.text)).toEqual([`${name} question`, `${name} reply`])
+    }
+    expect(diagnostics).toEqual([])
+  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+})
+
+test('Worker usage inside a query reads that conversation rather than the main host transcript', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage:() => {throw new Error('query must provide its own usage snapshot')},
+  }})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.context',async $ => {
+        const usage=await $.session.usage();
+        return {blocks:[{name:'inputTokens',text:String(usage.context.tokens)}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'query-usage',storageId:'query-usage@inline',pluginRoot:root,entrypoints:[entry]}])
+    expect(diagnostics).toEqual([])
+    const contexts: Record<string,string>[] = []
+    const h = harness(async function* () {yield response('usage-result','answer')})
+    h.context.mods = runtime
+    h.context.agentId = asAgentId('usage-child')
+    h.params.messages = [response('prior-child-response','earlier',200,100)]
+    h.params.deps!.autocompact = async (messages,_context,forkContext) => {
+      contexts.push(forkContext.userContext)
+      return {messages,wasCompacted:false}
+    }
+    expect((await drain(query(h.params))).terminal.reason).toBe('completed')
+    expect(contexts).toEqual([{inputTokens:'207'}])
+    expect(diagnostics).toEqual([])
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('usage read by refreshed context after compaction does not retain the precompact response', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-compact-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.context',async $ => {
+        const usage=await $.session.usage();
+        return {blocks:[{name:'inputTokens',text:String(usage.context.tokens)}]};
+      });
+    }`)
+    await runtime.reconcile([{name:'usage-compact',storageId:'usage-compact@inline',pluginRoot:root,entrypoints:[entry]}])
+    const requests: any[] = []
+    const h = harness(async function* (request) {requests.push(request);yield response('answer','done')})
+    h.context.mods = runtime
+    h.params.messages = [response('prior','earlier',200,100)]
+    h.params.deps!.autocompact = async () => ({wasCompacted:true,compactionResult:{
+      boundaryMarker:createCompactBoundaryMessage('auto',307),summaryMessages:[createUserMessage({content:'summary'})],attachments:[],hookResults:[],
+    }})
+    const original = process.env.NODE_ENV
+    process.env.NODE_ENV = 'development'
+    try {await drain(query(h.params))}
+    finally {
+      if (original === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = original
+    }
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(requests[0].messages)).toContain('# inputTokens\\nundefined')
+    expect(JSON.stringify(requests[0].messages)).not.toContain('# inputTokens\\n207')
+  } finally {
+    await runtime.dispose()
+    await rm(root,{recursive:true,force:true})
+  }
+})
