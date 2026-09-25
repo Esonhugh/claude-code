@@ -532,7 +532,10 @@ export async function processSlashCommand(
   const wrapsCommand = !isModCommand(command) && command.userInvocable !== false
   const ownedSnapshot =
     wrapsCommand && !modInvocation && !context.modsSnapshot
-      ? captureModSkillPromptSnapshot(context)
+      ? captureModSkillPromptSnapshot(
+          context,
+          canUseTool ?? context.canUseTool ?? hasPermissionsToUseTool,
+        )
       : undefined
   commandSnapshot ??= modInvocation?.snapshot ?? ownedSnapshot
   const invocation = modInvocation ?? (commandSnapshot ? {
@@ -1180,7 +1183,7 @@ export async function processPromptSlashCommand(
   }
   const ownedSnapshot = context.modsSnapshot
     ? undefined
-    : captureModSkillPromptSnapshot(context)
+    : captureModSkillPromptSnapshot(context, canUseTool)
   try {
     return await getMessagesForPromptSlashCommand(
       command,

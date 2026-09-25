@@ -1170,7 +1170,7 @@ async function executeRemoteSkill(
   )
   const ownedSnapshot = context.modsSnapshot
     ? undefined
-    : captureModSkillPromptSnapshot(context)
+    : captureModSkillPromptSnapshot(context, canUseTool)
   try {
     const snapshot = context.modsSnapshot ?? ownedSnapshot
     if (snapshot?.hasHooks('skill.prompt')) {

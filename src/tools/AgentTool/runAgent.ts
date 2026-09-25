@@ -764,7 +764,7 @@ export async function* runAgent({
       await import('../../utils/processUserInput/processSlashCommand.js')
     const ownedSkillSnapshot = toolUseContext.modsSnapshot
       ? undefined
-      : captureModSkillPromptSnapshot(preloadContext)
+      : captureModSkillPromptSnapshot(preloadContext, canUseTool)
     let loaded: Array<{
       skillName: string
       skill: (typeof validSkills)[0]['skill']

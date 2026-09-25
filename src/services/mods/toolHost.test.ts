@@ -1,5 +1,12 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { z } from 'zod/v4'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createModsRuntime } from './runtime.js'
+import { processPromptSlashCommand } from '../../utils/processUserInput/processSlashCommand.js'
+import type { Command } from '../../types/command.js'
+import { clearInvokedSkills } from '../../bootstrap/state.js'
 import { getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { createAssistantMessage } from '../../utils/messages.js'
@@ -70,6 +77,91 @@ function hook(event: string, invoke: ModDispatchHook['invoke']): ModDispatchHook
 }
 
 describe('author tool host through the real executor', () => {
+  for (const borrowed of [false, true]) {
+    test(`Worker skill.prompt uses invocation tools and permissions with ${borrowed ? 'borrowed' : 'owned'} snapshot`, async () => {
+      const f = fixture()
+      const checkedInputs: unknown[] = []
+      f.tool.checkPermissions = async input => {
+        checkedInputs.push(input)
+        return { behavior: 'ask', message: 'Confirm fixture' }
+      }
+      const root = await mkdtemp(join(tmpdir(), 'skill-prompt-host-'))
+      const diagnostics: unknown[] = []
+      let staleCalls = 0
+      let captures = 0
+      let releases = 0
+      const runtime = createModsRuntime({
+        services: {
+          toolHost: () => {
+            staleCalls++
+            throw new Error('stale session tool host must not be used')
+          },
+        },
+        onDiagnostic: event => diagnostics.push(event),
+      })
+      const capture = runtime.capture.bind(runtime)
+      const captureSpy = spyOn(runtime, 'capture').mockImplementation(services => {
+        captures++
+        const snapshot = capture(services)
+        return { ...snapshot, release() { releases++; snapshot.release() } }
+      })
+      let snapshot: ModSnapshot | undefined
+      const originalAttachments = process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      try {
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = '1'
+        const entry = join(root, 'register.ts')
+        await writeFile(entry, `export function register(on) {
+          on('skill.prompt', async ($, e, next) => {
+            const check = await $.tool.check({ tool: 'AuthorFixture', input: { value: 'checked' } });
+            const call = await $.tool.call({ tool: 'AuthorFixture', value: 'called' });
+            const core = await next(e);
+            return { text: core.text + '\\n' + JSON.stringify({ check, call }) };
+          });
+        }`)
+        await runtime.reconcile([{ name: 'skill-host', storageId: 'skill-host@inline', pluginRoot: root, entrypoints: [entry] }])
+        f.context.mods = runtime
+        Object.assign(f.context, { canUseTool: async () => {
+          throw new Error('context fallback permission must not replace invocation permission')
+        } })
+        const canUseTool: CanUseToolFn = async (...args) => {
+          f.permissions.push(args)
+          return { behavior: 'allow' }
+        }
+        if (borrowed) {
+          snapshot = runtime.capture({ toolHost: () => createModToolHost(f.context, canUseTool) })
+          f.context.modsSnapshot = snapshot
+        }
+        const command: Command = {
+          type: 'prompt', name: 'skill-host', description: 'host regression', progressMessage: 'loading',
+          contentLength: 0, source: 'userSettings',
+          async getPromptForCommand() { return [{ type: 'text', text: 'Original skill' }] },
+        }
+        const result = await processPromptSlashCommand('skill-host', '', [command], f.context, [], canUseTool)
+        expect(diagnostics).toEqual([])
+        expect(staleCalls).toBe(0)
+        expect(checkedInputs).toContainEqual({ value: 'checked' })
+        expect(f.calls.map(call => call.input)).toEqual([{ value: 'called' }])
+        expect(f.permissions).toHaveLength(1)
+        expect(f.permissions[0]![0]).toBe(f.tool)
+        expect(f.permissions[0]![1]).toEqual({ value: 'called' })
+        expect(JSON.stringify(result.messages)).toContain('mapped:called')
+        expect(JSON.stringify(result.messages)).toContain('Confirm fixture')
+        expect(captures).toBe(1)
+        expect(releases).toBe(borrowed ? 0 : 1)
+        snapshot?.release()
+        snapshot = undefined
+        expect(releases).toBe(1)
+      } finally {
+        snapshot?.release()
+        captureSpy.mockRestore()
+        await runtime.dispose()
+        clearInvokedSkills()
+        await rm(root, { recursive: true, force: true })
+        if (originalAttachments === undefined) delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+        else process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = originalAttachments
+      }
+    })
+  }
   test('spawn preserves omitted subagent type on the AgentTool production path', async () => {
     const f = fixture()
     let actualInput: Record<string, unknown> | undefined

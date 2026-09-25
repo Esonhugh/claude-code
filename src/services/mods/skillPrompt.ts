@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { createToolCatalogForContext } from './toolCatalog.js'
+import { createModToolHost } from './toolHost.js'
 import type { ModSnapshot } from './runtime.js'
 
 export type SkillPromptInput = { skill: string; text: string }
@@ -31,9 +33,11 @@ function validateResult(value: unknown): asserts value is SkillPromptResult {
 
 export function captureModSkillPromptSnapshot(
   context: ToolUseContext,
+  canUseTool: CanUseToolFn,
 ): ModSnapshot | undefined {
   return context.mods?.capture({
     toolCatalog: () => createToolCatalogForContext(context),
+    toolHost: () => createModToolHost(context, canUseTool),
   })
 }
 

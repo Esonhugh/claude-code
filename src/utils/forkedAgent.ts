@@ -207,7 +207,7 @@ export async function prepareForkedCommandContext(
     .join('\n\n')
   const ownedSnapshot = context.modsSnapshot
     ? undefined
-    : captureModSkillPromptSnapshot(context)
+    : captureModSkillPromptSnapshot(context, canUseTool)
   let skillContent: string
   try {
     const snapshot = context.modsSnapshot ?? ownedSnapshot
