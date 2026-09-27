@@ -3440,7 +3440,7 @@ describe('ModsPane host layout', () => {
         const conversationColumns = columns - bodyColumns - 2
         expect(domElement(stdout, 'REQUESTED_TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
         expect(domElement(stdout, 'REQUESTED_COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
-        expect(nodeCache.get(renderedElement(stdout, 'REQUESTED_BODY', 'ink-text'))!.x).toBe(conversationColumns)
+        expect(nodeCache.get(renderedElement(stdout, 'REQUESTED_BODY', 'ink-text'))!.x).toBe(conversationColumns + 1)
         expect(ui.getSnapshot()[0]).toMatchObject({ columns: requested, bodyColumns })
       }
     } finally {
@@ -3510,7 +3510,7 @@ describe('ModsPane host layout', () => {
         expect(composer.x).toBe(0)
         expect(composer.y).toBe(rows - 1)
         if (columns >= 110) {
-          expect(diff.x).toBe(width)
+          expect(diff.x).toBe(width + 1)
           expect(diff.y).toBeLessThan(composer.y)
         } else {
           expect(diff.x).toBe(0)
@@ -3570,13 +3570,13 @@ describe('ModsPane host layout', () => {
       await settle()
       expect(nodeCache.get(renderedElement(stdout, 'TRANSCRIPT:138', 'ink-text'))).toMatchObject({ x: 0 })
       expect(nodeCache.get(renderedElement(stdout, 'COMPOSER:138', 'ink-text'))).toMatchObject({ x: 0 })
-      expect(nodeCache.get(renderedElement(stdout, 'DOCK:42', 'ink-text'))).toMatchObject({ x: 138 })
+      expect(nodeCache.get(renderedElement(stdout, 'DOCK:41', 'ink-text'))).toMatchObject({ x: 139 })
 
       instance.rerender(<ThemeProvider>{draw(240, true)}</ThemeProvider>)
       await settle()
       expect(domElement(stdout, 'TRANSCRIPT:1', 'ink-box').yogaNode!.getComputedWidth()).toBe(1)
       expect(domElement(stdout, 'SIDEBAR:30', 'ink-box').yogaNode!.getComputedWidth()).toBe(30)
-      expect(domElement(stdout, 'DOCK:149', 'ink-box').yogaNode!.getComputedWidth()).toBe(149)
+      expect(domElement(stdout, 'DOCK:148', 'ink-box').yogaNode!.getComputedWidth()).toBe(148)
     } finally {
       instance.unmount()
       if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER

@@ -346,9 +346,17 @@ export function FullscreenLayout({
     [sidebarColumns, terminalRows],
   )
   const dockSize = useMemo(
-    () => ({ columns: dockColumns, rows: terminalRows }),
+    () => ({ columns: Math.max(0, dockColumns - 1), rows: terminalRows }),
     [dockColumns, terminalRows],
   )
+  const paneLayout = `${hasSidebar}:${sidebarColumns}:${hasDock}:${dockColumns}`
+  const previousPaneLayout = useRef(paneLayout)
+  useLayoutEffect(() => {
+    if (previousPaneLayout.current !== paneLayout) {
+      instances.get(process.stdout)?.invalidatePrevFrame()
+      previousPaneLayout.current = paneLayout
+    }
+  }, [paneLayout])
   // Scroll-derived chrome state lives HERE, not in REPL. StickyTracker
   // writes via ScrollChromeContext; pillVisible subscribes directly to
   // ScrollBox. Both change rarely (pill flips once per threshold crossing,
@@ -486,7 +494,17 @@ export function FullscreenLayout({
             )}
             {hasDock && (
               <TerminalSizeContext value={dockSize}>
-                <Box flexDirection="column" flexShrink={0} width={dockColumns} overflow="hidden">
+                <Box
+                  flexDirection="column"
+                  flexShrink={0}
+                  width={dockColumns}
+                  overflow="hidden"
+                  borderStyle="single"
+                  borderLeft
+                  borderRight={false}
+                  borderTop={false}
+                  borderBottom={false}
+                >
                   {dockPane}
                 </Box>
               </TerminalSizeContext>

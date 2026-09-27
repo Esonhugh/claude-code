@@ -380,7 +380,7 @@ export function DiffView({
       overflow="hidden"
     >
       <Box flexShrink={0} justifyContent="space-between">
-        <Text bold>Diff</Text>
+        {presentation === 'sidebar' ? <Text bold>Diff</Text> : <Text />}
         <Box onClick={onClose}>
           <Text>✕</Text>
         </Box>
@@ -541,7 +541,20 @@ export function DiffView({
       </ScrollBox>
     </Box>
   )
-  if (presentation === 'sidebar') return content
+  if (presentation === 'sidebar') {
+    return (
+      <Box flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden">
+        {content}
+        <Box flexShrink={0} paddingTop={1}>
+          <Text dimColor wrap="truncate-end">
+            {detail
+              ? '↑/↓ scroll · ← back · Esc close'
+              : '↑/↓ select · Enter view · PgUp/PgDn · Esc close'}
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
   return (
     <Dialog
       title={detail ? 'Diff · detail' : 'Diff · files'}

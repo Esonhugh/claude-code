@@ -1385,6 +1385,13 @@ export function ModsPane({
           </PaneLayoutContext.Provider>
         </PersonInputContext.Provider>
       </ScrollBox>
+      {pane.placement === 'dock' && pane.focused && (
+        <Box position="absolute" bottom={0} left={0} right={0} opaque>
+          <Text dimColor wrap="truncate-end">
+            ↑/↓ scroll · PgUp/PgDn · Esc {pane.closeOnEscape ? 'close' : 'return'}
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }
