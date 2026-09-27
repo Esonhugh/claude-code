@@ -597,7 +597,7 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 
 - 生命周期：扫描并固定模块快照 → register → `engine.create` → 准入 → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
 - 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除或拒绝准入撤下旧能力。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
-- 当前接线：tool/prompt/turn middleware、动态 slash commands、会话与 accepted settings 读取、fs、argv process、JSON store，以及 inline/fullscreen terminal Pane。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
+- 当前接线：tool 注册、列举、描述、调用与检查；prompt read/fill/suggest/submit/context/section/attachment；turn middleware 与流式 model step；agent offer/register/list/spawn；MCP 调用；动态 slash commands；session receive/measure/usage/compact/end/authorize；config/options、accepted settings、fs、受限 HTTP、argv process、env、JSON store，以及 terminal/remote UI 与 terminal media。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
 - Pane 输入：空 composer 且没有 dialog/其他输入所有权时，可用 Tab / Shift+Tab 或鼠标进入可见 dock。裸方向键在可见控件间导航，详情区域可滚动；Input/Select 优先处理自身按键，Escape 关闭或退焦。鼠标滚轮按实际命中的 Pane body 交给插件处理，Pane 外保持 transcript 滚动。
 - 焦点与布局：有可见内容的 Button/Select/Input 用高亮提示实际焦点；列表分页按最终落点与已提交绘制顺序导航。Diff 按 Pane 与嵌套 Code 容器的可用宽度排版，终端 resize 后重新适配；dock 正文预算随实际可见高度和 composer 高度更新。内容可达性、长文本与窄屏降级仍受插件自身布局及 wrap 声明约束。
 - Diff action：插件声明相应 Button `action` 时，默认 Ctrl/Opt+Up/Down 切换文件，Ctrl+x 后按 b 切换 diff base；沿用现有 keybindings 配置，可重绑或解绑。显示用 `hotkey` 文本本身不会注册动作。
@@ -626,7 +626,7 @@ bun scripts/mods-test-lab.mjs run sample
 
 无参数打开包含 Button、Input、Select、长列表和中英文 diff 的面板；`status` 查看计数，`context` 仅为下一条真正的 prompt 附加固定测试标记，`reset` 清理本 Mod 的测试状态。默认只观察事件，不改变工具输入/结果，不记录 prompt、工具参数或回答正文。最近事件最多 20 条；持久计数与当前 activation 状态分别展示。UI-only 入口没有模型服务，prompt/tool 完整链需要另行配置本地 loopback fixture。
 
-四个官方原件可单独下载并检查，下载不代表已经兼容或激活：
+官方 2.1.277 的 `agents-md`、`diff` 和 `telemetry` 已固定 provenance 并内嵌为 builtin Mods；`sec-default` 仍只作为可下载的官方原件检查，不因源码可扫描而获得 managed 安全身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
 
 ```bash
 bun scripts/mods-test-lab.mjs fetch-official
@@ -635,11 +635,13 @@ bun scripts/mods-test-lab.mjs check agents-md
 bun scripts/mods-test-lab.mjs check sec-default
 bun scripts/mods-test-lab.mjs check telemetry
 bun scripts/mods-test-lab.mjs run diff
+bun scripts/mods-test-lab.mjs run-builtin --binary ./built-claude
+bun scripts/mods-test-lab.mjs accept-builtin --binary ./built-claude
 ```
 
-下载固定官方提交到仓库外缓存，输出来源、内容摘要及实际路径；不全局安装、不修改用户 settings、不运行上游安装脚本。当前固定原件的 `diff` 依赖尚未支持的 `env.get`；`agents-md` 的 manifest `userConfig.options` 校验失败，直接扫描还缺 `session.root`；`telemetry` 缺 `session.authorize`。这些失败不会通过改写官方源码绕过。`sec-default` 可以扫描，但普通 inline 身份不等于 managed 安全策略。兼容旧版 `diff` 还受所选宿主的命令冲突规则约束，看到内置 diff 不能当作 Mod 触发成功。
+下载固定官方提交到仓库外缓存，输出来源、内容摘要及实际路径；不全局安装、不修改用户 settings、不运行上游安装脚本。`run-builtin` 使用 binary 内嵌 archive 启动隔离会话，但单纯创建 session 不代表 readiness、activation 或 trigger。`accept-builtin` 使用私有 HOME/config、假凭据、loopback provider 和 sandbox，差分验证 `agents-md`、builtin/native `diff` Pane 交互以及 telemetry 的 privacy 与 `session.end` flush，并检查清理；它不读取个人认证或访问真实 provider。
 
-停止会话后可用 `bun scripts/mods-test-lab.mjs clean <run目录>` 回收工具自己的运行目录，活跃或封存的验收记录不会自动删除。`check` 只检查 discovery/preparation/scan，不代表准入、激活或实际触发；`run` 创建 session 也不代表 readiness，需按日志和实际命令结果判断。
+停止手工会话后可用 `bun scripts/mods-test-lab.mjs clean <run目录>` 回收工具自己的运行目录，活跃或封存的验收记录不会自动删除。`check` 只检查 discovery/preparation/scan；builtin acceptance 通过也只证明当前制品的这三项场景，不等于全部官方 Mods、作者工具链、远端 surface、官方 binary parity 或完整 release gate 通过。
 
 测试方案、实际结果和未覆盖项见根目录 [`mods-test.md`](mods-test.md)；生命周期与契约依据见 [`docs/research/claude-mods.md`](docs/research/claude-mods.md)。
 

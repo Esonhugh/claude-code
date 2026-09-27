@@ -12,6 +12,27 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-27 - Mods compiled 验收与测试契约修复
+
+### 版本状态
+
+- 未发布；版本与依赖保持不变。本条仅覆盖 Mods 专项，不代表完整 release gate 或全部官方 runtime parity 通过。
+
+### 关联提交
+
+- 尚未提交；记录当前 `feat/mods` 工作区的专项修复与验收接线。
+
+### 变更内容
+
+- 同步 REPL Mods 测试 fixture 与正式 command/root host 契约，不通过生产 fallback 隐藏无效 session 实现。
+- 补强 builtin Mods acceptance 的四侧完整性、binary 内容身份及对称 cleanup 记录，并将真实 `built-claude` 的 `agents-md`、`diff`、`telemetry` 验收接入独立 release target。
+- 更新当前 Mods 使用说明；历史研究和测试账本继续保留其原始基线、失败与未覆盖结论。
+
+### 测试覆盖
+
+- 定向覆盖 REPL submit、Mods command/session/runtime host、acceptance mutation 与 release-driver target；最终 compiled 结果以本轮新 binary 的 `builtin-mods` evidence 为准。
+- `accept-builtin` 使用私有 HOME/config、dummy credential、loopback provider 与 sandbox；专项通过不替代其他 Agent、Workflow、team 或完整发布门禁。
+
 ## 2026-09-19 - Mods 分页焦点与自适应布局修复
 
 ### 版本状态

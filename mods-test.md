@@ -1,5 +1,7 @@
 # Mods 收口测试方案与验收记录
 
+> **历史验收账本：** 本文冻结各轮当时的源码、官方版本、binary hash、证据路径、失败和未覆盖结论，不是当前能力矩阵。当前用法与支持范围见 `README.md`；当前 compiled builtin 专项以 release gate 的 `builtin-mods` target 及其本轮 evidence 为准，后续成功不会改写这里的历史结果。
+
 第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；Mods UI/UX 修复与限定验收见第 9 节；可复用测试 Mod 与官方原件调试见第 10 节；输入、Pane reopen 与 builtin 让位修复见第 11 节。历史失败不会由后续成功覆盖。
 
 ## 1. 范围和判定规则
