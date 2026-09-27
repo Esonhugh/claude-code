@@ -4079,12 +4079,17 @@ function runHeadlessStreaming(
             // message order so a subsequent claude_authenticate doesn't
             // replace the service before this code lands.
             if (message.request.subtype === 'claude_oauth_callback') {
-              claudeOAuth.service.handleManualAuthCodeInput({
-                // @ts-ignore - recovered code
-                authorizationCode: message.request.authorizationCode,
-                // @ts-ignore - recovered code
-                state: message.request.state,
-              })
+              try {
+                claudeOAuth.service.handleManualAuthCodeInput({
+                  // @ts-ignore - recovered code
+                  authorizationCode: message.request.authorizationCode,
+                  // @ts-ignore - recovered code
+                  state: message.request.state,
+                })
+              } catch (error) {
+                sendControlResponseError(message, errorMessage(error))
+                continue
+              }
             }
             // Detach the await — the stdin reader is serial and blocking
             // here deadlocks claude_oauth_wait_for_completion: flow may

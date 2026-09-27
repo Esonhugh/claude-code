@@ -24,6 +24,7 @@ export class OAuthService {
   private port: number | null = null
   private manualAuthCodeResolver: ((authorizationCode: string) => void) | null =
     null
+  private expectedState: string | null = null
 
   constructor() {
     this.codeVerifier = crypto.generateCodeVerifier()
@@ -138,6 +139,7 @@ export class OAuthService {
     return new Promise((resolve, reject) => {
       // Set up manual auth code resolver
       this.manualAuthCodeResolver = resolve
+      this.expectedState = state
 
       // Start automatic flow
       this.authCodeListener
@@ -158,12 +160,16 @@ export class OAuthService {
     authorizationCode: string
     state: string
   }): void {
-    if (this.manualAuthCodeResolver) {
-      this.manualAuthCodeResolver(params.authorizationCode)
-      this.manualAuthCodeResolver = null
-      // Close the auth code listener since manual input was used
-      this.authCodeListener?.close()
+    if (!this.manualAuthCodeResolver) return
+    if (params.state !== this.expectedState) {
+      throw new Error('OAuth state mismatch. Please copy the full code again.')
     }
+
+    this.manualAuthCodeResolver(params.authorizationCode)
+    this.manualAuthCodeResolver = null
+    this.expectedState = null
+    // Close the auth code listener since manual input was used
+    this.authCodeListener?.close()
   }
 
   private formatTokens(
@@ -194,5 +200,6 @@ export class OAuthService {
   cleanup(): void {
     this.authCodeListener?.close()
     this.manualAuthCodeResolver = null
+    this.expectedState = null
   }
 }

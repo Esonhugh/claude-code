@@ -1410,7 +1410,7 @@ async function handleOAuth401ErrorImpl(
   }
 
   // Same token that failed - force refresh, bypassing local expiration check
-  return checkAndRefreshOAuthTokenIfNeeded(0, true)
+  return checkAndRefreshOAuthTokenIfNeeded(0, true, failedAccessToken)
 }
 
 /**
@@ -1451,6 +1451,7 @@ let pendingRefreshCheck: Promise<boolean> | null = null
 export function checkAndRefreshOAuthTokenIfNeeded(
   retryCount = 0,
   force = false,
+  failedAccessToken?: string,
 ): Promise<boolean> {
   // Deduplicate concurrent non-retry, non-force calls
   if (retryCount === 0 && !force) {
@@ -1458,19 +1459,28 @@ export function checkAndRefreshOAuthTokenIfNeeded(
       return pendingRefreshCheck
     }
 
-    const promise = checkAndRefreshOAuthTokenIfNeededImpl(retryCount, force)
+    const promise = checkAndRefreshOAuthTokenIfNeededImpl(
+      retryCount,
+      force,
+      failedAccessToken,
+    )
     pendingRefreshCheck = promise.finally(() => {
       pendingRefreshCheck = null
     })
     return pendingRefreshCheck
   }
 
-  return checkAndRefreshOAuthTokenIfNeededImpl(retryCount, force)
+  return checkAndRefreshOAuthTokenIfNeededImpl(
+    retryCount,
+    force,
+    failedAccessToken,
+  )
 }
 
 async function checkAndRefreshOAuthTokenIfNeededImpl(
   retryCount: number,
   force: boolean,
+  failedAccessToken?: string,
 ): Promise<boolean> {
   const MAX_RETRIES = 5
 
@@ -1498,10 +1508,14 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
   getClaudeAIOAuthTokens.cache?.clear?.()
   clearKeychainCache()
   const freshTokens = await getClaudeAIOAuthTokensAsync()
-  if (
-    !freshTokens?.refreshToken ||
-    !isOAuthTokenExpired(freshTokens.expiresAt)
-  ) {
+  if (!freshTokens?.refreshToken) {
+    return false
+  }
+  if (force && freshTokens.accessToken !== failedAccessToken) {
+    logEvent('tengu_oauth_token_refresh_race_resolved', {})
+    return true
+  }
+  if (!force && !isOAuthTokenExpired(freshTokens.expiresAt)) {
     return false
   }
 
@@ -1523,7 +1537,11 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
         })
         // Wait a bit before retrying
         await sleep(1000 + Math.random() * 1000)
-        return checkAndRefreshOAuthTokenIfNeededImpl(retryCount + 1, force)
+        return checkAndRefreshOAuthTokenIfNeededImpl(
+          retryCount + 1,
+          force,
+          failedAccessToken,
+        )
       }
       logEvent('tengu_oauth_token_refresh_lock_retry_limit_reached', {
         maxRetries: MAX_RETRIES,
@@ -1543,10 +1561,14 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
     getClaudeAIOAuthTokens.cache?.clear?.()
     clearKeychainCache()
     const lockedTokens = await getClaudeAIOAuthTokensAsync()
-    if (
-      !lockedTokens?.refreshToken ||
-      !isOAuthTokenExpired(lockedTokens.expiresAt)
-    ) {
+    if (!lockedTokens?.refreshToken) {
+      return false
+    }
+    if (force && lockedTokens.accessToken !== failedAccessToken) {
+      logEvent('tengu_oauth_token_refresh_race_resolved', {})
+      return true
+    }
+    if (!force && !isOAuthTokenExpired(lockedTokens.expiresAt)) {
       logEvent('tengu_oauth_token_refresh_race_resolved', {})
       return false
     }
@@ -1560,7 +1582,10 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
         ? undefined
         : lockedTokens.scopes,
     })
-    saveOAuthTokensIfNeeded(refreshedTokens)
+    const saveStatus = saveOAuthTokensIfNeeded(refreshedTokens)
+    if (!saveStatus.success) {
+      return false
+    }
 
     // Clear the cache after refreshing token
     getClaudeAIOAuthTokens.cache?.clear?.()
