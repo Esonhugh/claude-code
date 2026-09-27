@@ -10,6 +10,9 @@ const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK
 const originalVertex = process.env.CLAUDE_CODE_USE_VERTEX
 const originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY
 const originalBaseUrl = process.env.ANTHROPIC_BASE_URL
+const originalOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+const originalApiKey = process.env.ANTHROPIC_API_KEY
+const originalCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS
 
 function resetProviderEnv(): void {
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -92,6 +95,89 @@ try {
   })
   assert.notEqual(sentBodies[0], body)
   assert.ok(!sentBodies[0]!.includes('cc_entrypoint=cli; cch=00000;'))
+
+  resetProviderEnv()
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-oauth-token'
+  const authModule = await import('../../utils/auth.js')
+  authModule.getClaudeAIOAuthTokens.cache.clear?.()
+  const oauthRequests: Request[] = []
+  const oauthClient = await (await import('./client.js')).getAnthropicClient({
+    maxRetries: 0,
+    fetchOverride: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      oauthRequests.push(new Request(input, init))
+      return new Response(
+        JSON.stringify({
+          id: 'msg_test',
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          model: 'claude-sonnet-4-6',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as typeof globalThis.fetch,
+  })
+  await oauthClient.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1,
+    messages: [{ role: 'user', content: 'test' }],
+  })
+  const oauthHeaders = oauthRequests[0]!.headers
+  assert.equal(oauthHeaders.get('user-agent'), 'claude-cli/2.1.280 (external, cli)')
+  assert.equal(oauthHeaders.get('x-stainless-lang'), 'js')
+  assert.equal(oauthHeaders.get('x-stainless-package-version'), '0.112.1')
+  assert.equal(oauthHeaders.get('x-stainless-runtime'), 'node')
+  assert.equal(oauthHeaders.get('x-stainless-runtime-version'), 'v26.3.0')
+  assert.equal(oauthHeaders.get('x-stainless-retry-count'), '0')
+  assert.equal(oauthHeaders.get('x-stainless-timeout'), '600')
+  assert.equal(oauthHeaders.get('authorization'), 'Bearer test-oauth-token')
+  assert.equal(oauthHeaders.get('x-api-key'), null)
+
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'User-Agent: custom-agent',
+    'X-Stainless-Runtime: custom-runtime',
+  ].join('\n')
+  const overrideRequests: Request[] = []
+  const overrideClient = await (await import('./client.js')).getAnthropicClient({
+    maxRetries: 0,
+    fetchOverride: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      overrideRequests.push(new Request(input, init))
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof globalThis.fetch,
+  })
+  await overrideClient.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1,
+    messages: [{ role: 'user', content: 'test' }],
+  })
+  assert.equal(overrideRequests[0]!.headers.get('user-agent'), 'custom-agent')
+  assert.equal(overrideRequests[0]!.headers.get('x-stainless-runtime'), 'custom-runtime')
+
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  process.env.ANTHROPIC_API_KEY = 'test-api-key-env'
+  delete process.env.ANTHROPIC_CUSTOM_HEADERS
+  authModule.getClaudeAIOAuthTokens.cache.clear?.()
+  const apiKeyRequests: Request[] = []
+  const apiKeyClient = await (await import('./client.js')).getAnthropicClient({
+    apiKey: 'test-api-key',
+    maxRetries: 0,
+    fetchOverride: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      apiKeyRequests.push(new Request(input, init))
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof globalThis.fetch,
+  })
+  await apiKeyClient.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1,
+    messages: [{ role: 'user', content: 'test' }],
+  })
+  const apiKeyHeaders = apiKeyRequests[0]!.headers
+  assert.equal(apiKeyHeaders.get('x-api-key'), 'test-api-key')
+  assert.notEqual(apiKeyHeaders.get('user-agent'), 'claude-cli/2.1.280 (external, cli)')
+  assert.notEqual(apiKeyHeaders.get('x-stainless-package-version'), '0.112.1')
 } finally {
   resetProviderEnv()
   if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -104,6 +190,14 @@ try {
   else process.env.CLAUDE_CODE_USE_FOUNDRY = originalFoundry
   if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL
   else process.env.ANTHROPIC_BASE_URL = originalBaseUrl
+  if (originalOAuthToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalOAuthToken
+  if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+  else process.env.ANTHROPIC_API_KEY = originalApiKey
+  if (originalCustomHeaders === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS
+  else process.env.ANTHROPIC_CUSTOM_HEADERS = originalCustomHeaders
+  const authModule = await import('../../utils/auth.js')
+  authModule.getClaudeAIOAuthTokens.cache.clear?.()
 }
 
 console.log('cchFetch.test.ts passed')
