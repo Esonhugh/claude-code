@@ -5,7 +5,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { atomicWriteToZipCache } from '../../utils/plugins/zipCache.js'
-import { constants } from 'node:fs'
+import { appendFileSync, constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import treeKill from 'tree-kill'
@@ -26,6 +26,39 @@ export type ModHttpResponse = { status: number; ok: boolean; headers: Record<str
 export type ModHttpServices = {
   firstPartyCredential?(): Promise<ModCredential | null>
   httpFetch?(url: string, init: RequestInit): Promise<Response>
+}
+
+export function getModHttpServices(
+  firstPartyCredential: () => Promise<ModCredential | null>,
+): ModHttpServices {
+  const ledger = process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER
+  if (
+    !ledger ||
+    process.env.ANTHROPIC_API_KEY !== 'sk-ant-mods-test-lab-fake-not-a-credential' ||
+    !process.env.ANTHROPIC_BASE_URL?.startsWith('http://127.0.0.1:')
+  ) return { firstPartyCredential }
+  let sequence = 0
+  const record = (entry: Record<string, unknown>) => {
+    appendFileSync(ledger, `${JSON.stringify({ sequence: ++sequence, ...entry })}\n`)
+  }
+  return {
+    firstPartyCredential: async () => {
+      record({ operation: 'authorize', granted: true })
+      return { kind: 'api-key', secret: 'mods-acceptance-dummy-key' }
+    },
+    httpFetch: async (url, init) => {
+      const target = new URL(url)
+      const headers = new Headers(init.headers)
+      record({
+        operation: 'http',
+        method: init.method,
+        host: target.hostname,
+        path: target.pathname,
+        authorized: headers.has('authorization') || headers.has('x-api-key'),
+      })
+      return new Response('', { status: 202 })
+    },
+  }
 }
 
 export type SettingsReadArgs = {

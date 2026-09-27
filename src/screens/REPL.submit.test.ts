@@ -8,6 +8,7 @@ import { render } from '../ink.js'
 import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuffer.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
+import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { isCommandImmediate } from '../types/command.js'
 import { DiffController } from '../services/diff/controller.js'
 import {
@@ -43,7 +44,7 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
       return ts.visitNode(root, visit) as ts.SourceFile
     }] },
   }).outputText
-  return (scope: Record<string, any>) => new Function('scope', `with (scope) { ${js}; return extracted; }`)(scope)
+  return (scope: Record<string, any>) => new Function('scope', `with (scope) { ${js}; return extracted; }`)({ getModHttpServices, ...scope })
 }
 
 test('REPL sizes the dock from the shown pane requested body columns', () => {
@@ -1676,7 +1677,10 @@ test('QueryEngine drains its own proactive prompt through real input admission',
     getAppState: () => state, setAppState: update => { state = update(state) },
     readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
     modsSession: {
-      commands: { projection: (commands: unknown) => commands },
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
       bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
     } as any,
   })
@@ -1712,7 +1716,8 @@ test('REPL binds Mods MCP calls to the current connection and forwards cancellat
   let clients: any[] = []
   const awaitMods = extract('./REPL.tsx', 'awaitMods')({
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
-    getCwd: () => '/repo', getSessionId: () => 'session', setAppState: noop,
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session', setAppState: noop,
     getFirstPartyCredential: async () => null,
     modToolContextRef: { current: () => ({ options: { mcpClients: clients } }) },
     callMCPToolForMod, findMCPConnectionForMod,
@@ -1769,7 +1774,10 @@ test('QueryEngine binds Mods MCP calls to its configured connection', async () =
     getAppState: () => state, setAppState: update => { state = update(state) },
     readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
     modsSession: {
-      commands: { projection: (commands: unknown) => commands },
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
       bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
     } as any,
   })
@@ -1964,7 +1972,8 @@ test('REPL Mods tool host resolves the current context and permission callback o
   const modCanUseToolRef = { current: firstPermission }
   const awaitMods = extract('./REPL.tsx', 'awaitMods')({
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
-    getCwd: () => '/repo', getSessionId: () => 'session',
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session',
     getFirstPartyCredential: async () => null, setAppState: noop,
     modToolContextRef, modCanUseToolRef,
     createModToolHost: (context: unknown, canUseTool: unknown) => ({ context, canUseTool }),

@@ -286,6 +286,7 @@ import {
 } from 'src/utils/model/model.js'
 import { getModelOptions } from 'src/utils/model/modelOptions.js'
 import { getFirstPartyCredential } from '../utils/auth.js'
+import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
   getSupportedEffortLevelsForModel,
   modelSupportsEffort,
@@ -2850,7 +2851,7 @@ function runHeadlessStreaming(
     captureUsage: () => captureModSessionUsage(getModToolContext()),
     model: () => activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
     turns: () => mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual && message.toolUseResult === undefined).length,
-    firstPartyCredential: getFirstPartyCredential,
+    ...getModHttpServices(getFirstPartyCredential),
     configRows: () =>
       getConfigRows({
         getAppState,

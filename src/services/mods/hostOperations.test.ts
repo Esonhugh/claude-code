@@ -21,7 +21,7 @@ import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { createModHostOperations, type FsStat } from './hostOperations.js'
+import { createModHostOperations, getModHttpServices, type FsStat } from './hostOperations.js'
 import {
   getPolicySettingsOrigin,
   getSettingsForSource,
@@ -52,6 +52,9 @@ const envKeys = [
   'CLAUDE_CODE_PLUGIN_CACHE_DIR',
   'CLAUDE_CODE_MANAGED_SETTINGS_PATH',
   'CLAUDE_CODE_USE_COWORK_PLUGINS',
+  'CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
 ]
 let savedEnv: (string | undefined)[]
 
@@ -151,6 +154,34 @@ test('basic host operations do not eagerly load the instruction and query servic
     expect(Object.keys(require.cache).filter(path=>path.endsWith('/src/utils/claudemd.ts')||path.endsWith('/src/query.ts'))).toEqual([]);
   `)
 }, 15000)
+
+test('acceptance HTTP services record sanitized host calls without external network', async () => {
+  const ledger = join(root, 'acceptance.jsonl')
+  process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledger
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-mods-test-lab-fake-not-a-credential'
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:12345'
+  const services = getModHttpServices(async () => {
+    throw new Error('production credential source must not run')
+  })
+  const operations = createModHostOperations({
+    cwd: () => cwd,
+    storageId: 'acceptance@test',
+    signal: controller.signal,
+    sessionId: () => 'session-a',
+    ...services,
+  })
+
+  const authorization = await operations.session.authorize()
+  expect(await operations.http.fetch('https://api.anthropic.com/api/event_logging/v2/batch', {
+    method: 'POST',
+    auth: authorization!.handle,
+    body: '{"sensitive":"payload"}',
+  })).toEqual({ status: 202, ok: true, headers: {}, text: '' })
+  expect((await readFile(ledger, 'utf8')).trim().split('\n').map(line => JSON.parse(line))).toEqual([
+    { sequence: 1, operation: 'authorize', granted: true },
+    { sequence: 2, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
+  ])
+})
 
 test('session authorization keeps the credential in the host and injects it into host fetch', async () => {
   const requests: { url: string; init: RequestInit }[] = []

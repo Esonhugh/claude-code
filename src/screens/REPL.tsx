@@ -410,6 +410,7 @@ import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
 import { getFirstPartyCredential } from '../utils/auth.js'
+import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
 import {
@@ -1952,7 +1953,7 @@ export function REPL({
       (typeof message.message.content === 'string' ||
         !message.message.content.every(block => block.type === 'tool_result')),
     ).length,
-    firstPartyCredential: getFirstPartyCredential,
+    ...getModHttpServices(getFirstPartyCredential),
     mcpCall: (server, tool, args, signal) => {
       const clients = modToolContextRef.current!().options.mcpClients
       return callMCPToolForMod(findMCPConnectionForMod(clients, server), tool, args, signal)
