@@ -145,16 +145,18 @@ test('supports a real interrupt flow against a live PTY shell', async () => {
     exitedSessionTtlMs: 60_000,
   })
 
-  const resolved = resolveTerminalCommand()
   const opened = manager.open({
-    command: resolved.command,
-    args: resolved.args,
+    command: '/bin/sh',
+    args: [
+      '-lc',
+      `trap 'exit 130' INT; printf READY; while :; do sleep 0.05; done`,
+    ],
     cwd: process.cwd(),
     cols: 80,
     rows: 24,
   })
 
-  manager.write(opened.sessionId, 'sleep 5\r')
+  await waitFor(() => manager.getRenderedPreview(opened.sessionId).includes('READY'))
   const signaled = manager.signal(opened.sessionId, 'SIGINT')
 
   assert.equal(signaled.state, 'running')
