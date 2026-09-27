@@ -1261,6 +1261,7 @@ def assert_driver_behavior(module, baseline_module):
         'src/screens/REPL.tsx',
         'src/entrypoints/sdk/controlSchemas.ts',
     ]) == {
+        'builtin-mods',
         'effort-openai-responses-wire',
         'ssh-remote-session-lifecycle',
     }
@@ -2561,6 +2562,7 @@ def assert_driver_behavior(module, baseline_module):
 
     planned = module.plan_targets(['team-concurrency'], {'workflow-failure-detail'})
     assert planned == ['workflow-failure-detail', 'team-concurrency']
+    assert module.plan_targets(['builtin-mods'], {'agent-fg-bg'}) == ['builtin-mods']
     for path in (
         'src/tasks/InProcessTeammateTask/types.ts',
         'src/hooks/useBackgroundTaskNavigation.ts',
@@ -2573,6 +2575,11 @@ def assert_driver_behavior(module, baseline_module):
     assert module.plan_targets([], {'ssh-remote-session-lifecycle'}) == [
         'ssh-remote-session-lifecycle',
     ]
+    assert module.required_targets_for_paths([
+        'scripts/mods-test-lab.mjs',
+        'src/services/mods/runtime.ts',
+        'src/components/ModsPane.tsx',
+    ]) == {'builtin-mods'}
 
     with tempfile.TemporaryDirectory(prefix='release-driver-assertions-') as root_string:
         root = Path(root_string)

@@ -251,6 +251,18 @@ TARGET_PATH_RULES = (
         'src/screens/REPL',
         'src/entrypoints/sdk/controlSchemas',
     )),
+    ('builtin-mods', (
+        'scripts/mods-test-lab',
+        'src/services/mods/',
+        'src/components/ModsPane',
+        'src/screens/REPL',
+        'src/QueryEngine',
+        'src/query',
+        'src/utils/handlePromptSubmit',
+        'src/utils/processUserInput/',
+        'src/entrypoints/cli',
+        'src/services/plugins/builtinMods',
+    )),
 )
 SSH_LIFECYCLE_IDS = {
     'session_id': 'release-ssh-session-0001',
@@ -442,6 +454,8 @@ def required_targets_for_paths(paths):
 
 
 def plan_targets(extra_targets, required_targets):
+    if extra_targets == ['builtin-mods']:
+        return ['builtin-mods']
     duplicate_defaults = sorted(set(DEFAULT_TARGETS) & set(extra_targets))
     if duplicate_defaults:
         raise ValueError(
@@ -2724,6 +2738,108 @@ else:
         self.record(result)
         if result['validation_verdict'] != 'passed':
             raise RuntimeError(f'readiness smoke failed: {run_dir}')
+
+    def builtin_mods(self):
+        run_dir = self.evidence_root / 'builtin-mods'
+        run_dir.mkdir()
+        cache = run_dir / 'cache'
+        metadata_path = run_dir / 'run-metadata.json'
+        metadata_path.write_text(json.dumps({
+            'label': 'builtin-mods',
+            'source_run': 'builtin-mods',
+            'driver_run': f'{self.stamp}-{self.pid}',
+            'evidence_dir': str(run_dir.resolve()),
+            'binary': str(self.binary),
+            'binary_sha256': self.manifest['binary_sha256'],
+        }, indent=2) + '\n')
+        self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+        completed = subprocess.run(
+            [
+                'bun', str(self.repo / 'scripts/mods-test-lab.mjs'),
+                'accept-builtin', '--binary', str(self.binary),
+                '--cache', str(cache),
+            ],
+            cwd=self.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        (run_dir / 'stdout.txt').write_text(completed.stdout)
+        (run_dir / 'stderr.txt').write_text(completed.stderr)
+        reports = list((cache / 'runs').glob('r-*/acceptance.json'))
+        report = None
+        report_error = None
+        if len(reports) == 1:
+            try:
+                report = json.loads(reports[0].read_text())
+            except (OSError, json.JSONDecodeError) as error:
+                report_error = str(error)
+        else:
+            report_error = f'expected exactly one acceptance.json, found {len(reports)}'
+
+        expected_assertions = {'completeness', 'cleanup', 'agents', 'diff', 'telemetry'}
+        checks = {
+            'subprocess': completed.returncode == 0,
+            'report': report is not None,
+            'assertions': False,
+            'binary': False,
+            'sides': False,
+            'evidence_ownership': False,
+        }
+        if report is not None:
+            assertions = report.get('assertions', {})
+            pair = report.get('pair', {})
+            sides = [pair.get(name) for name in ('privacyOff', 'privacyOn', 'enabled', 'disabled')]
+            checks['assertions'] = (
+                set(assertions) == expected_assertions
+                and all(assertions[name].get('verdict') == 'passed' for name in expected_assertions)
+            )
+            checks['sides'] = all(isinstance(side, dict) for side in sides)
+            checks['binary'] = checks['sides'] and all(
+                side.get('binarySha256') == self.manifest['binary_sha256']
+                for side in sides
+            )
+            target_root = run_dir.resolve()
+            evidence_paths = [reports[0], Path(report.get('evidence', ''))]
+            for side in sides:
+                if not isinstance(side, dict):
+                    continue
+                for key in ('run', 'target', 'socket'):
+                    value = side.get(key)
+                    if key != 'target' and isinstance(value, str) and value.startswith('/'):
+                        evidence_paths.append(Path(value))
+                evidence_paths.extend(
+                    Path(value) for value in side.get('captures', {}).values()
+                    if isinstance(value, str)
+                )
+            checks['evidence_ownership'] = all(
+                is_relative_to(path.resolve(strict=False), target_root)
+                for path in evidence_paths
+            )
+        (run_dir / 'builtin-mods-checks.json').write_text(
+            json.dumps({'checks': checks, 'report_error': report_error}, indent=2) + '\n'
+        )
+        passed = all(checks.values())
+        result = {
+            'label': 'builtin-mods',
+            'evidence_dir': str(run_dir),
+            'validation_verdict': 'passed' if passed else 'failed',
+            'checks': checks,
+            'acceptance_report': str(reports[0]) if len(reports) == 1 else None,
+            'assertions': [self.required_assertion(
+                run_dir,
+                'builtin-mods-compiled-acceptance',
+                'Compiled builtin Mods acceptance',
+                'The current binary passes agents-md, diff, telemetry, completeness, cleanup, identity, and evidence ownership checks.',
+                [run_dir / 'builtin-mods-checks.json', run_dir / 'stdout.txt', run_dir / 'stderr.txt'],
+                passed=passed,
+                reason=report_error or 'builtin Mods compiled acceptance checks failed',
+            )],
+        }
+        self.record(result)
+        if not passed:
+            raise RuntimeError(f'builtin Mods acceptance failed: {run_dir}')
 
     def send(self, target, run_dir, text, filename, *, confirm_pending=True):
         input_path = run_dir / filename
@@ -7597,12 +7713,21 @@ return { results }
         except Exception:
             self.release_lease()
             raise
+        builtin_mods_only = targets == ['builtin-mods']
+        planned_targets = list(targets) if builtin_mods_only else ['readiness-smoke', *targets]
         self.manifest.update({
             'completion_state': 'running',
             'normal_exit': False,
-            'expected_run_count': len(targets) + 1,
+            'expected_run_count': len(planned_targets),
             'recorded_run_count': 0,
-            'planned_targets': ['readiness-smoke', *targets],
+            'planned_targets': planned_targets,
+            'readiness_smoke': {
+                'status': 'skipped' if builtin_mods_only else 'planned',
+                'reason': (
+                    'builtin-mods supplies target-specific isolated readiness and must not access an auth source'
+                    if builtin_mods_only else None
+                ),
+            },
             'matrix_complete': False,
             'completion_reason': None,
         })
@@ -7636,9 +7761,11 @@ return { results }
             'coordinator-selector': self.coordinator_selector,
             'transcript-retention': self.transcript_retention,
             'ssh-remote-session-lifecycle': self.ssh_remote_session_lifecycle,
+            'builtin-mods': self.builtin_mods,
         }
         try:
-            self.run_target('readiness-smoke', self.readiness_smoke)
+            if not builtin_mods_only:
+                self.run_target('readiness-smoke', self.readiness_smoke)
             for target in targets:
                 self.run_target(target, actions[target])
         except Exception as error:
@@ -7681,9 +7808,9 @@ return { results }
                     'binary',
                 )
             )
-            expected_runs = len(targets) + 1
+            expected_runs = len(planned_targets)
             required_coverage = validate_required_target_results(
-                set(self.manifest['required_targets']),
+                set(targets) if builtin_mods_only else set(self.manifest['required_targets']),
                 self.manifest['runs'],
                 self.registered_runs,
             )

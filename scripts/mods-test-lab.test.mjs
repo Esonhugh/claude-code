@@ -276,16 +276,20 @@ describe('deterministic compiled builtin acceptance', () => {
   test('managed-only differential requires a real main request on both sides', async () => {
     const { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs')
     const request = text => ({ body: { model: 'claude-sonnet-4-5-20250929', messages: [{ role: 'user', content: `MODS_ACCEPT_PROMPT ${text}` }] } })
+    const binarySha256 = 'a'.repeat(64)
+    const cleanup = { verdict: 'passed', paneDead: true, tmuxKill: { status: 0 }, providerClose: { status: 0 }, status: 0 }
     const pair = {
-      enabled: { requests: [request('')], catalog: 'Toggle the diff panel showing uncommitted changes', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
-      disabled: { requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
-      privacyOff: { ledger: [] },
-      privacyOn: { ledger: [
+      enabled: { binarySha256, cleanup, requests: [request('')], catalog: 'Toggle the diff panel showing uncommitted changes', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
+      disabled: { binarySha256, cleanup, requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
+      privacyOff: { binarySha256, cleanup, ledger: [] },
+      privacyOn: { binarySha256, cleanup, ledger: [
         { sequence: 1, operation: 'authorize', credentialKind: 'bearer', granted: true },
         { sequence: 2, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
       ] },
     }
     const result = assessBuiltinAcceptance(pair)
+    expect(result.completeness.verdict).toBe('passed')
+    expect(result.cleanup.verdict).toBe('passed')
     expect(result.agents.verdict).toBe('passed')
     const auxiliary = { body: { model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT MODS_ACCEPT_CLAUDE_MARKER' }] } }
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [auxiliary] } }).agents.verdict).toBe('failed')
@@ -296,6 +300,10 @@ describe('deterministic compiled builtin acceptance', () => {
     expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ledger: pair.privacyOn.ledger.slice(1) } }).telemetry.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, error: 'Timed out during exit' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { status: 1 } } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { ...cleanup, providerClose: { status: 1 }, verdict: 'failed' } } }).cleanup.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, privacyOff: { ledger: [] } }).completeness.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: undefined }).completeness.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ...pair.privacyOn, binarySha256: 'b'.repeat(64) } }).completeness.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [request('MODS_ACCEPT_CLAUDE_MARKER')] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, requests: [request('')] } }).agents.verdict).toBe('failed')

@@ -335,18 +335,24 @@ export async function startAcceptanceProvider(root) {
 }
 
 export function assessBuiltinAcceptance(pair) {
+  const names = ['privacyOff', 'privacyOn', 'enabled', 'disabled']
+  const sides = names.map(name => pair[name])
+  const complete = sides.every(side => side && typeof side.binarySha256 === 'string' && /^[a-f0-9]{64}$/.test(side.binarySha256) && side.cleanup)
+  const matchingBinary = complete && new Set(sides.map(side => side.binarySha256)).size === 1
+  const cleanup = complete && sides.every(side => side.cleanup.verdict === 'passed' && side.cleanup.paneDead === true && side.cleanup.tmuxKill?.status === 0 && side.cleanup.providerClose?.status === 0)
   const main = side => side.requests.filter(row => row.body.model === 'claude-sonnet-4-5-20250929' && JSON.stringify(row.body.messages).includes('MODS_ACCEPT_PROMPT'))
-  const enabled = main(pair.enabled), disabled = main(pair.disabled)
+  const enabled = main(pair.enabled ?? { requests: [] }), disabled = main(pair.disabled ?? { requests: [] })
   const markers = ['MODS_ACCEPT_CLAUDE_MARKER', 'MODS_TEST_LAB_AGENTS_MARKER']
   const agents = enabled.length > 0 && disabled.length > 0 &&
     enabled.every(row => markers.every(marker => !JSON.stringify(row.body).includes(marker))) &&
     disabled.every(row => markers.every(marker => JSON.stringify(row.body).includes(marker)))
-  const diff = [pair.enabled, pair.disabled].every(side => !side.error && (!side.cleanup || side.cleanup.status === 0)) && pair.enabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
+  const diffSides = [pair.enabled, pair.disabled]
+  const diff = diffSides.every(side => side && !side.error && (!side.cleanup || side.cleanup.status === 0)) && pair.enabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
     !pair.enabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
     pair.disabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
     !pair.disabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
-    [pair.enabled, pair.disabled].every(side => ['tracked.txt', '-before', '+after'].every(text => side.diff.includes(text))) &&
-    [pair.enabled, pair.disabled].every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view'))
+    diffSides.every(side => ['tracked.txt', '-before', '+after'].every(text => side.diff.includes(text))) &&
+    diffSides.every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view'))
   const privacyOff = pair.privacyOff?.ledger ?? []
   const privacyOn = pair.privacyOn?.ledger ?? []
   const telemetry = privacyOff.length === 0 && privacyOn.length === 2 &&
@@ -354,10 +360,38 @@ export function assessBuiltinAcceptance(pair) {
     privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'http' && privacyOn[1]?.method === 'POST' &&
     privacyOn[1]?.host === 'api.anthropic.com' && privacyOn[1]?.path === '/api/event_logging/v2/batch' && privacyOn[1]?.authorized === true
   return {
+    completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all four sides must record the same valid copied binary hash and complete cleanup evidence' },
+    cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all four sides must observe a dead pane, kill tmux successfully, close the provider successfully, and pass cleanup' },
     agents: { verdict: agents ? 'passed' : 'failed', reason: 'managed-only must remove both native instruction markers from every main request; disabled must retain both' },
     diff: { verdict: diff ? 'passed' : 'failed', reason: 'distinct command catalog ownership plus real diff content and dismissal on both sides' },
     telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'privacy off must make zero host calls; privacy on must append exactly authorize then sanitized first-party HTTP evidence' },
   }
+}
+
+async function cleanupAcceptanceSide(launch, provider) {
+  const cleanup = {
+    paneDead: false,
+    paneCheck: { status: null },
+    tmuxKill: { status: null },
+    providerClose: { status: null },
+    verdict: 'failed',
+  }
+  if (launch) {
+    const checked = spawnSync(launch.tmux, ['-S', launch.socket, 'display-message', '-p', '-t', launch.target, '#{pane_dead}'], { encoding: 'utf8', timeout: 10000 })
+    cleanup.paneCheck = { status: checked.status, error: checked.error?.message }
+    cleanup.paneDead = checked.status === 0 && checked.stdout.trim() === '1'
+    const stopped = spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
+    cleanup.tmuxKill = { status: stopped.status, error: stopped.error?.message }
+  }
+  if (provider) {
+    try {
+      await provider.close()
+      cleanup.providerClose = { status: 0 }
+    } catch (error) { cleanup.providerClose = { status: 1, error: error.message } }
+  }
+  cleanup.status = cleanup.tmuxKill.status
+  cleanup.verdict = cleanup.paneDead && cleanup.tmuxKill.status === 0 && cleanup.providerClose.status === 0 ? 'passed' : 'failed'
+  return cleanup
 }
 
 export async function acceptBuiltin(options) {
@@ -366,11 +400,13 @@ export async function acceptBuiltin(options) {
   for (const privacyOn of [false, true]) {
     const name = privacyOn ? 'privacyOn' : 'privacyOff'
     const root = directory(join(evidence, name))
-    const provider = await startAcceptanceProvider(root)
+    let provider
     let launch
     let ledgerPath
-    const side = pair[name] = { ledger: [], requests: provider.requests }
+    const side = pair[name] = { ledger: [], requests: [], binarySha256: sha256(readFileSync(options.binary)) }
     try {
+      provider = await startAcceptanceProvider(root)
+      side.requests = provider.requests
       launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
         ledgerPath = join(run, 'host.jsonl')
         writeFileSync(ledgerPath, '', { flag: 'wx', mode: 0o600 })
@@ -418,19 +454,22 @@ export async function acceptBuiltin(options) {
       }
     } catch (error) { side.error = error.message }
     finally {
-      if (launch) spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
-      if (ledgerPath) side.ledger = readFileSync(ledgerPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
-      await provider.close()
+      if (ledgerPath && existsSync(ledgerPath)) {
+        try { side.ledger = readFileSync(ledgerPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) } catch (error) { side.ledgerError = error.message }
+      }
+      side.cleanup = await cleanupAcceptanceSide(launch, provider)
       writeJSON(join(root, 'result.json'), side)
     }
   }
   for (const enabled of [true, false]) {
     const name = enabled ? 'enabled' : 'disabled'
     const root = directory(join(evidence, name))
-    const provider = await startAcceptanceProvider(root)
+    let provider
     let launch
-    const side = pair[name] = { requests: provider.requests, catalog: '', diff: '', closed: '', captures: {} }
+    const side = pair[name] = { requests: [], catalog: '', diff: '', closed: '', captures: {}, binarySha256: sha256(readFileSync(options.binary)) }
     try {
+      provider = await startAcceptanceProvider(root)
+      side.requests = provider.requests
       launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
         env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
         const path = join(run, 'config/settings.json')
@@ -498,11 +537,7 @@ export async function acceptBuiltin(options) {
       }
     } catch (error) { side.error = error.message }
     finally {
-      if (launch) {
-        const stopped = spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
-        side.cleanup = { status: stopped.status, error: stopped.error?.message }
-      }
-      await provider.close()
+      side.cleanup = await cleanupAcceptanceSide(launch, provider)
       writeJSON(join(root, 'result.json'), side)
     }
   }
