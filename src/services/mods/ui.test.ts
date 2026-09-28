@@ -893,7 +893,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     }
   })
 
-  test('person focus finishes after Escape and can reenter while the old draw stays pending', async () => {
+  test('person focus finishes after Escape and can reenter with an explicit render while the old draw stays pending', async () => {
     const owner = { plugin: 'fixture' }
     const pending = new Promise<never>(() => {})
     let draws = 0
@@ -904,7 +904,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
       },
       dispatch: async (_owner, event, input, core) => {
         if (event === 'ui.focus' && input.element !== undefined)
-          void ui.invalidate(owner, 'ui.render')
+          void ui.render()
         return core(input)
       },
     })
@@ -996,7 +996,8 @@ describe('mod UI dispatch and drawing lifetime', () => {
       try {
         await new Promise<void>(resolve => setImmediate(resolve))
         expect(finished).toBe(false)
-        replacing = ui.invalidate(owner, 'ui.render')
+        // Explicit renders may supersede a drawing; invalidations now wait for it.
+        replacing = ui.render()
         await new Promise<void>(resolve => setImmediate(resolve))
         if (rejection === 'before') {
           first.reject(failure)
@@ -1551,6 +1552,123 @@ describe('mod UI dispatch and drawing lifetime', () => {
 
     expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['third'] })
   })
+
+  for (const target of ['shown pane', 'background pane', 'site'] as const) {
+    for (const fails of [false, true]) {
+      test(`serializes slow redraw batches for ${target}, failure=${fails}`, async () => {
+        const owner = { plugin: 'fixture' }
+        const started = Promise.withResolvers<void>()
+        const gate = Promise.withResolvers<void>()
+        const trailingStarted = Promise.withResolvers<void>()
+        const trailingGate = Promise.withResolvers<void>()
+        const failure = new Error('slow draw failed')
+        let slow = false
+        let calls = 0
+        let concurrentDraws = 0
+        let maxConcurrentDraws = 0
+        let otherDraws = 0
+        const { ui } = fixture({
+          draw: async (_owner, input) => {
+            if (input.requestId !== 'target') {
+              if (slow) otherDraws++
+              return { type: 'Text' }
+            }
+            if (!slow) return { type: 'Text' }
+            const call = ++calls
+            maxConcurrentDraws = Math.max(maxConcurrentDraws, ++concurrentDraws)
+            try {
+              if (call === 1) {
+                started.resolve()
+                await gate.promise
+                if (fails) throw failure
+              } else if (call === 2) {
+                trailingStarted.resolve()
+                await trailingGate.promise
+              }
+              return { type: 'Text', children: [String(call)] }
+            } finally { concurrentDraws-- }
+          },
+        })
+        if (target === 'background pane')
+          await ui.open(owner, { id: 'other' }, { kind: 'person' }, wide)
+        if (target !== 'site')
+          await ui.open(owner, { id: 'target' }, { kind: 'plugin' }, wide)
+        await ui.commit(owner)
+        if (target === 'site') {
+          await ui.mount({ surface: 'terminal', component: 'Spinner', requestId: 'target', props: {} }, {
+            surface: 'terminal', render() {}, unmount() {},
+          })
+        }
+        if (target !== 'background pane')
+          await ui.open(owner, { id: 'other' }, { kind: 'plugin' }, wide)
+        slow = true
+        const first = ui.invalidate(owner, 'ui.render').catch(error => error)
+        await started.promise
+        let settled = 0
+        const burst = () => ui.invalidate(owner, 'ui.render').then(() => { settled++ })
+        const pending = [burst(), burst()]
+        await Bun.sleep(140)
+        pending.push(burst(), burst())
+        await Bun.sleep(140)
+        const observed = { maxConcurrentDraws, calls, settled, otherDraws }
+        gate.resolve()
+        expect(await first).toBe(fails ? failure : undefined)
+        await trailingStarted.promise
+        const settledBeforeTrailing = settled
+        trailingGate.resolve()
+        await Promise.all(pending)
+        expect(observed.maxConcurrentDraws).toBe(1)
+        expect(settledBeforeTrailing).toBe(0)
+        expect(observed.calls).toBe(1)
+        expect(observed.settled).toBe(0)
+        expect(observed.otherDraws).toBeGreaterThan(1)
+        expect(calls).toBe(2)
+        expect(settled).toBe(4)
+        await ui.invalidate(owner, 'ui.render')
+        expect(calls).toBe(3)
+        await ui.dispose()
+      })
+    }
+  }
+
+  for (const action of ['close', 'unload', 'reopen'] as const) {
+    test(`drops slow redraw trailing batches after ${action} without publishing the old tree`, async () => {
+      const owner = { plugin: 'fixture' }
+      const started = Promise.withResolvers<void>()
+      const gate = Promise.withResolvers<void>()
+      let slow = false
+      let oldDraws = 0
+      let oldDrawing: number | undefined
+      const { ui, released } = fixture({
+        draw: async (_owner, input, drawing) => {
+          if (slow && (input.props as { title: string }).title === 'old') {
+            oldDraws++
+            oldDrawing = drawing
+            started.resolve()
+            await gate.promise
+          }
+          return { type: 'Text', children: [(input.props as { title: string }).title] }
+        },
+      })
+      await ui.open(owner, { id: 'pane', title: 'old' }, { kind: 'person' }, wide)
+      await ui.commit(owner)
+      slow = true
+      const first = ui.invalidate(owner, 'ui.render')
+      await started.promise
+      const trailing = ui.invalidate(owner, 'ui.render')
+      if (action === 'unload') await ui.release(owner)
+      else if (action === 'close') await ui.close(owner, 'pane', { kind: 'person' })
+      else await ui.open(owner, { id: 'pane', title: 'new' }, { kind: 'person' }, wide)
+      await Bun.sleep(140)
+      gate.resolve()
+      await Promise.all([first, trailing])
+      expect(oldDraws).toBe(1)
+      expect(released).toContain(oldDrawing)
+      if (action === 'reopen')
+        expect(ui.getSnapshot()[0]!.tree).toEqual({ type: 'Text', children: ['new'] })
+      else expect(ui.getSnapshot()).toEqual([])
+    })
+  }
 
   test('does not draw a queued invalidation after its pane closes', async () => {
     const owner = { plugin: 'fixture' }

@@ -190,6 +190,7 @@ type RedrawSchedule = {
   lastStarted: number
   running: number
   scheduled: boolean
+  resume?: () => void
   timer?: ReturnType<typeof setTimeout>
   waiters: RedrawWaiter[]
 }
@@ -485,6 +486,10 @@ export function createModUi({
 
     const start = () => {
       schedule!.timer = undefined
+      if (schedule!.running) {
+        schedule!.resume = start
+        return
+      }
       schedule!.scheduled = false
       schedule!.running++
       schedule!.lastStarted = performance.now()
@@ -493,7 +498,12 @@ export function createModUi({
       void work.then(
         () => waiters.forEach(entry => entry.resolve()),
         error => waiters.forEach(entry => entry.reject(error)),
-      ).finally(() => { schedule!.running-- })
+      ).finally(() => {
+        schedule!.running--
+        const resume = schedule!.resume
+        schedule!.resume = undefined
+        resume?.()
+      })
     }
     const delay = Math.max(0, interval - (performance.now() - schedule.lastStarted))
     schedule.scheduled = true
