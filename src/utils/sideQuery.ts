@@ -4,7 +4,10 @@ import {
   getLastApiCompletionTimestamp,
   setLastApiCompletionTimestamp,
 } from '../bootstrap/state.js'
-import { STRUCTURED_OUTPUTS_BETA_HEADER } from '../constants/betas.js'
+import {
+  EXTENDED_CACHE_TTL_BETA_HEADER,
+  STRUCTURED_OUTPUTS_BETA_HEADER,
+} from '../constants/betas.js'
 import type { QuerySource } from '../constants/querySource.js'
 import {
   getAttributionHeader,
@@ -12,7 +15,11 @@ import {
 } from '../constants/system.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../services/analytics/metadata.js'
-import { getAPIMetadata } from '../services/api/claude.js'
+import {
+  getAPIMetadata,
+  getExtendedCacheTtlEnabled,
+  hasExtendedCacheTtlMarker,
+} from '../services/api/claude.js'
 import { getAnthropicClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'
@@ -165,6 +172,18 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
         ? [{ type: 'text' as const, text: system }]
         : []),
   ].filter((block): block is TextBlockParam => block !== null)
+
+  if (
+    getExtendedCacheTtlEnabled(opts.querySource) &&
+    hasExtendedCacheTtlMarker({
+      system: systemBlocks,
+      messages,
+      tools,
+    }) &&
+    !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
+  ) {
+    betas.push(EXTENDED_CACHE_TTL_BETA_HEADER)
+  }
 
   let thinkingConfig: BetaThinkingConfigParam | undefined
   if (thinking === false) {

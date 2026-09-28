@@ -75,6 +75,8 @@ const envKeys = [
   'CLAUDE_CODE_EXTRA_BODY',
   'CLAUDE_CODE_EFFORT_LEVEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_BETAS',
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
 ] as const
 const originalEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
 for (const key of envKeys) delete process.env[key]
@@ -83,6 +85,7 @@ beforeEach(() => {
 })
 
 const requests: MessageCreateParams[] = []
+const requestBetaHeaders: string[] = []
 const tokenRequests: Record<string, unknown>[] = []
 let rejectIncompatibleEffort = false
 let streamNotFound = false
@@ -92,6 +95,8 @@ const client = new Anthropic({
   timeout: 600_000,
   fetch: async (_url, init) => {
     const request = JSON.parse(String(init?.body)) as MessageCreateParams
+    const headers = new Headers(init?.headers)
+    requestBetaHeaders.push(headers.get('anthropic-beta') ?? '')
     if (String(_url).includes('/count_tokens')) {
       tokenRequests.push(request as unknown as Record<string, unknown>)
       return Response.json({input_tokens:123})
@@ -249,12 +254,13 @@ async function query(
     typeof queryModelWithoutStreaming
   >[0]['thinkingConfig'],
   expectedError?: string,
+  tools: import('../../Tool.js').Tools = [],
 ) {
   const result = await queryModelWithoutStreaming({
     messages: [createUserMessage({ content: 'test' })],
     systemPrompt: asSystemPrompt([]),
     thinkingConfig,
-    tools: [],
+    tools,
     signal: new AbortController().signal,
     options: {
       model,
@@ -263,7 +269,7 @@ async function query(
       mcpTools: [],
       hasAppendSystemPrompt: false,
       isNonInteractiveSession: true,
-      enablePromptCaching: false,
+      enablePromptCaching: true,
       getToolPermissionContext: async () => getEmptyToolPermissionContext(),
     },
   })
@@ -287,9 +293,137 @@ afterAll(() => {
 
 afterEach(() => {
   requests.length = 0
+  requestBetaHeaders.length = 0
   tokenRequests.length = 0
   rejectIncompatibleEffort = false
   streamNotFound = false
+})
+
+test('1h cache markers add the extended TTL beta once and 5m markers do not', async () => {
+  const state = await import('../../bootstrap/state.js')
+  state.setPromptCache1hEligible(true)
+  state.setPromptCache1hAllowlist(['repl_main_thread'])
+  process.env.ANTHROPIC_BETAS = 'extended-cache-ttl-2025-04-11'
+  try {
+    const request = await query('claude-sonnet-4-6', { type: 'disabled' })
+    expect(request.system).toContainEqual(
+      expect.objectContaining({
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }),
+    )
+    expect(
+      requestBetaHeaders[0]?.split(',').filter(
+        beta => beta.trim() === 'extended-cache-ttl-2025-04-11',
+      ),
+    ).toHaveLength(1)
+
+    state.setPromptCache1hAllowlist([])
+    process.env.ANTHROPIC_BETAS = ''
+    requests.length = 0
+    const fiveMinuteRequest = await query('claude-opus-4-6', {
+      type: 'disabled',
+    })
+    expect(fiveMinuteRequest.system).toContainEqual(
+      expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
+    )
+    expect(requestBetaHeaders[1] ?? '').not.toContain(
+      'extended-cache-ttl-2025-04-11',
+    )
+  } finally {
+    state.setPromptCache1hAllowlist(null)
+    state.setPromptCache1hEligible(null)
+    delete process.env.ANTHROPIC_BETAS
+  }
+})
+
+test('tool-based 1h cache markers add the extended TTL beta', async () => {
+  const state = await import('../../bootstrap/state.js')
+  const { z } = await import('zod/v4')
+  state.setPromptCache1hEligible(true)
+  state.setPromptCache1hAllowlist(['repl_main_thread'])
+  const tool = {
+    name: 'mcp__test__lookup',
+    isMcp: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  try {
+    const request = await query(
+      'claude-sonnet-4-6',
+      { type: 'disabled' },
+      undefined,
+      [tool],
+    )
+    expect(request.system).not.toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ scope: 'global' }),
+      }),
+    )
+    expect(request.tools).toContainEqual(
+      expect.objectContaining({
+        name: tool.name,
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }),
+    )
+    expect(requestBetaHeaders[0]).toContain('extended-cache-ttl-2025-04-11')
+  } finally {
+    state.setPromptCache1hAllowlist(null)
+    state.setPromptCache1hEligible(null)
+  }
+})
+
+test('side queries inspect only real cache_control markers for extended TTL', async () => {
+  const state = await import('../../bootstrap/state.js')
+  const { sideQuery } = await import('../../utils/sideQuery.js')
+  state.setPromptCache1hEligible(true)
+  state.setPromptCache1hAllowlist(['side_question'])
+  const base = {
+    model: 'claude-haiku-4-5',
+    querySource: 'side_question' as const,
+    maxRetries: 0,
+  }
+  try {
+    await sideQuery({
+      ...base,
+      messages: [{ role: 'user', content: 'test' }],
+      tools: [{
+        name: 'schema_ttl',
+        description: 'schema ttl',
+        input_schema: {
+          type: 'object',
+          properties: { ttl: { type: 'string', const: '1h' } },
+        },
+      }],
+    })
+    expect(requestBetaHeaders[0]).not.toContain('extended-cache-ttl-2025-04-11')
+
+    await sideQuery({
+      ...base,
+      messages: [{ role: 'user', content: [{
+        type: 'text',
+        text: 'test',
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }] }],
+    })
+    expect(requestBetaHeaders[1]).toContain('extended-cache-ttl-2025-04-11')
+
+    await sideQuery({
+      ...base,
+      messages: [{ role: 'user', content: 'test' }],
+      tools: [{
+        name: 'cached_tool',
+        description: 'cached tool',
+        input_schema: { type: 'object', properties: {} },
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }],
+    })
+    expect(requestBetaHeaders[2]).toContain('extended-cache-ttl-2025-04-11')
+  } finally {
+    state.setPromptCache1hAllowlist(null)
+    state.setPromptCache1hEligible(null)
+  }
 })
 
 test.each([false, true])(

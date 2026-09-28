@@ -24,7 +24,14 @@ try {
   delete process.env.CLAUDE_CODE_USE_VERTEX
   delete process.env.CLAUDE_CODE_USE_FOUNDRY
 
-  const { setIsInteractive } = await import('../bootstrap/state.js')
+  const {
+    setIsInteractive,
+    setPromptCache1hAllowlist,
+    setPromptCache1hEligible,
+  } = await import('../bootstrap/state.js')
+  const { getCacheControl, getExtendedCacheTtlEnabled } = await import(
+    '../services/api/claude.js'
+  )
   const { getAllModelBetas, modelSupportsStructuredOutputs } = await import('./betas.js')
   for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
     assert.equal(modelSupportsStructuredOutputs(model), true)
@@ -34,6 +41,36 @@ try {
   setIsInteractive(true)
   const betas = getAllModelBetas('claude-sonnet-4-6')
   assert.equal(betas.includes(THINKING_TOKEN_COUNT_BETA_HEADER), true)
+
+  setPromptCache1hEligible(true)
+  setPromptCache1hAllowlist(['side_question'])
+  assert.deepEqual(getCacheControl({ querySource: 'side_question' }), {
+    type: 'ephemeral',
+    ttl: '1h',
+  })
+  assert.equal(getExtendedCacheTtlEnabled('side_question'), true)
+  assert.deepEqual(getCacheControl({ querySource: 'compact' }), {
+    type: 'ephemeral',
+  })
+
+  process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+  assert.equal(getExtendedCacheTtlEnabled('side_question'), false)
+  assert.deepEqual(getCacheControl({ querySource: 'side_question' }), {
+    type: 'ephemeral',
+    ttl: '1h',
+  })
+  delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+
+  process.env.CLAUDE_CODE_USE_VERTEX = '1'
+  assert.equal(getExtendedCacheTtlEnabled('side_question'), false)
+  assert.deepEqual(getCacheControl({ querySource: 'side_question' }), {
+    type: 'ephemeral',
+    ttl: '1h',
+  })
+  delete process.env.CLAUDE_CODE_USE_VERTEX
+
+  setPromptCache1hAllowlist(null)
+  setPromptCache1hEligible(null)
 } finally {
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV
   else process.env.NODE_ENV = originalNodeEnv

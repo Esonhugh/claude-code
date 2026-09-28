@@ -141,6 +141,7 @@ import {
   CONTEXT_1M_BETA_HEADER,
   CONTEXT_MANAGEMENT_BETA_HEADER,
   EFFORT_BETA_HEADER,
+  EXTENDED_CACHE_TTL_BETA_HEADER,
   FAST_MODE_BETA_HEADER,
   PROMPT_CACHING_SCOPE_BETA_HEADER,
   REDACT_THINKING_BETA_HEADER,
@@ -400,6 +401,41 @@ export function getCacheControl({
  * The allowlist is cached in STATE for session stability — prevents mixed
  * TTLs when GrowthBook's disk cache updates mid-request.
  */
+export function getExtendedCacheTtlEnabled(querySource?: QuerySource): boolean {
+  return (
+    shouldIncludeFirstPartyOnlyBetas() &&
+    should1hCacheTTL(querySource)
+  )
+}
+
+type CacheControlBlock = {
+  cache_control?: { ttl?: string }
+}
+
+type CacheControlMessage = {
+  content: string | CacheControlBlock[]
+}
+
+export function hasExtendedCacheTtlMarker({
+  system,
+  messages,
+  tools,
+}: {
+  system?: CacheControlBlock[]
+  messages: CacheControlMessage[]
+  tools?: CacheControlBlock[]
+}): boolean {
+  return (
+    system?.some(block => block.cache_control?.ttl === '1h') === true ||
+    messages.some(
+      message =>
+        Array.isArray(message.content) &&
+        message.content.some(block => block.cache_control?.ttl === '1h'),
+    ) ||
+    tools?.some(tool => tool.cache_control?.ttl === '1h') === true
+  )
+}
+
 function should1hCacheTTL(querySource?: QuerySource): boolean {
   // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
   // No GrowthBook gating needed since 3P users don't have GrowthBook configured
@@ -1283,6 +1319,19 @@ async function* queryModel(
   const needsToolBasedCacheMarker =
     useGlobalCacheFeature &&
     filteredTools.some(t => t.isMcp === true && !willDefer(t))
+  const enablePromptCaching =
+    options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
+  if (
+    enablePromptCaching &&
+    needsToolBasedCacheMarker &&
+    toolSchemas.length > 0
+  ) {
+    const markerIndex = toolSchemas.length - 1
+    toolSchemas[markerIndex] = {
+      ...toolSchemas[markerIndex]!,
+      cache_control: getCacheControl({ querySource: options.querySource }),
+    }
+  }
 
   // Ensure prompt_caching_scope beta header is present when global cache is enabled.
   if (
@@ -1493,14 +1542,10 @@ async function* queryModel(
   // Prepend system prompt block for easy API identification
   logAPIPrefix(systemPrompt)
 
-  const enablePromptCaching =
-    options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
   const system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
     skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
     querySource: options.querySource,
   })
-  const useBetas = betas.length > 0
-
   // Build minimal context for detailed tracing (when beta tracing is enabled)
   // Note: The actual new_context message extraction is done in sessionTracing.ts using
   // hash-based tracking per querySource (agent) from the messagesForAPI array
@@ -1516,6 +1561,33 @@ async function* queryModel(
     } as unknown as BetaToolUnion)
   }
   const allTools = [...toolSchemas, ...extraToolSchemas]
+  // Consume once because request params are assembled repeatedly for logging and retries.
+  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
+  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
+  const messagesWithCacheBreakpoints = addCacheBreakpoints(
+    messagesForAPI,
+    enablePromptCaching,
+    options.querySource,
+    cachedMCEnabled &&
+      getAPIProvider() === 'firstParty' &&
+      options.querySource === 'repl_main_thread',
+    consumedCacheEdits,
+    consumedPinnedEdits,
+    options.skipCacheWrite,
+  )
+  if (
+    enablePromptCaching &&
+    getExtendedCacheTtlEnabled(options.querySource) &&
+    hasExtendedCacheTtlMarker({
+      system,
+      messages: messagesWithCacheBreakpoints,
+      tools: allTools,
+    }) &&
+    !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
+  ) {
+    betas.push(EXTENDED_CACHE_TTL_BETA_HEADER)
+  }
+  const useBetas = betas.length > 0
 
   const isFastMode =
     isFastModeEnabled() &&
@@ -1648,12 +1720,6 @@ async function* queryModel(
       streamResponse = undefined
     }
   }
-
-  // Consume pending cache edits ONCE before paramsFromContext is defined.
-  // paramsFromContext is called multiple times (logging, retries), so consuming
-  // inside it would cause the first call to steal edits from subsequent calls.
-  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
-  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
 
   // Capture the betas sent in the last API request, including the ones that
   // were dynamically added, so we can log and send it to telemetry.
@@ -1805,10 +1871,6 @@ async function* queryModel(
     // Cache editing beta: header is latched session-stable; useCachedMC
     // (controls cache_edits body behavior) stays live so edits stop when
     // the feature disables but the header doesn't flip.
-    const useCachedMC =
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
     if (
       cacheEditingHeaderLatched &&
       getAPIProvider() === 'firstParty' &&
@@ -1831,15 +1893,7 @@ async function* queryModel(
 
     return {
       model: normalizeModelStringForAPI(options.model),
-      messages: addCacheBreakpoints(
-        messagesForAPI,
-        enablePromptCaching,
-        options.querySource,
-        useCachedMC,
-        consumedCacheEdits,
-        consumedPinnedEdits,
-        options.skipCacheWrite,
-      ),
+      messages: messagesWithCacheBreakpoints,
       ...(openAICompaction && { openai_compaction: openAICompaction }),
       system,
       tools: allTools,
