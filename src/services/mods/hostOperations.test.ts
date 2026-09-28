@@ -179,7 +179,8 @@ test('acceptance HTTP services record sanitized host calls without external netw
   })).toEqual({ status: 202, ok: true, headers: {}, text: '' })
   expect((await readFile(ledger, 'utf8')).trim().split('\n').map(line => JSON.parse(line))).toEqual([
     { sequence: 1, operation: 'authorize', granted: true },
-    { sequence: 2, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
+    { sequence: 2, operation: 'authorize', granted: true },
+    { sequence: 3, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
   ])
 })
 
@@ -204,6 +205,117 @@ test('session authorization keeps the credential in the host and injects it into
   expect(requests).toHaveLength(1)
   expect(new Headers(requests[0]!.init.headers).get('authorization')).toBe('Bearer fake-host-only-token')
   expect(new Headers(requests[0]!.init.headers).get('x-api-key')).toBeNull()
+})
+
+describe('session authorization revalidation', () => {
+  for (const change of ['secret', 'kind', 'null'] as const) {
+    test(`revokes the old handle after a ${change} change in the same session`, async () => {
+      const original = { kind: 'bearer' as const, secret: 'fake-secret-a' }
+      let credential: { kind: 'bearer' | 'api-key'; secret: string } | null = original
+      const requests: RequestInit[] = []
+      const operations = createModHostOperations({
+        cwd: () => cwd, storageId: 'http@test', signal: controller.signal,
+        sessionId: () => 'session-a',
+        firstPartyCredential: async () => credential,
+        httpFetch: async (_url, init) => {
+          requests.push(init)
+          return new Response('accepted')
+        },
+      })
+      const old = await operations.session.authorize()
+      credential = change === 'null' ? null : {
+        kind: change === 'kind' ? 'api-key' : 'bearer',
+        secret: change === 'secret' ? 'fake-secret-b' : original.secret,
+      }
+      await expect(operations.http.fetch('https://api.anthropic.com/fixture', { auth: old!.handle }))
+        .rejects.toThrow('Invalid or expired session authorization')
+      expect(requests).toHaveLength(0)
+      const current = credential
+      credential = original
+      await expect(operations.http.fetch('https://api.anthropic.com/fixture', { auth: old!.handle }))
+        .rejects.toThrow('Invalid or expired session authorization')
+      expect(requests).toHaveLength(0)
+      credential = current
+      const fresh = await operations.session.authorize()
+      if (!current) {
+        expect(fresh).toBeNull()
+      } else {
+        expect(fresh).toEqual({ handle: expect.any(String), kind: current.kind })
+        expect(fresh!.handle).not.toBe(old!.handle)
+        await operations.http.fetch('https://api.anthropic.com/fixture', { auth: fresh!.handle })
+        expect(requests).toHaveLength(1)
+        const headers = new Headers(requests[0]!.headers)
+        expect(headers.get(current.kind === 'bearer' ? 'authorization' : 'x-api-key'))
+          .toBe(current.kind === 'bearer' ? `Bearer ${current.secret}` : current.secret)
+      }
+    })
+  }
+
+  test('a concurrent revocation prevents an earlier revalidation from using the old handle', async () => {
+    const original = { kind: 'bearer' as const, secret: 'fake-secret-a' }
+    let credential = original
+    let release!: (value: typeof original) => void
+    let pending: Promise<typeof original> = Promise.resolve(original)
+    let calls = 0
+    const operations = createModHostOperations({
+      cwd: () => cwd, storageId: 'http@test', signal: controller.signal,
+      sessionId: () => 'session-a',
+      firstPartyCredential: async () => pending,
+      httpFetch: async () => { calls++; return new Response('accepted') },
+    })
+    const authorization = await operations.session.authorize()
+    pending = new Promise(resolve => { release = resolve })
+    const earlier = operations.http.fetch('https://api.anthropic.com/fixture', {
+      auth: authorization!.handle,
+    })
+    credential = { kind: 'bearer', secret: 'fake-secret-b' }
+    pending = Promise.resolve(credential)
+    await expect(operations.http.fetch('https://api.anthropic.com/fixture', {
+      auth: authorization!.handle,
+    })).rejects.toThrow('Invalid or expired session authorization')
+    release(original)
+    await expect(earlier).rejects.toThrow('Invalid or expired session authorization')
+    expect(calls).toBe(0)
+  })
+
+  for (const race of ['activation abort', 'request abort', 'session change'] as const) {
+    test(`rejects ${race} during credential revalidation before transport`, async () => {
+      const credential = { kind: 'bearer' as const, secret: 'fake-host-only-token' }
+      let session = 'session-a'
+      let pending = Promise.resolve(credential)
+      let calls = 0
+      const invocation = new AbortController()
+      const operations = createModHostOperations({
+        cwd: () => cwd, storageId: 'http@test', signal: controller.signal,
+        sessionId: () => session,
+        firstPartyCredential: async () => pending,
+        httpFetch: async () => {
+          calls++
+          return new Response('accepted')
+        },
+      })
+      const authorization = await operations.session.authorize()
+      let release!: (value: typeof credential) => void
+      pending = new Promise(resolve => { release = resolve })
+      const result = operations.http.fetch('https://api.anthropic.com/fixture', {
+        auth: authorization!.handle,
+      }, invocation.signal)
+      const reason = new Error('fixture cancellation')
+      if (race === 'activation abort') controller.abort(reason)
+      else if (race === 'request abort') invocation.abort(reason)
+      else session = 'session-b'
+      release(credential)
+      if (race === 'session change') {
+        await expect(result).rejects.toThrow('Invalid or expired session authorization')
+        session = 'session-a'
+        await expect(operations.http.fetch('https://api.anthropic.com/fixture', { auth: authorization!.handle }))
+          .rejects.toThrow('Invalid or expired session authorization')
+      } else {
+        await expect(result).rejects.toBe(reason)
+      }
+      expect(calls).toBe(0)
+    })
+  }
 })
 
 describe('settings.read', () => {

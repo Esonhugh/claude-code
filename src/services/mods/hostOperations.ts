@@ -294,6 +294,19 @@ export function createModHostOperations({
           if (!authorization || authorization.session !== sessionId()) throw new Error('Invalid or expired session authorization')
           if (target.protocol !== 'https:' || target.hostname !== 'api.anthropic.com' || target.port || init.socketPath)
             throw new Error('Session authorization requires a first-party HTTPS host')
+          const credential = await firstPartyCredential()
+          signal.throwIfAborted()
+          requestSignal.throwIfAborted()
+          if (
+            authorizations.get(init.auth) !== authorization ||
+            authorization.session !== sessionId() ||
+            !credential ||
+            credential.kind !== authorization.credential.kind ||
+            credential.secret !== authorization.credential.secret
+          ) {
+            authorizations.delete(init.auth)
+            throw new Error('Invalid or expired session authorization')
+          }
           headers.delete('authorization')
           headers.delete('x-api-key')
           const { kind, secret } = authorization.credential
