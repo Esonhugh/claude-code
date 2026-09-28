@@ -126,6 +126,7 @@ export function dispatchModStream(options: {
       let clock: BigInt64Array | undefined
       let timedOut = false
       let last: ModHookStream | undefined
+      let lastInput: ModInput | undefined
       let lastResult: unknown
       let lastResolved = false
       let lastRejected = false
@@ -188,6 +189,7 @@ export function dispatchModStream(options: {
           if (!(hook!.tier === 'prepend' && ['append', 'builtin', 'core'].includes(target)) && !(hook!.tier === 'append' && target === 'core')) throw new Error(`Mod ${hook!.plugin} cannot continue from ${hook!.tier} to ${target}`)
           for (let tier = tiers.indexOf(hook!.tier) + 1; tier < tiers.indexOf(target); tier++) descent.add(tiers[tier]!)
         }
+        lastInput = structuredClone(rewritten)
         const branchTrace: TraceNode[] = []
         node.below = branchTrace
         const branch = run(index + 1, rewritten, lifetime.signal, descent, branchTrace, belowChanged)
@@ -206,6 +208,10 @@ export function dispatchModStream(options: {
         const own = controller
         const call = (rewritten: ModInput, target?: ModTier) => {
           own.signal.throwIfAborted()
+          if (catching && last) {
+            if (rewritten && rewritten.agentId === undefined && input.agentId !== undefined) rewritten = { ...rewritten, agentId: input.agentId }
+            if (!isDeepStrictEqual(rewritten, lastInput)) throw new Error(`Mod ${hook!.plugin} cannot rewrite input when resuming turn.step`)
+          }
           const branch = catching && last ? last : below(rewritten, target)
           const view = createModHookStream((async function* () {
             let thrown: { error: unknown } | undefined

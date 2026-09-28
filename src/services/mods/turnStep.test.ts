@@ -121,6 +121,36 @@ test('midstream failure keeps yielded chunks and resumes the existing model requ
   expect(events).toHaveLength(1)
 })
 
+test.each([
+  ['equivalent clone', '{ ...e, model: "downstream", metadata: { nested: [1, 2] } }', false],
+  ['original input', '{ ...e }', true],
+  ['changed model', '{ ...e, model: "changed", metadata: { nested: [1, 2] } }', true],
+  ['changed nested value', '{ ...e, model: "downstream", metadata: { nested: [1, 3] } }', true],
+  ['missing input', '{}', true],
+] as const)('streaming catch checks existing downstream input: %s', async (_name, rewritten, rejected) => {
+  const { value, events } = await fixture(`export function register(on) {
+    on('turn.step', async function* ($, e, next) {
+      const request = { ...e, model: 'downstream', metadata: { nested: [1, 2] } };
+      const stream = next(request);
+      yield (await stream.next()).value;
+      request.metadata.nested[1] = 3;
+      throw Error('midstream');
+    }).catch(async function* ($, e, next) { return yield* next(${rewritten}); });
+  }`)
+  const calls: ModInput[] = []
+  const source = value.stream('turn.step', input, async function* (request) {
+    calls.push(request)
+    yield { kind: 'text', index: 0, text: 'first' }
+    yield { kind: 'text', index: 0, text: 'second' }
+    return result
+  })
+  expect(await Array.fromAsync(source)).toEqual(['first', 'second'].map(text => ({ kind: 'text', index: 0, text })))
+  expect(await source.result).toEqual(result)
+  expect(calls).toEqual([{ ...input, model: 'downstream', metadata: { nested: [1, 2] } }])
+  expect(events).toHaveLength(rejected ? 2 : 1)
+  if (rejected) expect(events[1]!.message).toContain('cannot rewrite input when resuming turn.step')
+})
+
 test('a transform throwing inside for-await preserves the unconsumed downstream response', async () => {
   const { value, events } = await fixture(`export function register(on) {
     on('turn.step', async function* ($,e,next) {
@@ -142,7 +172,7 @@ test('catch replays a completed next result without a second model request', asy
   const { value, events } = await fixture(`export function register(on) {
     on('turn.step', async function* ($, e, next) { yield* next(e); throw Error('after response'); })
       .catch(async function* ($, e, next) {
-        const stream = next({});
+        const stream = next({ ...e });
         const r = yield* stream;
         return {...r,answer:(await stream.result).answer + ':caught'};
       });
