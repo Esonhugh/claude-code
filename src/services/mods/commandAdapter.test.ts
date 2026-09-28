@@ -11,6 +11,7 @@ import {
 } from '../../utils/processUserInput/processSlashCommand.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
 import { dispatchModEvent } from './dispatch.js'
+import { createModCommands } from './commands.js'
 import type { ModDispatchHook } from './types.js'
 import type { ModSnapshot } from './runtime.js'
 import { runImmediateModCommand, runModCommand } from './commandAdapter.js'
@@ -657,6 +658,124 @@ describe('immediate command entry', () => {
     expect(releases).toBe(1)
     expect(completions).toHaveLength(1)
     expect(completions[0]).toEqual([undefined, {display:'skip'}])
+  })
+})
+
+describe('command.run context', () => {
+  test('registered command projection forwards context even without text', async () => {
+    const commands = createModCommands({ getBuiltinCommands: () => [], run: async () => ({ context: ['hidden', 'hidden'] }) })
+    const owner = {}
+    commands.register(owner, { name: 'registered', description: 'test' })
+    commands.commit(owner)
+    const result = await processSlashCommand('/registered', [], [], [], context(commands.list()), () => {})
+    expect(result.shouldQuery).toBe(false)
+    expect(result.messages.filter(m => m.type === 'user' && m.isMeta && m.message.content === 'hidden')).toHaveLength(2)
+  })
+
+  test('ordinary slash entry injects synthetic context without querying', async () => {
+    const result = await processSlashCommand('/fixture', [], [], [], context([command]), () => {}, undefined, false, undefined, {
+      snapshot: snapshot(async () => ({ context: ['hidden'] })), origin: input.origin, presentation: input.presentation,
+    })
+    expect(result.shouldQuery).toBe(false)
+    expect(result.messages.filter(m => m.type === 'user' && m.isMeta && m.message.content === 'hidden')).toHaveLength(1)
+  })
+
+  test('immediate entry appends context to existing completion metadata', async () => {
+    const ui: Command = { type: 'local-jsx', name: 'panel', description: 'test', immediate: true,
+      load: async () => ({ call: async onDone => { onDone('host', { display: 'skip', metaMessages: ['existing'] }); return null } }),
+    }
+    const ctx = context([ui])
+    ctx.mods = { capture: () => snapshot(async (e, next) => ({ ...await next(e) as object, context: ['hidden'] })) } as any
+    const completions: unknown[] = []
+    await runImmediateModCommand(ui, (text, options) => completions.push({ text, options }), ctx, '')
+    expect(completions).toEqual([{ text: 'host', options: { display: 'skip', metaMessages: ['existing', 'hidden'] } }])
+  })
+
+  test.each(['unchanged', 'transformed', 'synthetic'])('%s injects each context item without changing query behavior', async mode => {
+    let calls = 0
+    const result = await runModCommand({
+      snapshot: snapshot(async (e, next) => {
+        if (mode === 'synthetic') return { context: ['one', 'one', 'two'] }
+        const receipt = await next({ ...e, context: ['one', 'one'] }) as any
+        expect(receipt.context).toEqual(['one', 'one'])
+        return { ...receipt, context: [...receipt.context, 'two'], ...(mode === 'transformed' ? { text: 'changed' } : {}) }
+      }), input, command,
+      core: async () => { calls++; return hostResult() },
+    })
+    expect(calls).toBe(mode === 'synthetic' ? 0 : 1)
+    expect(result.shouldQuery).toBe(mode !== 'synthetic')
+    expect(result.messages.filter(m => m.type === 'user' && m.isMeta).map(m => m.type === 'user' && m.message.content)).toEqual(['one', 'one', 'two'])
+  })
+
+  test.each([undefined, [], ['a'], ['a', ''], ['a', 1], new Array(2)])('rejects invalid or removed context at every next boundary: %j', async invalid => {
+    let reached = 0
+    await runModCommand({
+      snapshot: snapshot(
+        async (e, next) => next({ ...e, context: ['a', 'a'] }),
+        async (e, next) => {
+          await expect(next({ ...e, context: invalid })).rejects.toThrow('context')
+          return { context: ['a', 'a'] }
+        },
+        async () => { reached++; return {} },
+      ), input, command, core: async () => hostResult(),
+    })
+    expect(reached).toBe(0)
+  })
+
+  test('a short-circuit result cannot remove context received from an upstream hook', async () => {
+    const result = await runModCommand({
+      snapshot: snapshot(
+        async (e, next) => next({ ...e, context: ['retained'] }),
+        async () => ({ text: 'handled' }),
+      ),
+      input,
+      command,
+      core: async () => hostResult(),
+    })
+    expect(result.resultText).toBe('host')
+    expect(result.messages.filter(m => m.type === 'user' && m.isMeta).map(m =>
+      m.type === 'user' && m.message.content,
+    )).toEqual(['retained'])
+  })
+
+  test('selected ref retains its own context, not the last run context', async () => {
+    let calls = 0
+    const result = await runModCommand({
+      snapshot: snapshot(async (e, next) => {
+        const selected = await next({ ...e, args: 'selected', context: ['selected'] }) as object
+        await next({ ...e, args: 'last', context: ['last'] })
+        return { ...selected, text: 'changed' }
+      }), input, command, core: async args => { calls++; return hostResult(args) },
+    })
+    expect(calls).toBe(2)
+    expect(result.resultText).toBe('changed')
+    expect(result.messages.filter(m => m.type === 'user' && m.isMeta).map(m => m.type === 'user' && m.message.content)).toEqual(['selected'])
+  })
+
+  test.each([undefined, ['a'], [''], new Array(1)])('invalid result context falls back without replay: %j', async invalid => {
+    let calls = 0
+    const result = await runModCommand({
+      snapshot: snapshot(async (e, next) => {
+        const receipt = await next({ ...e, context: ['a', 'a'] }) as object
+        return { ...receipt, context: invalid }
+      }), input, command, core: async () => { calls++; return hostResult() },
+    })
+    expect(calls).toBe(1)
+    expect(result.messages.filter(m => m.type === 'user' && m.isMeta).map(m => m.type === 'user' && m.message.content)).toEqual(['a', 'a'])
+  })
+
+  test('allows multiset reordering and clones core receipts', async () => {
+    const contexts = ['b', 'a', 'a']
+    let receipt: any
+    await runModCommand({
+      snapshot: snapshot(async (e, next) => {
+        receipt = await next({ ...e, context: contexts })
+        return receipt
+      }), input: { ...input, context: ['a', 'b', 'a'] }, command,
+      core: async () => hostResult(),
+    })
+    expect(receipt.context).toEqual(contexts)
+    expect(receipt.context).not.toBe(contexts)
   })
 })
 

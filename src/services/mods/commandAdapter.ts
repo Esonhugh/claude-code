@@ -5,6 +5,7 @@ import type { ModOrigin } from './types.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import {
   createCommandInputMessage,
+  createUserMessage,
   formatCommandInputTags,
 } from '../../utils/messages.js'
 import type { SlashCommandResult } from '../../utils/processUserInput/processSlashCommand.js'
@@ -60,8 +61,28 @@ export type CommandRunInput = {
   args: string
   origin: PromptOrigin
   presentation: CommandPresentation
+  context?: readonly string[]
 }
-export type CommandRunResult = { text?: string; ref?: number }
+export type CommandRunResult = { text?: string; ref?: number; context?: readonly string[] }
+
+function validateContext(context: unknown): asserts context is readonly string[] | undefined {
+  if (context === undefined) return
+  if (!Array.isArray(context)) throw new Error('command.run context must be a list of texts')
+  for (let index = 0; index < context.length; index++) {
+    if (!Object.hasOwn(context, index) || typeof context[index] !== 'string' || context[index] === '')
+      throw new Error('command.run context must contain non-empty texts')
+  }
+}
+
+function retainContext(context: readonly string[] = [], received: readonly string[] = []) {
+  const remaining = new Map<string, number>()
+  for (const text of context) remaining.set(text, (remaining.get(text) ?? 0) + 1)
+  for (const text of received) {
+    const count = remaining.get(text) ?? 0
+    if (!count) throw new Error('command.run cannot remove received context')
+    remaining.set(text, count - 1)
+  }
+}
 export type ModCommandInvocation = {
   snapshot: ModSnapshot
   origin: PromptOrigin
@@ -130,7 +151,14 @@ export async function runImmediateModCommand(
           })
         }),
       }) as ImmediateResult
-      onDone(result.resultText, result.completionOptions)
+      const metaMessages = result.messages.flatMap(message =>
+        message.type === 'user' && message.isMeta && typeof message.message.content === 'string'
+          ? [message.message.content] : [],
+      )
+      onDone(result.resultText, metaMessages.length ? {
+        ...result.completionOptions,
+        metaMessages: [...(result.completionOptions?.metaMessages ?? []), ...metaMessages],
+      } : result.completionOptions)
       ready.resolve(null)
     } catch (error) {
       if (signal.aborted) {
@@ -168,10 +196,15 @@ export async function runModCommand({
     throw new Error('command.run requires a canonical command name')
   const runs: SlashCommandResult[] = []
   const pending: Promise<unknown>[] = []
-  function validateResult(value: unknown): asserts value is CommandRunResult {
+  function validateResult(value: unknown, nextResults: readonly unknown[] = []): asserts value is CommandRunResult {
     if (value === null || typeof value !== 'object' || Array.isArray(value))
       throw new Error('command.run must return an object')
     const result = value as CommandRunResult
+    validateContext(result.context)
+    for (const below of nextResults as readonly CommandRunResult[]) {
+      if (result.ref === undefined || below.ref === result.ref)
+        retainContext(result.context, below.context)
+    }
     if (result.text !== undefined && typeof result.text !== 'string')
       throw new Error('command.run text must be a string')
     if (
@@ -200,13 +233,30 @@ export async function runModCommand({
           }
           if (typeof rewritten.args !== 'string')
             throw new Error('command.run args must be a string')
+          validateContext(rewritten.context)
+          retainContext(rewritten.context, initial.context)
+          const context = rewritten.context === undefined ? undefined : [...rewritten.context]
           const host = await core(rewritten.args)
-          return { text: host.resultText, ref: runs.push(host) }
+          return { text: host.resultText, ref: runs.push(host), ...(context === undefined ? {} : { context }) }
         })()
         pending.push(execution)
         return execution
       },
-      { signal, validateResult },
+      {
+        signal,
+        validateResult,
+        restoreResult(result, previous, called) {
+          if (called) return result
+          const received = previous as CommandRunInput
+          const returned = result as CommandRunResult
+          retainContext(returned.context, received.context)
+          return result
+        },
+        validateInput(rewritten, received) {
+          validateContext(rewritten.context)
+          retainContext(rewritten.context, received.context as readonly string[] | undefined)
+        },
+      },
     )
   } finally {
     await Promise.allSettled(pending)
@@ -214,8 +264,9 @@ export async function runModCommand({
   signal?.throwIfAborted()
   validateResult(result)
   const host = result.ref === undefined ? runs.at(-1) : runs[result.ref - 1]
+  const contextMessages = (result.context ?? []).map(content => createUserMessage({ content, isMeta: true }))
   if (host && (result.text === undefined || result.text === host.resultText))
-    return host
+    return contextMessages.length ? { ...host, messages: [...host.messages, ...contextMessages] } : host
   if (host) {
     const stdout = `<local-command-stdout>${result.text}</local-command-stdout>`
     const isStdout = (text: string) =>
@@ -251,12 +302,12 @@ export async function runModCommand({
         },
       }
     else messages.push(createCommandInputMessage(stdout))
-    return { ...host, messages, resultText: result.text }
+    return { ...host, messages: [...messages, ...contextMessages], resultText: result.text }
   }
   return {
     command,
-    messages:
-      result.text === undefined
+    messages: [
+      ...(result.text === undefined
         ? []
         : [
             createCommandInputMessage(
@@ -268,7 +319,9 @@ export async function runModCommand({
             createCommandInputMessage(
               `<local-command-stdout>${result.text}</local-command-stdout>`,
             ),
-          ],
+          ]),
+      ...contextMessages,
+    ],
     shouldQuery: false,
     resultText: result.text,
   }

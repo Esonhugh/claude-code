@@ -816,10 +816,12 @@ async function getMessagesForSlashCommand(
             },
           ) => {
             doneWasCalled = true
-            // If display is 'skip', don't add any messages to the conversation
+            // Skipping display still retains hidden model context.
             if (options?.display === 'skip') {
               void resolve({
-                messages: [],
+                messages: (options.metaMessages ?? []).map(content =>
+                  createUserMessage({ content, isMeta: true }),
+                ),
                 shouldQuery: false,
                 command,
                 nextInput: options?.nextInput,
