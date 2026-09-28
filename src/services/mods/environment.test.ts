@@ -32,6 +32,54 @@ function next(call: (input: Record<string, unknown>) => Promise<unknown>): ModNe
   })
 }
 
+describe('Mods disposal failures', () => {
+  test.each([false, true])('waits for every unload and terminates once (multiple failures: %s)', async multiple => {
+    const OriginalWorker = globalThis.Worker
+    const pending: any[] = []
+    const workerRef: { current?: any } = {}
+    let terminated = 0
+    class FaultWorker {
+      onmessage: any
+      addEventListener() {}
+      postMessage(message: any) {
+        if (message.type === 'load') queueMicrotask(() => this.onmessage({data:{type:'result',id:message.id,registrations:[]}}))
+        else if (message.type === 'unload') pending.push(message)
+      }
+      terminate() { terminated++ }
+      constructor() { workerRef.current = this }
+    }
+    globalThis.Worker = FaultWorker as any
+    const value = createModEnvironmentHost()
+    globalThis.Worker = OriginalWorker
+    try {
+      const first = await value.load(declaration(''))
+      await value.load(declaration(''))
+      const unloading = first.dispose()
+      const firstError = unloading.catch(error => error)
+      await expect(first.invoke(first.registrations[0]?.id ?? 1, []))
+        .rejects.toThrow('unloaded')
+      const disposal = value.dispose()
+      let settled = false
+      const outcome = disposal.catch(error => error).finally(() => { settled = true })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      workerRef.current.onmessage({data:{type:'result',id:pending[0].id,error:'first unload'}})
+      await firstError
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(settled).toBe(false)
+      expect(terminated).toBe(0)
+      workerRef.current.onmessage({data:{type:'result',id:pending[1].id,...(multiple ? {error:'second unload'} : {})}})
+      const error = await outcome
+      if (multiple) {
+        expect(error).toBeInstanceOf(AggregateError)
+        expect(error.errors.map((error: Error) => error.message)).toEqual(['second unload', 'first unload'])
+      } else expect(error).toBe(await firstError)
+      expect(first.dispose()).toBe(unloading)
+      expect(value.dispose()).toBe(disposal)
+      expect(terminated).toBe(1)
+    } finally { await value.dispose().catch(() => {}) }
+  })
+})
+
 describe('Mods Worker environment', () => {
   test('registers and invokes mcp.call hooks', async () => {
     const environment = await host().load({

@@ -143,9 +143,12 @@ export function createModEnvironmentHost({
     releaseHostStreams(environment)
     const state = environments.get(environment)
     environments.delete(environment)
-    for (const client of state?.clients.values() ?? []) client.stop(new Error('Module environment unloaded'))
+    const errors: unknown[] = []
+    for (const client of state?.clients.values() ?? []) {
+      try { client.stop(new Error('Module environment unloaded')) } catch (error) { errors.push(error) }
+    }
     for (const cleanup of state?.cleanups ?? []) {
-      try { cleanup() } catch (error) { report(error, environment) }
+      try { cleanup() } catch (error) { errors.push(error) }
     }
     state?.cleanups.clear()
     state?.remote.clear()
@@ -155,6 +158,8 @@ export function createModEnvironmentHost({
       requests.delete(id)
       pending.reject(new Error('Module environment unloaded'))
     }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Module revocation failed')
   }
 
   function fail(error: Error, notify = true) {
@@ -163,7 +168,9 @@ export function createModEnvironmentHost({
     clearInterval(heartbeat)
     for (const request of requests.values()) request.reject(error)
     requests.clear()
-    for (const environment of environments.keys()) revoke(environment)
+    for (const environment of environments.keys()) {
+      try { revoke(environment) } catch (failure) { report(failure, environment) }
+    }
     worker.terminate()
     if (notify) { try { onDied?.(error) } catch (failure) { report(failure, 0) } }
   }
@@ -573,14 +580,25 @@ export function createModEnvironmentHost({
     const existing = unloading.get(environment)
     if (existing) return existing
     if (!environments.has(environment)) return Promise.resolve()
-    revoke(environment)
-    const pending = (async () => {
+    let resolve!: () => void
+    let reject!: (error: unknown) => void
+    const pending = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise
+      reject = rejectPromise
+    })
+    unloading.set(environment, pending)
+    const errors: unknown[] = []
+    try { revoke(environment) } catch (error) { errors.push(error) }
+    void (async () => {
       const timeout = setTimeout(() => fail(new Error('Mods Worker unload timed out')), 1000)
       timeout.unref?.()
       try { if (!dead) await request({ type: 'unload', environment }) }
+      catch (error) { errors.push(error) }
       finally { clearTimeout(timeout); unloading.delete(environment) }
+      if (errors.length === 1) reject(errors[0])
+      else if (errors.length > 1) reject(new AggregateError(errors, 'Module unload failed'))
+      else resolve()
     })()
-    unloading.set(environment, pending)
     return pending
   }
 
@@ -659,6 +677,7 @@ export function createModEnvironmentHost({
         for (const registration of registrations) {
           if (!declaration.events.includes(registration.event)) throw new Error('Actual module registration is absent from scan')
         }
+        let disposal: Promise<void> | undefined
         return {
           id, registrations,
           client: input => client(id, input),
@@ -667,7 +686,7 @@ export function createModEnvironmentHost({
           invokeDrawing: (drawing, handle, args) => invoke(id, handle, args, undefined, undefined, drawing),
           releaseDrawing: async drawing => { if (environments.has(id)) await request({ type: 'release-drawing', environment: id, drawing }) },
           setUiAccess: async allowed => { await request({ type: 'ui-access', environment: id, allowed }) },
-          dispose: () => unload(id),
+          dispose: () => disposal ??= unload(id),
         }
       } catch (error) {
         try { await unload(id) } catch (failure) { report(failure, id) }
@@ -675,10 +694,17 @@ export function createModEnvironmentHost({
       } finally { clearTimeout(timeout) }
     },
     dispose(): Promise<void> {
-      disposal ??= (async () => {
-        try { await Promise.all([...environments.keys()].map(unload).concat([...unloading.values()])) }
-        finally { fail(new Error('Mods Worker disposed'), false) }
-      })()
+      disposal ??= Promise.resolve().then(async () => {
+        const errors: unknown[] = []
+        try {
+          const results = await Promise.allSettled(new Set([...environments.keys()].map(unload).concat([...unloading.values()])))
+          for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
+        } finally {
+          try { fail(new Error('Mods Worker disposed'), false) } catch (error) { errors.push(error) }
+        }
+        if (errors.length === 1) throw errors[0]
+        if (errors.length > 1) throw new AggregateError(errors, 'Mods Worker disposal failed')
+      })
       return disposal
     },
   }

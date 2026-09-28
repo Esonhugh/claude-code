@@ -25,6 +25,48 @@ function runtime() {
 }
 const input = { tool: 'Bash', tool_use_id: 'test-call', command: 'original' }
 
+describe('Mods disposal failures', () => {
+  test('attempts UI and activation cleanup in order and retains the rejected disposal', async () => {
+    const plugin = await fixture(`export function register(on) { on('tool.call', () => ({result:'ok'})) }`)
+    const calls: string[] = []
+    const uiError = new Error('UI dispose failed')
+    const suggestionError = new Error('suggestion cleanup failed')
+    const releaseError = new Error('UI release failed')
+    const environmentError = new Error('environment dispose failed')
+    const value = createModsRuntime({ services: { prompt: () => ({
+      clearSuggestion() { calls.push('suggestion'); throw suggestionError },
+    } as any) } })
+    await value.reconcile([plugin])
+    value.ui.dispose = () => { calls.push('ui'); throw uiError }
+    value.ui.releaseCandidate = owner => {
+      calls.push('candidate')
+      const environment = (owner as any).environment
+      const dispose = environment.dispose.bind(environment)
+      environment.dispose = async () => { calls.push('environment'); await dispose(); throw environmentError }
+    }
+    value.ui.release = async () => { calls.push('release'); throw releaseError }
+    const pending = value.dispose()
+    const error = await pending.catch(error => error)
+    expect(value.dispose()).toBe(pending)
+    expect(calls).toEqual(['ui', 'suggestion', 'candidate', 'release', 'environment'])
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors[0]).toBe(uiError)
+    expect(error.errors[1].errors[0].errors).toEqual([suggestionError, releaseError])
+    expect(error.errors[1].errors[1]).toBe(environmentError)
+  })
+
+  test('returns a single cleanup error unchanged without retrying', async () => {
+    const value = createModsRuntime()
+    const failure = new Error('UI dispose failed')
+    let calls = 0
+    value.ui.dispose = () => { calls++; throw failure }
+    const pending = value.dispose()
+    expect(await pending.catch(error => error)).toBe(failure)
+    expect(value.dispose()).toBe(pending)
+    expect(calls).toBe(1)
+  })
+})
+
 describe('Mods public turn lifetime', () => {
   test('publishes synchronously without hooks and ends idempotently', () => {
     const { value } = runtime()

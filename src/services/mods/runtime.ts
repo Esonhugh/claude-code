@@ -116,6 +116,7 @@ export type ModDispatchOptions = {
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
   validateInput?: (input: ModInput, received: ModInput) => void
   restoreInput?: (input: ModInput, received: ModInput) => ModInput
+  restoreResult?: (result: unknown, previous: unknown, called: boolean) => unknown
   reportDirectCoreFailure?: boolean
 }
 export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
@@ -199,6 +200,15 @@ const coreHost: Nouns = {
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
+}
+
+async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
+  const errors: unknown[] = []
+  for (const cleanup of cleanups) {
+    try { await cleanup() } catch (error) { errors.push(error) }
+  }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, 'Mods cleanup failed')
 }
 
 export function createModsRuntime({ onDiagnostic, services = {} }: {
@@ -397,7 +407,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           signal: context.abortController.signal,
           core: async () => ({ command, messages: [], shouldQuery: false, resultText: `No Mod hook answered /${name}.` }),
         })
-        return { text: result.resultText }
+        return {
+          text: result.resultText,
+          context: result.messages.flatMap(message =>
+            message.type === 'user' && message.isMeta && typeof message.message.content === 'string'
+              ? [message.message.content] : [],
+          ),
+        }
       } finally { snapshot.release() }
     },
   })
@@ -489,23 +505,30 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function releaseUi(owner: Activation): Promise<void> {
     if (owner.uiRelease) return owner.uiRelease
-    services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner)
-    ui.releaseCandidate(owner)
-    if (owner.uiPublished && owner.uiStatus && !active.some(item => item !== owner && item.declaration.name === owner.declaration.name && item.uiStatus))
-      services.uiStatus?.(owner.declaration.name, undefined)
-    owner.uiRelease = ui.release(owner)
+    owner.uiRelease = Promise.resolve().then(() => runCleanups([
+      () => services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner),
+      () => ui.releaseCandidate(owner),
+      () => {
+        if (owner.uiPublished && owner.uiStatus && !active.some(item => item !== owner && item.declaration.name === owner.declaration.name && item.uiStatus))
+          services.uiStatus?.(owner.declaration.name, undefined)
+      },
+      () => ui.release(owner),
+    ]))
     return owner.uiRelease
   }
 
   function disposeActivation(owner: Activation): Promise<void> {
     if (owner.dispose) return owner.dispose
     owner.state = 'disposed'
-    commands.release(owner)
-    tools.release(owner)
-    agents.release(owner)
-    owner.controller.abort()
-    for (const id of owner.waits.keys()) cancelWait(owner, id)
-    owner.dispose = releaseUi(owner).finally(() => owner.environment.dispose()).finally(() => { retired.delete(owner); activations.delete(owner) })
+    owner.dispose = Promise.resolve().then(() => runCleanups([
+      () => commands.release(owner),
+      () => tools.release(owner),
+      () => agents.release(owner),
+      () => owner.controller.abort(),
+      ...[...owner.waits.keys()].map(id => () => cancelWait(owner, id)),
+      () => releaseUi(owner),
+      () => owner.environment.dispose(),
+    ])).finally(() => { retired.delete(owner); activations.delete(owner) })
     return owner.dispose
   }
 
@@ -1718,14 +1741,20 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           validatePromptContext(received)
           return reconcilePromptContext(restored, received)
         },
-        ...(event === 'session.attach' || event === 'session.detach' ? { restoreResult: (result: unknown, previous: unknown, called: boolean) => ({
-          clientId: ((called ? previous : input) as ModInput).clientId,
-        }) } : event === 'session.measure' ? { restoreResult: (_result: unknown, previous: unknown) => ({
-          changed: structuredClone((previous as ModInput).changed),
-        }) } : event === 'prompt.context' ? { restoreResult: (result: unknown, previous: unknown) => {
-          validatePromptContext(previous)
-          return reconcilePromptContext(result, previous)
-        } } : {}),
+        restoreResult: event === 'session.attach' || event === 'session.detach'
+          ? (_result: unknown, previous: unknown, called: boolean) => ({
+              clientId: ((called ? previous : input) as ModInput).clientId,
+            })
+          : event === 'session.measure'
+            ? (_result: unknown, previous: unknown) => ({
+                changed: structuredClone((previous as ModInput).changed),
+              })
+            : event === 'prompt.context'
+              ? (result: unknown, previous: unknown) => {
+                  validatePromptContext(previous)
+                  return reconcilePromptContext(result, previous)
+                }
+              : options.restoreResult,
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
       }))
     } finally {
@@ -2326,16 +2355,15 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       publicTurn = undefined
       forkSnapshot = null
       forkGeneration++
-      controller.abort()
-      disposal = (async () => {
-        await measurements.stop()
-        await ui.dispose()
-        await Promise.all([...activations].map(disposeActivation))
-        active = []
-        nouns = {}
-        await host.dispose()
-        await queue
-      })()
+      disposal = Promise.resolve().then(() => runCleanups([
+        () => controller.abort(),
+        () => measurements.stop(),
+        () => ui.dispose(),
+        () => runCleanups([...activations].map(owner => () => disposeActivation(owner))),
+        () => { active = []; nouns = {} },
+        () => host.dispose(),
+        () => queue,
+      ]))
       return disposal
     },
   }
