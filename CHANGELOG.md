@@ -16,7 +16,7 @@
 
 ### 版本状态
 
-- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219..3c4220e`，并包含当前工作区将 `Makefile VERSION` 升至 `2.1.280` 的版本配置。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
+- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219..7a337fe`。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
 - `package.json` 及 SDK/Bun 依赖保持不变；版本提升使本地构建、billing 标识与 Claude OAuth `User-Agent` 的 `2.1.280` 版本一致。
 
 ### 关联提交
@@ -24,7 +24,7 @@
 - `4444348..d7a939c` — 独立本地会话通信、Plan mode 配置、跨平台进程身份与构建宏；`fb7b441..531dfdf` — Mods 生命周期、宿主能力、UI/REPL/Agent/模型与 builtin compiled 验收的累计实现、修复、测试和说明。
 - `3b0d6ce`、`dbdb97e..9ba61da`、`20ad11e..57bd3a6` — OpenAI reasoning 恢复、`AGENTS.md` 指令链、Usage/Stats/status、Agent/TUI/diff、模型与运行时可靠性等累计改动。
 - `9ba33c6` — 固定 Claude.ai OAuth 请求的 CLI UA 与 Stainless SDK/runtime headers，并设置 retry count `0`、timeout `600`；`3c4220e` — 校验手工 OAuth callback state，并修复服务端拒绝 token 后的强制刷新、并发替换识别与保存失败处理。
-- 尚未提交的 `Makefile` 版本配置 — 将默认本地构建版本从 `2.1.219` 更新为 `2.1.280`。
+- `f024fd3..7a337fe` — credential handle 撤销、完整 lifecycle cleanup、Pane redraw 串行化、`command.run.context`、stream resume rewrite 拒绝及 compiled telemetry credential recheck 验收；`bd06460` — extended cache TTL beta 与实际 request marker 对齐；`d031266` — 将默认构建版本更新为 `2.1.280` 并整理发布记录。
 
 ### 变更内容
 
@@ -33,6 +33,10 @@
 - 累计提供可信 Mods 的加载、隔离 activation、作用域生命周期和配置管理，以及 tool/prompt/turn/command/session/settings、MCP、fs/process/store、模型、Agent、usage/telemetry、terminal media 与跨 surface UI 等宿主能力；支持 builtin modules 打包、compiled activation 和独立 acceptance host。
 - 完善 prompt context/provenance、queued submission、fork/compaction、工具准入与取消、session shutdown、动态 commands/config、REPL 与 Agent provider 绑定；按 activation generation 原子发布与恢复能力，避免 stale runtime、缓存或设置刷新破坏当前会话。
 - 修复 Pane/dock/fullscreen diff 的焦点、分页、滚动、尺寸、tab、图片更新和跨 Agent view 刷新，并补充官方类型 fixture、runtime test plugin、compiled builtin 与 telemetry release-driver 覆盖。
+- `command.run` 支持官方 context 契约，逐层验证 context 只能追加且保留重复项，并将最终 context 作为隐藏但 model-visible 的 meta messages 注入；短路 hook 不再静默删除上游 context。
+- session authorization handle 在每次 first-party HTTP 请求前重新解析 credential；credential kind、secret、session 或 activation 变化以及并发撤销都会永久拒绝旧 handle，拒绝路径不调用 transport。
+- runtime、Worker environment 与 UI cleanup 改为完整、有序且幂等的 settled cleanup，保留多故障 `AggregateError`；同 target 的慢 redraw 串行执行并合并 trailing invalidation，close/unload/reopen 不再发布旧绘制。
+- `turn.step` catch 只允许以等价输入恢复既有 downstream stream；改写 model 或嵌套输入时明确失败，不静默忽略，也不隐式创建第二次模型请求。
 
 #### 会话、指令与运行时
 
@@ -51,29 +55,9 @@
 ### 测试覆盖
 
 - OAuth 定向测试为 12 passed / 0 failed，覆盖 callback state、`401` 强制刷新、并发 token 替换、保存失败以及固定 UA/SDK/runtime/retry/timeout headers；`cchFetch` 自执行断言通过。
-- `make build` 通过，生成的 `built-claude --version` 为 `2.1.280`。
-- 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；本轮未验证 JA3，未升级 SDK/Bun，也未运行完整 release gate，因此不声称全量测试、全部平台或官方 runtime parity 通过。
-
-## 2026-09-27 - Mods compiled 验收与测试契约修复
-
-### 版本状态
-
-- 未发布；版本与依赖保持不变。本条仅覆盖 Mods 专项，不代表完整 release gate 或全部官方 runtime parity 通过。
-
-### 关联提交
-
-- 尚未提交；记录当前 `feat/mods` 工作区的专项修复与验收接线。
-
-### 变更内容
-
-- 同步 REPL Mods 测试 fixture 与正式 command/root host 契约，不通过生产 fallback 隐藏无效 session 实现。
-- 补强 builtin Mods acceptance 的四侧完整性、binary 内容身份及对称 cleanup 记录，并将真实 `built-claude` 的 `agents-md`、`diff`、`telemetry` 验收接入独立 release target。
-- 更新当前 Mods 使用说明；历史研究和测试账本继续保留其原始基线、失败与未覆盖结论。
-
-### 测试覆盖
-
-- 定向覆盖 REPL submit、Mods command/session/runtime host、acceptance mutation 与 release-driver target；最终 compiled 结果以本轮新 binary 的 `builtin-mods` evidence 为准。
-- `accept-builtin` 使用私有 HOME/config、dummy credential、loopback provider 与 sandbox；专项通过不替代其他 Agent、Workflow、team 或完整发布门禁。
+- Mods focused regression 为 605 passed / 4 skipped / 0 failed；完整 `src/services/mods` 为 1274 passed / 11 skipped / 0 failed；后续竞态修复定向回归为 294 passed / 1 skipped / 0 failed，slash-command Mods 集成为 67 passed / 0 failed。
+- `make release-check`、`make build` 与 builtin Mods compiled gate 通过；验收 binary SHA-256 为 `a441531e37abfb5c794c47cc1fe1379d176394f64adb62826a124ff8245f6d01`，覆盖 builtin 加载、agents-md、diff、telemetry 正向 credential revalidation、正常 cleanup 和 evidence identity。
+- 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；credential 变化后的吊销、cleanup fault aggregation、slow redraw/reopen、command context 与 streaming catch rewrite 仍主要由源码级确定性测试覆盖，不以 builtin compiled gate 声称这些分支已有 binary fault-injection 验收；本轮未验证 JA3，未升级 SDK/Bun，也不声称全部平台或官方 runtime 完整 parity。
 
 ## 2026-09-19 - Mods 分页焦点与自适应布局修复
 
