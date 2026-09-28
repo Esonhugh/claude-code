@@ -355,10 +355,11 @@ export function assessBuiltinAcceptance(pair) {
     diffSides.every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view'))
   const privacyOff = pair.privacyOff?.ledger ?? []
   const privacyOn = pair.privacyOn?.ledger ?? []
-  const telemetry = privacyOff.length === 0 && privacyOn.length === 2 &&
+  const telemetry = privacyOff.length === 0 && privacyOn.length === 3 &&
     privacyOn[0]?.sequence === 1 && privacyOn[0]?.operation === 'authorize' && privacyOn[0]?.granted === true &&
-    privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'http' && privacyOn[1]?.method === 'POST' &&
-    privacyOn[1]?.host === 'api.anthropic.com' && privacyOn[1]?.path === '/api/event_logging/v2/batch' && privacyOn[1]?.authorized === true
+    privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'authorize' && privacyOn[1]?.granted === true &&
+    privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
+    privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
   return {
     completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all four sides must record the same valid copied binary hash and complete cleanup evidence' },
     cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all four sides must observe a dead pane, kill tmux successfully, close the provider successfully, and pass cleanup' },

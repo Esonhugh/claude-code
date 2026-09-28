@@ -284,7 +284,8 @@ describe('deterministic compiled builtin acceptance', () => {
       privacyOff: { binarySha256, cleanup, ledger: [] },
       privacyOn: { binarySha256, cleanup, ledger: [
         { sequence: 1, operation: 'authorize', credentialKind: 'bearer', granted: true },
-        { sequence: 2, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
+        { sequence: 2, operation: 'authorize', credentialKind: 'bearer', granted: true },
+        { sequence: 3, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
       ] },
     }
     const result = assessBuiltinAcceptance(pair)
