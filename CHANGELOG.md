@@ -12,6 +12,48 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-09-27 - v2.1.280 - Mods 宿主扩展与 OAuth 兼容修复
+
+### 版本状态
+
+- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219..3c4220e`，并包含当前工作区将 `Makefile VERSION` 升至 `2.1.280` 的版本配置。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
+- `package.json` 及 SDK/Bun 依赖保持不变；版本提升使本地构建、billing 标识与 Claude OAuth `User-Agent` 的 `2.1.280` 版本一致。
+
+### 关联提交
+
+- `4444348..d7a939c` — 独立本地会话通信、Plan mode 配置、跨平台进程身份与构建宏；`fb7b441..531dfdf` — Mods 生命周期、宿主能力、UI/REPL/Agent/模型与 builtin compiled 验收的累计实现、修复、测试和说明。
+- `3b0d6ce`、`dbdb97e..9ba61da`、`20ad11e..57bd3a6` — OpenAI reasoning 恢复、`AGENTS.md` 指令链、Usage/Stats/status、Agent/TUI/diff、模型与运行时可靠性等累计改动。
+- `9ba33c6` — 固定 Claude.ai OAuth 请求的 CLI UA 与 Stainless SDK/runtime headers，并设置 retry count `0`、timeout `600`；`3c4220e` — 校验手工 OAuth callback state，并修复服务端拒绝 token 后的强制刷新、并发替换识别与保存失败处理。
+- 尚未提交的 `Makefile` 版本配置 — 将默认本地构建版本从 `2.1.219` 更新为 `2.1.280`。
+
+### 变更内容
+
+#### Mods 与插件宿主
+
+- 累计提供可信 Mods 的加载、隔离 activation、作用域生命周期和配置管理，以及 tool/prompt/turn/command/session/settings、MCP、fs/process/store、模型、Agent、usage/telemetry、terminal media 与跨 surface UI 等宿主能力；支持 builtin modules 打包、compiled activation 和独立 acceptance host。
+- 完善 prompt context/provenance、queued submission、fork/compaction、工具准入与取消、session shutdown、动态 commands/config、REPL 与 Agent provider 绑定；按 activation generation 原子发布与恢复能力，避免 stale runtime、缓存或设置刷新破坏当前会话。
+- 修复 Pane/dock/fullscreen diff 的焦点、分页、滚动、尺寸、tab、图片更新和跨 Agent view 刷新，并补充官方类型 fixture、runtime test plugin、compiled builtin 与 telemetry release-driver 覆盖。
+
+#### 会话、指令与运行时
+
+- 增加 official-compatible 本地独立会话发现、认证通信、策略、receipt 和 UI；补齐 Linux/Windows 进程身份、Windows x64 构建目标，并以设置显式控制 Plan mode 可用性。
+- 将 `AGENTS.md` 纳入指令发现、onboarding、memory、Agent 与 Workflow，保留结构化 prompt sections、来源与附件；改进 context window/usage breakdown、token cancellation、task 隔离、clear/fork snapshot 及 subprocess/SSH 失败恢复。
+- 更新 Usage/Stats/status、Agent transcript 与任务操作、TUI resize/switching、原生 fullscreen diff、多 base Git backend、模型默认值和 request contracts；修复 OpenAI reasoning 跨 resume 持久化。
+
+#### OAuth 与版本标识
+
+- Claude.ai OAuth first-party 请求固定发送 `claude-cli/2.1.280 (external, cli)`，并发送 Stainless JS package `0.112.1`、Node runtime `v26.3.0`、retry count `0` 与 timeout `600` headers；自定义 headers 仍保留既有覆盖顺序。
+- 手工 OAuth callback 现在必须匹配当前 flow state；不匹配时拒绝 code exchange，并将错误返回 headless control caller，而不是接受错误或过期 callback。
+- 收到 OAuth `401` 后即使本地 token 尚未过期也会强制刷新；等待锁期间若其他进程已替换失败 token则直接复用，刷新 token 保存失败则明确返回失败，不再误报恢复成功。
+- 默认本地构建版本升至 `2.1.280`，使 binary/billing 版本和固定 OAuth UA 一致；未升级 Anthropic SDK 或 Bun runtime，也未验证真实 TLS JA3 指纹一致性。
+- 主请求和 side query 仅在实际发送 `ttl: "1h"` cache marker 时附加 `extended-cache-ttl-2025-04-11` beta；遵守 first-party/experimental gate，并保持 5m、禁用 experimental 与不支持 provider 请求不携带该 beta。
+
+### 测试覆盖
+
+- OAuth 定向测试为 12 passed / 0 failed，覆盖 callback state、`401` 强制刷新、并发 token 替换、保存失败以及固定 UA/SDK/runtime/retry/timeout headers；`cchFetch` 自执行断言通过。
+- `make build` 通过，生成的 `built-claude --version` 为 `2.1.280`。
+- 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；本轮未验证 JA3，未升级 SDK/Bun，也未运行完整 release gate，因此不声称全量测试、全部平台或官方 runtime parity 通过。
+
 ## 2026-09-27 - Mods compiled 验收与测试契约修复
 
 ### 版本状态
