@@ -12,6 +12,7 @@ import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -230,10 +231,14 @@ def assert_driver_behavior(module, baseline_module):
         gate.session_index = 1
         commands = []
         gate.tmux = lambda *args, **kwargs: commands.append(args)
-        gate.capture = lambda *args: 'Background tasks'
+        captures = iter((
+            '❯ /tasks\n────────────────────────\nDebug mode\n',
+            'Background tasks',
+        ))
+        gate.capture = lambda *args: next(captures)
         with patch.object(module.time, 'sleep'):
             gate.send('pane', Path(directory), '/tasks', 'input.txt')
-        assert (Path(directory) / 'input.txt').read_bytes() == b'/tasks'
+        assert (Path(directory) / 'input.txt').read_bytes() == b'\x1b[200~/tasks\x1b[201~'
         assert sum(command[0] == 'send-keys' and command[-1] == 'Enter'
                    for command in commands) == 1
 
@@ -1201,6 +1206,7 @@ def assert_driver_behavior(module, baseline_module):
     ]) == {
         'goal-lifecycle',
         'agent-fg-bg',
+        'nested-agent',
         'workflow',
         'code-review',
     }
@@ -1208,8 +1214,12 @@ def assert_driver_behavior(module, baseline_module):
         'src/tools/AgentTool/runAgent.ts',
     ]) == {
         'agent-fg-bg',
+        'nested-agent',
         'subagent-stop-failure-lifecycle',
     }
+    assert module.required_targets_for_paths([
+        'src/query.ts',
+    ]) == {'builtin-mods', 'nested-agent'}
     assert module.required_targets_for_paths([
         'src/state/AppStateStore.ts',
     ]) == set()
@@ -1264,6 +1274,7 @@ def assert_driver_behavior(module, baseline_module):
         'builtin-mods',
         'effort-openai-responses-wire',
         'ssh-remote-session-lifecycle',
+        'terminal-interaction',
     }
     assert module.required_targets_for_paths([
         'src/ssh/createSSHSession.ts',
@@ -1307,6 +1318,26 @@ def assert_driver_behavior(module, baseline_module):
             'release-ssh-host',
             'set -eu; printf "%s\\n" "$(uname -s)" "$(uname -m)" "$HOME" "$PWD"',
         ]
+        secret_probe = subprocess.run(
+            [
+                str(executable), '--', 'release-ssh-host',
+                'set -eu; trap cleanup EXIT; env '
+                'CLAUDE_CODE_SSH_REMOTE_TOKEN\\=secret-token '
+                'CLAUDE_CODE_SSH_PERMISSION_BOOTSTRAP\\=secret-bootstrap '
+                'CLAUDE_CODE_OAUTH_TOKEN\\=secret-oauth claude --input-format stream-json ',
+            ],
+            env={'CC_VALIDATION_SSH_IO': fixture['io_path']},
+            input='',
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert secret_probe.returncode == 0
+        redacted_transport = Path(fixture['io_path']).read_text()
+        assert 'secret-token' not in redacted_transport
+        assert 'secret-bootstrap' not in redacted_transport
+        assert 'secret-oauth' not in redacted_transport
+        assert redacted_transport.count('[REDACTED]') >= 3
 
         lifecycle = subprocess.Popen(
             [
@@ -1422,7 +1453,7 @@ def assert_driver_behavior(module, baseline_module):
     assert module.BinaryGate.ssh_lifecycle_evidence({
         **module.SSH_LIFECYCLE_IDS,
         'events': complete_events,
-    }, require_cleanup=False)['passed'] is False
+    }, require_cleanup=False)['passed'] is True
     for mutation in (
         lambda events: events.__setitem__(4, {
             'event': 'task-start', 'task_id': 'wrong-task',
@@ -1468,6 +1499,7 @@ def assert_driver_behavior(module, baseline_module):
         'workflow-retry-partial-failure',
         'coordinator-selector',
         'transcript-retention',
+        'terminal-interaction',
     }
 
     with tempfile.TemporaryDirectory(prefix='release-driver-mock-cleanup-') as root_string:
@@ -2495,6 +2527,99 @@ def assert_driver_behavior(module, baseline_module):
         '● Finished old request\n'
         '❯ /deep-research current request\n'
     ) is True
+    assert module.submitted_input_pending(
+        '────────────────────────────────────────\n'
+        '❯ /code-review high Read-only validation using exactly: git diff base..HEAD -- first.ts\n'
+        '  second.ts. Do not modify files or create worktrees.\n'
+        '────────────────────────────────────────\n'
+        '  bypass permissions on  Debug mode\n'
+    ) is True
+    assert module.submitted_input_pending(
+        '────────────────────────────────────────\n'
+        '❯ /workflows\n'
+        '────────────────────────────────────────\n'
+        '  /workflows  View dynamic workflow runs\n'
+        '  /workflow-help  Another suggestion\n'
+    ) is True
+    assert module.submitted_input_pending(
+        '❯ /stats\n'
+        '────────────────────────────────────────\n'
+        '  Status   Config   Usage   Stats\n'
+        '  Overview   Models   OpenAI\n'
+        '  No stats available yet. Start using Claude Code!\n'
+    ) is False
+    assert module.submitted_input_pending(
+        '❯ RELEASE_RETENTION_RESUME\n'
+        '⏺ RELEASE_RETENTION_WORKER_DONE\n'
+        '──────────────────────────── @retention-worker ──\n'
+        '❯ Message @retention-worker…\n'
+        '────────────────────────────────────────\n'
+        '  @main @retention-worker · shift + ↓ to expand\n'
+    ) is False
+    assert module.submitted_input_pending(
+        '❯ RELEASE_RETENTION_RESUME\n'
+        '────────────────────────────────────────\n'
+        '  @main @retention-worker · shift + ↓ to expand\n'
+        '  bypass permissions on  Debug mode\n'
+    ) is True
+    assert module.submitted_input_pending(
+        '❯ Inspect the prompt cache boundary without implementation.\n'
+        '────────────────────────────────────────\n'
+        '  plan mode on  high · /effort\n'
+        '  Debug mode\n'
+    ) is True
+    assert module.submitted_input_visible(
+        '❯ RELEASE_SSH_TASK_START\n'
+        '────────────────────────────────────────\n'
+        '  Native installation exists but ~/.local/bin is not in your PATH.\n'
+        '  Goal is set\n',
+        'RELEASE_SSH_TASK_START',
+    ) is True
+    assert module.submitted_input_visible(
+        '❯ /workflows detail wp5qaxd20\n'
+        '────────────────────────────────────────\n'
+        '  bypass permissions on  Debug mode\n'
+        '  ◯ release-failure-detail  failed  1/1 agents\n',
+        '/workflows detail wp5qaxd20',
+    ) is True
+    assert module.submitted_input_visible(
+        '❯ Use Workflow with this exact inline script.\n'
+        '  ```js\n'
+        "  const value = await agent('Return a value.')\n"
+        '  return value\n'
+        '  ```\n'
+        '────────────────────────────────────────\n',
+        "Use Workflow with this exact inline script.\n```js\n"
+        "const value = await agent('Return a value.')\n"
+        'return value\n```',
+    ) is True
+    assert module.submitted_input_visible(
+        '❯ [Pasted text #1 +4 lines]\n'
+        '────────────────────────────────────────\n'
+        '  bypass permissions on  Debug mode\n',
+        "Use Workflow with this exact inline script.\n```js\n"
+        "const value = await agent('Return a value.')\n"
+        'return value\n```',
+    ) is True
+    assert module.submitted_input_visible(
+        '❯ [Pasted text #1 +3 lines]\n'
+        '────────────────────────────────────────\n',
+        "Use Workflow with this exact inline script.\n```js\n"
+        "const value = await agent('Return a value.')\n"
+        'return value\n```',
+    ) is False
+    assert module.submitted_input_visible(
+        '❯ /code-review high Read-only validation using exactly: git diff base..HEAD -- first.ts\n'
+        '  second.ts. Do not widen the diff range or path scope, run repository-wide searches, inspect unrelated commits, modify files, commit, push, release, or create\n'
+        '  worktrees.\n'
+        '────────────────────────────────────────\n',
+        '/code-review high Read-only validation using exactly: git diff base..HEAD -- first.ts\n'
+        'second.ts. Do not widen the diff range or path scope, run repository-wide searches, inspect unrelated commits, modify files, commit, push, release, or create worktrees.',
+    ) is True
+    assert module.submitted_input_visible(
+        '❯ RELEASE_SSH_TASK_START\n',
+        'different input',
+    ) is False
     assert module.submitted_input_pending('❯ \n') is False
     assert module.input_prompt_ready('❯ /goal wait for token\nGoal is set\n') is False
     assert module.input_prompt_ready(
@@ -2579,7 +2704,33 @@ def assert_driver_behavior(module, baseline_module):
         'scripts/mods-test-lab.mjs',
         'src/services/mods/runtime.ts',
         'src/components/ModsPane.tsx',
-    ]) == {'builtin-mods'}
+    ]) == {'builtin-mods', 'terminal-interaction'}
+    driver_source = Path(module.__file__).read_text()
+    for assertion in (
+        'completeness', 'cleanup', 'agents', 'diff', 'security', 'ui',
+        'dynamicTools', 'suggestionReload', 'telemetry',
+    ):
+        assert repr(assertion) in driver_source
+    assert 'compiled native sec-default policy and ModsPane interaction' in driver_source
+    assert module.required_targets_for_paths([
+        'src/components/LogoV2/CondensedLogo.tsx',
+        'src/components/diff/DiffView.tsx',
+        'src/hooks/useTextInput.ts',
+        'src/ink/parse-keypress.ts',
+        'src/ink/log-update.ts',
+    ]) == {'terminal-interaction'}
+    source_root = Path('/private/tmp/mods-release-source')
+    target_root = Path('/private/tmp/release-evidence/builtin-mods/acceptance-cache')
+    remapped = module.remap_path_strings({
+        'evidence': str(source_root / 'runs/r-123/evidence'),
+        'captures': [str(source_root / 'runs/r-123/capture.txt')],
+        'target': 'session:0.0',
+    }, source_root, target_root)
+    assert remapped == {
+        'evidence': str(target_root / 'runs/r-123/evidence'),
+        'captures': [str(target_root / 'runs/r-123/capture.txt')],
+        'target': 'session:0.0',
+    }
 
     with tempfile.TemporaryDirectory(prefix='release-driver-assertions-') as root_string:
         root = Path(root_string)
@@ -2760,7 +2911,33 @@ def assert_driver_behavior(module, baseline_module):
     assert "self.agent_completion_proof(" in driver
     assert "parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(\n            run_dir, subagents=True\n        )" in driver
     assert "'RELEASE_NESTED_PARENT_DONE'\n                    in self.assistant_text(run_dir, subagents=True)" in driver
-    assert "The child must not call Agent or delegate" in driver
+    assert "'RELEASE_FGBG_CHILD_REQUEST: Read Makefile" in driver
+    assert "'run_in_background': False" in driver
+    assert "expected_output='RELEASE_FGBG_CHILD_DONE'" in driver
+    assert "server.agent_fgbg_child_waiting.wait(timeout=30)" in driver
+    assert "server.agent_fgbg_release.set()" in driver
+    assert "CC_VALIDATION_CWD={fixture}" in driver
+    assert "raw-diff-down-enter.bin" in driver
+    assert "raw('delayed-paste-head', b'\\x1b[200~RECOVERY_LITERAL')" in driver
+    assert "raw('delayed-paste-continuation', b'_CONTINUATION\\x1b[201~')" in driver
+    assert "raw('delayed-paste-enter', b'\\r')" in driver
+    assert "'[diff] close user'" in driver
+    assert "'OMEGA_RELEASE_BODY'" in driver
+    assert "observe('08b-files'" not in driver
+    assert "observe('08-resize-109'" in driver
+    assert "observe('08a-resize-110'" in driver
+    terminal_interaction = driver.split(
+        '    def terminal_interaction(self):', 1
+    )[1].split('\n    def ', 1)[0]
+    assert terminal_interaction.index(
+        'cleanup = self.close(run_dir, session, target)'
+    ) < terminal_interaction.index(
+        "'bun', str(self.repo / 'scripts/verify-terminal-frame-evidence.mjs')"
+    )
+    assert "tempfile.mkdtemp(prefix='mods-release-', dir='/private/tmp')" in driver
+    assert "ignore=shutil.ignore_patterns('tmux.sock')" in driver
+    assert "shutil.rmtree(cache)" in driver
+    assert "'cache_cleanup': cache_removed" in driver
     assert "workflow did not reach a terminal status before timeout" in driver
     assert "'goal-lifecycle': self.goal_lifecycle" in driver
     assert "def goal_lifecycle(self):" in driver
@@ -2770,6 +2947,8 @@ def assert_driver_behavior(module, baseline_module):
     assert "'subagent-stop-fallback-exactly-once'" in driver
     assert "'goal-lifecycle-set-status-clear'" in driver
     assert "'agent-foreground-background-lifecycle'" in driver
+    assert "'nested-agent-lifecycle'" in driver
+    assert "run_dir, session, target, ready = self.start('workflow')" in driver
     assert "result = {'label': 'workflow', 'evidence_dir': str(run_dir)}" in driver
     assert "'inline-workflow-lifecycle'" in driver
     assert "f'{kind}-workflow-lifecycle'" in driver
@@ -2778,12 +2957,17 @@ def assert_driver_behavior(module, baseline_module):
     assert "'workflow-failure-detail': self.workflow_failure_detail" in driver
     assert "'coordinator-selector': self.coordinator_selector" in driver
     assert "'transcript-retention': self.transcript_retention" in driver
+    assert "'terminal-interaction': self.terminal_interaction" in driver
+    assert "def terminal_interaction(self):" in driver
     assert "def team_concurrency(self):" in driver
     assert "def workflow_retry_partial_failure(self):" in driver
     assert "def workflow_failure_detail(self):" in driver
     assert "def coordinator_selector(self):" in driver
     assert "def transcript_retention(self):" in driver
     assert "def run_target(self, label, action):" in driver
+    assert "'driver_sha256': sha256(Path(__file__).resolve())" in driver
+    assert "self.manifest['readiness_smoke'] = {" in driver
+    assert "'status': readiness_result['validation_verdict']" in driver
     assert "result['repository_state_expected_workflow_artifacts']" in driver
     assert "self.run_target(target, actions[target])" in driver
     assert "result_label = 'inline-workflow' if target == 'workflow' else target" not in driver
@@ -2981,7 +3165,7 @@ def assert_driver_behavior(module, baseline_module):
                     '04-model-selected-pane.txt': 'gpt-release-discovered',
                     '05-model-current-pane.txt': 'Current model: gpt-release-discovered',
                     '06-explicit-model-pane.txt': 'RELEASE_EXPLICIT_MODEL_OK',
-                    '07-alias-selected-pane.txt': 'Set model to Sonnet',
+                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra',
                     '08-default-model-pane.txt': 'RELEASE_DEFAULT_MODEL_OK',
                 }.get(path.name, '')
                 if faulty == 'missing-pane' and path.name == '08-default-model-pane.txt':
@@ -2995,7 +3179,7 @@ def assert_driver_behavior(module, baseline_module):
                 if text.startswith('/') or faulty == 'missing-response':
                     return
                 explicit = 'RELEASE_EXPLICIT_MODEL_REQUEST' in text
-                model = 'gpt-release-discovered' if explicit else 'gpt-5.6-luna'
+                model = 'gpt-release-discovered' if explicit else 'gpt-5.6-terra'
                 if faulty == ('explicit-model' if explicit else 'alias-model'):
                     model = 'wrong-model'
                 request = {
@@ -3406,6 +3590,7 @@ def assert_driver_behavior(module, baseline_module):
         write_transcript(transcript_path, entries)
         recorded = []
         visible_requests = 0
+        second_boundary_pending = False
         compact_gate = object.__new__(module.BinaryGate)
         first_item = {
             'type': 'compaction',
@@ -3442,7 +3627,7 @@ def assert_driver_behavior(module, baseline_module):
         )
 
         def send_compact(_target, _run_dir, text, _filename):
-            nonlocal visible_requests
+            nonlocal visible_requests, second_boundary_pending
             visible_requests += 1
             if text.startswith('Reply with the remote compaction seed'):
                 entries.append({
@@ -3469,6 +3654,14 @@ def assert_driver_behavior(module, baseline_module):
                     },
                 })
             elif text == '/compact' and visible_requests == 4:
+                second_boundary_pending = True
+            write_transcript(transcript_path, entries)
+
+        def wait_compact(predicate, *_args):
+            nonlocal second_boundary_pending
+            if predicate():
+                return True
+            if second_boundary_pending:
                 entries.append({
                     'type': 'system',
                     'subtype': 'compact_boundary',
@@ -3476,7 +3669,20 @@ def assert_driver_behavior(module, baseline_module):
                     'openAICompaction': second_item,
                     'compactMetadata': {'mode': 'codex'},
                 })
-            write_transcript(transcript_path, entries)
+                second_boundary_pending = False
+                write_transcript(transcript_path, entries)
+                if getattr(compact_gate, 'checkpoint_boundaries', False):
+                    for entry in entries:
+                        if entry.get('subtype') == 'compact_boundary':
+                            entry['compactMetadata'].update({
+                                'provider': 'openai',
+                                'preCompactTokens': 100,
+                                'postCompactTokens': 20,
+                                'compactionCallTokens': 30,
+                                'compactionResponseId': entry['openAICompaction']['id'],
+                            })
+                    write_transcript(transcript_path, entries)
+            return predicate()
 
         def capture_compact(_target, path, **_kwargs):
             text = 'Conversation compacted\nRELEASE_COMPACTION_CONTINUATION_OK\n❯\n'
@@ -3484,7 +3690,7 @@ def assert_driver_behavior(module, baseline_module):
             return text
 
         compact_gate.send = send_compact
-        compact_gate.wait_until = lambda predicate, *_args: predicate()
+        compact_gate.wait_until = wait_compact
         compact_gate.capture = capture_compact
         compact_gate.mock_response_requests = (
             lambda _run_dir: requests[:visible_requests]
@@ -3501,6 +3707,9 @@ def assert_driver_behavior(module, baseline_module):
         )
         compact_gate.assistant_text = (
             module.BinaryGate.assistant_text.__get__(compact_gate, module.BinaryGate)
+        )
+        compact_gate.compact_boundaries = (
+            module.BinaryGate.compact_boundaries.__get__(compact_gate, module.BinaryGate)
         )
         compact_gate.close = lambda *_args: {'stopped': True}
         compact_gate.cleanup_passed = lambda _cleanup: True
@@ -3529,6 +3738,7 @@ def assert_driver_behavior(module, baseline_module):
         original_send = compact_gate.send
 
         def send_with_checkpoint(*args):
+            compact_gate.checkpoint_boundaries = True
             original_send(*args)
             for entry in entries:
                 if entry.get('subtype') == 'compact_boundary':
@@ -3543,6 +3753,8 @@ def assert_driver_behavior(module, baseline_module):
 
         entries.clear()
         visible_requests = 0
+        second_boundary_pending = False
+        compact_gate.checkpoint_boundaries = False
         recorded.clear()
         compact_gate.send = send_with_checkpoint
         module.BinaryGate.openai_remote_compaction(compact_gate)
@@ -3560,6 +3772,8 @@ def assert_driver_behavior(module, baseline_module):
                                      (send_with_checkpoint, 'passed')):
                 entries.clear()
                 visible_requests = 0
+                second_boundary_pending = False
+                compact_gate.checkpoint_boundaries = False
                 recorded.clear()
                 compact_gate.send = sender
                 module.BinaryGate.openai_remote_compaction(compact_gate)
@@ -3570,6 +3784,8 @@ def assert_driver_behavior(module, baseline_module):
                 requests[1]['body']['instructions'] = invalid
                 entries.clear()
                 visible_requests = 0
+                second_boundary_pending = False
+                compact_gate.checkpoint_boundaries = False
                 recorded.clear()
                 compact_gate.send = send_with_checkpoint
                 module.BinaryGate.openai_remote_compaction(compact_gate)
@@ -3866,6 +4082,7 @@ def assert_driver_behavior(module, baseline_module):
             'CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK': '1',
             'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC': '1',
             'CC_VALIDATION_MAX_RETRIES': '0',
+            'CC_VALIDATION_PATH_PREFIX': str(root / 'driver bin'),
             'RELEASE_DRIVER_UNRELATED': 'must-not-pass',
             **proxy_env,
             **validation_proxy_env,
@@ -3896,6 +4113,8 @@ def assert_driver_behavior(module, baseline_module):
         assert child_env['OPENAI_BASE_URL'] == 'http://127.0.0.1:34567'
         assert 'ANTHROPIC_API_KEY' not in child_env
         assert 'CLAUDE_LOCAL_OAUTH_API_BASE' not in child_env
+        assert child_env['PATH'] == str(root / 'driver bin') + ':' + launch_env['PATH']
+        assert 'CC_VALIDATION_PATH_PREFIX' not in child_env
         assert 'RELEASE_DRIVER_UNRELATED' not in child_env
         for name in module.AUTH_ENV_VARS:
             assert name not in child_env
@@ -3971,6 +4190,21 @@ def assert_driver_behavior(module, baseline_module):
             assert 'effortLevel' not in fixture_settings
         finally:
             shutil.rmtree(home)
+
+        code_review_run_dir = evidence / 'runs' / 'code-review-run'
+        code_review_run_dir.mkdir(parents=True)
+        code_review_config, code_review_home = module.BinaryGate.make_fixture(
+            gate,
+            code_review_run_dir,
+            'code-review',
+        )
+        try:
+            code_review_settings = json.loads(
+                (code_review_config / 'settings.json').read_text()
+            )
+            assert code_review_settings['planModeAvailable'] is True
+        finally:
+            shutil.rmtree(code_review_home)
 
         first_party_run_dir = evidence / 'runs' / 'first-party-run'
         first_party_run_dir.mkdir(parents=True)
@@ -4369,14 +4603,18 @@ def assert_openai_stats(module):
                 registered[str(run.resolve())] = (run / 'run-metadata.json').read_text()
                 (run / 'pane-target.txt').write_text('synthetic-only')
                 (run / 'openai-stats-http.json').write_text('[]')
-                state.update(label=label, tab=0, rows=[])
+                state.update(label=label, tab=0, rows=[], parent_focused=True)
                 stub = SimpleNamespace(fail=False, snapshot=lambda: list(state['rows']))
                 gate.mock_servers[label] = stub
                 return run, label, label, True
             def tmux(*args):
                 assert args[3:].count('Tab') <= 1, 'navigate one tab per observed state'
                 for key in args[3:]:
-                    if key == 'Tab':
+                    if key == 'Down':
+                        state['parent_focused'] = False
+                    elif key == 'Tab':
+                        if state['parent_focused']:
+                            continue
                         state['tab'] = (state['tab'] + 1) % (2 if state['label'].endswith('api-key') else 3)
                         if state['tab'] == 2 and not state['rows']:
                             state['rows'].append({'route': 'activity', 'status': 200, 'matches_dummy': True})
@@ -4390,9 +4628,10 @@ def assert_openai_stats(module):
                 active = ('Overview', 'Models', 'OpenAI')[state['tab']]
                 if mutation == 'stale-local' and state['tab'] == 1:
                     active = 'Overview'
+                selected_reset = '\n\x1b[0m' if active == 'OpenAI' else '\x1b[0m'
                 text = text.replace('  ' + active if active != 'Overview' else '\nOverview',
                                     ('  ' if active != 'Overview' else '\n')
-                                    + '\x1b[1m\x1b[48;5;174m ' + active + ' \x1b[0m', 1)
+                                    + '\x1b[1m\x1b[48;5;174m ' + active + ' ' + selected_reset, 1)
                 text += '\nNo stats available yet'
                 if state['tab'] == 2:
                     text += '\n' + ('Failed to load OpenAI activity' if gate.mock_servers[state['label']].fail
@@ -4418,6 +4657,103 @@ def assert_openai_stats(module):
             assert (result['validation_verdict'] == 'passed') == (mutation is None), mutation
             if mutation is None:
                 assert module.validate_required_target_results({'openai-stats'}, recorded, registered)['passed']
+
+
+def assert_team_concurrency_mock(module):
+    source = DRIVER_PATH.read_text().split(
+        '    def team_concurrency(self):', 1
+    )[1].split('\n    def ', 1)[0]
+    assert "if terminal:\n                self.send(target, run_dir, '/tasks'" in source
+    assert "'Background tasks' in (" in source
+    assert "f'Team: {team_name} (4)' in text" in source
+    assert "not submitted_input_pending(text)" in source
+
+    assert 'team-concurrency' in module.MOCK_OPENAI_TARGETS
+    server = module.MockOpenAIServer(Path('/unused'), 'team-concurrency')
+    body = {
+        'input': [{'role': 'user', 'content': 'Binary-side team concurrency validation.'}],
+    }
+    child_kind, child_sse = server.response_for({
+        'input': [{
+            'role': 'user',
+            'content': 'Reply exactly worker-a. Do not use tools or modify files.',
+        }],
+    })
+    assert child_kind == 'team-worker-completed'
+    assert 'worker-a' in child_sse
+    expected = [
+        ('team-create', 'fc_team_create', 'TeamCreate'),
+        ('team-agents', 'fc_team_worker_a', 'Agent'),
+        ('team-completed', None, None),
+    ]
+    for expected_kind, expected_call_id, expected_name in expected:
+        kind, sse = server.response_for(body)
+        assert kind == expected_kind
+        if expected_call_id is None:
+            assert 'RELEASE_TEAM_CONCURRENCY_DONE' in sse
+            continue
+        events = [
+            json.loads(line[6:])
+            for line in sse.splitlines()
+            if line.startswith('data: ')
+        ]
+        calls = [
+            event
+            for event in events
+            if event['type'] == 'response.function_call_arguments.done'
+        ]
+        if expected_kind == 'team-create':
+            assert len(calls) == 1
+        else:
+            assert len(calls) == 3
+            assert [call['call_id'] for call in calls] == [
+                'fc_team_worker_a', 'fc_team_worker_b', 'fc_team_worker_c',
+            ]
+            assert [json.loads(call['arguments'])['name'] for call in calls] == [
+                'worker-a', 'worker-b', 'worker-c',
+            ]
+            assert all(json.loads(call['arguments'])['run_in_background'] for call in calls)
+        assert calls[0]['call_id'] == expected_call_id
+        assert calls[0]['name'] == expected_name
+        for call in calls:
+            body['input'].append({
+                'type': 'function_call_output',
+                'call_id': call['call_id'],
+                'output': json.dumps({'status': 'ok'}),
+            })
+
+
+def assert_terminal_repository_ignores_global_signing(module):
+    with tempfile.TemporaryDirectory(prefix='terminal-repository-unit-') as tmp:
+        root = Path(tmp)
+        global_config = root / 'global.gitconfig'
+        global_config.write_text('[commit]\n\tgpgSign = true\n')
+        fixture = root / 'fixture'
+        with patch.dict(module.os.environ, {'GIT_CONFIG_GLOBAL': str(global_config)}):
+            module.initialize_terminal_interaction_repository(fixture)
+        result = subprocess.run(
+            ['git', '-C', str(fixture), 'log', '-1', '--format=%s'],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**module.os.environ, 'GIT_CONFIG_GLOBAL': str(global_config)},
+        )
+        assert result.stdout.strip() == 'fixture'
+        assert subprocess.run(
+            ['git', '-C', str(fixture), 'status', '--porcelain'],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout == ''
+        module.mutate_terminal_interaction_repository(fixture)
+        assert (fixture / 'alpha.txt').read_text().endswith('ALPHA_RELEASE_BODY\n')
+        assert (fixture / 'omega.txt').read_text().endswith('OMEGA_RELEASE_BODY\n')
+        assert subprocess.run(
+            ['git', '-C', str(fixture), 'config', '--local', '--get', 'commit.gpgSign'],
+            capture_output=True,
+            text=True,
+            env={**module.os.environ, 'GIT_CONFIG_GLOBAL': str(global_config)},
+        ).returncode == 1
 
 
 def assert_failed_discovery_panes(module):
@@ -4447,7 +4783,609 @@ def assert_failed_discovery_panes(module):
             getattr(gate, method)()
 
 
+def assert_fixture_materializes_builtin_marketplace(module):
+    with tempfile.TemporaryDirectory(prefix='release-marketplace-fixture-') as directory:
+        root = Path(directory)
+        gate = object.__new__(module.BinaryGate)
+        gate.evidence_root = root / 'evidence'
+        gate.evidence_root.mkdir()
+        gate.repo = root / 'repo'
+        gate.repo.mkdir()
+        gate.auth_homes = set()
+        gate.auth_source = root / 'auth.json'
+        gate.auth_source.write_text('{}\n')
+
+        config, home = gate.make_fixture(root / 'run', 'nested-agent')
+        marketplaces = json.loads(
+            (config / 'plugins/known_marketplaces.json').read_text()
+        )
+        entry = marketplaces['Esonhugh-Marketplace']
+        assert entry['source'] == {
+            'source': 'github',
+            'repo': 'Esonhugh/Marketplace',
+        }
+        install_location = Path(entry['installLocation'])
+        assert install_location.is_dir()
+        manifest = json.loads(
+            (install_location / '.claude-plugin/marketplace.json').read_text()
+        )
+        assert manifest['name'] == 'Esonhugh-Marketplace'
+        assert manifest['plugins'] == []
+        assert entry['autoUpdate'] is False
+        assert home in gate.auth_homes
+
+
+def assert_send_uses_atomic_bracketed_paste(module):
+    with tempfile.TemporaryDirectory(prefix='release-send-atomic-') as directory:
+        root = Path(directory)
+        gate = object.__new__(module.BinaryGate)
+        pasted = []
+        keys = []
+        gate.paste_bytes = lambda target, run_dir, data, filename: pasted.append(
+            (target, run_dir, data, filename)
+        )
+        gate.tmux = lambda *args, **kwargs: keys.append(args)
+        gate.wait_until = lambda predicate, *args: any(
+            predicate() for _ in range(5)
+        )
+
+        text = 'first line\nsecond line'
+        captures = iter((
+            '❯ first line\n  second line\n'
+            '────────────────────────────────────────\n'
+            '  bypass permissions on  Debug mode\n',
+            '❯ ',
+        ))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, text, 'input.txt')
+
+        assert pasted == [(
+            'pane',
+            root,
+            b'\x1b[200~' + text.encode() + b'\x1b[201~',
+            'input.txt',
+        )]
+        assert keys == [('send-keys', '-t', 'pane', 'Enter')]
+
+        pending = (
+            '❯ first line\n'
+            '  second line\n'
+            '────────────────────────────────────────\n'
+            '  bypass permissions on  Debug mode\n'
+        )
+        keys.clear()
+        captures = iter((pending, pending, '❯ '))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, text, 'wrapped-input.txt')
+        assert keys == [
+            ('send-keys', '-t', 'pane', 'Enter'),
+            ('send-keys', '-t', 'pane', 'Enter'),
+        ]
+
+        keys.clear()
+        captures = iter((
+            '❯ \n  Pasting text…\n',
+            '❯ first line\n  second line\n'
+            '────────────────────────────────────────\n'
+            '  bypass permissions on  Debug mode\n',
+            '❯ ',
+        ))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, text, 'paste-publishing-input.txt')
+        assert keys == [('send-keys', '-t', 'pane', 'Enter')]
+
+        stats_open = (
+            '❯ /stats\n'
+            '────────────────────────────────────────\n'
+            '   Status   Config   Usage   Stats\n'
+            '   Overview   Models   OpenAI\n'
+            '  No stats available yet. Start using Claude Code!\n'
+            '    Esc to cancel · r to cycle dates · ctrl+s to copy\n'
+        )
+        keys.clear()
+        captures = iter((
+            '❯ /stats\n────────────────────────────────────────\n  bypass permissions on\n',
+            stats_open,
+        ))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, '/stats', 'stats-input.txt')
+        assert keys == [('send-keys', '-t', 'pane', 'Enter')]
+
+        pasted_ref = '❯ [Pasted text #1 +1 lines]\n────────────────────────────────────────\n'
+        keys.clear()
+        captures = iter((pasted_ref, '❯ '))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, text, 'pasted-ref-input.txt')
+        assert keys == [('send-keys', '-t', 'pane', 'Enter')]
+
+        ssh_text = 'RELEASE_SSH_TASK_START'
+        ssh_pending = (
+            '❯ RELEASE_SSH_TASK_START\n'
+            '────────────────────────────────────────\n'
+            '  xhigh · /effort · Goal is set\n'
+            '  Debug mode\n'
+        )
+        keys.clear()
+        captures = iter((ssh_pending, ssh_pending, '❯ '))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, ssh_text, 'ssh-goal-input.txt')
+        assert keys == [
+            ('send-keys', '-t', 'pane', 'Enter'),
+            ('send-keys', '-t', 'pane', 'Enter'),
+        ]
+
+        ssh_install_pending = (
+            '❯ RELEASE_SSH_TASK_START\n'
+            '────────────────────────────────────────\n'
+            '  Native installation exists but ~/.local/bin is not in your PATH. Run:\n'
+            '  echo export PATH · Goal is set\n'
+            '  Debug mode\n'
+        )
+        permission = (
+            '❯ RELEASE_SSH_TASK_START\n'
+            '⏺ Bash(pwd)\n'
+            '────────────────────────────────────────\n'
+            '  Tool use\n'
+            '  Do you want to proceed?\n'
+            '  ❯ 1. Yes\n'
+        )
+        keys.clear()
+        captures = iter((ssh_install_pending, permission))
+        gate.capture = lambda *args, **kwargs: next(captures)
+        gate.send('pane', root, ssh_text, 'ssh-permission-input.txt')
+        assert keys == [('send-keys', '-t', 'pane', 'Enter')]
+
+        keys.clear()
+        gate.capture = lambda *args, **kwargs: pending
+        try:
+            gate.send('pane', root, text, 'still-pending-input.txt')
+        except RuntimeError as error:
+            assert 'input remained pending after confirmation' in str(error)
+        else:
+            raise AssertionError('send must fail when confirmation leaves input pending')
+        assert keys == [
+            ('send-keys', '-t', 'pane', 'Enter'),
+            ('send-keys', '-t', 'pane', 'Enter'),
+        ]
+
+
+def assert_terminal_request_predicate(module):
+    def request(*texts):
+        return {'method': 'POST', 'path': '/v1/responses', 'body': {'input': [
+            {'role': 'user', 'content': [{'type': 'input_text', 'text': text}]}
+            for text in texts
+        ]}}
+
+    def request_with_blocks(*texts):
+        result = request()
+        result['body']['input'] = [{
+            'role': 'user',
+            'content': [{'type': 'input_text', 'text': text} for text in texts],
+        }]
+        return result
+
+    old = request('中文')
+    assert not module.terminal_request_submitted([old], 1, '中文')
+    assert not module.terminal_request_submitted([old, request('中文', 'wrong')], 1, '中文')
+    assert not module.terminal_request_submitted([old, request('prefix中文')], 1, '中文')
+    assert not module.terminal_request_submitted([old, request('中文suffix')], 1, '中文')
+    assert module.terminal_request_submitted([old, request('old', '中文')], 1, '中文')
+    assert not module.terminal_request_submitted([old, request('中文'), request('中文')], 1, '中文')
+    assert not module.terminal_request_submitted([old, request('中文'), request('wrong')], 1, '中文')
+
+    title = request('中文')
+    title['body']['instructions'] = module.TITLE_GENERATION_INSTRUCTION
+    main = request_with_blocks(
+        '<available-deferred-tools>ToolSearch</available-deferred-tools>',
+        '<system-reminder>context</system-reminder>',
+        '<system-reminder>more context</system-reminder>',
+        '中文',
+    )
+    assert module.terminal_request_submitted([old, title, main], 1, '中文')
+    assert module.terminal_request_submitted([old, main, title], 1, '中文')
+    assert not module.terminal_request_submitted([
+        old,
+        title,
+        request_with_blocks('<system-reminder>context</system-reminder>', 'wrong'),
+    ], 1, '中文')
+
+    continued = request('中文')
+    continued['body']['input'].append({'type': 'function_call_output', 'output': 'ok'})
+    assert not module.terminal_request_submitted([old, continued], 1, '中文')
+    extra = request_with_blocks(
+        '<system-reminder>context</system-reminder>', 'extra', '中文',
+    )
+    assert not module.terminal_request_submitted([old, extra], 1, '中文')
+    non_text = request_with_blocks('中文')
+    non_text['body']['input'][-1]['content'].insert(0, {'type': 'input_image', 'image_url': 'data:'})
+    assert not module.terminal_request_submitted([old, non_text], 1, '中文')
+
+
+def assert_terminal_git_wrapper(module):
+    with tempfile.TemporaryDirectory(prefix='terminal-git-wrapper-') as tmp:
+        root = Path(tmp)
+        module.initialize_terminal_interaction_repository(root / 'project')
+        module.mutate_terminal_interaction_repository(root / 'project')
+        wrapper = module.create_terminal_git_wrapper(root)
+        base = [str(wrapper / 'git'), '--no-optional-locks',
+                f'--git-dir={root / "project/.git"}',
+                f'--work-tree={root / "project"}', '--literal-pathspecs',
+                'diff', '--no-ext-diff', '--no-textconv', '--no-color',
+                '--ignore-submodules=dirty', 'HEAD']
+        # Stats, other paths, and multi-path commands must never wait on the FIFO.
+        for suffix in (['--numstat', '-z', '--', 'omega.txt'],
+                       ['--shortstat', '--', 'omega.txt'],
+                       ['--', 'alpha.txt'], ['--', 'alpha.txt', 'omega.txt']):
+            subprocess.run(base + suffix, cwd=root / 'project', check=True,
+                           capture_output=True, timeout=10)
+        assert not (root / 'omega-body-blocked.json').exists()
+        process = subprocess.Popen(base + ['--', 'omega.txt'], cwd=root / 'project',
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            # FIFO readiness is observable; no timed success barrier.
+            deadline = time.monotonic() + 10
+            while not (root / 'omega-body-blocked.json').exists():
+                assert process.poll() is None
+                assert time.monotonic() < deadline, 'wrapper never reached body barrier'
+            assert process.poll() is None
+            marker = json.loads((root / 'omega-body-blocked.json').read_text())
+            assert marker['argv'] == base[1:] + ['--', 'omega.txt']
+            module.release_terminal_git_wrapper(root)
+            stdout, stderr = process.communicate(timeout=10)
+            assert process.returncode == 0, stderr
+            assert b'OMEGA_RELEASE_BODY' in stdout
+            # Release is latched and idempotent, including future body requests.
+            module.release_terminal_git_wrapper(root)
+            subprocess.run(base + ['--', 'omega.txt'], cwd=root / 'project',
+                           check=True, capture_output=True, timeout=10)
+        finally:
+            module.release_terminal_git_wrapper(root)
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=10)
+
+
+def assert_terminal_matrix_execution(module):
+    for failure in (None, 'paste-head', 'omega-loading', 'resize-109'):
+        with tempfile.TemporaryDirectory(prefix='terminal-matrix-execution-') as tmp:
+            root = Path(tmp)
+            (root / 'project').mkdir()
+            (root / 'omega-body-blocked.json').write_text('{}')
+            gate = object.__new__(module.BinaryGate)
+            gate.start = lambda label: (root, 'session', 'pane', True)
+            rows = []
+            gate.mock_servers = {root.name: SimpleNamespace(snapshot=lambda: list(rows))}
+            gate.wait_until = lambda predicate, *args: bool(predicate())
+            state = {
+                'width': 200,
+                'closed': False,
+                'released': False,
+                'phase': '',
+                'cleanup': False,
+                'diff_mode': 'files',
+                'selection': 'alpha',
+            }
+            chunks = []
+            def request(text):
+                rows.append({'method': 'POST', 'path': '/v1/responses', 'body': {'input': [
+                    {'role': 'user', 'content': text}]}})
+            def paste(target, directory, chunk, name):
+                chunks.append((name, chunk))
+                expected = {
+                    'raw-same_chunk_utf8_submit.bin': '中文',
+                    'raw-csi_u_submit.bin': '中文',
+                    'raw-raw_backspace_submit.bin': '中',
+                    'raw-raw_del_submit.bin': '中',
+                    'raw-forward_delete_submit.bin': '中',
+                    'raw-cursor_combination_submit.bin': '首中甲文乙尾',
+                    'raw-delayed-paste-enter.bin': 'RECOVERY_LITERAL_CONTINUATION',
+                }
+                if name in expected:
+                    request(expected[name])
+                if name == 'raw-delayed-paste-continuation.bin':
+                    assert state['phase'] == '05a-paste-head-pane'
+                if name == 'raw-delayed-paste-enter.bin':
+                    assert state['phase'] == '05b-paste-continuation-pane'
+                if name == 'raw-diff-down-enter.bin':
+                    assert state['phase'] == '06a-partial-publish-pane'
+                    assert not state['released'] and chunk == b'\x1b[B\r'
+                    state['selection'] = 'omega'
+                    state['diff_mode'] = 'detail'
+                if name == 'raw-resize-back-to-files.bin':
+                    assert state['diff_mode'] == 'files'
+                    state['closed'] = True
+                    state['diff_mode'] = 'closed'
+                if name == 'raw-resize-up-enter.bin':
+                    assert state['diff_mode'] == 'files'
+                    assert chunk == b'\x1b[A\r'
+                    state['selection'] = 'alpha'
+                    state['diff_mode'] = 'detail'
+                if name == 'raw-detail-back.bin':
+                    assert state['diff_mode'] == 'detail'
+                    state['diff_mode'] = 'files'
+                if name == 'raw-diff-close.bin':
+                    assert state['diff_mode'] == 'files'
+                    state['closed'] = True
+                    state['diff_mode'] = 'closed'
+                if name == 'raw-diff-reopen.bin':
+                    state['closed'] = False
+                    state['diff_mode'] = 'files'
+            gate.paste_bytes = paste
+            gate.send = lambda *args: None
+            def tmux(*args, **kwargs):
+                if args[0] == 'resize-window':
+                    state['width'] = int(args[args.index('-x') + 1])
+                return SimpleNamespace(stdout=f'{state["width"]}x34', returncode=0)
+            gate.tmux = tmux
+            gate.debug = lambda directory: '[diff] close user' if state['closed'] else ''
+            def capture(target, path, **kwargs):
+                state['phase'] = path.stem
+                if failure and failure in path.stem:
+                    text = 'Base: session Diff · detail stale state'
+                elif 'startup' in path.stem:
+                    text = ' '.join('CLAWD_RELEASE_ROW_' + name for name in
+                                    ('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'))
+                    text += ' CLAWD_RELEASE_WIDE_ bypass permissions on'
+                elif 'paste-head' in path.stem:
+                    text = 'RECOVERY_LITERAL'
+                elif 'paste-continuation' in path.stem:
+                    text = 'RECOVERY_LITERAL_CONTINUATION'
+                elif 'alpha-ready' in path.stem or 'alpha-detail' in path.stem:
+                    text = 'Diff · detail alpha.txt ALPHA_RELEASE_BODY'
+                elif 'partial-publish' in path.stem or 'reopened' in path.stem:
+                    text = 'Diff alpha.txt omega.txt ALPHA_RELEASE_BODY'
+                elif 'omega-loading' in path.stem:
+                    text = 'Diff · detail omega.txt Loading diff body'
+                elif 'omega-ready' in path.stem:
+                    assert state['released']
+                    text = 'Diff · detail omega.txt OMEGA_RELEASE_BODY'
+                elif 'resize-109' in path.stem:
+                    state['diff_mode'] = 'hidden'
+                    text = '❯'
+                elif 'resize-110' in path.stem:
+                    assert state['released']
+                    state['diff_mode'] = 'files'
+                    text = 'Diff alpha.txt omega.txt ALPHA_RELEASE_BODY OMEGA_RELEASE_BODY'
+                elif 'alpha-detail' in path.stem:
+                    assert state['diff_mode'] == 'detail'
+                    assert state['selection'] == 'alpha'
+                    text = 'Diff · detail alpha.txt ALPHA_RELEASE_BODY'
+                elif 'files' in path.stem:
+                    assert state['diff_mode'] == 'files'
+                    text = 'Diff alpha.txt omega.txt'
+                elif 'closed' in path.stem:
+                    assert state['diff_mode'] == 'closed'
+                    text = '❯'
+                else:
+                    text = '❯'
+                path.write_text(text)
+                return text
+            gate.capture = capture
+            def release(directory):
+                state['released'] = True
+            def close(*args):
+                assert state['released']
+                state['cleanup'] = True
+                return {}
+            gate.close = close
+            gate.cleanup_passed = lambda cleanup: True
+            gate.required_assertion = lambda *args, **kwargs: kwargs
+            results = []
+            gate.record = results.append
+            with patch.object(module, 'release_terminal_git_wrapper', release):
+                gate.terminal_interaction()
+            assert state['cleanup']
+            checks = results[0]['checks']
+            if failure is None:
+                assert all(value for key, value in checks.items() if not key.startswith('frame_')), checks
+                assert checks['frame_physical'] is False  # no evidence cannot pass
+                expected_chunks = {
+                    'raw-csi_u_submit.bin': b'\x1b[20013u\x1b[25991u\x1b[13u',
+                    'raw-raw_backspace_submit.bin': '中文'.encode() + b'\x08\r',
+                    'raw-raw_del_submit.bin': '中文'.encode() + b'\x7f\r',
+                    'raw-forward_delete_submit.bin': '中文'.encode() + b'\x1b[D\x1b[3~\r',
+                    'raw-cursor_combination_submit.bin': (
+                        '中文'.encode() + b'\x1b[D' + '甲'.encode() + b'\x1b[C'
+                        + '乙'.encode() + b'\x1b[H' + '首'.encode()
+                        + b'\x1b[F' + '尾'.encode() + b'\r'),
+                }
+                assert {name: chunk for name, chunk in chunks if name in expected_chunks} == expected_chunks
+            else:
+                assert checks['scenario_completed'] is False
+            assert results[0]['validation_verdict'] == 'failed'
+
+
+def assert_terminal_matrix_contract(module):
+    source = DRIVER_PATH.read_text().split('    def terminal_interaction(self):', 1)[1].split(
+        '    def builtin_mods(self):', 1)[0]
+    assert 'recovery_deadline' not in source
+    assert 'time.monotonic' not in source
+    assert 'self.send(' not in source  # generic send has a fixed sleep barrier
+    for name in ('csi_u_submit', 'raw_backspace_submit', 'raw_del_submit',
+                 'forward_delete_submit', 'cursor_combination_submit',
+                 'paste_head_visible', 'paste_continuation_visible',
+                 'diff_alpha_ready', 'diff_partial_loading', 'resize_intent',
+                 'resize_keyboard_ownership', 'frame_semantics'):
+        assert name in source, name
+    assert 'terminal_request_submitted' in source
+    assert "raw('resize-back-to-files', b'\\x1b')" not in source
+    assert "raw('resize-up-enter', b'\\x1b[A\\r')" in source
+    assert source.index("'diff_alpha_ready'") < source.index("'raw-diff-down-enter.bin'")
+    assert 'release_terminal_git_wrapper(run_dir)' in source
+    assert 'finally:' in source
+    assert "json.loads(frame_report.read_text())" in source
+    # A successful verifier exit alone is insufficient.
+    assert 'terminal_frame_report_checks' in source
+    frames = [
+        {'frameId': 1, 'columns': 110, 'rows': 34, 'verdict': 'passed',
+         'semantic': {'diffMode': 'files', 'alphaBody': True}},
+        {'frameId': 2, 'columns': 110, 'rows': 34, 'verdict': 'passed',
+         'semantic': {'diffMode': 'detail', 'omegaFile': True, 'loading': True, 'omegaBody': False}},
+        {'frameId': 3, 'columns': 110, 'rows': 34, 'verdict': 'passed',
+         'semantic': {'diffMode': 'detail', 'omegaFile': True, 'omegaBody': True}},
+        {'frameId': 4, 'columns': 109, 'rows': 34, 'verdict': 'passed', 'semantic': {'diffMode': None}},
+        {'frameId': 5, 'columns': 110, 'rows': 34, 'verdict': 'passed',
+         'semantic': {'diffMode': 'files', 'omegaFile': True, 'omegaBody': True}},
+    ]
+    report = {'verdict': 'passed', 'frameCount': len(frames), 'frames': frames,
+              'sizeSequence': [{k: f[k] for k in ('columns', 'rows', 'frameId')}
+                               for f in (frames[0], frames[3], frames[4])]}
+    assert all(module.terminal_frame_report_checks(report).values())
+    for bad in (None, [], {}, {**report, 'frames': None}, {**report, 'frames': [None]},
+                {**report, 'frames': []}, {**report, 'sizeSequence': []},
+                {**report, 'verdict': 'failed'},
+                {**report, 'frames': [{**f, 'semantic': {}} for f in frames]},
+                {**report, 'frames': list(reversed(frames))}):
+        assert not all(module.terminal_frame_report_checks(bad).values()), bad
+
+
+def assert_deterministic_lifecycle_protocol(module):
+    def user(text, blocks):
+        return {'role': 'user', 'content': (
+            [{'type': 'input_text', 'text': '<system-reminder>Runtime context</system-reminder>'},
+             {'type': 'input_text', 'text': text}] if blocks else text)}
+
+    def output(call, text='ok'):
+        return {'type': 'function_call_output', 'call_id': call['call_id'], 'output': text}
+
+    for label in ('nested-agent', 'workflow', 'code-review'):
+        for blocks in (False, True):
+            with tempfile.TemporaryDirectory(prefix='release-lifecycle-protocol-') as directory:
+                root = Path(directory)
+                server = module.MockOpenAIServer(root, label)
+                base = server.start()
+                gate = object.__new__(module.BinaryGate)
+                gate.mock_servers = {root.name: server}
+
+                def post(items, expected, tool=None):
+                    request = Request(base + '/v1/responses',
+                                      data=json.dumps({'input': items}).encode(),
+                                      headers={'Authorization': 'Bearer ' + module.DUMMY_OPENAI_API_KEY,
+                                               'Content-Type': 'application/json'})
+                    with urlopen(request, timeout=3) as response:
+                        wire = response.read().decode()
+                    assert server.snapshot()[-1]['response_kind'] == expected, (label, wire)
+                    events = [json.loads(line[6:]) for line in wire.splitlines() if line.startswith('data: ')]
+                    if tool:
+                        calls = [event for event in events if event['type'] == 'response.function_call_arguments.done']
+                        assert len(calls) == 1 and calls[0]['name'] == tool
+                        return {**calls[0], 'args': json.loads(calls[0]['arguments'])}
+                    assert events[-1]['type'] == ('response.incomplete' if expected.endswith(('unrecognized', 'duplicate')) else 'response.completed')
+                    return wire
+
+                try:
+                    if label == 'nested-agent':
+                        parent = [user('Release gate read-only nested Agent validation.', blocks)]
+                        launch = post(parent, 'nested-root-launch', 'Agent')
+                        assert launch['args']['run_in_background'] is False
+                        nested = [user(launch['args']['prompt'], blocks)]
+                        # Assistant arguments contain child markers, but must not route the root as a child.
+                        parent.append({'type': 'function_call', 'name': 'Agent',
+                                       'call_id': launch['call_id'], 'arguments': json.dumps(launch['args'])})
+                        child = post(nested, 'nested-parent-launch', 'Agent')
+                        assert child['args']['run_in_background'] is False
+                        assert 'RELEASE_NESTED_CHILD_DONE' in post(
+                            [user(child['args']['prompt'], blocks)], 'nested-child-completed')
+                        nested.append(output(child, 'RELEASE_NESTED_CHILD_DONE'))
+                        assert 'RELEASE_NESTED_PARENT_DONE' in post(nested, 'nested-parent-completed')
+                        parent.append(output(launch, 'RELEASE_NESTED_PARENT_DONE'))
+                        assert 'RELEASE_NESTED_ROOT_DONE' in post(parent, 'nested-root-completed')
+                    else:
+                        if label == 'workflow':
+                            parent = [user('Use Workflow with this exact inline script.\n```js\n' + module.INLINE_WORKFLOW_SCRIPT + '```', blocks)]
+                            search = post(parent, 'workflow-search', 'ToolSearch')
+                            assert search['args'] == {'query': 'select:Workflow'}
+                            parent.append(output(search, 'Workflow discovered'))
+                            launch = post(parent, 'workflow-launch', 'Workflow')
+                            assert launch['args'] == {'script': module.INLINE_WORKFLOW_SCRIPT}
+                            assert launch['args']['script'].count('() => agent(') == 2
+                            for name, path in (('a', 'Makefile'), ('b', 'package.json')):
+                                worker = [user(f'Read-only. Read {path} and report only ' + ('VERSION.' if name == 'a' else 'version.'), blocks)]
+                                read = post(worker, f'workflow-probe-{name}-read', 'Read')
+                                assert Path(read['args']['file_path']).name == path
+                                worker.append(output(read, 'fixture version'))
+                                post(worker, f'workflow-probe-{name}-completed')
+                        else:
+                            args = module.code_review_prompt('a' * 40).removeprefix('/code-review ')
+                            parent = [user('Workflow: code-review\nSource: bundled:code-review\n\nUser input:\n' + args +
+                                           '\n\nExecute this validated workflow through WorkflowTool.run with selector-based input. Use selector: "code-review" and pass the user input as runArgs.', blocks)]
+                            launch = post(parent, 'code-review-launch', 'WorkflowTool')
+                            assert launch['args'] == {'action': 'run', 'selector': 'code-review', 'runArgs': args}
+                            assert 'script' not in launch['args'] and 'plan' not in launch['args']
+                            scope = [user('Establish the scope of a code review.\n\nReview target / instructions (passed by the user, verbatim): "' + args + '".', blocks)]
+                            structured = post(scope, 'code-review-scope-output', 'StructuredOutput')
+                            assert structured['args']['files'] == []
+                            assert structured['args']['diffCommand'].startswith('git diff ')
+                            assert structured['args']['summary']
+                            scope.append(output(structured, 'Structured output provided successfully'))
+                            post(scope, 'code-review-scope-completed')
+                        parent.append(output(launch, 'Workflow launched in background. Task ID: wfixture'))
+                        post(parent, label + '-parent-completed')
+                        parent.append(user('<task-notification><task-id>wfixture</task-id><status>completed</status></task-notification>', blocks))
+                        post(parent, label + '-notification-completed')
+                    assert label in module.MOCK_OPENAI_TARGETS
+                    assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'passed'
+                    # Wire evidence must fail independently for missing, duplicate, unknown and non-dummy requests.
+                    saved = server.snapshot()
+                    for mutated in (saved[1:], saved + [saved[0]],
+                                    saved + [{**saved[0], 'response_kind': 'unrecognized'}],
+                                    [{**saved[0], 'authorization': {'matches_dummy': False}}, *saved[1:]]):
+                        with server.lock:
+                            server.requests = mutated
+                        assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'failed'
+                    with server.lock:
+                        server.requests = list(saved)
+                    assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'passed'
+                    for request in saved:
+                        post(request['body']['input'], label + '-duplicate')
+                    assert post(parent, label + '-duplicate')
+                    assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'failed'
+                    assert post([user('unknown', blocks)], label + '-unrecognized')
+                    assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'failed'
+                    for authorization in (None, 'Bearer not-the-dummy-key'):
+                        headers = {'Content-Type': 'application/json'}
+                        if authorization:
+                            headers['Authorization'] = authorization
+                        try:
+                            urlopen(Request(base + '/v1/responses', data=b'{"input":[]}',
+                                            headers=headers), timeout=3)
+                        except HTTPError as error:
+                            assert error.code == 401
+                            error.close()
+                        else:
+                            raise AssertionError('mock accepted non-dummy authentication')
+                        assert server.snapshot()[-1]['response_kind'] == 'invalid-auth'
+                        assert gate.workflow_mock_wire(root, label)['validation_verdict'] == 'failed'
+                finally:
+                    assert server.stop()['stopped']
+
+        # These labels must never consult a real credential source.
+        with tempfile.TemporaryDirectory(prefix='release-lifecycle-auth-') as directory:
+            root = Path(directory)
+            gate = object.__new__(module.BinaryGate)
+            gate.repo = root
+            gate.evidence_root = root
+            gate.auth_source = root / 'must-not-read-auth'
+            gate.auth_homes = set()
+            try:
+                _, home = gate.make_fixture(root, label)
+                assert json.loads((home / '.codex/auth.json').read_text()) == {'OPENAI_API_KEY': module.DUMMY_OPENAI_API_KEY}
+                assert json.loads((root / 'auth-source-metadata.json').read_text())['source'] is None
+            finally:
+                for home in gate.auth_homes:
+                    shutil.rmtree(home)
+
+
 def main():
+    assert_deterministic_lifecycle_protocol(load_driver())
+    assert_fixture_materializes_builtin_marketplace(load_driver())
+    assert_send_uses_atomic_bracketed_paste(load_driver())
+    assert_terminal_request_predicate(load_driver())
+    assert_terminal_git_wrapper(load_driver())
+    assert_terminal_matrix_contract(load_driver())
+    assert_terminal_matrix_execution(load_driver())
+    assert_team_concurrency_mock(load_driver())
+    assert_terminal_repository_ignores_global_signing(load_driver())
     assert_failed_discovery_panes(load_driver())
     assert_openai_stats(load_driver())
     assert_plugins_reload(load_driver())

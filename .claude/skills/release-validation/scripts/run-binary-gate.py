@@ -60,6 +60,12 @@ MOCK_OPENAI_TARGETS = frozenset({
     'model-discovery-empty-picker',
     'model-internal-update-config-skill',
     'prompt-modes-cache-prefix',
+    'team-concurrency',
+    'agent-fg-bg',
+    'nested-agent',
+    'workflow',
+    'code-review',
+    'terminal-interaction',
 })
 WORKFLOW_FAULT_SCRIPTS = {
     'workflow-failure-detail': """export const meta = { name: 'release-failure-detail', description: 'Deterministic workflow failure diagnostics.', phases: [{ title: 'Failure probe' }] }
@@ -75,6 +81,29 @@ return await parallel([
   () => agent('Return exactly transient-worker-ok.', { label: 'transient-worker' }),
 ])
 """,
+}
+INLINE_WORKFLOW_SCRIPT = """export const meta = { name: 'release-inline-workflow', description: 'Read-only two-agent release probe.', phases: [{ title: 'Probe' }] }
+phase('Probe')
+const results = await parallel([
+  () => agent('Read-only. Read Makefile and report only VERSION.', { label: 'probe-a' }),
+  () => agent('Read-only. Read package.json and report only version.', { label: 'probe-b' }),
+])
+return { results }
+"""
+LIFECYCLE_MOCK_KINDS = {
+    'nested-agent': (
+        'nested-root-launch', 'nested-parent-launch', 'nested-child-completed',
+        'nested-parent-completed', 'nested-root-completed',
+    ),
+    'workflow': (
+        'workflow-search', 'workflow-launch', 'workflow-probe-a-read',
+        'workflow-probe-a-completed', 'workflow-probe-b-read',
+        'workflow-probe-b-completed', 'workflow-parent-completed',
+    ),
+    'code-review': (
+        'code-review-launch', 'code-review-scope-output',
+        'code-review-scope-completed', 'code-review-parent-completed',
+    ),
 }
 DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
 DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
@@ -116,6 +145,12 @@ TARGET_PATH_RULES = (
     ('agent-fg-bg', (
         'src/tools/AgentTool/',
         'src/tools/ClearGoalTool/',
+    )),
+    ('nested-agent', (
+        'src/tools/AgentTool/',
+        'src/QueryEngine',
+        'src/query',
+        'src/tools/shared/spawnMultiAgent',
     )),
     ('subagent-stop-failure-lifecycle', (
         'src/tools/AgentTool/runAgent',
@@ -251,6 +286,20 @@ TARGET_PATH_RULES = (
         'src/screens/REPL',
         'src/entrypoints/sdk/controlSchemas',
     )),
+    ('terminal-interaction', (
+        'src/components/FullscreenLayout',
+        'src/components/LogoV2/',
+        'src/components/ModsPane',
+        'src/components/PromptInput/',
+        'src/components/diff/',
+        'src/hooks/useTextInput',
+        'src/ink/',
+        'src/keybindings/',
+        'src/screens/REPL',
+        'src/types/textInputTypes',
+        'src/utils/handlePromptSubmit',
+        'src/utils/processUserInput/',
+    )),
     ('builtin-mods', (
         'scripts/mods-test-lab',
         'src/services/mods/',
@@ -304,24 +353,79 @@ def submitted_input_pending(pane):
         return False
     prompt_index = prompt_indexes[-1]
     prompt_text = lines[prompt_index].split('❯', 1)[1].strip()
-    if not prompt_text:
+    if not prompt_text or prompt_text.startswith('Message @'):
         return False
 
     def is_terminal_chrome(line):
         compact = line.replace(' ', '')
+        lower = line.lower()
         return (
             bool(compact) and set(compact) <= {'─'}
-        ) or 'bypass permissions on' in line or 'Debug mode' in line
+        ) or (
+            'bypass permissions on' in line
+            or 'Debug mode' in line
+            or 'Goal is set' in line
+            or 'plan mode on' in lower
+            or 'shift + ↓ to expand' in line
+        )
 
     trailing_content = [
         line.strip()
         for line in lines[prompt_index + 1:]
         if line.strip()
     ]
+    separator_index = next(
+        (
+            index
+            for index, line in enumerate(trailing_content)
+            if bool(line.replace(' ', ''))
+            and set(line.replace(' ', '')) <= {'─'}
+        ),
+        None,
+    )
+    if separator_index is not None:
+        content_after_separator = [
+            line
+            for line in trailing_content[separator_index + 1:]
+            if not is_terminal_chrome(line)
+        ]
+        if not content_after_separator:
+            return True
+        return all(line.lstrip().startswith('/') for line in content_after_separator)
     return not any(
         not is_terminal_chrome(line)
         for line in trailing_content
     )
+
+
+def submitted_input_visible(pane, text):
+    plain = strip_ansi(pane).replace('\u00a0', ' ')
+    lines = plain.splitlines()
+    prompt_indexes = [
+        index for index, line in enumerate(lines)
+        if '❯' in line
+    ]
+    if not prompt_indexes:
+        return False
+    prompt_index = prompt_indexes[-1]
+    prompt_lines = [lines[prompt_index].split('❯', 1)[1].strip()]
+    for line in lines[prompt_index + 1:]:
+        stripped = line.strip()
+        compact = stripped.replace(' ', '')
+        if bool(compact) and set(compact) <= {'─'}:
+            break
+        prompt_lines.append(stripped)
+    visible_text = '\n'.join(prompt_lines).strip()
+    if re.sub(r'\s+', ' ', visible_text) == re.sub(r'\s+', ' ', text.strip()):
+        return True
+    pasted_ref = re.fullmatch(
+        r'\[Pasted text #\d+(?: \+(\d+) lines)?\]',
+        visible_text,
+    )
+    if not pasted_ref:
+        return False
+    visible_lines = int(pasted_ref.group(1) or 0)
+    return visible_lines == len(re.findall(r'\r\n|\r|\n', text))
 
 
 def input_prompt_ready(pane):
@@ -568,6 +672,151 @@ def command(args, *, check=False, timeout=120):
     return result
 
 
+def initialize_terminal_interaction_repository(fixture):
+    fixture.mkdir()
+    command(['git', '-C', str(fixture), 'init', '-q'], check=True)
+    command(['git', '-C', str(fixture), 'config', 'user.name', 'Release Validation'], check=True)
+    command(['git', '-C', str(fixture), 'config', 'user.email', 'release-validation@example.invalid'], check=True)
+    (fixture / 'alpha.txt').write_text('alpha before\n')
+    (fixture / 'omega.txt').write_text('omega before\n')
+    command(['git', '-C', str(fixture), 'add', 'alpha.txt', 'omega.txt'], check=True)
+    command([
+        'git', '-C', str(fixture), '-c', 'commit.gpgSign=false',
+        'commit', '-q', '-m', 'fixture',
+    ], check=True)
+
+
+def mutate_terminal_interaction_repository(fixture):
+    (fixture / 'alpha.txt').write_text('alpha before\nALPHA_RELEASE_BODY\n')
+    (fixture / 'omega.txt').write_text('omega before\nOMEGA_RELEASE_BODY\n')
+
+
+def terminal_request_submitted(requests, offset, expected):
+    main_requests = [request for request in requests[offset:]
+                     if is_main_response_request(request)]
+    if len(main_requests) != 1:
+        return False
+    items = main_requests[0].get('body', {}).get('input', [])
+    if (
+        not items
+        or not isinstance(items[-1], dict)
+        or items[-1].get('role') != 'user'
+        or any(isinstance(item, dict) and item.get('type') == 'function_call_output'
+               for item in items)
+    ):
+        return False
+    content = items[-1].get('content')
+    if content == expected:
+        return True
+    if not isinstance(content, list):
+        return False
+    texts = []
+    for block in content:
+        if not isinstance(block, dict) or block.get('type') != 'input_text':
+            return False
+        text = block.get('text')
+        if not isinstance(text, str):
+            return False
+        if text.startswith(('<available-deferred-tools>', '<system-reminder>')):
+            continue
+        texts.append(text)
+    return texts == [expected]
+
+
+def create_terminal_git_wrapper(run_dir):
+    real_git = shutil.which('git')
+    if not real_git:
+        raise RuntimeError('git unavailable for terminal fixture')
+    wrapper_dir = run_dir / 'driver-bin'
+    wrapper_dir.mkdir()
+    os.mkfifo(run_dir / 'omega-body.fifo', 0o600)
+    wrapper = wrapper_dir / 'git'
+    wrapper.write_text(f'''#!{sys.executable} -S
+import json, os, select, sys
+from pathlib import Path
+root = Path({str(run_dir)!r})
+args = sys.argv[1:]
+tail = list(args)
+while tail and (tail[0] in ('--no-optional-locks', '--literal-pathspecs')
+                or tail[0].startswith(('--git-dir=', '--work-tree='))):
+    tail.pop(0)
+prefix = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--ignore-submodules=dirty']
+body = (len(tail) == len(prefix) + 3 and tail[:len(prefix)] == prefix
+        and not tail[len(prefix)].startswith('-') and tail[-2:] == ['--', 'omega.txt'])
+if body and not (root / 'omega-body-released').exists():
+    fd = os.open(root / 'omega-body.fifo', os.O_RDWR | os.O_NONBLOCK)
+    try:
+        marker = root / ('omega-body-' + str(os.getpid()) + '.tmp')
+        marker.write_text(json.dumps({{'pid': os.getpid(), 'argv': args}}))
+        marker.replace(root / 'omega-body-blocked.json')
+        if not (root / 'omega-body-released').exists():
+            if not select.select([fd], [], [], 30)[0]:
+                raise RuntimeError('omega body release timed out')
+            os.read(fd, 1)
+        if not (root / 'omega-body-released').exists():
+            raise RuntimeError('omega body release missing latch')
+    finally:
+        os.close(fd)
+os.execv({real_git!r}, [{real_git!r}, *args])
+''')
+    wrapper.chmod(0o700)
+    return wrapper_dir
+
+
+def release_terminal_git_wrapper(run_dir):
+    fifo = run_dir / 'omega-body.fifo'
+    if not fifo.exists():
+        return
+    (run_dir / 'omega-body-released').touch(mode=0o600)
+    fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        os.write(fd, b'1')
+    finally:
+        os.close(fd)
+
+
+def terminal_frame_report_checks(report):
+    invalid = {'frame_physical': False, 'frame_resize_sequence': False, 'frame_semantics': False}
+    if not isinstance(report, dict):
+        return invalid
+    frames = report.get('frames', [])
+    if not isinstance(frames, list) or any(
+        not isinstance(frame, dict) or not isinstance(frame.get('semantic', {}), dict)
+        for frame in frames
+    ):
+        return invalid
+    physical = (report.get('verdict') == 'passed' and bool(frames)
+                and report.get('frameCount') == len(frames)
+                and all(f.get('verdict') == 'passed' for f in frames)
+                and all(isinstance(f.get('frameId'), int) for f in frames)
+                and all(a['frameId'] < b['frameId'] for a, b in zip(frames, frames[1:])))
+    sequence = []
+    for frame in frames:
+        size = (frame.get('columns'), frame.get('rows'))
+        if not sequence or size != (sequence[-1]['columns'], sequence[-1]['rows']):
+            sequence.append({'columns': size[0], 'rows': size[1], 'frameId': frame.get('frameId')})
+    resize = bool(sequence) and report.get('sizeSequence') == sequence and any(
+        [f['columns'] for f in sequence[i:i + 3]] == [110, 109, 110]
+        for i in range(len(sequence) - 2))
+    # Require ordered semantic states, not just a physically self-consistent blank screen.
+    predicates = [
+        lambda f, s: f.get('columns') == 110 and s.get('alphaBody') is True,
+        lambda f, s: s.get('diffMode') == 'detail' and s.get('omegaFile') is True
+                     and s.get('loading') is True and s.get('omegaBody') is False,
+        lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'detail'
+                     and s.get('omegaFile') is True and s.get('omegaBody') is True,
+        lambda f, s: f.get('columns') == 109 and s.get('diffMode') is None,
+        lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'files'
+                     and s.get('omegaFile') is True and s.get('omegaBody') is True,
+    ]
+    stage = 0
+    for frame in frames:
+        if stage < len(predicates) and predicates[stage](frame, frame.get('semantic', {})):
+            stage += 1
+    return {'frame_physical': physical, 'frame_resize_sequence': resize,
+            'frame_semantics': physical and resize and stage == len(predicates)}
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -670,6 +919,21 @@ def is_relative_to(path, parent):
         return True
     except ValueError:
         return False
+
+
+def remap_path_strings(value, source_root, target_root):
+    if isinstance(value, dict):
+        return {
+            key: remap_path_strings(item, source_root, target_root)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [remap_path_strings(item, source_root, target_root) for item in value]
+    if isinstance(value, str):
+        source = str(source_root)
+        if value == source or value.startswith(source + os.sep):
+            return str(target_root) + value[len(source):]
+    return value
 
 
 def strip_ansi(text):
@@ -813,35 +1077,41 @@ def sse_compaction(item_id, encrypted_content):
     )
 
 
-def sse_function_call(call_id, name, arguments):
-    events = [
-        {
-            'type': 'response.output_item.added',
-            'item': {
-                'type': 'function_call',
-                'id': call_id,
+def sse_function_calls(calls):
+    events = []
+    for call_id, name, arguments in calls:
+        events.extend([
+            {
+                'type': 'response.output_item.added',
+                'item': {
+                    'type': 'function_call',
+                    'id': call_id,
+                    'call_id': call_id,
+                    'name': name,
+                },
+            },
+            {
+                'type': 'response.function_call_arguments.done',
+                'item_id': call_id,
                 'call_id': call_id,
                 'name': name,
+                'arguments': json.dumps(arguments, separators=(',', ':')),
             },
+        ])
+    events.append({
+        'type': 'response.completed',
+        'response': {
+            'usage': {'input_tokens': 1, 'output_tokens': len(calls)},
         },
-        {
-            'type': 'response.function_call_arguments.done',
-            'item_id': call_id,
-            'call_id': call_id,
-            'name': name,
-            'arguments': json.dumps(arguments, separators=(',', ':')),
-        },
-        {
-            'type': 'response.completed',
-            'response': {
-                'usage': {'input_tokens': 1, 'output_tokens': 1},
-            },
-        },
-    ]
+    })
     return ''.join(
         f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
         for event in events
     )
+
+
+def sse_function_call(call_id, name, arguments):
+    return sse_function_calls([(call_id, name, arguments)])
 
 
 def is_main_response_request(request):
@@ -862,6 +1132,7 @@ class MockOpenAIServer:
         self.requests = []
         self.server = None
         self.thread = None
+        self.lifecycle_responses = set()
         if label == 'transcript-retention':
             self.retention_release = threading.Event()
             self.retention_parent_waiting = threading.Event()
@@ -872,6 +1143,9 @@ class MockOpenAIServer:
             self.coordinator_release = threading.Event()
             self.coordinator_tools_done = threading.Event()
             self.coordinator_stopped = threading.Event()
+        if label == 'agent-fg-bg':
+            self.agent_fgbg_release = threading.Event()
+            self.agent_fgbg_child_waiting = threading.Event()
 
     def start(self):
         owner = self
@@ -937,6 +1211,11 @@ class MockOpenAIServer:
                 if urlsplit(self.path).path != '/v1/responses':
                     self.send_error(404)
                     return
+                if owner.label in LIFECYCLE_MOCK_KINDS and not request['authorization']['matches_dummy']:
+                    request['response_kind'] = 'invalid-auth'
+                    owner.flush()
+                    self.send_error(401)
+                    return
                 response_kind, response = owner.response_for(body)
                 request['response_kind'] = response_kind
                 owner.flush()
@@ -1001,6 +1280,104 @@ class MockOpenAIServer:
         with self.lock:
             return json.loads(json.dumps(self.requests))
 
+    def lifecycle_response(self, body):
+        items = body.get('input', [])
+        outputs = {item.get('call_id'): item.get('output') for item in items
+                   if isinstance(item, dict) and item.get('type') == 'function_call_output'}
+        users = []
+        for item in items:
+            if not isinstance(item, dict) or item.get('role') != 'user':
+                continue
+            content = item.get('content', '')
+            if isinstance(content, str):
+                users.append(content)
+            elif isinstance(content, list):
+                users.extend(block.get('text', '') for block in content if isinstance(block, dict))
+        kind, response = self.label + '-unrecognized', sse_incomplete('Unrecognized lifecycle fixture request')
+        if self.label == 'nested-agent':
+            if any(text.startswith('RELEASE_NESTED_CHILD_REQUEST:') for text in users):
+                kind, response = 'nested-child-completed', sse_completed('RELEASE_NESTED_CHILD_DONE')
+            elif any(text.startswith('RELEASE_NESTED_PARENT_REQUEST:') for text in users):
+                if 'fc_nested_child' in outputs:
+                    kind, response = 'nested-parent-completed', sse_completed('RELEASE_NESTED_PARENT_DONE')
+                else:
+                    kind, response = 'nested-parent-launch', sse_function_call(
+                        'fc_nested_child', 'Agent', {
+                            'description': 'release nested child', 'subagent_type': 'general-purpose',
+                            'run_in_background': False,
+                            'prompt': 'RELEASE_NESTED_CHILD_REQUEST: Reply exactly RELEASE_NESTED_CHILD_DONE.',
+                        })
+            elif any(text.startswith('Release gate read-only nested Agent validation.') for text in users):
+                if 'fc_nested_parent' in outputs:
+                    kind, response = 'nested-root-completed', sse_completed('RELEASE_NESTED_ROOT_DONE')
+                else:
+                    kind, response = 'nested-root-launch', sse_function_call(
+                        'fc_nested_parent', 'Agent', {
+                            'description': 'release nested parent', 'subagent_type': 'general-purpose',
+                            'run_in_background': False,
+                            'prompt': 'RELEASE_NESTED_PARENT_REQUEST: Use Agent once to launch a foreground child, then reply RELEASE_NESTED_PARENT_DONE.',
+                        })
+        elif self.label == 'workflow':
+            if any(text.startswith('Use Workflow with this exact inline script.')
+                   and INLINE_WORKFLOW_SCRIPT in text for text in users):
+                if 'fc_workflow_launch' in outputs:
+                    kind, response = 'workflow-parent-completed', sse_completed('RELEASE_WORKFLOW_PARENT_DONE')
+                elif 'fc_workflow_search' in outputs:
+                    kind, response = 'workflow-launch', sse_function_call(
+                        'fc_workflow_launch', 'Workflow', {'script': INLINE_WORKFLOW_SCRIPT})
+                else:
+                    kind, response = 'workflow-search', sse_function_call(
+                        'fc_workflow_search', 'ToolSearch', {'query': 'select:Workflow'})
+            else:
+                for name, path, version in (('a', 'Makefile', 'VERSION'), ('b', 'package.json', 'version')):
+                    if any(text.strip() == f'Read-only. Read {path} and report only {version}.' for text in users):
+                        call_id = f'fc_workflow_probe_{name}_read'
+                        if call_id in outputs:
+                            kind, response = f'workflow-probe-{name}-completed', sse_completed(str(outputs[call_id]))
+                        else:
+                            kind, response = f'workflow-probe-{name}-read', sse_function_call(
+                                call_id, 'Read', {'file_path': str(Path(__file__).resolve().parents[4] / path)})
+        elif self.label == 'code-review':
+            scope = any(text.startswith('Establish the scope of a code review.\n') for text in users)
+            if scope:
+                if 'fc_code_review_scope' in outputs:
+                    kind, response = 'code-review-scope-completed', sse_completed('')
+                else:
+                    diff = next((match.group(1) for text in users
+                                 if (match := re.search(r'using exactly: (git diff [^\n]+?)\. Do not widen', text))), None)
+                    if diff:
+                        kind, response = 'code-review-scope-output', sse_function_call(
+                            'fc_code_review_scope', 'StructuredOutput', {
+                                'diffCommand': diff, 'files': [],
+                                'summary': 'Deterministic empty-scope release fixture.',
+                            })
+            else:
+                prompt = next((text for text in users if text.startswith('Workflow: code-review\n')
+                               and 'selector-based input' in text and 'selector: "code-review"' in text), None)
+                if prompt:
+                    match = re.search(r'\nUser input:\n(.*?)\n\nExecute this validated workflow', prompt, re.DOTALL)
+                    if match:
+                        if 'fc_code_review_launch' in outputs:
+                            kind, response = 'code-review-parent-completed', sse_completed('RELEASE_CODE_REVIEW_PARENT_DONE')
+                        else:
+                            kind, response = 'code-review-launch', sse_function_call(
+                                'fc_code_review_launch', 'WorkflowTool', {
+                                    'action': 'run', 'selector': 'code-review', 'runArgs': match.group(1),
+                                })
+        # Task notifications are a distinct root turn, not a second workflow launch.
+        if (kind == self.label + '-parent-completed'
+                and kind in self.lifecycle_responses) and any(
+            '<task-notification>' in text and '<status>completed</status>' in text for text in users
+        ):
+            kind = self.label + '-notification-completed'
+            response = sse_completed('RELEASE_WORKFLOW_NOTIFICATION_DONE')
+        with self.lock:
+            if kind in self.lifecycle_responses:
+                return self.label + '-duplicate', sse_incomplete('Duplicate lifecycle fixture request: ' + kind)
+            if kind in LIFECYCLE_MOCK_KINDS[self.label] or kind == self.label + '-notification-completed':
+                self.lifecycle_responses.add(kind)
+        return kind, response
+
     def response_for(self, body):
         current_request = {
             'method': 'POST',
@@ -1009,6 +1386,52 @@ class MockOpenAIServer:
         }
         if not is_main_response_request(current_request):
             return 'title', sse_completed('{"title":"Release validation"}')
+        if self.label in LIFECYCLE_MOCK_KINDS:
+            return self.lifecycle_response(body)
+        if self.label == 'agent-fg-bg':
+            items = body.get('input', [])
+            outputs = {
+                item.get('call_id'): item.get('output')
+                for item in items if isinstance(item, dict)
+                and item.get('type') == 'function_call_output'
+            }
+            users = [
+                item for item in items
+                if isinstance(item, dict) and item.get('role') == 'user'
+            ]
+            child = any(
+                'RELEASE_FGBG_CHILD_REQUEST' in json.dumps(item.get('content'))
+                for item in users
+            )
+            if child:
+                if 'fc_release_fgbg_read' in outputs:
+                    self.agent_fgbg_child_waiting.set()
+                    if not self.agent_fgbg_release.wait(timeout=120):
+                        return 'agent-fg-bg-child-timeout', sse_incomplete(
+                            'foreground/background fixture was not released'
+                        )
+                    return 'agent-fg-bg-child-completed', sse_completed(
+                        'VERSION := release-validation\nRELEASE_FGBG_CHILD_DONE'
+                    )
+                return 'agent-fg-bg-read-call', sse_function_call(
+                    'fc_release_fgbg_read', 'Read',
+                    {'file_path': str(Path(__file__).resolve().parents[4] / 'Makefile')},
+                )
+            if 'fc_release_fgbg_agent' in outputs:
+                return 'agent-fg-bg-parent-completed', sse_completed(
+                    'RELEASE_FGBG_PARENT_RESTORED'
+                )
+            return 'agent-fg-bg-agent-call', sse_function_call(
+                'fc_release_fgbg_agent', 'Agent', {
+                    'description': 'release foreground background',
+                    'prompt': (
+                        'RELEASE_FGBG_CHILD_REQUEST: Read Makefile and report its '
+                        'VERSION line, then print RELEASE_FGBG_CHILD_DONE.'
+                    ),
+                    'subagent_type': 'general-purpose',
+                    'run_in_background': False,
+                },
+            )
         if self.label in WORKFLOW_FAULT_SCRIPTS:
             items = body.get('input', [])
             outputs = {item.get('call_id'): item.get('output')
@@ -1057,6 +1480,53 @@ class MockOpenAIServer:
                 if call_id not in outputs:
                     return call_id.removeprefix('fc_'), sse_function_call(call_id, name, arguments)
             return f'plugins-{phase}-completed', sse_completed(f'Plugin probe {phase} complete.')
+        if self.label == 'team-concurrency':
+            items = body.get('input', [])
+            worker = next((
+                name
+                for name in ('worker-a', 'worker-b', 'worker-c')
+                if any(
+                    isinstance(item, dict)
+                    and item.get('role') == 'user'
+                    and f'Reply exactly {name}.' in json.dumps(item.get('content'))
+                    for item in items
+                )
+            ), None)
+            if worker:
+                return 'team-worker-completed', sse_completed(worker)
+            outputs = {
+                item.get('call_id'): item.get('output')
+                for item in items
+                if isinstance(item, dict)
+                and item.get('type') == 'function_call_output'
+            }
+            if 'fc_team_create' not in outputs:
+                return 'team-create', sse_function_call(
+                    'fc_team_create',
+                    'TeamCreate',
+                    {'team_name': 'release-team-concurrency'},
+                )
+            worker_calls = [
+                (
+                    f'fc_team_worker_{suffix}',
+                    'Agent',
+                    {
+                        'description': f'release team concurrency {name}',
+                        'name': name,
+                        'subagent_type': 'general-purpose',
+                        'run_in_background': True,
+                        'prompt': f'Reply exactly {name}. Do not use tools or modify files.',
+                    },
+                )
+                for suffix, name in (
+                    ('a', 'worker-a'),
+                    ('b', 'worker-b'),
+                    ('c', 'worker-c'),
+                )
+            ]
+            if not all(call_id in outputs for call_id, _name, _arguments in worker_calls):
+                return 'team-agents', sse_function_calls(worker_calls)
+            return 'team-completed', sse_completed('RELEASE_TEAM_CONCURRENCY_DONE')
         if self.label in {'deferred-tool-discovery', 'deferred-tool-discovery-off'}:
             outputs = {item.get('call_id'): item.get('output')
                        for item in body.get('input', []) if isinstance(item, dict)
@@ -1333,6 +1803,8 @@ class MockOpenAIServer:
         if self.label == 'coordinator-selector':
             self.coordinator_stopped.set()
             self.coordinator_release.set()
+        if self.label == 'agent-fg-bg':
+            self.agent_fgbg_release.set()
         if self.server is None:
             return {'stopped': True, 'thread_alive': False}
         self.server.shutdown()
@@ -1703,6 +2175,7 @@ class BinaryGate:
             'baseline_captured_at': self.baseline.get('captured_at'),
             'binary': str(self.binary),
             'binary_sha256': current_state['binary']['sha256'],
+            'driver_sha256': sha256(Path(__file__).resolve()),
             'required_target_inputs': required_target_inputs,
             'required_targets': sorted(
                 required_targets_for_paths(required_target_inputs['all_paths'])
@@ -1933,11 +2406,16 @@ class BinaryGate:
         executable = bin_dir / 'ssh'
         remote_version = repr(str(self.baseline['makefile_version']))
         executable.write_text('''#!/usr/bin/env python3
-import atexit, json, os, signal, sys
+import atexit, json, os, re, signal, sys
 io = os.environ["CC_VALIDATION_SSH_IO"]
+def redact(value):
+    if not isinstance(value, str): return value
+    normalized = value.replace("\\\\=", "=")
+    return re.sub(r"(CLAUDE_CODE_(?:SSH_REMOTE_TOKEN|SSH_PERMISSION_BOOTSTRAP|OAUTH_TOKEN)=)[^ ]+", r"\\1[REDACTED]", normalized)
 def event(name, **extra):
+    safe = {key: [redact(item) for item in value] if isinstance(value, list) else redact(value) for key, value in extra.items()}
     with open(io, "a") as stream:
-        stream.write(json.dumps({"event": name, **extra}, sort_keys=True) + "\\n")
+        stream.write(json.dumps({"event": name, **safe}, sort_keys=True) + "\\n")
 def exit_on_signal(_signum, _frame):
     atexit.unregister(event)
     event("remote-process-exit")
@@ -2050,20 +2528,21 @@ else:
         ids_match = all(
             fixture.get(key) == value for key, value in SSH_LIFECYCLE_IDS.items()
         )
-        cleanup_absent = require_cleanup or not any(
-            name in observed_names for name in cleanup_names
+        cleanup_requirement_met = (
+            all(name in observed_names for name in cleanup_names)
+            if require_cleanup else True
         )
         return {
             'passed': (
                 ids_match and not missing_events and unique and ordered
-                and event_fields_match and cleanup_absent
+                and event_fields_match and cleanup_requirement_met
             ),
             'missing_events': missing_events,
             'ids_match': ids_match,
             'unique': unique,
             'ordered': ordered,
             'event_fields_match': event_fields_match,
-            'cleanup_absent': cleanup_absent,
+            'cleanup_requirement_met': cleanup_requirement_met,
         }
 
     @staticmethod
@@ -2223,6 +2702,8 @@ else:
             })
         if label == 'deferred-tool-discovery-off':
             settings['enableWorkflows'] = False
+        if label in {'code-review', 'prompt-modes-cache-prefix'}:
+            settings['planModeAvailable'] = True
         if label == 'prompt-modes-cache-prefix':
             settings.update({
                 'skipAutoPermissionPrompt': True,
@@ -2267,6 +2748,24 @@ else:
         (config / 'settings.json').write_text(
             json.dumps(settings, indent=2) + '\n'
         )
+        marketplace = config / 'plugins/marketplaces/Esonhugh-Marketplace'
+        (marketplace / '.claude-plugin').mkdir(parents=True)
+        (marketplace / '.claude-plugin/marketplace.json').write_text(json.dumps({
+            'name': 'Esonhugh-Marketplace',
+            'owner': {'name': 'Release validation fixture'},
+            'plugins': [],
+        }, indent=2) + '\n')
+        (config / 'plugins/known_marketplaces.json').write_text(json.dumps({
+            'Esonhugh-Marketplace': {
+                'source': {
+                    'source': 'github',
+                    'repo': 'Esonhugh/Marketplace',
+                },
+                'installLocation': str(marketplace),
+                'lastUpdated': '2026-09-29T00:00:00.000Z',
+                'autoUpdate': False,
+            },
+        }, indent=2) + '\n')
         (run_dir / 'auth-source-metadata.json').write_text(json.dumps({
             'source': auth_source,
             'strategy': auth_strategy,
@@ -2392,6 +2891,37 @@ else:
                 '-e',
                 f'CC_VALIDATION_SYSTEM_PROMPT={CUSTOM_SYSTEM_PROMPT_MARKER}',
             ])
+        if label == 'terminal-interaction':
+            fixture = run_dir / 'project'
+            initialize_terminal_interaction_repository(fixture)
+            global_config_path = config / '.claude.json'
+            global_config = json.loads(global_config_path.read_text())
+            global_config['projects'][str(fixture)] = {
+                'hasTrustDialogAccepted': True,
+                'hasCompletedProjectOnboarding': True,
+            }
+            global_config_path.write_text(json.dumps(global_config, indent=2) + '\n')
+            args.extend([
+                '-e', f'CC_VALIDATION_PATH_PREFIX={create_terminal_git_wrapper(run_dir)}',
+                '-e', f'CC_VALIDATION_CWD={fixture}',
+                '-e', f'CC_VALIDATION_FRAME_EVIDENCE_PATH={run_dir / "frames.jsonl"}',
+                '-e', 'CC_VALIDATION_NO_FLICKER=1',
+            ])
+            settings_path = config / 'settings.json'
+            settings = json.loads(settings_path.read_text())
+            settings['tui'] = 'fullscreen'
+            settings_path.write_text(json.dumps(settings, indent=2) + '\n')
+            clawd = config / 'clawd.txt'
+            clawd.write_text('\n'.join([
+                'CLAWD_RELEASE_ROW_ONE',
+                'CLAWD_RELEASE_ROW_TWO',
+                'CLAWD_RELEASE_ROW_THREE',
+                'CLAWD_RELEASE_ROW_FOUR',
+                'CLAWD_RELEASE_ROW_FIVE',
+                'CLAWD_RELEASE_ROW_SIX',
+                'CLAWD_RELEASE_ROW_SEVEN',
+                'CLAWD_RELEASE_WIDE_' + ('界' * 120),
+            ]) + '\n')
         if label == 'ssh-remote-session-lifecycle':
             fixture = self.make_ssh_transport_fixture(run_dir)
             args.extend([
@@ -2739,10 +3269,192 @@ else:
         if result['validation_verdict'] != 'passed':
             raise RuntimeError(f'readiness smoke failed: {run_dir}')
 
+    def terminal_interaction(self):
+        run_dir, session, target, ready = self.start('terminal-interaction')
+        result = {'label': 'terminal-interaction', 'evidence_dir': str(run_dir)}
+        input_chunks = []
+        checks = dict.fromkeys((
+            'ready', 'custom_clawd_layout', 'same_chunk_utf8_submit',
+            'csi_u_submit', 'raw_backspace_submit', 'raw_del_submit',
+            'forward_delete_submit', 'cursor_combination_submit',
+            'paste_head_visible', 'paste_continuation_visible', 'paste_recovery_submit',
+            'diff_alpha_ready', 'diff_partial_loading', 'diff_same_chunk_navigation',
+            'resize_intent', 'resize_keyboard_ownership', 'diff_closed', 'diff_reopened',
+            'frame_physical', 'frame_resize_sequence', 'frame_semantics', 'cleanup',
+        ), False)
+        checks['ready'] = ready
+        evidence = []
+
+        def pane(name):
+            path = run_dir / f'{name}-pane.txt'
+            if path not in evidence:
+                evidence.append(path)
+            return strip_ansi(self.capture(target, path, history=False))
+
+        def observe(name, predicate, timeout=30):
+            return self.wait_until(lambda: predicate(pane(name)), timeout, 0.1)
+
+        def require(name, value):
+            checks[name] = bool(value)
+            if not value:
+                raise RuntimeError(f'terminal interaction failed: {name}')
+
+        def raw(name, chunk):
+            input_chunks.append({'scenario': name, 'hex': chunk.hex()})
+            self.paste_bytes(target, run_dir, chunk, f'raw-{name}.bin')
+
+        def requests():
+            return self.mock_servers[run_dir.name].snapshot()
+
+        def submitted(name, offset, expected):
+            require(name, self.wait_until(
+                lambda: terminal_request_submitted(requests(), offset, expected), 30, 0.1))
+            require(name + '_prompt_restored', observe(name, input_prompt_ready))
+            require(name + '_exact_request', terminal_request_submitted(requests(), offset, expected))
+
+        try:
+            if not ready:
+                raise RuntimeError('terminal interaction did not reach readiness')
+            plain = pane('03-startup')
+            rows = [f'CLAWD_RELEASE_ROW_{name}' for name in (
+                'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN')]
+            require('custom_clawd_layout', all(marker in plain for marker in rows)
+                    and plain.count('CLAWD_RELEASE_WIDE_') == 1
+                    and 'bypass permissions on' in plain.lower())
+            cases = [
+                ('same_chunk_utf8_submit', '中文\r'.encode(), '中文'),
+                ('csi_u_submit', b'\x1b[20013u\x1b[25991u\x1b[13u', '中文'),
+                ('raw_backspace_submit', '中文'.encode() + b'\x08\r', '中'),
+                ('raw_del_submit', '中文'.encode() + b'\x7f\r', '中'),
+                ('forward_delete_submit', '中文'.encode() + b'\x1b[D\x1b[3~\r', '中'),
+                ('cursor_combination_submit', '中文'.encode()
+                 + b'\x1b[D' + '甲'.encode() + b'\x1b[C' + '乙'.encode()
+                 + b'\x1b[H' + '首'.encode()
+                 + b'\x1b[F' + '尾'.encode() + b'\r', '首中甲文乙尾'),
+            ]
+            for name, chunk, expected in cases:
+                offset = len(requests())
+                raw(name, chunk)
+                submitted(name, offset, expected)
+
+            offset = len(requests())
+            raw('delayed-paste-head', b'\x1b[200~RECOVERY_LITERAL')
+            require('paste_head_visible', observe('05a-paste-head',
+                    lambda text: 'RECOVERY_LITERAL' in text))
+            require('paste_head_not_submitted', len(requests()) == offset)
+            raw('delayed-paste-continuation', b'_CONTINUATION\x1b[201~')
+            require('paste_continuation_visible', observe('05b-paste-continuation',
+                    lambda text: 'RECOVERY_LITERAL_CONTINUATION' in text))
+            require('paste_continuation_not_submitted', len(requests()) == offset)
+            raw('delayed-paste-enter', b'\r')
+            submitted('paste_recovery_submit', offset, 'RECOVERY_LITERAL_CONTINUATION')
+
+            self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
+            fixture = run_dir / 'project'
+            (fixture / 'alpha.txt').write_text('alpha before\nALPHA_RELEASE_BODY\n')
+            raw('diff-open', b'/diff\r')
+            require('diff_alpha_ready', observe('06-alpha-ready', lambda text:
+                    'alpha.txt' in text and 'ALPHA_RELEASE_BODY' in text
+                    and 'omega.txt' not in text))
+            (fixture / 'omega.txt').write_text('omega before\nOMEGA_RELEASE_BODY\n')
+            require('omega_body_blocked', self.wait_until(
+                lambda: (run_dir / 'omega-body-blocked.json').exists(), 30, 0.1))
+            require('diff_partial_publish', observe('06a-partial-publish', lambda text:
+                    all(marker in text for marker in ('alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY'))
+                    and 'OMEGA_RELEASE_BODY' not in text))
+            navigation_offset = len(requests())
+            nav_chunk = b'\x1b[B\r'
+            input_chunks.append({'scenario': 'diff Down plus Enter in one chunk', 'hex': nav_chunk.hex()})
+            self.paste_bytes(target, run_dir, nav_chunk, 'raw-diff-down-enter.bin')
+            require('diff_partial_loading', observe('07-omega-loading', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'Loading diff body'))
+                    and 'OMEGA_RELEASE_BODY' not in text and 'ALPHA_RELEASE_BODY' not in text))
+            require('loading_keyboard_ownership', len(requests()) == navigation_offset)
+            release_terminal_git_wrapper(run_dir)
+            require('diff_same_chunk_navigation', observe('07a-omega-ready', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and 'Loading diff body' not in text and 'ALPHA_RELEASE_BODY' not in text))
+
+            before_resize = self.debug(run_dir).count('[diff] close')
+            self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
+            require('resize_hidden', observe('08-resize-109', lambda text:
+                    'Base:' not in text and 'Diff · detail' not in text
+                    and self.tmux('display-message', '-p', '-t', target,
+                                  '#{window_width}x#{window_height}').stdout.strip() == '109x34'))
+            self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
+            require('resize_intent', observe('08a-resize-110', lambda text:
+                    'Diff · detail' not in text
+                    and all(marker in text for marker in ('alpha.txt', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and self.tmux('display-message', '-p', '-t', target,
+                                  '#{window_width}x#{window_height}').stdout.strip() == '110x34')
+                    and self.debug(run_dir).count('[diff] close') == before_resize)
+            raw('resize-up-enter', b'\x1b[A\r')
+            require('resize_keyboard_ownership', observe('08c-alpha-detail', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'alpha.txt', 'ALPHA_RELEASE_BODY'))
+                    and 'OMEGA_RELEASE_BODY' not in text)
+                    and len(requests()) == navigation_offset
+                    and self.debug(run_dir).count('[diff] close') == before_resize)
+            raw('detail-back', b'\x1b')
+            require('diff_files_before_close', observe('09-files', lambda text:
+                    'Diff · detail' not in text and all(name in text for name in ('alpha.txt', 'omega.txt'))))
+            raw('diff-close', b'\x1b')
+            require('diff_closed', observe('09a-closed', lambda text:
+                    not any(name in text for name in ('alpha.txt', 'omega.txt'))
+                    and '[diff] close user' in self.debug(run_dir)))
+            raw('diff-reopen', b'/diff\r')
+            require('diff_reopened', observe('10-reopened', lambda text:
+                    all(marker in text for marker in ('alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY'))))
+        except Exception as error:
+            result['error'] = str(error)
+            checks['scenario_completed'] = False
+            pane('failure')
+        finally:
+            try:
+                release_terminal_git_wrapper(run_dir)
+            finally:
+                cleanup = self.close(run_dir, session, target)
+        checks['cleanup'] = self.cleanup_passed(cleanup)
+        (run_dir / 'input-chunks.json').write_text(json.dumps(input_chunks, indent=2) + '\n')
+        frame_report = run_dir / 'frame-physical-report.json'
+        frames = run_dir / 'frames.jsonl'
+        if frames.exists() and frames.stat().st_size:
+            verified = subprocess.run([
+                'bun', str(self.repo / 'scripts/verify-terminal-frame-evidence.mjs'),
+                str(frames), str(frame_report),
+            ], cwd=self.repo, capture_output=True, text=True, check=False)
+            (run_dir / 'frame-verifier-stdout.txt').write_text(verified.stdout)
+            (run_dir / 'frame-verifier-stderr.txt').write_text(verified.stderr)
+            try:
+                report = json.loads(frame_report.read_text())
+                checks.update(terminal_frame_report_checks(report))
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                result['frame_report_error'] = str(error)
+            checks['frame_physical'] = checks['frame_physical'] and verified.returncode == 0
+        checks_path = run_dir / 'terminal-interaction-checks.json'
+        checks_path.write_text(json.dumps(checks, indent=2) + '\n')
+        passed = all(checks.values())
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'checks': checks,
+            'input_chunks': input_chunks,
+            'assertions': [self.required_assertion(
+                run_dir,
+                'terminal-interaction-frame-and-input-matrix',
+                'Current-binary terminal interaction matrix',
+                'Exact incremental requests, raw input, partial loading ownership, open intent resize and physical/semantic frames agree.',
+                [*evidence, run_dir / 'omega-body-blocked.json',
+                 run_dir / 'input-chunks.json', frames, frame_report, checks_path],
+                passed=passed,
+                reason='Terminal input, lifecycle, frame replay, or cleanup evidence was incomplete',
+            )],
+            'cleanup': cleanup,
+        })
+        self.record(result)
+
     def builtin_mods(self):
         run_dir = self.evidence_root / 'builtin-mods'
         run_dir.mkdir()
-        cache = run_dir / 'cache'
+        cache = Path(tempfile.mkdtemp(prefix='mods-release-', dir='/private/tmp'))
         metadata_path = run_dir / 'run-metadata.json'
         metadata_path.write_text(json.dumps({
             'label': 'builtin-mods',
@@ -2770,15 +3482,39 @@ else:
         reports = list((cache / 'runs').glob('r-*/acceptance.json'))
         report = None
         report_error = None
-        if len(reports) == 1:
+        archived_report = None
+        cache_removed = False
+        try:
+            if len(reports) == 1:
+                relative_report = reports[0].relative_to(cache)
+                archive = run_dir / 'acceptance-cache'
+                shutil.copytree(
+                    cache,
+                    archive,
+                    ignore=shutil.ignore_patterns('tmux.sock'),
+                )
+                archived_report = archive / relative_report
+                report = remap_path_strings(
+                    json.loads(archived_report.read_text()),
+                    cache.resolve(),
+                    archive.resolve(),
+                )
+                archived_report.write_text(json.dumps(report, indent=2) + '\n')
+            else:
+                report_error = f'expected exactly one acceptance.json, found {len(reports)}'
+        except (OSError, json.JSONDecodeError) as error:
+            report_error = str(error)
+        finally:
             try:
-                report = json.loads(reports[0].read_text())
-            except (OSError, json.JSONDecodeError) as error:
-                report_error = str(error)
-        else:
-            report_error = f'expected exactly one acceptance.json, found {len(reports)}'
+                shutil.rmtree(cache)
+                cache_removed = not cache.exists()
+            except OSError as error:
+                report_error = report_error or f'cache cleanup failed: {error}'
 
-        expected_assertions = {'completeness', 'cleanup', 'agents', 'diff', 'telemetry'}
+        expected_assertions = {
+            'completeness', 'cleanup', 'agents', 'diff', 'security', 'ui',
+            'dynamicTools', 'suggestionReload', 'telemetry',
+        }
         checks = {
             'subprocess': completed.returncode == 0,
             'report': report is not None,
@@ -2786,11 +3522,15 @@ else:
             'binary': False,
             'sides': False,
             'evidence_ownership': False,
+            'cache_cleanup': cache_removed,
         }
-        if report is not None:
+        if report is not None and archived_report is not None:
             assertions = report.get('assertions', {})
             pair = report.get('pair', {})
-            sides = [pair.get(name) for name in ('privacyOff', 'privacyOn', 'enabled', 'disabled')]
+            sides = [pair.get(name) for name in (
+                'privacyOff', 'privacyOn', 'enabled', 'disabled',
+                'securityOrdinary', 'securityTeam', 'securityEnterprise',
+            )]
             checks['assertions'] = (
                 set(assertions) == expected_assertions
                 and all(assertions[name].get('verdict') == 'passed' for name in expected_assertions)
@@ -2801,38 +3541,53 @@ else:
                 for side in sides
             )
             target_root = run_dir.resolve()
-            evidence_paths = [reports[0], Path(report.get('evidence', ''))]
+            evidence_paths = [archived_report, Path(report.get('evidence', ''))]
+            durable_paths = list(evidence_paths)
             for side in sides:
                 if not isinstance(side, dict):
                     continue
-                for key in ('run', 'target', 'socket'):
-                    value = side.get(key)
-                    if key != 'target' and isinstance(value, str) and value.startswith('/'):
-                        evidence_paths.append(Path(value))
-                evidence_paths.extend(
+                run_path = side.get('run')
+                if isinstance(run_path, str) and run_path.startswith('/'):
+                    path = Path(run_path)
+                    evidence_paths.append(path)
+                    durable_paths.append(path)
+                socket_path = side.get('socket')
+                if isinstance(socket_path, str) and socket_path.startswith('/'):
+                    evidence_paths.append(Path(socket_path))
+                captures = [
                     Path(value) for value in side.get('captures', {}).values()
                     if isinstance(value, str)
+                ]
+                evidence_paths.extend(captures)
+                durable_paths.extend(captures)
+            checks['evidence_ownership'] = (
+                all(
+                    is_relative_to(path.resolve(strict=False), target_root)
+                    for path in evidence_paths
                 )
-            checks['evidence_ownership'] = all(
-                is_relative_to(path.resolve(strict=False), target_root)
-                for path in evidence_paths
+                and all(path.exists() for path in durable_paths)
             )
-        (run_dir / 'builtin-mods-checks.json').write_text(
-            json.dumps({'checks': checks, 'report_error': report_error}, indent=2) + '\n'
-        )
+        checks_path = run_dir / 'builtin-mods-checks.json'
+        checks_path.write_text(json.dumps({
+            'checks': checks,
+            'report_error': report_error,
+            'temporary_cache': str(cache),
+        }, indent=2) + '\n')
         passed = all(checks.values())
         result = {
             'label': 'builtin-mods',
             'evidence_dir': str(run_dir),
             'validation_verdict': 'passed' if passed else 'failed',
             'checks': checks,
-            'acceptance_report': str(reports[0]) if len(reports) == 1 else None,
+            'acceptance_report': str(archived_report) if archived_report else None,
             'assertions': [self.required_assertion(
                 run_dir,
                 'builtin-mods-compiled-acceptance',
                 'Compiled builtin Mods acceptance',
-                'The current binary passes agents-md, diff, telemetry, completeness, cleanup, identity, and evidence ownership checks.',
-                [run_dir / 'builtin-mods-checks.json', run_dir / 'stdout.txt', run_dir / 'stderr.txt'],
+                'The current binary passes agents-md, diff, telemetry, compiled native sec-default policy and ModsPane interaction, completeness, cleanup, identity, and evidence ownership checks.',
+                [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt', *(
+                    [archived_report] if archived_report else []
+                )],
                 passed=passed,
                 reason=report_error or 'builtin Mods compiled acceptance checks failed',
             )],
@@ -2841,22 +3596,58 @@ else:
         if not passed:
             raise RuntimeError(f'builtin Mods acceptance failed: {run_dir}')
 
-    def send(self, target, run_dir, text, filename, *, confirm_pending=True):
+    def paste_bytes(self, target, run_dir, data, filename):
         input_path = run_dir / filename
-        single_line_command = text.startswith('/') and '\n' not in text and '\r' not in text
-        input_path.write_text(text if single_line_command else text + '\n')
+        input_path.write_bytes(data)
         buffer_name = f'cc-release-{self.pid}-{self.session_index}'
         self.tmux('load-buffer', '-b', buffer_name, str(input_path), check=True)
         self.tmux('paste-buffer', '-b', buffer_name, '-t', target, check=True)
+
+    def send(self, target, run_dir, text, filename, *, confirm_pending=True):
+        self.paste_bytes(
+            target,
+            run_dir,
+            b'\x1b[200~' + text.encode() + b'\x1b[201~',
+            filename,
+        )
+        submitted_path = run_dir / f'02-submitted-{Path(filename).stem}-pane.txt'
+
+        def capture_pending():
+            pane = self.capture(target, submitted_path)
+            return pane, (
+                submitted_input_visible(pane, text)
+                and submitted_input_pending(pane)
+            )
+
+        paste_ready = self.wait_until(
+            lambda: submitted_input_visible(
+                capture_pending()[0],
+                text,
+            ),
+            5,
+            0.1,
+        )
+        if not paste_ready:
+            raise RuntimeError(
+                f'pasted input did not become ready for submission: {submitted_path}'
+            )
+
         self.tmux('send-keys', '-t', target, 'Enter', check=True)
         time.sleep(0.5)
-        submitted_path = run_dir / '02-submitted-pane.txt'
-        submitted = self.capture(target, submitted_path)
-        plain = strip_ansi(submitted)
-        if confirm_pending and ('[Pasted text' in plain or submitted_input_pending(submitted)):
+        submitted, is_pending = capture_pending()
+
+        if confirm_pending and is_pending:
+            plain = strip_ansi(submitted)
+            if re.search(r'\bEsc to (?:cancel|close)\b', plain):
+                is_pending = False
+
+        if confirm_pending and is_pending:
             self.tmux('send-keys', '-t', target, 'Enter', check=True)
-            time.sleep(0.5)
-            self.capture(target, submitted_path)
+            cleared = self.wait_until(lambda: not capture_pending()[1], 5, 0.1)
+            if not cleared:
+                raise RuntimeError(
+                    f'input remained pending after confirmation: {submitted_path}'
+                )
 
     def debug(self, run_dir):
         path = run_dir / 'debug.log'
@@ -2884,6 +3675,20 @@ else:
         return '\n'.join(
             path.read_text(errors='replace') for path in self.transcript_paths(run_dir)
         )
+
+    def compact_boundaries(self, run_dir):
+        boundaries = []
+        for path in self.transcript_paths(run_dir):
+            for entry in self.path_entries(path):
+                if (
+                    entry.get('type') == 'system'
+                    and entry.get('subtype') == 'compact_boundary'
+                ):
+                    boundaries.append({
+                        'openAICompaction': entry.get('openAICompaction'),
+                        'compactMetadata': entry.get('compactMetadata'),
+                    })
+        return boundaries
 
     def assistant_text(self, run_dir, *, subagents=False):
         text = []
@@ -3632,6 +4437,15 @@ else:
     def agent_ids(self, log):
         return sorted(set(re.findall(r'AgentLifecycle\] foreground_registered agent_id=([^ ]+)', log)))
 
+    def agent_launches(self, log):
+        launches = []
+        for payload in re.findall(r'AgentTool launch params (\{[^\n]+\})', log):
+            try:
+                launches.append(json.loads(payload))
+            except json.JSONDecodeError:
+                continue
+        return launches
+
     def write_markers(self, run_dir, log):
         keys = [
             'AgentTool launch params',
@@ -3780,22 +4594,27 @@ else:
             self.record(result)
             return
         prompt = (
-            'Release gate read-only validation. Call the Agent tool directly exactly once in foreground. '
-            'Use a general-purpose agent with description "release foreground background" and omit run_in_background. '
-            'The child must run the harmless command sleep 18, then read Makefile and report only the VERSION line. '
-            'The child must not call Agent or delegate; it must use Bash and Read directly. '
-            'Do not modify files and do not use any other parent tools. After continuation returns, print RELEASE_FGBG_PARENT_RESTORED.'
+            'Run the deterministic foreground/background Agent lifecycle release fixture. '
+            'Do not modify files.'
         )
         self.send(target, run_dir, prompt, 'input-agent.txt')
         registered = self.wait_until(
             lambda: '[AgentLifecycle] foreground_registered' in self.debug(run_dir), 90
         )
+        server = self.mock_servers.get(run_dir.name)
+        child_waiting = (
+            registered
+            and server is not None
+            and server.agent_fgbg_child_waiting.wait(timeout=30)
+        )
         self.capture(target, run_dir / '03-foreground-running-pane.txt')
-        if registered:
+        if child_waiting:
             self.tmux('send-keys', '-t', target, 'C-b')
-        transitioned = registered and self.wait_until(
+        transitioned = child_waiting and self.wait_until(
             lambda: '[AgentLifecycle] foreground_to_background' in self.debug(run_dir), 30
         )
+        if transitioned:
+            server.agent_fgbg_release.set()
         self.capture(target, run_dir / '04-backgrounded-pane.txt')
         terminal = transitioned and self.wait_until(
             lambda: (
@@ -3818,7 +4637,7 @@ else:
                     run_dir,
                     agent_id=task_match.group(1),
                     task_id=task_match.group(2),
-                    expected_output='VERSION :=',
+                    expected_output='RELEASE_FGBG_CHILD_DONE',
                 )['complete'],
                 30,
                 0.5,
@@ -3827,7 +4646,7 @@ else:
                 run_dir,
                 agent_id=task_match.group(1),
                 task_id=task_match.group(2),
-                expected_output='VERSION :=',
+                expected_output='RELEASE_FGBG_CHILD_DONE',
             )
         (run_dir / 'agent-completion-proof.json').write_text(
             json.dumps(agent_proof, indent=2) + '\n'
@@ -3899,13 +4718,14 @@ else:
                     in self.assistant_text(run_dir, subagents=True)
                     and 'RELEASE_NESTED_CHILD_DONE'
                     in self.assistant_text(run_dir, subagents=True)
+                    and 'RELEASE_NESTED_ROOT_DONE' in self.assistant_text(run_dir)
                 ),
                 360,
                 1,
             )
             final = self.capture(target, run_dir / '03-terminal-pane.txt')
             prompt_restored = self.wait_until(
-                lambda: '❯' in strip_ansi(
+                lambda: input_prompt_ready(
                     self.capture(target, run_dir / '04-final-pane.txt')
                 ),
                 30,
@@ -3919,6 +4739,20 @@ else:
         log = self.debug(run_dir)
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
+        launches = self.agent_launches(log)
+        root_launches = [launch for launch in launches if launch.get('spawnDepth') == 1]
+        child_launches = [launch for launch in launches if launch.get('spawnDepth') == 2]
+        parentage_ok = (
+            len(root_launches) == 1
+            and root_launches[0].get('parentAgentId') in {None, ''}
+            and len(child_launches) == 1
+            and child_launches[0].get('parentAgentId') in ids
+        )
+        (run_dir / 'nested-agent-launches.json').write_text(json.dumps({
+            'agent_ids': ids,
+            'launches': launches,
+            'parentage_ok': parentage_ok,
+        }, indent=2) + '\n')
         notifications = self.notification_count(run_dir)
         parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(
             run_dir, subagents=True
@@ -3926,13 +4760,16 @@ else:
         child_result = 'RELEASE_NESTED_CHILD_DONE' in self.assistant_text(
             run_dir, subagents=True
         )
+        wire_assertion = self.workflow_mock_wire(run_dir, 'nested-agent')
         cleanup = self.close(run_dir, session, target)
         passed = (
             terminal
+            and wire_assertion['validation_verdict'] == 'passed'
             and parent_result
             and child_result
             and prompt_restored
             and len(ids) == 2
+            and parentage_ok
             and markers['[AgentLifecycle] foreground_registered'] == 2
             and notifications == 0
             and self.cleanup_passed(cleanup)
@@ -3942,26 +4779,38 @@ else:
             'agent_ids': ids,
             'notification_count': notifications,
             'marker_counts': markers,
+            'agent_launches': launches,
+            'parentage_ok': parentage_ok,
             'child_result_observed': child_result,
             'parent_result_observed': parent_result,
             'parent_prompt_restored': prompt_restored,
+            'assertions': [
+                wire_assertion,
+                self.required_assertion(
+                    run_dir,
+                    'nested-agent-lifecycle',
+                    'Nested Agent lifecycle',
+                    'A foreground parent launches one child, both return their expected result, and the parent prompt is restored.',
+                    [
+                        run_dir / '03-terminal-pane.txt',
+                        run_dir / '04-final-pane.txt',
+                        run_dir / 'nested-agent-launches.json',
+                        run_dir / 'debug.log',
+                    ],
+                    passed=passed,
+                    reason='Nested Agent lifecycle or cleanup evidence was incomplete',
+                ),
+            ],
             'cleanup': cleanup,
         })
         self.record(result)
 
     def workflow(self):
-        run_dir, session, target, ready = self.start('inline-workflow')
+        run_dir, session, target, ready = self.start('workflow')
         result = {'label': 'workflow', 'evidence_dir': str(run_dir)}
         completion_proof = {'complete': False, 'status': None}
         if ready:
-            script = """export const meta = { name: 'release-inline-workflow', description: 'Read-only two-agent release probe.', phases: [{ title: 'Probe' }] }
-phase('Probe')
-const results = await parallel([
-  () => agent('Read-only. Read Makefile and report only VERSION.', { label: 'probe-a' }),
-  () => agent('Read-only. Read package.json and report only version.', { label: 'probe-b' }),
-])
-return { results }
-"""
+            script = INLINE_WORKFLOW_SCRIPT
             prompt = 'Use Workflow with this exact inline script. Do not modify files.\n```js\n' + script + '```'
             self.send(target, run_dir, prompt, 'input-workflow.txt')
             launched = self.wait_until(
@@ -4021,6 +4870,8 @@ return { results }
                     )
                     for _ in range(3):
                         self.tmux('send-keys', '-t', target, 'Escape')
+            self.wait_until(
+                lambda: 'RELEASE_WORKFLOW_PARENT_DONE' in self.assistant_text(run_dir), 30, 0.1)
             final = self.capture(target, run_dir / '08-final-pane.txt')
         else:
             task_id = run_id = status = None
@@ -4031,6 +4882,7 @@ return { results }
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
+        wire_assertion = self.workflow_mock_wire(run_dir, 'workflow')
         cleanup = self.close(run_dir, session, target)
         logical_workers = sorted(set(re.findall(
             r'workflow_worker_start[^\n]*\blogical=([^ ]+)',
@@ -4042,7 +4894,9 @@ return { results }
         )))
         passed = (
             status == 'completed'
+            and wire_assertion['validation_verdict'] == 'passed'
             and completion_proof['complete']
+            and 'RELEASE_WORKFLOW_PARENT_DONE' in self.assistant_text(run_dir)
             and logical_workers == ['probe-a', 'probe-b']
             and completed_logical_workers == logical_workers
             and notifications == 1
@@ -4068,6 +4922,7 @@ return { results }
             'parent_prompt_restored': '❯' in strip_ansi(final or terminal),
             'marker_counts': markers,
             'assertions': [
+                wire_assertion,
                 self.required_assertion(
                     run_dir,
                     'inline-workflow-lifecycle',
@@ -4155,6 +5010,9 @@ return { results }
                 and status not in {'completed', 'failed', 'stopped'}
                 and not completion_proof['complete']
             )
+            if kind == 'code-review' and completion_proof['complete']:
+                self.wait_until(
+                    lambda: 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir), 30, 0.1)
             terminal = self.capture(target, run_dir / '05-terminal-pane.txt')
         else:
             task_id = run_id = status = None
@@ -4195,6 +5053,7 @@ return { results }
         (run_dir / 'workflow-completion-proof.json').write_text(
             json.dumps(workflow_complete, indent=2) + '\n'
         )
+        wire_assertion = self.workflow_mock_wire(run_dir, kind) if kind == 'code-review' else None
         cleanup = self.close(run_dir, session, target)
         passed = (
             ready
@@ -4205,6 +5064,10 @@ return { results }
             and notifications == 1
             and '❯' in strip_ansi(terminal)
             and fetch_ok
+            and (wire_assertion is None or (
+                wire_assertion['validation_verdict'] == 'passed'
+                and 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir)
+            ))
             and self.cleanup_passed(cleanup)
         )
         if passed:
@@ -4238,6 +5101,7 @@ return { results }
             'deep_research_phase_evidence': phase_evidence,
             'marker_counts': markers,
             'assertions': [
+                *([wire_assertion] if wire_assertion else []),
                 self.required_assertion(
                     run_dir,
                     f'{kind}-workflow-lifecycle',
@@ -5189,6 +6053,7 @@ return { results }
                             request.get('response_kind') == 'compaction'
                             for request in self.mock_response_requests(run_dir)
                         ) == 2
+                        and len(self.compact_boundaries(run_dir)) == 2
                     ),
                     90,
                     0.25,
@@ -5244,17 +6109,7 @@ return { results }
             and compact_instructions[1].endswith('RELEASE_PRECOMPACT_HOOK')
             and 'RELEASE_COMPACT_CALLER' not in compact_instructions[1]
         )
-        boundaries = []
-        for path in self.transcript_paths(run_dir):
-            for entry in self.path_entries(path):
-                if (
-                    entry.get('type') == 'system'
-                    and entry.get('subtype') == 'compact_boundary'
-                ):
-                    boundaries.append({
-                        'openAICompaction': entry.get('openAICompaction'),
-                        'compactMetadata': entry.get('compactMetadata'),
-                    })
+        boundaries = self.compact_boundaries(run_dir)
         persisted_chain = (
             len(boundaries) == 2
             and boundaries[0].get('openAICompaction') == first_item
@@ -5786,7 +6641,7 @@ return { results }
         alias_selected = False
         for case, expected, pane_name in (
             ('EXPLICIT', 'gpt-release-discovered', '06-explicit-model-pane.txt'),
-            ('DEFAULT', 'gpt-5.6-luna', '08-default-model-pane.txt'),
+            ('DEFAULT', 'gpt-5.6-terra', '08-default-model-pane.txt'),
         ):
             pane_path = run_dir / pane_name
             input_path = run_dir / f'input-{case.lower()}-model.txt'
@@ -5796,7 +6651,7 @@ return { results }
                 if case == 'DEFAULT':
                     self.send(target, run_dir, '/model sonnet', 'input-model-alias.txt')
                     alias_selected = self.wait_until(
-                        lambda: 'Set model to Sonnet' in strip_ansi(
+                        lambda: 'Set model to gpt-5.6-terra' in strip_ansi(
                             self.capture(target, alias_path)
                         ), 30, 0.25,
                     )
@@ -6295,13 +7150,21 @@ return { results }
                 0.25,
             )
             self.capture(target, first_path)
-            self.send(target, run_dir, '/plan', 'input-plan-mode-command.txt')
-            plan_enabled = self.wait_until(
-                lambda: 'Enabled plan mode' in strip_ansi(
-                    self.capture(target, plan_path)
-                ),
-                30,
-                0.25,
+            plan_enabled = False
+            mode_cycles = 0
+            for mode_cycles in range(1, 5):
+                self.tmux('send-keys', '-t', target, 'BTab', check=True)
+                plan_enabled = self.wait_until(
+                    lambda: 'plan mode on' in strip_ansi(
+                        self.capture(target, plan_path)
+                    ).lower(),
+                    3,
+                    0.1,
+                )
+                if plan_enabled:
+                    break
+            (run_dir / 'input-plan-mode-command.txt').write_text(
+                f'BTab x{mode_cycles}\n'
             )
             if plan_enabled:
                 self.send(
@@ -6439,6 +7302,27 @@ return { results }
         requests = server.snapshot() if server else []
         responses = [request for request in requests if is_main_response_request(request)]
         kinds = [request.get('response_kind') for request in responses]
+        if label in LIFECYCLE_MOCK_KINDS:
+            expected = LIFECYCLE_MOCK_KINDS[label]
+            # Completion may arrive with the launch result or in a separate root turn.
+            notification = label + '-notification-completed'
+            optional = {notification} if label != 'nested-agent' else set()
+            checks = {
+                'exact-requests': sorted(kind for kind in kinds if kind not in optional) == sorted(expected),
+                'notification-turn-at-most-once': kinds.count(notification) <= 1,
+                'recognized': all(request.get('response_kind') in {*expected, *optional, 'models', 'title'}
+                                  for request in requests),
+                'dummy-auth': bool(requests) and all(
+                    request.get('authorization', {}).get('matches_dummy') for request in requests),
+            }
+            path = run_dir / 'workflow-mock-wire.json'
+            path.write_text(json.dumps({'checks': checks, 'response_kinds': kinds}, indent=2) + '\n')
+            return self.required_assertion(
+                run_dir, label + '-mock-wire', label,
+                'Local mock observes exact lifecycle requests with dummy authentication and no duplicates or unknown requests.',
+                [path, run_dir / 'mock-openai-requests.json'], passed=all(checks.values()),
+                reason='lifecycle mock protocol or dummy authentication mismatch',
+            )
         expected_workers = 1 if label == 'workflow-retry-partial-failure' else 0
         checks = {
             'discovery-once': kinds.count('workflow-search') == 1,
@@ -6624,8 +7508,10 @@ return { results }
         result = {'label': 'team-concurrency', 'evidence_dir': str(run_dir)}
         running_path = run_dir / '03-running-pane.txt'
         terminal_path = run_dir / '04-terminal-pane.txt'
+        tasks_path = run_dir / '05-tasks-pane.txt'
         marker_path = run_dir / 'debug-marker-search.txt'
         config_evidence = run_dir / 'team-config.json'
+        artifact_evidence = run_dir / 'team-artifacts.json'
         team_name = 'release-team-concurrency'
         terminal = False
         if ready:
@@ -6649,9 +7535,34 @@ return { results }
                 0.5,
             )
             self.capture(target, terminal_path)
+            if terminal:
+                self.send(target, run_dir, '/tasks', 'input-team-tasks.txt')
+                tasks_visible = self.wait_until(
+                    lambda: (
+                        'Background tasks' in (
+                            text := strip_ansi(self.capture(
+                                target, tasks_path, history=False
+                            ))
+                        )
+                        and f'Team: {team_name} (4)' in text
+                        and all(name in text for name in (
+                            'worker-a', 'worker-b', 'worker-c'
+                        ))
+                        and not submitted_input_pending(text)
+                    ),
+                    30,
+                    0.25,
+                )
+            else:
+                tasks_visible = False
+                tasks_path.write_text(
+                    'team completion marker was not reached; /tasks was not sent\n'
+                )
         else:
+            tasks_visible = False
             running_path.write_text('readiness failed\n')
             terminal_path.write_text('readiness failed\n')
+            tasks_path.write_text('readiness failed\n')
         team_files = list((run_dir / 'config' / 'teams').glob('*/config.json'))
         team_config = None
         if len(team_files) == 1:
@@ -6690,16 +7601,51 @@ return { results }
             and marker_counts['team_mutation_commit'] >= 3
             and marker_counts['team_mutation_abort'] == 0
         )
+        team_dir = team_files[0].parent if len(team_files) == 1 else None
+        inbox_paths = sorted(
+            str(path)
+            for path in (team_dir / 'inboxes').glob('*.json')
+        ) if team_dir else []
+        task_ids = sorted(set(re.findall(
+            r'\[spawnInProcessTeammate\] Spawning [^ ]+ \(taskId: ([^)]+)\)',
+            log,
+        )))
+        leader_inbox_path = team_dir / 'inboxes' / 'team-lead.json' if team_dir else None
+        idle_notifications = []
+        if leader_inbox_path and leader_inbox_path.exists():
+            try:
+                messages = json.loads(leader_inbox_path.read_text())
+                for message in messages:
+                    payload = json.loads(message.get('text', '')) if isinstance(message, dict) else None
+                    if isinstance(payload, dict) and payload.get('type') == 'idle_notification':
+                        idle_notifications.append(payload)
+            except (json.JSONDecodeError, OSError):
+                idle_notifications = []
+        idle_workers = [item.get('from') for item in idle_notifications]
+        artifact_evidence.write_text(json.dumps({
+            'inbox_paths': inbox_paths,
+            'task_ids': task_ids,
+            'idle_notifications': idle_notifications,
+        }, indent=2) + '\n')
+        artifacts_ok = (
+            inbox_paths == ([str(leader_inbox_path)] if leader_inbox_path else [])
+            and len(task_ids) == 3
+            and len(idle_notifications) == 3
+            and set(idle_workers) == {'worker-a', 'worker-b', 'worker-c'}
+            and all(item.get('idleReason') == 'available' for item in idle_notifications)
+        )
         cleanup = self.close(run_dir, session, target)
         passed = (
-            ready and terminal and config_ok and markers_ok
+            ready and terminal and tasks_visible and config_ok and markers_ok and artifacts_ok
             and self.cleanup_passed(cleanup)
         )
         evidence = [
             run_dir / 'input-team-concurrency.txt',
             running_path,
             terminal_path,
+            tasks_path,
             config_evidence,
+            artifact_evidence,
             marker_path,
             run_dir / 'debug.log',
         ]
@@ -6718,9 +7664,9 @@ return { results }
                 'team-mutation-lock-markers',
                 'Team mutation serialization',
                 'Three registrations commit without abort or member loss.',
-                [config_evidence, marker_path, run_dir / 'debug.log'],
-                passed=passed and markers_ok,
-                reason='team mutation marker counts were incomplete',
+                [config_evidence, artifact_evidence, marker_path, run_dir / 'debug.log'],
+                passed=passed and markers_ok and artifacts_ok,
+                reason='team mutation, task, or mailbox evidence was incomplete',
             ),
         ]
         result.update({
@@ -6729,6 +7675,9 @@ return { results }
             'team_name': team_config.get('name') if isinstance(team_config, dict) else None,
             'member_count': len(members),
             'agent_ids': agent_ids,
+            'task_ids': task_ids,
+            'inbox_paths': inbox_paths,
+            'tasks_visible': tasks_visible,
             'marker_counts': marker_counts,
             'assertions': assertions,
             'cleanup': cleanup,
@@ -7620,7 +8569,7 @@ return { results }
                         r'\s*Overview\s+Models(?:\s+OpenAI)?\s*', strip_ansi(line))), '')
                     # Ink's selected tab is the sole bold label in this row.
                     selected = re.findall(
-                        r'\x1b\[1m(?:\x1b\[[0-9;]*m)*\s*(Overview|Models|OpenAI)\s*\x1b\[0m', bar)
+                        r'\x1b\[1m(?:\x1b\[[0-9;]*m)*\s*(Overview|Models|OpenAI)\b', bar)
                     checks[f'{name}-active-{active.lower()}'] = selected == [active]
                     return text in strip_ansi(raw) and selected == [active]
 
@@ -7642,6 +8591,7 @@ return { results }
                 if ready:
                     self.send(target, run_dir, '/stats', 'stats-command.txt')
                     pane = observe('empty', 'No stats available yet', 0, 'Overview')
+                    self.tmux('send-keys', '-t', target, 'Down')
                     if label == 'openai-stats':
                         checks['oauth-tab'] = 'OpenAI' in pane
                         self.tmux('send-keys', '-t', target, 'Tab')
@@ -7761,11 +8711,17 @@ return { results }
             'coordinator-selector': self.coordinator_selector,
             'transcript-retention': self.transcript_retention,
             'ssh-remote-session-lifecycle': self.ssh_remote_session_lifecycle,
+            'terminal-interaction': self.terminal_interaction,
             'builtin-mods': self.builtin_mods,
         }
         try:
             if not builtin_mods_only:
                 self.run_target('readiness-smoke', self.readiness_smoke)
+                readiness_result = self.manifest['runs'][-1]
+                self.manifest['readiness_smoke'] = {
+                    'status': readiness_result['validation_verdict'],
+                    'evidence_dir': readiness_result['evidence_dir'],
+                }
             for target in targets:
                 self.run_target(target, actions[target])
         except Exception as error:

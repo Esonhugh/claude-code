@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
-import { appendFileSync } from 'fs'
+import { appendFileSync, writeFileSync } from 'fs'
+import { Buffer } from 'node:buffer'
 import React from 'react'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
@@ -20,6 +21,7 @@ import { getSystemContext } from './context.js'
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js'
 import { isSynchronizedOutputSupported } from './ink/terminal.js'
 import type { RenderOptions, Root, TextProps } from './ink.js'
+import { cellAt, CellWidth } from './ink/screen.js'
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js'
 import { startDeferredPrefetches } from './main.js'
 import {
@@ -410,6 +412,46 @@ export async function showSetupScreens(
   return onboardingShown
 }
 
+function serializeValidationFrame(
+  frame: NonNullable<Parameters<NonNullable<RenderOptions['onFrame']>>[0]['frame']>,
+  physicalCursor: Parameters<NonNullable<RenderOptions['onFrame']>>[0]['physicalCursor'],
+  terminalBuffer: Parameters<NonNullable<RenderOptions['onFrame']>>[0]['terminalBuffer'],
+): string {
+  const cells: Array<[number, number, string, number, string]> = []
+  for (let y = 0; y < frame.screen.height; y++) {
+    for (let x = 0; x < frame.screen.width; x++) {
+      const cell = cellAt(frame.screen, x, y)
+      if (!cell) continue
+      cells.push([
+        x,
+        y,
+        cell.char,
+        cell.width === CellWidth.Wide
+          ? 2
+          : cell.width === CellWidth.Narrow
+            ? 1
+            : 0,
+        cell.styleId === frame.screen.emptyStyleId
+          ? ''
+          : frame.screen.stylePool.transition(
+              frame.screen.stylePool.none,
+              cell.styleId,
+            ),
+      ])
+    }
+  }
+  return Buffer.from(
+    JSON.stringify({
+      columns: frame.screen.width,
+      rows: frame.screen.height,
+      viewport: frame.viewport,
+      cursor: physicalCursor ?? frame.cursor,
+      buffer: terminalBuffer ?? 'normal',
+      cells,
+    }),
+  ).toString('base64')
+}
+
 export function getRenderContext(exitOnCtrlC: boolean): {
   renderOptions: RenderOptions
   getFpsMetrics: () => FpsMetrics | undefined
@@ -432,6 +474,22 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   // render pipeline (yoga → screen buffer → diff → optimize → stdout)
   // so perf work on any phase can be validated against real user flows.
   const frameTimingLogPath = process.env.CLAUDE_CODE_FRAME_TIMING_LOG
+  const frameEvidencePath = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH
+  let frameId = 0
+  let pendingOutput = Buffer.alloc(0)
+  let originalStdoutWrite: typeof process.stdout.write | undefined
+  if (frameEvidencePath) {
+    writeFileSync(frameEvidencePath, '', { mode: 0o600 })
+    originalStdoutWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const bytes =
+        typeof chunk === 'string'
+          ? Buffer.from(chunk)
+          : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      pendingOutput = Buffer.concat([pendingOutput, bytes])
+      return originalStdoutWrite!(chunk as never, ...(args as never[]))
+    }) as typeof process.stdout.write
+  }
   return {
     getFpsMetrics: () => fpsTracker.getMetrics(),
     stats,
@@ -440,6 +498,23 @@ export function getRenderContext(exitOnCtrlC: boolean): {
       onFrame: event => {
         fpsTracker.record(event.durationMs)
         stats.observe('frame_duration_ms', event.durationMs)
+        if (frameEvidencePath && event.frame) {
+          frameId++
+          appendFileSync(
+            frameEvidencePath,
+            JSON.stringify({
+              frameId,
+              timestamp: Date.now(),
+              outputBase64: pendingOutput.toString('base64'),
+              frameBase64: serializeValidationFrame(
+                event.frame,
+                event.physicalCursor,
+                event.terminalBuffer,
+              ),
+            }) + '\n',
+          )
+          pendingOutput = Buffer.alloc(0)
+        }
         if (frameTimingLogPath && event.phases) {
           // Bench-only env-var-gated path: sync write so no frames dropped
           // on abrupt exit. ~100 bytes at ≤60fps is negligible. rss/cpu are
