@@ -79,8 +79,7 @@ async function fetchBootstrapAPI(): Promise<BootstrapResult | null> {
     return null
   }
 
-  const cacheKey = getFirstPartyModelCacheKey()
-  if (!cacheKey) return null
+  if (!getFirstPartyModelCacheKey()) return null
   const endpoint = `${getOauthConfig().BASE_API_URL}/api/claude_cli/bootstrap`
 
   // withOAuth401Retry handles the refresh-and-retry. API key users fail
@@ -101,6 +100,11 @@ async function fetchBootstrapAPI(): Promise<BootstrapResult | null> {
         logForDebugging('[Bootstrap] No auth available on retry, aborting')
         return null
       }
+
+      // Bind the response to the identity whose headers are used for this
+      // attempt. A 401 retry recomputes both headers and identity after refresh.
+      const cacheKey = getFirstPartyModelCacheKey()
+      if (!cacheKey) return null
 
       logForDebugging('[Bootstrap] Fetching')
       const response = await axios.get<unknown>(endpoint, {

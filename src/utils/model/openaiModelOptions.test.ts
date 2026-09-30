@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import axios from 'axios'
@@ -306,6 +306,18 @@ try {
     /^anthropic:https:\/\/openrouter\.ai\/api\/v1:auth:/,
   )
   assert.equal(cachedGatewayModels.models.length, 2)
+  assert.equal(statSync(CACHE_PATHS.gatewayModels()).mode & 0o777, 0o600)
+
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'authorization: Bearer custom-gateway-token',
+    'x-api-key: custom-gateway-key',
+    'X-Tenant-ID: tenant-b',
+  ].join('\n')
+  assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [])
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'authorization: Bearer custom-gateway-token',
+    'x-api-key: custom-gateway-key',
+  ].join('\n')
 
   process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1/'
   assert.equal(openAIModelOptions.getGatewayModelOptions().length, 2)

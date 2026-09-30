@@ -293,7 +293,7 @@ function getProviderModelOptions(fastMode: boolean): ModelOption[] {
       description: m.description ?? `[ANT-ONLY] ${m.label} (${m.model})`,
     }))
 
-    return [
+    const options = [
       getDefaultOptionForUser(),
       ...antModelOptions,
       getFirstPartyOption('opus', true),
@@ -301,6 +301,12 @@ function getProviderModelOptions(fastMode: boolean): ModelOption[] {
       getFirstPartyOption('sonnet', true),
       getHaiku45Option(),
     ]
+    for (const option of discoveredModelOptions ?? []) {
+      if (!options.some(existing => existing.value === option.value)) {
+        options.push(option)
+      }
+    }
+    return options
   }
 
   if (getAPIProvider() === 'firstParty') {

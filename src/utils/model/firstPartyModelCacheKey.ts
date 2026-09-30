@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { getOauthConfig } from '../../constants/oauth.js'
 import {
   getAnthropicApiKeyWithSource,
+  getApiKeyFromApiKeyHelperCached,
   getClaudeAIOAuthTokens,
   hasProfileScope,
 } from '../auth.js'
@@ -17,9 +18,12 @@ export function getFirstPartyModelCacheKey(): string | null {
     return `anthropic:${getModelsBaseURL(getOauthConfig().BASE_API_URL)}:oauth:${credentialIdentity(oauth)}`
   }
 
-  const apiKey = getAnthropicApiKeyWithSource({
+  const { key, source } = getAnthropicApiKeyWithSource({
     skipRetrievingKeyFromApiKeyHelper: true,
-  }).key?.trim()
+  })
+  const apiKey = (source === 'apiKeyHelper'
+    ? getApiKeyFromApiKeyHelperCached()
+    : key)?.trim()
   return apiKey
     ? `anthropic:${getModelsBaseURL(getOauthConfig().BASE_API_URL)}:api-key:${credentialIdentity(apiKey)}`
     : null

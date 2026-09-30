@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import axios from 'axios'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
@@ -194,14 +194,14 @@ function getGatewayModelCacheKey(
   const baseUrl = process.env.ANTHROPIC_BASE_URL
   if (!baseUrl) return null
   const headers = getGatewayHeaders(credential)
-  const authHeaders = Object.entries(headers)
+  const identityHeaders = Object.entries(headers)
     .filter(([name]) =>
-      ['authorization', 'x-api-key'].includes(name.toLowerCase()),
+      !['accept', 'anthropic-version', 'user-agent'].includes(name.toLowerCase()),
     )
     .sort(([left], [right]) => left.toLowerCase().localeCompare(right.toLowerCase()))
     .map(([name, value]) => `${name.toLowerCase()}:${value}`)
     .join('\n')
-  return `anthropic:${getModelsBaseURL(baseUrl)}:auth:${credentialIdentity(authHeaders)}`
+  return `anthropic:${getModelsBaseURL(baseUrl)}:auth:${credentialIdentity(identityHeaders)}`
 }
 
 function readGatewayModelCache(): GatewayModelCache | null {
@@ -339,7 +339,8 @@ function writeGatewayModelCache(cache: GatewayModelCache): void {
   const path = CACHE_PATHS.gatewayModels()
   try {
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify(cache), { encoding: 'utf8' })
+    writeFileSync(path, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600 })
+    chmodSync(path, 0o600)
   } catch (error) {
     logForDebugging(
       `[Gateway discovery] Cache write failed: ${error instanceof Error ? error.message : 'unknown'}`,
