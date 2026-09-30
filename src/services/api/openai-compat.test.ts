@@ -214,6 +214,12 @@ try {
   assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_red' })
   assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
 
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'off' }).error, null)
+  await daybreakClient.beta.messages.create(daybreakParams as any)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'standard' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'red' }).error, null)
   let forbiddenRequests = 0
   globalThis.fetch = (async (_input, init) => {
     forbiddenRequests++
@@ -236,7 +242,7 @@ try {
 
   assert.equal(updateSettingsForSource('userSettings', { daybreak: undefined }).error, null)
   await daybreakClient.beta.messages.create(daybreakParams as any)
-  assert.equal('access_programs' in daybreakBodies.at(-1)!, false)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'standard' })
   assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
 
   globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch

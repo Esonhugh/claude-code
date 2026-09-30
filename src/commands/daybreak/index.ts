@@ -6,7 +6,7 @@ export default {
   type: 'local-jsx',
   name: 'daybreak',
   description: 'Set the OpenAI Daybreak access program',
-  argumentHint: '[blue|red]',
+  argumentHint: '[blue|red|off]',
   isEnabled: () => getAPIProvider() === 'openai',
   get immediate() {
     return shouldInferenceConfigCommandBeImmediate()

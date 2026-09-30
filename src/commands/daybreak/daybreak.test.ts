@@ -23,8 +23,8 @@ try {
   const { SettingsSchema } = await import('../../utils/settings/types.js')
 
   assert.equal(command.isEnabled?.(), true)
-  assert.equal(command.argumentHint, '[blue|red]')
-  assert.equal(showCurrentDaybreak(), 'Daybreak is not configured. Usage: /daybreak [blue|red]')
+  assert.equal(command.argumentHint, '[blue|red|off]')
+  assert.equal(showCurrentDaybreak(), 'Daybreak is off; standard access program selected. Usage: /daybreak [blue|red|off]')
 
   const blue = executeDaybreak('blue')
   assert.equal(blue, 'Daybreak set to blue')
@@ -33,16 +33,23 @@ try {
   const red = executeDaybreak('RED')
   assert.equal(red, 'Daybreak set to red')
   assert.equal(getSettingsForSource('userSettings')?.daybreak, 'red')
-  assert.equal(showCurrentDaybreak(), 'Current Daybreak program: red. Usage: /daybreak [blue|red]')
+  assert.equal(showCurrentDaybreak(), 'Current Daybreak program: red. Usage: /daybreak [blue|red|off]')
+
+  const off = executeDaybreak('OFF')
+  assert.equal(off, 'Daybreak disabled; standard access program selected')
+  assert.equal(getSettingsForSource('userSettings')?.daybreak, 'off')
+  assert.equal(showCurrentDaybreak(), 'Daybreak is off; standard access program selected. Usage: /daybreak [blue|red|off]')
 
   const settingsPath = join(tempHome, 'settings.json')
+  assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).daybreak, 'off')
   const beforeInvalid = readFileSync(settingsPath, 'utf8')
-  assert.equal(executeDaybreak('purple'), 'Invalid argument: purple. Usage: /daybreak [blue|red]')
+  assert.equal(executeDaybreak('purple'), 'Invalid argument: purple. Usage: /daybreak [blue|red|off]')
   assert.equal(readFileSync(settingsPath, 'utf8'), beforeInvalid)
-  assert.equal(getSettingsForSource('userSettings')?.daybreak, 'red')
+  assert.equal(getSettingsForSource('userSettings')?.daybreak, 'off')
 
   assert.equal(SettingsSchema().parse({ daybreak: 'blue' }).daybreak, 'blue')
   assert.equal(SettingsSchema().parse({ daybreak: 'red' }).daybreak, 'red')
+  assert.equal(SettingsSchema().parse({ daybreak: 'off' }).daybreak, 'off')
   assert.equal(SettingsSchema().safeParse({ daybreak: 'purple' }).success, false)
 
   delete process.env.CLAUDE_CODE_USE_OPENAI

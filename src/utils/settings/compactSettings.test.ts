@@ -45,6 +45,7 @@ describe('settings schema', () => {
   test('accepts only supported Daybreak programs', () => {
     expect(SettingsSchema().parse({ daybreak: 'blue' }).daybreak).toBe('blue')
     expect(SettingsSchema().parse({ daybreak: 'red' }).daybreak).toBe('red')
+    expect(SettingsSchema().parse({ daybreak: 'off' }).daybreak).toBe('off')
     expect(SettingsSchema().parse({}).daybreak).toBeUndefined()
     expect(SettingsSchema().safeParse({ daybreak: 'standard' }).success).toBe(false)
   })

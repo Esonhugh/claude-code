@@ -1273,14 +1273,14 @@ export function createOpenAICompatClient(options: {
       // Extract system as instructions (required by chatgpt codex backend)
       const instructions = serializeOpenAIInstructions(params.system)
       const reasoning = anthropicEffortToOpenAIReasoning(params.output_config?.effort)
-      const daybreak = getInitialSettings().daybreak
+      const daybreak = getInitialSettings().daybreak ?? 'off'
       const payload: any = {
         model,
         input,
         instructions,
-        ...(daybreak && {
-          access_programs: { cyber: `daybreak_${daybreak}` },
-        }),
+        access_programs: {
+          cyber: daybreak === 'off' ? 'standard' : `daybreak_${daybreak}`,
+        },
         ...(tools && { tools }),
         ...(toolChoice && { tool_choice: toolChoice }),
         ...(reasoning && { reasoning }),

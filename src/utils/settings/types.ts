@@ -807,9 +807,11 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe('Advisor model for the server-side advisor tool.'),
       daybreak: z
-        .enum(['blue', 'red'])
+        .enum(['blue', 'red', 'off'])
         .optional()
-        .describe('OpenAI Daybreak access program for Responses requests.'),
+        .describe(
+          'OpenAI Daybreak access program for Responses requests. Use off to explicitly select standard access.',
+        ),
       fastMode: z
         .boolean()
         .optional()
