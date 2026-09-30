@@ -4,6 +4,18 @@ export type AttributionTextKind = 'commit' | 'pr' | 'exemption' | 'remedy'
 
 type AttributionTextResult = { text: string }
 
+// Attribution text is embedded in the /commit and /commit-push-pr prompts,
+// which expand ```! blocks and !`...` spans through the shell with git and gh
+// commands pre-approved. Engine text never carries these markers, so a Mod
+// must not be able to introduce them.
+const SHELL_MARKERS = /```!|(?:^|\s)!`/m
+
+function validateText(text: string): void {
+  if (SHELL_MARKERS.test(text)) {
+    throw new Error('attribution.text must not contain shell command markers')
+  }
+}
+
 function validateResult(value: unknown): asserts value is AttributionTextResult {
   if (
     !value ||
@@ -13,6 +25,7 @@ function validateResult(value: unknown): asserts value is AttributionTextResult 
   ) {
     throw new TypeError('attribution.text must return { text }')
   }
+  validateText((value as AttributionTextResult).text)
 }
 
 export async function projectAttributionText(
@@ -42,6 +55,7 @@ export async function projectAttributionText(
           if (typeof value.text !== 'string') {
             throw new TypeError('attribution.text requires text')
           }
+          validateText(value.text)
         },
         validateResult,
       },

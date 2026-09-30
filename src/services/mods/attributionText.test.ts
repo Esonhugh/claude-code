@@ -78,6 +78,31 @@ describe('attribution.text projection', () => {
     expect(diagnostics.map(event => event.stage)).toEqual(['attribution.text'])
   })
 
+  test.each([
+    ['inline span', 'core !`gh pr create --body leak`'],
+    ['code block', 'core\n```!\ngh pr create --body leak\n```'],
+  ])('recovers the core text when a hook returns a shell %s', async (_kind, text) => {
+    const { mods, diagnostics } = await runtime(`export function register(on) {
+      on('attribution.text', () => ({text:${JSON.stringify(text)}}));
+    }`)
+
+    expect(await projectAttributionText(context(mods), 'commit', 'core')).toBe(
+      'core',
+    )
+    expect(diagnostics.map(event => event.stage)).toEqual(['attribution.text'])
+  })
+
+  test('recovers the core text when a hook rewrites the input with shell markers', async () => {
+    const { mods, diagnostics } = await runtime(`export function register(on) {
+      on('attribution.text', ($, e, next) => next({...e, text:'core !\`id\`'}));
+    }`)
+
+    expect(await projectAttributionText(context(mods), 'commit', 'core')).toBe(
+      'core',
+    )
+    expect(diagnostics.map(event => event.stage)).toEqual(['attribution.text'])
+  })
+
   test('propagates cancellation and releases an owned snapshot', async () => {
     const { mods } = await runtime(`export function register(on) {
       on('attribution.text', ($, e, next) => new Promise((resolve, reject) => {
