@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, mock, test } from 'bun:test'
 
-const aliasEnvKeys = ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION'] as const
+const aliasEnvKeys = ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION'] as const
 const originalEnv = Object.fromEntries(aliasEnvKeys.map(key => [key, process.env[key]]))
 afterAll(() => {
   for (const key of aliasEnvKeys) {
@@ -37,18 +37,19 @@ mock.module('./modelAllowlist.js', () => ({ isModelAllowed: () => true }))
 mock.module('./modelStrings.js', () => ({ getModelStrings: () => modelStrings }))
 mock.module('./check1mAccess.js', () => ({ checkOpus1mAccess: () => true, checkSonnet1mAccess: () => true }))
 mock.module('../context.js', () => ({ has1mContext: (model: string) => model.includes('[1m]') }))
-const names: Record<string, string> = { 'claude-opus-5': 'Opus 5', 'claude-sonnet-5': 'Sonnet 5' }
+const names: Record<string, string> = { 'claude-opus-5-5': 'Opus 5.5', 'claude-sonnet-5-5': 'Sonnet 5.5', 'claude-fable-5-1': 'Fable 5.1' }
 mock.module('./model.js', () => ({
   getCanonicalName: (model: string) => model,
-  getClaudeAiUserDefaultModelDescription: () => 'Default Opus 5',
-  getDefaultSonnetModel: () => customSonnet ?? 'claude-sonnet-5',
-  getDefaultOpusModel: () => customOpus ?? 'claude-opus-5',
+  getClaudeAiUserDefaultModelDescription: () => 'Default Opus 5.5',
+  getDefaultSonnetModel: () => customSonnet ?? 'claude-sonnet-5-5',
+  getDefaultOpusModel: () => customOpus ?? 'claude-opus-5-5',
+  getDefaultFableModel: () => 'claude-fable-5-1',
   getDefaultHaikuModel: () => modelStrings.haiku45,
-  getDefaultMainLoopModelSetting: () => customOpus ?? 'claude-opus-5',
+  getDefaultMainLoopModelSetting: () => customOpus ?? 'claude-opus-5-5',
   getMarketingNameForModel: (model: string) => names[model],
   getUserSpecifiedModelSetting: () => currentModel,
   isOpus1mMergeEnabled: () => false,
-  getOpus46PricingSuffix: () => '',
+  getOpusPricingSuffix: () => '',
   renderDefaultModelSetting: (model: string) => names[model] ?? model,
 }))
 mock.module('../modelCost.js', () => ({
@@ -66,21 +67,23 @@ beforeEach(() => {
   discovered = undefined
 })
 
-test('first-party catalog offers Opus 5 and Sonnet 5 with model-derived pricing, without Fable', () => {
+test('first-party catalog offers current aliases without gated Mythos models', () => {
   const options = getModelOptions()
-  expect(options.find(option => option.value === 'opus')?.description).toContain('Opus 5')
-  expect(options.find(option => option.value === 'sonnet')?.description).toContain('Sonnet 5')
-  expect(options.find(option => option.value === 'sonnet')?.description).toContain('pricing:claude-sonnet-5')
-  expect(options.find(option => option.value === null)?.description).toContain('pricing:claude-opus-5')
-  expect(options.some(option => /Fable|4\.6|old-price/.test(option.description))).toBe(false)
+  expect(options.find(option => option.value === 'opus')?.description).toContain('Opus 5.5')
+  expect(options.find(option => option.value === 'sonnet')?.description).toContain('Sonnet 5.5')
+  expect(options.find(option => option.value === 'sonnet')?.description).toContain('pricing:claude-sonnet-5-5')
+  expect(options.find(option => option.value === null)?.description).toContain('pricing:claude-opus-5-5')
+  expect(options.find(option => option.value === 'fable')?.description).toContain('Fable 5.1')
+  expect(options.some(option => /mythos/i.test(`${option.value} ${option.label} ${option.description}`))).toBe(false)
+  expect(options.some(option => /4\.6|old-price/.test(option.description))).toBe(false)
 })
 
 test('subscriber catalog also offers both new families without PAYG pricing', () => {
   subscriber = true
   for (premium of [false, true]) {
     const options = getModelOptions()
-    expect(options.find(option => option.value === 'sonnet')?.description).toContain('Sonnet 5')
-    expect(options.find(option => option.value === 'opus')?.description).toContain('Opus 5')
+    expect(options.find(option => option.value === 'sonnet')?.description).toContain('Sonnet 5.5')
+    expect(options.find(option => option.value === 'opus')?.description).toContain('Opus 5.5')
     expect(options.some(option => option.description.includes('pricing:'))).toBe(false)
     expect(options.find(option => option.value === 'haiku')?.description).not.toContain('haiku45')
   }
@@ -114,9 +117,9 @@ test('first-party Haiku override is not presented as the stock 4.5 model', () =>
   expect(option?.description).not.toContain('Haiku 4.5')
 })
 
-test('Fable remains available only when explicitly selected or discovered', () => {
-  expect(getModelOptions().some(option => option.value === 'claude-fable-5-1')).toBe(false)
-  currentModel = 'claude-fable-5-1'
+test('Fable is a first-party family option and pinned legacy IDs remain visible', () => {
+  expect(getModelOptions().find(option => option.value === 'fable')?.description).toContain('Fable 5.1')
+  currentModel = 'claude-fable-5'
   expect(getModelOptions().some(option => option.value === currentModel)).toBe(true)
 })
 

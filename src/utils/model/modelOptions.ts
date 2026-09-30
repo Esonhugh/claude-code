@@ -18,11 +18,12 @@ import {
   getClaudeAiUserDefaultModelDescription,
   getDefaultSonnetModel,
   getDefaultOpusModel,
+  getDefaultFableModel,
   getDefaultHaikuModel,
   getDefaultMainLoopModelSetting,
   getMarketingNameForModel,
   getUserSpecifiedModelSetting,
-  getOpus46PricingSuffix,
+  getOpusPricingSuffix,
   renderDefaultModelSetting,
   type ModelSetting,
 } from './model.js'
@@ -141,7 +142,7 @@ function getOpus46Option(fastMode = false): ModelOption {
   return {
     value: getModelStrings().opus46,
     label: 'Opus',
-    description: `Opus 4.6 · Most capable for complex work${getOpus46PricingSuffix(fastMode)}`,
+    description: `Opus 4.6 · Most capable for complex work${getOpusPricingSuffix(fastMode)}`,
     descriptionForModel: 'Opus 4.6 - most capable for complex work',
   }
 }
@@ -161,7 +162,7 @@ export function getOpus46_1MOption(fastMode = false): ModelOption {
   return {
     value: getModelStrings().opus46 + '[1m]',
     label: 'Opus (1M context)',
-    description: `Opus 4.6 for long sessions${getOpus46PricingSuffix(fastMode)}`,
+    description: `Opus 4.6 for long sessions${getOpusPricingSuffix(fastMode)}`,
     descriptionForModel:
       'Opus 4.6 with 1M context window - for long sessions with large codebases',
   }
@@ -212,16 +213,23 @@ function getHaikuOption(): ModelOption {
 }
 
 function getFirstPartyOption(
-  family: 'opus' | 'sonnet',
+  family: 'fable' | 'opus' | 'sonnet',
   context1m = false,
 ): ModelOption {
-  const model = family === 'opus' ? getDefaultOpusModel() : getDefaultSonnetModel()
+  const model =
+    family === 'fable'
+      ? getDefaultFableModel()
+      : family === 'opus'
+        ? getDefaultOpusModel()
+        : getDefaultSonnetModel()
   const name = getMarketingNameForModel(model) ?? model
   const pricing = isClaudeAISubscriber() ? undefined : getModelPricingString(model)
   const description =
-    family === 'opus'
-      ? 'For complex coding and agent tasks'
-      : 'Balanced performance for everyday tasks'
+    family === 'fable'
+      ? 'For the hardest and longest-running tasks'
+      : family === 'opus'
+        ? 'For complex coding and agent tasks'
+        : 'Balanced performance for everyday tasks'
   return {
     value: context1m ? `${family}[1m]` : family,
     label: `${name}${context1m ? ' (1M context)' : ''}`,
@@ -285,6 +293,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   if (getAPIProvider() === 'firstParty') {
     return [
       getDefaultOptionForUser(fastMode),
+      getFirstPartyOption('fable'),
       getFirstPartyOption('opus'),
       getFirstPartyOption('sonnet'),
       getCustomHaikuOption() ?? getHaiku45Option(),

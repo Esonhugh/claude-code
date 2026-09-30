@@ -24,7 +24,7 @@ mock.module('../userType.js', () => ({ isAnt: () => false }))
 mock.module('../../constants/figures.js', () => ({ LIGHTNING_BOLT: 'fast' }))
 mock.module('../modelCost.js', () => ({
   formatModelPricing: () => '$5/$25 per Mtok',
-  getOpus46CostTier: () => ({}),
+  getOpusCostTier: () => ({}),
 }))
 mock.module('../context.js', () => ({
   has1mContext: (model: string) => /\[1m\]/i.test(model),
@@ -48,6 +48,7 @@ const {
   getDefaultMainLoopModel,
   getDefaultOpusModel,
   getDefaultSonnetModel,
+  getDefaultFableModel,
   getDefaultHaikuModel,
   getSmallFastModel,
   getUserSpecifiedModelSetting,
@@ -60,7 +61,7 @@ const {
 
 const envKeys = [
   'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
 ] as const
@@ -81,9 +82,12 @@ afterEach(() => {
 })
 
 describe('provider defaults and explicit model selection', () => {
-  test('first-party defaults to Opus 5 without upgrading explicit IDs', () => {
-    expect(getDefaultMainLoopModel()).toBe('claude-opus-5')
-    expect(getDefaultSonnetModel()).toBe('claude-sonnet-5')
+  test('first-party defaults to the current Opus and Sonnet releases without upgrading explicit IDs', () => {
+    expect(getDefaultMainLoopModel()).toBe('claude-opus-5-5')
+    expect(getDefaultSonnetModel()).toBe('claude-sonnet-5-5')
+    expect(getDefaultFableModel()).toBe('claude-fable-5-1')
+    expect(parseUserSpecifiedModel('fable')).toBe('claude-fable-5-1')
+    expect(parseUserSpecifiedModel('best')).toBe('claude-fable-5-1')
     expect(getDefaultHaikuModel()).toBe('claude-haiku-4-5-20251001')
     for (const model of ['claude-opus-4-20250514', 'claude-opus-4-1', 'Gateway/Custom-ID']) {
       expect(parseUserSpecifiedModel(model)).toBe(model)
@@ -122,7 +126,7 @@ describe('provider defaults and explicit model selection', () => {
     expect(getMainLoopModel()).toBe('session-model')
     modelOverride = null
     expect(getUserSpecifiedModelSetting()).toBeNull()
-    expect(getMainLoopModel()).toBe('claude-opus-5')
+    expect(getMainLoopModel()).toBe('claude-opus-5-5')
   })
 
   test('explicit GPT model on Anthropic protocol stays explicit', () => {
@@ -155,17 +159,38 @@ describe('provider defaults and explicit model selection', () => {
   })
 
   test('canonical model overrides continue to apply to new aliases', () => {
-    modelOverrides = { 'claude-opus-5': 'Gateway/Opus-Deployment' }
+    modelOverrides = { 'claude-opus-5-5': 'Gateway/Opus-Deployment' }
     expect(parseUserSpecifiedModel('opus')).toBe('Gateway/Opus-Deployment')
-    expect(getCanonicalName('Gateway/Opus-Deployment')).toBe('claude-opus-5')
+    expect(getCanonicalName('Gateway/Opus-Deployment')).toBe('claude-opus-5-5')
     expect(parseUserSpecifiedModel('Gateway/Other-Deployment')).toBe('Gateway/Other-Deployment')
   })
 
-  test('canonical names, labels and plan descriptions match new defaults', () => {
-    expect(getCanonicalName('claude-opus-5')).toBe('claude-opus-5')
-    expect(getCanonicalName('anthropic.claude-sonnet-5')).toBe('claude-sonnet-5')
-    expect(getPublicModelDisplayName('claude-opus-5')).toBe('Opus 5')
-    expect(getMarketingNameForModel('claude-sonnet-5')).toBe('Sonnet 5')
-    expect(renderDefaultModelSetting('opusplan')).toBe('Opus 5 in plan mode, else Sonnet 5')
+  test('canonical names, labels and plan descriptions match current and active legacy models', () => {
+    expect(getCanonicalName('claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(getCanonicalName('anthropic.claude-sonnet-5-5')).toBe('claude-sonnet-5-5')
+    expect(getCanonicalName('claude-fable-5-1')).toBe('claude-fable-5-1')
+    expect(ALL_MODEL_CONFIGS.mythos51).toEqual({
+      firstParty: 'claude-mythos-5-1',
+      bedrock: 'anthropic.claude-mythos-5-1',
+      vertex: 'claude-mythos-5-1',
+      foundry: 'claude-mythos-5-1',
+    })
+    expect(ALL_MODEL_CONFIGS.mythos50).toEqual({
+      firstParty: 'claude-mythos-5',
+      bedrock: 'anthropic.claude-mythos-5',
+      vertex: 'claude-mythos-5',
+      foundry: 'claude-mythos-5',
+    })
+    expect(getCanonicalName('anthropic.claude-mythos-5-1')).toBe('claude-mythos-5-1')
+    expect(getCanonicalName('claude-mythos-preview')).toBe('claude-mythos-preview')
+    expect(getCanonicalName('anthropic.claude-opus-4-8')).toBe('claude-opus-4-8')
+    expect(getCanonicalName('anthropic.claude-opus-4-7')).toBe('claude-opus-4-7')
+    expect(getPublicModelDisplayName('claude-opus-5-5')).toBe('Opus 5.5')
+    expect(getPublicModelDisplayName('claude-mythos-5-1')).toBe('Mythos 5.1')
+    expect(getPublicModelDisplayName('claude-mythos-preview')).toBe('Mythos Preview')
+    expect(getMarketingNameForModel('claude-sonnet-5-5')).toBe('Sonnet 5.5')
+    expect(getMarketingNameForModel('claude-fable-5-1')).toBe('Fable 5.1')
+    expect(getMarketingNameForModel('claude-mythos-5')).toBe('Mythos 5')
+    expect(renderDefaultModelSetting('opusplan')).toBe('Opus 5.5 in plan mode, else Sonnet 5.5')
   })
 })

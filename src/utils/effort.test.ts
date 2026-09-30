@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 
 import {
+  getDefaultEffortForModel,
   getEffortValueDescription,
   isEffortLevel,
   parseEffortValue,
@@ -25,5 +26,12 @@ assert.equal(
   getEffortValueDescription('ultracode'),
   'xhigh + dynamic workflow orchestration',
 )
+assert.equal(getDefaultEffortForModel('claude-opus-5-5'), 'medium')
+assert.equal(getDefaultEffortForModel('claude-fable-5-1'), 'high')
+assert.equal(getDefaultEffortForModel('claude-fable-5'), 'high')
+assert.equal(getDefaultEffortForModel('claude-mythos-5-1'), 'high')
+assert.equal(getDefaultEffortForModel('claude-mythos-5'), 'high')
+assert.equal(getDefaultEffortForModel('claude-mythos-preview'), 'high')
+assert.equal(getDefaultEffortForModel('claude-sonnet-5-5'), 'high')
 
 console.log('effort.test.ts passed')

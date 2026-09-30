@@ -148,10 +148,15 @@ export function modelSupports1M(model: string): boolean {
   }
   const canonical = getCanonicalName(model)
   return (
-    canonical === 'claude-opus-5' ||
-    canonical === 'claude-sonnet-5' ||
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical === 'claude-mythos-preview' ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
     canonical.includes('claude-sonnet-4') ||
-    canonical.includes('opus-4-6')
+    canonical.includes('opus-4-6') ||
+    canonical.includes('opus-4-7') ||
+    canonical.includes('opus-4-8')
   )
 }
 
@@ -190,7 +195,15 @@ export function getContextWindowForModel(
   }
 
   const canonical = getCanonicalName(model)
-  if (canonical === 'claude-opus-5' || canonical === 'claude-sonnet-5') {
+  if (
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical === 'claude-mythos-preview' ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-opus-4-7' ||
+    canonical === 'claude-opus-4-8'
+  ) {
     return is1mContextDisabled() ? MODEL_CONTEXT_WINDOW_DEFAULT : 1_000_000
   }
   if (isOpenAI1MModel(model)) {
@@ -346,7 +359,16 @@ export function getModelMaxOutputTokens(model: string): {
 
   const m = getCanonicalName(model)
 
-  if (m === 'claude-opus-5' || m === 'claude-sonnet-5' || isOpenAI1MModel(model)) {
+  if (
+    m.startsWith('claude-fable-5') ||
+    m.startsWith('claude-mythos-5') ||
+    m === 'claude-mythos-preview' ||
+    m.startsWith('claude-opus-5') ||
+    m.startsWith('claude-sonnet-5') ||
+    m === 'claude-opus-4-7' ||
+    m === 'claude-opus-4-8' ||
+    isOpenAI1MModel(model)
+  ) {
     defaultTokens = MAX_OUTPUT_TOKENS_DEFAULT
     upperLimit = 128_000
   } else if (m.includes('opus-4-6')) {

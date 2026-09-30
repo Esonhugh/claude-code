@@ -84,6 +84,48 @@ export const CLAUDE_SONNET_4_6_CONFIG = {
   foundry: 'claude-sonnet-4-6',
 } as const satisfies ModelConfig
 
+export const CLAUDE_OPUS_4_7_CONFIG = {
+  firstParty: 'claude-opus-4-7',
+  bedrock: 'anthropic.claude-opus-4-7',
+  vertex: 'claude-opus-4-7',
+  foundry: 'claude-opus-4-7',
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_8_CONFIG = {
+  firstParty: 'claude-opus-4-8',
+  bedrock: 'anthropic.claude-opus-4-8',
+  vertex: 'claude-opus-4-8',
+  foundry: 'claude-opus-4-8',
+} as const satisfies ModelConfig
+
+export const CLAUDE_FABLE_5_CONFIG = {
+  firstParty: 'claude-fable-5',
+  bedrock: 'anthropic.claude-fable-5',
+  vertex: 'claude-fable-5',
+  foundry: 'claude-fable-5',
+} as const satisfies ModelConfig
+
+export const CLAUDE_FABLE_5_1_CONFIG = {
+  firstParty: 'claude-fable-5-1',
+  bedrock: 'anthropic.claude-fable-5-1',
+  vertex: 'claude-fable-5-1',
+  foundry: 'claude-fable-5-1',
+} as const satisfies ModelConfig
+
+export const CLAUDE_MYTHOS_5_CONFIG = {
+  firstParty: 'claude-mythos-5',
+  bedrock: 'anthropic.claude-mythos-5',
+  vertex: 'claude-mythos-5',
+  foundry: 'claude-mythos-5',
+} as const satisfies ModelConfig
+
+export const CLAUDE_MYTHOS_5_1_CONFIG = {
+  firstParty: 'claude-mythos-5-1',
+  bedrock: 'anthropic.claude-mythos-5-1',
+  vertex: 'claude-mythos-5-1',
+  foundry: 'claude-mythos-5-1',
+} as const satisfies ModelConfig
+
 export const CLAUDE_OPUS_5_CONFIG = {
   firstParty: 'claude-opus-5',
   bedrock: 'anthropic.claude-opus-5',
@@ -91,11 +133,25 @@ export const CLAUDE_OPUS_5_CONFIG = {
   foundry: 'claude-opus-5',
 } as const satisfies ModelConfig
 
+export const CLAUDE_OPUS_5_5_CONFIG = {
+  firstParty: 'claude-opus-5-5',
+  bedrock: 'anthropic.claude-opus-5-5',
+  vertex: 'claude-opus-5-5',
+  foundry: 'claude-opus-5-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_SONNET_5_CONFIG = {
   firstParty: 'claude-sonnet-5',
   bedrock: 'anthropic.claude-sonnet-5',
   vertex: 'claude-sonnet-5',
   foundry: 'claude-sonnet-5',
+} as const satisfies ModelConfig
+
+export const CLAUDE_SONNET_5_5_CONFIG = {
+  firstParty: 'claude-sonnet-5-5',
+  bedrock: 'anthropic.claude-sonnet-5-5',
+  vertex: 'claude-sonnet-5-5',
+  foundry: 'claude-sonnet-5-5',
 } as const satisfies ModelConfig
 
 export const OPENAI_MODEL_CONFIG = {
@@ -115,11 +171,19 @@ export const ALL_MODEL_CONFIGS = {
   sonnet45: CLAUDE_SONNET_4_5_CONFIG,
   sonnet46: CLAUDE_SONNET_4_6_CONFIG,
   sonnet50: CLAUDE_SONNET_5_CONFIG,
+  sonnet55: CLAUDE_SONNET_5_5_CONFIG,
   opus40: CLAUDE_OPUS_4_CONFIG,
   opus41: CLAUDE_OPUS_4_1_CONFIG,
   opus45: CLAUDE_OPUS_4_5_CONFIG,
   opus46: CLAUDE_OPUS_4_6_CONFIG,
+  opus47: CLAUDE_OPUS_4_7_CONFIG,
+  opus48: CLAUDE_OPUS_4_8_CONFIG,
   opus50: CLAUDE_OPUS_5_CONFIG,
+  opus55: CLAUDE_OPUS_5_5_CONFIG,
+  fable50: CLAUDE_FABLE_5_CONFIG,
+  fable51: CLAUDE_FABLE_5_1_CONFIG,
+  mythos50: CLAUDE_MYTHOS_5_CONFIG,
+  mythos51: CLAUDE_MYTHOS_5_1_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS

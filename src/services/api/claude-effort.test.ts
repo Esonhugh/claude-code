@@ -36,7 +36,12 @@ try {
     toPersistableEffort,
   } = await import('../../utils/effort.js')
 
-  for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
+  for (const model of [
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-mythos-5-1',
+    'claude-mythos-5',
+  ]) {
     assert.equal(modelSupportsEffort(model), true)
     assert.equal(modelSupportsMaxEffort(model), true)
     assert.ok(getSupportedEffortLevelsForModel(model).includes('xhigh'))
@@ -99,6 +104,13 @@ try {
     'max',
   ])
   assert.deepEqual(getSupportedEffortLevelsForModel('claude-sonnet-4-6'), [
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'max',
+  ])
+  assert.deepEqual(getSupportedEffortLevelsForModel('claude-mythos-preview'), [
     'minimal',
     'low',
     'medium',

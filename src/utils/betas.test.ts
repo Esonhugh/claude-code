@@ -33,7 +33,12 @@ try {
     '../services/api/claude.js'
   )
   const { getAllModelBetas, modelSupportsStructuredOutputs } = await import('./betas.js')
-  for (const model of ['claude-opus-5', 'claude-sonnet-5']) {
+  for (const model of [
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-mythos-5-1',
+    'claude-mythos-5',
+  ]) {
     assert.equal(modelSupportsStructuredOutputs(model), true)
   }
   const { THINKING_TOKEN_COUNT_BETA_HEADER } = await import('../constants/betas.js')

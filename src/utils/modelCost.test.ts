@@ -10,8 +10,16 @@ const MODEL = 'claude-sonnet-4-5-20250929'
 
 describe('calculateUSDCost', () => {
   test.each([
+    ['claude-fable-5-1', 10, 50, 12.5, 0.25],
+    ['claude-mythos-5-1', 10, 50, 12.5, 0.25],
+    ['claude-opus-5-5', 4, 20, 5, 0.2],
+    ['claude-sonnet-5-5', 2, 10, 2.5, 0.2],
+    ['claude-fable-5', 10, 50, 12.5, 1],
+    ['claude-mythos-5', 10, 50, 12.5, 1],
     ['claude-opus-5', 5, 25, 6.25, 0.5],
     ['claude-sonnet-5', 2, 10, 2.5, 0.2],
+    ['claude-opus-4-8', 5, 25, 6.25, 0.5],
+    ['claude-opus-4-7', 5, 25, 6.25, 0.5],
     ['gpt-5.6-sol', 4, 20, 4, 0.4],
     ['gpt-6-astra', 10, 50, 10, 1],
     ['gpt-5.6-terra', 2, 12, 2, 0.2],
@@ -35,6 +43,29 @@ describe('calculateUSDCost', () => {
         input + output + cacheWrite + cacheRead,
       )
       expect(getModelPricingString(model)).toBeDefined()
+    },
+  )
+
+  test.each([
+    ['claude-opus-5-5', 8, 40, 10, 0.4],
+    ['claude-opus-5', 10, 50, 12.5, 1],
+    ['claude-opus-4-8', 10, 50, 12.5, 1],
+  ] as const)(
+    '%s uses its fast-mode premium when the response reports fast speed',
+    (model, input, output, cacheWrite, cacheRead) => {
+      const usage = {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_creation_input_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        speed: 'fast',
+      } as Usage
+      expect(getModelCosts(model, usage)).toMatchObject({
+        inputTokens: input,
+        outputTokens: output,
+        promptCacheWriteTokens: cacheWrite,
+        promptCacheReadTokens: cacheRead,
+      })
     },
   )
 

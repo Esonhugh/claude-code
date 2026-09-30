@@ -29,7 +29,7 @@ import {
   prefetchFastModeStatus,
 } from '../../utils/fastMode.js'
 import { formatDuration } from '../../utils/format.js'
-import { formatModelPricing, getOpus46CostTier } from '../../utils/modelCost.js'
+import { formatModelPricing, getOpusCostTier } from '../../utils/modelCost.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
@@ -78,7 +78,7 @@ export function FastModePicker({
   const isOpenAI = getAPIProvider() === 'openai'
   const pricing = isOpenAI
     ? 'Priority processing; increased usage applies'
-    : formatModelPricing(getOpus46CostTier(true))
+    : formatModelPricing(getOpusCostTier(true))
 
   function handleConfirm(): void {
     if (isUnavailable) return
@@ -230,7 +230,7 @@ async function handleFastModeShortcut(
     const pricing =
       getAPIProvider() === 'openai'
         ? 'Priority processing; increased usage applies'
-        : formatModelPricing(getOpus46CostTier(true))
+        : formatModelPricing(getOpusCostTier(true))
     return `${fastIcon} Fast mode ON${modelUpdated} · ${pricing}`
   } else {
     return `Fast mode OFF`

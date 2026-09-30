@@ -150,8 +150,12 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
     return false
   }
   return (
-    canonical === 'claude-opus-5' ||
-    canonical === 'claude-sonnet-5' ||
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical.includes('claude-opus-4-8') ||
+    canonical.includes('claude-opus-4-7') ||
     canonical.includes('claude-sonnet-4-6') ||
     canonical.includes('claude-sonnet-4-5') ||
     canonical.includes('claude-opus-4-1') ||

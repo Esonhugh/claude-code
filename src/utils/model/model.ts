@@ -16,7 +16,7 @@ import {
 } from '../context.js'
 import { OPENAI_MODEL_CONFIG } from './configs.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
-import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
+import { formatModelPricing, getOpusCostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider } from './providers.js'
@@ -41,7 +41,10 @@ export function isNonCustomOpusModel(model: ModelName): boolean {
     model === getModelStrings().opus41 ||
     model === getModelStrings().opus45 ||
     model === getModelStrings().opus46 ||
-    model === getModelStrings().opus50
+    model === getModelStrings().opus47 ||
+    model === getModelStrings().opus48 ||
+    model === getModelStrings().opus50 ||
+    model === getModelStrings().opus55
   )
 }
 
@@ -96,8 +99,17 @@ export function getMainLoopModel(): ModelName {
   return getDefaultMainLoopModel()
 }
 
+export function getDefaultFableModel(): ModelName {
+  if (process.env.ANTHROPIC_DEFAULT_FABLE_MODEL) {
+    return process.env.ANTHROPIC_DEFAULT_FABLE_MODEL
+  }
+  return getAPIProvider() === 'firstParty'
+    ? getModelStrings().fable51
+    : getDefaultOpusModel()
+}
+
 export function getBestModel(): ModelName {
-  return getDefaultOpusModel()
+  return getDefaultFableModel()
 }
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
@@ -109,7 +121,7 @@ export function getDefaultOpusModel(): ModelName {
   if (provider === 'openai') return OPENAI_MODEL_CONFIG.opus
   // Keep established SDK/endpoint defaults for third-party providers.
   return provider === 'firstParty'
-    ? getModelStrings().opus50
+    ? getModelStrings().opus55
     : getModelStrings().opus46
 }
 
@@ -121,7 +133,7 @@ export function getDefaultSonnetModel(): ModelName {
   const provider = getAPIProvider()
   if (provider === 'openai') return OPENAI_MODEL_CONFIG.sonnet
   return provider === 'firstParty'
-    ? getModelStrings().sonnet50
+    ? getModelStrings().sonnet55
     : getModelStrings().sonnet45
 }
 
@@ -186,7 +198,11 @@ export function getDefaultMainLoopModel(): ModelName {
  */
 export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
+  if (name.includes('claude-fable-5-1')) return 'claude-fable-5-1'
+  if (name.includes('claude-fable-5')) return 'claude-fable-5'
+  if (name.includes('claude-opus-5-5')) return 'claude-opus-5-5'
   if (name.includes('claude-opus-5')) return 'claude-opus-5'
+  if (name.includes('claude-sonnet-5-5')) return 'claude-sonnet-5-5'
   if (name.includes('claude-sonnet-5')) return 'claude-sonnet-5'
   // Special cases for Claude 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-8 before 4)
@@ -220,11 +236,14 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-haiku-4-5')) {
     return 'claude-haiku-4-5'
   }
-  if (name.includes('claude-fable-5')) {
-    return 'claude-fable-5'
+  if (name.includes('claude-mythos-5-1')) {
+    return 'claude-mythos-5-1'
   }
   if (name.includes('claude-mythos-5')) {
     return 'claude-mythos-5'
+  }
+  if (name.includes('claude-mythos-preview')) {
+    return 'claude-mythos-preview'
   }
   // Claude 3.x models use a different naming scheme (claude-3-{family})
   if (name.includes('claude-3-7-sonnet')) {
@@ -271,8 +290,8 @@ export function getClaudeAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
   const model = getDefaultMainLoopModel()
-  const fastPricing = model === getModelStrings().opus46 && fastMode
-    ? getOpus46PricingSuffix(true)
+  const fastPricing = model === getModelStrings().opus55 && fastMode
+    ? getOpusPricingSuffix(true)
     : ''
   return `${renderModelName(model)} · For complex coding and agent work${fastPricing}`
 }
@@ -286,9 +305,9 @@ export function renderDefaultModelSetting(
   return renderModelName(parseUserSpecifiedModel(setting))
 }
 
-export function getOpus46PricingSuffix(fastMode: boolean): string {
+export function getOpusPricingSuffix(fastMode: boolean): string {
   if (getAPIProvider() !== 'firstParty') return ''
-  const pricing = formatModelPricing(getOpus46CostTier(fastMode))
+  const pricing = formatModelPricing(getOpusCostTier(fastMode))
   const fastModeIndicator = fastMode ? ` (${LIGHTNING_BOLT})` : ''
   return ` ·${fastModeIndicator} ${pricing}`
 }
@@ -330,12 +349,39 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
   switch (model) {
+    case getModelStrings().fable51:
+    case getModelStrings().fable51 + '[1m]':
+      return 'Fable 5.1'
+    case getModelStrings().fable50:
+    case getModelStrings().fable50 + '[1m]':
+      return 'Fable 5'
+    case getModelStrings().mythos51:
+    case getModelStrings().mythos51 + '[1m]':
+      return 'Mythos 5.1'
+    case getModelStrings().mythos50:
+    case getModelStrings().mythos50 + '[1m]':
+      return 'Mythos 5'
+    case 'claude-mythos-preview':
+    case 'claude-mythos-preview[1m]':
+      return 'Mythos Preview'
+    case getModelStrings().opus55:
+    case getModelStrings().opus55 + '[1m]':
+      return 'Opus 5.5'
+    case getModelStrings().sonnet55:
+    case getModelStrings().sonnet55 + '[1m]':
+      return 'Sonnet 5.5'
     case getModelStrings().opus50:
     case getModelStrings().opus50 + '[1m]':
       return 'Opus 5'
     case getModelStrings().sonnet50:
     case getModelStrings().sonnet50 + '[1m]':
       return 'Sonnet 5'
+    case getModelStrings().opus48:
+    case getModelStrings().opus48 + '[1m]':
+      return 'Opus 4.8'
+    case getModelStrings().opus47:
+    case getModelStrings().opus47 + '[1m]':
+      return 'Opus 4.7'
     case getModelStrings().opus46:
       return 'Opus 4.6'
     case getModelStrings().opus46 + '[1m]':
@@ -452,6 +498,8 @@ export function parseUserSpecifiedModel(
         return getDefaultHaikuModel() + (has1mTag ? '[1m]' : '')
       case 'opus':
         return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
+      case 'fable':
+        return getDefaultFableModel() + (has1mTag ? '[1m]' : '')
       case 'best':
         return getBestModel()
       default:
@@ -535,8 +583,21 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const has1m = modelId.toLowerCase().includes('[1m]')
   const canonical = getCanonicalName(modelId)
 
+  if (canonical === 'claude-fable-5-1') return 'Fable 5.1'
+  if (canonical === 'claude-fable-5') return 'Fable 5'
+  if (canonical === 'claude-mythos-5-1') return 'Mythos 5.1'
+  if (canonical === 'claude-mythos-5') return 'Mythos 5'
+  if (canonical === 'claude-mythos-preview') return 'Mythos Preview'
+  if (canonical === 'claude-opus-5-5') return 'Opus 5.5'
   if (canonical === 'claude-opus-5') return 'Opus 5'
+  if (canonical === 'claude-sonnet-5-5') return 'Sonnet 5.5'
   if (canonical === 'claude-sonnet-5') return 'Sonnet 5'
+  if (canonical.includes('claude-opus-4-8')) {
+    return has1m ? 'Opus 4.8 (with 1M context)' : 'Opus 4.8'
+  }
+  if (canonical.includes('claude-opus-4-7')) {
+    return has1m ? 'Opus 4.7 (with 1M context)' : 'Opus 4.7'
+  }
   if (canonical.includes('claude-opus-4-6')) {
     return has1m ? 'Opus 4.6 (with 1M context)' : 'Opus 4.6'
   }

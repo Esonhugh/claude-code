@@ -52,7 +52,19 @@ afterEach(() => {
   interactive.mockReturnValue(true)
 })
 
-test.each(['claude-opus-5', 'claude-sonnet-5'])(
+test.each([
+  'claude-fable-5-1',
+  'claude-mythos-5-1',
+  'claude-mythos-5',
+  'claude-mythos-preview',
+  'claude-opus-5-5',
+  'claude-sonnet-5-5',
+  'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+])(
   '%s has native 1M input context and a conservative 32K output default',
   (model) => {
     expect(modelSupports1M(model)).toBe(true)
@@ -207,7 +219,7 @@ test('experiment compaction window applies only to interactive Opus 4.8', () => 
   )
 
   expect(resolveContextWindow('claude-opus-4-8')).toEqual({
-    window: 200_000,
+    window: 480_000,
     source: 'experiment',
   })
   expect(resolveContextWindow('custom-model')).toEqual({
@@ -217,7 +229,7 @@ test('experiment compaction window applies only to interactive Opus 4.8', () => 
 
   interactive.mockReturnValue(false)
   expect(resolveContextWindow('claude-opus-4-8')).toEqual({
-    window: 200_000,
+    window: 1_000_000,
     source: 'auto',
   })
 })
