@@ -180,7 +180,7 @@ function splitNumericParams(params: string): number[] {
 }
 
 export type KeyParseState = {
-  mode: 'NORMAL' | 'IN_PASTE'
+  mode: 'NORMAL' | 'IN_PASTE' | 'RECOVERING_PASTE'
   incomplete: string
   pasteBuffer: string
   // Internal tokenizer instance
@@ -225,21 +225,28 @@ export function parseMultipleKeypresses(
 
   // Convert tokens to parsed keys, handling paste mode
   const keys: ParsedInput[] = []
-  let inPaste = prevState.mode === 'IN_PASTE'
+  let inPaste = prevState.mode !== 'NORMAL'
+  let recoveringPaste = prevState.mode === 'RECOVERING_PASTE'
   let pasteBuffer = prevState.pasteBuffer
 
   for (const token of tokens) {
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
+        recoveringPaste = false
         pasteBuffer = ''
       } else if (token.value === PASTE_END) {
-        // Always emit a paste key, even for empty pastes. This allows
-        // downstream handlers to detect empty pastes (e.g., for clipboard
-        // image handling on macOS). The paste content may be empty string.
-        keys.push(createPasteKey(pasteBuffer))
-        inPaste = false
-        pasteBuffer = ''
+        if (inPaste) {
+          // Preserve genuine empty pastes for clipboard image handling, but
+          // do not emit a second empty paste when the closing marker arrives
+          // after an idle recovery already released the payload.
+          if (!recoveringPaste || pasteBuffer) {
+            keys.push(createPasteKey(pasteBuffer))
+          }
+          inPaste = false
+          recoveringPaste = false
+          pasteBuffer = ''
+        }
       } else if (inPaste) {
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
@@ -288,16 +295,30 @@ export function parseMultipleKeypresses(
     }
   }
 
-  // If flushing and still in paste mode, emit what we have
-  if (isFlush && inPaste && pasteBuffer) {
-    keys.push(createPasteKey(pasteBuffer))
-    inPaste = false
-    pasteBuffer = ''
+  // Release the currently buffered payload after an idle timeout, but keep
+  // treating late bytes as paste content until the terminal's closing marker
+  // arrives. This restores responsiveness without reinterpreting delayed CR,
+  // Tab, or Escape bytes as commands.
+  if (isFlush && inPaste) {
+    if (recoveringPaste) {
+      if (pasteBuffer) keys.push(createPasteKey(pasteBuffer))
+      inPaste = false
+      recoveringPaste = false
+      pasteBuffer = ''
+    } else {
+      keys.push(createPasteKey(pasteBuffer))
+      recoveringPaste = true
+      pasteBuffer = ''
+    }
   }
 
   // Build new state
   const newState: KeyParseState = {
-    mode: inPaste ? 'IN_PASTE' : 'NORMAL',
+    mode: !inPaste
+      ? 'NORMAL'
+      : recoveringPaste
+        ? 'RECOVERING_PASTE'
+        : 'IN_PASTE',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
     _tokenizer: tokenizer,
@@ -537,9 +558,18 @@ function keycodeToName(keycode: number): string | undefined {
     case 57415: // KP_EQUAL
       return '='
     default:
-      // Printable ASCII characters
-      if (keycode >= 32 && keycode <= 126) {
-        return String.fromCharCode(keycode).toLowerCase()
+      // Printable Unicode scalar values. Kitty CSI-u reports committed text as
+      // codepoints, including IME/CJK input; functional keys use the private-use
+      // range handled explicitly above or remain unmapped.
+      if (
+        keycode >= 32 &&
+        (keycode <= 126 || keycode >= 160) &&
+        keycode <= 0x10ffff &&
+        !(keycode >= 0xd800 && keycode <= 0xdfff) &&
+        !(keycode >= 0xe000 && keycode <= 0xf8ff)
+      ) {
+        const character = String.fromCodePoint(keycode)
+        return keycode <= 126 ? character.toLowerCase() : character
       }
       return undefined
   }

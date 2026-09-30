@@ -29,6 +29,11 @@ export type InlineGhostText = {
 /**
  * Base props for text input components
  */
+export type TextInputChangeResult =
+  | string
+  | { value: string; cursorOffset: number; accepted?: boolean }
+  | void
+
 export type BaseTextInputProps = {
   /**
    * Optional callback for handling history navigation on up arrow at start of input
@@ -77,9 +82,13 @@ export type BaseTextInputProps = {
   readonly value: string
 
   /**
-   * Function to call when value updates.
+   * Function to call when value updates. May return the value actually accepted
+   * by a controlled input so later events in the same stdin batch observe it.
    */
-  readonly onChange: (value: string) => void
+  readonly onChange: (
+    value: string,
+    cursorOffset?: number,
+  ) => TextInputChangeResult
 
   /**
    * Function to call when `Enter` is pressed, where first argument is a value of the input.

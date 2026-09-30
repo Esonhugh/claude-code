@@ -80,6 +80,7 @@ export function DiffView({
           linesRemoved: file.linesRemoved,
           isNewFile: file.isNewFile,
           isNoise: isDiffNoise(file.filePath),
+          isPreSession: false,
           isBinary: false,
           isLargeFile: false,
           isTruncated: file.isTruncated ?? false,
@@ -108,9 +109,17 @@ export function DiffView({
     visible.findIndex(file => file.path === state.selectedPath),
   )
   const selected = visible[selectedIndex]
-  const [detail, setDetail] = useState(false)
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const [detail, setDetailState] = useState(false)
+  const detailRef = useRef(detail)
+  detailRef.current = detail
   const listRef = useRef<ScrollBoxHandle>(null)
   const bodyRef = useRef<ScrollBoxHandle>(null)
+  const setDetail = (value: boolean) => {
+    detailRef.current = value
+    setDetailState(value)
+  }
   const fileAnchors = useRef(new Map<string, DOMElement>())
   const rowAnchors = useRef(new Map<string, DOMElement>())
   const { columns, rows } = useTerminalSize()
@@ -192,7 +201,10 @@ export function DiffView({
     if (!selectedPath) return
     const row = rowAnchors.current.get(selectedPath)
     if (row) listRef.current?.scrollToElement(row)
-  }, [selectedPath])
+    if (!state.selectedPath) return
+    const body = fileAnchors.current.get(selectedPath)
+    if (body) bodyRef.current?.scrollToElement(body)
+  }, [selectedPath, state.selectedPath])
 
   const { internal_eventEmitter } = useStdin()
   useEffect(() => {
@@ -220,7 +232,7 @@ export function DiffView({
 
   function select(path: string, open = false) {
     controller.selectFile(path)
-    if (presentation === 'dialog' && open) {
+    if (open) {
       setDetail(true)
       bodyRef.current?.scrollTo(0)
     } else {
@@ -229,78 +241,106 @@ export function DiffView({
     }
   }
   function moveFile(delta: number) {
-    if (detail) {
+    if (detailRef.current) {
       bodyRef.current?.scrollBy(delta * 3)
     } else {
-      const file =
-        visible[
-          Math.max(0, Math.min(visible.length - 1, selectedIndex + delta))
-        ]
+      const files = visibleRef.current
+      const path = controller.getSnapshot().selectedPath
+      const index = Math.max(
+        0,
+        files.findIndex(file => file.path === path),
+      )
+      const file = files[Math.max(0, Math.min(files.length - 1, index + delta))]
       if (file) select(file.path)
     }
   }
   function moveSource(delta: number) {
-    controller.chooseSource(
-      sources[
-        Math.max(0, Math.min(sources.length - 1, sourceIndex + delta))
-      ] ?? null,
+    const currentSource = controller.getSnapshot().source
+    const index = Math.max(0, sources.indexOf(currentSource))
+    const source =
+      sources[Math.max(0, Math.min(sources.length - 1, index + delta))] ?? null
+    controller.chooseSource(source)
+    const sourceTurn = turns.find(item => item.turnIndex === source)
+    const files = sourceTurn
+      ? [...sourceTurn.files.values()]
+          .map(file => ({
+            path: file.filePath,
+            linesAdded: file.linesAdded,
+            linesRemoved: file.linesRemoved,
+            isNewFile: file.isNewFile,
+            isNoise: isDiffNoise(file.filePath),
+            isPreSession: false,
+            isBinary: false,
+            isLargeFile: false,
+            isTruncated: file.isTruncated ?? false,
+            bodyState: 'ready' as const,
+          }))
+          .sort((a, b) => a.path.localeCompare(b.path))
+      : current.files
+    visibleRef.current = files.filter(
+      file =>
+        (controller.getSnapshot().showNoise || !file.isNoise) &&
+        (controller.getSnapshot().showPreSession || !file.isPreSession),
     )
   }
   useRegisterKeybindingContext('DiffDialog', keyboardEnabled)
   useKeybindings(
     {
       'diff:dismiss': () => {
-        if (detail) setDetail(false)
+        if (detailRef.current) setDetail(false)
         else onClose()
       },
       'diff:previousSource': () => {
-        if (detail) setDetail(false)
+        if (detailRef.current) setDetail(false)
         else moveSource(-1)
       },
       'diff:nextSource': () => {
-        if (!detail) moveSource(1)
+        if (!detailRef.current) moveSource(1)
       },
       'diff:back': () => setDetail(false),
       'diff:viewDetails': () => {
-        if (selected) select(selected.path, true)
+        const files = visibleRef.current
+        const path = controller.getSnapshot().selectedPath
+        const file = files.find(item => item.path === path) ?? files[0]
+        if (file) select(file.path, true)
       },
       'diff:previousFile': () => moveFile(-1),
       'diff:nextFile': () => moveFile(1),
     },
-    { context: 'DiffDialog', isActive: keyboardEnabled },
+    { context: 'DiffDialog', isActive: keyboardEnabled, capture: true },
   )
   useKeybindings(
     {
       'scroll:pageUp': () => {
         const target =
-          detail || presentation === 'sidebar'
+          detailRef.current || presentation === 'sidebar'
             ? bodyRef.current
             : listRef.current
         target?.scrollBy(-Math.max(1, target.getViewportHeight() - 1))
       },
       'scroll:pageDown': () => {
         const target =
-          detail || presentation === 'sidebar'
+          detailRef.current || presentation === 'sidebar'
             ? bodyRef.current
             : listRef.current
         target?.scrollBy(Math.max(1, target.getViewportHeight() - 1))
       },
       'scroll:top': () => {
         const target =
-          detail || presentation === 'sidebar'
+          detailRef.current || presentation === 'sidebar'
             ? bodyRef.current
             : listRef.current
         target?.scrollTo(0)
       },
       'scroll:bottom': () => {
         const target =
-          detail || presentation === 'sidebar'
+          detailRef.current || presentation === 'sidebar'
             ? bodyRef.current
             : listRef.current
         target?.scrollTo(target.getScrollHeight())
       },
     },
-    { context: 'Scroll', isActive: keyboardEnabled },
+    { context: 'Scroll', isActive: keyboardEnabled, capture: true },
   )
 
   const bodies = useMemo(() => {
@@ -311,11 +351,12 @@ export function DiffView({
     let preSession = 0
     let omitted = 0
     let preSessionOmitted = 0
-    const files =
-      detail && presentation === 'dialog'
-        ? selected
-          ? [selected]
-          : []
+    const files = detail
+      ? selected
+        ? [selected]
+        : []
+      : selected
+        ? [selected, ...visible.filter(file => file.path !== selected.path)]
         : visible
     const entries: {
       file: (typeof visible)[number]
@@ -344,13 +385,17 @@ export function DiffView({
         truncated: limited.truncated,
       })
     }
+    const order = new Map(visible.map((file, index) => [file.path, index]))
+    entries.sort(
+      (left, right) =>
+        (order.get(left.file.path) ?? 0) - (order.get(right.file.path) ?? 0),
+    )
     return { entries, omitted, preSessionOmitted }
   }, [
     visible,
     data.hunks,
     selected,
     detail,
-    presentation,
     width,
     summaryFiles.length,
   ])
@@ -373,15 +418,19 @@ export function DiffView({
   const content = (
     <Box
       flexDirection="column"
-      height={height}
+      height={presentation === 'sidebar' ? undefined : height}
       maxHeight="100%"
       flexGrow={1}
       minHeight={0}
       overflow="hidden"
     >
-      <Box flexShrink={0} justifyContent="space-between">
-        {presentation === 'sidebar' ? <Text bold>Diff</Text> : <Text />}
-        <Box onClick={onClose}>
+      <Box flexShrink={0} width="100%" justifyContent="space-between">
+        {presentation === 'sidebar' ? (
+          <Text bold>{detail ? 'Diff · detail' : 'Diff'}</Text>
+        ) : (
+          <Text />
+        )}
+        <Box width={1} flexShrink={0} onClick={onClose}>
           <Text>✕</Text>
         </Box>
       </Box>
@@ -404,34 +453,41 @@ export function DiffView({
         </Box>
       </Box>
       {!compact && (
-        <Text dimColor wrap="truncate-end">
-          {data.isUnborn && (data.stats?.filesCount ?? data.files.length) > 0
-            ? 'no commits yet — showing staged and new files'
-            : diffDisplayText(basis)}
-          {turn?.userPromptPreview
-            ? ` · ${diffDisplayText(turn.userPromptPreview)}`
-            : ''}
-        </Text>
-      )}
-      <Box flexShrink={0}>
-        <Box onClick={() => controller.toggleNoise()}>
-          <Text color="suggestion">
-            Noise {noiseCount} [{state.showNoise ? 'on' : 'off'}]
+        <Box flexShrink={0}>
+          <Text wrap="truncate-end" dimColor>
+            {data.isUnborn && (data.stats?.filesCount ?? data.files.length) > 0
+              ? 'no commits yet — showing staged and new files'
+              : diffDisplayText(basis)}
+            {turn?.userPromptPreview
+              ? ` · ${diffDisplayText(turn.userPromptPreview)}`
+              : ''}
           </Text>
         </Box>
-        <Box marginLeft={1} onClick={() => controller.togglePreSession()}>
+      )}
+      <Box flexShrink={0} minHeight={1}>
+        <Box flexShrink={0} onClick={() => controller.toggleNoise()}>
           <Text color="suggestion">
-            Pre-session {preSessionCount} [
-            {state.showPreSession ? 'on' : 'off'}]
+            {`Noise ${noiseCount} [${state.showNoise ? 'hide' : 'show'}]`}
+          </Text>
+        </Box>
+        <Box
+          marginLeft={1}
+          flexShrink={0}
+          onClick={() => controller.togglePreSession()}
+        >
+          <Text color="suggestion">
+            {`Pre-session ${preSessionCount} [${state.showPreSession ? 'hide' : 'show'}]`}
           </Text>
         </Box>
       </Box>
       {!compact && (
-        <Text dimColor wrap="truncate-end">
-          Todos {todos.done}/{todos.total} · {visible.length}/
-          {data.stats?.filesCount ?? data.files.length} files · +
-          {data.stats?.linesAdded ?? 0} -{data.stats?.linesRemoved ?? 0}
-        </Text>
+        <Box flexShrink={0}>
+          <Text wrap="truncate-end" dimColor>
+            Todos {todos.done}/{todos.total} · {visible.length}/
+            {data.stats?.filesCount ?? data.files.length} files · +
+            {data.stats?.linesAdded ?? 0} -{data.stats?.linesRemoved ?? 0}
+          </Text>
+        </Box>
       )}
       {state.armedPath && (
         <Box
@@ -450,7 +506,7 @@ export function DiffView({
       {data.outcome === 'unavailable' && data.files.length > 0 && (
         <Text dimColor>Git diff unavailable · showing last good data</Text>
       )}
-      {detail && presentation === 'dialog' && (
+      {detail && (
         <Box onClick={() => setDetail(false)}>
           <Text color="suggestion">‹ Back to files</Text>
         </Box>
@@ -465,7 +521,7 @@ export function DiffView({
           <DiffFileList
             files={summaryFiles}
             selectedIndex={selectedIndex}
-            onSelect={path => select(path, true)}
+            onSelect={path => select(path, presentation === 'dialog')}
             rowRef={(path, element) => {
               if (element) rowAnchors.current.set(path, element)
               else rowAnchors.current.delete(path)
@@ -548,8 +604,8 @@ export function DiffView({
         <Box flexShrink={0} paddingTop={1}>
           <Text dimColor wrap="truncate-end">
             {detail
-              ? '↑/↓ scroll · ← back · Esc close'
-              : '↑/↓ select · Enter view · PgUp/PgDn · Esc close'}
+              ? '↑/↓ scroll · ← back · Esc back'
+              : '↑/↓ select · Enter view · PgUp/PgDn scroll · Esc close'}
           </Text>
         </Box>
       </Box>

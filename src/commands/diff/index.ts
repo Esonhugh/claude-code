@@ -7,6 +7,6 @@ export default {
   name: 'diff',
   description: 'View uncommitted changes and per-turn diffs',
   immediate: (_args, context) =>
-    context.modCommand?.presentation.isFullscreen === true,
+    (context.modCommand?.presentation.columns ?? 0) >= MIN_DIFF_SIDEBAR_COLUMNS,
   load: () => import('./diff.js'),
 } satisfies Command

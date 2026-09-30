@@ -30,28 +30,76 @@ function createContext(
 }
 
 describe('/diff', () => {
-  test('only fullscreen diff bypasses the active turn queue', () => {
+  test('wide diff panels bypass the active turn queue in either renderer', () => {
     const fullscreen = createContext({ columns: 144, isFullscreen: true }).context
-    const inline = createContext({ columns: 144, isFullscreen: false }).context
+    const defaultRenderer = createContext({ columns: 144, isFullscreen: false }).context
+    const narrow = createContext({ columns: 109, isFullscreen: false }).context
     expect(isCommandImmediate(diffCommand, '', fullscreen)).toBe(true)
-    expect(isCommandImmediate(diffCommand, '', inline)).toBe(false)
+    expect(isCommandImmediate(diffCommand, '', defaultRenderer)).toBe(true)
+    expect(isCommandImmediate(diffCommand, '', narrow)).toBe(false)
   })
 
-  test('prepares the shared controller before opening and preserves failure feedback', async () => {
+  test('opens the native sidebar before the shared controller refresh completes', async () => {
     const { context, getState } = createContext({ columns: 144, isFullscreen: true })
-    let ready = false
+    let resolveRefresh!: () => void
+    let refreshStarted = false
+    const refresh = new Promise<void>(resolve => { resolveRefresh = resolve })
     const saved: boolean[] = []
     context.diff = {
-      refresh: async () => { ready = true },
-      getSnapshot: () => ({ data: { outcome: 'unavailable', error: 'Git probe failed' } }),
+      refresh: () => {
+        refreshStarted = true
+        return refresh
+      },
+      getSnapshot: () => ({ data: { stats: null, files: [], hunks: new Map(), loading: true } }),
       setOpenPreference: (value: boolean) => saved.push(value),
     } as unknown as NonNullable<LocalJSXCommandContext['diff']>
     const completions: Parameters<LocalJSXCommandOnDone>[] = []
+
+    const result = await call((...args) => completions.push(args), context, '')
+
+    expect(result).toBeNull()
+    expect(refreshStarted).toBe(true)
+    expect(getState().diffSidebarVisible).toBe(true)
+    expect(saved).toEqual([true])
+    expect(completions).toEqual([
+      ['Diff panel shown', { display: 'system' }],
+    ])
+    resolveRefresh()
+    await refresh
+  })
+
+  test('reports a delayed refresh failure without hiding the open sidebar', async () => {
+    const { context, getState } = createContext({ columns: 144, isFullscreen: true })
+    let resolveRefresh!: () => void
+    const refresh = new Promise<void>(resolve => { resolveRefresh = resolve })
+    let data = { outcome: undefined, error: undefined } as {
+      outcome?: 'unavailable'
+      error?: string
+    }
+    context.diff = {
+      refresh: () => refresh,
+      getSnapshot: () => ({ data }),
+      setOpenPreference: () => {},
+    } as unknown as NonNullable<LocalJSXCommandContext['diff']>
+    const addNotification = mock(() => {})
+    context.addNotification = addNotification
+    const completions: Parameters<LocalJSXCommandOnDone>[] = []
+
     await call((...args) => completions.push(args), context, '')
-    expect(ready).toBe(true)
-    expect(getState().diffSidebarVisible).toBe(false)
-    expect(completions[0]?.[0]).toContain('Git probe failed')
-    expect(saved).toEqual([])
+    data = { outcome: 'unavailable', error: 'Git probe failed' }
+    resolveRefresh()
+    await refresh
+    await Promise.resolve()
+
+    expect(getState().diffSidebarVisible).toBe(true)
+    expect(completions).toEqual([
+      ['Diff panel shown', { display: 'system' }],
+    ])
+    expect(addNotification).toHaveBeenCalledWith({
+      key: 'diff-refresh',
+      text: 'Diff is unavailable: Git probe failed',
+      priority: 'medium',
+    })
   })
 
   test('opens the native sidebar in a wide fullscreen terminal', async () => {
@@ -66,15 +114,21 @@ describe('/diff', () => {
     expect(result).toBeNull()
     expect(getState().diffSidebarVisible).toBe(true)
     expect(completions).toEqual([
-      ['Diff sidebar shown', { display: 'system' }],
+      ['Diff panel shown', { display: 'system' }],
     ])
   })
 
-  test('closes an open sidebar after the terminal becomes narrow', async () => {
+  test('replaces a hidden narrow sidebar with the diff dialog', async () => {
     const { context, getState } = createContext({
       columns: 110,
       isFullscreen: true,
     })
+    const saved: boolean[] = []
+    context.diff = {
+      refresh: async () => {},
+      getSnapshot: () => ({ data: { outcome: 'data' } }),
+      setOpenPreference: (value: boolean) => saved.push(value),
+    } as unknown as NonNullable<LocalJSXCommandContext['diff']>
     await call(() => {}, context, '')
     context.modCommand = {
       origin: { kind: 'composer' },
@@ -84,11 +138,10 @@ describe('/diff', () => {
 
     const result = await call((...args) => completions.push(args), context, '')
 
-    expect(result).toBeNull()
     expect(getState().diffSidebarVisible).toBe(false)
-    expect(completions).toEqual([
-      ['Diff sidebar hidden', { display: 'system' }],
-    ])
+    expect(saved).toEqual([true, false])
+    expect(result).toMatchObject({ props: { messages: context.messages } })
+    expect(completions).toEqual([])
   })
 
   test('keeps a visible Mods dock and falls back to DiffDialog', async () => {
@@ -121,11 +174,27 @@ describe('/diff', () => {
     expect(dock).toEqual({ visible: true, placement: 'dock', focused: true })
   })
 
-  test.each([
-    { columns: 109, isFullscreen: true },
-    { columns: 160, isFullscreen: false },
-  ])('uses DiffDialog outside a wide fullscreen terminal', async presentation => {
-    const { context, getState } = createContext(presentation)
+  test('opens a non-modal panel in a wide default renderer', async () => {
+    const { context, getState } = createContext({
+      columns: 160,
+      isFullscreen: false,
+    })
+    const completions: Parameters<LocalJSXCommandOnDone>[] = []
+
+    const result = await call((...args) => completions.push(args), context, '')
+
+    expect(result).toBeNull()
+    expect(getState().diffSidebarVisible).toBe(true)
+    expect(completions).toEqual([
+      ['Diff panel shown', { display: 'system' }],
+    ])
+  })
+
+  test('uses DiffDialog in a narrow terminal', async () => {
+    const { context, getState } = createContext({
+      columns: 109,
+      isFullscreen: true,
+    })
     const completions: Parameters<LocalJSXCommandOnDone>[] = []
 
     const result = await call((...args) => completions.push(args), context, '')

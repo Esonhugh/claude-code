@@ -3,6 +3,7 @@ import { type ReactNode, useEffect } from 'react'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { stringWidth } from '../../ink/stringWidth.js'
+import { expandTabs } from '../../ink/tabstops.js'
 import { Box, Text } from '../../ink.js'
 import { useAppState } from '../../state/AppState.js'
 import { getEffortSuffix } from '../../utils/effort.js'
@@ -67,9 +68,12 @@ export function CondensedLogo(): ReactNode {
   // Account for: condensed clawd width + gap (2) + padding (2)
   const customClawd = getCustomClawd()
   const clawdWidth = customClawd
-    ? Math.max(...customClawd.map(l => stringWidth(l)))
+    ? Math.max(...customClawd.map(line => stringWidth(expandTabs(line))))
     : 11
-  const textWidth = Math.max(columns - clawdWidth - 4, 20)
+  const horizontal = clawdWidth + 4 + 20 <= columns
+  const textWidth = horizontal
+    ? Math.max(columns - clawdWidth - 4, 1)
+    : Math.max(columns, 1)
 
   // Truncate version to fit within available width, accounting for "Claude Code v" prefix
   const versionPrefix = 'Claude Code v'
@@ -100,26 +104,38 @@ export function CondensedLogo(): ReactNode {
   // of which changing while in scrollback would force a full terminal reset.
   return (
     <OffscreenFreeze>
-      <Box flexDirection="row" gap={2} alignItems="center">
-      {isFullscreenEnvEnabled() ? <AnimatedClawd /> : <Clawd />}
+      <Box
+        flexDirection={horizontal ? 'row' : 'column'}
+        gap={horizontal ? 2 : 1}
+        alignItems={horizontal ? 'center' : 'flex-start'}
+      >
+      {isFullscreenEnvEnabled() && !customClawd ? (
+        <AnimatedClawd maxWidth={Math.max(horizontal ? clawdWidth : columns, 1)} />
+      ) : (
+        <Clawd maxWidth={Math.max(horizontal ? clawdWidth : columns, 1)} />
+      )}
 
       {/* Info */}
-      <Box flexDirection="column">
-        <Text>
+      <Box flexDirection="column" width={textWidth}>
+        <Text wrap="truncate-end">
           <Text bold>{uiName}</Text>{' '}
           <Text dimColor>v{truncatedVersion}</Text>
         </Text>
         {shouldSplit ? (
           <>
-            <Text dimColor>{truncatedModel}</Text>
-            <Text dimColor>{truncatedBilling}</Text>
+            <Text dimColor wrap="truncate-end">
+              {truncatedModel}
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {truncatedBilling}
+            </Text>
           </>
         ) : (
-          <Text dimColor>
+          <Text dimColor wrap="truncate-end">
             {truncatedModel} · {truncatedBilling}
           </Text>
         )}
-        <Text dimColor>
+        <Text dimColor wrap="truncate-end">
           {agentName ? `@${agentName} · ${truncatedCwd}` : truncatedCwd}
         </Text>
         {showGuestPassesUpsell && <GuestPassesUpsell />}

@@ -6,6 +6,7 @@ import { addToHistory } from '../history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
+  TextInputChangeResult,
   TextInputState,
 } from '../types/textInputTypes.js'
 import {
@@ -37,7 +38,7 @@ function mapInput(input_map: Array<[string, InputHandler]>): InputMapper {
 
 export type UseTextInputProps = {
   value: string
-  onChange: (value: string) => void
+  onChange: (value: string, cursorOffset?: number) => TextInputChangeResult
   onSubmit?: (value: string) => void
   onExit?: () => void
   onExitMessage?: (show: boolean, key?: string) => void
@@ -102,22 +103,61 @@ export function useTextInput({
 
   const offset = externalOffset
   const setOffset = onOffsetChange
-  const cursor = Cursor.fromText(originalValue, columns, offset)
+  // App dispatches every event parsed from one stdin read in a single React
+  // batch. Advance this render-local cursor after each event so committed IME
+  // text followed by Enter/navigation observes the preceding edit.
+  let cursor = Cursor.fromText(originalValue, columns, offset)
+  let submitAllowed = true
   const { addNotification, removeNotification } = useNotifications()
 
-  const handleCtrlC = useDoublePress(
+  function resolveAcceptedCursor(
+    result: TextInputChangeResult,
+    proposed: Cursor,
+  ): { cursor: Cursor; accepted: boolean } {
+    if (typeof result === 'string') {
+      return {
+        cursor: Cursor.fromText(
+          result,
+          columns,
+          Math.min(proposed.offset, result.length),
+        ),
+        accepted: result === proposed.text,
+      }
+    }
+    if (!result) return { cursor: proposed, accepted: true }
+    const value = result.value
+    const acceptedOffset = result.cursorOffset
+    return {
+      cursor: Cursor.fromText(
+        value,
+        columns,
+        Math.min(Math.max(acceptedOffset, 0), value.length),
+      ),
+      accepted: result.accepted ?? true,
+    }
+  }
+
+  let suppressCtrlCExitMessage = false
+  const dispatchCtrlC = useDoublePress(
     show => {
-      onExitMessage?.(show, 'Ctrl-C')
+      if (!suppressCtrlCExitMessage) onExitMessage?.(show, 'Ctrl-C')
     },
     () => onExit?.(),
     () => {
-      if (originalValue) {
-        onChange('')
+      if (cursor.text) {
+        suppressCtrlCExitMessage = true
+        onChange('', 0)
+        cursor = Cursor.fromText('', columns, 0)
         setOffset(0)
         onHistoryReset?.()
       }
     },
   )
+  function handleCtrlC(): void {
+    suppressCtrlCExitMessage = false
+    dispatchCtrlC()
+    suppressCtrlCExitMessage = false
+  }
 
   // NOTE(keybindings): This escape handler is intentionally NOT migrated to the keybindings system.
   // It's a text-level double-press escape for clearing input, not an action-level keybinding.
@@ -125,7 +165,7 @@ export function useTextInput({
   // not dialog dismissal, and needs the double-press safety mechanism.
   const handleEscape = useDoublePress(
     (show: boolean) => {
-      if (!originalValue || !show) {
+      if (!cursor.text || !show) {
         return
       }
       addNotification({
@@ -139,13 +179,14 @@ export function useTextInput({
       // Remove the "Esc again to clear" notification immediately
       removeNotification('escape-again-to-clear')
       onClearInput?.()
-      if (originalValue) {
+      if (cursor.text) {
         // Track double-escape usage for feature discovery
         // Save to history before clearing
-        if (originalValue.trim() !== '') {
-          addToHistory(originalValue)
+        if (cursor.text.trim() !== '') {
+          addToHistory(cursor.text)
         }
-        onChange('')
+        onChange('', 0)
+        cursor = Cursor.fromText('', columns, 0)
         setOffset(0)
         onHistoryReset?.()
       }
@@ -154,13 +195,13 @@ export function useTextInput({
 
   const handleEmptyCtrlD = useDoublePress(
     show => {
-      if (originalValue !== '') {
+      if (cursor.text !== '') {
         return
       }
       onExitMessage?.(show, 'Ctrl-D')
     },
     () => {
-      if (originalValue !== '') {
+      if (cursor.text !== '') {
         return
       }
       onExit?.()
@@ -245,6 +286,10 @@ export function useTextInput({
   ])
 
   function handleEnter(key: Key) {
+    if (!submitAllowed) {
+      submitAllowed = true
+      return cursor
+    }
     if (
       multiline &&
       cursor.offset > 0 &&
@@ -263,7 +308,10 @@ export function useTextInput({
     if (env.terminal === 'Apple_Terminal' && isModifierPressed('shift')) {
       return cursor.insert('\n')
     }
-    onSubmit?.(originalValue)
+    onSubmit?.(cursor.text)
+    // The remaining events from this stdin read are dispatched before React
+    // commits the submit handler's input clear. Treat them as a fresh draft.
+    cursor = Cursor.fromText('', columns, 0)
   }
 
   function upOrHistoryUp() {
@@ -455,9 +503,13 @@ export function useTextInput({
       // Update state once with the final result
       if (!cursor.equals(currentCursor)) {
         if (cursor.text !== currentCursor.text) {
-          onChange(currentCursor.text)
+          currentCursor = resolveAcceptedCursor(
+            onChange(currentCursor.text, currentCursor.offset),
+            currentCursor,
+          ).cursor
         }
         setOffset(currentCursor.offset)
+        cursor = currentCursor
       }
       resetKillAccumulation()
       resetYankState()
@@ -477,10 +529,17 @@ export function useTextInput({
     const nextCursor = mapKey(key)(filteredInput)
     if (nextCursor) {
       if (!cursor.equals(nextCursor)) {
+        let acceptedCursor = nextCursor
         if (cursor.text !== nextCursor.text) {
-          onChange(nextCursor.text)
+          const resolved = resolveAcceptedCursor(
+            onChange(nextCursor.text, nextCursor.offset),
+            nextCursor,
+          )
+          acceptedCursor = resolved.cursor
+          submitAllowed = resolved.accepted
         }
-        setOffset(nextCursor.offset)
+        setOffset(acceptedCursor.offset)
+        cursor = acceptedCursor
       }
       // SSH-coalesced Enter: on slow links, "o" + Enter can arrive as one
       // chunk "o\r". parseKeypress only matches s === '\r', so it hit the
@@ -488,6 +547,7 @@ export function useTextInput({
       // exactly one trailing \r is coalesced Enter; lone \r is Alt+Enter
       // (newline); embedded \r is multi-line paste.
       if (
+        submitAllowed &&
         filteredInput.length > 1 &&
         filteredInput.endsWith('\r') &&
         !filteredInput.slice(0, -1).includes('\r') &&
@@ -495,7 +555,7 @@ export function useTextInput({
         // coalesced Enter. See default handler above.
         filteredInput[filteredInput.length - 2] !== '\\'
       ) {
-        onSubmit?.(nextCursor.text)
+        onSubmit?.(cursor.text)
       }
     }
   }

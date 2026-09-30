@@ -363,7 +363,7 @@ function PromptHarness() {
     toolPermissionContext: liveState.toolPermissionContext,
     setToolPermissionContext: () => {}, apiKeyStatus: 'valid',
     commands: [], agents: [], enableLocalIOCompletions: false,
-    isLoading: false, verbose: false, messages: retainedMessages,
+    isLoading: false, isAssistantResponding: false, verbose: false, messages: retainedMessages,
     onAutoUpdaterResult: () => {}, autoUpdaterResult: null,
     input, onInputChange: setInput, mode: 'prompt', onModeChange: () => {},
     stashedPrompt: undefined, setStashedPrompt: () => {}, submitCount: 0,

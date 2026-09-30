@@ -21,6 +21,7 @@ import {
 } from './screen.js'
 import {
   CURSOR_HOME,
+  cursorPosition,
   scrollDown as csiScrollDown,
   scrollUp as csiScrollUp,
   RESET_SCROLL_REGION,
@@ -143,7 +144,12 @@ export class LogUpdate {
       next.viewport.height < prev.viewport.height ||
       (prev.viewport.width !== 0 && next.viewport.width !== prev.viewport.width)
     ) {
-      return fullResetSequence_CAUSES_FLICKER(next, 'resize', stylePool)
+      return fullResetSequence_CAUSES_FLICKER(
+        next,
+        'resize',
+        stylePool,
+        altScreen,
+      )
     }
 
     // DECSTBM scroll optimization: when a ScrollBox's scrollTop changed,
@@ -215,7 +221,12 @@ export class LogUpdate {
       logForDebugging(
         `Full reset (shrink->below): prevHeight=${prev.screen.height}, nextHeight=${next.screen.height}, viewport=${prev.viewport.height}`,
       )
-      return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool)
+      return fullResetSequence_CAUSES_FLICKER(
+        next,
+        'offscreen',
+        stylePool,
+        altScreen,
+      )
     }
 
     if (
@@ -239,11 +250,17 @@ export class LogUpdate {
       if (scrollbackChangeY >= 0) {
         const prevLine = readLine(prev.screen, scrollbackChangeY)
         const nextLine = readLine(next.screen, scrollbackChangeY)
-        return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool, {
-          triggerY: scrollbackChangeY,
-          prevLine,
-          nextLine,
-        })
+        return fullResetSequence_CAUSES_FLICKER(
+          next,
+          'offscreen',
+          stylePool,
+          altScreen,
+          {
+            triggerY: scrollbackChangeY,
+            prevLine,
+            nextLine,
+          },
+        )
       }
     }
 
@@ -267,6 +284,7 @@ export class LogUpdate {
           next,
           'offscreen',
           this.options.stylePool,
+          altScreen,
         )
       }
 
@@ -380,11 +398,17 @@ export class LogUpdate {
       }
     })
     if (needsFullReset) {
-      return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool, {
-        triggerY: resetTriggerY,
-        prevLine: readLine(prev.screen, resetTriggerY),
-        nextLine: readLine(next.screen, resetTriggerY),
-      })
+      return fullResetSequence_CAUSES_FLICKER(
+        next,
+        'offscreen',
+        stylePool,
+        altScreen,
+        {
+          triggerY: resetTriggerY,
+          prevLine: readLine(prev.screen, resetTriggerY),
+          nextLine: readLine(next.screen, resetTriggerY),
+        },
+      )
     }
 
     // Reset styles before rendering new rows (they'll set their own styles)
@@ -504,11 +528,12 @@ function fullResetSequence_CAUSES_FLICKER(
   frame: Frame,
   reason: FlickerReason,
   stylePool: StylePool,
+  altScreen: boolean,
   debug?: { triggerY: number; prevLine: string; nextLine: string },
 ): Diff {
   // After clearTerminal, cursor is at (0, 0)
   const screen = new VirtualScreen({ x: 0, y: 0 }, frame.viewport.width)
-  renderFrame(screen, frame, stylePool)
+  renderFrame(screen, frame, stylePool, altScreen)
   return [{ type: 'clearTerminal', reason, debug }, ...screen.diff]
 }
 
@@ -516,13 +541,22 @@ function renderFrame(
   screen: VirtualScreen,
   frame: Frame,
   stylePool: StylePool,
+  resetCursorEachRow = false,
 ): void {
-  renderFrameSlice(screen, frame, 0, frame.screen.height, stylePool)
+  renderFrameSlice(
+    screen,
+    frame,
+    0,
+    frame.screen.height,
+    stylePool,
+    resetCursorEachRow,
+  )
 }
 
 /**
  * Render a slice of rows from the frame's screen.
- * Each row is rendered followed by a newline. Cursor ends at (0, endY).
+ * Incremental/main-screen rendering advances rows with newlines. A full
+ * alt-screen reset uses absolute row positions so the bottom row cannot scroll.
  */
 function renderFrameSlice(
   screen: VirtualScreen,
@@ -530,6 +564,7 @@ function renderFrameSlice(
   startY: number,
   endY: number,
   stylePool: StylePool,
+  resetCursorEachRow = false,
 ): VirtualScreen {
   let currentStyleId = stylePool.none
   let currentHyperlink: Hyperlink = undefined
@@ -541,6 +576,14 @@ function renderFrameSlice(
 
   let index = startY * screenWidth
   for (let y = startY; y < endY; y += 1) {
+    if (resetCursorEachRow) {
+      screen.diff.push({
+        type: 'stdout',
+        content: cursorPosition(y + 1, 1),
+      })
+      screen.cursor.x = 0
+      screen.cursor.y = y
+    }
     // Advance cursor to this row using LF (not CSI CUD / cursor-down).
     // CSI CUD stops at the viewport bottom margin and cannot scroll,
     // but LF scrolls the viewport to create new lines. Without this,
@@ -609,10 +652,15 @@ function renderFrameSlice(
       currentHyperlink,
       undefined,
     )
-    // CR+LF at end of row — \r resets to column 0, \n moves to next line.
-    // Without \r, the terminal cursor stays at whatever column content ended
-    // (since we skip trailing spaces, this can be mid-row).
-    screen.txn(prev => [[CARRIAGE_RETURN, NEWLINE], { dx: -prev.x, dy: 1 }])
+    // A full alt-screen reset positions every row absolutely. Do not emit LF
+    // after the final viewport row: terminals scroll when LF is written at the
+    // bottom margin, shifting the freshly painted frame up by one row.
+    if (!resetCursorEachRow) {
+      // CR+LF at end of row — \r resets to column 0, \n moves to next line.
+      // Without \r, the terminal cursor stays at whatever column content ended
+      // (since we skip trailing spaces, this can be mid-row).
+      screen.txn(prev => [[CARRIAGE_RETURN, NEWLINE], { dx: -prev.x, dy: 1 }])
+    }
   }
 
   // Reset any open style/hyperlink at end of slice

@@ -1445,6 +1445,8 @@ export function REPL({
   // loading is driven by queryGuard (reserve/tryStart/end/cancelReservation),
   // external loading by setIsExternalLoading.
   const isLoading = isQueryActive || isExternalLoading
+  const isAssistantResponding =
+    isExternalLoading || (isQueryActive && !queryGuard.isDispatching)
 
   // Elapsed time is computed by SpinnerWithVerb from these refs on each
   // animation frame, avoiding a useInterval that re-renders the entire REPL.
@@ -1929,8 +1931,8 @@ export function REPL({
     pending.resolve(false)
   }, [])
   useEffect(() => clearPendingModSuggestion, [clearPendingModSuggestion])
-  const isLoadingRef = useRef(isLoading)
-  isLoadingRef.current = isLoading
+  const isExternalLoadingRef = useRef(isExternalLoading)
+  isExternalLoadingRef.current = isExternalLoading
   const [modStatuses, setModStatuses] = useState<Record<string, string>>({})
   const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
@@ -2067,10 +2069,11 @@ export function REPL({
         )
       },
       canSuggest: () =>
-        !isLoadingRef.current &&
+        !isExternalLoadingRef.current &&
         inputModeRef.current === 'prompt' &&
         !modTypeaheadActiveRef.current &&
-        !store.getState().viewingAgentTaskId,
+        !store.getState().viewingAgentTaskId &&
+        (!queryGuard.isActive || queryGuard.isDispatching),
       isBlocked: () => modPromptBlockedRef.current,
     }),
     presentation: () => modUiPresentationRef.current,
@@ -3195,7 +3198,8 @@ export function REPL({
     if (
       !insertTextRef.current ||
       inputValueRef.current !== '' ||
-      isLoadingRef.current ||
+      isExternalLoadingRef.current ||
+      (queryGuard.isActive && !queryGuard.isDispatching) ||
       inputModeRef.current !== 'prompt' ||
       modTypeaheadActiveRef.current ||
       store.getState().viewingAgentTaskId
@@ -3251,8 +3255,11 @@ export function REPL({
   const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
   const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
   const shownModDock = modDock.find(pane => pane.shown !== false)
-  const canShowDiffSidebar = isFullscreenEnvEnabled() &&
+  const canShowDiffSidebar =
     modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
+  const diffSidebarKeyboardActive = diffSidebarVisible && canShowDiffSidebar &&
+    modUiPresentation.composerEmpty && !modPaneFocused &&
+    !modUiPresentation.hasDialog && !modUiPresentation.keyboardOwned
 
   // True when permission prompts exist but are hidden because the user is typing
   const hasSuppressedDialogs =
@@ -4080,7 +4087,7 @@ export function REPL({
                 checkpointing: fileHistoryEnabled(),
               }).then(open => {
                 const hasDock = modsSession?.ui.getSnapshot().some(pane => pane.visible && pane.placement === 'dock')
-                if (open && session === getSessionId() && !hasDock && isFullscreenEnvEnabled() &&
+                if (open && session === getSessionId() && !hasDock &&
                     (process.stdout.columns ?? 80) >= MIN_DIFF_SIDEBAR_COLUMNS) {
                   setAppState(state => ({ ...state, diffSidebarVisible: true }))
                 }
@@ -6590,6 +6597,7 @@ export function REPL({
     onOpenBackgroundTasks: isShowingLocalJSXCommand
       ? undefined
       : () => setShowBashesDialog(true),
+    isActive: !diffSidebarKeyboardActive,
   })
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit()
@@ -6877,12 +6885,12 @@ export function REPL({
           voiceHandleKeyEvent={voice.handleKeyEvent}
           stripTrailing={voice.stripTrailing}
           resetAnchor={voice.resetAnchor}
-          isActive={!toolJSX?.isLocalJSXCommand}
+          isActive={!toolJSX?.isLocalJSXCommand && !diffSidebarKeyboardActive}
         />
       ) : null}
       <CommandKeybindingHandlers
         onSubmit={onSubmit}
-        isActive={!toolJSX?.isLocalJSXCommand}
+        isActive={!toolJSX?.isLocalJSXCommand && !diffSidebarKeyboardActive}
       />
       {/* ScrollKeybindingHandler must mount before CancelRequestHandler so
           ctrl+c-with-selection copies instead of cancelling the active task.
@@ -6900,7 +6908,7 @@ export function REPL({
             !focusedInputDialog ||
             focusedInputDialog === 'tool-permission')
         }
-        isKeyboardActive={!modPaneFocused && !diffDialogActive}
+        isKeyboardActive={!modPaneFocused && !diffDialogActive && !diffSidebarKeyboardActive}
         onScroll={
           centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined
@@ -6940,7 +6948,7 @@ export function REPL({
               key={conversationId}
               messages={messages}
               controller={diffController}
-              keyboardEnabled={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog && !modUiPresentation.keyboardOwned}
+              keyboardEnabled={diffSidebarKeyboardActive}
               onClose={() => {
                 diffController?.setOpenPreference(false)
                 setAppState(state => ({ ...state, diffSidebarVisible: false }))
@@ -7632,7 +7640,9 @@ export function REPL({
                         debug={debug}
                         ideSelection={ideSelection}
                         hasSuppressedDialogs={!!hasSuppressedDialogs}
-                        isLocalJSXCommandActive={isShowingLocalJSXCommand || modPaneFocused}
+                        isLocalJSXCommandActive={
+                          isShowingLocalJSXCommand || modPaneFocused
+                        }
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}
                         setToolPermissionContext={setToolPermissionContext}
@@ -7647,6 +7657,7 @@ export function REPL({
                             : undefined
                         }
                         isLoading={isLoading}
+                        isAssistantResponding={isAssistantResponding}
                         onExit={handleExit}
                         verbose={verbose}
                         messages={messages}
@@ -7872,7 +7883,10 @@ export function REPL({
       </MCPConnectionManager>
     </KeybindingSetup>
   )
-  if (isFullscreenEnvEnabled()) {
+  if (
+    isFullscreenEnvEnabled() ||
+    (diffSidebarVisible && canShowDiffSidebar)
+  ) {
     return (
       <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
         {mainReturn}

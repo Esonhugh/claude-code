@@ -469,7 +469,7 @@ test('automatic opening requires checkpointed main-loop edits and the correct wi
   )
   expect(await diff.autoOpen({ ...surface, hasDock: true })).toBe(false)
   expect(probes).toBe(0)
-  expect(await diff.autoOpen(surface)).toBe(true)
+  expect(await diff.autoOpen({ ...surface, isFullscreen: false })).toBe(true)
   expect(await diff.autoOpen(surface)).toBe(false)
   expect(probes).toBe(1)
   diff.dispose()

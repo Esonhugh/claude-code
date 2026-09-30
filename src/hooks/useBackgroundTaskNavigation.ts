@@ -68,6 +68,7 @@ function stepTeammateSelection(
  */
 export function useBackgroundTaskNavigation(options?: {
   onOpenBackgroundTasks?: () => void
+  isActive?: boolean
 }): { handleKeyDown: (e: KeyboardEvent) => void } {
   const tasks = useAppState(s => s.tasks)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
@@ -257,7 +258,9 @@ export function useBackgroundTaskNavigation(options?: {
     const keyboardEvent = new KeyboardEvent(event.keypress)
     handleKeyDown(keyboardEvent)
     if (keyboardEvent.defaultPrevented) event.stopImmediatePropagation()
-  }, { isActive: !isModalOverlayActive && !footerSelected })
+  }, {
+    isActive: options?.isActive !== false && !isModalOverlayActive && !footerSelected,
+  })
 
   return { handleKeyDown }
 }

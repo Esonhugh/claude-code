@@ -356,8 +356,14 @@ export default class App extends PureComponent<Props, State> {
     // Clear the timer reference
     this.incompleteEscapeTimer = null
 
-    // Only proceed if we have incomplete sequences
-    if (!this.keyParseState.incomplete) return
+    // Only proceed if there is neither an incomplete sequence nor an open
+    // bracketed paste. A paste start is itself a complete token, so its payload
+    // can be buffered while `incomplete` is empty.
+    if (
+      !this.keyParseState.incomplete &&
+      this.keyParseState.mode === 'NORMAL'
+    )
+      return
 
     // Fullscreen: if stdin has data waiting, it's almost certainly the
     // continuation of the buffered sequence (e.g. `[<64;74;16M` after a
@@ -401,18 +407,30 @@ export default class App extends PureComponent<Props, State> {
       )
     }
 
-    // If we have incomplete escape sequences, set a timer to flush them
-    if (this.keyParseState.incomplete) {
-      // Cancel any existing timer first
-      if (this.incompleteEscapeTimer) {
-        clearTimeout(this.incompleteEscapeTimer)
+    // Flush incomplete escape sequences and unterminated bracketed pastes.
+    // Paste start is a complete token, so an open paste may have no tokenizer
+    // buffer even though all subsequent input is still being withheld.
+    if (
+      this.keyParseState.incomplete ||
+      this.keyParseState.mode !== 'NORMAL'
+    ) {
+      // Once an unterminated paste has released its first payload, keep the
+      // recovery deadline fixed. Otherwise a steady stream of ordinary input
+      // can postpone the second flush forever and keep swallowing controls.
+      if (
+        this.keyParseState.mode !== 'RECOVERING_PASTE' ||
+        !this.incompleteEscapeTimer
+      ) {
+        if (this.incompleteEscapeTimer) {
+          clearTimeout(this.incompleteEscapeTimer)
+        }
+        this.incompleteEscapeTimer = setTimeout(
+          this.flushIncomplete,
+          this.keyParseState.mode !== 'NORMAL'
+            ? this.PASTE_TIMEOUT
+            : this.NORMAL_TIMEOUT,
+        )
       }
-      this.incompleteEscapeTimer = setTimeout(
-        this.flushIncomplete,
-        this.keyParseState.mode === 'IN_PASTE'
-          ? this.PASTE_TIMEOUT
-          : this.NORMAL_TIMEOUT,
-      )
     }
   }
 

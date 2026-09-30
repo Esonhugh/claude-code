@@ -252,6 +252,7 @@ type Props = {
   enableLocalIOCompletions?: boolean
   remoteFileSuggestionProvider?: RemoteFileSuggestionProvider
   isLoading: boolean
+  isAssistantResponding: boolean
   verbose: boolean
   messages: Message[]
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void
@@ -345,6 +346,7 @@ function PromptInput({
   enableLocalIOCompletions = true,
   remoteFileSuggestionProvider,
   isLoading,
+  isAssistantResponding,
   verbose,
   messages,
   onAutoUpdaterResult,
@@ -846,7 +848,7 @@ function PromptInput({
     markShown,
   } = usePromptSuggestion({
     inputValue: input,
-    isAssistantResponding: isLoading,
+    isAssistantResponding,
   })
 
   const displayedValue = useMemo(
@@ -1316,11 +1318,11 @@ function PromptInput({
   })
 
   const onChange = useCallback(
-    (value: string) => {
+    (value: string, proposedCursorOffset = cursorOffset) => {
       if (value === '?') {
         logEvent('tengu_help_toggled', {})
         setHelpOpen(v => !v)
-        return
+        return { value: input, cursorOffset, accepted: false }
       }
       setHelpOpen(false)
 
@@ -1339,7 +1341,7 @@ function PromptInput({
       if (insertedAtStart && mode !== 'prompt') {
         if (isSingleCharInsertion) {
           onModeChange(mode)
-          return
+          return { value: input, cursorOffset, accepted: false }
         }
         // Multi-char insertion into empty input (e.g. tab-accepting "! gcloud auth login")
         if (input.length === 0) {
@@ -1351,7 +1353,10 @@ function PromptInput({
           pushToBuffer(input, cursorOffset, pastedContents)
           trackAndSetInput(valueWithoutMode)
           setCursorOffset(valueWithoutMode.length)
-          return
+          return {
+            value: valueWithoutMode,
+            cursorOffset: valueWithoutMode.length,
+          }
         }
       }
 
@@ -1370,6 +1375,12 @@ function PromptInput({
       )
 
       trackAndSetInput(processedValue)
+      const tabsBeforeCursor = value.slice(0, proposedCursorOffset).split('\t')
+        .length - 1
+      return {
+        value: processedValue,
+        cursorOffset: proposedCursorOffset + tabsBeforeCursor * 3,
+      }
     },
     [
       trackAndSetInput,

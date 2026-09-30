@@ -86,7 +86,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     return {
       cursor,
       text: props.value,
-      setText: (newText: string) => props.onChange(newText),
+      setText: (newText: string) => props.onChange(newText, textInput.offset),
       setOffset: (offset: number) => textInput.setOffset(offset),
       enterInsert: (offset: number) => switchToInsertMode(offset),
       getRegister: () => persistentRef.current.register,
@@ -117,7 +117,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       case 'insert':
         if (change.text) {
           const newCursor = cursor.insert(change.text)
-          props.onChange(newCursor.text)
+          props.onChange(newCursor.text, newCursor.offset)
           textInput.setOffset(newCursor.offset)
         }
         break
@@ -290,7 +290,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       state.mode === 'NORMAL' &&
       state.command.type === 'idle'
     ) {
-      props.onChange('?')
+      props.onChange('?', textInput.offset)
     }
   }
 

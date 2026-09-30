@@ -11,6 +11,7 @@ import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { isCommandImmediate } from '../types/command.js'
 import { DiffController } from '../services/diff/controller.js'
+import { QueryGuard } from '../utils/QueryGuard.js'
 import {
   getUserContextInstructionFiles,
   withUserContextInstructionFiles,
@@ -44,7 +45,11 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
       return ts.visitNode(root, visit) as ts.SourceFile
     }] },
   }).outputText
-  return (scope: Record<string, any>) => new Function('scope', `with (scope) { ${js}; return extracted; }`)({ getModHttpServices, ...scope })
+  return (scope: Record<string, any>) => new Function(
+    'scope',
+    'getModHttpServices',
+    `with (scope) { ${js}; return extracted; }`,
+  )(scope, getModHttpServices)
 }
 
 test('REPL sizes the dock from the shown pane requested body columns', () => {
@@ -123,12 +128,57 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
   expect(prompt.isBlocked()).toBe(true)
 })
 
-test('Mods prompt suggestion requires a mounted box and reads live loading state', async () => {
+test('PromptInput keeps Mod suggestions visible during local command dispatch', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile(
+    'REPL.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  )
+  let responding: ts.Expression | undefined
+  let promptResponding: ts.Expression | undefined
+  function visit(node: ts.Node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(file) === 'isAssistantResponding'
+    ) {
+      responding = node.initializer
+    }
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === 'isAssistantResponding' &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer)
+    ) {
+      promptResponding = node.initializer.expression
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+
+  expect(responding).toBeDefined()
+  expect(promptResponding?.getText(file)).toBe('isAssistantResponding')
+  const evaluate = new Function(
+    'isExternalLoading',
+    'isQueryActive',
+    'queryGuard',
+    `return ${responding!.getText(file)}`,
+  )
+  expect(evaluate(false, true, { isDispatching: true })).toBe(false)
+  expect(evaluate(false, true, { isDispatching: false })).toBe(true)
+  expect(evaluate(true, false, { isDispatching: false })).toBe(true)
+  expect(evaluate(false, false, { isDispatching: false })).toBe(false)
+})
+
+test('Mods prompt suggestion requires a mounted box and reads live query state', async () => {
   let services: any
   let stateWrites = 0
   const inputValueRef = { current: '' }
   const insertTextRef = { current: null as null | { cursorOffset: number } }
-  const isLoadingRef = { current: false }
+  const queryGuard = new QueryGuard()
+  const isExternalLoadingRef = { current: false }
   const inputModeRef = { current: 'prompt' }
   const modTypeaheadActiveRef = { current: false }
   const appState = { viewingAgentTaskId: null as string | null }
@@ -138,7 +188,7 @@ test('Mods prompt suggestion requires a mounted box and reads live loading state
     setAppState: () => { stateWrites++ }, messagesRef: { current: [] },
     getFirstPartyCredential: async () => null,
     modToolContextRef: { current: noop }, inputValueRef, insertTextRef,
-    isLoadingRef, inputModeRef, modTypeaheadActiveRef,
+    queryGuard, isExternalLoadingRef, inputModeRef, modTypeaheadActiveRef,
     store: { getState: () => appState },
     modPromptBlockedRef: { current: false },
   })
@@ -155,9 +205,14 @@ test('Mods prompt suggestion requires a mounted box and reads live loading state
   appState.viewingAgentTaskId = 'agent-1'
   expect(prompt.canSuggest()).toBe(false)
   appState.viewingAgentTaskId = null
-  isLoadingRef.current = true
+  queryGuard.reserve()
+  expect(prompt.canSuggest()).toBe(true)
+  queryGuard.tryStart()
   expect(prompt.canSuggest()).toBe(false)
-  isLoadingRef.current = false
+  queryGuard.forceEnd()
+  isExternalLoadingRef.current = true
+  expect(prompt.canSuggest()).toBe(false)
+  isExternalLoadingRef.current = false
   modTypeaheadActiveRef.current = true
   expect(prompt.canSuggest()).toBe(false)
   expect(prompt.suggest('hidden by completion', 'fixture@test')).toBe(false)
@@ -184,7 +239,8 @@ test('Mods pending prompt suggestion rechecks live composer ownership', () => {
       modPromptBlockedRef: { current: false },
       insertTextRef: { current: { cursorOffset: 0 } },
       inputValueRef: { current: '' },
-      isLoadingRef: { current: false },
+      isExternalLoadingRef: { current: false },
+      queryGuard: new QueryGuard(),
       inputModeRef,
       modTypeaheadActiveRef: { current: false },
       store: { getState: () => appState },
@@ -333,11 +389,10 @@ test('diff keeps open intent across temporary width and dock restrictions but re
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   let state = { diffSidebarVisible: true }
-  let fullscreen = true
   const scope = {
     get diffSidebarVisible() { return state.diffSidebarVisible },
     modTerminalSize: { columns: 144 }, modDock: [] as unknown[],
-    MIN_DIFF_SIDEBAR_COLUMNS: 110, isFullscreenEnvEnabled: () => fullscreen,
+    MIN_DIFF_SIDEBAR_COLUMNS: 110,
     useEffect: (effect: () => void) => effect(),
     setAppState: (update: (previous: typeof state) => typeof state) => { state = update(state) },
   }
@@ -353,10 +408,6 @@ test('diff keeps open intent across temporary width and dock restrictions but re
   expect(state.diffSidebarVisible).toBe(true)
   scope.modDock = []
   expect(renderSidebar()).toBe(true)
-  fullscreen = false
-  expect(renderSidebar()).toBe(false)
-  fullscreen = true
-  expect(renderSidebar()).toBe(true)
   state.diffSidebarVisible = false
   for (const columns of [109, 110, 144]) {
     scope.modTerminalSize.columns = columns
@@ -364,14 +415,63 @@ test('diff keeps open intent across temporary width and dock restrictions but re
   }
 })
 
+test('Diff sidebar navigation does not disable PromptInput handling', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let expression = ''
+  function visit(node: ts.Node) {
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === 'isLocalJSXCommandActive' &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer)
+    ) {
+      expression = node.initializer.expression!.getText(file)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(expression).not.toContain('diffSidebarKeyboardActive')
+  expect(expression).toContain('isShowingLocalJSXCommand')
+  expect(expression).toContain('modPaneFocused')
+})
+
+test('Diff sidebar keyboard ownership disables background task navigation', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let options: ts.ObjectLiteralExpression | undefined
+  function visit(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(file) === 'useBackgroundTaskNavigation' &&
+      node.arguments[0] &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      options = node.arguments[0]
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(options).toBeDefined()
+  const isActive = options!.properties.find(
+    property => property.name?.getText(file) === 'isActive',
+  )
+  expect(isActive?.getText(file)).toBe('isActive: !diffSidebarKeyboardActive')
+})
+
 test('Diff dialog owns scroll keys while unrelated overlays keep transcript scrolling', () => {
   const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
   const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   let expression = ''
-  let declaration = ''
+  const declarations: string[] = []
   function visit(node: ts.Node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'diffDialogActive')
-      declaration = `const ${node.getText(file)};`
+    if (
+      ts.isVariableDeclaration(node) &&
+      ['diffDialogActive', 'diffSidebarKeyboardActive'].includes(
+        node.name.getText(file),
+      )
+    )
+      declarations.push(`const ${node.getText(file)};`)
     if (ts.isJsxAttribute(node) && node.name.getText(file) === 'isKeyboardActive' &&
       node.initializer && ts.isJsxExpression(node.initializer))
       expression = node.initializer.expression!.getText(file)
@@ -379,17 +479,36 @@ test('Diff dialog owns scroll keys while unrelated overlays keep transcript scro
   }
   visit(file)
   expect(expression).not.toBe('')
-  const js = ts.transpileModule(`${declaration}\nreturn ${expression};`, {
+  const js = ts.transpileModule(`${declarations.join('\n')}\nreturn ${expression};`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   const state = { activeOverlays: new Set<string>() }
-  const scope = { modPaneFocused: false, useAppState: (select: (s: typeof state) => unknown) => select(state) }
+  const scope = {
+    modPaneFocused: false,
+    diffSidebarVisible: false,
+    canShowDiffSidebar: true,
+    modUiPresentation: {
+      composerEmpty: true,
+      hasDialog: false,
+      keyboardOwned: false,
+    },
+    useAppState: (select: (s: typeof state) => unknown) => select(state),
+  }
   const active = () => new Function('scope', `with (scope) { ${js} }`)(scope)
   expect(active()).toBe(true)
+  scope.diffSidebarVisible = true
+  expect(active()).toBe(false)
+  scope.modUiPresentation.composerEmpty = false
+  expect(active()).toBe(true)
+  scope.modUiPresentation.composerEmpty = true
+  scope.canShowDiffSidebar = false
+  expect(active()).toBe(true)
+  scope.canShowDiffSidebar = true
   state.activeOverlays.add('diff-dialog')
   expect(active()).toBe(false)
   state.activeOverlays.clear()
   state.activeOverlays.add('other-dialog')
+  scope.diffSidebarVisible = false
   expect(active()).toBe(true)
   scope.modPaneFocused = true
   expect(active()).toBe(false)

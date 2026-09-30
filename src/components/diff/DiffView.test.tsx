@@ -35,7 +35,7 @@ if (!process.env[childKey]) {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
-  }, 30000)
+  }, 90000)
 } else {
   const React = await import('react')
   const { Readable, Writable } = await import('node:stream')
@@ -53,6 +53,12 @@ if (!process.env[childKey]) {
   const { default: instances } = await import('../../ink/instances.js')
   const { nodeCache } = await import('../../ink/node-cache.js')
   const { dispatchClick } = await import('../../ink/hit-test.js')
+  const {
+    applyTerminalOutput,
+    createTerminalScreenRenderer,
+    renderedPreview,
+    resizeTerminalScreenRenderer,
+  } = await import('../../utils/pty/terminalScreenRenderer.js')
   const { TerminalSizeContext } =
     await import('../../ink/components/TerminalSizeContext.js')
   const { KeybindingProvider } =
@@ -197,11 +203,23 @@ if (!process.env[childKey]) {
   class Output extends Writable {
     columns = 110
     rows = 32
-    isTTY = false
+    isTTY = true
     output = ''
+    screen = createTerminalScreenRenderer(this.columns, this.rows)
     _write(chunk: Buffer, _encoding: BufferEncoding, done: () => void) {
-      this.output += chunk.toString()
+      const text = chunk.toString()
+      this.output += text
+      applyTerminalOutput(this.screen, text)
       done()
+    }
+    resize(columns: number, rows: number) {
+      this.columns = columns
+      this.rows = rows
+      resizeTerminalScreenRenderer(this.screen, columns, rows)
+      this.emit('resize')
+    }
+    preview() {
+      return renderedPreview(this.screen)
     }
   }
   class Input extends Readable {
@@ -228,6 +246,7 @@ if (!process.env[childKey]) {
     initialDialog = false,
     messages: Message[] = [],
     transcriptKeyboard = false,
+    composerFirst = false,
   ) {
     const stdout = new Output()
     const stdin = new Input()
@@ -241,6 +260,8 @@ if (!process.env[childKey]) {
     let wheels = 0
     let keys = 0
     let rewinds = 0
+    let historyUp = 0
+    let historyDown = 0
     let mounts = 0
     let transcriptScrolls = 0
     const transcriptRef = React.createRef<import('../../ink/components/ScrollBox.js').ScrollBoxHandle>()
@@ -260,6 +281,8 @@ if (!process.env[childKey]) {
       useInput(
         (_input, key) => {
           if (key.wheelUp || key.wheelDown) wheels++
+          else if (key.upArrow) historyUp++
+          else if (key.downArrow) historyDown++
           else keys++
         },
         { isActive: !overlay },
@@ -302,6 +325,7 @@ if (!process.env[childKey]) {
                   {Array.from({ length: 60 }, (_, index) => <Text key={index}>transcript-{index}</Text>)}
                 </ScrollBox>
               </>}
+              {composerFirst && <Composer />}
               {show &&
                 (dialog ? (
                   <DiffDialog
@@ -333,7 +357,7 @@ if (!process.env[childKey]) {
                     </TerminalSizeContext>
                   </Box>
                 ))}
-              <Composer />
+              {!composerFirst && <Composer />}
             </Box>
           </TerminalSizeContext>
         </KeybindingProvider>
@@ -364,7 +388,7 @@ if (!process.env[childKey]) {
     }
     const text = () => textContent(root())
     const wait = async (predicate: () => boolean) => {
-      const deadline = Date.now() + 2000
+      const deadline = Date.now() + 5000
       while (!predicate() && Date.now() < deadline)
         await new Promise(resolve => setTimeout(resolve, 10))
       expect(predicate()).toBe(true)
@@ -400,18 +424,37 @@ if (!process.env[childKey]) {
       wait,
       click,
       key,
+      keyChunk: (sequence: string) => stdin.push(sequence),
       stdout,
+      preview: () => stdout.preview(),
       root,
       store,
+      altScreen: () => {
+        stdout.write('\u001b[?1049h\u001b[2J\u001b[H')
+        ;(
+          instances.get(stdout as never) as unknown as {
+            setAltScreenActive(active: boolean): void
+          }
+        ).setAltScreenActive(true)
+        rerender()
+      },
       scrolls: () =>
         elements().filter(el => el.style.overflowY === 'scroll'),
-      counts: () => ({ closes, wheels, keys, rewinds, mounts, transcriptScrolls }),
+      counts: () => ({
+        closes,
+        wheels,
+        keys,
+        rewinds,
+        historyUp,
+        historyDown,
+        mounts,
+        transcriptScrolls,
+      }),
       transcript: () => transcriptRef.current,
       resize: (columns: number, rows: number) => {
         width = columns
         height = rows
-        stdout.columns = columns
-        stdout.rows = rows
+        stdout.resize(columns, rows)
         rerender()
       },
       keyboard: (value: boolean) => {
@@ -420,6 +463,7 @@ if (!process.env[childKey]) {
       },
       dialog: () => {
         dialog = true
+        show = true
         rerender()
       },
       messages: (value: Message[]) => {
@@ -487,7 +531,7 @@ if (!process.env[childKey]) {
       else controller.dispose()
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test.each(['目录_', 'directory_'])('resized long %s paths stay separate from stats and clickable Ask', async prefix => {
     const { DiffFileList } = await import('./DiffFileList.js')
@@ -722,7 +766,8 @@ if (!process.env[childKey]) {
       expect(list!.scrollTop).toBe(listBeforeLeftWheel)
       expect(body!.scrollTop).toBe(bodyBeforeLeftWheel)
       await ui.key('x')
-      expect(ui.counts().keys).toBe(1)
+      await ui.key('中文')
+      expect(ui.counts().keys).toBe(2)
       await ui.click('file-05.ts')
       expect(controller.getSnapshot().selectedPath).toBe('file-05.ts')
       expect(body!.scrollTop).toBeGreaterThan(0)
@@ -753,6 +798,191 @@ if (!process.env[childKey]) {
       ui.unmount()
     }
   })
+
+  test('active sidebar consumes navigation before an earlier composer listener while text passes through', async () => {
+    const controller = new FixtureController(dataFor(2))
+    const ui = await mount(controller, false, [], false, true)
+    try {
+      ui.keyboard(true)
+      await ui.key('\u001b[B')
+      expect(controller.getSnapshot().selectedPath).toBe('file-01.ts')
+      expect(ui.counts()).toMatchObject({ historyDown: 0, historyUp: 0 })
+
+      await ui.key('\u001b[A')
+      expect(controller.getSnapshot().selectedPath).toBe('file-00.ts')
+      expect(ui.counts()).toMatchObject({ historyDown: 0, historyUp: 0 })
+
+      await ui.key('\r')
+      expect(ui.text()).toContain('Diff · detail')
+      expect(ui.counts().keys).toBe(0)
+
+      await ui.key('\u001b')
+      await ui.wait(() => ui.text().includes('↑/↓ select'))
+      expect(ui.counts().keys).toBe(0)
+      await ui.key('\u001b')
+      await ui.wait(() => ui.counts().closes === 1)
+      expect(ui.counts().keys).toBe(0)
+
+      ui.hide()
+      await ui.key('x')
+      await ui.key('中文')
+      expect(ui.counts().keys).toBe(2)
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  test.each([
+    ['sidebar', false],
+    ['dialog', true],
+  ] as const)(
+    '%s keeps the selected body visible when one stdin chunk moves beyond the render budget',
+    async (_presentation, initialDialog) => {
+      const data = dataFor(16)
+      for (const [index, file] of data.files.entries()) {
+        data.hunks.set(
+          file.path,
+          [
+            patch(
+              `UNIQUE_BODY_${String(index).padStart(2, '0')} [alpha,beta,gamma,delta]`,
+              65,
+            ),
+          ],
+        )
+      }
+      const controller = new FixtureController(data)
+      const ui = await mount(controller, initialDialog)
+      try {
+        await ui.wait(() => ui.text().includes('UNIQUE_BODY_00'))
+        await ui.wait(() =>
+          ui.text().includes('file bodies omitted (render budget)'),
+        )
+        if (!initialDialog) ui.keyboard(true)
+        ui.keyChunk('\u001b[B\u001b[B\u001b[B')
+        await ui.wait(
+          () => controller.getSnapshot().selectedPath === 'file-03.ts',
+        )
+        await ui.wait(() => ui.text().includes('UNIQUE_BODY_03'))
+
+        const heading = ui
+          .elements()
+          .find(
+            element =>
+              element.nodeName === 'ink-text' &&
+              textContent(element) === 'file-03.ts',
+          )!
+        expect(heading).toBeDefined()
+        expect(ui.preview()).toContain('file-03.ts')
+        expect(ui.preview()).toContain('UNIQUE_BODY_03')
+
+        ui.keyChunk('\u001b[A\u001b[A')
+        await ui.wait(
+          () => controller.getSnapshot().selectedPath === 'file-01.ts',
+        )
+        await ui.wait(() => ui.text().includes('UNIQUE_BODY_01'))
+        expect(ui.counts().keys).toBe(0)
+      } finally {
+        ui.unmount()
+      }
+    },
+  )
+
+  test.each([
+    ['sidebar', false],
+    ['dialog', true],
+  ] as const)(
+    '%s opens the selection moved to earlier in the same stdin chunk',
+    async (_presentation, initialDialog) => {
+      const data = dataFor(2)
+      data.hunks.set('file-00.ts', [patch('body-zero', 5)])
+      data.hunks.set('file-01.ts', [patch('body-one', 5)])
+      const controller = new FixtureController(data)
+      const ui = await mount(controller, initialDialog)
+      try {
+        if (!initialDialog) ui.keyboard(true)
+        ui.keyChunk('\u001b[B\r')
+        await ui.wait(() => ui.text().includes('Diff · detail'))
+        expect(controller.getSnapshot().selectedPath).toBe('file-01.ts')
+        expect(ui.text()).toContain('body-one')
+        expect(ui.text()).not.toContain('body-zero')
+      } finally {
+        ui.unmount()
+      }
+    },
+  )
+
+  test('dialog navigates the newly selected source within the same stdin chunk', async () => {
+    const messages = [
+      createUserMessage({ content: 'edit a file' }),
+      createUserMessage({
+        content: [
+          { type: 'tool_result', tool_use_id: 'edit', content: 'done' },
+        ],
+        toolUseResult: {
+          filePath: 'turn.ts',
+          structuredPatch: [patch('turn-body')],
+        },
+      }),
+    ]
+    const controller = new FixtureController(dataFor(2))
+    const ui = await mount(controller, true, messages)
+    try {
+      ui.keyChunk('\u001b[C\u001b[B')
+      await ui.wait(() => controller.getSnapshot().selectedPath === 'turn.ts')
+      expect(controller.getSnapshot().source).toBe(1)
+      expect(ui.text()).toContain('turn-body')
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  test('dialog applies same-chunk keys to the newly entered detail state', async () => {
+    const data = dataFor(2)
+    data.hunks.set('file-00.ts', [patch('long-body', 100)])
+    const controller = new FixtureController(data)
+    const ui = await mount(controller, true)
+    try {
+      ui.keyChunk('\r\u001b[B')
+      await ui.wait(() => ui.text().includes('Diff · detail'))
+      await ui.wait(() => ui.scrolls().length === 1)
+      await ui.wait(() => (ui.scrolls()[0]?.scrollTop ?? 0) > 0)
+      expect(controller.getSnapshot().selectedPath).toBe('file-00.ts')
+
+      ui.keyChunk('\u001b\r\u001b')
+      await ui.wait(() => ui.text().includes('Diff · files'))
+      expect(ui.counts().closes).toBe(0)
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  test.each([
+    ['PageDown', '\u001b[6~'],
+    ['Ctrl+End', '\u001b[1;5F'],
+  ])(
+    'dialog applies same-chunk Enter+%s to the newly entered detail body',
+    async (_key, sequence) => {
+      const data = dataFor(12)
+      data.hunks.set('file-00.ts', [patch('long-body', 100)])
+      const ui = await mount(new FixtureController(data), true)
+      try {
+        const [list, body] = ui.scrolls()
+        expect(list).toBeDefined()
+        expect(body).toBeDefined()
+        const initialBodyScrollTop = body!.scrollTop ?? 0
+        const initialListScrollTop = list!.scrollTop ?? 0
+        expect(body!.scrollHeight).toBeGreaterThan(body!.scrollViewportHeight!)
+
+        ui.keyChunk(`\r${sequence}`)
+        await ui.wait(() => ui.text().includes('Diff · detail'))
+        await ui.wait(() => ui.scrolls().length === 1)
+        await ui.wait(() => (body!.scrollTop ?? 0) > initialBodyScrollTop)
+        expect(list!.scrollTop).toBe(initialListScrollTop)
+      } finally {
+        ui.unmount()
+      }
+    },
+  )
 
   test('dialog handles list/detail keys, long-body scrolling and Escape without Rewind', async () => {
     const data = dataFor(2)
@@ -1024,7 +1254,7 @@ if (!process.env[childKey]) {
       await ui.wait(() => ui.text().includes('Source: Current'))
       await ui.click('Source: Current')
       expect(ui.text()).not.toContain('hidden-test-marker')
-      await ui.click('Noise 1 [off]')
+      await ui.click('Noise 1 [show]')
       expect(ui.text()).toContain('hidden-test-marker')
     } finally {
       ui.unmount()
@@ -1119,7 +1349,14 @@ if (!process.env[childKey]) {
             el => el.nodeName === 'ink-text' && textContent(el) === '✕',
           )!
         const rect = nodeCache.get(close)!
-        expect(rect.x).toBeLessThan(columns)
+        const title = ui
+          .elements()
+          .find(
+            el => el.nodeName === 'ink-text' && textContent(el) === 'Diff',
+          )!
+        const titleRect = nodeCache.get(title)!
+        expect(rect.x).toBe(columns - 2)
+        expect(rect.y).toBe(titleRect.y)
         expect(rect.y).toBeLessThan(10)
       }
       await ui.key('\u001b[B')
@@ -1128,13 +1365,32 @@ if (!process.env[childKey]) {
       await new Promise(resolve => setTimeout(resolve, 20))
       await ui.key('\u001b[B')
       expect(controller.getSnapshot().selectedPath).toBe('file-01.ts')
+      const body = ui.scrolls()[1]!
+      expect(body.scrollHeight).toBeGreaterThan(body.scrollViewportHeight!)
+      const beforePageDown = body.scrollTop!
+      await ui.key('\u001b[6~')
+      expect(body.scrollTop).toBeGreaterThan(beforePageDown)
+      expect(ui.counts().transcriptScrolls).toBe(0)
       expect(ui.counts().mounts).toBe(1)
+      expect(ui.text()).toContain(
+        '↑/↓ select · Enter view · PgUp/PgDn scroll · Esc close',
+      )
+      const close = ui
+        .elements()
+        .find(
+          el => el.nodeName === 'ink-text' && textContent(el) === '✕',
+        )!
+      const closeRect = nodeCache.get(close)!
+      expect(dispatchClick(close.parentNode!, closeRect.x, closeRect.y)).toBe(true)
+      await ui.wait(() => ui.counts().closes === 1)
+      ui.hide()
+      await ui.wait(() => !ui.text().includes('✕'))
       ui.dialog()
       await ui.wait(() => ui.text().includes('Diff · files'))
-      const body = ui.scrolls().at(-1)!
-      expect(body.scrollViewportHeight).toBeGreaterThanOrEqual(1)
+      const dialogBody = ui.scrolls().at(-1)!
+      expect(dialogBody.scrollViewportHeight).toBeGreaterThanOrEqual(1)
       expect(
-        body.scrollViewportTop! + body.scrollViewportHeight!,
+        dialogBody.scrollViewportTop! + dialogBody.scrollViewportHeight!,
       ).toBeLessThanOrEqual(10)
     } finally {
       ui.unmount()
@@ -1186,6 +1442,103 @@ if (!process.env[childKey]) {
     }
   })
 
+  test('real controller filter body publishes preserve physical header rows', async () => {
+    const files = [
+      { path: 'alpha.ts', isPreSession: false },
+      { path: 'beta.ts', isPreSession: false },
+      { path: 'noise.test.ts', isPreSession: false },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        path: `pre-${index}.ts`,
+        isPreSession: true,
+      })),
+    ]
+    const backend: import('../../utils/gitDiff.js').GitDiffBackend = {
+      root: '/synthetic',
+      headKey: async () => 'head',
+      fetch: async mode => ({
+        kind: 'data',
+        data: {
+          root: '/synthetic',
+          mode,
+          stats: {
+            filesCount: files.length,
+            linesAdded: files.length * 4,
+            linesRemoved: 0,
+          },
+          files: files.map(file => ({
+            ...file,
+            added: 4,
+            removed: 0,
+            isBinary: false,
+            renamedFrom: null,
+            isUntracked: false,
+          })),
+          source: { kind: 'working-tree', base: 'HEAD' },
+          baseRef: 'HEAD',
+          isUnborn: false,
+          stalePaths: [],
+          isUntrackedWithheld: false,
+          detailsOmitted: false,
+        },
+      }),
+      fetchBody: async (_snapshot, file) => {
+        await new Promise(resolve => setTimeout(resolve, 20))
+        return { status: 'ready', hunks: [patch(file.path, 4)] }
+      },
+    }
+    const controller = new DiffController({
+      cwd: '/synthetic',
+      createBackend: async () => backend,
+    })
+    await controller.refresh()
+    const ui = await mount(controller)
+    try {
+      ui.resize(180, 43)
+      ui.altScreen()
+      await ui.wait(() =>
+        ui.preview().includes('Noise 1 [show] Pre-session 4 [show]'),
+      )
+      await ui.click('Pre-session 4 [show]')
+      await ui.wait(() => controller.getSnapshot().data.hunks.has('pre-3.ts'))
+      await ui.click('Noise 1 [show]')
+      await ui.wait(() => controller.getSnapshot().data.hunks.has('noise.test.ts'))
+      await new Promise(resolve => setTimeout(resolve, 150))
+
+      const preview = ui.preview()
+      expect(preview).toContain('Noise 1 [hide] Pre-session 4 [hide]')
+      expect(preview).not.toContain('Todos 0/0 · 7/7 files · +28 -0hide]')
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  test('filter labels keep fixed width without stale terminal cells', async () => {
+    const data = dataFor(40)
+    for (const file of data.files.slice(0, 10)) file.isNoise = true
+    for (const file of data.files.slice(10)) file.isPreSession = true
+    const controller = new FixtureController(data)
+    const ui = await mount(controller)
+    try {
+      ui.resize(144, 32)
+      ui.altScreen()
+      await ui.wait(() =>
+        ui.preview().includes('Noise 10 [show] Pre-session 30 [show]'),
+      )
+      await ui.click('Pre-session 30 [show]')
+      expect(ui.preview()).toContain(
+        'Noise 10 [show] Pre-session 30 [hide]',
+      )
+      await ui.click('Noise 10 [show]')
+      expect(ui.preview()).toContain(
+        'Noise 10 [hide] Pre-session 30 [hide]',
+      )
+      expect(ui.preview()).not.toContain('Noise 10 [hide]]')
+      expect(ui.preview()).not.toContain('Pre-session 30 [hide]]')
+    } finally {
+      ui.unmount()
+    }
+  })
+
   test('noise and pre-session filters are independent and cap bodies at 20 files', async () => {
     const data = dataFor(23)
     data.files[0]!.isNoise = true
@@ -1194,16 +1547,18 @@ if (!process.env[childKey]) {
     const ui = await mount(controller)
     try {
       await ui.wait(() => ui.text().includes('No visible changes'))
-      await ui.click('Noise 1 [off]')
+      await ui.click('Noise 1 [show]')
       expect(ui.text()).toContain('file-00.ts')
       expect(ui.text()).not.toContain('file-01.ts')
-      await ui.click('Pre-session 22 [off]')
+      expect(ui.preview()).toContain('Noise 1 [hide] Pre-session 22 [show]')
+      expect(ui.preview()).not.toContain('Noise 1 [hide]]')
+      await ui.click('Pre-session 22 [show]')
       expect(ui.text()).toContain('body-20')
       expect(ui.text()).not.toContain('body-21')
       expect(ui.text()).toContain(
         '2 pre-session bodies omitted (20 file limit)',
       )
-      await ui.click('Noise 1 [on]')
+      await ui.click('Noise 1 [hide]')
       expect(ui.text()).not.toContain('file-00.ts')
       expect(ui.text()).toContain('body-20')
     } finally {

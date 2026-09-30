@@ -9,6 +9,8 @@ type Options = {
   context?: KeybindingContextName
   /** Only handle when active (like useInput's isActive) */
   isActive?: boolean
+  /** Handle before ordinary input listeners. */
+  capture?: boolean
 }
 
 /**
@@ -35,7 +37,7 @@ export function useKeybinding(
   handler: () => void | false | Promise<void>,
   options: Options = {},
 ): void {
-  const { context = 'Global', isActive = true } = options
+  const { context = 'Global', isActive = true, capture = false } = options
   const keybindingContext = useOptionalKeybindingContext()
 
   // Register handler with the context for ChordInterceptor to invoke
@@ -93,7 +95,7 @@ export function useKeybinding(
     [action, context, handler, keybindingContext],
   )
 
-  useInput(handleInput, { isActive })
+  useInput(handleInput, { isActive, capture })
 }
 
 /**
@@ -121,7 +123,7 @@ export function useKeybindings(
   handlers: Record<string, () => void | false | Promise<void>>,
   options: Options = {},
 ): void {
-  const { context = 'Global', isActive = true } = options
+  const { context = 'Global', isActive = true, capture = false } = options
   const keybindingContext = useOptionalKeybindingContext()
 
   // Register all handlers with the context for ChordInterceptor to invoke
@@ -192,5 +194,5 @@ export function useKeybindings(
     [context, handlers, keybindingContext],
   )
 
-  useInput(handleInput, { isActive })
+  useInput(handleInput, { isActive, capture })
 }

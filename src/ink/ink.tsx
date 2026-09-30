@@ -846,12 +846,14 @@ export default class Ink {
       }
 
       if (target !== null) {
+        let displayedTarget = target
         if (this.altScreenActive) {
           // Absolute CUP (1-indexed); next frame's CSI H resets regardless.
           // Emitted after altScreenParkPatch so the declared position wins.
           const row = Math.min(Math.max(target.y + 1, 1), terminalRows)
           const col = Math.min(Math.max(target.x + 1, 1), terminalWidth)
           optimized.push({ type: 'stdout', content: cursorPosition(row, col) })
+          displayedTarget = { x: col - 1, y: row - 1 }
         } else {
           // After the diff (or preamble), cursor is at frame.cursor. If no
           // diff AND previously parked, it's still at the old park position
@@ -866,7 +868,7 @@ export default class Ink {
             optimized.push({ type: 'stdout', content: cursorMove(dx, dy) })
           }
         }
-        this.displayCursor = target
+        this.displayCursor = displayedTarget
       } else {
         // Declaration cleared (input blur, unmount). Restore physical cursor
         // to frame.cursor before forgetting the park position — otherwise
@@ -892,7 +894,14 @@ export default class Ink {
       optimized,
       this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
     )
-    this.writeTerminalImages(frame)
+    const terminalImagesChanged = this.writeTerminalImages(frame)
+    if (terminalImagesChanged) {
+      const cursor = this.displayCursor ?? frame.cursor
+      const row = Math.min(Math.max(cursor.y + 1, 1), terminalRows)
+      const col = Math.min(Math.max(cursor.x + 1, 1), terminalWidth)
+      this.options.stdout.write(cursorPosition(row, col))
+      this.displayCursor = { x: col - 1, y: row - 1 }
+    }
     const writeMs = performance.now() - tWrite
 
     // Update blit safety for the NEXT frame. The frame just rendered
@@ -934,6 +943,9 @@ export default class Ink {
     }
     this.options.onFrame?.({
       durationMs: performance.now() - renderStart,
+      frame,
+      physicalCursor: this.displayCursor ?? frame.cursor,
+      terminalBuffer: this.altScreenActive ? 'alternate' : 'normal',
       phases: {
         renderer: rendererMs,
         diff: diffMs,
@@ -1707,13 +1719,13 @@ export default class Ink {
     reconciler.flushSyncWork()
   }
 
-  private writeTerminalImages(frame: Frame): void {
+  private writeTerminalImages(frame: Frame): boolean {
     const images = frame.terminalImages ?? []
     const next = new Map(images.map(image => [
       image.id,
       `${image.identity}\0${image.x}\0${image.y}\0${image.columns}\0${image.rows}\0${image.sourceLeft}\0${image.sourceTop}\0${image.sourceColumns}\0${image.sourceRows}`,
     ]))
-    if (mapsEqual(this.displayedTerminalImages, next)) return
+    if (mapsEqual(this.displayedTerminalImages, next)) return false
     let output = ''
     for (const [id, identity] of this.displayedTerminalImages) {
       if (next.get(id) !== identity)
@@ -1727,6 +1739,7 @@ export default class Ink {
     }
     if (output) this.options.stdout.write(output)
     this.displayedTerminalImages = next
+    return output.length > 0
   }
 
   unmount(error?: Error | number | null): void {

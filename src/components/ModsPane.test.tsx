@@ -3103,6 +3103,26 @@ describe('ModsPane input repair', () => {
     } finally { instance.unmount() }
   })
 
+  test('native diff owns navigation handlers without disabling PromptInput', () => {
+    const repl = readFileSync(new URL('../screens/REPL.tsx', import.meta.url), 'utf8')
+    expect(repl).toContain(
+      'const diffSidebarKeyboardActive = diffSidebarVisible && canShowDiffSidebar &&',
+    )
+    expect(repl).toContain(
+      'diffSidebarVisible && canShowDiffSidebar &&\n    modUiPresentation.composerEmpty && !modPaneFocused',
+    )
+    expect(repl).toContain(
+      'isKeyboardActive={!modPaneFocused && !diffDialogActive && !diffSidebarKeyboardActive}',
+    )
+    expect(repl).toContain(
+      'isLocalJSXCommandActive={\n                          isShowingLocalJSXCommand || modPaneFocused\n                        }',
+    )
+    expect(repl).toContain('keyboardEnabled={diffSidebarKeyboardActive}')
+    expect(repl).toContain(
+      'isActive={!toolJSX?.isLocalJSXCommand && !diffSidebarKeyboardActive}',
+    )
+  })
+
   test('PromptInput overlay Escape guard leaves pane Escape unarmed and restores normal Rewind handling', async () => {
     const source = readFileSync(new URL('./PromptInput/PromptInput.tsx', import.meta.url), 'utf8')
     const start = source.indexOf('  useInput((char, key) => {\n    // Skip legacy input handling')
@@ -3584,9 +3604,9 @@ describe('ModsPane host layout', () => {
     }
   })
 
-  test('places a native sidebar beside the transcript above a full-width composer', async () => {
+  test.each(['1', '0'])('places a native sidebar above a full-width composer with fullscreen=%s', async fullscreen => {
     const previous = process.env.CLAUDE_CODE_NO_FLICKER
-    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    process.env.CLAUDE_CODE_NO_FLICKER = fullscreen
     const stdout = new Output()
     stdout.columns = 180
     stdout.rows = 50
@@ -3635,6 +3655,7 @@ describe('ModsPane host layout', () => {
         expect(sidebar.x).toBe(transcriptWidth)
         expect(composer.x).toBe(0)
         expect(composer.y).toBe(rows - 1)
+        expect(sidebar.y).toBeLessThan(composer.y)
       }
 
       instance.rerender(<ThemeProvider><Host sidebarOpen={false} /></ThemeProvider>)
@@ -3642,7 +3663,7 @@ describe('ModsPane host layout', () => {
       expect(domElement(stdout, 'TRANSCRIPT:110', 'ink-box').yogaNode!.getComputedWidth()).toBe(110)
       expect(domElement(stdout, 'COMPOSER:110', 'ink-box').yogaNode!.getComputedWidth()).toBe(110)
       expect(elements(stdout, true).some(element => element.text === 'SIDEBAR:40')).toBe(false)
-      expect(composerMounts).toBe(1)
+      expect(composerMounts).toBe(fullscreen === '1' ? 1 : 2)
     } finally {
       instance.unmount()
       if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
@@ -4234,6 +4255,48 @@ describe('ModsPane Ink interaction', () => {
     } finally {
       instance.unmount()
     }
+  })
+
+  test('serializes Input change and submit across a host redraw in one stdin chunk', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const owner = {}
+    const interactions: { drawing: number; kind: string; value?: string }[] = []
+    const errors: unknown[] = []
+    let drawing = 7
+    let handle = 2
+    const rendered: { rerender?: (tree: React.ReactNode) => void } = {}
+    const draw = () => <><EnableInput /><ModsPane
+      pane={pane({ type: 'Input', props: { key: 'reply', autoFocus: true }, press: { plugin: 'fixture', handle } }, {
+        owner, drawing, focusedElement: 'reply',
+      })}
+      onInteract={async (_pane, seenDrawing, _press, kind, _element, value) => {
+        if (seenDrawing !== drawing) throw new Error('stale drawing')
+        if (kind === 'input.change') {
+          await Promise.resolve()
+          drawing++
+          handle++
+          rendered.rerender?.(<ThemeProvider>{draw()}</ThemeProvider>)
+          await settle()
+        }
+        if (seenDrawing !== drawing && kind !== 'input.change') throw new Error('stale drawing')
+        interactions.push({ drawing: seenDrawing, kind, value })
+      }}
+      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+      onError={error => { errors.push(error) }}
+    /></>
+    const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    rendered.rerender = instance.rerender
+    try {
+      await settle()
+      stdin.push('中文\r')
+      for (let index = 0; index < 10 && interactions.length < 2 && errors.length === 0; index++) await settle()
+      expect(errors).toEqual([])
+      expect(interactions).toEqual([
+        { drawing: 7, kind: 'input.change', value: '中文' },
+        { drawing: 8, kind: 'input.submit', value: '中文' },
+      ])
+    } finally { instance.unmount() }
   })
 
   test.each([

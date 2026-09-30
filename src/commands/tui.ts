@@ -113,7 +113,7 @@ const call: LocalJSXCommandCall = async (onDone, context, args) => {
       `Mouse: ${mouse}`,
       `CLAUDE_CODE_DISABLE_MOUSE: ${isMouseTrackingEnabled() ? 'off' : 'on'}`,
       `CLAUDE_CODE_DISABLE_MOUSE_CLICKS: ${isMouseClicksDisabled() ? 'on' : 'off'}`,
-      'Diff sidebar: use /diff in a Git repository with fullscreen and at least 110 columns; otherwise /diff opens a dialog.',
+      'Diff panel: use /diff in a Git repository with at least 110 columns; narrower terminals open a dialog.',
       usage,
     ].join('\n'),
     { display: 'system' },

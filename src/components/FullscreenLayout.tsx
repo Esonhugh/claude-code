@@ -59,7 +59,7 @@ type Props = {
   dockPane?: ReactNode
   /** Width of the Mods dock in terminal columns. Defaults to half the terminal. */
   dockWidth?: number
-  /** Native sidebar content beside the transcript but above the full-width composer. */
+  /** Native sidebar content beside the transcript and above the full-width composer. */
   sidebarPane?: ReactNode
   /** Width of the native sidebar in terminal columns. */
   sidebarWidth?: number
@@ -407,7 +407,7 @@ export function FullscreenLayout({
     }
   }, [])
 
-  if (isFullscreenEnvEnabled()) {
+  if (isFullscreenEnvEnabled() || hasSidebar) {
     // Overlay renders BELOW messages inside the same ScrollBox — user can
     // scroll up to see prior context while a permission dialog is showing.
     // The ScrollBox never unmounts across overlay transitions, so scroll
@@ -570,6 +570,7 @@ export function FullscreenLayout({
   return (
     <>
       {scrollable}
+      {sidebarPane}
       {dockPane}
       {inlinePane}
       {bottom}

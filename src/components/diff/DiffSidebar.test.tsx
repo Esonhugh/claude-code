@@ -231,7 +231,7 @@ if (!process.env[childKey]) {
         return
       }
       if (scenario === 'untracked' || scenario === 'binary') {
-        await click('Pre-session 1 [off]')
+        await click('Pre-session 1 [show]')
         await click(scenario === 'untracked' ? 'new.txt' : 'tracked.txt')
         await waitFor(
           scenario === 'untracked'
@@ -251,7 +251,7 @@ if (!process.env[childKey]) {
         return
       }
       await waitFor('No visible changes (check filters)')
-      await click('Pre-session 1 [off]')
+      await click('Pre-session 1 [show]')
       const fileNode = await waitFor('tracked.txt')
       const fileRect = nodeCache.get(fileNode)!
       stdin.push(`\u001b[<65;${fileRect.x + 1};${fileRect.y + 1}M`)
@@ -277,7 +277,7 @@ if (!process.env[childKey]) {
       expect(stdout.output).toContain('refreshed-marker')
       // File clicks now anchor the continuous body rather than entering detail mode.
       expect(texts().map(textContent).join('\n')).not.toContain('Back to files')
-      await click('Pre-session 0 [on]')
+      await click('Pre-session 0 [hide]')
       const { createUserMessage } = await import('../../utils/messages.js')
       const { ThemeProvider } = await import('../../ink.js')
       messages = [
@@ -314,7 +314,7 @@ if (!process.env[childKey]) {
       ]
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await waitFor('Source: Current')
-      await waitFor('Pre-session 0 [off]')
+      await waitFor('Pre-session 0 [show]')
       await click('✕')
       expect(closed).toBe(true)
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)

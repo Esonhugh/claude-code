@@ -50,6 +50,12 @@ export type FlickerReason = 'resize' | 'offscreen' | 'clear'
 
 export type FrameEvent = {
   durationMs: number
+  /** Frame committed by the render that produced this event. */
+  frame?: Frame
+  /** Physical cursor position after cursor declaration parking. */
+  physicalCursor?: Cursor
+  /** Terminal buffer that received this frame. */
+  terminalBuffer?: 'normal' | 'alternate'
   /** Phase breakdown in ms + patch count. Populated when the ink instance
    *  has frame-timing instrumentation enabled (via onFrame wiring). */
   phases?: {

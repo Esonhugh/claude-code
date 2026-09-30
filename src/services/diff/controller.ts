@@ -21,6 +21,8 @@ type Options = {
   createBackend?: typeof createGitDiffBackend
   loadPreferences?: (root: string) => DiffPreferences
   savePreferences?: (root: string, preferences: DiffPreferences) => void
+  scheduleRedraw?: (callback: () => void) => ReturnType<typeof setTimeout>
+  cancelRedraw?: (timer: ReturnType<typeof setTimeout>) => void
 }
 
 export type DiffViewState = {
@@ -36,7 +38,7 @@ export type DiffViewState = {
 function initialState(): DiffViewState {
   return {
     mode: 'session',
-    data: { stats: null, files: [], hunks: new Map(), loading: false },
+    data: { stats: null, files: [], hunks: new Map(), loading: true },
     armedPath: null,
     selectedPath: null,
     source: null,
@@ -125,7 +127,7 @@ export class DiffController {
   private async tick(): Promise<void> {
     const epoch = this.epoch
     const watchRevision = this.watchRevision
-    await this.refresh()
+    await (this.refreshInFlight ?? this.refresh())
     if (
       this.watchers > 0 &&
       epoch === this.epoch &&
@@ -252,7 +254,9 @@ export class DiffController {
   }
 
   private publishBodies(): void {
-    clearTimeout(this.redraw)
+    if (this.redraw !== undefined) {
+      ;(this.options.cancelRedraw ?? clearTimeout)(this.redraw)
+    }
     this.redraw = undefined
     if (!this.current) return
     const { snapshot, bodies } = this.current
@@ -345,11 +349,14 @@ export class DiffController {
               : body,
           )
           current.loaded.add(file.path)
-          this.redraw ??= setTimeout(() => {
+          this.redraw ??= (
+            this.options.scheduleRedraw ??
+            (callback => setTimeout(callback, 100))
+          )(() => {
             this.redraw = undefined
             if (epoch === this.epoch && this.current === current)
               this.publishBodies()
-          }, 100)
+          })
         }
       }),
     )
@@ -383,7 +390,6 @@ export class DiffController {
       this.autoOpened ||
       this.opening ||
       preference === false ||
-      !surface.isFullscreen ||
       !surface.checkpointing ||
       surface.hasDock ||
       surface.columns < (preference === true ? 110 : 144)
@@ -486,7 +492,9 @@ export class DiffController {
     this.lastFetchRecord = undefined
     clearTimeout(this.poll)
     clearTimeout(this.debounce)
-    clearTimeout(this.redraw)
+    if (this.redraw !== undefined) {
+      ;(this.options.cancelRedraw ?? clearTimeout)(this.redraw)
+    }
     this.redraw = undefined
     this.watchRevision++
     this.options.cwd = cwd
@@ -583,7 +591,9 @@ export class DiffController {
   dispose(): void {
     clearTimeout(this.poll)
     clearTimeout(this.debounce)
-    clearTimeout(this.redraw)
+    if (this.redraw !== undefined) {
+      ;(this.options.cancelRedraw ?? clearTimeout)(this.redraw)
+    }
     this.redraw = undefined
     this.watchers = 0
     this.epoch++

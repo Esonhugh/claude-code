@@ -25,9 +25,10 @@ class Output extends Writable {
   _write(_chunk: Buffer, _encoding: BufferEncoding, callback: () => void) { callback() }
 }
 
-async function navigation({ overlay = false, footer = false, status = 'running', teammate = false, idle = false }: {
+async function navigation({ overlay = false, footer = false, active = true, status = 'running', teammate = false, idle = false }: {
   overlay?: boolean
   footer?: boolean
+  active?: boolean
   status?: LocalAgentTaskState['status']
   teammate?: boolean
   idle?: boolean
@@ -58,7 +59,7 @@ async function navigation({ overlay = false, footer = false, status = 'running',
   })
   const observedKeys: string[] = []
   function Harness() {
-    useBackgroundTaskNavigation()
+    useBackgroundTaskNavigation({ isActive: active })
     useTeammateViewAutoExit()
     useInput((_input, key) => { if (key.escape) observedKeys.push('escape') })
     return null
@@ -72,6 +73,7 @@ async function navigation({ overlay = false, footer = false, status = 'running',
   return {
     store, abortController, currentWorkAbortController, observedKeys,
     async escape() { stdin.push('\u001b'); await new Promise(resolve => setTimeout(resolve, 100)) },
+    async shiftDown() { stdin.push('\u001b[1;2B'); await new Promise(resolve => setTimeout(resolve, 100)) },
     close() { instance.unmount(); instance.cleanup() },
   }
 }
@@ -183,5 +185,14 @@ test('modal Escape leaves the viewed agent and its work untouched', async () => 
     expect(h.abortController.signal.aborted).toBe(false)
     expect(h.store.getState().viewingAgentTaskId).toBe('agent-navigation')
     expect(h.observedKeys).toEqual(['escape'])
+  } finally { h.close() }
+})
+
+test('inactive navigation yields input ownership to the active surface', async () => {
+  const h = await navigation({ active: false })
+  try {
+    await h.shiftDown()
+    expect(h.store.getState().expandedView).toBe('none')
+    expect(h.store.getState().selectedIPAgentIndex).toBe(-1)
   } finally { h.close() }
 })

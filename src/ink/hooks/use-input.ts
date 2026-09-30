@@ -13,6 +13,9 @@ type Options = {
    * @default true
    */
   isActive?: boolean
+
+  /** Register before ordinary input listeners so consumed events cannot reach them. */
+  capture?: boolean
 }
 
 /**
@@ -81,12 +84,16 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
   })
 
   useEffect(() => {
-    internal_eventEmitter?.on('input', handleData)
+    if (options.capture) {
+      internal_eventEmitter?.prependListener('input', handleData)
+    } else {
+      internal_eventEmitter?.on('input', handleData)
+    }
 
     return () => {
       internal_eventEmitter?.removeListener('input', handleData)
     }
-  }, [internal_eventEmitter, handleData])
+  }, [internal_eventEmitter, handleData, options.capture])
 }
 
 export default useInput

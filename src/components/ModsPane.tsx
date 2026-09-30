@@ -152,6 +152,13 @@ type KeyElements = React.RefObject<Map<string, {
 }>>
 type HoverGroup = { plugin: string; scope: string }
 type HoverHandlers = Pick<React.ComponentProps<typeof Box>, 'onMouseEnter' | 'onMouseLeave'>
+type PendingInputInteraction = {
+  owner: object
+  plugin: string
+  key: string
+  kind: 'change' | 'submit'
+  value: string
+}
 
 type HoverGroupEntry = {
   count: number
@@ -1270,7 +1277,7 @@ export function ModsPane({
       }
       return
     }
-    if (pane.focusedElement === undefined || pendingFocus.current > 0) return
+    if (pane.focusedElement === undefined) return
     applyFocus(pane.focusedElement)
   }, [pane.focused, pane.focusedElement, validated.tree])
 
@@ -1773,7 +1780,7 @@ function RenderElementNode({
   if (node.type === 'Select') {
     return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} />
   }
-  return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} />
+  return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} />
 }
 
 function ModClient({
@@ -2278,7 +2285,7 @@ function ModSelect({
 }
 
 function ModInput({
-  node, pane, focusElements, keyElements, onInteract, currentPane, onFocus, onError,
+  node, pane, focusElements, keyElements, onInteract, currentPane, onFocus, onError, client,
 }: {
   node: RenderElement
   pane: ModUiPane
@@ -2288,6 +2295,7 @@ function ModInput({
   currentPane: () => ModUiPane
   onFocus: Props['onFocus']
   onError?: Props['onError']
+  client: boolean
 }): React.ReactNode {
   const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
@@ -2308,18 +2316,55 @@ function ModInput({
   const press = node.press!
   const owner = pane.owner
   const drawing = pane.drawing
+  const pending = React.useRef<PendingInputInteraction[]>([])
+  const running = React.useRef(false)
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
-  const send = (kind: 'change' | 'submit', next: string) => {
-    const current = currentPane()
-    if (!inputAllowed || drawing === undefined || current.owner !== owner || current.drawing !== drawing) return
-    void onInteract(
-      current,
-      drawing,
-      press,
-      kind === 'change' ? 'input.change' : 'input.submit',
-      key,
-      next,
-    ).catch(error => onError?.(error))
+  const send = (kind: 'change' | 'submit', value: string) => {
+    if (client) {
+      if (!inputAllowed || drawing === undefined) return
+      void onInteract(
+        pane,
+        drawing,
+        press,
+        kind === 'change' ? 'input.change' : 'input.submit',
+        key,
+        value,
+      ).catch(error => onError?.(error))
+      return
+    }
+    pending.current.push({ owner, plugin: press.plugin, key, kind, value })
+    if (running.current) return
+    running.current = true
+    void (async () => {
+      try {
+        while (pending.current.length > 0) {
+          const interaction = pending.current.shift()!
+          const current = currentPane()
+          if (!inputAllowed || current.owner !== interaction.owner || current.drawing === undefined) continue
+          let callback: ModUiCallback | undefined
+          const visit = (candidate: RenderElement) => {
+            if (candidate.type === 'Input' && candidate.props?.key === interaction.key &&
+                candidate.press?.plugin === interaction.plugin) callback = candidate.press
+            for (const child of candidate.children ?? []) if (typeof child !== 'string') visit(child)
+          }
+          visit(validateModRenderTree(current.tree).tree)
+          if (!callback) continue
+          await onInteract(
+            current,
+            current.drawing,
+            callback,
+            interaction.kind === 'change' ? 'input.change' : 'input.submit',
+            interaction.key,
+            interaction.value,
+          )
+        }
+      } catch (error) {
+        pending.current = []
+        onError?.(error)
+      } finally {
+        running.current = false
+      }
+    })()
   }
   const replace = (next: string, cursor: number) => {
     valueRef.current = next
