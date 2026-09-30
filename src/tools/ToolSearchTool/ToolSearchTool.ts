@@ -341,12 +341,16 @@ export const ToolSearchTool = buildTool({
   },
   async call(input, context, canUseTool) {
     const {
-      options: { tools: staleTools },
+      options,
       getAppState,
     } = context
     const { query, max_results = 5 } = input
     const appState = getAppState()
-    const tools = staleTools.filter(
+    const currentTools = options.refreshTools?.() ?? options.tools
+    const currentContext = currentTools === options.tools
+      ? context
+      : { ...context, options: { ...options, tools: currentTools } }
+    const tools = currentTools.filter(
       tool =>
         isPlanModeAvailable() ||
         (tool.name !== ENTER_PLAN_MODE_TOOL_NAME &&
@@ -354,14 +358,14 @@ export const ToolSearchTool = buildTool({
             appState.toolPermissionContext.mode === 'plan')),
     )
     const snapshot = context.modsSnapshot ?? context.mods?.capture({
-      toolCatalog: () => createToolCatalogForContext(context),
-      toolHost: () => createModToolHost(context, canUseTool),
+      toolCatalog: () => createToolCatalogForContext(currentContext),
+      toolHost: () => createModToolHost(currentContext, canUseTool),
     })
     let modDescriptions: ReadonlyMap<Tool, ModToolDescription> | undefined
     try {
       if (snapshot?.hasHooks('tool.describe')) {
         modDescriptions = await resolveModToolDescriptions(tools, {
-          tools: staleTools,
+          tools: currentTools,
           agents: context.options.agentDefinitions.activeAgents,
           getToolPermissionContext: async () => appState.toolPermissionContext,
           model: context.options.mainLoopModel,

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { zipSync } from 'fflate'
-import { COMMIT, OFFICIAL, check, cleanRun, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
+import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
 
 const roots = []
 function temp() {
@@ -157,6 +157,7 @@ describe('private fixtures without a compiled TTY', () => {
     expect(() => execFileSync(join(run, 'bin/security'), ['find-generic-password'], { env, stdio: 'pipe' })).toThrow()
     try { execFileSync(join(run, 'bin/security'), [], { env, stdio: 'pipe' }) } catch (error) { expect(error.status).toBe(44) }
     expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:1')
+    expect(env.ENABLE_TOOL_SEARCH).toBe('true')
     expect(env.ANTHROPIC_API_KEY).toContain('fake')
     expect(env.CLAUDE_CODE_SIMPLE).toBeUndefined()
     expect(env.HTTP_PROXY).toBeUndefined()
@@ -166,6 +167,8 @@ describe('private fixtures without a compiled TTY', () => {
     const profile = sandboxProfile(run)
     expect(profile).toContain('(deny network*)')
     expect(profile).toContain('(deny process-exec (literal "/usr/bin/security"))')
+    expect(profile).toContain('(deny file-read-data (require-all')
+    expect(profile).not.toContain('(deny file-read* (require-all')
     expect(profile).toContain('/Library/Keychains')
     expect(profile).toContain('com.apple.securityd')
   })
@@ -258,6 +261,28 @@ describe('builtin-only compiled launcher', () => {
     expect(report.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
   })
 
+  test('adds only the explicit release acceptance fixture when requested', () => {
+    const cache = shortTemp()
+    const binary = join(shortTemp(), 'built-claude')
+    writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    const fixture = plugin(shortTemp())
+    const report = startBuiltinRun(
+      parseArgs(['run-builtin', '--binary', binary, '--cache', cache]),
+      () => 'mods:0.0 %1 12345\n',
+      () => '/usr/local/bin/tmux',
+      undefined,
+      fixture,
+    )
+    expect(report.mode).toBe('builtin-with-inline-acceptance-fixture')
+    expect(report.argv).toContain('--plugin-dir')
+    expect(report.argv).toContain(join(report.run, 'plugin'))
+    expect(report.argv).not.toContain(fixture)
+    expect(report.argv).not.toContain('--plugin-dir=' + fixture)
+    expect(report.plugin.sha256).toBe(inventory(fixture).sha256)
+    expect(report.note).toContain('copied inline acceptance fixture')
+    expect(report.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
+  })
+
   test('fails clearly before tmux when the selected binary is missing', () => {
     const cache = temp()
     let called = false
@@ -267,6 +292,11 @@ describe('builtin-only compiled launcher', () => {
 })
 
 describe('deterministic compiled builtin acceptance', () => {
+  test('waits for an idle prompt after the completion marker before sending a local command', () => {
+    expect(isIdlePrompt('⏺ MODS_TOOLSEARCH_COMPLETE:acceptance123\n✽ Tomfoolering…\n❯ ')).toBe(false)
+    expect(isIdlePrompt('⏺ MODS_TOOLSEARCH_COMPLETE:acceptance123\n❯ \n⏵⏵ bypass permissions on')).toBe(true)
+  })
+
   test('acceptance CLI owns its mock endpoint and accepts no target', () => {
     expect(parseArgs(['accept-builtin', '--cache', '/private/tmp/mlab']).command).toBe('accept-builtin')
     expect(() => parseArgs(['accept-builtin', 'diff'])).toThrow()
@@ -279,8 +309,23 @@ describe('deterministic compiled builtin acceptance', () => {
     const binarySha256 = 'a'.repeat(64)
     const cleanup = { verdict: 'passed', paneDead: true, tmuxKill: { status: 0 }, providerClose: { status: 0 }, status: 0 }
     const pair = {
-      enabled: { binarySha256, cleanup, requests: [request('')], catalog: 'Toggle the diff panel showing uncommitted changes', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
-      disabled: { binarySha256, cleanup, requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on' },
+      enabled: { binarySha256, cleanup, requests: [request('')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
+      disabled: { binarySha256, cleanup, requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
+      securityOrdinary: { binarySha256, cleanup, registration: 'registration=mcp__mods-test-lab__acceptance-probe', toolSearch: 'MODS_TOOLSEARCH_COMPLETE:acceptance123', requests: [
+        { body: { model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Generate a title' }] } },
+        request('MODS_TOOLSEARCH_PROMPT:acceptance123'),
+        { body: { model: 'claude-sonnet-4-5-20250929', messages: [
+          { role: 'user', content: 'MODS_TOOLSEARCH_PROMPT:acceptance123' },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'mods_ts_acceptance123', content: 'found' }] },
+        ] } },
+        { body: { model: 'claude-sonnet-4-5-20250929', messages: [
+          { role: 'user', content: 'MODS_TOOLSEARCH_PROMPT:acceptance123' },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'mods_ts_acceptance123', content: 'found' }] },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'mods_dynamic_acceptance123', content: 'MODS_DYNAMIC_RESULT:acceptance123' }] },
+        ] } },
+      ], suggestionBase: 'MODS_SUGGESTION:base:basecheck\nsuggestion=shown:base:basecheck', suggestionReplacement: 'MODS_SUGGESTION:replacement:replacementcheck\nsuggestion=shown:replacement:replacementcheck', suggestionRollback: 'MODS_SUGGESTION:replacement:rollbackcheck\nsuggestion=shown:replacement:rollbackcheck', opened: 'Mods test lab\nLocal input', interacted: 'Input length=2/256\nControls: {"button":0,"input":1,"submit":1,"select":0}', resized: 'Mods test lab\nInput length=2/256\nControls: {"button":0,"input":1,"submit":1,"select":0}', closed: 'bypass permissions on', reopened: 'Mods test lab\nInput length=2/256\nEvents: background', reclosed: 'bypass permissions on' },
+      securityTeam: { binarySha256, cleanup, registration: 'denied: Managed allowedMcpServers policy does not permit user plugin tool registration' },
+      securityEnterprise: { binarySha256, cleanup, registration: 'denied: Managed allowedMcpServers policy does not permit user plugin tool registration' },
       privacyOff: { binarySha256, cleanup, ledger: [] },
       privacyOn: { binarySha256, cleanup, ledger: [
         { sequence: 1, operation: 'authorize', credentialKind: 'bearer', granted: true },
@@ -292,6 +337,10 @@ describe('deterministic compiled builtin acceptance', () => {
     expect(result.completeness.verdict).toBe('passed')
     expect(result.cleanup.verdict).toBe('passed')
     expect(result.agents.verdict).toBe('passed')
+    expect(result.security.verdict).toBe('passed')
+    expect(result.ui.verdict).toBe('passed')
+    expect(result.dynamicTools.verdict).toBe('passed')
+    expect(result.suggestionReload.verdict).toBe('passed')
     const auxiliary = { body: { model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT MODS_ACCEPT_CLAUDE_MARKER' }] } }
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [auxiliary] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [...pair.enabled.requests, auxiliary] } }).agents.verdict).toBe('passed')
@@ -308,10 +357,25 @@ describe('deterministic compiled builtin acceptance', () => {
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [request('MODS_ACCEPT_CLAUDE_MARKER')] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, requests: [request('')] } }).agents.verdict).toBe('failed')
-    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, catalog: pair.enabled.catalog } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, catalog: 'Toggle the diff panel showing uncommitted changes' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, diff: 'Diff panel shown' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, closed: 'bypass permissions on tracked.txt Enter to view' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, diff: 'tracked.txt +after' } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, dismissalEscapes: 1 } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityTeam: { ...pair.securityTeam, registration: 'registered' } }).security.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, registration: 'denied' } }).security.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, interacted: 'Mods test lab' } }).ui.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, resized: 'Mods test lab' } }).ui.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, reopened: 'Mods test lab\nInput length=2/256' } }).ui.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, toolSearch: '' } }).dynamicTools.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, requests: pair.securityOrdinary.requests.slice(0, 3) } }).dynamicTools.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, requests: [...pair.securityOrdinary.requests, pair.securityOrdinary.requests[3]] } }).dynamicTools.verdict).toBe('failed')
+    for (const mutation of [
+      { suggestionBase: '' },
+      { suggestionReplacement: 'MODS_SUGGESTION:base:replacementcheck\nsuggestion=shown:base:replacementcheck' },
+      { suggestionReplacement: `${pair.securityOrdinary.suggestionReplacement}\n${pair.securityOrdinary.suggestionReplacement}` },
+      { suggestionRollback: 'MODS_SUGGESTION:base:rollbackcheck\nsuggestion=shown:base:rollbackcheck' },
+    ]) expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, ...mutation } }).suggestionReload.verdict).toBe('failed')
   })
 
   test('places configured acceptance evidence inside the sandbox-writable child run', () => {
@@ -332,14 +396,39 @@ describe('deterministic compiled builtin acceptance', () => {
     const { startAcceptanceProvider } = await import('./mods-test-lab.mjs')
     const root = temp()
     const provider = await startAcceptanceProvider(root)
+    const post = body => globalThis.fetch(`${provider.url}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: 'secret-header-must-not-be-recorded' },
+      body: JSON.stringify({ stream: true, model: 'claude-sonnet-4-5-20250929', ...body }),
+    }).then(response => response.text())
     try {
       expect(provider.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-      const response = await globalThis.fetch(`${provider.url}/v1/messages`, { method: 'POST', headers: { authorization: 'secret-header-must-not-be-recorded' }, body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT' }] }) })
-      const text = await response.text()
+      const text = await post({ messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT' }] })
       expect(text).toContain('event: message_start')
       expect(text).toContain('MODS_ACCEPT_RESPONSE')
       expect(text).toContain('event: message_stop')
-      expect(provider.requests).toHaveLength(1)
+
+      const nonce = 'probe123'
+      const toolSearch = await post({ messages: [{ role: 'user', content: `MODS_TOOLSEARCH_PROMPT:${nonce}` }] })
+      expect(toolSearch).toContain('"name":"ToolSearch"')
+      expect(toolSearch).toContain(`select:mcp__mods-test-lab__dynamic_${nonce}`)
+      expect(toolSearch).toContain('"stop_reason":"tool_use"')
+
+      const dynamic = await post({ messages: [
+        { role: 'user', content: `MODS_TOOLSEARCH_PROMPT:${nonce}` },
+        { role: 'assistant', content: [{ type: 'tool_use', id: `mods_ts_${nonce}`, name: 'ToolSearch', input: { query: `select:mcp__mods-test-lab__dynamic_${nonce}` } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `mods_ts_${nonce}`, content: 'found' }] },
+      ] })
+      expect(dynamic).toContain(`"name":"mcp__mods-test-lab__dynamic_${nonce}"`)
+      expect(dynamic).toContain(`partial_json":"{\\"value\\":\\"${nonce}\\"}"`)
+
+      const complete = await post({ messages: [
+        { role: 'user', content: `MODS_TOOLSEARCH_PROMPT:${nonce}` },
+        { role: 'assistant', content: [{ type: 'tool_use', id: `mods_dynamic_${nonce}`, name: `mcp__mods-test-lab__dynamic_${nonce}`, input: { value: nonce } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `mods_dynamic_${nonce}`, content: `MODS_DYNAMIC_RESULT:${nonce}` }] },
+      ] })
+      expect(complete).toContain(`MODS_TOOLSEARCH_COMPLETE:${nonce}`)
+      expect(provider.requests).toHaveLength(4)
       expect(readFileSync(join(root, 'requests.jsonl'), 'utf8')).not.toContain('secret-header-must-not-be-recorded')
       expect((await globalThis.fetch(`${provider.url}/unexpected`)).status).toBe(404)
     } finally { await provider.close() }

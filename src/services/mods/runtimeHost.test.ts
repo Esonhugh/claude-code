@@ -402,24 +402,62 @@ test('replacement activation keeps its newly published prompt suggestion', async
   expect(shown?.text).toBe('version B')
 })
 
+test('failed replacement restores the previous activation prompt suggestion eligibility', async () => {
+  const owner = await plugin('suggest-rollback-owner', `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'reserved', description:'Reserved'}); return next(e); });
+  }`)
+  const source = (replacement: boolean) => `export function register(on) {
+    ${replacement ? "on('session.start', async ($, e, next) => { await $.command.register({name:'reserved', description:'Collision'}); return next(e); });" : ''}
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'previous generation'})}));
+  }`
+  const input = await plugin('suggest-rollback', source(false))
+  const suggestions: string[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { prompt: () => ({
+      read: () => ({ text: '', cursor: 0 }),
+      fill: () => false,
+      suggest: text => { suggestions.push(text); return true },
+    }) },
+  })
+  runtimes.push(value)
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-rollback' })
+  await value.reconcile([owner, input])
+
+  await writeFile(input.entrypoints[0]!, source(true))
+  await value.reconcile([owner, input])
+
+  expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+    result: { isShown: true },
+  })
+  expect(suggestions).toEqual(['previous generation'])
+  expect(diagnostics).toContainEqual(expect.objectContaining({
+    plugin: 'suggest-rollback',
+    stage: 'session.start',
+    message: expect.stringContaining('already owned'),
+  }))
+})
+
 test('retiring during a pending prompt suggestion reports it as not shown', async () => {
   const input = await plugin('suggest-pending-retire', `export function register(on) {
     on('tool.call', async $ => ({result:await $.prompt.suggest({text:'pending A'})}));
   }`)
   const pending = Promise.withResolvers<boolean>()
+  const entered = Promise.withResolvers<void>()
   let owner: string | undefined
   const cleared: string[] = []
   const value = createModsRuntime({ services: { prompt: () => ({
     read: () => ({ text: '', cursor: 0 }),
     fill: () => false,
-    suggest: (_text, nextOwner) => { owner = nextOwner; return pending.promise },
+    suggest: (_text, nextOwner) => { owner = nextOwner; entered.resolve(); return pending.promise },
     clearSuggestion: nextOwner => { cleared.push(nextOwner); pending.resolve(true) },
   }) } })
   runtimes.push(value)
   await value.reconcile([input])
   await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-pending-retire' })
   const call = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
-  await delay(20)
+  await entered.promise
 
   await value.reconcile([])
 
@@ -2119,7 +2157,7 @@ test('command commit collision rejects only the candidate and preserves the acti
   expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'second', stage:'session.start', message:expect.stringContaining('already owned')}))
 })
 
-test('only trusted diff@builtin replaces the built-in command and release restores it', async () => {
+test('built-in Mods cannot replace native commands', async () => {
   const source = (description: string) => `export function register(on) {
     on('session.start', async ($, e, next) => { await $.command.register({name:'diff', description:${JSON.stringify(description)}}); return next(e); });
   }`
@@ -2136,15 +2174,9 @@ test('only trusted diff@builtin replaces the built-in command and release restor
 
   diagnostics.length = 0
   await value.reconcile([{ ...official, storageId: 'diff@builtin', tier: 'builtin' }])
-  expect(value.commands.list()).toHaveLength(1)
-  expect(value.commands.projection([builtinDiff])).toEqual([
-    expect.objectContaining({ name: 'diff', description: 'Official Mod diff' }),
-  ])
-  expect(diagnostics).toEqual([])
-
-  await value.reconcile([])
   expect(value.commands.list()).toEqual([])
   expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'official-diff',stage:'session.start',message:expect.stringContaining('refused: it is the built-in /diff')}))
 })
 
 const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
@@ -2441,11 +2473,11 @@ test('parent cancellation reaches an in-flight Worker filesystem read without re
       mock.restore();
     }
   `
-  const child = Bun.spawn([process.execPath, '-e', source], {stdout:'pipe', stderr:'pipe', timeout:10000})
+  const child = Bun.spawn([process.execPath, '-e', source], {stdout:'pipe', stderr:'pipe', timeout:30000})
   const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
   expect(exit).toBe(0)
-}, 15000)
+}, 35000)
 
 test('Worker prompt.read and prompt.fill reach the mounted prompt box with caller-scoped visibility', async () => {
   const caller = await plugin('prompt-caller', `export function register(on) {

@@ -2,7 +2,8 @@ import type { On } from 'claude-code'
 
 const paneId = 'mods-test-lab'
 const contextMarker = '[mods-test-lab: one-shot context]'
-const usage = '/mods-test [open|status|reset|close|context]'
+const usage = '/mods-test [open|background|status|reset|close|context|register|toolsearch NONCE|suggest TEXT]'
+const generation = 'base'
 const emptyCounts = () => ({ command: 0, tool: 0, prompt: 0, turn: 0 })
 type Event = 'activation' | 'open' | 'status' | 'reset' | 'close' | 'context' |
   'tool' | 'prompt' | 'prompt.context' | 'turn' | 'button' | 'input' | 'submit' | 'select'
@@ -14,6 +15,7 @@ let events: Event[] = []
 let input = ''
 let selection = 'ascii'
 let pendingContext = false
+let pendingToolSearch: string | undefined
 let lastTurn: { reason: string; aborted: boolean } | undefined
 
 function record(event: Event) {
@@ -47,7 +49,7 @@ export function register(on: On) {
     await $.command.register({
       name: 'mods-test',
       description: 'Open the local Mods test lab (no model request)',
-      argumentHint: '[open|status|reset|close|context]',
+      argumentHint: '[open|background|status|reset|close|context|register|toolsearch NONCE|suggest TEXT]',
       immediate: true,
     })
     record('activation')
@@ -55,8 +57,29 @@ export function register(on: On) {
   })
 
   on('command.run', { command: 'mods-test' }, async ($, e) => {
-    const action = e.args.trim() || 'open'
-    if (!['open', 'status', 'reset', 'close', 'context'].includes(action)) return { text: usage }
+    const [action = 'open', argument] = e.args.trim() ? e.args.trim().split(/\s+/, 2) : []
+    if (action === 'toolsearch') {
+      if (!argument || !/^[A-Za-z0-9_-]{1,32}$/.test(argument)) return { text: usage }
+      pendingToolSearch = argument
+      return { text: `MODS_TOOLSEARCH_ARMED:${argument}` }
+    }
+    if (action === 'suggest') {
+      if (!argument || !/^[A-Za-z0-9_-]{1,32}$/.test(argument)) return { text: usage }
+      const result = await $.prompt.suggest({ text: `MODS_SUGGESTION:${generation}:${argument}` })
+      return { text: `suggestion=${result.isShown ? 'shown' : 'hidden'}:${generation}:${argument}` }
+    }
+    if (!['open', 'background', 'status', 'reset', 'close', 'context', 'register'].includes(action)) return { text: usage }
+    if (action === 'register') {
+      try {
+        const registered = await $.tool.register({
+          name: 'acceptance-probe',
+          description: 'Compiled native sec-default policy acceptance probe',
+        })
+        return { text: `registration=${registered.tool}` }
+      } catch (error) {
+        return { text: `registration=${error instanceof Error ? error.message : String(error)}` }
+      }
+    }
     if (action === 'reset') {
       counts = emptyCounts()
       persistent = { activations: persistent.activations, ...emptyCounts() }
@@ -74,11 +97,19 @@ export function register(on: On) {
     if (action === 'context') pendingContext = true
     await $.store.set('counters', persistent)
     if (action === 'open') await $.ui.open({ id: paneId, title: 'Mods test lab', focus: true, closeOnEscape: true })
+    if (action === 'background') await $.ui.open({ id: paneId, title: 'Mods test lab', closeOnEscape: true })
     if (action === 'close') await $.ui.close({ id: paneId })
     await $.ui.invalidate('ui.render')
     if (action === 'status' || action === 'reset') return { text: summary() }
     if (action === 'context') return { text: 'Mods test lab: fixed context armed for the next prompt only.' }
     return {}
+  })
+
+  on('tool.describe', async ($, e, next) => {
+    const result = await next(e)
+    return /^mcp__mods-test-lab__dynamic_[A-Za-z0-9_-]{1,32}$/.test(e.tool)
+      ? { ...result, isDeferred: true }
+      : result
   })
 
   on('tool.call', async ($, e, next) => {
@@ -87,6 +118,24 @@ export function register(on: On) {
     record('tool')
     await $.store.set('counters', persistent)
     await $.ui.invalidate('ui.render')
+    if (e.tool === 'ToolSearch' && pendingToolSearch) {
+      const nonce = pendingToolSearch
+      const expected = `select:mcp__mods-test-lab__dynamic_${nonce}`
+      if (e.query === expected) {
+        pendingToolSearch = undefined
+        await $.tool.register({
+          name: `dynamic_${nonce}`,
+          description: `Mods test lab dynamic tool ${nonce}`,
+          inputSchema: {
+            type: 'object',
+            properties: { value: { type: 'string' } },
+            required: ['value'],
+          },
+        })
+      }
+    }
+    const dynamic = /^mcp__mods-test-lab__dynamic_([A-Za-z0-9_-]{1,32})$/.exec(e.tool)
+    if (dynamic && e.value === dynamic[1]) return { result: `MODS_DYNAMIC_RESULT:${dynamic[1]}` }
     return next(e)
   })
 

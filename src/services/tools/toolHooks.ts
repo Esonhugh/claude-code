@@ -108,6 +108,7 @@ type ClassicToolResult = ClassicResult &
 /** Invocation-local managed Pre pass; never stored in a tool/agent context. */
 export type ManagedPreToolUsePass = {
   input?: ModInput
+  equivalentInputs?: ModInput[]
   result?: ClassicToolResult
   observations?: AggregatedHookResult[]
 }
@@ -246,7 +247,9 @@ async function* runClassicToolHooks(
   const execution = (async () => {
     try {
       const reused = event === 'PreToolUse' && managedPass?.result !== undefined &&
-        isDeepStrictEqual(managedPass.input, input)
+        [managedPass.input, ...(managedPass.equivalentInputs ?? [])].some(value =>
+          isDeepStrictEqual(value, input),
+        )
       const managed: ClassicToolResult = sourceScope === 'non-managed'
         ? {}
         : reused ? managedPass!.result! : await callClassic('managed', input)

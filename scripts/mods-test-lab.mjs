@@ -157,6 +157,7 @@ export function fixtureEnvironment(run, apiUrl = 'http://127.0.0.1:1') {
     HOME: join(run, 'home'), CLAUDE_CONFIG_DIR: join(run, 'config'), XDG_CONFIG_HOME: join(run, 'xdg'), XDG_CACHE_HOME: join(run, 'xdg-cache'), XDG_DATA_HOME: join(run, 'xdg-data'), TMPDIR: join(run, 'tmp'), TMP: join(run, 'tmp'), TEMP: join(run, 'tmp'),
     PATH: `${join(run, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`, SHELL: '/bin/sh', TERM: 'xterm-256color', LANG: 'en_US.UTF-8',
     ANTHROPIC_API_KEY: 'sk-ant-mods-test-lab-fake-not-a-credential', ANTHROPIC_BASE_URL: apiUrl,
+    ENABLE_TOOL_SEARCH: 'true',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1',
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
   }
@@ -188,7 +189,7 @@ export function sandboxProfile(run, inspect = false) {
   const path = value => JSON.stringify(value)
   const home = realpathSync(homedir())
   const exceptions = [`(require-not (subpath ${path(run)}))`, ...(inspect ? [`(require-not (subpath ${path(REPO)}))`] : [])]
-  return `(version 1)\n(allow default)\n(deny file-write* (require-all (require-not (subpath ${path(run)})) (require-not (subpath "/dev"))))\n(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-bind (local ip "localhost:*"))\n(allow network* (local unix-socket) (remote unix-socket))\n(deny process-exec (literal "/usr/bin/security"))\n(deny file-read* (require-all (subpath ${path(home)}) ${exceptions.join(' ')}))\n${[join(home, 'Library/Keychains'), '/Library/Keychains', '/System/Library/Keychains', '/Library/Managed Preferences', '/Library/Application Support/ClaudeCode', '/etc/claude-code', join(REPO, '.claude'), join(REPO, '.env')].map(value => `(deny file-read* (subpath ${path(value)}))`).join('\n')}\n(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))\n`
+  return `(version 1)\n(allow default)\n(deny file-write* (require-all (require-not (subpath ${path(run)})) (require-not (subpath "/dev"))))\n(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-bind (local ip "localhost:*"))\n(allow network* (local unix-socket) (remote unix-socket))\n(deny process-exec (literal "/usr/bin/security"))\n(deny file-read-data (require-all (subpath ${path(home)}) ${exceptions.join(' ')}))\n${[join(home, 'Library/Keychains'), '/Library/Keychains', '/System/Library/Keychains', '/Library/Managed Preferences', '/Library/Application Support/ClaudeCode', '/etc/claude-code', join(REPO, '.claude'), join(REPO, '.env')].map(value => `(deny file-read* (subpath ${path(value)}))`).join('\n')}\n(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))\n`
 }
 
 export async function inspectPlugin(plugin) {
@@ -269,29 +270,34 @@ export function startRun(options) {
   return report
 }
 
-export function startBuiltinRun(options, execute = execFileSync, findTmux = () => execFileSync('/usr/bin/which', ['tmux'], { encoding: 'utf8' }).trim(), configure) {
+export function startBuiltinRun(options, execute = execFileSync, findTmux = () => execFileSync('/usr/bin/which', ['tmux'], { encoding: 'utf8' }).trim(), configure, inlinePlugin) {
   const cache = cacheDirectory(options.cache)
   if (!existsSync(options.binary) || !lstatSync(options.binary).isFile()) throw new Error(`Built Claude binary not found: ${options.binary}`)
   const run = createRun(cache, 'run-builtin')
   const socket = join(run, 'tmux.sock')
   if (Buffer.byteLength(socket) >= 100) throw new Error(`Socket path too long; use --cache /private/tmp/mods-test-lab. Preserved ${run}`)
   const tmux = findTmux()
-  const env = prepareFixture(run)
+  const env = prepareFixture(run, inlinePlugin)
   env.ANTHROPIC_BASE_URL = options.apiUrl
   delete env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
   configure?.(run, env)
   const binary = join(run, 'bin/claude')
   cpSync(options.binary, binary, { errorOnExist: true, force: false })
   const debug = join(run, 'debug.log')
-  const argv = sandboxCommand(run, [binary, '--dangerously-skip-permissions', '--setting-sources', 'user,project,local', '--debug-file', debug])
-  const metadata = { run, socket, session: 'mods', mode: 'builtin-only', binary: options.binary, binarySha256: sha256(readFileSync(binary)), debug, env, argv, uiOnly: options.apiUrl === 'http://127.0.0.1:1', activation: 'not-verified', trigger: 'not-run' }
+  const copiedPlugin = inlinePlugin === undefined ? undefined : join(run, 'plugin')
+  const pluginArgs = copiedPlugin === undefined ? [] : ['--plugin-dir', copiedPlugin]
+  const argv = sandboxCommand(run, [binary, '--dangerously-skip-permissions', ...pluginArgs, '--setting-sources', 'user,project,local', '--debug-file', debug])
+  const metadata = { run, socket, session: 'mods', mode: inlinePlugin === undefined ? 'builtin-only' : 'builtin-with-inline-acceptance-fixture', binary: options.binary, binarySha256: sha256(readFileSync(binary)), ...(copiedPlugin === undefined ? {} : { plugin: inventory(copiedPlugin) }), debug, env, argv, uiOnly: options.apiUrl === 'http://127.0.0.1:1', activation: 'not-verified', trigger: 'not-run' }
   writeJSON(join(run, 'command.json'), metadata)
   const tmuxConfig = join(run, 'tmux.conf')
   writeFileSync(tmuxConfig, 'set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n', { flag: 'wx', mode: 0o600 })
   const child = execute(tmux, ['-S', socket, '-f', tmuxConfig, 'new-session', '-d', '-s', 'mods', '-x', '160', '-y', '50', '-c', join(run, 'project'), '-P', '-F', '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pid}', ...argv], { env, encoding: 'utf8', timeout: 10000 }).trim()
   const [target, pane, serverPid] = child.split(/\s+/)
   const tmuxArgs = [tmux, '-S', socket]
-  const report = { ...metadata, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), capture: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override. Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.' }
+  const note = inlinePlugin === undefined
+    ? 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
+    : 'Compiled builtin launch with one copied inline acceptance fixture under the private run; no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
+  const report = { ...metadata, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), capture: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: `${note} Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.` }
   writeJSON(join(run, 'run.json'), report)
   console.log(JSON.stringify(report, null, 2))
   return report
@@ -316,15 +322,32 @@ export async function startAcceptanceProvider(root) {
       const record = { sequence: requests.length + 1, path: req.url, body }
       requests.push(record)
       appendFileSync(ledger, `${JSON.stringify(record)}\n`)
-      const message = { id: `msg_lab_${requests.length}`, type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: 'MODS_ACCEPT_RESPONSE' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 100, output_tokens: 8 } }
+      const transcript = JSON.stringify(body.messages)
+      const nonce = /MODS_TOOLSEARCH_PROMPT:([A-Za-z0-9_-]{1,32})/.exec(transcript)?.[1]
+      const hasResult = id => body.messages?.some(message =>
+        Array.isArray(message.content) && message.content.some(block => block.type === 'tool_result' && block.tool_use_id === id))
+      let content = { type: 'text', text: 'MODS_ACCEPT_RESPONSE' }
+      if (nonce && hasResult(`mods_dynamic_${nonce}`)) {
+        content = { type: 'text', text: `MODS_TOOLSEARCH_COMPLETE:${nonce}` }
+      } else if (nonce && hasResult(`mods_ts_${nonce}`)) {
+        content = { type: 'tool_use', id: `mods_dynamic_${nonce}`, name: `mcp__mods-test-lab__dynamic_${nonce}`, input: { value: nonce } }
+      } else if (nonce) {
+        content = { type: 'tool_use', id: `mods_ts_${nonce}`, name: 'ToolSearch', input: { query: `select:mcp__mods-test-lab__dynamic_${nonce}` } }
+      }
+      const stopReason = content.type === 'tool_use' ? 'tool_use' : 'end_turn'
+      const message = { id: `msg_lab_${requests.length}`, type: 'message', role: 'assistant', model: body.model, content: [content], stop_reason: stopReason, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 8 } }
       if (!body.stream) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(message)); return }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      const block = content.type === 'tool_use' ? { ...content, input: {} } : { type: 'text', text: '' }
+      const delta = content.type === 'tool_use'
+        ? { type: 'input_json_delta', partial_json: JSON.stringify(content.input) }
+        : { type: 'text_delta', text: content.text }
       for (const event of [
         { type: 'message_start', message: { ...message, content: [], stop_reason: null } },
-        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'MODS_ACCEPT_RESPONSE' } },
+        { type: 'content_block_start', index: 0, content_block: block },
+        { type: 'content_block_delta', index: 0, delta },
         { type: 'content_block_stop', index: 0 },
-        { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 8 } },
+        { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 8 } },
         { type: 'message_stop' },
       ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
       res.end()
@@ -334,8 +357,12 @@ export async function startAcceptanceProvider(root) {
   return { url: `http://127.0.0.1:${server.address().port}`, requests, close: () => new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() }) }
 }
 
+export function isIdlePrompt(text) {
+  return /^❯\s*$/m.test(text) && !/[·✢✳✶✻✽*]\s+[^\n]*…/m.test(text)
+}
+
 export function assessBuiltinAcceptance(pair) {
-  const names = ['privacyOff', 'privacyOn', 'enabled', 'disabled']
+  const names = ['privacyOff', 'privacyOn', 'enabled', 'disabled', 'securityOrdinary', 'securityTeam', 'securityEnterprise']
   const sides = names.map(name => pair[name])
   const complete = sides.every(side => side && typeof side.binarySha256 === 'string' && /^[a-f0-9]{64}$/.test(side.binarySha256) && side.cleanup)
   const matchingBinary = complete && new Set(sides.map(side => side.binarySha256)).size === 1
@@ -347,12 +374,49 @@ export function assessBuiltinAcceptance(pair) {
     enabled.every(row => markers.every(marker => !JSON.stringify(row.body).includes(marker))) &&
     disabled.every(row => markers.every(marker => JSON.stringify(row.body).includes(marker)))
   const diffSides = [pair.enabled, pair.disabled]
-  const diff = diffSides.every(side => side && !side.error && (!side.cleanup || side.cleanup.status === 0)) && pair.enabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
-    !pair.enabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
-    pair.disabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
-    !pair.disabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
+  const diff = diffSides.every(side => side && !side.error && (!side.cleanup || side.cleanup.status === 0)) && diffSides.every(side =>
+    side.catalog.includes('View uncommitted changes and per-turn diffs') &&
+    !side.catalog.includes('Toggle the diff panel showing uncommitted changes')) &&
     diffSides.every(side => ['tracked.txt', '-before', '+after'].every(text => side.diff.includes(text))) &&
-    diffSides.every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view'))
+    diffSides.every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view')) &&
+    diffSides.every(side => side.dismissalEscapes === 2)
+  const registration = side => side?.registration ?? ''
+  const security = registration(pair.securityOrdinary).includes('mcp__mods-test-lab__acceptance-probe') &&
+    [pair.securityTeam, pair.securityEnterprise].every(side =>
+      registration(side).includes('Managed allowedMcpServers policy does not permit user plugin tool registration'))
+  const pane = side => side && !side.error &&
+    side.opened?.includes('Mods test lab') && side.opened?.includes('Local input') &&
+    side.reopened?.includes('Mods test lab') && side.reopened?.includes('Input length=2/256') && side.reopened?.includes('background') &&
+    side.resized?.includes('Mods test lab') && side.resized?.includes('Input length=2/256') && side.resized?.includes('"input":1') && side.resized?.includes('"submit":1') &&
+    side.interacted?.includes('Input length=2/256') && side.interacted?.includes('"input":1') && side.interacted?.includes('"submit":1') &&
+    side.closed?.includes('bypass permissions') && !side.closed?.includes('Mods test lab') &&
+    side.reclosed?.includes('bypass permissions') && !side.reclosed?.includes('Mods test lab')
+  const ui = pane(pair.securityOrdinary)
+  const dynamicNonce = 'acceptance123'
+  const dynamicRequests = (pair.securityOrdinary?.requests ?? []).filter(row =>
+    row.body?.model === 'claude-sonnet-4-5-20250929' &&
+    JSON.stringify(row.body?.messages).includes(`MODS_TOOLSEARCH_PROMPT:${dynamicNonce}`))
+  const latestToolResults = row => {
+    const messages = row.body?.messages ?? []
+    const last = messages.at(-1)
+    return Array.isArray(last?.content)
+      ? last.content.filter(block => block.type === 'tool_result')
+      : []
+  }
+  const dynamicTools = pair.securityOrdinary?.toolSearch?.includes(`MODS_TOOLSEARCH_COMPLETE:${dynamicNonce}`) &&
+    dynamicRequests.length === 3 &&
+    latestToolResults(dynamicRequests[1]).filter(block => block.tool_use_id === `mods_ts_${dynamicNonce}`).length === 1 &&
+    latestToolResults(dynamicRequests[2]).filter(block => block.tool_use_id === `mods_dynamic_${dynamicNonce}` && String(block.content).includes(`MODS_DYNAMIC_RESULT:${dynamicNonce}`)).length === 1
+  const exactOnce = (text, marker) => typeof text === 'string' && text.split(marker).length === 2
+  const suggestionReload =
+    exactOnce(pair.securityOrdinary?.suggestionBase, 'MODS_SUGGESTION:base:basecheck') &&
+    exactOnce(pair.securityOrdinary?.suggestionBase, 'suggestion=shown:base:basecheck') &&
+    exactOnce(pair.securityOrdinary?.suggestionReplacement, 'MODS_SUGGESTION:replacement:replacementcheck') &&
+    exactOnce(pair.securityOrdinary?.suggestionReplacement, 'suggestion=shown:replacement:replacementcheck') &&
+    !pair.securityOrdinary?.suggestionReplacement?.includes('MODS_SUGGESTION:base:replacementcheck') &&
+    exactOnce(pair.securityOrdinary?.suggestionRollback, 'MODS_SUGGESTION:replacement:rollbackcheck') &&
+    exactOnce(pair.securityOrdinary?.suggestionRollback, 'suggestion=shown:replacement:rollbackcheck') &&
+    !pair.securityOrdinary?.suggestionRollback?.includes('MODS_SUGGESTION:base:rollbackcheck')
   const privacyOff = pair.privacyOff?.ledger ?? []
   const privacyOn = pair.privacyOn?.ledger ?? []
   const telemetry = privacyOff.length === 0 && privacyOn.length === 3 &&
@@ -361,10 +425,14 @@ export function assessBuiltinAcceptance(pair) {
     privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
     privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
   return {
-    completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all four sides must record the same valid copied binary hash and complete cleanup evidence' },
-    cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all four sides must observe a dead pane, kill tmux successfully, close the provider successfully, and pass cleanup' },
+    completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all seven sides must record the same valid copied binary hash and complete cleanup evidence' },
+    cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all seven sides must observe a dead pane, kill tmux successfully, close the provider successfully, and pass cleanup' },
     agents: { verdict: agents ? 'passed' : 'failed', reason: 'managed-only must remove both native instruction markers from every main request; disabled must retain both' },
-    diff: { verdict: diff ? 'passed' : 'failed', reason: 'distinct command catalog ownership plus real diff content and dismissal on both sides' },
+    diff: { verdict: diff ? 'passed' : 'failed', reason: 'native command ownership, real diff content, and enabled/disabled dismissal paths must be distinct' },
+    security: { verdict: security ? 'passed' : 'failed', reason: 'ordinary registration must publish while compiled native sec-default denies it for team and enterprise sessions' },
+    ui: { verdict: ui ? 'passed' : 'failed', reason: 'ModsPane must open, own local input, survive resize, close with Escape, and reopen in the current binary' },
+    dynamicTools: { verdict: dynamicTools ? 'passed' : 'failed', reason: 'ToolSearch must discover a tool registered by its outer Mod hook, invoke it once, and return the matching result in one compiled-binary turn' },
+    suggestionReload: { verdict: suggestionReload ? 'passed' : 'failed', reason: 'successful replacement must publish only the new suggestion generation and failed replacement must restore that retained generation exactly once' },
     telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'privacy off must make zero host calls; privacy on must append exactly authorize then sanitized first-party HTTP evidence' },
   }
 }
@@ -528,12 +596,128 @@ export async function acceptBuiltin(options) {
       }
       side.diff = await wait('diff', text => text.includes('tracked.txt') && text.includes('before') && text.includes('after'))
       tmux('send-keys', '-t', launch.target, 'Escape')
-      if (enabled) { await delay(200); tmux('send-keys', '-t', launch.target, 'Escape') }
+      await delay(200)
+      tmux('send-keys', '-t', launch.target, 'Escape')
+      side.dismissalEscapes = 2
       side.closed = await wait('closed', text => text.includes('bypass permissions') && !text.includes('tracked.txt') && !text.includes('Enter to view'))
       await send('/exit')
       const exitDeadline = Date.now() + 45000
       while (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() !== '1') {
         if (Date.now() >= exitDeadline) throw new Error('Timed out during exit')
+        await delay(150)
+      }
+    } catch (error) { side.error = error.message }
+    finally {
+      side.cleanup = await cleanupAcceptanceSide(launch, provider)
+      writeJSON(join(root, 'result.json'), side)
+    }
+  }
+  for (const subscription of [null, 'team', 'enterprise']) {
+    const name = subscription === null ? 'securityOrdinary' : subscription === 'team' ? 'securityTeam' : 'securityEnterprise'
+    const root = directory(join(evidence, name))
+    let provider
+    let launch
+    const side = pair[name] = { registration: '', toolSearch: '', requests: [], suggestionBase: '', suggestionReplacement: '', suggestionRollback: '', opened: '', interacted: '', resized: '', closed: '', reopened: '', captures: {}, binarySha256: sha256(readFileSync(options.binary)) }
+    try {
+      provider = await startAcceptanceProvider(root)
+      side.requests = provider.requests
+      launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
+        env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
+        const configPath = join(run, 'config/.claude.json')
+        writeFileSync(configPath, JSON.stringify({ ...json(configPath), projects: { [join(run, 'project')]: { hasTrustDialogAccepted: true } } }))
+        if (subscription !== null) {
+          env.CLAUDE_CODE_ENTRYPOINT = 'claude-desktop'
+          writeFileSync(join(run, 'config/.credentials.json'), JSON.stringify({ claudeAiOauth: {
+            accessToken: `mods-acceptance-${subscription}`,
+            refreshToken: 'not-used',
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            scopes: ['user:inference'],
+            subscriptionType: subscription,
+            rateLimitTier: null,
+          } }), { mode: 0o600 })
+        }
+      }, join(REPO, 'examples/mods/mods-test-lab'))
+      side.run = launch.run
+      side.target = launch.target
+      side.socket = launch.socket
+      side.binarySha256 = launch.binarySha256
+      const tmux = (...args) => {
+        appendFileSync(join(root, 'commands.jsonl'), `${JSON.stringify(args)}\n`, { mode: 0o600 })
+        return execFileSync(launch.tmux, ['-S', launch.socket, ...args], { encoding: 'utf8', timeout: 10000 })
+      }
+      const capture = label => {
+        const text = tmux('capture-pane', '-p', '-S', '-2000', '-t', launch.target)
+        const path = join(root, `${label}.txt`)
+        writeFileSync(path, text, { mode: 0o600 })
+        side.captures[label] = path
+        return text
+      }
+      const wait = async (label, predicate) => {
+        const deadline = Date.now() + 45000
+        do {
+          const text = capture(label)
+          if (predicate(text)) return text
+          if (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() === '1') throw new Error(`CLI exited during ${label}`)
+          await delay(150)
+        } while (Date.now() < deadline)
+        throw new Error(`Timed out during ${label}`)
+      }
+      const send = async text => { tmux('send-keys', '-t', launch.target, '-l', text); await delay(200); tmux('send-keys', '-t', launch.target, 'Enter') }
+      await wait('ready', text => /bypass permissions/i.test(text))
+      await send('/reload-plugins')
+      await wait('reload', text => text.includes('Reloaded:'))
+      await send('/mods-test register')
+      side.registration = await wait('registration', text => text.includes('registration='))
+      if (subscription === null) {
+        const modulePath = join(launch.run, 'plugin/hooks/register.ts')
+        const replaceGeneration = generation => {
+          const source = readFileSync(modulePath, 'utf8')
+          if (!source.includes("const generation = 'base'")) throw new Error('Acceptance fixture generation marker is missing')
+          writeFileSync(modulePath, source.replace("const generation = 'base'", `const generation = '${generation}'`))
+        }
+        await send('/mods-test toolsearch acceptance123')
+        await wait('toolsearch-armed', text => text.includes('MODS_TOOLSEARCH_ARMED:acceptance123'))
+        await send('MODS_TOOLSEARCH_PROMPT:acceptance123')
+        side.toolSearch = await wait('toolsearch-complete', text => text.includes('MODS_TOOLSEARCH_COMPLETE:acceptance123'))
+        await wait('toolsearch-idle', isIdlePrompt)
+        await send('/mods-test suggest basecheck')
+        side.suggestionBase = await wait('suggestion-base', text => text.includes('MODS_SUGGESTION:base:basecheck') && text.includes('suggestion=shown:base:basecheck'))
+        const reload = async label => {
+          const marker = 'Reloaded:'
+          const before = capture(`${label}-before`)
+          const reloadCount = before.split(marker).length - 1
+          await send('/reload-plugins')
+          await wait(label, text => text.split(marker).length - 1 > reloadCount)
+        }
+        replaceGeneration('replacement')
+        await reload('suggestion-replacement-reload')
+        await send('/mods-test suggest replacementcheck')
+        side.suggestionReplacement = await wait('suggestion-replacement', text => text.includes('MODS_SUGGESTION:replacement:replacementcheck') && text.includes('suggestion=shown:replacement:replacementcheck'))
+        writeFileSync(modulePath, `${readFileSync(modulePath, 'utf8')}\nthrow new Error('MODS_TEST_LAB_REPLACEMENT_FAILURE')\n`)
+        await reload('suggestion-rollback-reload')
+        await send('/mods-test suggest rollbackcheck')
+        side.suggestionRollback = await wait('suggestion-rollback', text => text.includes('MODS_SUGGESTION:replacement:rollbackcheck') && text.includes('suggestion=shown:replacement:rollbackcheck'))
+        await send('/mods-test open')
+        side.opened = await wait('opened', text => text.includes('Mods test lab') && text.includes('Local input'))
+        tmux('send-keys', '-t', launch.target, 'Tab')
+        tmux('send-keys', '-t', launch.target, '-l', '中文')
+        tmux('send-keys', '-t', launch.target, 'Enter')
+        side.interacted = await wait('interacted', text => text.includes('Input length=2/256') && text.includes('"input":1') && text.includes('"submit":1'))
+        tmux('resize-window', '-t', launch.target, '-x', '100', '-y', '35')
+        side.resized = await wait('resized', text => text.includes('Mods test lab') && text.includes('Input length=2/256') && text.includes('"input":1') && text.includes('"submit":1'))
+        tmux('send-keys', '-t', launch.target, 'Escape')
+        side.closed = await wait('closed', text => text.includes('bypass permissions') && !text.includes('Mods test lab'))
+        await send('/mods-test background')
+        side.reopened = await wait('reopened', text => text.includes('Mods test lab') && text.includes('Input length=2/256') && text.includes('background'))
+        tmux('send-keys', '-t', launch.target, 'Tab')
+        await delay(200)
+        tmux('send-keys', '-t', launch.target, 'Escape')
+        side.reclosed = await wait('reclosed', text => text.includes('bypass permissions') && !text.includes('Mods test lab'))
+      }
+      await send('/exit')
+      const exitDeadline = Date.now() + 45000
+      while (tmux('display-message', '-p', '-t', launch.target, '#{pane_dead}').trim() !== '1') {
+        if (Date.now() >= exitDeadline) throw new Error('Timed out during security/UI exit')
         await delay(150)
       }
     } catch (error) { side.error = error.message }

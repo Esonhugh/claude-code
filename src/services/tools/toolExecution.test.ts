@@ -828,6 +828,38 @@ describe('Mods at the whole tool execution boundary', () => {
     }
   })
 
+  test('tool execution resolves runtime-published tools from the refreshed projected catalog', async () => {
+    const f = fixture(
+      async (event, next) => next(event),
+      'mcp__mods-fixture__dynamic',
+    )
+    const refreshed = { ...f.tool, name: 'RefreshedBase' } as Tool
+    const projectionInputs: Tool[][] = []
+    f.context.options.tools = []
+    f.context.options.refreshTools = () => [refreshed]
+    f.context.mods = {
+      ...f.context.mods,
+      tools: {
+        ...f.context.mods!.tools,
+        projection: (tools: Tool[]) => {
+          projectionInputs.push(tools)
+          return [...tools, f.tool]
+        },
+      },
+    }
+
+    const updates = await Array.fromAsync(runToolUse(
+      f.block,
+      f.assistant,
+      async () => ({ behavior: 'allow' }),
+      f.context,
+    ))
+
+    expect(projectionInputs).toEqual([[refreshed]])
+    expect(f.calls).toEqual([{ value: 'original' }])
+    expect(JSON.stringify(updates)).not.toContain('No such tool available')
+  })
+
   test('ToolSearch direct admission binds the actual tool catalog and releases its snapshot', async () => {
     const f = await workerFixture(`export function register(on) {
       on('tool.call', ($, e, next) => next(e));

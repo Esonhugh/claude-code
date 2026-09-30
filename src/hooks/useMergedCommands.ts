@@ -1,6 +1,6 @@
-import uniqBy from 'lodash-es/uniqBy.js'
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import type { Command } from '../commands.js'
+import { getCommandName } from '../types/command.js'
 import type { ModCommands } from '../services/mods/commands.js'
 import { logError } from '../utils/log.js'
 
@@ -61,10 +61,24 @@ export function useMergedCommands(
 ): Command[] {
   return useMemo(() => {
     if (mcpCommands.length > 0) {
-      const initialNames = new Set(initialCommands.map(command => command.name))
-      const uniqueMcpCommands = uniqBy(mcpCommands, 'name').filter(
-        command => !initialNames.has(command.name),
+      const claimedNames = new Set(
+        initialCommands.flatMap(command => [
+          command.name,
+          getCommandName(command),
+          ...(command.aliases ?? []),
+        ]),
       )
+      const uniqueMcpCommands: Command[] = []
+      for (const command of mcpCommands) {
+        const names = [
+          command.name,
+          getCommandName(command),
+          ...(command.aliases ?? []),
+        ]
+        if (names.some(name => claimedNames.has(name))) continue
+        uniqueMcpCommands.push(command)
+        for (const name of names) claimedNames.add(name)
+      }
       return [...initialCommands, ...uniqueMcpCommands]
     }
     return initialCommands

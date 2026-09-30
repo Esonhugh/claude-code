@@ -2158,6 +2158,48 @@ test('query captures a lazy author tool host for the current request context', a
   expect(services.toolHost()).toMatchObject({call:expect.any(Function),check:expect.any(Function)})
 })
 
+test('tool results keep references discovered from the refreshed tool catalog', async () => {
+  const { z } = await import('zod/v4')
+  const makeTool = (name: string) => ({
+    name,
+    inputSchema: z.object({}),
+    inputJSONSchema: { type: 'object', properties: {} },
+    prompt: async () => name,
+    maxResultSizeChars: Infinity,
+    isConcurrencySafe: () => false,
+  }) as unknown as Tool
+  const refreshed = makeTool('RefreshedDeferred')
+  const discovery = {
+    ...makeTool('DynamicDiscovery'),
+    call: async () => ({}),
+    mapToolResultToToolResultBlockParam: (_data: unknown, id: string) => ({
+      type: 'tool_result',
+      tool_use_id: id,
+      content: [{ type: 'tool_reference', tool_name: refreshed.name }],
+    }),
+  } as unknown as Tool
+  let requests = 0
+  const h = harness(async function* (request) {
+    requests++
+    if (requests === 1) {
+      yield createAssistantMessage({ content: [{
+        type: 'tool_use', caller: { type: 'direct' }, id: 'discover-call',
+        name: discovery.name, input: {},
+      }] })
+      return
+    }
+    expect(JSON.stringify(request.messages)).toContain(
+      `\"type\":\"tool_reference\",\"tool_name\":\"${refreshed.name}\"`,
+    )
+    yield response('discovery-done', 'answer')
+  })
+  h.context.options.tools = [discovery]
+  h.context.options.refreshTools = () => [discovery, refreshed]
+  const run = await drain(query(h.params))
+  expect(run.terminal.reason).toBe('completed')
+  expect(requests).toBe(2)
+})
+
 test('model request catalogs follow refreshed tools between query iterations', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mods-catalog-refresh-'))
   const diagnostics: unknown[] = []

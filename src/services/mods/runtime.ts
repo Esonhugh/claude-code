@@ -158,6 +158,7 @@ type Activation = {
   uiStatus?: { text: string | undefined }
   uiLogs?: { text: string; to: 'transcript' | 'debug' }[]
   suggestionOwner: string
+  suggestionEligible: boolean
   uiRelease?: Promise<void>
   dispose?: Promise<void>
 }
@@ -369,13 +370,6 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         ? command.source === 'builtin' || command.source === 'bundled'
         : !command.isMcp && (command.loadedFrom === undefined || command.loadedFrom === 'bundled'),
     ),
-    canReplaceBuiltin: (owner, spec, command) => {
-      const declaration = (owner as Activation).declaration
-      return declaration.storageId === 'diff@builtin' &&
-        declaration.tier === 'builtin' &&
-        spec.name === 'diff' &&
-        command.name === 'diff'
-    },
     describe: async (command, registeredOwner) => {
       const snapshot = capture()
       try {
@@ -534,6 +528,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
 
   function retire(owner: Activation) {
     if (owner.state === 'disposed' || owner.state === 'retiring') return
+    owner.suggestionEligible = false
     owner.state = 'retiring'
     void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
     commands.release(owner)
@@ -1180,7 +1175,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
               op,
               eventInput,
               async rewritten => {
-                if (owner.state !== 'active' || typeof rewritten.text !== 'string' || rewritten.text.trim() === '' ||
+                if (!owner.suggestionEligible || typeof rewritten.text !== 'string' || rewritten.text.trim() === '' ||
                     binding?.surface !== 'terminal' || !binding.isInteractive ||
                     prompt?.read().text !== '' || prompt.canSuggest?.() === false)
                   return { isShown: false }
@@ -1188,7 +1183,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
                   rewritten.text,
                   owner.suggestionOwner,
                 ) === true
-                return { isShown: shown && owner.state === 'active' }
+                return { isShown: shown && owner.suggestionEligible }
               },
               snapshot,
               table,
@@ -1986,6 +1981,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         const remaining = old
           ? built.modules.map(owner => owner === failed ? old : owner)
           : built.modules.filter(owner => owner !== failed)
+        if (old) old.suggestionEligible = true
         await disposeActivation(failed)
         built = await build(remaining, replacements)
         uiTables = await composeUiTables(built.modules, built.table)
@@ -2002,6 +1998,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     publicationNotifications = notifications
     try {
       const replaced = active.filter(owner => !built.modules.includes(owner))
+      for (const owner of replaced) owner.suggestionEligible = false
       await publishUiTables()
       active = built.modules
       for (const owner of active) owner.engineScope = { snapshot: active, table: built.table }
@@ -2104,6 +2101,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     for (const input of loading) {
       const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
+      let suggestionSuspended = false
       try {
         const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? await loadModDeclaration(input)
         ensureLive()
@@ -2111,6 +2109,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           isDeepStrictEqual(old.declaration.options, declaration.options) &&
           old.declaration.name === declaration.name && old.declaration.version === declaration.version &&
           old.declaration.pluginRoot === declaration.pluginRoot && old.declaration.isNative === declaration.isNative) continue
+        if (old) {
+          old.suggestionEligible = false
+          suggestionSuspended = true
+        }
         {
           const seats = [...(cold ? candidates : active).filter(owner => owner !== old), { declaration }].sort(seatOrder)
           const position = seats.findIndex(owner => owner.declaration === declaration)
@@ -2136,6 +2138,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           declaration, environment, state: 'active', references: 0, started: false,
           waits: new Map(), methods: new WeakMap(), controller: activationController,
           suggestionOwner: `${declaration.storageId}:${++activationId}`,
+          suggestionEligible: true,
           operations: createModHostOperations({
             cwd: () => { if (!binding) throw new Error('Module session is not bound'); return services.cwd?.() ?? binding.cwd },
             root: () => { if (!binding) throw new Error('Module session is not bound'); return services.root?.() ?? binding.cwd },
@@ -2154,6 +2157,9 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         else candidates.push(candidate)
         if (old) replacements.set(candidate, old)
       } catch (error) {
+        if (suggestionSuspended && old && active.includes(old)) {
+          old.suggestionEligible = true
+        }
         ensureLive()
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }

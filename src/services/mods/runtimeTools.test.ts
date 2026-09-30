@@ -229,6 +229,44 @@ test('ToolSearch description consumers execute author calls with the current too
   expect(permissions).toEqual(['Offline'])
 })
 
+test('ToolSearch description consumers use the refreshed catalog for author list and calls', async () => {
+  const mod=await plugin('search-refresh-host',`export function register(on) {
+    on('tool.describe',{tool:'Fresh'},async ($,e,next)=>{
+      const listed=await $.tool.list();
+      const result=await $.tool.call({tool:'Fresh',value:'description'});
+      return {...await next(e),description:listed.map(tool=>tool.name).join(',')+':'+result.text,isDeferred:true};
+    });
+  }`)
+  const diagnostics: unknown[]=[],calls: string[]=[]
+  const makeTool=(name:string)=>buildTool({
+    name,inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>name.toLowerCase(),prompt:async()=>name.toLowerCase(),renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(name+':'+input.value);return {data:'needlecapability'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const stale=makeTool('Stale'),fresh=makeTool('Fresh')
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{
+      tools:[stale],refreshTools:()=>[fresh],mcpClients:[],isNonInteractiveSession:true,
+      agentDefinitions:{activeAgents:[]},
+    },
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map(),mcp:{clients:[]}}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await ToolSearchTool.call(
+    {query:'needlecapability',max_results:5},context,
+    async (_tool,input)=>({behavior:'allow',updatedInput:input}),
+  )
+  expect(diagnostics).toEqual([])
+  expect(result.data.matches).toEqual(['Fresh'])
+  expect(calls).toEqual(['Fresh:description'])
+})
+
 test('standalone compaction consumers query author permissions from the current context', async () => {
   const mod=await plugin('compact-host',`export function register(on) {
     on('session.compact',async $=>({skip:(await $.tool.check({tool:'Offline',input:{value:'compact'}})).reason}));

@@ -139,6 +139,29 @@ test('native seating honors managed ownership, explicit omission/position, and o
   expect(getNativeModDeclaration({ ...native! })).toBeUndefined()
 })
 
+test('organization default denies user tool registration when policy settings are absent', async () => {
+  setCachedSettingsForSource('policySettings', null)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.reconcile(
+    seatNativeModPlugins([], settings({ subscriptionType: 'team' })),
+  )
+  await runtime.bind({
+    cwd: root,
+    sessionId: 'native-empty-policy',
+    surface: null,
+    isInteractive: false,
+  })
+  expect(
+    await runtime.dispatch(
+      'tool.register',
+      { name: 'probe' },
+      async () => ({ value: 'registered' }),
+      { origin: { plugin: 'fixture', tier: 'user' } },
+    ),
+  ).toMatchObject({ deny: expect.stringContaining('allowedMcpServers') })
+})
+
 test('provider provenance stays pinned across each protected subject continuation', async () => {
   await writeFile(
     join(root, 'register.ts'),

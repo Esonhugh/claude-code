@@ -79,6 +79,7 @@ import {
 } from './fileSuggestions.js'
 import { generateUnifiedSuggestions } from './unifiedSuggestions.js'
 import { buildCodexAppPluginProjections } from '../services/apps/pluginProjection.js'
+import { filterEnabledCodexAppTools } from '../services/apps/preferences.js'
 import {
   type RemoteFileSuggestionProvider,
   type RemoteFileSuggestionResult,
@@ -521,7 +522,7 @@ export function useTypeahead({
   const mcpResources = useAppState(s => s.mcp.resources)
   const mcpTools = useAppState(s => s.mcp.tools)
   const codexApps = useMemo(
-    () => buildCodexAppPluginProjections(mcpTools),
+    () => buildCodexAppPluginProjections(filterEnabledCodexAppTools(mcpTools)),
     [mcpTools],
   )
   const store = useAppStateStore()

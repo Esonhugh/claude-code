@@ -1830,10 +1830,16 @@ async function* queryLoop(
           shouldPreventContinuation = true
         }
 
+        const currentTools =
+          updatedToolUseContext.options.refreshTools?.() ??
+          updatedToolUseContext.options.tools
+        const normalizedTools =
+          updatedToolUseContext.mods?.tools?.projection(currentTools) ??
+          currentTools
         toolResults.push(
           ...normalizeMessagesForAPI(
             [update.message],
-            toolUseContext.options.tools,
+            normalizedTools,
           ).filter((_) => _.type === 'user'),
         )
       }

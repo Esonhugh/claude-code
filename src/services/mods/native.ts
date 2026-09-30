@@ -26,7 +26,7 @@ const source = `export function register(on) {
         pendingPolicy = $.settings.read({source:'policy'});
       }
       const policy = await pendingPolicy.catch(() => undefined);
-      if (!policy || Array.isArray(policy.allowedMcpServers)) return {deny:'Managed allowedMcpServers policy does not permit user plugin tool registration'};
+      if (!policy || Object.keys(policy).length === 0 || Array.isArray(policy.allowedMcpServers)) return {deny:'Managed allowedMcpServers policy does not permit user plugin tool registration'};
     }
     return next(event);
   });

@@ -1038,6 +1038,62 @@ describe('classic events at existing tool hook boundaries', () => {
     } finally {await runtime.dispose()}
   })
 
+  test('pass-through tool.call reuses managed PreToolUse after observable input backfill', async () => {
+    const marker = join(home, 'backfill-pre')
+    configure({ hooks: { PreToolUse: [{ hooks: [{
+      type: 'command',
+      command: `cat >> '${marker}'`,
+    }] }] } })
+    const f = fixture((event, next) => next(event))
+    Object.assign(f.tool, {
+      outputSchema: z.object({ value: z.string() }),
+      maxResultSizeChars: Infinity,
+      isConcurrencySafe: () => true,
+      validateInput: async () => ({ result: true }),
+      backfillObservableInput: (input: Record<string, unknown>) => {
+        input.derived = 'visible to hooks'
+      },
+      call: async (input: { value: string }) => ({ data: input }),
+      mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) => ({
+        type: 'tool_result', tool_use_id: id, content: data.value,
+      }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    f.context.options.mcpClients = []
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'backfill-pre', name: f.tool.name, input: { value: 'original' } }
+    await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toHaveLength(1)
+  })
+
+  test('invalid managed outer output rewrite keeps the valid result and reports the hook error', async () => {
+    configure({ hooks: { PostToolUse: [{ hooks: [command({ hookSpecificOutput: {
+      hookEventName: 'PostToolUse', updatedToolOutput: { invalid: true },
+    } })] }] } })
+    const f = fixture((event, next) => next(event))
+    Object.assign(f.tool, {
+      outputSchema: z.object({ value: z.string() }),
+      maxResultSizeChars: Infinity,
+      isConcurrencySafe: () => true,
+      validateInput: async () => ({ result: true }),
+      call: async (input: { value: string }) => ({ data: input }),
+      mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) => ({
+        type: 'tool_result', tool_use_id: id, content: data.value,
+      }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    f.context.options.mcpClients = []
+    const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: 'invalid-managed-output', name: f.tool.name, input: { value: 'original' } }
+    const updates = await Array.fromAsync(runToolUse(block, createAssistantMessage({ content: [block] }), async () => ({ behavior: 'allow' }), f.context))
+    const results = updates.flatMap(update =>
+      update.message.type === 'user' && Array.isArray(update.message.message.content)
+        ? update.message.message.content.filter(item => item.type === 'tool_result')
+        : [],
+    )
+    expect(results).toHaveLength(1)
+    expect(results[0]!.content).toBe('original')
+    expect(JSON.stringify(updates)).toContain('does not match ClassicFixture')
+  })
+
   test('managed outer review rewrites a regular output after non-managed classic rewriting', async () => {
     const marker = join(home, 'regular-review')
     configure({ hooks: { PostToolUse: [{ hooks: [{

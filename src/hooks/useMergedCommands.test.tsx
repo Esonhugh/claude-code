@@ -86,6 +86,169 @@ assert.equal(
   'merging additional command sources must preserve the built-in /terminal command',
 )
 
+const aliasedCommand = initialCommands.find(command => command.aliases?.length)
+assert.ok(aliasedCommand?.aliases?.[0])
+const collidingAliasCommand = {
+  ...additionalCommand,
+  name: aliasedCommand.aliases[0],
+} as Command
+const userFacingCommand = {
+  ...additionalCommand,
+  name: 'internal-command',
+  userFacingName: () => 'public-command',
+} as Command
+const collidingUserFacingCommand = {
+  ...additionalCommand,
+  name: 'public-command',
+} as Command
+const existingIdentityCommand = {
+  ...additionalCommand,
+  name: 'existing-raw',
+  userFacingName: () => 'existing-display',
+  aliases: ['existing-alias'],
+} as Command
+const externalDisplayCollisions = [
+  {
+    ...additionalCommand,
+    name: 'display-collides-with-raw',
+    userFacingName: () => 'existing-raw',
+  },
+  {
+    ...additionalCommand,
+    name: 'display-collides-with-display',
+    userFacingName: () => 'existing-display',
+  },
+  {
+    ...additionalCommand,
+    name: 'display-collides-with-alias',
+    userFacingName: () => 'existing-alias',
+  },
+] as Command[]
+const externalAliasCollisions = [
+  {
+    ...additionalCommand,
+    name: 'alias-collides-with-raw',
+    aliases: ['existing-raw'],
+  },
+  {
+    ...additionalCommand,
+    name: 'alias-collides-with-display',
+    aliases: ['existing-display'],
+  },
+  {
+    ...additionalCommand,
+    name: 'alias-collides-with-alias',
+    aliases: ['existing-alias'],
+  },
+] as Command[]
+const firstExternalCommand = {
+  ...additionalCommand,
+  name: 'first-external-raw',
+  userFacingName: () => 'first-external-display',
+  aliases: ['first-external-alias'],
+} as Command
+const externalBatchCollisions = [
+  {
+    ...additionalCommand,
+    name: 'batch-name-collision',
+    aliases: ['first-external-raw'],
+  },
+  {
+    ...additionalCommand,
+    name: 'batch-display-collision',
+    userFacingName: () => 'first-external-alias',
+  },
+  {
+    ...additionalCommand,
+    name: 'first-external-display',
+  },
+] as Command[]
+const laterExternalCommand = {
+  ...additionalCommand,
+  name: 'later-external',
+  aliases: ['later-external-alias'],
+} as Command
+let collisionCommands: Command[] | undefined
+function CaptureCommandCollisions(): null {
+  collisionCommands = useMergedCommands(
+    [...initialCommands, userFacingCommand, existingIdentityCommand],
+    [
+      collidingAliasCommand,
+      collidingUserFacingCommand,
+      ...externalDisplayCollisions,
+      ...externalAliasCollisions,
+      firstExternalCommand,
+      ...externalBatchCollisions,
+      laterExternalCommand,
+    ],
+  )
+  return null
+}
+const collisionInstance = await render(
+  React.createElement(CaptureCommandCollisions),
+  {
+    stdout: new TestStdout() as unknown as NodeJS.WriteStream,
+    patchConsole: false,
+  },
+)
+await new Promise(resolve => setImmediate(resolve))
+collisionInstance.unmount()
+collisionInstance.cleanup()
+assert.ok(collisionCommands)
+assert.equal(
+  collisionCommands.includes(collidingAliasCommand),
+  false,
+  'an external command must not claim a built-in alias',
+)
+assert.equal(
+  collisionCommands.includes(collidingUserFacingCommand),
+  false,
+  'an external command must not claim an existing user-facing name',
+)
+for (const command of externalDisplayCollisions) {
+  assert.equal(
+    collisionCommands.includes(command),
+    false,
+    `an external user-facing name must not claim an existing identity: ${command.name}`,
+  )
+}
+for (const command of externalAliasCollisions) {
+  assert.equal(
+    collisionCommands.includes(command),
+    false,
+    `an external alias must not claim an existing identity: ${command.name}`,
+  )
+}
+assert.equal(
+  collisionCommands.includes(firstExternalCommand),
+  true,
+  'the first external command must be retained',
+)
+for (const command of externalBatchCollisions) {
+  assert.equal(
+    collisionCommands.includes(command),
+    false,
+    `a later external command must not claim an earlier external identity: ${command.name}`,
+  )
+}
+assert.equal(
+  collisionCommands.includes(laterExternalCommand),
+  true,
+  'a non-conflicting later external command must be retained',
+)
+assert.equal(
+  findCommand('first-external-raw', collisionCommands),
+  firstExternalCommand,
+)
+assert.equal(
+  findCommand('first-external-display', collisionCommands),
+  firstExternalCommand,
+)
+assert.equal(
+  findCommand('first-external-alias', collisionCommands),
+  firstExternalCommand,
+)
+
 const { useReplCommands } = await import('./useMergedCommands.js')
 const local = { ...additionalCommand, name: 'local-command' } as Command
 const oldPlugin = { ...additionalCommand, type: 'prompt', source: 'plugin', name: 'plugin-command' } as unknown as Command

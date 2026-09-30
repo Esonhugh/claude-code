@@ -353,8 +353,12 @@ export async function* runToolUse(
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdateLazy, void> {
   const toolName = toolUse.name
+  const refreshedTools =
+    toolUseContext.options.refreshTools?.() ?? toolUseContext.options.tools
+  const currentTools =
+    toolUseContext.mods?.tools?.projection(refreshedTools) ?? refreshedTools
   // First try to find in the available tools (what the model sees)
-  let tool = findToolByName(toolUseContext.options.tools, toolName)
+  let tool = findToolByName(currentTools, toolName)
 
   // If not found, check if it's a deprecated tool being called by alias
   // (e.g., old transcripts calling "KillShell" which is now an alias for "TaskStop")
@@ -683,9 +687,44 @@ function streamedCheckPermissionsAndCallTool(
           mcpServerBaseUrl,
           'managed',
         )) {
-          if ('updatedToolOutput' in result)
-            output = result.updatedToolOutput
-          else if (result.message.type === 'progress') stream.enqueue(result)
+          if ('updatedToolOutput' in result) {
+            const replacement = result.updatedToolOutput
+            let invalid: string | undefined
+            if (!isMcpTool(tool)) {
+              const validation = tool.outputSchema?.safeParse(replacement)
+              if (validation && !validation.success)
+                invalid = validation.error.message
+              else {
+                try {
+                  if (
+                    tool.mapToolResultToToolResultBlockParam(
+                      replacement,
+                      toolUseID,
+                    ) === undefined
+                  )
+                    throw new Error('mapper returned undefined')
+                } catch (error) {
+                  invalid = formatError(error)
+                }
+              }
+            }
+            if (invalid === undefined) output = replacement
+            else {
+              logForDebugging(
+                `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape: ${invalid}`,
+                { level: 'error' },
+              )
+              messages.push({
+                message: createAttachmentMessage({
+                  type: 'hook_error_during_execution',
+                  content: `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape; using original output. ${invalid}`,
+                  hookName: `PostToolUse:${tool.name}`,
+                  toolUseID,
+                  hookEvent: 'PostToolUse',
+                }),
+              })
+            }
+          } else if (result.message.type === 'progress') stream.enqueue(result)
           else messages.push(result)
         }
         // Additive Mod context is also an output surface, reviewed separately.
@@ -974,6 +1013,14 @@ async function checkPermissionsAndCallTool(
   if (backfilledClone) {
     tool.backfillObservableInput!(backfilledClone as Record<string, unknown>)
     processedInput = backfilledClone
+    if (managedPass?.result !== undefined) {
+      const { tool: _tool, tool_use_id: _id, ...backfilledInput } = backfilledClone
+      managedPass.equivalentInputs = [{
+        ...backfilledInput,
+        tool: tool.name,
+        tool_use_id: toolUseID,
+      }]
+    }
   }
 
   let shouldPreventContinuation = false

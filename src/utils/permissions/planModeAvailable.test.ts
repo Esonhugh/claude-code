@@ -162,6 +162,36 @@ describe('Plan mode opt-in', () => {
     expect(getToolSchemaCache().size).toBe(6)
   })
 
+  test('ToolSearch uses the refreshed tool pool after runtime tools change', async () => {
+    configure({ planModeAvailable: false })
+    const permissionContext = getEmptyToolPermissionContext()
+    const refreshedName = 'mcp__plugin_fixture_server__probe_v2'
+    const stale = { name: 'stale' } as never
+    const refreshed = {
+      name: refreshedName,
+      isMcp: true,
+    } as never
+
+    const result = await ToolSearchTool.call(
+      { query: `select:${refreshedName}`, max_results: 5 },
+      {
+        options: {
+          tools: [stale],
+          refreshTools: () => [refreshed],
+          agentDefinitions: { activeAgents: [] },
+        },
+        getAppState: () => ({
+          mcp: { clients: [] },
+          toolPermissionContext: permissionContext,
+        }),
+        abortController: new AbortController(),
+      } as never,
+      async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    )
+
+    expect(result.data.matches).toEqual([refreshedName])
+  })
+
   test('filters disabled Plan tools when ToolSearch reads a stale startup pool', async () => {
     configure({ planModeAvailable: true })
     const context = getEmptyToolPermissionContext()

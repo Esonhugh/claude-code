@@ -53,6 +53,7 @@ if (!process.env[childFlag]) {
   const { createModsRuntime } = await import('./runtime.js')
   const { loadModDeclaration } = await import('./loader.js')
   const { prepareModPlugins } = await import('./plugins.js')
+  const { describeModTool } = await import('./toolCatalog.js')
   const { setOriginalCwd, setInlinePlugins } = await import('../../bootstrap/state.js')
   const { clearPluginCache, loadAllPluginsCacheOnly } = await import('../../utils/plugins/pluginLoader.js')
   const { resetSettingsCache } = await import('../../utils/settings/settingsCache.js')
@@ -66,6 +67,7 @@ if (!process.env[childFlag]) {
   let runtime: ReturnType<typeof createModsRuntime>
   let diagnostics: unknown[]
   let logs: unknown[]
+  let suggestions: string[]
   let presentation = { columns: 160, rows: 40, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false }
 
   beforeEach(async () => {
@@ -82,6 +84,7 @@ if (!process.env[childFlag]) {
     clearPluginCache()
     diagnostics = []
     logs = []
+    suggestions = []
     presentation = { columns: 160, rows: 40, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false }
     runtime = createModsRuntime({
       onDiagnostic: event => diagnostics.push(event),
@@ -89,6 +92,13 @@ if (!process.env[childFlag]) {
         uiPresentation: () => presentation,
         uiLog: (plugin, text) => { logs.push([plugin, text]) },
         uiStatus: (plugin, text) => { logs.push([plugin, text]) },
+        prompt: () => ({
+          read: () => ({ text: '', cursor: 0 }),
+          fill: () => false,
+          suggest: text => { suggestions.push(text); return true },
+          clearSuggestion: () => {},
+          isBlocked: () => false,
+        }),
       },
     })
     await runtime.bind({ cwd: root, sessionId: 'test-lab', surface: 'terminal', isInteractive: true })
@@ -139,8 +149,10 @@ if (!process.env[childFlag]) {
     const module = await command.load()
     expect(await module.call(text => { completions.push(text) }, {
       abortController: new AbortController(),
+      messages: [],
+      options: { tools: [] },
       modCommand: { origin: { kind: 'composer' }, presentation },
-    } satisfies Pick<LocalJSXCommandContext, 'abortController' | 'modCommand'> as unknown as LocalJSXCommandContext, args)).toBeNull()
+    } as unknown as LocalJSXCommandContext, args)).toBeNull()
     expect(completions).toHaveLength(1)
     return completions[0]
   }
@@ -184,16 +196,16 @@ if (!process.env[childFlag]) {
     })
     const declaration = await loadModDeclaration(found.inputs[0]!)
     expect(declaration.modules.map(module => module.path)).toEqual([entry])
-    expect(declaration.calls).toEqual(['command.register', 'store.get', 'store.set', 'ui.close', 'ui.invalidate', 'ui.open', 'ui.resolve'])
+    expect(declaration.calls).toEqual(['command.register', 'prompt.suggest', 'store.get', 'store.set', 'tool.register', 'ui.close', 'ui.invalidate', 'ui.open', 'ui.resolve'])
     expect(runtime.commands.list()).toHaveLength(1)
-    expect(runtime.commands.list()[0]).toMatchObject({ name: 'mods-test', immediate: true, argumentHint: '[open|status|reset|close|context]' })
+    expect(runtime.commands.list()[0]).toMatchObject({ name: 'mods-test', immediate: true, argumentHint: '[open|background|status|reset|close|context|register|toolsearch NONCE|suggest TEXT]' })
     expect(runtime.ui.getSnapshot()).toEqual([])
     expect(await store()).toEqual({ counters: { activations: 1, command: 0, tool: 0, prompt: 0, turn: 0 } })
     const status = await run('status')
     expect(state(status!).counts).toEqual({ command: 1, tool: 0, prompt: 0, turn: 0 })
     expect(status).toContain('activation=1')
     expect(runtime.ui.getSnapshot()).toEqual([])
-    expect(await run('unrecognized CANARY-ARG')).toBe('/mods-test [open|status|reset|close|context]')
+    expect(await run('unrecognized CANARY-ARG')).toBe('/mods-test [open|background|status|reset|close|context|register|toolsearch NONCE|suggest TEXT]')
     expect(logs).toEqual([])
     expect(diagnostics).toEqual([])
   })
@@ -235,10 +247,62 @@ if (!process.env[childFlag]) {
     expect(logs).toEqual([])
     await interact('close', 'press')
     expect(runtime.ui.getSnapshot()).toEqual([])
+    await run('background')
+    expect(runtime.ui.getSnapshot()[0]).toMatchObject({
+      id: 'mods-test-lab',
+      focused: false,
+    })
+    await run('close')
     await run('open')
     await run('close')
     expect(runtime.ui.getSnapshot()).toEqual([])
     expect(diagnostics).toEqual([])
+  })
+
+  test('registers its acceptance probe after session binding', async () => {
+    await activate()
+    expect(await run('register')).toBe('registration=mcp__mods-test-lab__acceptance-probe')
+    expect(runtime.tools.list().map(tool => tool.name)).toEqual([
+      'mcp__mods-test-lab__acceptance-probe',
+    ])
+  })
+
+  test('registers a requested deferred tool inside ToolSearch and answers its dynamic call', async () => {
+    await activate()
+    expect(await run('toolsearch probe123')).toBe('MODS_TOOLSEARCH_ARMED:probe123')
+    const search = {
+      tool: 'ToolSearch',
+      tool_use_id: 'mods_ts_probe123',
+      query: 'select:mcp__mods-test-lab__dynamic_probe123',
+    }
+    expect(await runtime.dispatch('tool.call', search, async event => {
+      expect(event).toEqual(search)
+      const [tool] = runtime.tools.list()
+      expect(tool?.name).toBe('mcp__mods-test-lab__dynamic_probe123')
+      const snapshot = runtime.capture()
+      try {
+        expect(await describeModTool(snapshot, tool!, 'dynamic')).toEqual({
+          description: 'dynamic',
+          isDeferred: true,
+        })
+      } finally {
+        snapshot.release()
+      }
+      return { result: 'search-result' }
+    })).toEqual({ result: 'search-result' })
+    expect(await runtime.dispatch('tool.call', {
+      tool: 'mcp__mods-test-lab__dynamic_probe123',
+      tool_use_id: 'mods_dynamic_probe123',
+      value: 'probe123',
+    }, async () => ({ result: 'core must not answer' }))).toEqual({
+      result: 'MODS_DYNAMIC_RESULT:probe123',
+    })
+  })
+
+  test('publishes the current activation suggestion through a real command', async () => {
+    await activate()
+    expect(await run('suggest first')).toBe('suggestion=shown:base:first')
+    expect(suggestions).toEqual(['MODS_SUGGESTION:base:first'])
   })
 
   test('observes tools exactly once and preserves input, success, and error results without recording content', async () => {
