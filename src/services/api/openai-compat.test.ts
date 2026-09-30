@@ -189,6 +189,58 @@ try {
   delete process.env.OPENAI_BASE_URL
   globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
 
+  const { updateSettingsForSource } = await import('../../utils/settings/settings.js')
+  const daybreakClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key', maxRetries: 0, timeout: 1000,
+  })
+  const daybreakBodies: Array<Record<string, any>> = []
+  globalThis.fetch = (async (_input, init) => {
+    daybreakBodies.push(JSON.parse(String(init?.body)))
+    return wireResponse()
+  }) as typeof fetch
+  const daybreakParams = {
+    model: 'gpt-5.6-sol', max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+  }
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'blue' }).error, null)
+  const blueStream = await daybreakClient.beta.messages.create({ ...daybreakParams, stream: true } as any)
+  for await (const _event of blueStream as unknown as AsyncIterable<any>) { /* consume response */ }
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_blue' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'red' }).error, null)
+  await daybreakClient.beta.messages.create(daybreakParams as any)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_red' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  let forbiddenRequests = 0
+  globalThis.fetch = (async (_input, init) => {
+    forbiddenRequests++
+    daybreakBodies.push(JSON.parse(String(init?.body)))
+    return new Response('{"error":{"message":"Daybreak access denied"}}', { status: 403 })
+  }) as typeof fetch
+  await assert.rejects(
+    () => daybreakClient.beta.messages.create(daybreakParams as any),
+    /OpenAI API 403: .*Daybreak access denied/,
+  )
+  assert.equal(forbiddenRequests, 1)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_red' })
+
+  globalThis.fetch = (async (_input, init) => {
+    daybreakBodies.push(JSON.parse(String(init?.body)))
+    return wireResponse()
+  }) as typeof fetch
+  await (daybreakClient.beta.messages as any).compact(daybreakParams)
+  assert.equal('access_programs' in daybreakBodies.at(-1)!, false)
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: undefined }).error, null)
+  await daybreakClient.beta.messages.create(daybreakParams as any)
+  assert.equal('access_programs' in daybreakBodies.at(-1)!, false)
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
+
   const debugArg = '--debug-to-stderr'
   const originalArgv = process.argv
   const originalStderrWrite = process.stderr.write

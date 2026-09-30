@@ -42,6 +42,13 @@ describe('settings schema', () => {
     expect(result.data.effortLevel).toBe('minimal')
   })
 
+  test('accepts only supported Daybreak programs', () => {
+    expect(SettingsSchema().parse({ daybreak: 'blue' }).daybreak).toBe('blue')
+    expect(SettingsSchema().parse({ daybreak: 'red' }).daybreak).toBe('red')
+    expect(SettingsSchema().parse({}).daybreak).toBeUndefined()
+    expect(SettingsSchema().safeParse({ daybreak: 'standard' }).success).toBe(false)
+  })
+
   test('validates the auto compact window used by production compaction', () => {
     expect(SettingsSchema().parse({ autoCompactWindow: 150_000 }).autoCompactWindow).toBe(150_000)
     expect(SettingsSchema().safeParse({ autoCompactWindow: 99_999 }).success).toBe(false)

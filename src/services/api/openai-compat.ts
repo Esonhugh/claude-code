@@ -27,6 +27,7 @@ import {
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 
 // --- Auth config ---
 
@@ -673,6 +674,9 @@ async function connectSSE(
     store: false,
     stream: true,
     include: ['reasoning.encrypted_content'],
+    ...(payload.access_programs && {
+      access_programs: payload.access_programs,
+    }),
     ...(payload.tools && { tools: payload.tools }),
     ...(payload.tool_choice && { tool_choice: payload.tool_choice }),
     ...(payload.reasoning && { reasoning: payload.reasoning }),
@@ -1269,10 +1273,14 @@ export function createOpenAICompatClient(options: {
       // Extract system as instructions (required by chatgpt codex backend)
       const instructions = serializeOpenAIInstructions(params.system)
       const reasoning = anthropicEffortToOpenAIReasoning(params.output_config?.effort)
+      const daybreak = getInitialSettings().daybreak
       const payload: any = {
         model,
         input,
         instructions,
+        ...(daybreak && {
+          access_programs: { cyber: `daybreak_${daybreak}` },
+        }),
         ...(tools && { tools }),
         ...(toolChoice && { tool_choice: toolChoice }),
         ...(reasoning && { reasoning }),
