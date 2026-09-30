@@ -2075,12 +2075,28 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     const scanned = new Map<ModPluginInput, ModDeclaration>()
     let loading = inputs
     let bootstrap: { modules: Activation[]; table: Nouns } | undefined
+    // A native seat holds the user tier out of the privileged events it wraps.
+    // Its own failure must not leave user Mods running unguarded, so the whole
+    // tier stands down for this reconcile instead.
+    const guards = new Set(inputs.filter(input => getNativeModDeclaration(input) !== undefined))
+    let guardFailed = false
+    const failGuard = (input: ModPluginInput) => {
+      if (!guards.has(input) || guardFailed) return
+      guardFailed = true
+      diagnostic(input.name, 'guard', 'Managed Mods protection did not load; no user Mod is activated')
+    }
+    const withdraw = (owner: Activation) => {
+      candidates.splice(candidates.indexOf(owner), 1)
+      active = active.filter(other => other !== owner)
+      retire(owner)
+    }
     if (cold) {
       for (const input of inputs) {
         try {
           scanned.set(input, getNativeModDeclaration(input) ?? await loadModDeclaration(input))
         } catch (error) {
           ensureLive()
+          failGuard(input)
           diagnostic(input.name, 'load', error)
         }
       }
@@ -2101,6 +2117,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
     for (const input of loading) {
       const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
+      if (guardFailed && (input.tier ?? 'user') === 'user') {
+        if (old) withdraw(old)
+        diagnostic(input.name, 'guard', 'Managed Mods protection is not loaded; this user Mod stands down')
+        continue
+      }
       let suggestionSuspended = false
       try {
         const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? await loadModDeclaration(input)
@@ -2123,11 +2144,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           }
           const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
           if (refusal !== undefined) {
-            if (old) {
-              candidates.splice(candidates.indexOf(old), 1)
-              active = active.filter(owner => owner !== old)
-              retire(old)
-            }
+            if (old) withdraw(old)
+            failGuard(input)
             diagnostic(declaration.name, 'admission', refusal)
             continue
           }
@@ -2161,6 +2179,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           old.suggestionEligible = true
         }
         ensureLive()
+        // A retained previous version still guards the user tier.
+        if (!old) failGuard(input)
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }
     }

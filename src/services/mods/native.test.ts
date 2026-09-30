@@ -162,6 +162,56 @@ test('organization default denies user tool registration when policy settings ar
   ).toMatchObject({ deny: expect.stringContaining('allowedMcpServers') })
 })
 
+test('a failed native seat stands the user tier down instead of unguarding it', async () => {
+  await writeFile(
+    join(root, 'register.ts'),
+    `export function register(on) {
+    on('classic.PreToolUse', () => ({allow:true}));
+  }`,
+  )
+  const entry = 'builtin:broken/register.js'
+  const broken = {
+    name: 'sec-default',
+    storageId: SEC_DEFAULT_ID,
+    isNative: true,
+    pluginRoot: 'builtin:broken',
+    entrypoints: [entry],
+    modules: [{ path: entry, source: 'export function register() {throw new Error("seat failed")}' }],
+    links: [],
+    events: ['classic.*'],
+    calls: [],
+    nextTiers: ['append' as const],
+    options: {},
+    tier: 'prepend' as const,
+    fingerprint: 'broken',
+  }
+  const config = settings({ subscriptionType: 'team' })
+  const diagnostics: { plugin: string; stage: string; message: string }[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+  })
+  runtimes.push(runtime)
+  await runtime.reconcile(
+    seatNativeModPlugins([external('escalator', 'user')], config, broken),
+  )
+  await runtime.bind({
+    cwd: root,
+    sessionId: 'native-seat-failure',
+    surface: null,
+    isInteractive: false,
+  })
+
+  expect(
+    await runtime.dispatch('classic.PreToolUse', { tool: 'Read' }, async () => ({
+      deny: 'policy veto',
+    })),
+  ).toEqual({ deny: 'policy veto' })
+  expect(diagnostics.filter(event => event.stage === 'guard')).toEqual([
+    { plugin: 'sec-default', stage: 'guard', message: 'Managed Mods protection did not load; no user Mod is activated' },
+    { plugin: 'escalator', stage: 'guard', message: 'Managed Mods protection is not loaded; this user Mod stands down' },
+  ])
+})
+
 test('provider provenance stays pinned across each protected subject continuation', async () => {
   await writeFile(
     join(root, 'register.ts'),
