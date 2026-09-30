@@ -20,12 +20,19 @@ const feature = spyOn(
 ).mockImplementation((_name, fallback) => fallback)
 const auth = await import('./auth.js')
 const subscription = spyOn(auth, 'getSubscriptionType').mockReturnValue(null)
+const cacheIdentity = await import('./model/firstPartyModelCacheKey.js')
+const firstPartyCacheKey = spyOn(
+  cacheIdentity,
+  'getFirstPartyModelCacheKey',
+).mockReturnValue(null)
 const bootstrap = await import('../bootstrap/state.js')
 const interactive = spyOn(bootstrap, 'getIsInteractive').mockReturnValue(true)
 const originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+const originalAnthropicBaseURL = process.env.ANTHROPIC_BASE_URL
 const {
   getContextWindowForModel,
   getModelMaxOutputTokens,
+  getSonnet1mExpTreatmentEnabled,
   modelSupports1M,
   resolveContextWindow,
 } = await import('./context.js')
@@ -34,6 +41,8 @@ afterAll(() => {
   mock.restore()
   if (originalEntrypoint === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT
   else process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
+  if (originalAnthropicBaseURL === undefined) delete process.env.ANTHROPIC_BASE_URL
+  else process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseURL
 })
 
 afterEach(() => {
@@ -42,6 +51,8 @@ afterEach(() => {
   delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   if (originalEntrypoint === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT
   else process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
+  if (originalAnthropicBaseURL === undefined) delete process.env.ANTHROPIC_BASE_URL
+  else process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseURL
   capability.mockReturnValue(undefined)
   ant.mockReturnValue(false)
   globalConfig.mockReturnValue({
@@ -49,6 +60,7 @@ afterEach(() => {
   } as unknown as ReturnType<typeof config.getGlobalConfig>)
   feature.mockImplementation((_name, fallback) => fallback)
   subscription.mockReturnValue(null)
+  firstPartyCacheKey.mockReturnValue('anthropic:test')
   interactive.mockReturnValue(true)
 })
 
@@ -172,6 +184,8 @@ test('client data compaction windows use model, surface, and subscription select
   subscription.mockReturnValue('team')
   globalConfig.mockReturnValue({
     autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:test',
+    additionalModelOptionsCacheKey: 'anthropic:test',
     clientDataCache: {
       rowan_thicket: {
         'claude-sonnet-5': {
@@ -195,6 +209,8 @@ test('client data surface selection falls back to the model default', () => {
   subscription.mockReturnValue('team')
   globalConfig.mockReturnValue({
     autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:test',
+    additionalModelOptionsCacheKey: 'anthropic:test',
     clientDataCache: {
       rowan_thicket: {
         'claude-sonnet-5': {
@@ -211,6 +227,67 @@ test('client data surface selection falls back to the model default', () => {
     window: 640_000,
     source: 'clientdata',
   })
+})
+
+test('bootstrap client data is ignored when its identity is not current', () => {
+  globalConfig.mockReturnValue({
+    autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:account-a',
+    additionalModelOptionsCacheKey: 'openai:account-b',
+    clientDataCache: {
+      rowan_thicket: { 'claude-sonnet-5': 400_000 },
+      coral_reef_sonnet: 'true',
+    },
+    autoCompactWindowsCache: { 'claude-sonnet-5': 300_000 },
+  } as unknown as ReturnType<typeof config.getGlobalConfig>)
+
+  expect(resolveContextWindow('claude-sonnet-5')).toEqual({
+    window: 967_000,
+    source: 'model-default',
+  })
+  expect(getSonnet1mExpTreatmentEnabled('claude-sonnet-4-6')).toBe(false)
+})
+
+test('bootstrap client data is ignored when the current account changes', () => {
+  firstPartyCacheKey.mockReturnValue('anthropic:account-b')
+  globalConfig.mockReturnValue({
+    autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:account-a',
+    additionalModelOptionsCacheKey: 'anthropic:account-a',
+    clientDataCache: {
+      rowan_thicket: { 'claude-sonnet-5': 400_000 },
+      coral_reef_sonnet: 'true',
+    },
+    autoCompactWindowsCache: { 'claude-sonnet-5': 300_000 },
+  } as unknown as ReturnType<typeof config.getGlobalConfig>)
+
+  expect(resolveContextWindow('claude-sonnet-5')).toEqual({
+    window: 967_000,
+    source: 'model-default',
+  })
+  expect(getSonnet1mExpTreatmentEnabled('claude-sonnet-4-6')).toBe(false)
+})
+
+test('bootstrap client data is ignored after switching to a gateway', () => {
+  process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
+  firstPartyCacheKey.mockReturnValue(null)
+  globalConfig.mockReturnValue({
+    autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:https://api.anthropic.com/v1:oauth:account-a',
+    additionalModelOptionsCacheKey:
+      'anthropic:https://api.anthropic.com/v1:oauth:account-a',
+    clientDataCache: {
+      rowan_thicket: { 'claude-sonnet-5': 400_000 },
+      coral_reef_sonnet: 'true',
+    },
+    autoCompactWindowsCache: { 'claude-sonnet-5': 300_000 },
+  } as unknown as ReturnType<typeof config.getGlobalConfig>)
+
+  expect(resolveContextWindow('claude-sonnet-5')).toEqual({
+    window: 967_000,
+    source: 'model-default',
+  })
+  expect(getSonnet1mExpTreatmentEnabled('claude-sonnet-4-6')).toBe(false)
 })
 
 test('experiment compaction window applies only to interactive Opus 4.8', () => {
@@ -237,6 +314,8 @@ test('experiment compaction window applies only to interactive Opus 4.8', () => 
 test('bootstrap model defaults apply after an explicit client-data replacement', () => {
   globalConfig.mockReturnValue({
     autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:test',
+    additionalModelOptionsCacheKey: 'anthropic:test',
     clientDataCache: {
       rowan_thicket: { 'claude-sonnet-5': 99_999 },
     },
@@ -255,6 +334,8 @@ test('bootstrap model defaults retain official surface-aware fallback values', (
   process.env.CLAUDE_CODE_ENTRYPOINT = 'local-agent'
   globalConfig.mockReturnValue({
     autoCompactEnabled: true,
+    bootstrapCacheKey: 'anthropic:test',
+    additionalModelOptionsCacheKey: 'anthropic:test',
     autoCompactWindowsCache: {
       'claude-sonnet-5': {
         default: 967_000,

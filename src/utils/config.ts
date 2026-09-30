@@ -562,6 +562,7 @@ export type GlobalConfig = {
   // Client data for server-side experiments (fetched during bootstrap).
   clientDataCache?: Record<string, unknown> | null
   autoCompactWindowsCache?: Record<string, unknown> | null
+  bootstrapCacheKey?: string
 
   // Additional model options for the model picker (fetched during bootstrap).
   additionalModelOptionsCache?: ModelOption[]

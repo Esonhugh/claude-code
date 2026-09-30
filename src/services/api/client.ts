@@ -382,7 +382,7 @@ async function configureApiKeyHeaders(
   }
 }
 
-function getCustomHeaders(): Record<string, string> {
+export function getCustomHeaders(): Record<string, string> {
   const customHeaders: Record<string, string> = {}
   const customHeadersEnv = process.env.ANTHROPIC_CUSTOM_HEADERS
 

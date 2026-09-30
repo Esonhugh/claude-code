@@ -5,6 +5,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { getSubscriptionType } from './auth.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getFirstPartyModelCacheKey } from './model/firstPartyModelCacheKey.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -67,6 +68,13 @@ function clientDataCompactionWindow(model: string): {
   replacesDefault: boolean
 } {
   const config = getGlobalConfig()
+  if (
+    !config.bootstrapCacheKey ||
+    config.bootstrapCacheKey !== config.additionalModelOptionsCacheKey ||
+    config.bootstrapCacheKey !== getFirstPartyModelCacheKey()
+  ) {
+    return { replacesDefault: false }
+  }
   const read = (source: unknown): { window?: number; present: boolean } => {
     if (!source || typeof source !== 'object' || Array.isArray(source))
       return { present: false }
@@ -302,7 +310,13 @@ export function getSonnet1mExpTreatmentEnabled(model: string): boolean {
   if (!getCanonicalName(model).includes('sonnet-4-6')) {
     return false
   }
-  return getGlobalConfig().clientDataCache?.['coral_reef_sonnet'] === 'true'
+  const config = getGlobalConfig()
+  return (
+    Boolean(config.bootstrapCacheKey) &&
+    config.bootstrapCacheKey === config.additionalModelOptionsCacheKey &&
+    config.bootstrapCacheKey === getFirstPartyModelCacheKey() &&
+    config.clientDataCache?.['coral_reef_sonnet'] === 'true'
+  )
 }
 
 /**

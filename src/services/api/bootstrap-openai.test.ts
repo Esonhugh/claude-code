@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import axios from 'axios'
 
 const originalAxiosGet = axios.get
@@ -27,6 +26,7 @@ try {
   const originalClientDataCache = getGlobalConfig().clientDataCache
   const originalAutoCompactWindowsCache =
     getGlobalConfig().autoCompactWindowsCache
+  const originalBootstrapCacheKey = getGlobalConfig().bootstrapCacheKey
   const originalModelOptionsCache = getGlobalConfig().additionalModelOptionsCache
   const originalModelOptionsCacheKey =
     getGlobalConfig().additionalModelOptionsCacheKey
@@ -36,6 +36,7 @@ try {
       ...current,
       clientDataCache: originalClientDataCache,
       autoCompactWindowsCache: originalAutoCompactWindowsCache,
+      bootstrapCacheKey: originalBootstrapCacheKey,
       additionalModelOptionsCache: originalModelOptionsCache,
       additionalModelOptionsCacheKey: originalModelOptionsCacheKey,
       customApiKeyResponses: originalCustomApiKeyResponses,
@@ -46,6 +47,7 @@ try {
     ...current,
     clientDataCache: { preserved: 'client-data' },
     autoCompactWindowsCache: { preserved: 321_000 },
+    bootstrapCacheKey: undefined,
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
@@ -109,16 +111,11 @@ try {
   assert.equal(requests[0]!.url, 'https://gateway.example/v1/models')
   assert.equal(requests[0]!.headers?.Authorization, 'Bearer gateway-token')
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
-    {
-      value: 'anthropic/claude-bootstrap',
-      label: 'Claude Bootstrap',
-      description: 'From gateway',
-    },
+    { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])
   assert.equal(
     getGlobalConfig().additionalModelOptionsCacheKey,
-    'anthropic:https://gateway.example/v1:auth-token:' +
-      createHash('sha256').update('gateway-token').digest('hex').slice(0, 16),
+    'openai:chatgpt:account-123',
   )
 
   saveGlobalConfig(current => ({
@@ -158,8 +155,7 @@ try {
   ])
   assert.equal(
     getGlobalConfig().additionalModelOptionsCacheKey,
-    'anthropic:https://gateway.example/v1:auth-token:' +
-      createHash('sha256').update('gateway-token').digest('hex').slice(0, 16),
+    'openai:chatgpt:account-123',
   )
 
   axios.get = (async () => ({ data: { data: [] } })) as typeof axios.get
@@ -217,6 +213,7 @@ try {
     },
     clientDataCache: undefined,
     autoCompactWindowsCache: undefined,
+    bootstrapCacheKey: undefined,
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
@@ -257,43 +254,52 @@ try {
     label: 'Claude First-Party Bootstrap',
     description: 'First-party bootstrap model',
   }])
-  assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
+  assert.match(
+    getGlobalConfig().additionalModelOptionsCacheKey ?? '',
+    /^anthropic:https:\/\/api\.anthropic\.com\/v1:api-key:/,
+  )
+  assert.equal(
+    getGlobalConfig().bootstrapCacheKey,
+    getGlobalConfig().additionalModelOptionsCacheKey,
+  )
 
-  // A gateway that does not serve /v1/models must still leave the caller with
-  // the first-party bootstrap.
+  // Gateway auth must not authorize the first-party bootstrap. Without usable
+  // first-party credentials, a gateway run may only touch the gateway endpoint.
   requests.length = 0
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
   process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
   process.env.ANTHROPIC_AUTH_TOKEN = 'gateway-token'
+  delete process.env.ANTHROPIC_API_KEY
+  authModule.getClaudeAIOAuthTokens.cache.set(undefined, null)
+  await fetchBootstrapData()
+  assert.deepEqual(requests.map(request => request.url), [
+    'https://gateway.example/v1/models',
+  ])
+  process.env.ANTHROPIC_API_KEY = 'first-party-test-key'
+
+  // A gateway that does not serve /v1/models must not fall through to the
+  // first-party bootstrap or expose a catalog from another endpoint.
+  requests.length = 0
   saveGlobalConfig(current => ({
     ...current,
+    bootstrapCacheKey: undefined,
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
-  const gatewayFailure = axios.get
   axios.get = (async (
     url: string,
     options?: { headers?: Record<string, string> },
   ) => {
-    if (url.includes('/v1/models')) {
-      requests.push({ url, headers: options?.headers, params: undefined })
-      throw new Error('gateway has no /v1/models')
-    }
-    return gatewayFailure(url, options as never)
+    requests.push({ url, headers: options?.headers, params: undefined })
+    throw new Error('gateway has no /v1/models')
   }) as typeof axios.get
 
   await fetchBootstrapData()
 
-  assert.equal(requests[0]!.url, 'https://gateway.example/v1/models')
-  assert.equal(
-    requests[1]!.url,
-    'https://api.anthropic.com/api/claude_cli/bootstrap',
-  )
-  assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [{
-    value: 'claude-first-party-bootstrap',
-    label: 'Claude First-Party Bootstrap',
-    description: 'First-party bootstrap model',
-  }])
+  assert.deepEqual(requests.map(request => request.url), [
+    'https://gateway.example/v1/models',
+  ])
+  assert.equal(getGlobalConfig().additionalModelOptionsCache, undefined)
   assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
 } finally {
   restoreGlobalConfig?.()

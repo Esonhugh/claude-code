@@ -31,9 +31,10 @@ import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
 import { isAnt } from 'src/utils/userType.js'
 import {
+  getFirstPartyModelCacheKey,
+  getGatewayModelOptions,
   getModelDiscoveryCacheKey,
   getOpenAIModelOptions,
-  isModelDiscoveryEnabled,
 } from './openaiModelOptions.js'
 
 
@@ -250,33 +251,37 @@ function getOpusPlanOption(): ModelOption {
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getCachedModelOptions(): ModelOption[] | undefined {
   const config = getGlobalConfig()
-  if (!isModelDiscoveryEnabled()) {
-    return config.additionalModelOptionsCacheKey === undefined
+  if (getAPIProvider() !== 'openai') {
+    const cacheKey = getFirstPartyModelCacheKey()
+    return cacheKey && config.additionalModelOptionsCacheKey === cacheKey
       ? config.additionalModelOptionsCache
       : undefined
   }
   const cacheKey = getModelDiscoveryCacheKey()
-  if (cacheKey === null) {
-    // Discovery is configured but has no credential to reach the gateway —
-    // OAuth alone cannot build one. Keep showing the first-party options
-    // instead of dropping the picker back to the static list.
-    return config.additionalModelOptionsCacheKey === undefined
-      ? config.additionalModelOptionsCache
-      : undefined
-  }
   return config.additionalModelOptionsCacheKey === cacheKey
     ? (config.additionalModelOptionsCache ?? [])
     : undefined
 }
 
 function getModelOptionsBase(fastMode = false): ModelOption[] {
+  const options = getProviderModelOptions(fastMode)
+  // Gateway discovery has its own cache, so its models are appended to the
+  // picker instead of replacing whatever the provider already offers.
+  const gatewayOptions = getGatewayModelOptions()
+  if (gatewayOptions.length === 0) return options
+  const combined = [...options]
+  for (const option of gatewayOptions) {
+    if (!combined.some(existing => existing.value === option.value)) {
+      combined.push(option)
+    }
+  }
+  return combined
+}
+
+function getProviderModelOptions(fastMode: boolean): ModelOption[] {
   const discoveredModelOptions = getCachedModelOptions()
   if (getAPIProvider() === 'openai') {
     return discoveredModelOptions ?? getOpenAIModelOptions()
-  }
-
-  if (discoveredModelOptions !== undefined) {
-    return discoveredModelOptions
   }
 
   if (isAnt()) {
@@ -299,13 +304,19 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   }
 
   if (getAPIProvider() === 'firstParty') {
-    return [
+    const options = [
       getDefaultOptionForUser(fastMode),
       getFirstPartyOption('fable'),
       getFirstPartyOption('opus'),
       getFirstPartyOption('sonnet'),
       getCustomHaikuOption() ?? getHaiku45Option(),
     ]
+    for (const option of discoveredModelOptions ?? []) {
+      if (!options.some(existing => existing.value === option.value)) {
+        options.push(option)
+      }
+    }
+    return options
   }
 
   // Third-party providers retain their existing supported model versions.

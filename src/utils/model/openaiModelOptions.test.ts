@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import axios from 'axios'
@@ -24,6 +24,7 @@ const originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
 const originalClaudeCodeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
 const originalGatewayDiscovery =
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+const originalCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS
 const originalAxiosGet = axios.get
 const tempHome = mkdtempSync(join(tmpdir(), 'claude-openai-model-options-'))
 
@@ -42,6 +43,7 @@ try {
     '../../bootstrap/state.js'
   )
   const { saveGlobalConfig } = await import('../config.js')
+  const { CACHE_PATHS } = await import('../cachePaths.js')
   const { resetSettingsCache } = await import('../settings/settingsCache.js')
   const openAIModelOptions = await import('./openaiModelOptions.js')
   const { getModelOptions } = await import('./modelOptions.js')
@@ -158,7 +160,12 @@ try {
         data: options?.headers?.['anthropic-version']
           ? [
               { id: 'anthropic/claude-gateway', name: 'Claude Gateway' },
-              { id: 'openai/gpt-router', name: 'GPT Router' },
+              {
+                id: 'openai/gpt-router',
+                name: 'GPT Router',
+                visibility: 'hide',
+                description: 'Internal gateway route',
+              },
             ]
           : url.includes('openrouter.ai')
             ? [{ id: 'openai/gpt-router', name: 'GPT Router' }]
@@ -255,26 +262,20 @@ try {
   process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
   process.env.ANTHROPIC_API_KEY = 'gateway-key'
   delete process.env.ANTHROPIC_AUTH_TOKEN
-  const gatewayCacheKey =
-    'anthropic:https://openrouter.ai/api/v1:api-key:' +
-    createHash('sha256').update('gateway-key').digest('hex').slice(0, 16)
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'authorization: Bearer custom-gateway-token',
+    'x-api-key: custom-gateway-key',
+  ].join('\n')
+  assert.equal(openAIModelOptions.getModelDiscoveryCacheKey(), null)
+  await openAIModelOptions.fetchGatewayModels()
+  assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
+  assert.equal(requests[0]!.headers?.['x-api-key'], 'custom-gateway-key')
   assert.equal(
-    openAIModelOptions.getModelDiscoveryCacheKey(),
-    gatewayCacheKey,
+    requests[0]!.headers?.authorization,
+    'Bearer custom-gateway-token',
   )
-  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1/'
-  assert.equal(
-    openAIModelOptions.getModelDiscoveryCacheKey(),
-    gatewayCacheKey,
-  )
-  process.env.ANTHROPIC_API_KEY = 'different-gateway-key'
-  assert.notEqual(
-    openAIModelOptions.getModelDiscoveryCacheKey(),
-    gatewayCacheKey,
-  )
-  process.env.ANTHROPIC_API_KEY = 'gateway-key'
-  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
-  assert.deepEqual(await openAIModelOptions.fetchModelOptions(), [
+  assert.deepEqual(requests[0]!.params, { limit: 1000 })
+  assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [
     {
       value: 'anthropic/claude-gateway',
       label: 'Claude Gateway',
@@ -282,13 +283,56 @@ try {
     },
     {
       value: 'openai/gpt-router',
-      label: 'GPT Router',
-      description: 'From gateway',
+      label: 'GPT Router (Hidden)',
+      description:
+        'Hidden by gateway; API support is enabled. Internal gateway route',
     },
   ])
-  assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
-  assert.equal(requests[0]!.headers?.['x-api-key'], 'gateway-key')
-  assert.deepEqual(requests[0]!.params, { limit: 1000 })
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'Authorization: Bearer different-custom-gateway-token',
+    'x-api-key: custom-gateway-key',
+  ].join('\n')
+  assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [])
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'authorization: Bearer custom-gateway-token',
+    'x-api-key: custom-gateway-key',
+  ].join('\n')
+  assert.equal(openAIModelOptions.getGatewayModelOptions().length, 2)
+  const cachedGatewayModels = JSON.parse(
+    readFileSync(CACHE_PATHS.gatewayModels(), 'utf8'),
+  ) as { cacheKey: string; models: unknown[] }
+  assert.match(
+    cachedGatewayModels.cacheKey,
+    /^anthropic:https:\/\/openrouter\.ai\/api\/v1:auth:/,
+  )
+  assert.equal(cachedGatewayModels.models.length, 2)
+
+  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1/'
+  assert.equal(openAIModelOptions.getGatewayModelOptions().length, 2)
+  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
+  delete process.env.ANTHROPIC_CUSTOM_HEADERS
+  process.env.ANTHROPIC_API_KEY = 'different-gateway-key'
+  assert.equal(openAIModelOptions.getModelDiscoveryCacheKey(), null)
+  assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [])
+  process.env.ANTHROPIC_API_KEY = 'gateway-key'
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'authorization: Bearer custom-gateway-token',
+    'x-api-key: custom-gateway-key',
+  ].join('\n')
+  assert.deepEqual(openAIModelOptions.getGatewayModelOptions(), [
+    {
+      value: 'anthropic/claude-gateway',
+      label: 'Claude Gateway',
+      description: 'From gateway',
+    },
+    {
+      value: 'openai/gpt-router',
+      label: 'GPT Router (Hidden)',
+      description:
+        'Hidden by gateway; API support is enabled. Internal gateway route',
+    },
+  ])
+  assert.equal(await openAIModelOptions.fetchModelOptions(), null)
 
   const gatewayOptions = [
     {
@@ -298,16 +342,17 @@ try {
     },
     {
       value: 'openai/gpt-router',
-      label: 'GPT Router',
-      description: 'From gateway',
+      label: 'GPT Router (Hidden)',
+      description:
+        'Hidden by gateway; API support is enabled. Internal gateway route',
     },
   ]
-  saveGlobalConfig(current => ({
-    ...current,
-    additionalModelOptionsCache: gatewayOptions,
-    additionalModelOptionsCacheKey: gatewayCacheKey,
-  }))
-  assert.deepEqual(getModelOptions(), gatewayOptions)
+  assert.deepEqual(
+    gatewayOptions.every(option =>
+      getModelOptions().some(current => current.value === option.value),
+    ),
+    true,
+  )
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
@@ -320,10 +365,12 @@ try {
     label: 'Claude Bootstrap Extra',
     description: 'From first-party bootstrap',
   }
+  process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
   saveGlobalConfig(current => ({
     ...current,
     additionalModelOptionsCache: [firstPartyBootstrapOption],
-    additionalModelOptionsCacheKey: undefined,
+    additionalModelOptionsCacheKey:
+      openAIModelOptions.getFirstPartyModelCacheKey() ?? undefined,
   }))
   assert.equal(
     getModelOptions().some(
@@ -353,14 +400,14 @@ try {
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), true)
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)
   assert.equal(requests.length, 0)
-  // OAuth cannot build a gateway credential, so the picker keeps the
-  // first-party bootstrap options instead of dropping to the static list.
+  // OAuth cannot build a gateway credential, and a first-party bootstrap cache
+  // must not leak into a gateway endpoint.
   assert.equal(openAIModelOptions.getModelDiscoveryCacheKey(), null)
   assert.equal(
     getModelOptions().some(
       option => option.value === firstPartyBootstrapOption.value,
     ),
-    true,
+    false,
   )
 
   // A first-party base URL is served by the bootstrap endpoint; discovery
@@ -369,6 +416,14 @@ try {
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)
   assert.equal(requests.length, 0)
+  assert.equal(
+    getModelOptions().some(
+      option => option.value === firstPartyBootstrapOption.value,
+    ),
+    false,
+  )
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  process.env.ANTHROPIC_API_KEY = 'gateway-key'
   assert.equal(
     getModelOptions().some(
       option => option.value === firstPartyBootstrapOption.value,
@@ -430,6 +485,11 @@ try {
   } else {
     process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY =
       originalGatewayDiscovery
+  }
+  if (originalCustomHeaders === undefined) {
+    delete process.env.ANTHROPIC_CUSTOM_HEADERS
+  } else {
+    process.env.ANTHROPIC_CUSTOM_HEADERS = originalCustomHeaders
   }
   rmSync(tempHome, { recursive: true, force: true })
 }

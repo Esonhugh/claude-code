@@ -16,6 +16,9 @@ let customOpus: string | undefined
 let customSonnet: string | undefined
 let currentModel: string | undefined
 let discovered: unknown[] | undefined
+let discoveredCacheKey: string | undefined
+let firstPartyCacheKey: string | null = 'anthropic:first-party:test'
+let gatewayOptions: Array<{ value: string; label: string; description: string }> = []
 const modelStrings = {
   opus41: 'backend/opus-4-1', opus46: 'backend/opus-4-6', sonnet46: 'backend/sonnet-4-6', haiku45: 'backend/haiku-4-5',
 }
@@ -28,10 +31,18 @@ mock.module('../auth.js', () => ({
 mock.module('../userType.js', () => ({ isAnt: () => false }))
 mock.module('../../bootstrap/state.js', () => ({ getInitialMainLoopModel: () => null }))
 mock.module('../settings/settings.js', () => ({ getSettings_DEPRECATED: () => ({}) }))
-mock.module('../config.js', () => ({ getGlobalConfig: () => ({ additionalModelOptionsCache: discovered }) }))
+mock.module('../config.js', () => ({
+  getGlobalConfig: () => ({
+    additionalModelOptionsCache: discovered,
+    additionalModelOptionsCacheKey: discoveredCacheKey,
+  }),
+}))
 mock.module('./openaiModelOptions.js', () => ({
-  isModelDiscoveryEnabled: () => false, getModelDiscoveryCacheKey: () => null,
+  getFirstPartyModelCacheKey: () => firstPartyCacheKey,
+  getModelDiscoveryCacheKey: () =>
+    provider === 'openai' ? 'openai:test' : null,
   getOpenAIModelOptions: () => [],
+  getGatewayModelOptions: () => gatewayOptions,
 }))
 mock.module('./modelAllowlist.js', () => ({ isModelAllowed: () => true }))
 mock.module('./modelStrings.js', () => ({ getModelStrings: () => modelStrings }))
@@ -65,6 +76,9 @@ beforeEach(() => {
   premium = false
   customOpus = customSonnet = currentModel = undefined
   discovered = undefined
+  discoveredCacheKey = undefined
+  firstPartyCacheKey = 'anthropic:first-party:test'
+  gatewayOptions = []
 })
 
 test('first-party catalog offers current aliases without gated Mythos models', () => {
@@ -123,8 +137,64 @@ test('Fable is a first-party family option and pinned legacy IDs remain visible'
   expect(getModelOptions().some(option => option.value === currentModel)).toBe(true)
 })
 
-test('discovery still replaces the static catalog and preserves unknown current IDs', () => {
-  discovered = [{ value: 'Gateway/Unknown', label: 'Unknown', description: 'From gateway' }]
+test('first-party bootstrap options extend the static catalog and preserve unknown current IDs', () => {
+  discovered = [{ value: 'Bootstrap/Unknown', label: 'Unknown', description: 'From bootstrap' }]
+  discoveredCacheKey = firstPartyCacheKey ?? undefined
   currentModel = 'Gateway/Current'
-  expect(getModelOptions().map(option => option.value)).toEqual(['Gateway/Unknown', 'Gateway/Current'])
+  expect(getModelOptions().map(option => option.value)).toEqual([
+    null,
+    'fable',
+    'opus',
+    'sonnet',
+    'haiku',
+    'Bootstrap/Unknown',
+    'Gateway/Current',
+  ])
+})
+
+test('first-party bootstrap cache is isolated by endpoint and credential identity', () => {
+  discovered = [{
+    value: 'claude-account-a',
+    label: 'Account A',
+    description: 'From first-party bootstrap',
+  }]
+  discoveredCacheKey = 'anthropic:first-party:account-a'
+  firstPartyCacheKey = 'anthropic:first-party:account-b'
+
+  expect(getModelOptions().some(option => option.value === 'claude-account-a')).toBe(false)
+  expect(getModelOptions().some(option => option.value === 'opus')).toBe(true)
+
+  firstPartyCacheKey = discoveredCacheKey
+  expect(getModelOptions().map(option => option.value)).toEqual([
+    null,
+    'fable',
+    'opus',
+    'sonnet',
+    'haiku',
+    'claude-account-a',
+  ])
+})
+
+test('gateway models are appended to the bootstrap catalog without duplicates', () => {
+  gatewayOptions = [
+    { value: 'Gateway/Model', label: 'Gateway Model', description: 'From gateway' },
+    { value: 'sonnet', label: 'Duplicate', description: 'From gateway' },
+  ]
+  const values = getModelOptions().map(option => option.value)
+  expect(values).toContain('opus')
+  expect(values).toContain('Gateway/Model')
+  expect(values.filter(value => value === 'sonnet')).toHaveLength(1)
+  expect(getModelOptions().find(option => option.value === 'sonnet')?.label).not.toBe('Duplicate')
+
+  discovered = [{ value: 'Bootstrap/Extra', label: 'Bootstrap Extra', description: 'From bootstrap' }]
+  discoveredCacheKey = firstPartyCacheKey ?? undefined
+  expect(getModelOptions().map(option => option.value)).toEqual([
+    null,
+    'fable',
+    'opus',
+    'sonnet',
+    'haiku',
+    'Bootstrap/Extra',
+    'Gateway/Model',
+  ])
 })
