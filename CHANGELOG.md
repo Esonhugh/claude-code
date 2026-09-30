@@ -16,7 +16,7 @@
 
 ### 版本状态
 
-- 本地待发布版本：`v2.1.280`；累计范围固定为上一 release tag `v2.1.219` 之后至当前本地 HEAD `887c499`（即 `v2.1.219..887c499`）的提交。`887c499` 尚未推送至 `origin/feat/mods`，当前未提交工作区变更也不属于该固定范围；此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
+- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219` 之后至当前实现提交 `29d8fef`（即 `v2.1.219..29d8fef`）。`29d8fef` 尚未推送至 `origin/feat/mods`；文档提交将在本条关联提交中单独记录。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
 - `package.json` 及 SDK/Bun 依赖保持不变；版本提升使本地构建、billing 标识与 Claude OAuth `User-Agent` 的 `2.1.280` 版本一致。
 
 ### 关联提交
@@ -26,6 +26,7 @@
 - `9ba33c6` — 固定 Claude.ai OAuth 请求的 CLI UA 与 Stainless SDK/runtime headers，并设置 retry count `0`、timeout `600`；`3c4220e` — 校验手工 OAuth callback state，并修复服务端拒绝 token 后的强制刷新、并发替换识别与保存失败处理。
 - `f024fd3^..7a337fe` — credential handle 撤销、完整 lifecycle cleanup、Pane redraw 串行化、`command.run.context`、stream resume rewrite 拒绝及 compiled telemetry credential recheck 验收；`bd06460` — extended cache TTL beta 与实际 request marker 对齐；`d031266` — 将默认构建版本更新为 `2.1.280` 并整理发布记录；`c07bf85` — 更新本版本变更日志。
 - `ca233cb` — 修复 custom Clawd fullscreen 覆盖与超宽 wrapping、native `/diff` same-chunk navigation 与异步 body/frame rendering、中文 UTF-8/CSI-u/未闭合 bracketed paste 输入恢复及 Mods Pane focus handoff；`838dcdc` — 修复动态 Mods lifecycle、ToolSearch catalog/tool reference 刷新、managed tool hook 重复执行与无效输出回退；`a6bf5f3` — 兼容 stable/beta cache-control message blocks；`b8997a9` — 收紧 release-driver 的 terminal frame、nested Agent、SSH evidence 和 required-target 验证；`0e11b48` — 刷新本版本候选说明与当前使用文档；`887c499` — 增加 OpenAI Daybreak access program 命令、设置、Responses request mapping 与回归测试。
+- `60e234a` — 稳定 native `/diff` sidebar 输入所有权、selection/body commit 与 terminal rendering；`e11af01` — 阻止非可信 Mods 注入 Agent 权限配置并保护后出现的 MCP/plugin/session 命名空间；`29d8fef` — 按 provider、endpoint 与 credential/account identity 隔离模型发现、bootstrap 与 gateway cache，并补齐 gateway credential 和请求身份边界。
 
 ### 变更内容
 
@@ -57,6 +58,13 @@
 - 默认本地构建版本升至 `2.1.280`，使 binary/billing 版本和固定 OAuth UA 一致；未升级 Anthropic SDK 或 Bun runtime，也未验证真实 TLS JA3 指纹一致性。
 - 主请求和 side query 仅在实际发送 `ttl: "1h"` cache marker 时附加 `extended-cache-ttl-2025-04-11` beta；遵守 first-party/experimental gate，并保持 5m、禁用 experimental 与不支持 provider 请求不携带该 beta。
 
+#### 模型发现与缓存隔离
+
+- OpenAI API、ChatGPT OAuth、official Anthropic bootstrap 与自定义 Anthropic gateway 的模型目录按 provider、规范化 endpoint、认证模式和 credential/account identity 隔离；身份不匹配时不读取旧目录，成功空响应只清空当前身份的目录。
+- Anthropic gateway 使用独立磁盘缓存并保留 `display_name`、`name`、description 与 hidden metadata；最终 wire `Authorization`/`x-api-key` 参与缓存身份，custom headers 大小写不敏感覆盖默认值，原始 credential 不落盘。
+- 自定义 gateway 只接受 `ANTHROPIC_AUTH_TOKEN`、显式 `ANTHROPIC_API_KEY` 或可信 `apiKeyHelper`，不发送 `/login` managed key 或 `CLAUDE_CODE_OAUTH_TOKEN`；gateway discovery 失败不回退 official bootstrap。
+- First-party bootstrap 响应在请求开始与提交时校验同一身份；发现模型追加到内置 Claude catalog，client data 与 compaction window 只在当前 first-party identity 匹配时生效，切换 provider、gateway 或账户不会消费旧 bootstrap 数据。
+
 #### OpenAI Daybreak
 
 - OpenAI provider 新增 `/daybreak [blue|red]`：无参数时显示当前状态，有效值写入 user settings，非法值返回用法且不改写已有配置；非 OpenAI provider 不注册该命令。
@@ -68,6 +76,8 @@
 - Mods focused regression 为 605 passed / 4 skipped / 0 failed；完整 `src/services/mods` 为 1274 passed / 11 skipped / 0 failed；后续竞态修复定向回归为 294 passed / 1 skipped / 0 failed，slash-command Mods 集成为 67 passed / 0 failed。
 - `make release-check` 与 `make build` 已通过；本轮交互修复的 focused regression 分别覆盖 custom Clawd physical layout、Mods focus handoff、native `/diff` state/frame/physical terminal、中文 same-chunk 输入、Unicode CSI-u 与 bracketed-paste recovery。最终 scripted binary matrix 与 candidate binary SHA-256 仅在四路 release gate 全部完成后确认，本条不复用旧制品哈希声称通过。
 - Daybreak command 回归覆盖 OpenAI-only 可见性、当前状态、大小写归一化、user settings 持久化、非法值不改写和 settings schema；OpenAI compatibility 回归覆盖 blue/red streaming 与非 streaming wire mapping、未配置时省略、remote compaction 隔离和 `403` 错误传播。
+- 模型发现定向验证通过：`context.test.ts` 26 passed、`modelOptions.test.ts` 9 passed，`openaiModelOptions.test.ts` 与 `bootstrap-openai.test.ts` 自执行断言通过；覆盖 provider/base URL/account/credential/custom-auth-header identity、gateway hidden metadata、managed key 隔离、失败保留、成功空目录、请求中身份变化及 bootstrap client-data 失效。最新实现另通过 TypeScript、ESLint、`git diff --check` 和 `make build`，构建产物 SHA-256 为 `d87d1a9c4def2464b1a6948360d8f3c20a5fbc0aff3e0383552e18b7886eed42`。
+- 只读远程能力检查分别确认 official Claude OAuth bootstrap/profile/models、Anthropic-compatible gateway `/v1/models` 与 ChatGPT OAuth Codex models endpoint 可访问；未发送 Messages 请求。隔离 OAuth 配置下的本地 binary `/status` 与 `/model` 显示 Claude Pro 登录及内置 Claude catalog；这些检查验证认证和目录入口，不等同于完整 release gate 或跨平台验收。
 - 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；credential 变化后的吊销、cleanup fault aggregation、slow redraw/reopen、command context 与 streaming catch rewrite 仍主要由源码级确定性测试覆盖，不以 builtin compiled gate 声称这些分支已有 binary fault-injection 验收；Daybreak 尚未完成本轮 fresh built binary 交互门禁，且 access-program 实际授权由 OpenAI 服务端决定；本轮未验证 JA3，未升级 SDK/Bun，也不声称全部平台或官方 runtime 完整 parity。
 
 ## 2026-09-19 - Mods 分页焦点与自适应布局修复
