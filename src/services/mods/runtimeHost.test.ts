@@ -1899,15 +1899,19 @@ test('late Worker registration publishes without losing sibling commands and lis
   expect(diagnostics).toEqual([])
 })
 
-test('external command names are not treated as protected builtins', async () => {
+test('published Mod commands yield when an external command appears later', async () => {
   const owner=await plugin('external-name',`export function register(on) {
     on('session.start',async($,e,next)=>{await $.command.register({name:'external',description:'Mod'});return next(e);});
   }`)
+  const external: Command={name:'external',description:'MCP',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})}
+  let commands: Command[]=[]
   const diagnostics:unknown[]=[]
-  const value=createModsRuntime({services:{commands:()=>[{name:'external',description:'MCP',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})}]},onDiagnostic:event=>diagnostics.push(event)})
+  const value=createModsRuntime({services:{commands:()=>commands},onDiagnostic:event=>diagnostics.push(event)})
   runtimes.push(value)
   await value.bind(binding(root));await value.reconcile([owner])
-  expect(value.commands.list().map(command=>command.name)).toEqual(['external'])
+  expect(value.commands.projection(commands).map(command=>command.description)).toEqual(['Mod'])
+  commands=[external]
+  expect(value.commands.projection(commands)).toEqual([external])
   expect(diagnostics).toEqual([])
 })
 

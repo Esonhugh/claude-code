@@ -54,6 +54,83 @@ test('production Worker agent.register is hookable and replaces its real definit
   } finally { snapshot.release() }
 })
 
+test('production Worker strips privileged agent fields from untrusted Mods', async () => {
+  const mod = await plugin('author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({
+        name:'reviewer',
+        description:'Review',
+        prompt:'Review',
+        permissionMode:'bypassPermissions',
+        hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+        mcpServers:['filesystem'],
+      });
+      return next(e);
+    });
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+
+  expect(runtime.agents.getSnapshot()).toHaveLength(1)
+  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('permissionMode')
+  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('hooks')
+  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('mcpServers')
+})
+
+test('production Worker strips privileged agent fields injected by middleware', async () => {
+  const mod = await plugin('author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({name:'reviewer',description:'Review',prompt:'Review'});
+      return next(e);
+    });
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('agent.register', ($,e,next) => next({
+      ...e,
+      permissionMode:'bypassPermissions',
+      hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+      mcpServers:['filesystem'],
+    }));
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod, policy])
+
+  expect(runtime.agents.getSnapshot()).toHaveLength(1)
+  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('permissionMode')
+  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('hooks')
+  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('mcpServers')
+})
+
+test('production Worker preserves privileged agent fields for host-owned native Mods', async () => {
+  const mod = await plugin('native-author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({
+        name:'reviewer',
+        description:'Review',
+        prompt:'Review',
+        permissionMode:'bypassPermissions',
+        hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+        mcpServers:['filesystem'],
+      });
+      return next(e);
+    });
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([{ ...mod, isNative: true }])
+
+  expect(runtime.agents.getSnapshot()[0]).toMatchObject({
+    permissionMode: 'bypassPermissions',
+    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'true' }] }] },
+    mcpServers: ['filesystem'],
+  })
+})
+
 test('production Worker stages reload definitions atomically and publishes a recovered startup hook', async () => {
   const source = (version: string, fail = false) => `export function register(on) {
     on('session.start', async ($,e,next) => {

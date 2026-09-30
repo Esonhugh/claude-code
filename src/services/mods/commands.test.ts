@@ -125,6 +125,31 @@ describe('mod command ownership', () => {
     expect(registry.projection([diff])).toEqual([diff])
   })
 
+  test('yields to external command names and aliases that appear after publication', () => {
+    const owner = {}
+    const registry = createRegistry()
+    registry.register(owner, { name: 'remote', description: 'Mod remote' })
+    registry.register(owner, { name: 'alias', description: 'Mod alias' })
+    registry.register(owner, { name: 'available', description: 'Available' })
+    registry.commit(owner)
+
+    const remote = { ...command('remote'), loadedFrom: 'mcp' as const }
+    const aliasOwner = {
+      ...command('external', ['alias']),
+      loadedFrom: 'plugin' as const,
+    }
+    const displayed = {
+      ...command('plugin:displayed'),
+      loadedFrom: 'plugin' as const,
+      userFacingName: () => 'available',
+    }
+    expect(registry.projection([remote, aliasOwner, displayed])).toEqual([
+      remote,
+      aliasOwner,
+      displayed,
+    ])
+  })
+
   test('repeated registration by one activation replaces its candidate spec', () => {
     const owner = {}
     const registry = createRegistry()

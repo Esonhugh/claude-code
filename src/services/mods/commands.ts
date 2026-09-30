@@ -1,7 +1,8 @@
-import type {
-  Command,
-  LocalJSXCommandContext,
-  LocalJSXCommandOnDone,
+import {
+  getCommandName,
+  type Command,
+  type LocalJSXCommandContext,
+  type LocalJSXCommandOnDone,
 } from '../../types/command.js'
 
 export type ModCommandSpec = {
@@ -69,13 +70,29 @@ export function createModCommands({
   function merge(existing: Command[]): Command[] {
     const base = existing.map(command => originals.get(command) ?? command).filter(command => !isModCommand(command))
     if (snapshot.length === 0) return base
+    const external = base.filter(command =>
+      command.isMcp ||
+      command.loadedFrom === 'mcp' ||
+      command.loadedFrom === 'plugin' ||
+      command.loadedFrom === 'codex_app' ||
+      (command.type === 'prompt' &&
+        (command.source === 'mcp' || command.source === 'plugin')),
+    )
+    const externalNames = new Set(
+      external.flatMap(command => [
+        command.name,
+        getCommandName(command),
+        ...(command.aliases ?? []),
+      ]),
+    )
     const activeNames = new Set(snapshot.map(command => command.name))
     return [
       ...base.filter(command =>
-        !activeNames.has(command.name) &&
-        !command.aliases?.some(alias => activeNames.has(alias)),
+        external.includes(command) ||
+        (!activeNames.has(command.name) &&
+          !command.aliases?.some(alias => activeNames.has(alias))),
       ),
-      ...snapshot,
+      ...snapshot.filter(command => !externalNames.has(command.name)),
     ]
   }
 

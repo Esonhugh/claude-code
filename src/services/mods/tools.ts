@@ -279,15 +279,13 @@ export function createModTools({
     projection(baseTools) {
       if (snapshot.length === 0 && !baseTools.some(tool => projectedTools.has(tool)))
         return baseTools
-      const activeNames = new Set(snapshot.map(tool => tool.name))
+      const base = baseTools.filter(tool => !projectedTools.has(tool))
+      const claimedNames = new Set(
+        base.flatMap(tool => [tool.name, ...(tool.aliases ?? [])]),
+      )
       return [
-        ...baseTools.filter(
-          tool =>
-            !projectedTools.has(tool) &&
-            !activeNames.has(tool.name) &&
-            !tool.aliases?.some(alias => activeNames.has(alias)),
-        ),
-        ...snapshot,
+        ...base,
+        ...snapshot.filter(tool => !claimedNames.has(tool.name)),
       ]
     },
     ownerOf(tool) {

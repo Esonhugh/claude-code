@@ -241,35 +241,32 @@ describe('mod tool ownership', () => {
     expect(registry.list()).toEqual([])
   })
 
-  test('projects active tools over colliding base names and aliases', () => {
+  test('yields to base tool names and aliases that appear after publication', () => {
     const owner = {}
     const registry = createRegistry()
     const first = baseTool('First')
-    const stale = baseTool('Stale', ['mcp__weather__active'])
+    const lateName = baseTool('mcp__weather__active')
+    const lateAlias = baseTool('AliasOwner', ['mcp__weather__aliased'])
     const unrelated = baseTool('Unrelated')
 
-    expect(registry.projection([first, stale, unrelated])).toEqual([
-      first,
-      stale,
-      unrelated,
-    ])
     registry.register(owner, { name: 'active', description: 'Active' })
-    expect(registry.projection([first, stale, unrelated])).toEqual([
-      first,
-      stale,
-      unrelated,
-    ])
+    registry.register(owner, { name: 'aliased', description: 'Aliased' })
+    registry.register(owner, { name: 'available', description: 'Available' })
     registry.commit(owner)
 
-    const projected = registry.projection([first, stale, unrelated])
-    expect(projected.map(tool => tool.name)).toEqual([
-      'First',
-      'Unrelated',
-      'mcp__weather__active',
+    const projected = registry.projection([
+      first,
+      lateName,
+      lateAlias,
+      unrelated,
     ])
-    expect(projected[0]).toBe(first)
-    expect(projected[1]).toBe(unrelated)
-    expect(projected[2]).toBe(registry.list()[0])
+    expect(projected).toEqual([
+      first,
+      lateName,
+      lateAlias,
+      unrelated,
+      registry.list()[2]!,
+    ])
   })
 
   test.each([false, true])(

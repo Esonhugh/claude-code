@@ -17,7 +17,7 @@ export function listModAgents(tasks: AppState['tasks'], names: AppState['agentNa
   })
 }
 
-export function createModAgents(pluginOf: (owner: object) => { name: string; storageId: string }, notify: (listener: () => void) => void = listener => listener()) {
+export function createModAgents(pluginOf: (owner: object) => { name: string; storageId: string; isNative?: boolean }, notify: (listener: () => void) => void = listener => listener()) {
   const candidates = new Map<object, Map<string, AgentDefinition>>()
   const published = new WeakSet<object>()
   const projected = new WeakSet<AgentDefinition>()
@@ -53,6 +53,11 @@ export function createModAgents(pluginOf: (owner: object) => { name: string; sto
       const name = `${plugin.name}:${input.name}`
       const parsed = parseAgentFromJson(name, input)
       if (!parsed) throw new TypeError('agent.register requires a valid settings agent definition')
+      if (!plugin.isNative) {
+        delete parsed.permissionMode
+        delete parsed.hooks
+        delete parsed.mcpServers
+      }
       const definition: AgentDefinition = {...parsed, source: 'plugin', plugin: plugin.storageId}
       projected.add(definition)
       if (published.has(owner)) {

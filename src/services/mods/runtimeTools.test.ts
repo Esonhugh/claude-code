@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { z } from 'zod/v4'
-import { buildTool, getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
+import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import { createModToolHost } from './toolHost.js'
 import { runModSessionCompact } from './compactAdapter.js'
 import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
@@ -621,6 +621,31 @@ for (const implementation of ['local','official'] as const) {
     expect(diagnostics).toEqual([])
   })
 }
+
+test('published author tools yield when a real session tool appears later', async () => {
+  const mod = await plugin('owned', `export function register(on) {
+    on('session.start',async ($,e,next) => {
+      await $.tool.register({name:'late',description:'Mod tool'});
+      return next(e);
+    });
+  }`)
+  let sessionTools: Tool[] = []
+  const runtime = createModsRuntime({ services: { tools: () => sessionTools } })
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const registered = runtime.tools.list()[0]!
+  expect(runtime.tools.projection(sessionTools)).toEqual([registered])
+
+  const late = buildTool({
+    name:'mcp__owned__late',inputSchema:z.object({}),maxResultSizeChars:1000,
+    description:async () => 'late session tool',prompt:async () => 'late session tool',
+    call:async () => ({data:'session'}),renderToolUseMessage:() => null,
+    mapToolResultToToolResultBlockParam:(data,id) => ({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  sessionTools = [late]
+  expect(runtime.tools.projection(sessionTools)).toEqual([late])
+})
 
 test('author registration cannot shadow a real session tool or its alias', async () => {
   const mod = await plugin('owned', `export function register(on) {
