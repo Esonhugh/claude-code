@@ -1934,6 +1934,25 @@ describe('ModsPane terminal hover', () => {
     }
   })
 
+  test('ignores inherited Object property names used as theme colors', async () => {
+    const stdout = new Output()
+    const instance = await modsPane({
+      type: 'Box',
+      props: { key: 'inherited', backgroundColor: 'valueOf', borderStyle: 'round', borderColor: 'constructor' },
+      children: [{ type: 'Text', props: { color: 'toString' }, children: ['inherited'] }],
+    }, stdout)
+    try {
+      await settle()
+      const label = renderedElement(stdout, 'inherited', 'ink-text')
+      const box = label.parentNode!
+      expect(box.style.backgroundColor).toBeUndefined()
+      expect(box.style.borderColor).toBeUndefined()
+      expect(label.textStyles?.color).toBeUndefined()
+    } finally {
+      instance.unmount()
+    }
+  })
+
   test('renders a plain Button hotkey as suggestion-colored inline text', async () => {
     const stdout = new Output()
     const instance = await modsPane({

@@ -1414,7 +1414,9 @@ function terminalStyles(value: Record<string, unknown>): Record<string, unknown>
   const style = { ...value }
   for (const key of ['color', 'backgroundColor', 'borderColor']) {
     const color = style[key]
-    if (typeof color === 'string' && ansiColors[color] !== undefined)
+    // Own keys only: a name such as 'valueOf' would otherwise resolve to a
+    // function through the prototype chain and break rendering.
+    if (typeof color === 'string' && Object.hasOwn(ansiColors, color))
       style[key] = ansiColors[color]
   }
   return style
@@ -1427,7 +1429,9 @@ function rawTextStyles(value: Record<string, unknown>, theme: Theme): Record<str
     if (typeof color !== 'string') continue
     if (color.startsWith('#') || color.startsWith('rgb(') ||
         color.startsWith('ansi256(') || color.startsWith('ansi:')) continue
-    style[key] = theme[color as keyof Theme] as Color | undefined
+    // Own keys only: a name such as 'constructor' would otherwise resolve to a
+    // function through the prototype chain and break rendering.
+    style[key] = Object.hasOwn(theme, color) ? theme[color as keyof Theme] as Color : undefined
   }
   return style
 }

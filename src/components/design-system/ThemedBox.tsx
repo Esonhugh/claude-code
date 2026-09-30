@@ -63,8 +63,9 @@ function resolveColor(
   ) {
     return color as Color
   }
-  // It's a theme key - resolve it
-  return theme[color as keyof Theme] as Color
+  // It's a theme key - resolve it. Own keys only, so an inherited name such as
+  // 'constructor' cannot resolve to a function.
+  return Object.hasOwn(theme, color) ? (theme[color as keyof Theme] as Color) : undefined
 }
 
 /**
