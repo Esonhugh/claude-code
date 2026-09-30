@@ -587,11 +587,22 @@ const stagedUiConsumers = new Map<number, number>()
 const stagedUiTables = new Map<number, ReadonlyMap<number, readonly [string, unknown][]>>()
 const reply = (message: ModWorkerReply) => postMessage(message)
 
+// A Promise subclass still belongs to the realm whose Promise it extends, so
+// walk the chain instead of trusting the immediate prototype.
+function realmOf(promise: object): Environment['lifetime'] | undefined {
+  for (let proto = Object.getPrototypeOf(promise) as object | null; proto; proto = Object.getPrototypeOf(proto)) {
+    const owner = promiseRealms.get(proto)
+    if (owner) return owner
+  }
+  return undefined
+}
+
 // Detached promises still belong to their VM, not to every plugin in this Worker.
 process.on('unhandledRejection', (error, promise) => {
-  const owner = promiseRealms.get(Object.getPrototypeOf(promise))
-  if (!owner) throw new Error('Unattributed Mods Worker rejection', { cause: error })
-  if (owner.disposed) return
+  // Throwing here would take down the shared Worker and every other Mod with
+  // it, so an unattributable rejection is dropped instead.
+  const owner = realmOf(promise)
+  if (!owner || owner.disposed) return
   const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
     ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined
   reply({ type: 'async-error', environment: owner.id, error: typeof message === 'string' ? message : 'Module asynchronous callback failed' })

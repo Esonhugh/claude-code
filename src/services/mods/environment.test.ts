@@ -550,6 +550,37 @@ describe('Mods Worker environment', () => {
     expect(result.siblingResult).toBe('sibling alive')
   })
 
+  test('rejection from a Promise subclass stays attributed to its environment', async () => {
+    // Attribution must follow the prototype chain: a subclass instance is not
+    // the realm's Promise.prototype, and losing the owner used to take down the
+    // shared Worker together with every sibling Mod.
+    const source = `
+      import {createModEnvironmentHost} from ${JSON.stringify(new URL('./environment.ts', import.meta.url).pathname)};
+      const errors=[], deaths=[];
+      const reported=Promise.withResolvers();
+      const worker=createModEnvironmentHost({onError:(error,environment)=>{errors.push({message:error.message,environment});reported.resolve()},onDied:error=>{deaths.push(error.message);reported.resolve()}});
+      try {
+        const environment=await worker.load(${JSON.stringify(declaration(`export function register(on) {
+          on('tool.call', () => { class Detached extends Promise {} Detached.reject(Error('subclass failed')); return 'started'; });
+        }`))});
+        const sibling=await worker.load(${JSON.stringify(declaration(`export function register(on) {on('tool.call',() => 'sibling alive');}`))});
+        const result=await environment.invoke(environment.registrations[0].id,[{}]);
+        await reported.promise;
+        const siblingResult=await sibling.invoke(sibling.registrations[0].id,[]);
+        console.log(JSON.stringify({result,errors,deaths,siblingResult,environment:environment.id}));
+      } finally {await worker.dispose()}
+    `
+    const child = Bun.spawn([process.execPath, '-e', source], { stdout:'pipe', stderr:'pipe' })
+    const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    expect(stderr).toBe('')
+    expect(exit).toBe(0)
+    const result = JSON.parse(stdout)
+    expect(result.deaths).toEqual([])
+    expect(result.errors).toEqual([{message:'subclass failed',environment:result.environment}])
+    expect(result.result).toBe('started')
+    expect(result.siblingResult).toBe('sibling alive')
+  })
+
   test('Client modules execute inside the real Worker VM', async () => {
     const clientPath = '/fixture/surface.js'
     const fixture = declaration(`export function register(on) {on('tool.call', () => 'alive')}`)
