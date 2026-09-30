@@ -185,7 +185,10 @@ import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
-  isOpus5OrSonnet5,
+  requiresAdaptiveThinkingContract,
+  requiresAlwaysOnAdaptiveThinking,
+  supportsManualThinkingBudget,
+  usesBetweenToolsWhenThinkingDisabled,
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
   shouldEnableThinkingByDefault,
@@ -617,13 +620,21 @@ export async function verifyApiKey(
           }),
         async anthropic => {
           const messages: MessageParam[] = [{ role: 'user', content: 'test' }]
+          const verificationThinking: BetaMessageStreamParams['thinking'] | undefined =
+            requiresAlwaysOnAdaptiveThinking(model)
+              ? { type: 'adaptive' }
+              : usesBetweenToolsWhenThinkingDisabled(model)
+                ? ({ type: 'between_tools' } as unknown as BetaMessageStreamParams['thinking'])
+                : requiresAdaptiveThinkingContract(model)
+                  ? { type: 'disabled' }
+                  : undefined
           // biome-ignore lint/plugin: API key verification is intentionally a minimal direct call
           await anthropic.beta.messages.create({
             model,
             max_tokens: 1,
             messages,
-            ...(isOpus5OrSonnet5(model)
-              ? { thinking: { type: 'disabled' as const } }
+            ...(verificationThinking
+              ? { thinking: verificationThinking }
               : { temperature: 1 }),
             ...(betas.length > 0 && { betas }),
             metadata: getAPIMetadata(),
@@ -1795,16 +1806,33 @@ async function* queryModel(
       options.maxOutputTokensOverride ||
       getMaxOutputTokensForModel(options.model)
 
-    const adaptiveOnly = isOpus5OrSonnet5(options.model)
+    const adaptiveOnly = requiresAdaptiveThinkingContract(options.model)
+    const alwaysOnAdaptive = requiresAlwaysOnAdaptiveThinking(options.model)
+    const manualThinkingBudget = supportsManualThinkingBudget(options.model)
+    const betweenToolsWhenDisabled = usesBetweenToolsWhenThinkingDisabled(
+      options.model,
+    )
     const adaptiveDisabled = isEnvTruthy(
       process.env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING,
     )
+    const thinkingDisabled =
+      thinkingConfig.type === 'disabled' ||
+      isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) ||
+      (adaptiveOnly && adaptiveDisabled)
+    const effortRequiresAdaptive = effort === 'xhigh' || effort === 'max'
     const hasThinking =
-      thinkingConfig.type !== 'disabled' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) &&
-      !(adaptiveOnly && adaptiveDisabled)
+      alwaysOnAdaptive ||
+      !thinkingDisabled ||
+      (betweenToolsWhenDisabled && effortRequiresAdaptive)
     let thinking: BetaMessageStreamParams['thinking'] | undefined =
-      adaptiveOnly && !hasThinking ? { type: 'disabled' } : undefined
+      alwaysOnAdaptive ||
+      (betweenToolsWhenDisabled && thinkingDisabled && effortRequiresAdaptive)
+        ? { type: 'adaptive' }
+        : betweenToolsWhenDisabled && thinkingDisabled
+          ? ({ type: 'between_tools' } as unknown as BetaMessageStreamParams['thinking'])
+          : adaptiveOnly && !hasThinking
+            ? { type: 'disabled' }
+            : undefined
 
     // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
     // without notifying the model launch DRI and research. This is a sensitive
@@ -1812,6 +1840,7 @@ async function* queryModel(
     if (hasThinking && modelSupportsThinking(options.model)) {
       if (
         !adaptiveDisabled &&
+        (!manualThinkingBudget || thinkingConfig.type !== 'enabled') &&
         (adaptiveOnly || modelSupportsAdaptiveThinking(options.model))
       ) {
         // For models that support adaptive thinking, always use adaptive
@@ -3508,7 +3537,7 @@ export async function queryHaiku({
         systemPrompt,
         thinkingConfig: {
           type:
-            isOpus5OrSonnet5(model) && shouldEnableThinkingByDefault()
+            requiresAdaptiveThinkingContract(model) && shouldEnableThinkingByDefault()
               ? 'adaptive'
               : 'disabled',
         },
@@ -3572,7 +3601,7 @@ export async function queryWithModel({
         systemPrompt,
         thinkingConfig: {
           type:
-            isOpus5OrSonnet5(options.model) && shouldEnableThinkingByDefault()
+            requiresAdaptiveThinkingContract(options.model) && shouldEnableThinkingByDefault()
               ? 'adaptive'
               : 'disabled',
         },

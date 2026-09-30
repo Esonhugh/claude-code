@@ -114,6 +114,25 @@ const client = new Anthropic({
         { status: 400 },
       )
     }
+    if (
+      request.tool_choice?.type === 'tool' &&
+      [
+        'claude-fable-5-1',
+        'claude-opus-5-5',
+        'claude-sonnet-5-5',
+      ].includes(request.model)
+    ) {
+      return Response.json(
+        {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'forced tool choice is not supported by this model',
+          },
+        },
+        { status: 400 },
+      )
+    }
     if (streamNotFound && request.stream) {
       return Response.json(
         {
@@ -255,6 +274,9 @@ async function query(
   >[0]['thinkingConfig'],
   expectedError?: string,
   tools: import('../../Tool.js').Tools = [],
+  optionOverrides: Partial<
+    Parameters<typeof queryModelWithoutStreaming>[0]['options']
+  > = {},
 ) {
   const result = await queryModelWithoutStreaming({
     messages: [createUserMessage({ content: 'test' })],
@@ -271,6 +293,7 @@ async function query(
       isNonInteractiveSession: true,
       enablePromptCaching: true,
       getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      ...optionOverrides,
     },
   })
   if (expectedError) {
@@ -1404,7 +1427,44 @@ test.each(['claude-opus-5', 'claude-sonnet-5'])(
   },
 )
 
-test.each(['claude-opus-5', 'claude-sonnet-5'])(
+test.each([
+  'claude-fable-5-1',
+  'claude-fable-5',
+  'claude-mythos-5-1',
+  'claude-mythos-5',
+  'claude-mythos-preview',
+  'claude-opus-5-5',
+])(
+  '%s keeps adaptive thinking enabled when callers request disabled thinking',
+  async (model) => {
+    const request = await query(model, { type: 'disabled' })
+    expect(request.thinking).toEqual({ type: 'adaptive' })
+    expect(request.temperature).toBeUndefined()
+  },
+)
+
+test('Sonnet 5.5 uses between-tools reasoning when thinking is disabled', async () => {
+  const request = await query('claude-sonnet-5-5', { type: 'disabled' })
+  expect(request.thinking as unknown).toEqual({ type: 'between_tools' })
+  expect(request.temperature).toBeUndefined()
+})
+
+test.each(['xhigh', 'max'] as const)(
+  'Sonnet 5.5 uses adaptive reasoning for disabled thinking at %s effort',
+  async (effort) => {
+    const request = await query(
+      'claude-sonnet-5-5',
+      { type: 'disabled' },
+      undefined,
+      [],
+      { effortValue: effort, effortResolved: true },
+    )
+    expect(request.thinking).toEqual({ type: 'adaptive' })
+    expect(request.output_config?.effort as string).toBe(effort)
+  },
+)
+
+test.each(['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-mythos-5-1', 'claude-mythos-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])(
   '%s uses adaptive instead of legacy manual budgets',
   async (model) => {
     const request = await query(model, { type: 'enabled', budgetTokens: 1234 })
@@ -1412,6 +1472,15 @@ test.each(['claude-opus-5', 'claude-sonnet-5'])(
     expect(request.temperature).toBeUndefined()
   },
 )
+
+test('Mythos Preview preserves an explicit manual thinking budget', async () => {
+  const request = await query('claude-mythos-preview', {
+    type: 'enabled',
+    budgetTokens: 1234,
+  })
+  expect(request.thinking).toEqual({ type: 'enabled', budget_tokens: 1234 })
+  expect(request.temperature).toBeUndefined()
+})
 
 test.each([
   'CLAUDE_CODE_DISABLE_THINKING',
@@ -1453,6 +1522,24 @@ test.each(['xhigh', 'max', 'ultracode'])(
       effort: effort === 'ultracode' ? 'xhigh' : effort,
     })
     expect(request.thinking).toEqual({ type: 'disabled' })
+  },
+)
+
+test.each(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5'])(
+  '%s preserves explicit forced tool choice and surfaces the provider 400',
+  async (model) => {
+    const request = await query(
+      model,
+      { type: 'disabled' },
+      'forced tool choice is not supported',
+      [],
+      { toolChoice: { type: 'tool', name: 'FixtureTool' } },
+    )
+    expect(request.model).toBe(model)
+    expect(request.tool_choice).toEqual({
+      type: 'tool',
+      name: 'FixtureTool',
+    })
   },
 )
 
