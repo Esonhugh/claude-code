@@ -29,7 +29,7 @@
 - JavaScript 构建产物：`dist/cli.js`
 - 本地 binary：`built-claude`
 
-发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
+当前源码候选版本为 `2.1.280`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 安装与运行
 
@@ -120,7 +120,7 @@ OpenAI 模型 API 凭证读取优先级为：
 
 未显式指定 OpenAI 模型时，Anthropic 模型名称默认映射为 `gpt-5.6-luna`；显式指定的 OpenAI 模型名称保持不变。
 
-ChatGPT OAuth 模式下，`/stats` 提供独立 OpenAI activity 标签页，显示 profile、lifetime/peak/streak 指标及 Daily、Weekly、Cumulative 图表。图表内按 `v` 切换视图；Daily 使用 `↑/↓` 移动一天、`←/→` 移动七天，Weekly/Cumulative 使用方向键选择周。Token 摘要使用 K/M/B 两位有效数字，选中项保留精确数值。
+ChatGPT OAuth 模式下，`/stats` 提供独立 OpenAI activity 标签页，显示 lifetime/peak/streak 指标及 Daily、Weekly、Cumulative 图表。图表内按 `v` 切换视图；Daily 使用 `↑/↓` 移动一天、`←/→` 移动七天，Weekly 使用 `←/→` 选择周并以 `↑/↓` 选择周内日期，Cumulative 使用 `←/→` 选择周。Token 摘要使用 K/M/B 两位有效数字，选中项保留精确数值。
 
 API key 示例：
 
@@ -243,7 +243,7 @@ CLAUDE_CODE_EFFORT_LEVEL=xhigh claude
 }
 ```
 
-还可以在 `${CLAUDE_CONFIG_DIR:-~/.claude}/clawd.txt` 中保存自定义 Clawd ASCII 图。文件存在且非空时，Logo 区域优先显示该文件内容；读取失败或文件为空时回退到内置图案。
+还可以在 `${CLAUDE_CONFIG_DIR:-~/.claude}/clawd.txt` 中保存自定义 Clawd ASCII 图。文件存在且非空时，Logo 区域优先显示该文件内容；读取失败或文件为空时回退到内置图案。Fullscreen condensed 布局会按图案的终端显示宽度在横排与纵排间切换，超宽行在可用列内截断，图案的实际行数参与布局，不覆盖会话正文。
 
 ```bash
 mkdir -p ~/.claude
@@ -399,7 +399,7 @@ Codex Apps 需要同时满足：
 - 使用 ChatGPT OAuth 登录，而不是 API key；
 - 未设置 `CLAUDE_CODE_DISABLE_CODEX_APPS=1`。
 
-隐藏指定 connector：
+隐藏指定 connector：`disabledCodexApps` 仅在用户级 `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json` 中生效；project/local settings 中的同名配置不生效。
 
 ```json
 {
@@ -479,7 +479,8 @@ SSH Remote 当前只支持 interactive TUI。`!command` 在远端 cwd 直接执�
 ```json
 {
   "action": "new-session",
-  "command": "bun repl",
+  "command": "bun",
+  "args": ["repl"],
   "cwd": "/path/to/project",
   "cols": 120,
   "rows": 30
@@ -552,6 +553,7 @@ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 /cd ../another-project
 /reload-skills
 /reload-plugins
+/diff
 /workflows
 /list-agents
 ```
@@ -564,8 +566,11 @@ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
 - `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
 - `/reload-plugins`：应用 `/plugin manage` 中的安装、更新和启停变更，重新加载 plugin commands、skills、hooks、MCP 和 LSP；已安装插件使用本地安装缓存，不会因 reload 自动下载。
+- `/diff`：打开当前 Git working tree 的原生 diff。终端至少 110 列且没有可见 Mods dock 时使用右侧 sidebar，否则打开 dialog；sidebar 获得键盘所有权后可连续切换文件、进入详情，并在 resize、关闭和重新打开后保留一致的 selection/body identity。
 - `/workflows`：查看 Dynamic Workflow runs，不直接启动 workflow。
 - `/list-agents`（别名 `/peers`）：列出当前 messaging registry 中其他可发现的本地 Claude session。
+
+PromptInput 按 UTF-8 stream 处理普通文本、中文等宽字符、Kitty CSI-u 和 bracketed paste。同一个 stdin chunk 中的文本与 Enter/Backspace/方向键按顺序生效；未闭合 paste 会在有界空闲恢复后释放 literal payload 并回到普通输入，避免后续按键被永久吞掉。
 
 ### Mods / Function Hooks
 
@@ -595,7 +600,7 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 /plugin enable my-mod
 ```
 
-- 生命周期：扫描并固定模块快照 → register → `engine.create` → 准入 → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
+- 生命周期：扫描并固定模块声明 → 准入 → 加载候选模块并执行 register → `engine.create` → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
 - 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除或拒绝准入撤下旧能力。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
 - 当前接线：tool 注册、列举、描述、调用与检查；prompt read/fill/suggest/submit/context/section/attachment；turn middleware 与流式 model step；agent offer/register/list/spawn；MCP 调用；动态 slash commands；session receive/measure/usage/compact/end/authorize；config/options、accepted settings、fs、受限 HTTP、argv process、env、JSON store，以及 terminal/remote UI 与 terminal media。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
 - Pane 输入：空 composer 且没有 dialog/其他输入所有权时，可用 Tab / Shift+Tab 或鼠标进入可见 dock。裸方向键在可见控件间导航，详情区域可滚动；Input/Select 优先处理自身按键，Escape 关闭或退焦。鼠标滚轮按实际命中的 Pane body 交给插件处理，Pane 外保持 transcript 滚动。

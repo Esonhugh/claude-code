@@ -16,15 +16,16 @@
 
 ### 版本状态
 
-- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219..7a337fe`。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
+- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219` 之后的当前分支提交。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
 - `package.json` 及 SDK/Bun 依赖保持不变；版本提升使本地构建、billing 标识与 Claude OAuth `User-Agent` 的 `2.1.280` 版本一致。
 
 ### 关联提交
 
-- `4444348..d7a939c` — 独立本地会话通信、Plan mode 配置、跨平台进程身份与构建宏；`fb7b441..531dfdf` — Mods 生命周期、宿主能力、UI/REPL/Agent/模型与 builtin compiled 验收的累计实现、修复、测试和说明。
+- `4444348..39a9abd` — 独立本地会话通信、Plan mode 配置、跨平台进程身份、构建宏与当前功能说明；`fb7b441..531dfdf` — Mods 生命周期、宿主能力、UI/REPL/Agent/模型与 builtin compiled 验收的累计实现、修复、测试和说明。
 - `3b0d6ce`、`dbdb97e..9ba61da`、`20ad11e..57bd3a6` — OpenAI reasoning 恢复、`AGENTS.md` 指令链、Usage/Stats/status、Agent/TUI/diff、模型与运行时可靠性等累计改动。
 - `9ba33c6` — 固定 Claude.ai OAuth 请求的 CLI UA 与 Stainless SDK/runtime headers，并设置 retry count `0`、timeout `600`；`3c4220e` — 校验手工 OAuth callback state，并修复服务端拒绝 token 后的强制刷新、并发替换识别与保存失败处理。
-- `f024fd3..7a337fe` — credential handle 撤销、完整 lifecycle cleanup、Pane redraw 串行化、`command.run.context`、stream resume rewrite 拒绝及 compiled telemetry credential recheck 验收；`bd06460` — extended cache TTL beta 与实际 request marker 对齐；`d031266` — 将默认构建版本更新为 `2.1.280` 并整理发布记录。
+- `f024fd3..7a337fe` — credential handle 撤销、完整 lifecycle cleanup、Pane redraw 串行化、`command.run.context`、stream resume rewrite 拒绝及 compiled telemetry credential recheck 验收；`bd06460` — extended cache TTL beta 与实际 request marker 对齐；`d031266` — 将默认构建版本更新为 `2.1.280` 并整理发布记录；`c07bf85` — 更新本版本变更日志。
+- `ca233cb` — 修复 custom Clawd fullscreen 覆盖与超宽 wrapping、native `/diff` same-chunk navigation 与异步 body/frame rendering、中文 UTF-8/CSI-u/未闭合 bracketed paste 输入恢复及 Mods Pane focus handoff；`838dcdc` — 修复动态 Mods lifecycle、ToolSearch catalog/tool reference 刷新、managed tool hook 重复执行与无效输出回退；`a6bf5f3` — 兼容 stable/beta cache-control message blocks；`b8997a9` — 收紧 release-driver 的 terminal frame、nested Agent、SSH evidence 和 required-target 验证。
 
 ### 变更内容
 
@@ -43,6 +44,10 @@
 - 增加 official-compatible 本地独立会话发现、认证通信、策略、receipt 和 UI；补齐 Linux/Windows 进程身份、Windows x64 构建目标，并以设置显式控制 Plan mode 可用性。
 - 将 `AGENTS.md` 纳入指令发现、onboarding、memory、Agent 与 Workflow，保留结构化 prompt sections、来源与附件；改进 context window/usage breakdown、token cancellation、task 隔离、clear/fork snapshot 及 subprocess/SSH 失败恢复。
 - 更新 Usage/Stats/status、Agent transcript 与任务操作、TUI resize/switching、原生 fullscreen diff、多 base Git backend、模型默认值和 request contracts；修复 OpenAI reasoning 跨 resume 持久化。
+- 修复 fullscreen condensed custom Clawd 固定高度覆盖正文和超宽行 uncontrolled wrap；图案按 display-cell width 在横排与纵排间切换，并在可用宽度内截断。
+- 修复 native `/diff` 连续按键与同 chunk `Down + Enter` 读取旧 selection、selected body 被渲染预算挤出，以及 resize、异步 partial publish 和 alternate-screen 增量输出可能出现的 logical/physical 不一致。
+- 修复 PromptInput 在同一 stdin chunk 中提交中文、退格或导航时读取旧 cursor；支持 Unicode Kitty CSI-u，并让未闭合 bracketed paste 经两阶段有界恢复释放迟到 literal payload 后返回普通输入。
+- 修复 Mods Pane 在 Escape 释放旧 drawing 后，新的 Tab focus 已发布却被旧 pending redraw 阻止同步到实际 DOM element 的焦点竞态。
 
 #### OAuth 与版本标识
 
@@ -56,7 +61,7 @@
 
 - OAuth 定向测试为 12 passed / 0 failed，覆盖 callback state、`401` 强制刷新、并发 token 替换、保存失败以及固定 UA/SDK/runtime/retry/timeout headers；`cchFetch` 自执行断言通过。
 - Mods focused regression 为 605 passed / 4 skipped / 0 failed；完整 `src/services/mods` 为 1274 passed / 11 skipped / 0 failed；后续竞态修复定向回归为 294 passed / 1 skipped / 0 failed，slash-command Mods 集成为 67 passed / 0 failed。
-- `make release-check`、`make build` 与 builtin Mods compiled gate 通过；验收 binary SHA-256 为 `a441531e37abfb5c794c47cc1fe1379d176394f64adb62826a124ff8245f6d01`，覆盖 builtin 加载、agents-md、diff、telemetry 正向 credential revalidation、正常 cleanup 和 evidence identity。
+- `make release-check` 与 `make build` 已通过；本轮交互修复的 focused regression 分别覆盖 custom Clawd physical layout、Mods focus handoff、native `/diff` state/frame/physical terminal、中文 same-chunk 输入、Unicode CSI-u 与 bracketed-paste recovery。最终 scripted binary matrix 与 candidate binary SHA-256 仅在四路 release gate 全部完成后确认，本条不复用旧制品哈希声称通过。
 - 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；credential 变化后的吊销、cleanup fault aggregation、slow redraw/reopen、command context 与 streaming catch rewrite 仍主要由源码级确定性测试覆盖，不以 builtin compiled gate 声称这些分支已有 binary fault-injection 验收；本轮未验证 JA3，未升级 SDK/Bun，也不声称全部平台或官方 runtime 完整 parity。
 
 ## 2026-09-19 - Mods 分页焦点与自适应布局修复
