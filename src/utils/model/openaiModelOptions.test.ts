@@ -288,7 +288,7 @@ try {
   ])
   assert.equal(requests[0]!.url, 'https://openrouter.ai/api/v1/models')
   assert.equal(requests[0]!.headers?.['x-api-key'], 'gateway-key')
-  assert.equal(requests[0]!.params, undefined)
+  assert.deepEqual(requests[0]!.params, { limit: 1000 })
 
   const gatewayOptions = [
     {
@@ -353,6 +353,29 @@ try {
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), true)
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)
   assert.equal(requests.length, 0)
+  // OAuth cannot build a gateway credential, so the picker keeps the
+  // first-party bootstrap options instead of dropping to the static list.
+  assert.equal(openAIModelOptions.getModelDiscoveryCacheKey(), null)
+  assert.equal(
+    getModelOptions().some(
+      option => option.value === firstPartyBootstrapOption.value,
+    ),
+    true,
+  )
+
+  // A first-party base URL is served by the bootstrap endpoint; discovery
+  // must not take it over.
+  process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+  assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
+  assert.equal(await openAIModelOptions.fetchModelOptions(), null)
+  assert.equal(requests.length, 0)
+  assert.equal(
+    getModelOptions().some(
+      option => option.value === firstPartyBootstrapOption.value,
+    ),
+    true,
+  )
+  process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   authModule.getOpenAIAuthInfo.cache.set(undefined, {

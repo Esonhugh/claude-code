@@ -121,13 +121,20 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
 export async function fetchBootstrapData(): Promise<void> {
   try {
     let response: BootstrapResponse | null
-    const modelDiscovery = isModelDiscoveryEnabled()
+    let modelDiscovery = isModelDiscoveryEnabled()
     if (modelDiscovery) {
       const discovery = await fetchModelDiscoveryResult()
-      if (!discovery || discovery.cacheKey !== getModelDiscoveryCacheKey()) {
+      if (discovery && discovery.cacheKey === getModelDiscoveryCacheKey()) {
+        response = { additional_model_options: discovery.options }
+      } else if (getAPIProvider() === 'firstParty') {
+        // A gateway that does not serve /v1/models must not also cost the
+        // caller the first-party bootstrap, which is what runs without the
+        // discovery flag. OpenAI keeps its existing cache instead.
+        modelDiscovery = false
+        response = await fetchBootstrapAPI()
+      } else {
         return
       }
-      response = { additional_model_options: discovery.options }
     } else {
       response = await fetchBootstrapAPI()
     }
@@ -143,7 +150,10 @@ export async function fetchBootstrapData(): Promise<void> {
       ? config.autoCompactWindowsCache
       : (response.auto_compact_windows ?? null)
     const additionalModelOptions = response.additional_model_options ?? []
-    const additionalModelOptionsCacheKey = getModelDiscoveryCacheKey() ?? undefined
+    // First-party options stay unkeyed so they survive a later discovery run.
+    const additionalModelOptionsCacheKey = modelDiscovery
+      ? (getModelDiscoveryCacheKey() ?? undefined)
+      : undefined
 
     // Only persist if data actually changed — avoids a config write on every startup.
     if (

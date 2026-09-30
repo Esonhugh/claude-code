@@ -5,7 +5,7 @@ import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
 import type { ModelOption } from './modelOptions.js'
-import { getAPIProvider } from './providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 import { OPENAI_MODEL_CONFIG } from './configs.js'
 import { getModelPricingString } from '../modelCost.js'
 
@@ -61,6 +61,7 @@ type ModelDiscoveryRequest = {
   headers: Record<string, string>
   params?: Record<string, string | number>
   parseOptions?: ParseModelOptions
+  timeoutMs?: number
 }
 
 export type ModelDiscoveryResult = {
@@ -87,11 +88,14 @@ export function getOpenAIModelOptions(): ModelOption[] {
 }
 
 export function isModelDiscoveryEnabled(): boolean {
+  if (getAPIProvider() === 'openai') return true
   return (
-    getAPIProvider() === 'openai' ||
-    (getAPIProvider() === 'firstParty' &&
-      isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY) &&
-      Boolean(process.env.ANTHROPIC_BASE_URL))
+    getAPIProvider() === 'firstParty' &&
+    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY) &&
+    // A first-party base URL is served by the bootstrap endpoint, so discovery
+    // only applies to an actual gateway.
+    !isFirstPartyAnthropicBaseUrl() &&
+    Boolean(process.env.ANTHROPIC_BASE_URL)
   )
 }
 
@@ -126,7 +130,7 @@ export async function fetchModelDiscoveryResult(): Promise<ModelDiscoveryResult 
     const response = await axios.get<OpenAIModelsResponse>(request.endpoint, {
       headers: request.headers,
       params: request.params,
-      timeout: 5000,
+      timeout: request.timeoutMs ?? 5000,
     })
 
     if (
@@ -195,6 +199,9 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
     return null
   }
 
+  const timeoutMs = Number(
+    process.env.CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS,
+  )
   return {
     cacheKey: `anthropic:${getModelsBaseURL(process.env.ANTHROPIC_BASE_URL!)}:${authToken ? 'auth-token' : 'api-key'}:${credentialIdentity(authToken ?? apiKey!)}`,
     endpoint: getModelsEndpoint(process.env.ANTHROPIC_BASE_URL!),
@@ -206,10 +213,13 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
       'anthropic-version': '2023-06-01',
       'User-Agent': getClaudeCodeUserAgent(),
     },
+    // A gateway lists every model it proxies, so page past the default 20.
+    params: { limit: 1000 },
     parseOptions: {
       includeUnknownModels: true,
       defaultDescription: 'From gateway',
     },
+    timeoutMs: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 3000,
   }
 }
 

@@ -256,7 +256,15 @@ function getCachedModelOptions(): ModelOption[] | undefined {
       : undefined
   }
   const cacheKey = getModelDiscoveryCacheKey()
-  return cacheKey !== null && config.additionalModelOptionsCacheKey === cacheKey
+  if (cacheKey === null) {
+    // Discovery is configured but has no credential to reach the gateway —
+    // OAuth alone cannot build one. Keep showing the first-party options
+    // instead of dropping the picker back to the static list.
+    return config.additionalModelOptionsCacheKey === undefined
+      ? config.additionalModelOptionsCache
+      : undefined
+  }
+  return config.additionalModelOptionsCacheKey === cacheKey
     ? (config.additionalModelOptionsCache ?? [])
     : undefined
 }

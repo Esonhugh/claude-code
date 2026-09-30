@@ -258,6 +258,43 @@ try {
     description: 'First-party bootstrap model',
   }])
   assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
+
+  // A gateway that does not serve /v1/models must still leave the caller with
+  // the first-party bootstrap.
+  requests.length = 0
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
+  process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
+  process.env.ANTHROPIC_AUTH_TOKEN = 'gateway-token'
+  saveGlobalConfig(current => ({
+    ...current,
+    additionalModelOptionsCache: undefined,
+    additionalModelOptionsCacheKey: undefined,
+  }))
+  const gatewayFailure = axios.get
+  axios.get = (async (
+    url: string,
+    options?: { headers?: Record<string, string> },
+  ) => {
+    if (url.includes('/v1/models')) {
+      requests.push({ url, headers: options?.headers, params: undefined })
+      throw new Error('gateway has no /v1/models')
+    }
+    return gatewayFailure(url, options as never)
+  }) as typeof axios.get
+
+  await fetchBootstrapData()
+
+  assert.equal(requests[0]!.url, 'https://gateway.example/v1/models')
+  assert.equal(
+    requests[1]!.url,
+    'https://api.anthropic.com/api/claude_cli/bootstrap',
+  )
+  assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [{
+    value: 'claude-first-party-bootstrap',
+    label: 'Claude First-Party Bootstrap',
+    description: 'First-party bootstrap model',
+  }])
+  assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
 } finally {
   restoreGlobalConfig?.()
   axios.get = originalAxiosGet
