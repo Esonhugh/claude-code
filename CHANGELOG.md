@@ -12,20 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-09-27 - v2.1.280 - Mods 宿主扩展与 OAuth 兼容修复
+## 2026-09-30 - v2.1.280 - Mods 宿主扩展、OAuth 与 OpenAI Daybreak
 
 ### 版本状态
 
-- 本地待发布版本：`v2.1.280`；累计范围为上一 release tag `v2.1.219` 之后的当前分支提交。此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
+- 本地待发布版本：`v2.1.280`；累计范围固定为上一 release tag `v2.1.219` 之后至当前本地 HEAD `887c499`（即 `v2.1.219..887c499`）的提交。`887c499` 尚未推送至 `origin/feat/mods`，当前未提交工作区变更也不属于该固定范围；此版本不等于官方 Claude Code 功能全量对齐，本次不发布、不打 tag。
 - `package.json` 及 SDK/Bun 依赖保持不变；版本提升使本地构建、billing 标识与 Claude OAuth `User-Agent` 的 `2.1.280` 版本一致。
 
 ### 关联提交
 
-- `4444348..39a9abd` — 独立本地会话通信、Plan mode 配置、跨平台进程身份、构建宏与当前功能说明；`fb7b441..531dfdf` — Mods 生命周期、宿主能力、UI/REPL/Agent/模型与 builtin compiled 验收的累计实现、修复、测试和说明。
-- `3b0d6ce`、`dbdb97e..9ba61da`、`20ad11e..57bd3a6` — OpenAI reasoning 恢复、`AGENTS.md` 指令链、Usage/Stats/status、Agent/TUI/diff、模型与运行时可靠性等累计改动。
+- `4444348^..39a9abd` — 独立本地会话通信、Plan mode 配置、跨平台进程身份、构建宏与当前功能说明；`fb7b441^..531dfdf` — Mods 生命周期、宿主能力、UI/REPL/Agent/模型与 builtin compiled 验收的累计实现、修复、测试和说明。
+- `3b0d6ce`、`dbdb97e^..9ba61da`、`20ad11e^..57bd3a6` — OpenAI reasoning 恢复、`AGENTS.md` 指令链、Usage/Stats/status、Agent/TUI/diff、模型与运行时可靠性等累计改动。
 - `9ba33c6` — 固定 Claude.ai OAuth 请求的 CLI UA 与 Stainless SDK/runtime headers，并设置 retry count `0`、timeout `600`；`3c4220e` — 校验手工 OAuth callback state，并修复服务端拒绝 token 后的强制刷新、并发替换识别与保存失败处理。
-- `f024fd3..7a337fe` — credential handle 撤销、完整 lifecycle cleanup、Pane redraw 串行化、`command.run.context`、stream resume rewrite 拒绝及 compiled telemetry credential recheck 验收；`bd06460` — extended cache TTL beta 与实际 request marker 对齐；`d031266` — 将默认构建版本更新为 `2.1.280` 并整理发布记录；`c07bf85` — 更新本版本变更日志。
-- `ca233cb` — 修复 custom Clawd fullscreen 覆盖与超宽 wrapping、native `/diff` same-chunk navigation 与异步 body/frame rendering、中文 UTF-8/CSI-u/未闭合 bracketed paste 输入恢复及 Mods Pane focus handoff；`838dcdc` — 修复动态 Mods lifecycle、ToolSearch catalog/tool reference 刷新、managed tool hook 重复执行与无效输出回退；`a6bf5f3` — 兼容 stable/beta cache-control message blocks；`b8997a9` — 收紧 release-driver 的 terminal frame、nested Agent、SSH evidence 和 required-target 验证。
+- `f024fd3^..7a337fe` — credential handle 撤销、完整 lifecycle cleanup、Pane redraw 串行化、`command.run.context`、stream resume rewrite 拒绝及 compiled telemetry credential recheck 验收；`bd06460` — extended cache TTL beta 与实际 request marker 对齐；`d031266` — 将默认构建版本更新为 `2.1.280` 并整理发布记录；`c07bf85` — 更新本版本变更日志。
+- `ca233cb` — 修复 custom Clawd fullscreen 覆盖与超宽 wrapping、native `/diff` same-chunk navigation 与异步 body/frame rendering、中文 UTF-8/CSI-u/未闭合 bracketed paste 输入恢复及 Mods Pane focus handoff；`838dcdc` — 修复动态 Mods lifecycle、ToolSearch catalog/tool reference 刷新、managed tool hook 重复执行与无效输出回退；`a6bf5f3` — 兼容 stable/beta cache-control message blocks；`b8997a9` — 收紧 release-driver 的 terminal frame、nested Agent、SSH evidence 和 required-target 验证；`0e11b48` — 刷新本版本候选说明与当前使用文档；`887c499` — 增加 OpenAI Daybreak access program 命令、设置、Responses request mapping 与回归测试。
 
 ### 变更内容
 
@@ -57,12 +57,18 @@
 - 默认本地构建版本升至 `2.1.280`，使 binary/billing 版本和固定 OAuth UA 一致；未升级 Anthropic SDK 或 Bun runtime，也未验证真实 TLS JA3 指纹一致性。
 - 主请求和 side query 仅在实际发送 `ttl: "1h"` cache marker 时附加 `extended-cache-ttl-2025-04-11` beta；遵守 first-party/experimental gate，并保持 5m、禁用 experimental 与不支持 provider 请求不携带该 beta。
 
+#### OpenAI Daybreak
+
+- OpenAI provider 新增 `/daybreak [blue|red]`：无参数时显示当前状态，有效值写入 user settings，非法值返回用法且不改写已有配置；非 OpenAI provider 不注册该命令。
+- 配置 `blue` 或 `red` 后，普通 OpenAI Responses create 请求分别发送 `access_programs: { cyber: "daybreak_blue" }` 或 `daybreak_red`；未配置时省略该字段，remote compaction 请求始终不携带该 access-program marker，服务端拒绝仍按原始 OpenAI API 错误返回。
+
 ### 测试覆盖
 
 - OAuth 定向测试为 12 passed / 0 failed，覆盖 callback state、`401` 强制刷新、并发 token 替换、保存失败以及固定 UA/SDK/runtime/retry/timeout headers；`cchFetch` 自执行断言通过。
 - Mods focused regression 为 605 passed / 4 skipped / 0 failed；完整 `src/services/mods` 为 1274 passed / 11 skipped / 0 failed；后续竞态修复定向回归为 294 passed / 1 skipped / 0 failed，slash-command Mods 集成为 67 passed / 0 failed。
 - `make release-check` 与 `make build` 已通过；本轮交互修复的 focused regression 分别覆盖 custom Clawd physical layout、Mods focus handoff、native `/diff` state/frame/physical terminal、中文 same-chunk 输入、Unicode CSI-u 与 bracketed-paste recovery。最终 scripted binary matrix 与 candidate binary SHA-256 仅在四路 release gate 全部完成后确认，本条不复用旧制品哈希声称通过。
-- 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；credential 变化后的吊销、cleanup fault aggregation、slow redraw/reopen、command context 与 streaming catch rewrite 仍主要由源码级确定性测试覆盖，不以 builtin compiled gate 声称这些分支已有 binary fault-injection 验收；本轮未验证 JA3，未升级 SDK/Bun，也不声称全部平台或官方 runtime 完整 parity。
+- Daybreak command 回归覆盖 OpenAI-only 可见性、当前状态、大小写归一化、user settings 持久化、非法值不改写和 settings schema；OpenAI compatibility 回归覆盖 blue/red streaming 与非 streaming wire mapping、未配置时省略、remote compaction 隔离和 `403` 错误传播。
+- 本条保留历史未发布条目中记录的局部失败、平台限制和未覆盖边界；credential 变化后的吊销、cleanup fault aggregation、slow redraw/reopen、command context 与 streaming catch rewrite 仍主要由源码级确定性测试覆盖，不以 builtin compiled gate 声称这些分支已有 binary fault-injection 验收；Daybreak 尚未完成本轮 fresh built binary 交互门禁，且 access-program 实际授权由 OpenAI 服务端决定；本轮未验证 JA3，未升级 SDK/Bun，也不声称全部平台或官方 runtime 完整 parity。
 
 ## 2026-09-19 - Mods 分页焦点与自适应布局修复
 
@@ -82,7 +88,7 @@
 ### 测试覆盖
 
 - 增加真实文件 key、五行窗口延迟重绘的16文件正反分页回归，覆盖逐次和连续方向键；补充精确注销、host 焦点回声、控件高亮、109/110列切换及嵌套 padding 的红绿验证。
-- 新制品的限定 scripted tmux 验收、相邻回归及未覆盖项记录到 mods-test.md 与 handoff.md；历史失败保留，不以本轮局部结果声称全仓或官方完整 parity 通过。
+- 新制品的限定 scripted tmux 验收、相邻回归及未覆盖项记录在 `mods-test.md` 对应历史轮次中；历史失败保留，不以本轮局部结果声称全仓或官方完整 parity 通过。
 
 ## 2026-09-19 - Mods 输入链与 SSH 长临时路径修复
 
@@ -101,7 +107,7 @@
 ### 测试覆盖
 
 - SSH 长路径、多字节、并发目录、真实本地 UDS、启动失败和清理重试取得红→绿；主线程追加 close/error 两项红→绿，相邻10文件142 pass / 0 fail。该结果不代表真实远端 SSH 集成。
-- Mods 输入链的红绿、相邻回归、提交后完整自动化及新制品 scripted tmux 结果以 mods-test.md 第8节和 handoff.md 顶部为准；CHANGELOG 内嵌制品，后续动态测试结果不改变已构建内容身份。
+- Mods 输入链的红绿、相邻回归、提交后完整自动化及新制品 scripted tmux 结果见 `mods-test.md` 第 8 节；CHANGELOG 内嵌制品，后续动态测试结果不改变已构建内容身份。
 - Workflow 原5000ms超时仍未定因；一次有界诊断的目标通过，但镜像漏内嵌 CHANGELOG 导致完整前缀不合格，不把未复现当成修复。指定 settings 的官方检查在 sandbox 编译前置受阻，official 未启动，不据此判断认证或 gate；推送门禁仍保留。
 
 ## 2026-09-18 - Mods 生命周期、宿主能力与兼容性收口

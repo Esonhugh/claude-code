@@ -189,7 +189,7 @@ make build
 
 新制品的no-plugin/empty-module规范化请求对照仍为**not covered**，marker通过不能证明空Mods零增量。该smoke总体记录为not covered；首轮完整交互矩阵仍failed，Workflow timeout根因仍未定，推送继续阻塞。未借此重跑官方binary自然gate或声明官方运行时parity。
 
-smoke agent记录的`handoff.md`、`mods-test.md`内容漂移来自主线程并发回填报告；这是主线程补充说明，不改写agent的“未归因”原始记录，也不把“全仓bytes不变”断言改标通过。HEAD/index在该smoke期间未变，锁定binary及生产构建输入未变；最终只补这两份不内嵌报告，CHANGELOG保持构建时内容。
+smoke agent记录的当时交接报告与本账本内容漂移来自主线程并发回填报告；这是主线程补充说明，不改写agent的“未归因”原始记录，也不把“全仓bytes不变”断言改标通过。HEAD/index在该smoke期间未变，锁定binary及生产构建输入未变；最终只补这两份不内嵌报告，CHANGELOG保持构建时内容。
 
 ### 7.4 交互补验：已确认结果与限制
 
@@ -306,7 +306,7 @@ Workflow 只做一次探针校准和一次原 full-b 到目标的精确前缀诊
 
 `make release-check` 与 `make build` 均 exit0，检查及构建前后 tracked内容无变化。构建为 **2.1.219，100119266 bytes**，SHA-256 **`13e042c2a21c2b0a3799f02832d6b357483263d9cc46db3e69a8d43deec7d31e`**。构建锁定时，仓库 `built-claude` 与 `build/artifact/built-claude` 隔离副本hash相同，见 `build/release-check.json`、`build/build.json`、`build/artifact-lock.json`。报告复核时，仓库产物已变为 `b5d6121afa250922d4ccbe395f35dba5dc3033a119a7d291dd7fc18eae84235f`；本任务未重建或覆盖它，不把该并发替换产物算作已验收。隔离副本仍为上述 `13e042c2…`，是本轮scripted tmux的唯一指定制品；最终交接与实际覆盖见第8.8节。
 
-完整测试于本地2026-09-19 00:28:47结束，首次审计发现 `src/services/api/openai-compat.ts` 和 `openai-compat.test.ts` 出现额外未提交改动，记录mtime分别00:33:10和00:30:58，均晚于测试结束；之后还观察到 `src/utils/messages.ts` 改动与新的 `src/services/api/openai-reasoning-resume.test.ts`。后续复核时，这组并发工作已由其他任务正常签名提交为 `3b0d6ce`，另包含 `src/utils/conversationRecovery.ts`，当前HEAD因而前进。两个完整模式保留的before/after hash一致；**本轮结果对应冻结的 `6b967f3` 内容和上述binary，不覆盖后来的OpenAI提交，也不声称验证了当前HEAD的全部生产代码**。未修改、暂存或代替其他任务提交这些文件。报告回填只改本文件及`handoff.md`，不改已内嵌CHANGELOG或重建产物；两份既有cross-session草稿继续保留。
+完整测试于本地2026-09-19 00:28:47结束，首次审计发现 `src/services/api/openai-compat.ts` 和 `openai-compat.test.ts` 出现额外未提交改动，记录mtime分别00:33:10和00:30:58，均晚于测试结束；之后还观察到 `src/utils/messages.ts` 改动与新的 `src/services/api/openai-reasoning-resume.test.ts`。后续复核时，这组并发工作已由其他任务正常签名提交为 `3b0d6ce`，另包含 `src/utils/conversationRecovery.ts`，当前HEAD因而前进。两个完整模式保留的before/after hash一致；**本轮结果对应冻结的 `6b967f3` 内容和上述binary，不覆盖后来的OpenAI提交，也不声称验证了当前HEAD的全部生产代码**。未修改、暂存或代替其他任务提交这些文件。报告回填只改本账本及当时的交接报告，不改已内嵌CHANGELOG或重建产物；两份既有cross-session草稿继续保留。
 
 ### 8.8 新制品交互：已结束，存在确认失败及未覆盖项
 
@@ -585,7 +585,7 @@ session/window/pane为`cc-uiux-height-contract-10:0.0` / `%0`，160×50；socket
 
 本次只修仓库外harness并回填这两份不内嵌报告，未再改生产协议、README/CHANGELOG、依赖、版本或CI，无新build，未启动官方CLI或真实provider。报告检查`U/docs-height-followup-check.log`为5 pass/0 fail、exit0；签名提交前另做最终diff检查。此前259/0、release-check与build属于第五制品冻结基线，不冒充当前HEAD重测。
 
-**本轮限定补验已结束，不再启动runtime。整体仍未通过，不push。** 第四制品长行尾部/Page严格谓词、依赖的rapid Escape/Rewind及其他未覆盖项仍保留；公共Yoga子布局缓存未修，旧Workflow timeout/PTY退出码异常继续阻止整体推送。仅正常签名提交`mods-test.md`与`handoff.md`，不混入两份cross-session草稿、并发源码或原始证据。
+**本轮限定补验已结束，不再启动runtime。整体仍未通过，不push。** 第四制品长行尾部/Page严格谓词、依赖的rapid Escape/Rewind及其他未覆盖项仍保留；公共Yoga子布局缓存未修，旧Workflow timeout/PTY退出码异常继续阻止整体推送。仅正常签名提交本账本与当时的交接报告，不混入两份cross-session草稿、并发源码或原始证据。
 
 ## 10. 可复用测试 Mod 与官方原件调试（2026-09-19）
 
@@ -635,7 +635,7 @@ session/window/pane为`cc-uiux-height-contract-10:0.0` / `%0`，160×50；socket
 
 冻结宿主构建与版本检查已完成，`make build` exit0，版本2.1.219，初始制品 `L/artifact/built-claude` SHA-256 `ca066924ce48976c590b22e97f09c73f3a816152894c1cd26d75ccf9b7fc27e3`。宿主2742文件清单为 `host-source-manifest.json`。这是未叠加新样例/脚本前的宿主制品，不能当成最终新增文件检查；不覆盖共享根目录产物。并发工作已开始调整真实工作区 `src/services/mods/runtime.ts` 的 builtin diff 冲突规则，本轮不恢复、不混入该修改；旧diff覆盖资格只对冻结基线和指定 binary 有效。
 
-最终叠加样例、测试、launcher 及 README 后，`L/final-release-check.log` 与 `L/final-build.log` 均 exit0。`audit:missing` 报告10个既有测试字符串 fixture 相对引用，src 导入/文本资产/类型模块缺失为0，目标正常退出。`git diff --check` 通过显式 `GIT_DIR/GIT_WORK_TREE` 检查真实工作区，不把 archive 误称为 Git worktree。2746文件构建内容摘要 `aa83b3352d0529726db4cb5138d31c3512cc0a85cf4390562f684afbf6bddc0b`，构建前后未变；动态 `mods-test.md`/`handoff.md` 和运行输出不进入源码身份。最终 `L/artifact/final-built-claude` 为100432994 bytes，SHA-256仍为 `ca066924ce48976c590b22e97f09c73f3a816152894c1cd26d75ccf9b7fc27e3`，与全部本轮 runtime 使用的初始制品逐字节相同，见 `L/final-artifact.json`。
+最终叠加样例、测试、launcher 及 README 后，`L/final-release-check.log` 与 `L/final-build.log` 均 exit0。`audit:missing` 报告10个既有测试字符串 fixture 相对引用，src 导入/文本资产/类型模块缺失为0，目标正常退出。`git diff --check` 通过显式 `GIT_DIR/GIT_WORK_TREE` 检查真实工作区，不把 archive 误称为 Git worktree。2746文件构建内容摘要 `aa83b3352d0529726db4cb5138d31c3512cc0a85cf4390562f684afbf6bddc0b`，构建前后未变；动态验收报告和运行输出不进入源码身份。最终 `L/artifact/final-built-claude` 为100432994 bytes，SHA-256仍为 `ca066924ce48976c590b22e97f09c73f3a816152894c1cd26d75ccf9b7fc27e3`，与全部本轮 runtime 使用的初始制品逐字节相同，见 `L/final-artifact.json`。
 
 修正后的 sample 在冻结源码和实际工作区分别 **7/0、249 expect**，完整类型无 skip，见 `sample-fixed-qualified.log`、`sample-current-workspace.log`。中间一次误把完整类型路径写成 `official-reviewed/mods/types` 导致 TS6053，原 `sample-fixed.log` 保留；实际提取路径是 `official-reviewed/types`，修正参数后通过，不改声明。launcher 最终离线测试 **14/0、111 expect**，包含真实 sandbox discovery、空 security 44、真实 security EPERM 与清理边界，主线程复验见 `launcher-main-review.log`。将其并入九文件的外层sandbox时，launcher测试固定使用短 `/private/tmp/mods-lab-test-*`，不在外层只允许L写入的范围内，12项在mkdtemp处EPERM，合批结果 **221/12** 保留于 `final-mods-adjacent.log`，不能称十文件全通过。没有扩大sandbox写权限或跳过断言；九文件在原隔离内复验 **219/0**（`final-mods-nine.log`），launcher保持其独立真实sandbox测试的14/0，分别报告。
 
@@ -719,7 +719,7 @@ Pane 最小红测为 0 pass / 1 fail；builtin 契约及旧绕过参数红测为
 
 ### 11.3 构建身份与终端验收
 
-从 `303d0ce451a8e9a513c24dde34526af95b92fa1c` 的 Git archive 建独立镜像，仅叠加本节宿主修复及既有 sample/launcher；不混入并发 native/model/API/Agent 改动、不覆盖共享 `built-claude`。2758 个内容记录见 `F/source-inventory.json`，排除动态 `handoff.md`/`mods-test.md`；源码摘要 `fded438c4f7d47e748121d724fd5e78ab7d5a49e9e1cdec9af378a9f03f9c397`，构建后无漂移。
+从 `303d0ce451a8e9a513c24dde34526af95b92fa1c` 的 Git archive 建独立镜像，仅叠加本节宿主修复及既有 sample/launcher；不混入并发 native/model/API/Agent 改动、不覆盖共享 `built-claude`。2758 个内容记录见 `F/source-inventory.json`，排除动态验收报告；源码摘要 `fded438c4f7d47e748121d724fd5e78ab7d5a49e9e1cdec9af378a9f03f9c397`，构建后无漂移。
 
 - `make release-check`：exit 0，含 TypeScript、lint、changelog、audit 与 diff 检查。
 - `make build`：exit 0，制品 `F/source/built-claude`，2.1.219，100432994 bytes，SHA-256 `f5bfe62a03a6ba05666ec98195e9ad09b8a4af0bf7d47234652c865203c1df26`。
