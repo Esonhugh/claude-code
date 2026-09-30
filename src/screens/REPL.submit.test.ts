@@ -436,7 +436,7 @@ test('Diff sidebar navigation does not disable PromptInput handling', () => {
   expect(expression).toContain('modPaneFocused')
 })
 
-test('Diff sidebar keyboard ownership disables background task navigation', () => {
+test('Diff sidebar leaves keyboard navigation with the composer and background tasks', () => {
   const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
   const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   let options: ts.ObjectLiteralExpression | undefined
@@ -456,7 +456,7 @@ test('Diff sidebar keyboard ownership disables background task navigation', () =
   const isActive = options!.properties.find(
     property => property.name?.getText(file) === 'isActive',
   )
-  expect(isActive?.getText(file)).toBe('isActive: !diffSidebarKeyboardActive')
+  expect(isActive?.getText(file)).toBe('isActive: true')
 })
 
 test('Diff dialog owns scroll keys while unrelated overlays keep transcript scrolling', () => {
@@ -467,9 +467,7 @@ test('Diff dialog owns scroll keys while unrelated overlays keep transcript scro
   function visit(node: ts.Node) {
     if (
       ts.isVariableDeclaration(node) &&
-      ['diffDialogActive', 'diffSidebarKeyboardActive'].includes(
-        node.name.getText(file),
-      )
+      node.name.getText(file) === 'diffDialogActive'
     )
       declarations.push(`const ${node.getText(file)};`)
     if (ts.isJsxAttribute(node) && node.name.getText(file) === 'isKeyboardActive' &&
@@ -479,14 +477,13 @@ test('Diff dialog owns scroll keys while unrelated overlays keep transcript scro
   }
   visit(file)
   expect(expression).not.toBe('')
+  expect(declarations.join('\n')).not.toContain('diffSidebarKeyboardActive')
   const js = ts.transpileModule(`${declarations.join('\n')}\nreturn ${expression};`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   const state = { activeOverlays: new Set<string>() }
   const scope = {
     modPaneFocused: false,
-    diffSidebarVisible: false,
-    canShowDiffSidebar: true,
     modUiPresentation: {
       composerEmpty: true,
       hasDialog: false,
@@ -496,19 +493,13 @@ test('Diff dialog owns scroll keys while unrelated overlays keep transcript scro
   }
   const active = () => new Function('scope', `with (scope) { ${js} }`)(scope)
   expect(active()).toBe(true)
-  scope.diffSidebarVisible = true
-  expect(active()).toBe(false)
   scope.modUiPresentation.composerEmpty = false
   expect(active()).toBe(true)
   scope.modUiPresentation.composerEmpty = true
-  scope.canShowDiffSidebar = false
-  expect(active()).toBe(true)
-  scope.canShowDiffSidebar = true
   state.activeOverlays.add('diff-dialog')
   expect(active()).toBe(false)
   state.activeOverlays.clear()
   state.activeOverlays.add('other-dialog')
-  scope.diffSidebarVisible = false
   expect(active()).toBe(true)
   scope.modPaneFocused = true
   expect(active()).toBe(false)

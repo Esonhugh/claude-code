@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import { AppStoreContext, getDefaultAppState } from '../../state/AppState.js'
 import { createStore } from '../../state/store.js'
 import { Box, Text, createRoot } from '../../ink.js'
+import { AlternateScreen } from '../../ink/components/AlternateScreen.js'
 import type { Frame } from '../../ink/frame.js'
 import { useDeclaredCursor } from '../../ink/hooks/use-declared-cursor.js'
 import instances from '../../ink/instances.js'
@@ -52,7 +53,7 @@ function deferred<T>(): Deferred<T> {
   }
 }
 
-function body(marker: string): DiffBody {
+function body(marker: string, lineCount = 1): DiffBody {
   return {
     status: 'ready',
     hunks: [
@@ -60,8 +61,11 @@ function body(marker: string): DiffBody {
         oldStart: 1,
         oldLines: 0,
         newStart: 1,
-        newLines: 1,
-        lines: [`+${marker}`],
+        newLines: lineCount,
+        lines: Array.from(
+          { length: lineCount },
+          (_, index) => `+${marker}_${index.toString().padStart(2, '0')}`,
+        ),
       },
     ],
   }
@@ -170,6 +174,50 @@ test('production scheduler emits and physically applies its trailing commit', ()
     scheduler: 'production',
   })
 }, 15000)
+
+test('entering alternate screen paints the first frame atomically', async () => {
+  const output = new DiffTerminalOutput(40, 8)
+  const input = new Input()
+  const root = await createRoot({
+    stdout: output as never,
+    stdin: input as never,
+    patchConsole: false,
+    exitOnCtrlC: false,
+  })
+
+  try {
+    root.render(
+      <AlternateScreen mouseTracking={false}>
+        <Text>DIFF_FIRST_FRAME</Text>
+      </AlternateScreen>,
+    )
+    await waitFor(() => output.writes.length > 0)
+    for (let index = 0; index < 5; index++) {
+      await settleReact()
+      await output.flush()
+      if (
+        output.writes.some(
+          write =>
+            write.screen &&
+            screenLines(write.screen).join('\n').includes('DIFF_FIRST_FRAME'),
+        )
+      ) {
+        break
+      }
+      await new Promise(resolve => setImmediate(resolve))
+    }
+
+    const enterWrite = output.writes.find(write =>
+      write.bytes.includes(Buffer.from('\u001b[?1049h')),
+    )
+    expect(enterWrite).toBeDefined()
+    expect(enterWrite!.bytes.toString()).toContain('DIFF_FIRST_FRAME')
+    expect(enterWrite!.bytes.toString()).toContain('\u001b[?2026h')
+    expect(enterWrite!.bytes.toString()).toContain('\u001b[?2026l')
+  } finally {
+    root.unmount()
+  }
+})
 
 test('alternate-screen frame evidence reports the clamped physical cursor', async () => {
   const output = new DiffTerminalOutput(10, 4)
@@ -390,7 +438,7 @@ test('records every async diff publish as matching logical and terminal frames',
         }
       })
     })
-    pending.get('pre-one.ts')!.resolve(body('PRE_ONE_BODY'))
+    pending.get('pre-one.ts')!.resolve(body('PRE_ONE_BODY', 40))
     await waitFor(() => scheduledRedraw !== undefined)
     scheduledRedraw!()
     scheduledRedraw = undefined
@@ -404,6 +452,11 @@ test('records every async diff publish as matching logical and terminal frames',
       controller.getSnapshot().data.files.find(file => file.path === 'pre-two.ts')
         ?.bodyState,
     ).toBe('loading')
+    await settleReact()
+    await output.flush()
+    const partialScreen = screenLines(recorder.frames.at(-1)!.screen).join('\n')
+    expect(partialScreen).toContain('PRE_ONE_BODY_00')
+    expect(partialScreen).not.toContain('PRE_ONE_BODY_30')
 
     output.resize(109, 32)
     await output.flush()

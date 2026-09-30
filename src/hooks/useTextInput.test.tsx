@@ -101,8 +101,15 @@ async function runChunk(
     cleared,
     changes,
     notification: store.getState().notifications.current,
+    value: currentValue,
   }
 }
+
+test('PageUp does not move the composer cursor before Ctrl-U', async () => {
+  const result = await runChunk('\u001b[5~\x15xyz', 'xyz', undefined, '/diff')
+
+  expect(result.value).toBe('xyz')
+})
 
 test('submits Chinese text received with Enter in one stdin chunk', async () => {
   expect((await runChunk('中文\r')).submitted).toEqual(['中文'])

@@ -762,13 +762,18 @@ function renderNodeToOutput(
         const sticky =
           node.stickyScroll ?? Boolean(node.attributes['stickyScroll'])
         const prevMaxScroll = Math.max(0, prevScrollHeight - prevInnerHeight)
-        // Positional check only valid when content grew — virtualization can
-        // transiently SHRINK scrollHeight (tail unmount + stale heightCache
-        // spacer) making scrollTop >= prevMaxScroll true by artifact, not
-        // because the user was at bottom.
+        // Positional check only valid when content grew and was already
+        // scrollable. If the previous content fit, scrollTop=prevMax=0 says
+        // nothing about intent; following there would jump an initially short
+        // async body to the end as soon as it first overflows. Virtualization
+        // can also transiently SHRINK scrollHeight (tail unmount + stale
+        // heightCache spacer), so shrinking never establishes bottom intent.
         const grew = scrollHeight >= prevScrollHeight
         const atBottom =
-          sticky || (grew && scrollTopBeforeFollow >= prevMaxScroll)
+          sticky ||
+          (grew &&
+            prevMaxScroll > 0 &&
+            scrollTopBeforeFollow >= prevMaxScroll)
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined

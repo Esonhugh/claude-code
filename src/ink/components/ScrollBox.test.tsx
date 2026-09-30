@@ -17,6 +17,62 @@ class Output extends Writable {
   }
 }
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  expect(predicate()).toBe(true)
+}
+
+test('a non-sticky ScrollBox stays at the top when content first overflows', async () => {
+  const stdout = new Output()
+  const scrollRef = createRef<ScrollBoxHandle>()
+  const draw = (count: number) => (
+    <ScrollBox
+      ref={scrollRef}
+      width={40}
+      height={4}
+      flexShrink={0}
+      flexDirection="column"
+    >
+      {Array.from({ length: count }, (_, index) => (
+        <Box key={index} flexShrink={0}>
+          <Text>line-{index.toString().padStart(2, '0')}</Text>
+        </Box>
+      ))}
+    </ScrollBox>
+  )
+  const instance = await render(draw(2), {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    patchConsole: false,
+    exitOnCtrlC: false,
+  })
+
+  try {
+    await waitFor(
+      () =>
+        scrollRef.current !== null &&
+        scrollRef.current.getScrollHeight() > 0 &&
+        scrollRef.current.getScrollHeight() <=
+          scrollRef.current.getViewportHeight(),
+    )
+    expect(scrollRef.current?.getScrollTop()).toBe(0)
+
+    instance.rerender(draw(10))
+    await waitFor(
+      () =>
+        scrollRef.current !== null &&
+        scrollRef.current.getScrollHeight() >
+          scrollRef.current.getViewportHeight(),
+    )
+
+    expect(scrollRef.current?.getScrollTop()).toBe(0)
+  } finally {
+    instance.unmount()
+  }
+})
+
 test('a horizontally constrained ScrollBox does not shift sibling columns', async () => {
   const stdout = new Output()
   const scrollRef = createRef<ScrollBoxHandle>()

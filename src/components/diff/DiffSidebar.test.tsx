@@ -9,6 +9,7 @@ if (!process.env[childKey]) {
   test.each([
     'continuous',
     'interaction',
+    'keyboard-ownership',
     'subdirectory',
     'clean',
     'untracked',
@@ -88,6 +89,9 @@ if (!process.env[childKey]) {
     const { Readable, Writable } = await import('node:stream')
     const { Box, Text, render, useInput } = await import('../../ink.js')
     const { DiffSidebar } = await import('./DiffSidebar.js')
+    const { KeybindingSetup } = await import(
+      '../../keybindings/KeybindingProviderSetup.js'
+    )
     const { DiffController } = await import('../../services/diff/controller.js')
     const controller =
       process.env.DIFF_SIDEBAR_SCENARIO === 'continuous'
@@ -135,10 +139,14 @@ if (!process.env[childKey]) {
     const store = createStore(getDefaultAppState())
     let closed = false
     let transcriptWheels = 0
+    let transcriptEscapes = 0
+    let transcriptText = ''
     const stdin = new Input()
     function TranscriptInput() {
-      useInput((_input, key) => {
+      useInput((input, key) => {
         if (key.wheelDown || key.wheelUp) transcriptWheels++
+        if (key.escape) transcriptEscapes++
+        else if (input && !key.ctrl && !key.meta) transcriptText += input
       })
       return <Text>transcript</Text>
     }
@@ -146,20 +154,22 @@ if (!process.env[childKey]) {
     let messages: Message[] = []
     const draw = () => (
       <AppStoreContext value={store}>
-        <Box width={80} height={24} flexDirection="column">
-          <TranscriptInput />
-          {closed ? (
-            <Text>closed</Text>
-          ) : (
-            <DiffSidebar
-              messages={messages}
-              controller={controller}
-              onClose={() => {
-                closed = true
-              }}
-            />
-          )}
-        </Box>
+        <KeybindingSetup>
+          <Box width={80} height={24} flexDirection="column">
+            <TranscriptInput />
+            {closed ? (
+              <Text>closed</Text>
+            ) : (
+              <DiffSidebar
+                messages={messages}
+                controller={controller}
+                onClose={() => {
+                  closed = true
+                }}
+              />
+            )}
+          </Box>
+        </KeybindingSetup>
       </AppStoreContext>
     )
     const instance = await render(draw(), {
@@ -250,7 +260,25 @@ if (!process.env[childKey]) {
         expect(closed).toBe(true)
         return
       }
-      await waitFor('No visible changes (check filters)')
+      await waitFor(
+        scenario === 'keyboard-ownership'
+          ? 'Working tree is clean'
+          : 'No visible changes (check filters)',
+      )
+      if (scenario === 'keyboard-ownership') {
+        stdin.push('draft')
+        const textDeadline = Date.now() + 1000
+        while (transcriptText !== 'draft' && Date.now() < textDeadline)
+          await new Promise(resolve => setTimeout(resolve, 10))
+        expect(transcriptText).toBe('draft')
+        stdin.push('\u001b')
+        const closeDeadline = Date.now() + 1000
+        while (!closed && Date.now() < closeDeadline)
+          await new Promise(resolve => setTimeout(resolve, 10))
+        expect(closed).toBe(true)
+        expect(transcriptEscapes).toBe(0)
+        return
+      }
       await click('Pre-session 1 [show]')
       const fileNode = await waitFor('tracked.txt')
       const fileRect = nodeCache.get(fileNode)!

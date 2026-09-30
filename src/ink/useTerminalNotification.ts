@@ -5,6 +5,11 @@ import { ITERM2, OSC, osc, PROGRESS, wrapForMultiplexer } from './termio/osc.js'
 
 export type TerminalWriter = {
   write(data: string): void
+  setAltScreenActive?: (
+    active: boolean,
+    mouseTracking?: boolean,
+    entrySequence?: string,
+  ) => void
   isTTY: boolean
 }
 

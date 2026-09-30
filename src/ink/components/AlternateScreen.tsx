@@ -3,7 +3,6 @@ import React, {
   useContext,
   useInsertionEffect,
 } from 'react'
-import instances from '../instances.js'
 import {
   DISABLE_MOUSE_TRACKING,
   ENABLE_MOUSE_TRACKING,
@@ -48,28 +47,27 @@ export function AlternateScreen({
 
   // useInsertionEffect (not useLayoutEffect): react-reconciler calls
   // resetAfterCommit between the mutation and layout commit phases, and
-  // Ink's resetAfterCommit triggers onRender. With useLayoutEffect, that
-  // first onRender fires BEFORE this effect — writing a full frame to the
-  // main screen with altScreen=false. That frame is preserved when we
-  // enter alt screen and revealed on exit as a broken view. Insertion
-  // effects fire during the mutation phase, before resetAfterCommit, so
-  // ENTER_ALT_SCREEN reaches the terminal before the first frame does.
+  // Ink's resetAfterCommit triggers onRender. Insertion effects mark the
+  // renderer as alt-screen before that first frame. The renderer prepends
+  // entry+clear to the frame's terminal transaction so the previous screen
+  // remains visible until the complete alternate-screen frame is ready.
   // Cleanup timing is unchanged: both insertion and layout effect cleanup
   // run in the mutation phase on unmount, before resetAfterCommit.
   useInsertionEffect(() => {
-    const ink = instances.get(process.stdout)
     if (!terminal) return
 
-    terminal.write(
+    const entrySequence =
       ENTER_ALT_SCREEN +
-        '\x1b[2J\x1b[H' +
-        (mouseTracking ? ENABLE_MOUSE_TRACKING : ''),
-    )
-    ink?.setAltScreenActive(true, mouseTracking)
+      '\x1b[2J\x1b[H' +
+      (mouseTracking ? ENABLE_MOUSE_TRACKING : '')
+    if (terminal.setAltScreenActive) {
+      terminal.setAltScreenActive(true, mouseTracking, entrySequence)
+    } else {
+      terminal.write(entrySequence)
+    }
 
     return () => {
-      ink?.setAltScreenActive(false)
-      ink?.clearTextSelection()
+      terminal.setAltScreenActive?.(false)
       terminal.write((mouseTracking ? DISABLE_MOUSE_TRACKING : '') + EXIT_ALT_SCREEN)
     }
   }, [terminal, mouseTracking])

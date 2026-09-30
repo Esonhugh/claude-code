@@ -20,7 +20,6 @@ import {
   yankPop,
 } from '../utils/Cursor.js'
 import { env } from '../utils/env.js'
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../utils/modifiers.js'
 import { useDoublePress } from './useDoublePress.js'
@@ -394,17 +393,11 @@ export function useTextInput({
       case key.end:
         return () => cursor.endOfLine()
       case key.pageDown:
-        // In fullscreen mode, PgUp/PgDn scroll the message viewport instead
-        // of moving the cursor — no-op here, ScrollKeybindingHandler handles it.
-        if (isFullscreenEnvEnabled()) {
-          return NOOP_HANDLER
-        }
-        return () => cursor.endOfLine()
       case key.pageUp:
-        if (isFullscreenEnvEnabled()) {
-          return NOOP_HANDLER
-        }
-        return () => cursor.startOfLine()
+        // Page keys belong to the message viewport. Keep the composer cursor
+        // stable even when the viewport handler is inactive or an overlay is
+        // presenting a passive sidebar.
+        return NOOP_HANDLER
       case key.wheelUp:
       case key.wheelDown:
         // Mouse wheel events only exist when fullscreen mouse tracking is on.

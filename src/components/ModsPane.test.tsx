@@ -3122,24 +3122,17 @@ describe('ModsPane input repair', () => {
     } finally { instance.unmount() }
   })
 
-  test('native diff owns navigation handlers without disabling PromptInput', () => {
+  test('native diff sidebar leaves keyboard navigation with the composer', () => {
     const repl = readFileSync(new URL('../screens/REPL.tsx', import.meta.url), 'utf8')
+    expect(repl).not.toContain('diffSidebarKeyboardActive')
     expect(repl).toContain(
-      'const diffSidebarKeyboardActive = diffSidebarVisible && canShowDiffSidebar &&',
-    )
-    expect(repl).toContain(
-      'diffSidebarVisible && canShowDiffSidebar &&\n    modUiPresentation.composerEmpty && !modPaneFocused',
-    )
-    expect(repl).toContain(
-      'isKeyboardActive={!modPaneFocused && !diffDialogActive && !diffSidebarKeyboardActive}',
+      'isKeyboardActive={!modPaneFocused && !diffDialogActive}',
     )
     expect(repl).toContain(
       'isLocalJSXCommandActive={\n                          isShowingLocalJSXCommand || modPaneFocused\n                        }',
     )
-    expect(repl).toContain('keyboardEnabled={diffSidebarKeyboardActive}')
-    expect(repl).toContain(
-      'isActive={!toolJSX?.isLocalJSXCommand && !diffSidebarKeyboardActive}',
-    )
+    expect(repl).toContain('keyboardEnabled={false}')
+    expect(repl).toContain('isActive={!toolJSX?.isLocalJSXCommand}')
   })
 
   test('PromptInput overlay Escape guard leaves pane Escape unarmed and restores normal Rewind handling', async () => {

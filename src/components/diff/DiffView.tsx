@@ -20,7 +20,10 @@ import type { InputEvent } from '../../ink/events/input-event.js'
 import { getRootNode } from '../../ink/focus.js'
 import { hitTest } from '../../ink/hit-test.js'
 import { useRegisterKeybindingContext } from '../../keybindings/KeybindingContext.js'
-import { useKeybindings } from '../../keybindings/useKeybinding.js'
+import {
+  useKeybinding,
+  useKeybindings,
+} from '../../keybindings/useKeybinding.js'
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import { DiffController } from '../../services/diff/controller.js'
 import { isDiffNoise } from '../../services/diff/classify.js'
@@ -235,9 +238,6 @@ export function DiffView({
     if (open) {
       setDetail(true)
       bodyRef.current?.scrollTo(0)
-    } else {
-      const anchor = fileAnchors.current.get(path)
-      if (anchor) bodyRef.current?.scrollToElement(anchor)
     }
   }
   function moveFile(delta: number) {
@@ -284,6 +284,15 @@ export function DiffView({
     )
   }
   useRegisterKeybindingContext('DiffDialog', keyboardEnabled)
+  useKeybinding(
+    'diff:dismiss',
+    () => onClose(),
+    {
+      context: 'DiffDialog',
+      isActive: presentation === 'sidebar' && !keyboardEnabled,
+      capture: true,
+    },
+  )
   useKeybindings(
     {
       'diff:dismiss': () => {

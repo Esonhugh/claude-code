@@ -116,7 +116,10 @@ import {
   supportsTabStatus,
   wrapForMultiplexer,
 } from './termio/osc.js'
-import { TerminalWriteProvider } from './useTerminalNotification.js'
+import {
+  TerminalWriteProvider,
+  type TerminalWriter,
+} from './useTerminalNotification.js'
 
 // Alt-screen: renderer.ts sets cursor.visible = !isTTY || screen.height===0,
 // which is always false in alt-screen (TTY + content fills screen).
@@ -225,6 +228,9 @@ export default class Ink {
   // Set alongside altScreenActive so SIGCONT resume knows whether to
   // re-enable mouse tracking (not all <AlternateScreen> uses want it).
   private altScreenMouseTracking = false
+  // Terminal modes to prepend to the first rendered alternate-screen frame.
+  // Keeping entry deferred avoids a visible cleared interval before paint.
+  private pendingAltScreenEntry: string | null = null
   // True when the previous frame's screen buffer cannot be trusted for
   // blit — selection overlay mutated it, resetFramesForAltScreen()
   // replaced it with blanks, or forceRedraw() reset it to 0×0. Forces
@@ -265,6 +271,7 @@ export default class Ink {
       write: (data: string): void => {
         options.stdout.write(data)
       },
+      setAltScreenActive: this.setAltScreenActive,
       isTTY: Boolean(options.stdout.isTTY),
     }
 
@@ -888,11 +895,17 @@ export default class Ink {
       }
     }
 
+    const altScreenEntry = this.pendingAltScreenEntry
+    if (altScreenEntry !== null && hasDiff) {
+      this.pendingAltScreenEntry = null
+      optimized.unshift({ type: 'stdout', content: altScreenEntry })
+    }
+
     const tWrite = performance.now()
     writeDiffToTerminal(
       this.terminal,
       optimized,
-      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED && altScreenEntry === null,
     )
     const terminalImagesChanged = this.writeTerminalImages(frame)
     if (terminalImagesChanged) {
@@ -1048,13 +1061,20 @@ export default class Ink {
    * the first alt-screen frame (and first main-screen frame on exit) is
    * a full redraw with no stale diff state.
    */
-  setAltScreenActive(active: boolean, mouseTracking = false): void {
+  setAltScreenActive(
+    active: boolean,
+    mouseTracking = false,
+    entrySequence?: string,
+  ): void {
     if (this.altScreenActive === active) return
     this.altScreenActive = active
     this.altScreenMouseTracking = active && mouseTracking
     if (active) {
+      this.pendingAltScreenEntry = entrySequence ?? null
       this.resetFramesForAltScreen()
     } else {
+      this.pendingAltScreenEntry = null
+      this.clearTextSelection()
       this.repaint()
     }
   }
@@ -1664,10 +1684,7 @@ export default class Ink {
 
   // Stable identity for TerminalWriteContext. Recreating this object on each
   // render would retrigger terminal mode effects on every SIGWINCH.
-  private terminalWriter: {
-    write(data: string): void
-    isTTY: boolean
-  }
+  private terminalWriter: TerminalWriter
 
   private setCursorDeclaration: CursorDeclarationSetter = (
     decl,

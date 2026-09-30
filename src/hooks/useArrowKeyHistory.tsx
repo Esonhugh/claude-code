@@ -125,22 +125,21 @@ export function useArrowKeyHistory(
       value: string,
       mode: HistoryMode,
       contents: Record<number, PastedContent>,
-      cursorToStart = false,
     ): void => {
       onSetInput(value, mode, contents)
-      setCursorOffset?.(cursorToStart ? 0 : value.length)
+      setCursorOffset?.(value.length)
     },
     [onSetInput, setCursorOffset],
   )
 
   const updateInput = useCallback(
-    (input: HistoryEntry | undefined, cursorToStart = false): void => {
+    (input: HistoryEntry | undefined): void => {
       if (!input || !input.display) return
 
       const mode = getModeFromInput(input.display)
       const value = mode === 'bash' ? input.display.slice(1) : input.display
 
-      setInputWithCursor(value, mode, input.pastedContents ?? {}, cursorToStart)
+      setInputWithCursor(value, mode, input.pastedContents ?? {})
     },
     [setInputWithCursor],
   )
@@ -223,7 +222,7 @@ export function useArrowKeyHistory(
 
       const newIndex = targetIndex + 1
       setHistoryIndex(newIndex)
-      updateInput(historyCache.current[targetIndex], true)
+      updateInput(historyCache.current[targetIndex])
 
       // Show hint once per session after navigating through 2 history entries
       if (newIndex >= 2 && !hasShownSearchHintRef.current) {

@@ -393,6 +393,16 @@ if (!process.env[childKey]) {
         await new Promise(resolve => setTimeout(resolve, 10))
       expect(predicate()).toBe(true)
     }
+    const clickNow = (label: string) => {
+      const el = elements().find(
+        el =>
+          el.nodeName === 'ink-text' &&
+          textContent(el).includes(label) &&
+          nodeCache.has(el),
+      )!
+      const rect = nodeCache.get(el)!
+      expect(dispatchClick(root(), rect.x, rect.y)).toBe(true)
+    }
     const click = async (label: string) => {
       await wait(() =>
         elements().some(
@@ -402,14 +412,7 @@ if (!process.env[childKey]) {
             nodeCache.has(el),
         ),
       )
-      const el = elements().find(
-        el =>
-          el.nodeName === 'ink-text' &&
-          textContent(el).includes(label) &&
-          nodeCache.has(el),
-      )!
-      const rect = nodeCache.get(el)!
-      expect(dispatchClick(root(), rect.x, rect.y)).toBe(true)
+      clickNow(label)
       await new Promise(resolve => setTimeout(resolve, 30))
     }
     const key = async (sequence: string) => {
@@ -423,6 +426,7 @@ if (!process.env[childKey]) {
       elements,
       wait,
       click,
+      clickNow,
       key,
       keyChunk: (sequence: string) => stdin.push(sequence),
       stdout,
@@ -768,9 +772,11 @@ if (!process.env[childKey]) {
       await ui.key('x')
       await ui.key('中文')
       expect(ui.counts().keys).toBe(2)
-      await ui.click('file-05.ts')
+      body!.scrollTop = 0
+      ui.clickNow('file-05.ts')
       expect(controller.getSnapshot().selectedPath).toBe('file-05.ts')
-      expect(body!.scrollTop).toBeGreaterThan(0)
+      expect(body!.scrollAnchor).toBeUndefined()
+      await ui.wait(() => (body!.scrollTop ?? 0) > 0)
       const heading = ui
         .elements()
         .find(

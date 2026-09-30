@@ -3257,9 +3257,6 @@ export function REPL({
   const shownModDock = modDock.find(pane => pane.shown !== false)
   const canShowDiffSidebar =
     modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
-  const diffSidebarKeyboardActive = diffSidebarVisible && canShowDiffSidebar &&
-    modUiPresentation.composerEmpty && !modPaneFocused &&
-    !modUiPresentation.hasDialog && !modUiPresentation.keyboardOwned
 
   // True when permission prompts exist but are hidden because the user is typing
   const hasSuppressedDialogs =
@@ -6597,7 +6594,7 @@ export function REPL({
     onOpenBackgroundTasks: isShowingLocalJSXCommand
       ? undefined
       : () => setShowBashesDialog(true),
-    isActive: !diffSidebarKeyboardActive,
+    isActive: true,
   })
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit()
@@ -6885,12 +6882,12 @@ export function REPL({
           voiceHandleKeyEvent={voice.handleKeyEvent}
           stripTrailing={voice.stripTrailing}
           resetAnchor={voice.resetAnchor}
-          isActive={!toolJSX?.isLocalJSXCommand && !diffSidebarKeyboardActive}
+          isActive={!toolJSX?.isLocalJSXCommand}
         />
       ) : null}
       <CommandKeybindingHandlers
         onSubmit={onSubmit}
-        isActive={!toolJSX?.isLocalJSXCommand && !diffSidebarKeyboardActive}
+        isActive={!toolJSX?.isLocalJSXCommand}
       />
       {/* ScrollKeybindingHandler must mount before CancelRequestHandler so
           ctrl+c-with-selection copies instead of cancelling the active task.
@@ -6908,7 +6905,7 @@ export function REPL({
             !focusedInputDialog ||
             focusedInputDialog === 'tool-permission')
         }
-        isKeyboardActive={!modPaneFocused && !diffDialogActive && !diffSidebarKeyboardActive}
+        isKeyboardActive={!modPaneFocused && !diffDialogActive}
         onScroll={
           centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined
@@ -6948,7 +6945,7 @@ export function REPL({
               key={conversationId}
               messages={messages}
               controller={diffController}
-              keyboardEnabled={diffSidebarKeyboardActive}
+              keyboardEnabled={false}
               onClose={() => {
                 diffController?.setOpenPreference(false)
                 setAppState(state => ({ ...state, diffSidebarVisible: false }))
