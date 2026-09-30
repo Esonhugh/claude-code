@@ -408,12 +408,25 @@ export function getExtendedCacheTtlEnabled(querySource?: QuerySource): boolean {
   )
 }
 
-type CacheControlBlock = {
-  cache_control?: { ttl?: string }
+type CacheControlMessage = {
+  content: string | readonly unknown[]
 }
 
-type CacheControlMessage = {
-  content: string | CacheControlBlock[]
+function hasOneHourCacheControl(value: unknown): boolean {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('cache_control' in value)
+  ) {
+    return false
+  }
+  const cacheControl = value.cache_control
+  return (
+    typeof cacheControl === 'object' &&
+    cacheControl !== null &&
+    'ttl' in cacheControl &&
+    cacheControl.ttl === '1h'
+  )
 }
 
 export function hasExtendedCacheTtlMarker({
@@ -421,18 +434,18 @@ export function hasExtendedCacheTtlMarker({
   messages,
   tools,
 }: {
-  system?: CacheControlBlock[]
-  messages: CacheControlMessage[]
-  tools?: CacheControlBlock[]
+  system?: readonly unknown[]
+  messages: readonly CacheControlMessage[]
+  tools?: readonly unknown[]
 }): boolean {
   return (
-    system?.some(block => block.cache_control?.ttl === '1h') === true ||
+    system?.some(hasOneHourCacheControl) === true ||
     messages.some(
       message =>
         Array.isArray(message.content) &&
-        message.content.some(block => block.cache_control?.ttl === '1h'),
+        message.content.some(hasOneHourCacheControl),
     ) ||
-    tools?.some(tool => tool.cache_control?.ttl === '1h') === true
+    tools?.some(hasOneHourCacheControl) === true
   )
 }
 

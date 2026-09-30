@@ -299,6 +299,34 @@ afterEach(() => {
   streamNotFound = false
 })
 
+test('cache marker inspection accepts stable and beta thinking blocks', async () => {
+  const { hasExtendedCacheTtlMarker } = await import('./claude.js')
+  const stableMessages: Anthropic.MessageParam[] = [
+    {
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: 'stable', signature: 'stable' }],
+    },
+  ]
+  const betaMessages: Anthropic.Beta.Messages.BetaMessageParam[] = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'beta', signature: 'beta' },
+        {
+          type: 'text',
+          text: 'cached',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ],
+    },
+  ]
+
+  expect(
+    hasExtendedCacheTtlMarker({ messages: stableMessages }),
+  ).toBe(false)
+  expect(hasExtendedCacheTtlMarker({ messages: betaMessages })).toBe(true)
+})
+
 test('1h cache markers add the extended TTL beta once and 5m markers do not', async () => {
   const state = await import('../../bootstrap/state.js')
   state.setPromptCache1hEligible(true)
