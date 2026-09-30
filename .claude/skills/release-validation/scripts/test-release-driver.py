@@ -1669,13 +1669,18 @@ def assert_driver_behavior(module, baseline_module):
             run_dir = Path(root_string)
             gate = object.__new__(module.BinaryGate)
             clock = [10.9 if scenario == 'late' else 10.1]
-            presses = []
-            gate.tmux = lambda *args, **kwargs: presses.append((args[-1], clock[0]))
+            writes = []
+            rewinding = [False]
+            def write(*args, **kwargs):
+                value = args[-1]
+                writes.append((value, clock[0]))
+                if value == '\x1b\x1b' and scenario != 'disabled-rewind':
+                    rewinding[0] = True
+                elif value == 'Escape' and any(item == '\x1b\x1b' for item, _ in writes):
+                    rewinding[0] = False
+            gate.tmux = write
             def capture(target, path, **kwargs):
-                text = 'Rewind' if (
-                    scenario == 'polluted' or
-                    (scenario != 'disabled-rewind' and len(presses) == 3)
-                ) else '❯ '
+                text = 'Rewind' if scenario == 'polluted' or rewinding[0] else '❯ '
                 path.write_text(text)
                 return text
             gate.capture = capture
@@ -1693,14 +1698,15 @@ def assert_driver_behavior(module, baseline_module):
             evidence = json.loads((run_dir / 'escape-window-evidence.json').read_text())
             assert evidence['passed'] == passed
             if scenario == 'pass':
-                assert 0 <= presses[0][1] - 10.0 < 0.8
-                assert presses[1][1] - presses[0][1] > 0.8
-                assert presses[2][1] - presses[1][1] < 0.8
-                assert presses[-1][0] == 'Escape'
+                assert 0 <= writes[0][1] - 10.0 < 0.8
+                assert writes[1][1] - writes[0][1] > 0.9
+                assert writes[1][0] == '\x1b\x1b'
+                assert evidence['double_chunk_hex'] == '1b1b'
+                assert writes[-1][0] == 'Escape'
                 assert len(evidence['samples']) > 1
-                assert clock[0] - presses[-1][1] >= 0.8
+                assert clock[0] - writes[-1][1] >= 0.8
             elif scenario == 'late':
-                assert not presses
+                assert not writes
 
     # Relevant visible rows from round8 shift-main.txt, with ANSI preserved.
     rewind_pane = (

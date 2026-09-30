@@ -8096,14 +8096,17 @@ else:
                 polluted = rewind(path)
                 evidence['samples'].append({'time': time.monotonic(), 'path': str(path),
                                             'rewind': polluted})
-                return time.monotonic() > evidence['main_escape_sent'] + 0.8
+                # Ink buffers a lone ESC for 50 ms before dispatch. Observe past
+                # that delay plus the 800 ms double-press window so this probe's
+                # ESC cannot pair with the following intentional double ESC.
+                return time.monotonic() > evidence['main_escape_sent'] + 0.9
             observed = self.wait_until(observe, 2, 0.05)
             evidence['isolated'] = observed and not any(sample['rewind'] for sample in evidence['samples'])
             if evidence['isolated']:
                 evidence['double_first_sent'] = time.monotonic()
-                self.tmux('send-keys', '-t', target, 'Escape', check=True)
-                evidence['double_second_sent'] = time.monotonic()
-                self.tmux('send-keys', '-t', target, 'Escape', check=True)
+                evidence['double_second_sent'] = evidence['double_first_sent']
+                evidence['double_chunk_hex'] = '1b1b'
+                self.tmux('send-keys', '-t', target, '-l', '\x1b\x1b', check=True)
                 evidence['normal_rewind'] = (
                     evidence['double_second_sent'] - evidence['double_first_sent'] < 0.8
                     and self.wait_until(lambda: rewind(run_dir / 'main-rewind-pane.txt'), 5, 0.05))

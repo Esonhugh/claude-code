@@ -444,8 +444,11 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     assert.equal(liveState.footerSelection, null, 'selecting main clears footer selection')
     await pressPromptKey('\x1b')
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate Escape must not arm the first main Escape')
-    await pressPromptKey('\x1b')
-    assert.equal(onShowMessageSelector.mock.calls.length, 1, 'normal main double Escape still opens Rewind')
+    await new Promise(resolve => setTimeout(resolve, 850))
+    promptIn.push('\x1b\x1b')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    await flush()
+    assert.equal(onShowMessageSelector.mock.calls.length, 1, 'rapid main double Escape still opens Rewind')
 
     onShowMessageSelector.mockClear()
     setLocalJSXCommandActive!(true)
