@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { zipSync } from 'fflate'
-import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
+import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
 
 const roots = []
 function temp() {
@@ -303,11 +303,120 @@ describe('deterministic compiled builtin acceptance', () => {
     expect(() => parseArgs(['accept-builtin', '--api-url', 'http://127.0.0.1:1234'])).toThrow()
   })
 
+  test('removes the tmux socket after successful acceptance cleanup', async () => {
+    const root = temp()
+    const socket = join(root, 'tmux.sock')
+    writeFileSync(socket, '')
+    const tmux = join(root, 'tmux')
+    writeFileSync(tmux, `#!/bin/sh
+if [ "$3" = "display-message" ]; then
+  printf '1\\n'
+  exit 0
+fi
+if [ "$3" = "kill-server" ]; then
+  exit 0
+fi
+exit 1
+`)
+    chmodSync(tmux, 0o700)
+
+    const cleanup = await cleanupAcceptanceSide(
+      { tmux, socket, target: 'accept:0.0' },
+      { close: async () => {} },
+    )
+
+    expect(cleanup.verdict).toBe('passed')
+    expect(cleanup.socketRemove.status).toBe(0)
+    expect(existsSync(socket)).toBe(false)
+  })
+
+  test('does not unlink the socket when tmux shutdown fails and still closes the provider', async () => {
+    const root = temp()
+    const socket = join(root, 'tmux.sock')
+    writeFileSync(socket, '')
+    const tmux = join(root, 'tmux')
+    writeFileSync(tmux, `#!/bin/sh
+if [ "$3" = "display-message" ]; then
+  printf '1\\n'
+  exit 0
+fi
+exit 9
+`)
+    chmodSync(tmux, 0o700)
+    let providerClosed = false
+
+    const cleanup = await cleanupAcceptanceSide(
+      { tmux, socket, target: 'accept:0.0' },
+      { close: async () => { providerClosed = true } },
+    )
+
+    expect(cleanup.verdict).toBe('failed')
+    expect(cleanup.tmuxKill.status).toBe(9)
+    expect(cleanup.socketRemove.status).toBe(1)
+    expect(existsSync(socket)).toBe(true)
+    expect(providerClosed).toBe(true)
+  })
+
+  test('accepts an already absent socket after successful tmux shutdown', async () => {
+    const root = temp()
+    const socket = join(root, 'tmux.sock')
+    const tmux = join(root, 'tmux')
+    writeFileSync(tmux, `#!/bin/sh
+if [ "$3" = "display-message" ]; then
+  printf '1\\n'
+  exit 0
+fi
+if [ "$3" = "kill-server" ]; then
+  exit 0
+fi
+exit 1
+`)
+    chmodSync(tmux, 0o700)
+
+    const cleanup = await cleanupAcceptanceSide(
+      { tmux, socket, target: 'accept:0.0' },
+      { close: async () => {} },
+    )
+
+    expect(cleanup.verdict).toBe('passed')
+    expect(cleanup.socketRemove.status).toBe(0)
+  })
+
+  test('reports socket removal failure but still closes the provider', async () => {
+    const root = temp()
+    const socket = join(root, 'tmux.sock')
+    mkdirSync(socket)
+    writeFileSync(join(socket, 'owned-by-fixture'), '')
+    const tmux = join(root, 'tmux')
+    writeFileSync(tmux, `#!/bin/sh
+if [ "$3" = "display-message" ]; then
+  printf '1\\n'
+  exit 0
+fi
+if [ "$3" = "kill-server" ]; then
+  exit 0
+fi
+exit 1
+`)
+    chmodSync(tmux, 0o700)
+    let providerClosed = false
+
+    const cleanup = await cleanupAcceptanceSide(
+      { tmux, socket, target: 'accept:0.0' },
+      { close: async () => { providerClosed = true } },
+    )
+
+    expect(cleanup.verdict).toBe('failed')
+    expect(cleanup.socketRemove.status).toBe(1)
+    expect(cleanup.socketRemove.error).toBeString()
+    expect(providerClosed).toBe(true)
+  })
+
   test('managed-only differential requires a real main request on both sides', async () => {
     const { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs')
     const request = text => ({ body: { model: 'claude-sonnet-4-5-20250929', messages: [{ role: 'user', content: `MODS_ACCEPT_PROMPT ${text}` }] } })
     const binarySha256 = 'a'.repeat(64)
-    const cleanup = { verdict: 'passed', paneDead: true, tmuxKill: { status: 0 }, providerClose: { status: 0 }, status: 0 }
+    const cleanup = { verdict: 'passed', paneDead: true, tmuxKill: { status: 0 }, socketRemove: { status: 0 }, providerClose: { status: 0 }, status: 0 }
     const pair = {
       enabled: { binarySha256, cleanup, requests: [request('')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
       disabled: { binarySha256, cleanup, requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
@@ -346,11 +455,19 @@ describe('deterministic compiled builtin acceptance', () => {
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [...pair.enabled.requests, auxiliary] } }).agents.verdict).toBe('passed')
     expect(result.diff.verdict).toBe('passed')
     expect(result.telemetry.verdict).toBe('passed')
+    for (const name of Object.keys(pair)) {
+      for (const field of ['error', 'ledgerError']) {
+        const failed = assessBuiltinAcceptance({ ...pair, [name]: { ...pair[name], [field]: 'Acceptance evidence failed' } })
+        expect(failed.completeness.verdict).toBe('failed')
+        if (name === 'privacyOff' || name === 'privacyOn') expect(failed.telemetry.verdict).toBe('failed')
+      }
+    }
     expect(assessBuiltinAcceptance({ ...pair, privacyOff: { ledger: pair.privacyOn.ledger } }).telemetry.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ledger: pair.privacyOn.ledger.slice(1) } }).telemetry.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, error: 'Timed out during exit' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { status: 1 } } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { ...cleanup, providerClose: { status: 1 }, verdict: 'failed' } } }).cleanup.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { ...cleanup, socketRemove: undefined } } }).cleanup.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, privacyOff: { ledger: [] } }).completeness.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: undefined }).completeness.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ...pair.privacyOn, binarySha256: 'b'.repeat(64) } }).completeness.verdict).toBe('failed')

@@ -364,9 +364,9 @@ export function isIdlePrompt(text) {
 export function assessBuiltinAcceptance(pair) {
   const names = ['privacyOff', 'privacyOn', 'enabled', 'disabled', 'securityOrdinary', 'securityTeam', 'securityEnterprise']
   const sides = names.map(name => pair[name])
-  const complete = sides.every(side => side && typeof side.binarySha256 === 'string' && /^[a-f0-9]{64}$/.test(side.binarySha256) && side.cleanup)
+  const complete = sides.every(side => side && !side.error && !side.ledgerError && typeof side.binarySha256 === 'string' && /^[a-f0-9]{64}$/.test(side.binarySha256) && side.cleanup)
   const matchingBinary = complete && new Set(sides.map(side => side.binarySha256)).size === 1
-  const cleanup = complete && sides.every(side => side.cleanup.verdict === 'passed' && side.cleanup.paneDead === true && side.cleanup.tmuxKill?.status === 0 && side.cleanup.providerClose?.status === 0)
+  const cleanup = complete && sides.every(side => side.cleanup.verdict === 'passed' && side.cleanup.paneDead === true && side.cleanup.tmuxKill?.status === 0 && side.cleanup.socketRemove?.status === 0 && side.cleanup.providerClose?.status === 0)
   const main = side => side.requests.filter(row => row.body.model === 'claude-sonnet-4-5-20250929' && JSON.stringify(row.body.messages).includes('MODS_ACCEPT_PROMPT'))
   const enabled = main(pair.enabled ?? { requests: [] }), disabled = main(pair.disabled ?? { requests: [] })
   const markers = ['MODS_ACCEPT_CLAUDE_MARKER', 'MODS_TEST_LAB_AGENTS_MARKER']
@@ -419,14 +419,15 @@ export function assessBuiltinAcceptance(pair) {
     !pair.securityOrdinary?.suggestionRollback?.includes('MODS_SUGGESTION:base:rollbackcheck')
   const privacyOff = pair.privacyOff?.ledger ?? []
   const privacyOn = pair.privacyOn?.ledger ?? []
-  const telemetry = privacyOff.length === 0 && privacyOn.length === 3 &&
+  const telemetry = [pair.privacyOff, pair.privacyOn].every(side => side && !side.error && !side.ledgerError) &&
+    privacyOff.length === 0 && privacyOn.length === 3 &&
     privacyOn[0]?.sequence === 1 && privacyOn[0]?.operation === 'authorize' && privacyOn[0]?.granted === true &&
     privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'authorize' && privacyOn[1]?.granted === true &&
     privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
     privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
   return {
     completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all seven sides must record the same valid copied binary hash and complete cleanup evidence' },
-    cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all seven sides must observe a dead pane, kill tmux successfully, close the provider successfully, and pass cleanup' },
+    cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all seven sides must observe a dead pane, kill tmux successfully, remove its socket, close the provider successfully, and pass cleanup' },
     agents: { verdict: agents ? 'passed' : 'failed', reason: 'managed-only must remove both native instruction markers from every main request; disabled must retain both' },
     diff: { verdict: diff ? 'passed' : 'failed', reason: 'native command ownership, real diff content, and enabled/disabled dismissal paths must be distinct' },
     security: { verdict: security ? 'passed' : 'failed', reason: 'ordinary registration must publish while compiled native sec-default denies it for team and enterprise sessions' },
@@ -442,6 +443,7 @@ async function cleanupAcceptanceSide(launch, provider) {
     paneDead: false,
     paneCheck: { status: null },
     tmuxKill: { status: null },
+    socketRemove: { status: null },
     providerClose: { status: null },
     verdict: 'failed',
   }
@@ -451,6 +453,12 @@ async function cleanupAcceptanceSide(launch, provider) {
     cleanup.paneDead = checked.status === 0 && checked.stdout.trim() === '1'
     const stopped = spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
     cleanup.tmuxKill = { status: stopped.status, error: stopped.error?.message }
+    try {
+      if (stopped.status === 0 && existsSync(launch.socket)) rmSync(launch.socket)
+      cleanup.socketRemove = { status: stopped.status === 0 && !existsSync(launch.socket) ? 0 : 1 }
+    } catch (error) {
+      cleanup.socketRemove = { status: 1, error: error.message }
+    }
   }
   if (provider) {
     try {
@@ -459,7 +467,7 @@ async function cleanupAcceptanceSide(launch, provider) {
     } catch (error) { cleanup.providerClose = { status: 1, error: error.message } }
   }
   cleanup.status = cleanup.tmuxKill.status
-  cleanup.verdict = cleanup.paneDead && cleanup.tmuxKill.status === 0 && cleanup.providerClose.status === 0 ? 'passed' : 'failed'
+  cleanup.verdict = cleanup.paneDead && cleanup.tmuxKill.status === 0 && cleanup.socketRemove.status === 0 && cleanup.providerClose.status === 0 ? 'passed' : 'failed'
   return cleanup
 }
 
@@ -758,6 +766,8 @@ export function cleanRun(cache, target, execute = spawnSync) {
   rmSync(run, { recursive: true })
   return { cleaned: run }
 }
+
+export { cleanupAcceptanceSide }
 
 if (import.meta.main) {
   try {
