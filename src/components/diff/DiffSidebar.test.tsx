@@ -235,13 +235,13 @@ if (!process.env[childKey]) {
         return
       }
       if (scenario === 'clean') {
-        await waitFor('Working tree is clean')
+        await waitFor('No changes this session')
         await click('✕')
         expect(closed).toBe(true)
         return
       }
       if (scenario === 'untracked' || scenario === 'binary') {
-        await click('Pre-session 1 [show]')
+        await click('+1 file edited before this session (show)')
         await click(scenario === 'untracked' ? 'new.txt' : 'tracked.txt')
         await waitFor(
           scenario === 'untracked'
@@ -251,7 +251,7 @@ if (!process.env[childKey]) {
         if (scenario === 'untracked') {
           // The backend explicitly withholds untracked bodies. Do not imply an
           // empty file or bypass that boundary with a component filesystem read.
-          await waitFor('New file not yet staged; diff body not loaded')
+          await waitFor('New file not yet staged.')
           expect(texts().map(textContent).join('\n')).not.toContain(
             'metadata-only',
           )
@@ -260,11 +260,7 @@ if (!process.env[childKey]) {
         expect(closed).toBe(true)
         return
       }
-      await waitFor(
-        scenario === 'keyboard-ownership'
-          ? 'Working tree is clean'
-          : 'No visible changes (check filters)',
-      )
+      await waitFor('No changes this session')
       if (scenario === 'keyboard-ownership') {
         stdin.push('draft')
         const textDeadline = Date.now() + 1000
@@ -279,7 +275,7 @@ if (!process.env[childKey]) {
         expect(transcriptEscapes).toBe(0)
         return
       }
-      await click('Pre-session 1 [show]')
+      await click('+1 file edited before this session (show)')
       const fileNode = await waitFor('tracked.txt')
       const fileRect = nodeCache.get(fileNode)!
       stdin.push(`\u001b[<65;${fileRect.x + 1};${fileRect.y + 1}M`)
@@ -305,7 +301,6 @@ if (!process.env[childKey]) {
       expect(stdout.output).toContain('refreshed-marker')
       // File clicks now anchor the continuous body rather than entering detail mode.
       expect(texts().map(textContent).join('\n')).not.toContain('Back to files')
-      await click('Pre-session 0 [hide]')
       const { createUserMessage } = await import('../../utils/messages.js')
       const { ThemeProvider } = await import('../../ink.js')
       messages = [
@@ -342,7 +337,6 @@ if (!process.env[childKey]) {
       ]
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await waitFor('Source: Current')
-      await waitFor('Pre-session 0 [show]')
       await click('✕')
       expect(closed).toBe(true)
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)

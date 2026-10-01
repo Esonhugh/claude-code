@@ -1,19 +1,32 @@
 import type { StructuredPatchHunk } from 'diff'
 import React, { useMemo } from 'react'
 import type { DiffFile } from '../../hooks/useDiffData.js'
+import { useSettings } from '../../hooks/useSettings.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../ink.js'
 import { StructuredDiff } from '../StructuredDiff.js'
+import { expectColorDiff } from '../StructuredDiff/colorDiff.js'
 import { diffDisplayText } from './displayText.js'
 
 export type DiffRenderBudget = { chars: number; nodes: number }
 
-// Budget the fallback renderer too: wrapping and word-level spans create nodes.
-// Each patch is a separate Code leaf, capped before invoking StructuredDiff.
+// Highlighted patches render as a constant number of RawAnsi leaves; only the
+// fallback renderer creates Yoga nodes per wrapped row and word-diff span.
+const HIGHLIGHTED_PATCH_NODES = 4
+
+export function useHighlightedDiff(): boolean {
+  const settings = useSettings()
+  return (
+    expectColorDiff() !== null && !(settings.syntaxHighlightingDisabled ?? false)
+  )
+}
+
+// Each patch is a separate leaf, capped at 10k chars before StructuredDiff.
 export function limitDiffHunks(
   hunks: StructuredPatchHunk[],
   budget: DiffRenderBudget,
   width: number,
+  highlighted: boolean,
 ): { hunks: StructuredPatchHunk[]; truncated: boolean } {
   const result: StructuredPatchHunk[] = []
   for (const hunk of hunks) {
@@ -41,28 +54,37 @@ export function limitDiffHunks(
     for (const rawLine of hunk.lines) {
       const line = diffDisplayText(rawLine)
       const cost = line.length + 1
-      if (cost > 10_000 || cost > budget.chars) {
-        flush()
-        return { hunks: result, truncated: true }
-      }
-      const nodes =
-        12 +
-        2 * line.split(/(\W)/u).length +
-        8 * Math.ceil(cost / Math.max(1, width - 12))
-      if (nodes > budget.nodes) {
+      // Highlighted rows are padded to the full width.
+      const rendered = highlighted
+        ? Math.ceil(cost / Math.max(1, width)) * Math.max(1, width)
+        : cost
+      if (cost > 10_000 || rendered > budget.chars) {
         flush()
         return { hunks: result, truncated: true }
       }
       if (chars + cost > 10_000) flush()
+      const nodes = highlighted
+        ? lines.length
+          ? 0
+          : HIGHLIGHTED_PATCH_NODES
+        : 12 +
+          2 * line.split(/(\W)/u).length +
+          8 * Math.ceil(cost / Math.max(1, width - 12))
+      if (nodes > budget.nodes) {
+        flush()
+        return { hunks: result, truncated: true }
+      }
       lines.push(line)
       chars += cost
-      budget.chars -= cost
+      budget.chars -= rendered
       budget.nodes -= nodes
     }
     flush()
   }
   return { hunks: result, truncated: false }
 }
+
+const SAFE_PATHSPEC = /^[\p{L}\p{N}._/@+-]+$/u
 
 type Props = {
   filePath: string
@@ -93,10 +115,16 @@ export function DiffDetailView({
 }: Props): React.ReactNode {
   const { columns } = useTerminalSize()
   const contentWidth = Math.max(1, width ?? columns - 4)
+  const highlighted = useHighlightedDiff()
   const limited = useMemo(
     () =>
-      limitDiffHunks(hunks, { chars: 78_000, nodes: 1400 }, contentWidth),
-    [hunks, contentWidth],
+      limitDiffHunks(
+        hunks,
+        { chars: 78_000, nodes: 1400 },
+        contentWidth,
+        highlighted,
+      ),
+    [hunks, contentWidth, highlighted],
   )
   const firstHunk = limited.hunks[0]
   const firstLine =
@@ -105,7 +133,14 @@ export function DiffDetailView({
         null)
       : null
   const notice =
-    bodyState === 'loading'
+    isUntracked && !hunks.length
+      ? [
+          'New file not yet staged.',
+          SAFE_PATHSPEC.test(filePath)
+            ? `Run \`git add :/${filePath}\` to see line counts.`
+            : 'Stage it with git add to see line counts.',
+        ].join('\n')
+      : bodyState === 'loading'
       ? 'Loading diff body…'
       : bodyState === 'unavailable'
         ? hunks.length > 0
@@ -116,33 +151,42 @@ export function DiffDetailView({
           : isLargeFile || bodyState === 'large'
             ? 'Large file - diff exceeds display limit'
             : bodyState === 'no-body'
-              ? isUntracked
-                ? 'New file not yet staged; diff body not loaded'
-                : 'No textual diff (metadata-only, empty or not loaded)'
+              ? 'No textual diff (metadata-only, empty or not loaded)'
               : !hunks.length
                 ? renderTruncated
                   ? null
                   : 'Diff body unavailable (no content returned)'
                 : null
   const truncated = renderTruncated || limited.truncated
+  const divider = (
+    <Text dimColor wrap="truncate-end">
+      {'─'.repeat(contentWidth)}
+    </Text>
+  )
   return (
     <Box flexDirection="column" flexShrink={0} width="100%">
+      {divider}
       <Box flexShrink={0}>
-        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+        <Box flexShrink={1} minWidth={0}>
           <Text bold wrap="truncate-middle">
             {diffDisplayText(filePath)}
           </Text>
         </Box>
-        {isUntracked && <Text dimColor> (untracked)</Text>}
+        {isUntracked && (
+          <Box flexShrink={0}>
+            <Text> (untracked)</Text>
+          </Box>
+        )}
+        <Box flexGrow={1} />
         {onAsk && !notice && hunks.length > 0 && (
-          <Box flexShrink={0} onClick={onAsk}>
-            <Text color="suggestion">
-              {' '}
+          <Box flexShrink={0} marginLeft={1} onClick={onAsk}>
+            <Text color={armed ? 'suggestion' : undefined} dimColor={!armed}>
               {armed ? '[Cancel Ask]' : '[Ask]'}
             </Text>
           </Box>
         )}
       </Box>
+      {divider}
       {notice && <Text dimColor>{notice}</Text>}
       {(!notice || bodyState === 'unavailable') &&
         limited.hunks.map((patch, index) => (

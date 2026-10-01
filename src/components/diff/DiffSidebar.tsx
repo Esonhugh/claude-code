@@ -23,12 +23,9 @@ export function DiffSidebar({
       flexGrow={1}
       minHeight={0}
       overflow="hidden"
-      borderStyle="single"
-      borderLeft
-      borderRight={false}
-      borderTop={false}
-      borderBottom={false}
+      backgroundColor="userMessageBackground"
       paddingX={1}
+      paddingY={1}
     >
       <DiffView
         messages={messages}

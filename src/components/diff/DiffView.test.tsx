@@ -70,6 +70,7 @@ if (!process.env[childKey]) {
     await import('../../keybindings/useKeybinding.js')
   const { useIsOverlayActive } =
     await import('../../context/overlayContext.js')
+  const { ModalContext } = await import('../../context/modalContext.js')
   const { createUserMessage, createAssistantMessage } =
     await import('../../utils/messages.js')
   type DiffData = import('../../hooks/useDiffData.js').DiffData
@@ -247,6 +248,7 @@ if (!process.env[childKey]) {
     messages: Message[] = [],
     transcriptKeyboard = false,
     composerFirst = false,
+    modal = false,
   ) {
     const stdout = new Output()
     const stdin = new Input()
@@ -328,13 +330,23 @@ if (!process.env[childKey]) {
               {composerFirst && <Composer />}
               {show &&
                 (dialog ? (
-                  <DiffDialog
-                    controller={controller}
-                    messages={messages}
-                    onDone={() => {
-                      closes++
-                    }}
-                  />
+                  <ModalContext
+                    value={
+                      modal
+                        ? { rows: height - 3, columns: width - 4, scrollRef: null }
+                        : null
+                    }
+                  >
+                    <Box flexDirection="column" paddingX={modal ? 2 : 0}>
+                      <DiffDialog
+                        controller={controller}
+                        messages={messages}
+                        onDone={() => {
+                          closes++
+                        }}
+                      />
+                    </Box>
+                  </ModalContext>
                 ) : (
                   <Box flexGrow={1} minHeight={0}>
                     <Box width={Math.floor(width / 2)}>
@@ -509,7 +521,7 @@ if (!process.env[childKey]) {
           },
         }),
       ])
-      await ui.wait(() => ui!.text().includes('Working tree is clean'))
+      await ui.wait(() => ui!.text().includes('No changes this session'))
       expect(ui.text()).not.toContain(note)
       writeFileSync(join(root, 'staged.ts'), 'staged body\n')
       execFileSync('git', ['add', '--', 'staged.ts'], { cwd: root })
@@ -736,10 +748,13 @@ if (!process.env[childKey]) {
     ])
     try {
       await ui.wait(() => ui.text().includes('Base: session'))
-      expect(ui.text()).toContain('vs branch-name')
+      expect(ui.text()).not.toContain('branch-name')
+      await ui.click('Base: session')
+      await ui.click('Base: uncommitted')
+      expect(ui.text()).toContain('branch vs branch-name')
       expect(ui.text()).not.toContain('no commits yet')
       await ui.click('Source: Current')
-      expect(ui.text()).toContain('preview    marker')
+      expect(ui.text()).toContain('Turn 1 "preview    marker"')
       expect(ui.text()).not.toContain('\u202e')
     } finally {
       ui.unmount()
@@ -777,15 +792,16 @@ if (!process.env[childKey]) {
       expect(controller.getSnapshot().selectedPath).toBe('file-05.ts')
       expect(body!.scrollAnchor).toBeUndefined()
       await ui.wait(() => (body!.scrollTop ?? 0) > 0)
+      // The body heading sits under its divider at the top of the viewport.
       const heading = ui
         .elements()
-        .find(
+        .findLast(
           element =>
             element.nodeName === 'ink-text' &&
             textContent(element) === 'file-05.ts',
         )!
       const headingRect = nodeCache.get(heading)!
-      expect(headingRect.y).toBe(body!.scrollViewportTop)
+      expect(headingRect.y).toBe(body!.scrollViewportTop! + 1)
       expect(ui.elements().length).toBeLessThanOrEqual(1500)
       await ui.click('[Ask]')
       expect(controller.getSnapshot().armedPath).not.toBeNull()
@@ -819,7 +835,7 @@ if (!process.env[childKey]) {
       expect(ui.counts()).toMatchObject({ historyDown: 0, historyUp: 0 })
 
       await ui.key('\r')
-      expect(ui.text()).toContain('Diff · detail')
+      expect(ui.text()).toContain('Back to files')
       expect(ui.counts().keys).toBe(0)
 
       await ui.key('\u001b')
@@ -851,7 +867,7 @@ if (!process.env[childKey]) {
           [
             patch(
               `UNIQUE_BODY_${String(index).padStart(2, '0')} [alpha,beta,gamma,delta]`,
-              65,
+              120,
             ),
           ],
         )
@@ -868,7 +884,7 @@ if (!process.env[childKey]) {
         await ui.wait(
           () => controller.getSnapshot().selectedPath === 'file-03.ts',
         )
-        await ui.wait(() => ui.text().includes('UNIQUE_BODY_03'))
+        await ui.wait(() => ui.preview().includes('UNIQUE_BODY_03'))
 
         const heading = ui
           .elements()
@@ -907,7 +923,7 @@ if (!process.env[childKey]) {
       try {
         if (!initialDialog) ui.keyboard(true)
         ui.keyChunk('\u001b[B\r')
-        await ui.wait(() => ui.text().includes('Diff · detail'))
+        await ui.wait(() => ui.text().includes('Back to files'))
         expect(controller.getSnapshot().selectedPath).toBe('file-01.ts')
         expect(ui.text()).toContain('body-one')
         expect(ui.text()).not.toContain('body-zero')
@@ -1195,7 +1211,7 @@ if (!process.env[childKey]) {
         createUserMessage({ content: 'replacement transcript' }),
       ])
       await ui.wait(() => ui.text().includes('Source: Current'))
-      expect(ui.text()).toContain('Todos 0/0')
+      expect(ui.text()).not.toContain('Todos')
     } finally {
       ui.unmount()
     }
@@ -1233,7 +1249,7 @@ if (!process.env[childKey]) {
       await TaskUpdateTool.call({ taskId: second.data.task.id, status: 'deleted' }, context)
       await ui.wait(() => ui.text().includes('Todos 1/1'))
       await resetTaskList(getTaskListId())
-      await ui.wait(() => ui.text().includes('Todos 0/0'))
+      await ui.wait(() => !ui.text().includes('Todos'))
     } finally {
       ui.unmount()
       await resetTaskList(getTaskListId())
@@ -1260,7 +1276,7 @@ if (!process.env[childKey]) {
       await ui.wait(() => ui.text().includes('Source: Current'))
       await ui.click('Source: Current')
       expect(ui.text()).not.toContain('hidden-test-marker')
-      await ui.click('Noise 1 [show]')
+      await ui.click('1 test/generated (show)')
       expect(ui.text()).toContain('hidden-test-marker')
     } finally {
       ui.unmount()
@@ -1286,7 +1302,7 @@ if (!process.env[childKey]) {
           files: [{ ...data.files[0]!, bodyState }],
         })
         await ui.wait(() => ui.text().includes(expected))
-        expect(ui.text()).not.toContain('Working tree is clean')
+        expect(ui.text()).not.toMatch(/No changes|No uncommitted/)
       }
       controller.publish({ ...data, outcome: 'unavailable' })
       await ui.wait(() => ui.text().includes('showing last good data'))
@@ -1299,7 +1315,7 @@ if (!process.env[childKey]) {
         outcome: 'no-repository',
       })
       await ui.wait(() => ui.text().includes('Not a Git repository'))
-      expect(ui.text()).not.toContain('Working tree is clean')
+      expect(ui.text()).not.toMatch(/No changes|No uncommitted/)
     } finally {
       ui.unmount()
     }
@@ -1329,7 +1345,7 @@ if (!process.env[childKey]) {
         ui.text().includes('Untracked files unavailable; not counted'),
       )
       expect(ui.text()).toContain('No tracked changes')
-      expect(ui.text()).not.toContain('Working tree is clean')
+      expect(ui.text()).not.toMatch(/No changes|No uncommitted/)
       controller.publish({ ...dataFor(1), isUntrackedWithheld: true })
       await ui.wait(() => ui.text().includes('file-00.ts'))
       expect(ui.text()).toContain(
@@ -1358,7 +1374,9 @@ if (!process.env[childKey]) {
         const title = ui
           .elements()
           .find(
-            el => el.nodeName === 'ink-text' && textContent(el) === 'Diff',
+            el =>
+              el.nodeName === 'ink-text' &&
+              textContent(el).startsWith('3 files changed'),
           )!
         const titleRect = nodeCache.get(title)!
         expect(rect.x).toBe(columns - 2)
@@ -1414,10 +1432,12 @@ if (!process.env[childKey]) {
       )
     const controller = new FixtureController(data)
     const ui = await mount(controller)
+    const { default: stripAnsi } = await import('strip-ansi')
     try {
       await ui.wait(() => ui.text().includes('render budget'))
+      // Highlighted bodies carry ANSI styling; the cap bounds displayed text.
       expect(ui.elements().length).toBeLessThanOrEqual(1500)
-      expect(ui.text().length).toBeLessThanOrEqual(80_000)
+      expect(stripAnsi(ui.text()).length).toBeLessThanOrEqual(80_000)
       ui.store.setState(previous => ({
         ...previous,
         settings: {
@@ -1502,17 +1522,19 @@ if (!process.env[childKey]) {
       ui.resize(180, 43)
       ui.altScreen()
       await ui.wait(() =>
-        ui.preview().includes('Noise 1 [show] Pre-session 4 [show]'),
+        ui.preview().includes('+4 files edited before this session (show)'),
       )
-      await ui.click('Pre-session 4 [show]')
+      expect(ui.preview()).toContain('1 test/generated (show)')
+      await ui.click('+4 files edited before this session (show)')
       await ui.wait(() => controller.getSnapshot().data.hunks.has('pre-3.ts'))
-      await ui.click('Noise 1 [show]')
+      await ui.click('1 test/generated (show)')
       await ui.wait(() => controller.getSnapshot().data.hunks.has('noise.test.ts'))
       await new Promise(resolve => setTimeout(resolve, 150))
 
       const preview = ui.preview()
-      expect(preview).toContain('Noise 1 [hide] Pre-session 4 [hide]')
-      expect(preview).not.toContain('Todos 0/0 · 7/7 files · +28 -0hide]')
+      expect(preview).toContain('1 test/generated (hide)')
+      expect(preview).toContain('+4 files edited before this session (hide)')
+      expect(preview).toMatch(/7 files changed \+28\s+✕/)
     } finally {
       ui.unmount()
     }
@@ -1528,18 +1550,18 @@ if (!process.env[childKey]) {
       ui.resize(144, 32)
       ui.altScreen()
       await ui.wait(() =>
-        ui.preview().includes('Noise 10 [show] Pre-session 30 [show]'),
+        ui.preview().includes('+30 files edited before this session (show)'),
       )
-      await ui.click('Pre-session 30 [show]')
-      expect(ui.preview()).toContain(
-        'Noise 10 [show] Pre-session 30 [hide]',
+      expect(ui.preview()).toMatch(/10 tests\/generated \(show\)\s*\n/)
+      await ui.click('+30 files edited before this session (show)')
+      expect(ui.preview()).toMatch(
+        /\+30 files edited before this session \(hide\)\s*\n/,
       )
-      await ui.click('Noise 10 [show]')
-      expect(ui.preview()).toContain(
-        'Noise 10 [hide] Pre-session 30 [hide]',
+      await ui.click('10 tests/generated (show)')
+      expect(ui.preview()).toMatch(/10 tests\/generated \(hide\)\s*\n/)
+      expect(ui.preview()).toMatch(
+        /\+30 files edited before this session \(hide\)\s*\n/,
       )
-      expect(ui.preview()).not.toContain('Noise 10 [hide]]')
-      expect(ui.preview()).not.toContain('Pre-session 30 [hide]]')
     } finally {
       ui.unmount()
     }
@@ -1552,21 +1574,171 @@ if (!process.env[childKey]) {
     const controller = new FixtureController(data)
     const ui = await mount(controller)
     try {
-      await ui.wait(() => ui.text().includes('No visible changes'))
-      await ui.click('Noise 1 [show]')
+      await ui.wait(() => ui.text().includes('No changes this session'))
+      await ui.click('1 test/generated (show)')
       expect(ui.text()).toContain('file-00.ts')
       expect(ui.text()).not.toContain('file-01.ts')
-      expect(ui.preview()).toContain('Noise 1 [hide] Pre-session 22 [show]')
-      expect(ui.preview()).not.toContain('Noise 1 [hide]]')
-      await ui.click('Pre-session 22 [show]')
+      expect(ui.preview()).toMatch(/1 test\/generated \(hide\)\s*\n/)
+      expect(ui.preview()).toContain(
+        '+22 files edited before this session (show)',
+      )
+      await ui.click('+22 files edited before this session (show)')
       expect(ui.text()).toContain('body-20')
       expect(ui.text()).not.toContain('body-21')
       expect(ui.text()).toContain(
         '2 pre-session bodies omitted (20 file limit)',
       )
-      await ui.click('Noise 1 [hide]')
+      await ui.click('1 test/generated (hide)')
       expect(ui.text()).not.toContain('file-00.ts')
       expect(ui.text()).toContain('body-20')
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  function parityData(): DiffData {
+    const app = (n: number) =>
+      `line ${n} of app.ts: const value${n} = compute(${n});`
+    const files = [
+      { path: 'src/obsolete.ts', linesAdded: 0, linesRemoved: 1 },
+      { path: 'README.md', linesAdded: 6, linesRemoved: 1, isPreSession: true },
+      { path: 'src/app.ts', linesAdded: 4, linesRemoved: 3, isPreSession: true },
+      { path: 'src/newfile.ts', linesAdded: 0, linesRemoved: 0, isPreSession: true,
+        isUntracked: true, bodyState: 'no-body' as const },
+    ].map(file => ({
+      isBinary: false,
+      isLargeFile: false,
+      isTruncated: false,
+      bodyState: 'ready' as const,
+      ...file,
+    }))
+    return {
+      files,
+      hunks: new Map<string, Hunk[]>([
+        ['src/obsolete.ts', [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 0,
+          lines: ['-export const old = 1;'] }]],
+        ['README.md', [{ oldStart: 4, oldLines: 4, newStart: 4, newLines: 9,
+          lines: [' ', ' ## Usage', ' ', '-Run the thing.', '+Run the thing with `bun start`.',
+            '+', '+More docs here.', '+', '+## License', '+MIT'] }]],
+        ['src/app.ts', [
+          { oldStart: 1, oldLines: 13, newStart: 1, newLines: 15, lines: [
+            ...[1, 2].map(n => ` ${app(n)}`), `-${app(3)}`,
+            '+line 3 of app.ts: const value3 = computeFast(3, { cache: true });',
+            ...[4, 5, 6, 7, 8, 9, 10].map(n => ` ${app(n)}`),
+            '+// inserted helper comment', '+const extra = 42;',
+            ...[11, 12, 13].map(n => ` ${app(n)}`)] },
+          { oldStart: 27, oldLines: 32, newStart: 29, newLines: 32, lines: [
+            ...[27, 28, 29].map(n => ` ${app(n)}`), `-${app(30)}`,
+            ...Array.from({ length: 24 }, (_, i) => ` ${app(31 + i)}`), `-${app(55)}`,
+            '+line 55 of app.ts: const value55 = compute(55) * 2; // APP_TAIL',
+            ...[56, 57, 58].map(n => ` ${app(n)}`)] },
+        ]],
+        ['src/newfile.ts', []],
+      ]),
+      loading: false,
+      outcome: 'data',
+      baseLabel: 'git diff HEAD',
+      stats: { filesCount: 4, linesAdded: 10, linesRemoved: 5 },
+    }
+  }
+
+  test('small multi-file diffs render every body without render-budget truncation', async () => {
+    for (const initialDialog of [false, true]) {
+      const controller = new FixtureController(parityData())
+      controller.snapshot = { ...controller.snapshot, showPreSession: true }
+      const ui = await mount(controller, initialDialog)
+      try {
+        await ui.wait(() => ui.text().includes('APP_TAIL'))
+        expect(ui.text()).toContain('More docs here.')
+        expect(ui.text()).toContain('export const old = 1;')
+        expect(ui.text()).not.toContain('render budget')
+      } finally {
+        ui.unmount()
+      }
+    }
+  })
+
+  test('narrow modal dialog keeps gutter signs and the close mark on the header line', async () => {
+    const controller = new FixtureController(parityData())
+    controller.snapshot = { ...controller.snapshot, showPreSession: true }
+    // Fullscreen splits the gutter into its own column, as in the REPL modal.
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
+    const ui = await mount(controller, true, [], false, false, true)
+    try {
+      ui.resize(100, 40)
+      ui.altScreen()
+      await ui.wait(() => ui.preview().includes('More docs here.'))
+      const lines = ui.preview().split("\n").map(line => line.trimEnd())
+      expect(lines.find(line => line.includes('More docs here.'))).toMatch(/\d \+More docs here\.$/)
+      expect(lines.find(line => line.includes('Run the thing.'))).toMatch(/\d -Run the thing\.$/)
+      const close = lines.find(line => line.includes('✕'))!
+      expect(close).toMatch(/4 files changed \+10 -5\s+✕$/)
+    } finally {
+      delete process.env.CLAUDE_CODE_NO_FLICKER
+      ui.unmount()
+    }
+  })
+
+  test('sidebar matches the official panel: fill, one-line header, list and file frames', async () => {
+    const controller = new FixtureController(parityData())
+    const ui = await mount(controller)
+    try {
+      ui.altScreen()
+      await ui.wait(() => ui.text().includes('export const old = 1;'))
+      const panel = ui.elements().find(el => el.style.backgroundColor !== undefined)
+      expect(panel).toBeDefined()
+      expect(ui.elements().some(el => el.style.borderStyle !== undefined)).toBe(false)
+      let preview = ui.preview()
+      // Session mode shows only session files; counts follow the shown files.
+      expect(preview).toMatch(/1 file changed -1\s+✕/)
+      expect(preview).not.toContain('Base:  ')
+      expect(preview).not.toContain('›')
+      expect(preview).not.toContain('↑/↓')
+      expect(preview).not.toContain('uncommitted (vs HEAD)')
+      expect(preview).toMatch(/src\/obsolete\.ts\s+-1/)
+      expect(preview).toContain('+3 files edited before this session (show)')
+      expect(preview).toMatch(/─{20,}\n\s*src\/obsolete\.ts.*\n\s*─{20,}/)
+      await ui.click('+3 files edited before this session (show)')
+      await ui.wait(() => ui.preview().includes('4 files changed'))
+      preview = ui.preview()
+      expect(preview).toMatch(/4 files changed \+10 -5\s+✕/)
+      const order = ['README.md', 'src/app.ts', 'src/newfile.ts', 'src/obsolete.ts']
+        .map(path => preview.indexOf(path))
+      expect([...order].sort((a, b) => a - b)).toEqual(order)
+      expect(preview).toMatch(/src\/newfile\.ts\s*\n/)
+      expect(ui.text()).toContain('src/newfile.ts (untracked)')
+      expect(ui.text()).toContain('New file not yet staged.')
+      expect(ui.text()).toContain('Run `git add :/src/newfile.ts` to see line counts.')
+      await controller.cycleBase()
+      await ui.wait(() => ui.preview().includes('uncommitted (vs HEAD)'))
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  test('empty states are per base, centered, and show only the close mark', async () => {
+    const data = { ...dataFor(0), baseLabel: 'vs main' }
+    const controller = new FixtureController(data)
+    const ui = await mount(controller)
+    try {
+      ui.altScreen()
+      for (const [message, line] of [
+        ['No changes this session', null],
+        ['No uncommitted changes', 'uncommitted (vs HEAD)'],
+        ['No changes vs main', 'branch vs main'],
+      ] as const) {
+        await ui.wait(() => ui.preview().includes(message))
+        const preview = ui.preview()
+        expect(preview).not.toContain('changed')
+        if (line) expect(preview).toContain(line)
+        const rows = preview.split('\n')
+        const row = rows.findIndex(text => text.includes(message))
+        expect(row).toBeGreaterThan(8)
+        expect(row).toBeLessThan(24)
+        const column = rows[row]!.indexOf(message)
+        expect(column).toBeGreaterThan(55 + 5)
+        await controller.cycleBase()
+      }
     } finally {
       ui.unmount()
     }
