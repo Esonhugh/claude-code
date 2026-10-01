@@ -35,6 +35,8 @@ import {
   refreshCodexAppToolExposure,
   setCodexAppEnabled,
 } from '../../services/apps/preferences.js'
+import { isHostOwnedCodexAppsConfig } from '../../services/apps/trust.js'
+import { CODEX_APPS_SERVER_NAMES } from '../../services/apps/types.js'
 import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js'
 import type {
   MCPServerConnection,
@@ -825,7 +827,11 @@ export function ManagePlugins({
         id: `mcp:${client.name}`,
         name: client.name,
         description: undefined,
-        scope: client.config.scope,
+        scope:
+          CODEX_APPS_SERVER_NAMES.some(name => name === client.name) &&
+          isHostOwnedCodexAppsConfig(client.config)
+            ? 'codex-app'
+            : client.config.scope,
         status: getMcpStatus(client),
         client,
       })
@@ -3085,6 +3091,8 @@ export function ManagePlugins({
               return 'Enterprise'
             case 'managed':
               return 'Managed'
+            case 'claudeai':
+              return 'Claude AI'
             case 'builtin':
               return 'Built-in'
             case 'dynamic':

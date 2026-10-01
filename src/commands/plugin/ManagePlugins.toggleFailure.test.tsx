@@ -7,6 +7,14 @@ import stripAnsi from 'strip-ansi'
 import { setAllowedSettingSources, setFlagSettingsInline } from '../../bootstrap/state.js'
 import { AppStateProvider, getDefaultAppState } from '../../state/AppState.js'
 import { render } from '../../ink.js'
+import { markHostOwnedCodexAppsConfig } from '../../services/apps/trust.js'
+import {
+  CODEX_APPS_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+  CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME,
+  CODEX_APPS_SERVER_NAME,
+} from '../../services/apps/types.js'
+import type { MCPServerConnection } from '../../services/mcp/types.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 
 const plugin = {
@@ -21,10 +29,26 @@ const plugin = {
   repository: 'test-marketplace',
 }
 
+const builtinPlugin = {
+  name: 'builtin-fixture',
+  manifest: {
+    name: 'builtin-fixture',
+    description: 'Built-in grouping fixture',
+    version: '1.0.0',
+  },
+  path: '/tmp/builtin-fixture',
+  source: 'builtin-fixture@builtin',
+  repository: 'builtin',
+  isBuiltin: true,
+}
+
 let disableMode: 'success' | 'success-false' | 'reject' = 'success-false'
 
 mock.module('../../utils/plugins/pluginLoader.js', () => ({
-  loadAllPlugins: async () => ({ enabled: [plugin], disabled: [] }),
+  loadAllPlugins: async () => ({
+    enabled: [plugin, builtinPlugin],
+    disabled: [],
+  }),
 }))
 
 const keybindingHandlers = new Map<string, () => void>()
@@ -145,6 +169,83 @@ function waitFor(
   })
 }
 
+function pendingMcp(
+  name: string,
+  kind?: 'connectors' | 'plugins' | 'claude-ai',
+): MCPServerConnection {
+  const config =
+    kind === 'connectors' || kind === 'plugins'
+      ? markHostOwnedCodexAppsConfig(
+          {
+            type: 'http',
+            url:
+              kind === 'connectors'
+                ? CODEX_APPS_MCP_URL
+                : CODEX_APPS_PLUGIN_RUNTIME_MCP_URL,
+            scope: 'dynamic',
+          },
+          kind,
+        )
+      : kind === 'claude-ai'
+        ? {
+            type: 'claudeai-proxy' as const,
+            url: 'https://example.invalid/mcp',
+            id: 'official-app-fixture',
+            scope: 'claudeai' as const,
+          }
+        : {
+            type: 'stdio' as const,
+            command: 'unused-test-command',
+            args: [],
+            scope: 'dynamic' as const,
+          }
+  return { name, type: 'pending', config }
+}
+
+async function renderPluginList(
+  clients: MCPServerConnection[],
+): Promise<string> {
+  process.env.NODE_ENV = 'test'
+  process.env.ANTHROPIC_API_KEY = 'test-key'
+  ;(globalThis as unknown as { MACRO: { VERSION: string } }).MACRO = {
+    VERSION: '0.0.0-test',
+  }
+  setAllowedSettingSources(['flagSettings'])
+  setFlagSettingsInline({ enabledPlugins: {} })
+  resetSettingsCache()
+
+  const { ManagePlugins } = await import('./ManagePlugins.js')
+  const stdout = new TestStdout()
+  const stdin = new TestStdin()
+  const appState = getDefaultAppState()
+  const instance = await render(
+    <AppStateProvider
+      initialState={{
+        ...appState,
+        mcp: { ...appState.mcp, clients, tools: [] },
+        plugins: { ...appState.plugins, errors: [] },
+      }}
+    >
+      <ManagePlugins setViewState={() => {}} setResult={() => {}} />
+    </AppStateProvider>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
+
+  await waitFor(
+    () => stripAnsi(stdout.output).includes('toggle-failure-plugin'),
+    `plugin did not render. Output:\n${stripAnsi(stdout.output)}`,
+  )
+  const output = stripAnsi(stdout.output)
+  instance.unmount()
+  instance.cleanup()
+  return output
+}
+
 async function renderAndToggle(
   expectedOutput: string,
 ): Promise<string> {
@@ -193,6 +294,32 @@ async function renderAndToggle(
 
   return stripAnsi(stdout.output)
 }
+
+const groupedOutput = await renderPluginList([
+  pendingMcp(CODEX_APPS_SERVER_NAME, 'connectors'),
+  pendingMcp(CODEX_APPS_PLUGIN_RUNTIME_SERVER_NAME, 'plugins'),
+  pendingMcp('ordinary_dynamic'),
+  pendingMcp('host_owned_other_name', 'connectors'),
+  pendingMcp('claude.ai Claude Docs', 'claude-ai'),
+])
+const codexAppsSection = groupedOutput.match(/Codex Apps\n([^]*?)\n\n/)?.[1]
+assert.ok(codexAppsSection)
+assert.match(codexAppsSection, /codex_apps MCP/)
+assert.match(codexAppsSection, /codex_apps_plugins MCP/)
+assert.doesNotMatch(codexAppsSection, /ordinary_dynamic MCP/)
+assert.doesNotMatch(codexAppsSection, /host_owned_other_name MCP/)
+assert.match(groupedOutput, /Built-in\s+builtin-fixture Plugin/)
+const dynamicSection = groupedOutput.match(
+  /Built-in\n([^]*?ordinary_dynamic MCP[^]*?)\n\n/,
+)?.[1]
+assert.ok(dynamicSection)
+assert.match(dynamicSection, /ordinary_dynamic MCP/)
+assert.match(dynamicSection, /host_owned_other_name MCP/)
+assert.match(
+  groupedOutput,
+  /Claude AI\s+claude\.ai Claude Docs MCP Claude Official App/,
+)
+assert.doesNotMatch(groupedOutput, /\n {2}claudeai\n/)
 
 disableMode = 'success'
 const successOutput = await renderAndToggle('will disable')
