@@ -633,7 +633,7 @@ bun scripts/mods-test-lab.mjs run sample
 
 无参数打开包含 Button、Input、Select、长列表和中英文 diff 的面板；`status` 查看计数，`context` 仅为下一条真正的 prompt 附加固定测试标记，`reset` 清理本 Mod 的测试状态。默认只观察事件，不改变工具输入/结果，不记录 prompt、工具参数或回答正文。最近事件最多 20 条；持久计数与当前 activation 状态分别展示。UI-only 入口没有模型服务，prompt/tool 完整链需要另行配置本地 loopback fixture。
 
-官方 2.1.277 的 `agents-md`、`diff` 和 `telemetry` 已固定 provenance 并内嵌为 builtin Mods；`telemetry` 会把插件使用记录发往 Anthropic，默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载，启用后 Mods 通过 `session.authorize` 使用本会话的 first-party 凭据发送；settings 中设置 `"privacyMode": true` 后 Mods 不再获得该凭据（会话中途开启也会立即作废已发出的授权），`ANTHROPIC_BASE_URL` 指向非官方网关时其 key 也不会被授权；`sec-default` 仍只作为可下载的官方原件检查，不因源码可扫描而获得 managed 安全身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
+官方 2.1.277 的 `agents-md`、`diff` 和 `telemetry` 已固定 provenance 并内嵌为 builtin Mods；`telemetry` 默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载。生产 Mods 不会获得当前会话的 Anthropic credential，`session.authorize` 恒返回空授权；只有隔离的 builtin acceptance fixture 会注入固定 dummy credential 并限定到 loopback transport。`sec-default` 仍只作为可下载的官方原件检查，不因源码可扫描而获得 managed 安全身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
 
 ```bash
 bun scripts/mods-test-lab.mjs fetch-official
@@ -646,7 +646,7 @@ bun scripts/mods-test-lab.mjs run-builtin --binary ./built-claude
 bun scripts/mods-test-lab.mjs accept-builtin --binary ./built-claude
 ```
 
-下载固定官方提交到仓库外缓存，输出来源、内容摘要及实际路径；不全局安装、不修改用户 settings、不运行上游安装脚本。`run-builtin` 使用 binary 内嵌 archive 启动隔离会话，但单纯创建 session 不代表 readiness、activation 或 trigger。`accept-builtin` 使用私有 HOME/config、假凭据、loopback provider 和 sandbox，差分验证 `agents-md`、builtin/native `diff` Pane 交互以及 telemetry 的 privacy 与 `session.end` flush，并检查清理；它不读取个人认证或访问真实 provider。
+下载固定官方提交到仓库外缓存，输出来源、内容摘要及实际路径；不全局安装、不修改用户 settings、不运行上游安装脚本。`run-builtin` 使用 binary 内嵌 archive 启动隔离会话，但单纯创建 session 不代表 readiness、activation 或 trigger。`accept-builtin` 使用私有 HOME/config、固定 dummy credential、loopback provider 和 sandbox，差分验证 `agents-md`、builtin/native `diff` Pane 交互以及 telemetry 的隔离授权与 `session.end` flush，并检查清理；它不读取个人认证或访问真实 provider。
 
 停止手工会话后可用 `bun scripts/mods-test-lab.mjs clean <run目录>` 回收工具自己的运行目录，活跃或封存的验收记录不会自动删除。`check` 只检查 discovery/preparation/scan；builtin acceptance 通过也只证明当前制品的这三项场景，不等于全部官方 Mods、作者工具链、远端 surface、官方 binary parity 或完整 release gate 通过。
 

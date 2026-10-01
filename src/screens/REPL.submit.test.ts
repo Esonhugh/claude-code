@@ -111,7 +111,6 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
     getSessionId: () => 'session',
     setAppState: noop,
     messagesRef: { current: [] },
-    getFirstPartyCredential: async () => null,
     modToolContextRef: { current: noop },
     inputValueRef,
     insertTextRef,
@@ -186,7 +185,6 @@ test('Mods prompt suggestion requires a mounted box and reads live query state',
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
     setAppState: () => { stateWrites++ }, messagesRef: { current: [] },
-    getFirstPartyCredential: async () => null,
     modToolContextRef: { current: noop }, inputValueRef, insertTextRef,
     queryGuard, isExternalLoadingRef, inputModeRef, modTypeaheadActiveRef,
     store: { getState: () => appState },
@@ -1643,7 +1641,7 @@ test('Mods usage captures the live REPL context and transcript when the capabili
   const awaitMods = extract('./REPL.tsx','awaitMods')({
     modsSession:{bind:async (_binding:unknown,_set:unknown,host:unknown) => {services=host}},
     getCwd:() => '/repo',getOriginalCwd:() => '/repo',getSessionId:() => 'session',setAppState:noop,
-    messagesRef,getFirstPartyCredential:async()=>null,modToolContextRef,
+    messagesRef,modToolContextRef,
     captureModSessionUsage:(context:unknown) => {captured.push(context);return reader},
   })
   await awaitMods()
@@ -1666,7 +1664,6 @@ test('Mods author tool host reads the live REPL context and permission consumer'
   const awaitMods = extract('./REPL.tsx','awaitMods')({
     modsSession:{bind:async (_binding:unknown,_set:unknown,value:unknown) => {services=value}},
     getCwd:() => '/repo',getSessionId:() => 'session',getOriginalCwd:() => '/repo',setAppState:noop,
-    getFirstPartyCredential: async () => null,
     modToolContextRef, modCanUseToolRef:{current:canUseTool},
     createModToolHost:(...args:unknown[]) => {captured.push(args);return host},
   })
@@ -1686,7 +1683,6 @@ test('Mods proactive prompt uses the REPL queue and settles on admission', async
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
     setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
-    getFirstPartyCredential: async () => null,
     enqueueTracked: queue.enqueueTracked, remove: queue.remove,
   })
   try {
@@ -1721,7 +1717,6 @@ test('Mods proactive prompt abort removes the exact REPL queue entry', async () 
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
     setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
-    getFirstPartyCredential: async () => null,
     enqueueTracked: queue.enqueueTracked, remove: queue.remove,
   })
   const controller = new AbortController()
@@ -1828,7 +1823,6 @@ test('REPL binds Mods MCP calls to the current connection and forwards cancellat
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo',
     getSessionId: () => 'session', setAppState: noop,
-    getFirstPartyCredential: async () => null,
     modToolContextRef: { current: () => ({ options: { mcpClients: clients } }) },
     callMCPToolForMod, findMCPConnectionForMod,
   })
@@ -2084,7 +2078,7 @@ test('REPL Mods tool host resolves the current context and permission callback o
     modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
     getCwd: () => '/repo', getOriginalCwd: () => '/repo',
     getSessionId: () => 'session',
-    getFirstPartyCredential: async () => null, setAppState: noop,
+    setAppState: noop,
     modToolContextRef, modCanUseToolRef,
     createModToolHost: (context: unknown, canUseTool: unknown) => ({ context, canUseTool }),
   })

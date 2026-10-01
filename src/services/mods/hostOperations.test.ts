@@ -160,15 +160,12 @@ test('acceptance HTTP services record sanitized host calls without external netw
   process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledger
   process.env.ANTHROPIC_API_KEY = 'sk-ant-mods-test-lab-fake-not-a-credential'
   process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:12345'
-  const services = getModHttpServices(async () => {
-    throw new Error('production credential source must not run')
-  })
   const operations = createModHostOperations({
     cwd: () => cwd,
     storageId: 'acceptance@test',
     signal: controller.signal,
     sessionId: () => 'session-a',
-    ...services,
+    ...getModHttpServices(),
   })
 
   const authorization = await operations.session.authorize()
@@ -184,7 +181,22 @@ test('acceptance HTTP services record sanitized host calls without external netw
   ])
 })
 
-test('session authorization keeps the credential in the host and injects it into host fetch', async () => {
+test('production HTTP services do not expose a session credential', async () => {
+  delete process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER
+  const services = getModHttpServices()
+  expect(Object.keys(services)).toEqual([])
+
+  const operations = createModHostOperations({
+    cwd: () => cwd,
+    storageId: 'http@test',
+    signal: controller.signal,
+    sessionId: () => 'session-a',
+    ...services,
+  })
+  expect(await operations.session.authorize()).toBeNull()
+})
+
+test('session authorization keeps an explicitly supplied dummy credential in the host', async () => {
   const requests: { url: string; init: RequestInit }[] = []
   const operations = createModHostOperations({
     cwd: () => cwd, storageId: 'http@test', signal: controller.signal,
@@ -207,7 +219,7 @@ test('session authorization keeps the credential in the host and injects it into
   expect(new Headers(requests[0]!.init.headers).get('x-api-key')).toBeNull()
 })
 
-describe('session authorization revalidation', () => {
+describe('session authorization revalidation for explicit dummy services', () => {
   for (const change of ['secret', 'kind', 'null'] as const) {
     test(`revokes the old handle after a ${change} change in the same session`, async () => {
       const original = { kind: 'bearer' as const, secret: 'fake-secret-a' }

@@ -60,7 +60,6 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/Syntheti
 import type { Message, MessageOrigin, UserMessage } from './types/message.js'
 import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
-import { getFirstPartyCredential } from './utils/auth.js'
 import { getModHttpServices } from './services/mods/hostOperations.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
@@ -507,7 +506,7 @@ export class QueryEngine {
       turns: () => this.mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual &&
         message.toolUseResult === undefined &&
         (typeof message.message.content === 'string' || !message.message.content.every(block => block.type === 'tool_result'))).length,
-      ...getModHttpServices(getFirstPartyCredential),
+      ...getModHttpServices(),
       configRows: () =>
         getConfigRows({
           getAppState: this.config.getAppState,

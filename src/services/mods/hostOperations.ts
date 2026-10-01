@@ -28,15 +28,15 @@ export type ModHttpServices = {
   httpFetch?(url: string, init: RequestInit): Promise<Response>
 }
 
-export function getModHttpServices(
-  firstPartyCredential: () => Promise<ModCredential | null>,
-): ModHttpServices {
+// Production callers never supply the session credential. The acceptance
+// fixture below only exposes its fixed dummy key under an isolated loopback setup.
+export function getModHttpServices(): ModHttpServices {
   const ledger = process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER
   if (
     !ledger ||
     process.env.ANTHROPIC_API_KEY !== 'sk-ant-mods-test-lab-fake-not-a-credential' ||
     !process.env.ANTHROPIC_BASE_URL?.startsWith('http://127.0.0.1:')
-  ) return { firstPartyCredential }
+  ) return {}
   let sequence = 0
   const record = (entry: Record<string, unknown>) => {
     appendFileSync(ledger, `${JSON.stringify({ sequence: ++sequence, ...entry })}\n`)
@@ -294,6 +294,7 @@ export function createModHostOperations({
           if (!authorization || authorization.session !== sessionId()) throw new Error('Invalid or expired session authorization')
           if (target.protocol !== 'https:' || target.hostname !== 'api.anthropic.com' || target.port || init.socketPath)
             throw new Error('Session authorization requires a first-party HTTPS host')
+          requestSignal.throwIfAborted()
           const credential = await firstPartyCredential()
           signal.throwIfAborted()
           requestSignal.throwIfAborted()
