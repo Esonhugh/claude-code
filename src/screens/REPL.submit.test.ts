@@ -354,66 +354,93 @@ test('startup resume dates the diff baseline from activation, not historical mes
   diff.dispose()
 })
 
-test('diff keeps open intent across temporary width and dock restrictions but respects an explicit close', () => {
+test('diff hands an open sidebar to a dialog when layout narrows and respects an explicit close', () => {
   const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
   const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
-  let layout = ''
-  let visible = ''
+  const declarations = new Map<string, string>()
+  let sidebarVisible = ''
+  let centeredModal = ''
   function visit(node: ts.Node) {
-    if (ts.isBlock(node)) {
-      const start = node.statements.findIndex(statement => ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations.some(declaration => declaration.name.getText(file) === 'canShowDiffSidebar'))
-      if (start !== -1) {
-        const statements = [node.statements[start]!]
-        for (const statement of node.statements.slice(start + 1)) {
-          if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression) ||
-            statement.expression.expression.getText(file) !== 'useEffect') break
-          statements.push(statement)
-        }
-        layout = statements.map(statement => statement.getText(file)).join('\n')
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const name = node.name.getText(file)
+      if (
+        name === 'otherModalOverlayActive' ||
+        name === 'canShowDiffSidebar' ||
+        name === 'showResponsiveDiffDialog'
+      ) {
+        declarations.set(name, node.initializer.getText(file))
       }
+      if (name === 'centeredModal') centeredModal = node.initializer.getText(file)
     }
     if (ts.isJsxAttribute(node) && node.name.getText(file) === 'sidebarPane' &&
       node.initializer && ts.isJsxExpression(node.initializer) &&
       node.initializer.expression && ts.isConditionalExpression(node.initializer.expression)) {
-      visible = node.initializer.expression.condition.getText(file)
+      sidebarVisible = node.initializer.expression.condition.getText(file)
     }
     ts.forEachChild(node, visit)
   }
   visit(file)
-  expect(layout).not.toBe('')
-  expect(visible).not.toBe('')
-  const js = ts.transpileModule(`${layout}\nreturn ${visible};`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText
-  let state = { diffSidebarVisible: true }
+  expect(declarations.has('otherModalOverlayActive')).toBe(true)
+  expect(declarations.has('canShowDiffSidebar')).toBe(true)
+  expect(declarations.has('showResponsiveDiffDialog')).toBe(true)
+  expect(sidebarVisible).not.toBe('')
+  expect(centeredModal).toContain('responsiveDiffDialog')
+
+  const evaluate = new Function('scope', `with (scope) {
+    const otherModalOverlayActive = ${declarations.get('otherModalOverlayActive')};
+    const canShowDiffSidebar = ${declarations.get('canShowDiffSidebar')};
+    const showResponsiveDiffDialog = ${declarations.get('showResponsiveDiffDialog')};
+    return { sidebar: ${sidebarVisible}, dialog: showResponsiveDiffDialog };
+  }`)
+  const state = {
+    activeOverlays: new Set<string>(),
+    diffSidebarVisible: true,
+  }
   const scope = {
     get diffSidebarVisible() { return state.diffSidebarVisible },
+    useAppState: (select: (value: typeof state) => unknown) => select(state),
+    screen: 'prompt',
     modTerminalSize: { columns: 144 }, modDock: [] as unknown[],
     MIN_DIFF_SIDEBAR_COLUMNS: 110,
-    useEffect: (effect: () => void) => effect(),
-    setAppState: (update: (previous: typeof state) => typeof state) => { state = update(state) },
+    toolJSX: null, focusedInputDialog: undefined,
+    showBashesDialog: false, exitFlow: null,
   }
-  const renderSidebar = () => new Function('scope', `with (scope) { ${js} }`)(scope)
-  expect(renderSidebar()).toBe(true)
+  const presentation = () => evaluate(scope) as { sidebar: boolean; dialog: boolean }
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
   scope.modTerminalSize.columns = 109
-  expect(renderSidebar()).toBe(false)
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
   expect(state.diffSidebarVisible).toBe(true)
   scope.modTerminalSize.columns = 110
-  expect(renderSidebar()).toBe(true)
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
   scope.modDock = [{}]
-  expect(renderSidebar()).toBe(false)
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
   expect(state.diffSidebarVisible).toBe(true)
+  scope.toolJSX = { jsx: {} }
+  expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  scope.toolJSX = null
   scope.modDock = []
-  expect(renderSidebar()).toBe(true)
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
+  scope.modTerminalSize.columns = 109
+  scope.screen = 'transcript'
+  expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.screen = 'prompt'
+  state.activeOverlays.add('select')
+  expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  expect(state.diffSidebarVisible).toBe(true)
+  state.activeOverlays.clear()
+  state.activeOverlays.add('diff-dialog')
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
+  state.activeOverlays.clear()
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
   state.diffSidebarVisible = false
   for (const columns of [109, 110, 144]) {
     scope.modTerminalSize.columns = columns
-    expect(renderSidebar()).toBe(false)
+    expect(presentation()).toEqual({ sidebar: false, dialog: false })
   }
 })
 
-test('Diff sidebar navigation does not disable PromptInput handling', () => {
+test('Diff sidebar leaves PromptInput active while its responsive dialog takes ownership', () => {
   const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
   const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   let expression = ''
@@ -431,7 +458,16 @@ test('Diff sidebar navigation does not disable PromptInput handling', () => {
   visit(file)
   expect(expression).not.toContain('diffSidebarKeyboardActive')
   expect(expression).toContain('isShowingLocalJSXCommand')
+  expect(expression).toContain('showResponsiveDiffDialog')
   expect(expression).toContain('modPaneFocused')
+  const active = new Function(
+    'isShowingLocalJSXCommand',
+    'showResponsiveDiffDialog',
+    'modPaneFocused',
+    `return ${expression}`,
+  )
+  expect(active(false, false, false)).toBe(false)
+  expect(active(false, true, false)).toBe(true)
 })
 
 test('Diff sidebar leaves keyboard navigation with the composer and background tasks', () => {

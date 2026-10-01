@@ -4,6 +4,7 @@ import type { DiffFile } from '../../hooks/useDiffData.js'
 import { useSettings } from '../../hooks/useSettings.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { Box, Text } from '../../ink.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import { StructuredDiff } from '../StructuredDiff.js'
 import { expectColorDiff } from '../StructuredDiff/colorDiff.js'
 import { diffDisplayText } from './displayText.js'
@@ -54,10 +55,28 @@ export function limitDiffHunks(
     for (const rawLine of hunk.lines) {
       const line = diffDisplayText(rawLine)
       const cost = line.length + 1
-      // Highlighted rows are padded to the full width.
-      const rendered = highlighted
-        ? Math.ceil(cost / Math.max(1, width)) * Math.max(1, width)
-        : cost
+      const maxLineNumber = Math.max(
+        0,
+        hunk.oldStart + hunk.oldLines - 1,
+        hunk.newStart + hunk.newLines - 1,
+      )
+      const effectiveWidth = Math.max(
+        1,
+        width - String(maxLineNumber).length - 3,
+      )
+      let rows = 1
+      if (highlighted) {
+        let rowWidth = 0
+        for (const char of line.slice(1)) {
+          const charWidth = stringWidth(char)
+          if (rowWidth > 0 && rowWidth + charWidth > effectiveWidth) {
+            rows++
+            rowWidth = 0
+          }
+          rowWidth += charWidth
+        }
+      }
+      const rendered = highlighted ? rows * Math.max(1, width) : cost
       if (cost > 10_000 || rendered > budget.chars) {
         flush()
         return { hunks: result, truncated: true }

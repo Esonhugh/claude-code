@@ -638,6 +638,7 @@ import {
   useUnseenDivider,
   computeUnseenDivider,
 } from '../components/FullscreenLayout.js'
+import { DiffDialog } from '../components/diff/DiffDialog.js'
 import { DiffSidebar } from '../components/diff/DiffSidebar.js'
 import { DiffController } from '../services/diff/controller.js'
 import { MIN_DIFF_SIDEBAR_COLUMNS } from '../commands/diff/index.js'
@@ -3177,16 +3178,36 @@ export function REPL({
   }
 
   const focusedInputDialog = getFocusedInputDialog()
+  const otherModalOverlayActive = useAppState(state => {
+    for (const id of state.activeOverlays) {
+      if (id !== 'diff-dialog' && id !== 'autocomplete') return true
+    }
+    return false
+  })
   const modTerminalSize = useTerminalSize()
+  const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
+  const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
+  const shownModDock = modDock.find(pane => pane.shown !== false)
+  const canShowDiffSidebar =
+    modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
+  const showResponsiveDiffDialog =
+    screen === 'prompt' &&
+    diffSidebarVisible &&
+    !canShowDiffSidebar &&
+    !otherModalOverlayActive &&
+    !toolJSX?.jsx &&
+    !focusedInputDialog &&
+    !showBashesDialog &&
+    !exitFlow
   const modUiPresentation = useMemo<ModUiPresentation>(() => ({
     columns: modTerminalSize.columns,
     rows: modTerminalSize.rows,
     isFullscreen: isFullscreenEnvEnabled(),
     composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
-    hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow),
+    hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow || showResponsiveDiffDialog),
     keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode === 'selecting-agent',
     agentId: viewedAgentTask?.id,
-  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode, viewedAgentTask?.id])
+  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, showResponsiveDiffDialog, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode, viewedAgentTask?.id])
   modUiPresentationRef.current = modUiPresentation
   modPromptBlockedRef.current =
     modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
@@ -3251,11 +3272,6 @@ export function REPL({
       onError={logError}
     />
   )
-  const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
-  const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
-  const shownModDock = modDock.find(pane => pane.shown !== false)
-  const canShowDiffSidebar =
-    modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
 
   // True when permission prompts exist but are hidden because the user is typing
   const hasSuppressedDialogs =
@@ -5976,7 +5992,8 @@ export function REPL({
 
   useQueueProcessor({
     executeQueuedInput,
-    hasActiveLocalJsxUI: isShowingLocalJSXCommand,
+    hasActiveLocalJsxUI:
+      isShowingLocalJSXCommand || showResponsiveDiffDialog,
     queryGuard,
   })
 
@@ -6228,7 +6245,8 @@ export function REPL({
       isLoading:
         isRemoteExecutionSession || isLoading || initialMessage !== null,
       queuedCommandsLength: queuedCommands.length,
-      hasActiveLocalJsxUI: isShowingLocalJSXCommand,
+      hasActiveLocalJsxUI:
+        isShowingLocalJSXCommand || showResponsiveDiffDialog,
       isInPlanMode: toolPermissionContext.mode === 'plan',
       onSubmitTick: (prompt: string) =>
         handleIncomingPrompt(prompt, { isMeta: true }),
@@ -6590,7 +6608,7 @@ export function REPL({
   // Guard onOpenBackgroundTasks when a local-jsx dialog (e.g. /mcp) is open —
   // otherwise Shift+Down stacks BackgroundTasksDialog on top and deadlocks input.
   useBackgroundTaskNavigation({
-    onOpenBackgroundTasks: isShowingLocalJSXCommand
+    onOpenBackgroundTasks: isShowingLocalJSXCommand || showResponsiveDiffDialog
       ? undefined
       : () => setShowBashesDialog(true),
     isActive: true,
@@ -6860,7 +6878,19 @@ export function REPL({
   // /config, /theme, /diff, ...) both go here now.
   const toolJsxCentered =
     isFullscreenEnvEnabled() && toolJSX?.isLocalJSXCommand === true
-  const centeredModal: React.ReactNode = toolJsxCentered ? toolJSX!.jsx : null
+  const responsiveDiffDialog = showResponsiveDiffDialog ? (
+    <DiffDialog
+      messages={messages}
+      controller={diffController}
+      onDone={() => {
+        diffController?.setOpenPreference(false)
+        setAppState(state => ({ ...state, diffSidebarVisible: false }))
+      }}
+    />
+  ) : null
+  const centeredModal: React.ReactNode = toolJsxCentered
+    ? toolJSX!.jsx
+    : responsiveDiffDialog
 
   // <AlternateScreen> at the root: everything below is inside its
   // <Box height={rows}>. Handlers/contexts are zero-height so ScrollBox's
@@ -7637,7 +7667,9 @@ export function REPL({
                         ideSelection={ideSelection}
                         hasSuppressedDialogs={!!hasSuppressedDialogs}
                         isLocalJSXCommandActive={
-                          isShowingLocalJSXCommand || modPaneFocused
+                          isShowingLocalJSXCommand ||
+                          showResponsiveDiffDialog ||
+                          modPaneFocused
                         }
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}

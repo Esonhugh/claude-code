@@ -226,7 +226,7 @@ export function DiffView({
     if (!selectedPath) return
     const row = rowAnchors.current.get(selectedPath)
     if (row) listRef.current?.scrollToElement(row)
-    if (!state.selectedPath) return
+    if (!state.selectedPath || detailRef.current) return
     const body = fileAnchors.current.get(selectedPath)
     if (body) bodyRef.current?.scrollToElement(body)
   }, [selectedPath, state.selectedPath])
@@ -579,12 +579,16 @@ export function DiffView({
           </Text>
         </Box>
       )}
-      {!compact && (
+      {(!compact || sources.length > 1) && (
         <Box flexShrink={0}>
-          <Box flexShrink={0} onClick={() => controller.cycleBase()}>
-            <Text dimColor>Base: {state.mode}</Text>
-          </Box>
-          <Text dimColor> · </Text>
+          {!compact && (
+            <>
+              <Box flexShrink={0} onClick={() => controller.cycleBase()}>
+                <Text dimColor>Base: {state.mode}</Text>
+              </Box>
+              <Text dimColor> · </Text>
+            </>
+          )}
           <Box
             flexShrink={1}
             minWidth={0}
@@ -598,7 +602,7 @@ export function DiffView({
               Source: {turn ? `Turn ${turn.turnIndex}` : 'Current'}
             </Text>
           </Box>
-          {todos.total > 0 && (
+          {!compact && todos.total > 0 && (
             <Box flexShrink={0}>
               <Text dimColor>
                 {' '}

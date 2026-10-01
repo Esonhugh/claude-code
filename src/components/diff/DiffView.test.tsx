@@ -73,6 +73,9 @@ if (!process.env[childKey]) {
   const { ModalContext } = await import('../../context/modalContext.js')
   const { createUserMessage, createAssistantMessage } =
     await import('../../utils/messages.js')
+  const { limitDiffHunks } = await import('./DiffDetailView.js')
+  const { ColorDiff } = await import('../../native-ts/color-diff/index.js')
+  const { stringWidth } = await import('../../ink/stringWidth.js')
   type DiffData = import('../../hooks/useDiffData.js').DiffData
   type DOMElement = import('../../ink/dom.js').DOMElement
   type DOMNode = import('../../ink/dom.js').DOMNode
@@ -1357,15 +1360,28 @@ if (!process.env[childKey]) {
     }
   })
 
-  test('109/110/143/144 widths and small height keep body usable without stealing composer keys', async () => {
+  test('109/110/143/144 widths and small height keep body and source navigation usable without stealing composer keys', async () => {
     const controller = new FixtureController(dataFor(3))
-    const ui = await mount(controller)
+    const messages: Message[] = [
+      createUserMessage({ content: 'edit from a previous turn' }),
+      createUserMessage({
+        content: [
+          { type: 'tool_result', tool_use_id: 'edit', content: 'done' },
+        ],
+        toolUseResult: {
+          filePath: 'turn.ts',
+          structuredPatch: [patch('turn-marker')],
+        },
+      }),
+    ]
+    const ui = await mount(controller, false, messages)
     try {
       for (const columns of [109, 110, 143, 144]) {
         ui.resize(columns, 10)
         await ui.wait(
           () => (ui.scrolls()[1]?.scrollViewportHeight ?? 0) >= 1,
         )
+        expect(ui.text()).toContain('Source: Current')
         const close = ui
           .elements()
           .find(
@@ -1384,6 +1400,12 @@ if (!process.env[childKey]) {
         expect(rect.y).toBe(titleRect.y)
         expect(rect.y).toBeLessThan(10)
       }
+      await ui.click('Source: Current')
+      expect(ui.text()).toContain('Source: Turn 1')
+      expect(ui.text()).toContain('turn-marker')
+      await ui.click('Source: Turn 1')
+      expect(ui.text()).toContain('Source: Current')
+      expect(ui.text()).toContain('body-0')
       await ui.key('\u001b[B')
       expect(controller.getSnapshot().selectedPath).toBeNull()
       ui.keyboard(true)
@@ -1419,6 +1441,51 @@ if (!process.env[childKey]) {
       ).toBeLessThanOrEqual(10)
     } finally {
       ui.unmount()
+    }
+  })
+
+  test('highlighted render budgets match gutter-adjusted display-cell wrapping', () => {
+    for (const [width, hunk] of [
+      [12, patch('12345678')],
+      [12, patch('中文中文')],
+      [39, patch('中'.repeat(35))],
+      [12, {
+        ...patch('1234567'),
+        oldStart: 999,
+        newStart: 999,
+      }],
+    ] as const) {
+      const rendered = new ColorDiff(hunk, null, 'fixture.ts').render(
+        'dark',
+        width,
+        false,
+      )!
+      expect(rendered.length).toBeGreaterThan(1)
+      expect(rendered.every(line => stringWidth(line) === width)).toBe(true)
+
+      const oneRowBudget = limitDiffHunks(
+        [hunk],
+        { chars: width, nodes: 100 },
+        width,
+        true,
+      )
+      expect(oneRowBudget).toEqual({ hunks: [], truncated: true })
+
+      expect(limitDiffHunks(
+        [hunk],
+        { chars: rendered.length * width - 1, nodes: 100 },
+        width,
+        true,
+      )).toEqual({ hunks: [], truncated: true })
+
+      const exactBudget = limitDiffHunks(
+        [hunk],
+        { chars: rendered.length * width, nodes: 100 },
+        width,
+        true,
+      )
+      expect(exactBudget.truncated).toBe(false)
+      expect(exactBudget.hunks[0]?.lines).toEqual(hunk.lines)
     }
   })
 
