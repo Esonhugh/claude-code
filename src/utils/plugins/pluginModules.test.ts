@@ -3,6 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginHooksSchema } from './schemas.js'
+import {
+  checkEnabledPlugins,
+  getPluginEditableScopes,
+} from './pluginStartupCheck.js'
+import { setAllowedSettingSources, setFlagSettingsInline } from '../../bootstrap/state.js'
+import { resetSettingsCache } from '../settings/settingsCache.js'
 
 const childFlag = 'CLAUDE_CODE_INLINE_PLUGIN_TEST_CHILD'
 
@@ -83,6 +89,18 @@ if (!process.env[childFlag]) {
     expect((await load()).disabled).toEqual([])
   })
 }
+
+describe('enabled plugin settings', () => {
+  test('treats version constraint arrays as enabled', async () => {
+    setAllowedSettingSources(['flagSettings'])
+    setFlagSettingsInline({
+      enabledPlugins: { 'pinned@marketplace': ['^1.0.0'] },
+    })
+    resetSettingsCache()
+    expect(await checkEnabledPlugins()).toContain('pinned@marketplace')
+    expect(getPluginEditableScopes().get('pinned@marketplace')).toBe('flag')
+  })
+})
 
 describe('plugin module declarations', () => {
   test('retains modules-only declarations', () => {

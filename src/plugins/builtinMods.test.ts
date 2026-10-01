@@ -111,8 +111,14 @@ describe('built-in Mods archive', () => {
     const officialArchive = join(here, '..', '..', 'assets', 'builtin-mods-2.1.277.zip')
     const root = await mkdtemp(join(tmpdir(), 'builtin-mods-official-cache-'))
     roots.push(root)
-
-    await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
+    const previous = process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY
+    delete process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY
+    try {
+      await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY
+      else process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY = previous
+    }
 
     expect([...getBuiltinPlugins().enabled, ...getBuiltinPlugins().disabled].map(plugin => plugin.name).sort()).toEqual(['agents-md', 'diff', 'telemetry'])
     expect(['agents-md', 'diff', 'telemetry'].map(name => getBuiltinPluginDefinition(name)?.defaultEnabled)).toEqual([true, true, false])

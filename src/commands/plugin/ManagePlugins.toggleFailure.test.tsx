@@ -39,15 +39,31 @@ const builtinPlugin = {
   path: '/tmp/builtin-fixture',
   source: 'builtin-fixture@builtin',
   repository: 'builtin',
+  enabled: false,
   isBuiltin: true,
+}
+const pinnedPlugin = {
+  ...plugin,
+  name: 'pinned-plugin',
+  manifest: {
+    ...plugin.manifest,
+    name: 'pinned-plugin',
+    description: 'Version-constrained plugin fixture',
+  },
+  source: 'pinned-plugin@test-marketplace',
+  enabled: true,
 }
 
 let disableMode: 'success' | 'success-false' | 'reject' = 'success-false'
+let loadBuiltinOnly = false
+const enableCalls: string[] = []
+const uninstallCalls: string[] = []
+const installationLookups: string[] = []
 
 mock.module('../../utils/plugins/pluginLoader.js', () => ({
   loadAllPlugins: async () => ({
-    enabled: [plugin, builtinPlugin],
-    disabled: [],
+    enabled: loadBuiltinOnly ? [] : [plugin, pinnedPlugin],
+    disabled: [builtinPlugin],
   }),
 }))
 
@@ -79,12 +95,21 @@ mock.module('../../services/plugins/pluginOperations.js', () => ({
       ? { success: true, message: 'disabled' }
       : { success: false, message: 'policy blocked disable' }
   },
-  enablePluginOp: async () => ({ success: true, message: 'enabled' }),
-  getPluginInstallationFromV2: () => ({ scope: 'user' }),
+  enablePluginOp: async (pluginId: string) => {
+    enableCalls.push(pluginId)
+    return { success: true, message: 'enabled' }
+  },
+  getPluginInstallationFromV2: (pluginId: string) => {
+    installationLookups.push(pluginId)
+    return { scope: 'user' }
+  },
   isInstallableScope: (scope: string) =>
     scope === 'user' || scope === 'project' || scope === 'local',
   isPluginEnabledAtProjectScope: () => false,
-  uninstallPluginOp: async () => ({ success: true, message: 'uninstalled' }),
+  uninstallPluginOp: async (pluginId: string) => {
+    uninstallCalls.push(pluginId)
+    return { success: true, message: 'uninstalled' }
+  },
   updatePluginOp: async () => ({ success: true, message: 'updated' }),
 }))
 
@@ -211,7 +236,11 @@ async function renderPluginList(
     VERSION: '0.0.0-test',
   }
   setAllowedSettingSources(['flagSettings'])
-  setFlagSettingsInline({ enabledPlugins: {} })
+  setFlagSettingsInline({
+    enabledPlugins: loadBuiltinOnly
+      ? {}
+      : { 'pinned-plugin@test-marketplace': ['^1.0.0'] },
+  })
   resetSettingsCache()
 
   const { ManagePlugins } = await import('./ManagePlugins.js')
@@ -255,7 +284,11 @@ async function renderAndToggle(
     VERSION: '0.0.0-test',
   }
   setAllowedSettingSources(['flagSettings'])
-  setFlagSettingsInline({ enabledPlugins: {} })
+  setFlagSettingsInline({
+    enabledPlugins: loadBuiltinOnly
+      ? {}
+      : { 'pinned-plugin@test-marketplace': ['^1.0.0'] },
+  })
   resetSettingsCache()
 
   const { ManagePlugins } = await import('./ManagePlugins.js')
@@ -280,8 +313,11 @@ async function renderAndToggle(
     },
   )
 
+  const expectedPluginName = loadBuiltinOnly
+    ? 'builtin-fixture'
+    : 'toggle-failure-plugin'
   await waitFor(
-    () => stripAnsi(stdout.output).includes('toggle-failure-plugin'),
+    () => stripAnsi(stdout.output).includes(expectedPluginName),
     `plugin did not render. Output:\n${stripAnsi(stdout.output)}`,
   )
   keybindingHandlers.get('plugin:toggle')?.()
@@ -293,6 +329,57 @@ async function renderAndToggle(
   instance.cleanup()
 
   return stripAnsi(stdout.output)
+}
+
+async function renderBuiltinAutoUninstall(): Promise<string> {
+  process.env.NODE_ENV = 'test'
+  process.env.ANTHROPIC_API_KEY = 'test-key'
+  ;(globalThis as unknown as { MACRO: { VERSION: string } }).MACRO = {
+    VERSION: '0.0.0-test',
+  }
+  setAllowedSettingSources(['flagSettings'])
+  setFlagSettingsInline({
+    enabledPlugins: loadBuiltinOnly
+      ? {}
+      : { 'pinned-plugin@test-marketplace': ['^1.0.0'] },
+  })
+  resetSettingsCache()
+
+  const { ManagePlugins } = await import('./ManagePlugins.js')
+  const stdout = new TestStdout()
+  const stdin = new TestStdin()
+  const appState = getDefaultAppState()
+  const instance = await render(
+    <AppStateProvider
+      initialState={{
+        ...appState,
+        mcp: { ...appState.mcp, clients: [], tools: [] },
+        plugins: { ...appState.plugins, errors: [] },
+      }}
+    >
+      <ManagePlugins
+        setViewState={() => {}}
+        setResult={() => {}}
+        targetPlugin="builtin-fixture@builtin"
+        action="uninstall"
+      />
+    </AppStateProvider>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
+
+  await waitFor(
+    () => stripAnsi(stdout.output).includes('cannot be updated or uninstalled'),
+    `built-in uninstall guard did not render. Output:\n${stripAnsi(stdout.output)}`,
+  )
+  const output = stripAnsi(stdout.output)
+  instance.unmount()
+  instance.cleanup()
+  return output
 }
 
 const groupedOutput = await renderPluginList([
@@ -308,7 +395,8 @@ assert.match(codexAppsSection, /codex_apps MCP/)
 assert.match(codexAppsSection, /codex_apps_plugins MCP/)
 assert.doesNotMatch(codexAppsSection, /ordinary_dynamic MCP/)
 assert.doesNotMatch(codexAppsSection, /host_owned_other_name MCP/)
-assert.match(groupedOutput, /Built-in\s+builtin-fixture Plugin/)
+assert.match(groupedOutput, /Built-in\s+builtin-fixture Plugin · builtin · [^\n]*disabled/)
+assert.match(groupedOutput, /pinned-plugin Plugin · test-marketplace · [^\n]*enabled/)
 const dynamicSection = groupedOutput.match(
   /Built-in\n([^]*?ordinary_dynamic MCP[^]*?)\n\n/,
 )?.[1]
@@ -320,6 +408,20 @@ assert.match(
   /Claude AI\s+claude\.ai Claude Docs MCP Claude Official App/,
 )
 assert.doesNotMatch(groupedOutput, /\n {2}claudeai\n/)
+
+loadBuiltinOnly = true
+enableCalls.length = 0
+const builtinToggleOutput = await renderAndToggle('will enable')
+assert.deepEqual(enableCalls, ['builtin-fixture@builtin'])
+assert.match(builtinToggleOutput, /will enable/)
+assert.doesNotMatch(builtinToggleOutput, /will disable/)
+installationLookups.length = 0
+uninstallCalls.length = 0
+const builtinAutoUninstallOutput = await renderBuiltinAutoUninstall()
+assert.match(builtinAutoUninstallOutput, /Built-in plugins cannot be updated or uninstalled/)
+assert.deepEqual(installationLookups, [])
+assert.deepEqual(uninstallCalls, [])
+loadBuiltinOnly = false
 
 disableMode = 'success'
 const successOutput = await renderAndToggle('will disable')

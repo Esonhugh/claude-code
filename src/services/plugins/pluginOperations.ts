@@ -56,7 +56,6 @@ import {
   loadPluginManifest,
 } from '../../utils/plugins/pluginLoader.js'
 import { deletePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
-import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js'
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
 import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
 import type {
@@ -178,6 +177,22 @@ export type PluginUpdateResult = {
  *
  * Precedence: local > project > user (most specific wins).
  */
+function getReadOnlyPluginControl(pluginId: string): {
+  enabled: boolean
+  label: string
+} | null {
+  for (const [source, label] of [
+    ['policySettings', 'organization policy'],
+    ['flagSettings', 'command-line settings'],
+  ] as const) {
+    const value = getSettingsForSource(source)?.enabledPlugins?.[pluginId]
+    if (value !== undefined) {
+      return { enabled: value === true || Array.isArray(value), label }
+    }
+  }
+  return null
+}
+
 function findPluginInSettings(plugin: string): {
   pluginId: string
   scope: InstallableScope
@@ -591,9 +606,31 @@ export async function setPluginEnabledOp(
 ): Promise<PluginOperationResult> {
   const operation = enabled ? 'enable' : 'disable'
 
-  // Built-in plugins: always use user-scope settings, bypass the normal
-  // scope-resolution + installed_plugins lookup (they're not installed).
+  // Built-in plugins are persisted at user scope because they have no install
+  // record. A higher-precedence source still wins, so don't report a user write
+  // as successful when it cannot change the effective state.
   if (isBuiltinPluginId(plugin)) {
+    const readOnlyControl = getReadOnlyPluginControl(plugin)
+    if (readOnlyControl) {
+      return {
+        success: false,
+        message: `Built-in plugin "${plugin}" is controlled by ${readOnlyControl.label} and cannot be ${operation}d in user settings`,
+      }
+    }
+    const editableOverride = [
+      ['localSettings', 'local project settings'],
+      ['projectSettings', 'project settings'],
+    ] as const
+    const override = editableOverride.find(
+      ([source]) =>
+        getSettingsForSource(source)?.enabledPlugins?.[plugin] !== undefined,
+    )
+    if (override) {
+      return {
+        success: false,
+        message: `Built-in plugin "${plugin}" is controlled by ${override[1]}; change that setting instead of user settings`,
+      }
+    }
     const { error } = updateSettingsForSource('userSettings', {
       enabledPlugins: {
         ...getSettingsForSource('userSettings')?.enabledPlugins,
@@ -674,13 +711,15 @@ export async function setPluginEnabledOp(
     }
   }
 
-  // ── Policy guard ──
-  // Org-blocked plugins cannot be enabled at any scope. Check after pluginId
-  // is resolved so we catch both full identifiers and bare-name lookups.
-  if (enabled && isPluginBlockedByPolicy(pluginId)) {
+  // ── Read-only source guard ──
+  // Policy and --settings/SDK flag values outrank editable scopes. A write to
+  // user/project/local settings cannot change the effective state while one is
+  // present, so report the controlling source instead of a false success.
+  const readOnlyControl = getReadOnlyPluginControl(pluginId)
+  if (readOnlyControl) {
     return {
       success: false,
-      message: `Plugin "${pluginId}" is blocked by your organization's policy and cannot be enabled`,
+      message: `Plugin "${pluginId}" is controlled by ${readOnlyControl.label} and cannot be ${operation}d in editable settings`,
     }
   }
 
@@ -726,7 +765,7 @@ export async function setPluginEnabledOp(
     scope && !isOverride
       ? (scopeSettingsValue === undefined && inlinePlugin
           ? inlinePlugin.enabled
-          : scopeSettingsValue === true)
+          : scopeSettingsValue === true || Array.isArray(scopeSettingsValue))
       : (inlinePlugin?.enabled ?? getPluginEditableScopes().has(pluginId))
   if (enabled === isCurrentlyEnabled) {
     return {

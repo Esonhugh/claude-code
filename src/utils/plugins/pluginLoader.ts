@@ -2061,7 +2061,7 @@ async function loadPluginsFromMarketplaces({
             result.entry,
             result.marketplaceInstallLocation,
             pluginId,
-            enabledValue === true,
+            enabledValue === true || Array.isArray(enabledValue),
             errors,
             installEntry?.installPath,
           )
@@ -2069,7 +2069,7 @@ async function loadPluginsFromMarketplaces({
             result.entry,
             result.marketplaceInstallLocation,
             pluginId,
-            enabledValue === true,
+            enabledValue === true || Array.isArray(enabledValue),
             errors,
             installEntry?.version,
           )

@@ -99,7 +99,6 @@ import {
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js'
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
 import {
-  getSettings_DEPRECATED,
   getSettingsForSource,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
@@ -170,6 +169,10 @@ type PluginState = {
   scope?: 'user' | 'project' | 'local' | 'managed' | 'builtin'
   pendingEnable?: boolean // Toggle enable/disable
   pendingUpdate?: boolean // Marked for update
+}
+
+function isPluginEnabled(plugin: LoadedPlugin): boolean {
+  return plugin.enabled !== false
 }
 
 /**
@@ -703,8 +706,6 @@ export function ManagePlugins({
 
   // Derive unified items from plugins and MCP servers
   const unifiedItems = useMemo(() => {
-    const mergedSettings = getSettings_DEPRECATED()
-
     // Build map of plugin name -> child MCPs
     // Plugin MCPs have names like "plugin:pluginName:serverName"
     const pluginMcpMap = new Map<
@@ -734,7 +735,7 @@ export function ManagePlugins({
 
     for (const state of pluginStates) {
       const pluginId = `${state.plugin.name}@${state.marketplace}`
-      const isEnabled = mergedSettings?.enabledPlugins?.[pluginId] !== false
+      const isEnabled = isPluginEnabled(state.plugin)
       const errors = pluginErrors.filter(
         e =>
           ('plugin' in e && e.plugin === state.plugin.name) ||
@@ -1173,7 +1174,6 @@ export function ManagePlugins({
       setLoading(true)
       try {
         const { enabled, disabled } = await loadAllPlugins()
-        const mergedSettings = getSettings_DEPRECATED() // Use merged settings to respect all layers
 
         const allPlugins = filterManagedDisabledPlugins([
           ...enabled,
@@ -1193,10 +1193,7 @@ export function ManagePlugins({
         // Create marketplace info array with enabled/disabled counts
         const marketplaceInfos: MarketplaceInfo[] = []
         for (const [name, plugins] of Object.entries(pluginsByMarketplace)) {
-          const enabledCount = count(plugins, p => {
-            const pluginId = `${p.name}@${name}`
-            return mergedSettings?.enabledPlugins?.[pluginId] !== false
-          })
+          const enabledCount = count(plugins, isPluginEnabled)
           const disabledCount = plugins.length - enabledCount
 
           marketplaceInfos.push({
@@ -1266,9 +1263,11 @@ export function ManagePlugins({
           p => p.name === targetName,
         )
         if (plugin) {
-          // Get scope from V2 data for proper operation handling
+          // Built-in plugins have no V2 installation entry.
           const pluginId = `${plugin.name}@${marketplace.name}`
-          const { scope } = getPluginInstallationFromV2(pluginId)
+          const scope = plugin.isBuiltin
+            ? 'builtin'
+            : getPluginInstallationFromV2(pluginId).scope
 
           const pluginState: PluginState = {
             plugin,
@@ -1438,29 +1437,20 @@ export function ManagePlugins({
       // that handle their own settings updates, so we only need to clear caches here
       clearAllCaches()
 
-      // Prompt for manifest.userConfig + channel userConfig if the plugin ends
-      // up enabled. Re-read settings rather than keying on `operation ===
-      // 'enable'`: install enables on install, so the menu shows "Disable"
-      // first. PluginOptionsFlow itself checks getUnconfiguredOptions — if
-      // nothing needs filling, it calls onDone('skipped') immediately.
-      const pluginIdNow = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`
-      const settingsAfter = getSettings_DEPRECATED()
-      const enabledAfter =
-        settingsAfter?.enabledPlugins?.[pluginIdNow] !== false
-      if (operation === 'enable' && enabledAfter) {
+      // Prompt for manifest and channel options after a successful enable.
+      // PluginOptionsFlow skips immediately when nothing needs configuration.
+      if (operation === 'enable') {
         setIsProcessing(false)
         setViewState({ type: 'plugin-options' })
         return
       }
 
       const operationName =
-        operation === 'enable'
-          ? 'Enabled'
-          : operation === 'disable'
-            ? 'Disabled'
-            : operation === 'update'
-              ? 'Updated'
-              : 'Uninstalled'
+        operation === 'disable'
+          ? 'Disabled'
+          : operation === 'update'
+            ? 'Updated'
+            : 'Uninstalled'
 
       // Single-line warning — notification timeout is ~8s, multi-line would scroll off.
       // The persistent record is in the Errors tab (dependency-unsatisfied after reload).
@@ -1511,9 +1501,8 @@ export function ManagePlugins({
     if (item?.type === 'flagged-plugin') return
     if (item?.type === 'plugin') {
       const pluginId = `${item.plugin.name}@${item.marketplace}`
-      const mergedSettings = getSettings_DEPRECATED()
       const currentPending = pendingToggles.get(pluginId)
-      const isEnabled = mergedSettings?.enabledPlugins?.[pluginId] !== false
+      const isEnabled = isPluginEnabled(item.plugin)
       const pluginScope = item.scope
       const isBuiltin = pluginScope === 'builtin'
       if (isBuiltin || isInstallableScope(pluginScope)) {
@@ -1691,9 +1680,8 @@ export function ManagePlugins({
   const detailsMenuItems = React.useMemo(() => {
     if (viewState !== 'plugin-details' || !selectedPlugin) return []
 
-    const mergedSettings = getSettings_DEPRECATED()
     const pluginId = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`
-    const isEnabled = mergedSettings?.enabledPlugins?.[pluginId] !== false
+    const isEnabled = isPluginEnabled(selectedPlugin.plugin)
     const isBuiltin = selectedPlugin.marketplace === 'builtin'
     const isFavorite = favoritePluginIds.has(pluginId)
 
@@ -2481,9 +2469,8 @@ export function ManagePlugins({
 
   // Plugin details view
   if (viewState === 'plugin-details' && selectedPlugin) {
-    const mergedSettings = getSettings_DEPRECATED() // Use merged settings to respect all layers
     const pluginId = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`
-    const isEnabled = mergedSettings?.enabledPlugins?.[pluginId] !== false
+    const isEnabled = isPluginEnabled(selectedPlugin.plugin)
 
     // Compute plugin errors section
     const filteredPluginErrors = pluginErrors.filter(

@@ -72,7 +72,7 @@ export function getBuiltinPlugins(): {
     // Enabled state: user preference > plugin default > true
     const isEnabled =
       userSetting !== undefined
-        ? userSetting === true
+        ? userSetting === true || Array.isArray(userSetting)
         : (definition.defaultEnabled ?? true)
 
     const plugin: LoadedPlugin = {
