@@ -30,9 +30,10 @@ import {
   permissionPromptToolResultToPermissionDecision,
   outputSchema as permissionToolOutputSchema,
 } from 'src/utils/permissions/PermissionPromptToolResultSchema.js'
-import type {
-  PermissionDecision,
-  PermissionDecisionReason,
+import {
+  type PermissionDecision,
+  type PermissionDecisionReason,
+  requiresExplicitUserApproval,
 } from 'src/utils/permissions/PermissionResult.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
 import { writeToStdout } from 'src/utils/process.js'
@@ -582,14 +583,19 @@ export class StructuredIO {
       parentSignal.addEventListener('abort', onParentAbort, { once: true })
 
       try {
-        // Start the hook evaluation (runs in background)
-        const hookPromise = executePermissionRequestHooksForSDK(
-          tool.name,
-          toolUseID,
-          input,
-          toolUseContext,
-          mainPermissionResult.suggestions,
-        ).then(decision => ({ source: 'hook' as const, decision }))
+        // Start the hook evaluation (runs in background), unless this decision
+        // requires approval from an actual user.
+        const hookPromise = requiresExplicitUserApproval(
+          mainPermissionResult.decisionReason,
+        )
+          ? undefined
+          : executePermissionRequestHooksForSDK(
+              tool.name,
+              toolUseID,
+              input,
+              toolUseContext,
+              mainPermissionResult.suggestions,
+            ).then(decision => ({ source: 'hook' as const, decision }))
 
         // Start the SDK permission prompt immediately (don't wait for hooks)
         const requestId = randomUUID()
@@ -617,7 +623,9 @@ export class StructuredIO {
         // Race: hook completion vs SDK prompt response.
         // The hook promise always resolves (never rejects), returning
         // undefined if no hook made a decision.
-        const winner = await Promise.race([hookPromise, sdkPromise])
+        const winner = hookPromise
+          ? await Promise.race([hookPromise, sdkPromise])
+          : await sdkPromise
 
         if (winner.source === 'hook') {
           if (winner.decision) {
