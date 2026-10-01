@@ -15,6 +15,7 @@ import {
   clearBuiltinPlugins,
   getBuiltinPlugins,
 } from './builtinPlugins.js'
+import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -113,6 +114,18 @@ describe('built-in Mods archive', () => {
     await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
 
     expect(getBuiltinPlugins().enabled.map(plugin => plugin.name)).toEqual(['agents-md', 'diff', 'telemetry'])
+  })
+
+  test('invalidates plugin loads memoized before the built-in Mods were registered', async () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const officialArchive = join(here, '..', '..', 'assets', 'builtin-mods-2.1.277.zip')
+    const root = await mkdtemp(join(tmpdir(), 'builtin-mods-official-cache-'))
+    roots.push(root)
+    loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve({ enabled: [], disabled: [], errors: [] }))
+
+    await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
+
+    expect(loadAllPluginsCacheOnly.cache?.has(undefined)).toBe(false)
   })
 
   test('rejects a non-pinned archive for official initialization without publishing it', async () => {

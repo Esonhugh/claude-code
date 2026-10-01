@@ -511,8 +511,6 @@ export async function acceptBuiltin(options) {
         tmux('send-keys', '-t', launch.target, 'Enter')
       }
       await wait(text => /bypass permissions/i.test(text))
-      await send('/reload-plugins')
-      await wait(text => text.includes('Reloaded:'))
       await send('MODS_ACCEPT_PROMPT Reply with the fixed response only. Do not use tools.')
       await wait(text => text.includes('MODS_ACCEPT_RESPONSE'))
       await send('/exit')
@@ -580,8 +578,6 @@ export async function acceptBuiltin(options) {
       const startup = await wait('startup', text => /Yes, I trust this folder|bypass permissions/i.test(text))
       if (startup.includes('Yes, I trust this folder')) tmux('send-keys', '-t', launch.target, 'Enter')
       await wait('ready', text => /bypass permissions/i.test(text))
-      await send('/reload-plugins')
-      await wait('reload', text => text.includes('Reloaded:'))
       await send('MODS_ACCEPT_PROMPT Reply with the fixed response only. Do not use tools.')
       await wait('response', text => text.includes('MODS_ACCEPT_RESPONSE'))
       writeFileSync(join(launch.run, 'project/tracked.txt'), 'after\n')

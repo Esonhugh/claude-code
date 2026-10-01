@@ -8,6 +8,7 @@ import {
   PluginHooksSchema,
   PluginManifestSchema,
 } from '../utils/plugins/schemas.js'
+import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
 import { registerBuiltinPlugin } from './builtinPlugins.js'
 
 function validateEntry(name: string): string {
@@ -166,6 +167,9 @@ export async function initializeOfficialBuiltinMods(
   })
   for (const definition of await loadBuiltinModDefinitions(root))
     registerBuiltinPlugin(definition)
+  // Startup consumers (MCP config) may have memoized a load before this
+  // asynchronous registration finished.
+  clearPluginCache('built-in Mods registered')
 }
 
 export async function materializeBuiltinModsArchive(
