@@ -13,6 +13,7 @@ import {
 } from './builtinMods.js'
 import {
   clearBuiltinPlugins,
+  getBuiltinPluginDefinition,
   getBuiltinPlugins,
 } from './builtinPlugins.js'
 import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
@@ -113,7 +114,25 @@ describe('built-in Mods archive', () => {
 
     await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
 
-    expect(getBuiltinPlugins().enabled.map(plugin => plugin.name)).toEqual(['agents-md', 'diff', 'telemetry'])
+    expect([...getBuiltinPlugins().enabled, ...getBuiltinPlugins().disabled].map(plugin => plugin.name).sort()).toEqual(['agents-md', 'diff', 'telemetry'])
+    expect(['agents-md', 'diff', 'telemetry'].map(name => getBuiltinPluginDefinition(name)?.defaultEnabled)).toEqual([true, true, false])
+  })
+
+  test('enables the official telemetry Mod only when Anthropic telemetry is opted in', async () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const officialArchive = join(here, '..', '..', 'assets', 'builtin-mods-2.1.277.zip')
+    const root = await mkdtemp(join(tmpdir(), 'builtin-mods-official-cache-'))
+    roots.push(root)
+    const previous = process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY
+    process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY = '1'
+    try {
+      await initializeOfficialBuiltinMods(officialArchive, join(root, 'cache'))
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY
+      else process.env.CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY = previous
+    }
+
+    expect(getBuiltinPluginDefinition('telemetry')?.defaultEnabled).toBe(true)
   })
 
   test('invalidates plugin loads memoized before the built-in Mods were registered', async () => {

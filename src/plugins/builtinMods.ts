@@ -8,6 +8,7 @@ import {
   PluginHooksSchema,
   PluginManifestSchema,
 } from '../utils/plugins/schemas.js'
+import { isAnthropicTelemetryEnabled } from '../services/analytics/config.js'
 import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
 import { registerBuiltinPlugin } from './builtinPlugins.js'
 
@@ -149,6 +150,8 @@ export async function loadBuiltinModDefinitions(
       path,
       hooks: hooks.hooks,
       hookModules: [{ configPath, paths: hooks.modules }],
+      // Plugin analytics posts first-party rows; follow this fork's opt-in.
+      defaultEnabled: name !== 'telemetry' || isAnthropicTelemetryEnabled(),
     }
   }))
 }
