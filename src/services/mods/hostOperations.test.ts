@@ -160,9 +160,7 @@ test('acceptance HTTP services record sanitized host calls without external netw
   process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledger
   process.env.ANTHROPIC_API_KEY = 'sk-ant-mods-test-lab-fake-not-a-credential'
   process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:12345'
-  const services = getModHttpServices(async () => {
-    throw new Error('production credential source must not run')
-  })
+  const services = getModHttpServices()
   const operations = createModHostOperations({
     cwd: () => cwd,
     storageId: 'acceptance@test',
@@ -182,6 +180,20 @@ test('acceptance HTTP services record sanitized host calls without external netw
     { sequence: 2, operation: 'authorize', granted: true },
     { sequence: 3, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
   ])
+})
+
+test('production HTTP services never authorize the session credential', async () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-only-session-key'
+  delete process.env.ANTHROPIC_BASE_URL
+  const operations = createModHostOperations({
+    cwd: () => cwd,
+    storageId: 'production@test',
+    signal: controller.signal,
+    sessionId: () => 'session-a',
+    ...getModHttpServices(),
+  })
+
+  expect(await operations.session.authorize()).toBeNull()
 })
 
 test('session authorization keeps the credential in the host and injects it into host fetch', async () => {
