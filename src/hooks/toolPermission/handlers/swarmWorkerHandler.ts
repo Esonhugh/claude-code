@@ -21,6 +21,7 @@ type SwarmWorkerPermissionParams = {
   pendingClassifierCheck?: PendingClassifierCheck | undefined
   updatedInput: Record<string, unknown> | undefined
   suggestions: PermissionUpdate[] | undefined
+  requiresExplicitUserApproval: boolean
 }
 
 /**
@@ -49,9 +50,10 @@ async function handleSwarmWorkerPermission(
   // For bash commands, try classifier auto-approval before forwarding to
   // the leader. Agents await the classifier result (rather than racing it
   // against user interaction like the main agent).
-  const classifierResult = feature('BASH_CLASSIFIER')
-    ? await ctx.tryClassifier?.(params.pendingClassifierCheck, updatedInput)
-    : null
+  const classifierResult =
+    feature('BASH_CLASSIFIER') && !params.requiresExplicitUserApproval
+      ? await ctx.tryClassifier?.(params.pendingClassifierCheck, updatedInput)
+      : null
   if (classifierResult) {
     return classifierResult
   }

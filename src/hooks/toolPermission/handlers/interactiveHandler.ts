@@ -36,6 +36,7 @@ type InteractivePermissionParams = {
   description: string
   result: PermissionDecision & { behavior: 'ask' }
   awaitAutomatedChecksBeforeDialog: boolean | undefined
+  requiresExplicitUserApproval: boolean
   bridgeCallbacks?: BridgePermissionCallbacks
   channelCallbacks?: ChannelPermissionCallbacks
 }
@@ -63,6 +64,7 @@ function handleInteractivePermission(
     description,
     result,
     awaitAutomatedChecksBeforeDialog,
+    requiresExplicitUserApproval,
     bridgeCallbacks,
     channelCallbacks,
   } = params
@@ -102,7 +104,8 @@ function handleInteractivePermission(
       ? {
           classifierCheckInProgress:
             !!result.pendingClassifierCheck &&
-            !awaitAutomatedChecksBeforeDialog,
+            !awaitAutomatedChecksBeforeDialog &&
+            !requiresExplicitUserApproval,
         }
       : {}),
     onUserInteraction() {
@@ -202,7 +205,7 @@ function handleInteractivePermission(
       resolveOnce(ctx.cancelAndAbort(feedback, undefined, contentBlocks))
     },
     async recheckPermission() {
-      if (isResolved()) return
+      if (requiresExplicitUserApproval || isResolved()) return
       const freshResult = await hasPermissionsToUseTool(
         ctx.tool,
         ctx.input,
@@ -408,7 +411,7 @@ function handleInteractivePermission(
   }
 
   // Skip hooks if they were already awaited in the coordinator branch above
-  if (!awaitAutomatedChecksBeforeDialog) {
+  if (!awaitAutomatedChecksBeforeDialog && !requiresExplicitUserApproval) {
     // Execute PermissionRequest hooks asynchronously
     // If hook returns a decision before user responds, apply it
     void (async () => {
@@ -435,7 +438,8 @@ function handleInteractivePermission(
     feature('BASH_CLASSIFIER') &&
     result.pendingClassifierCheck &&
     ctx.tool.name === BASH_TOOL_NAME &&
-    !awaitAutomatedChecksBeforeDialog
+    !awaitAutomatedChecksBeforeDialog &&
+    !requiresExplicitUserApproval
   ) {
     // UI indicator for "classifier running" — set here (not in
     // toolExecution.ts) so commands that auto-allow via prefix rules

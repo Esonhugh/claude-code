@@ -29,7 +29,10 @@ import {
 import { logForDebugging } from '../utils/debug.js'
 import { AbortError } from '../utils/errors.js'
 import { logError } from '../utils/log.js'
-import type { PermissionDecision } from '../utils/permissions/PermissionResult.js'
+import {
+  type PermissionDecision,
+  requiresExplicitUserApproval,
+} from '../utils/permissions/PermissionResult.js'
 import { hasPermissionsToUseTool } from '../utils/permissions/permissions.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { handleCoordinatorPermission } from './toolPermission/handlers/coordinatorHandler.js'
@@ -189,6 +192,13 @@ function useCanUseTool(
               }
 
               case 'ask': {
+                const needsExplicitUserApproval = requiresExplicitUserApproval(
+                  result.decisionReason,
+                )
+                const pendingClassifierCheck = needsExplicitUserApproval
+                  ? undefined
+                  : result.pendingClassifierCheck
+
                 // For coordinator workers, await automated checks before showing dialog.
                 // Background workers should only interrupt the user when automated checks can't decide.
                 if (
@@ -200,13 +210,13 @@ function useCanUseTool(
                       ctx,
                       ...(feature('BASH_CLASSIFIER')
                         ? {
-                            pendingClassifierCheck:
-                              result.pendingClassifierCheck,
+                            pendingClassifierCheck,
                           }
                         : {}),
                       updatedInput: result.updatedInput,
                       suggestions: result.suggestions,
                       permissionMode: appState.toolPermissionContext.mode,
+                      requiresExplicitUserApproval: needsExplicitUserApproval,
                     },
                   )
                   if (coordinatorDecision) {
@@ -228,11 +238,12 @@ function useCanUseTool(
                   description,
                   ...(feature('BASH_CLASSIFIER')
                     ? {
-                        pendingClassifierCheck: result.pendingClassifierCheck,
+                        pendingClassifierCheck,
                       }
                     : {}),
                   updatedInput: result.updatedInput,
                   suggestions: result.suggestions,
+                  requiresExplicitUserApproval: needsExplicitUserApproval,
                 })
                 if (swarmDecision) {
                   resolve(swarmDecision)
@@ -243,7 +254,7 @@ function useCanUseTool(
                 // to resolve before showing the dialog (main agent only)
                 if (
                   feature('BASH_CLASSIFIER') &&
-                  result.pendingClassifierCheck &&
+                  pendingClassifierCheck &&
                   tool.name === BASH_TOOL_NAME &&
                   !appState.toolPermissionContext
                     .awaitAutomatedChecksBeforeDialog
@@ -314,6 +325,7 @@ function useCanUseTool(
                     awaitAutomatedChecksBeforeDialog:
                       appState.toolPermissionContext
                         .awaitAutomatedChecksBeforeDialog,
+                    requiresExplicitUserApproval: needsExplicitUserApproval,
                     bridgeCallbacks: feature('BRIDGE_MODE')
                       ? appState.replBridgePermissionCallbacks
                       : undefined,
