@@ -12,6 +12,24 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-01 - Builtin Mods 启动生效、telemetry 默认关闭与 /diff 外观对齐
+
+### 版本状态
+
+- 未发布；保持版本与依赖不变。
+
+### 变更内容
+
+- 修复 builtin Mods 启动后需 `/reload-plugins` 才生效：MCP 配置在 builtin 异步注册完成前已 memoize 不含 builtin 的插件列表，注册完成后现在失效该缓存。
+- `telemetry` builtin Mod 默认关闭，仅在 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或 `/plugin` 手动启用时加载。
+- Mods 不再获得会话自身的 Anthropic 凭据（无论 `ANTHROPIC_BASE_URL` 是否官方），`session.authorize` 恒返回空授权。
+- `/diff` sidebar 外观对齐官方：灰底无边框、单行 `N files changed +a -r ✕` 头部且计数与所示文件一致、`────` 文件分隔、未跟踪文件提示、按路径排序、按 base 居中的空状态；sidebar 不再显示无效按键提示；修复小 diff 被 render budget 截断及窄 dialog gutter 丢失 `+`/`-`。保留 Ask、按轮次查看、noise/pre-session 开关。
+- `/diff` sidebar 接通 `ctrl+x b` 切换 base 与 `ctrl/meta+up/down` 切换文件；键绑定 hook 只在匹配自身 action 时结束 chord，取消交由全局 chord interceptor 判定，修复 diff 面板打开时 `ctrl+x b` 第二键落入输入框、`ctrl+x ctrl+e` 无法打开外部编辑器。
+
+### 测试覆盖
+
+- 新增插件缓存失效、telemetry 默认/opt-in、Mods 生产凭据为空、diff 截断/窄 gutter/外观/空状态的回归测试；`mods-test-lab` 的 builtin telemetry/diff 验收不再先执行 `/reload-plugins`。
+
 ## 2026-09-30 - v2.1.280 - Mods 宿主扩展、OAuth 与 OpenAI Daybreak
 
 ### 版本状态
