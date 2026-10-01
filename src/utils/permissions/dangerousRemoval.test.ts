@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolUseContext } from '../../Tool.js'
@@ -39,8 +39,11 @@ if (process.env[childFlag] !== '1') {
   const { hasPermissionsToUseTool } = await import('./permissions.js')
 
   function contextForPermissionCheck() {
-    const state = getDefaultAppState()
-    state.toolPermissionContext = { ...state.toolPermissionContext, mode: 'bypassPermissions' }
+    const initialState = getDefaultAppState()
+    const state = {
+      ...initialState,
+      toolPermissionContext: { ...initialState.toolPermissionContext, mode: 'bypassPermissions' as const },
+    }
     return {
       getAppState: () => state,
       abortController: new AbortController(),
@@ -58,6 +61,64 @@ if (process.env[childFlag] !== '1') {
     )
     expect(result.behavior).toBe('ask')
     expect('pendingClassifierCheck' in result && result.pendingClassifierCheck).toBeFalsy()
+  })
+
+  test('bypass requires explicit approval for home configuration directories and their contents', async () => {
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    for (const target of ['~/.config', '~/.codex', '~/.config/app/settings.json', '~/.codex/config.toml']) {
+      const result = await hasPermissionsToUseTool(
+        BashTool, { command: `rm -rf ${target}` }, contextForPermissionCheck(), undefined as never, 'home-config-removal',
+      )
+      expect(result.behavior).toBe('ask')
+      expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+    }
+  })
+
+  test('shell startup files and backups remain intact while bypass waits for approval', async () => {
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const bashrc = join(homedir(), '.bashrc')
+    const backup = `${bashrc}.bak`
+    const contents = '# isolated deletion test fixture\n'
+    writeFileSync(bashrc, contents, { flag: 'wx' })
+    copyFileSync(bashrc, backup)
+    for (const target of ['~/.bashrc', '~/.bashrc.bak', '~/.zshrc', '~/.zshrc.bak', JSON.stringify(backup)]) {
+      const context = contextForPermissionCheck()
+      const input = { command: `rm -rf ${target}` }
+      const result = await hasPermissionsToUseTool(
+        BashTool, input, context, undefined as never, 'shell-config-removal',
+      )
+      expect(result.behavior).toBe('ask')
+      expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+      expect('pendingClassifierCheck' in result && result.pendingClassifierCheck).toBeFalsy()
+      const state = context.getAppState()
+      const headless = await hasPermissionsToUseTool(BashTool, input, {
+        ...context,
+        getAppState: () => ({
+          ...state,
+          toolPermissionContext: { ...state.toolPermissionContext, shouldAvoidPermissionPrompts: true },
+        }),
+      }, undefined as never, 'headless-shell-config-removal')
+      expect(headless.behavior).toBe('deny')
+    }
+    expect(readFileSync(bashrc, 'utf8')).toBe(contents)
+    expect(readFileSync(backup, 'utf8')).toBe(contents)
+  })
+
+  test('home configuration protection matches directory boundaries and normalized paths', async () => {
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    for (const target of ['~/.CONFIG', '~/.Codex/config.toml', '~/.BASHRC.BAK', '~/.config/../.codex/config.toml']) {
+      const result = await hasPermissionsToUseTool(
+        BashTool, { command: `rm -rf ${target}` }, contextForPermissionCheck(), undefined as never, 'normalized-config-removal',
+      )
+      expect(result.behavior).toBe('ask')
+      expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+    }
+    for (const target of ['~/.configuration', '~/.codex-cache', '~/.bashrc.notes', './fixtures/.bashrc.bak']) {
+      const result = await hasPermissionsToUseTool(
+        BashTool, { command: `rm -rf ${target}` }, contextForPermissionCheck(), undefined as never, 'ordinary-config-name',
+      )
+      expect(result.behavior).toBe('allow')
+    }
   })
 
   test('PreToolUse ask preserves the mandatory approval rather than masking it', async () => {

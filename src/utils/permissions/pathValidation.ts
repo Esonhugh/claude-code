@@ -313,7 +313,8 @@ const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/
  * - Wildcard '*' (removes all files in directory)
  * - Any path ending with '/*' or '\*' (e.g., /path/to/dir/*, C:\foo\*)
  * - Root directory (/)
- * - Home directory (~)
+ * - Home directory (~), ~/.config and ~/.codex (including their contents)
+ * - ~/.bashrc, ~/.zshrc and their .bak backups
  * - Direct children of root (/usr, /tmp, /etc, etc.)
  * - Windows drive root (C:\, D:\) and direct children (C:\Windows, C:\Users)
  */
@@ -339,6 +340,20 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
 
   const normalizedHome = homedir().replace(/[\\/]+/g, '/')
   if (normalizedPath === normalizedHome) {
+    return true
+  }
+  const homeRelativePath = normalizedPath
+    .toLowerCase()
+    .startsWith(`${normalizedHome.toLowerCase()}/`)
+    ? normalizedPath.slice(normalizedHome.length + 1).toLowerCase()
+    : undefined
+  if (
+    homeRelativePath &&
+    (['.config', '.codex'].some(
+      dir => homeRelativePath === dir || homeRelativePath.startsWith(`${dir}/`),
+    ) ||
+      ['.bashrc', '.bashrc.bak', '.zshrc', '.zshrc.bak'].includes(homeRelativePath))
+  ) {
     return true
   }
 
