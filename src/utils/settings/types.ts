@@ -806,6 +806,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Advisor model for the server-side advisor tool.'),
+      privacyMode: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, Mods never receive this session's Anthropic credential: session.authorize returns no authorization. Default: false.",
+        ),
       daybreak: z
         .enum(['blue', 'red', 'off'])
         .optional()

@@ -12,7 +12,10 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { getModelStrings } from 'src/utils/model/modelStrings.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from 'src/utils/model/providers.js'
 import {
   getIsNonInteractiveSession,
   preferThirdPartyAuthentication,
@@ -1785,6 +1788,28 @@ export function isUsing3PServices(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
   )
+}
+
+export async function getFirstPartyCredential(): Promise<
+  { kind: 'bearer' | 'api-key'; secret: string } | null
+> {
+  // A custom gateway's key is not first-party and must never reach
+  // api.anthropic.com; privacy mode withholds the session's own credential.
+  if (
+    isUsing3PServices() ||
+    !isFirstPartyAnthropicBaseUrl() ||
+    getSettings_DEPRECATED()?.privacyMode === true
+  )
+    return null
+
+  if (isClaudeAISubscriber()) {
+    await checkAndRefreshOAuthTokenIfNeeded()
+    const accessToken = getClaudeAIOAuthTokens()?.accessToken
+    if (accessToken) return { kind: 'bearer', secret: accessToken }
+  }
+
+  const apiKey = getAnthropicApiKey()
+  return apiKey ? { kind: 'api-key', secret: apiKey } : null
 }
 
 /**

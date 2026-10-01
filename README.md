@@ -633,7 +633,7 @@ bun scripts/mods-test-lab.mjs run sample
 
 无参数打开包含 Button、Input、Select、长列表和中英文 diff 的面板；`status` 查看计数，`context` 仅为下一条真正的 prompt 附加固定测试标记，`reset` 清理本 Mod 的测试状态。默认只观察事件，不改变工具输入/结果，不记录 prompt、工具参数或回答正文。最近事件最多 20 条；持久计数与当前 activation 状态分别展示。UI-only 入口没有模型服务，prompt/tool 完整链需要另行配置本地 loopback fixture。
 
-官方 2.1.277 的 `agents-md`、`diff` 和 `telemetry` 已固定 provenance 并内嵌为 builtin Mods；`telemetry` 会把插件使用记录发往 Anthropic，默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载，且 Mods 不会获得会话自身的 Anthropic 凭据（`session.authorize` 恒为空授权），因此即使启用也无法用本机登录态发送；`sec-default` 仍只作为可下载的官方原件检查，不因源码可扫描而获得 managed 安全身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
+官方 2.1.277 的 `agents-md`、`diff` 和 `telemetry` 已固定 provenance 并内嵌为 builtin Mods；`telemetry` 会把插件使用记录发往 Anthropic，默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载，启用后 Mods 通过 `session.authorize` 使用本会话的 first-party 凭据发送；settings 中设置 `"privacyMode": true` 后 Mods 不再获得该凭据（会话中途开启也会立即作废已发出的授权），`ANTHROPIC_BASE_URL` 指向非官方网关时其 key 也不会被授权；`sec-default` 仍只作为可下载的官方原件检查，不因源码可扫描而获得 managed 安全身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
 
 ```bash
 bun scripts/mods-test-lab.mjs fetch-official

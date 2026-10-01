@@ -28,15 +28,15 @@ export type ModHttpServices = {
   httpFetch?(url: string, init: RequestInit): Promise<Response>
 }
 
-// Mods never receive the session's own credential; only the loopback
-// acceptance ledger hands out a fixed dummy key.
-export function getModHttpServices(): ModHttpServices {
+export function getModHttpServices(
+  firstPartyCredential: () => Promise<ModCredential | null>,
+): ModHttpServices {
   const ledger = process.env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER
   if (
     !ledger ||
     process.env.ANTHROPIC_API_KEY !== 'sk-ant-mods-test-lab-fake-not-a-credential' ||
     !process.env.ANTHROPIC_BASE_URL?.startsWith('http://127.0.0.1:')
-  ) return {}
+  ) return { firstPartyCredential }
   let sequence = 0
   const record = (entry: Record<string, unknown>) => {
     appendFileSync(ledger, `${JSON.stringify({ sequence: ++sequence, ...entry })}\n`)
