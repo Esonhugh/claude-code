@@ -38,6 +38,7 @@ import {
 import { logError } from '../../utils/log.js'
 import {
   getRuleBehaviorDescription,
+  requiresExplicitUserApproval,
   type PermissionDecisionReason,
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
@@ -807,7 +808,7 @@ export async function resolveHookPermissionDecision(
     const protectedDecision =
       (why?.type === 'rule' && ['policySettings', 'flagSettings'].includes(why.rule.source)) ||
       (why?.type === 'hook' && ['policySettings', 'flagSettings'].includes(why.hookSource ?? '')) ||
-      why?.type === 'safetyCheck'
+      why?.type === 'safetyCheck' || requiresExplicitUserApproval(why)
     if (protectedDecision && core.behavior === 'deny') return declarative
     const event = { tool: tool.name, input: structuredClone(declarative.input), tool_use_id: toolUseID }
     const pinned = structuredClone(event)
@@ -842,15 +843,23 @@ export async function resolveHookPermissionDecision(
         decisionReason: { type: 'hook', hookName: 'tool.check', reason: verdict.reason },
         updatedInput: coreUpdatedInput,
       }
-    if (protectedDecision && core.behavior === 'ask' && decision.behavior === 'allow') decision = core
+    if (protectedDecision && core.behavior === 'ask' &&
+      (decision.behavior === 'allow' ||
+        (decision.behavior === 'ask' && requiresExplicitUserApproval(why)))) decision = core
     if (hookPermissionResult && decision.behavior !== 'deny') {
       // Pre's deny/ask short-circuits the ordinary rules. An override must not
       // erase a managed rule or safety prompt that that short-circuit hid.
       const rules = await checkRuleBasedPermissions(tool, declarative.input, toolUseContext)
       const reason = rules?.decisionReason
       if (rules && ((reason?.type === 'rule' &&
-        ['policySettings', 'flagSettings'].includes(reason.rule.source)) || reason?.type === 'safetyCheck'))
+        ['policySettings', 'flagSettings'].includes(reason.rule.source)) || reason?.type === 'safetyCheck' ||
+        requiresExplicitUserApproval(reason)))
         decision = rules
+    }
+    if (decision.behavior === 'ask' && requiresExplicitUserApproval(decision.decisionReason)) {
+      decision = await hasPermissionsToUseTool(
+        tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
+      )
     }
     if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
       (requireCanUseTool || (requiresInteraction &&
@@ -929,13 +938,24 @@ export async function resolveHookPermissionDecision(
 
   // No hook decision or 'ask' — normal permission flow, possibly with
   // forceDecision so the dialog shows the hook's ask message.
-  const forceDecision =
+  let forceDecision: PermissionDecision | undefined =
     hookPermissionResult?.behavior === 'ask' ? hookPermissionResult : undefined
   const askInput =
     hookPermissionResult?.behavior === 'ask' &&
     hookPermissionResult.updatedInput
       ? hookPermissionResult.updatedInput
       : input
+  if (forceDecision) {
+    const ruleCheck = await checkRuleBasedPermissions(tool, askInput, toolUseContext)
+    if (ruleCheck?.behavior === 'deny') {
+      return { decision: ruleCheck, input: askInput }
+    }
+    if (requiresExplicitUserApproval(ruleCheck?.decisionReason)) {
+      forceDecision = await hasPermissionsToUseTool(
+        tool, askInput, toolUseContext, assistantMessage, toolUseID,
+      )
+    }
+  }
   return {
     decision: await canUseTool(
       tool,

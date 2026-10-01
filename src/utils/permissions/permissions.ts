@@ -23,6 +23,7 @@ import {
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
+import { requiresExplicitUserApproval } from './PermissionResult.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -519,6 +520,17 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         message: DONT_ASK_REJECT_MESSAGE(tool.name),
       }
     }
+    if (requiresExplicitUserApproval(result.decisionReason)) {
+      if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
+        return {
+          behavior: 'deny',
+          message: result.message,
+          decisionReason: result.decisionReason!,
+        }
+      }
+      return { ...result, pendingClassifierCheck: undefined }
+    }
+
     // Apply auto mode: use AI classifier instead of prompting user
     // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode
     if (
@@ -527,29 +539,6 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         (appState.toolPermissionContext.mode === 'plan' &&
           (autoModeStateModule?.isAutoModeActive() ?? false)))
     ) {
-      // Non-classifier-approvable safetyCheck decisions stay immune to ALL
-      // auto-approve paths: the acceptEdits fast-path, the safe-tool allowlist,
-      // and the classifier. Step 1g only guards bypassPermissions; this guards
-      // auto. classifierApprovable safetyChecks (sensitive-file paths) fall
-      // through to the classifier — the fast-paths below naturally don't fire
-      // because the tool's own checkPermissions still returns 'ask'.
-      if (
-        result.decisionReason?.type === 'safetyCheck' &&
-        !result.decisionReason.classifierApprovable
-      ) {
-        if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
-          return {
-            behavior: 'deny',
-            message: result.message,
-            decisionReason: {
-              type: 'asyncAgent',
-              reason:
-                'Safety check requires interactive approval and permission prompts are not available in this context',
-            },
-          }
-        }
-        return result
-      }
       if (tool.requiresUserInteraction?.() && result.behavior === 'ask') {
         return result
       }
@@ -1150,7 +1139,8 @@ export async function checkRuleBasedPermissions(
   // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'safetyCheck'
+    (toolPermissionResult.decisionReason?.type === 'safetyCheck' ||
+      requiresExplicitUserApproval(toolPermissionResult.decisionReason))
   ) {
     return toolPermissionResult
   }
@@ -1258,7 +1248,8 @@ async function hasPermissionsToUseToolInner(
   // checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these paths.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'safetyCheck'
+    (toolPermissionResult.decisionReason?.type === 'safetyCheck' ||
+      requiresExplicitUserApproval(toolPermissionResult.decisionReason))
   ) {
     return toolPermissionResult
   }

@@ -10,7 +10,10 @@ import {
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { expandTilde, getDirectoryForPath } from '../../utils/path.js'
 import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
-import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
+import {
+  requiresExplicitUserApproval,
+  type PermissionResult,
+} from '../../utils/permissions/PermissionResult.js'
 import { createReadRuleSuggestion } from '../../utils/permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
 import {
@@ -90,8 +93,9 @@ function checkDangerousRemovalPaths(
         behavior: 'ask',
         message: `Dangerous ${command} operation detected: '${absolutePath}'\n\nThis command would remove a critical system directory. This requires explicit approval and cannot be auto-allowed by permission rules.`,
         decisionReason: {
-          type: 'other',
+          type: 'safetyCheck',
           reason: `Dangerous ${command} operation on critical path: ${absolutePath}`,
+          classifierApprovable: false,
         },
         // Don't provide suggestions - we don't want to encourage saving dangerous commands
         suggestions: [],
@@ -1064,9 +1068,8 @@ export function checkPathConstraints(
     toolPermissionContext,
     compoundCommandHasCd,
   )
-  if (redirectionResult.behavior !== 'passthrough') {
-    return redirectionResult
-  }
+  if (redirectionResult.behavior === 'deny') return redirectionResult
+  let approvalResult = redirectionResult.behavior === 'ask' ? redirectionResult : undefined
 
   // SECURITY: When AST-derived commands are available, iterate them with
   // pre-parsed argv instead of re-parsing via splitCommand_DEPRECATED + shell-quote.
@@ -1081,8 +1084,12 @@ export function checkPathConstraints(
         toolPermissionContext,
         compoundCommandHasCd,
       )
-      if (result.behavior === 'ask' || result.behavior === 'deny') {
-        return result
+      if (result.behavior === 'deny') return result
+      if (
+        result.behavior === 'ask' &&
+        (!approvalResult || requiresExplicitUserApproval(result.decisionReason))
+      ) {
+        approvalResult = result
       }
     }
   } else {
@@ -1094,11 +1101,17 @@ export function checkPathConstraints(
         toolPermissionContext,
         compoundCommandHasCd,
       )
-      if (result.behavior === 'ask' || result.behavior === 'deny') {
-        return result
+      if (result.behavior === 'deny') return result
+      if (
+        result.behavior === 'ask' &&
+        (!approvalResult || requiresExplicitUserApproval(result.decisionReason))
+      ) {
+        approvalResult = result
       }
     }
   }
+
+  if (approvalResult) return approvalResult
 
   // Always return passthrough to let other permission checks handle the command
   return {

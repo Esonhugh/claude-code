@@ -40,6 +40,7 @@ import {
   getBashPromptDenyDescriptions,
   isClassifierPermissionsEnabled,
 } from '../../utils/permissions/bashClassifier.js'
+import { requiresExplicitUserApproval } from '../../utils/permissions/PermissionResult.js'
 import type {
   PermissionDecisionReason,
   PermissionResult,
@@ -1272,6 +1273,7 @@ export async function checkCommandAndSuggestRules(
 function checkSandboxAutoAllow(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
+  astCommands?: SimpleCommand[],
 ): PermissionResult {
   const command = input.command.trim()
 
@@ -1348,7 +1350,20 @@ function checkSandboxAutoAllow(
       },
     }
   }
-  // No explicit rules, so auto-allow with sandbox
+  const pathResult = checkPathConstraints(
+    input,
+    getCwd(),
+    toolPermissionContext,
+    commandHasAnyCd(command),
+    astCommands?.flatMap(cmd => cmd.redirects),
+    astCommands,
+  )
+  if (
+    pathResult.behavior === 'deny' ||
+    requiresExplicitUserApproval(pathResult.decisionReason)
+  ) {
+    return pathResult
+  }
 
   return {
     behavior: 'allow',
@@ -1840,6 +1855,7 @@ export async function bashToolHasPermission(
     const sandboxAutoAllowResult = checkSandboxAutoAllow(
       input,
       appState.toolPermissionContext,
+      astCommands,
     )
     if (sandboxAutoAllowResult.behavior !== 'passthrough') {
       return sandboxAutoAllowResult
@@ -2285,7 +2301,10 @@ export async function bashToolHasPermission(
     astRedirects,
     astCommands,
   )
-  if (pathResult.behavior === 'deny') {
+  if (
+    pathResult.behavior === 'deny' ||
+    requiresExplicitUserApproval(pathResult.decisionReason)
+  ) {
     return pathResult
   }
 

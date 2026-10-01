@@ -20,6 +20,18 @@ export type {
   PermissionResult,
 }
 
+export function requiresExplicitUserApproval(
+  reason: PermissionDecisionReason | undefined,
+): boolean {
+  if (reason?.type === 'safetyCheck') return !reason.classifierApprovable
+  if (reason?.type === 'subcommandResults') {
+    return Array.from(reason.reasons.values()).some(result =>
+      requiresExplicitUserApproval(result.decisionReason),
+    )
+  }
+  return false
+}
+
 // Helper function to get the appropriate prose description for rule behavior
 export function getRuleBehaviorDescription(
   permissionResult: PermissionResult['behavior'],
