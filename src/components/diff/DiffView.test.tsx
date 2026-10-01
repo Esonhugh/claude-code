@@ -466,6 +466,7 @@ if (!process.env[childKey]) {
         mounts,
         transcriptScrolls,
       }),
+      handlers: () => providerProps.handlerRegistryRef.current,
       transcript: () => transcriptRef.current,
       resize: (columns: number, rows: number) => {
         width = columns
@@ -1711,6 +1712,29 @@ if (!process.env[childKey]) {
       expect(ui.text()).toContain('Run `git add :/src/newfile.ts` to see line counts.')
       await controller.cycleBase()
       await ui.wait(() => ui.preview().includes('uncommitted (vs HEAD)'))
+    } finally {
+      ui.unmount()
+    }
+  })
+
+  test('global diff actions drive a sidebar that does not own the keyboard', async () => {
+    const controller = new FixtureController(dataFor(2))
+    const ui = await mount(controller)
+    try {
+      ui.altScreen()
+      await ui.wait(() => ui.preview().includes('2 files changed'))
+      // The provider's chord interceptor invokes Global registrations this way.
+      const invoke = (action: string) => {
+        const registration = [...ui.handlers().get(action) ?? []]
+          .find(item => item.context === 'Global')
+        expect(registration).toBeDefined()
+        registration!.handler()
+      }
+      invoke('app:cycleDiffBase')
+      await ui.wait(() => ui.preview().includes('uncommitted (vs HEAD)'))
+      const selected = controller.getSnapshot().selectedPath
+      invoke('app:diffFileListDown')
+      await ui.wait(() => controller.getSnapshot().selectedPath !== selected)
     } finally {
       ui.unmount()
     }

@@ -88,6 +88,7 @@ if (!process.env[childKey]) {
     const React = await import('react')
     const { Readable, Writable } = await import('node:stream')
     const { Box, Text, render, useInput } = await import('../../ink.js')
+    const { useKeybinding } = await import('../../keybindings/useKeybinding.js')
     const { DiffSidebar } = await import('./DiffSidebar.js')
     const { KeybindingSetup } = await import(
       '../../keybindings/KeybindingProviderSetup.js'
@@ -142,7 +143,9 @@ if (!process.env[childKey]) {
     let transcriptEscapes = 0
     let transcriptText = ''
     const stdin = new Input()
+    let externalEditors = 0
     function TranscriptInput() {
+      useKeybinding('chat:externalEditor', () => { externalEditors++ }, { context: 'Chat' })
       useInput((input, key) => {
         if (key.wheelDown || key.wheelUp) transcriptWheels++
         if (key.escape) transcriptEscapes++
@@ -266,6 +269,19 @@ if (!process.env[childKey]) {
         const textDeadline = Date.now() + 1000
         while (transcriptText !== 'draft' && Date.now() < textDeadline)
           await new Promise(resolve => setTimeout(resolve, 10))
+        expect(transcriptText).toBe('draft')
+        stdin.push('\u0018')
+        await new Promise(resolve => setTimeout(resolve, 40))
+        stdin.push('b')
+        await waitFor('uncommitted (vs HEAD)')
+        expect(transcriptText).toBe('draft')
+        stdin.push('\u0018')
+        await new Promise(resolve => setTimeout(resolve, 40))
+        stdin.push('\u0005')
+        const editorDeadline = Date.now() + 1000
+        while (externalEditors === 0 && Date.now() < editorDeadline)
+          await new Promise(resolve => setTimeout(resolve, 10))
+        expect(externalEditors).toBe(1)
         expect(transcriptText).toBe('draft')
         stdin.push('\u001b')
         const closeDeadline = Date.now() + 1000

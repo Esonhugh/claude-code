@@ -306,6 +306,14 @@ export function DiffView({
     )
   }
   useRegisterKeybindingContext('DiffDialog', keyboardEnabled)
+  useKeybindings(
+    {
+      'app:cycleDiffBase': () => void controller.cycleBase(),
+      'app:diffFileListUp': () => moveFile(-1),
+      'app:diffFileListDown': () => moveFile(1),
+    },
+    { context: 'Global' },
+  )
   useKeybinding(
     'diff:dismiss',
     () => onClose(),

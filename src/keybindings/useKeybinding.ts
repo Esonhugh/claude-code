@@ -65,9 +65,10 @@ export function useKeybinding(
 
       switch (result.type) {
         case 'match':
-          // Chord completed (if any) - clear pending state
-          keybindingContext.setPendingChord(null)
+          // Only the owner of the matched action settles the chord; otherwise
+          // a capture-phase hook would erase it before the interceptor runs.
           if (result.action === action) {
+            keybindingContext.setPendingChord(null)
             if (handler() !== false) {
               event.stopImmediatePropagation()
             }
@@ -79,8 +80,8 @@ export function useKeybinding(
           event.stopImmediatePropagation()
           break
         case 'chord_cancelled':
-          // Chord was cancelled (escape or invalid key)
-          keybindingContext.setPendingChord(null)
+          // This hook only sees its own contexts; the chord interceptor
+          // resolves every registered context and settles the chord.
           break
         case 'unbound':
           // Explicitly unbound - clear any pending chord
@@ -163,9 +164,9 @@ export function useKeybindings(
 
       switch (result.type) {
         case 'match':
-          // Chord completed (if any) - clear pending state
-          keybindingContext.setPendingChord(null)
+          // Only the owner of the matched action settles the chord (see above).
           if (result.action in handlers) {
+            keybindingContext.setPendingChord(null)
             const handler = handlers[result.action]
             if (handler && handler() !== false) {
               event.stopImmediatePropagation()
@@ -178,8 +179,8 @@ export function useKeybindings(
           event.stopImmediatePropagation()
           break
         case 'chord_cancelled':
-          // Chord was cancelled (escape or invalid key)
-          keybindingContext.setPendingChord(null)
+          // This hook only sees its own contexts; the chord interceptor
+          // resolves every registered context and settles the chord.
           break
         case 'unbound':
           // Explicitly unbound - clear any pending chord
