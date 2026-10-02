@@ -6,15 +6,37 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { isDangerousRemovalPath } from '../../utils/permissions/pathValidation.js'
 
 type Argument = { value: string; unknown: boolean }
+type Variables = Readonly<Record<string, string | undefined>>
 
-// Decode one parser-delimited word, never evaluate shell syntax.
-function argument(text: string): Argument {
+// The shell maintains these itself, so the process snapshot does not describe them.
+const SHELL_MAINTAINED = new Set(['PWD', 'OLDPWD', '_'])
+// Plain $NAME or ${NAME}. A following '[' or ':' is a zsh subscript or modifier.
+const VARIABLE = /\$(?:([A-Za-z_]\w*)(?![\w:[])|\{([A-Za-z_]\w*)\}(?![:[]))/y
+
+// Decode one parser-delimited word, never evaluate shell syntax. Plain variables
+// are substituted from the supplied environment snapshot only.
+function argument(text: string, vars: Variables): Argument {
   let value = ''
   let quote = ''
   let unknown = false
   const braces: boolean[] = []
   for (let i = 0; i < text.length; i++) {
     const char = text[i]!
+    if (char === '$' && quote !== "'") {
+      VARIABLE.lastIndex = i
+      const match = VARIABLE.exec(text)
+      const name = match?.[1] ?? match?.[2]
+      const resolved =
+        name && !SHELL_MAINTAINED.has(name) && Object.hasOwn(vars, name)
+          ? vars[name]
+          : undefined
+      // Unquoted results may be split or globbed by the shell.
+      if (resolved !== undefined && (quote || !/[\s*?[\]]/.test(resolved))) {
+        value += resolved
+        i += match![0].length - 1
+        continue
+      }
+    }
     if (quote === "'") {
       if (char === "'") quote = ''
       else value += char
@@ -39,10 +61,11 @@ function argument(text: string): Argument {
         )
           braces[braces.length - 1] = true
       }
+      // zsh also expands forms such as $~NAME, $=NAME and $^NAME.
       if (
         (char === '$' &&
-          (/[A-Za-z_0-9?$!#*@({\-]/.test(text[i + 1] ?? '') ||
-            (!quote && /['"]/.test(text[i + 1] ?? '')))) ||
+          /\S/.test(text[i + 1] ?? ' ') &&
+          !(quote && text[i + 1] === '"')) ||
         char === '`' ||
         (!quote &&
           (/[*?\[\]]/.test(char) ||
@@ -431,19 +454,81 @@ function* commands(
   }
 }
 
+const ASSIGNMENT_NODES = new Set([
+  'variable_assignment',
+  'declaration_command',
+  'unset_command',
+  'for_statement',
+  'c_style_for_statement',
+])
+// Commands that assign variables directly, by name, or by evaluating text.
+const VARIABLE_SETTERS = new Set([
+  'read',
+  'mapfile',
+  'readarray',
+  'getopts',
+  'printf',
+  'print',
+  'vared',
+  'zparseopts',
+  'eval',
+  'source',
+  '.',
+  'trap',
+  'set',
+  'let',
+  'export',
+  'declare',
+  'typeset',
+  'local',
+  'readonly',
+  'unset',
+  'integer',
+  'float',
+])
+
+// The environment snapshot only describes commands that cannot assign
+// variables themselves, including inside function bodies.
+function assignsVariables(root: Node): boolean {
+  const pending = [root]
+  while (pending.length) {
+    const node = pending.pop()!
+    if (
+      ASSIGNMENT_NODES.has(node.type) ||
+      (node.type === 'expansion' && node.text.includes('='))
+    )
+      return true
+    if (node.type === 'command') {
+      const [name = '', next = ''] = commandWords(node.children).map(word =>
+        basename(argument(word.text, {}).value),
+      )
+      if (
+        VARIABLE_SETTERS.has(name) ||
+        (['builtin', 'command', 'noglob'].includes(name) &&
+          VARIABLE_SETTERS.has(next))
+      )
+        return true
+    }
+    pending.push(...node.children)
+  }
+  return false
+}
+
 export function checkDangerousRemoval(
   command: string,
   cwd: string,
   root: Node | null | typeof PARSE_ABORTED,
+  env: Variables,
 ): PermissionResult {
   if (!root || typeof root === 'symbol') {
     const message = `Dangerous removal not analyzed: raw Bash parse unavailable (${command.length} characters)`
     logForDebugging(message)
     return { behavior: 'passthrough', message }
   }
+  const vars = assignsVariables(root) ? {} : env
   for (const { words, scope } of commands(root)) {
     const { argv, unknown, input } = unwrap(
-      words.map(child => argument(child.text)),
+      words.map(child => argument(child.text, vars)),
     )
     if (!argv[0] || argv[0].unknown) continue
     const name = basename(argv[0].value)

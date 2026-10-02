@@ -225,6 +225,32 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('removal targets resolve variables from the Bash child environment snapshot', async () => {
+    const { setSessionEnvVar, deleteSessionEnvVar } =
+      await import('../../utils/sessionEnvVars.js')
+    const decide = (command: string) =>
+      hasPermissionsToUseTool(BashTool, { command }, context(), undefined as never, 'env-removal')
+    process.env.CC_REMOVAL_TEST_DIR = 'dist'
+    process.env.CC_REMOVAL_TEST_ROOT = '/'
+    try {
+      const ordinary = await decide('rm -rf "$CC_REMOVAL_TEST_DIR"')
+      expect(ordinary.behavior).toBe('allow')
+      for (const command of ['rm -rf "$CC_REMOVAL_TEST_ROOT"', 'rm -rf "$HOME"']) {
+        const result = await decide(command)
+        expect(result.behavior).toBe('ask')
+        expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+      }
+      setSessionEnvVar('CC_REMOVAL_TEST_DIR', '/')
+      const overridden = await decide('rm -rf "$CC_REMOVAL_TEST_DIR"')
+      expect(overridden.behavior).toBe('ask')
+      expect(requiresExplicitUserApproval(overridden.decisionReason)).toBe(true)
+    } finally {
+      deleteSessionEnvVar('CC_REMOVAL_TEST_DIR')
+      delete process.env.CC_REMOVAL_TEST_DIR
+      delete process.env.CC_REMOVAL_TEST_ROOT
+    }
+  })
+
   test('mandatory removal evaluation reuses one raw syntax parse', async () => {
     const { getParserModule } = await import('../../utils/bash/bashParser.js')
     const parse = spyOn(getParserModule()!, 'parse')

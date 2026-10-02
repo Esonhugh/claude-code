@@ -68,7 +68,9 @@ import {
 } from '../../utils/permissions/shellRuleMatching.js'
 import { getPlatform } from '../../utils/platform.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
+import { getSessionEnvVars } from '../../utils/sessionEnvVars.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { subprocessEnv } from '../../utils/subprocessEnv.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 import { BashTool } from './BashTool.js'
 import { checkCommandOperatorPermissions } from './bashCommandHelpers.js'
@@ -1689,7 +1691,9 @@ function checkRemovalPermission(
   root: Node | null | typeof PARSE_ABORTED,
 ): PermissionResult | null {
   try {
-    let removal = checkDangerousRemoval(input.command, getCwd(), root)
+    // Same variables the Bash child receives; never evaluated through a shell.
+    const env = { ...subprocessEnv(), ...Object.fromEntries(getSessionEnvVars()) }
+    let removal = checkDangerousRemoval(input.command, getCwd(), root, env)
     if (!root || typeof root === 'symbol') {
       // A literal command-position removal name is evidence, unlike an arbitrary
       // occurrence of "rm" in echoed text, comments, or an incomplete heredoc.

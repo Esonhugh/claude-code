@@ -7,14 +7,14 @@ import { checkDangerousRemoval } from './dangerousRemoval.js'
 
 const cwd = '/tmp/dangerous-removal-test/project'
 
-function check(command: string, directory = cwd) {
+function check(command: string, directory = cwd, env: Record<string, string> = {}) {
   const root = getParserModule()!.parse(command, Infinity)
   expect(root).not.toBeNull()
-  return checkDangerousRemoval(command, directory, root)
+  return checkDangerousRemoval(command, directory, root, env)
 }
 
-function expectMandatory(command: string, directory = cwd) {
-  expect(check(command, directory)).toMatchObject({
+function expectMandatory(command: string, directory = cwd, env: Record<string, string> = {}) {
+  expect(check(command, directory, env)).toMatchObject({
     behavior: 'ask',
     decisionReason: { type: 'safetyCheck', classifierApprovable: false },
     suggestions: [],
@@ -34,7 +34,6 @@ describe('dangerous removal analysis', () => {
     for (const command of [
       'rm ordinary$',
       'rm "$"',
-      'rm cost$=literal',
       'rm {}',
       'rm ordinary{literal}',
     ]) {
@@ -46,7 +45,7 @@ describe('dangerous removal analysis', () => {
     const root = getParserModule()!.parse(command, Infinity)
     expect(root).not.toBeNull()
     const start = performance.now()
-    expect(checkDangerousRemoval(command, cwd, root).behavior).toBe(
+    expect(checkDangerousRemoval(command, cwd, root, {}).behavior).toBe(
       'passthrough',
     )
     // A broad ceiling catches multi-second blocking, not microbenchmark noise.
@@ -132,6 +131,7 @@ describe('dangerous removal analysis', () => {
           command,
           cwd,
           aborted ? PARSE_ABORTED : null,
+          {},
         )
         expect(result.behavior).toBe('passthrough')
         expect('message' in result && result.message).toMatch(/not analyzed/i)
@@ -333,6 +333,79 @@ describe('dangerous removal analysis', () => {
       'echo "rm /"',
     ]) {
       expect(check(command).behavior).toBe('passthrough')
+    }
+  })
+  test('resolves plain variables from the environment snapshot without evaluating the shell', () => {
+    const env = {
+      BUILD_DIR: 'build',
+      TMPDIR: '/tmp/dangerous-removal-test/tmp/',
+      SPACED: 'build out',
+      GLOB: 'build/*',
+      ROOT: '/',
+      HOME: homedir(),
+      EMPTY: '',
+      PWD: '/tmp/dangerous-removal-test/project',
+      _: '/tmp/dangerous-removal-test/project',
+    }
+    for (const command of [
+      'rm -rf "$BUILD_DIR"',
+      'rm -rf ${BUILD_DIR}/out',
+      'rm -rf "$TMPDIR/cc-x"',
+      'rm -rf $TMPDIR',
+      'rm -rf "$SPACED"',
+      'rm -rf "$GLOB"',
+      'find $BUILD_DIR -delete',
+      'cd /tmp && rm -rf "$TMPDIR/cc-x"',
+    ]) {
+      expect(check(command, cwd, env).behavior).toBe('passthrough')
+    }
+    for (const command of [
+      'rm -rf "$ROOT"',
+      'rm -rf $HOME',
+      'rm -rf "${HOME}/.config"',
+      'find "$HOME" -delete',
+      'rm -rf "$EMPTY/"',
+      'rm -rf $SPACED',
+      'rm -rf $GLOB',
+      'rm -rf "$MISSING"',
+      'rm -rf "$constructor"',
+      'rm -rf "$PWD"',
+      'rm -rf "$_"',
+      'rm -rf "${BUILD_DIR:-build}"',
+      'rm -rf "$BUILD_DIR[1]"',
+      'rm -rf "$BUILD_DIR:h"',
+      'cd /tmp && rm -rf "$BUILD_DIR"',
+    ]) {
+      expectMandatory(command, cwd, env)
+    }
+  })
+  test('does not use the environment snapshot when the command can assign variables', () => {
+    const env = { BUILD_DIR: 'build' }
+    for (const command of [
+      'BUILD_DIR=/; rm -rf "$BUILD_DIR"',
+      'export BUILD_DIR=/; rm -rf "$BUILD_DIR"',
+      'unset BUILD_DIR; rm -rf "$BUILD_DIR/"',
+      'read BUILD_DIR; rm -rf "$BUILD_DIR"',
+      'builtin read BUILD_DIR; rm -rf "$BUILD_DIR"',
+      'printf -v BUILD_DIR /; rm -rf "$BUILD_DIR"',
+      'for BUILD_DIR in /; do rm -rf "$BUILD_DIR"; done',
+      ': "${BUILD_DIR:=/}"; rm -rf "$BUILD_DIR"',
+      'f() { BUILD_DIR=/; }; f; rm -rf "$BUILD_DIR"',
+      'source ./env.sh; rm -rf "$BUILD_DIR"',
+      'eval "BUILD_DIR=/"; rm -rf "$BUILD_DIR"',
+    ]) {
+      expectMandatory(command, cwd, env)
+    }
+  })
+  test('treats zsh parameter forms as expansions', () => {
+    const env = { HOME: homedir() }
+    for (const command of [
+      'rm -rf $~HOME',
+      'rm -rf $=HOME',
+      'rm -rf $^HOME',
+      'rm cost$=literal',
+    ]) {
+      expectMandatory(command, cwd, env)
     }
   })
   test('treats quoted and escaped shell expansions as literal paths', () => {
