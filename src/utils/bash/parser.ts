@@ -104,35 +104,38 @@ export const PARSE_ABORTED = Symbol('parse-aborted')
 export async function parseCommandRaw(
   command: string,
 ): Promise<Node | null | typeof PARSE_ABORTED> {
-  if (!command || command.length > MAX_COMMAND_LENGTH) return null
   if (feature('TREE_SITTER_BASH') || feature('TREE_SITTER_BASH_SHADOW')) {
-    await ensureParserInitialized()
-    const mod = getParserModule()
-    logLoadOnce(mod !== null)
-    if (!mod) return null
-    try {
-      const result = mod.parse(command)
-      // SECURITY: Module loaded; null here = timeout/node-budget abort in
-      // bashParser.ts (PARSE_TIMEOUT_MS=50, MAX_NODES=50_000).
-      // Previously collapsed into `return null` → parse-unavailable → legacy
-      // path, which lacks EVAL_LIKE_BUILTINS — `trap`, `enable`, `hash` leaked.
-      if (result === null) {
-        logEvent('tengu_tree_sitter_parse_abort', {
-          cmdLength: command.length,
-          panic: false,
-        })
-        return PARSE_ABORTED
-      }
-      return result
-    } catch {
+    return parseCommandRawForRemoval(command)
+  }
+  return null
+}
+
+// Removal protection shares syntax, not the feature-gated approval policy.
+export async function parseCommandRawForRemoval(
+  command: string,
+): Promise<Node | null | typeof PARSE_ABORTED> {
+  if (!command || command.length > MAX_COMMAND_LENGTH) return null
+  await ensureParserInitialized()
+  const mod = getParserModule()
+  logLoadOnce(mod !== null)
+  if (!mod) return null
+  try {
+    const result = mod.parse(command)
+    if (result === null) {
       logEvent('tengu_tree_sitter_parse_abort', {
         cmdLength: command.length,
-        panic: true,
+        panic: false,
       })
       return PARSE_ABORTED
     }
+    return result
+  } catch {
+    logEvent('tengu_tree_sitter_parse_abort', {
+      cmdLength: command.length,
+      panic: true,
+    })
+    return PARSE_ABORTED
   }
-  return null
 }
 
 function findCommandNode(node: Node, parent: Node | null): Node | null {

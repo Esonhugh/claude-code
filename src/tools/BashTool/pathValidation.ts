@@ -19,7 +19,6 @@ import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateS
 import {
   type FileOperationType,
   formatDirectoryList,
-  isDangerousRemovalPath,
   validatePath,
 } from '../../utils/permissions/pathValidation.js'
 import type { BashTool } from './BashTool.js'
@@ -63,52 +62,6 @@ export type PathCommand =
   | 'sha256sum'
   | 'sha1sum'
   | 'md5sum'
-
-/**
- * Checks if an rm/rmdir command targets dangerous paths that should always
- * require explicit user approval, even if allowlist rules exist.
- * This prevents catastrophic data loss from commands like `rm -rf /`.
- */
-function checkDangerousRemovalPaths(
-  command: 'rm' | 'rmdir',
-  args: string[],
-  cwd: string,
-): PermissionResult {
-  // Extract paths using the existing path extractor
-  const extractor = PATH_EXTRACTORS[command]
-  const paths = extractor(args)
-
-  for (const path of paths) {
-    // Expand tilde and resolve to absolute path
-    // NOTE: We check the path WITHOUT resolving symlinks, because dangerous paths
-    // like /tmp should be caught even though /tmp is a symlink to /private/tmp on macOS
-    const cleanPath = expandTilde(path.replace(/^['"]|['"]$/g, ''))
-    const absolutePath = isAbsolute(cleanPath)
-      ? cleanPath
-      : resolve(cwd, cleanPath)
-
-    // Check if this is a dangerous path (using the non-symlink-resolved path)
-    if (isDangerousRemovalPath(absolutePath)) {
-      return {
-        behavior: 'ask',
-        message: `Dangerous ${command} operation detected: '${absolutePath}'\n\nThis command would remove a protected file or directory. This requires explicit approval and cannot be auto-allowed by permission rules.`,
-        decisionReason: {
-          type: 'safetyCheck',
-          reason: `Dangerous ${command} operation on critical path: ${absolutePath}`,
-          classifierApprovable: false,
-        },
-        // Don't provide suggestions - we don't want to encourage saving dangerous commands
-        suggestions: [],
-      }
-    }
-  }
-
-  // No dangerous paths found
-  return {
-    behavior: 'passthrough',
-    message: `No dangerous removals detected for ${command} command`,
-  }
-}
 
 /**
  * SECURITY: Extract positional (non-flag) arguments, correctly handling the
@@ -657,6 +610,7 @@ function validateCommandPaths(
     }
   }
 
+  let removalAsk: PermissionResult | undefined
   for (const path of paths) {
     const { allowed, resolvedPath, decisionReason } = validatePath(
       path,
@@ -687,14 +641,17 @@ function validateCommandPaths(
         }
       }
 
-      return {
+      const ask: PermissionResult = {
         behavior: 'ask',
         message,
         blockedPath: resolvedPath,
         decisionReason,
       }
+      if (command !== 'rm' && command !== 'rmdir') return ask
+      removalAsk ??= ask
     }
   }
+  if (removalAsk) return removalAsk
 
   // All paths are valid - return passthrough
   return {
@@ -726,17 +683,6 @@ export function createPathChecker(
     // If explicitly denied, respect that (don't override with dangerous path message)
     if (result.behavior === 'deny') {
       return result
-    }
-
-    // Check for dangerous removal paths AFTER explicit deny rules but BEFORE other results
-    // This ensures the check runs even if the user has allowlist rules or if glob patterns
-    // were rejected, but respects explicit deny rules. Dangerous patterns get a specific
-    // error message that overrides generic glob pattern rejection messages.
-    if (command === 'rm' || command === 'rmdir') {
-      const dangerousPathResult = checkDangerousRemovalPaths(command, args, cwd)
-      if (dangerousPathResult.behavior !== 'passthrough') {
-        return dangerousPathResult
-      }
     }
 
     // If it's a passthrough, return it directly
@@ -1075,7 +1021,7 @@ export function checkPathConstraints(
   // pre-parsed argv instead of re-parsing via splitCommand_DEPRECATED + shell-quote.
   // shell-quote has a single-quote backslash bug that causes
   // parseCommandArguments to silently return [] and skip path validation
-  // (isDangerousRemovalPath etc). The AST already resolved argv correctly.
+  // against explicit file rules. The AST already resolved argv correctly.
   if (astCommands) {
     for (const cmd of astCommands) {
       const result = validateSinglePathCommandArgv(
