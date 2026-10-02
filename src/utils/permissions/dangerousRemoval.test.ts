@@ -2,7 +2,7 @@ import { expect, spyOn, test } from 'bun:test'
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ToolUseContext } from '../../Tool.js'
+import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 
 const childFlag = 'CLAUDE_CODE_DANGEROUS_REMOVAL_TEST_CHILD'
 
@@ -38,11 +38,11 @@ if (process.env[childFlag] !== '1') {
   const { BashTool } = await import('../../tools/BashTool/BashTool.js')
   const { hasPermissionsToUseTool } = await import('./permissions.js')
 
-  function contextForPermissionCheck() {
+  function contextForPermissionCheck(permission: Partial<ToolPermissionContext> = {}) {
     const initialState = getDefaultAppState()
     const state = {
       ...initialState,
-      toolPermissionContext: { ...initialState.toolPermissionContext, mode: 'bypassPermissions' as const },
+      toolPermissionContext: { ...initialState.toolPermissionContext, mode: 'bypassPermissions' as const, ...permission },
     }
     return {
       getAppState: () => state,
@@ -50,6 +50,230 @@ if (process.env[childFlag] !== '1') {
       options: { isNonInteractiveSession: false },
     } as ToolUseContext
   }
+
+  test('whole-tool Bash ask preserves mandatory approval for home configuration removal', async () => {
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const result = await hasPermissionsToUseTool(
+      BashTool, { command: 'rm -rf ~/.codex' },
+      contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } }),
+      undefined as never, 'whole-tool-ask-removal',
+    )
+    expect(result.behavior).toBe('ask')
+    expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+    expect('pendingClassifierCheck' in result && result.pendingClassifierCheck).toBeFalsy()
+  })
+
+  test('tool.check allow cannot approve mandatory removal hidden by whole-tool ask', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const result = await resolveHookPermissionDecision(
+      undefined, BashTool, { command: 'rm -rf ~/.codex' }, {
+        ...contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } }),
+        modsSnapshot: {
+          hasHooks: () => true,
+          dispatch: async () => ({ decision: 'allow' }),
+        } as unknown as NonNullable<ToolUseContext['modsSnapshot']>,
+      },
+      async (tool, input, context, message, id, forced) =>
+        forced ?? hasPermissionsToUseTool(tool, input, context, message, id),
+      undefined as never, 'plugin-whole-tool-ask-removal',
+    )
+    expect(result.decision.behavior).toBe('ask')
+    expect(requiresExplicitUserApproval(result.decision.decisionReason)).toBe(true)
+  })
+
+  test('PreToolUse allow forwards mandatory approval for updated input to the prompt', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const updatedInput = { command: 'rm -rf ~/.codex' }
+    const result = await resolveHookPermissionDecision(
+      { behavior: 'allow', updatedInput }, BashTool, { command: 'echo safe' },
+      contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } }),
+      async (_tool, _input, _context, _message, _id, forced) => forced ?? { behavior: 'allow' },
+      undefined as never, 'hook-allow-updated-removal',
+    )
+    expect(result.input).toEqual(updatedInput)
+    expect(result.decision.behavior).toBe('ask')
+    expect(requiresExplicitUserApproval(result.decision.decisionReason)).toBe(true)
+  })
+
+  test('PreToolUse ask preserves mandatory approval from updated input despite whole-tool ask', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const updatedInput = { command: 'rm -rf ~/.codex && echo done' }
+    const result = await resolveHookPermissionDecision(
+      { behavior: 'ask', message: 'Hook review', updatedInput }, BashTool, { command: 'echo safe' },
+      contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } }),
+      async (_tool, _input, _context, _message, _id, forced) => forced ?? { behavior: 'allow' },
+      undefined as never, 'hook-ask-whole-tool-updated-removal',
+    )
+    expect(result.input).toEqual(updatedInput)
+    expect(result.decision.behavior).toBe('ask')
+    expect(requiresExplicitUserApproval(result.decision.decisionReason)).toBe(true)
+    expect('pendingClassifierCheck' in result.decision && result.decision.pendingClassifierCheck).toBeFalsy()
+  })
+
+  test('tool.check ask cannot replace mandatory approval on PreToolUse updated input', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const updatedInput = { command: 'rm -rf ~/.codex && echo done' }
+    for (const behavior of ['ask', 'allow'] as const) {
+      const result = await resolveHookPermissionDecision(
+        { behavior, message: 'Hook review', updatedInput }, BashTool, { command: 'echo safe' }, {
+          ...contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } }),
+          modsSnapshot: {
+            hasHooks: () => true,
+            dispatch: async () => ({ decision: 'ask', reason: 'Plugin review' }),
+          } as unknown as NonNullable<ToolUseContext['modsSnapshot']>,
+        },
+        async (_tool, _input, _context, _message, _id, forced) => forced ?? { behavior: 'allow' },
+        undefined as never, 'plugin-ask-updated-removal',
+      )
+      expect(result.input).toEqual(updatedInput)
+      expect(result.decision.behavior).toBe('ask')
+      expect(requiresExplicitUserApproval(result.decision.decisionReason)).toBe(true)
+    }
+  })
+
+  test('whole-tool ask cannot hide headless mandatory refusals from hooks or plugins', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const input = { command: 'rm -rf ~/.codex' }
+    for (const permission of [{ shouldAvoidPermissionPrompts: true }, { mode: 'dontAsk' as const }]) {
+      const context = contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] }, ...permission })
+      const direct = await hasPermissionsToUseTool(BashTool, input, context, undefined as never, 'whole-tool-headless')
+      expect(direct.behavior).toBe('deny')
+      for (const behavior of [undefined, 'ask', 'allow'] as const) {
+        for (const pluginDecision of [undefined, 'ask', 'allow'] as const) {
+          const result = await resolveHookPermissionDecision(
+            behavior ? { behavior, message: 'Hook review', updatedInput: input } : undefined,
+            BashTool, behavior ? { command: 'echo safe' } : input, {
+              ...context,
+              modsSnapshot: pluginDecision ? {
+                hasHooks: () => true,
+                dispatch: async () => ({ decision: pluginDecision }),
+              } as unknown as NonNullable<ToolUseContext['modsSnapshot']> : undefined,
+            },
+            async (tool, args, ctx, message, id, forced) =>
+              forced ?? hasPermissionsToUseTool(tool, args, ctx, message, id),
+            undefined as never, 'hook-plugin-headless-removal',
+          )
+          expect(result.input).toEqual(input)
+          expect(result.decision.behavior).toBe('deny')
+        }
+      }
+    }
+  })
+
+  test('explicit whole-tool and command denies take precedence over whole-tool ask', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    for (const denied of ['Bash', 'Bash(rm:*)']) {
+      const context = contextForPermissionCheck({
+        alwaysAskRules: { session: ['Bash'] }, alwaysDenyRules: { session: [denied] },
+      })
+      const input = { command: 'rm -rf ~/.codex' }
+      const direct = await hasPermissionsToUseTool(BashTool, input, context, undefined as never, 'whole-tool-ask-deny')
+      expect(direct.behavior).toBe('deny')
+      for (const behavior of ['ask', 'allow'] as const) {
+        const result = await resolveHookPermissionDecision(
+          { behavior, message: 'Hook review', updatedInput: input }, BashTool, { command: 'echo safe' }, context,
+          async () => { throw new Error('An explicit deny must not request approval') },
+          undefined as never, 'hook-whole-tool-ask-deny',
+        )
+        expect(result.input).toEqual(input)
+        expect(result.decision.behavior).toBe('deny')
+      }
+    }
+  })
+
+  test('hook and plugin explicit denies remain final for mandatory removal', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const input = { command: 'rm -rf ~/.codex' }
+    const context = contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } })
+    const hookDeny = {
+      behavior: 'deny' as const, message: 'Hook refused',
+      decisionReason: { type: 'hook' as const, hookName: 'PreToolUse' },
+    }
+    const denied = await resolveHookPermissionDecision(
+      hookDeny, BashTool, input, context,
+      async () => { throw new Error('An explicit deny must not request approval') },
+      undefined as never, 'hook-denied-removal',
+    )
+    expect(denied.decision).toEqual(hookDeny)
+    for (const behavior of [undefined, 'ask', 'allow'] as const) {
+      const result = await resolveHookPermissionDecision(
+        behavior ? { behavior, message: 'Hook review', updatedInput: input } : undefined,
+        BashTool, behavior ? { command: 'echo safe' } : input, {
+          ...context,
+          modsSnapshot: {
+            hasHooks: () => true,
+            dispatch: async () => ({ decision: 'deny', reason: 'Plugin refused' }),
+          } as unknown as NonNullable<ToolUseContext['modsSnapshot']>,
+        },
+        async () => { throw new Error('An explicit deny must not request approval') },
+        undefined as never, 'plugin-denied-removal',
+      )
+      expect(result.decision).toMatchObject({ behavior: 'deny', message: 'Plugin refused' })
+    }
+  })
+
+  test('ordinary whole-tool and hook asks retain their existing semantics', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const input = { command: 'echo safe' }
+    const context = contextForPermissionCheck({ alwaysAskRules: { session: ['Bash', 'Bash(echo:*)'] } })
+    const direct = await hasPermissionsToUseTool(BashTool, input, context, undefined as never, 'ordinary-whole-tool-ask')
+    expect(direct).toMatchObject({
+      behavior: 'ask', decisionReason: { type: 'rule', rule: { ruleValue: { toolName: 'Bash' } } },
+    })
+    expect(direct.decisionReason?.type === 'rule' && direct.decisionReason.rule.ruleValue.ruleContent).toBeUndefined()
+    const hookAsk = { behavior: 'ask' as const, message: 'Hook review', updatedInput: input }
+    const asked = await resolveHookPermissionDecision(
+      hookAsk, BashTool, input, context,
+      async (_tool, _input, _context, _message, _id, forced) => forced ?? { behavior: 'allow' },
+      undefined as never, 'ordinary-hook-ask',
+    )
+    expect(asked.decision).toEqual(hookAsk)
+    const allowed = await resolveHookPermissionDecision(
+      undefined, BashTool, input, {
+        ...context,
+        modsSnapshot: {
+          hasHooks: () => true,
+          dispatch: async () => ({ decision: 'allow' }),
+        } as unknown as NonNullable<ToolUseContext['modsSnapshot']>,
+      },
+      async () => { throw new Error('Ordinary user rules remain plugin-overridable') },
+      undefined as never, 'ordinary-plugin-allow',
+    )
+    expect(allowed.decision.behavior).toBe('allow')
+  })
+
+  test('whole-tool ask keeps sandbox auto-allow only for eligible ordinary commands', async () => {
+    const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
+    const { requiresExplicitUserApproval } = await import('./PermissionResult.js')
+    const { SandboxManager } = await import('../sandbox/sandbox-adapter.js')
+    const mocks = [
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(true),
+      spyOn(SandboxManager, 'isAutoAllowBashIfSandboxedEnabled').mockReturnValue(true),
+      spyOn(SandboxManager, 'areUnsandboxedCommandsAllowed').mockReturnValue(true),
+    ]
+    const context = contextForPermissionCheck({ alwaysAskRules: { session: ['Bash'] } })
+    try {
+      for (const input of [{ command: 'echo safe' }, { command: 'echo safe', dangerouslyDisableSandbox: true }, { command: 'rm -rf ~/.codex' }]) {
+        const expected = input.dangerouslyDisableSandbox || input.command.startsWith('rm') ? 'ask' : 'allow'
+        const direct = await hasPermissionsToUseTool(BashTool, input, context, undefined as never, 'whole-tool-sandbox')
+        const hooked = await resolveHookPermissionDecision(
+          { behavior: 'allow' }, BashTool, input, context,
+          async (tool, args, ctx, message, id, forced) => forced ?? hasPermissionsToUseTool(tool, args, ctx, message, id),
+          undefined as never, 'hook-whole-tool-sandbox',
+        )
+        for (const decision of [direct, hooked.decision]) {
+          expect(decision.behavior).toBe(expected)
+          expect(requiresExplicitUserApproval(decision.decisionReason)).toBe(input.command.startsWith('rm'))
+        }
+      }
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
 
   test('bypass pauses dangerous removal for explicit approval', async () => {
     const context = contextForPermissionCheck()

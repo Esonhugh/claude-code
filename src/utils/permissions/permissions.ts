@@ -1081,7 +1081,8 @@ export async function checkRuleBasedPermissions(
     }
   }
 
-  // 1b. Entire tool has an ask rule
+  // 1b. Defer the whole-tool ask until tool denies and mandatory asks are checked.
+  let wholeToolAsk: PermissionAskDecision | undefined
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
     const canSandboxAutoAllow =
@@ -1091,7 +1092,7 @@ export async function checkRuleBasedPermissions(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
-      return {
+      wholeToolAsk = {
         behavior: 'ask',
         decisionReason: {
           type: 'rule',
@@ -1124,6 +1125,14 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
+  if (
+    toolPermissionResult?.behavior === 'ask' &&
+    requiresExplicitUserApproval(toolPermissionResult.decisionReason)
+  ) {
+    return toolPermissionResult
+  }
+  if (wholeToolAsk) return wholeToolAsk
+
   // 1f. Content-specific ask rules from tool.checkPermissions
   // (e.g. Bash(npm publish:*) → {ask, type:'rule', ruleBehavior:'ask'})
   if (
@@ -1139,8 +1148,7 @@ export async function checkRuleBasedPermissions(
   // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    (toolPermissionResult.decisionReason?.type === 'safetyCheck' ||
-      requiresExplicitUserApproval(toolPermissionResult.decisionReason))
+    toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
     return toolPermissionResult
   }
@@ -1174,7 +1182,8 @@ async function hasPermissionsToUseToolInner(
     }
   }
 
-  // 1b. Check if the entire tool should always ask for permission
+  // 1b. Defer the whole-tool ask until tool denies and mandatory asks are checked.
+  let wholeToolAsk: PermissionAskDecision | undefined
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
     // When autoAllowBashIfSandboxed is on, sandboxed commands skip the ask rule and
@@ -1187,7 +1196,7 @@ async function hasPermissionsToUseToolInner(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
-      return {
+      wholeToolAsk = {
         behavior: 'ask',
         decisionReason: {
           type: 'rule',
@@ -1221,6 +1230,14 @@ async function hasPermissionsToUseToolInner(
     return toolPermissionResult
   }
 
+  if (
+    toolPermissionResult?.behavior === 'ask' &&
+    requiresExplicitUserApproval(toolPermissionResult.decisionReason)
+  ) {
+    return toolPermissionResult
+  }
+  if (wholeToolAsk) return wholeToolAsk
+
   // 1e. Tool requires user interaction even in bypass mode
   if (
     tool.requiresUserInteraction?.() &&
@@ -1248,8 +1265,7 @@ async function hasPermissionsToUseToolInner(
   // checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these paths.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    (toolPermissionResult.decisionReason?.type === 'safetyCheck' ||
-      requiresExplicitUserApproval(toolPermissionResult.decisionReason))
+    toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
     return toolPermissionResult
   }

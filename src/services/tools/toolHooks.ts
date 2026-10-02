@@ -915,6 +915,12 @@ export async function resolveHookPermissionDecision(
       )
       return { decision: ruleCheck, input: hookInput }
     }
+    const forceDecision = requiresExplicitUserApproval(ruleCheck.decisionReason)
+      ? await hasPermissionsToUseTool(tool, hookInput, toolUseContext, assistantMessage, toolUseID)
+      : undefined
+    if (forceDecision?.behavior === 'deny') {
+      return { decision: forceDecision, input: hookInput }
+    }
     // ask rule — dialog required despite hook approval
     logForDebugging(
       `Hook approved tool use for ${tool.name}, but ask rule requires prompt`,
@@ -926,6 +932,7 @@ export async function resolveHookPermissionDecision(
         toolUseContext,
         assistantMessage,
         toolUseID,
+        forceDecision,
       ),
       input: hookInput,
     }
