@@ -207,10 +207,15 @@ export function StreamingMarkdown({
   const stripped = stripPromptXMLTags(children)
 
   const stablePrefixRef = useRef('')
+  const stableTokensRef = useRef<Token[]>([])
+  const prefixCacheKeyRef = useRef<string | undefined>(undefined)
+  const hasDefinitionsRef = useRef(false)
 
   // Reset if text was replaced (defensive; normally unmount handles this)
   if (!stripped.startsWith(stablePrefixRef.current)) {
     stablePrefixRef.current = ''
+    stableTokensRef.current = []
+    hasDefinitionsRef.current = false
   }
 
   // Lex only from current boundary — O(unstable length), not O(full text)
@@ -228,6 +233,26 @@ export function StreamingMarkdown({
   }
   if (advance > 0) {
     stablePrefixRef.current = stripped.substring(0, boundary + advance)
+    stableTokensRef.current = [
+      ...stableTokensRef.current,
+      ...tokens.slice(0, lastContentIdx),
+    ]
+    if (Object.keys(tokens.links).length > 0) hasDefinitionsRef.current = true
+    if (prefixCacheKeyRef.current) tokenCache.delete(prefixCacheKeyRef.current)
+    prefixCacheKeyRef.current = undefined
+    // Markdown normalizes with trim() before looking up the cache. Reuse the
+    // blocks we just parsed instead of re-lexing the growing prefix each time.
+    // Definitions can resolve links in earlier blocks, so preserve full lexing
+    // for that case rather than caching independently parsed blocks.
+    if (!hasDefinitionsRef.current) {
+      const key = hashContent(stripPromptXMLTags(stablePrefixRef.current))
+      if (tokenCache.size >= TOKEN_CACHE_MAX) {
+        const first = tokenCache.keys().next().value
+        if (first !== undefined) tokenCache.delete(first)
+      }
+      tokenCache.set(key, stableTokensRef.current)
+      prefixCacheKeyRef.current = key
+    }
   }
 
   const stablePrefix = stablePrefixRef.current
