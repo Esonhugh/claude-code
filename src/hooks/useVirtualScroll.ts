@@ -2,12 +2,15 @@ import type { RefObject } from 'react'
 import {
   useCallback,
   useDeferredValue,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
 } from 'react'
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
+import { FRAME_INTERVAL_MS } from '../ink/constants.js'
 import type { DOMElement } from '../ink/dom.js'
 
 /**
@@ -594,6 +597,28 @@ export function useVirtualScroll(
     } else {
       scrollRef.current?.setClampBounds(clampMin, clampMax)
     }
+  })
+
+  // Drain keeps scrollTop + pendingDelta constant, so the store snapshot
+  // cannot wake us after a capped range falls behind. Retry only while the
+  // destination lacks mounted coverage, yielding between commits.
+  const [, retryCoverage] = useState(0)
+  useEffect(() => {
+    const needsCoverage = () => {
+      const s = scrollRef.current
+      if (!s || s.isSticky() || s.getViewportHeight() === 0) return false
+      const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
+      const target = Math.max(
+        0,
+        Math.min(s.getScrollTop() + s.getPendingDelta(), max),
+      )
+      return target < clampMin || target > clampMax
+    }
+    if (!needsCoverage()) return
+    const timer = setTimeout(() => {
+      if (needsCoverage()) retryCoverage(n => n + 1)
+    }, FRAME_INTERVAL_MS)
+    return () => clearTimeout(timer)
   })
 
   // Measure heights from the PREVIOUS Ink render. Runs every commit (no

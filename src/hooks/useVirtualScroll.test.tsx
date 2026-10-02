@@ -24,13 +24,16 @@ function List({
   scrollRef,
   columns,
   items,
+  onRender,
 }: {
   scrollRef: React.RefObject<ScrollBoxHandle | null>
   columns: number
   items: string[]
+  onRender?: (mounted: number) => void
 }) {
   const { range, spacerRef, topSpacer, bottomSpacer, measureRef } =
     useVirtualScroll(scrollRef, items, columns)
+  onRender?.(range[1] - range[0])
   return (
     <>
       <Box ref={spacerRef} height={topSpacer} flexShrink={0} />
@@ -43,6 +46,102 @@ function List({
     </>
   )
 }
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = performance.now() + 2000
+  while (!predicate() && performance.now() < deadline) {
+    await Bun.sleep(5)
+  }
+  expect(predicate()).toBe(true)
+}
+
+test.each([
+  { from: 90, delta: 240 },
+  { from: 90, delta: 600 },
+  { from: 90, delta: 1200 },
+  { from: 1500, delta: -240 },
+  { from: 1500, delta: -600 },
+  { from: 1500, delta: -1200 },
+])(
+  'a burst from $from by $delta reaches the visible target without more input',
+  async ({ from, delta }) => {
+    const env = {
+      NODE_ENV: process.env.NODE_ENV,
+      TERM_PROGRAM: process.env.TERM_PROGRAM,
+    }
+    process.env.NODE_ENV = 'production'
+    process.env.TERM_PROGRAM = 'vscode'
+    const stdout = new Output()
+    const scrollRef = createRef<ScrollBoxHandle>()
+    const items = Array.from(
+      { length: 2000 },
+      (_, index) => `message-${index}\nbody one\nbody two`,
+    )
+    let renders = 0
+    let maxMounted = 0
+    let paintedTop = -1
+    const instance = await render(
+      <ScrollBox
+        ref={scrollRef}
+        width={80}
+        height={20}
+        flexDirection="column"
+        stickyScroll
+      >
+        <List
+          scrollRef={scrollRef}
+          columns={80}
+          items={items}
+          onRender={mounted => {
+            renders++
+            maxMounted = Math.max(maxMounted, mounted)
+          }}
+        />
+      </ScrollBox>,
+      {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+        onFrame: () => {
+          const s = scrollRef.current
+          const el = s?.getElement()
+          if (s && el) {
+            paintedTop = Math.max(
+              el.scrollClampMin ?? 0,
+              Math.min(s.getScrollTop(), el.scrollClampMax ?? Infinity),
+            )
+          }
+        },
+      },
+    )
+    try {
+      await waitFor(() => scrollRef.current?.getViewportHeight() === 20)
+      scrollRef.current!.scrollTo(from)
+      await waitFor(() => paintedTop === from)
+      stdout.output = ''
+      scrollRef.current!.scrollBy(delta)
+      await waitFor(() => scrollRef.current!.getPendingDelta() === 0)
+      expect(scrollRef.current!.getScrollTop()).toBe(from + delta)
+      await waitFor(() => paintedTop === from + delta)
+      expect(stripAnsi(stdout.output)).toContain(
+        `message-${(from + delta) / 3}\n`,
+      )
+      expect(maxMounted).toBeLessThanOrEqual(300)
+      await Bun.sleep(80)
+      const settledRenders = renders
+      await Bun.sleep(80)
+      expect(renders).toBe(settledRenders)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+      stdout.destroy()
+      for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  },
+)
 
 test.each(['during', 'after'])(
   'bottom-following messages appended %s a resize remain visible',
