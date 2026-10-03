@@ -2,6 +2,7 @@
 import ast
 import importlib.util
 import json
+import os
 from pathlib import Path
 import signal
 import shutil
@@ -42,6 +43,824 @@ def load_baseline():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_retained_g5_contract():
+    driver = load_driver()
+    root = '/private/tmp/owned/config/dev-mods/session-id'
+    request = {'method': 'POST', 'path': '/v1/responses',
+               'authorization': {'matches_dummy': True},
+               'response_kind': 'retained-readiness',
+               'body': {'input': [{'role': 'user', 'content': [
+                   {'type': 'input_text', 'text': 'Session authoring was enabled for this session only. '
+                    f'Create plugins as direct child directories of `{root}`'}]}]}}
+    consent = {'type': 'dev-mods', 'sessionId': 'session-id', 'folder': root}
+    observed = dict(requests=[request], roots=[root], entries=[consent], prompt_ready=True)
+    assert driver.retained_g5_semantics('enable', **observed)
+    for key, value in [('requests', []), ('roots', []), ('entries', []), ('prompt_ready', False)]:
+        assert not driver.retained_g5_semantics('enable', **{**observed, key: value})
+    wrong = json.loads(json.dumps(request))
+    wrong['body']['input'][0]['role'] = 'assistant'
+    assert not driver.retained_g5_semantics('enable', **{**observed, 'requests': [wrong]})
+    wrong = json.loads(json.dumps(request))
+    wrong['authorization']['matches_dummy'] = False
+    assert not driver.retained_g5_semantics('enable', **{**observed, 'requests': [wrong]})
+    declined = json.loads(json.dumps(request))
+    declined['body']['input'][0]['content'][0]['text'] = 'This invocation did not enable a session authoring root; explain the supported plugin load/reload path instead of claiming hot reload.'
+    assert driver.retained_g5_semantics('not-now', [declined], [], [], True)
+    assert not driver.retained_g5_semantics('not-now', [declined], [root], [], True)
+    assert driver.retained_g5_semantics('cancel', [], [], [], True)
+    assert not driver.retained_g5_semantics('cancel', [request], [], [], True)
+    policy = driver.retained_target_policy(['terminal-interaction', 'agent-fg-bg'])
+    assert policy['overall_verdict'] == 'blocked'
+    assert 'terminal-interaction' in policy['blocked_targets']
+    assert 'agent-fg-bg' in policy['blocked_targets']
+    source = DRIVER_PATH.read_text()
+    assert "retained_g5(root, binary, repo, evidence, baseline_module," in source
+    assert driver.retained_g5_consent('mod_hot_reload\n …folder truncated\n 1. How does this work?\n 2. Enable for this session\n 3. Not now')
+    assert not driver.retained_g5_consent('❯ /plugin-authoring')
+
+
+def test_retained_g5_stops_at_first_divergence():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='g5-stop-') as directory:
+        root = Path(directory)
+        evidence = root / 'evidence'
+        evidence.mkdir()
+        for failed_index in range(3):
+            run_root = root / str(failed_index)
+            run_root.mkdir()
+            calls = []
+
+            def run(_root, _binary, _repo, _evidence, _baseline, scenario):
+                calls.append(scenario)
+                return {'scenario_id': f'G5-{scenario}',
+                        'status': 'failed' if len(calls) == failed_index + 1 else 'passed'}
+
+            with patch.object(driver, 'retained_readiness', side_effect=run):
+                result = driver.retained_g5(run_root, None, None, evidence, None)
+            assert len(calls) == failed_index + 1, calls
+            assert result['first_divergence'] == result['scenarios'][-1]
+            assert result['validation_verdict'] == 'blocked'
+            assert result['turn_end_plugin_load'] == 'not covered'
+            assert result['resume'] == 'not covered'
+            assert json.loads((evidence / 'g5-result.json').read_text()) == result
+
+
+def test_retained_state_content_exclusion():
+    import os
+    baseline = load_baseline()
+    calls = []
+    def command(repo, *args, **kwargs):
+        calls.append(args)
+        return ''
+    with patch.dict(os.environ, {'CC_VALIDATION_STATE_CONTENT_EXCLUDE': 'src/hooks/useVirtualScroll.test.tsx'}), \
+         patch.object(baseline, 'command', side_effect=command), \
+         patch.object(baseline, 'git_paths_manifest', return_value={}), \
+         patch.object(baseline, 'binary_identity', return_value={}):
+        state = baseline.retained_repository_state(Path('/repo'), Path('/tmp/run'), Path('/tmp/binary'))
+    assert state['content_excluded_paths'] == ['src/hooks/useVirtualScroll.test.tsx']
+    for args in calls:
+        if args[0] == 'diff':
+            assert ':(top,literal,exclude)src/hooks/useVirtualScroll.test.tsx' in args
+    assert ('status', '--short', '--', '.') in calls
+
+
+def test_retained_g5_turn_end_load_contract():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='g5-turn-') as directory:
+        root = Path(directory)
+        evidence = root / 'evidence'
+        evidence.mkdir()
+        with patch.object(driver, 'retained_readiness', return_value={'status': 'passed'}) as run:
+            result = driver.retained_g5(root, None, None, evidence, None, 'turn-end-load')
+        assert run.call_count == 1
+        assert run.call_args.args[-1] == 'turn-end-load'
+        assert result['turn_end_plugin_load'] == 'passed'
+        assert result['validation_verdict'] == 'blocked'
+        assert result['resume'] == 'not covered'
+    active = 'Working… esc to interrupt'
+    assert driver.retained_g5_turn_active(active, True, False, False)
+    for pane, waiting, released, declarations in [
+        ('❯ ', True, False, False), (active, False, False, False),
+        (active, True, True, False), (active, True, False, True),
+        (active + ' G5_TURN_END_ACTIVE', True, False, False),
+    ]:
+        assert not driver.retained_g5_turn_active(pane, waiting, released, declarations)
+    with tempfile.TemporaryDirectory(prefix='g5-provider-') as directory:
+        provider = driver.MockOpenAIServer(Path(directory), 'retained-turn-end-load')
+        responses = []
+        worker = threading.Thread(target=lambda: responses.append(provider.response_for({})))
+        worker.start()
+        try:
+            assert provider.turn_waiting.wait(2)
+            assert not responses
+            provider.turn_release.set()
+            worker.join(2)
+            assert responses[0][0] == 'retained-readiness'
+            assert 'RELEASE_RETAINED_RESPONSE' in responses[0][1]
+        finally:
+            provider.turn_release.set()
+            worker.join(2)
+
+
+def test_retained_g5_held_identity_and_async_persistence():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='g5-identity-') as directory:
+        config = Path(directory) / 'config'
+        session = 'd60f8a82-2d37-46f7-a7f3-38e83c2b1d1c'
+        root = config / 'dev-mods' / session
+        root.mkdir(parents=True)
+        request = {'sequence': 2, 'method': 'POST', 'path': '/v1/responses',
+                   'authorization': {'matches_dummy': True}, 'response_kind': None,
+                   'headers': {key: session for key in
+                               ('session-id', 'thread-id', 'x-claude-code-session-id')},
+                   'body': {'input': [{'role': 'user', 'content': [{'type': 'input_text',
+                       'text': 'Session authoring was enabled for this session only. '
+                               f'Create plugins as direct child directories of `{root}`; '
+                               'valid child plugins load after the current turn and are watched for later changes.'}]}]}}
+        identity = driver.retained_g5_held_identity([request], [str(root)], config)
+        assert identity == {'sessionId': session, 'folder': str(root), 'request_sequence': 2}
+        assert not driver.retained_g5_identity_persisted(identity, [])
+        entry = {'type': 'dev-mods', 'sessionId': session, 'folder': str(root)}
+        assert driver.retained_g5_identity_persisted(identity, [entry])
+        for field in ('sessionId', 'folder', 'type'):
+            assert not driver.retained_g5_identity_persisted(identity, [{**entry, field: 'wrong'}])
+        for field, value in [('authorization', {'matches_dummy': False}),
+                             ('response_kind', 'retained-readiness'), ('path', '/other'),
+                             ('headers', {**request['headers'], 'thread-id': 'other'}),
+                             ('headers', {}), ('body', {'input': []})]:
+            assert driver.retained_g5_held_identity([{**request, field: value}], [str(root)], config) is None
+        assert driver.retained_g5_held_identity([request, request], [str(root)], config) is None
+        assert driver.retained_g5_held_identity([request], [], config) is None
+        assert driver.retained_g5_held_identity([request], [str(root)], config / 'other') is None
+        wrong = json.loads(json.dumps(request))
+        wrong['body']['input'][0]['role'] = 'assistant'
+        assert driver.retained_g5_held_identity([wrong], [str(root)], config) is None
+        root.rmdir()
+        root.symlink_to(config, target_is_directory=True)
+        assert driver.retained_g5_held_identity([request], [str(root)], config) is None
+
+
+def test_retained_g5_same_session_resume_contract():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='g5-resume-') as directory:
+        root = Path(directory)
+        evidence = root / 'evidence'
+        evidence.mkdir()
+        with patch.object(driver, 'retained_readiness', return_value={'status': 'passed'}) as run:
+            result = driver.retained_g5(root, None, None, evidence, None, 'same-session-resume')
+        assert run.call_count == 1
+        assert run.call_args.args[-1] == 'same-session-resume'
+        assert result['resume'] == 'passed'
+        assert result['turn_end_plugin_load'] == 'not covered'
+        assert result['validation_verdict'] == 'blocked'
+    identity = {'sessionId': 'original', 'folder': '/owned/dev-mods/original'}
+    entry = {'type': 'dev-mods', **identity}
+    request = {'method': 'POST', 'path': '/v1/responses',
+               'authorization': {'matches_dummy': True}, 'response_kind': 'retained-readiness',
+               'headers': {key: 'original' for key in
+                           ('session-id', 'thread-id', 'x-claude-code-session-id')}}
+    pane = 'G5_SAME_SESSION_ROOT_ACTIVE\nG5_SAME_SESSION_CHILD_ACTIVE\n❯ '
+    assert driver.retained_g5_resumed(identity, [entry], [request], pane)
+    for field in ('sessionId', 'folder', 'type'):
+        assert not driver.retained_g5_resumed(identity, [{**entry, field: 'other'}], [request], pane)
+    for key in request['headers']:
+        wrong = {**request, 'headers': {**request['headers'], key: 'new-session'}}
+        assert not driver.retained_g5_resumed(identity, [entry], [wrong], pane)
+    assert not driver.retained_g5_resumed(identity, [entry], [], pane)
+    assert not driver.retained_g5_resumed(identity, [entry], [request], '❯ ')
+    assert not driver.retained_g5_resumed(identity, [entry], [{**request, 'authorization': {}}], pane)
+    retained_launcher = LAUNCHER_PATH.read_text().split('\nfi', 1)[0]
+    assert '"$@"' in retained_launcher
+
+
+def test_retained_g5_fork_session_contract():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='g5-fork-', dir='/private/tmp') as directory:
+        root = Path(directory)
+        evidence = root / 'evidence'
+        evidence.mkdir()
+        with patch.object(driver, 'retained_readiness', return_value={'status': 'passed'}) as run:
+            result = driver.retained_g5(root, None, None, evidence, None, 'fork-session')
+        assert run.call_count == 1
+        assert run.call_args.args[-1] == 'fork-session'
+        assert result['fork_session'] == 'passed'
+        assert result['validation_verdict'] == 'blocked'
+
+        original_session = 'd60f8a82-2d37-46f7-a7f3-38e83c2b1d1c'
+        fork_session = '4389974e-2f95-4b9d-b22f-90d37efefca9'
+        original = {
+            'sessionId': original_session,
+            'folder': str(root / 'config/dev-mods' / original_session),
+        }
+        entry = {'type': 'dev-mods', **original}
+        request = {
+            'method': 'POST',
+            'path': '/v1/responses',
+            'authorization': {'matches_dummy': True},
+            'response_kind': 'retained-readiness',
+            'headers': {key: fork_session for key in
+                        ('session-id', 'thread-id', 'x-claude-code-session-id')},
+        }
+        pane = 'G5_FORK_IDENTITY_PROBE\n❯ '
+        roots = [original['folder']]
+        assert driver.retained_g5_forked(original, [entry], roots, [request], pane)
+        for key in request['headers']:
+            wrong = {**request, 'headers': {**request['headers'], key: original_session}}
+            assert not driver.retained_g5_forked(original, [entry], roots, [wrong], pane)
+        assert not driver.retained_g5_forked(original, [], roots, [request], pane)
+        assert not driver.retained_g5_forked(original, [entry], roots + [
+            str(root / 'config/dev-mods' / fork_session)
+        ], [request], pane)
+        assert not driver.retained_g5_forked(original, [entry], roots, [request], '❯ ')
+        for marker in (
+            'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'
+        ):
+            assert not driver.retained_g5_forked(
+                original, [entry], roots, [request], pane + marker
+            )
+        assert not driver.retained_g5_forked(
+            original, [entry], roots, [{**request, 'authorization': {}}], pane
+        )
+
+    with tempfile.TemporaryDirectory(prefix='g5-default-', dir='/private/tmp') as directory:
+        root = Path(directory)
+        evidence = root / 'evidence'
+        evidence.mkdir()
+        calls = []
+        def run(_root, _binary, _repo, _evidence, _baseline, scenario):
+            calls.append(scenario)
+            return {'status': 'passed'}
+        with patch.object(driver, 'retained_readiness', side_effect=run):
+            result = driver.retained_g5(root, None, None, evidence, None)
+        assert calls == [
+            'not-now', 'enable', 'cancel', 'turn-end-load',
+            'same-session-resume', 'fork-session',
+        ]
+        assert result['resume'] == 'passed'
+        assert result['fork_session'] == 'passed'
+        assert result['physical_frames'] == 'not covered'
+        assert result['validation_verdict'] == 'blocked'
+
+    source = DRIVER_PATH.read_text()
+    assert "choices=['turn-end-load', 'same-session-resume', 'fork-session']" in source
+
+
+def test_retained_g5_fork_cancel_clears_restored_draft_before_exit():
+    source = DRIVER_PATH.read_text()
+    lines = source.splitlines()
+    start = next(index for index, line in enumerate(lines, 1)
+                 if "wait_pane('fork-consent-cancel', fork_cancelled)" in line)
+    end = next(index for index, line in enumerate(lines, 1)
+               if index > start and "normal_exit('resumed-exit')" in line)
+    calls = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not start <= node.lineno <= end:
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id not in ('send', 'wait_pane', 'normal_exit'):
+            continue
+        args = [arg.value if isinstance(arg, ast.Constant) else None for arg in node.args]
+        calls.append((node.lineno, node.func.id, *args))
+    inputs = [call[2:] for call in sorted(calls)]
+    assert inputs == [
+        ('fork-consent-cancel', None),
+        ('C-u', '15'),
+        ('fork-cancel-draft-cleared', None),
+        ('resumed-exit',),
+    ]
+
+    def simulate_composer(initial):
+        composer = initial
+        for value, *raw_hex in inputs:
+            if value == 'C-u' and raw_hex == ['15']:
+                composer = ''
+            elif value == 'resumed-exit':
+                composer += '/exit'
+        return composer
+
+    assert '/plugin-authoring' + '/exit' == '/plugin-authoring/exit'
+    assert simulate_composer('/plugin-authoring') == '/exit'
+    assert simulate_composer('') == '/exit'
+
+
+def test_retained_g5_marker_fixture_composes_handlers():
+    source = DRIVER_PATH.read_text()
+    fixture = source.split(
+        "(plugin / 'hooks/marker.mjs').write_text(f'''", 1
+    )[1].split("''')", 1)[0]
+    marker_sources = [
+        eval("f'''" + fixture + "'''", {}, {'marker': marker}).replace(
+            'export function register', f'function register{index}'
+        )
+        for index, marker in enumerate(('ROOT', 'CHILD'))
+    ]
+    probe = f'''{marker_sources[0]}
+{marker_sources[1]}
+const handlers = [];
+const on = (_event, _filter, handler) => handlers.push(handler);
+register0(on);
+register1(on);
+const $ = {{ui: {{resolve: () => ({{
+  Box: props => ({{type: "Box", ...props}}),
+  Text: props => ({{type: "Text", ...props}}),
+}})}}}};
+const dispatch = index => index === handlers.length
+  ? {{type: "Text", children: "BASE"}}
+  : handlers[index]($, {{}}, () => dispatch(index + 1));
+const text = JSON.stringify(await dispatch(0));
+if (!text.includes("ROOT") || !text.includes("CHILD")) {{
+  throw new Error(`composed markers missing: ${{text}}`);
+}}
+'''
+    with tempfile.TemporaryDirectory(
+        prefix='g5-marker-fixture-', dir='/private/tmp'
+    ) as directory:
+        root = Path(directory)
+        isolated = {
+            name: str(root / name.lower())
+            for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR')
+        }
+        for value in isolated.values():
+            Path(value).mkdir()
+        env = {**os.environ, **isolated}
+        result = subprocess.run(
+            ['nice', '-n', '10', 'bun', '-e', probe], cwd=root, env=env,
+            text=True, capture_output=True,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_retained_g5_clear_cancel_contract():
+    driver = load_driver()
+    restored = (
+        '────────────────────────────────────────\n'
+        '❯\u00a0/plugin-authoring\n'
+        '────────────────────────────────────────\n'
+        '  /plugin-authoring       Make a mod: a pane, band, status line, toast, or hook\n'
+    )
+    get_request = {'method': 'GET', 'path': '/v1/models'}
+    root = '/private/tmp/owned/config/dev-mods/previous-session'
+    entry = {'type': 'dev-mods', 'sessionId': 'previous-session', 'folder': root}
+    before = {'requests': [get_request], 'roots': [], 'entries': []}
+    assert driver.retained_g5_terminal_semantics(
+        'cancel', restored, '/plugin-authoring', before, dict(before)
+    )
+    for pane in (
+        restored.replace('/plugin-authoring', '/wrong-draft'),
+        restored.replace('❯\u00a0/plugin-authoring', '❯ '),
+        restored + 'mod_hot_reload\n1. How does this work?\n'
+        '2. Enable for this session\n3. Not now\n',
+        restored + 'esc to interrupt\n',
+    ):
+        assert not driver.retained_g5_terminal_semantics(
+            'cancel', pane, '/plugin-authoring', before, dict(before)
+        )
+    post_request = {'method': 'POST', 'path': '/v1/responses'}
+    for key, value in (
+        ('requests', [get_request, post_request]),
+        ('requests', [get_request, post_request, post_request]),
+        ('roots', [root]),
+        ('entries', [entry]),
+    ):
+        after = {**before, key: value}
+        assert not driver.retained_g5_terminal_semantics(
+            'cancel', restored, '/plugin-authoring', before, after
+        )
+    enabled_request = {
+        'method': 'POST',
+        'path': '/v1/responses',
+        'authorization': {'matches_dummy': True},
+        'response_kind': 'retained-readiness',
+        'body': {'input': [{'role': 'user', 'content': [{
+            'type': 'input_text',
+            'text': 'Session authoring was enabled for this session only. '
+                    f'Create plugins as direct child directories of `{root}`.',
+        }]}]},
+    }
+    assert driver.retained_g5_terminal_semantics(
+        'enable', 'RELEASE_RETAINED_RESPONSE\n❯ ', None, None,
+        {'requests': [enabled_request], 'roots': [root], 'entries': [entry]},
+    )
+    assert not driver.retained_g5_terminal_semantics(
+        'enable', 'RELEASE_RETAINED_RESPONSE\n❯ draft', None, None,
+        {'requests': [enabled_request], 'roots': [root], 'entries': [entry]},
+    )
+
+
+def test_retained_external_tmp_binary():
+    import hashlib
+    import os
+
+    baseline = load_baseline()
+    parent = Path(tempfile.mkdtemp(prefix='external-binary-')).resolve()
+    repo = parent / 'repo'
+    repo.mkdir()
+    binary = parent / 'build/built-claude'
+    binary.parent.mkdir()
+    binary.write_bytes(b'qualified fixture')
+    binary.chmod(0o700)
+    root = parent / 'run'
+    assert baseline.retained_paths(repo, root, binary) == (root, binary)
+    identity = baseline.binary_identity(binary)
+    assert identity['sha256'] == hashlib.sha256(b'qualified fixture').hexdigest()
+    assert identity['size'] == 17 and identity['exists']
+    link = parent / 'linked-binary'
+    link.symlink_to(binary)
+    home = parent / 'user-home'
+    with patch.object(baseline.pwd, 'getpwall', return_value=[SimpleNamespace(pw_dir=str(home))]):
+        for invalid in (link, parent / 'missing', parent / 'build',
+                        root / 'binary', repo / 'built-claude',
+                        home / 'binary', Path('/usr/bin/true')):
+            try:
+                baseline.retained_paths(repo, root, invalid)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f'unsafe binary accepted: {invalid}')
+    alias = Path('/tmp') / binary.relative_to(Path('/tmp').resolve())
+    assert baseline.retained_paths(repo, root, alias) == (root, binary)
+    print(f'external binary evidence: {parent}', flush=True)
+
+
+def test_retained_external_tmp_root():
+    import os
+    import stat
+
+    baseline = load_baseline()
+    driver = load_driver()
+    parent = Path(tempfile.mkdtemp(prefix='retained-path-test-')).resolve()
+    print(f'retained evidence: {parent}', flush=True)
+    repo = parent / 'repo'
+    repo.mkdir()
+    env = {**os.environ, 'HOME': str(parent), 'GIT_CONFIG_GLOBAL': '/dev/null',
+           'GIT_CONFIG_NOSYSTEM': '1'}
+    subprocess.run(['git', 'init', '-q', str(repo)], env=env, check=True)
+    (repo / 'Makefile').write_text('VERSION := test\n')
+    (repo / 'package.json').write_text('{"version":"0.0.0-dev"}')
+    binary = repo / 'build/built-claude'
+    binary.parent.mkdir()
+    binary.write_text('isolated binary')
+    (repo / 'built-claude').write_text('protected binary')
+    (repo / '.gitignore').write_text('ignored/\n')
+    (repo / 'ignored').mkdir()
+    (repo / 'ignored/old-auth.json').write_text('dummy authentication fixture')
+    root = parent / 'run'
+    alias = Path('/tmp') / root.relative_to(Path('/tmp').resolve())
+    assert baseline.retained_paths(repo, alias, binary) == (root, binary)
+    args = SimpleNamespace(repo=repo, run_root=alias, binary=binary,
+                           output=alias / 'baseline.json', release_base_ref='HEAD')
+    original_command = baseline.command
+    def command(repo, *args, **kwargs):
+        if args[:2] == ('rev-parse', '--verify'):
+            return 'fixture-commit\n'
+        if args[:2] == ('rev-parse', 'HEAD'):
+            return 'fixture-commit\n'
+        return original_command(repo, *args, **kwargs)
+    with patch.object(baseline, 'command', side_effect=command):
+        baseline.capture_retained_baseline(args)
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        before = baseline.retained_repository_state(repo, root, binary)
+        assert before['ignored_files_excluded_roots'] == []
+        assert 'ignored/old-auth.json' in before['ignored_files_manifest']
+        (root / 'evidence').mkdir()
+        (root / 'evidence/result').write_text('retained')
+        assert baseline.retained_repository_state(repo, root, binary) == before
+        try:
+            baseline.capture_retained_baseline(args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('existing root accepted')
+    fake_home = parent / 'other-user-home'
+    with patch.object(baseline.pwd, 'getpwall', return_value=[SimpleNamespace(pw_dir=str(fake_home))]):
+        for invalid in (fake_home, fake_home / 'run'):
+            try:
+                baseline.retained_paths(repo, invalid, binary)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f'user HOME accepted: {invalid}')
+    link = parent / 'link'
+    link.symlink_to(parent, target_is_directory=True)
+    for invalid in (Path('/'), Path('/tmp'), Path.home(), Path.home() / 'unsafe-run',
+                    repo, repo / '.git/run', link / 'run2'):
+        try:
+            baseline.retained_paths(repo, invalid, binary)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'unsafe root accepted: {invalid}')
+    for invalid in (repo / 'built-claude', root / 'binary', parent / 'binary'):
+        try:
+            baseline.retained_paths(repo, parent / 'another-run', invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'unsafe binary accepted: {invalid}')
+    internal = repo / 'new-run'
+    with patch.object(baseline, 'command', side_effect=command):
+        assert baseline.retained_repository_state(repo, internal, binary)['ignored_files_excluded_roots'] == ['new-run']
+    planned = driver.plan_targets(['builtin-mods'], {'terminal-interaction'}, retain_artifacts=True)
+    assert set(driver.DEFAULT_TARGETS) | {'builtin-mods', 'terminal-interaction'} <= set(planned)
+
+
+def test_retained_builtin_cache_no_delete():
+    import hashlib
+    import os
+    import zipfile
+
+    repo = SCRIPTS_DIR.parents[3]
+    root = Path(tempfile.mkdtemp(prefix='.retained-cache-test-')).resolve()
+    print(f'retained evidence: {root}', flush=True)
+    home = root / 'home'
+    home.mkdir()
+    (root / 'tmp').mkdir()
+    fixture = root / 'repo'
+    fixture.mkdir()
+    env = {**load_baseline().retained_environment(root),
+           'BUN_RUNTIME_TRANSPILER_CACHE_PATH': '0',
+           'PATH': os.environ.get('PATH', '/usr/bin:/bin')}
+    subprocess.run(['git', 'init', '-q', str(fixture)], env=env, check=True)
+    driver = load_driver()
+    evidence = driver.seed_retained_builtin_cache(repo, root, env)
+    target = Path(evidence['path'])
+    archive = repo / 'assets/builtin-mods-2.1.277.zip'
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert target.is_relative_to(home)
+    assert target.name == evidence['archive_digest'] == digest
+    with zipfile.ZipFile(archive) as zipped:
+        for entry in zipped.infolist():
+            if not entry.is_dir():
+                assert (target / entry.filename).read_bytes() == zipped.read(entry)
+    assert (target / '.complete').read_text() == f"{digest}\n{evidence['tree_digest']}"
+
+    # Run the product's unchanged algorithms, denying every cache-miss mutation.
+    source = (repo / 'src/plugins/builtinMods.ts').read_text()
+    product = source[source.index('const OFFICIAL_MODS'):source.index('function portableEntryName')]
+    product += source[source.index('async function treeDigest'):source.index('export async function loadBuiltinModDefinitions')]
+    product += source[source.index('export async function materializeBuiltinModsArchive'):]
+    probe = '''import { createHash, randomUUID } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { z } from 'zod';
+const forbidden = () => { throw new Error('cache miss or mutation attempted'); };
+const mkdir = forbidden, writeFile = forbidden, rename = forbidden, rm = forbidden;
+const unzipArchive = forbidden;
+'''
+    probe += product
+    probe += '''
+const [archive, target, expected] = process.argv.slice(-3);
+await validateOfficialBuiltinModsProvenance(target);
+const actual = await treeDigest(target);
+if (actual !== expected) throw new Error(`treeDigest mismatch: ${actual}`);
+const hit = await materializeBuiltinModsArchive(archive, target.slice(0, target.lastIndexOf('/')), {
+  validate: validateOfficialBuiltinModsProvenance,
+});
+if (hit !== target) throw new Error('wrong cache target');
+console.log(JSON.stringify({treeDigest: actual, cacheHit: true, provenance: true}));
+'''
+    # Resolve zod from this repository, not from a global installation.
+    probe_path = root / 'product-cache-probe.ts'
+    probe = probe.replace("from 'zod'", 'from ' + json.dumps(str(repo / 'node_modules/zod/index.js')))
+    probe_path.write_text(probe)
+    before = load_baseline().tree_manifest(home)
+    result = subprocess.run(['bun', str(probe_path), str(archive), str(target),
+                             evidence['tree_digest']], cwd=fixture, env=env,
+                            capture_output=True, text=True, timeout=30)
+    (root / 'product-probe.log').write_text(result.stdout + result.stderr)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)['cacheHit'] is True
+    assert load_baseline().tree_manifest(home) == before
+    assert list(target.parent.iterdir()) == [target]
+    (root / 'cache-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    print(result.stdout, end='')
+    # A repeated seed must preserve, not overwrite or clean, existing artifacts.
+    try:
+        driver.seed_retained_builtin_cache(repo, root, env)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError('existing cache accepted for writing')
+    assert load_baseline().tree_manifest(home) == before
+
+
+
+
+
+
+
+
+def test_retained_ripgrep_cache_no_delete():
+    import hashlib
+    import os
+    import stat
+
+    repo = SCRIPTS_DIR.parents[3]
+    root = Path(tempfile.mkdtemp(prefix='.retained-ripgrep-test-')).resolve()
+    print(f'retained evidence: {root}', flush=True)
+    for name in ('home', 'tmp'):
+        (root / name).mkdir()
+    env = {**load_baseline().retained_environment(root),
+           'BUN_RUNTIME_TRANSPILER_CACHE_PATH': '0',
+           'PATH': os.environ.get('PATH', '/usr/bin:/bin')}
+    driver = load_driver()
+    source = repo / 'node_modules/@vscode/ripgrep-darwin-arm64/bin/rg'
+    version = json.loads((repo / 'node_modules/@vscode/ripgrep/package.json').read_text())['version']
+    expected = root / f'home/Library/Caches/claude-cli-nodejs/ripgrep/{version}-arm64-darwin/rg'
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    forbidden = AssertionError('deletion attempted')
+    with patch('os.unlink', side_effect=forbidden), patch('os.remove', side_effect=forbidden), patch('os.rmdir', side_effect=forbidden), patch('shutil.rmtree', side_effect=forbidden):
+        evidence = driver.seed_retained_ripgrep_cache(repo, root, env)
+        assert Path(evidence['path']) == expected
+        assert evidence['source'] == str(source)
+        assert evidence['version'] == version
+        assert expected.read_bytes() == data
+        assert hashlib.sha256(expected.read_bytes()).hexdigest() == evidence['sha256'] == digest
+        assert stat.S_IMODE(expected.stat().st_mode) == 0o755
+        before = load_baseline().tree_manifest(root / 'home')
+        try:
+            driver.seed_retained_ripgrep_cache(repo, root, env)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError('existing cache accepted for writing')
+        assert load_baseline().tree_manifest(root / 'home') == before
+
+    # Embed the real packaging input with the packaging shim's own wiring.
+    shim = (repo / 'scripts/shims/embedded-ripgrep.js').read_text()
+    wiring = '\n'.join(line for line in shim.splitlines()
+                       if 'embeddedRipgrepPath' in line or 'EMBEDDED_RIPGREP_VERSION' in line)
+    wiring = wiring.replace('__CLAUDE_CODE_RIPGREP_BINARY__', json.dumps(str(source)))
+    wiring = wiring.replace('__CLAUDE_CODE_RIPGREP_VERSION__', version)
+    probe = wiring + '\n' + '''
+import fs from 'node:fs';
+const { getEmbeddedRipgrepPath } = await import(PRODUCT_PATH);
+const mutations = [];
+for (const name of ['mkdirSync', 'writeFileSync', 'chmodSync', 'renameSync', 'rmSync', 'unlinkSync', 'rmdirSync']) {
+  fs[name] = () => { mutations.push(name); throw new Error(`mutation attempted: ${name}`); };
+}
+const hit = getEmbeddedRipgrepPath();
+if (hit !== process.argv.at(-1)) throw new Error(`wrong cache target: ${hit}`);
+if (mutations.length) throw new Error(`mutations: ${mutations}`);
+console.log(JSON.stringify({cacheHit: true, path: hit, mutations}));
+'''.replace('PRODUCT_PATH', json.dumps(str(repo / 'src/utils/embeddedRipgrep.ts')))
+    probe_path = root / 'product-ripgrep-probe.ts'
+    probe_path.write_text(probe)
+    binary = root / 'product-ripgrep-probe'
+    result = subprocess.run(['bun', 'build', '--compile', str(probe_path), '--outfile', str(binary)],
+                            cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    (root / 'build.log').write_text(result.stdout + result.stderr)
+    assert result.returncode == 0, result.stdout + result.stderr
+    profile = root / 'probe.sb'
+    profile.write_text(driver.retained_sandbox_profile(root, 12345))
+    result = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(profile), str(binary), str(expected)],
+                            cwd=root, env=env, capture_output=True, text=True, timeout=30)
+    (root / 'product-probe.log').write_text(result.stdout + result.stderr)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {'cacheHit': True, 'path': str(expected), 'mutations': []}
+    assert load_baseline().tree_manifest(root / 'home') == before
+    assert list(expected.parent.iterdir()) == [expected]
+    (root / 'cache-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    print(result.stdout, end='')
+
+
+def test_retained_policy_pure():
+    baseline = load_baseline()
+    driver = load_driver()
+    repo = Path('/repo')
+    root = repo / 'new-run'
+    binary = repo / 'new-build/output/built-claude'
+    with patch.object(Path, 'resolve', lambda self: self), patch.object(Path, 'is_symlink', return_value=False):
+        assert baseline.retained_paths(repo, root, binary) == (root, binary)
+        for invalid in (repo, Path('/outside'), repo / '.git/run'):
+            try:
+                baseline.retained_paths(repo, invalid, binary)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f'accepted unsafe root: {invalid}')
+    with patch.object(baseline, 'command', return_value='new-run/evidence\0unknown.pyc\0dist/new\0'), patch.object(Path, 'is_symlink', return_value=False), patch.object(Path, 'is_file', return_value=True), patch.object(baseline, 'sha256', return_value='hash'):
+        manifest = baseline.git_paths_manifest(repo, '--others', excluded_roots=('new-run',), strict=True)
+        assert set(manifest) == {'unknown.pyc', 'dist/new'}
+    planned = driver.plan_targets(['builtin-mods'], {'terminal-interaction'}, retain_artifacts=True)
+    assert set(driver.DEFAULT_TARGETS) <= set(planned)
+    assert {'builtin-mods', 'terminal-interaction'} <= set(planned)
+    policy = driver.retained_target_policy(planned)
+    assert policy['overall_verdict'] == 'blocked'
+    assert policy['readiness_smoke']['status'] == 'blocked'
+    assert set(policy['blocked_targets']) == {'readiness-smoke', *planned}
+    assert not policy['runs'] and not policy['matrix_complete']
+    assert 'commit' in policy['blocked_targets']['terminal-interaction']
+    assert 'S7 cold-cache restart' in policy['blocked_targets']['builtin-mods']
+    env = baseline.retained_environment(root)
+    assert env['TMPDIR'] == env['CLAUDE_CODE_TMPDIR'] == str(root / 'tmp')
+    assert env['HOME'] == str(root / 'home')
+    assert env['GIT_CONFIG_GLOBAL'] == '/dev/null'
+
+
+def test_retained_owned_atomic_config():
+    import os
+    driver = load_driver()
+    root = Path(tempfile.mkdtemp(prefix='owned-atomic-')).resolve()
+    (root / 'config').mkdir()
+    target = root / 'config/.claude.json'
+    target.write_text('before')
+    protected = root / 'keep-evidence'
+    protected.write_text('keep')
+    profile = root / 'profile.sb'
+    profile.write_text(driver.retained_sandbox_profile(root, 12345))
+    script = '''from pathlib import Path
+import sys
+r=Path(sys.argv[1]); c=r/'config/.claude.json'
+t=c.with_name(c.name+'.tmp.123.456'); t.write_text('after'); t.replace(c)
+l=c.with_name(c.name+'.lock'); l.mkdir(); l.rmdir()
+try: (r/'keep-evidence').unlink()
+except PermissionError: pass
+else: raise AssertionError('unrelated evidence deletion allowed')
+'''
+    result = subprocess.run(['/usr/bin/sandbox-exec', '-f', str(profile),
+                             sys.executable, '-c', script, str(root)],
+                            env=dict(os.environ), capture_output=True, text=True, timeout=10)
+    print(result.stderr, end='')
+    assert result.returncode == 0
+    assert target.read_text() == 'after' and protected.read_text() == 'keep'
+
+
+def test_retained_readiness_contract_pure():
+    driver = load_driver()
+    root = Path('/repo/.r-test')
+    profile = driver.retained_sandbox_profile(root, 12345)
+    assert '(deny file-write-unlink)' in profile
+    assert '(deny network*)' in profile
+    assert '(remote ip "localhost:12345")' in profile
+    assert '/usr/bin/security' in profile
+    assert 'keychain' in profile.lower()
+    assert '(subpath "/repo/.r-test")' in profile
+    request = {'method': 'POST', 'path': '/v1/responses',
+               'authorization': {'matches_dummy': True},
+               'body': {'input': [{'role': 'user', 'content': 'RELEASE_RETAINED_INPUT'}]},
+               'response_kind': 'retained-readiness'}
+    assert driver.retained_readiness_request([request])
+    assert not driver.retained_readiness_request([])
+    request['authorization']['matches_dummy'] = False
+    assert not driver.retained_readiness_request([request])
+
+
+def test_retained_submitted_contract_pure():
+    import inspect
+    driver = load_driver()
+    request = {'method': 'POST', 'path': '/v1/responses',
+               'authorization': {'matches_dummy': True},
+               'body': {'input': [{'role': 'user', 'content': [
+                   {'type': 'input_text', 'text': 'RELEASE_RETAINED_INPUT'}]}]},
+               'response_kind': 'retained-readiness'}
+    completed = ('❯ RELEASE_RETAINED_INPUT\n\n⏺ RELEASE_RETAINED_RESPONSE\n'
+                 '────────────────\n❯\u00a0\n────────────────\n')
+    # Exercise the exact predicate wired into the real retained wait_pane.
+    source = inspect.getsource(driver.retained_readiness)
+    predicate_source = source.split("wait_pane('submitted', ", 1)[1].split("\n            wait_pane('response'", 1)[0]
+    predicate = eval('(' + predicate_source.rstrip().removesuffix(')') + ')', {
+        **vars(driver), 'raw': b'RELEASE_RETAINED_INPUT',
+        'provider': SimpleNamespace(snapshot=lambda: requests)})
+    requests = [request]
+    assert predicate(completed), 'completed transcript plus matching request must count as submitted'
+    draft = '────────────────\n❯ RELEASE_RETAINED_INPUT\n────────────────\n'
+    assert not predicate(draft), 'draft is not a submitted transcript'
+    assert not predicate('⏺ RELEASE_RETAINED_RESPONSE\n────────────────\n❯\n────────────────\n')
+    requests = []
+    assert not predicate(completed)
+    for key, value in [('method', 'GET'), ('path', '/v1/chat/completions'),
+                       ('response_kind', 'title'),
+                       ('authorization', {'matches_dummy': False}),
+                       ('body', {}), ('body', {'input': []}),
+                       ('body', {'input': [{'role': 'assistant', 'content': 'RELEASE_RETAINED_INPUT'}]}),
+                       ('body', {'input': [{'role': 'user', 'content': 'NOT_RELEASE_RETAINED_INPUT'}]})]:
+        requests = [{**request, key: value}]
+        assert not predicate(completed), (key, value)
+
+
+def test_retained_cli_pure():
+    driver = load_driver()
+    baseline = load_baseline()
+    args = ['--repo', '/repo', '--binary', '/repo/build/built-claude',
+            '--run-root', '/repo/run', '--retain-artifacts']
+    with patch.object(sys, 'argv', ['driver', *args, '--baseline', '/repo/run/baseline.json', '--evidence-root', '/repo/run/evidence']), patch.object(driver, 'retained_preflight', return_value=2) as preflight, patch.object(driver, 'BinaryGate', side_effect=AssertionError('legacy gate constructed')):
+        assert driver.main() == 2
+        assert preflight.call_count == 1
+        assert preflight.call_args.args[0].binary == Path('/repo/build/built-claude')
+    with patch.object(sys, 'argv', ['baseline', *args, '--output', '/repo/run/baseline.json']), patch.object(baseline, 'capture_retained_baseline', return_value=0) as capture:
+        assert baseline.main() == 0
+        assert capture.call_count == 1
+    with patch.object(Path, 'is_file', return_value=True), patch.object(Path, 'stat', return_value=SimpleNamespace(st_size=42, st_mtime_ns=123)), patch.object(baseline, 'sha256', return_value='fresh-hash'):
+        identity = baseline.binary_identity(Path('/repo/build/built-claude'))
+        assert identity == {'path': '/repo/build/built-claude', 'exists': True, 'size': 42, 'mtime_ns': 123, 'sha256': 'fresh-hash'}
+    launcher = LAUNCHER_PATH.read_text()
+    assert launcher.index('exit 2') < launcher.index('\ncd ')
+    policy = driver.retained_target_policy(['builtin-mods'])
+    assert policy['planned_targets'] == ['readiness-smoke', 'builtin-mods']
+    assert driver.validate_required_target_results({'terminal-interaction'}, [])['passed'] is False
 
 
 def make_gate(module, repo, evidence, baseline_manifest, baseline_exists):

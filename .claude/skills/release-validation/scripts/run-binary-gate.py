@@ -107,6 +107,7 @@ LIFECYCLE_MOCK_KINDS = {
 }
 DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
 DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
+OFFICIAL_BUILTIN_MODS_SHA256 = '7529d618a2048f43b92070be542bfa6171d78932cdd24aed73b3392a33c6f161'
 CUSTOM_SYSTEM_PROMPT_MARKER = 'RELEASE_CUSTOM_SYSTEM_PROMPT_MARKER'
 TITLE_GENERATION_INSTRUCTION = 'Generate a concise, sentence-case title'
 BUN_BUILD_TEMPORARY_PATTERN = re.compile(
@@ -529,7 +530,10 @@ def collect_required_target_inputs(repo, baseline, explicit_base_ref=None):
             ['git', '-C', str(repo), 'diff', '--name-only'],
             check=True,
         ).stdout)),
-        'untracked': sorted(untracked_manifest(repo)),
+        'untracked': sorted(
+            baseline['untracked_files_manifest']
+            if baseline.get('retain_artifacts') else untracked_manifest(repo)
+        ),
     }
     all_paths = sorted({
         path
@@ -557,8 +561,8 @@ def required_targets_for_paths(paths):
 
 
 
-def plan_targets(extra_targets, required_targets):
-    if extra_targets == ['builtin-mods']:
+def plan_targets(extra_targets, required_targets, *, retain_artifacts=False):
+    if extra_targets == ['builtin-mods'] and not retain_artifacts:
         return ['builtin-mods']
     duplicate_defaults = sorted(set(DEFAULT_TARGETS) & set(extra_targets))
     if duplicate_defaults:
@@ -1133,6 +1137,9 @@ class MockOpenAIServer:
         self.server = None
         self.thread = None
         self.lifecycle_responses = set()
+        if label == 'retained-turn-end-load':
+            self.turn_waiting = threading.Event()
+            self.turn_release = threading.Event()
         if label == 'transcript-retention':
             self.retention_release = threading.Event()
             self.retention_parent_waiting = threading.Event()
@@ -1386,6 +1393,13 @@ class MockOpenAIServer:
         }
         if not is_main_response_request(current_request):
             return 'title', sse_completed('{"title":"Release validation"}')
+        if self.label == 'retained-turn-end-load':
+            self.turn_waiting.set()
+            if not self.turn_release.wait(90):
+                return 'retained-timeout', sse_incomplete('G5 harness release not observed')
+            return 'retained-readiness', sse_completed('RELEASE_RETAINED_RESPONSE')
+        if self.label == 'retained-readiness':
+            return 'retained-readiness', sse_completed('RELEASE_RETAINED_RESPONSE')
         if self.label in LIFECYCLE_MOCK_KINDS:
             return self.lifecycle_response(body)
         if self.label == 'agent-fg-bg':
@@ -8804,6 +8818,811 @@ else:
         return self.manifest['overall_verdict'] == 'passed'
 
 
+def retained_target_policy(targets):
+    reasons = {
+        'readiness-smoke': 'real credential copy and runtime cleanup not adapted',
+        'plugins-reload': 'plugin update/delete lifecycle not adapted',
+        'terminal-interaction': 'fixture git commit is forbidden',
+        'builtin-mods': 'S7 cold-cache restart has not run',
+        'team-concurrency': 'team directory cleanup not adapted',
+        'transcript-retention': 'team directory cleanup not adapted',
+        'coordinator-selector': 'team directory cleanup not adapted',
+        'ssh-remote-session-lifecycle': 'socket fallback outside run root not constrained',
+    }
+    planned = ['readiness-smoke', *targets]
+    return {
+        'overall_verdict': 'blocked', 'completion_state': 'blocked',
+        'normal_exit': False, 'matrix_complete': False, 'runs': [],
+        'planned_targets': planned, 'expected_run_count': len(planned),
+        'recorded_run_count': 0,
+        'readiness_smoke': {'status': 'blocked', 'reason': reasons['readiness-smoke']},
+        'blocked_targets': {
+            target: reasons.get(target, 'runtime cleanup and child environment not adapted')
+            for target in planned
+        },
+    }
+
+
+def retained_sandbox_profile(root, port):
+    quoted = json.dumps(str(root))
+    config = str(root / 'config/.claude.json')
+    atomic = json.dumps('^' + ''.join(
+        character if character.isalnum() or character in '/_-' else f'[{character}]'
+        for character in config
+    ) + r'[.]tmp[.][0-9]+[.][0-9]+$')
+    return f'''(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write* (subpath {quoted}))
+(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (regex #"^/dev/ttys"))
+(deny file-write-unlink)
+(allow file-write-unlink (literal {json.dumps(str(root / 't'))}))
+(allow file-write-unlink (literal {json.dumps(config)}) (literal {json.dumps(config + '.lock')}) (regex #{atomic}))
+(deny network*)
+(allow network* (local unix-socket) (remote unix-socket))
+(allow network-outbound (remote ip "localhost:{port}"))
+(deny process-exec (literal "/usr/bin/security"))
+(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))
+(deny file-read* (regex #"/Library/Keychains(/|$)"))
+'''
+
+
+def retained_readiness_request(requests):
+    return any(
+        request.get('method') == 'POST'
+        and request.get('path') == '/v1/responses'
+        and request.get('authorization', {}).get('matches_dummy') is True
+        and request.get('response_kind') == 'retained-readiness'
+        and any(
+            message.get('role') == 'user' and (
+                message.get('content') == 'RELEASE_RETAINED_INPUT'
+                or isinstance(message.get('content'), list) and any(
+                    part.get('type') == 'input_text'
+                    and part.get('text') == 'RELEASE_RETAINED_INPUT'
+                    for part in message['content'] if isinstance(part, dict)
+                )
+            )
+            for message in (request.get('body') or {}).get('input', [])
+            if isinstance(message, dict)
+        )
+        for request in requests
+    )
+
+
+
+
+
+
+RETAINED_BUILTIN_TREE_DIGEST_SCRIPT = r'''
+import { createHash } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+async function treeDigest(root, relative = '') {
+  const hash = createHash('sha256');
+  for (const name of (await readdir(join(root, relative), { withFileTypes: true }))
+    .filter(entry => relative !== '' || entry.name !== '.complete')
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    const path = relative ? `${relative}/${name.name}` : name.name;
+    hash.update(name.isDirectory() ? `d\0${path}\0` : `f\0${path}\0`);
+    hash.update(name.isDirectory() ? await treeDigest(root, path) : await readFile(join(root, path)));
+  }
+  return hash.digest('hex');
+}
+console.log(await treeDigest(process.argv.at(-2), process.argv.at(-1)));
+'''
+
+
+
+
+
+
+def seed_retained_builtin_cache(repo, root, env):
+    import io
+    import zipfile
+
+    # Retained readiness is macOS-only. Match env-paths('claude-cli') there.
+    if sys.platform != 'darwin' or Path(env['HOME']) != root / 'home':
+        raise ValueError('retained builtin cache requires the isolated macOS HOME')
+    archive = repo / 'assets/builtin-mods-2.1.277.zip'
+    data = archive.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != OFFICIAL_BUILTIN_MODS_SHA256:
+        raise ValueError('retained builtin archive does not match official SHA-256')
+    cache = root / 'home/Library/Caches/claude-cli-nodejs/builtin-mods'
+    target = cache / digest
+    for parent in (target, *target.parents):
+        if parent.is_symlink():
+            raise ValueError(f'retained cache path is a symlink: {parent}')
+        if parent == root:
+            break
+    target.mkdir(parents=True, mode=0o700)
+    # The pinned archive is trusted; still keep extraction confined to target.
+    with zipfile.ZipFile(io.BytesIO(data)) as zipped:
+        for entry in zipped.infolist():
+            name = entry.filename
+            if name.startswith('/') or '\\' in name or any(
+                part in ('', '.', '..') for part in name.rstrip('/').split('/')
+            ):
+                raise ValueError(f'unsafe builtin archive entry: {name}')
+            if entry.is_dir():
+                continue
+            path = target / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open('xb') as stream:
+                stream.write(zipped.read(entry))
+    completed = subprocess.run(
+        ['bun', '--eval', RETAINED_BUILTIN_TREE_DIGEST_SCRIPT, str(target), ''],
+        cwd=root, env=env, capture_output=True, text=True, check=True, timeout=30,
+    )
+    tree_digest = completed.stdout.strip()
+    if not re.fullmatch('[0-9a-f]{64}', tree_digest):
+        raise ValueError('invalid builtin tree digest output')
+    with (target / '.complete').open('x') as stream:
+        stream.write(f'{digest}\n{tree_digest}')
+    return {'archive': str(archive), 'path': str(target),
+            'archive_digest': digest, 'tree_digest': tree_digest}
+
+
+def seed_retained_ripgrep_cache(repo, root, env):
+    if (sys.platform != 'darwin' or os.uname().machine != 'arm64'
+            or Path(env['HOME']) != root / 'home'):
+        raise ValueError('retained ripgrep cache requires the isolated macOS arm64 HOME')
+    # Keep these inputs identical to scripts/package-binary.mjs.
+    package = repo / 'node_modules/@vscode/ripgrep/package.json'
+    version = json.loads(package.read_text())['version']
+    if not isinstance(version, str) or not re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+-]*', version):
+        raise ValueError('invalid installed ripgrep version')
+    source = repo / 'node_modules/@vscode/ripgrep-darwin-arm64/bin/rg'
+    data = source.read_bytes()
+    target = root / f'home/Library/Caches/claude-cli-nodejs/ripgrep/{version}-arm64-darwin/rg'
+    for parent in (target, *target.parents):
+        if parent.is_symlink():
+            raise ValueError(f'retained cache path is a symlink: {parent}')
+        if parent == root:
+            break
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open('xb') as stream:
+        stream.write(data)
+        os.fchmod(stream.fileno(), 0o755)
+    return {'source': str(source), 'version': version, 'path': str(target),
+            'sha256': hashlib.sha256(data).hexdigest()}
+
+
+
+
+def retained_g5_consent(pane):
+    return all(text in pane for text in (
+        'mod_hot_reload', 'How does this work?', 'Enable for this session', 'Not now'))
+
+
+def retained_g5_clear_cancelled(pane, expected_draft, before, after):
+    plain = strip_ansi(pane).replace('\u00a0', ' ')
+    if (retained_g5_consent(plain)
+            or not submitted_input_visible(plain, expected_draft)):
+        return False
+    prompt_index = plain.rfind('❯')
+    if prompt_index < 0 or 'esc to interrupt' in plain[prompt_index:].lower():
+        return False
+    before_posts = [request for request in before['requests']
+                    if request.get('method') == 'POST']
+    after_posts = [request for request in after['requests']
+                   if request.get('method') == 'POST']
+    return (after_posts == before_posts
+            and after['roots'] == before['roots']
+            and after['entries'] == before['entries'])
+
+
+def retained_g5_terminal_semantics(scenario, pane, expected_draft, before, after):
+    if retained_g5_consent(pane):
+        return False
+    if scenario == 'cancel':
+        return (before is not None
+                and expected_draft is not None
+                and retained_g5_clear_cancelled(
+                    pane, expected_draft, before, after,
+                ))
+    return (retained_g5_semantics(
+                'enable' if scenario in (
+                    'turn-end-load', 'same-session-resume', 'fork-session'
+                ) else scenario,
+                after['requests'], after['roots'], after['entries'],
+                input_prompt_ready(pane),
+            )
+            and 'RELEASE_RETAINED_RESPONSE' in pane)
+
+
+def retained_g5_semantics(scenario, requests, roots, entries, prompt_ready):
+    if not prompt_ready:
+        return False
+    posts = [request for request in requests if request.get('method') == 'POST']
+    texts = []
+    for request in posts:
+        if (request.get('path') != '/v1/responses'
+                or request.get('authorization', {}).get('matches_dummy') is not True
+                or request.get('response_kind') != 'retained-readiness'):
+            continue
+        for message in (request.get('body') or {}).get('input', []):
+            if not isinstance(message, dict) or message.get('role') != 'user':
+                continue
+            content = message.get('content', [])
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                texts.extend(part.get('text', '') for part in content
+                             if isinstance(part, dict) and part.get('type') == 'input_text')
+    if scenario == 'cancel':
+        return not posts and not roots and not entries
+    if scenario == 'not-now':
+        return not roots and not entries and any(
+            'This invocation did not enable a session authoring root;' in text for text in texts)
+    if scenario == 'enable':
+        return any(entry.get('type') == 'dev-mods'
+                   and entry.get('folder') in roots
+                   and Path(entry['folder']).name == entry.get('sessionId')
+                   and any('Session authoring was enabled for this session only.' in text
+                           and f"`{entry['folder']}`" in text for text in texts)
+                   for entry in entries)
+    return False
+
+
+def retained_g5_held_identity(requests, roots, config, response_kind=None):
+    held = [request for request in requests if is_main_response_request(request)]
+    if len(held) != 1:
+        return None
+    request = held[0]
+    if (request.get('response_kind') != response_kind
+            or request.get('authorization', {}).get('matches_dummy') is not True):
+        return None
+    headers = request.get('headers', {})
+    session = headers.get('session-id', '')
+    if (not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', session)
+            or any(headers.get(key) != session for key in ('thread-id', 'x-claude-code-session-id'))):
+        return None
+    folders = []
+    for message in request.get('body', {}).get('input', []):
+        if not isinstance(message, dict) or message.get('role') != 'user':
+            continue
+        content = message.get('content', [])
+        texts = [content] if isinstance(content, str) else [
+            part.get('text', '') for part in content
+            if isinstance(part, dict) and part.get('type') == 'input_text']
+        for text in texts:
+            folders.extend(re.findall(
+                r'Session authoring was enabled for this session only\. '
+                r'Create plugins as direct child directories of `([^`]+)`; '
+                r'valid child plugins load after the current turn and are watched for later changes\.', text))
+    if len(folders) != 1:
+        return None
+    folder = Path(folders[0])
+    if (folders[0] not in roots or folder != config / 'dev-mods' / session
+            or not folder.is_dir() or folder.is_symlink() or folder.parent.is_symlink()):
+        return None
+    return {'sessionId': session, 'folder': folders[0], 'request_sequence': request['sequence']}
+
+
+def retained_g5_identity_persisted(identity, entries):
+    return any(entry.get('type') == 'dev-mods'
+               and entry.get('sessionId') == identity['sessionId']
+               and entry.get('folder') == identity['folder'] for entry in entries)
+
+
+def retained_g5_resumed(identity, entries, requests, pane):
+    posts = [request for request in requests if is_main_response_request(request)]
+    return (len(posts) == 1
+            and posts[0].get('authorization', {}).get('matches_dummy') is True
+            and posts[0].get('response_kind') == 'retained-readiness'
+            and all(posts[0].get('headers', {}).get(key) == identity['sessionId']
+                    for key in ('session-id', 'thread-id', 'x-claude-code-session-id'))
+            and retained_g5_identity_persisted(identity, entries)
+            and all(marker in pane for marker in (
+                'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'))
+            and input_prompt_ready(pane))
+
+
+def retained_g5_forked(original, entries, roots, requests, pane):
+    posts = [request for request in requests if is_main_response_request(request)]
+    if len(posts) != 1:
+        return False
+    request = posts[0]
+    headers = request.get('headers', {})
+    fork_session = headers.get('session-id', '')
+    return (request.get('authorization', {}).get('matches_dummy') is True
+            and request.get('response_kind') == 'retained-readiness'
+            and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', fork_session) is not None
+            and fork_session != original['sessionId']
+            and all(headers.get(key) == fork_session
+                    for key in ('thread-id', 'x-claude-code-session-id'))
+            and roots == [original['folder']]
+            and len(entries) == 1
+            and retained_g5_identity_persisted(original, entries)
+            and 'G5_FORK_IDENTITY_PROBE' in pane
+            and all(marker not in pane for marker in (
+                'G5_SAME_SESSION_ACTIVE', 'G5_SAME_SESSION_ROOT_ACTIVE',
+                'G5_SAME_SESSION_CHILD_ACTIVE'))
+            and input_prompt_ready(pane))
+
+
+def retained_g5_turn_active(pane, waiting, released, declarations):
+    return (waiting and not released and not declarations
+            and 'esc to interrupt' in strip_ansi(pane).lower()
+            and 'G5_TURN_END_ACTIVE' not in pane)
+
+
+def retained_g5(root, binary, repo, evidence, baseline_module, scenario_only=None):
+    result = {'label': 'terminal-interaction', 'validation_verdict': 'blocked',
+              'logical_frames': 'not covered', 'physical_frames': 'not covered',
+              'turn_end_plugin_load': 'not covered', 'resume': 'not covered',
+              'fork_session': 'not covered', 'scenarios': []}
+    scenarios = ((scenario_only,) if scenario_only else
+                 ('not-now', 'enable', 'cancel', 'turn-end-load',
+                  'same-session-resume', 'fork-session'))
+    for scenario in scenarios:
+        child = root / f'g5-{scenario}'
+        child.mkdir(mode=0o700)
+        child_evidence = child / 'evidence'
+        child_evidence.mkdir(mode=0o700)
+        run = retained_readiness(child, binary, repo, child_evidence, baseline_module, scenario)
+        result['scenarios'].append(run)
+        if scenario == 'turn-end-load':
+            result['turn_end_plugin_load'] = run['status']
+        if scenario == 'same-session-resume':
+            result['resume'] = run['status']
+        if scenario == 'fork-session':
+            result['fork_session'] = run['status']
+        if run['status'] != 'passed':
+            break
+    result['first_divergence'] = next((run for run in result['scenarios']
+                                       if run['status'] != 'passed'), None)
+    (evidence / 'g5-result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def retained_readiness(root, binary, repo, evidence, baseline_module, scenario=None):
+    result = {'label': 'readiness-smoke', 'status': 'failed',
+              'evidence_dir': str(evidence), 'physical_covered': False,
+              'feature_matrix_covered': False, 'assertions': []}
+    env = {**baseline_module.retained_environment(root),
+           'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+           'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+    for name in ('home/.codex', 'config', 'tmp', 'cwd'):
+        (root / name).mkdir(parents=True, mode=0o700)
+    (root / 'home/.codex/auth.json').write_text(json.dumps({'OPENAI_API_KEY': DUMMY_OPENAI_API_KEY}))
+    (root / 'home/.codex/auth.json').chmod(0o600)
+    (root / 'config/.claude.json').write_text(json.dumps({
+        'numStartups': 1, 'installMethod': 'local', 'hasCompletedOnboarding': True,
+        'projects': {str(root / 'cwd'): {'hasTrustDialogAccepted': True,
+                                       'hasCompletedProjectOnboarding': True}}}))
+    (root / 'config/settings.json').write_text(json.dumps({
+        'skipDangerousModePermissionPrompt': True, 'model': 'gpt-release-discovered'}))
+    result['builtin_cache'] = seed_retained_builtin_cache(repo, root, env)
+    result['ripgrep_cache'] = seed_retained_ripgrep_cache(repo, root, env)
+    provider = MockOpenAIServer(evidence, 'retained-turn-end-load'
+                                if scenario == 'turn-end-load' else 'retained-readiness')
+    server = None
+    log = None
+    socket_path = str(root / 't')
+    tmux_path = shutil.which('tmux', path=env['PATH'])
+    if not tmux_path or not Path('/usr/bin/sandbox-exec').is_file():
+        raise RuntimeError('retained readiness requires tmux and macOS sandbox-exec')
+    def tmux(*arguments, check=True):
+        completed = subprocess.run([tmux_path, '-S', socket_path, *arguments],
+                                   cwd=root / 'cwd', env=env, capture_output=True,
+                                   text=True, timeout=10)
+        if check and completed.returncode:
+            raise RuntimeError(f'tmux {arguments!r}: {completed.stderr}')
+        return completed
+    def wait_pane(name, predicate):
+        deadline = time.monotonic() + 45
+        last = ''
+        while time.monotonic() < deadline:
+            captured = tmux('capture-pane', '-p', '-t', 'readiness:0.0', check=False)
+            last = captured.stdout
+            (evidence / f'{name}.txt').write_text(last)
+            if captured.returncode == 0 and predicate(strip_ansi(last)):
+                result['assertions'].append({'state': name, 'passed': True})
+                return
+            if server.poll() is not None:
+                break
+            time.sleep(0.1)
+        raise RuntimeError(f'{name} state not observed; see {evidence / (name + ".txt")}')
+    def g5_interaction():
+        result.update({'label': f'G5-{scenario}', 'scenario_id': f'G5-{scenario}',
+                       'logical_frames': 'not covered', 'physical_frames': 'not covered',
+                       'raw_inputs': [], 'clear': 'not covered'})
+        def send(value, hex_value=None):
+            result['raw_inputs'].append({'hex': hex_value or value.encode().hex(),
+                                         'transport': 'tmux key' if hex_value else 'tmux literal',
+                                         'value': value})
+            (evidence / 'input.json').write_text(json.dumps(result['raw_inputs'], indent=2))
+            tmux('send-keys', '-t', 'readiness:0.0', *([] if hex_value else ['-l']), value)
+        def snapshot():
+            roots = sorted(str(path) for path in (root / 'config/dev-mods').glob('*') if path.is_dir())
+            entries = []
+            for path in (root / 'config/projects').rglob('*.jsonl'):
+                for line in path.read_text().splitlines():
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if entry.get('type') == 'dev-mods':
+                        entries.append({**entry, 'evidence_path': str(path)})
+            result['semantic_state'] = {'roots': roots, 'entries': entries,
+                                        'requests_path': str(evidence / 'mock-openai-requests.json')}
+            return roots, entries
+        send('/plugin-authoring')
+        wait_pane('command-draft', lambda pane: '/plugin-authoring' in pane)
+        send('Enter', '0d')
+        wait_pane('consent', retained_g5_consent)
+        roots, entries = snapshot()
+        if roots or entries or any(r.get('method') == 'POST' for r in provider.snapshot()):
+            raise RuntimeError('G5 consent had premature filesystem or model side effects')
+        before_cancel = None
+        if scenario == 'cancel':
+            before_cancel = {
+                'requests': provider.snapshot(),
+                'roots': roots,
+                'entries': entries,
+            }
+            send('C-c', '03')
+        else:
+            send('Down', '1b5b42')
+            if scenario == 'not-now':
+                send('Down', '1b5b42')
+            send('Enter', '0d')
+        if scenario == 'turn-end-load':
+            wait_pane('turn-active-before-write', lambda pane: retained_g5_turn_active(
+                pane, provider.turn_waiting.is_set(), provider.turn_release.is_set(), False))
+            roots, entries = snapshot()
+            identity = retained_g5_held_identity(provider.snapshot(), roots, root / 'config')
+            if identity is None:
+                raise RuntimeError('harness gap: exact held request consent session root not observed')
+            result['held_identity'] = identity
+            (evidence / 'held-identity.json').write_text(json.dumps({
+                **identity, 'entries_at_hold': entries,
+                'requests': provider.snapshot()}, indent=2) + '\n')
+            plugin = Path(identity['folder']) / 'g5-turn-marker'
+            (plugin / '.claude-plugin').mkdir(parents=True)
+            (plugin / 'hooks').mkdir()
+            (plugin / '.claude-plugin/plugin.json').write_text(json.dumps({
+                'name': 'g5-turn-marker', 'version': '0.0.1',
+                'description': 'Retained G5 turn boundary fixture'}))
+            (plugin / 'hooks/hooks.json').write_text(json.dumps({'modules': ['./marker.mjs']}))
+            (plugin / 'hooks/marker.mjs').write_text('''export function register(on) {
+  on("ui.render", { component: "AbovePrompt" }, ($, e) => {
+    const { Text } = $.ui.resolve(e);
+    return Text({ children: "G5_TURN_END_ACTIVE" });
+  });
+}
+''')
+            result['fixture'] = {'root': str(plugin),
+                                 'files': baseline_module.tree_manifest(plugin)}
+            # Check every sampled active pane while the provider response is held.
+            # This is bounded semantic sampling, not per-frame physical coverage.
+            observations = []
+            for index in range(20):
+                pane = tmux('capture-pane', '-p', '-t', 'readiness:0.0').stdout
+                (evidence / f'turn-held-{index:02d}.txt').write_text(pane)
+                state = {'sample': index, 'waiting': provider.turn_waiting.is_set(),
+                         'released': provider.turn_release.is_set(),
+                         'declarations': (plugin / '.claude-plugin/types').exists()}
+                state['passed'] = retained_g5_turn_active(pane, state['waiting'],
+                                                          state['released'], state['declarations'])
+                observations.append(state)
+                (evidence / 'turn-observations.json').write_text(json.dumps(observations, indent=2))
+                if not state['passed']:
+                    raise RuntimeError('turn boundary divergence or active-state harness gap; response remains held')
+                threading.Event().wait(0.1)
+            result['assertions'].append({'state': 'turn-held-no-early-load', 'passed': True})
+            provider.turn_release.set()
+        def terminal(pane):
+            roots, entries = snapshot()
+            if scenario == 'turn-end-load' and not retained_g5_identity_persisted(
+                    result['held_identity'], entries):
+                return False
+            return retained_g5_terminal_semantics(
+                scenario,
+                pane,
+                '/plugin-authoring' if scenario == 'cancel' else None,
+                before_cancel,
+                {
+                    'requests': provider.snapshot(),
+                    'roots': roots,
+                    'entries': entries,
+                },
+            )
+        wait_pane('semantic-terminal', terminal)
+        if scenario == 'turn-end-load':
+            wait_pane('turn-end-ui-active', lambda pane: terminal(pane)
+                      and 'G5_TURN_END_ACTIVE' in pane)
+        if scenario in ('same-session-resume', 'fork-session'):
+            roots, entries = snapshot()
+            identity = retained_g5_held_identity(provider.snapshot(), roots, root / 'config',
+                                                'retained-readiness')
+            if identity is None or not retained_g5_identity_persisted(identity, entries):
+                raise RuntimeError('harness gap: exact original consent identity not observed')
+            result['original_identity'] = identity
+            (evidence / 'original-identity.json').write_text(json.dumps({
+                **identity, 'entries': entries, 'requests': provider.snapshot()}, indent=2))
+            plugins = []
+            for name, marker in (
+                ('g5-resume-root-marker', 'G5_SAME_SESSION_ROOT_ACTIVE'),
+                ('g5-resume-child-marker', 'G5_SAME_SESSION_CHILD_ACTIVE'),
+            ):
+                plugin = Path(identity['folder']) / name
+                (plugin / '.claude-plugin').mkdir(parents=True)
+                (plugin / 'hooks').mkdir()
+                (plugin / '.claude-plugin/plugin.json').write_text(json.dumps({
+                    'name': name, 'version': '0.0.1'}))
+                (plugin / 'hooks/hooks.json').write_text(json.dumps({'modules': ['./marker.mjs']}))
+                (plugin / 'hooks/marker.mjs').write_text(f'''export function register(on) {{
+  on("ui.render", {{ component: "AbovePrompt" }}, async ($, e, next) => {{
+    const {{ Box, Text }} = $.ui.resolve(e);
+    return Box({{ children: [await next(e), Text({{ children: "{marker}" }})] }});
+  }});
+}}
+''')
+                plugins.append(plugin)
+            result['fixtures'] = [
+                {'root': str(plugin), 'files': baseline_module.tree_manifest(plugin)}
+                for plugin in plugins
+            ]
+            wait_pane('original-ui-active', lambda pane: input_prompt_ready(pane)
+                      and all(marker in pane for marker in (
+                          'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE')))
+            def normal_exit(name):
+                send('/exit')
+                wait_pane(name + '-draft', lambda pane: submitted_input_visible(pane, '/exit'))
+                send('Enter', '0d')
+                def exited(_pane):
+                    state = tmux('display-message', '-p', '-t', 'readiness:0.0',
+                                 '#{pane_dead} #{pane_dead_status}').stdout.strip()
+                    result[name] = state
+                    (evidence / (name + '.json')).write_text(json.dumps({'dead_status': state}))
+                    return state == '1 0'
+                wait_pane(name, exited)
+            normal_exit('original-exit')
+            _, entries = snapshot()
+            (evidence / 'authorization-after-exit.json').write_text(json.dumps(entries, indent=2))
+            if not retained_g5_identity_persisted(identity, entries):
+                raise RuntimeError('original authorization missing after normal exit')
+            before_sequences = {request['sequence'] for request in provider.snapshot()}
+            resume_args = ['--resume', identity['sessionId']]
+            if scenario == 'fork-session':
+                resume_args.append('--fork-session')
+            resume_command = command_line + ' ' + shlex.join(resume_args)
+            result['resume_argv'] = [str(binary), '--dangerously-skip-permissions', '--debug',
+                                     '--debug-file', str(evidence / 'debug.log'), *resume_args]
+            result['resume_command'] = resume_command
+            (evidence / 'resume-launch.json').write_text(json.dumps({
+                'argv': result['resume_argv'], 'command': resume_command}, indent=2))
+            tmux('respawn-pane', '-t', 'readiness:0.0', resume_command)
+            def resumed_ready(pane):
+                if not input_prompt_ready(pane):
+                    return False
+                if scenario == 'fork-session':
+                    return all(marker not in pane for marker in (
+                        'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'))
+                return all(marker in pane for marker in (
+                    'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'))
+            wait_pane('resumed-startup', resumed_ready)
+            result['resumed_pane_identity'] = tmux('display-message', '-p', '-t', 'readiness:0.0',
+                '#{session_id} #{window_id} #{pane_id} #{pane_pid}').stdout.strip()
+            probe = ('G5_FORK_IDENTITY_PROBE' if scenario == 'fork-session'
+                     else 'G5_RESUME_IDENTITY_PROBE')
+            send(probe)
+            wait_pane('resume-probe-draft', lambda pane: submitted_input_visible(pane, probe))
+            send('Enter', '0d')
+            def resumed(pane):
+                roots, entries = snapshot()
+                requests = [request for request in provider.snapshot()
+                            if request['sequence'] not in before_sequences]
+                (evidence / 'resumed-identity.json').write_text(json.dumps({
+                    'expected': identity, 'roots': roots, 'entries': entries,
+                    'requests': requests}, indent=2))
+                if scenario == 'fork-session':
+                    return retained_g5_forked(identity, entries, roots, requests, pane)
+                return retained_g5_resumed(identity, entries, requests, pane)
+            wait_pane('resumed-exact-identity-ui', resumed)
+            if scenario == 'fork-session':
+                roots, entries = snapshot()
+                before_cancel = {'requests': provider.snapshot(), 'roots': roots, 'entries': entries}
+                send('/plugin-authoring')
+                wait_pane('fork-command-draft', lambda pane:
+                          submitted_input_visible(pane, '/plugin-authoring'))
+                send('Enter', '0d')
+                wait_pane('fork-consent', retained_g5_consent)
+                send('C-c', '03')
+                def fork_cancelled(pane):
+                    roots, entries = snapshot()
+                    return retained_g5_clear_cancelled(pane, '/plugin-authoring', before_cancel, {
+                        'requests': provider.snapshot(), 'roots': roots, 'entries': entries})
+                wait_pane('fork-consent-cancel', fork_cancelled)
+                send('C-u', '15')
+                wait_pane('fork-cancel-draft-cleared', input_prompt_ready)
+            normal_exit('resumed-exit')
+        if scenario == 'enable':
+            before = {
+                'requests': provider.snapshot(),
+                'roots': list(result['semantic_state']['roots']),
+                'entries': list(result['semantic_state']['entries']),
+            }
+            send('/clear')
+            wait_pane('clear-draft', lambda pane: '/clear' in pane)
+            send('Enter', '0d')
+            wait_pane('clear-ready', lambda pane: input_prompt_ready(pane)
+                      and 'RELEASE_RETAINED_RESPONSE' not in pane)
+            send('/plugin-authoring')
+            wait_pane('clear-command-draft', lambda pane: '/plugin-authoring' in pane)
+            send('Enter', '0d')
+            wait_pane('clear-consent', retained_g5_consent)
+            send('C-c', '03')
+            def clear_cancelled(pane):
+                roots, entries = snapshot()
+                after = {
+                    'requests': provider.snapshot(),
+                    'roots': roots,
+                    'entries': entries,
+                }
+                return retained_g5_clear_cancelled(
+                    pane, '/plugin-authoring', before, after,
+                )
+            wait_pane('clear-cancel', clear_cancelled)
+            result['clear'] = 'passed'
+
+    try:
+        url = provider.start()
+        profile = root / 'sandbox.sb'
+        profile.write_text(retained_sandbox_profile(root, urlsplit(url).port))
+        launch_env = {**env, 'CC_VALIDATION_RETAIN_ARTIFACTS': '1',
+            'CC_VALIDATION_RUN_ROOT': str(root), 'CC_VALIDATION_BINARY': str(binary),
+            'CC_VALIDATION_REPO_ROOT': str(repo), 'CC_VALIDATION_CWD': str(root / 'cwd'),
+            'CC_VALIDATION_HOME': env['HOME'], 'CC_VALIDATION_CONFIG_DIR': env['CLAUDE_CONFIG_DIR'],
+            'CC_VALIDATION_EVIDENCE_DIR': str(evidence),
+            'CC_VALIDATION_OPENAI_BASE_URL': url + '/v1',
+            'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
+        launcher = repo / '.claude/skills/claude-agent-workflow-validation/scripts/launch-built-claude.sh'
+        command_line = shlex.join(['/usr/bin/env', '-i',
+            *(f'{key}={value}' for key, value in launch_env.items()), '/bin/sh', str(launcher)])
+        argv = ['/usr/bin/sandbox-exec', '-f', str(profile), tmux_path,
+                '-D', '-S', socket_path, '-f', '/dev/null']
+        result.update({'command': argv, 'environment': launch_env,
+                       'binary_before': baseline_module.binary_identity(binary),
+                       'socket': socket_path, 'target': 'readiness:0.0'})
+        log = (evidence / 'tmux-server.log').open('x')
+        server = subprocess.Popen(argv, cwd=root / 'cwd', env=env, stdout=log, stderr=log,
+                                  start_new_session=True)
+        result['server_pid'] = server.pid
+        deadline = time.monotonic() + 10
+        while not (root / 't').exists() and server.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        tmux('set-option', '-g', 'remain-on-exit', 'on')
+        result['launch_command'] = command_line
+        tmux('new-session', '-d', '-s', 'readiness', '-x', '120', '-y', '40', command_line)
+        wait_pane('startup', input_prompt_ready)
+        result['pane_identity'] = tmux('display-message', '-p', '-t', 'readiness:0.0',
+                                      '#{session_id} #{window_id} #{pane_id} #{pane_pid}').stdout.strip()
+        if scenario:
+            g5_interaction()
+        else:
+            raw = b'RELEASE_RETAINED_INPUT'
+            (evidence / 'input.json').write_text(json.dumps([
+                {'hex': raw.hex(), 'transport': 'tmux send-keys -l'},
+                {'hex': '0d', 'transport': 'tmux send-keys Enter'}], indent=2))
+            tmux('send-keys', '-t', 'readiness:0.0', '-l', raw.decode())
+            wait_pane('input', lambda pane: raw.decode() in pane)
+            tmux('send-keys', '-t', 'readiness:0.0', 'Enter')
+            # A fast response clears the composer; observe the submitted transcript instead.
+            wait_pane('submitted', lambda pane: bool(re.search(
+                r'^\s*❯ RELEASE_RETAINED_INPUT\s*\n\s*⏺ RELEASE_RETAINED_RESPONSE\s*$',
+                pane, re.MULTILINE)) and input_prompt_ready(pane)
+                      and retained_readiness_request(provider.snapshot()))
+            wait_pane('response', lambda pane: 'RELEASE_RETAINED_RESPONSE' in pane
+                      and input_prompt_ready(pane))
+        result['binary_after'] = baseline_module.binary_identity(binary)
+        if result['binary_before'] != result['binary_after']:
+            raise RuntimeError('binary identity changed during readiness')
+        result['status'] = 'passed'
+    except Exception as error:
+        result['error'] = f'{type(error).__name__}: {error}'
+    finally:
+        if server is not None:
+            closed = tmux('kill-server', check=False)
+            result['close_server'] = {'returncode': closed.returncode, 'stderr': closed.stderr}
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.terminate()
+                server.wait(timeout=10)
+            result['server_exit'] = server.returncode
+            socket_file = root / 't'
+            if socket_file.is_socket():
+                socket_file.unlink()
+            result['socket_released'] = not (root / 't').exists()
+            if not result['socket_released']:
+                result['status'] = 'failed'
+        if scenario == 'turn-end-load':
+            provider.turn_release.set()
+        provider.stop()
+        if log:
+            log.close()
+        result['validation_verdict'] = result['status']
+        (evidence / 'readiness-result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def retained_preflight(args, extra_targets):
+    # Never construct BinaryGate here: its legacy lifecycle owns destructive cleanup.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'release_baseline', Path(__file__).with_name('capture-release-baseline.py'),
+    )
+    baseline_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(baseline_module)
+    repo = args.repo.resolve()
+    root, binary = baseline_module.retained_paths(repo, args.run_root, args.binary)
+    if args.baseline.parent.resolve() / args.baseline.name != root / 'baseline.json' or args.baseline.is_symlink():
+        raise ValueError('--baseline must be <run-root>/baseline.json, not a symlink')
+    baseline = json.loads(args.baseline.read_text())
+    if baseline.get('run_root') != str(root) or baseline.get('retain_artifacts') is not True:
+        raise ValueError('baseline does not own this retained run root')
+    if baseline.get('repo') != str(repo):
+        raise ValueError('baseline repository does not match --repo')
+    evidence = args.evidence_root.parent.resolve() / args.evidence_root.name
+    if evidence != root / 'evidence' or evidence.exists() or evidence.is_symlink():
+        raise ValueError('--evidence-root must be a new <run-root>/evidence')
+    if {p.name for p in root.iterdir()} != {'baseline.json'}:
+        raise ValueError('run root contains unexpected artifacts or was already used')
+    state = baseline_module.retained_repository_state(repo, root, binary)
+    for key, value in state.items():
+        if baseline.get(key) != value:
+            raise ValueError(f'baseline {key} does not match current repository state')
+    inputs = collect_required_target_inputs(repo, baseline, args.base_ref)
+    required = required_targets_for_paths(inputs['all_paths'])
+    targets = plan_targets(extra_targets, required, retain_artifacts=True)
+    manifest = {
+        **retained_target_policy(targets),
+        'repo': str(repo), 'run_root': str(root), 'retain_artifacts': True,
+        'baseline': str(args.baseline), 'binary': state['binary'],
+        'protected_root_binary': state['protected_root_binary'],
+        'required_target_inputs': inputs, 'required_targets': sorted(required),
+        'required_target_coverage': validate_required_target_results(required, []),
+        'environment': baseline_module.retained_environment(root),
+        'tmux': {'socket': str(root / 't'), 'started': False},
+        'processes_started': [], 'cleanup': 'not needed; no handlers started',
+        'repository_state_start': state,
+    }
+    socket_path = str(root / 't')
+    if len(socket_path.encode()) >= 100:
+        manifest['isolation_blocker'] = 'private tmux socket path too long; no external fallback allowed'
+    evidence.mkdir(mode=0o700)
+    if 'isolation_blocker' not in manifest:
+        readiness = retained_readiness(root, binary, repo, evidence, baseline_module)
+        manifest['readiness_smoke'] = readiness
+        manifest['runs'] = [readiness]
+        manifest['recorded_run_count'] = 1
+        manifest['blocked_targets'].pop('readiness-smoke')
+        manifest['tmux']['started'] = 'server_pid' in readiness
+        manifest['processes_started'] = [readiness['server_pid']] if 'server_pid' in readiness else []
+        manifest['cleanup'] = {key: readiness.get(key) for key in ('server_exit', 'socket_released', 'close_server')}
+        if readiness['status'] == 'passed' and 'terminal-interaction' in targets:
+            g5 = retained_g5(root, binary, repo, evidence, baseline_module,
+                             getattr(args, 'g5_scenario', None))
+            manifest['runs'].append(g5)
+            manifest['recorded_run_count'] = len(manifest['runs'])
+        manifest['required_target_coverage'] = validate_required_target_results(
+            required, manifest['runs'],
+        )
+    final_state = baseline_module.retained_repository_state(repo, root, binary)
+    manifest['repository_state_unchanged'] = final_state == state
+    manifest['repository_state_end'] = final_state
+    manifest['retained_inventory_before_report'] = baseline_module.tree_manifest(root)
+    manifest['inventory_excludes_self'] = 'evidence/driver-final-manifest.json'
+    with (evidence / 'driver-final-manifest.json').open('x') as stream:
+        stream.write(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps(manifest, indent=2))
+    return 2
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo', type=Path, default=Path.cwd())
@@ -8827,7 +9646,14 @@ def main():
         default=None,
         help='comma-separated extra targets to append after diff-required targets',
     )
+    parser.add_argument('--binary', type=Path)
+    parser.add_argument('--run-root', type=Path)
+    parser.add_argument('--retain-artifacts', action='store_true')
+    parser.add_argument('--g5-scenario', choices=['turn-end-load', 'same-session-resume', 'fork-session'],
+                        help='retained diagnostic subset; required targets and blocked verdict remain unchanged')
     args = parser.parse_args()
+    if args.g5_scenario and not args.retain_artifacts:
+        parser.error('--g5-scenario requires retained mode')
     try:
         extra_targets = parse_target_list(args.targets)
     except ValueError as error:
@@ -8839,6 +9665,13 @@ def main():
     unknown = set(extra_targets) - allowed
     if unknown:
         parser.error(f'unknown targets: {sorted(unknown)}')
+    if args.retain_artifacts or args.run_root or args.binary:
+        if not (args.retain_artifacts and args.run_root and args.binary):
+            parser.error('retained mode requires --binary, --run-root and --retain-artifacts')
+        try:
+            return retained_preflight(args, extra_targets)
+        except (RuntimeError, ValueError, OSError) as error:
+            parser.error(str(error))
     try:
         gate = BinaryGate(
             args.repo,
