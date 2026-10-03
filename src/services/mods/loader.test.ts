@@ -1,19 +1,15 @@
-import { afterEach, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { expect, test } from 'bun:test'
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { loadModDeclaration, validateModRegistrations } from './loader'
 
 const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
-const roots: string[] = []
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
-})
+const evidenceRoot = fileURLToPath(new URL('../../../.claude-test-evidence/', import.meta.url))
 
 async function plugin(files: Record<string, string>) {
-  const root = await mkdtemp(join(tmpdir(), 'mods-loader-'))
-  roots.push(root)
+  await mkdir(evidenceRoot, { recursive: true })
+  const root = await mkdtemp(join(evidenceRoot, 'mods-loader-'))
   for (const [path, source] of Object.entries(files)) {
     await mkdir(dirname(join(root, path)), { recursive: true })
     await writeFile(join(root, path), source)
@@ -178,6 +174,39 @@ test('records literal environment reads and writes across entrypoints and import
     reads: ['MODS_CONTRACT_HELPER', 'MODS_CONTRACT_VALUE'],
     writes: ['MODS_CONTRACT_VALUE'],
   })
+})
+
+test('records state reads and writes from literal and const references while preserving store calls', async () => {
+  const input = await plugin({
+    'main.ts': `const BASE = {plugin:'owner', key:'shared'};
+      const MEMBER = {...BASE, id:'static-member'};
+      export function register(on) { on('tool.call', async ($, e) => ({result:{
+        first:await $.state.get({plugin:'reader', key:'value'}),
+        second:await $.state.get({...MEMBER, id:e.requestId}),
+        written:await $.state.set(BASE, {value:1}),
+        stored:await $.store.get('legacy'),
+      }})); }`,
+  })
+  const declaration = await loadModDeclaration(input)
+  expect(declaration.calls).toEqual(['state.get', 'state.set', 'store.get'])
+  expect(declaration.state).toEqual({
+    reads: [
+      { plugin: 'owner', key: 'shared' },
+      { plugin: 'reader', key: 'value' },
+    ],
+    writes: [{ plugin: 'owner', key: 'shared' }],
+  })
+})
+
+test.each([
+  `$.state.get(e.reference)`,
+  `$.state.set({plugin:e.plugin, key:'value'}, {value:1})`,
+  `$.state.get({plugin:'owner', key:e.key})`,
+])('refuses state references whose owner and key cannot be listed statically: %s', async expression => {
+  const input = await plugin({
+    'main.ts': `export function register(on) { on('tool.call', async ($, e) => ({result:await ${expression}})); }`,
+  })
+  await expect(loadModDeclaration(input)).rejects.toThrow(/state access requires.*plugin.*key/i)
 })
 
 test.each([
@@ -953,7 +982,7 @@ test.each([
   [`import fs from 'node:fs'; export function register(on) {}`, /bare/],
   [`import 'some-package'; export function register(on) {}`, /bare/],
   [`import '/absolute.js'; export function register(on) {}`, /bare/],
-  [`import { on } from 'claude-code'; export function register(listen) {}`, /empty runtime/],
+  [`import { on } from 'claude-code'; export function register(listen) {}`, /claude-code runtime exports only atom, derive, memberOf, read and update/],
   [`export default function register(on) {}`, /named register/],
   [`export { register } from './helper.ts'`, /re-exported register/],
   [`import { register } from './helper.ts'; export { register }`, /re-exported register/],

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isModEventPattern, normalizeModMatcher } from './matcher'
-import type { ModDeclaration, ModInput, ModRegistration, ModTier } from './types'
+import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
 // Deliberately a small authoring language, not the official parser or a security sandbox.
 // The host must also validate registrations and actual capability requests.
@@ -24,14 +24,14 @@ type Resolved = { binding: Binding; members: string[] }
 const tiers: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 const coreNouns = new Set([
   'engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp',
-  'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'settings', 'env',
+  'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env',
 ])
 const supportedEvents = new Set([
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
   'clock.now', 'clock.sleep', 'clock.after', 'clock.every', 'mcp.call',
   'config.set', 'config.describe', 'session.authorize', 'http.fetch',
   'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run',
-  'store.get', 'store.set', 'store.delete', 'store.keys', 'env.get', 'env.set',
+  'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
   'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage',
   'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
@@ -74,11 +74,14 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const events = new Set<string>()
   const calls = new Set<string>()
   const env = { reads: new Set<string>(), writes: new Set<string>() }
+  const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
   // Roles flow from register/handler parameters through lexical bindings and actual imports, never parameter names.
   const moduleScopes = new Map<string, Scope>()
   const registers = new Set<Node>()
   const engineNextBindings = new Set<Node>()
+  const stateConstBindings = new Set<Binding>()
+  const stateConstReads = new Set<Node>()
   let engineReturns = new Set<Node>()
   const activeHelpers = new Map<Node, Set<string>>()
   const scopes = new Map<object, Map<Scope, Map<string, Scope>>>()
@@ -210,6 +213,88 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (!name.value || /[=\0]/.test(name.value))
       fail(path, 'environment name must be nonempty without NUL or =')
     env[call === 'env.get' ? 'reads' : 'writes'].add(name.value)
+  }
+
+  function literalString(node: Node): string | undefined {
+    if (node.type === 'Literal' && typeof node.value === 'string') return node.value
+    if (node.type === 'TemplateLiteral' && !node.expressions.length) return node.quasis[0]?.value.cooked ?? undefined
+  }
+
+  function stateReference(node: Node, scope: Scope, resolving = new Set<Binding>()): ModStateReference | undefined {
+    if (node.type === 'Identifier') {
+      const binding = lookup(node.name, scope)
+      if (!binding?.alias || resolving.has(binding)) return
+      stateConstBindings.add(binding)
+      stateConstReads.add(node)
+      const next = new Set(resolving).add(binding)
+      return stateReference(binding.alias.node, binding.alias.scope, next)
+    }
+    if (node.type !== 'ObjectExpression') return
+    let reference: Partial<ModStateReference> = {}
+    for (const property of node.properties) {
+      if (property.type === 'SpreadElement') {
+        const spread = stateReference(property.argument, scope, resolving)
+        if (!spread) return
+        reference = { ...reference, ...spread }
+        continue
+      }
+      const key = property.computed ? undefined : property.key?.name ?? property.key?.value
+      if (property.type !== 'Property' || property.kind !== 'init' || typeof key !== 'string') return
+      if (key !== 'plugin' && key !== 'key') continue
+      const value = literalString(property.value)
+      if (value === undefined) return
+      reference[key] = value
+    }
+    return typeof reference.plugin === 'string' && typeof reference.key === 'string'
+      ? { plugin: reference.plugin, key: reference.key }
+      : undefined
+  }
+
+  function stateHelper(node: Node, scope: Scope): string | undefined {
+    if (node.type !== 'CallExpression' || node.optional || node.callee.type !== 'Identifier') return
+    const imported = lookup(node.callee.name, scope)?.imported
+    if (imported?.path === 'claude-code' && ['atom', 'derive', 'memberOf', 'read', 'update'].includes(imported.name))
+      return imported.name
+  }
+
+  function stateSources(node: Node, scope: Scope, resolving = new Set<Binding>()): ModStateReference[] | undefined {
+    if (node.type === 'Identifier') {
+      const binding = lookup(node.name, scope)
+      if (!binding?.alias || resolving.has(binding)) return
+      const references = stateSources(binding.alias.node, binding.alias.scope, new Set(resolving).add(binding))
+      if (references && (binding.alias.node.type === 'ObjectExpression' ||
+        binding.alias.node.type === 'Identifier' && stateConstBindings.has(lookup(binding.alias.node.name, binding.alias.scope)!))) {
+        stateConstBindings.add(binding)
+        stateConstReads.add(node)
+      }
+      return references
+    }
+    const helper = stateHelper(node, scope)
+    if (helper === 'atom' || helper === 'memberOf')
+      return node.arguments[0] && stateSources(node.arguments[0], scope, resolving)
+    if (helper === 'derive') {
+      const sources = node.arguments[0]
+      if (sources?.type !== 'ArrayExpression') return
+      const references: ModStateReference[] = []
+      for (const source of sources.elements) {
+        const found = source && stateSources(source, scope, resolving)
+        if (!found) return
+        references.push(...found)
+      }
+      return references
+    }
+    const reference = stateReference(node, scope)
+    return reference && [reference]
+  }
+
+  function scanState(call: string, node: Node, scope: Scope) {
+    if (call !== 'state.get' && call !== 'state.set') return
+    const reference = node.arguments[0]
+    if (!reference || reference.type === 'SpreadElement')
+      fail(path, 'state access requires a reference with literal plugin and key')
+    const resolved = stateReference(reference, scope)
+    if (!resolved) fail(path, 'state access requires a reference with literal plugin and key; only id may be computed')
+    state[call === 'state.get' ? 'reads' : 'writes'].set(`${resolved.plugin}\0${resolved.key}`, resolved)
   }
 
   function bind(pattern: Node, bindings: Map<string, Binding>) {
@@ -551,6 +636,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         }
         break
       case 'Identifier':
+        if (!collecting && stateConstBindings.has(lookup(node.name, scope)!) && !stateConstReads.has(node)) {
+          fail(path, `state reference const ${node.name} may only be used by state.get/state.set references or object spreads`)
+        }
         if (collecting) {
           // An escaped builtin (including aliases/mutator arguments) cannot authorize passing an engine later.
           if (['Object', 'globalThis', 'self', 'window'].includes(node.name) && !lookup(node.name, scope)) builtinObjectChanged = true
@@ -577,6 +665,28 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           if (hookEvent === 'engine.create') fail(path, 'engine.create catch is unsupported')
           if (node.arguments.length !== 1 || !isFunction(node.arguments[0])) fail(path, 'catch requires one inline handler')
           visitFunction(node.arguments[0], scope, [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], hookEvent, true)
+          return
+        }
+        const stateOperation = stateHelper(node, scope)
+        if (stateOperation) {
+          const access = stateOperation === 'read' || stateOperation === 'update'
+          const source = node.arguments[access ? 1 : 0]
+          const references = stateOperation === 'derive'
+            ? stateSources(node, scope)
+            : source && stateSources(source, scope)
+          if (!references) fail(path, 'state helper requires sources with literal plugin and key; only id may be computed')
+          for (const reference of references) {
+            const key = `${reference.plugin}\0${reference.key}`
+            state.reads.set(key, reference)
+            if (stateOperation === 'update') state.writes.set(key, reference)
+          }
+          if (access) {
+            if (!collecting && !['engine', 'beneath'].includes(roleOf(node.arguments[0], scope) ?? ''))
+              fail(path, 'state helper requires the engine as its first argument')
+            calls.add('state.get')
+            if (stateOperation === 'update') calls.add('state.set')
+          }
+          for (const argument of node.arguments.slice(access ? 1 : 0)) visit(argument, scope, event)
           return
         }
         if (collecting) {
@@ -633,6 +743,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           if (node.optional) fail(path, 'optional capability calls are unsupported')
           calls.add(call)
           scanEnvironment(call, node)
+          scanState(call, node, scope)
         } else if (roleOf(callee, scope) === 'next') {
           if (node.optional || node.arguments.length !== 1) fail(path, 'next requires one input and a non-optional call')
         } else if (capabilityValue(callee, scope)?.role === 'next') {
@@ -741,7 +852,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     path = module
     visit(program, [])
   }
-  return { events, calls, env, nextTiers }
+  return { events, calls, env, state, nextTiers }
 }
 
 function within(root: string, path: string): boolean {
@@ -795,6 +906,7 @@ export async function loadModDeclaration(input: {
   const events = new Set<string>()
   const calls = new Set<string>()
   const env = { reads: new Set<string>(), writes: new Set<string>() }
+  const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
   const seen = new Set<string>()
   const programs = new Map<string, Node>()
@@ -935,8 +1047,10 @@ export async function loadModDeclaration(input: {
       if (!['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(statement.type) || !statement.source) continue
       const specifier = statement.source.value as string
       if (specifier === 'claude-code') {
-        if (statement.type !== 'ImportDeclaration' || statement.specifiers.some((item: Node) => item.type !== 'ImportNamespaceSpecifier')) {
-          fail(path, 'claude-code has an empty runtime namespace; use type-only or side-effect/namespace imports')
+        if (statement.type !== 'ImportDeclaration' || statement.specifiers.some((item: Node) =>
+          item.type !== 'ImportNamespaceSpecifier' && (item.type !== 'ImportSpecifier' ||
+            !['atom', 'derive', 'memberOf', 'read', 'update'].includes(item.imported.name ?? item.imported.value)))) {
+          fail(path, 'claude-code runtime exports only atom, derive, memberOf, read and update')
         }
         links.push({ from: path, specifier, to: 'claude-code' })
         continue
@@ -982,6 +1096,8 @@ export async function loadModDeclaration(input: {
   for (const value of scanned.calls) calls.add(value)
   for (const value of scanned.env.reads) env.reads.add(value)
   for (const value of scanned.env.writes) env.writes.add(value)
+  for (const [key, value] of scanned.state.reads) state.reads.set(key, value)
+  for (const [key, value] of scanned.state.writes) state.writes.set(key, value)
   for (const value of scanned.nextTiers) nextTiers.add(value)
   const relativePath = (path: string) => relative(root, path).split(sep).join('/')
   // Absolute installation locations are plumbing, not declaration identity.
@@ -997,6 +1113,10 @@ export async function loadModDeclaration(input: {
     ...(input.isNative === true ? { isNative: true } : {}),
     entrypoints, modules, links, ...(clients.length ? { clients } : {}), events: [...events], calls: [...calls].sort(),
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
+    ...(state.reads.size || state.writes.size ? { state: {
+      reads: [...state.reads.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value),
+      writes: [...state.writes.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value),
+    } } : {}),
     nextTiers: tiers.filter(value => nextTiers.has(value)), options, tier, fingerprint,
   }
 }

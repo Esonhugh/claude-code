@@ -1,7 +1,14 @@
 import type { Dirent, Stats } from 'fs'
-import { readdir, readFile, stat } from 'fs/promises'
+import { readdir, readFile, realpath, stat } from 'fs/promises'
 import * as path from 'path'
 import { z } from 'zod/v4'
+import { loadModDeclaration } from '../../services/mods/loader.js'
+import {
+  parseModTypeContract,
+  validateModStateReferences,
+  type ModStateDeclaration,
+} from '../../services/mods/typeContract.js'
+import type { LoadedPlugin } from '../../types/plugin.js'
 import { errorMessage, getErrnoCode, isENOENT } from '../errors.js'
 import { FRONTMATTER_REGEX } from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
@@ -33,8 +40,61 @@ export type ValidationResult = {
   success: boolean
   errors: ValidationError[]
   warnings: ValidationWarning[]
+  notes?: string[]
   filePath: string
   fileType: 'plugin' | 'marketplace' | 'skill' | 'agent' | 'command' | 'hooks'
+}
+
+function within(root: string, candidate: string): boolean {
+  const part = path.relative(root, candidate)
+  return part !== '..' && !part.startsWith(`..${path.sep}`) && !path.isAbsolute(part)
+}
+
+async function loadTypeContract(
+  pluginRoot: string,
+  relativePath: string,
+): Promise<ReturnType<typeof parseModTypeContract>> {
+  const root = path.resolve(pluginRoot)
+  const requested = path.resolve(root, relativePath)
+  if (!within(root, requested)) throw new Error(`${relativePath} leaves the plugin root`)
+  const [rootReal, actual] = await Promise.all([realpath(root), realpath(requested)])
+  if (!within(rootReal, actual)) throw new Error(`${relativePath} realpath is outside the plugin root`)
+  const metadata = await stat(actual)
+  if (!metadata.isFile()) throw new Error(`${relativePath} must be a regular file`)
+  return parseModTypeContract(await readFile(actual, 'utf8'))
+}
+
+export async function resolveForeignModStateDeclarations(
+  plugins: readonly LoadedPlugin[],
+  owner: string,
+): Promise<{ declarations: ModStateDeclaration[] | undefined; warning?: string }> {
+  const declarations: ModStateDeclaration[] = []
+  for (const plugin of plugins) {
+    if (plugin.name === owner || !plugin.manifest.types) continue
+    try {
+      let contract: ReturnType<typeof parseModTypeContract>
+      if (plugin.contractFiles) {
+        const requested = plugin.manifest.types
+        const normalized = path.posix.normalize(requested)
+        if (path.posix.isAbsolute(requested) || requested.includes('\\') || normalized === '..' || normalized.startsWith('../'))
+          throw new Error(`${requested} leaves the plugin root`)
+        if (!Object.hasOwn(plugin.contractFiles, normalized) || normalized.endsWith('/'))
+          throw new Error(`${requested} is missing or is not a regular file in the archive`)
+        contract = parseModTypeContract(new TextDecoder('utf-8', { fatal: true }).decode(plugin.contractFiles[normalized]))
+      } else {
+        contract = await loadTypeContract(plugin.path, plugin.manifest.types)
+      }
+      declarations.push(
+        ...contract.state.filter(declaration => declaration.plugin === plugin.name),
+      )
+    } catch (error) {
+      return {
+        declarations: undefined,
+        warning: `Could not load ${plugin.name} types contract ${plugin.manifest.types}: ${errorMessage(error)}. Foreign state references were left unchecked.`,
+      }
+    }
+  }
+  return { declarations }
 }
 
 export type ValidationError = {
@@ -131,6 +191,7 @@ export async function validatePluginManifest(
 ): Promise<ValidationResult> {
   const errors: ValidationError[] = []
   const warnings: ValidationWarning[] = []
+  const notes: string[] = []
   const absolutePath = path.resolve(filePath)
 
   // Read file content — handle ENOENT / EISDIR / permission errors directly
@@ -293,12 +354,33 @@ export async function validatePluginManifest(
           'No author information provided. Consider adding author details for plugin attribution',
       })
     }
+
+    if (manifest.types) {
+      const manifestDir = path.dirname(absolutePath)
+      const pluginRoot = path.basename(manifestDir) === '.claude-plugin'
+        ? path.dirname(manifestDir)
+        : manifestDir
+      try {
+        const contract = await loadTypeContract(pluginRoot, manifest.types)
+        notes.push(
+          `types ${manifest.types} declares on $: ${contract.nouns.length ? contract.nouns.map(name => `$.${name}`).join(', ') : 'nothing (no EngineInterface member)'}`,
+        )
+        if (contract.state.length) {
+          notes.push(
+            `types ${manifest.types} declares state: ${contract.state.flatMap(({ plugin, keys }) => keys.map(key => `${plugin}.${key}`)).join(', ')}`,
+          )
+        }
+      } catch (error) {
+        errors.push({ path: 'types', message: errorMessage(error) })
+      }
+    }
   }
 
   return {
     success: errors.length === 0,
     errors,
     warnings,
+    ...(notes.length ? { notes } : {}),
     filePath: absolutePath,
     fileType: 'plugin',
   }
@@ -643,7 +725,11 @@ function validateComponentFile(
  * at runtime (pluginLoader uses .parse() not .safeParse()) — a bad hooks.json
  * breaks the whole plugin. Surfacing it here is essential.
  */
-async function validateHooksJson(filePath: string): Promise<ValidationResult> {
+async function validateHooksJson(
+  filePath: string,
+  pluginRoot: string,
+  foreignDeclarations?: readonly ModStateDeclaration[],
+): Promise<ValidationResult> {
   let content: string
   try {
     content = await readFile(filePath, { encoding: 'utf-8' })
@@ -701,10 +787,72 @@ async function validateHooksJson(filePath: string): Promise<ValidationResult> {
     }
   }
 
+  const errors: ValidationError[] = []
+  const warnings: ValidationWarning[] = []
+  const notes: string[] = []
+  let owner = path.basename(pluginRoot)
+  let declared: ModStateDeclaration[] = []
+  try {
+    const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json')
+    const manifest = jsonParse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
+    if (typeof manifest.name === 'string') owner = manifest.name
+    if (typeof manifest.types === 'string') {
+      declared = (await loadTypeContract(pluginRoot, manifest.types)).state
+    }
+  } catch {
+    // Manifest validation reports unreadable or invalid contracts separately.
+  }
+
+  for (const [index, modulePath] of (result.data.modules ?? []).entries()) {
+    const resolved = path.resolve(path.dirname(filePath), modulePath)
+    try {
+      const declaration = await loadModDeclaration({
+        name: owner,
+        storageId: owner,
+        pluginRoot,
+        entrypoints: [resolved],
+      })
+      notes.push(
+        `${modulePath} hooks: ${declaration.events.join(', ') || 'nothing'}`,
+        `${modulePath} calls: ${[
+          ...declaration.calls.map(call => `$.${call}`),
+          ...declaration.nextTiers.map(tier => `next.to:${tier}`),
+        ].join(', ') || 'nothing on $'}`,
+      )
+      if (!declaration.state) continue
+      for (const direction of ['writes', 'reads'] as const) {
+        notes.push(
+          `${modulePath} state ${direction}: ${declaration.state[direction].map(({ plugin, key }) => `${plugin}.${key}`).join(', ') || 'nothing'}`,
+        )
+      }
+      const state = validateModStateReferences({
+        owner,
+        references: declaration.state,
+        declared,
+        others: foreignDeclarations ? [...foreignDeclarations] : undefined,
+      })
+      errors.push(...state.problems.map(message => ({
+        path: `modules[${index}]`,
+        message,
+      })))
+      if (state.unchecked.length) {
+        notes.push(
+          `${modulePath} state of other plugins, not checked (validate with their contracts available): ${state.unchecked.join(', ')}`,
+        )
+      }
+    } catch (error) {
+      errors.push({
+        path: `modules[${index}]`,
+        message: errorMessage(error),
+      })
+    }
+  }
+
   return {
-    success: true,
-    errors: [],
-    warnings: [],
+    success: errors.length === 0,
+    errors,
+    warnings,
+    ...(notes.length ? { notes } : {}),
     filePath,
     fileType: 'hooks',
   }
@@ -757,11 +905,12 @@ async function collectMarkdown(
  * manifest can declare custom paths but the default layout covers the vast
  * majority of plugins; this is a linter, not a loader).
  *
- * Returns one ValidationResult per file that has errors or warnings. A clean
- * plugin returns an empty array.
+ * Returns one ValidationResult per file that has errors, warnings or author
+ * notes. Files with no diagnostics are omitted.
  */
 export async function validatePluginContents(
   pluginDir: string,
+  foreignDeclarations?: readonly ModStateDeclaration[],
 ): Promise<ValidationResult[]> {
   const results: ValidationResult[] = []
 
@@ -800,8 +949,14 @@ export async function validatePluginContents(
 
   const hooksResult = await validateHooksJson(
     path.join(pluginDir, 'hooks', 'hooks.json'),
+    pluginDir,
+    foreignDeclarations,
   )
-  if (hooksResult.errors.length > 0 || hooksResult.warnings.length > 0) {
+  if (
+    hooksResult.errors.length > 0 ||
+    hooksResult.warnings.length > 0 ||
+    hooksResult.notes?.length
+  ) {
     results.push(hooksResult)
   }
 

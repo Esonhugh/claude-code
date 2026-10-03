@@ -174,6 +174,16 @@ const RelativePath = lazySchema(() => z.string().startsWith('./'))
 const RelativeJSONPath = lazySchema(() => RelativePath().endsWith('.json'))
 
 /**
+ * Path to the plugin's TypeScript declaration contract.
+ */
+const RelativeTypeContractPath = lazySchema(() =>
+  RelativePath().refine(
+    value => value.endsWith('.ts') || value.endsWith('.mts') || value.endsWith('.cts'),
+    'Types contract path must point to a TypeScript declaration file',
+  ),
+)
+
+/**
  * Schema for MCPB (MCP Bundle) file paths
  * Supports both local relative paths and remote URLs
  */
@@ -323,6 +333,11 @@ const PluginManifestMetadataSchema = lazySchema(() =>
       .describe(
         'Plugins that must be enabled for this plugin to function. Bare names (no "@marketplace") are resolved against the declaring plugin\'s own marketplace.',
       ),
+    types: RelativeTypeContractPath()
+      .optional()
+      .describe(
+        "Path to the plugin's types-only TypeScript contract, relative to the plugin root",
+      ),
   }),
 )
 
@@ -347,7 +362,7 @@ export const PluginHooksSchema = lazySchema(() =>
     modules: z.array(z.string().refine(
       value => value.startsWith('./') || value.startsWith('../'),
       'Hooks modules must use relative paths',
-    )).optional(),
+    )).max(1, 'Hooks configuration supports at most one module').optional(),
   }).refine(value => value.hooks !== undefined || value.modules !== undefined, {
     message: 'Hooks configuration must declare hooks or modules',
   }),

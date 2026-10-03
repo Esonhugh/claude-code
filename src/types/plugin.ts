@@ -56,6 +56,8 @@ export type LoadedPlugin = {
   manifest: PluginManifest
   path: string
   source: string
+  /** Read-only ZIP contents, relative to the plugin root; contract discovery only. */
+  contractFiles?: Readonly<Record<string, Uint8Array>>
   repository: string // Repository identifier, usually same as source
   enabled?: boolean
   isBuiltin?: boolean // true for built-in plugins that ship with the CLI

@@ -34,6 +34,12 @@ export type ModModule = {
   source: string
 }
 
+export type ModStateReference = {
+  plugin: string
+  key: string
+  id?: string
+}
+
 export type ModDeclaration = {
   name: string
   storageId: string
@@ -48,6 +54,7 @@ export type ModDeclaration = {
   events: string[]
   calls: string[]
   env?: { reads: string[]; writes: string[] }
+  state?: { reads: ModStateReference[]; writes: ModStateReference[] }
   nextTiers: ModTier[]
   options: ModInput
   tier: ModTier

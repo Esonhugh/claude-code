@@ -71,6 +71,14 @@ export function handleMarketplaceError(error: unknown, action: string): never {
 }
 
 function printValidationResult(result: ValidationResult): void {
+  for (const note of result.notes ?? []) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`  ${figures.pointer} ${note}`)
+  }
+  if (result.notes?.length) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log('')
+  }
   if (result.errors.length > 0) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(
