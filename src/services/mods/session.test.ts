@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LoadedPlugin } from '../../types/plugin.js'
@@ -22,11 +22,17 @@ import { runToolUse } from '../tools/toolExecution.js'
 import { createAssistantMessage } from '../../utils/messages.js'
 import { getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import { z } from 'zod/v4'
-import { getIsInteractive, setIsInteractive } from '../../bootstrap/state.js'
+import {
+  getInlinePlugins,
+  getIsInteractive,
+  setInlinePlugins,
+  setIsInteractive,
+} from '../../bootstrap/state.js'
 import { resetHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import {
   createModsSession,
+  ModAuthoringPromptDismissedError,
   type ModsSession,
   type ModsSessionOptions,
 } from './session.js'
@@ -58,7 +64,7 @@ const binding = {
   cwd: '/tmp',
   sessionId: 'first',
   surface: null,
-  isInteractive: false,
+  isInteractive: true,
 } as const
 const input = { tool: 'Bash', tool_use_id: 'call', command: 'test' }
 const core = async () => ({ result: 'core' })
@@ -110,6 +116,551 @@ function watchEvents() {
 }
 
 describe('Mods CLI session host', () => {
+  test('session authoring asks once concurrently, persists only enable, and loads child plugins after the turn barrier', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    let persisted = 0
+    let loads = 0
+    const declaration = await plugin()
+    const host = session({
+      loadPlugins: async () => [declaration],
+      authoringRoot: () => root,
+      persistAuthoringConsent: async value => {
+        expect(value).toBe(root)
+        persisted++
+      },
+      loadAuthoringPlugin: async path => {
+        loads++
+        expect(path).toBe(join(root, 'child'))
+        return { ...declaration, path }
+      },
+    })
+    await host.bind(binding)
+    const endTurn = host.runtime?.beginPublicTurn('turn')
+    let asks = 0
+    const prompt = async (request: import('../../types/hooks.js').PromptRequest) => {
+      asks++
+      expect(request.prompt).toBe('mod_hot_reload')
+      expect(request.options.map(option => option.label)).toEqual([
+        'How does this work?',
+        'Enable for this session',
+        'Not now',
+      ])
+      await Promise.resolve()
+      return { prompt_response: request.prompt, selected: 'enable' }
+    }
+    const [first, second] = await Promise.all([
+      host.requestAuthoringConsent(prompt, new AbortController().signal),
+      host.requestAuthoringConsent(prompt, new AbortController().signal),
+    ])
+    expect(first).toEqual({ enabled: true, root })
+    expect(second).toEqual(first)
+    expect(asks).toBe(1)
+    expect(persisted).toBe(1)
+    await mkdir(join(root, 'child'))
+    expect(loads).toBe(0)
+    endTurn?.()
+    await host.finishTurn()
+    expect(loads).toBe(1)
+  })
+
+  test('authoring children use inline enablement and standard source precedence without mutating global inline paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-policy-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    const names = ['disabled', 'duplicate', 'managed', 'unique']
+    for (const name of names) {
+      await mkdir(join(root, name))
+      await writeFile(
+        join(root, name, 'register.ts'),
+        'export function register(on) { on("tool.call", ($, e, next) => next(e)); }',
+      )
+    }
+    const configuredDuplicate = {
+      ...await plugin(),
+      name: 'duplicate',
+      manifest: { name: 'duplicate' },
+      source: 'duplicate@marketplace',
+      repository: 'duplicate@marketplace',
+    }
+    const configuredManaged = {
+      ...await plugin(),
+      name: 'managed',
+      manifest: { name: 'managed' },
+      source: 'managed@marketplace',
+      repository: 'managed@marketplace',
+    }
+    const previousInline = [...getInlinePlugins()]
+    setInlinePlugins(['/existing/global-inline'])
+    cleanups.push(() => setInlinePlugins(previousInline))
+    let current: PrepareModPluginsSettings = {
+      ...settings(),
+      userSettings: { enabledPlugins: { 'disabled@inline': false } },
+      policySettings: { enabledPlugins: { 'managed@marketplace': true } },
+    }
+    const loadedPlugins: Array<Array<{ name: string; root: string }>> = []
+    const host = session({
+      authoringRoot: () => root,
+      persistAuthoringConsent: async () => {},
+      getSettings: () => current,
+      loadPlugins: async () => [configuredDuplicate, configuredManaged],
+      loadAuthoringPlugin: async path => {
+        const name = path.split('/').at(-1)!
+        return {
+          name,
+          manifest: { name },
+          path,
+          source: `${name}@inline`,
+          repository: `${name}@inline`,
+          enabled: true,
+          hookModules: [
+            { configPath: join(path, 'hooks.json'), paths: ['./register.ts'] },
+          ],
+        }
+      },
+      createRuntime: options => {
+        const runtime = createModsRuntime(options)
+        return {
+          ...runtime,
+          reconcile: async inputs => {
+            loadedPlugins.push(
+              inputs
+                .filter(input => input.name !== 'sec-default')
+                .map(input => ({ name: input.name, root: input.pluginRoot })),
+            )
+            await runtime.reconcile(inputs)
+          },
+        }
+      },
+    })
+    await host.bind(binding)
+    await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )
+    expect(loadedPlugins.at(-1)?.map(plugin => plugin.name)).toEqual([
+      'managed',
+      'duplicate',
+      'unique',
+    ])
+    expect(loadedPlugins.at(-1)?.find(plugin => plugin.name === 'duplicate')?.root)
+      .toBe(join(root, 'duplicate'))
+    expect(loadedPlugins.at(-1)?.find(plugin => plugin.name === 'managed')?.root)
+      .toBe(configuredManaged.path)
+    expect(getInlinePlugins()).toEqual(['/existing/global-inline'])
+
+    current = {
+      ...current,
+      policySettings: { enabledPlugins: { 'managed@inline': false } },
+    }
+    await host.refresh()
+    expect(loadedPlugins.at(-1)?.map(plugin => plugin.name)).toEqual([
+      'duplicate',
+      'unique',
+      'managed',
+    ])
+    expect(loadedPlugins.at(-1)?.find(plugin => plugin.name === 'managed')?.root)
+      .toBe(configuredManaged.path)
+  })
+
+  test('authoring component errors remain visible after reconcile clears prior diagnostics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-errors-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    const child = join(root, 'invalid')
+    await mkdir(join(child, '.claude-plugin'), { recursive: true })
+    await writeFile(
+      join(child, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'invalid', skills: './missing-skills' }),
+    )
+    const host = session({
+      authoringRoot: () => root,
+      persistAuthoringConsent: async () => {},
+    })
+    let state = { plugins: { errors: [] } } as unknown as import('../../state/AppState.js').AppState
+    await host.bind(binding, update => { state = update(state) })
+    await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )
+    expect(state.plugins.errors).toContainEqual(expect.objectContaining({
+      type: 'path-not-found',
+      plugin: 'invalid',
+      component: 'skills',
+      source: 'invalid@inline',
+    }))
+  })
+
+  test('decline is final for the request while withdrawn can ask again and never persists', async () => {
+    const root = '/repo-local/dev-mods/first'
+    let persisted = 0
+    const host = session({
+      authoringRoot: () => root,
+      persistAuthoringConsent: async () => { persisted++ },
+    })
+    await host.bind(binding)
+    const decline = await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'decline' }),
+      new AbortController().signal,
+    )
+    expect(decline).toEqual({ enabled: false })
+
+    const controller = new AbortController()
+    const withdrawn = host.requestAuthoringConsent(
+      (_request, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      }),
+      controller.signal,
+    )
+    controller.abort(new Error('withdrawn'))
+    await expect(withdrawn).rejects.toThrow('withdrawn')
+    const retry = await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'decline' }),
+      new AbortController().signal,
+    )
+    expect(retry).toEqual({ enabled: false })
+    expect(persisted).toBe(0)
+  })
+
+  test('withdrawn consent is scheduled once at turn end with a session-owned signal', async () => {
+    const host = session({ authoringRoot: () => '/repo-local/dev-mods/first' })
+    await host.bind(binding)
+    const first = new AbortController()
+    let asks = 0
+    let retrySignal: AbortSignal | undefined
+    const prompt = async (request: import('../../types/hooks.js').PromptRequest, signal?: AbortSignal) => {
+      asks++
+      if (asks === 1) throw new ModAuthoringPromptDismissedError()
+      retrySignal = signal
+      return { prompt_response: request.prompt, selected: 'decline' }
+    }
+    await expect(host.requestAuthoringConsent(prompt, first.signal))
+      .rejects.toBeInstanceOf(ModAuthoringPromptDismissedError)
+    first.abort(new Error('turn ended'))
+
+    await host.finishTurn()
+    await host.finishTurn()
+    await Promise.resolve()
+    expect(asks).toBe(2)
+    expect(retrySignal).toBeDefined()
+    expect(retrySignal).not.toBe(first.signal)
+    expect(retrySignal?.aborted).toBe(false)
+  })
+
+  test('disposing cancels a queued turn-end consent retry', async () => {
+    const host = session({ authoringRoot: () => '/repo-local/dev-mods/first' })
+    await host.bind(binding)
+    let calls = 0
+    let retrySignal: AbortSignal | undefined
+    const prompt = async (_request: import('../../types/hooks.js').PromptRequest, signal?: AbortSignal) => {
+      calls++
+      if (calls === 1) throw new ModAuthoringPromptDismissedError()
+      retrySignal = signal
+      return await new Promise<import('../../types/hooks.js').PromptResponse>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+    await expect(host.requestAuthoringConsent(prompt, new AbortController().signal))
+      .rejects.toBeInstanceOf(ModAuthoringPromptDismissedError)
+    await host.finishTurn()
+    expect(calls).toBe(2)
+    await host.dispose()
+    expect(retrySignal?.aborted).toBe(true)
+  })
+
+  test('turn-end consent retry reports errors and stays cancelled after session switch', async () => {
+    const diagnostics: import('./runtime.js').ModDiagnostic[] = []
+    const diagnosticReported = Promise.withResolvers<void>()
+    const host = session({
+      authoringRoot: id => `/repo-local/dev-mods/${id}`,
+      onDiagnostic: event => {
+        diagnostics.push(event)
+        diagnosticReported.resolve()
+      },
+    })
+    await host.bind(binding)
+    let calls = 0
+    let retrySignal: AbortSignal | undefined
+    const release = Promise.withResolvers<import('../../types/hooks.js').PromptResponse>()
+    const prompt = async (request: import('../../types/hooks.js').PromptRequest, signal?: AbortSignal) => {
+      calls++
+      if (calls === 1) throw new ModAuthoringPromptDismissedError()
+      retrySignal = signal
+      return release.promise
+    }
+    await expect(host.requestAuthoringConsent(prompt, new AbortController().signal))
+      .rejects.toBeInstanceOf(ModAuthoringPromptDismissedError)
+    await host.finishTurn()
+    expect(calls).toBe(2)
+    await host.bind({ ...binding, sessionId: 'second' })
+    expect(retrySignal?.aborted).toBe(true)
+    release.reject(retrySignal?.reason)
+    await Promise.resolve()
+    expect(diagnostics).toEqual([])
+
+    await expect(host.requestAuthoringConsent(async () => {
+      throw new Error('queue unavailable')
+    }, new AbortController().signal)).rejects.toThrow('queue unavailable')
+    await host.finishTurn()
+    await diagnosticReported.promise
+    expect(diagnostics.at(-1)).toMatchObject({
+      plugin: 'host',
+      stage: 'authoring-consent',
+      message: 'Unable to request Mod authoring consent: queue unavailable',
+    })
+  })
+
+  test('non-interactive hosts do not request authoring consent', async () => {
+    const host = session()
+    await host.bind({ ...binding, isInteractive: false })
+    expect(await host.requestAuthoringConsent(async () => {
+      throw new Error('must not ask')
+    }, new AbortController().signal)).toEqual({ enabled: false })
+  })
+
+  test('restores consent only for the exact current session authoring path', async () => {
+    const root = '/repo-local/dev-mods/first'
+    let asks = 0
+    const host = session({ authoringRoot: id => `/repo-local/dev-mods/${id}` })
+    host.restoreAuthoringConsent('/repo-local/dev-mods/other')
+    await host.bind(binding)
+    await host.requestAuthoringConsent(async request => {
+      asks++
+      return { prompt_response: request.prompt, selected: 'decline' }
+    }, new AbortController().signal)
+    expect(asks).toBe(1)
+    await host.bind({ ...binding, sessionId: 'other' })
+    host.restoreAuthoringConsent(root)
+    await host.bind(binding)
+    expect(await host.requestAuthoringConsent(async () => {
+      throw new Error('must not ask')
+    }, new AbortController().signal)).toEqual({ enabled: true, root })
+  })
+
+  test('same-session restore discovers authoring children without restarting configured plugins, and new sessions do not inherit them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-resume-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    const configured = await plugin()
+    const childRoot = join(root, 'resume-child')
+    await mkdir(childRoot)
+    await writeFile(
+      join(childRoot, 'register.ts'),
+      `export function register(on) {
+        on('command.run', () => ({ marker: 'restored-child' }));
+      }`,
+    )
+    let authoringLoads = 0
+    const host = session({
+      authoringRoot: id => id === binding.sessionId ? root : join(root, id),
+      loadPlugins: async () => [configured],
+      loadAuthoringPlugin: async path => {
+        authoringLoads++
+        return {
+          name: 'resume-child',
+          manifest: { name: 'resume-child' },
+          path,
+          source: 'resume-child@inline',
+          repository: 'resume-child@inline',
+          enabled: true,
+          hookModules: [
+            { configPath: join(path, 'hooks.json'), paths: ['./register.ts'] },
+          ],
+        }
+      },
+    })
+
+    await host.bind(binding)
+    expect(authoringLoads).toBe(0)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
+
+    const finishTurn = host.runtime!.beginPublicTurn('resume-turn')
+    host.restoreAuthoringConsent(root)
+    await host.bind({ ...binding })
+    expect(authoringLoads).toBe(0)
+    finishTurn()
+    await host.finishTurn()
+    expect(authoringLoads).toBe(1)
+    expect(await host.runtime!.dispatch('command.run', {}, async () => ({ marker: 'core' })))
+      .toEqual({ marker: 'restored-child' })
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
+
+    host.restoreAuthoringConsent(undefined)
+    await host.bind({ ...binding, sessionId: 'forked' })
+    expect(host.runtime!.hasHooks('command.run')).toBe(false)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
+  })
+
+  test('does not enable session authoring when the Mods host is disabled', async () => {
+    const host = session({ getDisabledReason: () => 'Mods disabled' })
+    await host.bind(binding)
+    expect(await host.requestAuthoringConsent(async () => {
+      throw new Error('must not ask')
+    }, new AbortController().signal)).toEqual({ enabled: false })
+  })
+
+  test('authoring watcher changes wait for turn end while ordinary plugin changes still refresh', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-turn-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    const declaration = await plugin()
+    const watchers: Array<EventEmitter & { close: () => Promise<void> }> = []
+    const watch = spyOn(chokidar, 'watch').mockImplementation(() => {
+      const watcher = Object.assign(new EventEmitter(), {
+        close: async () => {},
+      })
+      watchers.push(watcher)
+      return watcher as unknown as FSWatcher
+    })
+    cleanups.push(() => watch.mockRestore())
+    let configuredLoads = 0
+    let authoringLoads = 0
+    const host = session({
+      loadPlugins: async () => {
+        configuredLoads++
+        return [declaration]
+      },
+      authoringRoot: () => root,
+      persistAuthoringConsent: async () => {},
+      loadAuthoringPlugin: async path => {
+        authoringLoads++
+        return { ...declaration, path }
+      },
+    })
+    await mkdir(join(root, 'child'))
+    await host.bind(binding)
+    await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )
+    expect(authoringLoads).toBe(1)
+    expect(watchers).toHaveLength(2)
+
+    const endTurn = host.runtime!.beginPublicTurn('authoring-turn')
+    let scheduled: (() => void) | undefined
+    const timer = spyOn(globalThis, 'setTimeout').mockImplementation((callback => {
+      scheduled = callback as () => void
+      return { unref() {} } as unknown as ReturnType<typeof setTimeout>
+    }) as typeof setTimeout)
+    cleanups.push(() => timer.mockRestore())
+
+    watchers.at(-1)!.emit('all', 'change', join(root, 'child', 'register.ts'))
+    expect(scheduled).toBeUndefined()
+    await host.bind(binding)
+    expect(authoringLoads).toBe(1)
+    expect(configuredLoads).toBe(2)
+    await host.finishTurn()
+    expect(configuredLoads).toBe(3)
+    expect(authoringLoads).toBe(1)
+
+    watchers.at(-1)!.emit('all', 'change', join(declaration.path, 'register.ts'))
+    expect(scheduled).toBeDefined()
+    scheduled!()
+    await host.bind(binding)
+    expect(configuredLoads).toBe(4)
+    expect(authoringLoads).toBe(1)
+
+    endTurn()
+    await Promise.all([host.finishTurn(), host.finishTurn()])
+    expect(configuredLoads).toBe(5)
+    expect(authoringLoads).toBe(2)
+  })
+
+  test('late authoring persistence cannot activate a disposed host', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-dispose-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const host = session({
+      authoringRoot: () => root,
+      persistAuthoringConsent: async () => {
+        entered.resolve()
+        await release.promise
+      },
+    })
+    await host.bind(binding)
+    const enabling = host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )
+    await entered.promise
+    const disposed = host.dispose()
+    release.resolve()
+    expect(await enabling).toEqual({ enabled: false })
+    await disposed
+    expect(host.runtime).toBeUndefined()
+  })
+
+  test('a late consent response cannot enable a different bound session', async () => {
+    const firstRoot = await mkdtemp(join(tmpdir(), 'mods-authoring-first-'))
+    const secondRoot = await mkdtemp(join(tmpdir(), 'mods-authoring-second-'))
+    cleanups.push(() => rm(firstRoot, { recursive: true, force: true }))
+    cleanups.push(() => rm(secondRoot, { recursive: true, force: true }))
+    const response = Promise.withResolvers<import('../../types/hooks.js').PromptResponse>()
+    const host = session({
+      authoringRoot: id => id === binding.sessionId ? firstRoot : secondRoot,
+      persistAuthoringConsent: async () => {},
+    })
+    await host.bind(binding)
+    const stale = host.requestAuthoringConsent(() => response.promise, new AbortController().signal)
+    await host.bind({ ...binding, sessionId: 'second' })
+    response.resolve({ prompt_response: 'mod_hot_reload', selected: 'enable' })
+    expect(await stale).toEqual({ enabled: false })
+    expect(await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )).toEqual({ enabled: true, root: secondRoot })
+  })
+
+  test('aborted late enable does not activate and persistence errors remain retryable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-abort-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let persists = 0
+    const host = session({
+      authoringRoot: () => root,
+      persistAuthoringConsent: async () => {
+        persists++
+        if (persists === 1) {
+          entered.resolve()
+          await release.promise
+        } else if (persists === 2) {
+          throw new Error('persistence unavailable')
+        }
+      },
+    })
+    await host.bind(binding)
+    const controller = new AbortController()
+    const aborted = host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      controller.signal,
+    )
+    await entered.promise
+    controller.abort(new Error('withdrawn'))
+    release.resolve()
+    await expect(aborted).rejects.toThrow('withdrawn')
+
+    await expect(host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )).rejects.toThrow('persistence unavailable')
+    expect(await host.requestAuthoringConsent(
+      async request => ({ prompt_response: request.prompt, selected: 'enable' }),
+      new AbortController().signal,
+    )).toEqual({ enabled: true, root })
+    expect(persists).toBe(3)
+  })
+
+  test('authoring explanation is bounded to three prompts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-authoring-explain-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    let asks = 0
+    const host = session({ authoringRoot: () => root })
+    await host.bind(binding)
+    expect(await host.requestAuthoringConsent(async request => {
+      asks++
+      return { prompt_response: request.prompt, selected: 'explain' }
+    }, new AbortController().signal)).toEqual({ enabled: false })
+    expect(asks).toBe(3)
+  })
+
   test('Worker registered agents publish into next-turn ToolUseContext state and disappear on unload', async () => {
     const mod = await plugin(`export function register(on) {
       on('command.run', async $ => ({text:JSON.stringify(await $.agent.register({name:'reviewer',description:'Review',prompt:'Review carefully',model:'inherit'}))}));
@@ -312,6 +863,61 @@ describe('Mods CLI session host', () => {
     expect(await call(text=>{results.push(text)},{...context,modCommand:{...context.modCommand!,origin:{kind:'composer'}}},'verbose=true')).toBeNull()
     expect(verbose).toBe(true)
     expect(results.at(-1)).toBe('verbose = true')
+  })
+
+  test('cold runtime is bound before its first UI publication can render', async () => {
+    const declaration = await plugin(`let starts = 0; export function register(on) {
+      on('session.start', ($, e, next) => { starts++; return next(e); });
+      on('ui.render', ($, e, next) => {
+        if (e.component !== 'AbovePrompt') return next(e);
+        return $.ui.resolve(e).Text({children:'cold-resume-ready:'+starts});
+      });
+      on('tool.call', () => ({result:starts}));
+    }`)
+    const diagnostics: import('./runtime.js').ModDiagnostic[] = []
+    const frames: unknown[] = []
+    const events: string[] = []
+    const host = session({
+      loadPlugins: async () => [declaration],
+      onDiagnostic: event => diagnostics.push(event),
+      createRuntime: options => {
+        const runtime = createModsRuntime(options)
+        return {
+          ...runtime,
+          bind: async next => {
+            events.push('bind')
+            await runtime.bind(next)
+          },
+          reconcile: async inputs => {
+            await runtime.reconcile(inputs)
+            events.push('publication')
+            const site = await runtime.ui.mount({
+              surface: 'terminal',
+              component: 'AbovePrompt',
+              requestId: 'cold-resume',
+              props: {},
+            }, {
+              surface: 'terminal',
+              render: tree => { frames.push(tree) },
+              unmount: () => {},
+            })
+            await site.dispose()
+          },
+        }
+      },
+    })
+
+    await host.bind({ ...binding, surface: 'terminal' })
+
+    expect(events).toEqual(['bind', 'publication'])
+    expect(diagnostics).toEqual([])
+    expect(frames).toContainEqual(expect.objectContaining({
+      type: 'Text',
+      children: ['cold-resume-ready:1'],
+    }))
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:1})
+    await host.bind({ ...binding, surface: 'terminal' })
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:1})
   })
 
   test('bind supplies live host services before start and publishes command changes without a render race', async () => {

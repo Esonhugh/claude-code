@@ -400,7 +400,10 @@ import {
 import { getViewedAgentTask, getAgentInProgressToolUseIDs } from '../state/selectors.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
-import type { ModsSession } from '../services/mods/session.js'
+import {
+  ModAuthoringPromptDismissedError,
+  type ModsSession,
+} from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
@@ -956,6 +959,7 @@ export type Props = {
   initialContentReplacements?: ContentReplacementRecord[]
   // Initial agent context for session resume (name/color set via /rename or /color)
   initialAgentName?: string
+  initialDevModsFolder?: string
   initialAgentColor?: AgentColorName
   mcpClients?: MCPServerConnection[]
   dynamicMcpConfig?: Record<string, ScopedMcpServerConfig>
@@ -1002,6 +1006,7 @@ export function REPL({
   initialFileHistorySnapshots,
   initialContentReplacements,
   initialAgentName,
+  initialDevModsFolder,
   initialAgentColor,
   mcpClients: initialMcpClients,
   dynamicMcpConfig: initialDynamicMcpConfig,
@@ -1024,6 +1029,11 @@ export function REPL({
     remoteSessionConfig || directConnectConfig || sshSession,
   )
   const modsSession = isRemoteExecutionSession ? undefined : configuredModsSession
+  const initialDevModsRestored = useRef(false)
+  if (!initialDevModsRestored.current) {
+    initialDevModsRestored.current = true
+    modsSession?.restoreAuthoringConsent?.(initialDevModsFolder)
+  }
 
   // Env-var gates hoisted to mount-time — isEnvTruthy does toLowerCase+trim+
   // includes, and these were on the render path (hot during PageUp spam).
@@ -1662,8 +1672,10 @@ export function REPL({
       request: PromptRequest
       title: string
       toolInputSummary?: string | null
+      dismissError?: () => Error
       resolve: (response: PromptResponse) => void
-      reject: (error: Error) => void
+      reject: (error: unknown) => void
+      cleanup: () => void
     }>
   >([])
 
@@ -2271,10 +2283,10 @@ export function REPL({
   const setPastedContents = useCallback<React.Dispatch<
     React.SetStateAction<Record<number, PastedContent>>
   >>(update => {
+    const previous = pastedContentsRef.current
+    const next = typeof update === 'function' ? update(previous) : update
+    if (Object.is(next, previous)) return
     draftGenerationRef.current++
-    const next = typeof update === 'function'
-      ? update(pastedContentsRef.current)
-      : update
     pastedContentsRef.current = next
     setPastedContentsState(next)
   }, [])
@@ -2903,6 +2915,7 @@ export function REPL({
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
         restoreSessionMetadata(log)
+        modsSession?.restoreAuthoringConsent?.(log.devModsFolder)
         // Resumed sessions shouldn't re-title from mid-conversation context
         // (same reasoning as the useRef seed), and the previous session's
         // Haiku title shouldn't carry over.
@@ -3387,7 +3400,7 @@ export function REPL({
     } else if (focusedInputDialog === 'prompt') {
       // Reject all pending prompts and clear the queue
       for (const item of promptQueue) {
-        item.reject(new Error('Prompt cancelled by user'))
+        item.reject(item.dismissError?.() ?? new Error('Prompt cancelled by user'))
       }
       setPromptQueue([])
       abortController?.abort('user-cancel')
@@ -3775,13 +3788,44 @@ export function REPL({
   ])
 
   const requestPrompt = useCallback(
-    (title: string, toolInputSummary?: string | null) =>
-      (request: PromptRequest): Promise<PromptResponse> =>
+    (
+      title: string,
+      toolInputSummary?: string | null,
+      dismissError?: () => Error,
+    ) =>
+      (request: PromptRequest, signal?: AbortSignal): Promise<PromptResponse> =>
         new Promise<PromptResponse>((resolve, reject) => {
-          setPromptQueue(prev => [
-            ...prev,
-            { request, title, toolInputSummary, resolve, reject },
-          ])
+          let settled = false
+          const cleanup = () => signal?.removeEventListener('abort', abort)
+          const finish = (settle: () => void) => {
+            if (settled) return
+            settled = true
+            cleanup()
+            settle()
+          }
+          const item = {
+            request,
+            title,
+            toolInputSummary,
+            dismissError,
+            resolve: (response: PromptResponse) => finish(() => resolve(response)),
+            reject: (error: unknown) => finish(() => reject(error)),
+            cleanup,
+          }
+          const abort = () => {
+            item.reject(
+              item.dismissError?.() ??
+                signal?.reason ??
+                new Error('Prompt cancelled'),
+            )
+            setPromptQueue(prev => prev.filter(candidate => candidate !== item))
+          }
+          if (signal?.aborted) {
+            abort()
+            return
+          }
+          signal?.addEventListener('abort', abort, { once: true })
+          setPromptQueue(prev => [...prev, item])
         }),
     [],
   )
@@ -3825,6 +3869,7 @@ export function REPL({
         abortController,
         diff: diffController,
         mods: modsSession?.runtime,
+        modsSession,
         modCommand: {
           origin: { kind: 'composer' },
           presentation: { columns: process.stdout.columns ?? 80, isFullscreen: isFullscreenEnvEnabled() },
@@ -3950,6 +3995,16 @@ export function REPL({
         },
         resume,
         setConversationId,
+        requestModAuthoringConsent: modsSession
+          ? signal => modsSession.requestAuthoringConsent(
+              requestPrompt(
+                'mod_hot_reload',
+                undefined,
+                () => new ModAuthoringPromptDismissedError(),
+              ),
+              signal,
+            )
+          : undefined,
         requestPrompt: feature('HOOK_PROMPTS') ? requestPrompt : undefined,
         contentReplacementState: contentReplacementStateRef.current,
       }
@@ -7246,7 +7301,9 @@ export function REPL({
                     onAbort={() => {
                       const item = promptQueue[0]
                       if (!item) return
-                      item.reject(new Error('Prompt cancelled by user'))
+                      item.reject(
+                        item.dismissError?.() ?? new Error('Prompt cancelled by user'),
+                      )
                       setPromptQueue(([, ...tail]) => tail)
                     }}
                   />

@@ -9,7 +9,12 @@ import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuff
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
-import { isCommandImmediate } from '../types/command.js'
+import {
+  createModsSession,
+  ModAuthoringPromptDismissedError,
+} from '../services/mods/session.js'
+import { isCommandImmediate, type Command } from '../types/command.js'
+import { processSlashCommand } from '../utils/processUserInput/processSlashCommand.js'
 import { DiffController } from '../services/diff/controller.js'
 import { QueryGuard } from '../utils/QueryGuard.js'
 import {
@@ -18,7 +23,7 @@ import {
 } from '../context.js'
 
 // Execute the actual callbacks without importing REPL's startup/services graph.
-function extract(path: string, name: string, kind: 'callback' | 'function' | 'effect' = 'callback') {
+function extract(path: string, name: string, kind: 'callback' | 'function' | 'effect' | 'block' = 'callback') {
   const source = readFileSync(new URL(path, import.meta.url), 'utf8')
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   const matches: ts.Node[] = []
@@ -30,12 +35,16 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
     if (kind === 'function' && ts.isFunctionDeclaration(node) && node.name?.text === name) matches.push(node)
     if (kind === 'effect' && ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' &&
       node.arguments[0]?.getText(file).includes(name)) matches.push(node.arguments[0])
+    if (kind === 'block' && ts.isIfStatement(node) && node.expression.getText(file).includes(name)) {
+      matches.push(node.thenStatement)
+    }
     ts.forEachChild(node, visit)
   }
   visit(file)
   expect(matches).toHaveLength(1)
   const text = matches[0]!.getText(file).replace(/^export /, '')
-  const js = ts.transpileModule(`const extracted = (${text});`, {
+  const expression = kind === 'block' ? `() => ${text}` : `(${text})`
+  const js = ts.transpileModule(`const extracted = ${expression};`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, jsx: ts.JsxEmit.React },
     transformers: { before: [context => root => {
       const visit = (node: ts.Node): ts.VisitResult<ts.Node> =>
@@ -83,6 +92,143 @@ function deferred() {
 }
 const noop = () => {}
 
+
+test('initial CLI resume restores persisted Mod authoring consent before the first host bind', async () => {
+  const calls: unknown[] = []
+  const modsSession = {
+    restoreAuthoringConsent: (root: string | undefined) => calls.push(['restore', root]),
+    bind: async (value: unknown) => { calls.push(['bind', value]) },
+  }
+  const restore = extract('./REPL.tsx', 'initialDevModsRestored', 'block')({
+    initialDevModsRestored: { current: false },
+    initialDevModsFolder: '/config/dev-mods/session',
+    modsSession,
+  })
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession,
+    getCwd: () => '/repo',
+    getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session',
+    setAppState: noop,
+    messagesRef: { current: [] },
+    modToolContextRef: { current: noop },
+    inputValueRef: { current: '' },
+    insertTextRef: { current: null },
+    modPromptBlockedRef: { current: false },
+  })
+
+  restore()
+  await awaitMods()
+  expect(calls).toEqual([
+    ['restore', '/config/dev-mods/session'],
+    ['bind', {
+      cwd: '/repo',
+      surface: 'terminal',
+      isInteractive: true,
+      sessionId: 'session',
+    }],
+  ])
+})
+
+test('resume processing preserves authoring consent only for the original session', () => {
+  const source = readFileSync(new URL('../utils/sessionRestore.ts', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('sessionRestore.ts', source, ts.ScriptTarget.Latest, true)
+  let returned: ts.ObjectLiteralExpression | undefined
+  function visit(node: ts.Node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'processResumedConversation') {
+      function findReturn(candidate: ts.Node) {
+        if (ts.isReturnStatement(candidate) && candidate.expression && ts.isObjectLiteralExpression(candidate.expression)) {
+          returned = candidate.expression
+        }
+        ts.forEachChild(candidate, findReturn)
+      }
+      findReturn(node)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(returned).toBeDefined()
+  const devModsFolder = returned!.properties.find(property =>
+    property.name?.getText(file) === 'devModsFolder',
+  )
+  expect(devModsFolder).toBeDefined()
+  const evaluate = new Function(
+    'opts',
+    'result',
+    `return ({${devModsFolder!.getText(file)}}).devModsFolder`,
+  )
+  expect(evaluate({ forkSession: false }, { devModsFolder: '/config/dev-mods/session' }))
+    .toBe('/config/dev-mods/session')
+  expect(evaluate({ forkSession: true }, { devModsFolder: '/config/dev-mods/session' }))
+    .toBeUndefined()
+})
+
+test('production tool context exposes Mod authoring consent while generic hook prompts stay feature-gated', async () => {
+  const requests: any[] = []
+  const requestPrompt = (source: string) => async (request: unknown, signal?: AbortSignal) => {
+    requests.push(source, request, signal)
+    return { prompt_response: 'mod_hot_reload', selected: 'enable' }
+  }
+  const modsSession = {
+    runtime: undefined,
+    requestAuthoringConsent: async (prompt: any, signal: AbortSignal) => {
+      const response = await prompt({ prompt: 'mod_hot_reload' }, signal)
+      return response.selected === 'enable'
+        ? { enabled: true, root: '/config/dev-mods/session' }
+        : { enabled: false }
+    },
+  }
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let returned: ts.ObjectLiteralExpression | undefined
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'getToolUseContext' &&
+      node.initializer && ts.isCallExpression(node.initializer)) {
+      const callback = node.initializer.arguments[0]
+      if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) {
+        function findReturn(candidate: ts.Node) {
+          if (returned) return
+          if (ts.isReturnStatement(candidate) && candidate.expression && ts.isObjectLiteralExpression(candidate.expression)) {
+            returned = candidate.expression
+            return
+          }
+          ts.forEachChild(candidate, findReturn)
+        }
+        findReturn(callback.body)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(returned).toBeDefined()
+  const properties = returned!.properties.filter(property =>
+    property.name && ['requestModAuthoringConsent', 'requestPrompt'].includes(property.name.getText(file)),
+  )
+  const expression = `{${properties.map(property => property.getText(file)).join(',')}}`
+  const js = ts.transpileModule(`return ${expression};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const context = new Function('scope', `with (scope) { ${js} }`)({
+    modsSession,
+    requestPrompt,
+    feature: () => false,
+  })
+
+  expect(context.requestPrompt).toBeUndefined()
+  const signal = new AbortController().signal
+  await expect(context.requestModAuthoringConsent(signal)).resolves.toEqual({
+    enabled: true,
+    root: '/config/dev-mods/session',
+  })
+  expect(requests).toEqual(['mod_hot_reload', { prompt: 'mod_hot_reload' }, signal])
+
+  const noHost = new Function('scope', `with (scope) { ${js} }`)({
+    modsSession: undefined,
+    requestPrompt,
+    feature: () => false,
+  })
+  expect(noHost.requestModAuthoringConsent).toBeUndefined()
+})
 
 test('Mods prompt host reads and fills the live mounted PromptInput bridge', async () => {
   let services: any
@@ -460,14 +606,17 @@ test('Diff sidebar leaves PromptInput active while its responsive dialog takes o
   expect(expression).toContain('isShowingLocalJSXCommand')
   expect(expression).toContain('showResponsiveDiffDialog')
   expect(expression).toContain('modPaneFocused')
+  expect(expression).toContain('modAbovePromptFocused')
   const active = new Function(
     'isShowingLocalJSXCommand',
     'showResponsiveDiffDialog',
     'modPaneFocused',
+    'modAbovePromptFocused',
     `return ${expression}`,
   )
-  expect(active(false, false, false)).toBe(false)
-  expect(active(false, true, false)).toBe(true)
+  expect(active(false, false, false, false)).toBe(false)
+  expect(active(false, true, false, false)).toBe(true)
+  expect(active(false, false, false, true)).toBe(true)
 })
 
 test('Diff sidebar leaves keyboard navigation with the composer and background tasks', () => {
@@ -518,6 +667,7 @@ test('Diff dialog owns scroll keys while unrelated overlays keep transcript scro
   const state = { activeOverlays: new Set<string>() }
   const scope = {
     modPaneFocused: false,
+    modAbovePromptFocused: false,
     modUiPresentation: {
       composerEmpty: true,
       hasDialog: false,
@@ -1080,6 +1230,99 @@ test('admission failure never overwrites the running abort controller or a newer
   expect(h.guard.isActive).toBe(true)
 })
 
+for (const order of ['dismissal-first', 'abort-first'] as const) {
+  test(`${order} Mod authoring consent cancellation restores the unadmitted draft`, async () => {
+    const command: Command = {
+      type: 'prompt',
+      name: 'plugin-authoring',
+      description: 'request Mod authoring consent',
+      progressMessage: 'testing',
+      contentLength: 0,
+      source: 'builtin',
+      async getPromptForCommand(_args, context) {
+        await context.requestModAuthoringConsent?.(context.abortController.signal)
+        return [{ type: 'text', text: 'consent granted' }]
+      },
+    }
+    const h = harness({ active: false, input: '/plugin-authoring', commands: [command] })
+    h.scope.setPastedContents = extract('./REPL.tsx', 'setPastedContents')({
+      draftGenerationRef: h.epoch,
+      pastedContentsRef: h.scope.pastedContentsRef,
+      setPastedContentsState: (value: any) => { h.draft.paste = value },
+    })
+    const controller = new AbortController()
+    const promptQueue: any[] = []
+    const setPromptQueue = (update: (previous: any[]) => any[]) => {
+      promptQueue.splice(0, promptQueue.length, ...update(promptQueue))
+    }
+    const requestPrompt = extract('./REPL.tsx', 'requestPrompt')({
+      useCallback: (callback: unknown) => callback,
+      setPromptQueue,
+      logForDebugging: noop,
+    })('mod_hot_reload', undefined, () => new ModAuthoringPromptDismissedError())
+    const modsSession = createModsSession({
+      isTrusted: true,
+      getSettings: () => ({
+        userSettings: null,
+        flagSettings: null,
+        policySettings: null,
+        hookPolicy: { managedOnly: false, allDisabled: false },
+      }),
+      loadPlugins: async () => [],
+      authoringRoot: () => '/config/dev-mods/session',
+    })
+    await modsSession.bind({
+      cwd: '/repo',
+      sessionId: 'session',
+      surface: 'terminal',
+      isInteractive: true,
+    })
+    h.lowerScope.processUserInput = async (params: any) => processSlashCommand(
+      params.input,
+      [],
+      [],
+      [],
+      {
+        options: {
+          commands: [command],
+          tools: [],
+          isNonInteractiveSession: false,
+          mcpResources: {},
+        },
+        messages: [],
+        abortController: controller,
+        requestModAuthoringConsent: signal =>
+          modsSession.requestAuthoringConsent(requestPrompt, signal),
+        getAppState: () => ({ sessionState: { sessionHooks: {} } }),
+        setAppState: noop,
+      } as never,
+      noop,
+    )
+
+    try {
+      const pending = h.submit('/plugin-authoring', h.helpers)
+      h.release()
+      const deadline = Date.now() + 4_000
+      while (promptQueue.length === 0 && Date.now() < deadline)
+        await new Promise<void>(resolve => setImmediate(resolve))
+      expect(promptQueue).toHaveLength(1)
+      const [item] = promptQueue
+      h.scope.setPastedContents((previous: any) => previous)
+      if (order === 'abort-first') controller.abort('user-cancel')
+      item.reject(item.dismissError())
+      if (order === 'dismissal-first') controller.abort('user-cancel')
+
+      await expect(pending).rejects.toBeInstanceOf(ModAuthoringPromptDismissedError)
+      expect(h.draft.text).toBe('/plugin-authoring')
+      expect(h.draft.cursor).toBe('/plugin-authoring'.length)
+      expect(h.executions).toEqual([])
+      expect(h.queued).toEqual([])
+    } finally {
+      await modsSession.dispose()
+    }
+  })
+}
+
 test('post-admission drop displays only the new warning and does not undo the queued prompt', async () => {
   const h = harness()
   const message = { type: 'user', uuid: 'settled', message: { content: 'entered' } }
@@ -1245,7 +1488,7 @@ test('/exit executes once after barriers without leaving its input behind', asyn
 })
 
 
-test('real REPL setters advance ownership synchronously, including identical values', () => {
+test('real REPL setters advance ownership synchronously except pasted-content no-ops', () => {
   const generation = { current: 0 }
   const base: Record<string, any> = {
     draftGenerationRef: generation, inputValueRef: { current: '' },
@@ -1258,7 +1501,7 @@ test('real REPL setters advance ownership synchronously, including identical val
   }
   for (const [name, value] of [
     ['setInputValue', ''], ['setInputMode', 'prompt'],
-    ['setPastedContents', (p: any) => p], ['setStashedPrompt', undefined],
+    ['setStashedPrompt', undefined],
   ] as const) {
     const set = extract('./REPL.tsx', name)(base)
     const before = generation.current
@@ -1266,8 +1509,13 @@ test('real REPL setters advance ownership synchronously, including identical val
     expect(generation.current).toBe(before + 1)
   }
   const setPaste = extract('./REPL.tsx', 'setPastedContents')(base)
+  const beforeNoop = generation.current
+  setPaste((prev: any) => prev)
+  expect(generation.current).toBe(beforeNoop)
   setPaste({ 1: { content: 'one' } })
+  expect(generation.current).toBe(beforeNoop + 1)
   setPaste((prev: any) => ({ ...prev, 2: { content: 'two' } }))
+  expect(generation.current).toBe(beforeNoop + 2)
   expect(base.pastedContentsRef.current).toEqual({ 1: { content: 'one' }, 2: { content: 'two' } })
 })
 

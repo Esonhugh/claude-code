@@ -300,6 +300,7 @@ export type ProcessedResume = {
   agentName: string | undefined
   agentColor: AgentColorName | undefined
   restoredAgentDef: AgentDefinition | undefined
+  devModsFolder: string | undefined
   initialState: AppState
 }
 
@@ -329,6 +330,7 @@ type ResumeLoadResult = {
   tag?: string
   mode?: 'coordinator' | 'normal'
   worktreeSession?: PersistedWorktreeSession | null
+  devModsFolder?: string
   prNumber?: number
   prUrl?: string
   prRepository?: string
@@ -571,6 +573,7 @@ export async function processResumedConversation(
       ? undefined
       : result.agentColor) as AgentColorName | undefined,
     restoredAgentDef: restoredAgent,
+    devModsFolder: opts.forkSession ? undefined : result.devModsFolder,
     initialState,
   }
 }

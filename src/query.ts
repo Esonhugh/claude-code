@@ -400,8 +400,20 @@ export async function* query(
       logError(new Error('Mods turn.complete failed', { cause: error }))
     } finally {
       endPublicTurn?.()
-      if (loopStarted && handlesMeasure)
-        await params.toolUseContext.mods!.measure(() => captureModSessionUsage(catalogContext))
+      try {
+        await params.toolUseContext.modsSession?.finishTurn()
+      } catch (error) {
+        logForDebugging(`Mods finishTurn failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
+        logError(new Error('Mods finishTurn failed', { cause: error }))
+      }
+      if (loopStarted && handlesMeasure) {
+        try {
+          await params.toolUseContext.mods!.measure(() => captureModSessionUsage(catalogContext))
+        } catch (error) {
+          logForDebugging(`Mods session.measure failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
+          logError(new Error('Mods session.measure failed', { cause: error }))
+        }
+      }
     }
   }
   // Never yield from finally: doing so would keep iterator.return() suspended.

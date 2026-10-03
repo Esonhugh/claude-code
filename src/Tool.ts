@@ -182,6 +182,7 @@ export type ManagedSSHRemotePermissions = {
 export type ToolUseContext = {
   diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
+  modsSession?: import('./services/mods/session.js').ModsSession
   modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
   /** Invocation-local author result sink; never inherited by nested tools. */
   modToolCallResult?: (result: import('./services/mods/toolAdapter.js').ToolCallResult) => void
@@ -318,13 +319,17 @@ export type ToolUseContext = {
     }
   >
   queryTracking?: QueryChainTracking
+  /** Interactive consent entry used only by the bundled Mod authoring skill. */
+  requestModAuthoringConsent?: (
+    signal: AbortSignal,
+  ) => Promise<{ enabled: boolean; root?: string }>
   /** Callback factory for requesting interactive prompts from the user.
    * Returns a prompt callback bound to the given source name.
    * Only available in interactive (REPL) contexts. */
   requestPrompt?: (
     sourceName: string,
     toolInputSummary?: string | null,
-  ) => (request: PromptRequest) => Promise<PromptResponse>
+  ) => (request: PromptRequest, signal?: AbortSignal) => Promise<PromptResponse>
   toolUseId?: string
   criticalSystemReminder_EXPERIMENTAL?: string
   /** When true, preserve toolUseResult on messages even for subagents.

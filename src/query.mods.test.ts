@@ -3133,6 +3133,34 @@ for (const mode of ['none', 'no-hook', 'hook']) {
   }
 }
 
+test('finishTurn failure preserves the query error, emits diagnostics, and still measures usage', async () => {
+  const h = harness(async function* () {})
+  const original = new Error('query failure')
+  const finishFailure = new Error('finishTurn failure')
+  const diagnostics: any[] = []
+  const order: string[] = []
+  h.context.modsSession = {
+    finishTurn: async () => {
+      order.push('finishTurn')
+      throw finishFailure
+    },
+  } as unknown as ToolUseContext['modsSession']
+  h.snapshot.hasHooks = event => event === 'session.measure'
+  h.context.mods!.measure = async () => {
+    order.push('measure')
+  }
+  const run = isolatedWrapper(async function* () {
+    yield { type: 'stream_request_start' }
+    throw original
+  }, diagnostics, [])(h.params)
+
+  await run.next()
+  await expect(run.next()).rejects.toBe(original)
+  expect(order).toEqual(['finishTurn', 'measure'])
+  expect(diagnostics.some(value => String(value).includes('Mods finishTurn failed'))).toBe(true)
+  expect(diagnostics.some(value => value instanceof Error && value.cause === finishFailure)).toBe(true)
+})
+
 for (const ending of ['return', 'throw', 'close']) {
   test(`finalizer failure is diagnostic without overriding ${ending}`, async () => {
     const h = harness(async function* () {})

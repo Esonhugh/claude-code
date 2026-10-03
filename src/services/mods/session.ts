@@ -1,7 +1,11 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { sep } from 'node:path'
+import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
+import { mkdir, readdir } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
+import type { PromptRequest, PromptResponse } from '../../types/hooks.js'
+import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { recordDevModsConsent } from '../../utils/sessionStorage.js'
 import type { Tool, Tools } from '../../Tool.js'
 import type { Command } from '../../types/command.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
@@ -20,6 +24,8 @@ import { subscribePluginRefresh } from '../../utils/plugins/cacheUtils.js'
 import {
   clearPluginCache,
   loadAllPluginsCacheOnly,
+  loadSessionOnlyPlugins,
+  mergePluginSources,
 } from '../../utils/plugins/pluginLoader.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import { getEnabledSettingSources } from '../../utils/settings/constants.js'
@@ -51,11 +57,27 @@ import {
   type ModsRuntime,
 } from './runtime.js'
 
+export class ModAuthoringPromptDismissedError extends Error {
+  constructor() {
+    super('Mod authoring prompt dismissed')
+    this.name = 'ModAuthoringPromptDismissedError'
+  }
+}
+
 export type ModsSessionOptions = {
   /** The CLI supplies this only after its trust gate (print mode has implicit trust). */
   isTrusted: boolean
   getDisabledReason?: () => string | undefined
   loadPlugins?: () => Promise<readonly LoadedPlugin[]>
+  loadAuthoringPlugin?: (
+    path: string,
+  ) => Promise<
+    | LoadedPlugin
+    | { plugin: LoadedPlugin; errors: PluginError[] }
+    | undefined
+  >
+  authoringRoot?: (sessionId: string) => string
+  persistAuthoringConsent?: (root: string) => Promise<void>
   getSettings?: () => PrepareModPluginsSettings
   onDiagnostic?: (event: ModDiagnostic) => void
   createRuntime?: typeof createModsRuntime
@@ -92,6 +114,18 @@ export function createModsSession(options: ModsSessionOptions) {
   // Retired activations may still report errors after a token is rotated.
   const diagnosticSecrets = new Set<string>()
   let configPlugins: readonly LoadedPlugin[] = []
+  let authoringRoot: string | undefined
+  let restoredAuthoringRoot: string | undefined
+  let authoringRestorePending = false
+  let authoringEnabled = false
+  let authoringPending = false
+  let authoringGeneration = 0
+  let authoringConsent: Promise<{ enabled: boolean; root?: string }> | undefined
+  let authoringPrompt: ((request: PromptRequest, signal?: AbortSignal) => Promise<PromptResponse>) | undefined
+  let authoringRetryPending = false
+  let authoringRetry: Promise<void> | undefined
+  let authoringController = new AbortController()
+  const authoringPlugins = new Map<string, LoadedPlugin>()
   let builtinConfigRows: ModHostServices['configRows']
   const services: ModHostServices = {
     configRows: async () => [
@@ -337,27 +371,41 @@ export function createModsSession(options: ModsSessionOptions) {
     ])).digest('hex')
   }
 
-  function scheduleRefresh() {
-    if (stopped) return
+  function authoringOwns(path: string): boolean {
+    if (!authoringEnabled || !authoringRoot) return false
+    const child = relative(authoringRoot, path)
+    return child === '' || (!child.startsWith(`..${sep}`) && child !== '..' && !isAbsolute(child))
+  }
+
+  function deferAuthoringRefresh(): boolean {
+    if (!runtime?.activePublicTurnId) return false
+    authoringPending = true
+    return true
+  }
+
+  function scheduleRefresh(authoringChange = false) {
+    if (stopped || (authoringChange && deferAuthoringRefresh())) return
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = undefined
-      void refresh().catch(() => {}) // refresh reports the stage, not raw input
+      void refresh(undefined, authoringChange).catch(() => {}) // refresh reports the stage, not raw input
     }, 150)
     timer.unref?.()
   }
 
   async function watchPlugins(plugins: readonly LoadedPlugin[]) {
     const nextRoots = [
-      ...new Set(
-        plugins
+      ...new Set([
+        ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
+        ...plugins
           .filter(
             plugin =>
               plugin.isBuiltin !== true &&
+              !authoringOwns(plugin.path) &&
               plugin.hookModules?.some(group => group.paths.length),
           )
           .map(plugin => plugin.path),
-      ),
+      ]),
     ].sort()
     if (
       nextRoots.length === roots.length &&
@@ -382,12 +430,12 @@ export function createModsSession(options: ModsSessionOptions) {
         path.split(sep).includes('.git') ||
         Boolean(stats && !stats.isFile() && !stats.isDirectory()),
     })
-    watcher.on('all', () => {
+    watcher.on('all', (_event, path: string) => {
       // Invalidate the declaration cache only on an actual owned-file change,
       // never on polling ticks. This picks up imports and hooks.json changes.
       if (stopped) return
       clearPluginCache()
-      scheduleRefresh()
+      scheduleRefresh(authoringOwns(path))
     })
     watcher.on('error', () =>
       diagnostic({
@@ -399,15 +447,97 @@ export function createModsSession(options: ModsSessionOptions) {
     )
   }
 
-  async function reconcile(plugins?: readonly LoadedPlugin[]) {
+  async function loadAuthoringChildren(
+    enabledPlugins: SettingsJson['enabledPlugins'],
+  ): Promise<PluginError[]> {
+    if (!authoringEnabled || !authoringRoot) return []
+    let children: string[]
+    try {
+      children = (await readdir(authoringRoot, { withFileTypes: true }))
+        .filter(entry => entry.isDirectory() && !entry.isSymbolicLink())
+        .map(entry => join(authoringRoot!, entry.name))
+        .sort()
+    } catch (error) {
+      return [{
+        type: 'generic-error',
+        source: 'plugin:mods:host',
+        plugin: 'host',
+        error: `authoring: Unable to read this session's Mods folder: ${error instanceof Error ? error.message : String(error)}`,
+      }]
+    }
+    const next = new Map<string, LoadedPlugin>()
+    const errors: PluginError[] = []
+    if (!options.loadAuthoringPlugin) {
+      const loaded = await loadSessionOnlyPlugins(children, enabledPlugins)
+      for (const plugin of loaded.plugins) next.set(plugin.path, plugin)
+      errors.push(...loaded.errors)
+    } else {
+      for (const child of children) {
+        try {
+          const result = await options.loadAuthoringPlugin(child)
+          if (!result) continue
+          const loaded = 'plugin' in result ? result.plugin : result
+          if ('plugin' in result) errors.push(...result.errors)
+          loaded.source = `${loaded.name}@inline`
+          loaded.repository = loaded.source
+          loaded.enabled = enabledPlugins?.[loaded.source] !== false
+          next.set(child, loaded)
+        } catch (error) {
+          errors.push({
+            type: 'generic-error',
+            source: `${basename(child)}@inline`,
+            plugin: basename(child),
+            error: `authoring: ${error instanceof Error ? error.message : String(error)}`,
+          })
+        }
+      }
+    }
+    authoringPlugins.clear()
+    for (const [path, plugin] of next) authoringPlugins.set(path, plugin)
+    return errors
+  }
+
+  function effectiveEnabledPlugins(
+    settings: PrepareModPluginsSettings,
+  ): SettingsJson['enabledPlugins'] {
+    return Object.assign(
+      {},
+      settings.userSettings?.enabledPlugins,
+      settings.flagSettings?.enabledPlugins,
+      settings.policySettings?.enabledPlugins,
+    )
+  }
+
+  function managedPluginNames(settings: PrepareModPluginsSettings): Set<string> | null {
+    const names = new Set<string>()
+    for (const [pluginId, value] of Object.entries(
+      settings.policySettings?.enabledPlugins ?? {},
+    )) {
+      if (typeof value !== 'boolean' || !pluginId.includes('@')) continue
+      const name = pluginId.split('@')[0]
+      if (name) names.add(name)
+    }
+    return names.size > 0 ? names : null
+  }
+
+  async function reconcile(plugins?: readonly LoadedPlugin[], deferAuthoring = false) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const policy = settings.policySettings
     const disabled = options.getDisabledReason?.()
       ?? (policy?.allowManagedHooksOnly || policy?.strictPluginOnlyCustomization
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
-    const loaded = plugins ?? (await loadPlugins())
+    const configured = plugins ?? (await loadPlugins())
+    const authoringErrors = deferAuthoring
+      ? []
+      : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
     if (stopped || isShuttingDown()) return
+    const { plugins: loaded, errors: mergeErrors } = mergePluginSources({
+      session: [...authoringPlugins.values()],
+      marketplace: configured.filter(plugin => plugin.isBuiltin !== true),
+      builtin: configured.filter(plugin => plugin.isBuiltin === true),
+      managedNames: managedPluginNames(settings),
+    })
     configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
     for (const input of prepared.inputs) {
@@ -423,7 +553,7 @@ export function createModsSession(options: ModsSessionOptions) {
     const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
       .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
     services.pluginOrigin = storageId => origins.get(storageId)
-    diagnostics = []
+    diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
     for (const error of prepared.errors) diagnostic(error)
     if (
@@ -442,10 +572,17 @@ export function createModsSession(options: ModsSessionOptions) {
         Object.keys(plugin.manifest.userConfig ?? {}).length > 0,
     )
     if (!runtime && !disabled && (inputs.length > 0 || hasConfigRows)) {
-      runtime = (options.createRuntime ?? createModsRuntime)({
+      const created = (options.createRuntime ?? createModsRuntime)({
         onDiagnostic: diagnostic,
         services,
       })
+      if (binding) await created.bind(binding)
+      if (stopped) {
+        await created.dispose()
+        return
+      }
+      runtime = created
+      runtimeBound = binding !== undefined
       unsubscribeUi = runtime.ui.subscribe(() => {
         for (const listener of uiListeners) listener()
       })
@@ -479,14 +616,50 @@ export function createModsSession(options: ModsSessionOptions) {
       publishDiagnostics()
   }
 
-  function refresh(plugins?: readonly LoadedPlugin[]): Promise<void> {
+  function authoringRequestIsCurrent(
+    sessionId: string,
+    generation: number,
+    signal: AbortSignal,
+  ): boolean {
+    return !stopped && !signal.aborted && generation === authoringGeneration && binding?.sessionId === sessionId
+  }
+
+  async function enableAuthoring(
+    root: string,
+    sessionId: string,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    signal.throwIfAborted()
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    signal.throwIfAborted()
+    if (!authoringRequestIsCurrent(sessionId, generation, signal)) return false
+    await (options.persistAuthoringConsent ?? recordDevModsConsent)(root)
+    signal.throwIfAborted()
+    if (!authoringRequestIsCurrent(sessionId, generation, signal)) return false
+    authoringRoot = root
+    authoringEnabled = true
+    if (deferAuthoringRefresh()) return true
+    await refresh()
+    if (!authoringRequestIsCurrent(sessionId, generation, signal)) {
+      authoringRoot = undefined
+      authoringEnabled = false
+      authoringPlugins.clear()
+      return false
+    }
+    return true
+  }
+
+  function refresh(plugins?: readonly LoadedPlugin[], authoringChange = false): Promise<void> {
     if (stopped || isShuttingDown() || !options.isTrusted) return Promise.resolve()
+    if (authoringChange && deferAuthoringRefresh()) return Promise.resolve()
     initialize()
     if (timer) clearTimeout(timer)
     timer = undefined
+    const deferAuthoring = deferAuthoringRefresh()
     return enqueue(async () => {
       try {
-        await reconcile(plugins)
+        await reconcile(plugins, deferAuthoring)
       } catch (error) {
         if (!stopped)
           diagnostic({
@@ -522,9 +695,120 @@ export function createModsSession(options: ModsSessionOptions) {
     })
   }
 
+  async function requestAuthoringConsent(
+    requestPrompt: (
+      request: PromptRequest,
+      signal?: AbortSignal,
+    ) => Promise<PromptResponse>,
+    signal: AbortSignal,
+  ): Promise<{ enabled: boolean; root?: string }> {
+    if (stopped || !options.isTrusted || options.getDisabledReason?.() || !binding?.isInteractive)
+      return { enabled: false }
+    authoringPrompt = requestPrompt
+    if (authoringEnabled && authoringRoot)
+      return { enabled: true, root: authoringRoot }
+    if (authoringConsent) return authoringConsent
+    const generation = authoringGeneration
+    const consent = (async () => {
+      const sessionId = binding.sessionId
+      const root =
+        options.authoringRoot?.(sessionId) ??
+        join(getClaudeConfigHomeDir(), 'dev-mods', sessionId)
+      let expanded = false
+      for (let attempt = 0; attempt < 3; attempt++) {
+        signal.throwIfAborted()
+        if (!authoringRequestIsCurrent(sessionId, generation, signal))
+          return { enabled: false }
+        const timing = runtime?.activePublicTurnId
+          ? 'when this turn ends'
+          : 'now'
+        const message = expanded
+          ? [
+              `Mods live in this session's folder (${root}).`,
+              'A mod is code Claude wrote; it runs with your permissions.',
+              `Enable: they load ${timing} and reload when their files change.`,
+              'Enable holds for this session, also after a restart.',
+              'Not now: they stay unloaded until this session next starts.',
+              '/plugin lists what loaded and turns it off.',
+            ].join('\n')
+          : `Enable hot reloading for this session?\n\nMods in this session's folder (${root}) load ${timing} and reload when their files change. They run with your permissions.`
+        const response = await requestPrompt(
+          {
+            prompt: 'mod_hot_reload',
+            message,
+            options: [
+              { key: 'explain', label: 'How does this work?' },
+              { key: 'enable', label: 'Enable for this session' },
+              { key: 'decline', label: 'Not now' },
+            ],
+          },
+          signal,
+        )
+        signal.throwIfAborted()
+        if (!authoringRequestIsCurrent(sessionId, generation, signal))
+          return { enabled: false }
+        if (response.selected === 'explain') {
+          expanded = true
+          continue
+        }
+        authoringRetryPending = false
+        if (response.selected !== 'enable') return { enabled: false }
+        return await enableAuthoring(root, sessionId, generation, signal)
+          ? { enabled: true, root }
+          : { enabled: false }
+      }
+      return { enabled: false }
+    })()
+    authoringConsent = consent
+    try {
+      return await consent
+    } catch (error) {
+      if (signal.aborted || error instanceof ModAuthoringPromptDismissedError) {
+        authoringRetryPending = true
+      } else {
+        diagnostic({
+          plugin: 'host',
+          stage: 'authoring-consent',
+          message: `Unable to request Mod authoring consent: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
+      throw error
+    } finally {
+      if (authoringConsent === consent) authoringConsent = undefined
+    }
+  }
+
+  function scheduleAuthoringRetry() {
+    if (authoringRetry || !authoringRetryPending || !authoringPrompt || stopped || !binding?.isInteractive)
+      return
+    authoringRetryPending = false
+    const prompt = authoringPrompt
+    const signal = authoringController.signal
+    const retry = requestAuthoringConsent(prompt, signal)
+      .then(() => {})
+      .catch(error => {
+        if (signal.aborted || error instanceof ModAuthoringPromptDismissedError) return
+        diagnostic({
+          plugin: 'host',
+          stage: 'authoring-consent',
+          message: `Unable to request Mod authoring consent: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      })
+      .finally(() => {
+        if (authoringRetry === retry) authoringRetry = undefined
+      })
+    authoringRetry = retry
+  }
+
   function dispose(): Promise<void> {
     if (disposal) return disposal
     stopped = true
+    authoringGeneration++
+    authoringConsent = undefined
+    authoringPrompt = undefined
+    authoringRetryPending = false
+    authoringController.abort(new Error('Mods session disposed'))
+    authoringPending = false
     receiveController.abort(new Error('Mods session disposed'))
     firstBinding.resolve()
     if (timer) clearTimeout(timer)
@@ -586,12 +870,34 @@ export function createModsSession(options: ModsSessionOptions) {
       if (binding && binding.sessionId !== next.sessionId) {
         receiveController.abort(new Error('Mods session changed'))
         receiveController = new AbortController()
+        authoringGeneration++
+        authoringConsent = undefined
+        authoringPrompt = undefined
+        authoringRetryPending = false
+        authoringController.abort(new Error('Mods session changed'))
+        authoringController = new AbortController()
+        authoringRoot = undefined
+        authoringEnabled = false
+        authoringPending = false
+        authoringPlugins.clear()
       }
       binding = next
+      const authoringRestoreRequested = authoringRestorePending
+      if (authoringRestorePending) {
+        const expected =
+          options.authoringRoot?.(next.sessionId) ??
+          join(getClaudeConfigHomeDir(), 'dev-mods', next.sessionId)
+        if (restoredAuthoringRoot === expected) {
+          authoringRoot = restoredAuthoringRoot
+          authoringEnabled = true
+        }
+        restoredAuthoringRoot = undefined
+        authoringRestorePending = false
+      }
       if (changed) runtimeBound = false
       const first = !initialized
       initialize()
-      if (first || timer) await refresh()
+      if (first || timer || authoringRestoreRequested) await refresh()
       else if (runtime)
         await enqueue(async () => {
           await runtime!.bind(next)
@@ -627,6 +933,24 @@ export function createModsSession(options: ModsSessionOptions) {
         if (abort) combined.signal.removeEventListener('abort', abort)
         snapshot?.release()
         combined.cleanup()
+      }
+    },
+    requestAuthoringConsent,
+    async finishTurn(): Promise<void> {
+      if (authoringPending) {
+        authoringPending = false
+        await refresh()
+      }
+      scheduleAuthoringRetry()
+    },
+    restoreAuthoringConsent(root: string | undefined): void {
+      restoredAuthoringRoot = root
+      authoringRestorePending = true
+      if (!root) {
+        authoringRoot = undefined
+        authoringEnabled = false
+        authoringPending = false
+        authoringPlugins.clear()
       }
     },
     refresh,

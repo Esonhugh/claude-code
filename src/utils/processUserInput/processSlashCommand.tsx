@@ -1050,8 +1050,18 @@ async function getMessagesForSlashCommand(
             uuid,
           )
         } catch (e) {
+          const { ModAuthoringPromptDismissedError } =
+            await import('../../services/mods/session.js')
+          if (e instanceof ModAuthoringPromptDismissedError) {
+            logForDebugging(
+              '[mods_authoring_cancel] slashCatch branch=dismissal',
+            )
+            throw e
+          }
+
           // Handle abort errors specially to show proper "Interrupted" message
           if (e instanceof AbortError) {
+            logForDebugging('[mods_authoring_cancel] slashCatch branch=abort')
             return {
               messages: [
                 createUserMessage({
@@ -1066,6 +1076,9 @@ async function getMessagesForSlashCommand(
               command,
             }
           }
+          logForDebugging(
+            '[mods_authoring_cancel] slashCatch branch=generic',
+          )
           return {
             messages: [
               createUserMessage({

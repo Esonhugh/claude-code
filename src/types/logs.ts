@@ -50,6 +50,13 @@ export type LogOption = {
   mode?: 'coordinator' | 'normal' // Session mode for coordinator/normal detection
   worktreeSession?: PersistedWorktreeSession | null // Worktree state at session end (null = exited, undefined = never entered)
   contentReplacements?: ContentReplacementRecord[] // Replacement decisions for resume reconstruction
+  devModsFolder?: string // Positive session-scoped Mods authoring consent
+}
+
+export type DevModsMessage = {
+  type: 'dev-mods'
+  sessionId: UUID
+  folder: string
 }
 
 export type SummaryMessage = {
@@ -312,6 +319,7 @@ export type Entry =
   | SpeculationAcceptMessage
   | ModeEntry
   | WorktreeStateEntry
+  | DevModsMessage
   | ContentReplacementEntry
   | ContextCollapseCommitEntry
   | ContextCollapseSnapshotEntry

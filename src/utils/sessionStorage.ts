@@ -1218,6 +1218,8 @@ class Project {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'worktree-state') {
       void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'dev-mods') {
+      void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'content-replacement') {
       // Content replacement records can always be appended. Subagent records
       // go to the sidechain file (for AgentTool resume); main-thread
@@ -1565,6 +1567,13 @@ export function adoptResumedSessionFile(): void {
  * commit, in commit order. On resume these are collected into an ordered
  * array and handed to restoreFromEntries() which rebuilds the commit log.
  */
+export async function recordDevModsConsent(folder: string): Promise<void> {
+  const sessionId = getSessionId() as UUID
+  if (!sessionId) throw new Error('Cannot persist Mods authoring consent without a session')
+  await getProject().appendEntry({ type: 'dev-mods', sessionId, folder })
+  await getProject().flush()
+}
+
 export async function recordContextCollapseCommit(commit: {
   collapseId: string
   summaryUuid: string
@@ -2340,6 +2349,7 @@ export async function loadTranscriptFromFile(
       leafUuids,
       contentReplacements,
       worktreeStates,
+      devModsFolders,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -2385,6 +2395,7 @@ export async function loadTranscriptFromFile(
       worktreeSession: worktreeStates.has(sessionId)
         ? worktreeStates.get(sessionId)
         : undefined,
+      devModsFolder: devModsFolders.get(sessionId),
     }
   }
 
@@ -3005,6 +3016,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       prRepositories,
       modes,
       worktreeStates,
+      devModsFolders,
       fileHistorySnapshots,
       attributionSnapshots,
       contentReplacements,
@@ -3051,6 +3063,9 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
           : log.worktreeSession,
+      devModsFolder: sessionId
+        ? devModsFolders.get(sessionId)
+        : log.devModsFolder,
       prNumber: sessionId ? prNumbers.get(sessionId) : log.prNumber,
       prUrl: sessionId ? prUrls.get(sessionId) : log.prUrl,
       prRepository: sessionId
@@ -3152,6 +3167,7 @@ const METADATA_TYPE_MARKERS = [
   '"type":"agent-setting"',
   '"type":"mode"',
   '"type":"worktree-state"',
+  '"type":"dev-mods"',
   '"type":"pr-link"',
 ]
 const METADATA_MARKER_BUFS = METADATA_TYPE_MARKERS.map(m => Buffer.from(m))
@@ -3518,6 +3534,7 @@ export async function loadTranscriptFile(
   prRepositories: Map<UUID, string>
   modes: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
+  devModsFolders: Map<UUID, string>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3538,6 +3555,7 @@ export async function loadTranscriptFile(
   const prRepositories = new Map<UUID, string>()
   const modes = new Map<UUID, string>()
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
+  const devModsFolders = new Map<UUID, string>()
   const fileHistorySnapshots = new Map<UUID, FileHistorySnapshotMessage>()
   const attributionSnapshots = new Map<UUID, AttributionSnapshotMessage>()
   const contentReplacements = new Map<UUID, ContentReplacementRecord[]>()
@@ -3636,6 +3654,8 @@ export async function loadTranscriptFile(
           modes.set(entry.sessionId, entry.mode)
         } else if (entry.type === 'worktree-state' && entry.sessionId) {
           worktreeStates.set(entry.sessionId, entry.worktreeSession)
+        } else if (entry.type === 'dev-mods' && entry.sessionId) {
+          devModsFolders.set(entry.sessionId, entry.folder)
         } else if (entry.type === 'pr-link' && entry.sessionId) {
           prNumbers.set(entry.sessionId, entry.prNumber)
           prUrls.set(entry.sessionId, entry.prUrl)
@@ -3704,6 +3724,8 @@ export async function loadTranscriptFile(
         modes.set(entry.sessionId, entry.mode)
       } else if (entry.type === 'worktree-state' && entry.sessionId) {
         worktreeStates.set(entry.sessionId, entry.worktreeSession)
+      } else if (entry.type === 'dev-mods' && entry.sessionId) {
+        devModsFolders.set(entry.sessionId, entry.folder)
       } else if (entry.type === 'pr-link' && entry.sessionId) {
         prNumbers.set(entry.sessionId, entry.prNumber)
         prUrls.set(entry.sessionId, entry.prUrl)
@@ -3835,6 +3857,7 @@ export async function loadTranscriptFile(
     prRepositories,
     modes,
     worktreeStates,
+    devModsFolders,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3856,6 +3879,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   agentNames: Map<UUID, string>
   agentSettings: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
+  devModsFolders: Map<UUID, string>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3912,6 +3936,7 @@ export async function getLastSessionLog(
     agentNames,
     agentSettings,
     worktreeStates,
+    devModsFolders,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3957,6 +3982,7 @@ export async function getLastSessionLog(
     ),
     agentName: agentNames.get(sessionId) ?? transcript[0]?.agentName,
     worktreeSession: worktreeStates.get(sessionId),
+    devModsFolder: devModsFolders.get(sessionId),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),

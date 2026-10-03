@@ -8,7 +8,9 @@ import {
   getInvokedSkillsForAgent,
 } from '../../bootstrap/state.js'
 import { createModsRuntime } from '../../services/mods/runtime.js'
+import { ModAuthoringPromptDismissedError } from '../../services/mods/session.js'
 import type { Command } from '../../types/command.js'
+import { AbortError } from '../errors.js'
 import { processSlashCommand } from './processSlashCommand.js'
 
 const promptCommand: Command = {
@@ -81,6 +83,58 @@ assert.equal(result.messages[2]?.type, 'system')
 assert.equal(
   result.messages[2]?.content,
   '<local-command-stdout>Goal is clear</local-command-stdout>',
+)
+
+async function runThrowingPrompt(error: Error) {
+  const command: Command = {
+    type: 'prompt',
+    name: 'throwing-prompt',
+    description: 'throw from a prompt command',
+    progressMessage: 'testing',
+    contentLength: 0,
+    source: 'builtin',
+    async getPromptForCommand(_args, context) {
+      await context.requestModAuthoringConsent?.(context.abortController.signal)
+      return [{ type: 'text', text: 'consent granted' }]
+    },
+  }
+  return processSlashCommand(
+    '/throwing-prompt',
+    [],
+    [],
+    [],
+    {
+      options: {
+        commands: [command],
+        tools: [],
+        isNonInteractiveSession: false,
+        mcpResources: {},
+      },
+      messages: [],
+      abortController: new AbortController(),
+      requestModAuthoringConsent: async () => { throw error },
+      getAppState: () => appState as never,
+      setAppState: () => {},
+    } as never,
+    () => {},
+  )
+}
+
+const dismissed = new ModAuthoringPromptDismissedError()
+await assert.rejects(runThrowingPrompt(dismissed), error => error === dismissed)
+
+const ordinaryFailure = await runThrowingPrompt(new Error('ordinary prompt failure'))
+assert.equal(ordinaryFailure.shouldQuery, false)
+assert.match(
+  JSON.stringify(ordinaryFailure.messages),
+  /<local-command-stderr>Error: ordinary prompt failure<\/local-command-stderr>/,
+)
+
+const interrupted = await runThrowingPrompt(new AbortError('cancel prompt'))
+assert.equal(interrupted.shouldQuery, false)
+assert.equal(
+  interrupted.messages.some(message => message.type === 'user' && message.isMeta),
+  true,
 )
 
 const originalDisableAttachments = process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS

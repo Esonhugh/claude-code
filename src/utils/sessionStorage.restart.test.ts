@@ -1,6 +1,12 @@
 import { expect, test } from 'bun:test'
 import type { UUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -12,6 +18,7 @@ if (!process.env[childKey]) {
     'same-timestamp',
     'first-command',
     'conversation',
+    'dev-mods-resume',
     'disabled-env',
     'disabled-state',
     'disabled-setting',
@@ -78,7 +85,11 @@ if (!process.env[childKey]) {
       expect(existsSync(storage.getTranscriptPath())).toBe(false)
       return
     }
-    if (scenario === 'first-command' || scenario === 'conversation') {
+    if (
+      scenario === 'first-command' ||
+      scenario === 'conversation' ||
+      scenario === 'dev-mods-resume'
+    ) {
       const history =
         scenario === 'conversation'
           ? [
@@ -99,6 +110,52 @@ if (!process.env[childKey]) {
       await storage.recordTranscript(history)
       await storage.persistSessionForRestart([...history, first])
       await storage.persistSessionForRestart([...history, first])
+      if (scenario === 'dev-mods-resume') {
+        const devModsFolder = join(
+          process.env.CLAUDE_CONFIG_DIR!,
+          'dev-mods',
+          sessionId,
+        )
+        mkdirSync(devModsFolder, { recursive: true, mode: 0o700 })
+        await storage.recordDevModsConsent(devModsFolder)
+        await storage.flushSessionStorage()
+        const { loadConversationForResume } = await import(
+          './conversationRecovery.js'
+        )
+        const loaded = await loadConversationForResume(sessionId, undefined)
+        expect(loaded?.devModsFolder).toBe(devModsFolder)
+
+        const { createModsSession } = await import('../services/mods/session.js')
+        const loadedChildren: string[][] = []
+        const modsSession = createModsSession({
+          isTrusted: true,
+          authoringRoot: id => join(process.env.CLAUDE_CONFIG_DIR!, 'dev-mods', id),
+          loadPlugins: async () => [],
+          loadAuthoringPlugin: async path => {
+            loadedChildren.push([path])
+            return undefined
+          },
+          getSettings: () => ({
+            userSettings: null,
+            flagSettings: null,
+            policySettings: null,
+            enabledOptionSources: { user: true, flag: true },
+            hookPolicy: { managedOnly: false, allDisabled: false },
+          }),
+        })
+        const child = join(devModsFolder, 'resume-marker')
+        mkdirSync(child)
+        modsSession.restoreAuthoringConsent(loaded?.devModsFolder)
+        await modsSession.bind({
+          cwd: process.cwd(),
+          surface: 'terminal',
+          isInteractive: true,
+          sessionId,
+        })
+        expect(loadedChildren).toEqual([[child]])
+        await modsSession.dispose()
+        return
+      }
       const restored = await storage.getLastSessionLog(sessionId)
       expect(restored?.messages.map((message) => message.uuid)).toEqual(
         [...history, first].map((message) => message.uuid),

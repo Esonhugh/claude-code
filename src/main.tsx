@@ -4250,6 +4250,7 @@ async function run(): Promise<CommanderCommand> {
               initialFileHistorySnapshots: loaded.fileHistorySnapshots,
               initialContentReplacements: loaded.contentReplacements,
               initialAgentName: loaded.agentName,
+              initialDevModsFolder: loaded.devModsFolder,
               initialAgentColor: loaded.agentColor,
             },
             renderAndRun,
@@ -5052,6 +5053,7 @@ async function run(): Promise<CommanderCommand> {
                 agentName: undefined,
                 agentColor: undefined as AgentColorName | undefined,
                 restoredAgentDef: mainThreadAgentDefinition,
+                devModsFolder: undefined,
                 initialState,
                 contentReplacements: undefined,
               }
@@ -5071,6 +5073,7 @@ async function run(): Promise<CommanderCommand> {
               initialFileHistorySnapshots: resumeData.fileHistorySnapshots,
               initialContentReplacements: resumeData.contentReplacements,
               initialAgentName: resumeData.agentName,
+              initialDevModsFolder: resumeData.devModsFolder,
               initialAgentColor: resumeData.agentColor,
             },
             renderAndRun,

@@ -496,6 +496,7 @@ export async function loadConversationForResume(
   tag?: string
   mode?: 'coordinator' | 'normal'
   worktreeSession?: PersistedWorktreeSession | null
+  devModsFolder?: string
   prNumber?: number
   prUrl?: string
   prRepository?: string
@@ -607,6 +608,7 @@ export async function loadConversationForResume(
       tag: log?.tag,
       mode: log?.mode,
       worktreeSession: log?.worktreeSession,
+      devModsFolder: log?.devModsFolder,
       prNumber: log?.prNumber,
       prUrl: log?.prUrl,
       prRepository: log?.prRepository,
