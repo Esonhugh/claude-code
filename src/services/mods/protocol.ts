@@ -15,21 +15,31 @@ export function createModHookStream(
     closed = true
     signal?.removeEventListener('abort', abort)
   }
-  const abort = () => {
-    if (closed) return
-    const error = signal?.reason ?? new Error('Module invocation aborted')
+  let closing: Promise<IteratorResult<unknown, unknown>> | undefined
+  const cancel = (error: unknown, value: unknown) => {
+    if (closing) return closing
+    if (closed) return Promise.resolve({ done: true as const, value })
     result.reject(error)
     finish()
     canceled.reject(error)
-    void pull('return', undefined).catch(() => {})
+    // Publish teardown before calling pull: cancellation may synchronously reenter.
+    const completion = Promise.withResolvers<IteratorResult<unknown, unknown>>()
+    closing = completion.promise
+    void closing.catch(() => {})
+    try { completion.resolve(pull('return', value)) }
+    catch (error) { completion.reject(error) }
+    return closing
+  }
+  const abort = () => {
+    if (!closed) cancel(signal?.reason ?? new Error('Module invocation aborted'), undefined)
   }
   const run = (method: 'next' | 'return' | 'throw', value: unknown) => {
+    if (method === 'return') return cancel(new Error('Module stream closed before completion'), value)
     const pending = queue.then(async () => {
       if (closed) {
         if (method === 'throw') throw value
-        return { done: true as const, value: method === 'return' ? value : undefined }
+        return { done: true as const, value: undefined }
       }
-      if (method === 'return') result.reject(new Error('Module stream closed before its result'))
       try {
         const item = await Promise.race([pull(method, value), canceled.promise])
         if (item.done) { result.resolve(item.value); finish() }
@@ -145,6 +155,7 @@ export type ModWorkerReply =
       registrations?: (Omit<ModRegistration, 'matcher'> & { matcher?: ModWireValue; catchId?: number })[]
       error?: string
       errorRef?: number
+      aborted?: true
     }
   | {
       type: 'host-call'

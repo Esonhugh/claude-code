@@ -382,6 +382,7 @@ export function createModEnvironmentHost({
     })
   }
 
+  const streamAbortErrors = new WeakSet<Error>()
   worker.onmessage = async (event: MessageEvent<ModWorkerReply>) => {
     const message = event.data
     if (message.type === 'pong') { pingSent = undefined; return }
@@ -396,7 +397,11 @@ export function createModEnvironmentHost({
       if (message.error !== undefined) {
         const errors = invocationErrors.get(message.invocation ?? message.id)
         if (message.errorRef !== undefined && errors?.has(message.errorRef)) pending.reject(errors.get(message.errorRef) as Error)
-        else pending.reject(new Error(message.error))
+        else {
+          const error = new Error(message.error)
+          if (message.aborted) streamAbortErrors.add(error)
+          pending.reject(error)
+        }
       }
       else pending.resolve(message)
       return
@@ -548,15 +553,28 @@ export function createModEnvironmentHost({
         if (result.value?.type !== 'stream' || result.value.invocation !== id) throw new Error('Module did not return a stream')
         retained = true
         state.cleanups.add(unloaded)
+        let pendingPull: Promise<ModWorkerReply> | undefined
         return createModHookStream(async (method, value) => {
           try {
             stateFor(environment)
-            const response = await request({ type:'stream-pull', environment, invocation:id, method,
+            const interrupted = method === 'return' ? pendingPull : undefined
+            if (interrupted)
+              worker.postMessage({ type: 'abort', environment, invocation: id } satisfies ModWorkerRequest)
+            const responsePromise = request({ type:'stream-pull', environment, invocation:id, method,
               value:encode(environment, value instanceof Error ? {message:value.message, name:value.name} : value) })
+            if (method !== 'return') pendingPull = responsePromise
+            if (interrupted) {
+              const outcomes = await Promise.allSettled([responsePromise, interrupted])
+              for (const outcome of outcomes) {
+                if (outcome.status === 'rejected' && !streamAbortErrors.has(outcome.reason)) throw outcome.reason
+              }
+            }
+            const response = await responsePromise
             const item = decode(environment, response.value!) as IteratorResult<unknown, unknown>
             if (item.done) cleanup()
             return item
           } catch (error) { cleanup(); throw error }
+          finally { if (method !== 'return') pendingPull = undefined }
         }, streamAbort.signal)
       }
       return result.value ? decode(environment, result.value) : undefined

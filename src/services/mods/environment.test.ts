@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { createModClockBridge, createModEnvironmentHost, createModStreamBridge } from './environment.js'
 import type { ModDeclaration, ModNext } from './types.js'
@@ -8,12 +8,9 @@ import { dispatchModEvent, dispatchModStream } from './dispatch.js'
 import { loadModDeclaration } from './loader.js'
 
 const hosts: ReturnType<typeof createModEnvironmentHost>[] = []
-const roots: string[] = []
+const evidenceRoot = fileURLToPath(new URL('../../../.claude-test-evidence/', import.meta.url))
 afterEach(async () => {
-  await Promise.all([
-    ...hosts.splice(0).map(host => host.dispose()),
-    ...roots.splice(0).map(root => rm(root, { recursive: true, force: true })),
-  ])
+  await Promise.all(hosts.splice(0).map(host => host.dispose()))
 })
 
 function declaration(source: string): ModDeclaration {
@@ -218,6 +215,68 @@ describe('Mods Worker environment', () => {
     const failure = await second.result.then(() => null, error => error)
     expect(failure.message).toMatch(/closed/)
     expect(closed).toBe(2)
+  })
+
+  test('explicit Worker stream return waits for its asynchronous finally', async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const environment = await host().load({...declaration(`export function register(on) {
+      on('turn.step', async function* ($) {
+        try { yield 'ready'; }
+        finally { await $.finalize(); }
+      });
+    }`), events:['turn.step']})
+    const frame = next(async () => ({})); frame.event = 'turn.step'
+    const stream = environment.invokeStream(environment.registrations[0]!.id, [{
+      finalize: () => { entered.resolve(); return release.promise },
+    }, {}], frame)
+    expect(await stream.next()).toEqual({done:false,value:'ready'})
+    let settled = false
+    const closing = stream.return('closed')
+    void closing.then(() => { settled = true }, () => { settled = true })
+    try {
+      await entered.promise
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(settled).toBe(false)
+    } finally { release.resolve() }
+    expect(await closing).toEqual({done:true,value:'closed'})
+    await expect(stream.result).rejects.toThrow(/closed/)
+  })
+
+  test.each([undefined, 'worker-finally-failed', 'Module invocation aborted'])('explicit Worker return interrupts a pending host capability (finally failure=%s)', async failure => {
+    const entered = Promise.withResolvers<void>()
+    const finalized = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const environment = await host().load({...declaration(`export function register(on) {
+      on('turn.step', async function* ($) {
+        try { yield 'ready'; await $.hold(); yield 'never'; }
+        finally { await $.finalize(); }
+      });
+    }`), events:['turn.step']})
+    const frame = next(async () => ({})); frame.event = 'turn.step'
+    const stream = environment.invokeStream(environment.registrations[0]!.id, [{
+      hold: () => { entered.resolve(); return new Promise(() => {}) },
+      finalize: async () => {
+        finalized.resolve()
+        await release.promise
+        if (failure) throw new Error(failure)
+      },
+    }, {}], frame)
+    expect(await stream.next()).toEqual({done:false,value:'ready'})
+    const pending = stream.next().then(() => null, error => error)
+    await entered.promise
+    let settled = false
+    const closing = stream.return('closed')
+    void closing.then(() => { settled = true }, () => { settled = true })
+    try {
+      expect(await pending).toBeInstanceOf(Error)
+      await expect(stream.result).rejects.toThrow(/closed/)
+      await finalized.promise
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(settled).toBe(false)
+    } finally { release.resolve() }
+    if (failure) await expect(closing).rejects.toThrow(failure)
+    else expect(await closing).toEqual({done:true,value:'closed'})
   })
 
   test.each(['abort', 'dispose'])('stream %s releases a pending pull and its result without draining', async mode => {
@@ -1041,8 +1100,8 @@ describe('Mods Worker environment', () => {
   })
 
   test('executes loader output with exactly the official hooks realm globals', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-globals-'))
-    roots.push(root)
+    await mkdir(evidenceRoot, { recursive: true })
+    const root = await mkdtemp(join(evidenceRoot, 'mods-globals-'))
     const entrypoint = join(root, 'main.js')
     await writeFile(entrypoint, `export function register(on) {
       const globals = {

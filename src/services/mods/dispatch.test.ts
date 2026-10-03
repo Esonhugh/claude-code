@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { dispatchModEvent } from './dispatch.js'
+import { createModHookStream, dispatchModEvent, dispatchModStream } from './dispatch.js'
+import { createModHookStream as createProtocolStream } from './protocol.js'
 import type { ModDispatchHook, ModInput, ModNext, ModTier } from './types.js'
 
 function hook(
@@ -43,6 +44,186 @@ function deferred<T>() {
   })
   return { promise, resolve, reject }
 }
+
+describe('mod stream cancellation lifecycle', () => {
+  it('protocol return interrupts a pending next and shares teardown with abort and repeated return', async () => {
+    for (const abortFirst of [false, true]) {
+      const parent = new AbortController()
+      const started = deferred<void>()
+      const pulling = deferred<IteratorResult<unknown>>()
+      const closing = deferred<IteratorResult<unknown>>()
+      const methods: string[] = []
+      const stream = createProtocolStream(async method => {
+        methods.push(method)
+        if (method === 'return') return closing.promise
+        started.resolve()
+        return pulling.promise
+      }, parent.signal)
+      const pending = stream.next()
+      const rejected = assert.rejects(pending, /closed|cancel/)
+      const result = assert.rejects(stream.result, /closed|cancel/)
+      await started.promise
+      if (abortFirst) parent.abort(Error('cancel'))
+      const returned = stream.return('first')
+      const repeated = stream.return('second')
+      let settled = false
+      void returned.then(() => { settled = true }, () => { settled = true })
+      try {
+        // Verify explicit return on its own before introducing the abort race.
+        await Promise.resolve()
+        assert.deepEqual(methods, ['next', 'return'])
+        parent.abort(Error('cancel'))
+        assert.equal(settled, false)
+      } finally {
+        closing.resolve({ done: true, value: 'closed' })
+        pulling.reject(Error('late pull failure'))
+        await Promise.allSettled([pending, returned, repeated, stream.result])
+      }
+      await Promise.all([rejected, result])
+      assert.deepEqual(await returned, { done: true, value: 'closed' })
+      assert.deepEqual(await repeated, await returned)
+    }
+  })
+
+  it('protocol preserves normal pull ordering and completion', async () => {
+    const first = deferred<IteratorResult<unknown>>()
+    const started = deferred<void>()
+    const values: unknown[] = []
+    const stream = createProtocolStream(async (_method, value) => {
+      values.push(value)
+      started.resolve()
+      return values.length === 1 ? first.promise : { done: true, value: 'result' }
+    })
+    const one = stream.next('one'), two = stream.next('two')
+    await started.promise
+    assert.deepEqual(values, ['one'])
+    first.resolve({ done: false, value: 'chunk' })
+    assert.deepEqual(await one, { done: false, value: 'chunk' })
+    assert.deepEqual(await two, { done: true, value: 'result' })
+    assert.equal(await stream.result, 'result')
+    assert.deepEqual(values, ['one', 'two'])
+  })
+
+  it('dispatch return waits for cooperative core and hook asynchronous finally', async () => {
+    for (const useHook of [false, true]) {
+      const started = deferred<void>(), finalizing = deferred<void>(), release = deferred<void>()
+      let finalized = false, settled = false
+      async function* body(signal?: AbortSignal) {
+        try {
+          await new Promise<void>(resolve => {
+            signal!.addEventListener('abort', () => resolve(), { once: true })
+            started.resolve()
+          })
+          yield 'late'
+          return 'done'
+        } finally {
+          finalizing.resolve()
+          await release.promise
+          finalized = true
+        }
+      }
+      const stream = dispatchModStream({ event: 'turn.step', input: {},
+        hooks: useHook ? [{ ...hook('stream', async () => {}, { event: 'turn.step' }), invokeStream: (_input, next) => body(next.signal) }] : [],
+        core: (_input, signal) => body(signal),
+      })
+      const pending = stream.next()
+      const rejected = assert.rejects(stream.result, /closed/)
+      void pending.catch(() => {})
+      await started.promise
+      const returned = stream.return(undefined)
+      void returned.then(() => { settled = true }, () => { settled = true })
+      try {
+        await finalizing.promise
+        // An event-loop turn observes premature fulfillment, not a timed success barrier.
+        await new Promise<void>(resolve => setImmediate(resolve))
+        assert.equal(settled, false)
+        assert.equal(finalized, false)
+      } finally {
+        release.resolve()
+        await Promise.allSettled([pending, returned])
+      }
+      await returned
+      await rejected
+      assert.equal(finalized, true)
+    }
+  })
+
+  it('retains teardown failures for explicit return after abort without unhandled rejection', async () => {
+    for (const protocol of [false, true]) {
+      const parent = new AbortController()
+      const failure = Error('finally failed')
+      const iterator = (async function* () {
+        try { yield 'chunk' } finally { await Promise.reject(failure) }
+      })()
+      const stream = protocol
+        ? createProtocolStream((method, value) => iterator[method](value as never), parent.signal)
+        : createModHookStream(iterator, undefined, parent.signal)
+      await stream.next()
+      const result = assert.rejects(stream.result, /cancel/)
+      parent.abort(Error('cancel'))
+      await new Promise<void>(resolve => setImmediate(resolve))
+      await assert.rejects(stream.return(undefined), error => error === failure)
+      await assert.rejects(stream.return(undefined), error => error === failure)
+      await result
+    }
+  })
+
+  it('dispatch return reports finally failure from an in-flight next', async () => {
+    for (const useHook of [false, true]) {
+      const started = deferred<void>()
+      const failure = Error('pending finally failed')
+      async function* body(signal?: AbortSignal) {
+        try {
+          await new Promise<void>(resolve => {
+            signal!.addEventListener('abort', () => resolve(), { once: true })
+            started.resolve()
+          })
+          yield 'late'
+          return 'done'
+        } finally { await Promise.reject(failure) }
+      }
+      const stream = dispatchModStream({ event: 'turn.step', input: {},
+        hooks: useHook ? [{ ...hook('stream', async () => {}, { event: 'turn.step' }), invokeStream: (_input, next) => body(next.signal) }] : [],
+        core: (_input, signal) => body(signal),
+      })
+      const pending = stream.next()
+      const result = assert.rejects(stream.result, /closed/)
+      void pending.catch(() => {})
+      await started.promise
+      await assert.rejects(stream.return(undefined), error => error === failure)
+      await result
+      await Promise.allSettled([pending])
+    }
+  })
+
+  it('does not claim an uncooperative generator has closed before its wait is released', async () => {
+    const started = deferred<void>(), release = deferred<void>()
+    let finalized = false, settled = false, cancellations = 0
+    const stream = createModHookStream((async function* () {
+      try { started.resolve(); await release.promise; yield 'late' }
+      finally { finalized = true }
+    })(), () => { cancellations++ })
+    const pending = stream.next()
+    void pending.catch(() => {})
+    await started.promise
+    const result = assert.rejects(stream.result, /closed/)
+    const returned = stream.return(undefined)
+    const repeated = stream.return(undefined)
+    void returned.then(() => { settled = true }, () => { settled = true })
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.equal(cancellations, 1)
+      assert.equal(settled, false)
+      assert.equal(finalized, false)
+    } finally {
+      release.resolve()
+      await Promise.allSettled([pending, returned, repeated])
+    }
+    await returned
+    await result
+    assert.equal(finalized, true)
+  })
+})
 
 describe('ordinary mod dispatch', () => {
   it('pins agentId before lower hooks and restores omissions for tools and completions', async () => {

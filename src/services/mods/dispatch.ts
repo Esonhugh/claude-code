@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
 import { createAbortController } from '../../utils/abortController.js'
+import { createModHookStream as createProtocolStream } from './protocol.js'
 import type {
   ModDispatchHook,
   ModHookStream,
@@ -47,42 +48,23 @@ const tiers: readonly ModTier[] = [
 ]
 
 export function createModHookStream<C, R>(iterator: AsyncGenerator<C, R>, close?: (error: Error) => void, signal?: AbortSignal): ModHookStream<C, R> {
-  let resolve!: (value: R) => void, reject!: (error: unknown) => void
-  let finished = false
-  const result = new Promise<R>((yes, no) => { resolve = yes; reject = no })
-  void result.catch(() => {})
-  const abort = () => {
-    if (finished) return
-    finished = true
-    const error = signal!.reason
-    reject(error)
-    signal?.removeEventListener('abort', abort)
-    close?.(error)
-    void iterator.return(undefined as R).catch(() => {})
-  }
-  signal?.addEventListener('abort', abort, { once: true })
-  if (signal?.aborted) abort()
-  const pull = async (method: 'next' | 'return' | 'throw', value?: unknown): Promise<IteratorResult<C, R>> => {
-    if (method === 'return' && !finished) {
-      finished = true
-      const error = value instanceof Error ? value : new Error('Module stream closed before completion')
-      reject(error)
-      signal?.removeEventListener('abort', abort)
+  let pending: Promise<IteratorResult<C, R>> | undefined
+  return createProtocolStream(async (method, value) => {
+    if (method === 'return') {
+      const error = signal?.aborted ? signal.reason : value instanceof Error ? value : new Error('Module stream closed before completion')
       close?.(error)
+      const closing = iterator.return(value as R)
+      // A queued generator return can succeed even when the pending next's
+      // finally failed. Observe both so teardown failures remain visible.
+      const outcomes = await Promise.allSettled([closing, ...(pending ? [pending] : [])])
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected' && outcome.reason !== error) throw outcome.reason
+      }
+      return closing
     }
-    try {
-      const item = await (method === 'next' ? iterator.next(value) : method === 'return' ? iterator.return(value as R) : iterator.throw(value))
-      if (item.done && !finished) { finished = true; signal?.removeEventListener('abort', abort); resolve(item.value) }
-      return item
-    } catch (error) { finished = true; signal?.removeEventListener('abort', abort); reject(error); throw error }
-  }
-  return {
-    next: value => pull('next', value),
-    return: value => pull('return', value),
-    throw: error => pull('throw', error),
-    [Symbol.asyncIterator]() { return this },
-    result,
-  } as ModHookStream<C, R>
+    pending = method === 'next' ? iterator.next(value) : iterator.throw(value)
+    try { return await pending } finally { pending = undefined }
+  }, signal) as ModHookStream<C, R>
 }
 
 export function dispatchModStream(options: {
@@ -119,6 +101,7 @@ export function dispatchModStream(options: {
       const hook = hooks[index]
       const children = new Set<ModHookStream>()
       let current: AsyncGenerator<unknown, unknown> | undefined
+      let currentPull: Promise<IteratorResult<unknown, unknown>> | undefined
       let timer: ReturnType<typeof setTimeout> | undefined
       let started = 0, remaining = 0, allowance = 0, pauses = 0, working = false
       let controller = createAbortController()
@@ -263,7 +246,11 @@ export function dispatchModStream(options: {
           for (;;) {
             working = true; resume()
             let item: IteratorResult<unknown, unknown>
-            try { item = await wait(Promise.race([thrown ? current.throw(thrown.error) : current.next(), timeout])) }
+            try {
+              currentPull = thrown ? current.throw(thrown.error) : current.next()
+              item = await wait(Promise.race([currentPull, timeout]))
+              currentPull = undefined
+            }
             finally { working = false; stop() }
             thrown = undefined
             if (item.done) {
@@ -278,8 +265,19 @@ export function dispatchModStream(options: {
         } finally {
           working = false; stop(); expire = undefined
           controller.abort(new Error(`Mod ${hook!.plugin} invocation finished`))
-          if (current) void current.return(undefined).catch(() => {})
+          const closing = current?.return(undefined)
           current = undefined
+          // Cancellation owns teardown; timeout recovery must still be able to
+          // abandon an uncooperative hook and resume its retained branch.
+          if (lifetime.signal.aborted) {
+            const outcomes = await Promise.allSettled([closing, currentPull])
+            currentPull = undefined
+            for (const outcome of outcomes) {
+              // Teardown failure must replace the cancellation that entered finally.
+              // eslint-disable-next-line no-unsafe-finally
+              if (outcome.status === 'rejected' && outcome.reason !== lifetime.signal.reason) throw outcome.reason
+            }
+          } else { void closing?.catch(() => {}); currentPull = undefined }
         }
       }
       try {
@@ -288,7 +286,9 @@ export function dispatchModStream(options: {
           current = options.core(input, lifetime.signal)
           let thrown: { error: unknown } | undefined
           for (;;) {
-            const item = await wait(thrown ? current.throw(thrown.error) : current.next())
+            currentPull = thrown ? current.throw(thrown.error) : current.next()
+            const item = await wait(currentPull)
+            currentPull = undefined
             thrown = undefined
             if (item.done) { record('returned', item.value); return item.value }
             chunks++
@@ -297,7 +297,7 @@ export function dispatchModStream(options: {
         }
         try { const result = yield* invoke(false); record('returned', result); return result }
         catch (error) {
-          lifetime.signal.throwIfAborted()
+          if (lifetime.signal.aborted) throw error
           if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
           if (hook.registration.hasCatch) {
             try {
@@ -318,8 +318,17 @@ export function dispatchModStream(options: {
         parent?.removeEventListener('abort', abort)
         lifetime.abort(new Error('Module stream finished'))
         controller.abort(lifetime.signal.reason)
-        if (current) void current.return(undefined).catch(() => {})
-        for (const child of children) void child.return(undefined).catch(() => {})
+        const closing = await Promise.allSettled([
+          ...(current ? [current.return(undefined)] : []),
+          ...(currentPull ? [currentPull] : []),
+          ...Array.from(children, child => child.return(undefined)),
+        ])
+        const failures = closing.filter((item): item is PromiseRejectedResult => item.status === 'rejected' && item.reason !== lifetime.signal.reason)
+        // Surface teardown failures only after every owned stream has settled.
+        // eslint-disable-next-line no-unsafe-finally
+        if (failures.length === 1) throw failures[0]!.reason
+        // eslint-disable-next-line no-unsafe-finally
+        if (failures.length > 1) throw new AggregateError(failures.map(item => item.reason), 'Module stream teardown failed')
       }
     })()
     return createModHookStream(body, error => { parent?.removeEventListener('abort', abort); lifetime.abort(error) }, parent)

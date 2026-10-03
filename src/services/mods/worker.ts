@@ -41,6 +41,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const frames = new Map();
   const pending = new Map();
   const hostErrors = new WeakMap();
+  const abortErrors = new WeakSet();
   const signals = new Map();
   const registrations = [];
   const timers = new Map();
@@ -400,6 +401,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   return {
     on,
     errorReference(error) { return hostErrors.get(error); },
+    isAbortError(error) { return abortErrors.has(error); },
     async register(fn, options) {
       try { await fn(on, freeze(JSON.parse(options))); }
       finally { registering = false; }
@@ -525,7 +527,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       if (streams.has(invocation)) for (const [call, item] of pending) {
         if (item.invocation !== invocation) continue;
         pending.delete(call);
-        item.reject(Object.assign(Error('Module invocation aborted'), {name:'AbortError'}));
+        const error = Object.assign(Error('Module invocation aborted'), {name:'AbortError'});
+        abortErrors.add(error);
+        item.reject(error);
       }
     },
     setUiAccess(allowed) { uiAllowed = allowed; },
@@ -559,6 +563,7 @@ type Environment = {
   lifetime: { id: number; disposed: boolean }
   api: {
     errorReference(error: unknown): number | undefined
+    isAbortError(error: unknown): boolean
     register(fn: unknown, options: string): Promise<string>
     invoke(text: string): Promise<string>
     invokeUi(handle: number, props: string): string
@@ -891,6 +896,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value
       : undefined
     const errorRef = request.type === 'invoke' || request.type === 'stream-pull' ? environments.get(request.environment)?.api.errorReference(error) : undefined
-    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef })
+    const aborted = request.type === 'stream-pull' && environments.get(request.environment)?.api.isAbortError(error)
+    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef, ...(aborted ? {aborted:true} : {}) })
   }
 }
