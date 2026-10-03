@@ -46,6 +46,8 @@ import {
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
+import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
+import { builtinModsArchive } from '../../plugins/bundled/index.js'
 import { getInlinePlugins } from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
@@ -73,7 +75,10 @@ import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
-import { getSettings_DEPRECATED } from '../settings/settings.js'
+import {
+  getSettings_DEPRECATED,
+  getSettingsWithErrors,
+} from '../settings/settings.js'
 import {
   clearPluginSettingsBase,
   getPluginSettingsBase,
@@ -87,7 +92,11 @@ import { getAddDirEnabledPlugins } from './addDirPluginSettings.js'
 import { verifyAndDemote } from './dependencyResolver.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
-import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
+import {
+  getInMemoryInstalledPlugins,
+  getInstalledPluginsFilePath,
+  readInstalledPluginsForContractValidation,
+} from './installedPluginsManager.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import {
   formatSourceForDisplay,
@@ -100,6 +109,8 @@ import {
   getMarketplaceCacheOnly,
   getPluginByIdCacheOnly,
   loadKnownMarketplacesConfigSafe,
+  loadKnownMarketplacesConfig,
+  readCachedMarketplace,
 } from './marketplaceManager.js'
 import { getPluginSeedDirs, getPluginsDirectory } from './pluginDirectories.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
@@ -1351,12 +1362,23 @@ export async function createPluginFromPath(
   enabled: boolean,
   fallbackName: string,
   strict = true,
+  contractOnly = false,
 ): Promise<{ plugin: LoadedPlugin; errors: PluginError[] }> {
   const errors: PluginError[] = []
 
   // Step 1: Load or create the plugin manifest
   // This provides metadata about the plugin (name, version, etc.)
   const manifestPath = join(pluginPath, '.claude-plugin', 'plugin.json')
+  if (contractOnly) {
+    if (!(await stat(pluginPath)).isDirectory()) {
+      throw new Error(`Plugin path is not a directory: ${pluginPath}`)
+    }
+    try {
+      await readFile(manifestPath, 'utf-8')
+    } catch (error) {
+      if (!isENOENT(error)) throw error
+    }
+  }
   const manifest = await loadPluginManifest(manifestPath, fallbackName, source)
 
   // Step 2: Create the base plugin object
@@ -1369,6 +1391,8 @@ export async function createPluginFromPath(
     repository: source, // For backward compatibility with Plugin Repository
     enabled, // Current enabled state
   }
+
+  if (contractOnly) return { plugin, errors }
 
   // Step 3: Auto-detect optional directories in parallel
   const [
@@ -1894,20 +1918,37 @@ function mergeHooksSettings(
  */
 async function loadPluginsFromMarketplaces({
   cacheOnly,
+  contractOnly = false,
 }: {
   cacheOnly: boolean
+  contractOnly?: boolean
 }): Promise<{
   plugins: LoadedPlugin[]
   errors: PluginError[]
 }> {
-  const settings = getSettings_DEPRECATED()
+  const { settings, errors: settingsErrors } = getSettingsWithErrors()
+  const addDirErrors: typeof settingsErrors = []
+  const addDirPlugins = getAddDirEnabledPlugins(
+    contractOnly ? addDirErrors : undefined,
+  )
   // Merge --add-dir plugins at lowest priority; standard settings win on conflict
   const enabledPlugins = {
-    ...getAddDirEnabledPlugins(),
+    ...addDirPlugins,
     ...(settings.enabledPlugins || {}),
   }
   const plugins: LoadedPlugin[] = []
   const errors: PluginError[] = []
+
+  if (contractOnly) {
+    for (const error of [...settingsErrors, ...addDirErrors]) {
+      errors.push({
+        type: 'generic-error',
+        source: error.file,
+        error: `${error.path}: ${error.message}`,
+      })
+    }
+    if (errors.length) return { plugins, errors }
+  }
 
   // Filter to plugin@marketplace format and validate
   const marketplacePluginEntries = Object.entries(enabledPlugins).filter(
@@ -1917,14 +1958,18 @@ async function loadPluginsFromMarketplaces({
       if (!isValidFormat || value === undefined) return false
       // Builtin and --plugin-dir entries are loaded by their own sources.
       const { marketplace } = parsePluginIdentifier(key)
-      return marketplace !== BUILTIN_MARKETPLACE_NAME && marketplace !== 'inline'
+      return (
+        marketplace !== BUILTIN_MARKETPLACE_NAME && marketplace !== 'inline'
+      )
     },
   )
 
   // Load known marketplaces config to look up sources for policy checking.
   // Use the Safe variant so a corrupted config file doesn't crash all plugin
   // loading — this is a read-only path, so returning {} degrades gracefully.
-  const knownMarketplaces = await loadKnownMarketplacesConfigSafe()
+  const knownMarketplaces = await (contractOnly
+    ? loadKnownMarketplacesConfig()
+    : loadKnownMarketplacesConfigSafe())
 
   // Fail-closed guard for enterprise policy: if a policy IS configured and we
   // cannot resolve a marketplace's source (config returned {} due to corruption,
@@ -1957,13 +2002,50 @@ async function loadPluginsFromMarketplaces({
   >()
   await Promise.all(
     [...uniqueMarketplaces].map(async name => {
-      marketplaceCatalogs.set(name, await getMarketplaceCacheOnly(name))
+      if (contractOnly) {
+        const config = knownMarketplaces[name]
+        if (!config) {
+          errors.push({
+            type: 'generic-error',
+            source: name,
+            error: 'Missing marketplace registration',
+          })
+          return
+        }
+        try {
+          marketplaceCatalogs.set(
+            name,
+            await readCachedMarketplace(config.installLocation),
+          )
+        } catch (error) {
+          errors.push({
+            type: 'generic-error',
+            source: config.installLocation,
+            error: errorMessage(error),
+          })
+        }
+      } else {
+        marketplaceCatalogs.set(name, await getMarketplaceCacheOnly(name))
+      }
     }),
   )
 
   // Look up installed versions once so the first-pass ZIP cache check
   // can hit even when the marketplace entry omits `version`.
-  const installedPluginsData = getInMemoryInstalledPlugins()
+  let installedPluginsData: ReturnType<typeof getInMemoryInstalledPlugins>
+  try {
+    installedPluginsData = contractOnly
+      ? readInstalledPluginsForContractValidation()
+      : getInMemoryInstalledPlugins()
+  } catch (error) {
+    errors.push({
+      type: 'generic-error',
+      source: getInstalledPluginsFilePath(),
+      error: errorMessage(error),
+    })
+    return { plugins, errors }
+  }
+  if (contractOnly && errors.length) return { plugins, errors }
 
   // Load all marketplace plugins in parallel for faster startup
   const results = await Promise.allSettled(
@@ -2038,7 +2120,7 @@ async function loadPluginsFromMarketplaces({
             marketplaceInstallLocation: marketplaceConfig.installLocation,
           }
         }
-      } else {
+      } else if (!contractOnly) {
         result = await getPluginByIdCacheOnly(pluginId)
       }
 
@@ -2064,6 +2146,7 @@ async function loadPluginsFromMarketplaces({
             enabledValue === true || Array.isArray(enabledValue),
             errors,
             installEntry?.installPath,
+            contractOnly,
           )
         : loadPluginFromMarketplaceEntry(
             result.entry,
@@ -2109,6 +2192,7 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
   enabled: boolean,
   errorsOut: PluginError[],
   installPath: string | undefined,
+  contractOnly = false,
 ): Promise<LoadedPlugin | null> {
   let pluginPath: string
 
@@ -2120,7 +2204,8 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
       marketplaceDir = (await stat(marketplaceInstallLocation)).isDirectory()
         ? marketplaceInstallLocation
         : join(marketplaceInstallLocation, '..')
-    } catch {
+    } catch (error) {
+      if (contractOnly) throw error
       errorsOut.push({
         type: 'plugin-cache-miss',
         source: pluginId,
@@ -2134,7 +2219,7 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
     // surfaces ENOENT as a load failure, no need to pre-check here.
   } else {
     // External source (npm/github/url/git-subdir) — use recorded installPath.
-    if (!installPath || !(await pathExists(installPath))) {
+    if (!installPath || (!contractOnly && !(await pathExists(installPath)))) {
       errorsOut.push({
         type: 'plugin-cache-miss',
         source: pluginId,
@@ -2144,6 +2229,22 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
       return null
     }
     pluginPath = installPath
+  }
+
+  if (contractOnly) {
+    if (pluginPath.endsWith('.zip')) {
+      try {
+        const contractFiles = unzipArchive(await readFile(pluginPath))
+        return await finishLoadingPluginFromPath(
+          entry, pluginId, enabled, errorsOut, pluginPath, true, contractFiles,
+        )
+      } catch (error) {
+        throw new Error(`ZIP ${pluginPath}: ${errorMessage(error)}`)
+      }
+    }
+    if (!(await stat(pluginPath)).isDirectory()) {
+      throw new Error(`Plugin path is not a directory: ${pluginPath}`)
+    }
   }
 
   // Zip cache extraction — must still happen in cacheOnly mode (invariant 4)
@@ -2177,6 +2278,7 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
     enabled,
     errorsOut,
     pluginPath,
+    contractOnly,
   )
 }
 
@@ -2430,20 +2532,34 @@ async function finishLoadingPluginFromPath(
   enabled: boolean,
   errorsOut: PluginError[],
   pluginPath: string,
+  contractOnly = false,
+  contractFiles?: Readonly<Record<string, Uint8Array>>,
 ): Promise<LoadedPlugin | null> {
   const errors: PluginError[] = []
 
   // Check if plugin.json exists to determine if we should use marketplace manifest
   const manifestPath = join(pluginPath, '.claude-plugin', 'plugin.json')
-  const hasManifest = await pathExists(manifestPath)
+  const hasManifest = contractFiles
+    ? Object.hasOwn(contractFiles, '.claude-plugin/plugin.json')
+    : await pathExists(manifestPath)
 
-  const { plugin, errors: pluginErrors } = await createPluginFromPath(
+  const { plugin, errors: pluginErrors } = contractFiles
+    ? { plugin: {
+        name: entry.name,
+        manifest: hasManifest
+          ? PluginManifestSchema().parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(contractFiles['.claude-plugin/plugin.json'])))
+          : { name: entry.name },
+        path: pluginPath, source: pluginId, repository: pluginId, enabled, contractFiles,
+      } as LoadedPlugin, errors: [] }
+    : await createPluginFromPath(
     pluginPath,
     pluginId,
     enabled,
     entry.name,
     entry.strict ?? true, // Respect marketplace entry's strict setting
+    contractOnly,
   )
+  plugin.name = plugin.manifest.name
   errors.push(...pluginErrors)
 
   // Set sha from source if available (for github and url source types)
@@ -2464,6 +2580,7 @@ async function finishLoadingPluginFromPath(
       strict: undefined,
     } as PluginManifest
     plugin.name = plugin.manifest.name
+    if (contractOnly) return plugin
 
     // Process commands from marketplace entry
     if (entry.commands) {
@@ -2712,6 +2829,7 @@ async function finishLoadingPluginFromPath(
     })
     return null
   } else if (hasManifest) {
+    if (contractOnly) return plugin
     // Has plugin.json - marketplace can supplement commands/agents/skills/hooks/outputStyles
 
     // Supplement commands from marketplace entry
@@ -2932,8 +3050,10 @@ async function finishLoadingPluginFromPath(
  * @param sessionPluginPaths - Array of plugin directory paths from CLI
  * @returns LoadedPlugin objects and any errors encountered
  */
-async function loadSessionOnlyPlugins(
+export async function loadSessionOnlyPlugins(
   sessionPluginPaths: Array<string>,
+  enabledPlugins = getSettings_DEPRECATED().enabledPlugins,
+  contractOnly = false,
 ): Promise<{ plugins: LoadedPlugin[]; errors: PluginError[] }> {
   if (sessionPluginPaths.length === 0) {
     return { plugins: [], errors: [] }
@@ -2966,12 +3086,14 @@ async function loadSessionOnlyPlugins(
         `${dirName}@inline`, // temporary, will be updated after we know the real name
         true, // Resolve settings after reading the manifest's plugin name.
         dirName,
+        true,
+        contractOnly,
       )
 
       // Update source to use the actual plugin name from manifest
       plugin.source = `${plugin.name}@inline`
       plugin.repository = `${plugin.name}@inline`
-      plugin.enabled = getSettings_DEPRECATED().enabledPlugins?.[plugin.source] !== false
+      plugin.enabled = enabledPlugins?.[plugin.source] !== false
 
       plugins.push(plugin)
       errors.push(...pluginErrors)
@@ -3153,6 +3275,39 @@ export const loadAllPluginsCacheOnly = memoize(
   },
 )
 
+/** Read-only discovery; never publishes a partial context or warms runtime caches. */
+export async function loadPluginsForContractValidation(): Promise<{
+  enabled: LoadedPlugin[]
+  errors: PluginError[]
+  complete: boolean
+}> {
+  try {
+    const result = await assemblePluginLoadResult(
+      () =>
+        loadPluginsFromMarketplaces({ cacheOnly: true, contractOnly: true }),
+      true,
+    )
+    const complete = result.errors.length === 0
+    return {
+      enabled: complete ? result.enabled : [],
+      errors: result.errors,
+      complete,
+    }
+  } catch (error) {
+    return {
+      enabled: [],
+      complete: false,
+      errors: [
+        {
+          type: 'generic-error',
+          source: 'plugin-context',
+          error: errorMessage(error),
+        },
+      ],
+    }
+  }
+}
+
 /**
  * Shared body of loadAllPlugins and loadAllPluginsCacheOnly.
  *
@@ -3165,6 +3320,7 @@ async function assemblePluginLoadResult(
     plugins: LoadedPlugin[]
     errors: PluginError[]
   }>,
+  contractOnly = false,
 ): Promise<PluginLoadResult> {
   // Load marketplace plugins and session-only plugins in parallel.
   // getInlinePlugins() is a synchronous state read with no dependency on
@@ -3173,11 +3329,31 @@ async function assemblePluginLoadResult(
   const [marketplaceResult, sessionResult] = await Promise.all([
     marketplaceLoader(),
     inlinePlugins.length > 0
-      ? loadSessionOnlyPlugins(inlinePlugins)
+      ? loadSessionOnlyPlugins(inlinePlugins, undefined, contractOnly)
       : Promise.resolve({ plugins: [], errors: [] }),
   ])
   // 3. Load built-in plugins that ship with the CLI
-  const builtinResult = getBuiltinPlugins()
+  const builtinErrors: PluginError[] = []
+  let builtinResult: ReturnType<typeof getBuiltinPlugins> = { enabled: [], disabled: [] }
+  if (contractOnly) {
+    try {
+      const archive = builtinModsArchive()
+      if (!archive) throw new Error('Built-in Mods archive is missing')
+      const { definitions, files } = await readOfficialBuiltinModDefinitions(archive)
+      builtinResult = getBuiltinPlugins(definitions)
+      for (const plugin of [...builtinResult.enabled, ...builtinResult.disabled]) {
+        if (!definitions.some(definition => definition.path === plugin.path)) continue
+        const prefix = `${plugin.name}/`
+        plugin.contractFiles = Object.fromEntries(Object.entries(files)
+          .filter(([name]) => name.startsWith(prefix))
+          .map(([name, bytes]) => [name.slice(prefix.length), bytes]))
+      }
+    } catch (error) {
+      builtinErrors.push({ type: 'generic-error', source: 'builtin', error: errorMessage(error) })
+    }
+  } else {
+    builtinResult = getBuiltinPlugins()
+  }
 
   // Session plugins (--plugin-dir) override installed ones by name,
   // UNLESS the installed plugin is locked by managed settings
@@ -3194,6 +3370,8 @@ async function assemblePluginLoadResult(
     ...mergeErrors,
   ]
 
+  allErrors.push(...builtinErrors)
+
   // Verify dependencies. Runs AFTER the parallel load — deps are presence
   // checks, not load-order, so no topological sort needed. Demotion is
   // session-local: does NOT write settings (user fixes intent via /doctor).
@@ -3209,7 +3387,7 @@ async function assemblePluginLoadResult(
   )
 
   // 3. Cache plugin settings for synchronous access by the settings cascade
-  cachePluginSettings(enabledPlugins)
+  if (!contractOnly) cachePluginSettings(enabledPlugins)
 
   return {
     enabled: enabledPlugins,

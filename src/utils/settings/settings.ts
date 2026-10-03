@@ -119,6 +119,11 @@ export function loadManagedFileSettings(): {
     const code = getErrnoCode(e)
     if (code !== 'ENOENT' && code !== 'ENOTDIR') {
       logError(e)
+      errors.push({
+        file: dropInDir,
+        path: '',
+        message: `Failed to read managed settings directory: ${e instanceof Error ? e.message : String(e)}`,
+      })
     }
   }
 
@@ -196,8 +201,17 @@ export function parseSettingsFile(path: string): {
   let result: ParsedSettings
   try {
     result = readSettingsFile(path)
-  } catch {
-    return { settings: null, errors: [] }
+  } catch (error) {
+    return {
+      settings: null,
+      errors: [
+        {
+          file: path,
+          path: '',
+          message: `Failed to read settings file: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+    }
   }
   setCachedParsedFile(path, result)
   // Clone the first return too — the caller may mutate before

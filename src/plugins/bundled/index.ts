@@ -22,7 +22,7 @@ import { initializeOfficialBuiltinMods } from '../builtinMods.js'
 
 const archiveName = 'builtin-mods-2.1.277.zip'
 
-function builtinModsArchive(): string | undefined {
+export function builtinModsArchive(): string | undefined {
   if (process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE)
     return process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
   const here = dirname(fileURLToPath(import.meta.url))

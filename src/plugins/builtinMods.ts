@@ -88,7 +88,7 @@ function validateEntryCollisions(names: string[]): void {
   }
 }
 
-function unzipArchive(bytes: Uint8Array): Record<string, Uint8Array> {
+export function unzipArchive(bytes: Uint8Array): Record<string, Uint8Array> {
   const rawNames = new Set<string>()
   const names: string[] = []
   const entries = unzipSync(bytes, {
@@ -154,6 +154,33 @@ export async function loadBuiltinModDefinitions(
       defaultEnabled: name !== 'telemetry' || isAnthropicTelemetryEnabled(),
     }
   }))
+}
+
+export async function readOfficialBuiltinModDefinitions(
+  archivePath: string,
+): Promise<{ definitions: BuiltinPluginDefinition[]; files: Record<string, Uint8Array> }> {
+  const bytes = await readFile(archivePath)
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  if (digest !== OFFICIAL_ARCHIVE_SHA256)
+    throw new Error(`Built-in Mods archive SHA-256 must be ${OFFICIAL_ARCHIVE_SHA256}, received ${digest}`)
+  const files = unzipArchive(bytes)
+  const read = (name: string) => {
+    if (!Object.hasOwn(files, name)) throw new Error(`Built-in Mods archive missing ${name}`)
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files[name]))
+  }
+  OfficialProvenanceSchema.parse(read('provenance.json'))
+  const definitions = OFFICIAL_MODS.map(name => {
+    const manifest = PluginManifestSchema().parse(read(`${name}/.claude-plugin/plugin.json`))
+    if (manifest.name !== name) throw new Error(`Built-in Mod manifest name mismatch: ${name}`)
+    return {
+      name,
+      description: manifest.description ?? name,
+      manifest,
+      path: `${archivePath}/${name}`,
+      defaultEnabled: name !== 'telemetry' || isAnthropicTelemetryEnabled(),
+    }
+  })
+  return { definitions, files }
 }
 
 export async function initializeOfficialBuiltinMods(

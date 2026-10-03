@@ -304,6 +304,15 @@ function migrateV1ToV2(v1Data: InstalledPluginsFileV1): InstalledPluginsFileV2 {
   return { version: 2, plugins: v2Plugins }
 }
 
+/** Fresh read without migration writes or cached error-to-empty fallback. */
+export function readInstalledPluginsForContractValidation(): InstalledPluginsFileV2 {
+  const raw = readInstalledPluginsFileRaw()
+  if (!raw) return { version: 2, plugins: {} }
+  return raw.version === 2
+    ? InstalledPluginsFileSchemaV2().parse(raw.data)
+    : migrateV1ToV2(InstalledPluginsFileSchemaV1().parse(raw.data))
+}
+
 /**
  * Load installed plugins in V2 format.
  *

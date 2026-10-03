@@ -2064,7 +2064,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
  * @returns The marketplace object
  * @throws If marketplace file not found or invalid
  */
-async function readCachedMarketplace(
+export async function readCachedMarketplace(
   installLocation: string,
 ): Promise<PluginMarketplace> {
   // For git-sourced directories, the manifest lives at .claude-plugin/marketplace.json.

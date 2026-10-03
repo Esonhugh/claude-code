@@ -14,6 +14,7 @@ import type {
   ExtraKnownMarketplaceSchema,
   SettingsJson,
 } from '../settings/types.js'
+import type { ValidationError } from '../settings/validation.js'
 
 type ExtraKnownMarketplace = z.infer<
   ReturnType<typeof ExtraKnownMarketplaceSchema>
@@ -31,17 +32,18 @@ const SETTINGS_FILES = ['settings.json', 'settings.local.json'] as const
  * This has the lowest priority — callers must spread their standard settings
  * on top to let user/project/local/flag/policy override.
  */
-export function getAddDirEnabledPlugins(): NonNullable<
-  SettingsJson['enabledPlugins']
-> {
+export function getAddDirEnabledPlugins(
+  errors?: ValidationError[],
+): NonNullable<SettingsJson['enabledPlugins']> {
   const result: NonNullable<SettingsJson['enabledPlugins']> = {}
   for (const dir of getAdditionalDirectoriesForClaudeMd()) {
     for (const file of SETTINGS_FILES) {
-      const { settings } = parseSettingsFile(join(dir, '.claude', file))
-      if (!settings?.enabledPlugins) {
+      const parsed = parseSettingsFile(join(dir, '.claude', file))
+      errors?.push(...parsed.errors)
+      if (!parsed.settings?.enabledPlugins) {
         continue
       }
-      Object.assign(result, settings.enabledPlugins)
+      Object.assign(result, parsed.settings.enabledPlugins)
     }
   }
   return result

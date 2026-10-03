@@ -138,6 +138,166 @@ test('keeps errors and warnings alongside notes and accepts absent notes', () =>
   expect(print({ ...result, notes: undefined })).not.toContain('undefined')
 })
 
+test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-empty', 'throw', 'broken-types', 'foreign-write'])(
+  'standalone validate consumes only complete contract discovery: %s', async mode => {
+    const owner = await pluginRoot('owner')
+    const foreign = await pluginRoot('other')
+    await mkdir(join(owner, 'hooks'))
+    await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+    await writeFile(join(owner, 'hooks', 'register.ts'), `throw new Error('must never execute'); export function register(on) { on('tool.call', async ($) => { await $.state.${mode === 'foreign-write' ? 'set' : 'get'}({plugin:'other', key:'value'}${mode === 'foreign-write' ? ', 1' : ''}); }); }`)
+    await writeFile(join(foreign, 'contract.d.ts'), `declare module 'claude-code' { interface PluginState { other: { ${mode === 'complete-missing' ? 'different' : 'value'}: string } } }`)
+    const lines: string[] = []
+    const exits: number[] = []
+    let discoveries = 0
+    const forbidden = () => { throw new Error('materializing loader forbidden') }
+    const bindings = {
+      validateManifest, validatePluginContents, resolveForeignModStateDeclarations,
+      dirname, basename, plural, figures,
+      readFile: async (path: string) => readFileSync(path, 'utf8'),
+      jsonParse: JSON.parse,
+      errorMessage: (error: unknown) => String(error),
+      getPluginErrorMessage: (error: { error?: string }) => error.error,
+      logError: forbidden, setUseCoworkPlugins: forbidden,
+      loadAllPlugins: forbidden, loadAllPluginsCacheOnly: forbidden,
+      loadPluginsForContractValidation: async () => {
+        discoveries++
+        if (mode === 'throw') throw new Error('unreadable context')
+        return {
+          complete: !mode.startsWith('incomplete'),
+          enabled: ['empty', 'incomplete-empty'].includes(mode) ? [] : [loadedPlugin(foreign, 'other', mode === 'broken-types' ? './missing.d.ts' : './contract.d.ts')],
+          errors: mode === 'incomplete' ? [{ type: 'generic-error', source: 'builtin', error: 'builtin unavailable' }] : [],
+        }
+      },
+      printValidationResult: (result: ValidationResult) => lines.push(print(result)),
+      console: { log: (...args: unknown[]) => lines.push(args.join(' ')), error: forbidden },
+      process: { exit: (code: number) => exits.push(code) },
+      cliOk: (message: string) => { lines.push(message); exits.push(0) },
+    }
+    const run = new Function(...Object.keys(bindings), `${compileFunction('pluginValidateHandler')}\nreturn pluginValidateHandler`)(...Object.values(bindings)) as typeof pluginValidateHandler
+    await run(owner, {})
+    expect(discoveries).toBe(1)
+    const output = lines.join('\n')
+    if (['incomplete', 'incomplete-empty', 'throw', 'broken-types'].includes(mode)) {
+      expect(output).toMatch(/not checked.*other\.value/)
+      expect(output).toContain('Validation passed with warnings')
+      expect(output).not.toContain('not declared in any available')
+      expect(output).toContain(mode === 'incomplete' ? 'builtin unavailable' : mode === 'incomplete-empty' ? 'is incomplete' : mode === 'throw' ? 'unreadable context' : 'missing.d.ts')
+      expect(exits).toEqual([0])
+    } else if (mode === 'empty' || mode === 'complete-missing') {
+      expect(output).toMatch(/other\.value.*not declared in any available/)
+      expect(exits).toEqual([1])
+    } else if (mode === 'foreign-write') {
+      expect(output).toContain("only a value's owner may write")
+      expect(exits).toEqual([1])
+    } else {
+      expect(output).not.toContain('not checked')
+      expect(exits).toEqual([0])
+    }
+  },
+)
+
+test.each([true, false])('shared merge retains managed enabled=%s against an inline override', async enabled => {
+  const installed = loadedPlugin(await pluginRoot('other'), 'other')
+  installed.enabled = enabled
+  const inline = loadedPlugin(await pluginRoot('other'), 'other')
+  inline.source = 'other@inline'
+  const result = pluginLoader.mergePluginSources({
+    marketplace: [installed], session: [inline], builtin: [],
+    managedNames: new Set(['other']),
+  })
+  expect(result.plugins).toEqual([installed])
+  expect(result.plugins[0]?.enabled).toBe(enabled)
+  expect(result.errors).toHaveLength(1)
+  expect(result.errors[0]?.source).toBe('other@inline')
+})
+
+test('cold real handler discovers builtin contracts without invoking runtime loaders', async () => {
+  const owner = await pluginRoot('owner')
+  await mkdir(join(owner, 'hooks'))
+  await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+  await writeFile(join(owner, 'hooks', 'register.ts'), `throw new Error('must never execute'); export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
+  const full = spyOn(pluginLoader, 'loadAllPlugins')
+  const cached = spyOn(pluginLoader, 'loadAllPluginsCacheOnly')
+  try {
+    const output = await runValidate(owner)
+    expect(full).not.toHaveBeenCalled()
+    expect(cached).not.toHaveBeenCalled()
+    expect(output).not.toMatch(/incomplete/i)
+    expect(output).not.toContain('not checked')
+    expect(output).toMatch(/other\.value.*not declared in any available/)
+  } finally {
+    full.mockRestore()
+    cached.mockRestore()
+  }
+})
+
+test('plugin validate uses complete cached contracts for foreign state', async () => {
+  const owner = await pluginRoot('owner')
+  const foreign = await pluginRoot('other')
+  await mkdir(join(owner, 'hooks'))
+  await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+  await writeFile(join(owner, 'hooks', 'register.ts'), `export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
+  await writeFile(join(foreign, 'contract.d.ts'), `declare module 'claude-code' { interface PluginState { other: { value: string } } }`)
+  const cached: PluginLoadResult = {
+    enabled: [loadedPlugin(foreign, 'other', './contract.d.ts')],
+    disabled: [],
+    errors: [],
+  }
+  pluginLoader.loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve(cached))
+  const output = await runValidate(owner)
+  expect(output).not.toContain('not checked')
+  expect(output).not.toContain('not declared in any available')
+  expect(output).toContain('Validation passed')
+})
+
+test('plugin validate treats an empty successful cache as a complete context', async () => {
+  const owner = await pluginRoot('owner')
+  await mkdir(join(owner, 'hooks'))
+  await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+  await writeFile(join(owner, 'hooks', 'register.ts'), `export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
+  pluginLoader.loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve({
+    enabled: [],
+    disabled: [],
+    errors: [],
+  }))
+  const output = await runValidate(owner)
+  expect(output).toMatch(/other\.value.*not declared in any available/)
+  expect(output).not.toContain('not checked')
+})
+
+test('plugin validate warns and leaves foreign state unchecked for cached loader errors', async () => {
+  const owner = await pluginRoot('owner')
+  await mkdir(join(owner, 'hooks'))
+  await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+  await writeFile(join(owner, 'hooks', 'register.ts'), `export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
+  pluginLoader.loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve({
+    enabled: [],
+    disabled: [],
+    errors: [{ type: 'generic-error', source: 'broken@test', error: 'broken contract' }],
+  }))
+  const output = await runValidate(owner)
+  expect(output).toMatch(/cached plugin context has 1 loader error.*unchecked/i)
+  expect(output).toMatch(/not checked.*other\.value/)
+})
+
+test('plugin validate warns and leaves foreign state unchecked for damaged cached context', async () => {
+  const owner = await pluginRoot('owner')
+  const foreign = await pluginRoot('other')
+  await mkdir(join(owner, 'hooks'))
+  await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
+  await writeFile(join(owner, 'hooks', 'register.ts'), `export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
+  const cached: PluginLoadResult = {
+    enabled: [loadedPlugin(foreign, 'other', './missing.d.ts')],
+    disabled: [],
+    errors: [],
+  }
+  pluginLoader.loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve(cached))
+  const output = await runValidate(owner)
+  expect(output).toMatch(/warning/i)
+  expect(output).toMatch(/missing\.d\.ts.*unchecked/i)
+  expect(output).toMatch(/not checked.*other\.value/)
+})
+
 test('prints plugin tests in the official bun-style stdout contract', () => {
   const lines: string[] = []
   const run = new Function(

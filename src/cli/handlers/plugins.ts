@@ -4,6 +4,7 @@
  */
 /* eslint-disable custom-rules/no-process-exit -- CLI subcommand handlers intentionally exit */
 import figures from 'figures'
+import { readFile } from 'node:fs/promises'
 import { basename, dirname, relative } from 'path'
 import { setUseCoworkPlugins } from '../../bootstrap/state.js'
 import {
@@ -49,14 +50,19 @@ import {
   parsePluginIdentifier,
   scopeToSettingSource,
 } from '../../utils/plugins/pluginIdentifier.js'
-import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
+import {
+  loadAllPlugins,
+  loadAllPluginsCacheOnly,
+  loadPluginsForContractValidation,
+} from '../../utils/plugins/pluginLoader.js'
 import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
+  resolveForeignModStateDeclarations,
   type ValidationResult,
   validateManifest,
   validatePluginContents,
 } from '../../utils/plugins/validatePlugin.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { plural } from '../../utils/stringUtils.js'
 import { cliError, cliOk } from '../exit.js'
 
@@ -127,7 +133,41 @@ export async function pluginValidateHandler(
     if (result.fileType === 'plugin') {
       const manifestDir = dirname(result.filePath)
       if (basename(manifestDir) === '.claude-plugin') {
-        contentResults = await validatePluginContents(dirname(manifestDir))
+        let foreignDeclarations: Awaited<ReturnType<typeof resolveForeignModStateDeclarations>>['declarations']
+        let foreignWarning: string | undefined
+        const cachedPlugins = loadAllPluginsCacheOnly.cache?.get(undefined)
+        try {
+          const context = cachedPlugins
+            ? { ...await cachedPlugins, complete: true }
+            : await loadPluginsForContractValidation()
+          if (!context.complete || context.errors.length) {
+            const details = context.errors.map(error => `${error.source}: ${getPluginErrorMessage(error)}`).join('; ')
+            foreignWarning = `${cachedPlugins ? 'Cached plugin' : 'Plugin contract'} context has ${context.errors.length} loader ${plural(context.errors.length, 'error')}${context.complete ? '' : ' and is incomplete'}; foreign state references were left unchecked.${details ? ` ${details}` : ''}`
+          } else {
+            const manifest = jsonParse(await readFile(result.filePath, 'utf8')) as { name?: unknown }
+            if (typeof manifest.name === 'string') {
+              const resolved = await resolveForeignModStateDeclarations(
+                context.enabled,
+                manifest.name,
+              )
+              foreignDeclarations = resolved.declarations
+              foreignWarning = resolved.warning
+            }
+          }
+        } catch (error) {
+          foreignWarning = `Could not use ${cachedPlugins ? 'cached plugin' : 'plugin contract'} context: ${errorMessage(error)}. Foreign state references were left unchecked.`
+        }
+        contentResults = await validatePluginContents(
+          dirname(manifestDir),
+          foreignDeclarations,
+        )
+        if (foreignWarning) {
+          const hooksResult = contentResults.find(r => r.fileType === 'hooks')
+          hooksResult?.warnings.push({
+            path: 'state',
+            message: foreignWarning,
+          })
+        }
         for (const r of contentResults) {
           // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`Validating ${r.fileType}: ${r.filePath}\n`)

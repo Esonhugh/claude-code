@@ -54,7 +54,7 @@ export function getBuiltinPluginDefinition(
  * enabled/disabled based on user settings (with defaultEnabled as fallback).
  * Plugins whose isAvailable() returns false are omitted entirely.
  */
-export function getBuiltinPlugins(): {
+export function getBuiltinPlugins(contractDefinitions?: BuiltinPluginDefinition[]): {
   enabled: LoadedPlugin[]
   disabled: LoadedPlugin[]
 } {
@@ -62,7 +62,18 @@ export function getBuiltinPlugins(): {
   const enabled: LoadedPlugin[] = []
   const disabled: LoadedPlugin[] = []
 
-  for (const [name, definition] of BUILTIN_PLUGINS) {
+  if (contractDefinitions) {
+    for (const definition of BUILTIN_PLUGINS.values()) {
+      if (definition.isAvailable)
+        throw new Error(`Built-in ${definition.name} availability cannot be determined without executing its callback`)
+    }
+  }
+  const definitions = contractDefinitions
+    ? new Map([...BUILTIN_PLUGINS, ...contractDefinitions.map(definition => [definition.name, definition] as const)])
+    : BUILTIN_PLUGINS
+  for (const [name, definition] of definitions) {
+    if (contractDefinitions && definition.isAvailable)
+      throw new Error(`Built-in ${name} availability cannot be determined without executing its callback`)
     if (definition.isAvailable && !definition.isAvailable()) {
       continue
     }
