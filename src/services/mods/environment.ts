@@ -36,6 +36,11 @@ export function createModClockBridge(callbacks: ClockCallbacks): object {
 
 type RemoteRegistration = (ModRegistration & { catchId?: number })[]
 type HostFunction = (...args: unknown[]) => unknown
+const stateMethods = new WeakMap<HostFunction, 'get' | 'set'>()
+export function createModStateBridge(method: 'get' | 'set', call: HostFunction): HostFunction {
+  stateMethods.set(call, method)
+  return call
+}
 const storeMethods = new WeakMap<HostFunction, 'get' | 'set' | 'delete'>()
 export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: HostFunction): HostFunction {
   storeMethods.set(call, method)
@@ -206,7 +211,8 @@ export function createModEnvironmentHost({
         throw new Error('Function belongs to another module environment')
       }
       const storeMethod = storeMethods.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}) }
+      const stateMethod = stateMethods.get(value as HostFunction)
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)

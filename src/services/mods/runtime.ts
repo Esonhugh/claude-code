@@ -11,7 +11,7 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
+import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
@@ -31,6 +31,7 @@ import { validateModCompactInput, validateModCompactResult } from './compactAdap
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
+import { createModState } from './state.js'
 import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
@@ -163,6 +164,7 @@ type Activation = {
   dispose?: Promise<void>
 }
 type DrawingLease = {
+  instance: string
   owner: ModUiOwner
   snapshot: readonly Activation[]
   table: Nouns
@@ -190,6 +192,7 @@ const coreHost: Nouns = {
   settings: { read: hostIdentity },
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
+  state: { get: hostIdentity, set: hostIdentity },
   session: { cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
@@ -255,6 +258,18 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
   }
   const agents = createModAgents(owner => (owner as Activation).declaration, notify)
   const config = createModConfig(() => services.configRows?.() ?? [], (event, input, core, options) => dispatch(event, input, core, active, nouns, options), () => nouns)
+  const state = createModState({
+    onStale: instances => {
+      for (const instance of instances) {
+        const [surface, component, requestId] = instance.split('\0')
+        void ui.invalidateInstance({
+          surface: surface as ModRenderSurface,
+          component: component as ModRenderComponent,
+          requestId,
+        }).catch(error => diagnostic('mods', 'state.invalidate', error))
+      }
+    },
+  })
   const drawings = new Map<number, DrawingLease>()
   const clientOwners = new Map<number, { participant: Activation; owner: object; requestId: string }>()
   const clients = createModClients({
@@ -327,7 +342,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     },
     draw: async (owner, input, drawing, core, validateRenderTree) => {
       const entered = uiContext.getStore()
-      const lease: DrawingLease = { owner, snapshot: entered?.snapshot ?? active, table: entered?.table ?? nouns, participants: new Set() }
+      const instance = `${input.surface}\0${input.component}\0${input.requestId}`
+      const lease: DrawingLease = { instance, owner, snapshot: entered?.snapshot ?? active, table: entered?.table ?? nouns, participants: new Set() }
       drawings.set(drawing, lease)
       return dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, { drawing, validateRenderTree })
     },
@@ -347,6 +363,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       const lease = drawings.get(drawing)
       if (!lease || lease.owner !== owner) return
       drawings.delete(drawing)
+      if (![...drawings.values()].some(current => current.instance === lease.instance))
+        state.forgetRender(lease.instance)
       await Promise.all([...lease.participants].map(item => item.environment.releaseDrawing(drawing)))
     },
   })
@@ -637,6 +655,14 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       case 'env.set': return { name: args[0], value: args[1] }
       case 'store.get': case 'store.delete': return { key: args[0] }
       case 'store.set': return { key: args[0], value: args[1] }
+      case 'state.get': return args[0] as ModInput
+      case 'state.set': return {
+        ...(args[0] as ModInput),
+        value: args[1],
+        ...(args[2] && typeof args[2] === 'object' && (args[2] as ModInput).ifVersion !== undefined
+          ? { ifVersion: (args[2] as ModInput).ifVersion }
+          : {}),
+      }
       case 'process.run': return { argv: args[0], ...(args[1] === undefined ? {} : { init: args[1] }) }
       case 'session.usage': {
         const input = args[0] === undefined ? {} : args[0]
@@ -960,6 +986,44 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     }
   }
 
+  async function dispatchState(op: string, input: ModInput, snapshot: readonly Activation[], table: Nouns,
+    options: ModDispatchOptions & { origin: ModOrigin }) {
+    const received = op === 'state.set'
+      ? Object.freeze({ ...input, previous: state.previous({
+        plugin: input.plugin as string,
+        key: input.key as string,
+        ...(input.id === undefined ? {} : { id: input.id as string }),
+      }) })
+      : input
+    return await dispatch(
+      op,
+      received,
+      async rewritten => op === 'state.get'
+        ? state.get(rewritten as never)
+        : state.set(options.origin.plugin, rewritten as never),
+      snapshot,
+      table,
+      {
+        ...options,
+        validateInput: (rewritten, original) => {
+          if (rewritten.plugin !== original.plugin || rewritten.key !== original.key ||
+              rewritten.id !== original.id)
+            throw new Error(`${op} cannot rewrite plugin, key or id`)
+          if (op === 'state.set' && (rewritten.ifVersion !== original.ifVersion ||
+              !isDeepStrictEqual(rewritten.previous, original.previous)))
+            throw new Error('state.set cannot rewrite ifVersion or previous')
+        },
+        ...(op === 'state.set' ? {
+          restoreInput: (rewritten: ModInput, original: ModInput) => ({
+            ...rewritten,
+            ...(!Object.hasOwn(rewritten, 'ifVersion') ? { ifVersion: original.ifVersion } : {}),
+            ...(!Object.hasOwn(rewritten, 'previous') ? { previous: original.previous } : {}),
+          }),
+        } : {}),
+      },
+    ) as { value?: unknown; deny?: string } & Record<string, unknown>
+  }
+
   function engineFor(owner: Activation, snapshot: readonly Activation[], table: Nouns, lease: CapabilityLease, dynamic = false): Record<string, unknown> {
     const scope = () => {
       if (!dynamic) return { snapshot, table, lease }
@@ -1092,6 +1156,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
           if (typeof name !== 'string' || !allowed?.includes(name))
             throw new Error(`Module environment name ${String(name)} is absent from scan for ${op}`)
         }
+        if (op === 'state.get' || op === 'state.set') {
+          const ref = input as { plugin?: unknown; key?: unknown }
+          const allowed = owner.declaration.state?.[op === 'state.get' ? 'reads' : 'writes']
+          if (typeof ref.plugin !== 'string' || typeof ref.key !== 'string' ||
+              !allowed?.some(entry => entry.plugin === ref.plugin && entry.key === ref.key))
+            throw new Error(`Module state reference ${String(ref.plugin)} ${String(ref.key)} is absent from scan for ${op}`)
+        }
         if (fn !== hostIdentity && (args.length > 1 || typeof input !== 'object' || input === null || Array.isArray(input))) {
           throw new Error('Custom noun methods require one object argument or no arguments')
         }
@@ -1103,6 +1174,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         try {
           if (fn === hostIdentity && op === 'prompt.read')
             return await readPromptForCaller(owner, snapshot, table)
+          if (fn === hostIdentity && (op === 'state.get' || op === 'state.set')) {
+            const result = await withReference(owner, () => dispatchState(op, input as ModInput, snapshot, table, {
+              signal, origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+              ...(caller ? { caller } : {}),
+            }))
+            return capabilityResult(op, result)
+          }
           if (fn === hostIdentity && (op === 'config.list' || op === 'config.set')) {
             const run = (event: string, eventInput: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) =>
               dispatch(event, eventInput, core, snapshot, table, {
@@ -1377,11 +1455,23 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             createModStoreBridge(method, wrapped[method])
         }
       }
+      if (noun === 'state') {
+        for (const method of ['get', 'set'] as const) {
+          if (methods[method] === hostIdentity && wrapped[method])
+            createModStateBridge(method, wrapped[method])
+        }
+      }
       result[noun] = noun === 'ui' && !lease.building
         ? createModUiBridge(wrapped)
         : Object.freeze(wrapped)
     }
     return Object.freeze(result)
+  }
+
+  function capabilityResult(op: string, result: { value?: unknown; deny?: string }) {
+    if (typeof result.deny === 'string') throw new Error(result.deny)
+    return ['agent.spawn', 'tool.call', 'tool.check', 'prompt.fill', 'prompt.submit',
+      'prompt.suggest', 'prompt.compose', 'config.set', 'state.get', 'state.set'].includes(op) ? result : result.value
   }
 
   const emptyEngine = Object.freeze({})
@@ -1535,6 +1625,18 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         ? typeof result.value !== 'string'
         : result.value !== undefined && typeof result.value !== 'string')) {
         throw new Error(`${event} must return ${event === 'model.complete' ? 'a string' : 'a string, undefined'} or deny`)
+      }
+      return
+    }
+    if (event === 'state.get' || event === 'state.set') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object or deny`)
+      const value = result as ModInput
+      if (typeof value.deny === 'string') return
+      if (event === 'state.get') {
+        if (!Object.hasOwn(value, 'value') || !Number.isSafeInteger(value.version) || (value.version as number) < 0)
+          throw new Error('state.get must return value and a non-negative version')
+      } else if (typeof value.isSet !== 'boolean' || !Number.isSafeInteger(value.version) || (value.version as number) < 0) {
+        throw new Error('state.set must return isSet and a non-negative version')
       }
       return
     }
@@ -1700,7 +1802,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       ? {...requestServices.getStore(), messages: services.messages}
       : requestServices.getStore() ?? {}
     try {
-      return await requestServices.run(dispatchServices, () => dispatchModEvent({
+      const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner), core,
         signal: combined.signal, origin: options.origin,
         reportDirectCoreFailure: options.reportDirectCoreFailure,
@@ -1752,6 +1854,11 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
               : options.restoreResult,
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
       }))
+      if (event === 'ui.render') {
+        const instance = `${String(input.surface)}\0${String(input.component)}\0${String(input.requestId)}`
+        return await state.render(instance, () => state.dispatch(runDispatch))
+      }
+      return await state.dispatch(runDispatch)
     } finally {
       combined.cleanup()
       for (const owner of snapshot) {
@@ -2318,6 +2425,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         attachedClients.clear()
         clientTransitions.clear()
         clearTimeout(timer)
+        state.reset()
       })
     return ending
   }
@@ -2365,6 +2473,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         await measurements.reset()
         ending = undefined
         commands.invalidateDescriptions()
+        state.reset()
         sectionCache = new Map()
         attachmentCache = new Map()
         invalidatePromptContext()

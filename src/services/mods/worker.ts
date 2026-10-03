@@ -11,10 +11,19 @@ import { createModUiRealm } from './uiRealm.js'
 import { createModClientRealm, copyModClientData } from './clientRealm.js'
 import { isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 import { createModWebRealm } from './webRealm.js'
+import { modStateLibrarySource } from './stateLibrary.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
 const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation) => {
+  const normalizeStateValue = value => {
+    let text;
+    try { text = JSON.stringify(value); }
+    catch (error) { throw TypeError('state.set value is not JSON data (' + String(error?.message ?? error) + ')'); }
+    if (text === undefined) throw TypeError('state.set value is not JSON data');
+    if (text.length > 4194304) throw RangeError('state.set value is ' + text.length + ' characters, over the 4194304 limit');
+    return JSON.parse(text);
+  };
   const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
   const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
   const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData);
@@ -291,8 +300,15 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           } catch (error) { pending.delete(call); reject(error); }
         });
       };
+      const invokeHost = (...args) => {
+        if (wire.stateMethod === 'set') {
+          try { args[1] = normalizeStateValue(args[1]); }
+          catch (error) { return Promise.reject(error); }
+        }
+        return callHost(...args);
+      };
       const proxy = wire.stream ? (...args) => {
-        const opened = callHost(...args);
+        const opened = invokeHost(...args);
         const result = opened.then(stream => stream.result);
         result.catch(() => {});
         return {
@@ -302,7 +318,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           result,
           [Symbol.asyncIterator]() { return this; },
         };
-      } : callHost;
+      } : invokeHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
       return Object.freeze(proxy);
     }
@@ -328,9 +344,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     if (!registering) throw Error('on() is only available during register()');
     if (typeof matcher === 'function') { handler = matcher; matcher = undefined; }
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
-    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'settings', 'env']);
+    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env']);
     const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
-      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys', 'env.get', 'env.set',
+      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
       'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'command.register', 'command.list', 'command.run', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status',
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
@@ -830,7 +846,10 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     const declaration = request.declaration
     const modules = new Map<string, vm.SourceTextModule>()
     const source = new Map(declaration.modules.map(module => [module.path, module.source]))
-    const empty = new vm.SyntheticModule([], () => {}, { context: environment.context })
+    const stateLibrary = new vm.SourceTextModule(modStateLibrarySource, {
+      context: environment.context,
+      identifier: 'claude-code',
+    })
     const getModule = (path: string): vm.SourceTextModule => {
       const cached = modules.get(path)
       if (cached) return cached
@@ -848,7 +867,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     const entrypoints = request.type === 'load-client' ? [] : declaration.entrypoints.map(getModule)
     for (const module of entrypoints) {
       if (module.status === 'unlinked') await module.link((specifier, parent) => {
-        if (specifier === 'claude-code') return empty
+        if (specifier === 'claude-code') return stateLibrary
         const link = declaration.links.find(link => link.from === parent.identifier && link.specifier === specifier)
         if (!link) throw new Error('Import missing from scanned snapshot')
         return getModule(link.to)
@@ -862,7 +881,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     for (const client of clients) {
       const module = getModule(client.path)
       if (module.status === 'unlinked') await module.link((specifier, parent) => {
-        if (specifier === 'claude-code') return empty
+        if (specifier === 'claude-code') return stateLibrary
         const link = declaration.links.find(link => link.from === parent.identifier && link.specifier === specifier)
         if (!link) throw new Error('Client import missing from scanned snapshot')
         return getModule(link.to)

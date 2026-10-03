@@ -121,6 +121,7 @@ export type ModUi = {
     rows?: number
   }): Promise<unknown>
   invalidate(owner: ModUiOwner, event: string): Promise<void>
+  invalidateInstance(instance: Pick<ModRenderInput, 'surface' | 'component' | 'requestId'>): Promise<void>
   render(presentation?: ModUiPresentation): Promise<void>
   scroll(
     owner: ModUiOwner,
@@ -314,6 +315,7 @@ export function createModUi({
   const serializedBlits = new Map<string, Promise<void>>()
   const blitGenerations = new Map<string, number>()
   const focusWaiters = new Set<() => void>()
+  const siteInputs = new WeakMap<ModRenderSite, ModRenderInput>()
   const sites = new Map<ModUiOwner, ModRenderSite & {
     redraw(): Promise<void>
     blit(plugin: string, input: {
@@ -979,6 +981,7 @@ export function createModUi({
           return disposal
         },
       }
+      siteInputs.set(site, structuredClone(initial))
       sites.set(owner, site)
       try { await site.update(initial); return site }
       catch (error) { await site.dispose(); throw error }
@@ -1175,6 +1178,20 @@ export function createModUi({
         origin: { kind: 'plugin', name: plugin },
         restoreInput: (rewritten, original) => ({ ...original, ...rewritten }),
       })
+    },
+
+    async invalidateInstance(instance) {
+      const work: Promise<void>[] = []
+      if (instance.surface === 'terminal' && instance.component === 'Pane') {
+        const pane = active.get(instance.requestId)
+        if (pane) work.push(invalidatePane(pane))
+      }
+      for (const site of sites.values()) {
+        const input = siteInputs.get(site)!
+        if (input.surface === instance.surface && input.component === instance.component && input.requestId === instance.requestId)
+          work.push(invalidateSite(site))
+      }
+      await Promise.all(work)
     },
 
     async invalidate(owner, event) {
