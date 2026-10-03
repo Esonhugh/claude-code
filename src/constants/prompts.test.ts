@@ -162,7 +162,7 @@ describe('getSystemPrompt layering', () => {
       'output_efficiency',
       'tool_guidance',
     ])
-    expect(sections).toContainEqual({ name: 'mcp_instructions', text: null })
+    expect(sections).toContainEqual({ name: 'mcp_instructions', text: null, scope: 'session' })
     expect(sections).toContainEqual({
       text: '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
     })

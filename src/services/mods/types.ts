@@ -1,5 +1,18 @@
 import type { ModMatcher } from './matcher.js'
 
+export type PromptComposeScope = 'shared' | 'session'
+export type PromptComposeTrait = 'bare' | 'lean' | 'sdk-preset' | 'teammate' | 'analysis' | 'print' | 'skills' | 'send-user-message'
+export type PromptComposeSection = { id: string; text: string; scope: PromptComposeScope }
+export type PromptComposeInput = {
+  model: string
+  promptModel: string
+  surfaces: readonly ('terminal' | 'desktop' | 'mobile' | 'vscode')[]
+  tools: readonly string[]
+  outputStyle: { name: string; isKeepingCodingInstructions: boolean } | null
+  traits: readonly PromptComposeTrait[]
+}
+export type PromptComposeResult = { sections: readonly PromptComposeSection[] }
+
 export type ModModelForkRequest = { prompt: string }
 export type ModModelForkResult = { text: string; usage: Omit<ModTurnUsage, 'model'> } | null
 

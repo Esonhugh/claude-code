@@ -9,7 +9,7 @@ export const SEC_DEFAULT_ID = 'sec-default@builtin'
 // embedded source, not an installed plugin path, so packaged hosts own its code.
 const source = `export function register(on) {
   let pendingPolicy, expires = 0;
-  for (const name of ['classic.*', 'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read']) {
+  for (const name of ['classic.*', 'prompt.compose', 'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read']) {
     on(name, ($, event, next) => next.to(event, 'append'));
   }
   for (const name of ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn']) {
@@ -58,6 +58,7 @@ const source = `export function register(on) {
 }`
 const events = [
   'classic.*',
+  'prompt.compose',
   'prompt.section',
   'prompt.context',
   'prompt.attachment',

@@ -11,7 +11,7 @@ import { asAgentId } from './types/ids.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { createModsRuntime, type ModSnapshot } from './services/mods/runtime.js'
 import { createAssistantMessage, handleMessageFromStream, normalizeMessagesForAPI, type StreamingThinking } from './utils/messages.js'
-import { asSystemPrompt, withSystemPromptSections, getSystemPromptSections } from './utils/systemPromptType.js'
+import { asSystemPrompt, withSystemPromptSections, getSystemPromptFacts, getSystemPromptSections } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { getDefaultAppState } from './state/AppStateStore.js'
 import { resetStateForTests } from './bootstrap/state.js'
@@ -123,6 +123,7 @@ const wrapperJS = ts.transpileModule(wrapper.getText(ast).replace(/^export /, ''
 function isolatedWrapper(loop: (...args: any[]) => AsyncGenerator<any, any>, diagnostics: any[], lifecycle: any[]) {
   return new Function('scope', `with (scope) { ${wrapperJS}; return query; }`)({
     queryLoop: loop, createModTurnCompletion, randomUUID, createSystemMessage,
+    getSystemPromptFacts, getSystemPromptSections,
     notifyCommandLifecycle: (...args: any[]) => lifecycle.push(args),
     logError: (error: any) => diagnostics.push(error), logForDebugging: (text: string) => diagnostics.push(text),
   }) as typeof query

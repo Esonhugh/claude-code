@@ -25,7 +25,7 @@ import {
 } from '../utils/model/model.js'
 import { getSkillToolCommands } from 'src/commands.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
-import { getOutputStyleConfig } from './outputStyles.js'
+import { getAllOutputStyles, getOutputStyleConfig } from './outputStyles.js'
 import type {
   MCPServerConnection,
   ConnectedMCPServer,
@@ -69,6 +69,7 @@ import {
   concatSystemPrompts,
   withSystemPromptSections,
   type SystemPromptSection,
+  type SystemPromptFacts,
 } from '../utils/systemPromptType.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
@@ -358,10 +359,11 @@ function getDiscoverSkillsGuidance(): string | null {
 function getSessionSpecificGuidanceSection(
   enabledTools: Set<string>,
   skillToolCommands: Command[],
+  traits?: readonly string[],
 ): string | null {
   const hasAskUserQuestionTool = enabledTools.has(ASK_USER_QUESTION_TOOL_NAME)
   const hasSkills =
-    skillToolCommands.length > 0 && enabledTools.has(SKILL_TOOL_NAME)
+    (traits ? traits.includes('skills') : skillToolCommands.length > 0) && enabledTools.has(SKILL_TOOL_NAME)
   const hasAgentTool = enabledTools.has(AGENT_TOOL_NAME)
   const searchTools = hasEmbeddedSearchTools()
     ? `\`find\` or \`grep\` via the ${BASH_TOOL_NAME} tool`
@@ -371,7 +373,7 @@ function getSessionSpecificGuidanceSection(
     hasAskUserQuestionTool
       ? `If you do not understand why the user has denied a tool call, use the ${ASK_USER_QUESTION_TOOL_NAME} to ask them.`
       : null,
-    getIsNonInteractiveSession()
+    (traits ? traits.includes('print') : getIsNonInteractiveSession())
       ? null
       : `If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.`,
     // isForkSubagentEnabled() reads getIsNonInteractiveSession() — must be
@@ -452,25 +454,58 @@ export async function getSystemPrompt(
   model: string,
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
+  composition?: import('../services/mods/types.js').PromptComposeInput,
 ): Promise<string[]> {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  const recipe = (input: import('../services/mods/types.js').PromptComposeInput) =>
+    getSystemPrompt(tools, input.promptModel, additionalWorkingDirectories, mcpClients, input)
+  if (composition?.traits.some(trait => !['bare', 'print', 'skills'].includes(trait))) {
+    throw new Error('Unsupported prompt generation trait')
+  }
+  if (composition?.traits.includes('skills') && !composition.tools.includes(SKILL_TOOL_NAME)) {
+    throw new Error('Skills guidance requires the Skill tool')
+  }
+  if (composition ? composition.traits.includes('bare') : isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+    if (composition && (composition.outputStyle !== null || composition.traits.includes('skills'))) {
+      throw new Error('Bare prompts do not render output styles or skills')
+    }
     return withSystemPromptSections([
       {
         name: 'identity',
+        scope: 'session',
         text: `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
       },
-    ])
+    ], { promptModel: model, outputStyle: null, traits: ['bare', ...((composition ? composition.traits.includes('print') : getIsNonInteractiveSession()) ? ['print' as const] : [])] }, recipe)
   }
 
   const cwd = getCwd()
-  const [skillToolCommands, outputStyleConfig, envInfo] = await Promise.all([
+  const [skillToolCommands, configuredOutputStyle, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
     getOutputStyleConfig(),
     computeSimpleEnvInfo(model, additionalWorkingDirectories),
   ])
 
+  let outputStyleConfig = configuredOutputStyle
+  if (composition) {
+    const requested = composition.outputStyle
+    const style = requested ? (await getAllOutputStyles(cwd))[requested.name] : null
+    if (requested && !style) throw new Error(`Unknown output style: ${requested.name}`)
+    outputStyleConfig = style && requested
+      ? { ...style, keepCodingInstructions: requested.isKeepingCodingInstructions }
+      : null
+  }
   const settings = getInitialSettings()
-  const enabledTools = new Set(tools.map(_ => _.name))
+  const enabledTools = new Set(composition?.tools ?? tools.map(_ => _.name))
+  const facts: SystemPromptFacts = {
+    promptModel: model,
+    outputStyle: outputStyleConfig === null ? null : {
+      name: outputStyleConfig.name,
+      isKeepingCodingInstructions: outputStyleConfig.keepCodingInstructions === true,
+    },
+    traits: composition ? [...composition.traits] : [
+      ...(getIsNonInteractiveSession() ? ['print' as const] : []),
+      ...(enabledTools.has(SKILL_TOOL_NAME) && skillToolCommands.length > 0 ? ['skills' as const] : []),
+    ],
+  }
 
   if (
     (feature('PROACTIVE') || feature('KAIROS')) &&
@@ -500,12 +535,12 @@ ${CYBER_RISK_INSTRUCTION}`,
       { name: 'frc', text: getFunctionResultClearingSection(model) },
       { name: 'summarize_tool_results', text: SUMMARIZE_TOOL_RESULTS_SECTION },
       { name: 'proactive', text: getProactiveSection() },
-    ])
+    ].map(section => ({ ...section, scope: 'session' as const })), facts, recipe)
   }
 
   const dynamicSections = [
     systemPromptSection('session_guidance', () =>
-      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
+      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, composition?.traits),
     ),
     systemPromptSection('memory', () => loadMemoryPrompt()),
     systemPromptSection('ant_model_override', () =>
@@ -574,7 +609,9 @@ ${CYBER_RISK_INSTRUCTION}`,
   ]
 
   const resolvedDynamicSections =
-    await resolveSystemPromptSections(dynamicSections)
+    composition
+      ? await Promise.all(dynamicSections.map(section => section.compute()))
+      : await resolveSystemPromptSections(dynamicSections)
   const sourceSections: PromptSection[] = [
     {
       id: 'identity',
@@ -640,6 +677,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       .filter(section => section.layer !== 'task-dynamic')
       .map(section => ({
         name: section.id,
+        scope: 'shared' as const,
         text: selectedStaticContentByName.get(section.id) ?? null,
       })),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
@@ -648,11 +686,12 @@ ${CYBER_RISK_INSTRUCTION}`,
       : []),
     ...dynamicSections.map(section => ({
       name: section.name,
+      scope: 'session' as const,
       text: selectedDynamicContentByName.get(section.name) ?? null,
     })),
   ]
 
-  return withSystemPromptSections(sections)
+  return withSystemPromptSections(sections, facts, recipe)
 }
 
 function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {

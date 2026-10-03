@@ -89,6 +89,9 @@ const requestBetaHeaders: string[] = []
 const tokenRequests: Record<string, unknown>[] = []
 let rejectIncompatibleEffort = false
 let streamNotFound = false
+let streamInterrupted = false
+let overflowRequest = 0
+let overloadedModel: string | undefined
 const client = new Anthropic({
   apiKey: 'test-only',
   maxRetries: 0,
@@ -102,6 +105,21 @@ const client = new Anthropic({
       return Response.json({input_tokens:123})
     }
     requests.push(request)
+    if (request.model === overloadedModel) {
+      return Response.json({
+        type: 'error',
+        error: { type: 'overloaded_error', message: 'controlled model overload' },
+      }, { status: 529 })
+    }
+    if (requests.length === overflowRequest) {
+      return Response.json({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'input length and `max_tokens` exceed context limit: 188059 + 20000 > 200000',
+        },
+      }, { status: 400 })
+    }
     if (rejectIncompatibleEffort) {
       return Response.json(
         {
@@ -179,8 +197,15 @@ const client = new Anthropic({
       },
       { type: 'message_stop' },
     ]
+    // HTTP creation succeeds; the real SDK raises this error only during iteration.
+    const transportEvents = streamInterrupted
+      ? [...events.slice(0, 3), {
+          type: 'error',
+          error: { type: 'api_error', message: 'controlled mid-stream interruption' },
+        }]
+      : events
     return new Response(
-      events
+      transportEvents
         .map(
           (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
         )
@@ -198,6 +223,7 @@ const client = new Anthropic({
 mock.module('./client.js', () => ({
   CLIENT_REQUEST_ID_HEADER: 'x-client-request-id',
   getAnthropicClient: async () => client,
+  getCustomHeaders: () => ({}),
 }))
 
 mock.module('../vcr.js', () => ({
@@ -320,6 +346,9 @@ afterEach(() => {
   tokenRequests.length = 0
   rejectIncompatibleEffort = false
   streamNotFound = false
+  streamInterrupted = false
+  overflowRequest = 0
+  overloadedModel = undefined
 })
 
 test('cache marker inspection accepts stable and beta thinking blocks', async () => {
@@ -1162,6 +1191,282 @@ test('Worker usage summary avoids provider calls while full counts using the cap
   } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
 })
 
+for (const scenario of ['404 fallback', 'stream overflow', 'fallback overflow'] as const) {
+  test(`prompt.compose refreshes each wire attempt: ${scenario}`, async () => {
+    streamNotFound = scenario !== 'stream overflow'
+    overflowRequest = scenario === 'stream overflow' ? 1 : scenario === 'fallback overflow' ? 2 : 0
+    const composeModels: string[] = []
+    const signal = new AbortController().signal
+    const result = await queryModelWithoutStreaming({
+      messages: [createUserMessage({ content: 'compose retry' })],
+      systemPrompt: asSystemPrompt(['UNCOMPOSED']),
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal,
+      options: {
+        model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+        agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true, enablePromptCaching: true,
+        maxOutputTokensOverride: 20000,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+        composeSystemPrompt: async (model, tools, attemptSignal) => {
+          expect(tools).toEqual([])
+          expect(attemptSignal).toBe(signal)
+          composeModels.push(model)
+          return asSystemPrompt([`ATTEMPT_POLICY_${composeModels.length}`])
+        },
+      },
+    })
+    expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+    const count = scenario === 'fallback overflow' ? 3 : 2
+    expect(requests).toHaveLength(count)
+    expect(requests.map(request => Boolean(request.stream))).toEqual(
+      scenario === 'stream overflow' ? [true, true] : scenario === '404 fallback' ? [true, false] : [true, false, false],
+    )
+    if (overflowRequest) {
+      expect(requests[overflowRequest - 1]!.max_tokens).toBe(20000)
+      expect(requests[overflowRequest]!.max_tokens).toBe(10941)
+      expect(requests[overflowRequest]!.thinking).toBeUndefined()
+    }
+    for (let index = 0; index < count; index++) {
+      const wire = JSON.stringify(requests[index]!.system)
+      expect(wire).toContain(`ATTEMPT_POLICY_${index + 1}`)
+      expect(wire).not.toContain('UNCOMPOSED')
+      // Everything except the fresh policy (including prefixes/cache markers) is stable.
+      expect(wire.replace(`ATTEMPT_POLICY_${index + 1}`, 'POLICY')).toBe(
+        JSON.stringify(requests[0]!.system).replace('ATTEMPT_POLICY_1', 'POLICY'),
+      )
+    }
+    expect(composeModels).toEqual(Array(count).fill('claude-sonnet-4-6'))
+    expect(unexpectedIO).toEqual([])
+  })
+}
+
+test('prompt.compose refreshes after a partial SSE error before nonstream fallback', async () => {
+  streamInterrupted = true
+  const composeModels: string[] = []
+  const events: unknown[] = []
+  const signal = new AbortController().signal
+  let fallbackCalls = 0
+  for await (const event of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'compose interrupted stream' })],
+    systemPrompt: asSystemPrompt(['UNCOMPOSED']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      onStreamingFallback: () => {
+        fallbackCalls++
+        expect(requests).toHaveLength(1)
+        expect(events).toContainEqual(expect.objectContaining({
+          type: 'stream_event', event: {
+            type: 'content_block_delta', index: 0,
+            delta: { type: 'text_delta', text: 'OK' },
+          },
+        }))
+      },
+      composeSystemPrompt: async (model, tools, attemptSignal) => {
+        expect(tools).toEqual([])
+        expect(attemptSignal).toBe(signal)
+        composeModels.push(model)
+        return asSystemPrompt([`INTERRUPTED_POLICY_${composeModels.length}_${model}`])
+      },
+    },
+  })) events.push(event)
+  expect(fallbackCalls).toBe(1)
+  expect(events.filter(event => (event as { type: string }).type === 'assistant')).toEqual([
+    expect.objectContaining({ message: expect.objectContaining({
+      content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn',
+    }) }),
+  ])
+  expect(requests).toHaveLength(2)
+  expect(requests.map(request => Boolean(request.stream))).toEqual([true, false])
+  expect(composeModels).toEqual(['claude-sonnet-4-6', 'claude-sonnet-4-6'])
+  const { getCLISyspromptPrefix } = await import('../../constants/system.js')
+  const prefix = getCLISyspromptPrefix({ isNonInteractive: true, hasAppendSystemPrompt: false })
+  for (let index = 0; index < requests.length; index++) {
+    const request = requests[index]!
+    const marker = `INTERRUPTED_POLICY_${index + 1}_${composeModels[index]}`
+    expect(request.model).toBe(composeModels[index]!)
+    const blocks = request.system as Array<{ text: string }>
+    expect(blocks.filter(block => block.text === prefix)).toHaveLength(1)
+    expect(blocks.filter(block => block.text === marker)).toHaveLength(1)
+    const wire = JSON.stringify(blocks)
+    expect(wire).not.toContain('UNCOMPOSED')
+    expect(wire.replace(marker, 'POLICY')).toBe(
+      JSON.stringify(requests[0]!.system).replace(`INTERRUPTED_POLICY_1_${composeModels[0]}`, 'POLICY'),
+    )
+    expect(request.messages).toEqual(requests[0]!.messages)
+  }
+  expect(tokenRequests).toEqual([])
+  expect(unexpectedIO).toEqual([])
+})
+
+test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {
+  const { randomUUID } = await import('node:crypto')
+  const { query: runQuery } = await import('../../query.js')
+  const { FallbackTriggeredError } = await import('./withRetry.js')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { getCLISyspromptPrefix } = await import('../../constants/system.js')
+  const primary = 'claude-opus-4-6'
+  const fallback = 'claude-sonnet-4-6'
+  overloadedModel = primary
+  const { getSystemPrompt } = await import('../../constants/prompts.js')
+  const { concatSystemPrompts } = await import('../../utils/systemPromptType.js')
+  const prompt = concatSystemPrompts(await getSystemPrompt([], primary, [], []), ['UNCOMPOSED_OVERLOAD'])
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  const composeModels: string[] = []
+  runtime.registerHostHook({ plugin: 'overload-wire', tier: 'append',
+    registration: { id: 1, event: 'prompt.compose', hasCatch: false },
+    invoke: async (input, next) => {
+      composeModels.push(input.model as string)
+      await next(input)
+      return { sections: [{ id: 'overload:policy',
+        text: `OVERLOAD_POLICY_${composeModels.length}_${input.model}`, scope: 'session' }] }
+    },
+  })
+  let state = getDefaultAppState()
+  const context: import('../../Tool.js').ToolUseContext = {
+    options: { commands: [], debug: false, mainLoopModel: primary, tools: [], verbose: false,
+      thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+      agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+    abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+    messages: [], mods: runtime,
+  }
+  const caught: unknown[] = []
+  const params: QueryParams = {
+    messages: [createUserMessage({ content: 'compose overloaded model' })],
+    systemPrompt: prompt, userContext: {}, systemContext: {},
+    canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext: context,
+    querySource: 'repl_main_thread', fallbackModel: fallback,
+    deps: { uuid: randomUUID, microcompact: async messages => ({ messages }),
+      autocompact: async () => ({ wasCompacted: false }),
+      // Observe and rethrow the real transport error; never manufacture a fallback.
+      callModel: async function* (...args) {
+        try { return yield* queryModelWithStreaming(...args) }
+        catch (error) {
+          caught.push(error)
+          expect(requests).toHaveLength(3)
+          expect(context.options.mainLoopModel).toBe(primary)
+          throw error
+        }
+      },
+    },
+  }
+  const events = []
+  const iterator = runQuery(params)
+  for (;;) {
+    const next = await iterator.next()
+    if (next.done) {
+      expect(next.value).toEqual({ reason: 'completed' })
+      break
+    }
+    events.push(next.value)
+  }
+  expect(caught).toHaveLength(1)
+  expect(caught[0]).toBeInstanceOf(FallbackTriggeredError)
+  expect(caught[0]).toMatchObject({ originalModel: primary, fallbackModel: fallback })
+  expect(requests.map(request => request.model)).toEqual([primary, primary, primary, fallback])
+  expect(requests.every(request => request.stream === true)).toBe(true)
+  expect(composeModels).toEqual(requests.map(request => request.model))
+  expect(context.options.mainLoopModel).toBe(fallback)
+  expect(events.filter(event => event.type === 'assistant')).toEqual([
+    expect.objectContaining({ message: expect.objectContaining({ model: fallback,
+      content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn' }) }),
+  ])
+  const prefix = getCLISyspromptPrefix({ isNonInteractive: true, hasAppendSystemPrompt: false })
+  for (let index = 0; index < requests.length; index++) {
+    const request = requests[index]!
+    const marker = `OVERLOAD_POLICY_${index + 1}_${composeModels[index]}`
+    const blocks = request.system as Array<{ text: string }>
+    expect(blocks.filter(block => block.text === prefix)).toHaveLength(1)
+    expect(blocks.filter(block => block.text === marker)).toHaveLength(1)
+    expect(JSON.stringify(blocks)).not.toContain('UNCOMPOSED_OVERLOAD')
+    expect(JSON.stringify(blocks).replace(marker, 'POLICY')).toBe(
+      JSON.stringify(requests[0]!.system).replace(`OVERLOAD_POLICY_1_${primary}`, 'POLICY'),
+    )
+    expect(request.messages).toEqual(requests[0]!.messages)
+  }
+  expect(tokenRequests).toEqual([])
+  expect(diagnostics).toEqual([])
+  expect(unexpectedIO).toEqual([])
+}, 30_000)
+
+test('prompt.compose uses the real query and final SDK catalog on each request', async () => {
+  const { randomUUID } = await import('node:crypto')
+  const { query: runQuery } = await import('../../query.js')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { getSystemPrompt } = await import('../../constants/prompts.js')
+  const { getSystemPromptFacts, getSystemPromptSections } = await import('../../utils/systemPromptType.js')
+  const runtime = createModsRuntime()
+  const seen: any[] = []
+  runtime.registerHostHook({ plugin: 'wire', tier: 'append',
+    registration: { id: 1, event: 'prompt.compose', hasCatch: false },
+    invoke: async (input, next) => {
+      seen.push(input)
+      const original = await next(input) as { sections: any[] }
+      expect(original.sections.find(section => section.id === 'system')?.scope).toBe('shared')
+      return { sections: [{ id: 'wire:policy', text: `WIRE_POLICY_${seen.length}`, scope: 'session' }] }
+    },
+  })
+  runtime.registerHostHook({ plugin: 'step', tier: 'append',
+    registration: { id: 3, event: 'turn.step', hasCatch: false },
+    invoke: async (input, next) => next(input),
+    invokeStream: async function* (input, next) {
+      return yield* next({ ...input, model: 'claude-opus-4-6' }) as unknown as AsyncGenerator<unknown, unknown>
+    },
+  })
+  const { FileReadTool } = await import('../../tools/FileReadTool/FileReadTool.js')
+  runtime.registerHostHook({ plugin: 'catalog', tier: 'append',
+    registration: { id: 2, event: 'tool.list', hasCatch: false },
+    invoke: async () => ({ value: [] }),
+  })
+  let state = getDefaultAppState()
+  const context: import('../../Tool.js').ToolUseContext = {
+    options: { commands: [], debug: false, mainLoopModel: 'claude-sonnet-5', tools: [FileReadTool], verbose: false,
+      thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+      agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+    abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+    messages: [], mods: runtime,
+  }
+  const prompt = await getSystemPrompt([], 'claude-sonnet-5', [], [])
+  expect(getSystemPromptFacts(prompt)?.promptModel).toBe('claude-sonnet-5')
+  expect(getSystemPromptSections(prompt)?.find(section => 'name' in section && section.name === 'env_info_simple')?.scope).toBe('session')
+  let frozen: import('../../utils/forkedAgent.js').CacheSafeParams | undefined
+  const params: QueryParams = {
+    messages: [createUserMessage({ content: 'compose question' })],
+    systemPrompt: asSystemPrompt(prompt), userContext: {}, systemContext: {},
+    canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext: context,
+    querySource: 'repl_main_thread', onCacheSafeParams: value => { frozen = value },
+    deps: { uuid: randomUUID, microcompact: async messages => ({ messages }),
+      autocompact: async () => ({ wasCompacted: false }), callModel: queryModelWithStreaming },
+  }
+  try {
+    for (let i = 0; i < 2; i++) for await (const _ of runQuery(params)) { /* Real SDK transport above. */ }
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ model: 'claude-opus-4-6', promptModel: 'claude-sonnet-5', surfaces: [], tools: [], outputStyle: null, traits: ['print'] })
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]!.system)).toContain('WIRE_POLICY_1')
+    expect(JSON.stringify(requests[1]!.system)).toContain('WIRE_POLICY_2')
+    expect([...frozen!.systemPrompt]).toEqual(['WIRE_POLICY_2'])
+    expect(frozen!.toolUseContext.renderedSystemPrompt).toEqual(frozen!.systemPrompt)
+    for await (const _ of runQuery({ ...params, ...frozen!, onCacheSafeParams: undefined })) { /* Frozen fork. */ }
+    expect(seen).toHaveLength(2)
+    expect(JSON.stringify(requests[2]!.system)).toBe(JSON.stringify(requests[1]!.system))
+  } finally { await runtime.dispose() }
+})
+
 test('Mods named sections reach the actual SDK system field and invalidate on the next query', async () => {
   const {mkdtemp,writeFile,rm} = await import('node:fs/promises')
   const {tmpdir} = await import('node:os')
@@ -1224,7 +1529,7 @@ test('Mods named sections reach the actual SDK system field and invalidate on th
     const {concatSystemPrompts,getSystemPromptSections} = await import('../../utils/systemPromptType.js')
     const source = await getSystemPrompt([],context.options.mainLoopModel,[],[])
     const named = getSystemPromptSections(source)!.filter(section => 'name' in section)
-    expect(named).toContainEqual({name:'language',text:null})
+    expect(named).toContainEqual({name:'language',text:null,scope:'session'})
     expect(named.some(section => section.name==='system')).toBe(true)
     params.systemPrompt = concatSystemPrompts(source,['SOURCE_APPEND_LITERAL'])
     await runtime.dispatch('tool.call',{},async () => ({result:'unhandled'}))

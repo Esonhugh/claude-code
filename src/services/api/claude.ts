@@ -778,6 +778,7 @@ export type Options = {
   effortResolved?: boolean
   mcpTools: Tools
   modsSnapshot?: import('../mods/runtime.js').ModSnapshot
+  composeSystemPrompt?: (model: string, tools: string[], signal: AbortSignal) => Promise<SystemPrompt>
   hasPendingMcpServers?: boolean
   queryTracking?: QueryChainTracking
   agentId?: AgentId // Only set for subagents
@@ -919,7 +920,7 @@ export async function* executeNonStreamingRequest(
     initialConsecutive529Errors?: number
     querySource?: QuerySource
   },
-  paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
+  paramsFromContext: (context: RetryContext) => BetaMessageStreamParams | Promise<BetaMessageStreamParams>,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
   captureRequest: (params: BetaMessageStreamParams) => void,
   /**
@@ -940,7 +941,7 @@ export async function* executeNonStreamingRequest(
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
-      const retryParams = paramsFromContext(context)
+      const retryParams = await paramsFromContext(context)
       captureRequest(retryParams)
       onAttempt(attempt, start, retryParams.max_tokens)
 
@@ -1549,24 +1550,24 @@ async function* queryModel(
   const injectChromeHere =
     useToolSearch && hasChromeTools && !isMcpInstructionsDeltaEnabled()
 
-  // filter(Boolean) works by converting each element to a boolean - empty strings become false and are filtered out.
-  systemPrompt = asSystemPrompt(
+  const withSystemPrefix = (prompt: SystemPrompt): SystemPrompt => asSystemPrompt(
     [
       getAttributionHeader(fingerprint),
       getCLISyspromptPrefix({
         isNonInteractive: options.isNonInteractiveSession,
         hasAppendSystemPrompt: options.hasAppendSystemPrompt,
       }),
-      ...systemPrompt,
+      ...prompt,
       ...(advisorModel ? [ADVISOR_TOOL_INSTRUCTIONS] : []),
       ...(injectChromeHere ? [CHROME_TOOL_SEARCH_INSTRUCTIONS] : []),
     ].filter(Boolean),
   )
 
+  systemPrompt = withSystemPrefix(systemPrompt)
   // Prepend system prompt block for easy API identification
   logAPIPrefix(systemPrompt)
 
-  const system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
+  let system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
     skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
     querySource: options.querySource,
   })
@@ -1958,6 +1959,23 @@ async function* queryModel(
     }
   }
 
+  // Compose only for actual attempts, not the logging-only params calculation.
+  const paramsForAttempt = async (context: RetryContext) => {
+    if (options.composeSystemPrompt) {
+      const prompt = await options.composeSystemPrompt(
+        context.model,
+        filteredTools.map(tool => tool.name),
+        signal,
+      )
+      systemPrompt = withSystemPrefix(prompt)
+      system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
+        skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
+        querySource: options.querySource,
+      })
+    }
+    return paramsFromContext(context)
+  }
+
   // Compute log scalars synchronously so the fire-and-forget .then() closure
   // captures only primitives instead of paramsFromContext's full closure scope
   // (messagesForAPI, system, allTools, betas — the entire request-building
@@ -2025,7 +2043,7 @@ async function* queryModel(
         // client_creation_start is meaningful on attempt 1.
         queryCheckpoint('query_client_creation_end')
 
-        const params = paramsFromContext(context)
+        const params = await paramsForAttempt(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
 
         maxOutputTokens = params.max_tokens
@@ -2800,7 +2818,7 @@ async function* queryModel(
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
         },
-        paramsFromContext,
+        paramsForAttempt,
         (attempt, _startTime, tokens) => {
           attemptNumber = attempt
           maxOutputTokens = tokens
@@ -2902,7 +2920,7 @@ async function* queryModel(
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
           },
-          paramsFromContext,
+          paramsForAttempt,
           (attempt, _startTime, tokens) => {
             attemptNumber = attempt
             maxOutputTokens = tokens

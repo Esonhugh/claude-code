@@ -1,5 +1,5 @@
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import type { ModModelForkRequest, ModModelForkResult } from './types.js'
+import type { ModModelForkRequest, ModModelForkResult, PromptComposeInput, PromptComposeResult } from './types.js'
 import { createModAgents, listModAgents } from './agents.js'
 import type { AppState } from '../../state/AppState.js'
 import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
@@ -84,6 +84,7 @@ export type ModRequestServices = {
     check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }>
   }
   toolCatalog?(): ToolCatalog
+  composePrompt?(input: Partial<PromptComposeInput>, snapshot: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult>
   captureUsage?(): ModUsageReader
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
@@ -204,7 +205,7 @@ const coreHost: Nouns = {
   command: { register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
-  prompt: { read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
+  prompt: { compose: hostIdentity, read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
@@ -614,6 +615,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       throw new TypeError('mcp.call must return { content, isError, structuredContent? }')
   }
 
+  function validateComposeInput(value: unknown, partial = false): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new TypeError('prompt.compose takes an object')
+    const input = value as ModInput
+    const fields = ['model', 'promptModel', 'surfaces', 'tools', 'outputStyle', 'traits']
+    if (Object.keys(input).some(key => !fields.includes(key))) throw new TypeError('Unknown prompt.compose fact')
+    for (const field of fields) {
+      const fact = input[field]
+      if (partial && fact === undefined) continue
+      const valid = field === 'model' || field === 'promptModel' ? typeof fact === 'string'
+        : field === 'outputStyle' ? fact === null || !!fact && typeof fact === 'object' && !Array.isArray(fact) &&
+          typeof (fact as ModInput).name === 'string' && typeof (fact as ModInput).isKeepingCodingInstructions === 'boolean'
+        : Array.isArray(fact) && fact.every(item => typeof item === 'string' &&
+          (field === 'tools' || (field === 'surfaces'
+            ? ['terminal', 'desktop', 'mobile', 'vscode']
+            : ['bare', 'lean', 'sdk-preset', 'teammate', 'analysis', 'print', 'skills', 'send-user-message']).includes(item)))
+      if (!valid) throw new TypeError(`Invalid prompt.compose ${field}`)
+    }
+  }
+
   function hostInput(op: string, args: unknown[]): ModInput {
     switch (op) {
       case 'agent.spawn': {
@@ -686,6 +707,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           : {}),
       }
       case 'process.run': return { argv: args[0], ...(args[1] === undefined ? {} : { init: args[1] }) }
+      case 'prompt.compose': {
+        const input = args[0] === undefined ? {} : args[0]
+        if (args.length > 1) throw new TypeError('prompt.compose takes one optional object')
+        validateComposeInput(input, true)
+        return input as ModInput
+      }
       case 'session.usage': {
         const input = args[0] === undefined ? {} : args[0]
         if (args.length > 1) throw new TypeError('session.usage takes one optional object')
@@ -1214,6 +1241,34 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               })) as { value?: unknown; deny?: string }
             return capabilityResult(op, result)
           }
+          if (fn === hostIdentity && op === 'prompt.compose') {
+            const compose = requestServices.getStore()?.composePrompt ?? services.composePrompt
+            if (!compose) throw new Error('Prompt composition host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            let open = true
+            const callSnapshot: ModSnapshot = {
+              dispatch: (event, eventInput, core, options) => {
+                if (!open) throw new Error('Mod prompt composition invocation settled')
+                return dispatch(event, eventInput, core, snapshot, table, {
+                  ...options, signal: combined.signal,
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? { caller } : {}),
+                })
+              },
+              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+                item.environment.registrations.some(registration =>
+                  matchesModEventPattern(registration.event, event) &&
+                  (item !== owner || registration.id !== caller?.registrationId),
+                )),
+              release() {},
+            }
+            try {
+              combined.signal.throwIfAborted()
+              const result = await withReference(owner, () => compose(input as Partial<PromptComposeInput>, callSnapshot, combined.signal))
+              validateResult(op, result, input as ModInput)
+              return result
+            } finally { open = false; combined.cleanup() }
+          }
           if (fn === hostIdentity && op === 'prompt.read')
             return await readPromptForCaller(owner, snapshot, table)
           if (fn === hostIdentity && (op === 'state.get' || op === 'state.set')) {
@@ -1694,6 +1749,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   }
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
+    if (event === 'prompt.compose') {
+      if (!result || typeof result !== 'object' || !Array.isArray((result as ModInput).sections))
+        throw new TypeError('prompt.compose must return sections')
+      const ids = new Set<string>()
+      let session = false
+      for (const section of (result as PromptComposeResult).sections) {
+        if (!section || typeof section.id !== 'string' || !section.id || ids.has(section.id) ||
+            typeof section.text !== 'string' || !['shared', 'session'].includes(section.scope) ||
+            session && section.scope === 'shared') throw new TypeError('Invalid prompt.compose section')
+        ids.add(section.id)
+        session ||= section.scope === 'session'
+      }
+      return
+    }
     if (event === 'prompt.read') {
       if (!result || typeof result !== 'object' || Array.isArray(result))
         throw new TypeError('prompt.read must return value or deny')
@@ -1965,6 +2034,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
           if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
             throw new TypeError('model.fork takes only {prompt: string}')
+          if (event === 'prompt.compose') {
+            validateComposeInput(value)
+            if (value.model !== input.model) throw new TypeError('prompt.compose cannot rewrite model')
+          }
           if (event === 'session.usage') validateModSessionUsageArgs(value)
           if (event === 'session.compact') {
             validateModCompactInput(value)

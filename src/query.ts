@@ -41,9 +41,18 @@ import { findToolByName, type ToolUseContext } from './Tool.js'
 import {
   asSystemPrompt,
   getSystemPromptSections,
+  getSystemPromptFacts,
+  renderSystemPrompt,
+  hasSystemPromptRecipe,
+  withSystemPromptSections,
+  type SystemPromptSection,
   type SystemPrompt,
 } from './utils/systemPromptType.js'
 import { renderModPromptSections } from './services/mods/promptSections.js'
+import type { ModSnapshot } from './services/mods/runtime.js'
+import type { PromptComposeInput, PromptComposeResult, PromptComposeSection } from './services/mods/types.js'
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './constants/prompts.js'
+import { shouldUseGlobalCacheScope } from './utils/betas.js'
 import { renderModPromptAttachments } from './services/mods/promptAttachments.js'
 import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
@@ -277,7 +286,67 @@ export async function* query(
     }}
   }
   let catalogContext = { ...params.toolUseContext, messages: params.messages }
+  const promptFacts = getSystemPromptFacts(params.systemPrompt)
+  const promptPlan = getSystemPromptSections(params.systemPrompt)
+  let composeModel = catalogContext.options.mainLoopModel
+  let composeTools = catalogContext.options.tools.map(tool => tool.name)
+  async function composePrompt(input: Partial<PromptComposeInput>, invocation: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult> {
+    if (!promptFacts || !promptPlan) throw new Error('Prompt generation facts are unavailable for this prompt')
+    const facts: PromptComposeInput = {
+      ...promptFacts,
+      model: composeModel,
+      surfaces: catalogContext.options.isNonInteractiveSession ? [] : ['terminal'],
+      tools: composeTools,
+      ...input,
+    }
+    return await invocation.dispatch('prompt.compose', facts, async resolved => {
+      let plan = promptPlan
+      if (hasSystemPromptRecipe(params.systemPrompt)) {
+        plan = getSystemPromptSections(await renderSystemPrompt(params.systemPrompt, resolved as PromptComposeInput))!
+      } else if (JSON.stringify(resolved.tools) !== JSON.stringify(composeTools) ||
+          resolved.promptModel !== promptFacts.promptModel ||
+          JSON.stringify(resolved.outputStyle) !== JSON.stringify(promptFacts.outputStyle) ||
+          JSON.stringify(resolved.traits) !== JSON.stringify(promptFacts.traits)) {
+        // Text-only metadata can be composed unchanged, but cannot be regenerated.
+        throw new Error('Prompt generation recipe is unavailable for this prompt')
+      }
+      const sections: PromptComposeSection[] = []
+      async function visit(plan: readonly SystemPromptSection[]) {
+        for (const section of plan) {
+          if ('sections' in section) {
+            const start = sections.length
+            await visit(section.sections)
+            const children = sections.splice(start)
+            if (children.length) sections.push({
+              id: `join-${start}`,
+              text: children.map(child => child.text).join(section.separator),
+              // A joined string is indivisible on the wire: a session child
+              // makes the entire group session-scoped, never globally cached.
+              scope: children.every(child => child.scope === 'shared') ? 'shared' : 'session',
+            })
+            continue
+          }
+          if (section.text === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue
+          if (!section.scope) throw new Error('Prompt section scope is unavailable')
+          let text = section.text
+          if ('name' in section && invocation.hasHooks('prompt.section')) {
+            const rendered = await renderModPromptSections(
+              withSystemPromptSections([section]), invocation, signal,
+            )
+            text = rendered.length ? rendered.join('\n\n') : null
+          }
+          if (text !== null) sections.push({
+            id: 'name' in section ? section.name : `context-${sections.length}`,
+            text, scope: section.scope,
+          })
+        }
+      }
+      await visit(plan)
+      return { sections }
+    }, { signal }) as PromptComposeResult
+  }
   const snapshot = catalogContext.mods?.capture({
+    composePrompt,
     tools: () => catalogContext.options.tools,
     toolCatalog: () => createToolCatalogForContext(catalogContext),
     toolHost: () => createModToolHost(catalogContext, params.canUseTool),
@@ -292,6 +361,7 @@ export async function* query(
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesAgentOffer = snapshot?.hasHooks('agent.offer') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
+  const handlesCompose = promptFacts !== undefined && snapshot?.hasHooks('prompt.compose') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
   const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
   const handlesStep = snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
@@ -305,6 +375,7 @@ export async function* query(
     !handlesAgentOffer &&
     !handlesContext &&
     !handlesSections &&
+    !handlesCompose &&
     !handlesAttachments &&
     !handlesStep &&
     !handlesCompact
@@ -359,7 +430,7 @@ export async function* query(
         return {reason:'aborted_streaming'}
       }
     }
-    if (handlesSections) {
+    if (handlesSections && !handlesCompose) {
       const systemPrompt = await renderModPromptSections(
         params.systemPrompt,
         snapshot!,
@@ -370,7 +441,20 @@ export async function* query(
     }
     loopStarted = true
     terminal = yield* queryLoop(params, consumedCommandUuids, completion?.observe,
-      context => { catalogContext = context }, handlesStep ? turnId : undefined)
+      context => { catalogContext = context }, handlesStep ? turnId : undefined,
+      handlesCompose ? async (model, tools, signal) => {
+        composeModel = model
+        composeTools = tools
+        const result = await composePrompt({}, snapshot!, signal)
+        const firstSession = result.sections.findIndex(section => section.scope === 'session')
+        // Only a contiguous shared prefix can be globally cached. Never reorder
+        // append/prepend content to manufacture such a prefix.
+        return asSystemPrompt(result.sections.flatMap((section, index) =>
+          shouldUseGlobalCacheScope() && firstSession > 0 && index === firstSession
+            ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY, section.text]
+            : [section.text],
+        ))
+      } : undefined)
     returned = true
     for (const uuid of consumedCommandUuids) {
       notifyCommandLifecycle(uuid, 'completed')
@@ -428,6 +512,7 @@ async function* queryLoop(
   observeResponse?: (message: Message | StreamEvent) => void,
   updateCatalogContext?: (context: ToolUseContext) => void,
   turnId?: string,
+  composeRequest?: (model: string, tools: string[], signal: AbortSignal) => Promise<SystemPrompt>,
 ): AsyncGenerator<
   | StreamEvent
   | RequestStartEvent
@@ -446,7 +531,7 @@ async function* queryLoop(
     skipCacheWrite,
   } = params
   // Query assembly is complete; cache-sharing forks inherit bytes, not plans.
-  const systemPrompt = getSystemPromptSections(params.systemPrompt)
+  let systemPrompt = getSystemPromptSections(params.systemPrompt)
     ? asSystemPrompt([...params.systemPrompt])
     : params.systemPrompt
   let userContext = params.userContext
@@ -873,7 +958,7 @@ async function* queryLoop(
       messages: messagesForQuery,
     }
     updateCatalogContext?.(toolUseContext)
-    if (!cacheSafeParamsEmitted && params.onCacheSafeParams) {
+    if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
       cacheSafeParamsEmitted = true
       params.onCacheSafeParams({
         systemPrompt,
@@ -1044,6 +1129,21 @@ async function* queryLoop(
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
               modsSnapshot: toolUseContext.modsSnapshot,
+              composeSystemPrompt: composeRequest ? async (model, tools, signal) => {
+                systemPrompt = await composeRequest(model, tools, signal)
+                toolUseContext.renderedSystemPrompt = systemPrompt
+                updateCatalogContext?.(toolUseContext)
+                if (params.onCacheSafeParams) {
+                  cacheSafeParamsEmitted = true
+                  params.onCacheSafeParams({
+                    systemPrompt, userContext, systemContext,
+                    resolvedPromptContextBlocks: structuredClone(contextBlocks),
+                    toolUseContext: { ...toolUseContext, renderedSystemPrompt: systemPrompt },
+                    forkContextMessages: messagesForQuery,
+                  })
+                }
+                return asSystemPrompt(appendSystemContext(systemPrompt, systemContext))
+              } : undefined,
               hasPendingMcpServers: appState.mcp.clients.some(
                 (c) => c.type === 'pending',
               ),
