@@ -516,6 +516,7 @@ export class QueryEngine {
       commands: () => this.config.commands,
       tasks: () => getAppState().tasks,
       agentNames: () => getAppState().agentNameRegistry,
+      tools: () => getModToolContext().options.tools,
       toolCatalog: () => createToolCatalogForContext(getModToolContext()),
       toolHost: () => createModToolHost(getModToolContext(), wrappedCanUseTool),
       mcpCall: (server, tool, args, signal) =>

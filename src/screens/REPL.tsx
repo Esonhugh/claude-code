@@ -1977,6 +1977,7 @@ export function REPL({
     builtinCommands: () => modBuiltinCommandsRef.current,
     tasks: () => store.getState().tasks,
     agentNames: () => store.getState().agentNameRegistry,
+    tools: () => modToolContextRef.current!().options.tools,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     toolHost: () => createModToolHost(modToolContextRef.current!(), modCanUseToolRef.current!),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {

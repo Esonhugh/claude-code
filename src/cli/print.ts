@@ -2868,6 +2868,7 @@ function runHeadlessStreaming(
     commands: () => currentCommands,
     tasks: () => getAppState().tasks,
     agentNames: () => getAppState().agentNameRegistry,
+    tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
     toolHost: () => createModToolHost(getModToolContext(), canUseTool),
     mcpCall: (server, tool, args, signal) =>

@@ -1,18 +1,19 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createModsRuntime } from './runtime.js'
 import type { ModTier } from './types.js'
 
 const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
+const evidenceRoot = fileURLToPath(new URL('../../../.claude-test-evidence/', import.meta.url))
 
 const cleanups: (() => Promise<unknown>)[] = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
 async function fixture(source: string, name = 'fixture') {
-  const root = await mkdtemp(join(tmpdir(), 'mods-runtime-'))
-  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  await mkdir(evidenceRoot, { recursive: true })
+  const root = await mkdtemp(join(evidenceRoot, 'mods-runtime-'))
   const entry = join(root, 'register.ts')
   await writeFile(entry, source)
   return { name, storageId: name + '@inline', pluginRoot: root, entrypoints: [entry] }
@@ -24,6 +25,18 @@ function runtime() {
   return { value, events }
 }
 const input = { tool: 'Bash', tool_use_id: 'test-call', command: 'original' }
+
+test('author declarations leave builtin release trees untouched but refresh author tiers', async () => {
+  for (const tier of ['builtin', 'user', 'prepend', 'append'] as const) {
+    const plugin = await fixture(`export function register(on) { on('command.run', () => ({text:'ok'})) }`)
+    const { value, events } = runtime()
+    const candidate = { ...plugin, tier, storageId: `fixture@${tier}` }
+    await value.reconcile([candidate])
+    await value.reconcile([candidate])
+    expect(events.filter(event => event.stage === 'types')).toEqual([])
+    expect(await Bun.file(join(plugin.pluginRoot, '.claude-plugin/types/claude-code/index.d.ts')).exists()).toBe(tier !== 'builtin')
+  }
+})
 
 describe('Mods disposal failures', () => {
   test('attempts UI and activation cleanup in order and retains the rejected disposal', async () => {

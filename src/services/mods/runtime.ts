@@ -33,6 +33,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
 import { createModToasts } from './toast.js'
+import { ensureModDeclarations } from './declarations.js'
 import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
@@ -2249,11 +2250,26 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       let suggestionSuspended = false
       try {
         const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? await loadModDeclaration(input)
+        const refreshDeclarations = async () => {
+          if (declaration.isNative || declaration.tier === 'builtin') return
+          try {
+            await ensureModDeclarations(
+              declaration.pluginRoot, typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
+              (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
+            )
+          } catch (error) {
+            diagnostic(input.name, 'types', error)
+          }
+        }
         ensureLive()
         if (old && old.declaration.fingerprint === declaration.fingerprint &&
           isDeepStrictEqual(old.declaration.options, declaration.options) &&
           old.declaration.name === declaration.name && old.declaration.version === declaration.version &&
-          old.declaration.pluginRoot === declaration.pluginRoot && old.declaration.isNative === declaration.isNative) continue
+          old.declaration.pluginRoot === declaration.pluginRoot && old.declaration.isNative === declaration.isNative) {
+          await refreshDeclarations()
+          ensureLive()
+          continue
+        }
         if (old) {
           old.suggestionEligible = false
           suggestionSuspended = true
@@ -2274,6 +2290,8 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             continue
           }
         }
+        await refreshDeclarations()
+        ensureLive()
         const environment = await host.load(declaration)
         const activationController = new AbortController()
         const candidate: Activation = {
