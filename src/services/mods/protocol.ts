@@ -93,6 +93,7 @@ export type ModWireValue =
 export type ModWorkerRequest =
   | { id: number; type: 'client'; environment: number; request: import('./client.js').ModClientRequest }
   | { type: 'ping' }
+  | { type: 'settle'; barrier: number }
   | { id: number; type: 'load'; environment: number; declaration: ModDeclaration }
   | { id: number; type: 'load-client'; environment: number; declaration: ModDeclaration; module: string }
   | {
@@ -146,6 +147,7 @@ export type ModWorkerRequest =
 
 export type ModWorkerReply =
   | { type: 'pong' }
+  | { type: 'settled'; id: number }
   | { type: 'async-error'; environment: number; error: string }
   | {
       type: 'result'

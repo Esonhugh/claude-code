@@ -4,7 +4,7 @@
  */
 /* eslint-disable custom-rules/no-process-exit -- CLI subcommand handlers intentionally exit */
 import figures from 'figures'
-import { basename, dirname } from 'path'
+import { basename, dirname, relative } from 'path'
 import { setUseCoworkPlugins } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -22,6 +22,7 @@ import {
   VALID_UPDATE_SCOPES,
 } from '../../services/plugins/pluginCliCommands.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
+import { isInBundledMode } from '../../utils/bundledMode.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
@@ -158,6 +159,69 @@ export async function pluginValidateHandler(
       `${figures.cross} Unexpected error during validation: ${errorMessage(error)}`,
     )
     process.exit(2)
+  }
+}
+
+function printPluginTestResult(
+  root: string,
+  result: {
+    files: Array<{
+      file: string
+      tests: Array<{ name: string; durationMs: number; failure?: string }>
+      loadFailure?: string
+    }>
+    passed: number
+    failed: number
+    durationMs: number
+  },
+): void {
+  const lines = ['']
+  for (const file of result.files) {
+    const title = relative(root, file.file) || basename(file.file)
+    lines.push(`${title}:`)
+    for (const test of file.tests) {
+      lines.push(`(${test.failure === undefined ? 'pass' : 'fail'}) ${test.name} [${test.durationMs.toFixed(2)}ms]`)
+      if (test.failure !== undefined) lines.push(test.failure)
+    }
+    if (file.loadFailure !== undefined) {
+      lines.push('(fail) the file did not load')
+      lines.push(file.loadFailure)
+    }
+    lines.push('')
+  }
+  const tests = result.files.reduce((sum, file) => sum + file.tests.length, 0)
+  lines.push(` ${result.passed} pass`)
+  lines.push(` ${result.failed} fail`)
+  lines.push(`Ran ${tests} ${tests === 1 ? 'test' : 'tests'} across ${result.files.length} ${result.files.length === 1 ? 'file' : 'files'}. [${(result.durationMs / 1000).toFixed(2)}s]`)
+  process.stdout.write(`${lines.join('\n')}\n`)
+}
+
+export async function pluginTestHandler(
+  directory: string,
+  options: { child?: string } = {},
+): Promise<void> {
+  try {
+    const { runPluginTestChild, runPluginTests } = await import(
+      '../../services/mods/testing/runner.js'
+    )
+    if (options.child) process.exit(await runPluginTestChild(directory, options.child))
+    const result = await runPluginTests(directory, {
+      childCommand: file => [
+        process.execPath,
+        ...(isInBundledMode() ? [] : [process.argv[1]!]),
+        'plugin',
+        'test',
+        directory,
+        '--child',
+        file,
+      ],
+    })
+    printPluginTestResult(directory, result)
+    if (result.failed) process.exit(1)
+    process.exit(0)
+  } catch (error) {
+    logError(error)
+    cliError(`${figures.cross} Plugin tests failed: ${errorMessage(error)}`)
   }
 }
 

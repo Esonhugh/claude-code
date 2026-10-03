@@ -114,6 +114,31 @@ export function createModEnvironmentHost({
   let dead: Error | undefined
   let disposal: Promise<void> | undefined
   let pingSent: number | undefined
+  let epoch = 0
+  const barriers = new Map<number, { resolve(): void; reject(error: Error): void }>()
+  const progress = new Set<() => void>()
+  const activeCalls = new Map<number, { environment: number; invocation: number }>()
+  function changed() {
+    epoch++
+    for (const resolve of progress) resolve()
+    progress.clear()
+  }
+  async function settle(held: () => number) {
+    for (;;) {
+      if (dead) throw dead
+      const before = epoch
+      const holding = held()
+      await new Promise<void>((resolve, reject) => {
+        const barrier = ++nextRequest
+        barriers.set(barrier, { resolve, reject })
+        try { worker.postMessage({ type: 'settle', barrier } satisfies ModWorkerRequest) }
+        catch (error) { barriers.delete(barrier); reject(error) }
+      })
+      if (before !== epoch || holding !== held()) continue
+      if (requests.size === 0 && activeCalls.size === 0 || activeCalls.size > 0 && activeCalls.size <= held()) return
+      await new Promise<void>(resolve => { progress.add(resolve) })
+    }
+  }
   // Probe the event loop, not Promise duration: long asynchronous work is allowed.
   const heartbeat = setInterval(() => {
     if (pingSent !== undefined) {
@@ -148,6 +173,8 @@ export function createModEnvironmentHost({
     releaseHostStreams(environment)
     const state = environments.get(environment)
     environments.delete(environment)
+    for (const [call, owner] of activeCalls) if (owner.environment === environment) activeCalls.delete(call)
+    changed()
     const errors: unknown[] = []
     for (const client of state?.clients.values() ?? []) {
       try { client.stop(new Error('Module environment unloaded')) } catch (error) { errors.push(error) }
@@ -170,6 +197,9 @@ export function createModEnvironmentHost({
   function fail(error: Error, notify = true) {
     if (dead) return
     dead = error
+    for (const barrier of barriers.values()) barrier.reject(error)
+    barriers.clear()
+    changed()
     clearInterval(heartbeat)
     for (const request of requests.values()) request.reject(error)
     requests.clear()
@@ -383,6 +413,7 @@ export function createModEnvironmentHost({
     if (dead) return Promise.reject(dead)
     return new Promise((resolve, reject) => {
       requests.set(id, { environment: message.environment, resolve, reject })
+      changed()
       try { worker.postMessage({ ...message, id }) }
       catch (error) { requests.delete(id); reject(new Error(errorMessage(error, 'Mods Worker request failed'))) }
     })
@@ -392,6 +423,13 @@ export function createModEnvironmentHost({
   worker.onmessage = async (event: MessageEvent<ModWorkerReply>) => {
     const message = event.data
     if (message.type === 'pong') { pingSent = undefined; return }
+    if (message.type === 'settled') {
+      const barrier = barriers.get(message.id)
+      barriers.delete(message.id)
+      barrier?.resolve()
+      return
+    }
+    changed()
     if (message.type === 'async-error') {
       if (environments.has(message.environment)) report(new Error(message.error), message.environment)
       return
@@ -432,6 +470,7 @@ export function createModEnvironmentHost({
       if (!dead && environments.has(message.environment)) worker.postMessage(response)
       return
     }
+    activeCalls.set(message.call, { environment: message.environment, invocation: message.invocation })
     const fn = functions.get(message.handle)
     const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call }
     try {
@@ -474,6 +513,8 @@ export function createModEnvironmentHost({
         if (frame) { response.invocation = fn.invocation; response.trace = encode(message.environment, frame.next.trace) }
       }
     } catch (error) { response.error = errorMessage(error, 'Module trace snapshot failed') }
+    activeCalls.delete(message.call)
+    changed()
     if (!dead && environments.has(message.environment)) {
       try { worker.postMessage(response) } catch (error) { fail(new Error(errorMessage(error, 'Mods Worker response failed'))) }
     }
@@ -496,6 +537,8 @@ export function createModEnvironmentHost({
     const unloaded = () => streamAbort.abort(new Error('Module environment unloaded'))
     const cleanup = () => {
       retained = false
+      for (const [call, owner] of activeCalls) if (owner.invocation === id) activeCalls.delete(call)
+      changed()
       unsubscribeTrace?.()
       frames.delete(id)
       contexts.delete(id)
@@ -665,6 +708,7 @@ export function createModEnvironmentHost({
   }
 
   return {
+    settle,
     async prepareUiTables(
       tables: ReadonlyMap<ModEnvironment, ReadonlyMap<string, object>>,
       stagedEnvironments: readonly ModEnvironment[],

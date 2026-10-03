@@ -714,6 +714,11 @@ function createEnvironment(id: number, plugin: string): Environment {
 self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
   const request = event.data
   if (request.type === 'ping') { reply({ type: 'pong' }); return }
+  if (request.type === 'settle') {
+    // A worker turn boundary drains continuations without awaiting held capabilities.
+    setImmediate(() => reply({ type: 'settled', id: request.barrier }))
+    return
+  }
   if (request.type === 'host-result') {
     environments.get(request.environment)?.api.result(JSON.stringify(request))
     return

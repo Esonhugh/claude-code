@@ -137,3 +137,43 @@ test('keeps errors and warnings alongside notes and accepts absent notes', () =>
   expect(output).toContain('foreign state not checked')
   expect(print({ ...result, notes: undefined })).not.toContain('undefined')
 })
+
+test('prints plugin tests in the official bun-style stdout contract', () => {
+  const lines: string[] = []
+  const run = new Function(
+    'process', 'relative', 'basename',
+    `${compileFunction('printPluginTestResult')}\nreturn printPluginTestResult`,
+  )({ stdout: { write: (value: string) => lines.push(value) } }, relative, basename) as (root: string, result: unknown) => void
+  run('/plugin', {
+    durationMs: 420,
+    passed: 2,
+    failed: 1,
+    files: [{
+      file: '/plugin/tests/weather.test.ts',
+      tests: [
+        { name: 'weather > clear', durationMs: 12.34 },
+        { name: 'weather > storm', durationMs: 5.6, failure: 'Expected Clear\nReceived Storm' },
+        { name: 'weather > showers', durationMs: 0 },
+      ],
+    }],
+  })
+  expect(lines.join('')).toBe(`\ntests/weather.test.ts:\n(pass) weather > clear [12.34ms]\n(fail) weather > storm [5.60ms]\nExpected Clear\nReceived Storm\n(pass) weather > showers [0.00ms]\n\n 2 pass\n 1 fail\nRan 3 tests across 1 file. [0.42s]\n`)
+})
+
+test('prints file loading errors separately and pluralizes summary nouns', () => {
+  const lines: string[] = []
+  const run = new Function(
+    'process', 'relative', 'basename',
+    `${compileFunction('printPluginTestResult')}\nreturn printPluginTestResult`,
+  )({ stdout: { write: (value: string) => lines.push(value) } }, relative, basename) as (root: string, result: unknown) => void
+  run('/plugin', {
+    durationMs: 1500,
+    passed: 0,
+    failed: 1,
+    files: [
+      { file: '/plugin/one.test.ts', tests: [], loadFailure: 'SyntaxError: broken' },
+      { file: '/plugin/two.test.ts', tests: [] },
+    ],
+  })
+  expect(lines.join('')).toBe(`\none.test.ts:\n(fail) the file did not load\nSyntaxError: broken\n\ntwo.test.ts:\n\n 0 pass\n 1 fail\nRan 0 tests across 2 files. [1.50s]\n`)
+})

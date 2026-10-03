@@ -5788,6 +5788,15 @@ async function run(): Promise<CommanderCommand> {
       await pluginValidateHandler(manifestPath, options)
     })
 
+  pluginCmd
+    .command('test [dir]')
+    .description('Run plugin author tests')
+    .option('--child <file>', undefined)
+    .action(async (directory = '.', options: { child?: string }) => {
+      const { pluginTestHandler } = await import('./cli/handlers/plugins.js')
+      await pluginTestHandler(directory, options)
+    })
+
   // Plugin list command
   pluginCmd
     .command('list')
