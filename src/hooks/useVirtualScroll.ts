@@ -593,7 +593,14 @@ export function useVirtualScroll(
       : Math.max(effTopSpacer, offsets[effEnd]! - viewportH) + listOrigin
   useLayoutEffect(() => {
     if (isSticky) {
-      scrollRef.current?.setClampBounds(undefined, undefined)
+      // Keep the floor while sticky. scrollTop is pinned to maxScroll, which
+      // already sits above it, so the sticky paint itself is unchanged — but
+      // an imperative scrollTo/scrollBy that breaks stickiness (a wheel burst
+      // reaching the top takes scrollUp's scrollTo(0) branch) paints before
+      // this effect reruns. With no floor that frame lands above the mounted
+      // range and the viewport shows bare spacer. The ceiling stays unbounded
+      // so a streaming tail is never clamped out of view.
+      scrollRef.current?.setClampBounds(clampMin, Infinity)
     } else {
       scrollRef.current?.setClampBounds(clampMin, clampMax)
     }

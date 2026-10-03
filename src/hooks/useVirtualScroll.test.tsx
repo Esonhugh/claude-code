@@ -29,11 +29,11 @@ function List({
   scrollRef: React.RefObject<ScrollBoxHandle | null>
   columns: number
   items: string[]
-  onRender?: (mounted: number) => void
+  onRender?: (mounted: number, topSpacer: number) => void
 }) {
   const { range, spacerRef, topSpacer, bottomSpacer, measureRef } =
     useVirtualScroll(scrollRef, items, columns)
-  onRender?.(range[1] - range[0])
+  onRender?.(range[1] - range[0], topSpacer)
   return (
     <>
       <Box ref={spacerRef} height={topSpacer} flexShrink={0} />
@@ -142,6 +142,66 @@ test.each([
     }
   },
 )
+
+// A wheel burst whose accumulated step reaches the top makes scrollUp take its
+// scrollTo(0) branch. Sticky leaves the clamp bounds undefined, so the frame
+// painted between that jump and React's next commit lands far outside the
+// mounted range and the viewport shows bare spacer instead of messages.
+// Asserted on the bounds rather than on a captured frame: whether the bad
+// frame is actually painted depends on commit/paint ordering, so observing it
+// is inherently racy.
+test('breaking the sticky bottom leaves the paint inside the mounted range', async () => {
+  const stdout = new Output()
+  const scrollRef = createRef<ScrollBoxHandle>()
+  const VIEWPORT = 20
+  const items = Array.from(
+    { length: 2000 },
+    (_, index) => `message-${index}\nbody one\nbody two`,
+  )
+  let topSpacer = 0
+  const instance = await render(
+    <ScrollBox
+      ref={scrollRef}
+      width={80}
+      height={VIEWPORT}
+      flexDirection="column"
+      stickyScroll
+    >
+      <List
+        scrollRef={scrollRef}
+        columns={80}
+        items={items}
+        onRender={(_mounted, spacer) => {
+          topSpacer = spacer
+        }}
+      />
+    </ScrollBox>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
+  try {
+    await waitFor(() => scrollRef.current?.getViewportHeight() === VIEWPORT)
+    await waitFor(() => scrollRef.current?.isSticky() === true)
+    // Tail mounted, so everything above it is unmounted spacer.
+    await waitFor(() => topSpacer > 0)
+    const mountedTop = topSpacer
+    scrollRef.current!.scrollTo(0)
+    const el = scrollRef.current!.getElement()!
+    // The exact expression render-node-to-output paints with.
+    const painted = Math.max(
+      el.scrollClampMin ?? 0,
+      Math.min(el.scrollTop ?? 0, el.scrollClampMax ?? Infinity),
+    )
+    expect(painted).toBeGreaterThanOrEqual(mountedTop)
+  } finally {
+    instance.unmount()
+    instance.cleanup()
+    stdout.destroy()
+  }
+})
 
 test.each(['during', 'after'])(
   'bottom-following messages appended %s a resize remain visible',
