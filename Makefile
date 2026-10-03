@@ -12,8 +12,12 @@ CLAUDE_KEEP_PACK ?= 0
 .PHONY: build linux-baseline test release-check download-claude clean-download-claude
 
 build:
+ifneq ($(strip $(CLAUDE_CODE_BUILD_DIR)),)
+	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BUILD_DIR="$(CLAUDE_CODE_BUILD_DIR)" bun package:binary
+else
 	CLAUDE_CODE_VERSION=$(VERSION) bun package:binary
 	mv $(FILE) ./built-claude
+endif
 
 linux-baseline:
 	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BINARY_TARGET=bun-linux-x64-baseline bun package:binary

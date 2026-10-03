@@ -3,10 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { buildCli, prepareBuildDirectory } from './build.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(scriptDir, '..');
-const distDir = path.join(projectDir, 'dist');
+const outputDir = process.env.CLAUDE_CODE_BUILD_DIR
+  ? prepareBuildDirectory(process.env.CLAUDE_CODE_BUILD_DIR)
+  : undefined;
+const distDir = path.join(outputDir ?? projectDir, 'dist');
 const nodeModulesDir = path.join(projectDir, 'node_modules');
 const releaseDir = path.join(distDir, 'release');
 const cliEntrypoint = path.join(distDir, 'cli.js');
@@ -59,7 +63,9 @@ const targetSuffix = targetParts?.[3] ?? '';
 const artifactPlatform = `${platform}-${arch}${targetSuffix}`;
 const extension = platform === 'win32' ? '.exe' : '';
 const artifactName = `claude-code-v${version}-${artifactPlatform}${extension}`;
-const outfile = path.join(releaseDir, artifactName);
+const outfile = outputDir
+  ? path.join(outputDir, `built-claude${extension}`)
+  : path.join(releaseDir, artifactName);
 
 function sharpPlatformArch() {
   if (platform === 'linux' && targetSuffix === '-musl') {
@@ -125,9 +131,13 @@ function run(command, args, options = {}) {
   }
 }
 
-run('bun', ['./scripts/build.mjs'], {
-  env: { ...process.env, CLAUDE_CODE_EMBEDDED_SHARP: '1' },
-});
+if (outputDir) {
+  await buildCli({ outputDir, embedSharpNative: true });
+} else {
+  run('bun', ['./scripts/build.mjs'], {
+    env: { ...process.env, CLAUDE_CODE_EMBEDDED_SHARP: '1' },
+  });
+}
 
 if (!fs.existsSync(cliEntrypoint)) {
   throw new Error(
@@ -172,12 +182,12 @@ for (const assetPath of [sharpAddonPath, ...sharpLibraryPaths]) {
   }
 }
 
-const generatedSharpPath = path.join(projectDir, 'embedded-sharp.js');
+const generatedSharpPath = path.join(outputDir ?? projectDir, 'embedded-sharp.js');
 const embeddedEntrypointContents = await fs.promises.readFile(
   embeddedEntrypoint,
   'utf8',
 );
-const generatedEntrypoint = path.join(projectDir, 'embedded-cli.js');
+const generatedEntrypoint = path.join(outputDir ?? projectDir, 'embedded-cli.js');
 const generatedEntrypointContents = embeddedEntrypointContents
   .replace('__CLAUDE_CODE_RIPGREP_BINARY__', JSON.stringify(ripgrepBinaryPath))
   .replace('__CLAUDE_CODE_RIPGREP_VERSION__', ripgrepPackageJson.version)
@@ -189,7 +199,7 @@ const generatedEntrypointContents = embeddedEntrypointContents
     '__CLAUDE_CODE_EMBEDDED_SHARP__',
     JSON.stringify(generatedSharpPath),
   )
-  .replace("'./cli.js'", "'./dist/cli.js'");
+  .replace("'./cli.js'", JSON.stringify(cliEntrypoint));
 if (generatedEntrypointContents.includes('__CLAUDE_CODE_')) {
   throw new Error('Failed to generate embedded ripgrep entrypoint.');
 }
@@ -254,7 +264,7 @@ run('bun', [
   path.join(distDir, 'worker.js'),
   '--outfile',
   outfile,
-]);
+], { cwd: outputDir ?? projectDir });
 
 if (platform !== 'win32') {
   await fs.promises.chmod(outfile, 0o755);
