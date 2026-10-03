@@ -2,7 +2,18 @@ import { isDeepStrictEqual } from 'node:util'
 import { isProxy } from 'node:util/types'
 import { copyModClientData } from './clientRealm.js'
 export { copyModClientData } from './clientRealm.js'
-import type { ModUiCallback, ModUiInteraction, ModUiPane } from './ui.js'
+import type { ModUiCallback, ModUiInteraction, ModRenderSurface, ModRenderComponent } from './ui.js'
+
+export type ModClientSite = {
+  owner: object
+  id: string
+  visible: boolean
+  tree?: unknown
+  drawing?: number
+  surface?: ModRenderSurface
+  component?: ModRenderComponent
+  clock?: 'manual'
+}
 
 export type ModClientRequest = {
   op: 'mount' | 'update' | 'frame' | 'pointer' | 'key' | 'press' | 'resize' | 'dispose'
@@ -16,19 +27,22 @@ export type ModClientRequest = {
   rows?: number
   handle?: number
 }
-export type ModClientFrame = { tree?: unknown; post?: unknown; stopped?: boolean; active?: boolean }
+export type ModClientFrame = { tree?: unknown; post?: unknown; stopped?: boolean; active?: boolean; nextDue?: number }
 export type ModClientHandle = {
   ready: Promise<void>
-  update(pane: ModUiPane, node: unknown): Promise<void>
+  update(pane: ModClientSite, node: unknown): Promise<void>
   resize(columns: number, rows: number): Promise<void>
   pointer(event: unknown): Promise<void>
   key(event: unknown): Promise<void>
   press(callback: ModUiCallback, kind: ModUiInteraction, element: string, value?: string): Promise<unknown>
+  post(data: unknown): Promise<void>
+  advance(ms: number): Promise<void>
+  settled?(): Promise<void>
   dispose(): Promise<void>
 }
 export type ModClients = {
-  mount(pane: ModUiPane, node: unknown, commit: (tree: unknown) => void, onError?: (error: unknown) => void): ModClientHandle
-  reconcile(panes: readonly ModUiPane[]): void
+  mount(pane: ModClientSite, node: unknown, commit: (tree: unknown) => void, onError?: (error: unknown) => void): ModClientHandle
+  reconcile(panes: readonly ModClientSite[]): void
 }
 
 type ClientNode = { type: 'Client'; props: { key: string; module: string; props?: unknown }; group: { plugin: string } }
@@ -40,13 +54,13 @@ export function findModClient(tree: unknown, plugin: string, key: string, module
 }
 
 export function createModClients(options: {
-  request(pane: ModUiPane, plugin: string, request: ModClientRequest): Promise<ModClientFrame>
-  message(pane: ModUiPane, plugin: string, input: { element: string; module: string; data: unknown }): Promise<{ props?: unknown }>
+  request(pane: ModClientSite, plugin: string, request: ModClientRequest): Promise<ModClientFrame>
+  message(pane: ModClientSite, plugin: string, input: { element: string; module: string; data: unknown }): Promise<{ props?: unknown }>
   validate(tree: unknown): void
 }): ModClients {
   let nextId = 0
-  let currentPanes: readonly ModUiPane[] | undefined
-  const mounted = new Set<{ pane: ModUiPane; node: ClientNode; dispose(): Promise<void> }>()
+  let currentPanes: readonly ModClientSite[] | undefined
+  const mounted = new Set<{ pane: ModClientSite; node: ClientNode; dispose(): Promise<void> }>()
   return {
     reconcile(panes) {
       currentPanes = panes
@@ -68,18 +82,29 @@ export function createModClients(options: {
       const id = ++nextId
       const plugin = node.group.plugin
       let disposed = false
+      let now = pane.clock === 'manual' ? 0 : performance.now()
+      let nextDue: number | undefined
+      let needsFrame = false
       let timer: ReturnType<typeof setTimeout> | undefined
       let queue = Promise.resolve()
+      let scheduledFrame: Promise<void> | undefined
+      let finishFrame: (() => void) | undefined
+      const posts = new Set<Promise<void>>()
       let generation = 0
       let lastTree: unknown
       let disposePromise: Promise<void> | undefined
+      const stopped = Promise.withResolvers<void>()
       const entry = { pane, node, dispose: () => handle.dispose() }
       mounted.add(entry)
       const schedule = () => {
-        if (disposed || timer !== undefined) return
+        if (disposed || pane.clock === 'manual' || timer !== undefined) return
+        scheduledFrame = new Promise<void>(resolve => { finishFrame = resolve })
         timer = setTimeout(() => {
           timer = undefined
-          void run({ op: 'frame', id, now: performance.now() }).catch(fail)
+          const finish = finishFrame!
+          scheduledFrame = undefined
+          finishFrame = undefined
+          void run({ op: 'frame', id, now: performance.now() }).catch(fail).finally(finish)
         }, 16)
         timer.unref?.()
       }
@@ -90,6 +115,8 @@ export function createModClients(options: {
       }
       const deliver = (frame: ModClientFrame) => {
         if (disposed) return
+        nextDue = frame.nextDue
+        needsFrame = frame.active === true
         if (frame.stopped) { void handle.dispose(); return }
         if (frame.tree !== undefined) {
           options.validate(frame.tree)
@@ -97,25 +124,31 @@ export function createModClients(options: {
           commit(frame.tree)
         }
         if (frame.active) schedule()
-        if (Object.hasOwn(frame, 'post')) {
-          const sent = ++generation
-          void options.message(pane, plugin, { element: node.props.key, module: node.props.module, data: frame.post }).then(result => {
-            if (disposed || sent !== generation || !Object.hasOwn(result, 'props')) return
-            return run({ op: 'update', id, props: copyModClientData(result.props, isProxy) }, () => sent === generation)
-          }).catch(error => { if (sent === generation) fail(error) })
-        }
+        if (Object.hasOwn(frame, 'post')) void post(frame.post).catch(() => {})
+      }
+      const post = (data: unknown): Promise<void> => {
+        if (disposed) return Promise.reject(new Error('Client instance is stale'))
+        const sent = ++generation
+        const work = options.message(pane, plugin, { element: node.props.key, module: node.props.module, data }).then(result => {
+          if (disposed || sent !== generation || !Object.hasOwn(result, 'props')) return
+          return run({ op: 'update', id, props: copyModClientData(result.props, isProxy) }, () => sent === generation)
+        }).catch(error => { if (!disposed && sent === generation) { fail(error); throw error } })
+        posts.add(work)
+        void work.then(() => posts.delete(work), () => posts.delete(work))
+        return Promise.race([work, stopped.promise])
       }
       const run = (request: ModClientRequest, stillCurrent: () => boolean = () => true): Promise<void> => {
         const operation = queue.then(async () => {
           if (disposed || !stillCurrent()) return
-          deliver(await options.request(pane, plugin, request))
+          const frame = await options.request(pane, plugin, request)
+          if (stillCurrent()) deliver(frame)
         })
         queue = operation.catch(() => {})
         void operation.catch(fail)
         return operation
       }
       const props = (value: unknown) => value === undefined ? undefined : copyModClientData(value, isProxy)
-      const ready = run({ op: 'mount', id, element: node.props.key, module: node.props.module, props: initialProps, now: performance.now() })
+      const ready = run({ op: 'mount', id, element: node.props.key, module: node.props.module, props: initialProps, now })
       const handle: ModClientHandle = {
         ready,
         async update(nextPane, raw) {
@@ -141,16 +174,48 @@ export function createModClients(options: {
             Array.isArray(tree.children) && tree.children.some(contains))
           if (callback.plugin !== plugin || !contains(lastTree)) throw new Error('Client callback is stale')
           await run({ op: 'press', id, handle: callback.handle, event: {
-            plugin, surface: 'terminal', component: 'Pane', requestId: pane.id,
+            plugin, surface: pane.surface ?? 'terminal', component: pane.component ?? 'Pane', requestId: pane.id,
             element, ...(value === undefined ? {} : { value }),
             ...(kind === 'input.change' ? { kind: 'change' } : kind === 'input.submit' ? { kind: 'submit' } : {}),
           } }, () => contains(lastTree))
         },
+        async post(data) {
+          await post(copyModClientData(data, isProxy))
+          await handle.settled?.()
+        },
+        async advance(ms) {
+          if (disposed) throw new Error('Client instance is stale')
+          if (pane.clock !== 'manual') throw new Error('Client advance requires a manual clock')
+          if (!Number.isFinite(ms) || ms < 0 || !Number.isFinite(now + ms)) throw new TypeError('Invalid Client advance')
+          await queue
+          const end = now + ms
+          while (!disposed && nextDue !== undefined && nextDue <= end) {
+            now = Math.max(now, nextDue)
+            await run({ op: 'frame', id, now })
+            await Promise.race([Promise.all([...posts]), stopped.promise])
+          }
+          now = end
+          if (!disposed) await run({ op: 'frame', id, now })
+          await handle.settled?.()
+        },
+        async settled() {
+          // Observe one already scheduled frame and its replies, never drain recurring clocks.
+          await queue
+          if (pane.clock === 'manual' && needsFrame) await run({ op: 'frame', id, now })
+          const frame = scheduledFrame
+          if (frame) await frame
+          await Promise.race([Promise.all([...posts]), stopped.promise])
+          await queue
+        },
         dispose() {
           if (disposePromise) return disposePromise
           disposed = true
+          stopped.resolve()
           generation++
           if (timer !== undefined) clearTimeout(timer)
+          finishFrame?.()
+          scheduledFrame = undefined
+          finishFrame = undefined
           mounted.delete(entry)
           lastTree = undefined
           disposePromise = queue.then(() => options.request(pane, plugin, { op: 'dispose', id })).then(() => {}, error => { onError?.(error) })

@@ -90,7 +90,7 @@ export function createModClientRealm(ui: {
       return { tree, active: instance.dirty || instance.timers.size > 0 || instance.post !== undefined }
     } catch (error) { dispose(instance.id); throw error }
   }
-  return {
+  const realm = {
     register(path: string, draw: Draw) { modules.set(path, draw) },
     request(input: ModClientRequest): ModClientFrame {
       try {
@@ -175,5 +175,17 @@ export function createModClientRealm(ui: {
       } catch (error) { dispose(input.id); throw error }
     },
     dispose() { for (const id of instances.keys()) dispose(id); modules.clear() },
+  }
+  return {
+    ...realm,
+    request(input: ModClientRequest): ModClientFrame {
+      const frame = realm.request(input)
+      const instance = instances.get(input.id)
+      if (instance?.timers.size) {
+        // Zero-period timers need a future deadline to keep manual advancement finite.
+        frame.nextDue = Math.min(...[...instance.timers].map(timer => timer.ms === 0 ? instance.now + 1 : timer.due))
+      }
+      return frame
+    },
   }
 }

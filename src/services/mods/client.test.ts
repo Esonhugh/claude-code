@@ -5,6 +5,60 @@ import type { ModUiPane } from './ui.js'
 const node = {type:'Client',props:{key:'counter',module:'counter.ts'},group:{plugin:'owner'}}
 const pane = {id:'panel',owner:{},visible:true,tree:node,drawing:1} as ModUiPane
 
+test('Client manual advance visits timer deadlines in order and respects cancellation', async () => {
+  const { createModClientRealm } = await import('./clientRealm.js')
+  const { createModUiRealm } = await import('./uiRealm.js')
+  const realm = createModClientRealm(createModUiRealm('owner', () => false))
+  const ticks: string[] = []
+  realm.register('counter.ts', (_, s) => {
+    if (s.state === undefined) {
+      s.setState(0)
+      const stop = s.every(10, () => { ticks.push('ten'); s.setState(s.state + 1); if (s.state === 2) stop() })
+      s.every(15, () => { ticks.push('fifteen') })
+    }
+    return s.elements.Text({children:s.state})
+  })
+  const clients = createModClients({request:async (_s,_p,r) => realm.request(r),message:async()=>({}),validate() {}})
+  const handle = clients.mount({...pane,clock:'manual'},node,()=>{})
+  try {
+    await handle.ready
+    await handle.advance(35)
+    expect(ticks).toEqual(['ten','fifteen','ten','fifteen'])
+    await handle.advance(10)
+    expect(ticks).toEqual(['ten','fifteen','ten','fifteen','fifteen'])
+    await handle.dispose()
+    await expect(handle.advance(1)).rejects.toThrow(/stale/)
+  } finally { await handle.dispose() }
+})
+
+test('Client settling waits one scheduled frame and its reply without draining recurring clocks', async () => {
+  let frames = 0
+  const reply = Promise.withResolvers<{props: unknown}>()
+  const posted = Promise.withResolvers<void>()
+  const commits: unknown[] = []
+  const clients = createModClients({
+    async request(_site, _plugin, request) {
+      if (request.op === 'mount') return {active:true}
+      if (request.op === 'frame') { frames++; return {active:true,post:'message'} }
+      if (request.op === 'update') return {tree:{type:'Text',children:['reply']}}
+      return {}
+    },
+    async message() { posted.resolve(); return reply.promise }, validate() {},
+  })
+  const handle = clients.mount(pane, node, tree => commits.push(tree))
+  try {
+    await handle.ready
+    let settled = false
+    const pending = handle.settled!().then(() => { settled = true })
+    await posted.promise
+    expect(settled).toBe(false)
+    reply.resolve({props:{value:1}})
+    await pending
+    expect(frames).toBe(1)
+    expect(commits).toEqual([{type:'Text',children:['reply']}])
+  } finally { reply.resolve({props:{}}); await handle.dispose() }
+})
+
 test('Client pending message props cannot commit after unmount or into its replacement', async () => {
   const posted = Promise.withResolvers<void>()
   const answer = Promise.withResolvers<{props:unknown}>()

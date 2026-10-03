@@ -8,6 +8,20 @@ function fixture() {
   return realm
 }
 
+test('Client realm reports next timer deadline without changing realtime frame coalescing', () => {
+  const realm = fixture()
+  let ticks = 0
+  realm.register('clock.ts', (_, s) => {
+    if (s.state === undefined) { s.setState(0); s.every(10, () => ticks++) }
+    return s.elements.Text({children:'clock'})
+  })
+  expect(realm.request({op:'mount',id:1,module:'clock.ts',now:0}).nextDue).toBe(10)
+  expect(realm.request({op:'frame',id:1,now:35}).nextDue).toBe(45)
+  expect(ticks).toBe(1)
+  realm.request({op:'dispose',id:1})
+  expect(realm.request({op:'frame',id:1,now:100})).toEqual({stopped:true})
+})
+
 test('Client module props are immutable snapshots and unsupported async modules are rejected', () => {
   const realm=fixture()
   realm.register('props.ts',(props:any,s)=> {

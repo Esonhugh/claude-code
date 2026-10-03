@@ -408,6 +408,7 @@ import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
+import { ModsAbovePrompt } from '../components/ModsAbovePrompt.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { getCwd } from '../utils/cwd.js'
@@ -1934,6 +1935,7 @@ export function REPL({
   const isExternalLoadingRef = useRef(isExternalLoading)
   isExternalLoadingRef.current = isExternalLoading
   const [modStatuses, setModStatuses] = useState<Record<string, string>>({})
+  const [modAbovePromptFocused, setModAbovePromptFocused] = useState(false)
   const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
   const getModUiSnapshot = useCallback(() => modsSession?.ui.getSnapshot() ?? emptyModPanes, [modsSession, emptyModPanes])
@@ -3244,6 +3246,20 @@ export function REPL({
   }, [modsSession, modUiPresentation])
   const modPaneFocused = modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
     !modUiPresentation.keyboardOwned && modPanes.some(pane => pane.visible && pane.shown !== false && pane.focused)
+  const modAbovePromptCanFocus = modUiPresentation.composerEmpty &&
+    !modUiPresentation.hasDialog && !modUiPresentation.keyboardOwned && !modPaneFocused
+  const hasModSurvey = feedbackSurvey.state !== 'closed' ||
+    postCompactSurvey.state !== 'closed' || memorySurvey.state !== 'closed' ||
+    frustrationDetection.state !== 'closed' || skillImprovementSurvey.isOpen
+  const modAbovePrompt = <ModsAbovePrompt
+    ui={modsSession?.runtime?.ui}
+    hasSurvey={hasModSurvey}
+    isWorking={isLoading}
+    view={viewedAgentTask ? { agentId: viewedAgentTask.id } : {}}
+    canFocus={modAbovePromptCanFocus}
+    onFocusChange={setModAbovePromptFocused}
+    onError={logError}
+  />
   const renderModPane = (pane: ModUiPane) => (
     <ModsPane
       key={`${pane.plugin}:${pane.id}`}
@@ -6934,7 +6950,7 @@ export function REPL({
             !focusedInputDialog ||
             focusedInputDialog === 'tool-permission')
         }
-        isKeyboardActive={!modPaneFocused && !diffDialogActive}
+        isKeyboardActive={!modPaneFocused && !modAbovePromptFocused && !diffDialogActive}
         onScroll={
           centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined
@@ -7661,6 +7677,7 @@ export function REPL({
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {
                       }
+                      {modAbovePrompt}
                       <HoldToastsProvider hold={shouldHoldToasts(modPanes)}>
                       <PromptInput
                         debug={debug}
@@ -7669,7 +7686,8 @@ export function REPL({
                         isLocalJSXCommandActive={
                           isShowingLocalJSXCommand ||
                           showResponsiveDiffDialog ||
-                          modPaneFocused
+                          modPaneFocused ||
+                          modAbovePromptFocused
                         }
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}

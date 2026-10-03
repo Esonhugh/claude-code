@@ -291,12 +291,12 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
       return withReference(entry.participant, () => entry.participant.environment.client(request))
     },
     message: async (pane, plugin, message) => {
-      const current = ui.getSnapshot().find(item => item.owner === pane.owner && item.id === pane.id)
+      const current = ui.getClientSite(pane.owner, pane.id)
       const lease = current?.drawing === undefined ? undefined : drawings.get(current.drawing)
       const participant = [...(lease?.participants ?? [])].find(item => item.declaration.name === plugin)
       if (!participant || !current?.visible || !findModClient(current.tree, plugin, message.element, message.module)) return {}
       return dispatch('ui.message', {
-        surface: 'terminal', component: 'Pane', requestId: current.id, ...message,
+        surface: current.surface ?? 'terminal', component: current.component ?? 'Pane', requestId: current.id, ...message,
       }, async () => ({}), lease!.snapshot, lease!.table, {
         only: participant, origin: { plugin: 'client', tier: participant.declaration.tier },
       }) as Promise<{ props?: unknown }>
@@ -1440,7 +1440,7 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
             } finally { provider.active = false }
           }, snapshot, table, {
             origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-            ...(fn === hostIdentity && signal ? { signal } : {}),
+            ...(fn === hostIdentity && signal && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal } : {}),
             reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }

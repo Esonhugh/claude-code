@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { isProxy } from 'node:util/types'
+import { createModClients, type ModClientFrame } from './client.js'
+import { createModClientRealm } from './clientRealm.js'
+import { createModUiRealm } from './uiRealm.js'
 import {
   createModUi,
   type ModUiDispatch,
@@ -43,7 +47,233 @@ function fixture(overrides: Partial<Parameters<typeof createModUi>[0]> = {}) {
   return { ui, draws, invoked, released }
 }
 
+test('manual Client controls use real listeners, messages and every crossed interval', async () => {
+  const realm = createModClientRealm(createModUiRealm('fixture', isProxy))
+  const ticks: number[] = []
+  realm.register('controls.ts', (props: any, s) => {
+    if (s.state === undefined) {
+      s.setState(0)
+      s.every(10, () => { s.setState(s.state + 1); ticks.push(s.state) })
+      s.onKey((e: any) => { s.setState(s.state + (e.ctrl ? 10 : 1)) })
+      s.onPointer((e: any) => { s.setState(s.state + e.x) })
+    }
+    return s.elements.Text({ children: `${s.state}:${s.columns}x${s.rows}:${props?.reply ?? ''}` })
+  })
+  const messages: unknown[] = []
+  const clients = createModClients({
+    request: async (_s, _p, request) => realm.request(request),
+    message: async (s, p, input) => { messages.push([s.surface, p, input]); return {props:{reply:'ok'}} },
+    validate() {},
+  })
+  const { ui } = fixture({ clients, draw: async () => ({type:'Client', props:{key:'board',module:'controls.ts'},group:{plugin:'fixture'}}) })
+  const site = await ui.mount({surface:'terminal',component:'AbovePrompt',requestId:'controls',props:{},viewport:{columns:20,rows:2}}, {
+    surface:'terminal', clientClock:'manual', render() {}, unmount() {},
+  })
+  try {
+    await site.key({key:'a',ctrl:true})
+    await site.pointer({type:'down',x:2,y:0,button:'left'})
+    await site.advance(35)
+    expect(ticks).toEqual([13,14,15])
+    await site.resize({columns:40,rows:3,in:'board'})
+    await site.post({pick:2}, {in:'board'})
+    expect(site.getTree({in:'board'})).toMatchObject({children:['15:40x3:ok']})
+    expect(messages).toEqual([['terminal','fixture',{element:'board',module:'controls.ts',data:{pick:2}}]])
+    await expect(site.key({key:'a',in:'missing'})).rejects.toThrow(/Client/)
+    await expect(site.advance(-1)).rejects.toThrow(/advance/)
+    await site.dispose()
+    await expect(site.key({key:'a'})).rejects.toThrow(/stale/)
+    await expect(site.advance(1)).rejects.toThrow(/stale/)
+    expect(ticks).toEqual([13,14,15])
+  } finally { await site.dispose() }
+})
+
+test('manual Client controls reject ambiguous selection and fence late posts on dispose', async () => {
+  const realm = createModClientRealm(createModUiRealm('fixture', isProxy))
+  const seen: string[] = []
+  realm.register('keys.ts', (props: any, s) => {
+    s.onKey((e: any) => { seen.push(`${props.name}:${e.key}:${String(e.in)}`) })
+    return s.elements.Text({children:props.name})
+  })
+  const reply = Promise.withResolvers<{props: unknown}>()
+  const entered = Promise.withResolvers<void>()
+  const clients = createModClients({
+    request: async (_s, _p, request) => realm.request(request),
+    message: async () => { entered.resolve(); return reply.promise }, validate() {},
+  })
+  const { ui } = fixture({clients, draw: async () => ({type:'Box',children:['a','b'].map(name => ({
+    type:'Client',props:{key:name,module:'keys.ts',props:{name}},group:{plugin:'fixture'},
+  }))})})
+  const paints: unknown[] = []
+  const site = await ui.mount({surface:'desktop',component:'AbovePrompt',requestId:'multi',props:{}}, {
+    surface:'desktop',clientClock:'manual',render(tree) { paints.push(tree) },unmount() {},
+  })
+  try {
+    await expect(site.key({key:'x'})).rejects.toThrow(/ambiguous/)
+    await expect(site.resize({columns:1,rows:1})).rejects.toThrow(/ambiguous/)
+    await expect(site.post(null)).rejects.toThrow(/ambiguous/)
+    await site.key({key:'x',in:'b'})
+    expect(seen).toEqual(['b:x:undefined'])
+    const pending = site.post(null,{in:'a'})
+    await entered.promise
+    const count = paints.length
+    await site.dispose()
+    reply.resolve({props:{name:'late'}})
+    await pending
+    expect(paints).toHaveLength(count)
+  } finally { reply.resolve({props:{name:'late'}}); await site.dispose() }
+})
+
+test('render site owns real Client first frame, local actions, updates and late disposal', async () => {
+  const realm = createModClientRealm(createModUiRealm('fixture', isProxy))
+  const events: unknown[] = []
+  realm.register('counter.ts', (props: any, s) => s.elements.Button({
+    key: 'run', label: `${props.label}:${s.state ?? 0}`,
+    onPress: () => { s.setState((s.state ?? 0) + 1) },
+  }))
+  const blocked = Promise.withResolvers<ModClientFrame>()
+  const entered = Promise.withResolvers<void>()
+  let block = false
+  const disposed: number[] = []
+  const clients = createModClients({
+    async request(_site, _plugin, request) {
+      if (request.op === 'dispose') disposed.push(request.id)
+      if (request.op === 'press') events.push(request.event)
+      const frame = realm.request(request)
+      if (block && request.op === 'update') { entered.resolve(); return blocked.promise }
+      return frame
+    },
+    message: async () => ({}), validate() {},
+  })
+  const { ui, invoked } = fixture({ clients, draw: async (_owner, input) => ({
+    type: 'Box', children: [
+      { type: 'Button', props: { key: 'run' }, press: { plugin: 'fixture', handle: 1 } },
+      { type: 'Client', props: { key: 'counter', module: 'counter.ts', props: input.props }, group: { plugin: 'fixture' } },
+    ],
+  }) })
+  const input = { surface: 'terminal' as const, component: 'AbovePrompt' as const, requestId: 'band', props: { label: 'first' } }
+  const paints: any[] = []
+  let drawing = 0
+  let changed = Promise.withResolvers<void>()
+  const site = await ui.mount(input, { surface: 'terminal', render(tree, next) {
+    paints.push(tree); drawing = next; changed.resolve()
+  }, unmount() {} })
+  try {
+    expect(paints.at(-1).children[1].props.label).toBe('first:0')
+    expect((site.getTree() as any).children[1].type).toBe('Client')
+    const local = site.getTree({ in: 'counter' }) as any
+    expect(local.press.handle).toBe(1)
+    changed = Promise.withResolvers<void>()
+    await site.interact(drawing, local.press, 'press', 'run', undefined, { in: 'counter' })
+    await changed.promise
+    expect(paints.at(-1).children[1].props.label).toBe('first:1')
+    expect(events).toEqual([expect.objectContaining({ surface: 'terminal', component: 'AbovePrompt', requestId: 'band' })])
+    await site.interact(drawing, { plugin: 'fixture', handle: 1 }, 'press', 'run')
+    expect(invoked).toHaveLength(1)
+    await site.update({ ...input, props: { label: 'next' } })
+    expect(paints.at(-1).children[1].props.label).toBe('next:1')
+    changed = Promise.withResolvers<void>()
+    await site.interact(drawing, paints.at(-1).children[1].press, 'press', 'run')
+    await changed.promise
+    expect(paints.at(-1).children[1].props.label).toBe('next:2')
+    block = true
+    const update = site.update({ ...input, props: { label: 'late' } })
+    await entered.promise
+    const count = paints.length
+    const disposal = site.dispose()
+    blocked.resolve({ tree: { type: 'Text', children: ['late'] } })
+    await update; await disposal
+    expect(paints).toHaveLength(count)
+    expect(disposed).toEqual([1])
+    expect(site.getTree()).toBeUndefined()
+  } finally { blocked.resolve({}); await site.dispose() }
+})
+
 describe('mod UI ownership and pane policy', () => {
+  test('abandons plugin focus across dialog ownership transfer', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core, options) => {
+        if (event === 'ui.focus' && options.origin?.kind === 'plugin') {
+          entered.resolve()
+          await resume.promise
+        }
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    const pending = ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'plugin' } })
+    await entered.promise
+    await ui.render({ ...wide, hasDialog: true })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    resume.resolve()
+    expect(await pending).toMatchObject({ deny: expect.any(String) })
+    await ui.close(owner, 'pane', { kind: 'person' })
+    await ui.dispose()
+  })
+
+  test('abandons a delayed plugin focus when the person leaves and returns', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core, options) => {
+        if (event === 'ui.focus' && options.origin?.kind === 'plugin') {
+          entered.resolve()
+          await resume.promise
+        }
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } })
+    const pending = ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'plugin' } })
+    await entered.promise
+    await ui.focus(owner, { requestId: 'pane', origin: { kind: 'person' } })
+    await ui.focus(owner, { requestId: 'pane', element: 'run', origin: { kind: 'person' } })
+    resume.resolve()
+    expect(await pending).toMatchObject({ deny: expect.any(String) })
+    await ui.close(owner, 'pane', { kind: 'person' })
+    await ui.dispose()
+  })
+
+  test('invalidates only the requested render instance', async () => {
+    const { ui, draws } = fixture()
+    const input = { surface: 'terminal' as const, component: 'AbovePrompt' as const, requestId: 'band', props: {} }
+    const consumer = { surface: 'terminal' as const, render() {}, unmount() {} }
+    const band = await ui.mount(input, consumer)
+    const other = await ui.mount({ ...input, requestId: 'other' }, consumer)
+    draws.length = 0
+    await ui.invalidateInstance(input)
+    expect(draws.map(draw => draw.input.requestId)).toEqual(['band'])
+    await band.dispose()
+    draws.length = 0
+    await ui.invalidateInstance(input)
+    expect(draws).toHaveLength(0)
+    await other.dispose()
+  })
+
+  test('reports placement and places waiting panes on resize unless explicitly closed', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.commit(owner)
+    const narrow = { ...wide, columns: 100 }
+    expect(await ui.open(owner, { id: 'waiting' }, { kind: 'plugin' }, narrow))
+      .toMatchObject({ isPlaced: false, reason: expect.any(String) })
+    expect(ui.getSnapshot()[0]?.visible).toBe(false)
+    await ui.render(wide)
+    expect(ui.getSnapshot()[0]?.visible).toBe(true)
+    expect(await ui.open(owner, { id: 'waiting' }, { kind: 'plugin' }, wide))
+      .toEqual({ isPlaced: true })
+    await ui.close(owner, 'waiting', { kind: 'plugin' })
+    await ui.render(wide)
+    expect(ui.getSnapshot()).toHaveLength(0)
+    await ui.dispose()
+  })
+
   test('folds Raster and byte or file Image blits to the last payload per frame but publishes every shm blit', async () => {
     const owner = { plugin: 'fixture' }
     const source = { file: '/tmp/first.png', format: 'png' }
@@ -846,6 +1076,42 @@ describe('mod UI dispatch and drawing lifetime', () => {
       proceed.resolve()
       await Promise.all([focusing, invalidating])
       await ui.release(owner)
+    }
+  })
+
+  test('person focus stops waiting when a dialog takes keyboard ownership', async () => {
+    const owner = { plugin: 'fixture' }
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    let draws = 0
+    let invalidating: Promise<void> | undefined
+    const { ui } = fixture({
+      draw: async () => {
+        if (++draws === 2) { entered.resolve(); await resume.promise }
+        return { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 1 } }
+      },
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.focus' && input.element !== undefined)
+          invalidating = ui.invalidate(owner, 'ui.render')
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane', focus: true }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    let finished = false
+    const focusing = ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, wide).then(result => { finished = true; return result })
+    await entered.promise
+    const presenting = ui.render({ ...wide, hasDialog: true })
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(finished).toBe(true)
+      expect(await focusing).toEqual({ focused: false })
+    } finally {
+      resume.resolve()
+      await Promise.all([focusing, invalidating, presenting])
+      await ui.dispose()
     }
   })
 

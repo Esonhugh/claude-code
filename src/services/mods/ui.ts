@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { ModInput } from './types.js'
-import type { ModClients } from './client.js'
+import type { ModClients, ModClientHandle, ModClientSite } from './client.js'
 
 export type ModRenderSurface = 'terminal' | 'desktop' | 'mobile' | 'vscode'
 export type ModRenderComponent = 'AskUserQuestion' | 'UserMessage' | 'AssistantMessage' | 'ToolUse' | 'ToolResult' | 'ToolGroup' | 'ToolProgress' | 'CommandOutput' | 'Spinner' | 'TurnDuration' | 'InfoNotice' | 'SessionMode' | 'PromptHint' | 'AbovePrompt' | 'Pane'
@@ -11,16 +11,25 @@ export type ModRenderInput = {
   props: ModInput
   viewport?: { columns: number; rows: number; isFullscreen?: boolean }
 }
+export type ModClientBinding = { handle: ModClientHandle; tree?: unknown }
 export type ModRenderConsumer = {
   surface: ModRenderSurface
   clientId?: string
+  clientClock?: 'manual'
   signal?: AbortSignal
-  render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput): void | Promise<void>
+  retainClients?: boolean
+  render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput, clients?: ReadonlyMap<string, ModClientBinding>): void | Promise<void>
   unmount(): void | Promise<void>
 }
 export type ModRenderSite = {
+  key(event: { key: string; ctrl?: true; shift?: true; meta?: true; in?: string }): Promise<void>
+  pointer(event: { type: 'down' | 'move' | 'up' | 'enter' | 'leave'; x: number; y: number; fine?: { x: number; y: number }; button?: 'left' | 'middle' | 'right'; shift?: true; alt?: true; ctrl?: true; in?: string }): Promise<void>
+  resize(size: { columns: number; rows: number; in?: string }): Promise<void>
+  post(data: unknown, scope?: { in?: string }): Promise<void>
+  advance(ms: number): Promise<void>
+  getTree(scope?: { in?: string }): unknown
   update(input: ModRenderInput): Promise<void>
-  interact(drawing: number, callback: ModUiCallback, kind: ModUiInteraction, element: string, value?: string): Promise<unknown>
+  interact(drawing: number, callback: ModUiCallback, kind: ModUiInteraction, element: string, value?: string, scope?: { in?: string }): Promise<unknown>
   dispose(): Promise<void>
 }
 
@@ -50,7 +59,7 @@ export type ModUiOpenArgs = {
   columns?: number
 }
 
-export type ModUiCallback = { plugin: string; handle: number }
+export type ModUiCallback = { plugin: string; handle: number; client?: string }
 export type ModUiInteraction =
   | 'press'
   | 'link.press'
@@ -67,6 +76,7 @@ export type ModUiKeyRow = {
 
 export type ModUiPane = {
   clients?: ModClients
+  clientBindings?: ReadonlyMap<string, ModClientBinding>
   id: string
   title: string
   plugin: string
@@ -169,6 +179,7 @@ export type ModUi = {
   commit(owner: ModUiOwner, replacedOwner?: ModUiOwner): Promise<void>
   releaseCandidate(owner: ModUiOwner): void
   release(owner: ModUiOwner): Promise<void>
+  getClientSite(owner: ModUiOwner, id: string): ModClientSite | undefined
   getSnapshot(): readonly ModUiPane[]
   subscribe(listener: () => void): () => void
 }
@@ -315,6 +326,8 @@ export function createModUi({
   const serializedBlits = new Map<string, Promise<void>>()
   const blitGenerations = new Map<string, number>()
   const focusWaiters = new Set<() => void>()
+  const clientSites = new Map<ModUiOwner, ModClientSite>()
+  const reconcileClients = () => clients?.reconcile([...snapshot, ...clientSites.values()])
   const siteInputs = new WeakMap<ModRenderSite, ModRenderInput>()
   const sites = new Map<ModUiOwner, ModRenderSite & {
     redraw(): Promise<void>
@@ -354,6 +367,12 @@ export function createModUi({
     if (pane.personInitiated) return true
     const threshold = personRequested.has(askedKey(pane.owner, pane.id)) ? 110 : 144
     return pane.presentation.columns >= threshold
+  }
+
+  function placementResult(pane: PaneState): { isPlaced: boolean; reason?: string } {
+    return pane.visible
+      ? { isPlaced: true }
+      : { isPlaced: false, reason: `Pane is waiting for sufficient terminal width (${pane.presentation.columns} columns)` }
   }
 
   function placementOf(presentation: ModUiPresentation): ModUiPlacement {
@@ -407,7 +426,7 @@ export function createModUi({
     reconcileShown()
     revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
-    clients?.reconcile(snapshot)
+    reconcileClients()
     wakeFocusWaiters()
     for (const listener of [...listeners]) notify(listener)
   }
@@ -796,6 +815,10 @@ export function createModUi({
   }
 
   const ui: ModUi = {
+    getClientSite(owner, id) {
+      const site = clientSites.get(owner)
+      return site?.id === id ? site : snapshot.find(pane => pane.owner === owner && pane.id === id)
+    },
     async dispose() {
       await Promise.all([...sites.values()].map(site => site.dispose()))
     },
@@ -808,6 +831,86 @@ export function createModUi({
       let attached = false
       let disposal: Promise<void> | undefined
       let queue = Promise.resolve()
+      const instances = new Map<string, { node: any; handle: ModClientHandle; tree?: unknown }>()
+      let resolveEngine: (ref: number) => ModInput = () => { throw new Error('Unknown Mod UI engine ref') }
+      let syncing = false
+      let paintingQueue = Promise.resolve()
+      const expanded = (value: any, client?: string): any => {
+        if (!value || typeof value !== 'object') return value
+        if (value.type === 'Client') {
+          const entry = instances.get(`${value.group.plugin}\0${value.props.key}`)
+          return entry?.tree === undefined ? { type: 'Box', children: [] } : expanded(entry.tree, value.props.key)
+        }
+        return { ...value,
+          ...(client && value.press ? { press: { ...value.press, client } } : {}),
+          ...(Array.isArray(value.children) ? { children: value.children.map((child: unknown) => expanded(child, client)) } : {}),
+        }
+      }
+      const renderTree = (value: unknown) => consumer.render(
+        consumer.retainClients ? value : expanded(value), drawing!, resolveEngine,
+        consumer.retainClients ? new Map([...instances].map(([key, entry]) => [key, { handle: entry.handle, tree: entry.tree }])) : undefined,
+      )
+      const paint = () => {
+        const work = paintingQueue.then(async () => {
+          if (!disposed && drawing !== undefined) await renderTree(tree)
+        })
+        paintingQueue = work.catch(() => {})
+        return work
+      }
+      const syncClients = async () => {
+        if (!clients || !current) return
+        const descriptor: ModClientSite = { owner, id: current.requestId, visible: true, tree, drawing,
+          surface: current.surface, component: current.component, clock: consumer.clientClock }
+        clientSites.set(owner, descriptor)
+        const nodes = new Map<string, any>()
+        const visit = (value: any) => {
+          if (!value || typeof value !== 'object') return
+          if (value.type === 'Client') {
+            const key = `${value.group.plugin}\0${value.props.key}`
+            if (nodes.has(key)) throw new Error('Client key is already mounted in this drawing')
+            nodes.set(key, value)
+          } else if (Array.isArray(value.children)) value.children.forEach(visit)
+        }
+        visit(tree)
+        for (const [key, entry] of instances) {
+          if (!nodes.has(key) || nodes.get(key).props.module !== entry.node.props.module) {
+            instances.delete(key)
+            await entry.handle.dispose()
+          }
+        }
+        reconcileClients()
+        syncing = true
+        try {
+          for (const [key, node] of nodes) {
+            if (disposed) break
+            const entry = instances.get(key)
+            if (entry) { entry.node = node; await entry.handle.update(descriptor, node) }
+            else {
+              const next = { node, handle: undefined as unknown as ModClientHandle, tree: undefined as unknown }
+              instances.set(key, next)
+              next.handle = clients.mount(descriptor, node, output => {
+                if (disposed || instances.get(key) !== next) return
+                next.tree = output
+                if (!syncing) void paint().catch(() => site.dispose())
+              })
+              await next.handle.ready
+              await next.handle.resize(current.viewport?.columns ?? 0, current.viewport?.rows ?? 0)
+            }
+          }
+        } finally { syncing = false }
+      }
+      const control = (scope: { in?: string } | undefined, act: (handle: ModClientHandle) => Promise<void>) => {
+        const work = queue.then(async () => {
+          if (disposed) throw new Error('Mod UI render site is stale')
+          const matches = [...instances.values()].filter(entry => scope?.in === undefined || entry.node.props.key === scope.in)
+          if (matches.length !== 1) throw new Error(matches.length ? 'Client selection is ambiguous; specify in' : 'Client is not mounted')
+          await act(matches[0]!.handle)
+          await matches[0]!.handle.settled?.()
+          await paintingQueue
+        })
+        queue = work.catch(() => {})
+        return work
+      }
       const clientId = consumer.clientId ?? `${consumer.surface}:default`
       if (typeof clientId !== 'string' || !clientId) throw new TypeError('Mod UI render clientId must be a non-empty string')
       const site: ModRenderSite & {
@@ -818,6 +921,28 @@ export function createModUi({
         }): Promise<unknown>
         update(input: ModRenderInput, force?: boolean): Promise<void>
       } = {
+        key({ in: key, ...event }) { return control({ in: key }, handle => handle.key(event)) },
+        pointer({ in: key, ...event }) { return control({ in: key }, handle => handle.pointer(event)) },
+        resize({ in: key, columns, rows }) { return control({ in: key }, handle => handle.resize(columns, rows)) },
+        post(data, scope) { return control(scope, handle => handle.post(data)) },
+        advance(ms) {
+          const work = queue.then(async () => {
+            if (disposed) throw new Error('Mod UI render site is stale')
+            if (consumer.clientClock !== 'manual') throw new Error('Client advance requires a manual clock')
+            if (!Number.isFinite(ms) || ms < 0) throw new TypeError('Invalid Client advance')
+            for (const entry of instances.values()) await entry.handle.advance(ms)
+            await paintingQueue
+          })
+          queue = work.catch(() => {})
+          return work
+        },
+        getTree(scope) {
+          if (disposed) return undefined
+          if (!scope?.in) return tree
+          const matches = [...instances.values()].filter(entry => entry.node.props.key === scope.in)
+          if (matches.length > 1) throw new Error('Client key is ambiguous')
+          return matches[0]?.tree
+        },
         async redraw() {
           if (!current) await queue
           if (current && !disposed) await site.update(current, true)
@@ -859,10 +984,10 @@ export function createModUi({
             })
             const nextTree = replaceNode(tree, latest, replacement)
             validateTree?.(nextTree, current)
-            await consumer.render(nextTree, drawing!, () => {
-              throw new Error('Engine refs are unavailable while blitting')
-            })
+            await renderTree(nextTree)
             tree = nextTree
+            const descriptor = clientSites.get(owner)
+            if (descriptor) descriptor.tree = tree
             return {}
           }
           const serialize = () => {
@@ -899,6 +1024,7 @@ export function createModUi({
               return
             }
             const next = nextDrawing++
+            const previous = drawing
             let painting = true
             try {
               if (!attached && request.surface !== 'terminal') {
@@ -921,18 +1047,28 @@ export function createModUi({
               validate(result)
               if (disposed) { await releaseDrawing(owner, next); return }
               if (request.surface !== 'terminal') freezeRenderTree(result)
-              await consumer.render(result, next, ref => {
-                if (disposed || !painting && drawing !== next || !originals.has(ref)) throw new Error('Unknown or stale Mod UI engine ref')
-                return structuredClone(originals.get(ref)!)
-              })
-              const previous = drawing
               drawing = next
               tree = result
               current = request
+              resolveEngine = ref => {
+                if (disposed || !painting && drawing !== next || !originals.has(ref)) throw new Error('Unknown or stale Mod UI engine ref')
+                return structuredClone(originals.get(ref)!)
+              }
+              await syncClients()
+              await paint()
               if (previous !== undefined) {
                 await releaseDrawing(owner, previous)
               }
             } catch (error) {
+              if (drawing === next) {
+                clientSites.delete(owner)
+                await Promise.all([...instances.values()].map(entry => entry.handle.dispose()))
+                instances.clear()
+                drawing = undefined
+                tree = undefined
+                current = undefined
+                if (previous !== undefined) await releaseDrawing(owner, previous)
+              }
               await releaseDrawing(owner, next)
               throw error
             } finally { painting = false }
@@ -940,13 +1076,23 @@ export function createModUi({
           queue = work.catch(() => {})
           return work
         },
-        async interact(expectedDrawing, callback, kind, element, value) {
+        async interact(expectedDrawing, callback, kind, element, value, scope) {
           validateCallback(callback)
-          const lease = drawing
-          if (disposed || lease === undefined || lease !== expectedDrawing || !current || !interactiveNode(tree, kind, element, callback))
-            throw new Error('Mod UI drawing callback is stale')
           if (!['press', 'link.press', 'input.change', 'input.submit', 'select'].includes(kind)) throw new TypeError('Mod UI interaction kind is invalid')
           if (kind !== 'press' && typeof value !== 'string') throw new TypeError('Mod UI interaction value must be a string')
+          const lease = drawing
+          const client = scope?.in ?? callback.client
+          if (client !== undefined) {
+            if (disposed || lease !== expectedDrawing) throw new Error('Mod UI drawing callback is stale')
+            const entry = instances.get(`${callback.plugin}\0${client}`)
+            if (!entry || !interactiveNode(entry.tree, kind, element, callback)) throw new Error('Client callback is stale')
+            await entry.handle.press(callback, kind, element, value)
+            await entry.handle.settled?.()
+            await paintingQueue
+            return
+          }
+          if (disposed || lease === undefined || lease !== expectedDrawing || !current || !interactiveNode(tree, kind, element, callback))
+            throw new Error('Mod UI drawing callback is stale')
           const input = {
             surface: current.surface, component: current.component, requestId: current.requestId,
             plugin: callback.plugin, element,
@@ -961,8 +1107,13 @@ export function createModUi({
         dispose() {
           if (disposal) return disposal
           disposed = true
+          clientSites.delete(owner)
+          const stopping = Promise.all([...instances.values()].map(entry => entry.handle.dispose()))
           disposal = (async () => {
             await queue
+            await stopping
+            await paintingQueue
+            instances.clear()
             try {
               if (drawing !== undefined) {
                 const previous = drawing
@@ -1007,8 +1158,9 @@ export function createModUi({
           if (committed && existing && !ownsPane(owner, existing))
             throw new Error(`Mod UI pane ${spec.id} is already owned by another activation`)
           if (!committed) {
-            store.set(spec.id, openState(owner, existing, spec, origin, presentation))
-            return undefined
+            const pane = openState(owner, existing, spec, origin, presentation)
+            store.set(spec.id, pane)
+            return placementResult(pane)
           }
 
           if (!existing) {
@@ -1017,7 +1169,7 @@ export function createModUi({
             if (origin.kind === 'person') reconcileShown(pane)
             if (!pane.visible) {
               publish()
-              return undefined
+              return placementResult(pane)
             }
             try {
               await redraw(pane)
@@ -1025,7 +1177,7 @@ export function createModUi({
               publish()
               throw error
             }
-            return undefined
+            return placementResult(pane)
           }
 
           const key = askedKey(owner, spec.id)
@@ -1041,12 +1193,12 @@ export function createModUi({
           }
           if (openGenerations.get(key) !== generation) {
             await releaseLease(pane).catch(() => {})
-            return undefined
+            return { isPlaced: false, reason: 'Pane open was superseded or closed' }
           }
           openGenerations.delete(key)
           if (existing && active.get(spec.id) !== existing) {
             await releaseLease(pane).catch(() => {})
-            return undefined
+            return { isPlaced: false, reason: 'Pane open was superseded or closed' }
           }
           if (spec.focus === true) {
             for (const current of active.values()) current.focused = false
@@ -1058,7 +1210,7 @@ export function createModUi({
             existing.drawGeneration++
             await releaseLease(existing).catch(() => {})
           }
-          return undefined
+          return placementResult(pane)
         },
         { origin },
       )
@@ -1297,7 +1449,7 @@ export function createModUi({
         origin: request.origin,
       })
       const result = await dispatch(owner, 'ui.focus', input, async rewritten => {
-        if (active.get(pane.id) !== pane || person && generation !== personFocusGeneration)
+        if (active.get(pane.id) !== pane || generation !== personFocusGeneration)
           return { deny: 'another move landed first' }
         if (!pane.visible || !visibleOf(pane) || pane.tree === undefined)
           return { deny: 'site is not visible' }

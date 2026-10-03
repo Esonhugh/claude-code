@@ -442,7 +442,9 @@ function trueProp(props: Record<string, unknown>, key: string): void {
 
 function validatePress(value: unknown, type: string): ModUiCallback {
   const press = record(value, `${type} press`)
-  assertKeys(press, new Set(['plugin', 'handle']), `${type} press`)
+  assertKeys(press, new Set(['plugin', 'handle', 'client']), `${type} press`)
+  if (press.client !== undefined && (typeof press.client !== 'string' || !press.client))
+    throw new TypeError(`${type} press client must be a non-empty string`)
   if (typeof press.plugin !== 'string' || !press.plugin)
     throw new TypeError(`${type} press plugin must be a string`)
   if (!Number.isInteger(press.handle) || (press.handle as number) < 1)
@@ -1804,6 +1806,8 @@ function ModClient({
   const key = props.key as string
   const plugin = node.group!.plugin
   const module = props.module as string
+  const binding = pane.clientBindings?.get(`${plugin}\0${key}`)
+  const boundFrame = React.useMemo(() => binding?.tree === undefined ? undefined : validateModRenderTree(binding.tree), [binding?.tree])
   const element = React.useRef<DOMElement>(null)
   const handle = React.useRef<ModClientHandle | undefined>(undefined)
   const releasePointer = React.useRef<(() => void) | undefined>(undefined)
@@ -1822,6 +1826,16 @@ function ModClient({
 
   React.useLayoutEffect(() => {
     setFrame(undefined)
+    if (binding) {
+      // Render sites own this instance; the terminal only owns its region and input.
+      handle.current = binding.handle
+      lastSize.current = undefined
+      return () => {
+        handle.current = undefined
+        lastSize.current = undefined
+        releasePointer.current?.()
+      }
+    }
     if (!pane.clients) {
       latestError.current?.(new Error('Client cannot mount without a terminal clients host'))
       return
@@ -1877,7 +1891,7 @@ function ModClient({
       }
       void next.dispose().catch(error => latestError.current?.(error))
     }
-  }, [pane.clients, pane.owner, plugin, key, module])
+  }, [pane.clients, pane.owner, plugin, key, module, binding?.handle])
 
   React.useLayoutEffect(() => {
     const current = handle.current
@@ -1897,7 +1911,8 @@ function ModClient({
     lastSize.current = [columns, rows]
     void current.resize(columns, rows).catch(error => latestError.current?.(error))
   })
-  React.useEffect(() => { reportMetrics?.() }, [frame, reportMetrics])
+  const renderedFrame = binding ? boundFrame : frame
+  React.useEffect(() => { reportMetrics?.() }, [renderedFrame, reportMetrics])
 
   const run = (operation: Promise<unknown>) => {
     void operation.catch(error => latestError.current?.(error))
@@ -1972,7 +1987,7 @@ function ModClient({
   }, [internal_eventEmitter, inputAllowed, pane.visible, pane.owner, module, key, plugin])
   const keyDown = (event: KeyboardEvent) => {
     const current = handle.current
-    if (!current || !inputAllowed || !pane.visible || event.currentTarget !== event.target || event.key === 'escape') return
+    if (!current || !inputAllowed || !pane.visible || event.currentTarget !== event.target || event.key === 'escape' || event.key === 'tab') return
     event.preventDefault()
     event.stopPropagation()
     run(current.key({
@@ -1998,8 +2013,8 @@ function ModClient({
     }}
     onKeyDown={keyDown}
   >
-    {frame && <RenderElementNode
-      node={frame.tree}
+    {renderedFrame && <RenderElementNode
+      node={renderedFrame.tree}
       pane={pane}
       focusElements={focusElements}
       keyElements={keyElements}
@@ -2007,8 +2022,8 @@ function ModClient({
       currentPane={() => pane}
       onFocus={async () => onFocus(pane, key)}
       onError={onError}
-      hoverBoxes={frame.hoverBoxes}
-      clientHandle={handle.current}
+      hoverBoxes={renderedFrame.hoverBoxes}
+      clientHandle={binding?.handle ?? handle.current}
     />}
   </Box>
 }

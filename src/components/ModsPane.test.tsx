@@ -27,7 +27,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime } from '../services/mods/runtime.js'
-import type { ModClientHandle, ModClients } from '../services/mods/client.js'
+import type { ModClientHandle, ModClients, ModClientSite } from '../services/mods/client.js'
 import createRenderer from '../ink/renderer.js'
 import { CharPool, createScreen, HyperlinkPool, StylePool } from '../ink/screen.js'
 import type { Frame } from '../ink/frame.js'
@@ -872,12 +872,12 @@ describe('ModsPane Client consumer', () => {
   }
 
   function clientHost(options: {
-    mount?: (pane: ModUiPane, node: unknown, commit: (tree: unknown) => void) => void
+    mount?: (pane: ModClientSite, node: unknown, commit: (tree: unknown) => void) => void
   } = {}): {
     clients: ModClients
     calls: {
-      mounts: { pane: ModUiPane; node: unknown; commit: (tree: unknown) => void }[]
-      updates: { pane: ModUiPane; node: unknown }[]
+      mounts: { pane: ModClientSite; node: unknown; commit: (tree: unknown) => void }[]
+      updates: { pane: ModClientSite; node: unknown }[]
       resizes: [number, number][]
       pointers: unknown[]
       keys: unknown[]
@@ -886,8 +886,8 @@ describe('ModsPane Client consumer', () => {
     }
   } {
     const calls = {
-      mounts: [] as { pane: ModUiPane; node: unknown; commit: (tree: unknown) => void }[],
-      updates: [] as { pane: ModUiPane; node: unknown }[],
+      mounts: [] as { pane: ModClientSite; node: unknown; commit: (tree: unknown) => void }[],
+      updates: [] as { pane: ModClientSite; node: unknown }[],
       resizes: [] as [number, number][],
       pointers: [] as unknown[],
       keys: [] as unknown[],
@@ -905,6 +905,7 @@ describe('ModsPane Client consumer', () => {
           async resize(columns, rows) { calls.resizes.push([columns, rows]) },
           async pointer(event) { calls.pointers.push(event) },
           async key(event) { calls.keys.push(event) },
+          async post() {}, async advance() {},
           async press(...args) { calls.presses.push(args); return undefined },
           async dispose() { calls.disposes++ },
         }
@@ -917,6 +918,13 @@ describe('ModsPane Client consumer', () => {
   function paneWithClients(tree: unknown, clients: ModClients, changes: Partial<ModUiPane> = {}): ModUiPane {
     return Object.assign(pane(tree, changes), { clients })
   }
+
+  test('accepts host-routed Client callbacks while rejecting malformed Client addresses', () => {
+    const button = (client: unknown) => ({type:'Button',props:{key:'go',label:'Go'},press:{plugin:'fixture',handle:1,client}})
+    expect(() => validateModRenderTree(button('counter'))).not.toThrow()
+    expect(() => validateModRenderTree(button(''))).toThrow('client')
+    expect(() => validateModRenderTree(button(1))).toThrow('client')
+  })
 
   test('validates a strict Client leaf with bounded plain JSON props and layout', () => {
     expect(() => validateModRenderTree(clientNode({
@@ -994,7 +1002,7 @@ describe('ModsPane Client consumer', () => {
         return {
           ready,
           async update() {}, async resize() {}, async pointer() {}, async key() {},
-          async press() {}, async dispose() {},
+          async post() {}, async advance() {}, async press() {}, async dispose() {},
         }
       },
     }
@@ -3126,10 +3134,12 @@ describe('ModsPane input repair', () => {
     const repl = readFileSync(new URL('../screens/REPL.tsx', import.meta.url), 'utf8')
     expect(repl).not.toContain('diffSidebarKeyboardActive')
     expect(repl).toContain(
-      'isKeyboardActive={!modPaneFocused && !diffDialogActive}',
+      'isKeyboardActive={!modPaneFocused && !modAbovePromptFocused && !diffDialogActive}',
     )
-    expect(repl).toContain(
-      'isLocalJSXCommandActive={\n                          isShowingLocalJSXCommand || modPaneFocused\n                        }',
+    const localOwnership = repl.match(/isLocalJSXCommandActive=\{([\s\S]*?)\}/)?.[1]
+      ?.replace(/\s+/g, ' ').trim()
+    expect(localOwnership).toBe(
+      'isShowingLocalJSXCommand || showResponsiveDiffDialog || modPaneFocused || modAbovePromptFocused',
     )
     expect(repl).toContain('keyboardEnabled={false}')
     expect(repl).toContain('isActive={!toolJSX?.isLocalJSXCommand}')
