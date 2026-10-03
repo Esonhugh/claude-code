@@ -9,3 +9,7 @@ __pycache__/
 official-claude
 built-claude
 .claude-test-evidence/
+
+# Mod type declarations written by Claude Code on load (build-specific)
+examples/mods/*/.claude-plugin/types/
+examples/mods/*/.claude-test-environment/
